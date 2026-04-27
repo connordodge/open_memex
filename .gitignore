@@ -1,0 +1,35 @@
+# Rust
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# Flutter
+app/build/
+app/.dart_tool/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/.packages
+app/.pub-cache/
+app/.pub/
+app/ios/Pods/
+app/macos/Pods/
+app/macos/Flutter/ephemeral/
+app/macos/Flutter/Flutter-Generated.xcconfig
+app/macos/Flutter/GeneratedPluginRegistrant.swift
+app/.idea/
+app/*.iml
+
+# Native libs produced by build.rs / cargo
+app/macos/Frameworks/
+**/libapp_rust*.a
+**/libapp_rust*.dylib
+
+# OS / editor
+.DS_Store
+.vscode/
+*.swp
+*.swo
+
+# Secrets
+.env
+.env.local
