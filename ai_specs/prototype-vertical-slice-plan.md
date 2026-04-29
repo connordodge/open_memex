@@ -22,7 +22,7 @@ Vertical-slice prototype: Flutter macOS app + Rust core (FRB v2) + SQLite (FTS5 
 ### Phase 1: Vertical slice — Flutter ↔ Rust ↔ SQLite end-to-end
 
 - **Goal**: launch app, create vault, write a note via Flutter UI, persist through FRB→Rust→SQLite, restart, see note. Proves the bridge + storage path.
-- **Status (2026-04-27)**: **Rust foundation complete and validated.** sqlite-vec auto-extension proven working on macOS via integration test — the highest architectural risk in the plan. FRB scaffolding + Flutter app + robot test remain; recommended to resume in a fresh session given the size of that surface and the fiddly macOS Xcode build-phase wiring.
+- **Status (2026-04-29)**: **Pivoted to MCP-server-first** — the user wanted to actually try the idea, and the AI-native thesis lives in the MCP server, not the GUI. Rust foundation + indexing + hybrid search + MCP server + Claude Desktop integration are all done. Flutter app deferred (note-creation surface is now Claude itself + the `memex add` CLI). Phase-2 / Phase-3 collapsed forward in this session.
 - [x] `git init` + `.gitignore` (Rust `target/`, Flutter build, `.env`, `.DS_Store`)
 - [x] `Cargo.toml` workspace root (members: `crates/memex-core`; `app/rust` to be added when FRB scaffolding lands)
 - [x] `crates/memex-core/Cargo.toml` deps: `rusqlite` (bundled+load_extension+vtab+blob), `sqlite-vec`, `serde`/`serde_json`, `thiserror`, `ulid`, `tracing`
@@ -55,6 +55,18 @@ Vertical-slice prototype: Flutter macOS app + Rust core (FRB v2) + SQLite (FTS5 
 - `cargo test --workspace` → 4/4 integration tests pass
 - `cargo clippy --workspace --all-targets -- -D warnings` → clean
 - Flutter analysis/tests not run because no Flutter app exists yet
+
+**Phase 2 (indexing) and Phase 3 (MCP) work pulled forward in the 2026-04-29 session:**
+- [x] memex-core schema v2: chunks, chunk_fts (FTS5), chunk_vec (sqlite-vec), tags, pending_index
+- [x] Chunker module with paragraph/heading-based splitting and token-target packing (5 unit tests)
+- [x] Embedder trait + FakeEmbedder (deterministic for tests) + FastEmbedder wrapping `fastembed-rs` BGE-small-en-v1.5
+- [x] Inline indexer: rewrites chunks + FTS rows + vector rows in a single transaction on every note write
+- [x] Hybrid search via Reciprocal Rank Fusion over FTS5 + vec0 results (4 integration tests)
+- [x] memex-mcp binary `memex` with subcommands: `init`, `add`, `ls`, `serve`
+- [x] MCP server (rmcp 1.5) over stdio with 3 tools: `search`, `get_note`, `create_note` (3 integration smoke tests)
+- [x] Agent-authored notes auto-tagged `inbox` + `agent-authored` with frontmatter `source: "agent"`
+- [x] Logs to `<vault>/.memex/mcp.log` with daily rotation
+- [x] `docs/claude-desktop-setup.md` and `README.md` written
 
 ### Phase 2: Indexing pipeline + hybrid search
 

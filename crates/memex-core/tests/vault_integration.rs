@@ -18,15 +18,18 @@ fn vault_create_writes_manifest_db_objects_and_schema() {
         "objects/ must exist as a directory"
     );
 
-    // manifest is well-formed JSON with vault_id + schema_version=1
+    // manifest is well-formed JSON with vault_id + current schema_version
     let manifest_text = fs::read_to_string(root.join("manifest.json")).unwrap();
     let manifest: serde_json::Value = serde_json::from_str(&manifest_text).unwrap();
-    assert_eq!(manifest["schema_version"], 1);
+    let app_v = memex_core::schema::APP_SCHEMA_VERSION;
+    assert_eq!(
+        manifest["schema_version"].as_i64().unwrap(),
+        app_v
+    );
     assert!(manifest["vault_id"].as_str().unwrap().len() == 26, "vault_id is a ULID");
 
     // schema_version table populated
-    let v = vault.schema_version();
-    assert_eq!(v, 1);
+    assert_eq!(vault.schema_version(), app_v);
 
     // notes table exists and is empty
     let count: i64 = vault

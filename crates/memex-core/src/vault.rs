@@ -161,6 +161,12 @@ impl Vault {
     pub fn connection_ref(&self) -> &Connection {
         &self.conn
     }
+
+    /// Mutable connection access for callers that need transactions
+    /// (notably the indexer).
+    pub fn connection_mut(&mut self) -> &mut Connection {
+        &mut self.conn
+    }
 }
 
 fn configure_connection(conn: &mut Connection) -> Result<()> {
@@ -172,7 +178,7 @@ fn configure_connection(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn now_unix_ms() -> i64 {
+pub fn now_unix_ms() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

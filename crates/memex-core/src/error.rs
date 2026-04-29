@@ -28,6 +28,12 @@ pub enum MemexError {
 
     #[error("invalid path: {0}")]
     InvalidPath(String),
+
+    #[error("embedder init failed: {0}")]
+    EmbedderInit(String),
+
+    #[error("embedder inference failed: {0}")]
+    EmbedderInfer(String),
 }
 
 pub type Result<T> = std::result::Result<T, MemexError>;
