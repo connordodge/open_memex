@@ -68,6 +68,25 @@ Vertical-slice prototype: Flutter macOS app + Rust core (FRB v2) + SQLite (FTS5 
 - [x] Logs to `<vault>/.memex/mcp.log` with daily rotation
 - [x] `docs/claude-desktop-setup.md` and `README.md` written
 
+**Flutter app pulled forward in the 2026-05-01 session (architecture pivot: subprocess + direct SQLite read instead of FRB):**
+- [x] `memex update --vault <p> --note-id <id> --expected-version <v>` and `memex get` subcommands added
+- [x] Flutter macOS app scaffolded (`app/`); macOS sandbox disabled in entitlements so the app can spawn the `memex` binary and read the vault folder
+- [x] State management with Riverpod 2.x: `settingsProvider`, `currentVaultProvider`, `vaultDbProvider`, `notesListProvider`, `selectedNoteProvider`, `editorControllerProvider`
+- [x] `MemexCli` service: subprocess wrapper for `init`/`add`/`update`, with structured `MemexException` (incl. `versionConflict` kind)
+- [x] `VaultDb`: read-only SQLite access to the vault via `sqlite3` package (writes go through the CLI to keep indexing in one place)
+- [x] Vault picker screen with create / open / recents (and "memex binary not found" recovery path)
+- [x] Main window: note list sidebar + plain-markdown editor with debounced save (~500ms) + save-status indicator (idle/dirty/saving/clean/error/conflict)
+- [x] Optimistic concurrency surfaced as a "conflict — reload" indicator if an external write (e.g., from Claude) advances the version
+- [x] Stable selectors on key widgets (`vault-picker-create`, `vault-picker-open`, `note-list-item-{id}`, `editor-content`, `editor-title`, `save-indicator`, `vault-switcher`, `new-note-button`)
+- [x] Widget tests: 2 passing — vault picker empty state + recents rendering
+- [x] `flutter analyze` clean, `flutter build macos --debug` builds successfully
+- [x] README updated with quick-start for the Flutter app
+
+**Decisions worth flagging:**
+- **No `flutter_rust_bridge`.** The original plan had FRB v2 + a static-linked Rust library inside the macOS app bundle. Pivoted to: Flutter spawns the `memex` binary for writes, reads the SQLite file directly via `sqlite3` package. Rationale: avoids macOS Xcode build-phase wiring + sandbox-vs-extension-load issues, reuses the same binary already powering the MCP server, and keeps indexing logic single-sourced. Tradeoff: ~30-50ms subprocess spawn per write (acceptable for desktop note-creation latency).
+- **macOS sandbox disabled.** Required for spawning `memex` and reading user-chosen vault paths. Acceptable for a local-first dev tool.
+- **Plain `TextField` markdown editor**, not WYSIWYG. Spec called for `super_editor`; deferring per the plan's risk note about markdown round-trip lossiness. Easy to swap in later.
+
 ### Phase 2: Indexing pipeline + hybrid search
 
 - **Goal**: notes are chunked, embedded with fastembed, FTS+vector indexes populated; `search()` returns ranked chunks via RRF.

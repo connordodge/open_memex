@@ -2,15 +2,18 @@
 
 Open-source, local-first, AI-native knowledge base. The user's notes live on their device. AI agents access them through a standard MCP server.
 
-**Status: prototype.** This is the MCP-server-first vertical slice — enough to actually use the system end-to-end via Claude Desktop, with the desktop GUI deferred.
+**Status: prototype.** Two ways to use it: a Flutter macOS desktop app for typing/editing notes, and an MCP server for AI agents (e.g. Claude Desktop) to read, search, and write the same vault.
 
 ## What works today
 
 - `memex` CLI binary that doubles as an MCP server:
   - `memex init <path>` — create a vault
   - `memex add --vault <path> --title ... --tags ...` — append a note (body from stdin)
+  - `memex update --vault <path> --note-id <id> --expected-version <v>` — update a note (body from stdin)
+  - `memex get --vault <path> --note-id <id>` — print a note as JSON
   - `memex ls --vault <path>` — list notes
   - `memex serve --vault <path>` — run as an MCP server over stdio (for Claude Desktop, etc.)
+- **Flutter macOS app** (`app/`) with vault picker, multi-vault recents, note list, plain-markdown editor, debounced save
 - SQLite-backed vault (`memex.db`) with WAL, FTS5, and a `vec0` virtual table from `sqlite-vec`
 - Markdown chunker + inline indexing on every note write
 - Hybrid search: FTS5 (BM25) + optional vector (cosine) fused via Reciprocal Rank Fusion
@@ -20,45 +23,67 @@ Open-source, local-first, AI-native knowledge base. The user's notes live on the
 ## Architecture
 
 ```
-┌──────────────────────────────────────┐
-│   Claude Desktop (or any MCP client) │
-└──────────────┬───────────────────────┘
-               │ MCP / stdio
-┌──────────────▼───────────────────────┐
-│           memex-mcp binary           │
-│  • search / get_note / create_note   │
-└──────────────┬───────────────────────┘
-               │ in-process
-┌──────────────▼───────────────────────┐
-│            memex-core                │
-│  • Vault (SQLite + manifest)         │
-│  • Notes CRUD + optimistic concurrency│
-│  • Chunker + Indexer                 │
-│  • Hybrid search (FTS + vec0 + RRF)  │
-│  • Embedder (fastembed-rs, optional) │
-└──────────────────────────────────────┘
+┌──────────────────────────┐    ┌──────────────────────────┐
+│   Flutter macOS app      │    │   Claude Desktop         │
+│   (vault picker + edit)  │    │   (or any MCP client)    │
+└──────────┬───────────────┘    └──────────┬───────────────┘
+           │ subprocess +                  │ MCP over stdio
+           │ direct SQLite read            │
+           │                               │
+   ┌───────▼───────────────┐       ┌───────▼───────────────┐
+   │   memex add/update/   │       │   memex serve         │
+   │   get/ls/init         │       │   (MCP server)        │
+   └───────┬───────────────┘       └───────┬───────────────┘
+           │                               │
+           │   single `memex` binary       │
+           └───────────────┬───────────────┘
+                           │ in-process
+                ┌──────────▼───────────────┐
+                │       memex-core         │
+                │  • Vault (SQLite)        │
+                │  • Notes CRUD + opt.con. │
+                │  • Chunker + Indexer     │
+                │  • Hybrid search (RRF)   │
+                │  • Embedder (optional)   │
+                └──────────────────────────┘
+                           │
+                ┌──────────▼───────────────┐
+                │   <vault>/memex.db       │  ← shared
+                │   <vault>/objects/       │
+                │   <vault>/manifest.json  │
+                └──────────────────────────┘
 ```
 
-A future Flutter desktop app will sit alongside the MCP server, sharing the same vault file.
+The Flutter app and the MCP server both go through the same `memex` Rust binary for writes (so indexing logic lives in one place), and SQLite WAL mode lets them share the vault concurrently.
 
 ## Quick start
 
 ```bash
-# Build & install
+# Build & install the CLI / MCP server
 cargo install --path crates/memex-mcp --locked
 
 # Create a vault
 memex init ~/Documents/MyMemex
 
 # Add a note
-echo "# Hello\n\nThis is my first note." | \
+printf '# Hello\n\nThis is my first note.\n' | \
   memex add --vault ~/Documents/MyMemex --title "Hello"
-
-# Wire to Claude Desktop
-# See docs/claude-desktop-setup.md
 ```
 
-Then ask Claude things about your notes. See [`docs/claude-desktop-setup.md`](docs/claude-desktop-setup.md) for the config snippet and troubleshooting.
+### Flutter desktop app
+
+```bash
+cd app
+flutter run -d macos       # development
+# or
+flutter build macos        # release build at build/macos/Build/Products/Release/
+```
+
+On first launch, click "Open existing vault…" and pick the same folder, or "Create new vault…" to make a fresh one. The app finds the `memex` binary at `~/.cargo/bin/memex` automatically.
+
+### Claude Desktop integration
+
+See [`docs/claude-desktop-setup.md`](docs/claude-desktop-setup.md) for the config snippet and troubleshooting. Both the Flutter app and Claude can be pointed at the same vault simultaneously — SQLite WAL handles concurrent access.
 
 ## Repo layout
 
@@ -68,6 +93,7 @@ open_memex/
 ├── crates/
 │   ├── memex-core/            # storage, indexing, search, embeddings
 │   └── memex-mcp/             # CLI + MCP server binary (`memex`)
+├── app/                       # Flutter macOS desktop app
 ├── ai_specs/                  # spec + plan
 ├── docs/                      # user-facing docs
 └── README.md
@@ -78,18 +104,20 @@ open_memex/
 ```bash
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+cd app && flutter analyze && flutter test
 ```
 
 ## What's deferred
 
 - Sync / CRDTs (single device only)
 - Mobile platforms
-- Web/audio/video/image ingestion
+- Windows / Linux desktop (Flutter app is macOS-only for now)
+- Web / audio / video / image ingestion
 - Structured tables (Notion-style)
+- WYSIWYG markdown editor (current editor is plain `TextField` over markdown)
 - Plugin system
 - Encryption at rest
-- A Flutter UI (planned next)
-- `update_note` / `delete_note` exposed as MCP tools
+- `update_note` / `delete_note` exposed as MCP tools (Flutter app uses them via CLI today)
 
 ## License
 

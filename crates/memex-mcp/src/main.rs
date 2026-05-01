@@ -4,7 +4,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use memex_core::indexer;
-use memex_core::notes::{create_note, list_notes, CreateNote};
+use memex_core::notes::{create_note, get_note as core_get_note, list_notes, update_note, CreateNote, NoteId, UpdateNote};
 use memex_core::tags;
 use memex_core::Vault;
 use rmcp::transport::stdio;
@@ -52,6 +52,33 @@ enum Commands {
         #[arg(long, default_value = "20")]
         limit: i64,
     },
+    /// Update an existing note. Body comes from stdin.
+    Update {
+        /// Vault directory.
+        #[arg(long)]
+        vault: PathBuf,
+        /// Note id (ULID).
+        #[arg(long)]
+        note_id: String,
+        /// Expected current version (optimistic concurrency).
+        #[arg(long)]
+        expected_version: i64,
+        /// New title (optional; if omitted, keeps existing title).
+        #[arg(long)]
+        title: Option<String>,
+        /// Use real embeddings.
+        #[arg(long)]
+        with_embeddings: bool,
+    },
+    /// Print a single note as JSON to stdout.
+    Get {
+        /// Vault directory.
+        #[arg(long)]
+        vault: PathBuf,
+        /// Note id (ULID).
+        #[arg(long)]
+        note_id: String,
+    },
     /// Run as an MCP server over stdio.
     Serve {
         /// Vault directory.
@@ -78,6 +105,14 @@ async fn main() -> Result<()> {
             with_embeddings,
         } => cmd_add(vault, title, tags, with_embeddings).await,
         Commands::Ls { vault, limit } => cmd_ls(vault, limit),
+        Commands::Update {
+            vault,
+            note_id,
+            expected_version,
+            title,
+            with_embeddings,
+        } => cmd_update(vault, note_id, expected_version, title, with_embeddings).await,
+        Commands::Get { vault, note_id } => cmd_get(vault, note_id),
         Commands::Serve {
             vault,
             with_embeddings,
@@ -158,6 +193,80 @@ fn cmd_ls(vault_path: PathBuf, limit: i64) -> Result<()> {
         println!("{}  {}", n.id, n.title);
     }
     Ok(())
+}
+
+async fn cmd_update(
+    vault_path: PathBuf,
+    note_id: String,
+    expected_version: i64,
+    title: Option<String>,
+    with_embeddings: bool,
+) -> Result<()> {
+    use std::io::Read;
+    let absolute = make_absolute(&vault_path)?;
+    let mut buf = String::new();
+    std::io::stdin()
+        .read_to_string(&mut buf)
+        .context("read note body from stdin")?;
+
+    let id = NoteId::parse(&note_id).map_err(|e| anyhow::anyhow!("invalid note_id: {e}"))?;
+    let mut vault = Vault::open(&absolute).context("open vault")?;
+    let updated = update_note(
+        &mut vault,
+        &id,
+        expected_version,
+        UpdateNote {
+            title,
+            content_md: Some(buf.clone()),
+            frontmatter: None,
+        },
+    )?;
+
+    let embedder = if with_embeddings {
+        Some(build_default_embedder(&absolute))
+    } else {
+        None
+    };
+    indexer::reindex_note(
+        vault.connection_mut(),
+        updated.id.as_str(),
+        &buf,
+        embedder.as_deref(),
+    )?;
+
+    println!("{}", serde_json::to_string(&UpdateOutput {
+        note_id: updated.id.to_string(),
+        version: updated.version,
+        updated_at: updated.updated_at,
+    })?);
+    Ok(())
+}
+
+fn cmd_get(vault_path: PathBuf, note_id: String) -> Result<()> {
+    let absolute = make_absolute(&vault_path)?;
+    let id = NoteId::parse(&note_id).map_err(|e| anyhow::anyhow!("invalid note_id: {e}"))?;
+    let vault = Vault::open(&absolute)?;
+    let note = core_get_note(&vault, &id)?;
+    let tag_list = tags::tags_for_note(&vault, note.id.as_str()).unwrap_or_default();
+    let payload = serde_json::json!({
+        "note_id": note.id.to_string(),
+        "title": note.title,
+        "content_md": note.content_md,
+        "frontmatter": note.frontmatter,
+        "version": note.version,
+        "created_at": note.created_at,
+        "updated_at": note.updated_at,
+        "tags": tag_list,
+    });
+    println!("{}", serde_json::to_string(&payload)?);
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct UpdateOutput {
+    note_id: String,
+    version: i64,
+    updated_at: i64,
 }
 
 async fn cmd_serve(
