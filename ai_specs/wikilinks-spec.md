@@ -1,5 +1,5 @@
 <goal>
-Add wikilink-based note linking to Open Memex. The user can type `[[Title]]` while writing markdown and immediately link to (or create) another note in their vault. Links are typed via four kinds — `references` (default), `extends`, `contradicts`, `example-of` — surfaced in three input forms (inline `[[Title|kind]]`, curated section headings, YAML frontmatter). The link graph is exposed both in the GUI (autocomplete popover, kind chip, ghost-link rendering, backlinks panel) and to AI agents over MCP (real backlinks, graph traversal, agent-authored links).
+Add wikilink-based note linking to Open Memex. The user can type `[[Title]]` while writing markdown and immediately link to (or create) another note in their vault. Links are typed via a two-tier vocabulary: four **built-in kinds** (`references` default, `extends`, `contradicts`, `example-of`) get special treatment in headings, frontmatter, and AI prompts; **user-defined kinds** (any normalized kebab-case string) are first-class for storage and querying but without the curated shortcuts. Surfaced in three input forms: inline `[[Title~kind|alias]]`, curated section headings (built-ins only), YAML frontmatter (built-in or user-defined keys). The link graph is exposed both in the GUI (autocomplete popover, kind chip, ghost-link rendering, backlinks panel) and to AI agents over MCP (real backlinks, graph traversal, agent-authored links).
 
 **Why it matters:** Search alone treats notes as a flat bag of chunks. A typed link graph encodes the structure of the user's thinking — what extends what, what contradicts what, what stands as an example of what — which qualitatively expands what AI agents can do over the vault: load foundational context, surface contradictions, follow trains of thought, and write back into the graph as they synthesize.
 
@@ -39,7 +39,11 @@ Add wikilink-based note linking to Open Memex. The user can type `[[Title]]` whi
 **Naming + style:**
 - Rust: `link_kind` is a `LinkKind` enum (`References`, `Extends`, `Contradicts`, `ExampleOf`); SQL stores lowercase strings (`references`, `extends`, `contradicts`, `example-of`). `LinkSource` enum likewise (`InlineBody`, `InlineSection`, `Frontmatter`, `AutoAdded`).
 - Curated section headings are matched **case-insensitively** with whitespace trimmed: `## Contradicts`, `## contradicts`, `##  Contradicts` all count.
-- Wikilink syntax: `[[Title]]` or `[[Title|kind]]`. Whitespace inside `[[ ]]` is trimmed before resolution. Pipe is forbidden inside titles (it's the kind separator); enforced at note creation/rename.
+- Wikilink syntax: `[[Title]]`, `[[Title~kind]]`, `[[Title|alias]]`, or `[[Title~kind|alias]]`. Whitespace inside `[[ ]]` is trimmed before resolution. Tilde (`~`) is the kind separator; pipe (`|`) is the display-alias separator (Obsidian-compatible). Both are forbidden inside titles; the characters `~`, `|`, `]`, and newline are also forbidden in titles. Enforced at note creation and rename. Caret (`^`) is intentionally **not** used for kind so it remains available for future block-reference / transclusion features.
+- Kind vocabulary is **two-tier**:
+  - **Built-in kinds** (special-cased everywhere): `references` (default, untyped), `extends`, `contradicts`, `example-of`. Recognized via curated section headings, frontmatter keys, and (for AI) given well-defined semantic treatment.
+  - **User-defined kinds**: any normalized lowercase-kebab-case string up to 64 chars, ASCII alphanumeric + `-`, must start with a letter. Stored verbatim. Surfaced in `neighbors(kind?)` queries and in the chip's "More…" dropdown.
+- Kind normalization at write time: lowercase, whitespace runs collapsed to `-`, leading/trailing `-` stripped, validated against the regex above. Rejected at the Rust boundary if invalid.
 </background>
 
 <user_flows>
@@ -83,7 +87,7 @@ Add wikilink-based note linking to Open Memex. The user can type `[[Title]]` whi
 
 **Primary flow F — backlinks panel:**
 1. User opens any note in the editor.
-2. Below the editor body, a `## Backlinks` panel lists all notes linking IN to this one, grouped by kind (`Contradicted by`, `Extended by`, `Examples`, `References`).
+2. A `## Backlinks` panel is mounted as a fixed-height pane **below the editor scroll region** (does not scroll with body content) with a collapse toggle. It lists all notes linking IN to this one, grouped by kind. Built-in kinds get friendly labels (`Contradicted by`, `Extended by`, `Examples`, `References`); user-defined kinds appear under their normalized kind string (e.g. `Inspired by` → `inspired-by`).
 3. Clicking a backlink switches to that note.
 
 **Primary flow G — agent (MCP) flow:**
@@ -93,7 +97,7 @@ Add wikilink-based note linking to Open Memex. The user can type `[[Title]]` whi
 4. Claude calls `add_link(from_id, to_id, kind: "contradicts")` while synthesizing — server inserts a wikilink in the right place per the kind→destination rules below and reindexes.
 
 **Alternative flows:**
-- *Renaming a note*: `memex update --title "New Title"` performs a transactional rename pass — every `[[Old Title]]` and `[[Old Title|kind]]` in any note's body or frontmatter becomes the new title. Opt-out: `--no-rename-links`. The new-title collision case (a different note already has `New Title`) rejects the rename with a `TitleConflict` error.
+- *Renaming a note*: `memex update --title "New Title"` performs a transactional rename pass — every `[[Old Title]]`, `[[Old Title~kind]]`, `[[Old Title|alias]]`, and `[[Old Title~kind|alias]]` in any note's body or frontmatter becomes the new title (kind and alias preserved). Opt-out: `--no-rename-links`. The new-title collision case rejects the rename with a `TitleConflict` error.
 - *Importing markdown with wikilinks but no matching notes*: links are recorded with `to_note_id = NULL` (ghost). They render as ghost links in the editor; clicking creates the target.
 - *Editor uses `[[` literally inside a code block / inline code*: extractor still records the link by default (we are not parsing markdown semantics for v1). Code-block exclusion is a v2 nicety.
 - *Frontmatter is malformed YAML*: the indexer logs the parse error, treats frontmatter as empty for indexing, and the editor shows a small "frontmatter parse error" badge near the top. Body indexing still proceeds.
@@ -110,16 +114,21 @@ Add wikilink-based note linking to Open Memex. The user can type `[[Title]]` whi
 **Functional — schema and core (`memex-core`):**
 
 1. Apply schema migration v2 → v3:
-   - Add `UNIQUE` constraint to `notes.title`. The migration must check for pre-existing duplicates and rename conflicts deterministically as `"<title> (2)"`, `"<title> (3)"`, … with a one-line warning per renamed note logged via `tracing`. Emit a side-table `notes_dedup_log(old_title, new_title, note_id)` so the GUI can later surface "we renamed N notes during upgrade." Idempotent: re-running the migration on an already-deduped DB is a no-op.
-   - Create `links(id TEXT PRIMARY KEY, from_note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE, to_note_id TEXT NULL REFERENCES notes(id) ON DELETE SET NULL, link_text TEXT NOT NULL, link_kind TEXT NOT NULL, label TEXT NULL, position INTEGER NOT NULL, source TEXT NOT NULL)`. `link_kind` ∈ {`references`, `extends`, `contradicts`, `example-of`}. `source` ∈ {`inline_body`, `inline_section`, `frontmatter`, `auto_added`}.
+   - Add `UNIQUE` constraint to `notes.title`. Check for pre-existing duplicates first; if ≤ 1,000 collisions, rename deterministically as `"<title> (2)"`, `"<title> (3)"`, …, recording each rename in `notes_dedup_log(note_id TEXT PRIMARY KEY, old_title TEXT NOT NULL, new_title TEXT NOT NULL, migrated_at INTEGER NOT NULL)` and logging a `tracing` warning. If > 1,000 collisions, the migration aborts: `schema_version` stays at 2, no rows are modified, and `MemexError::TooManyDedupCollisions { count }` is raised so the GUI can surface a triage screen ("the vault has too many duplicate titles; resolve via `memex update --title` then re-open"). Idempotent: re-running on a deduped DB is a no-op.
+   - Create `links(id TEXT PRIMARY KEY, from_note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE, to_note_id TEXT NULL REFERENCES notes(id) ON DELETE SET NULL, link_text TEXT NOT NULL, link_kind TEXT NOT NULL CHECK (link_kind GLOB '[a-z][a-z0-9-]*' AND length(link_kind) <= 64), label TEXT NULL, position INTEGER NOT NULL, source TEXT NOT NULL CHECK (source IN ('inline_body','inline_section','frontmatter','auto_added')), UNIQUE (from_note_id, position))`.
+   - `position` is a **byte offset into the note's full `content_md`** (which includes any frontmatter delimiters). It is unique within a note.
+   - `link_kind` is the **normalized** kind string (lowercase, kebab-case, ASCII alphanumeric + `-`, must start with a letter, ≤ 64 chars). The four built-in kinds (`references`, `extends`, `contradicts`, `example-of`) are recognized everywhere; user-defined kinds (any other valid string) are stored verbatim and surface in `neighbors()` queries and the chip's "More…" dropdown.
+   - `label` is **single-purpose**: stores the user-supplied display alias from `[[Title|alias]]` syntax or the explicit `label` arg of `add_link`. It is **not** used to preserve unknown-kind literals (the user-defined-kind path makes that unnecessary).
    - Create indexes: `(from_note_id)`, `(to_note_id)`, `(link_kind, to_note_id)`.
-2. Define a `LinkKind` Rust enum (`References`, `Extends`, `Contradicts`, `ExampleOf`) with `as_str` / `from_str` for SQL round-tripping. Same for `LinkSource`. Bind both via `rusqlite::ToSql` / `FromSql`.
-3. Add a `links.rs` module with: `add_link`, `remove_link`, `links_for_note(note_id, direction)`, `replace_links_for_note(note_id, links)`. The replace fn is what the indexer uses (delete + insert in one transaction).
-4. Implement a `link_extractor` module that, given a note's full markdown (frontmatter + body), returns a vector of `ExtractedLink { link_text, kind, label?, position, source }` records.
-   - Wikilink regex: matches `[[<title>]]` or `[[<title>|<kind>]]`. Title is non-empty after trim, contains no `]`, no newline. Kind, if present, must match the four-kind whitelist (case-insensitive, hyphen or space tolerant: `example-of`, `example of`, `Example Of` all map to `ExampleOf`). Unknown kinds fall back to `References` and the unknown literal is logged.
-   - Frontmatter parse: YAML at top of file delimited by `---` lines. Keys `references`, `extends`, `contradicts`, `example-of` (kebab or underscore: `example_of` also accepted). Values are scalar `[[Title]]`, list of `[[Title]]`, or list of bare strings (treated as titles).
-   - Section grouping: when a wikilink in the body sits under a curated `##` heading (the closest preceding heading at depth 2), it inherits the kind of that heading. Curated headings (case-insensitive, trimmed): "Contradicts" → `Contradicts`, "Extends" / "Builds on" / "Builds-on" → `Extends`, "Example of" / "Examples" → `ExampleOf`, "See also" / "References" → `References`, "Open questions" → no implicit kind (its presence is captured separately as a bool on the note for AI surfacing — see #6).
-   - Precedence: explicit `[[Title|kind]]` > section-based > frontmatter context > default `References`.
+   - Add `notes.has_open_questions BOOLEAN NOT NULL DEFAULT 0` and `notes.frontmatter_parse_error BOOLEAN NOT NULL DEFAULT 0`.
+2. Define a `LinkKind` Rust type that wraps a normalized `String` (newtype with validation in the constructor). Provide `LinkKind::built_in()` returning the canonical four constants and `LinkKind::is_built_in(&self) -> bool`. Also `LinkSource` enum (`InlineBody`, `InlineSection`, `Frontmatter`, `AutoAdded`) with `as_str` / `from_str` for SQL round-tripping. Bind both via `rusqlite::ToSql` / `FromSql`.
+3. Add a `links.rs` module with: `add_link`, `remove_link`, `links_out_for_note(note_id)`, `links_in_for_note(note_id, kind?)`, `replace_links_for_note(note_id, links)`. The replace fn is what the indexer uses (delete + insert in one transaction).
+4. Implement a `link_extractor` module that, given a note's full markdown (frontmatter + body), returns `ExtractedLinks { body: Vec<ExtractedLink>, frontmatter: Vec<ExtractedLink>, has_open_questions: bool, frontmatter_parse_error: bool }` where `ExtractedLink` is `{ link_text, kind, label?, position, source }`.
+   - Wikilink regex (compiled once): matches `[[<title>(?:~<kind>)?(?:\|<alias>)?]]`. Title is non-empty after trim and contains no `~`, `|`, `]`, or newline. `<kind>` (if present) is normalized (lowercase, kebab-case) and validated against `^[a-z][a-z0-9-]*$` with length ≤ 64; **invalid kinds are rejected at extraction with the link defaulted to `references`** and a `tracing` warning logged. `<alias>` (if present) is captured into `label` verbatim (allowed chars: anything except `]` and newline).
+   - Frontmatter parse: YAML at top of file delimited by `---` lines. **Only `[[Title]]` form is accepted** as a value (scalar or list element); bare strings are not treated as titles (avoids the silent-rename problem). Keys are: the four built-in kinds (`references`, `extends`, `contradicts`, `example-of`; underscore form `example_of` accepted) **plus** any user-defined kebab-case key matching `^[a-z][a-z0-9-]*$` with length ≤ 64. Built-in keys get their well-known kind; user-defined keys map to themselves as the kind.
+   - Section grouping: when a wikilink in the body sits under a curated `##` heading (the closest preceding heading at depth 2), it inherits the kind of that heading. Curated headings (case-insensitive, trimmed): "Contradicts" → `contradicts`, "Extends" / "Builds on" / "Builds-on" → `extends`, "Example of" / "Examples" → `example-of`, "See also" / "References" → `references`, "Open questions" → no implicit kind (its presence is captured separately as a bool on the note for AI surfacing — see #6). User-defined headings do **not** introduce implicit kinds in v1 (deferred to v2 to avoid magic).
+   - Precedence: explicit `[[Title~kind]]` > section-based (built-in only) > default `references`.
+   - Frontmatter and body extraction are independent of each other (frontmatter wikilinks always carry `source = frontmatter`).
 5. Extend `indexer::reindex_note` to also rebuild the row's outgoing links via `replace_links_for_note`. Resolution: for each `link_text`, look up the matching `notes.title` and set `to_note_id` (or `NULL` if no match — ghost link). Same single transaction as the existing chunk/FTS/vec rewrite.
 6. Add a derived flag `notes.has_open_questions BOOLEAN NOT NULL DEFAULT 0` (migration-time) computed by the indexer when the body contains a `## Open questions` heading. Lets agents query "show me notes with open questions" cheaply.
 7. Implement `notes::update_note` enhancement: when the title changes, perform a transactional rename pass that rewrites every `[[OldTitle]]` and `[[OldTitle|kind]]` in every note's `content_md` (including frontmatter strings) to the new title, then reindexes each touched note. New parameter: `RenameOptions { rename_links: bool }` (default true). The new title is validated against the unique constraint **before** doing any rewrites — collision returns `MemexError::TitleConflict { existing_id, attempted_title }` and no change is made.
@@ -134,27 +143,33 @@ Add wikilink-based note linking to Open Memex. The user can type `[[Title]]` whi
 
 **Functional — MCP server (`memex-mcp`):**
 
-13. `get_note` tool param `include_backlinks: bool` (default false). When true, the response payload gains `links: { references: [...], extends: [...], contradicts: [...], example_of: [...] }` and `backlinks` with the same shape. Each entry: `{ note_id, title, link_id, label?, source }`.
-14. New tool `neighbors(note_id: string, depth?: int = 1, kind?: string)`. Returns `{ vault_id, root_note_id, depth, results: [{ note_id, title, distance, edges: [{ from_id, to_id, kind, label? }] }] }`. Depth clamped server-side to `[1, 3]`.
-15. New tool `add_link(from_id: string, to_id: string, kind?: string, label?: string)`. Default kind: `references`.
+13. `get_note` tool param `include_backlinks: bool` (default false). When true, the response payload gains `links: Map<kind_string, Vec<LinkEntry>>` and `backlinks: Map<kind_string, Vec<LinkEntry>>` — keys are the normalized kind strings (built-in or user-defined), values are arrays of `{ note_id, title, link_id, label?, source }`. Built-in kinds appear first in the map, user-defined kinds follow alphabetically.
+14. New tool `neighbors(note_id: string, depth?: int = 1, kind?: string)`. Returns `{ vault_id, root_note_id, depth, results: [{ note_id, title, distance, edges: [{ from_id, to_id, kind, label? }] }] }`. Depth clamped server-side to `[1, 3]`. `kind` if provided must match the validation regex (built-in or user-defined). Self-edges (`from_id == to_id`) are excluded from results.
+15. New tool `add_link(from_id: string, to_id: string, kind?: string, label?: string)`. Default kind: `references`. `kind` is normalized at the server boundary; invalid input → structured error.
    - Destination rule:
      - If `kind` is `references` (or omitted), append a single line `[[<Target Title>]]` to (or after) a `## Auto-added links` section at the bottom of the source note (creating the section if absent).
-     - If `kind` is one of `extends`/`contradicts`/`example-of`, write into YAML frontmatter under the corresponding key (creating frontmatter if absent). Idempotent: a duplicate add is a no-op (returns the existing link id).
-   - Returns `{ vault_id, link_id, from_id, to_id, kind, source: "auto_added"|"frontmatter", note_version: int }`.
+     - Otherwise (any non-`references` kind, built-in or user-defined), write into YAML frontmatter under the kind key (creating frontmatter if absent). Idempotent: a duplicate add is a no-op (returns the existing link id with `was_existing: true`).
+   - Returns `{ vault_id, link_id, from_id, to_id, kind, source: "auto_added"|"frontmatter", was_existing: bool, note_version: int }`.
 16. All three new/changed tools include the standard `vault_id` + structured-error handling already used by `search`/`create_note`.
 
 **Functional — Flutter app (`app/`):**
 
 17. Wikilink autocomplete:
-    - Detected by a `WikilinkAutocompleteController` watching `TextEditingController` changes; opens a popover anchored to the caret position when an unclosed `[[` is observed before the cursor and there is no `]]` between `[[` and the cursor.
-    - Popover contents: 0..N matched note titles (max 8 visible, scroll for more), ranked by simple fuzzy score × recency; followed by a "+ Create new note titled `<query>`" item iff `<query>` does not exactly match any existing title.
-    - Keyboard: `↑/↓` move selection, `Enter`/`Tab` accept, `Esc` dismiss, typing updates the query, backspacing past `[[` dismisses.
+    - **Trigger rule:** the popover opens only when a fresh `[[` is **typed via a keystroke event** (not via cursor movement, paste, or programmatic insertion). The controller listens to keystroke events on the body field; when the keystroke produces a `[[` immediately before the caret AND the caret is at the end of that newly-typed `[[`, the popover opens. Subsequent keystrokes update the query as long as the caret remains inside the `[[…` range and there is no `]]` between `[[` and the caret. Backspacing past `[[`, typing `]]`, moving the caret outside the range, or losing focus closes the popover. Editing inside an already-closed `[[Title]]` does **not** reopen the popover.
+    - Popover contents: 0..N matched note titles (max 8 visible, scroll for more), ranked by simple fuzzy score × recency; followed by a "+ Create new note titled `<query>`" item iff `<query>` is non-empty and does not exactly match any existing title.
+    - Keyboard: `↑/↓` move selection, `Enter`/`Tab` accept, `Esc` dismiss, typing updates the query.
     - Accept-existing inserts `<Title>]]` after the existing `[[`, places the cursor right after `]]`, closes the popover, schedules the inline kind chip.
-    - Accept-create calls `memex add --title "<query>" --vault <vault>` via `MemexCli`. On success, inserts `<query>]]` and the popover closes; on failure, snackbar.
-18. Ghost-link click: if the user clicks a wikilink whose `to_note_id IS NULL` (resolved at render time from the live `links` table), call `memex add` to create the note, then navigate via the existing `selectedNoteIdProvider`.
-19. Inline kind chip: appears next to the just-inserted wikilink (overlay positioned at the closing `]]`). Default label "references". Click cycles through the four kinds; rewriting the body text to `[[Title|kind]]` (or stripping the suffix back to `[[Title]]` for `references`). Auto-dismiss on next keystroke, focus loss, or 4s timeout (whichever is sooner).
-20. Wikilink rendering inside the editor: implemented via `TextField` in normal mode and a separate "rendered overlay" pass that detects wikilink ranges and paints a `Container` with click handler over each match. (Fallback if rich text inside the editable body is too involved: render wikilinks as plain text with a subtle background highlight + a separate, simpler "Links" sub-panel that lists them clickably. Behavior to be locked in during Phase 4 implementation.)
-21. `## Backlinks` panel: a fixed-height panel below the editor body. Reads `links_in(note_id)` from `VaultDb`. Groups by kind, headers per group, click-to-navigate. Empty state: "No backlinks yet."
+    - Accept-create calls `memex add --title "<query>" --vault <vault>` via `MemexCli`. On success, inserts `<query>]]` and the popover closes; on failure, snackbar; the typed text remains so the user can retry.
+18. Wikilink click behavior (uniform): **bare click navigates**; no modifier key required. Clicking *outside* a wikilink range places the caret as usual. Clicking a wikilink whose `to_note_id IS NULL` (ghost link) calls `memex add` to create the note with that title, then navigates. No confirmation dialog.
+19. Inline kind chip:
+    - Appears next to the just-inserted wikilink (overlay positioned at the closing `]]`). Default label "references" with three quick-button suffixes for the other built-ins (`extends`, `contradicts`, `example-of`). A "More…" button opens a fuzzy-search picker over kinds already present in the vault (`SELECT DISTINCT link_kind FROM links`) plus a "Create new kind…" affordance for typing a fresh user-defined kind.
+    - Selecting a built-in or user-defined kind rewrites the body text from `[[Title]]` → `[[Title~kind]]` (or strips the suffix back to `[[Title]]` for `references`).
+    - **Dismiss rules:** the chip stays visible until the caret leaves the inserted wikilink range, OR the user presses `Esc`, OR a 10s timeout elapses, OR the editor loses focus. It does **not** dismiss on every keystroke.
+20. Wikilink rendering inside the editor:
+    - Styled in-place via a custom `TextEditingController` that overrides `buildTextSpan` to apply distinct text styles to wikilink ranges (target exists → colored, no underline; ghost → dashed underline + muted color + tooltip on hover that says "Click to create").
+    - Tap routing via a `Stack`ed transparent `GestureDetector` layer over the `TextField` that resolves `RenderEditable.getPositionForPoint(localTap)` to a wikilink range and dispatches navigate-or-ghost-create per requirement 18.
+    - **Fallback (locked in if Phase 4 first integration test reveals the tap-overlay too fragile):** render wikilinks as styled text with no in-place click handling, plus a separate "Links" sub-panel listing each wikilink clickably under the editor body. Document the chosen path in `docs/wikilinks.md`.
+21. `## Backlinks` panel: a fixed-height pane mounted **below the editor scroll region** (not at the bottom of body content) so it is always visible regardless of body length. Includes a collapse toggle (`Key('backlinks-panel-collapse')`). Reads `links_in_for_note(note_id)` from `VaultDb`. Groups by kind: built-in kinds first (`References`, `Extends`, `Contradicts`, `Example of`), user-defined kinds alphabetically below. Click navigates. Empty state: "No backlinks yet."
 22. Refresh: `vaultRevisionProvider` already exists; bump it after every write so the backlinks panel and the wikilink resolver both reread.
 23. New Riverpod providers: `linksOutProvider(noteId)`, `linksInProvider(noteId)`, `wikilinkAutocompleteProvider`. All three hydrate from `VaultDb`; writes go through `MemexCli`.
 
@@ -165,25 +180,26 @@ Add wikilink-based note linking to Open Memex. The user can type `[[Title]]` whi
 26. `add_link` for a link that already exists (same `from_id`, `to_id`, `kind`): no-op; returns the existing link id with `was_existing: true`.
 27. Frontmatter YAML parse failure: indexer logs the error, treats frontmatter as empty for that pass, and sets `notes.frontmatter_parse_error` (boolean column added in v3 migration). Body indexing continues. Editor surfaces a small warning chip.
 28. `[[]]` and `[[ ]]` and other zero-length wikilinks: extractor skips silently. No error, no link.
-29. `[[Title|made-up-kind]]` (unknown kind): extractor records the link as `kind=References`, logs the unknown literal, includes it in the optional `label` field for round-trip preservation.
+29. `[[Title~Made-Up-Kind]]` (kind contains invalid chars or fails normalization): extractor logs a warning and records the link as `kind=references`. (User-defined kebab-case kinds are valid; only kinds that violate the format/length validation fall back to the default.)
 30. Title-rename pass partial failure: the entire rename is one transaction; if any rewrite fails for any reason (e.g. SQLite busy), the whole rename rolls back, including the `notes.title` change.
 
 **Edge Cases:**
 
-31. Self-link (`[[This Title]]` in the same note): allowed but ignored for backlink/neighbor purposes — recorded with `from_note_id == to_note_id` and a `source` of whatever applies; UI hides them from the backlinks panel.
+31. Self-link (`[[This Title]]` in the same note): allowed but ignored for backlink/neighbor purposes — recorded with `from_note_id == to_note_id` and a `source` of whatever applies. **Hidden from both the backlinks panel and the `neighbors()` MCP tool.**
 32. Multiple wikilinks to the same target in the same note: each occurrence is a separate row in `links` (distinguished by `position`). Backlinks panel deduplicates per source-note; `neighbors` returns one edge per source-note.
 33. Wikilinks inside fenced code blocks / inline code: extracted as normal in v1 (we don't parse markdown semantics yet). Documented limitation.
 34. Wikilinks containing characters with case differences (`[[hello]]` vs note `Hello`): titles are matched **case-sensitively** because titles themselves are case-sensitive in v1. We accept this as a minor papercut documented in the README; future v2 may add case-folded resolution.
-35. A note whose title contains `|` (the kind separator): rejected at create / rename time with `TitleInvalid` and a helpful message. Migration auto-renames such notes by replacing `|` with `-`.
-36. Frontmatter list with mixed bare strings and `[[...]]`: both accepted, both treated as titles for resolution.
+35. A note whose title contains `|`, `~`, `]`, or newline: rejected at create / rename time with `TitleInvalid` and a helpful message. Migration auto-renames such notes by replacing the offending character(s) with `-` and logging to `notes_dedup_log`.
+36. Frontmatter list elements that are bare strings (not `[[Title]]`): silently ignored at extraction (unlike v0 of the spec which accepted them). Frontmatter must use the `[[Title]]` form to register a link. Documented in `docs/wikilinks.md`.
 37. Long notes (>50k chars): extractor must not be quadratic; use a single regex pass + linear scan over headings.
 38. Concurrent rename + indexing of the same note (very unlikely but possible if Claude writes mid-rename): SQLite WAL serialization + the rename transaction holding the write lock guarantees consistency. Loser retries via existing `busy_timeout`.
+39. Pre-existing dedup-rename leaves old `[[Foo]]` references resolving to whichever sibling kept the bare title (the *renamed* note becomes unreachable from old links). Documented limitation: surfaced via the dedup-log banner that lists each renamed note with a "review references to this note" affordance. No automatic redirect in v1 (manual triage by the user; a future tool can offer it).
 
 **Validation:**
 
-39. Pre-rename validation: target new title is non-empty after trim, ≤ 200 characters, contains no `|`, no newline, no leading/trailing whitespace.
-40. `add_link` arg validation: `from_id` and `to_id` are valid ULIDs; `kind` if provided is in the whitelist; `label` ≤ 200 characters.
-41. Wikilink popover query: trimmed; empty query shows top recent notes (≤ 8); query length capped at 200 chars before being sent through the matcher.
+40. Pre-rename validation: target new title is non-empty after trim, ≤ 200 characters, contains no `|`, `~`, `]`, or newline, no leading/trailing whitespace.
+41. `add_link` arg validation: `from_id` and `to_id` are valid ULIDs; `kind` if provided is normalized at the boundary and validated against `^[a-z][a-z0-9-]*$` with length ≤ 64; `label` ≤ 200 characters and contains no `]` or newline.
+42. Wikilink popover query: trimmed; empty query shows top recent notes (≤ 8); query length capped at 200 chars before being sent through the matcher.
 </requirements>
 
 <boundaries>
@@ -204,7 +220,7 @@ Add wikilink-based note linking to Open Memex. The user can type `[[Title]]` whi
 - Per-note wikilink count: soft-capped at 1,000 outgoing links; beyond that the indexer logs a warning and only the first 1,000 are recorded. Realistic notes are well under 50.
 - Backlink panel: shows up to 200 incoming links across all kinds; "Show all" button reveals more.
 - `neighbors()` depth: clamped to 1..3 (server-side enforcement; agents can't accidentally explode the graph).
-- Auto-dedup migration: hard-bails if there are >1,000 collisions to dedup (vault is misshapen; surface a clear error and abort).
+- Auto-dedup migration: hard-bails if there are >1,000 collisions to dedup. **Recovery path:** the vault stays at `schema_version = 2`, no rows are modified, and the app surfaces a triage screen on next launch listing the duplicate-title groups with copy-to-clipboard `memex update --title` snippets. Once the user resolves them, the next launch retries the migration. Document this clearly in `docs/wikilinks.md`.
 
 </boundaries>
 
