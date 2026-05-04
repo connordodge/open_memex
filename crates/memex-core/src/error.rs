@@ -34,6 +34,30 @@ pub enum MemexError {
 
     #[error("embedder inference failed: {0}")]
     EmbedderInfer(String),
+
+    #[error("title conflicts with existing note {existing_id}: {attempted_title}")]
+    TitleConflict {
+        existing_id: String,
+        attempted_title: String,
+    },
+
+    #[error("title invalid: {0}")]
+    TitleInvalid(String),
+
+    #[error("too many duplicate-title collisions during migration: {count}")]
+    TooManyDedupCollisions { count: i64 },
+
+    #[error("invalid link kind: {0}")]
+    InvalidLinkKind(String),
+
+    #[error("yaml error: {0}")]
+    Yaml(String),
+}
+
+impl From<serde_yaml::Error> for MemexError {
+    fn from(e: serde_yaml::Error) -> Self {
+        MemexError::Yaml(e.to_string())
+    }
 }
 
 pub type Result<T> = std::result::Result<T, MemexError>;

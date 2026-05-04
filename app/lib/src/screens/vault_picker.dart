@@ -72,16 +72,25 @@ class VaultPickerScreen extends ConsumerWidget {
   }
 
   Future<void> _createVault(BuildContext context, WidgetRef ref) async {
-    final selected = await FilePicker.platform.getDirectoryPath(
-      dialogTitle: 'Choose an empty folder for your new vault',
+    final result = await showDialog<_CreateVaultResult>(
+      context: context,
+      builder: (_) => const _CreateVaultDialog(),
     );
-    if (selected == null) return;
+    if (result == null) return;
+    final fullPath = p.join(result.parentDir, result.name);
+    if (Directory(fullPath).existsSync() &&
+        Directory(fullPath).listSync().isNotEmpty) {
+      if (context.mounted) {
+        _showError(context, '$fullPath already exists and is not empty.');
+      }
+      return;
+    }
     final cli = ref.read(memexCliProvider);
     if (cli == null) return;
     try {
-      await cli.initVault(selected);
-      await ref.read(settingsProvider.notifier).rememberVault(selected);
-      ref.read(currentVaultProvider.notifier).state = selected;
+      await cli.initVault(fullPath);
+      await ref.read(settingsProvider.notifier).rememberVault(fullPath);
+      ref.read(currentVaultProvider.notifier).state = fullPath;
     } catch (e) {
       if (context.mounted) {
         _showError(context, 'Could not create vault: $e');
@@ -203,4 +212,158 @@ class _RecentVaultTile extends ConsumerWidget {
 
 void _showError(BuildContext context, String msg) {
   ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+}
+
+class _CreateVaultResult {
+  _CreateVaultResult({required this.parentDir, required this.name});
+  final String parentDir;
+  final String name;
+}
+
+class _CreateVaultDialog extends StatefulWidget {
+  const _CreateVaultDialog();
+
+  @override
+  State<_CreateVaultDialog> createState() => _CreateVaultDialogState();
+}
+
+class _CreateVaultDialogState extends State<_CreateVaultDialog> {
+  final _nameCtrl = TextEditingController(text: 'MyMemex');
+  String? _parentDir;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    final home = Platform.environment['HOME'];
+    if (home != null) {
+      _parentDir = p.join(home, 'Documents');
+    }
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickParent() async {
+    final dir = await FilePicker.platform.getDirectoryPath(
+      dialogTitle: 'Choose where the new vault folder should live',
+      initialDirectory: _parentDir,
+    );
+    if (dir != null) {
+      setState(() => _parentDir = dir);
+    }
+  }
+
+  void _submit() {
+    final name = _nameCtrl.text.trim();
+    if (name.isEmpty) {
+      setState(() => _error = 'Vault name cannot be empty.');
+      return;
+    }
+    if (name.contains('/') || name.contains('..')) {
+      setState(() => _error = 'Vault name cannot contain "/" or "..".');
+      return;
+    }
+    if (_parentDir == null || _parentDir!.isEmpty) {
+      setState(() => _error = 'Choose a parent folder.');
+      return;
+    }
+    Navigator.of(
+      context,
+    ).pop(_CreateVaultResult(parentDir: _parentDir!, name: name));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final fullPath = (_parentDir != null && _nameCtrl.text.trim().isNotEmpty)
+        ? p.join(_parentDir!, _nameCtrl.text.trim())
+        : null;
+
+    return AlertDialog(
+      title: const Text('Create new vault'),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(minWidth: 480),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Vault name'),
+            const SizedBox(height: 6),
+            TextField(
+              controller: _nameCtrl,
+              autofocus: true,
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                hintText: 'MyMemex',
+              ),
+              onChanged: (_) => setState(() => _error = null),
+              onSubmitted: (_) => _submit(),
+            ),
+            const SizedBox(height: 16),
+            const Text('Parent folder'),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 10,
+                    ),
+                    decoration: BoxDecoration(
+                      border: Border.all(
+                        color: Theme.of(context).colorScheme.outline,
+                      ),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      _parentDir ?? '(none selected)',
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton(
+                  onPressed: _pickParent,
+                  child: const Text('Choose…'),
+                ),
+              ],
+            ),
+            if (fullPath != null) ...[
+              const SizedBox(height: 16),
+              Text(
+                'Vault will be created at:',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 2),
+              Text(
+                fullPath,
+                style: Theme.of(
+                  context,
+                ).textTheme.bodyMedium?.copyWith(fontFamily: 'Menlo'),
+              ),
+            ],
+            if (_error != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                _error!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('Create')),
+      ],
+    );
+  }
 }

@@ -30,6 +30,8 @@ clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 rmcp = { version = "1.5", features = ["server", "transport-io", "macros"] }
 schemars = "1.2"
+serde_yaml = "0.9"
+regex = "1"
 
 [profile.release]
 lto = "thin"

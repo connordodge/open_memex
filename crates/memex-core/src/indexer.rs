@@ -9,6 +9,8 @@ use ulid::Ulid;
 
 use crate::chunker;
 use crate::embedder::Embedder;
+use crate::link_extractor;
+use crate::links;
 use crate::schema;
 use crate::Result;
 
@@ -21,6 +23,7 @@ pub fn reindex_note(
     embedder: Option<&dyn Embedder>,
 ) -> Result<usize> {
     let chunks = chunker::chunk(content_md);
+    let extracted = link_extractor::extract(content_md);
 
     let model_version = embedder.map(|e| e.model_version().to_string());
     let dim = embedder.map(|e| e.dimension());
@@ -29,6 +32,24 @@ pub fn reindex_note(
     }
 
     let tx = conn.transaction()?;
+
+    // Update per-note flags + replace outgoing links.
+    tx.execute(
+        "UPDATE notes
+            SET has_open_questions = ?, frontmatter_parse_error = ?
+            WHERE id = ?",
+        params![
+            extracted.has_open_questions as i64,
+            extracted.frontmatter_parse_error as i64,
+            note_id,
+        ],
+    )?;
+    let pending: Vec<links::PendingLink> = extracted
+        .body
+        .into_iter()
+        .chain(extracted.frontmatter)
+        .collect();
+    links::replace_links_for_note(&tx, note_id, &pending)?;
 
     // Drop existing chunk rows for this note. Cascading FK on `chunks` does
     // not extend to virtual tables, so we delete from chunk_fts (and chunk_vec)

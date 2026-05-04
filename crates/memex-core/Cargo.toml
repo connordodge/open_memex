@@ -16,6 +16,8 @@ ulid = { workspace = true }
 tracing = { workspace = true }
 fastembed = { workspace = true }
 zerocopy = { workspace = true }
+serde_yaml = { workspace = true }
+regex = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
