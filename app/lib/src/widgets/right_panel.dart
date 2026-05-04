@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
+import '../db.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
@@ -171,18 +172,24 @@ class _ConnectionsTab extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final selected = ref.watch(selectedNoteProvider);
-    final db = ref.watch(vaultDbProvider);
-    if (selected == null || db == null) {
+    if (selected == null) {
       return const _PlaceholderTab(
         eyebrow: 'knowledge graph · this note',
         subtitle: '',
         empty: 'select a note to see its connections.',
       );
     }
-    // Outgoing + incoming links from the new v3 links table.
-    // VaultDb may not yet expose these; we render empty state for now and
-    // wire it up when Phase 4 lands.
+
+    final outgoing = ref.watch(linksOutProvider(selected.id));
+    final backlinksByKind = ref.watch(backlinksProvider(selected.id));
+    final outCount = outgoing.length;
+    final inCount = backlinksByKind.values.fold<int>(
+      0,
+      (sum, list) => sum + list.length,
+    );
+
     return ListView(
+      key: const Key('backlinks-panel'),
       children: [
         PanelHeader(
           eyebrow: 'knowledge graph · this note',
@@ -192,25 +199,207 @@ class _ConnectionsTab extends ConsumerWidget {
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
           child: Text(
-            '${selected.tags.length} tags · ${selected.contentMd.split(RegExp(r"\[\[")).length - 1} wikilinks in body',
+            '$outCount outgoing · $inCount backlinks · ${selected.tags.length} tags',
             style: OmType.mono(size: 10.5, color: OmColors.fg3, height: 1.6),
           ),
         ),
         const OmHairline(),
-        const Padding(
-          padding: EdgeInsets.fromLTRB(16, 24, 16, 16),
+        if (outgoing.isEmpty && backlinksByKind.isEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 24, 16, 16),
+            child: Text(
+              'no links yet.\ntype `[[` in the editor to start linking notes.',
+              style: OmType.mono(size: 11, color: OmColors.fg3, height: 1.6),
+            ),
+          )
+        else ...[
+          if (outgoing.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            const Eyebrow('outgoing'),
+            const SizedBox(height: 4),
+            for (final kind in orderedLinkKinds(
+              outgoing.map((l) => l.kind),
+            )) ...[
+              _OutgoingKindGroup(
+                kind: kind,
+                links: outgoing.where((l) => l.kind == kind).toList(),
+              ),
+            ],
+            const SizedBox(height: 16),
+          ],
+          if (backlinksByKind.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 0, 16, 0),
+              child: Eyebrow('backlinks'),
+            ),
+            const SizedBox(height: 4),
+            for (final kind in orderedLinkKinds(backlinksByKind.keys)) ...[
+              _BacklinkKindGroup(kind: kind, entries: backlinksByKind[kind]!),
+            ],
+            const SizedBox(height: 16),
+          ],
+        ],
+      ],
+    );
+  }
+}
+
+class _OutgoingKindGroup extends ConsumerWidget {
+  const _OutgoingKindGroup({required this.kind, required this.links});
+  final String kind;
+  final List<LinkRow> links;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
           child: Text(
-            'connections light up once Phase 4 wires the links table\ninto the editor.',
-            textAlign: TextAlign.left,
-            style: TextStyle(
-              fontFamily: 'monospace',
-              fontSize: 11,
-              color: OmColors.fg3,
-              height: 1.6,
+            kind.toUpperCase(),
+            style: OmType.mono(
+              size: 10.5,
+              color: kind == 'references' ? OmColors.fg2 : OmColors.accentSoft,
+              letterSpacing: 0.8,
             ),
           ),
         ),
+        for (final l in links)
+          _LinkRowItem(
+            key: Key('outgoing-link-${l.id}'),
+            title: l.toNoteId == null ? l.linkText : null,
+            ghostTitle: l.toNoteId == null ? l.linkText : null,
+            resolvedTitle: l.toNoteId != null ? l.linkText : null,
+            label: l.label,
+            onTap: l.toNoteId == null
+                ? null
+                : () => ref.read(selectedNoteIdProvider.notifier).state =
+                      l.toNoteId,
+          ),
       ],
+    );
+  }
+}
+
+class _BacklinkKindGroup extends ConsumerWidget {
+  const _BacklinkKindGroup({required this.kind, required this.entries});
+  final String kind;
+  final List<BacklinkEntry> entries;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+          child: Text(
+            backlinkLabelForKind(kind).toUpperCase(),
+            style: OmType.mono(
+              size: 10.5,
+              color: kind == 'contradicts'
+                  ? OmColors.danger
+                  : kind == 'extends'
+                  ? OmColors.accent
+                  : OmColors.fg2,
+              letterSpacing: 0.8,
+            ),
+          ),
+        ),
+        for (final e in entries)
+          _LinkRowItem(
+            key: Key('backlink-item-${e.fromNoteId}-${e.linkId}'),
+            title: e.fromTitle,
+            resolvedTitle: e.fromTitle,
+            label: e.label,
+            onTap: () =>
+                ref.read(selectedNoteIdProvider.notifier).state = e.fromNoteId,
+          ),
+      ],
+    );
+  }
+}
+
+class _LinkRowItem extends StatefulWidget {
+  const _LinkRowItem({
+    super.key,
+    this.title,
+    this.ghostTitle,
+    this.resolvedTitle,
+    this.label,
+    this.onTap,
+  });
+  final String? title;
+  final String? ghostTitle;
+  final String? resolvedTitle;
+  final String? label;
+  final VoidCallback? onTap;
+
+  @override
+  State<_LinkRowItem> createState() => _LinkRowItemState();
+}
+
+class _LinkRowItemState extends State<_LinkRowItem> {
+  bool _hover = false;
+  @override
+  Widget build(BuildContext context) {
+    final isGhost = widget.resolvedTitle == null && widget.ghostTitle != null;
+    final display = widget.resolvedTitle ?? widget.ghostTitle ?? '?';
+    return MouseRegion(
+      cursor: widget.onTap == null
+          ? SystemMouseCursors.basic
+          : SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: Container(
+          color: _hover ? OmColors.surface3 : Colors.transparent,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Row(
+            children: [
+              Icon(
+                isGhost ? LucideIcons.fileX : LucideIcons.fileText,
+                size: 12,
+                color: isGhost ? OmColors.fg3 : OmColors.fg2,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  display,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: OmType.sans(
+                    size: 13,
+                    color: isGhost ? OmColors.fg3 : OmColors.fg0,
+                  ),
+                ),
+              ),
+              if (widget.label != null && widget.label!.isNotEmpty) ...[
+                const SizedBox(width: 8),
+                Text(
+                  widget.label!,
+                  style: OmType.mono(size: 10.5, color: OmColors.fg3),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+              if (isGhost) ...[
+                const SizedBox(width: 6),
+                Text(
+                  'GHOST',
+                  style: OmType.mono(
+                    size: 9.5,
+                    color: OmColors.fg4,
+                    letterSpacing: 0.8,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

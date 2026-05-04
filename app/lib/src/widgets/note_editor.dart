@@ -11,6 +11,8 @@ import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
 import 'atoms.dart';
+import 'kind_chip.dart';
+import 'wikilink_autocomplete.dart';
 
 /// Editor controller — owns the debounced save state. Unchanged in shape
 /// from the previous version; the design redesign happens in the widget tree.
@@ -378,7 +380,7 @@ class _Breadcrumb extends StatelessWidget {
   }
 }
 
-class _DocumentSurface extends StatelessWidget {
+class _DocumentSurface extends ConsumerStatefulWidget {
   const _DocumentSurface({
     required this.note,
     required this.titleCtrl,
@@ -395,80 +397,143 @@ class _DocumentSurface extends StatelessWidget {
   final String? errorMessage;
 
   @override
+  ConsumerState<_DocumentSurface> createState() => _DocumentSurfaceState();
+}
+
+class _DocumentSurfaceState extends ConsumerState<_DocumentSurface> {
+  final _bodyKey = GlobalKey();
+  final _kindChipCtrl = KindChipController();
+
+  @override
+  void initState() {
+    super.initState();
+    widget.bodyCtrl.addListener(_onBodyChanged);
+  }
+
+  @override
+  void dispose() {
+    widget.bodyCtrl.removeListener(_onBodyChanged);
+    _kindChipCtrl.dispose();
+    super.dispose();
+  }
+
+  void _onBodyChanged() {
+    final caret = widget.bodyCtrl.selection.baseOffset;
+    if (caret < 0) return;
+    _kindChipCtrl.onSelectionChanged(caret);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(28, 28, 28, 200),
-      child: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 760),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _MetaRail(note: note),
-              const SizedBox(height: 18),
-              TextField(
-                key: const Key('editor-title'),
-                controller: titleCtrl,
-                style: OmType.h1Serif(),
-                cursorColor: OmColors.accent,
-                decoration: InputDecoration(
-                  hintText: 'Untitled',
-                  hintStyle: OmType.serif(
-                    size: 36,
-                    color: OmColors.fg3,
-                    weight: FontWeight.w500,
-                  ),
-                ),
-                onChanged: onTitleChanged,
-              ),
-              if (note.tags.isNotEmpty) ...[
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 4,
-                  children: [
-                    for (final t in note.tags)
-                      Text(
-                        '#$t',
-                        style: OmType.mono(
-                          size: 12,
-                          color: OmColors.accentSoft,
-                        ),
+    final note = widget.note;
+    return Stack(
+      children: [
+        SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(28, 28, 28, 200),
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 760),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _MetaRail(note: note),
+                  const SizedBox(height: 18),
+                  TextField(
+                    key: const Key('editor-title'),
+                    controller: widget.titleCtrl,
+                    style: OmType.h1Serif(),
+                    cursorColor: OmColors.accent,
+                    decoration: InputDecoration(
+                      hintText: 'Untitled',
+                      hintStyle: OmType.serif(
+                        size: 36,
+                        color: OmColors.fg3,
+                        weight: FontWeight.w500,
                       ),
-                  ],
-                ),
-              ],
-              const SizedBox(height: 18),
-              if (errorMessage != null) ...[
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: Text(
-                    errorMessage!,
-                    style: OmType.mono(size: 11, color: OmColors.danger),
+                    ),
+                    onChanged: widget.onTitleChanged,
                   ),
-                ),
-              ],
-              TextField(
-                key: const Key('editor-content'),
-                controller: bodyCtrl,
-                maxLines: null,
-                minLines: 12,
-                cursorColor: OmColors.accent,
-                style: OmType.mono(
-                  size: 13.5,
-                  color: OmColors.fg0,
-                  height: 1.7,
-                ),
-                decoration: InputDecoration(
-                  hintText: 'write markdown…',
-                  hintStyle: OmType.mono(size: 13.5, color: OmColors.fg3),
-                ),
-                onChanged: onContentChanged,
+                  if (note.tags.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      children: [
+                        for (final t in note.tags)
+                          Text(
+                            '#$t',
+                            style: OmType.mono(
+                              size: 12,
+                              color: OmColors.accentSoft,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ],
+                  const SizedBox(height: 18),
+                  if (widget.errorMessage != null) ...[
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        widget.errorMessage!,
+                        style: OmType.mono(size: 11, color: OmColors.danger),
+                      ),
+                    ),
+                  ],
+                  TextField(
+                    key: _bodyKey,
+                    controller: widget.bodyCtrl,
+                    maxLines: null,
+                    minLines: 12,
+                    cursorColor: OmColors.accent,
+                    style: OmType.mono(
+                      size: 13.5,
+                      color: OmColors.fg0,
+                      height: 1.7,
+                    ),
+                    decoration: InputDecoration(
+                      hintText: 'type [[ to link a note · write markdown…',
+                      hintStyle: OmType.mono(size: 13.5, color: OmColors.fg3),
+                    ),
+                    onChanged: widget.onContentChanged,
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
         ),
-      ),
+        // Wikilink autocomplete (zero-size widget; uses an Overlay).
+        IgnorePointer(
+          ignoring: false,
+          child: WikilinkAutocomplete(
+            key: const Key('editor-content'),
+            controller: widget.bodyCtrl,
+            editorKey: _bodyKey,
+            onNoteCreatedSelect: (_) {},
+            onInserted: (start, end) {
+              _kindChipCtrl.show(start: start, end: end);
+            },
+          ),
+        ),
+        // Floating kind chip near the bottom of the editor pane.
+        ListenableBuilder(
+          listenable: _kindChipCtrl,
+          builder: (context, _) {
+            final box =
+                _bodyKey.currentContext?.findRenderObject() as RenderBox?;
+            final origin = box?.localToGlobal(Offset.zero) ?? Offset.zero;
+            // Anchor relative to the surrounding Stack; the OverlayEntry
+            // approach the chip implements would be cleaner, but for v1 we
+            // place it just above the bottom of the editor.
+            final size = MediaQuery.of(context).size;
+            return KindChip(
+              controller: _kindChipCtrl,
+              editorController: widget.bodyCtrl,
+              anchor: Offset(origin.dx + 24, size.height - 110),
+            );
+          },
+        ),
+      ],
     );
   }
 }

@@ -85,6 +85,7 @@ class MemexCli {
     String? title,
     required String contentMd,
     bool withEmbeddings = false,
+    bool noRenameLinks = false,
   }) async {
     final args = <String>[
       'update',
@@ -95,6 +96,7 @@ class MemexCli {
       '--expected-version',
       expectedVersion.toString(),
       if (title != null && title.isNotEmpty) ...['--title', title],
+      if (noRenameLinks) '--no-rename-links',
       if (withEmbeddings) '--with-embeddings',
     ];
     final r = await _run(args, stdinBody: contentMd);
@@ -114,6 +116,77 @@ class MemexCli {
       noteId: json['note_id'] as String,
       version: (json['version'] as num).toInt(),
       updatedAt: (json['updated_at'] as num).toInt(),
+    );
+  }
+
+  /// Add a wikilink from one note to another. Mirrors the `memex add-link`
+  /// CLI subcommand. Idempotent — if the link already exists, the returned
+  /// [AddLinkResult.wasExisting] is true and no markdown mutation occurs.
+  Future<AddLinkResult> addLink({
+    required String vaultPath,
+    required String fromNoteId,
+    required String toNoteId,
+    String kind = 'references',
+    String? label,
+    bool withEmbeddings = false,
+  }) async {
+    final args = <String>[
+      'add-link',
+      '--vault',
+      vaultPath,
+      '--from',
+      fromNoteId,
+      '--to',
+      toNoteId,
+      '--kind',
+      kind,
+      if (label != null && label.isNotEmpty) ...['--label', label],
+      if (withEmbeddings) '--with-embeddings',
+    ];
+    final r = await _run(args);
+    if (r.exitCode != 0) {
+      throw MemexException('add-link failed: ${r.stderr}');
+    }
+    final json = jsonDecode(r.stdout.trim()) as Map<String, dynamic>;
+    return AddLinkResult(
+      linkId: json['link_id'] as String?,
+      fromNoteId: json['from'] as String,
+      toNoteId: json['to'] as String,
+      kind: json['kind'] as String,
+      source: json['source'] as String,
+      wasExisting: json['was_existing'] as bool,
+      noteVersion: (json['note_version'] as num).toInt(),
+    );
+  }
+
+  /// Fetch a single note as JSON via `memex get`. Optionally include the
+  /// outgoing/incoming links maps.
+  Future<NoteFetchResult> getNote({
+    required String vaultPath,
+    required String noteId,
+    bool includeLinks = false,
+  }) async {
+    final args = <String>[
+      'get',
+      '--vault',
+      vaultPath,
+      '--note-id',
+      noteId,
+      if (includeLinks) '--include-links',
+    ];
+    final r = await _run(args);
+    if (r.exitCode != 0) {
+      throw MemexException('get failed: ${r.stderr}');
+    }
+    final json = jsonDecode(r.stdout.trim()) as Map<String, dynamic>;
+    return NoteFetchResult(
+      noteId: json['note_id'] as String,
+      title: json['title'] as String,
+      contentMd: json['content_md'] as String,
+      version: (json['version'] as num).toInt(),
+      tags: ((json['tags'] as List?) ?? const []).cast<String>(),
+      links: json['links'] as Map<String, dynamic>?,
+      backlinks: json['backlinks'] as Map<String, dynamic>?,
     );
   }
 }
@@ -138,6 +211,44 @@ class NoteUpdateResult {
   final String noteId;
   final int version;
   final int updatedAt;
+}
+
+class AddLinkResult {
+  AddLinkResult({
+    required this.linkId,
+    required this.fromNoteId,
+    required this.toNoteId,
+    required this.kind,
+    required this.source,
+    required this.wasExisting,
+    required this.noteVersion,
+  });
+  final String? linkId;
+  final String fromNoteId;
+  final String toNoteId;
+  final String kind;
+  final String source;
+  final bool wasExisting;
+  final int noteVersion;
+}
+
+class NoteFetchResult {
+  NoteFetchResult({
+    required this.noteId,
+    required this.title,
+    required this.contentMd,
+    required this.version,
+    required this.tags,
+    required this.links,
+    required this.backlinks,
+  });
+  final String noteId;
+  final String title;
+  final String contentMd;
+  final int version;
+  final List<String> tags;
+  final Map<String, dynamic>? links;
+  final Map<String, dynamic>? backlinks;
 }
 
 enum MemexErrorKind { other, versionConflict }

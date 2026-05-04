@@ -72,6 +72,83 @@ class VaultDb {
     );
   }
 
+  /// All notes' (id, title) pairs. Used for the wikilink autocomplete and
+  /// the kind-chip "More…" picker.
+  List<NoteTitle> allTitles({int limit = 1000}) {
+    final rows = db.select(
+      'SELECT id, title, updated_at FROM notes ORDER BY updated_at DESC LIMIT ?',
+      [limit],
+    );
+    return rows
+        .map(
+          (r) => NoteTitle(
+            id: r['id'] as String,
+            title: r['title'] as String,
+            updatedAt: (r['updated_at'] as num).toInt(),
+          ),
+        )
+        .toList();
+  }
+
+  /// Outgoing links for a note, ordered by position.
+  List<LinkRow> linksOutFor(String noteId) {
+    final rows = db.select(
+      'SELECT id, from_note_id, to_note_id, link_text, link_kind, label, position, source '
+      'FROM links WHERE from_note_id = ? ORDER BY position',
+      [noteId],
+    );
+    return rows.map(_rowToLink).toList();
+  }
+
+  /// Incoming links for a note, optionally filtered by kind. Joined with
+  /// notes so the source title is available.
+  List<LinkRow> linksInFor(String noteId, {String? kind}) {
+    final whereKind = kind != null ? ' AND link_kind = ?' : '';
+    final args = <Object?>[noteId];
+    if (kind != null) args.add(kind);
+    final rows = db.select(
+      'SELECT id, from_note_id, to_note_id, link_text, link_kind, label, position, source '
+      'FROM links WHERE to_note_id = ?$whereKind '
+      'ORDER BY link_kind, from_note_id, position',
+      args,
+    );
+    return rows.map(_rowToLink).toList();
+  }
+
+  /// Map of note_id → title for a list of ids. Used to enrich link rows
+  /// with the source/target's display title.
+  Map<String, String> titlesForIds(List<String> ids) {
+    if (ids.isEmpty) return const {};
+    final placeholders = List.filled(ids.length, '?').join(',');
+    final rows = db.select(
+      'SELECT id, title FROM notes WHERE id IN ($placeholders)',
+      ids,
+    );
+    return {for (final r in rows) r['id'] as String: r['title'] as String};
+  }
+
+  /// All distinct kinds present in the vault's links table. Used by the
+  /// kind chip's "More…" picker.
+  List<String> distinctLinkKinds() {
+    final rows = db.select(
+      'SELECT DISTINCT link_kind FROM links ORDER BY link_kind',
+    );
+    return rows.map((r) => r['link_kind'] as String).toList();
+  }
+
+  static LinkRow _rowToLink(Row r) {
+    return LinkRow(
+      id: r['id'] as String,
+      fromNoteId: r['from_note_id'] as String,
+      toNoteId: r['to_note_id'] as String?,
+      linkText: r['link_text'] as String,
+      kind: r['link_kind'] as String,
+      label: r['label'] as String?,
+      position: (r['position'] as num).toInt(),
+      source: r['source'] as String,
+    );
+  }
+
   static bool isVault(String path) {
     return File(p.join(path, 'manifest.json')).existsSync() &&
         File(p.join(path, 'memex.db')).existsSync();
@@ -121,6 +198,36 @@ class Note {
   final int createdAt;
   final int updatedAt;
   final List<String> tags;
+}
+
+class NoteTitle {
+  NoteTitle({required this.id, required this.title, required this.updatedAt});
+  final String id;
+  final String title;
+  final int updatedAt;
+}
+
+class LinkRow {
+  LinkRow({
+    required this.id,
+    required this.fromNoteId,
+    required this.toNoteId,
+    required this.linkText,
+    required this.kind,
+    required this.label,
+    required this.position,
+    required this.source,
+  });
+  final String id;
+  final String fromNoteId;
+  final String? toNoteId;
+  final String linkText;
+  final String kind;
+  final String? label;
+  final int position;
+  final String source;
+
+  bool get isGhost => toNoteId == null;
 }
 
 class VaultDbException implements Exception {
