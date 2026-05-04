@@ -5,6 +5,7 @@ import 'src/screens/main_window.dart';
 import 'src/screens/vault_picker.dart';
 import 'src/state/settings.dart';
 import 'src/state/vault_state.dart';
+import 'src/theme/app_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -22,21 +23,13 @@ class OpenMemexApp extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final theme = buildOmTheme();
     return MaterialApp(
       title: 'Open Memex',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF3B6BB1)),
-        useMaterial3: true,
-      ),
-      darkTheme: ThemeData(
-        brightness: Brightness.dark,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF3B6BB1),
-          brightness: Brightness.dark,
-        ),
-        useMaterial3: true,
-      ),
+      themeMode: ThemeMode.dark,
+      theme: theme,
+      darkTheme: theme,
       home: const _Router(),
     );
   }

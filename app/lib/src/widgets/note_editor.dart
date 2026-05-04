@@ -2,11 +2,18 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
+import 'package:path/path.dart' as p;
 
 import '../db.dart';
 import '../memex_cli.dart';
 import '../state/vault_state.dart';
+import '../theme/colors.dart';
+import '../theme/typography.dart';
+import 'atoms.dart';
 
+/// Editor controller — owns the debounced save state. Unchanged in shape
+/// from the previous version; the design redesign happens in the widget tree.
 class EditorController extends StateNotifier<EditorStateValue> {
   EditorController(this._ref)
     : super(
@@ -83,7 +90,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
         title: state.title.trim().isEmpty ? null : state.title.trim(),
         contentMd: state.contentMd,
       );
-      if (_activeNoteId != id) return; // user switched notes mid-save
+      if (_activeNoteId != id) return;
       state = state.copyWith(
         status: SaveStatus.clean,
         lastSavedVersion: result.version,
@@ -120,7 +127,13 @@ final editorControllerProvider =
     );
 
 class NoteEditor extends ConsumerStatefulWidget {
-  const NoteEditor({super.key});
+  const NoteEditor({
+    super.key,
+    required this.rightPanelOpen,
+    required this.onToggleRightPanel,
+  });
+  final bool rightPanelOpen;
+  final VoidCallback onToggleRightPanel;
 
   @override
   ConsumerState<NoteEditor> createState() => _NoteEditorState();
@@ -158,14 +171,12 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
     final note = ref.watch(selectedNoteProvider);
     final editor = ref.watch(editorControllerProvider);
     final controller = ref.read(editorControllerProvider.notifier);
+    final vaultPath = ref.watch(currentVaultProvider);
 
-    // Sync controllers when the selected note changes after first frame.
     ref.listen<Note?>(
       selectedNoteProvider,
       (_, curr) => _hydrate(curr, controller),
     );
-
-    // Initial-mount hydration (ref.listen doesn't fire for the existing value).
     if (note != null && _hydratedFor != note.id) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
@@ -173,67 +184,406 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
       });
     }
 
-    if (note == null) {
-      return const Center(child: Text('Select a note from the sidebar.'));
-    }
-
-    return Padding(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          TextField(
-            key: const Key('editor-title'),
-            controller: _titleCtrl,
-            style: Theme.of(context).textTheme.headlineSmall,
-            decoration: const InputDecoration(
-              border: InputBorder.none,
-              hintText: 'Title',
+    return Expanded(
+      child: Container(
+        color: OmColors.surface2,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _TabBar(
+              note: note,
+              dirty:
+                  editor.status == SaveStatus.dirty ||
+                  editor.status == SaveStatus.saving,
+              rightOpen: widget.rightPanelOpen,
+              onToggleRight: widget.onToggleRightPanel,
             ),
-            onChanged: controller.onTitleChanged,
-          ),
-          const SizedBox(height: 8),
-          if (note.tags.isNotEmpty)
-            Wrap(
-              spacing: 6,
-              runSpacing: 4,
-              children: note.tags
-                  .map(
-                    (t) => Chip(
-                      label: Text(t),
-                      visualDensity: VisualDensity.compact,
+            const OmHairline(),
+            _Toolbar(note: note, vaultPath: vaultPath, status: editor.status),
+            const OmHairline(),
+            Expanded(
+              child: note == null
+                  ? _EmptyEditor()
+                  : _DocumentSurface(
+                      note: note,
+                      titleCtrl: _titleCtrl,
+                      bodyCtrl: _bodyCtrl,
+                      onTitleChanged: controller.onTitleChanged,
+                      onContentChanged: controller.onContentChanged,
+                      errorMessage: editor.errorMessage,
                     ),
-                  )
-                  .toList(),
             ),
-          const SizedBox(height: 12),
-          if (editor.errorMessage != null)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Text(
-                editor.errorMessage!,
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
+            const OmHairline(),
+            _StatusBar(status: editor.status),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TabBar extends StatelessWidget {
+  const _TabBar({
+    required this.note,
+    required this.dirty,
+    required this.rightOpen,
+    required this.onToggleRight,
+  });
+  final Note? note;
+  final bool dirty;
+  final bool rightOpen;
+  final VoidCallback onToggleRight;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 32,
+      color: OmColors.surface1,
+      child: Row(
+        children: [
+          if (note != null)
+            Container(
+              constraints: const BoxConstraints(maxWidth: 240),
+              padding: const EdgeInsets.fromLTRB(12, 0, 10, 0),
+              decoration: BoxDecoration(
+                color: OmColors.surface2,
+                border: Border(
+                  top: BorderSide(color: OmColors.accent, width: 1),
+                  right: BorderSide(color: OmColors.line1, width: 1),
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    LucideIcons.fileText,
+                    size: 12,
+                    color: OmColors.fg1,
+                  ),
+                  const SizedBox(width: 7),
+                  Flexible(
+                    child: Text(
+                      '${note!.title}.md',
+                      style: OmType.sans(size: 12.5, color: OmColors.fg0),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  if (dirty) ...[
+                    const SizedBox(width: 7),
+                    const OmDot(color: OmColors.agent, size: 5),
+                  ],
+                ],
               ),
             ),
+          const Spacer(),
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              onTap: onToggleRight,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Icon(
+                  LucideIcons.atom,
+                  size: 13,
+                  color: rightOpen ? OmColors.fg0 : OmColors.fg2,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Toolbar extends ConsumerWidget {
+  const _Toolbar({
+    required this.note,
+    required this.vaultPath,
+    required this.status,
+  });
+  final Note? note;
+  final String? vaultPath;
+  final SaveStatus status;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Container(
+      height: 44,
+      color: OmColors.surface1,
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      child: Row(
+        children: [
           Expanded(
-            child: TextField(
-              key: const Key('editor-content'),
-              controller: _bodyCtrl,
-              maxLines: null,
-              expands: true,
-              keyboardType: TextInputType.multiline,
-              textAlignVertical: TextAlignVertical.top,
-              style: const TextStyle(
-                fontFamily: 'Menlo',
-                fontSize: 14,
-                height: 1.4,
-              ),
-              decoration: const InputDecoration(
-                border: InputBorder.none,
-                hintText: 'Write markdown…',
-              ),
-              onChanged: controller.onContentChanged,
+            child: _Breadcrumb(note: note, vaultPath: vaultPath),
+          ),
+          if (status == SaveStatus.conflict)
+            const OmChip(label: 'conflict — reload', tone: ChipTone.danger),
+          if (status == SaveStatus.error)
+            const OmChip(label: 'save failed', tone: ChipTone.danger),
+          const SizedBox(width: 8),
+          OmButton(
+            kind: OmButtonKind.ghost,
+            size: 26,
+            icon: LucideIcons.share,
+            onPressed: null,
+            tooltip: 'share',
+          ),
+          const SizedBox(width: 4),
+          OmButton(
+            kind: OmButtonKind.ghost,
+            size: 26,
+            icon: LucideIcons.ellipsis,
+            onPressed: null,
+            tooltip: 'more',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Breadcrumb extends StatelessWidget {
+  const _Breadcrumb({required this.note, required this.vaultPath});
+  final Note? note;
+  final String? vaultPath;
+  @override
+  Widget build(BuildContext context) {
+    if (note == null || vaultPath == null) {
+      return const SizedBox.shrink();
+    }
+    final vaultName = p.basename(vaultPath!);
+    final parts = [vaultName, '${note!.title}.md'];
+    return Row(
+      children: [
+        for (var i = 0; i < parts.length; i++) ...[
+          Text(
+            parts[i],
+            style: OmType.mono(
+              size: 11.5,
+              color: i == parts.length - 1 ? OmColors.fg1 : OmColors.fg3,
             ),
+          ),
+          if (i < parts.length - 1)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              child: Text(
+                '/',
+                style: OmType.mono(size: 11.5, color: OmColors.fg4),
+              ),
+            ),
+        ],
+      ],
+    );
+  }
+}
+
+class _DocumentSurface extends StatelessWidget {
+  const _DocumentSurface({
+    required this.note,
+    required this.titleCtrl,
+    required this.bodyCtrl,
+    required this.onTitleChanged,
+    required this.onContentChanged,
+    required this.errorMessage,
+  });
+  final Note note;
+  final TextEditingController titleCtrl;
+  final TextEditingController bodyCtrl;
+  final ValueChanged<String> onTitleChanged;
+  final ValueChanged<String> onContentChanged;
+  final String? errorMessage;
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(28, 28, 28, 200),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 760),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _MetaRail(note: note),
+              const SizedBox(height: 18),
+              TextField(
+                key: const Key('editor-title'),
+                controller: titleCtrl,
+                style: OmType.h1Serif(),
+                cursorColor: OmColors.accent,
+                decoration: InputDecoration(
+                  hintText: 'Untitled',
+                  hintStyle: OmType.serif(
+                    size: 36,
+                    color: OmColors.fg3,
+                    weight: FontWeight.w500,
+                  ),
+                ),
+                onChanged: onTitleChanged,
+              ),
+              if (note.tags.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
+                  children: [
+                    for (final t in note.tags)
+                      Text(
+                        '#$t',
+                        style: OmType.mono(
+                          size: 12,
+                          color: OmColors.accentSoft,
+                        ),
+                      ),
+                  ],
+                ),
+              ],
+              const SizedBox(height: 18),
+              if (errorMessage != null) ...[
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    errorMessage!,
+                    style: OmType.mono(size: 11, color: OmColors.danger),
+                  ),
+                ),
+              ],
+              TextField(
+                key: const Key('editor-content'),
+                controller: bodyCtrl,
+                maxLines: null,
+                minLines: 12,
+                cursorColor: OmColors.accent,
+                style: OmType.mono(
+                  size: 13.5,
+                  color: OmColors.fg0,
+                  height: 1.7,
+                ),
+                decoration: InputDecoration(
+                  hintText: 'write markdown…',
+                  hintStyle: OmType.mono(size: 13.5, color: OmColors.fg3),
+                ),
+                onChanged: onContentChanged,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MetaRail extends StatelessWidget {
+  const _MetaRail({required this.note});
+  final Note note;
+  @override
+  Widget build(BuildContext context) {
+    final updated = _formatRelative(note.updatedAt);
+    final words = _wordCount(note.contentMd);
+    return Container(
+      padding: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: OmColors.line1, width: 1)),
+      ),
+      child: Wrap(
+        spacing: 14,
+        runSpacing: 6,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(LucideIcons.clock, size: 11, color: OmColors.fg3),
+              const SizedBox(width: 5),
+              Text(
+                'updated $updated',
+                style: OmType.mono(size: 11, color: OmColors.fg3),
+              ),
+            ],
+          ),
+          Text('·', style: OmType.mono(size: 11, color: OmColors.fg4)),
+          Text(
+            '$words words',
+            style: OmType.mono(size: 11, color: OmColors.fg3),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static String _formatRelative(int unixMs) {
+    final delta = DateTime.now().millisecondsSinceEpoch - unixMs;
+    if (delta < 60 * 1000) return 'just now';
+    final m = delta ~/ 60000;
+    if (m < 60) return '$m minute${m == 1 ? '' : 's'} ago';
+    final h = m ~/ 60;
+    if (h < 24) return '$h hour${h == 1 ? '' : 's'} ago';
+    final d = h ~/ 24;
+    return '$d day${d == 1 ? '' : 's'} ago';
+  }
+
+  static int _wordCount(String s) {
+    final words = s.trim().split(RegExp(r'\s+')).where((w) => w.isNotEmpty);
+    return words.length;
+  }
+}
+
+class _StatusBar extends StatelessWidget {
+  const _StatusBar({required this.status});
+  final SaveStatus status;
+  @override
+  Widget build(BuildContext context) {
+    final (label, color) = switch (status) {
+      SaveStatus.idle => ('idle', OmColors.fg3),
+      SaveStatus.dirty => ('unsaved', OmColors.warn),
+      SaveStatus.saving => ('saving…', OmColors.fg2),
+      SaveStatus.clean => ('synced', OmColors.accent),
+      SaveStatus.error => ('save failed', OmColors.danger),
+      SaveStatus.conflict => ('conflict', OmColors.danger),
+    };
+    return Container(
+      key: const Key('save-indicator'),
+      height: 26,
+      color: OmColors.surface1,
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Row(
+        children: [
+          OmDot(color: color, size: 5, pulse: status == SaveStatus.saving),
+          const SizedBox(width: 5),
+          Text(
+            label,
+            style: OmType.mono(size: 10.5, color: color, letterSpacing: 0.2),
+          ),
+          const SizedBox(width: 10),
+          Text('·', style: OmType.mono(size: 11, color: OmColors.fg4)),
+          const SizedBox(width: 10),
+          Text('md', style: OmType.mono(size: 10.5, color: OmColors.fg3)),
+          const Spacer(),
+          Text(
+            'agents API · ⌘;',
+            style: OmType.mono(size: 10.5, color: OmColors.fg2),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmptyEditor extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            'select a note from the sidebar',
+            style: OmType.mono(size: 12, color: OmColors.fg3),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'or press ⌘N to create a new one',
+            style: OmType.mono(size: 11, color: OmColors.fg4),
           ),
         ],
       ),
