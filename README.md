@@ -9,16 +9,19 @@ Open-source, local-first, AI-native knowledge base. The user's notes live on the
 - `memex` CLI binary that doubles as an MCP server:
   - `memex init <path>` — create a vault
   - `memex add --vault <path> --title ... --tags ...` — append a note (body from stdin)
-  - `memex update --vault <path> --note-id <id> --expected-version <v>` — update a note (body from stdin)
-  - `memex get --vault <path> --note-id <id>` — print a note as JSON
+  - `memex update --vault <path> --note-id <id> --expected-version <v> [--no-rename-links]` — update a note (body from stdin); title changes auto-rewrite `[[OldTitle]]` in linkers transactionally
+  - `memex get --vault <path> --note-id <id> [--include-links]` — print a note as JSON, optionally with links + backlinks
   - `memex ls --vault <path>` — list notes
+  - `memex links --vault <path> --note-id <id> [--dir in|out|both] [--kind <k>]` — print the link tree
+  - `memex add-link --vault <path> --from <id> --to <id> [--kind <k>] [--label <s>]` — insert a wikilink, idempotent
   - `memex serve --vault <path>` — run as an MCP server over stdio (for Claude Desktop, etc.)
-- **Flutter macOS app** (`app/`) with vault picker, multi-vault recents, note list, plain-markdown editor, debounced save
+- **Flutter macOS app** (`app/`) with vault picker, multi-vault recents, note list, plain-markdown editor, debounced save, **wikilink autocomplete (`[[`) with create-on-the-fly**, **inline kind chip**, and a **real backlinks panel** grouped by kind
 - SQLite-backed vault (`memex.db`) with WAL, FTS5, and a `vec0` virtual table from `sqlite-vec`
 - Markdown chunker + inline indexing on every note write
 - Hybrid search: FTS5 (BM25) + optional vector (cosine) fused via Reciprocal Rank Fusion
 - Local embeddings via `fastembed-rs` (`BGE-small-en-v1.5`, 384-dim) — opt-in with `--with-embeddings`
-- 3 MCP tools: `search`, `get_note`, `create_note`
+- **Wikilinks**: `[[Title]]`, `[[Title~kind]]`, `[[Title|alias]]`, `[[Title~kind|alias]]`. Two-tier kind vocabulary — four built-ins (`references`, `extends`, `contradicts`, `example-of`) get curated section headings + frontmatter shortcuts; user-defined kebab-case kinds are first-class for storage and `neighbors()` queries. See [`docs/wikilinks.md`](docs/wikilinks.md).
+- 5 MCP tools: `search`, `get_note` (with `include_backlinks`), `create_note`, `neighbors`, `add_link`
 
 ## Architecture
 
@@ -115,9 +118,11 @@ cd app && flutter analyze && flutter test
 - Web / audio / video / image ingestion
 - Structured tables (Notion-style)
 - WYSIWYG markdown editor (current editor is plain `TextField` over markdown)
+- In-editor wikilink rendering + click-to-navigate (today the right-panel Connections tab handles navigation; styled `TextSpan` + tap routing on `EditableText` is the v2 work)
 - Plugin system
 - Encryption at rest
 - `update_note` / `delete_note` exposed as MCP tools (Flutter app uses them via CLI today)
+- Transclusions (`![[Title]]`)
 
 ## License
 

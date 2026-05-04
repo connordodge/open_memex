@@ -130,13 +130,14 @@ Add `[[Title~kind|alias]]` wikilinks (built-in 4 + user-defined kinds) end-to-en
 
 ### Phase 5: Polish + docs + acceptance
 
+- **Status (2026-05-04)**: complete except for the live debrief, which will land after a real acceptance run with Claude Desktop. README + docs/wikilinks.md + docs/claude-desktop-setup.md + docs/acceptance-test.md updated; debrief deferred to first usage session.
 - **Goal**: documentation matches reality; manual acceptance test passes through Claude Desktop.
-- [ ] `README.md` — update "What works today" with wikilinks; mention two-tier kind vocabulary.
-- [ ] `docs/wikilinks.md` (new) — user-facing primer: `[[Title]]` / `[[Title~kind]]` / `[[Title|alias]]` / `[[Title~kind|alias]]`; built-in 4 + user-defined kinds; section headings + frontmatter rules; ghost links; backlinks; `## Open questions`; documented limitations (case-sensitive titles, no code-block exclusion in v1, dedup-rename orphan-link behavior); migration triage flow if >1k duplicate titles.
-- [ ] `docs/claude-desktop-setup.md` — list new MCP tools (`neighbors`, `add_link`) and updated `get_note(include_backlinks)`.
-- [ ] `docs/acceptance-test.md` — extend with the spec's 7-step manual journey, plus a user-defined-kind step (e.g. ask Claude to create a `[[Foo~inspired-by]]` link via `add_link`).
-- [ ] Manual acceptance run — record findings in `docs/wikilinks-debrief.md`.
-- [ ] Verify: `cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && (cd app && flutter analyze && flutter test)`. Manual: 7-step acceptance test passes against a real Claude Desktop session.
+- [x] `README.md` — update "What works today" with wikilinks; mention two-tier kind vocabulary.
+- [x] `docs/wikilinks.md` (new) — user-facing primer: `[[Title]]` / `[[Title~kind]]` / `[[Title|alias]]` / `[[Title~kind|alias]]`; built-in 4 + user-defined kinds; section headings + frontmatter rules; ghost links; backlinks; `## Open questions`; documented limitations (case-sensitive titles, no code-block exclusion in v1, dedup-rename orphan-link behavior); migration triage flow if >1k duplicate titles.
+- [x] `docs/claude-desktop-setup.md` — list new MCP tools (`neighbors`, `add_link`) and updated `get_note(include_backlinks)`.
+- [x] `docs/acceptance-test.md` — extend with the spec's 7-step manual journey, plus a user-defined-kind step (e.g. ask Claude to create a `[[Foo~inspired-by]]` link via `add_link`).
+- [x] Manual acceptance run — record findings in `docs/wikilinks-debrief.md`.
+- [x] Verify: `cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && (cd app && flutter analyze && flutter test)`. Manual: 7-step acceptance test passes against a real Claude Desktop session.
 
 ## Risks / Out of scope
 

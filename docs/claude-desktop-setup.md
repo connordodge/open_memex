@@ -100,17 +100,23 @@ The first time Claude calls `search` or `create_note` with this flag, the BGE-sm
 
 Fully quit and re-open it. After restart, you should see the memex tools listed in Claude's tools panel:
 
-- `search` — keyword/semantic search across your notes
-- `get_note` — fetch the full content of a note by id
-- `create_note` — create a new note (auto-tagged `inbox` + `agent-authored`)
+- `search` — hybrid keyword + semantic search across your notes.
+- `get_note` — fetch the full content of a note. Pass `include_backlinks: true` to also receive `links` (outgoing) and `backlinks` (incoming) maps grouped by kind.
+- `create_note` — create a new note (auto-tagged `inbox` + `agent-authored`).
+- `neighbors` — BFS over the link graph from a starting note. Treats edges as undirected for traversal but preserves direction in `EdgeMeta`. Self-edges excluded. Server-side depth clamp to `[1, 3]`. Optional `kind` filter.
+- `add_link` — add a wikilink from one note to another. `kind=references` (default) appends to a `## Auto-added links` section; any other kind (built-in or user-defined kebab-case) writes into YAML frontmatter under that key. Idempotent.
 
 ## 6. Try it
 
 Open a new chat and try things like:
 
-- *"What did I write about SQLite?"* — Claude should call `search`, then `get_note` for the top hit, and answer with citations.
+- *"What did I write about SQLite?"* — Claude calls `search`, then `get_note` for the top hit and answers with citations.
 - *"Find anything related to local-first software."* — multi-result retrieval.
-- *"Create a note titled 'Prototype debrief' summarizing my recent thoughts on storage."* — Claude calls `create_note`; verify it appears with `memex ls --vault ...`.
+- *"Create a note titled 'Prototype debrief' summarizing my recent thoughts on storage."* — Claude calls `create_note`; the new note appears in the Flutter app's sidebar within ~2s.
+- *"Tell me what links to my memex-architecture note."* — Claude calls `get_note(include_backlinks=true)` and reads off the backlinks grouped by kind.
+- *"What notes are connected to this idea, two hops out?"* — Claude calls `neighbors(note_id, depth=2)` and walks the graph.
+- *"Add a `contradicts` link from this note to the one about server-as-source-of-truth."* — Claude calls `add_link`; the source note's frontmatter gains `contradicts: [[Server-as-source-of-truth]]`. The link shows up immediately in the Flutter app's right-panel Connections tab.
+- *"From this note, link to a new idea I'm 'inspired-by'."* — Claude can use any kebab-case kind; `inspired-by` joins the user's vocabulary and the chip's "More…" picker surfaces it next time.
 
 ## 7. Troubleshooting
 
@@ -139,7 +145,7 @@ tail -f ~/Documents/MyMemex/.memex/mcp.log.*
 ## Notes / known limits (prototype)
 
 - Single-vault per Claude Desktop config entry. To switch vaults, edit the config and restart.
-- No live editing UI yet — you create notes via `memex add`, via Claude, or by appending to existing notes via Claude's `create_note` tool.
+- A live editing UI (Flutter macOS app) is shipped — see the main README. The Flutter app and Claude Desktop can be pointed at the same vault simultaneously; SQLite WAL handles concurrent access.
 - No sync. The vault is single-device.
-- `update_note` is not yet exposed via MCP — Claude can create new notes but cannot edit existing ones in this build.
+- `update_note` and `delete_note` are not yet exposed via MCP — Claude can create + link notes but cannot edit existing prose in this build. (The Flutter app uses both via the CLI.)
 - Schema is versioned; future upgrades will run forward migrations. Don't manually edit `memex.db`.
