@@ -70,21 +70,21 @@ Add `[[Title~kind|alias]]` wikilinks (built-in 4 + user-defined kinds) end-to-en
 ### Phase 2: Title-rename pass + CLI `links` and `add-link`
 
 - **Goal**: renaming a note rewrites all `[[OldTitle...]]` variants across linkers transactionally; `memex links` and `memex add-link` work end-to-end.
-- [ ] `crates/memex-core/src/notes.rs` — extend `update_note` signature with `RenameOptions { rename_links: bool }` (default true). On title change: validate new title (non-empty, ≤200 chars, no `~`/`|`/`]`/newline) → `TitleInvalid`; pre-check `UNIQUE` collision → `TitleConflict`; if `rename_links`, query backlinks via `links` table, rewrite each linker's `content_md` (body + frontmatter strings) replacing `[[OldTitle]]`, `[[OldTitle~kind]]`, `[[OldTitle|alias]]`, `[[OldTitle~kind|alias]]` → `[[NewTitle...]]` (preserving kind + alias). Reindex each touched note. **All in one transaction.**
-- [ ] `crates/memex-core/src/links.rs` — `add_link(vault, from_id, to_id, kind, label?, source) -> Link`; `remove_link(link_id)`. (Body markdown insertion happens in CLI/MCP layer; core only manages the table. Body insertion calls `update_note` with the modified `content_md`.)
-- [ ] `crates/memex-mcp/src/main.rs` — add `Commands::Links { vault, note_id, dir, kind? }` and `Commands::AddLink { vault, from, to, kind, label }` variants; `cmd_links` prints tree grouped by kind (built-ins first, user-defined alphabetically); `cmd_add_link` constructs new `content_md` per kind→destination rule (frontmatter for any non-`references` kind, built-in or user-defined; `## Auto-added links` section for `references`), calls `update_note`, returns JSON `{ link_id, from, to, kind, source, was_existing, note_version }`.
-- [ ] `crates/memex-mcp/src/main.rs` — add `--no-rename-links` flag to `Commands::Update`, thread to `update_note`.
-- [ ] `crates/memex-mcp/src/main.rs` — add `--include-links` flag to `Commands::Get` → output JSON gains `links` + `backlinks` arrays grouped by kind.
-- [ ] TDD: integration — `update_note` with new title rewrites every linker's `[[Old~kind]]` → `[[New~kind]]` (kind + alias preserved); collision → `TitleConflict`, no rows changed.
-- [ ] TDD: integration — `update_note` with `RenameOptions { rename_links: false }` only changes `notes.title`; linkers' `[[OldTitle]]` → ghost on next reindex.
-- [ ] TDD: integration — title-rename pass also rewrites frontmatter wikilinks (`extends: [[Old]]` → `extends: [[New]]`).
-- [ ] TDD: CLI subprocess — `memex add-link --kind contradicts` inserts into source frontmatter under `contradicts:` key.
-- [ ] TDD: CLI subprocess — `memex add-link --kind inspired-by` (user-defined) inserts into frontmatter under `inspired-by:` key.
-- [ ] TDD: CLI subprocess — `memex add-link` (no kind, default `references`) inserts into `## Auto-added links` section.
-- [ ] TDD: CLI subprocess — `memex add-link` is idempotent: second call returns existing link id with `was_existing: true`, no duplicate row.
-- [ ] TDD: CLI subprocess — `memex add-link --kind Made_Up` (invalid format) → structured `InvalidLinkKind` error, exit non-zero, nothing mutated.
-- [ ] TDD: CLI subprocess — `memex links --note-id <id>` prints expected tree from a hand-built fixture.
-- [ ] Verify: `cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings`.
+- [x] `crates/memex-core/src/notes.rs` — extend `update_note` signature with `RenameOptions { rename_links: bool }` (default true). On title change: validate new title (non-empty, ≤200 chars, no `~`/`|`/`]`/newline) → `TitleInvalid`; pre-check `UNIQUE` collision → `TitleConflict`; if `rename_links`, query backlinks via `links` table, rewrite each linker's `content_md` (body + frontmatter strings) replacing `[[OldTitle]]`, `[[OldTitle~kind]]`, `[[OldTitle|alias]]`, `[[OldTitle~kind|alias]]` → `[[NewTitle...]]` (preserving kind + alias). Reindex each touched note. **All in one transaction.**
+- [x] `crates/memex-core/src/links.rs` — `add_link(vault, from_id, to_id, kind, label?, source) -> Link`; `remove_link(link_id)`. (Body markdown insertion happens in CLI/MCP layer; core only manages the table. Body insertion calls `update_note` with the modified `content_md`.)
+- [x] `crates/memex-mcp/src/main.rs` — add `Commands::Links { vault, note_id, dir, kind? }` and `Commands::AddLink { vault, from, to, kind, label }` variants; `cmd_links` prints tree grouped by kind (built-ins first, user-defined alphabetically); `cmd_add_link` constructs new `content_md` per kind→destination rule (frontmatter for any non-`references` kind, built-in or user-defined; `## Auto-added links` section for `references`), calls `update_note`, returns JSON `{ link_id, from, to, kind, source, was_existing, note_version }`.
+- [x] `crates/memex-mcp/src/main.rs` — add `--no-rename-links` flag to `Commands::Update`, thread to `update_note`.
+- [x] `crates/memex-mcp/src/main.rs` — add `--include-links` flag to `Commands::Get` → output JSON gains `links` + `backlinks` arrays grouped by kind.
+- [x] TDD: integration — `update_note` with new title rewrites every linker's `[[Old~kind]]` → `[[New~kind]]` (kind + alias preserved); collision → `TitleConflict`, no rows changed.
+- [x] TDD: integration — `update_note` with `RenameOptions { rename_links: false }` only changes `notes.title`; linkers' `[[OldTitle]]` → ghost on next reindex.
+- [x] TDD: integration — title-rename pass also rewrites frontmatter wikilinks (`extends: [[Old]]` → `extends: [[New]]`).
+- [x] TDD: CLI subprocess — `memex add-link --kind contradicts` inserts into source frontmatter under `contradicts:` key.
+- [x] TDD: CLI subprocess — `memex add-link --kind inspired-by` (user-defined) inserts into frontmatter under `inspired-by:` key.
+- [x] TDD: CLI subprocess — `memex add-link` (no kind, default `references`) inserts into `## Auto-added links` section.
+- [x] TDD: CLI subprocess — `memex add-link` is idempotent: second call returns existing link id with `was_existing: true`, no duplicate row.
+- [x] TDD: CLI subprocess — `memex add-link --kind Made_Up` (invalid format) → structured `InvalidLinkKind` error, exit non-zero, nothing mutated.
+- [x] TDD: CLI subprocess — `memex links --note-id <id>` prints expected tree from a hand-built fixture.
+- [x] Verify: `cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings`.
 
 ### Phase 3: MCP additions — `get_note(include_backlinks)`, `neighbors`, `add_link`
 
