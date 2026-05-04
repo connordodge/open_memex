@@ -3,6 +3,7 @@
 pub mod chunker;
 pub mod embedder;
 pub mod error;
+pub mod graph;
 pub mod indexer;
 pub mod link_extractor;
 pub mod links;

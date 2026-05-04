@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use memex_mcp::state::AppState;
 use memex_mcp::tools::{
-    CreateNoteParams, GetNoteParams, Memex, SearchParams,
+    AddLinkParams, CreateNoteParams, GetNoteParams, Memex, NeighborsParams, SearchParams,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use serde_json::Value;
@@ -94,4 +94,340 @@ async fn get_note_with_invalid_id_returns_structured_error() {
     let v: Value = serde_json::from_str(&resp).unwrap();
     assert!(v["error"].is_object(), "expected error object, got {v}");
     assert_eq!(v["error"]["code"].as_str().unwrap(), "get_note.invalid_id");
+}
+
+async fn create_simple_note(memex: &Memex, title: &str, body: &str) -> String {
+    let resp = memex
+        .create_note(Parameters(CreateNoteParams {
+            content_md: body.to_string(),
+            title: Some(title.to_string()),
+            tags: None,
+            agent_id: Some("smoke".into()),
+        }))
+        .await;
+    let v: Value = serde_json::from_str(&resp).unwrap();
+    v["note_id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn get_note_with_include_backlinks_returns_grouped_maps() {
+    let memex = Memex::new(fresh_state());
+    let target = create_simple_note(&memex, "Target", "x").await;
+    let _src = create_simple_note(
+        &memex,
+        "Source",
+        "## Contradicts\n\n[[Target]]\n\n## Extends\n\n[[Target~extends]]\n",
+    )
+    .await;
+    // Have Source's links resolve to Target by reindexing — since `## Extends`
+    // isn't a curated heading mapping (extends is the kind for the explicit
+    // `~extends` though), this gives us at least a contradicts edge from
+    // section grouping plus an explicit extends edge.
+
+    let resp = memex
+        .get_note(Parameters(GetNoteParams {
+            note_id: target.clone(),
+            include_backlinks: Some(true),
+        }))
+        .await;
+    let v: Value = serde_json::from_str(&resp).expect("json");
+    assert!(v["backlinks"].is_object(), "expected backlinks map: {v}");
+    let bl = v["backlinks"].as_object().unwrap();
+    let kinds: Vec<&str> = bl.keys().map(|s| s.as_str()).collect();
+    assert!(kinds.contains(&"contradicts"), "kinds: {kinds:?}");
+    assert!(kinds.contains(&"extends"), "kinds: {kinds:?}");
+}
+
+#[tokio::test]
+async fn get_note_without_include_backlinks_omits_links_keys() {
+    let memex = Memex::new(fresh_state());
+    let id = create_simple_note(&memex, "Solo", "body").await;
+    let resp = memex
+        .get_note(Parameters(GetNoteParams {
+            note_id: id,
+            include_backlinks: None,
+        }))
+        .await;
+    let v: Value = serde_json::from_str(&resp).unwrap();
+    assert!(v.get("links").is_none() || v["links"].is_null());
+    assert!(v.get("backlinks").is_none() || v["backlinks"].is_null());
+}
+
+#[tokio::test]
+async fn add_link_default_kind_inserts_into_auto_added_section() {
+    let memex = Memex::new(fresh_state());
+    let from = create_simple_note(&memex, "Source", "body.\n").await;
+    let to = create_simple_note(&memex, "Target", "x").await;
+
+    let resp = memex
+        .add_link(Parameters(AddLinkParams {
+            from_id: from.clone(),
+            to_id: to.clone(),
+            kind: None,
+            label: None,
+        }))
+        .await;
+    let v: Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(v["was_existing"], false);
+    assert_eq!(v["kind"], "references");
+    assert_eq!(v["source"], "auto_added");
+
+    // Verify by reading the source note: body now has the auto-added section.
+    let g = memex
+        .get_note(Parameters(GetNoteParams {
+            note_id: from,
+            include_backlinks: None,
+        }))
+        .await;
+    let body = serde_json::from_str::<Value>(&g).unwrap()["content_md"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(body.contains("## Auto-added links"));
+    assert!(body.contains("[[Target]]"));
+}
+
+#[tokio::test]
+async fn add_link_typed_kind_writes_to_frontmatter() {
+    let memex = Memex::new(fresh_state());
+    let from = create_simple_note(&memex, "Source", "body").await;
+    let to = create_simple_note(&memex, "Target", "x").await;
+
+    let resp = memex
+        .add_link(Parameters(AddLinkParams {
+            from_id: from.clone(),
+            to_id: to.clone(),
+            kind: Some("contradicts".into()),
+            label: None,
+        }))
+        .await;
+    let v: Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(v["kind"], "contradicts");
+    assert_eq!(v["source"], "frontmatter");
+
+    let g = memex
+        .get_note(Parameters(GetNoteParams {
+            note_id: from,
+            include_backlinks: None,
+        }))
+        .await;
+    let body = serde_json::from_str::<Value>(&g).unwrap()["content_md"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(body.starts_with("---\n"));
+    assert!(body.contains("contradicts:\n  - [[Target]]"));
+}
+
+#[tokio::test]
+async fn add_link_user_defined_kind_is_first_class() {
+    let memex = Memex::new(fresh_state());
+    let from = create_simple_note(&memex, "Source", "body").await;
+    let to = create_simple_note(&memex, "Bush", "x").await;
+
+    let resp = memex
+        .add_link(Parameters(AddLinkParams {
+            from_id: from,
+            to_id: to,
+            kind: Some("inspired-by".into()),
+            label: None,
+        }))
+        .await;
+    let v: Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(v["kind"], "inspired-by");
+    assert_eq!(v["source"], "frontmatter");
+}
+
+#[tokio::test]
+async fn add_link_idempotent_returns_was_existing_true() {
+    let memex = Memex::new(fresh_state());
+    let from = create_simple_note(&memex, "A", "body").await;
+    let to = create_simple_note(&memex, "B", "x").await;
+
+    let first = memex
+        .add_link(Parameters(AddLinkParams {
+            from_id: from.clone(),
+            to_id: to.clone(),
+            kind: None,
+            label: None,
+        }))
+        .await;
+    let v1: Value = serde_json::from_str(&first).unwrap();
+    let id1 = v1["link_id"].as_str().unwrap().to_string();
+
+    let second = memex
+        .add_link(Parameters(AddLinkParams {
+            from_id: from,
+            to_id: to,
+            kind: None,
+            label: None,
+        }))
+        .await;
+    let v2: Value = serde_json::from_str(&second).unwrap();
+    assert_eq!(v2["was_existing"], true);
+    assert_eq!(v2["link_id"].as_str().unwrap(), id1);
+}
+
+#[tokio::test]
+async fn add_link_invalid_kind_returns_error() {
+    let memex = Memex::new(fresh_state());
+    let from = create_simple_note(&memex, "A", "body").await;
+    let to = create_simple_note(&memex, "B", "x").await;
+
+    let resp = memex
+        .add_link(Parameters(AddLinkParams {
+            from_id: from,
+            to_id: to,
+            kind: Some("Made_Up".into()),
+            label: None,
+        }))
+        .await;
+    let v: Value = serde_json::from_str(&resp).unwrap();
+    assert!(v["error"].is_object());
+    assert_eq!(v["error"]["code"], "add_link.invalid_kind");
+}
+
+#[tokio::test]
+async fn add_link_unknown_target_returns_error() {
+    let memex = Memex::new(fresh_state());
+    let from = create_simple_note(&memex, "A", "body").await;
+
+    let resp = memex
+        .add_link(Parameters(AddLinkParams {
+            from_id: from,
+            to_id: "01HXXXXXXXXXXXXXXXXXXXXXXX".into(), // valid ULID format, no row
+            kind: None,
+            label: None,
+        }))
+        .await;
+    let v: Value = serde_json::from_str(&resp).unwrap();
+    assert!(v["error"].is_object());
+    assert_eq!(v["error"]["code"], "add_link.to_not_found");
+}
+
+#[tokio::test]
+async fn neighbors_returns_bfs_results_with_edge_metadata() {
+    let memex = Memex::new(fresh_state());
+    let root = create_simple_note(&memex, "Root", "body").await;
+    let n1 = create_simple_note(&memex, "Friend", "x").await;
+    let n2 = create_simple_note(&memex, "Friend2", "y").await;
+
+    // Root → Friend (contradicts), Root → Friend2 (extends).
+    memex
+        .add_link(Parameters(AddLinkParams {
+            from_id: root.clone(),
+            to_id: n1.clone(),
+            kind: Some("contradicts".into()),
+            label: None,
+        }))
+        .await;
+    memex
+        .add_link(Parameters(AddLinkParams {
+            from_id: root.clone(),
+            to_id: n2.clone(),
+            kind: Some("extends".into()),
+            label: None,
+        }))
+        .await;
+
+    let resp = memex
+        .neighbors(Parameters(NeighborsParams {
+            note_id: root.clone(),
+            depth: Some(1),
+            kind: None,
+        }))
+        .await;
+    let v: Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(v["root_note_id"].as_str().unwrap(), root);
+    assert_eq!(v["depth"].as_i64().unwrap(), 1);
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    let ids: Vec<&str> = results
+        .iter()
+        .map(|r| r["note_id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&n1.as_str()));
+    assert!(ids.contains(&n2.as_str()));
+}
+
+#[tokio::test]
+async fn neighbors_kind_filter_restricts_edges_followed() {
+    let memex = Memex::new(fresh_state());
+    let root = create_simple_note(&memex, "Root", "body").await;
+    let cont = create_simple_note(&memex, "Contra", "x").await;
+    let ext = create_simple_note(&memex, "Ext", "y").await;
+    memex
+        .add_link(Parameters(AddLinkParams {
+            from_id: root.clone(),
+            to_id: cont.clone(),
+            kind: Some("contradicts".into()),
+            label: None,
+        }))
+        .await;
+    memex
+        .add_link(Parameters(AddLinkParams {
+            from_id: root.clone(),
+            to_id: ext.clone(),
+            kind: Some("extends".into()),
+            label: None,
+        }))
+        .await;
+
+    let resp = memex
+        .neighbors(Parameters(NeighborsParams {
+            note_id: root,
+            depth: Some(1),
+            kind: Some("contradicts".into()),
+        }))
+        .await;
+    let v: Value = serde_json::from_str(&resp).unwrap();
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["note_id"].as_str().unwrap(), cont);
+}
+
+#[tokio::test]
+async fn neighbors_clamps_depth_to_max() {
+    let memex = Memex::new(fresh_state());
+    let root = create_simple_note(&memex, "R", "body").await;
+    let resp = memex
+        .neighbors(Parameters(NeighborsParams {
+            note_id: root,
+            depth: Some(99),
+            kind: None,
+        }))
+        .await;
+    let v: Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(v["depth"].as_i64().unwrap(), 3);
+}
+
+#[tokio::test]
+async fn neighbors_invalid_kind_returns_error() {
+    let memex = Memex::new(fresh_state());
+    let root = create_simple_note(&memex, "R", "body").await;
+    let resp = memex
+        .neighbors(Parameters(NeighborsParams {
+            note_id: root,
+            depth: Some(1),
+            kind: Some("Made_Up".into()),
+        }))
+        .await;
+    let v: Value = serde_json::from_str(&resp).unwrap();
+    assert!(v["error"].is_object());
+    assert_eq!(v["error"]["code"], "neighbors.invalid_kind");
+}
+
+#[tokio::test]
+async fn neighbors_invalid_note_id_returns_error() {
+    let memex = Memex::new(fresh_state());
+    let resp = memex
+        .neighbors(Parameters(NeighborsParams {
+            note_id: "not-a-ulid".into(),
+            depth: None,
+            kind: None,
+        }))
+        .await;
+    let v: Value = serde_json::from_str(&resp).unwrap();
+    assert!(v["error"].is_object());
+    assert_eq!(v["error"]["code"], "neighbors.invalid_id");
 }

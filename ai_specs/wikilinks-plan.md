@@ -88,16 +88,17 @@ Add `[[Title~kind|alias]]` wikilinks (built-in 4 + user-defined kinds) end-to-en
 
 ### Phase 3: MCP additions — `get_note(include_backlinks)`, `neighbors`, `add_link`
 
+- **Status (2026-05-04)**: complete. memex-core::graph::neighbors BFS, all three MCP tools wired, 13 new tool-smoke tests (16 total in tool_smoke.rs). 85 tests across the workspace; cargo clippy clean.
 - **Goal**: agents read the link graph and add to it via MCP. Smoke tests pass against Claude Desktop.
-- [ ] `crates/memex-core/src/graph.rs` (new) — `neighbors(conn, note_id, depth, kind?)` BFS, depth-clamped 1..3, **excludes self-edges**. Returns `Vec<NeighborHit { note_id, title, distance, edges: Vec<EdgeMeta> }>`.
-- [ ] `crates/memex-core/src/lib.rs` — re-export `graph`.
-- [ ] `crates/memex-mcp/src/tools.rs` — wire up `GetNoteParams.include_backlinks` (already declared at `tools.rs:75`): when `true`, populate envelope with `links: Map<kind_string, Vec<LinkEntry>>` + `backlinks: Map<kind_string, Vec<LinkEntry>>` (built-in kinds first, user-defined alphabetically).
-- [ ] `crates/memex-mcp/src/tools.rs` — new tool `neighbors(NeighborsParams { note_id, depth?, kind? }) -> NeighborsEnvelope { vault_id, root_note_id, depth, results }`. Server-side depth clamp; kind validated via `LinkKind::new`; invalid kind → structured error.
-- [ ] `crates/memex-mcp/src/tools.rs` — new tool `add_link(AddLinkParams { from_id, to_id, kind?, label? }) -> AddLinkEnvelope { vault_id, link_id, from_id, to_id, kind, source, was_existing, note_version }`. Shares destination logic with CLI `cmd_add_link`. Kind normalized at server boundary.
-- [ ] TDD: smoke (`tests/tool_smoke.rs` extend) — `get_note(id, include_backlinks: true)` returns kind-keyed map shape against seeded vault with mixed built-in + user-defined kinds.
-- [ ] TDD: smoke — `neighbors(id, depth=2)` against fixture returns expected BFS edges; self-links excluded; `depth=99` clamped; invalid `note_id` → structured error; invalid `kind` → structured error.
-- [ ] TDD: smoke — `add_link(from, to, "contradicts")` writes to source frontmatter; `add_link(from, to, "inspired-by")` writes to frontmatter under user-defined key; `add_link(from, to)` (default) writes to `## Auto-added links`; second call returns `was_existing: true`; non-existent ids → `NotFound`.
-- [ ] Verify: `cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings`.
+- [x] `crates/memex-core/src/graph.rs` (new) — `neighbors(conn, note_id, depth, kind?)` BFS, depth-clamped 1..3, **excludes self-edges**. Returns `Vec<NeighborHit { note_id, title, distance, edges: Vec<EdgeMeta> }>`.
+- [x] `crates/memex-core/src/lib.rs` — re-export `graph`.
+- [x] `crates/memex-mcp/src/tools.rs` — wire up `GetNoteParams.include_backlinks` (already declared at `tools.rs:75`): when `true`, populate envelope with `links: Map<kind_string, Vec<LinkEntry>>` + `backlinks: Map<kind_string, Vec<LinkEntry>>` (built-in kinds first, user-defined alphabetically).
+- [x] `crates/memex-mcp/src/tools.rs` — new tool `neighbors(NeighborsParams { note_id, depth?, kind? }) -> NeighborsEnvelope { vault_id, root_note_id, depth, results }`. Server-side depth clamp; kind validated via `LinkKind::new`; invalid kind → structured error.
+- [x] `crates/memex-mcp/src/tools.rs` — new tool `add_link(AddLinkParams { from_id, to_id, kind?, label? }) -> AddLinkEnvelope { vault_id, link_id, from_id, to_id, kind, source, was_existing, note_version }`. Shares destination logic with CLI `cmd_add_link`. Kind normalized at server boundary.
+- [x] TDD: smoke (`tests/tool_smoke.rs` extend) — `get_note(id, include_backlinks: true)` returns kind-keyed map shape against seeded vault with mixed built-in + user-defined kinds.
+- [x] TDD: smoke — `neighbors(id, depth=2)` against fixture returns expected BFS edges; self-links excluded; `depth=99` clamped; invalid `note_id` → structured error; invalid `kind` → structured error.
+- [x] TDD: smoke — `add_link(from, to, "contradicts")` writes to source frontmatter; `add_link(from, to, "inspired-by")` writes to frontmatter under user-defined key; `add_link(from, to)` (default) writes to `## Auto-added links`; second call returns `was_existing: true`; non-existent ids → `NotFound`.
+- [x] Verify: `cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings`.
 
 ### Phase 4: Flutter editor — autocomplete + chip + bare-click navigation + backlinks panel
 
