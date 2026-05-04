@@ -44,7 +44,19 @@ class Sidebar extends ConsumerWidget {
           ),
           _VaultPillsRow(currentVault: currentVault),
           const OmHairline(),
-          PanelHeader(eyebrow: '$vaultName · tree', action: 'filter'),
+          PanelHeader(
+            eyebrow: '$vaultName · tree',
+            action: switch (ref.watch(sidebarSortProvider)) {
+              NoteSortMode.lastEdited => 'sort: edited',
+              NoteSortMode.alphabetical => 'sort: a–z',
+            },
+            onAction: () {
+              final n = ref.read(sidebarSortProvider.notifier);
+              n.state = n.state == NoteSortMode.lastEdited
+                  ? NoteSortMode.alphabetical
+                  : NoteSortMode.lastEdited;
+            },
+          ),
           Expanded(
             child: notes.isEmpty
                 ? _EmptyTree(onCreate: onNewNote)

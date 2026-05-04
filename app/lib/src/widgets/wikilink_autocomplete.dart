@@ -14,30 +14,32 @@ import '../theme/typography.dart';
 /// rewrites the body so the wikilink ends with `]]` and the caret lands
 /// just after.
 ///
-/// Usage: pump a [WikilinkAutocomplete] inside a `Stack` over the body
-/// `TextField`. The widget owns the keystroke listener, the popover
-/// `OverlayEntry`, and the create-on-the-fly call to `MemexCli`.
+/// Usage:
+///   1. Mount as a sibling of the body `TextField`.
+///   2. Pass `caretLocator` — a function that returns the **global** offset
+///      where the bottom-left of the caret currently sits.
+///   3. Wire the body field's `FocusNode.onKeyEvent` to call
+///      [handleKeyEvent] BEFORE the field gets the key. While the popover
+///      is open, that intercepts ↑/↓/Enter/Tab/Esc.
+///
+/// The widget never requests focus — the body `TextField` keeps focus the
+/// whole time so the user can keep typing to narrow the query.
 class WikilinkAutocomplete extends ConsumerStatefulWidget {
   const WikilinkAutocomplete({
     super.key,
     required this.controller,
-    required this.editorKey,
+    required this.caretLocator,
     required this.onNoteCreatedSelect,
     this.onInserted,
   });
 
-  /// The body field's text controller. The autocomplete watches its `text`
-  /// and `selection` to decide when to open and what to show.
   final TextEditingController controller;
 
-  /// `GlobalKey` on the body `TextField` so we can read its render box and
-  /// place the popover at the caret.
-  final GlobalKey editorKey;
+  /// Returns the **global** screen offset where the popover should anchor
+  /// its top-left. The editor computes this from the field's `RenderBox`
+  /// + a `TextPainter` over `controller.text[0..caret]`.
+  final Offset Function() caretLocator;
 
-  /// Called when the user picks the "+ Create new note titled X" item or
-  /// selects an existing note. The host can use this to optionally
-  /// navigate (we don't navigate by default — keystroke focus stays in
-  /// the editor so typing continues smoothly).
   final void Function(String noteId) onNoteCreatedSelect;
 
   /// Called after a wikilink is spliced into the editor's text. `start..end`
@@ -47,17 +49,18 @@ class WikilinkAutocomplete extends ConsumerStatefulWidget {
 
   @override
   ConsumerState<WikilinkAutocomplete> createState() =>
-      _WikilinkAutocompleteState();
+      WikilinkAutocompleteState();
 }
 
-class _WikilinkAutocompleteState extends ConsumerState<WikilinkAutocomplete> {
+class WikilinkAutocompleteState extends ConsumerState<WikilinkAutocomplete> {
   OverlayEntry? _entry;
-  final _focusNode = FocusNode(skipTraversal: true);
   String _query = '';
   int _triggerOffset = -1; // byte offset of the `[[` that triggered.
   int _selectedIndex = 0;
   List<NoteTitle> _matches = const [];
   bool _busy = false;
+
+  bool get isOpen => _entry != null;
 
   @override
   void initState() {
@@ -69,21 +72,21 @@ class _WikilinkAutocompleteState extends ConsumerState<WikilinkAutocomplete> {
   void dispose() {
     widget.controller.removeListener(_onChange);
     _entry?.remove();
-    _focusNode.dispose();
     super.dispose();
   }
 
   void _onChange() {
     final text = widget.controller.text;
     final caret = widget.controller.selection.baseOffset;
-    if (caret < 0) return;
-    // Look for the last unclosed `[[` before the caret.
+    if (caret < 0) {
+      _close();
+      return;
+    }
     final newTrigger = _findUnclosedTrigger(text, caret);
     if (newTrigger == null) {
       _close();
       return;
     }
-    _triggerOffset = newTrigger;
     final newQuery = text.substring(newTrigger + 2, caret);
     if (newQuery.contains('\n') ||
         newQuery.contains(']') ||
@@ -91,6 +94,7 @@ class _WikilinkAutocompleteState extends ConsumerState<WikilinkAutocomplete> {
       _close();
       return;
     }
+    _triggerOffset = newTrigger;
     _query = newQuery;
     _refreshMatches();
     if (_entry == null) {
@@ -101,7 +105,6 @@ class _WikilinkAutocompleteState extends ConsumerState<WikilinkAutocomplete> {
   }
 
   static int? _findUnclosedTrigger(String text, int caret) {
-    // Search backwards from caret for `[[` with no `]]` between it and caret.
     final scanFrom = (caret - 64).clamp(0, text.length);
     final window = text.substring(scanFrom, caret);
     final lastOpen = window.lastIndexOf('[[');
@@ -132,7 +135,6 @@ class _WikilinkAutocompleteState extends ConsumerState<WikilinkAutocomplete> {
     if (needle.isEmpty) return 1;
     if (hay.startsWith(needle)) return 1000 - hay.length;
     if (hay.contains(needle)) return 500 - hay.length;
-    // Subsequence match.
     var i = 0;
     var consecutive = 0;
     var bonus = 0;
@@ -156,6 +158,7 @@ class _WikilinkAutocompleteState extends ConsumerState<WikilinkAutocomplete> {
   }
 
   void _close() {
+    if (_entry == null && _query.isEmpty && _triggerOffset == -1) return;
     _entry?.remove();
     _entry = null;
     _query = '';
@@ -163,28 +166,86 @@ class _WikilinkAutocompleteState extends ConsumerState<WikilinkAutocomplete> {
     _matches = const [];
   }
 
-  Offset _caretGlobalOffset() {
-    final ctx = widget.editorKey.currentContext;
-    if (ctx == null) return Offset.zero;
-    final box = ctx.findRenderObject() as RenderBox?;
-    if (box == null) return Offset.zero;
-    // Approximate placement: bottom-left of the editor field, then nudge.
-    // The full RenderEditable.getLocalRectForCaret path is fiddlier; for a
-    // useful-enough v1 we anchor at the editor's top-left and let the user
-    // see the popover always in the same spot.
-    final origin = box.localToGlobal(Offset.zero);
-    return Offset(origin.dx, origin.dy + 22);
-  }
+  /// Called by the host's `FocusNode.onKeyEvent`. While the popover is
+  /// open, ↑/↓ move selection, Enter/Tab accept, Esc dismisses — and the
+  /// host returns `KeyEventResult.handled` for those so the `TextField`
+  /// doesn't process them.
+  KeyEventResult handleKeyEvent(KeyEvent event) {
+    if (!isOpen) return KeyEventResult.ignored;
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      // Swallow the key-up paired with a handled key-down.
+      return KeyEventResult.handled;
+    }
 
-  Widget _buildPopover(BuildContext context) {
-    final caret = _caretGlobalOffset();
     final showCreate =
         _query.trim().isNotEmpty &&
         !_matches.any((m) => m.title == _query.trim());
     final itemCount = _matches.length + (showCreate ? 1 : 0);
+
+    if (event.logicalKey == LogicalKeyboardKey.escape) {
+      _close();
+      return KeyEventResult.handled;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+      if (itemCount > 0) {
+        _selectedIndex = (_selectedIndex + 1) % itemCount;
+        _entry?.markNeedsBuild();
+      }
+      return KeyEventResult.handled;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+      if (itemCount > 0) {
+        _selectedIndex = (_selectedIndex - 1 + itemCount) % itemCount;
+        _entry?.markNeedsBuild();
+      }
+      return KeyEventResult.handled;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.enter ||
+        event.logicalKey == LogicalKeyboardKey.numpadEnter ||
+        event.logicalKey == LogicalKeyboardKey.tab) {
+      if (itemCount == 0) {
+        // Nothing to accept. Treat Enter normally if there's no list at all.
+        if (event.logicalKey == LogicalKeyboardKey.tab) {
+          // Still consume Tab so the field doesn't insert one.
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      }
+      if (_selectedIndex < _matches.length) {
+        _acceptExisting(_matches[_selectedIndex]);
+      } else if (showCreate) {
+        _acceptCreate();
+      }
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  Widget _buildPopover(BuildContext context) {
+    final caret = widget.caretLocator();
+    final showCreate =
+        _query.trim().isNotEmpty &&
+        !_matches.any((m) => m.title == _query.trim());
+    final itemCount = _matches.length + (showCreate ? 1 : 0);
+
+    final mediaSize = MediaQuery.of(context).size;
+    const popoverWidth = 320.0;
+    const popoverMaxHeight = 280.0;
+    // Place below the caret line by default. If the popover would clip the
+    // bottom, flip above.
+    var top = caret.dy + 6;
+    if (top + popoverMaxHeight > mediaSize.height - 24) {
+      top = caret.dy - popoverMaxHeight - 24;
+      if (top < 8) top = 8;
+    }
+    var left = caret.dx;
+    if (left + popoverWidth > mediaSize.width - 12) {
+      left = mediaSize.width - popoverWidth - 12;
+    }
+    if (left < 8) left = 8;
+
     return Stack(
       children: [
-        // Tap-outside dismiss layer. Keep it click-through for keys.
         Positioned.fill(
           child: GestureDetector(
             behavior: HitTestBehavior.translucent,
@@ -192,108 +253,69 @@ class _WikilinkAutocompleteState extends ConsumerState<WikilinkAutocomplete> {
           ),
         ),
         Positioned(
-          left: caret.dx,
-          top: caret.dy,
-          child: KeyboardListener(
-            focusNode: _focusNode..requestFocus(),
-            onKeyEvent: _onKeyEvent,
-            child: Material(
-              elevation: 12,
-              color: OmColors.surface3,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(6),
-                side: BorderSide(color: OmColors.line3),
+          left: left,
+          top: top,
+          child: Material(
+            elevation: 12,
+            color: OmColors.surface3,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(6),
+              side: BorderSide(color: OmColors.line3),
+            ),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(
+                minWidth: popoverWidth,
+                maxWidth: popoverWidth,
+                maxHeight: popoverMaxHeight,
               ),
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(
-                  minWidth: 280,
-                  maxWidth: 360,
-                  maxHeight: 320,
-                ),
-                child: Column(
-                  key: const Key('wikilink-popover'),
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    if (itemCount == 0)
-                      Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Text(
-                          _query.isEmpty ? 'type to search…' : 'no matches',
-                          style: OmType.mono(size: 11, color: OmColors.fg3),
-                        ),
-                      )
-                    else
-                      Flexible(
-                        child: ListView.builder(
-                          padding: const EdgeInsets.symmetric(vertical: 4),
-                          shrinkWrap: true,
-                          itemCount: itemCount,
-                          itemBuilder: (_, i) {
-                            if (i < _matches.length) {
-                              final n = _matches[i];
-                              return _Item(
-                                key: Key('wikilink-popover-item-${n.title}'),
-                                icon: LucideIcons.fileText,
-                                label: n.title,
-                                selected: i == _selectedIndex,
-                                onTap: () => _acceptExisting(n),
-                              );
-                            }
-                            return _Item(
-                              key: const Key('wikilink-popover-create'),
-                              icon: LucideIcons.plus,
-                              label:
-                                  'Create new note titled "${_query.trim()}"',
-                              accent: true,
-                              selected: i == _selectedIndex,
-                              onTap: _busy ? null : _acceptCreate,
-                            );
-                          },
-                        ),
+              child: Column(
+                key: const Key('wikilink-popover'),
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (itemCount == 0)
+                    Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Text(
+                        _query.isEmpty ? 'type to search…' : 'no matches',
+                        style: OmType.mono(size: 11, color: OmColors.fg3),
                       ),
-                  ],
-                ),
+                    )
+                  else
+                    Flexible(
+                      child: ListView.builder(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        shrinkWrap: true,
+                        itemCount: itemCount,
+                        itemBuilder: (_, i) {
+                          if (i < _matches.length) {
+                            final n = _matches[i];
+                            return _Item(
+                              key: Key('wikilink-popover-item-${n.title}'),
+                              icon: LucideIcons.fileText,
+                              label: n.title,
+                              selected: i == _selectedIndex,
+                              onTap: () => _acceptExisting(n),
+                            );
+                          }
+                          return _Item(
+                            key: const Key('wikilink-popover-create'),
+                            icon: LucideIcons.plus,
+                            label: 'Create new note titled "${_query.trim()}"',
+                            accent: true,
+                            selected: i == _selectedIndex,
+                            onTap: _busy ? null : _acceptCreate,
+                          );
+                        },
+                      ),
+                    ),
+                ],
               ),
             ),
           ),
         ),
       ],
     );
-  }
-
-  void _onKeyEvent(KeyEvent event) {
-    if (event is! KeyDownEvent && event is! KeyRepeatEvent) return;
-    final showCreate =
-        _query.trim().isNotEmpty &&
-        !_matches.any((m) => m.title == _query.trim());
-    final itemCount = _matches.length + (showCreate ? 1 : 0);
-    if (event.logicalKey == LogicalKeyboardKey.escape) {
-      _close();
-      return;
-    }
-    if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
-      if (itemCount == 0) return;
-      _selectedIndex = (_selectedIndex + 1) % itemCount;
-      _entry?.markNeedsBuild();
-      return;
-    }
-    if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
-      if (itemCount == 0) return;
-      _selectedIndex = (_selectedIndex - 1 + itemCount) % itemCount;
-      _entry?.markNeedsBuild();
-      return;
-    }
-    if (event.logicalKey == LogicalKeyboardKey.enter ||
-        event.logicalKey == LogicalKeyboardKey.tab) {
-      if (itemCount == 0) return;
-      if (_selectedIndex < _matches.length) {
-        _acceptExisting(_matches[_selectedIndex]);
-      } else if (showCreate) {
-        _acceptCreate();
-      }
-      return;
-    }
   }
 
   /// Replace the unclosed `[[<query>` with `[[<title>]]` and place caret

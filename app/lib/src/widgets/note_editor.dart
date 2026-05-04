@@ -52,6 +52,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
 
   void onTitleChanged(String value) {
     if (_activeNoteId == null) return;
+    if (value == state.title) return; // no-op (e.g. programmatic re-hydration)
     state = state.copyWith(
       title: value,
       status: SaveStatus.dirty,
@@ -62,6 +63,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
 
   void onContentChanged(String value) {
     if (_activeNoteId == null) return;
+    if (value == state.contentMd) return; // no-op (programmatic re-hydration)
     state = state.copyWith(
       contentMd: value,
       status: SaveStatus.dirty,
@@ -402,25 +404,83 @@ class _DocumentSurface extends ConsumerStatefulWidget {
 
 class _DocumentSurfaceState extends ConsumerState<_DocumentSurface> {
   final _bodyKey = GlobalKey();
+  final _autocompleteKey = GlobalKey<WikilinkAutocompleteState>();
+  final _bodyFocus = FocusNode(debugLabel: 'editor-body');
   final _kindChipCtrl = KindChipController();
+  String _lastSeenBody = '';
 
   @override
   void initState() {
     super.initState();
+    _lastSeenBody = widget.bodyCtrl.text;
     widget.bodyCtrl.addListener(_onBodyChanged);
+    // Intercept ↑/↓/Enter/Tab/Esc when the autocomplete popover is open
+    // so the body field doesn't process them.
+    _bodyFocus.onKeyEvent = (node, event) {
+      final autocomplete = _autocompleteKey.currentState;
+      if (autocomplete == null || !autocomplete.isOpen) {
+        return KeyEventResult.ignored;
+      }
+      return autocomplete.handleKeyEvent(event);
+    };
   }
 
   @override
   void dispose() {
     widget.bodyCtrl.removeListener(_onBodyChanged);
+    _bodyFocus.dispose();
     _kindChipCtrl.dispose();
     super.dispose();
   }
 
   void _onBodyChanged() {
+    final text = widget.bodyCtrl.text;
     final caret = widget.bodyCtrl.selection.baseOffset;
-    if (caret < 0) return;
-    _kindChipCtrl.onSelectionChanged(caret);
+    if (text != _lastSeenBody) {
+      _lastSeenBody = text;
+      // Route to the editor controller's save path. This catches BOTH
+      // user typing AND programmatic splices (autocomplete inserts, kind
+      // chip rewrites) — onChanged on a TextField only fires for user input.
+      widget.onContentChanged(text);
+    }
+    if (caret >= 0) {
+      _kindChipCtrl.onSelectionChanged(caret);
+    }
+  }
+
+  /// Compute the global screen offset where the popover should anchor.
+  /// Uses a TextPainter that mirrors the body field's style + width to
+  /// figure out where the caret sits inside the editor's RenderBox.
+  Offset _caretGlobal() {
+    final ctx = _bodyKey.currentContext;
+    if (ctx == null) return Offset.zero;
+    final box = ctx.findRenderObject() as RenderBox?;
+    if (box == null) return Offset.zero;
+
+    final text = widget.bodyCtrl.text;
+    final caret = widget.bodyCtrl.selection.baseOffset.clamp(0, text.length);
+    // TextPainter measures the prefix, then we ask where its end sits.
+    final prefix = text.substring(0, caret);
+    final style = OmType.mono(size: 13.5, color: OmColors.fg0, height: 1.7);
+    final painter = TextPainter(
+      text: TextSpan(
+        // Include a single trailing space so the painter has something to
+        // measure even when the prefix ends with a newline.
+        text: prefix.isEmpty ? ' ' : prefix,
+        style: style,
+      ),
+      textDirection: TextDirection.ltr,
+      maxLines: null,
+    );
+    painter.layout(maxWidth: box.size.width);
+    final localCaret = painter.getOffsetForCaret(
+      TextPosition(offset: prefix.length),
+      Rect.zero,
+    );
+    painter.dispose();
+    final lineHeight = 13.5 * 1.7;
+    final origin = box.localToGlobal(Offset.zero);
+    return origin + Offset(localCaret.dx, localCaret.dy + lineHeight);
   }
 
   @override
@@ -483,6 +543,7 @@ class _DocumentSurfaceState extends ConsumerState<_DocumentSurface> {
                   TextField(
                     key: _bodyKey,
                     controller: widget.bodyCtrl,
+                    focusNode: _bodyFocus,
                     maxLines: null,
                     minLines: 12,
                     cursorColor: OmColors.accent,
@@ -495,7 +556,9 @@ class _DocumentSurfaceState extends ConsumerState<_DocumentSurface> {
                       hintText: 'type [[ to link a note · write markdown…',
                       hintStyle: OmType.mono(size: 13.5, color: OmColors.fg3),
                     ),
-                    onChanged: widget.onContentChanged,
+                    // No onChanged here — the controller listener above
+                    // routes both typed AND programmatic splice updates
+                    // through the save path.
                   ),
                 ],
               ),
@@ -503,17 +566,14 @@ class _DocumentSurfaceState extends ConsumerState<_DocumentSurface> {
           ),
         ),
         // Wikilink autocomplete (zero-size widget; uses an Overlay).
-        IgnorePointer(
-          ignoring: false,
-          child: WikilinkAutocomplete(
-            key: const Key('editor-content'),
-            controller: widget.bodyCtrl,
-            editorKey: _bodyKey,
-            onNoteCreatedSelect: (_) {},
-            onInserted: (start, end) {
-              _kindChipCtrl.show(start: start, end: end);
-            },
-          ),
+        WikilinkAutocomplete(
+          key: _autocompleteKey,
+          controller: widget.bodyCtrl,
+          caretLocator: _caretGlobal,
+          onNoteCreatedSelect: (_) {},
+          onInserted: (start, end) {
+            _kindChipCtrl.show(start: start, end: end);
+          },
         ),
         // Floating kind chip near the bottom of the editor pane.
         ListenableBuilder(
