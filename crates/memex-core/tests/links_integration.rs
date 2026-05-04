@@ -2,9 +2,12 @@
 //! real indexer. No mocks — these prove the link rows are actually written
 //! and resolved correctly.
 
+use memex_core::error::MemexError;
 use memex_core::indexer;
 use memex_core::links::{self, LinkKind, LinkSource};
-use memex_core::notes::{create_note, update_note, CreateNote, UpdateNote};
+use memex_core::notes::{
+    create_note, update_note, update_note_with_options, CreateNote, RenameOptions, UpdateNote,
+};
 use memex_core::Vault;
 use rusqlite::params;
 
@@ -294,6 +297,196 @@ fn open_questions_flag_is_set_on_relevant_notes() {
         .unwrap();
     assert_eq!(flag_with, 1);
     assert_eq!(flag_without, 0);
+}
+
+#[test]
+fn title_rename_rewrites_wikilinks_in_linkers_transactionally() {
+    let (_dir, mut vault) = fresh_vault();
+
+    // Target whose title we will rename.
+    let target = create_note(
+        &mut vault,
+        CreateNote {
+            title: Some("Old Title".into()),
+            content_md: "I am the target".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    indexer::reindex_note(vault.connection_mut(), target.id.as_str(), "I am the target", None)
+        .unwrap();
+
+    // Linker note that references the target in body + frontmatter.
+    let linker_body =
+        "---\nextends: [[Old Title]]\n---\n# Source\n\nSee [[Old Title]] and [[Old Title~contradicts]] and [[Old Title|aliased]].";
+    let linker = create_note(
+        &mut vault,
+        CreateNote {
+            title: Some("Linker".into()),
+            content_md: linker_body.into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    indexer::reindex_note(vault.connection_mut(), linker.id.as_str(), linker_body, None).unwrap();
+
+    // Rename the target.
+    let renamed = update_note(
+        &mut vault,
+        &target.id,
+        target.version,
+        UpdateNote {
+            title: Some("New Title".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(renamed.title, "New Title");
+
+    // Linker's content was rewritten in body and frontmatter.
+    let updated_linker_content: String = vault
+        .connection_ref()
+        .query_row(
+            "SELECT content_md FROM notes WHERE id = ?",
+            params![linker.id.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(updated_linker_content.contains("[[New Title]]"));
+    assert!(updated_linker_content.contains("[[New Title~contradicts]]"));
+    assert!(updated_linker_content.contains("[[New Title|aliased]]"));
+    assert!(!updated_linker_content.contains("[[Old Title"));
+
+    // Linker's links rows were re-indexed and resolve to the renamed target.
+    let outgoing = links::links_out_for_note(&vault, linker.id.as_str()).unwrap();
+    for l in &outgoing {
+        assert_eq!(l.link_text, "New Title");
+        assert_eq!(l.to_note_id.as_deref(), Some(target.id.as_str()));
+    }
+}
+
+#[test]
+fn title_rename_rejects_collision_without_modifying_anything() {
+    let (_dir, mut vault) = fresh_vault();
+    let a = create_note(
+        &mut vault,
+        CreateNote {
+            title: Some("Foo".into()),
+            content_md: "a".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let _b = create_note(
+        &mut vault,
+        CreateNote {
+            title: Some("Bar".into()),
+            content_md: "b".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let err = update_note(
+        &mut vault,
+        &a.id,
+        a.version,
+        UpdateNote {
+            title: Some("Bar".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    matches!(err, MemexError::TitleConflict { .. });
+
+    // a's title unchanged.
+    let after = vault
+        .connection_ref()
+        .query_row(
+            "SELECT title FROM notes WHERE id = ?",
+            params![a.id.as_str()],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap();
+    assert_eq!(after, "Foo");
+}
+
+#[test]
+fn title_rename_with_no_rename_links_skips_linker_rewrite() {
+    let (_dir, mut vault) = fresh_vault();
+
+    let target = create_note(
+        &mut vault,
+        CreateNote {
+            title: Some("Old".into()),
+            content_md: "x".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    indexer::reindex_note(vault.connection_mut(), target.id.as_str(), "x", None).unwrap();
+
+    let linker_body = "Linking [[Old]] here";
+    let linker = create_note(
+        &mut vault,
+        CreateNote {
+            title: Some("Linker".into()),
+            content_md: linker_body.into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    indexer::reindex_note(vault.connection_mut(), linker.id.as_str(), linker_body, None).unwrap();
+
+    update_note_with_options(
+        &mut vault,
+        &target.id,
+        target.version,
+        UpdateNote {
+            title: Some("New".into()),
+            ..Default::default()
+        },
+        RenameOptions { rename_links: false },
+    )
+    .unwrap();
+
+    let untouched: String = vault
+        .connection_ref()
+        .query_row(
+            "SELECT content_md FROM notes WHERE id = ?",
+            params![linker.id.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(untouched, linker_body);
+}
+
+#[test]
+fn title_rename_rejects_invalid_title_chars() {
+    let (_dir, mut vault) = fresh_vault();
+    let a = create_note(
+        &mut vault,
+        CreateNote {
+            title: Some("Foo".into()),
+            content_md: "a".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    for bad in ["With~Tilde", "With|Pipe", "With]Bracket", "  leading", ""] {
+        let err = update_note(
+            &mut vault,
+            &a.id,
+            a.version,
+            UpdateNote {
+                title: Some(bad.into()),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, MemexError::TitleInvalid(_)), "bad title was accepted: {bad:?}");
+    }
 }
 
 #[test]
