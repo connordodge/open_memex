@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::error::MemexError;
 use crate::Result;
 
-pub const APP_SCHEMA_VERSION: i64 = 3;
+pub const APP_SCHEMA_VERSION: i64 = 4;
 
 pub const MAX_DEDUP_COLLISIONS: i64 = 1000;
 
@@ -99,6 +99,35 @@ CREATE INDEX IF NOT EXISTS idx_links_to   ON links(to_note_id);
 CREATE INDEX IF NOT EXISTS idx_links_kind ON links(link_kind, to_note_id);
 "#;
 
+// V4 adds the canvas layer: named user-curated boards (`canvases`) and per-board
+// note placements (`canvas_nodes`). Canvases never own edges — lines on a canvas
+// are computed at read time from the `links` table, filtered to wikilinks whose
+// from_note_id and to_note_id are both placed on the same canvas.
+const V4: &str = r#"
+CREATE TABLE IF NOT EXISTS canvases (
+    id          TEXT PRIMARY KEY,
+    title       TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    version     INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_canvases_title_unique ON canvases(title);
+CREATE INDEX IF NOT EXISTS idx_canvases_updated_at ON canvases(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS canvas_nodes (
+    canvas_id   TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
+    note_id     TEXT NOT NULL REFERENCES notes(id)    ON DELETE CASCADE,
+    x           REAL NOT NULL,
+    y           REAL NOT NULL,
+    z_order     INTEGER NOT NULL DEFAULT 0,
+    placed_at   INTEGER NOT NULL,
+    PRIMARY KEY (canvas_id, note_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_canvas_nodes_note ON canvas_nodes(note_id);
+"#;
+
 pub fn apply(conn: &mut Connection) -> Result<()> {
     // v1, v2: each in its own transaction so partial migrations are durable.
     {
@@ -123,6 +152,19 @@ pub fn apply(conn: &mut Connection) -> Result<()> {
         .unwrap_or(0);
     if current < 3 {
         apply_v3(conn)?;
+    }
+
+    // v4: canvas layer (canvases, canvas_nodes). No data migration needed.
+    {
+        let tx = conn.transaction()?;
+        let current: i64 = tx
+            .query_row("SELECT COALESCE(MAX(version), 0) FROM schema_version", [], |r| r.get(0))
+            .unwrap_or(0);
+        if current < 4 {
+            tx.execute_batch(V4)?;
+            tx.execute("INSERT INTO schema_version(version) VALUES (4)", [])?;
+        }
+        tx.commit()?;
     }
     Ok(())
 }

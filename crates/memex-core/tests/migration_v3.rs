@@ -108,11 +108,11 @@ fn v3_migration_dedups_duplicate_titles_deterministically() {
         .unwrap();
     assert_eq!(dedup_count, 3);
 
-    // schema_version reaches 3.
+    // schema_version reaches the latest application version (v3 and beyond all apply).
     let v: i64 = conn
         .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(v, 3);
+    assert_eq!(v, schema::APP_SCHEMA_VERSION);
 }
 
 #[test]
@@ -122,7 +122,7 @@ fn v3_migration_is_idempotent_on_already_v3_db() {
     let v_before: i64 = conn
         .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(v_before, 3);
+    assert_eq!(v_before, schema::APP_SCHEMA_VERSION);
 
     // Apply again — must not error and must not advance the version further.
     schema::apply(&mut conn).expect("second apply");

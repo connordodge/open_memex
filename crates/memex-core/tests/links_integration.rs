@@ -496,7 +496,7 @@ fn schema_v3_migration_is_idempotent_on_fresh_vault() {
         .connection_ref()
         .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(v, 3);
+    assert_eq!(v, memex_core::schema::APP_SCHEMA_VERSION);
 
     // Sanity: tables / columns exist.
     let _: i64 = vault

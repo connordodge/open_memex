@@ -1,5 +1,6 @@
 //! Open Memex core library.
 
+pub mod canvas;
 pub mod chunker;
 pub mod embedder;
 pub mod error;
@@ -13,6 +14,9 @@ pub mod search;
 pub mod tags;
 pub mod vault;
 
+pub use canvas::{
+    Canvas, CanvasDetail, CanvasEdge, CanvasId, CanvasNode, CanvasSummary, Clock, SystemClock,
+};
 pub use error::{MemexError, Result};
 pub use notes::{Note, NoteId};
 pub use search::{search, SearchFilters, SearchHit, SearchMode, SearchOptions, SearchResults};
