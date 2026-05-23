@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use memex_core::canvas;
 use memex_core::graph;
 use memex_core::indexer;
 use memex_core::links::{self as core_links, LinkKind, LinkSource};
@@ -11,6 +12,7 @@ use memex_core::notes::{
 };
 use memex_core::search::{self, SearchFilters, SearchMode, SearchOptions};
 use memex_core::tags;
+use memex_core::CanvasId;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_handler, tool_router, ServerHandler};
@@ -168,6 +170,165 @@ pub struct CreateNoteEnvelope {
     pub vault_id: String,
     pub note_id: String,
     pub version: i64,
+}
+
+// ---------- canvas tool params/envelopes ----------
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListCanvasesParams {}
+
+#[derive(Debug, Serialize)]
+pub struct CanvasSummaryDto {
+    pub canvas_id: String,
+    pub title: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub version: i64,
+    pub node_count: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ListCanvasesEnvelope {
+    pub vault_id: String,
+    pub canvases: Vec<CanvasSummaryDto>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetCanvasParams {
+    pub canvas_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CanvasNodeDto {
+    pub note_id: String,
+    pub note_title: String,
+    pub x: f64,
+    pub y: f64,
+    pub z_order: i64,
+    pub placed_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CanvasEdgeDto {
+    pub link_id: String,
+    pub from_note_id: String,
+    pub to_note_id: String,
+    pub link_text: String,
+    pub kind: String,
+    pub label: Option<String>,
+    pub source: String,
+    pub position: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GetCanvasEnvelope {
+    pub vault_id: String,
+    pub canvas_id: String,
+    pub title: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub version: i64,
+    pub nodes: Vec<CanvasNodeDto>,
+    pub edges: Vec<CanvasEdgeDto>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CreateCanvasParams {
+    pub title: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateCanvasEnvelope {
+    pub vault_id: String,
+    pub canvas_id: String,
+    pub title: String,
+    pub version: i64,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AddToCanvasParams {
+    pub canvas_id: String,
+    pub note_id: String,
+    /// Canvas-space x. Defaults to 0.0.
+    #[serde(default)]
+    pub x: Option<f64>,
+    /// Canvas-space y. Defaults to 0.0.
+    #[serde(default)]
+    pub y: Option<f64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AddToCanvasEnvelope {
+    pub vault_id: String,
+    pub canvas_id: String,
+    pub note_id: String,
+    pub note_title: String,
+    pub x: f64,
+    pub y: f64,
+    pub z_order: i64,
+    pub placed_at: i64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RemoveFromCanvasParams {
+    pub canvas_id: String,
+    pub note_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RemoveFromCanvasEnvelope {
+    pub vault_id: String,
+    pub canvas_id: String,
+    pub note_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MoveNodeParams {
+    pub canvas_id: String,
+    pub note_id: String,
+    pub x: f64,
+    pub y: f64,
+    #[serde(default)]
+    pub z_order: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DeleteCanvasParams {
+    pub canvas_id: String,
+    pub expected_version: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeleteCanvasEnvelope {
+    pub vault_id: String,
+    pub canvas_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UpdateLinkParams {
+    pub link_id: String,
+    /// New kind. `None` = keep current.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// New label. `None` = keep current; non-null sets the label.
+    #[serde(default)]
+    pub label: Option<String>,
+    /// Set to `true` to clear the label. Takes precedence over `label`.
+    #[serde(default)]
+    pub clear_label: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UpdateLinkEnvelope {
+    pub vault_id: String,
+    pub link_id: String,
+    pub from_note_id: String,
+    pub to_note_id: Option<String>,
+    pub kind: String,
+    pub label: Option<String>,
+    pub source: String,
+    pub position: i64,
 }
 
 #[tool_router(router = tool_router)]
@@ -490,6 +651,295 @@ impl Memex {
             version: note.version,
         })
         .unwrap_or_else(|e| err_payload("create_note.serialize", &e.to_string()))
+    }
+
+    /// List all canvases in the vault.
+    #[tool(description = "List every canvas in the user's vault. Returns canvas \
+        ids, titles, timestamps, version, and node_count, ordered by most recently \
+        updated. Use this to find which canvas to fetch or modify next.")]
+    pub async fn list_canvases(&self, _params: Parameters<ListCanvasesParams>) -> String {
+        let vault = self.state.vault.lock().await;
+        let summaries = match canvas::list_canvases(&vault) {
+            Ok(s) => s,
+            Err(e) => return err_payload("list_canvases", &e.to_string()),
+        };
+        let env = ListCanvasesEnvelope {
+            vault_id: vault.vault_id().to_string(),
+            canvases: summaries
+                .into_iter()
+                .map(|s| CanvasSummaryDto {
+                    canvas_id: s.id.to_string(),
+                    title: s.title,
+                    created_at: s.created_at,
+                    updated_at: s.updated_at,
+                    version: s.version,
+                    node_count: s.node_count,
+                })
+                .collect(),
+        };
+        serde_json::to_string(&env)
+            .unwrap_or_else(|e| err_payload("list_canvases.serialize", &e.to_string()))
+    }
+
+    /// Read one canvas in full.
+    #[tool(description = "Fetch a canvas by id. Returns the canvas metadata, the \
+        list of placed notes (with positions), and the list of edges. Edges are \
+        wikilinks whose source and target are both placed on this canvas — \
+        wikilinks to off-canvas notes are not included.")]
+    pub async fn get_canvas(&self, params: Parameters<GetCanvasParams>) -> String {
+        let cid = match CanvasId::parse(&params.0.canvas_id) {
+            Ok(c) => c,
+            Err(e) => return err_payload("get_canvas.invalid_id", &e.to_string()),
+        };
+        let vault = self.state.vault.lock().await;
+        let detail = match canvas::get_canvas(&vault, &cid) {
+            Ok(d) => d,
+            Err(e) => return err_payload("get_canvas", &e.to_string()),
+        };
+        let env = GetCanvasEnvelope {
+            vault_id: vault.vault_id().to_string(),
+            canvas_id: detail.canvas.id.to_string(),
+            title: detail.canvas.title,
+            created_at: detail.canvas.created_at,
+            updated_at: detail.canvas.updated_at,
+            version: detail.canvas.version,
+            nodes: detail
+                .nodes
+                .into_iter()
+                .map(|n| CanvasNodeDto {
+                    note_id: n.note_id,
+                    note_title: n.note_title,
+                    x: n.x,
+                    y: n.y,
+                    z_order: n.z_order,
+                    placed_at: n.placed_at,
+                })
+                .collect(),
+            edges: detail
+                .edges
+                .into_iter()
+                .map(|e| CanvasEdgeDto {
+                    link_id: e.link_id,
+                    from_note_id: e.from_note_id,
+                    to_note_id: e.to_note_id,
+                    link_text: e.link_text,
+                    kind: e.link_kind.as_str().to_string(),
+                    label: e.label,
+                    source: e.source.as_str().to_string(),
+                    position: e.position,
+                })
+                .collect(),
+        };
+        serde_json::to_string(&env)
+            .unwrap_or_else(|e| err_payload("get_canvas.serialize", &e.to_string()))
+    }
+
+    /// Create a new, empty canvas.
+    #[tool(description = "Create a new canvas with the given title. The title must \
+        be unique within the vault. Returns the new canvas_id; use add_to_canvas to \
+        place notes on it.")]
+    pub async fn create_canvas(&self, params: Parameters<CreateCanvasParams>) -> String {
+        let mut vault = self.state.vault.lock().await;
+        let c = match canvas::create_canvas(&mut vault, params.0.title) {
+            Ok(c) => c,
+            Err(memex_core::MemexError::TitleConflict {
+                existing_id,
+                attempted_title,
+            }) => {
+                return err_payload(
+                    "create_canvas.title_conflict",
+                    &format!(
+                        "title '{attempted_title}' already used by canvas {existing_id}"
+                    ),
+                );
+            }
+            Err(e) => return err_payload("create_canvas", &e.to_string()),
+        };
+        let env = CreateCanvasEnvelope {
+            vault_id: vault.vault_id().to_string(),
+            canvas_id: c.id.to_string(),
+            title: c.title,
+            version: c.version,
+            created_at: c.created_at,
+        };
+        serde_json::to_string(&env)
+            .unwrap_or_else(|e| err_payload("create_canvas.serialize", &e.to_string()))
+    }
+
+    /// Place a note on a canvas (idempotent).
+    #[tool(description = "Place a note on a canvas at the given (x, y) coordinates. \
+        Idempotent on (canvas_id, note_id): if the note is already placed, returns \
+        the existing placement and position is unchanged. Defaults to (0, 0) when \
+        x/y are omitted.")]
+    pub async fn add_to_canvas(&self, params: Parameters<AddToCanvasParams>) -> String {
+        let AddToCanvasParams {
+            canvas_id,
+            note_id,
+            x,
+            y,
+        } = params.0;
+        let cid = match CanvasId::parse(&canvas_id) {
+            Ok(c) => c,
+            Err(e) => return err_payload("add_to_canvas.invalid_canvas", &e.to_string()),
+        };
+        if let Err(e) = NoteId::parse(&note_id) {
+            return err_payload("add_to_canvas.invalid_note", &e.to_string());
+        }
+        let mut vault = self.state.vault.lock().await;
+        let node = match canvas::add_to_canvas(
+            &mut vault,
+            &cid,
+            &note_id,
+            x.unwrap_or(0.0),
+            y.unwrap_or(0.0),
+        ) {
+            Ok(n) => n,
+            Err(e) => return err_payload("add_to_canvas", &e.to_string()),
+        };
+        let env = AddToCanvasEnvelope {
+            vault_id: vault.vault_id().to_string(),
+            canvas_id: node.canvas_id.to_string(),
+            note_id: node.note_id,
+            note_title: node.note_title,
+            x: node.x,
+            y: node.y,
+            z_order: node.z_order,
+            placed_at: node.placed_at,
+        };
+        serde_json::to_string(&env)
+            .unwrap_or_else(|e| err_payload("add_to_canvas.serialize", &e.to_string()))
+    }
+
+    /// Remove a note's placement from a canvas. No-op if not placed.
+    #[tool(description = "Remove a note's placement from a canvas. The note and \
+        every wikilink in it are untouched — only the placement record is removed. \
+        Idempotent: calling on an unplaced note is a no-op.")]
+    pub async fn remove_from_canvas(
+        &self,
+        params: Parameters<RemoveFromCanvasParams>,
+    ) -> String {
+        let RemoveFromCanvasParams { canvas_id, note_id } = params.0;
+        let cid = match CanvasId::parse(&canvas_id) {
+            Ok(c) => c,
+            Err(e) => return err_payload("remove_from_canvas.invalid_canvas", &e.to_string()),
+        };
+        let mut vault = self.state.vault.lock().await;
+        if let Err(e) = canvas::remove_from_canvas(&mut vault, &cid, &note_id) {
+            return err_payload("remove_from_canvas", &e.to_string());
+        }
+        let env = RemoveFromCanvasEnvelope {
+            vault_id: vault.vault_id().to_string(),
+            canvas_id,
+            note_id,
+        };
+        serde_json::to_string(&env)
+            .unwrap_or_else(|e| err_payload("remove_from_canvas.serialize", &e.to_string()))
+    }
+
+    /// Move a placed node on the canvas.
+    #[tool(description = "Move a placed node to new (x, y) coordinates on its \
+        canvas. Optionally updates z_order. Errors if the note is not placed on \
+        this canvas.")]
+    pub async fn move_node(&self, params: Parameters<MoveNodeParams>) -> String {
+        let MoveNodeParams {
+            canvas_id,
+            note_id,
+            x,
+            y,
+            z_order,
+        } = params.0;
+        let cid = match CanvasId::parse(&canvas_id) {
+            Ok(c) => c,
+            Err(e) => return err_payload("move_node.invalid_canvas", &e.to_string()),
+        };
+        let mut vault = self.state.vault.lock().await;
+        let node = match canvas::move_node(&mut vault, &cid, &note_id, x, y, z_order) {
+            Ok(n) => n,
+            Err(e) => return err_payload("move_node", &e.to_string()),
+        };
+        let env = AddToCanvasEnvelope {
+            vault_id: vault.vault_id().to_string(),
+            canvas_id: node.canvas_id.to_string(),
+            note_id: node.note_id,
+            note_title: node.note_title,
+            x: node.x,
+            y: node.y,
+            z_order: node.z_order,
+            placed_at: node.placed_at,
+        };
+        serde_json::to_string(&env)
+            .unwrap_or_else(|e| err_payload("move_node.serialize", &e.to_string()))
+    }
+
+    /// Delete a canvas. Notes and links are not touched.
+    #[tool(description = "Delete a canvas by id, honoring optimistic concurrency \
+        via `expected_version`. Cascades placements only — the underlying notes \
+        and their wikilinks are unchanged.")]
+    pub async fn delete_canvas(&self, params: Parameters<DeleteCanvasParams>) -> String {
+        let cid = match CanvasId::parse(&params.0.canvas_id) {
+            Ok(c) => c,
+            Err(e) => return err_payload("delete_canvas.invalid_id", &e.to_string()),
+        };
+        let mut vault = self.state.vault.lock().await;
+        if let Err(e) = canvas::delete_canvas(&mut vault, &cid, params.0.expected_version) {
+            return err_payload("delete_canvas", &e.to_string());
+        }
+        let env = DeleteCanvasEnvelope {
+            vault_id: vault.vault_id().to_string(),
+            canvas_id: cid.to_string(),
+        };
+        serde_json::to_string(&env)
+            .unwrap_or_else(|e| err_payload("delete_canvas.serialize", &e.to_string()))
+    }
+
+    /// Update the `kind` and/or `label` of an existing wikilink in place.
+    #[tool(description = "Edit a single wikilink's kind and/or label in place. Pass \
+        `clear_label=true` to remove the label. Frontmatter links accept label \
+        changes only — changing the kind of a frontmatter-bound wikilink returns \
+        an error in v1.")]
+    pub async fn update_link(&self, params: Parameters<UpdateLinkParams>) -> String {
+        let UpdateLinkParams {
+            link_id,
+            kind,
+            label,
+            clear_label,
+        } = params.0;
+        let new_kind = match kind {
+            Some(k) => match LinkKind::new(&k) {
+                Ok(lk) => Some(lk),
+                Err(e) => return err_payload("update_link.invalid_kind", &e.to_string()),
+            },
+            None => None,
+        };
+        let new_label: Option<Option<String>> = if clear_label.unwrap_or(false) {
+            Some(None)
+        } else {
+            label.map(Some)
+        };
+        let mut vault = self.state.vault.lock().await;
+        let link = match core_links::update_link(
+            &mut vault,
+            &link_id,
+            core_links::UpdateLink {
+                new_kind,
+                new_label,
+            },
+        ) {
+            Ok(l) => l,
+            Err(e) => return err_payload("update_link", &e.to_string()),
+        };
+        let env = UpdateLinkEnvelope {
+            vault_id: vault.vault_id().to_string(),
+            link_id: link.id,
+            from_note_id: link.from_note_id,
+            to_note_id: link.to_note_id,
+            kind: link.link_kind.as_str().to_string(),
+            label: link.label,
+            source: link.source.as_str().to_string(),
+            position: link.position,
+        };
+        serde_json::to_string(&env)
+            .unwrap_or_else(|e| err_payload("update_link.serialize", &e.to_string()))
     }
 }
 

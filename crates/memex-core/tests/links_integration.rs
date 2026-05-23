@@ -489,6 +489,292 @@ fn title_rename_rejects_invalid_title_chars() {
     }
 }
 
+// ---------- update_link ----------
+
+fn place_source_with_target(content: &str) -> (tempfile::TempDir, Vault, String) {
+    let (dir, mut vault) = fresh_vault();
+    let _target = create_note(
+        &mut vault,
+        CreateNote {
+            title: Some("Target".into()),
+            content_md: "# Target\n".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let src = create_note(
+        &mut vault,
+        CreateNote {
+            title: Some("Source".into()),
+            content_md: content.into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    indexer::reindex_note(vault.connection_mut(), src.id.as_str(), content, None).unwrap();
+    let src_id = src.id.as_str().to_string();
+    (dir, vault, src_id)
+}
+
+#[test]
+fn update_link_adds_kind_to_plain_wikilink() {
+    let (_dir, mut vault, src) = place_source_with_target("Hello [[Target]] world.");
+    let link = &links::links_out_for_note(&vault, &src).unwrap()[0];
+    let link_id = link.id.clone();
+    assert_eq!(link.link_kind.as_str(), "references");
+
+    let updated = links::update_link(
+        &mut vault,
+        &link_id,
+        links::UpdateLink {
+            new_kind: Some(LinkKind::new("extends").unwrap()),
+            new_label: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(updated.link_kind.as_str(), "extends");
+
+    let body: String = vault
+        .connection_ref()
+        .query_row(
+            "SELECT content_md FROM notes WHERE id = ?",
+            [&src],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(body.contains("[[Target~extends]]"), "{body:?}");
+    assert!(!body.contains("[[Target]]"), "{body:?}");
+}
+
+#[test]
+fn update_link_changes_kind_on_already_typed_wikilink() {
+    let (_dir, mut vault, src) = place_source_with_target("Hello [[Target~extends]] world.");
+    let link = &links::links_out_for_note(&vault, &src).unwrap()[0];
+    let link_id = link.id.clone();
+
+    links::update_link(
+        &mut vault,
+        &link_id,
+        links::UpdateLink {
+            new_kind: Some(LinkKind::new("contradicts").unwrap()),
+            new_label: None,
+        },
+    )
+    .unwrap();
+
+    let body: String = vault
+        .connection_ref()
+        .query_row(
+            "SELECT content_md FROM notes WHERE id = ?",
+            [&src],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(body.contains("[[Target~contradicts]]"), "{body:?}");
+    assert!(!body.contains("[[Target~extends]]"), "{body:?}");
+}
+
+#[test]
+fn update_link_sets_label_preserving_kind() {
+    let (_dir, mut vault, src) = place_source_with_target("[[Target~extends]] alone.");
+    let link = &links::links_out_for_note(&vault, &src).unwrap()[0];
+    let link_id = link.id.clone();
+
+    links::update_link(
+        &mut vault,
+        &link_id,
+        links::UpdateLink {
+            new_kind: None,
+            new_label: Some(Some("the target".into())),
+        },
+    )
+    .unwrap();
+
+    let body: String = vault
+        .connection_ref()
+        .query_row(
+            "SELECT content_md FROM notes WHERE id = ?",
+            [&src],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(body.contains("[[Target~extends|the target]]"), "{body:?}");
+}
+
+#[test]
+fn update_link_clears_label() {
+    let (_dir, mut vault, src) =
+        place_source_with_target("[[Target~extends|alias here]] alone.");
+    let link = &links::links_out_for_note(&vault, &src).unwrap()[0];
+    let link_id = link.id.clone();
+    assert_eq!(link.label.as_deref(), Some("alias here"));
+
+    let updated = links::update_link(
+        &mut vault,
+        &link_id,
+        links::UpdateLink {
+            new_kind: None,
+            new_label: Some(None),
+        },
+    )
+    .unwrap();
+    assert!(updated.label.is_none());
+
+    let body: String = vault
+        .connection_ref()
+        .query_row(
+            "SELECT content_md FROM notes WHERE id = ?",
+            [&src],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(body.contains("[[Target~extends]]"), "{body:?}");
+    assert!(!body.contains("alias here"), "{body:?}");
+}
+
+#[test]
+fn update_link_sets_both_kind_and_label_starting_from_plain() {
+    let (_dir, mut vault, src) = place_source_with_target("plain [[Target]] here.");
+    let link = &links::links_out_for_note(&vault, &src).unwrap()[0];
+    let link_id = link.id.clone();
+
+    links::update_link(
+        &mut vault,
+        &link_id,
+        links::UpdateLink {
+            new_kind: Some(LinkKind::new("inspired-by").unwrap()),
+            new_label: Some(Some("the muse".into())),
+        },
+    )
+    .unwrap();
+
+    let body: String = vault
+        .connection_ref()
+        .query_row(
+            "SELECT content_md FROM notes WHERE id = ?",
+            [&src],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(body.contains("[[Target~inspired-by|the muse]]"), "{body:?}");
+}
+
+#[test]
+fn update_link_noop_returns_current_link_unchanged() {
+    let (_dir, mut vault, src) = place_source_with_target("[[Target~extends]]");
+    let link = links::links_out_for_note(&vault, &src).unwrap()[0].clone();
+    let result = links::update_link(
+        &mut vault,
+        &link.id,
+        links::UpdateLink::default(),
+    )
+    .unwrap();
+    assert_eq!(result.id, link.id);
+    assert_eq!(result.link_kind.as_str(), "extends");
+}
+
+#[test]
+fn update_link_rejects_unknown_link_id() {
+    let (_dir, mut vault) = fresh_vault();
+    let err = links::update_link(
+        &mut vault,
+        "nonexistent-link-id",
+        links::UpdateLink {
+            new_kind: Some(LinkKind::new("extends").unwrap()),
+            new_label: None,
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, MemexError::NotFound(_)), "got {err:?}");
+}
+
+#[test]
+fn update_link_on_frontmatter_link_rejects_kind_change() {
+    let (_dir, mut vault) = fresh_vault();
+    let _target = create_note(
+        &mut vault,
+        CreateNote {
+            title: Some("Target".into()),
+            content_md: "# Target\n".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let content = "---\nextends:\n  - [[Target]]\n---\n# Source\n";
+    let src = create_note(
+        &mut vault,
+        CreateNote {
+            title: Some("Source".into()),
+            content_md: content.into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    indexer::reindex_note(vault.connection_mut(), src.id.as_str(), content, None).unwrap();
+
+    let link = &links::links_out_for_note(&vault, src.id.as_str()).unwrap()[0];
+    assert_eq!(link.source, LinkSource::Frontmatter);
+    let err = links::update_link(
+        &mut vault,
+        &link.id,
+        links::UpdateLink {
+            new_kind: Some(LinkKind::new("contradicts").unwrap()),
+            new_label: None,
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, MemexError::InvalidLinkKind(_)), "got {err:?}");
+}
+
+#[test]
+fn update_link_on_frontmatter_link_supports_label_change() {
+    let (_dir, mut vault) = fresh_vault();
+    let _target = create_note(
+        &mut vault,
+        CreateNote {
+            title: Some("Target".into()),
+            content_md: "# Target\n".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let content = "---\nextends:\n  - [[Target]]\n---\n# Source\n";
+    let src = create_note(
+        &mut vault,
+        CreateNote {
+            title: Some("Source".into()),
+            content_md: content.into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    indexer::reindex_note(vault.connection_mut(), src.id.as_str(), content, None).unwrap();
+
+    let link = links::links_out_for_note(&vault, src.id.as_str()).unwrap()[0].clone();
+    let updated = links::update_link(
+        &mut vault,
+        &link.id,
+        links::UpdateLink {
+            new_kind: None,
+            new_label: Some(Some("Tee".into())),
+        },
+    )
+    .unwrap();
+    assert_eq!(updated.label.as_deref(), Some("Tee"));
+
+    let body: String = vault
+        .connection_ref()
+        .query_row(
+            "SELECT content_md FROM notes WHERE id = ?",
+            [src.id.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(body.contains("[[Target|Tee]]"), "{body:?}");
+    // No `~kind` infix in the YAML wikilink.
+    assert!(!body.contains("[[Target~"), "{body:?}");
+}
+
 #[test]
 fn schema_v3_migration_is_idempotent_on_fresh_vault() {
     let (_dir, vault) = fresh_vault();

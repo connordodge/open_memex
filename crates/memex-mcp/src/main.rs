@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use memex_core::canvas;
 use memex_core::indexer;
 use memex_core::links::{self as core_links, LinkKind, LinkSource, PendingLink};
 use memex_core::notes::{
@@ -10,7 +11,7 @@ use memex_core::notes::{
     NoteId, RenameOptions, UpdateNote,
 };
 use memex_core::tags;
-use memex_core::Vault;
+use memex_core::{CanvasId, Vault};
 use rmcp::transport::stdio;
 use rmcp::ServiceExt;
 use rusqlite::params;
@@ -133,6 +134,33 @@ enum Commands {
         #[arg(long)]
         with_embeddings: bool,
     },
+    /// Rewrite the `kind` and/or `label` on an existing wikilink in place.
+    UpdateLink {
+        /// Vault directory.
+        #[arg(long)]
+        vault: PathBuf,
+        /// Link id (ULID-style id from the `links` table).
+        #[arg(long)]
+        link_id: String,
+        /// New kind. If omitted, kind is unchanged.
+        #[arg(long)]
+        kind: Option<String>,
+        /// New label. If omitted, label is unchanged.
+        #[arg(long)]
+        label: Option<String>,
+        /// Clear the label (overrides --label).
+        #[arg(long)]
+        clear_label: bool,
+        /// Use real embeddings during the post-write reindex.
+        #[arg(long)]
+        with_embeddings: bool,
+    },
+    /// Canvas operations: create/list/get/rename/delete canvases and place,
+    /// remove, or move notes on them.
+    Canvas {
+        #[command(subcommand)]
+        action: CanvasAction,
+    },
     /// Run as an MCP server over stdio.
     Serve {
         /// Vault directory.
@@ -144,6 +172,86 @@ enum Commands {
         /// Log level filter (default: info). Logs go to <vault>/.memex/mcp.log.
         #[arg(long, default_value = "info")]
         log_level: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum CanvasAction {
+    /// Create a new canvas.
+    New {
+        #[arg(long)]
+        vault: PathBuf,
+        #[arg(long)]
+        title: String,
+    },
+    /// List all canvases.
+    Ls {
+        #[arg(long)]
+        vault: PathBuf,
+    },
+    /// Print one canvas as JSON.
+    Get {
+        #[arg(long)]
+        vault: PathBuf,
+        #[arg(long)]
+        canvas_id: String,
+    },
+    /// Rename a canvas.
+    Rename {
+        #[arg(long)]
+        vault: PathBuf,
+        #[arg(long)]
+        canvas_id: String,
+        #[arg(long)]
+        title: String,
+        #[arg(long)]
+        expected_version: i64,
+    },
+    /// Delete a canvas (cascades placements only).
+    Rm {
+        #[arg(long)]
+        vault: PathBuf,
+        #[arg(long)]
+        canvas_id: String,
+        #[arg(long)]
+        expected_version: i64,
+    },
+    /// Place a note on a canvas at (x, y).
+    Add {
+        #[arg(long)]
+        vault: PathBuf,
+        #[arg(long)]
+        canvas_id: String,
+        #[arg(long)]
+        note_id: String,
+        #[arg(long, default_value = "0.0")]
+        x: f64,
+        #[arg(long, default_value = "0.0")]
+        y: f64,
+    },
+    /// Remove a note's placement from a canvas.
+    Remove {
+        #[arg(long)]
+        vault: PathBuf,
+        #[arg(long)]
+        canvas_id: String,
+        #[arg(long)]
+        note_id: String,
+    },
+    /// Move a placed node to new coordinates.
+    Move {
+        #[arg(long)]
+        vault: PathBuf,
+        #[arg(long)]
+        canvas_id: String,
+        #[arg(long)]
+        note_id: String,
+        #[arg(long)]
+        x: f64,
+        #[arg(long)]
+        y: f64,
+        #[arg(long)]
+        z: Option<i64>,
     },
 }
 
@@ -196,6 +304,15 @@ async fn main() -> Result<()> {
             label,
             with_embeddings,
         } => cmd_add_link(vault, from, to, kind, label, with_embeddings).await,
+        Commands::UpdateLink {
+            vault,
+            link_id,
+            kind,
+            label,
+            clear_label,
+            with_embeddings,
+        } => cmd_update_link(vault, link_id, kind, label, clear_label, with_embeddings).await,
+        Commands::Canvas { action } => cmd_canvas(action),
         Commands::Serve {
             vault,
             with_embeddings,
@@ -623,6 +740,299 @@ async fn cmd_add_link(
         note_version: updated.version,
     };
     println!("{}", serde_json::to_string(&payload)?);
+    Ok(())
+}
+
+async fn cmd_update_link(
+    vault_path: PathBuf,
+    link_id: String,
+    kind: Option<String>,
+    label: Option<String>,
+    clear_label: bool,
+    _with_embeddings: bool,
+) -> Result<()> {
+    let absolute = make_absolute(&vault_path)?;
+    let mut vault = Vault::open(&absolute).context("open vault")?;
+    let new_kind = match kind {
+        Some(k) => Some(LinkKind::new(&k).map_err(|e| anyhow::anyhow!("invalid --kind: {e}"))?),
+        None => None,
+    };
+    let new_label: Option<Option<String>> = if clear_label {
+        Some(None)
+    } else {
+        label.map(Some)
+    };
+    let link = core_links::update_link(
+        &mut vault,
+        &link_id,
+        core_links::UpdateLink {
+            new_kind,
+            new_label,
+        },
+    )?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "vault_id": vault.vault_id(),
+            "link_id": link.id,
+            "from_note_id": link.from_note_id,
+            "to_note_id": link.to_note_id,
+            "kind": link.link_kind.as_str(),
+            "label": link.label,
+            "source": link.source.as_str(),
+            "position": link.position,
+        }))?
+    );
+    Ok(())
+}
+
+fn cmd_canvas(action: CanvasAction) -> Result<()> {
+    match action {
+        CanvasAction::New { vault, title } => cmd_canvas_new(vault, title),
+        CanvasAction::Ls { vault } => cmd_canvas_ls(vault),
+        CanvasAction::Get { vault, canvas_id } => cmd_canvas_get(vault, canvas_id),
+        CanvasAction::Rename {
+            vault,
+            canvas_id,
+            title,
+            expected_version,
+        } => cmd_canvas_rename(vault, canvas_id, title, expected_version),
+        CanvasAction::Rm {
+            vault,
+            canvas_id,
+            expected_version,
+        } => cmd_canvas_rm(vault, canvas_id, expected_version),
+        CanvasAction::Add {
+            vault,
+            canvas_id,
+            note_id,
+            x,
+            y,
+        } => cmd_canvas_add(vault, canvas_id, note_id, x, y),
+        CanvasAction::Remove {
+            vault,
+            canvas_id,
+            note_id,
+        } => cmd_canvas_remove(vault, canvas_id, note_id),
+        CanvasAction::Move {
+            vault,
+            canvas_id,
+            note_id,
+            x,
+            y,
+            z,
+        } => cmd_canvas_move(vault, canvas_id, note_id, x, y, z),
+    }
+}
+
+fn open_vault(vault_path: PathBuf) -> Result<(PathBuf, Vault)> {
+    let absolute = make_absolute(&vault_path)?;
+    let vault = Vault::open(&absolute).context("open vault")?;
+    Ok((absolute, vault))
+}
+
+fn parse_canvas_id(s: &str) -> Result<CanvasId> {
+    CanvasId::parse(s).map_err(|e| anyhow::anyhow!("invalid --canvas-id: {e}"))
+}
+
+fn cmd_canvas_new(vault_path: PathBuf, title: String) -> Result<()> {
+    let (_abs, mut vault) = open_vault(vault_path)?;
+    let c = canvas::create_canvas(&mut vault, title)?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "vault_id": vault.vault_id(),
+            "canvas_id": c.id.to_string(),
+            "title": c.title,
+            "version": c.version,
+            "created_at": c.created_at,
+            "updated_at": c.updated_at,
+        }))?
+    );
+    Ok(())
+}
+
+fn cmd_canvas_ls(vault_path: PathBuf) -> Result<()> {
+    let (_abs, vault) = open_vault(vault_path)?;
+    let summaries = canvas::list_canvases(&vault)?;
+    let arr: Vec<serde_json::Value> = summaries
+        .into_iter()
+        .map(|s| {
+            serde_json::json!({
+                "canvas_id": s.id.to_string(),
+                "title": s.title,
+                "created_at": s.created_at,
+                "updated_at": s.updated_at,
+                "version": s.version,
+                "node_count": s.node_count,
+            })
+        })
+        .collect();
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "vault_id": vault.vault_id(),
+            "canvases": arr,
+        }))?
+    );
+    Ok(())
+}
+
+fn cmd_canvas_get(vault_path: PathBuf, canvas_id: String) -> Result<()> {
+    let (_abs, vault) = open_vault(vault_path)?;
+    let cid = parse_canvas_id(&canvas_id)?;
+    let d = canvas::get_canvas(&vault, &cid)?;
+    let nodes: Vec<serde_json::Value> = d
+        .nodes
+        .into_iter()
+        .map(|n| {
+            serde_json::json!({
+                "note_id": n.note_id,
+                "note_title": n.note_title,
+                "x": n.x,
+                "y": n.y,
+                "z_order": n.z_order,
+                "placed_at": n.placed_at,
+            })
+        })
+        .collect();
+    let edges: Vec<serde_json::Value> = d
+        .edges
+        .into_iter()
+        .map(|e| {
+            serde_json::json!({
+                "link_id": e.link_id,
+                "from_note_id": e.from_note_id,
+                "to_note_id": e.to_note_id,
+                "link_text": e.link_text,
+                "kind": e.link_kind.as_str(),
+                "label": e.label,
+                "source": e.source.as_str(),
+                "position": e.position,
+            })
+        })
+        .collect();
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "vault_id": vault.vault_id(),
+            "canvas_id": d.canvas.id.to_string(),
+            "title": d.canvas.title,
+            "created_at": d.canvas.created_at,
+            "updated_at": d.canvas.updated_at,
+            "version": d.canvas.version,
+            "nodes": nodes,
+            "edges": edges,
+        }))?
+    );
+    Ok(())
+}
+
+fn cmd_canvas_rename(
+    vault_path: PathBuf,
+    canvas_id: String,
+    title: String,
+    expected_version: i64,
+) -> Result<()> {
+    let (_abs, mut vault) = open_vault(vault_path)?;
+    let cid = parse_canvas_id(&canvas_id)?;
+    let c = canvas::rename_canvas(&mut vault, &cid, title, expected_version)?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "vault_id": vault.vault_id(),
+            "canvas_id": c.id.to_string(),
+            "title": c.title,
+            "version": c.version,
+            "updated_at": c.updated_at,
+        }))?
+    );
+    Ok(())
+}
+
+fn cmd_canvas_rm(vault_path: PathBuf, canvas_id: String, expected_version: i64) -> Result<()> {
+    let (_abs, mut vault) = open_vault(vault_path)?;
+    let cid = parse_canvas_id(&canvas_id)?;
+    canvas::delete_canvas(&mut vault, &cid, expected_version)?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "vault_id": vault.vault_id(),
+            "canvas_id": canvas_id,
+        }))?
+    );
+    Ok(())
+}
+
+fn cmd_canvas_add(
+    vault_path: PathBuf,
+    canvas_id: String,
+    note_id: String,
+    x: f64,
+    y: f64,
+) -> Result<()> {
+    let (_abs, mut vault) = open_vault(vault_path)?;
+    let cid = parse_canvas_id(&canvas_id)?;
+    let _ = NoteId::parse(&note_id).map_err(|e| anyhow::anyhow!("invalid --note-id: {e}"))?;
+    let node = canvas::add_to_canvas(&mut vault, &cid, &note_id, x, y)?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "vault_id": vault.vault_id(),
+            "canvas_id": node.canvas_id.to_string(),
+            "note_id": node.note_id,
+            "note_title": node.note_title,
+            "x": node.x,
+            "y": node.y,
+            "z_order": node.z_order,
+            "placed_at": node.placed_at,
+        }))?
+    );
+    Ok(())
+}
+
+fn cmd_canvas_remove(
+    vault_path: PathBuf,
+    canvas_id: String,
+    note_id: String,
+) -> Result<()> {
+    let (_abs, mut vault) = open_vault(vault_path)?;
+    let cid = parse_canvas_id(&canvas_id)?;
+    canvas::remove_from_canvas(&mut vault, &cid, &note_id)?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "vault_id": vault.vault_id(),
+            "canvas_id": canvas_id,
+            "note_id": note_id,
+        }))?
+    );
+    Ok(())
+}
+
+fn cmd_canvas_move(
+    vault_path: PathBuf,
+    canvas_id: String,
+    note_id: String,
+    x: f64,
+    y: f64,
+    z: Option<i64>,
+) -> Result<()> {
+    let (_abs, mut vault) = open_vault(vault_path)?;
+    let cid = parse_canvas_id(&canvas_id)?;
+    let node = canvas::move_node(&mut vault, &cid, &note_id, x, y, z)?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "vault_id": vault.vault_id(),
+            "canvas_id": node.canvas_id.to_string(),
+            "note_id": node.note_id,
+            "note_title": node.note_title,
+            "x": node.x,
+            "y": node.y,
+            "z_order": node.z_order,
+        }))?
+    );
     Ok(())
 }
 

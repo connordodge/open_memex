@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use memex_mcp::state::AppState;
 use memex_mcp::tools::{
-    AddLinkParams, CreateNoteParams, GetNoteParams, Memex, NeighborsParams, SearchParams,
+    AddLinkParams, AddToCanvasParams, CreateCanvasParams, CreateNoteParams, DeleteCanvasParams,
+    GetCanvasParams, GetNoteParams, ListCanvasesParams, Memex, MoveNodeParams, NeighborsParams,
+    RemoveFromCanvasParams, SearchParams, UpdateLinkParams,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use serde_json::Value;
@@ -430,4 +432,230 @@ async fn neighbors_invalid_note_id_returns_error() {
     let v: Value = serde_json::from_str(&resp).unwrap();
     assert!(v["error"].is_object());
     assert_eq!(v["error"]["code"], "neighbors.invalid_id");
+}
+
+// ---------- canvas tools ----------
+
+async fn make_note(memex: &Memex, title: &str, body: &str) -> String {
+    let resp = memex
+        .create_note(Parameters(CreateNoteParams {
+            content_md: body.into(),
+            title: Some(title.into()),
+            tags: None,
+            agent_id: Some("smoke".into()),
+        }))
+        .await;
+    let v: Value = serde_json::from_str(&resp).unwrap();
+    v["note_id"].as_str().unwrap().to_string()
+}
+
+async fn make_canvas(memex: &Memex, title: &str) -> String {
+    let resp = memex
+        .create_canvas(Parameters(CreateCanvasParams {
+            title: title.into(),
+        }))
+        .await;
+    let v: Value = serde_json::from_str(&resp).unwrap();
+    v["canvas_id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn create_canvas_round_trip_and_list() {
+    let memex = Memex::new(fresh_state());
+    let cid = make_canvas(&memex, "Board A").await;
+
+    let listed = memex
+        .list_canvases(Parameters(ListCanvasesParams {}))
+        .await;
+    let v: Value = serde_json::from_str(&listed).unwrap();
+    let canvases = v["canvases"].as_array().unwrap();
+    assert_eq!(canvases.len(), 1);
+    assert_eq!(canvases[0]["canvas_id"].as_str().unwrap(), cid);
+    assert_eq!(canvases[0]["title"].as_str().unwrap(), "Board A");
+    assert_eq!(canvases[0]["node_count"].as_i64().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn create_canvas_duplicate_title_returns_title_conflict_error() {
+    let memex = Memex::new(fresh_state());
+    let _ = make_canvas(&memex, "Dup").await;
+    let resp = memex
+        .create_canvas(Parameters(CreateCanvasParams { title: "Dup".into() }))
+        .await;
+    let v: Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(v["error"]["code"], "create_canvas.title_conflict");
+}
+
+#[tokio::test]
+async fn add_to_canvas_defaults_x_y_to_zero() {
+    let memex = Memex::new(fresh_state());
+    let cid = make_canvas(&memex, "Board").await;
+    let nid = make_note(&memex, "Note A", "# Note A\n").await;
+    let resp = memex
+        .add_to_canvas(Parameters(AddToCanvasParams {
+            canvas_id: cid.clone(),
+            note_id: nid.clone(),
+            x: None,
+            y: None,
+        }))
+        .await;
+    let v: Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(v["x"].as_f64().unwrap(), 0.0);
+    assert_eq!(v["y"].as_f64().unwrap(), 0.0);
+    assert_eq!(v["note_title"].as_str().unwrap(), "Note A");
+}
+
+#[tokio::test]
+async fn get_canvas_returns_placed_nodes_and_edges_between_them() {
+    let memex = Memex::new(fresh_state());
+    let cid = make_canvas(&memex, "Board").await;
+    let beta_id = make_note(&memex, "Beta", "# Beta\n").await;
+    let _gamma_id = make_note(&memex, "Gamma", "# Gamma\n").await;
+    let alpha_id = make_note(&memex, "Alpha", "# Alpha\n\n[[Beta]] and [[Gamma]]").await;
+    memex
+        .add_to_canvas(Parameters(AddToCanvasParams {
+            canvas_id: cid.clone(),
+            note_id: alpha_id.clone(),
+            x: Some(1.0),
+            y: Some(2.0),
+        }))
+        .await;
+    memex
+        .add_to_canvas(Parameters(AddToCanvasParams {
+            canvas_id: cid.clone(),
+            note_id: beta_id.clone(),
+            x: Some(10.0),
+            y: Some(20.0),
+        }))
+        .await;
+
+    let resp = memex
+        .get_canvas(Parameters(GetCanvasParams {
+            canvas_id: cid.clone(),
+        }))
+        .await;
+    let v: Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(v["canvas_id"].as_str().unwrap(), cid);
+    assert_eq!(v["nodes"].as_array().unwrap().len(), 2);
+    let edges = v["edges"].as_array().unwrap();
+    assert_eq!(edges.len(), 1, "Gamma is off-canvas; only Alpha->Beta renders");
+    assert_eq!(edges[0]["from_note_id"].as_str().unwrap(), alpha_id);
+    assert_eq!(edges[0]["to_note_id"].as_str().unwrap(), beta_id);
+}
+
+#[tokio::test]
+async fn get_canvas_unknown_id_returns_structured_error() {
+    let memex = Memex::new(fresh_state());
+    let resp = memex
+        .get_canvas(Parameters(GetCanvasParams {
+            canvas_id: "not-a-ulid".into(),
+        }))
+        .await;
+    let v: Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(v["error"]["code"], "get_canvas.invalid_id");
+}
+
+#[tokio::test]
+async fn remove_from_canvas_then_move_node_errors() {
+    let memex = Memex::new(fresh_state());
+    let cid = make_canvas(&memex, "Board").await;
+    let nid = make_note(&memex, "Note", "# Note\n").await;
+    memex
+        .add_to_canvas(Parameters(AddToCanvasParams {
+            canvas_id: cid.clone(),
+            note_id: nid.clone(),
+            x: Some(1.0),
+            y: Some(1.0),
+        }))
+        .await;
+    memex
+        .remove_from_canvas(Parameters(RemoveFromCanvasParams {
+            canvas_id: cid.clone(),
+            note_id: nid.clone(),
+        }))
+        .await;
+    let resp = memex
+        .move_node(Parameters(MoveNodeParams {
+            canvas_id: cid.clone(),
+            note_id: nid.clone(),
+            x: 9.0,
+            y: 9.0,
+            z_order: None,
+        }))
+        .await;
+    let v: Value = serde_json::from_str(&resp).unwrap();
+    assert!(v["error"].is_object(), "expected an error payload: {v}");
+}
+
+#[tokio::test]
+async fn delete_canvas_with_wrong_expected_version_errors() {
+    let memex = Memex::new(fresh_state());
+    let cid = make_canvas(&memex, "Board").await;
+    // Bump version via a placement.
+    let nid = make_note(&memex, "Note", "# Note\n").await;
+    memex
+        .add_to_canvas(Parameters(AddToCanvasParams {
+            canvas_id: cid.clone(),
+            note_id: nid,
+            x: None,
+            y: None,
+        }))
+        .await;
+    let resp = memex
+        .delete_canvas(Parameters(DeleteCanvasParams {
+            canvas_id: cid,
+            expected_version: 1, // stale; placement bumped to 2
+        }))
+        .await;
+    let v: Value = serde_json::from_str(&resp).unwrap();
+    assert!(v["error"].is_object(), "expected an error payload: {v}");
+}
+
+// ---------- update_link tool ----------
+
+#[tokio::test]
+async fn update_link_changes_kind_in_place_via_tool() {
+    let memex = Memex::new(fresh_state());
+    let _target = make_note(&memex, "Target", "# Target\n").await;
+    let source = make_note(&memex, "Source", "Hello [[Target]] world.").await;
+
+    // Find the link id (one outgoing link from source).
+    let n = memex
+        .get_note(Parameters(GetNoteParams {
+            note_id: source.clone(),
+            include_backlinks: Some(true),
+        }))
+        .await;
+    let v: Value = serde_json::from_str(&n).unwrap();
+    let link_id = v["links"]["references"][0]["link_id"]
+        .as_str()
+        .expect("link_id from references")
+        .to_string();
+
+    let resp = memex
+        .update_link(Parameters(UpdateLinkParams {
+            link_id: link_id.clone(),
+            kind: Some("extends".into()),
+            label: Some("the goal".into()),
+            clear_label: None,
+        }))
+        .await;
+    let v: Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(v["kind"].as_str().unwrap(), "extends");
+    assert_eq!(v["label"].as_str().unwrap(), "the goal");
+}
+
+#[tokio::test]
+async fn update_link_unknown_id_returns_error() {
+    let memex = Memex::new(fresh_state());
+    let resp = memex
+        .update_link(Parameters(UpdateLinkParams {
+            link_id: "nope".into(),
+            kind: Some("extends".into()),
+            label: None,
+            clear_label: None,
+        }))
+        .await;
+    let v: Value = serde_json::from_str(&resp).unwrap();
+    assert!(v["error"].is_object(), "expected an error payload: {v}");
 }

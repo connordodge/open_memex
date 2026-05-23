@@ -270,6 +270,157 @@ pub fn links_in_for_note(
     Ok(out)
 }
 
+/// Read one link row by id.
+pub fn get_link(vault: &Vault, link_id: &str) -> Result<Link> {
+    let mut stmt = vault.connection_ref().prepare(
+        "SELECT id, from_note_id, to_note_id, link_text, link_kind, label, position, source
+         FROM links WHERE id = ?",
+    )?;
+    let mut rows = stmt.query(params![link_id])?;
+    let row = rows
+        .next()?
+        .ok_or_else(|| MemexError::NotFound(format!("link {link_id}")))?;
+    row_to_link(row).map_err(MemexError::from)
+}
+
+/// Patch shape for `update_link`. Each field uses an `Option` to express
+/// "no change"; for `new_label`, an additional inner `Option` distinguishes
+/// "clear label" (`Some(None)`) from "set label" (`Some(Some(s))`).
+#[derive(Debug, Clone, Default)]
+pub struct UpdateLink {
+    pub new_kind: Option<LinkKind>,
+    pub new_label: Option<Option<String>>,
+}
+
+/// Rewrite the `kind` and/or `label` on a single wikilink occurrence in the
+/// source note's body. The title is never changed by this function — title
+/// renames go through `notes::update_note`'s rename-links pass.
+///
+/// Behavior by `LinkSource`:
+/// * `InlineBody`, `InlineSection`, `AutoAdded` — rewrites the `[[...]]` token
+///   at the link's `position` in the source body, preserving the title and
+///   updating the `~kind` / `|alias` segments.
+/// * `Frontmatter` — only `new_label` is supported in v1; supplying
+///   `new_kind` returns `InvalidLinkKind` ("frontmatter kind change not
+///   supported"). Label changes rewrite the `[[Title|alias]]` token in place.
+///
+/// After the body is updated, the source note is saved through
+/// `update_note_with_options(rename_links: false)` and reindexed by the caller
+/// (matching the existing add-link path).
+pub fn update_link(
+    vault: &mut Vault,
+    link_id: &str,
+    patch: UpdateLink,
+) -> Result<Link> {
+    let current = get_link(vault, link_id)?;
+
+    // Resolve target kind + label, then determine whether anything needs to change.
+    let new_kind = patch.new_kind.unwrap_or_else(|| current.link_kind.clone());
+    let kind_changed = new_kind.as_str() != current.link_kind.as_str();
+    let new_label: Option<String> = match patch.new_label {
+        Some(maybe) => maybe.and_then(|s| if s.is_empty() { None } else { Some(s) }),
+        None => current.label.clone(),
+    };
+    let label_changed = new_label != current.label;
+    if !kind_changed && !label_changed {
+        return Ok(current);
+    }
+
+    if kind_changed && matches!(current.source, LinkSource::Frontmatter) {
+        return Err(MemexError::InvalidLinkKind(
+            "frontmatter link kind cannot be changed via update_link in v1; \
+             remove the link and re-add it under the desired kind"
+                .into(),
+        ));
+    }
+
+    let from_id = current.from_note_id.clone();
+    let title = current.link_text.clone();
+
+    // Read current source body + version.
+    let (source_version, source_body): (i64, String) = vault
+        .connection_ref()
+        .query_row(
+            "SELECT version, content_md FROM notes WHERE id = ?",
+            params![from_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                MemexError::NotFound(format!("note {from_id}"))
+            }
+            other => MemexError::from(other),
+        })?;
+
+    // Locate the `[[...]]` token at `current.position`.
+    let pos = current.position as usize;
+    if pos >= source_body.len() || !source_body[pos..].starts_with("[[") {
+        return Err(MemexError::NotFound(format!(
+            "wikilink token not found at position {pos} in note {from_id}"
+        )));
+    }
+    let close_rel = source_body[pos..]
+        .find("]]")
+        .ok_or_else(|| MemexError::NotFound(format!(
+            "wikilink missing closing brackets at position {pos} in note {from_id}"
+        )))?;
+    let token_end = pos + close_rel + 2;
+
+    // Build replacement. Frontmatter never carries `~kind` (the YAML key does).
+    let include_kind = !matches!(current.source, LinkSource::Frontmatter);
+    let new_token = render_wikilink_token(&title, &new_kind, new_label.as_deref(), include_kind);
+    let mut new_body = String::with_capacity(source_body.len() + new_token.len());
+    new_body.push_str(&source_body[..pos]);
+    new_body.push_str(&new_token);
+    new_body.push_str(&source_body[token_end..]);
+
+    // Save via the standard update path so existing indexing wires in.
+    crate::notes::update_note_with_options(
+        vault,
+        &crate::notes::NoteId::parse(&from_id)?,
+        source_version,
+        crate::notes::UpdateNote {
+            content_md: Some(new_body.clone()),
+            ..Default::default()
+        },
+        crate::notes::RenameOptions { rename_links: false },
+    )?;
+    // Reindex so the `links` row reflects the new kind/label.
+    crate::indexer::reindex_note(vault.conn_mut(), &from_id, &new_body, None)?;
+
+    // The new link row sits at the same (from_note_id, position) because we
+    // edited the `[[...]]` token in place; the leading `[[` byte offset is
+    // unchanged.
+    let new_link: Link = vault
+        .connection_ref()
+        .query_row(
+            "SELECT id, from_note_id, to_note_id, link_text, link_kind, label, position, source
+             FROM links WHERE from_note_id = ? AND position = ?",
+            params![from_id, current.position],
+            row_to_link,
+        )
+        .map_err(MemexError::from)?;
+    Ok(new_link)
+}
+
+fn render_wikilink_token(
+    title: &str,
+    kind: &LinkKind,
+    label: Option<&str>,
+    include_kind: bool,
+) -> String {
+    let kind_seg = if include_kind && kind.as_str() != LinkKind::REFERENCES {
+        format!("~{}", kind.as_str())
+    } else {
+        String::new()
+    };
+    let alias_seg = match label {
+        Some(l) if !l.is_empty() => format!("|{l}"),
+        _ => String::new(),
+    };
+    format!("[[{title}{kind_seg}{alias_seg}]]")
+}
+
 fn row_to_link(r: &rusqlite::Row<'_>) -> rusqlite::Result<Link> {
     Ok(Link {
         id: r.get(0)?,

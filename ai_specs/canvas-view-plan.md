@@ -54,20 +54,20 @@ Visual, tabbed canvas board for Open Memex. Concept=note, line=wikilink. Rust co
 ### Phase 2: CLI + MCP tools + `update-link` primitive
 
 - **Goal**: All canvas ops reachable from terminal + MCP. Add the missing `update-link` primitive that the edge inspector needs in Phase 4. JSON output from day 1.
-- [ ] `crates/memex-core/src/links.rs` — new `update_link(vault, link_id, new_kind?, new_label?) -> LinkRow`: rewrites the matching wikilink occurrence in the source note's body via the existing extractor/serializer round-trip; transactional; bumps source note `version`. Returns updated `LinkRow`.
-- [ ] `crates/memex-mcp/src/main.rs` — introduce nested clap: `Canvas { #[command(subcommand)] action: CanvasAction }` variant + `enum CanvasAction { New, Ls, Get, Rename, Rm, Add, Remove, Move }`. Add `UpdateLink { … }` flat variant alongside `AddLink`.
-- [ ] `crates/memex-mcp/src/main.rs` — `cmd_canvas_*` helpers (printf JSON output, mirror `cmd_add_link` shape); `cmd_update_link`.
-- [ ] `crates/memex-mcp/src/tools.rs` — inside existing `#[tool_router]` impl block, add `#[tool]` methods: `list_canvases`, `get_canvas`, `create_canvas`, `add_to_canvas`, `remove_from_canvas`, `move_node`, `delete_canvas`, **plus** `update_link`. One `Params` struct + one `Envelope` struct per tool. Reuse `err_payload`, `group_links_by_kind` (for `get_canvas` edges if grouped form chosen, else inline flat list).
-- [ ] `crates/memex-mcp/tests/tool_smoke.rs` — add round-trip tests for each new tool (direct method calls, JSON parse).
-- [ ] `crates/memex-mcp/tests/cli_smoke.rs` (extend or create) — `memex canvas new/ls/get/add/move/remove/rm/rename` exit-0 + JSON shape; `memex update-link` round-trip.
-- [ ] TDD: `update_link` changes only kind, only label, or both; preserves alias; rejects unknown `link_id`; honors source-note version.
-- [ ] TDD: `update_link` rewrites `[[Title]]` → `[[Title~kind]]`, `[[Title~old~kind]]` → `[[Title~new]]`, etc. — exhaustive over the four wikilink shapes in `docs/wikilinks.md`.
-- [ ] TDD: `list_canvases` MCP tool returns expected JSON shape (compare to documented schema in spec).
-- [ ] TDD: `get_canvas` MCP tool returns nodes + edges; invalid `canvas_id` returns structured `err_payload`.
-- [ ] TDD: `create_canvas` MCP duplicate-title returns `err_payload("create_canvas.title_conflict", …)`.
-- [ ] TDD: `add_to_canvas` MCP defaults `x=0.0, y=0.0` when omitted.
-- [ ] TDD: `delete_canvas` MCP honors `expected_version`.
-- [ ] Verify: `cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings`.
+- [x] `crates/memex-core/src/links.rs` — new `update_link(vault, link_id, new_kind?, new_label?) -> LinkRow`: rewrites the matching wikilink occurrence in the source note's body via the existing extractor/serializer round-trip; transactional; bumps source note `version`. Returns updated `LinkRow`.
+- [x] `crates/memex-mcp/src/main.rs` — introduce nested clap: `Canvas { #[command(subcommand)] action: CanvasAction }` variant + `enum CanvasAction { New, Ls, Get, Rename, Rm, Add, Remove, Move }`. Add `UpdateLink { … }` flat variant alongside `AddLink`.
+- [x] `crates/memex-mcp/src/main.rs` — `cmd_canvas_*` helpers (printf JSON output, mirror `cmd_add_link` shape); `cmd_update_link`.
+- [x] `crates/memex-mcp/src/tools.rs` — inside existing `#[tool_router]` impl block, add `#[tool]` methods: `list_canvases`, `get_canvas`, `create_canvas`, `add_to_canvas`, `remove_from_canvas`, `move_node`, `delete_canvas`, **plus** `update_link`. One `Params` struct + one `Envelope` struct per tool. Reuse `err_payload`, `group_links_by_kind` (for `get_canvas` edges if grouped form chosen, else inline flat list).
+- [x] `crates/memex-mcp/tests/tool_smoke.rs` — add round-trip tests for each new tool (direct method calls, JSON parse).
+- [x] `crates/memex-mcp/tests/cli_canvas.rs` (new) — `memex canvas new/ls/get/add/move/remove/rm` exit-0 + JSON shape; `memex update-link` round-trip.
+- [x] TDD: `update_link` changes only kind, only label, or both; preserves alias; rejects unknown `link_id`; honors source-note version.
+- [x] TDD: `update_link` rewrites `[[Title]]` → `[[Title~kind]]`, `[[Title~old]]` → `[[Title~new]]`, plus alias preserve/clear over the four wikilink shapes in `docs/wikilinks.md`.
+- [x] TDD: `list_canvases` MCP tool returns expected JSON shape (compare to documented schema in spec).
+- [x] TDD: `get_canvas` MCP tool returns nodes + edges; invalid `canvas_id` returns structured `err_payload`.
+- [x] TDD: `create_canvas` MCP duplicate-title returns `err_payload("create_canvas.title_conflict", …)`.
+- [x] TDD: `add_to_canvas` MCP defaults `x=0.0, y=0.0` when omitted.
+- [x] TDD: `delete_canvas` MCP honors `expected_version`.
+- [x] Verify: `cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings`.
 
 ### Phase 3: Tabbed workspace shell + rail refactor (no canvas tab yet)
 
