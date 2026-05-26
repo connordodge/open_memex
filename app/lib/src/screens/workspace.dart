@@ -163,12 +163,15 @@ class _TabChip extends ConsumerWidget {
                   ),
                 ),
                 const SizedBox(width: 4),
-                InkWell(
+                // GestureDetector with opaque hit-test, not InkWell — InkWell
+                // defers hits to its child so the outer tab GestureDetector
+                // still sees the tap on the X and "wins" the switch-tab tap.
+                GestureDetector(
                   key: Key('tab-close-${tab.tabId}'),
+                  behavior: HitTestBehavior.opaque,
                   onTap: onClose,
-                  borderRadius: BorderRadius.circular(2),
                   child: const Padding(
-                    padding: EdgeInsets.all(2),
+                    padding: EdgeInsets.all(4),
                     child: Icon(LucideIcons.x, size: 11, color: OmColors.fg3),
                   ),
                 ),
