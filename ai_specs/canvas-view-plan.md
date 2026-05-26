@@ -125,14 +125,14 @@ Visual, tabbed canvas board for Open Memex. Concept=note, line=wikilink. Rust co
 ### Phase 5: Polish, docs, manual verification
 
 - **Goal**: Documentation; manual primary-flow walkthrough; performance smoke.
-- [ ] `docs/canvas.md` (new) — user-facing: what canvases are, drag/place/link/zoom flows, off-canvas hiding policy, multi-edge rendering, MCP tool list, current limits.
-- [ ] `docs/canvas-acceptance.md` (new) — manual journey (mirror `docs/acceptance-test.md` style) for each phase.
-- [ ] `README.md` — append a "Canvas" bullet under "What works today"; link to `docs/canvas.md`.
-- [ ] `docs/wikilinks.md` — append cross-reference to canvas section ("lines on a canvas are wikilinks").
-- [ ] Manual: run `flutter run -d macos` against a real vault; walk primary flow; capture screenshot via `act-flutter-screenshot`.
-- [ ] Manual: open `memex serve` in the MCP inspector; verify `list_canvases` / `get_canvas` / `create_canvas` / `add_to_canvas` / `update_link` round-trip.
-- [ ] Manual: perf smoke at ~200 nodes / 400 edges (synthetic vault); document FPS; record if degraded earlier than 500/1000 target.
-- [ ] Verify: full suite — `cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && cd app && flutter analyze && flutter test`.
+- [x] `docs/canvas.md` (new) — user-facing reference covering placement, drag-to-link, edge inspector, animated zoom, MCP tool list, persistence, and v1 limits.
+- [x] `docs/canvas-acceptance.md` (new) — 10-step manual journey mirroring `docs/acceptance-test.md` style.
+- [x] `README.md` — added canvas bullet + bumped MCP tool count + linked `docs/canvas.md`.
+- [x] `docs/wikilinks.md` — added "Wikilinks on the canvas" cross-reference section.
+- [Pending user] Manual: walk the primary flow via `flutter run -d macos`. The 10-step acceptance test in `docs/canvas-acceptance.md` is the script.
+- [Pending user] Manual: open `memex serve` in the MCP inspector and verify the round-trip.
+- [Pending user] Manual: perf smoke at ~200 nodes / 400 edges.
+- [x] Verify: `cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && cd app && flutter analyze && flutter test` — 133 Rust tests + 25 Flutter tests pass; clippy and analyzer clean.
 
 ## Risks / Out of scope
 

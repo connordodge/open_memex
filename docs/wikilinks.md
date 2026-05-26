@@ -125,6 +125,16 @@ When Claude (or any MCP client) talks to the memex, the link graph is queryable:
 
 The semantic difference between `extends` and `contradicts` and `example-of` is what lets an AI do qualitatively different things from "search returns chunks." Asking *"what notes contradict this one?"* turns into a single graph query, not a flaky pattern-match.
 
+## Wikilinks on the canvas
+
+Open Memex also has a [visual canvas view](canvas.md). The lines you draw
+between nodes on a canvas *are* the wikilinks described in this doc —
+drawing a line writes a `[[Target~kind|label]]` token into the source
+note, and editing a line via the canvas's edge inspector rewrites that
+exact wikilink occurrence in place. Frontmatter-bound wikilinks accept
+label edits but not kind changes via the inspector (the kind lives in
+the YAML key).
+
 ## Documented limitations (v1)
 
 - Wikilinks inside fenced code blocks or inline code are still extracted. They're rare in practice; we'll add code-block exclusion in v2.

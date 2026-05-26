@@ -15,13 +15,14 @@ Open-source, local-first, AI-native knowledge base. The user's notes live on the
   - `memex links --vault <path> --note-id <id> [--dir in|out|both] [--kind <k>]` — print the link tree
   - `memex add-link --vault <path> --from <id> --to <id> [--kind <k>] [--label <s>]` — insert a wikilink, idempotent
   - `memex serve --vault <path>` — run as an MCP server over stdio (for Claude Desktop, etc.)
-- **Flutter macOS app** (`app/`) with vault picker, multi-vault recents, note list, plain-markdown editor, debounced save, **wikilink autocomplete (`[[`) with create-on-the-fly**, **inline kind chip**, and a **real backlinks panel** grouped by kind
+- **Flutter macOS app** (`app/`) with vault picker, multi-vault recents, **tabbed workspace** (note + canvas tabs persist per-vault), note list, plain-markdown editor, debounced save, **wikilink autocomplete (`[[`) with create-on-the-fly**, **inline kind chip**, and a **real backlinks panel** grouped by kind
+- **Canvas view**: user-curated boards where notes become draggable nodes and wikilinks render as labelled lines. Drag from the rail to place; drag from a node's edge handle to draw a typed link; click a line to edit kind/label; double-click a node to zoom into its editor. See [`docs/canvas.md`](docs/canvas.md).
 - SQLite-backed vault (`memex.db`) with WAL, FTS5, and a `vec0` virtual table from `sqlite-vec`
 - Markdown chunker + inline indexing on every note write
 - Hybrid search: FTS5 (BM25) + optional vector (cosine) fused via Reciprocal Rank Fusion
 - Local embeddings via `fastembed-rs` (`BGE-small-en-v1.5`, 384-dim) — opt-in with `--with-embeddings`
 - **Wikilinks**: `[[Title]]`, `[[Title~kind]]`, `[[Title|alias]]`, `[[Title~kind|alias]]`. Two-tier kind vocabulary — four built-ins (`references`, `extends`, `contradicts`, `example-of`) get curated section headings + frontmatter shortcuts; user-defined kebab-case kinds are first-class for storage and `neighbors()` queries. See [`docs/wikilinks.md`](docs/wikilinks.md).
-- 5 MCP tools: `search`, `get_note` (with `include_backlinks`), `create_note`, `neighbors`, `add_link`
+- 13 MCP tools: `search`, `get_note` (with `include_backlinks`), `create_note`, `neighbors`, `add_link`, `update_link`, plus `list_canvases` / `get_canvas` / `create_canvas` / `add_to_canvas` / `remove_from_canvas` / `move_node` / `delete_canvas` (see [`docs/canvas.md`](docs/canvas.md))
 
 ## Architecture
 
