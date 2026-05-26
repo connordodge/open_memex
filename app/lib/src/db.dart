@@ -136,6 +136,102 @@ class VaultDb {
     return rows.map((r) => r['link_kind'] as String).toList();
   }
 
+  // ---------- canvas reads ----------
+
+  /// List every canvas with a node-count, ordered by `updated_at DESC`.
+  List<CanvasRow> listCanvases() {
+    final rows = db.select(
+      'SELECT c.id, c.title, c.created_at, c.updated_at, c.version, '
+      '       (SELECT COUNT(*) FROM canvas_nodes n WHERE n.canvas_id = c.id) AS node_count '
+      'FROM canvases c ORDER BY c.updated_at DESC, c.id ASC',
+    );
+    return rows
+        .map(
+          (r) => CanvasRow(
+            canvasId: r['id'] as String,
+            title: r['title'] as String,
+            createdAt: (r['created_at'] as num).toInt(),
+            updatedAt: (r['updated_at'] as num).toInt(),
+            version: (r['version'] as num).toInt(),
+            nodeCount: (r['node_count'] as num).toInt(),
+          ),
+        )
+        .toList();
+  }
+
+  /// Read a canvas's metadata, placed nodes, and edges in one call. Edges are
+  /// the existing wikilinks whose source AND target are both placed on this
+  /// canvas — off-canvas wikilinks are excluded.
+  CanvasDetailRow? getCanvasDetail(String canvasId) {
+    final canvasRows = db.select(
+      'SELECT id, title, created_at, updated_at, version FROM canvases WHERE id = ?',
+      [canvasId],
+    );
+    if (canvasRows.isEmpty) return null;
+    final c = canvasRows.first;
+
+    final nodeRows = db.select(
+      'SELECT cn.note_id, n.title, cn.x, cn.y, cn.z_order, cn.placed_at '
+      'FROM canvas_nodes cn JOIN notes n ON n.id = cn.note_id '
+      'WHERE cn.canvas_id = ? '
+      'ORDER BY cn.z_order ASC, cn.placed_at ASC',
+      [canvasId],
+    );
+    final nodes = nodeRows
+        .map(
+          (r) => CanvasNodeRow(
+            noteId: r['note_id'] as String,
+            noteTitle: r['title'] as String,
+            x: (r['x'] as num).toDouble(),
+            y: (r['y'] as num).toDouble(),
+            zOrder: (r['z_order'] as num).toInt(),
+            placedAt: (r['placed_at'] as num).toInt(),
+          ),
+        )
+        .toList();
+
+    List<CanvasEdgeRow> edges = const [];
+    if (nodes.isNotEmpty) {
+      final ids = nodes.map((n) => n.noteId).toList();
+      final placeholders = List.filled(ids.length, '?').join(',');
+      // Bind ids twice (once for from, once for to).
+      final binds = <Object?>[...ids, ...ids];
+      final edgeRows = db.select(
+        'SELECT id, from_note_id, to_note_id, link_text, link_kind, label, position, source '
+        'FROM links '
+        'WHERE to_note_id IS NOT NULL '
+        '  AND from_note_id IN ($placeholders) '
+        '  AND to_note_id   IN ($placeholders) '
+        'ORDER BY from_note_id, position',
+        binds,
+      );
+      edges = edgeRows
+          .map(
+            (r) => CanvasEdgeRow(
+              linkId: r['id'] as String,
+              fromNoteId: r['from_note_id'] as String,
+              toNoteId: r['to_note_id'] as String,
+              linkText: r['link_text'] as String,
+              kind: r['link_kind'] as String,
+              label: r['label'] as String?,
+              position: (r['position'] as num).toInt(),
+              source: r['source'] as String,
+            ),
+          )
+          .toList();
+    }
+
+    return CanvasDetailRow(
+      canvasId: c['id'] as String,
+      title: c['title'] as String,
+      createdAt: (c['created_at'] as num).toInt(),
+      updatedAt: (c['updated_at'] as num).toInt(),
+      version: (c['version'] as num).toInt(),
+      nodes: nodes,
+      edges: edges,
+    );
+  }
+
   static LinkRow _rowToLink(Row r) {
     return LinkRow(
       id: r['id'] as String,
@@ -235,4 +331,78 @@ class VaultDbException implements Exception {
   final String message;
   @override
   String toString() => message;
+}
+
+class CanvasRow {
+  CanvasRow({
+    required this.canvasId,
+    required this.title,
+    required this.createdAt,
+    required this.updatedAt,
+    required this.version,
+    required this.nodeCount,
+  });
+  final String canvasId;
+  final String title;
+  final int createdAt;
+  final int updatedAt;
+  final int version;
+  final int nodeCount;
+}
+
+class CanvasNodeRow {
+  CanvasNodeRow({
+    required this.noteId,
+    required this.noteTitle,
+    required this.x,
+    required this.y,
+    required this.zOrder,
+    required this.placedAt,
+  });
+  final String noteId;
+  final String noteTitle;
+  final double x;
+  final double y;
+  final int zOrder;
+  final int placedAt;
+}
+
+class CanvasEdgeRow {
+  CanvasEdgeRow({
+    required this.linkId,
+    required this.fromNoteId,
+    required this.toNoteId,
+    required this.linkText,
+    required this.kind,
+    required this.label,
+    required this.position,
+    required this.source,
+  });
+  final String linkId;
+  final String fromNoteId;
+  final String toNoteId;
+  final String linkText;
+  final String kind;
+  final String? label;
+  final int position;
+  final String source;
+}
+
+class CanvasDetailRow {
+  CanvasDetailRow({
+    required this.canvasId,
+    required this.title,
+    required this.createdAt,
+    required this.updatedAt,
+    required this.version,
+    required this.nodes,
+    required this.edges,
+  });
+  final String canvasId;
+  final String title;
+  final int createdAt;
+  final int updatedAt;
+  final int version;
+  final List<CanvasNodeRow> nodes;
+  final List<CanvasEdgeRow> edges;
 }

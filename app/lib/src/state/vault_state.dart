@@ -61,6 +61,30 @@ final notesListProvider = Provider<List<NoteListItem>>((ref) {
 /// The currently selected note id (or null).
 final selectedNoteIdProvider = StateProvider<String?>((_) => null);
 
+/// Whether the right (Connections) panel is visible. Lives here so the
+/// Workspace shell and the canvas zoom-in path can both reach it.
+final rightPanelOpenProvider = StateProvider<bool>((_) => true);
+
+/// All canvases in the current vault, ordered by `updated_at DESC`.
+final canvasesProvider = Provider<List<CanvasRow>>((ref) {
+  ref.watch(vaultRevisionProvider);
+  final db = ref.watch(vaultDbProvider);
+  if (db == null) return const [];
+  return db.listCanvases();
+});
+
+/// Hydrated canvas (metadata + placed nodes + edges). Provider.family keyed
+/// on canvas id.
+final canvasDetailProvider = Provider.family<CanvasDetailRow?, String>((
+  ref,
+  canvasId,
+) {
+  ref.watch(vaultRevisionProvider);
+  final db = ref.watch(vaultDbProvider);
+  if (db == null) return null;
+  return db.getCanvasDetail(canvasId);
+});
+
 /// Hydrated form of the selected note.
 final selectedNoteProvider = Provider<Note?>((ref) {
   ref.watch(vaultRevisionProvider);

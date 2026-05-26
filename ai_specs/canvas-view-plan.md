@@ -71,28 +71,27 @@ Visual, tabbed canvas board for Open Memex. Concept=note, line=wikilink. Rust co
 
 ### Phase 3: Tabbed workspace shell + rail refactor (no canvas tab yet)
 
-- **Goal**: Replace `MainWindow` with `Workspace` (tabs of notes). Two-list rail (notes only; canvas rail placeholder). Tabs persist. Existing note flows unchanged. Lays the chassis for Phase 4.
-- [ ] `app/lib/src/screens/workspace.dart` (new) — top-level shell: brand chrome → row of `Sidebar(railA: CanvasesRail, railB: NotesRail)` + `TabBar` + `TabBody`. Note tab embeds existing `NoteEditor` + `RightPanel`.
-- [ ] `app/lib/main.dart` — route to `Workspace`. Delete `MainWindow` once parity confirmed (keep one commit for diff legibility, then a delete commit).
-- [ ] `app/lib/src/state/tabs_state.dart` (new) — `WorkspaceTab` sealed/sum type (`NoteTab(noteId)`, `CanvasTab(canvasId)`); `tabsProvider: StateNotifierProvider<TabsNotifier, List<WorkspaceTab>>`; `activeTabProvider: StateProvider<int>`. Notifier exposes `openOrFocus`, `close`, `reorder`.
-- [ ] `app/lib/src/state/ui_state_store.dart` (new) — per-vault JSON read/write at `<vaultPath>/.memex/ui_state.json` (tabs[], activeIndex, per-canvas `{x, y, zoom}`). Atomic write via tmp+rename. Soft LRU cap 20 tabs.
-- [ ] `app/lib/src/state/vault_state.dart` — move `rightPanelOpenProvider` here from `main_window.dart`. Add `tabsRestoreProvider` (FutureProvider that reads ui_state.json on vault switch).
-- [ ] `app/lib/src/widgets/sidebar.dart` — refactor: extract `_TreeItem` → `NoteRow` (new file `notes_rail.dart`), introduce parallel `CanvasRow` + `CanvasesRail` (placeholder list this phase). `Sidebar` hosts brand/command/vault chrome, then `CanvasesRail`, divider, then `NotesRail`. Keep `Key('note-list-item-$id')` + add `Key('note-row-$id')`.
-- [ ] `app/lib/src/widgets/notes_rail.dart` (new) — search input, sorted notes list, "+ New note" button, `Key('notes-rail')`, `Key('new-note-button')`. Tap → `tabsNotifier.openOrFocus(NoteTab(id))`.
-- [ ] `app/lib/src/widgets/canvases_rail.dart` (new) — search input, canvases list (calls `db.listCanvases()`), "+ New canvas" button, `Key('canvases-rail')`, `Key('new-canvas-button')`, `Key('canvas-row-$id')`. Tap → `tabsNotifier.openOrFocus(CanvasTab(id))`. Drag handle on row → `Draggable<NoteId>` (note rows) for Phase 4 consumption.
-- [ ] `app/lib/src/widgets/tab_bar_widget.dart` (new) — top tab strip with title + close ("x") per tab, middle-click close, `Key('workspace-tab-bar')`, `Key('tab-$tabId')`, `Key('tab-close-$tabId')`.
-- [ ] `app/lib/src/widgets/tab_body.dart` (new) — `IndexedStack` over tabs (preserves canvas viewport/scroll state on switch); for `NoteTab` render existing editor; for `CanvasTab` render placeholder this phase.
-- [ ] `app/lib/src/db.dart` — add `listCanvases()`, `getCanvasDetail(canvasId)` (read-only SQLite, `IN (...)` edge join mirroring core).
-- [ ] `app/lib/src/memex_cli.dart` — refactor to interface `MemexCli` (rename current concrete to `SubprocessMemexCli`); add canvas wrappers (`createCanvas`, `renameCanvas`, `deleteCanvas`, `addToCanvas`, `removeFromCanvas`, `moveNode`) parsing JSON envelopes; add `updateLink`.
-- [ ] `app/test/fakes/in_memory_memex_cli.dart` (new) — `InMemoryMemexCli implements MemexCli` for widget tests (records calls; canned responses).
-- [ ] `app/test/journeys/` (new dir) — scaffolding (`pump_app.dart` helper that sets up `ProviderScope` overrides with in-memory fakes + `Workspace`).
-- [ ] TDD: opening a note via `NotesRail` tap creates a `NoteTab` and activates it.
-- [ ] TDD: tapping a note that's already open in a tab switches to that tab (no duplicate tab).
-- [ ] TDD: closing the active tab activates the previous tab; closing the last tab shows empty placeholder.
-- [ ] TDD: 21st tab open evicts oldest non-active tab (LRU).
-- [ ] TDD: `tabs_state` writes/reads `<vaultPath>/.memex/ui_state.json` round-trip; corrupted file falls back to empty tabs.
-- [ ] Robot: `note_tab_flow_test.dart` — open vault → click two notes from rail → assert two tabs open → switch tabs → close one → close other → empty state. Selectors as above + `Key('empty-workspace')`.
-- [ ] Verify: `cd app && flutter analyze && flutter test`.
+- **Goal**: Replace `MainWindow` with `Workspace` (tabs of notes). Two-list rail (canvas section + notes tree, in the existing sidebar chrome). Tabs persist. Existing note flows unchanged. Lays the chassis for Phase 4.
+- [x] `app/lib/src/screens/workspace.dart` (new) — top-level shell: `Sidebar` + `_WorkspaceTabBar` + `_TabBody` + `RightPanel`. Note tab embeds existing `NoteEditor` + `RightPanel`. Canvas tab renders a Phase-4 placeholder.
+- [x] `app/lib/main.dart` — route to `Workspace`; delete `main_window.dart` outright.
+- [x] `app/lib/src/state/tabs_state.dart` (new) — sealed `WorkspaceTab` (`NoteTab`, `CanvasTab`); `tabsProvider: StateNotifierProvider<TabsNotifier, TabsState>`; `activeTabProvider`. Notifier exposes `openOrFocus`, `close`, `setActive`. Note: `tabsState` carries `(tabs, activeIndex)` together; LRU eviction past `kMaxOpenTabs = 20`.
+- [x] `app/lib/src/state/ui_state_store.dart` (new) — per-vault JSON read/write at `<vaultPath>/.memex/ui_state.json` (tabs[], activeIndex, per-canvas `{dx, dy, zoom}`). Atomic write via tmp+rename, serialized via an internal future queue.
+- [x] `app/lib/src/state/vault_state.dart` — `rightPanelOpenProvider` lives here; add `canvasesProvider` + `canvasDetailProvider(canvasId)` family.
+- [x] `app/lib/src/widgets/sidebar.dart` — refactored to host a `Canvases` panel above the existing notes tree. Note tap → `tabsNotifier.openOrFocus(NoteTab)`; canvas tap → `openOrFocus(CanvasTab)`. New "+ new canvas" affordance with title prompt.
+- [N/A] `notes_rail.dart` / `canvases_rail.dart` (deferred) — kept the rails inline in `sidebar.dart` to preserve the existing visual chrome. Keys `Key('notes-rail')` and `Key('canvases-rail')` still present.
+- [x] Tab strip lives in `workspace.dart` as `_WorkspaceTabBar` (not extracted to its own file). Keys: `Key('workspace-tab-bar')`, `Key('tab-$tabId')`, `Key('tab-close-$tabId')`. Middle-click close deferred.
+- [x] Tab body lives in `workspace.dart` as `_TabBody`. CanvasTab → placeholder pending Phase 4.
+- [x] `app/lib/src/db.dart` — `listCanvases()` + `getCanvasDetail(canvasId)` with IN-clause edge join mirroring core.
+- [x] `app/lib/src/memex_cli.dart` — added canvas wrappers (`createCanvas`, `renameCanvas`, `deleteCanvas`, `listCanvases`, `getCanvas`, `addToCanvas`, `removeFromCanvas`, `moveNode`) + `updateLink`, all JSON-parsing. Concrete class kept (no interface extraction); Dart `implements MemexCli` is enough for Phase 4 fakes.
+- [N/A] `InMemoryMemexCli` fake — deferred to Phase 4 where widget tests for the canvas view will need it. Phase 3 tests cover `TabsNotifier` and `UiStateStore` directly without going through `MemexCli`.
+- [N/A] `app/test/journeys/` scaffolding — deferred to Phase 4 (no robot test yet for note-only flow; chassis behavior covered by unit tests).
+- [x] TDD: opening a note via the sidebar adds a NoteTab and emits the selection.
+- [x] TDD: opening an already-open tab switches to it without duplicating.
+- [x] TDD: closing the active tab activates the previous tab; closing the only tab returns to empty state.
+- [x] TDD: 21st tab open evicts oldest non-active tab (LRU).
+- [x] TDD: `UiStateStore` writes/reads round-trip; corrupted file falls back to empty; invalid viewport zoom dropped; unknown tab kinds dropped.
+- [N/A] Robot: `note_tab_flow_test.dart` — deferred to Phase 4 alongside the canvas primary-flow journey test. Phase 3 tab-flow behavior is covered by direct `TabsNotifier` unit tests against the real store on a tmp filesystem.
+- [x] Verify: `cd app && flutter analyze && flutter test` (15 tests pass; no analyzer issues).
 
 ### Phase 4: Canvas view (drag-from-rail, drag-to-link, edge inspector, animated zoom)
 

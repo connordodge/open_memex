@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'src/screens/main_window.dart';
 import 'src/screens/vault_picker.dart';
+import 'src/screens/workspace.dart';
 import 'src/state/settings.dart';
 import 'src/state/vault_state.dart';
 import 'src/theme/app_theme.dart';
@@ -44,6 +44,6 @@ class _Router extends ConsumerWidget {
     if (current == null) {
       return const VaultPickerScreen();
     }
-    return const MainWindow();
+    return const Workspace();
   }
 }

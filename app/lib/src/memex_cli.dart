@@ -159,6 +159,218 @@ class MemexCli {
     );
   }
 
+  /// Rewrite the kind/label of an existing wikilink in place.
+  Future<UpdateLinkResult> updateLink({
+    required String vaultPath,
+    required String linkId,
+    String? kind,
+    String? label,
+    bool clearLabel = false,
+  }) async {
+    final args = <String>[
+      'update-link',
+      '--vault',
+      vaultPath,
+      '--link-id',
+      linkId,
+      if (kind != null && kind.isNotEmpty) ...['--kind', kind],
+      if (label != null && !clearLabel) ...['--label', label],
+      if (clearLabel) '--clear-label',
+    ];
+    final r = await _run(args);
+    if (r.exitCode != 0) {
+      throw MemexException('update-link failed: ${r.stderr}');
+    }
+    final json = jsonDecode(r.stdout.trim()) as Map<String, dynamic>;
+    return UpdateLinkResult(
+      linkId: json['link_id'] as String,
+      fromNoteId: json['from_note_id'] as String,
+      toNoteId: json['to_note_id'] as String?,
+      kind: json['kind'] as String,
+      label: json['label'] as String?,
+      source: json['source'] as String,
+      position: (json['position'] as num).toInt(),
+    );
+  }
+
+  // ---------- canvas wrappers ----------
+
+  Future<CanvasInfo> createCanvas({
+    required String vaultPath,
+    required String title,
+  }) async {
+    final r = await _run([
+      'canvas',
+      'new',
+      '--vault',
+      vaultPath,
+      '--title',
+      title,
+    ]);
+    if (r.exitCode != 0) {
+      throw MemexException('canvas new failed: ${r.stderr}');
+    }
+    return CanvasInfo._fromJson(
+      jsonDecode(r.stdout.trim()) as Map<String, dynamic>,
+    );
+  }
+
+  Future<List<CanvasSummary>> listCanvases({required String vaultPath}) async {
+    final r = await _run(['canvas', 'ls', '--vault', vaultPath]);
+    if (r.exitCode != 0) {
+      throw MemexException('canvas ls failed: ${r.stderr}');
+    }
+    final json = jsonDecode(r.stdout.trim()) as Map<String, dynamic>;
+    final arr = (json['canvases'] as List).cast<Map<String, dynamic>>();
+    return arr.map(CanvasSummary._fromJson).toList();
+  }
+
+  Future<CanvasDetail> getCanvas({
+    required String vaultPath,
+    required String canvasId,
+  }) async {
+    final r = await _run([
+      'canvas',
+      'get',
+      '--vault',
+      vaultPath,
+      '--canvas-id',
+      canvasId,
+    ]);
+    if (r.exitCode != 0) {
+      throw MemexException('canvas get failed: ${r.stderr}');
+    }
+    return CanvasDetail._fromJson(
+      jsonDecode(r.stdout.trim()) as Map<String, dynamic>,
+    );
+  }
+
+  Future<CanvasInfo> renameCanvas({
+    required String vaultPath,
+    required String canvasId,
+    required String title,
+    required int expectedVersion,
+  }) async {
+    final r = await _run([
+      'canvas',
+      'rename',
+      '--vault',
+      vaultPath,
+      '--canvas-id',
+      canvasId,
+      '--title',
+      title,
+      '--expected-version',
+      expectedVersion.toString(),
+    ]);
+    if (r.exitCode != 0) {
+      throw MemexException('canvas rename failed: ${r.stderr}');
+    }
+    return CanvasInfo._fromJson(
+      jsonDecode(r.stdout.trim()) as Map<String, dynamic>,
+    );
+  }
+
+  Future<void> deleteCanvas({
+    required String vaultPath,
+    required String canvasId,
+    required int expectedVersion,
+  }) async {
+    final r = await _run([
+      'canvas',
+      'rm',
+      '--vault',
+      vaultPath,
+      '--canvas-id',
+      canvasId,
+      '--expected-version',
+      expectedVersion.toString(),
+    ]);
+    if (r.exitCode != 0) {
+      throw MemexException('canvas rm failed: ${r.stderr}');
+    }
+  }
+
+  Future<CanvasNodeInfo> addToCanvas({
+    required String vaultPath,
+    required String canvasId,
+    required String noteId,
+    double x = 0.0,
+    double y = 0.0,
+  }) async {
+    final r = await _run([
+      'canvas',
+      'add',
+      '--vault',
+      vaultPath,
+      '--canvas-id',
+      canvasId,
+      '--note-id',
+      noteId,
+      '--x',
+      x.toString(),
+      '--y',
+      y.toString(),
+    ]);
+    if (r.exitCode != 0) {
+      throw MemexException('canvas add failed: ${r.stderr}');
+    }
+    return CanvasNodeInfo._fromJson(
+      jsonDecode(r.stdout.trim()) as Map<String, dynamic>,
+    );
+  }
+
+  Future<void> removeFromCanvas({
+    required String vaultPath,
+    required String canvasId,
+    required String noteId,
+  }) async {
+    final r = await _run([
+      'canvas',
+      'remove',
+      '--vault',
+      vaultPath,
+      '--canvas-id',
+      canvasId,
+      '--note-id',
+      noteId,
+    ]);
+    if (r.exitCode != 0) {
+      throw MemexException('canvas remove failed: ${r.stderr}');
+    }
+  }
+
+  Future<CanvasNodeInfo> moveNode({
+    required String vaultPath,
+    required String canvasId,
+    required String noteId,
+    required double x,
+    required double y,
+    int? zOrder,
+  }) async {
+    final r = await _run([
+      'canvas',
+      'move',
+      '--vault',
+      vaultPath,
+      '--canvas-id',
+      canvasId,
+      '--note-id',
+      noteId,
+      '--x',
+      x.toString(),
+      '--y',
+      y.toString(),
+      if (zOrder != null) ...['--z', zOrder.toString()],
+    ]);
+    if (r.exitCode != 0) {
+      throw MemexException('canvas move failed: ${r.stderr}');
+    }
+    return CanvasNodeInfo._fromJson(
+      jsonDecode(r.stdout.trim()) as Map<String, dynamic>,
+    );
+  }
+
   /// Fetch a single note as JSON via `memex get`. Optionally include the
   /// outgoing/incoming links maps.
   Future<NoteFetchResult> getNote({
@@ -259,4 +471,168 @@ class MemexException implements Exception {
   final MemexErrorKind kind;
   @override
   String toString() => message;
+}
+
+class UpdateLinkResult {
+  UpdateLinkResult({
+    required this.linkId,
+    required this.fromNoteId,
+    required this.toNoteId,
+    required this.kind,
+    required this.label,
+    required this.source,
+    required this.position,
+  });
+  final String linkId;
+  final String fromNoteId;
+  final String? toNoteId;
+  final String kind;
+  final String? label;
+  final String source;
+  final int position;
+}
+
+class CanvasInfo {
+  CanvasInfo({
+    required this.canvasId,
+    required this.title,
+    required this.version,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+  final String canvasId;
+  final String title;
+  final int version;
+  final int createdAt;
+  final int updatedAt;
+
+  static CanvasInfo _fromJson(Map<String, dynamic> j) => CanvasInfo(
+    canvasId: j['canvas_id'] as String,
+    title: j['title'] as String,
+    version: (j['version'] as num).toInt(),
+    createdAt: (j['created_at'] as num?)?.toInt() ?? 0,
+    updatedAt: (j['updated_at'] as num?)?.toInt() ?? 0,
+  );
+}
+
+class CanvasSummary {
+  CanvasSummary({
+    required this.canvasId,
+    required this.title,
+    required this.version,
+    required this.createdAt,
+    required this.updatedAt,
+    required this.nodeCount,
+  });
+  final String canvasId;
+  final String title;
+  final int version;
+  final int createdAt;
+  final int updatedAt;
+  final int nodeCount;
+
+  static CanvasSummary _fromJson(Map<String, dynamic> j) => CanvasSummary(
+    canvasId: j['canvas_id'] as String,
+    title: j['title'] as String,
+    version: (j['version'] as num).toInt(),
+    createdAt: (j['created_at'] as num).toInt(),
+    updatedAt: (j['updated_at'] as num).toInt(),
+    nodeCount: (j['node_count'] as num).toInt(),
+  );
+}
+
+class CanvasNodeInfo {
+  CanvasNodeInfo({
+    required this.canvasId,
+    required this.noteId,
+    required this.noteTitle,
+    required this.x,
+    required this.y,
+    required this.zOrder,
+    required this.placedAt,
+  });
+  final String canvasId;
+  final String noteId;
+  final String noteTitle;
+  final double x;
+  final double y;
+  final int zOrder;
+  final int placedAt;
+
+  static CanvasNodeInfo _fromJson(Map<String, dynamic> j) => CanvasNodeInfo(
+    canvasId: j['canvas_id'] as String,
+    noteId: j['note_id'] as String,
+    noteTitle: j['note_title'] as String,
+    x: (j['x'] as num).toDouble(),
+    y: (j['y'] as num).toDouble(),
+    zOrder: (j['z_order'] as num).toInt(),
+    placedAt: (j['placed_at'] as num?)?.toInt() ?? 0,
+  );
+}
+
+class CanvasEdgeInfo {
+  CanvasEdgeInfo({
+    required this.linkId,
+    required this.fromNoteId,
+    required this.toNoteId,
+    required this.linkText,
+    required this.kind,
+    required this.label,
+    required this.source,
+    required this.position,
+  });
+  final String linkId;
+  final String fromNoteId;
+  final String toNoteId;
+  final String linkText;
+  final String kind;
+  final String? label;
+  final String source;
+  final int position;
+
+  static CanvasEdgeInfo _fromJson(Map<String, dynamic> j) => CanvasEdgeInfo(
+    linkId: j['link_id'] as String,
+    fromNoteId: j['from_note_id'] as String,
+    toNoteId: j['to_note_id'] as String,
+    linkText: j['link_text'] as String,
+    kind: j['kind'] as String,
+    label: j['label'] as String?,
+    source: j['source'] as String,
+    position: (j['position'] as num).toInt(),
+  );
+}
+
+class CanvasDetail {
+  CanvasDetail({
+    required this.canvasId,
+    required this.title,
+    required this.version,
+    required this.createdAt,
+    required this.updatedAt,
+    required this.nodes,
+    required this.edges,
+  });
+  final String canvasId;
+  final String title;
+  final int version;
+  final int createdAt;
+  final int updatedAt;
+  final List<CanvasNodeInfo> nodes;
+  final List<CanvasEdgeInfo> edges;
+
+  static CanvasDetail _fromJson(Map<String, dynamic> j) => CanvasDetail(
+    canvasId: j['canvas_id'] as String,
+    title: j['title'] as String,
+    version: (j['version'] as num).toInt(),
+    createdAt: (j['created_at'] as num).toInt(),
+    updatedAt: (j['updated_at'] as num).toInt(),
+    nodes: ((j['nodes'] as List?) ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(CanvasNodeInfo._fromJson)
+        .toList(),
+    edges: ((j['edges'] as List?) ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(CanvasEdgeInfo._fromJson)
+        .toList(),
+  );
 }
