@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
+import '../state/canvas_state.dart';
 import '../state/tabs_state.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
+import '../widgets/canvas_view.dart';
 import '../widgets/note_editor.dart';
 import '../widgets/right_panel.dart';
 import '../widgets/sidebar.dart';
@@ -227,46 +229,118 @@ class _TabBody extends ConsumerWidget {
       );
     }
     if (active is CanvasTab) {
-      return _CanvasTabPlaceholder(canvasId: active.id);
+      return _CanvasTabContent(
+        canvasId: active.id,
+        rightPanelOpen: rightPanelOpen,
+        onToggleRightPanel: onToggleRightPanel,
+      );
     }
     return const SizedBox.shrink();
   }
 }
 
-/// Placeholder for the Phase 4 canvas view. Shows the canvas title and a
-/// hint that the canvas view is not yet wired.
-class _CanvasTabPlaceholder extends ConsumerWidget {
-  const _CanvasTabPlaceholder({required this.canvasId});
+/// Renders a canvas tab. Switches between the canvas view and the embedded
+/// NoteEditor (double-click zoom-in path) via an `AnimatedSwitcher`.
+class _CanvasTabContent extends ConsumerWidget {
+  const _CanvasTabContent({
+    required this.canvasId,
+    required this.rightPanelOpen,
+    required this.onToggleRightPanel,
+  });
   final String canvasId;
+  final bool rightPanelOpen;
+  final VoidCallback onToggleRightPanel;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final detail = ref.watch(canvasDetailProvider(canvasId));
-    return Container(
-      key: Key('canvas-tab-$canvasId'),
-      alignment: Alignment.center,
-      color: OmColors.surface1,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            detail?.title ?? 'canvas',
-            style: OmType.mono(size: 14, color: OmColors.fg1),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'canvas view coming in Phase 4',
-            style: OmType.mono(size: 11, color: OmColors.fg3),
-          ),
-          if (detail != null) ...[
-            const SizedBox(height: 12),
-            Text(
-              '${detail.nodes.length} nodes · ${detail.edges.length} edges',
-              style: OmType.mono(size: 11, color: OmColors.fg3),
+    final zoom = ref.watch(canvasZoomProvider(canvasId));
+    final config = ref.watch(canvasAnimationConfigProvider);
+    return AnimatedSwitcher(
+      duration: config.zoomDuration,
+      switchInCurve: Curves.easeInOut,
+      switchOutCurve: Curves.easeInOut,
+      transitionBuilder: (child, anim) =>
+          FadeTransition(opacity: anim, child: child),
+      child: zoom.isZoomed
+          ? _ZoomedNoteView(
+              key: Key('zoomed-${zoom.zoomedNoteId}'),
+              canvasId: canvasId,
+              noteId: zoom.zoomedNoteId!,
+              rightPanelOpen: rightPanelOpen,
+              onToggleRightPanel: onToggleRightPanel,
+            )
+          : CanvasView(key: Key('canvas-tab-$canvasId'), canvasId: canvasId),
+    );
+  }
+}
+
+/// While a canvas tab is "zoomed into" a note, this widget renders the
+/// existing NoteEditor with a back-arrow chip overlaid in the top-left.
+class _ZoomedNoteView extends ConsumerStatefulWidget {
+  const _ZoomedNoteView({
+    super.key,
+    required this.canvasId,
+    required this.noteId,
+    required this.rightPanelOpen,
+    required this.onToggleRightPanel,
+  });
+
+  final String canvasId;
+  final String noteId;
+  final bool rightPanelOpen;
+  final VoidCallback onToggleRightPanel;
+
+  @override
+  ConsumerState<_ZoomedNoteView> createState() => _ZoomedNoteViewState();
+}
+
+class _ZoomedNoteViewState extends ConsumerState<_ZoomedNoteView> {
+  @override
+  void initState() {
+    super.initState();
+    // Force the editor to load this note even though the active tab is a
+    // CanvasTab (so the legacy selectedNoteIdProvider isn't pointing at it).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ref.read(selectedNoteIdProvider.notifier).state = widget.noteId;
+    });
+  }
+
+  void _zoomOut() {
+    ref.read(canvasZoomProvider(widget.canvasId).notifier).state =
+        CanvasZoomState.none;
+    // Clear the legacy selection — the canvas tab is the source of truth now.
+    ref.read(selectedNoteIdProvider.notifier).state = null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        NoteEditor(
+          rightPanelOpen: widget.rightPanelOpen,
+          onToggleRightPanel: widget.onToggleRightPanel,
+        ),
+        Positioned(
+          left: 12,
+          top: 12,
+          child: Material(
+            color: OmColors.surface2,
+            borderRadius: BorderRadius.circular(4),
+            child: InkWell(
+              key: const Key('zoom-out-back-button'),
+              borderRadius: BorderRadius.circular(4),
+              onTap: _zoomOut,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                child: Text(
+                  '← back to canvas',
+                  style: OmType.mono(size: 11, color: OmColors.fg1),
+                ),
+              ),
             ),
-          ],
-        ],
-      ),
+          ),
+        ),
+      ],
     );
   }
 }

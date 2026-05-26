@@ -330,40 +330,49 @@ class _TreeItemState extends State<_TreeItem> {
   @override
   Widget build(BuildContext context) {
     const tint = OmColors.fg1;
+    final row = Container(
+      key: Key('note-list-item-${widget.note.id}'),
+      padding: const EdgeInsets.fromLTRB(10, 5, 10, 5),
+      decoration: BoxDecoration(
+        color: widget.active
+            ? OmColors.surface4
+            : (_hover ? OmColors.surface3 : Colors.transparent),
+        borderRadius: BorderRadius.circular(5),
+      ),
+      child: Row(
+        children: [
+          const SizedBox(width: 11),
+          const Icon(LucideIcons.fileText, size: 13, color: tint),
+          const SizedBox(width: 7),
+          Expanded(
+            child: Text(
+              widget.note.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: OmType.sans(
+                size: 13,
+                color: widget.active ? OmColors.fg0 : OmColors.fg1,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: Container(
-          key: Key('note-list-item-${widget.note.id}'),
-          padding: const EdgeInsets.fromLTRB(10, 5, 10, 5),
-          decoration: BoxDecoration(
-            color: widget.active
-                ? OmColors.surface4
-                : (_hover ? OmColors.surface3 : Colors.transparent),
-            borderRadius: BorderRadius.circular(5),
-          ),
-          child: Row(
-            children: [
-              const SizedBox(width: 11),
-              const Icon(LucideIcons.fileText, size: 13, color: tint),
-              const SizedBox(width: 7),
-              Expanded(
-                child: Text(
-                  widget.note.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: OmType.sans(
-                    size: 13,
-                    color: widget.active ? OmColors.fg0 : OmColors.fg1,
-                  ),
-                ),
-              ),
-            ],
+      child: Draggable<String>(
+        data: widget.note.id,
+        feedback: Material(
+          color: Colors.transparent,
+          child: SizedBox(
+            width: 200,
+            child: Opacity(opacity: 0.85, child: row),
           ),
         ),
+        childWhenDragging: Opacity(opacity: 0.4, child: row),
+        child: GestureDetector(onTap: widget.onTap, child: row),
       ),
     );
   }
