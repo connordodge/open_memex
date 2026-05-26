@@ -453,22 +453,30 @@ class _NodeCard extends ConsumerWidget {
                   ],
                 ),
               ),
-              // Edge handle pip on the right border.
+              // Edge handle pip on the right border. Lives just inside the
+              // card so hit-testing always succeeds; opaque hit behavior
+              // claims the pointer before the outer card's pan recognizer
+              // gets a chance to win the gesture arena (otherwise dragging
+              // from the pip just moves the whole node).
               Positioned(
-                right: -6,
-                top: kCanvasNodeSize.height / 2 - 6,
-                child: GestureDetector(
-                  key: Key('edge-handle-${node.noteId}'),
-                  onPanStart: (_) => onEdgeDragStart(),
-                  onPanUpdate: (d) => onEdgeDragUpdate(d.globalPosition),
-                  onPanEnd: (d) => onEdgeDragEnd(d.globalPosition),
-                  child: Container(
-                    width: 12,
-                    height: 12,
-                    decoration: BoxDecoration(
-                      color: OmColors.accent,
-                      shape: BoxShape.circle,
-                      border: Border.all(color: OmColors.surface1, width: 1.5),
+                right: 0,
+                top: kCanvasNodeSize.height / 2 - 9,
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.precise,
+                  child: GestureDetector(
+                    key: Key('edge-handle-${node.noteId}'),
+                    behavior: HitTestBehavior.opaque,
+                    onPanStart: (_) => onEdgeDragStart(),
+                    onPanUpdate: (d) => onEdgeDragUpdate(d.globalPosition),
+                    onPanEnd: (d) => onEdgeDragEnd(d.globalPosition),
+                    child: Container(
+                      width: 18,
+                      height: 18,
+                      decoration: BoxDecoration(
+                        color: OmColors.accent,
+                        shape: BoxShape.circle,
+                        border: Border.all(color: OmColors.surface1, width: 2),
+                      ),
                     ),
                   ),
                 ),
