@@ -138,8 +138,26 @@ class VaultDb {
 
   // ---------- canvas reads ----------
 
+  /// True if the canvas layer (V4 migration) has been applied to this vault.
+  /// Cached after the first probe so the per-frame read in `listCanvases` is
+  /// fast.
+  bool? _canvasTablesPresent;
+
+  bool _hasCanvasTables() {
+    if (_canvasTablesPresent != null) return _canvasTablesPresent!;
+    final row = db.select(
+      "SELECT COUNT(*) AS n FROM sqlite_master "
+      "WHERE type='table' AND name='canvases'",
+    );
+    _canvasTablesPresent = (row.first['n'] as int) > 0;
+    return _canvasTablesPresent!;
+  }
+
   /// List every canvas with a node-count, ordered by `updated_at DESC`.
+  /// Returns an empty list when the vault predates V4 (`canvases` table
+  /// absent) so the UI doesn't crash on pre-migration handles.
   List<CanvasRow> listCanvases() {
+    if (!_hasCanvasTables()) return const [];
     final rows = db.select(
       'SELECT c.id, c.title, c.created_at, c.updated_at, c.version, '
       '       (SELECT COUNT(*) FROM canvas_nodes n WHERE n.canvas_id = c.id) AS node_count '
@@ -161,8 +179,10 @@ class VaultDb {
 
   /// Read a canvas's metadata, placed nodes, and edges in one call. Edges are
   /// the existing wikilinks whose source AND target are both placed on this
-  /// canvas — off-canvas wikilinks are excluded.
+  /// canvas — off-canvas wikilinks are excluded. Returns null for vaults that
+  /// predate V4.
   CanvasDetailRow? getCanvasDetail(String canvasId) {
+    if (!_hasCanvasTables()) return null;
     final canvasRows = db.select(
       'SELECT id, title, created_at, updated_at, version FROM canvases WHERE id = ?',
       [canvasId],

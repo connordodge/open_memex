@@ -314,11 +314,21 @@ class _ZoomedNoteViewState extends ConsumerState<_ZoomedNoteView> {
 
   @override
   Widget build(BuildContext context) {
+    // `NoteEditor.build()` returns `Expanded(...)`, which requires a Flex
+    // parent. Wrap it in a Row so the Expanded resolves correctly, then
+    // overlay the back-arrow chip via a Stack.
     return Stack(
       children: [
-        NoteEditor(
-          rightPanelOpen: widget.rightPanelOpen,
-          onToggleRightPanel: widget.onToggleRightPanel,
+        Positioned.fill(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              NoteEditor(
+                rightPanelOpen: widget.rightPanelOpen,
+                onToggleRightPanel: widget.onToggleRightPanel,
+              ),
+            ],
+          ),
         ),
         Positioned(
           left: 12,
