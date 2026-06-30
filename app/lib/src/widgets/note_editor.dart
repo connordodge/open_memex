@@ -135,9 +135,14 @@ class NoteEditor extends ConsumerStatefulWidget {
     super.key,
     required this.rightPanelOpen,
     required this.onToggleRightPanel,
+    this.onBackToCanvas,
   });
   final bool rightPanelOpen;
   final VoidCallback onToggleRightPanel;
+
+  /// When non-null, the editor is shown zoomed-in from a canvas. The toolbar
+  /// renders a "← back to canvas" affordance that invokes this.
+  final VoidCallback? onBackToCanvas;
 
   @override
   ConsumerState<NoteEditor> createState() => _NoteEditorState();
@@ -188,112 +193,38 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
       });
     }
 
-    return Expanded(
-      child: Container(
-        color: OmColors.surface2,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _TabBar(
-              note: note,
-              dirty:
-                  editor.status == SaveStatus.dirty ||
-                  editor.status == SaveStatus.saving,
-              rightOpen: widget.rightPanelOpen,
-              onToggleRight: widget.onToggleRightPanel,
-            ),
-            const OmHairline(),
-            _Toolbar(note: note, vaultPath: vaultPath, status: editor.status),
-            const OmHairline(),
-            Expanded(
-              child: note == null
-                  ? _EmptyEditor()
-                  : _DocumentSurface(
-                      note: note,
-                      titleCtrl: _titleCtrl,
-                      bodyCtrl: _bodyCtrl,
-                      onTitleChanged: controller.onTitleChanged,
-                      onContentChanged: controller.onContentChanged,
-                      errorMessage: editor.errorMessage,
-                    ),
-            ),
-            const OmHairline(),
-            _StatusBar(status: editor.status),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _TabBar extends StatelessWidget {
-  const _TabBar({
-    required this.note,
-    required this.dirty,
-    required this.rightOpen,
-    required this.onToggleRight,
-  });
-  final Note? note;
-  final bool dirty;
-  final bool rightOpen;
-  final VoidCallback onToggleRight;
-
-  @override
-  Widget build(BuildContext context) {
+    // Returns a plain Container (not Expanded): each call site places this in
+    // its own flex/bounded parent (workspace `_TabBody` inside an Expanded,
+    // `_ZoomedNoteView` inside a Positioned.fill). Rooting in Expanded here
+    // caused two competing FlexParentData widgets on the same RenderObject.
     return Container(
-      height: 32,
-      color: OmColors.surface1,
-      child: Row(
+      color: OmColors.surface2,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (note != null)
-            Container(
-              constraints: const BoxConstraints(maxWidth: 240),
-              padding: const EdgeInsets.fromLTRB(12, 0, 10, 0),
-              decoration: BoxDecoration(
-                color: OmColors.surface2,
-                border: Border(
-                  top: BorderSide(color: OmColors.accent, width: 1),
-                  right: BorderSide(color: OmColors.line1, width: 1),
-                ),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(
-                    LucideIcons.fileText,
-                    size: 12,
-                    color: OmColors.fg1,
-                  ),
-                  const SizedBox(width: 7),
-                  Flexible(
-                    child: Text(
-                      '${note!.title}.md',
-                      style: OmType.sans(size: 12.5, color: OmColors.fg0),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  if (dirty) ...[
-                    const SizedBox(width: 7),
-                    const OmDot(color: OmColors.agent, size: 5),
-                  ],
-                ],
-              ),
-            ),
-          const Spacer(),
-          MouseRegion(
-            cursor: SystemMouseCursors.click,
-            child: GestureDetector(
-              onTap: onToggleRight,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                child: Icon(
-                  LucideIcons.atom,
-                  size: 13,
-                  color: rightOpen ? OmColors.fg0 : OmColors.fg2,
-                ),
-              ),
-            ),
+          _Toolbar(
+            note: note,
+            vaultPath: vaultPath,
+            status: editor.status,
+            rightOpen: widget.rightPanelOpen,
+            onToggleRight: widget.onToggleRightPanel,
+            onBackToCanvas: widget.onBackToCanvas,
           ),
+          const OmHairline(),
+          Expanded(
+            child: note == null
+                ? _EmptyEditor()
+                : _DocumentSurface(
+                    note: note,
+                    titleCtrl: _titleCtrl,
+                    bodyCtrl: _bodyCtrl,
+                    onTitleChanged: controller.onTitleChanged,
+                    onContentChanged: controller.onContentChanged,
+                    errorMessage: editor.errorMessage,
+                  ),
+          ),
+          const OmHairline(),
+          _StatusBar(status: editor.status),
         ],
       ),
     );
@@ -305,10 +236,16 @@ class _Toolbar extends ConsumerWidget {
     required this.note,
     required this.vaultPath,
     required this.status,
+    required this.rightOpen,
+    required this.onToggleRight,
+    this.onBackToCanvas,
   });
   final Note? note;
   final String? vaultPath;
   final SaveStatus status;
+  final bool rightOpen;
+  final VoidCallback onToggleRight;
+  final VoidCallback? onBackToCanvas;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -318,6 +255,10 @@ class _Toolbar extends ConsumerWidget {
       padding: const EdgeInsets.symmetric(horizontal: 24),
       child: Row(
         children: [
+          if (onBackToCanvas != null) ...[
+            _BackToCanvasButton(onTap: onBackToCanvas!),
+            const SizedBox(width: 12),
+          ],
           Expanded(
             child: _Breadcrumb(note: note, vaultPath: vaultPath),
           ),
@@ -341,7 +282,53 @@ class _Toolbar extends ConsumerWidget {
             onPressed: null,
             tooltip: 'more',
           ),
+          const SizedBox(width: 4),
+          // Right-panel (agents) toggle — relocated here from the old
+          // second-level tab bar, which duplicated the workspace tab row.
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              onTap: onToggleRight,
+              child: Container(
+                width: 26,
+                height: 26,
+                alignment: Alignment.center,
+                child: Icon(
+                  LucideIcons.atom,
+                  size: 14,
+                  color: rightOpen ? OmColors.fg0 : OmColors.fg2,
+                ),
+              ),
+            ),
+          ),
         ],
+      ),
+    );
+  }
+}
+
+/// "← back to canvas" pill shown in the toolbar when a note is opened by
+/// zooming in from a canvas.
+class _BackToCanvasButton extends StatelessWidget {
+  const _BackToCanvasButton({required this.onTap});
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: OmColors.surface2,
+      borderRadius: BorderRadius.circular(4),
+      child: InkWell(
+        key: const Key('zoom-out-back-button'),
+        borderRadius: BorderRadius.circular(4),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+          child: Text(
+            '← back to canvas',
+            style: OmType.mono(size: 11, color: OmColors.fg1),
+          ),
+        ),
       ),
     );
   }
@@ -581,7 +568,14 @@ class _DocumentSurfaceState extends ConsumerState<_DocumentSurface> {
           builder: (context, _) {
             final box =
                 _bodyKey.currentContext?.findRenderObject() as RenderBox?;
-            final origin = box?.localToGlobal(Offset.zero) ?? Offset.zero;
+            // build() runs before layout, so on the first frame the box has no
+            // size yet and `localToGlobal` would walk into an unlaid-out
+            // ancestor (hasSize assertion). The chip is only shown after a
+            // wikilink insert — well past first layout — so falling back to
+            // Offset.zero until the box is laid out is safe.
+            final origin = (box != null && box.hasSize && box.attached)
+                ? box.localToGlobal(Offset.zero)
+                : Offset.zero;
             // Anchor relative to the surrounding Stack; the OverlayEntry
             // approach the chip implements would be cleaner, but for v1 we
             // place it just above the bottom of the editor.

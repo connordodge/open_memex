@@ -131,52 +131,80 @@ class _TabChip extends ConsumerWidget {
         child: GestureDetector(
           key: Key('tab-${tab.tabId}'),
           onTap: onTap,
-          child: Container(
-            constraints: const BoxConstraints(maxWidth: 200),
-            padding: const EdgeInsets.fromLTRB(10, 0, 4, 0),
-            decoration: BoxDecoration(
-              color: active ? OmColors.surface3 : Colors.transparent,
-              border: Border.all(
-                color: active ? OmColors.line2 : OmColors.line1,
-                width: 1,
-              ),
-              borderRadius: BorderRadius.circular(4),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  isCanvas ? LucideIcons.layoutDashboard : LucideIcons.fileText,
-                  size: 11,
-                  color: active ? OmColors.fg1 : OmColors.fg3,
+          child: Stack(
+            children: [
+              Container(
+                constraints: const BoxConstraints(maxWidth: 200),
+                padding: const EdgeInsets.fromLTRB(10, 0, 4, 0),
+                decoration: BoxDecoration(
+                  color: active ? OmColors.surface3 : Colors.transparent,
+                  border: Border.all(
+                    color: active ? OmColors.line2 : OmColors.line1,
+                    width: 1,
+                  ),
+                  borderRadius: BorderRadius.circular(4),
                 ),
-                const SizedBox(width: 6),
-                Flexible(
-                  child: Text(
-                    title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: OmType.sans(
-                      size: 12,
-                      color: active ? OmColors.fg0 : OmColors.fg2,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      isCanvas
+                          ? LucideIcons.layoutDashboard
+                          : LucideIcons.fileText,
+                      size: 11,
+                      color: active ? OmColors.fg1 : OmColors.fg3,
+                    ),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: OmType.sans(
+                          size: 12,
+                          color: active ? OmColors.fg0 : OmColors.fg2,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    // GestureDetector with opaque hit-test, not InkWell — InkWell
+                    // defers hits to its child so the outer tab GestureDetector
+                    // still sees the tap on the X and "wins" the switch-tab tap.
+                    GestureDetector(
+                      key: Key('tab-close-${tab.tabId}'),
+                      behavior: HitTestBehavior.opaque,
+                      onTap: onClose,
+                      child: const Padding(
+                        padding: EdgeInsets.all(4),
+                        child: Icon(
+                          LucideIcons.x,
+                          size: 11,
+                          color: OmColors.fg3,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              // Accent underline spanning the full width of the active tab,
+              // flush with its rounded bottom corners.
+              if (active)
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: Container(
+                    height: 2.5,
+                    decoration: const BoxDecoration(
+                      color: OmColors.accent,
+                      borderRadius: BorderRadius.only(
+                        bottomLeft: Radius.circular(4),
+                        bottomRight: Radius.circular(4),
+                      ),
                     ),
                   ),
                 ),
-                const SizedBox(width: 4),
-                // GestureDetector with opaque hit-test, not InkWell — InkWell
-                // defers hits to its child so the outer tab GestureDetector
-                // still sees the tap on the X and "wins" the switch-tab tap.
-                GestureDetector(
-                  key: Key('tab-close-${tab.tabId}'),
-                  behavior: HitTestBehavior.opaque,
-                  onTap: onClose,
-                  child: const Padding(
-                    padding: EdgeInsets.all(4),
-                    child: Icon(LucideIcons.x, size: 11, color: OmColors.fg3),
-                  ),
-                ),
-              ],
-            ),
+            ],
           ),
         ),
       ),
@@ -317,43 +345,13 @@ class _ZoomedNoteViewState extends ConsumerState<_ZoomedNoteView> {
 
   @override
   Widget build(BuildContext context) {
-    // `NoteEditor.build()` returns `Expanded(...)`, which requires a Flex
-    // parent. Wrap it in a Row so the Expanded resolves correctly, then
-    // overlay the back-arrow chip via a Stack.
-    return Stack(
-      children: [
-        Positioned.fill(
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              NoteEditor(
-                rightPanelOpen: widget.rightPanelOpen,
-                onToggleRightPanel: widget.onToggleRightPanel,
-              ),
-            ],
-          ),
-        ),
-        Positioned(
-          left: 12,
-          top: 12,
-          child: Material(
-            color: OmColors.surface2,
-            borderRadius: BorderRadius.circular(4),
-            child: InkWell(
-              key: const Key('zoom-out-back-button'),
-              borderRadius: BorderRadius.circular(4),
-              onTap: _zoomOut,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                child: Text(
-                  '← back to canvas',
-                  style: OmType.mono(size: 11, color: OmColors.fg1),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ],
+    // The "← back to canvas" affordance now lives inline in the editor toolbar
+    // (passed via onBackToCanvas) instead of being overlaid, so it no longer
+    // collides with the tab bar.
+    return NoteEditor(
+      rightPanelOpen: widget.rightPanelOpen,
+      onToggleRightPanel: widget.onToggleRightPanel,
+      onBackToCanvas: _zoomOut,
     );
   }
 }
