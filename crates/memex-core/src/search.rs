@@ -6,7 +6,7 @@
 //! text is never indexed into the topic, so this is the only way a topic is
 //! found through the day's words.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::embedder::Embedder;
 use crate::link_extractor::{parse_transclusions, TransclusionToken};
 use crate::links::{daily_note_id_for_title, LinkKind};
+use crate::transclusion::resolve_span;
 use crate::Result;
 
 const RRF_K: f32 = 60.0;
@@ -223,21 +224,17 @@ fn transcluding_topics(
         return Ok(Vec::new());
     }
 
-    // The day's block ords by block id, and the ords of the blocks that
-    // overlap the chunk: block [s, e) overlaps chunk [cs, ce) iff
-    // s < ce && cs < e.
-    let mut ord_of: HashMap<String, i64> = HashMap::new();
+    // The ords of the day's blocks that overlap the chunk: block [s, e)
+    // overlaps chunk [cs, ce) iff s < ce && cs < e.
     let mut hit_ords: Vec<i64> = Vec::new();
-    let mut stmt = conn.prepare_cached(
-        "SELECT block_id, ord, start_byte, end_byte FROM blocks WHERE note_id = ?",
-    )?;
+    let mut stmt =
+        conn.prepare_cached("SELECT ord, start_byte, end_byte FROM blocks WHERE note_id = ?")?;
     let mut rows = stmt.query(params![hit.note_id])?;
     while let Some(r) = rows.next()? {
-        let (ord, s, e): (i64, i64, i64) = (r.get(1)?, r.get(2)?, r.get(3)?);
+        let (ord, s, e): (i64, i64, i64) = (r.get(0)?, r.get(1)?, r.get(2)?);
         if s < ce && cs < e {
             hit_ords.push(ord);
         }
-        ord_of.insert(r.get(0)?, ord);
     }
     if hit_ords.is_empty() {
         return Ok(Vec::new());
@@ -261,10 +258,14 @@ fn transcluding_topics(
 
     let mut out = Vec::new();
     for (note_id, note_title, body) in topics {
-        let Some(token) = parse_transclusions(&body)
-            .into_iter()
-            .find(|t| t.date == date && covers(t, &ord_of, &hit_ords))
-        else {
+        let mut covering = None;
+        for token in parse_transclusions(&body) {
+            if token.date == date && covers(conn, &hit.note_id, &token, &hit_ords)? {
+                covering = Some(token);
+                break;
+            }
+        }
+        let Some(token) = covering else {
             continue;
         };
         if !passes_filters(conn, &note_id, filters) {
@@ -295,22 +296,18 @@ fn transcluding_topics(
     Ok(out)
 }
 
-/// Whether `token` transcludes one of `hit_ords`: its blocks are those with
-/// an ord between its endpoints' ords, inclusive, in either order (C4). A
-/// token whose endpoint block no longer exists covers nothing.
-fn covers(token: &TransclusionToken, ord_of: &HashMap<String, i64>, hit_ords: &[i64]) -> bool {
-    let Some(&from) = ord_of.get(&token.from) else {
-        return false;
-    };
-    let to = match &token.to {
-        None => from,
-        Some(to) => match ord_of.get(to) {
-            Some(&ord) => ord,
-            None => return false,
-        },
-    };
-    let (lo, hi) = (from.min(to), from.max(to));
-    hit_ords.iter().any(|&ord| lo <= ord && ord <= hi)
+/// Whether `token` transcludes one of `hit_ords` of daily note
+/// `daily_note_id`. Its block span comes from the one C4 resolver
+/// ([`resolve_span`], D28); a token whose endpoint block no longer exists
+/// covers nothing.
+fn covers(
+    conn: &Connection,
+    daily_note_id: &str,
+    token: &TransclusionToken,
+    hit_ords: &[i64],
+) -> Result<bool> {
+    let span = resolve_span(conn, daily_note_id, &token.from, token.to.as_deref())?;
+    Ok(span.is_some_and(|(lo, hi)| hit_ords.iter().any(|&ord| lo <= ord && ord <= hi)))
 }
 
 fn fts_search(conn: &Connection, q: &str, k: i64) -> Result<Vec<(String, i64)>> {
