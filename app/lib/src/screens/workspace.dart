@@ -3,11 +3,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../state/canvas_state.dart';
+import '../state/graph_state.dart';
 import '../state/tabs_state.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
 import '../widgets/canvas_view.dart';
+import '../widgets/graph/graph_view.dart';
 import '../widgets/note_editor.dart';
 import '../widgets/right_panel.dart';
 import '../widgets/sidebar.dart';
@@ -125,7 +127,6 @@ class _TabChip extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final title = _titleFor(tab, ref);
-    final isCanvas = tab is CanvasTab;
     return Padding(
       padding: const EdgeInsets.only(right: 4),
       child: MouseRegion(
@@ -150,9 +151,11 @@ class _TabChip extends ConsumerWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Icon(
-                      isCanvas
-                          ? LucideIcons.layoutDashboard
-                          : LucideIcons.fileText,
+                      switch (tab) {
+                        NoteTab() => LucideIcons.fileText,
+                        CanvasTab() => LucideIcons.layoutDashboard,
+                        GraphTab() => LucideIcons.network,
+                      },
                       size: 11,
                       color: active ? OmColors.fg1 : OmColors.fg3,
                     ),
@@ -215,6 +218,9 @@ class _TabChip extends ConsumerWidget {
 
   String _titleFor(WorkspaceTab tab, WidgetRef ref) {
     if (tab is NoteTab) {
+      // The virtual Today note has no row yet: its chip reads its ISO date,
+      // like a real daily note's title.
+      if (VirtualTodayTab.dateOf(tab.id) case final date?) return date;
       final db = ref.watch(vaultDbProvider);
       // No reactive title yet — read once. The rail update on bump will
       // re-render the chip.
@@ -228,6 +234,9 @@ class _TabChip extends ConsumerWidget {
           .toList();
       if (summary.isNotEmpty) return summary.first.title;
       return 'canvas';
+    }
+    if (tab is GraphTab) {
+      return graphTabTitle(ref.watch(vaultDbProvider), tab.scope);
     }
     return tab.id;
   }
@@ -260,6 +269,10 @@ class _TabBody extends ConsumerWidget {
         rightPanelOpen: rightPanelOpen,
         onToggleRightPanel: onToggleRightPanel,
       );
+    }
+    if (active is GraphTab) {
+      // Keyed by scope: another Graph tab gets a fresh view and layout.
+      return GraphView(key: ValueKey(active), scope: active.scope);
     }
     if (active is CanvasTab) {
       return _CanvasTabContent(

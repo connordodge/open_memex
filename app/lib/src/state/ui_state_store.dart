@@ -19,12 +19,21 @@ class UiStateStore {
 
   String get _filePath => p.join(vaultPath, '.memex', 'ui_state.json');
 
-  /// Serialize concurrent writes so the tmp+rename pattern stays atomic.
-  Future<void> _writeQueue = Future<void>.value();
+  /// Per file: the write queue that serializes every store's writes, so the
+  /// tmp+rename pattern stays atomic even with one store per provider.
+  static final Map<String, Future<void>> _queues = {};
 
-  /// Read the persisted state. Returns the empty state when the file is
-  /// missing or corrupt — never throws.
+  /// Per file: the latest state queued and not yet on disk. [read] returns it
+  /// so a read-modify-write (the tabs, the sidebar mode) never builds on a
+  /// file another write is about to replace.
+  static final Map<String, UiState> _pending = {};
+
+  /// Read the persisted state (or the newest state still waiting to be
+  /// written). Returns the empty state when the file is missing or corrupt —
+  /// never throws.
   UiState read() {
+    final pending = _pending[_filePath];
+    if (pending != null) return pending;
     try {
       final file = File(_filePath);
       if (!file.existsSync()) return UiState.empty();
@@ -38,18 +47,27 @@ class UiStateStore {
   }
 
   /// Persist [state] atomically. Creates the `.memex/` directory if needed.
-  /// Writes are serialized: a second `write` call awaits the first.
+  /// Writes to one file are serialized across stores: a second `write` call
+  /// awaits the first.
   Future<void> write(UiState state) {
-    final next = _writeQueue.then((_) => _doWrite(state));
+    final path = _filePath;
+    _pending[path] = state;
+    final next = flush().then((_) => _doWrite(state));
     // Swallow errors on the chained future so one failure doesn't poison
     // every subsequent write; individual callers still observe their own.
-    _writeQueue = next.catchError((_) {});
+    late final Future<void> settled;
+    settled = next.catchError((_) {}).whenComplete(() {
+      if (identical(_pending[path], state)) _pending.remove(path);
+      if (identical(_queues[path], settled)) _queues.remove(path);
+    });
+    _queues[path] = settled;
     return next;
   }
 
-  /// Completes once every write queued so far has finished (successfully or
-  /// not). Lets callers and tests wait for unawaited persistence.
-  Future<void> flush() => _writeQueue;
+  /// Completes once every write queued so far for this file has finished
+  /// (successfully or not), by this store or another one on the same vault.
+  /// Lets callers and tests wait for unawaited persistence.
+  Future<void> flush() => _queues[_filePath] ?? Future<void>.value();
 
   Future<void> _doWrite(UiState state) async {
     final dir = Directory(p.dirname(_filePath));
@@ -63,12 +81,18 @@ class UiStateStore {
   }
 }
 
+/// The sidebar's two modes (Req 50, WI #23), persisted per vault as
+/// `sidebar_mode` (`days` | `topics`). A missing or unknown value reads as
+/// [SidebarMode.days].
+enum SidebarMode { days, topics }
+
 /// In-memory shape of the per-vault UI state.
 class UiState {
   UiState({
     required this.tabs,
     required this.activeTabIndex,
     required this.canvasViewports,
+    this.sidebarMode = SidebarMode.days,
   });
 
   factory UiState.empty() =>
@@ -78,10 +102,14 @@ class UiState {
   final int activeTabIndex;
   final Map<String, CanvasViewport> canvasViewports;
 
+  /// The sidebar mode (`sidebar_mode`), [SidebarMode.days] by default.
+  final SidebarMode sidebarMode;
+
   Map<String, dynamic> toJson() => {
     'tabs': tabs.map((t) => t.toJson()).toList(),
     'active_tab_index': activeTabIndex,
     'canvas_viewports': canvasViewports.map((k, v) => MapEntry(k, v.toJson())),
+    'sidebar_mode': sidebarMode.name,
   };
 
   static UiState fromJson(Map<String, dynamic> json) {
@@ -105,32 +133,47 @@ class UiState {
       tabs: tabs,
       activeTabIndex: active.clamp(0, tabs.isEmpty ? 0 : tabs.length - 1),
       canvasViewports: viewports,
+      sidebarMode: switch (json['sidebar_mode']) {
+        'topics' => SidebarMode.topics,
+        _ => SidebarMode.days,
+      },
     );
   }
 }
 
-/// Tagged-union of tab kinds. `kind` ∈ {`note`, `canvas`}; `id` is the
-/// underlying note_id or canvas_id.
+/// Tagged-union of tab kinds. `kind` ∈ {`note`, `canvas`, `graph`}; `id` is
+/// the underlying note_id or canvas_id, or for `graph` the scope as
+/// `<scope>:<id>` (D26: `folder:<smartFolderId>`, `topic:<noteId>`,
+/// `day:<noteId>`, `vault:all`). Unknown kinds are dropped on read, so older
+/// apps skip newer tab kinds and keep the rest.
 class PersistedTab {
   PersistedTab({required this.kind, required this.id});
 
   static const String kindNote = 'note';
   static const String kindCanvas = 'canvas';
+  static const String kindGraph = 'graph';
+
+  static const _knownKinds = {kindNote, kindCanvas, kindGraph};
 
   final String kind;
   final String id;
 
   bool get isNote => kind == kindNote;
   bool get isCanvas => kind == kindCanvas;
+  bool get isGraph => kind == kindGraph;
 
   Map<String, dynamic> toJson() => {'kind': kind, 'id': id};
 
+  /// Null for an unknown kind or a malformed entry (missing or non-string
+  /// `kind`/`id`).
   static PersistedTab? fromJson(Map<String, dynamic> json) {
-    final k = json['kind'] as String?;
-    final i = json['id'] as String?;
-    if (k == null || i == null) return null;
-    if (k != kindNote && k != kindCanvas) return null;
-    return PersistedTab(kind: k, id: i);
+    if (json case {
+      'kind': final String k,
+      'id': final String i,
+    } when _knownKinds.contains(k)) {
+      return PersistedTab(kind: k, id: i);
+    }
+    return null;
   }
 
   @override

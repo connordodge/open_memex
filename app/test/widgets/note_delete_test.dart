@@ -75,6 +75,8 @@ Future<WorkspaceHarness> _pump(
   for (final tab in [...h.read(tabsProvider).tabs]) {
     tabs.close(tab);
   }
+  // The sidebar opens in Days mode (#23); the note list is the Topics mode.
+  await tester.tap(find.byKey(const Key('sidebar-mode-topics')));
   await pumpFrames(tester);
   return h;
 }

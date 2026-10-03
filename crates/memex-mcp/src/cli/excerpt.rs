@@ -3,6 +3,11 @@
 use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
+use memex_core::excerpts;
+use memex_core::{Caller, NoteId, Vault};
+
+use super::InvalidArgument;
+use crate::tools::excerpts::ExcerptWritten;
 
 /// `memex excerpt <command>`
 #[derive(Args, Debug)]
@@ -37,25 +42,28 @@ pub struct ExcerptRmArgs {
 
 pub fn run(args: ExcerptArgs) -> anyhow::Result<()> {
     match args.command {
-        ExcerptCommand::Rm(_) => super::not_implemented("excerpt rm"),
+        ExcerptCommand::Rm(a) => rm(a),
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn stub_reports_not_implemented() {
-        let err = run(ExcerptArgs {
-            command: ExcerptCommand::Rm(ExcerptRmArgs {
-                vault: PathBuf::from("v"),
-                topic_note_id: "t".into(),
-                date: "2026-10-03".into(),
-                block_ids: vec!["b7k2m9".into()],
-            }),
-        })
-        .unwrap_err();
-        assert_eq!(err.to_string(), "memex excerpt rm: not implemented yet");
+/// `memex excerpt rm`: the person removes one transclusion (Req 14). The
+/// topic's `excerpt` chip on that day goes with its last excerpt from it.
+fn rm(args: ExcerptRmArgs) -> anyhow::Result<()> {
+    if args.block_ids.iter().any(|id| id.trim().is_empty()) {
+        let msg = "--block-ids must list one or two non-empty block ids".to_string();
+        return Err(InvalidArgument(msg).into());
     }
+    let topic = NoteId::parse(&args.topic_note_id)?;
+    let mut vault = Vault::open(&args.vault)?;
+    let written = excerpts::remove_excerpt(
+        &mut vault,
+        &topic,
+        &args.date,
+        &args.block_ids,
+        Caller::Person,
+        None,
+    )?;
+    let line = ExcerptWritten::new(&vault, &written);
+    println!("{}", serde_json::to_string(&line)?);
+    Ok(())
 }

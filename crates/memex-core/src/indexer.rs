@@ -94,15 +94,19 @@ pub fn reindex_note(
     for (idx, c) in chunks.iter().enumerate() {
         let chunk_id = Ulid::new().to_string();
         tx.execute(
-            "INSERT INTO chunks (id, note_id, ord, content, token_count, embed_model_version)
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO chunks
+                (id, note_id, ord, content, token_count, embed_model_version,
+                 start_byte, end_byte)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 chunk_id,
                 note_id,
                 c.ord,
                 c.content,
                 c.token_count,
-                model_version.as_deref()
+                model_version.as_deref(),
+                c.start_byte as i64,
+                c.end_byte as i64,
             ],
         )?;
         tx.execute(

@@ -3,6 +3,11 @@
 //!
 //! Token counting here is an approximation — words / 0.75 — adequate for
 //! prototype indexing decisions. Replace with a real tokenizer if needed.
+//!
+//! Every chunk records its UTF-8 byte range in the input (D25). A chunk of
+//! whole blocks spans from its first block's first byte to its last block's
+//! last byte, and its content is exactly that slice. Sentence sub-chunks of a
+//! long block all carry the range of the (trimmed) block they came from.
 
 const TARGET_TOKENS: usize = 380;
 const MAX_TOKENS: usize = 600;
@@ -12,6 +17,10 @@ pub struct Chunk {
     pub ord: i64,
     pub content: String,
     pub token_count: i64,
+    /// UTF-8 byte offset into the chunked input where this chunk starts (D25).
+    pub start_byte: usize,
+    /// UTF-8 byte offset one past the end of this chunk in the input (D25).
+    pub end_byte: usize,
 }
 
 pub fn chunk(content_md: &str) -> Vec<Chunk> {
@@ -29,13 +38,14 @@ pub fn chunk(content_md: &str) -> Vec<Chunk> {
         if bt > MAX_TOKENS {
             // flush current first
             if !current.is_empty() {
-                push_chunk(&mut chunks, &current, current_tokens);
+                push_chunk(&mut chunks, content_md, &current, current_tokens);
                 current.clear();
                 current_tokens = 0;
             }
+            let range = byte_range(content_md, block);
             for s in split_long_block(block) {
                 let st = approx_tokens(&s);
-                push_chunk_owned(&mut chunks, &s, st);
+                push_chunk_owned(&mut chunks, &s, st, range);
             }
             continue;
         }
@@ -43,7 +53,7 @@ pub fn chunk(content_md: &str) -> Vec<Chunk> {
         // If adding this block would exceed TARGET_TOKENS and we already
         // have something, flush first.
         if current_tokens + bt > TARGET_TOKENS && !current.is_empty() {
-            push_chunk(&mut chunks, &current, current_tokens);
+            push_chunk(&mut chunks, content_md, &current, current_tokens);
             current.clear();
             current_tokens = 0;
         }
@@ -51,21 +61,32 @@ pub fn chunk(content_md: &str) -> Vec<Chunk> {
         current_tokens += bt;
     }
     if !current.is_empty() {
-        push_chunk(&mut chunks, &current, current_tokens);
+        push_chunk(&mut chunks, content_md, &current, current_tokens);
     }
     chunks
 }
 
-fn push_chunk(chunks: &mut Vec<Chunk>, blocks: &[&str], tokens: usize) {
-    let content = blocks.join("\n\n").trim().to_string();
+/// Pushes one chunk made of whole `blocks` (non-empty subslices of `input`,
+/// in order). Its range runs from the first block's start to the last
+/// block's end, and its content is that slice of `input`.
+fn push_chunk(chunks: &mut Vec<Chunk>, input: &str, blocks: &[&str], tokens: usize) {
+    let (start_byte, _) = byte_range(input, blocks[0]);
+    let (_, end_byte) = byte_range(input, blocks[blocks.len() - 1]);
     chunks.push(Chunk {
         ord: chunks.len() as i64,
-        content,
+        content: input[start_byte..end_byte].to_string(),
         token_count: tokens as i64,
+        start_byte,
+        end_byte,
     });
 }
 
-fn push_chunk_owned(chunks: &mut Vec<Chunk>, block: &str, tokens: usize) {
+fn push_chunk_owned(
+    chunks: &mut Vec<Chunk>,
+    block: &str,
+    tokens: usize,
+    (start_byte, end_byte): (usize, usize),
+) {
     let content = block.trim().to_string();
     if content.is_empty() {
         return;
@@ -74,7 +95,17 @@ fn push_chunk_owned(chunks: &mut Vec<Chunk>, block: &str, tokens: usize) {
         ord: chunks.len() as i64,
         content,
         token_count: tokens as i64,
+        start_byte,
+        end_byte,
     });
+}
+
+/// The `[start, end)` UTF-8 byte range of `sub` within `parent`. `sub` must
+/// be a subslice of `parent` (every block is: `split_into_blocks` only splits
+/// and trims), so both ends lie on char boundaries.
+fn byte_range(parent: &str, sub: &str) -> (usize, usize) {
+    let start = sub.as_ptr() as usize - parent.as_ptr() as usize;
+    (start, start + sub.len())
 }
 
 fn split_into_blocks(s: &str) -> Vec<&str> {
