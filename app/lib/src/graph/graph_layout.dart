@@ -98,9 +98,9 @@ class GraphLayout {
     final v = [for (final id in _ids) _vel[id]!];
 
     // Many-body repulsion: every pair pushes apart, weaker with distance.
-    for (var i = 0; i < n; i++) {
+    for (final (i, pi) in p.indexed) {
       for (var j = i + 1; j < n; j++) {
-        final d = p[j] - p[i];
+        final d = p[j] - pi;
         final f =
             _repulsion *
             _alpha /
