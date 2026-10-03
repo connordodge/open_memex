@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use rusqlite::params;
+use chrono::NaiveDate;
 use serde_json::{json, Map, Value};
 
 use crate::caller::Caller;
@@ -18,7 +18,6 @@ use crate::embedder::Embedder;
 use crate::error::MemexError;
 use crate::footer::{self, ChipOrigin, RemoveMode};
 use crate::indexer;
-use crate::links;
 use crate::notes::{self, Note, NoteId, RenameOptions, UpdateNote};
 use crate::transclusion::{self, parse_transclusions, TransclusionToken};
 use crate::vault::Vault;
@@ -83,9 +82,9 @@ pub fn add_excerpt_with_hook(
     before_write: &mut dyn FnMut(&mut Vault),
 ) -> Result<Note> {
     let ids = requested_ids(block_ids)?;
-    daily::parse_iso_date(date)?;
+    let day_date = daily::parse_iso_date(date)?;
     topic_note(vault, topic_note_id)?;
-    let day = daily_note_for_date(vault, date)?
+    let day = daily_note_for_date(vault, day_date)?
         .ok_or_else(|| MemexError::NotFound(format!("no daily note for {date}")))?;
     let blocks = DayBlocks::load(vault, &day)?;
     let wanted = ids
@@ -163,7 +162,7 @@ pub fn remove_excerpt_with_hook(
     before_write: &mut dyn FnMut(&mut Vault),
 ) -> Result<Note> {
     let ids = requested_ids(block_ids)?;
-    daily::parse_iso_date(date)?;
+    let day_date = daily::parse_iso_date(date)?;
     let from = ids[0];
     let to = (ids.len() > 1).then(|| ids[ids.len() - 1]);
 
@@ -192,7 +191,7 @@ pub fn remove_excerpt_with_hook(
         .iter()
         .any(|t| t.date == date);
     if !day_still_excerpted {
-        if let Some(day) = daily_note_for_date(vault, date)? {
+        if let Some(day) = daily_note_for_date(vault, day_date)? {
             footer::remove_chip(
                 vault,
                 &day,
@@ -250,10 +249,10 @@ fn topic_note(vault: &Vault, id: &NoteId) -> Result<Note> {
     Ok(note)
 }
 
-/// The `role: daily` note titled `date`, if any (D27: the one lookup is
-/// `links::daily_note_id_for_title`).
-fn daily_note_for_date(vault: &Vault, date: &str) -> Result<Option<NoteId>> {
-    links::daily_note_id_for_title(vault.connection_ref(), date)?
+/// The `role: daily` note for `date`, if any (D27: the one lookup is
+/// `daily::daily_note_for_date`).
+fn daily_note_for_date(vault: &Vault, date: NaiveDate) -> Result<Option<NoteId>> {
+    daily::daily_note_for_date(vault.connection_ref(), date)?
         .map(|id| NoteId::parse(&id))
         .transpose()
 }
@@ -314,14 +313,11 @@ struct DayBlocks {
 
 impl DayBlocks {
     fn load(vault: &Vault, day: &NoteId) -> Result<Self> {
-        let mut stmt = vault
-            .connection_ref()
-            .prepare("SELECT block_id, ord FROM blocks WHERE note_id = ?")?;
-        let rows = stmt
-            .query_map(params![day.as_str()], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let (blocks, _) = daily::stored_blocks(vault.connection_ref(), day.as_str())?;
+        let rows: Vec<(String, i64)> = blocks
+            .into_iter()
+            .map(|b| (b.block_id, b.ord as i64))
+            .collect();
         Ok(Self {
             ids: rows.iter().map(|(id, ord)| (*ord, id.clone())).collect(),
             ords: rows.into_iter().collect(),
