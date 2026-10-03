@@ -21,6 +21,8 @@ class EditorToolbar extends StatelessWidget {
     required this.rightOpen,
     required this.onToggleRight,
     this.onBackToCanvas,
+    this.sourceMode = false,
+    this.onToggleSource,
   });
   final Note? note;
   final String? vaultPath;
@@ -31,6 +33,13 @@ class EditorToolbar extends StatelessWidget {
   /// When non-null, the toolbar shows a "← back to canvas" pill that
   /// invokes this.
   final VoidCallback? onBackToCanvas;
+
+  /// True while the body shows the single Source field.
+  final bool sourceMode;
+
+  /// Switches the body between the segmented view and Source; the `Source`
+  /// toggle (Key `editor-source-toggle`) shows only when non-null.
+  final VoidCallback? onToggleSource;
 
   @override
   Widget build(BuildContext context) {
@@ -53,6 +62,10 @@ class EditorToolbar extends StatelessWidget {
           if (status == SaveStatus.error)
             const OmChip(label: 'save failed', tone: ChipTone.danger),
           const SizedBox(width: 8),
+          if (onToggleSource != null) ...[
+            _SourceToggle(active: sourceMode, onTap: onToggleSource!),
+            const SizedBox(width: 4),
+          ],
           OmButton(
             kind: OmButtonKind.ghost,
             size: 26,
@@ -82,6 +95,60 @@ class EditorToolbar extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// The `Source` toggle (Key `editor-source-toggle`): highlighted while the
+/// body shows the plain Source field.
+class _SourceToggle extends StatelessWidget {
+  const _SourceToggle({required this.active, required this.onTap});
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: active ? 'show segments' : 'show markdown source',
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          key: const Key('editor-source-toggle'),
+          behavior: HitTestBehavior.opaque,
+          onTap: onTap,
+          child: Container(
+            height: 26,
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: active ? OmColors.surface3 : null,
+              border: Border.all(
+                color: active ? OmColors.line2 : OmColors.line1,
+                width: 1,
+              ),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  LucideIcons.code,
+                  size: 12,
+                  color: active ? OmColors.accent : OmColors.fg2,
+                ),
+                const SizedBox(width: 5),
+                Text(
+                  'Source',
+                  style: OmType.mono(
+                    size: 11,
+                    color: active ? OmColors.fg0 : OmColors.fg2,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
