@@ -3,16 +3,17 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:path/path.dart' as p;
 
-import '../db.dart';
 import '../state/settings.dart';
 import '../state/tabs_state.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
 import 'atoms.dart';
+import 'sidebar/canvases_rail.dart';
+import 'sidebar/notes_pane.dart';
 
 /// Left sidebar: brand header → command/search button → vault pills →
-/// note tree → agent activity footer (placeholder).
+/// canvases rail → note tree → agent activity footer (placeholder).
 class Sidebar extends ConsumerWidget {
   const Sidebar({super.key, required this.onNewNote});
   final VoidCallback onNewNote;
@@ -55,7 +56,7 @@ class Sidebar extends ConsumerWidget {
             action: '+ new',
             onAction: () => _newCanvas(context, ref),
           ),
-          _CanvasesRail(canvases: canvases, activeCanvasId: activeCanvasId),
+          CanvasesRail(canvases: canvases, activeCanvasId: activeCanvasId),
           const OmHairline(),
           PanelHeader(
             eyebrow: '$vaultName · tree',
@@ -71,23 +72,11 @@ class Sidebar extends ConsumerWidget {
             },
           ),
           Expanded(
-            child: notes.isEmpty
-                ? _EmptyTree(onCreate: onNewNote)
-                : ListView.builder(
-                    key: const Key('notes-rail'),
-                    padding: const EdgeInsets.symmetric(horizontal: 6),
-                    itemCount: notes.length,
-                    itemBuilder: (_, i) {
-                      final n = notes[i];
-                      return _TreeItem(
-                        note: n,
-                        active: n.id == activeNoteId,
-                        onTap: () => ref
-                            .read(tabsProvider.notifier)
-                            .openOrFocus(NoteTab(n.id)),
-                      );
-                    },
-                  ),
+            child: NotesPane(
+              notes: notes,
+              activeNoteId: activeNoteId,
+              onNewNote: onNewNote,
+            ),
           ),
           const OmHairline(),
           const _AgentFooter(),
@@ -309,207 +298,6 @@ class _VaultPill extends ConsumerWidget {
       OmColors.fg2,
     ];
     return palette[h.abs() % palette.length];
-  }
-}
-
-class _TreeItem extends StatefulWidget {
-  const _TreeItem({
-    required this.note,
-    required this.active,
-    required this.onTap,
-  });
-  final NoteListItem note;
-  final bool active;
-  final VoidCallback onTap;
-  @override
-  State<_TreeItem> createState() => _TreeItemState();
-}
-
-class _TreeItemState extends State<_TreeItem> {
-  bool _hover = false;
-  @override
-  Widget build(BuildContext context) {
-    const tint = OmColors.fg1;
-    final row = Container(
-      key: Key('note-list-item-${widget.note.id}'),
-      padding: const EdgeInsets.fromLTRB(10, 5, 10, 5),
-      decoration: BoxDecoration(
-        color: widget.active
-            ? OmColors.surface4
-            : (_hover ? OmColors.surface3 : Colors.transparent),
-        borderRadius: BorderRadius.circular(5),
-      ),
-      child: Row(
-        children: [
-          const SizedBox(width: 11),
-          const Icon(LucideIcons.fileText, size: 13, color: tint),
-          const SizedBox(width: 7),
-          Expanded(
-            child: Text(
-              widget.note.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: OmType.sans(
-                size: 13,
-                color: widget.active ? OmColors.fg0 : OmColors.fg1,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: Draggable<String>(
-        data: widget.note.id,
-        feedback: Material(
-          color: Colors.transparent,
-          child: SizedBox(
-            width: 200,
-            child: Opacity(opacity: 0.85, child: row),
-          ),
-        ),
-        childWhenDragging: Opacity(opacity: 0.4, child: row),
-        child: GestureDetector(onTap: widget.onTap, child: row),
-      ),
-    );
-  }
-}
-
-class _EmptyTree extends StatelessWidget {
-  const _EmptyTree({required this.onCreate});
-  final VoidCallback onCreate;
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 24, 20, 20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(
-            'no notes yet.',
-            style: OmType.mono(size: 11.5, color: OmColors.fg3),
-          ),
-          const SizedBox(height: 12),
-          OmButton(
-            kind: OmButtonKind.secondary,
-            icon: LucideIcons.plus,
-            label: 'new note',
-            kbd: '⌘N',
-            onPressed: onCreate,
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _CanvasesRail extends ConsumerWidget {
-  const _CanvasesRail({required this.canvases, required this.activeCanvasId});
-  final List<CanvasRow> canvases;
-  final String? activeCanvasId;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    if (canvases.isEmpty) {
-      return Padding(
-        padding: const EdgeInsets.fromLTRB(20, 6, 20, 12),
-        child: Text(
-          'no canvases yet.',
-          style: OmType.mono(size: 11, color: OmColors.fg3),
-        ),
-      );
-    }
-    return SizedBox(
-      key: const Key('canvases-rail'),
-      height: (canvases.length * 26.0).clamp(26.0, 156.0),
-      child: ListView.builder(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-        itemCount: canvases.length,
-        itemBuilder: (_, i) {
-          final c = canvases[i];
-          final active = c.canvasId == activeCanvasId;
-          return _CanvasRow(
-            canvas: c,
-            active: active,
-            onTap: () => ref
-                .read(tabsProvider.notifier)
-                .openOrFocus(CanvasTab(c.canvasId)),
-          );
-        },
-      ),
-    );
-  }
-}
-
-class _CanvasRow extends StatefulWidget {
-  const _CanvasRow({
-    required this.canvas,
-    required this.active,
-    required this.onTap,
-  });
-  final CanvasRow canvas;
-  final bool active;
-  final VoidCallback onTap;
-
-  @override
-  State<_CanvasRow> createState() => _CanvasRowState();
-}
-
-class _CanvasRowState extends State<_CanvasRow> {
-  bool _hover = false;
-  @override
-  Widget build(BuildContext context) {
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: Container(
-          key: Key('canvas-row-${widget.canvas.canvasId}'),
-          padding: const EdgeInsets.fromLTRB(10, 4, 10, 4),
-          decoration: BoxDecoration(
-            color: widget.active
-                ? OmColors.surface4
-                : (_hover ? OmColors.surface3 : Colors.transparent),
-            borderRadius: BorderRadius.circular(5),
-          ),
-          child: Row(
-            children: [
-              const SizedBox(width: 11),
-              const Icon(
-                LucideIcons.layoutDashboard,
-                size: 13,
-                color: OmColors.fg1,
-              ),
-              const SizedBox(width: 7),
-              Expanded(
-                child: Text(
-                  widget.canvas.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: OmType.sans(
-                    size: 13,
-                    color: widget.active ? OmColors.fg0 : OmColors.fg1,
-                  ),
-                ),
-              ),
-              if (widget.canvas.nodeCount > 0)
-                Padding(
-                  padding: const EdgeInsets.only(left: 6),
-                  child: Text(
-                    '${widget.canvas.nodeCount}',
-                    style: OmType.mono(size: 10.5, color: OmColors.fg3),
-                  ),
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
   }
 }
 
