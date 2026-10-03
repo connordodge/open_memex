@@ -109,28 +109,39 @@ class UiState {
   }
 }
 
-/// Tagged-union of tab kinds. `kind` ∈ {`note`, `canvas`}; `id` is the
-/// underlying note_id or canvas_id.
+/// Tagged-union of tab kinds. `kind` ∈ {`note`, `canvas`, `graph`}; `id` is
+/// the underlying note_id or canvas_id, or for `graph` the scope as
+/// `<scope>:<id>` (D26: `folder:<smartFolderId>`, `topic:<noteId>`,
+/// `day:<noteId>`, `vault:all`). Unknown kinds are dropped on read, so older
+/// apps skip newer tab kinds and keep the rest.
 class PersistedTab {
   PersistedTab({required this.kind, required this.id});
 
   static const String kindNote = 'note';
   static const String kindCanvas = 'canvas';
+  static const String kindGraph = 'graph';
+
+  static const _knownKinds = {kindNote, kindCanvas, kindGraph};
 
   final String kind;
   final String id;
 
   bool get isNote => kind == kindNote;
   bool get isCanvas => kind == kindCanvas;
+  bool get isGraph => kind == kindGraph;
 
   Map<String, dynamic> toJson() => {'kind': kind, 'id': id};
 
+  /// Null for an unknown kind or a malformed entry (missing or non-string
+  /// `kind`/`id`).
   static PersistedTab? fromJson(Map<String, dynamic> json) {
-    final k = json['kind'] as String?;
-    final i = json['id'] as String?;
-    if (k == null || i == null) return null;
-    if (k != kindNote && k != kindCanvas) return null;
-    return PersistedTab(kind: k, id: i);
+    if (json case {
+      'kind': final String k,
+      'id': final String i,
+    } when _knownKinds.contains(k)) {
+      return PersistedTab(kind: k, id: i);
+    }
+    return null;
   }
 
   @override

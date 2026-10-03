@@ -120,4 +120,23 @@ void main() {
     expect(done, 2);
     expect(File('${tmp.path}/.memex/ui_state.json').existsSync(), isTrue);
   });
+  test(
+    'a tab entry with a non-string kind or id is dropped and the rest load',
+    () {
+      final state = UiState.fromJson({
+        'tabs': [
+          {'kind': 7, 'id': 'n1'},
+          {'kind': 'note', 'id': 8},
+          {'kind': 'note'},
+          {'kind': 'graph', 'id': 'vault:all'},
+          {'kind': 'note', 'id': 'n0'},
+        ],
+        'active_tab_index': 0,
+      });
+      expect(state.tabs, [
+        PersistedTab(kind: PersistedTab.kindGraph, id: 'vault:all'),
+        PersistedTab(kind: PersistedTab.kindNote, id: 'n0'),
+      ]);
+    },
+  );
 }
