@@ -80,10 +80,11 @@ DateTime? parseIsoDate(String text) {
   final year = int.parse(m.group(1)!);
   final month = int.parse(m.group(2)!);
   final day = int.parse(m.group(3)!);
-  // DateTime normalises out-of-range parts (2026-02-30 → 2026-03-02); a real
-  // date round-trips unchanged.
+  // DateTime normalises out-of-range parts (2026-02-30 → 2026-03-02,
+  // 2026-13-01 → 2027-01-01); a real date round-trips unchanged. The year
+  // can only change together with the month, so month and day suffice.
   final d = DateTime(year, month, day);
-  if (d.year != year || d.month != month || d.day != day) return null;
+  if (d.month != month || d.day != day) return null;
   return d;
 }
 

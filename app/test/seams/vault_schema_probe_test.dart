@@ -1,11 +1,13 @@
 import 'dart:async';
 
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/cli/settings_cli.dart';
 import 'package:open_memex_app/src/db.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
+import 'package:open_memex_app/src/widgets/vault_schema_banner.dart';
 import 'package:sqlite3/sqlite3.dart';
 
 import '../support/app_harness.dart';
@@ -191,6 +193,25 @@ void main() {
       addTearDown(db.close);
       expect(_container(db: db).read(vaultV5ReadyProvider), isTrue);
       expect(_container(db: null).read(vaultV5ReadyProvider), isFalse);
+    });
+  });
+
+  group('VaultSchemaBanner', () {
+    testWidgets('the outdated banner waits for the open call to finish', (
+      tester,
+    ) async {
+      final release = Completer<MemexResult>();
+      final cli = FakeMemexCli()..on('settings get', (_) => release.future);
+
+      await pumpWorkspace(tester, db: FakeVaultDb.v4(), cli: cli);
+      expect(find.byKey(const Key('vault-schema-outdated')), findsNothing);
+
+      release.complete(
+        FakeMemexCli.failure("error: unrecognized subcommand 'settings'\n"),
+      );
+      await pumpFrames(tester);
+      expect(find.byKey(const Key('vault-schema-outdated')), findsOneWidget);
+      expect(find.text(vaultSchemaOutdatedMessage), findsOneWidget);
     });
   });
 
