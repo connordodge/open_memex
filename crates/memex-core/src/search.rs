@@ -1,10 +1,19 @@
 //! Hybrid search: FTS5 (BM25) + optional vector (`vec0`) fused via
 //! Reciprocal Rank Fusion.
+//!
+//! After fusion, every hit on a daily note is expanded into the topic notes
+//! that transclude one of the hit chunk's blocks (D25, Spec TD5). Transcluded
+//! text is never indexed into the topic, so this is the only way a topic is
+//! found through the day's words.
 
-use rusqlite::{params, Connection};
+use std::collections::{HashMap, HashSet};
+
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::embedder::Embedder;
+use crate::link_extractor::{parse_transclusions, TransclusionToken};
+use crate::links::{daily_note_id_for_title, LinkKind};
 use crate::Result;
 
 const RRF_K: f32 = 60.0;
@@ -123,7 +132,185 @@ pub fn search(conn: &Connection, opts: SearchOptions<'_>) -> Result<SearchResult
         }
     }
     let truncated = hits.len() >= opts.k && fused.len() > hits.len();
-    Ok(SearchResults { hits, truncated })
+    let (hits, dropped) = expand_transclusions(conn, hits, opts.k, &opts.filters)?;
+    Ok(SearchResults {
+        hits,
+        truncated: truncated || dropped,
+    })
+}
+
+/// A topic note found through a transclusion of a daily-note hit's blocks.
+/// `chunk_id`, `ord` and `snippet` are the topic's own chunk that holds the
+/// covering `![[…]]` token.
+struct Expansion {
+    note_id: String,
+    note_title: String,
+    chunk_id: String,
+    ord: i64,
+    snippet: String,
+}
+
+/// Expands each daily-note hit in `direct` (already filtered, ranked and
+/// capped at `k`) into the topic notes that transclude one of its blocks
+/// (D25). Each expanded hit sits right after its source hit (after earlier
+/// expansions of the same source), with the source's score and
+/// `via: <date>`. A (topic, date) pair is expanded once, after its first
+/// source hit. A topic appears as a direct hit or as expanded hits, never
+/// both: a topic already shown as a direct hit above the source is not
+/// expanded, and a topic already shown as an expanded hit drops its own
+/// lower-ranked direct hit. The total is capped at `k`. Returns the hits and
+/// whether the cap dropped any.
+fn expand_transclusions(
+    conn: &Connection,
+    direct: Vec<SearchHit>,
+    k: usize,
+    filters: &SearchFilters,
+) -> Result<(Vec<SearchHit>, bool)> {
+    let mut hits: Vec<SearchHit> = Vec::new();
+    let mut shown_direct: HashSet<String> = HashSet::new();
+    let mut shown_expanded: HashSet<String> = HashSet::new();
+    let mut pairs: HashSet<(String, String)> = HashSet::new();
+    for source in direct {
+        if shown_expanded.contains(&source.note_id) {
+            continue;
+        }
+        let topics = transcluding_topics(conn, &source, filters)?;
+        shown_direct.insert(source.note_id.clone());
+        let date = source.note_title.clone();
+        let score = source.score;
+        hits.push(source);
+        for t in topics {
+            if shown_direct.contains(&t.note_id) || !pairs.insert((t.note_id.clone(), date.clone()))
+            {
+                continue;
+            }
+            shown_expanded.insert(t.note_id.clone());
+            hits.push(SearchHit {
+                chunk_id: t.chunk_id,
+                note_id: t.note_id,
+                note_title: t.note_title,
+                snippet: t.snippet,
+                score,
+                ord: t.ord,
+                via: Some(date.clone()),
+            });
+        }
+    }
+    let dropped = hits.len() > k;
+    hits.truncate(k);
+    Ok((hits, dropped))
+}
+
+/// The topic notes (passing `filters`) with a transclusion covering a block
+/// of `hit`'s daily note that overlaps the hit chunk's byte range, in title
+/// order. Empty unless `hit` is on the daily note of its title's date and
+/// its chunk has a stored range (NULL ranges never expand).
+fn transcluding_topics(
+    conn: &Connection,
+    hit: &SearchHit,
+    filters: &SearchFilters,
+) -> Result<Vec<Expansion>> {
+    let (cs, ce): (Option<i64>, Option<i64>) = conn.query_row(
+        "SELECT start_byte, end_byte FROM chunks WHERE id = ?",
+        params![hit.chunk_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let (Some(cs), Some(ce)) = (cs, ce) else {
+        return Ok(Vec::new());
+    };
+    let date = hit.note_title.as_str();
+    if daily_note_id_for_title(conn, date)?.as_deref() != Some(hit.note_id.as_str()) {
+        return Ok(Vec::new());
+    }
+
+    // The day's block ords by block id, and the ords of the blocks that
+    // overlap the chunk: block [s, e) overlaps chunk [cs, ce) iff
+    // s < ce && cs < e.
+    let mut ord_of: HashMap<String, i64> = HashMap::new();
+    let mut hit_ords: Vec<i64> = Vec::new();
+    let mut stmt = conn.prepare_cached(
+        "SELECT block_id, ord, start_byte, end_byte FROM blocks WHERE note_id = ?",
+    )?;
+    let mut rows = stmt.query(params![hit.note_id])?;
+    while let Some(r) = rows.next()? {
+        let (ord, s, e): (i64, i64, i64) = (r.get(1)?, r.get(2)?, r.get(3)?);
+        if s < ce && cs < e {
+            hit_ords.push(ord);
+        }
+        ord_of.insert(r.get(0)?, ord);
+    }
+    if hit_ords.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut stmt = conn.prepare_cached(
+        "SELECT DISTINCT n.id, n.title, n.content_md
+           FROM links l JOIN notes n ON n.id = l.from_note_id
+          WHERE l.link_kind = ? AND l.link_text = ?
+          ORDER BY n.title, n.id",
+    )?;
+    let topics = stmt
+        .query_map(params![LinkKind::FROM_DAY, date], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut out = Vec::new();
+    for (note_id, note_title, body) in topics {
+        let Some(token) = parse_transclusions(&body)
+            .into_iter()
+            .find(|t| t.date == date && covers(t, &ord_of, &hit_ords))
+        else {
+            continue;
+        };
+        if !passes_filters(conn, &note_id, filters) {
+            continue;
+        }
+        // The topic chunk holding the token, else its first chunk (a topic
+        // whose chunks have no stored range yet).
+        let chunk: Option<(String, i64, String)> = conn
+            .query_row(
+                "SELECT id, ord, content FROM chunks WHERE note_id = ?1
+                  ORDER BY (start_byte <= ?2 AND ?2 < end_byte) DESC, ord
+                  LIMIT 1",
+                params![note_id, token.start as i64],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        let Some((chunk_id, ord, content)) = chunk else {
+            continue;
+        };
+        out.push(Expansion {
+            note_id,
+            note_title,
+            chunk_id,
+            ord,
+            snippet: snippet(&content, 280),
+        });
+    }
+    Ok(out)
+}
+
+/// Whether `token` transcludes one of `hit_ords`: its blocks are those with
+/// an ord between its endpoints' ords, inclusive, in either order (C4). A
+/// token whose endpoint block no longer exists covers nothing.
+fn covers(token: &TransclusionToken, ord_of: &HashMap<String, i64>, hit_ords: &[i64]) -> bool {
+    let Some(&from) = ord_of.get(&token.from) else {
+        return false;
+    };
+    let to = match &token.to {
+        None => from,
+        Some(to) => match ord_of.get(to) {
+            Some(&ord) => ord,
+            None => return false,
+        },
+    };
+    let (lo, hi) = (from.min(to), from.max(to));
+    hit_ords.iter().any(|&ord| lo <= ord && ord <= hi)
 }
 
 fn fts_search(conn: &Connection, q: &str, k: i64) -> Result<Vec<(String, i64)>> {
@@ -179,9 +366,26 @@ fn enrich_hit(
         return Ok(None);
     };
 
+    if !passes_filters(conn, &nid, filters) {
+        return Ok(None);
+    }
+
+    Ok(Some(SearchHit {
+        chunk_id: cid,
+        note_id: nid,
+        note_title: title,
+        snippet: snippet(&content, 280),
+        score,
+        ord,
+        via: None,
+    }))
+}
+
+/// Whether note `nid` satisfies `filters` (direct and expanded hits alike).
+fn passes_filters(conn: &Connection, nid: &str, filters: &SearchFilters) -> bool {
     if let Some(req) = &filters.note_id {
-        if &nid != req {
-            return Ok(None);
+        if nid != req {
+            return false;
         }
     }
     if !filters.tags_all.is_empty() {
@@ -194,20 +398,11 @@ fn enrich_hit(
                 )
                 .unwrap_or(0);
             if has == 0 {
-                return Ok(None);
+                return false;
             }
         }
     }
-
-    Ok(Some(SearchHit {
-        chunk_id: cid,
-        note_id: nid,
-        note_title: title,
-        snippet: snippet(&content, 280),
-        score,
-        ord,
-        via: None,
-    }))
+    true
 }
 
 fn snippet(content: &str, max_chars: usize) -> String {
