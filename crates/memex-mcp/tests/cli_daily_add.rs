@@ -515,3 +515,47 @@ fn update_link_on_a_daily_note_reindexes_from_the_normalized_body() {
     assert_eq!(s.version, 2);
     assert_indexed_from_stored_content(&vault, &id);
 }
+
+// ---------- Implementer additions (lead ruling, WI #7) ----------
+
+#[test]
+fn add_role_daily_adopting_with_a_body_appends_it_after_one_blank_line() {
+    let (_dir, vault) = init_vault();
+    let old = add_plain(&vault, "2026-09-05", "old\n");
+
+    let stdout = ok_stdout(run(
+        &[
+            "add",
+            "--vault",
+            &vault,
+            "--role",
+            "daily",
+            "--title",
+            "2026-09-05",
+        ],
+        Some("new\n\n"),
+    ));
+    assert_eq!(stdout, c21("Adopted note", &old, "2026-09-05"));
+    let s = stored(&vault, &old);
+    assert_eq!(s.content_md, "old\n\nnew\n<!-- memex:topics -->\n");
+    assert_eq!(s.version, 2);
+    assert_eq!(content_version(&vault, &old), 1);
+    assert_indexed_from_stored_content(&vault, &old);
+}
+
+#[test]
+fn add_without_a_role_still_prints_created_note_and_reports_a_taken_title() {
+    let (_dir, vault) = init_vault();
+    let first = add_plain(&vault, "Groceries", "milk\n");
+    let v = error_json(&run(
+        &["add", "--vault", &vault, "--title", "Groceries"],
+        Some("eggs\n"),
+    ));
+    let want = MemexError::TitleConflict {
+        existing_id: first.clone(),
+        attempted_title: "Groceries".into(),
+    }
+    .to_error_json();
+    assert_eq!(v, want);
+    assert_eq!(note_ids(&vault), vec![first]);
+}

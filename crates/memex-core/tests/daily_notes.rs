@@ -16,7 +16,8 @@ use memex_core::daily::{self, ReviewState};
 use memex_core::error::MemexError;
 use memex_core::indexer;
 use memex_core::notes::{
-    create_note_as, get_note, update_note_as, CreateNote, Note, NoteId, RenameOptions, UpdateNote,
+    self, create_note_as, get_note, update_note_as, CreateNote, Note, NoteId, RenameOptions,
+    UpdateNote,
 };
 use memex_core::{Caller, Vault};
 use rusqlite::params;
@@ -957,4 +958,258 @@ fn non_daily_notes_are_saved_exactly_as_before() {
         assert_eq!(row_count(&vault, "blocks", &n.id), 0, "{}", n.title);
         assert_eq!(row_count(&vault, "day_reviews", &n.id), 0, "{}", n.title);
     }
+}
+
+// ---------- Implementer additions (lead rulings, WI #7) ----------
+
+struct FixedClock(i64);
+
+impl memex_core::Clock for FixedClock {
+    fn now_ms(&self) -> i64 {
+        self.0
+    }
+}
+
+/// 2026-09-05T12:00Z: the same local date in every test-machine time zone.
+const NOON_2026_09_05_UTC: i64 = 1_788_609_600_000;
+
+fn plain_input_untitled(body: &str) -> CreateNote {
+    CreateNote {
+        title: None,
+        content_md: body.into(),
+        frontmatter: None,
+    }
+}
+
+#[test]
+fn create_daily_note_without_a_title_defaults_to_today_from_the_clock() {
+    let (_dir, mut vault) = fresh_vault();
+    let clock = FixedClock(NOON_2026_09_05_UTC);
+    assert_eq!(daily::today_with_clock(&clock).to_string(), "2026-09-05");
+
+    let input = CreateNote {
+        title: None,
+        content_md: "Morning.\n".into(),
+        frontmatter: Some(json!({ "role": "daily" })),
+    };
+    let outcome = notes::create_or_adopt_note(&mut vault, input, Caller::Person, &clock).unwrap();
+    assert!(!outcome.adopted, "a fresh daily note is created");
+    let note = outcome.note;
+    assert_eq!(note.title, "2026-09-05");
+    assert_eq!(note.content_md, "Morning.\n<!-- memex:topics -->\n");
+    assert_eq!(
+        (note.created_at, note.updated_at),
+        (NOON_2026_09_05_UTC, NOON_2026_09_05_UTC)
+    );
+    assert_eq!(stored(&vault, &note.id).title, "2026-09-05");
+    assert_eq!(content_version(&vault, &note.id), 1);
+
+    // A role-less note without a title still derives it from the content.
+    let plain = notes::create_or_adopt_note(
+        &mut vault,
+        plain_input_untitled("# Groceries\nmilk"),
+        Caller::Person,
+        &clock,
+    )
+    .unwrap();
+    assert!(!plain.adopted);
+    assert_eq!(plain.note.title, "Groceries");
+}
+
+#[test]
+fn create_or_adopt_note_reports_adoption_and_trims_the_appended_input() {
+    let (_dir, mut vault) = fresh_vault();
+    let clock = FixedClock(NOON_2026_09_05_UTC);
+    let old = create_plain(&mut vault, "2026-09-05", "old\n", None);
+    let outcome = notes::create_or_adopt_note(
+        &mut vault,
+        daily_input("2026-09-05", "new\n\n"),
+        Caller::Person,
+        &clock,
+    )
+    .unwrap();
+    assert!(outcome.adopted);
+    assert_eq!(outcome.note.id, old.id);
+    assert_eq!(
+        outcome.note.content_md, "old\n\nnew\n<!-- memex:topics -->\n",
+        "trailing whitespace of the input is trimmed before the C3.1 append"
+    );
+}
+
+#[test]
+fn person_create_daily_over_a_note_with_another_role_fails_with_title_conflict() {
+    let (_dir, mut vault) = fresh_vault();
+    let topic = create_plain(
+        &mut vault,
+        "2026-09-05",
+        "a topic",
+        Some(json!({ "role": "topic" })),
+    );
+    match create_note_as(&mut vault, daily_input("2026-09-05", "x"), Caller::Person) {
+        Err(MemexError::TitleConflict { existing_id, .. }) => {
+            assert_eq!(existing_id, topic.id.as_str())
+        }
+        other => panic!("expected TitleConflict, got {other:?}"),
+    }
+    let kept = stored(&vault, &topic.id);
+    assert_eq!((kept.content_md.as_str(), kept.version), ("a topic", 1));
+    assert_eq!(day_review(&vault, &topic.id), None);
+}
+
+fn set_frontmatter(
+    vault: &mut Vault,
+    id: &NoteId,
+    title: Option<&str>,
+    frontmatter: Value,
+) -> Result<Note, MemexError> {
+    let version = get_note(vault, id).unwrap().version;
+    update_note_as(
+        vault,
+        id,
+        version,
+        UpdateNote {
+            title: title.map(Into::into),
+            frontmatter: Some(frontmatter),
+            ..Default::default()
+        },
+        RenameOptions::default(),
+        Caller::Person,
+    )
+}
+
+#[test]
+fn update_adding_role_daily_validates_and_canonicalizes_like_a_daily_create() {
+    let (_dir, mut vault) = fresh_vault();
+
+    // A non-ISO title cannot become a daily note.
+    let groceries = create_plain(&mut vault, "Groceries", "milk\n", None);
+    match set_frontmatter(&mut vault, &groceries.id, None, json!({ "role": "daily" })) {
+        Err(MemexError::InvalidDate(_)) => {}
+        other => panic!("expected InvalidDate, got {other:?}"),
+    }
+    assert_eq!(stored(&vault, &groceries.id).version, 1);
+    assert_eq!(day_review(&vault, &groceries.id), None);
+
+    // Retitling onto a date that has a daily note while becoming daily.
+    let fifth = create_daily(&mut vault, "2026-09-05", "Five.\n");
+    match set_frontmatter(
+        &mut vault,
+        &groceries.id,
+        Some("2026-09-05"),
+        json!({ "role": "daily" }),
+    ) {
+        Err(MemexError::DailyNoteExists { date, existing_id }) => {
+            assert_eq!(date, "2026-09-05");
+            assert_eq!(existing_id, fifth.id.as_str());
+        }
+        other => panic!("expected DailyNoteExists, got {other:?}"),
+    }
+
+    // An ISO-titled note becomes a daily note: canonical body, blocks, row.
+    let day = create_plain(
+        &mut vault,
+        "2026-09-06",
+        "Six.\n<!-- memex:topics -->\nlate\n",
+        Some(json!({ "mood": "ok" })),
+    );
+    let saved = set_frontmatter(
+        &mut vault,
+        &day.id,
+        None,
+        json!({ "mood": "ok", "role": "daily" }),
+    )
+    .unwrap();
+    assert_eq!(saved.version, 2);
+    assert_eq!(saved.content_md, "Six.\nlate\n<!-- memex:topics -->\n");
+    let rows = blocks_of(&vault, &day.id);
+    assert_eq!(block_texts(&rows), vec!["Six.\nlate"]);
+    assert_eq!(
+        (rows[0].source.as_str(), rows[0].created_version),
+        ("person", 2)
+    );
+    assert_eq!(day_review(&vault, &day.id), Some((1, None)));
+    assert_blocks_match_body(&vault, &day.id);
+}
+
+#[test]
+fn retitle_collisions_are_daily_note_exists_only_between_daily_notes() {
+    let (_dir, mut vault) = fresh_vault();
+    let fifth = create_daily(&mut vault, "2026-09-05", "Five.\n");
+    let plain = create_plain(&mut vault, "Scratch", "x", None);
+    let held = create_plain(&mut vault, "2026-09-06", "role-less", None);
+
+    // A role-less note retitled onto a daily note's date.
+    match retitle(&mut vault, &plain.id, "2026-09-05") {
+        Err(MemexError::TitleConflict { existing_id, .. }) => {
+            assert_eq!(existing_id, fifth.id.as_str())
+        }
+        other => panic!("expected TitleConflict, got {other:?}"),
+    }
+    // A daily note retitled onto a date a role-less note holds.
+    match retitle(&mut vault, &fifth.id, "2026-09-06") {
+        Err(MemexError::TitleConflict { existing_id, .. }) => {
+            assert_eq!(existing_id, held.id.as_str())
+        }
+        other => panic!("expected TitleConflict, got {other:?}"),
+    }
+    assert_eq!(stored(&vault, &fifth.id).title, "2026-09-05");
+}
+
+#[test]
+fn a_daily_note_with_a_legacy_non_iso_title_can_still_be_edited() {
+    let (_dir, mut vault) = fresh_vault();
+    // Written before the ISO rule existed (e.g. by an older client).
+    let note = create_plain(&mut vault, "Monday", "Old day.\n", None);
+    vault
+        .connection_ref()
+        .execute(
+            "UPDATE notes SET frontmatter = '{\"role\":\"daily\"}' WHERE id = ?",
+            [note.id.as_str()],
+        )
+        .unwrap();
+
+    let saved = set_body(&mut vault, &note.id, "Old day.\n\nMore.\n");
+    assert_eq!(saved.title, "Monday");
+    assert_eq!(
+        saved.content_md,
+        "Old day.\n\nMore.\n<!-- memex:topics -->\n"
+    );
+    // The day_reviews row is created lazily at the first daily write.
+    assert_eq!(day_review(&vault, &note.id), Some((1, None)));
+    assert_blocks_match_body(&vault, &note.id);
+}
+
+#[test]
+fn review_state_without_a_day_reviews_row_is_unreviewed() {
+    let (_dir, mut vault) = fresh_vault();
+    let plain = create_plain(&mut vault, "Scratch", "x", None);
+    assert_eq!(state(&vault, &plain.id), ReviewState::Unreviewed);
+}
+
+#[test]
+fn matched_blocks_keep_their_created_at_and_new_blocks_get_the_write_time() {
+    let (_dir, mut vault) = fresh_vault();
+    let note = create_daily(&mut vault, "2026-09-05", "Alpha paragraph here.\n");
+    let alpha = blocks_of(&vault, &note.id)[0].block_id.clone();
+    vault
+        .connection_ref()
+        .execute(
+            "UPDATE blocks SET created_at = 42 WHERE note_id = ?",
+            [note.id.as_str()],
+        )
+        .unwrap();
+
+    set_body(&mut vault, &note.id, "Alpha paragraph here!\n\nNew one.\n");
+    let created: Vec<(String, i64)> = {
+        let conn = vault.connection_ref();
+        let mut stmt = conn
+            .prepare("SELECT block_id, created_at FROM blocks WHERE note_id = ? ORDER BY ord")
+            .unwrap();
+        stmt.query_map([note.id.as_str()], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert_eq!(created[0], (alpha, 42));
+    assert!(created[1].1 > 42, "{created:?}");
 }

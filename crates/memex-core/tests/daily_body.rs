@@ -436,3 +436,59 @@ fn review_state_as_str_returns_c2_labels() {
         "Changed since review"
     );
 }
+
+// ---------- Implementer additions (WI #7) ----------
+
+#[test]
+fn append_to_person_uses_the_c3_1_separator() {
+    let cases = [
+        ("", "new", "new\n"),
+        ("old", "new", "old\n\nnew\n"),
+        ("old\n", "new", "old\n\nnew\n"),
+        ("old\n\n", "new", "old\n\nnew\n"),
+        ("old\n\n\n", "new", "old\n\n\nnew\n"),
+        ("old\n", "two\nlines", "old\n\ntwo\nlines\n"),
+    ];
+    for (person, text, want) in cases {
+        assert_eq!(
+            daily::append_to_person(person, text),
+            want,
+            "{person:?} + {text:?}"
+        );
+    }
+}
+
+#[test]
+fn parse_iso_date_accepts_only_strict_calendar_dates() {
+    assert_eq!(
+        daily::parse_iso_date("2026-09-05").unwrap(),
+        date(2026, 9, 5)
+    );
+    for bad in [
+        "2026-09-5",
+        "2026-9-05",
+        "2026-02-30",
+        "x026-09-05",
+        "2026_09_05",
+    ] {
+        assert!(
+            matches!(daily::parse_iso_date(bad), Err(MemexError::InvalidDate(_))),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn is_daily_matches_the_role_exactly() {
+    use serde_json::json;
+    assert!(daily::is_daily(&json!({ "role": "daily" })));
+    for fm in [
+        json!({}),
+        json!({ "role": "Daily" }),
+        json!({ "role": "topic" }),
+        json!({ "role": null }),
+        json!(null),
+    ] {
+        assert!(!daily::is_daily(&fm), "{fm}");
+    }
+}
