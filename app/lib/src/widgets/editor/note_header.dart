@@ -14,7 +14,7 @@ import 'review_chip.dart';
 ///
 /// A `role: daily` note's [DailyDateHeader] replaces the title field: its
 /// title is not editable (Req 49). The unsaved virtual Today note has no
-/// meta rail.
+/// meta rail and no review chip.
 class NoteHeader extends StatelessWidget {
   const NoteHeader({
     super.key,
@@ -28,11 +28,13 @@ class NoteHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // The unsaved virtual Today note was never updated or reviewed.
+    final saved = VirtualTodayTab.dateOf(note.id) == null;
     return Column(
       key: const Key('note-header'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (VirtualTodayTab.dateOf(note.id) == null) _MetaRail(note: note),
+        if (saved) _MetaRail(note: note),
         const SizedBox(height: 18),
         DailyDateHeader(note: note),
         if (note.role != 'daily')
@@ -51,7 +53,7 @@ class NoteHeader extends StatelessWidget {
             ),
             onChanged: onTitleChanged,
           ),
-        ReviewChip(note: note),
+        if (saved) ReviewChip(note: note),
         if (note.tags.isNotEmpty) ...[
           const SizedBox(height: 12),
           Wrap(
