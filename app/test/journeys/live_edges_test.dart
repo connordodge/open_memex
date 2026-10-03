@@ -3,6 +3,7 @@
 // non-daily conflicts, non-conflict failures, a note deleted mid-merge,
 // dismissing the inline error, and the gutter following unsaved edits.
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -189,6 +190,47 @@ void main() {
       expect(find.textContaining("Couldn't save"), findsNothing);
       expect(r.bodyText, '${_topicBody}One.\nTwo.\nThree.\n');
     });
+
+    testWidgets(
+      'a save that succeeds after an overlapping save conflicted on a topic note ends synced without an error',
+      (tester) async {
+        final pending = <Completer<MemexResult>>[];
+        final (r, _) = await _launch(
+          tester,
+          configure: (cli, _, _) => cli.on('update', (_) {
+            final c = Completer<MemexResult>();
+            pending.add(c);
+            return c.future;
+          }),
+        );
+        await _openTopic(r);
+        await r.type('${_topicBody}One.\n');
+        await r.fireDebounce();
+        await r.type('${_topicBody}One.\nTwo.\n');
+        await r.fireDebounce();
+        expect(pending, hasLength(2));
+
+        pending[0].complete(
+          FakeMemexCli.error(
+            'version_conflict',
+            'version conflict: expected 1, current 2',
+          ),
+        );
+        await r.settle();
+        expect(r.editor.errorMessage, contains('version conflict'));
+
+        pending[1].complete(
+          FakeMemexCli.ok(
+            jsonEncode({'note_id': _topicId, 'version': 2, 'updated_at': 1}),
+          ),
+        );
+        await r.settle();
+        expect(r.editor.status, SaveStatus.clean);
+        expect(r.editor.lastSavedVersion, 2);
+        expect(r.editor.errorMessage, isNull);
+        expect(r.inlineError, findsNothing);
+      },
+    );
 
     testWidgets(
       'a daily note save that fails without a conflict shows the error and does not merge',
