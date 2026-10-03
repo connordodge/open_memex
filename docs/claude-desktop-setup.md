@@ -31,7 +31,7 @@ You'll see something like:
 Initialized vault
   path:        /Users/you/Documents/MyMemex
   vault_id:    01KQAFAQ66A7P1HCMRPY304AXK
-  schema_ver:  2
+  schema_ver:  5
 ```
 
 Take note of the absolute vault path — you'll plug it into Claude Desktop's config next.
@@ -98,13 +98,17 @@ The first time Claude calls `search` or `create_note` with this flag, the BGE-sm
 
 ## 5. Restart Claude Desktop
 
-Fully quit and re-open it. After restart, you should see the memex tools listed in Claude's tools panel:
+Fully quit and re-open it. Claude Desktop keeps `memex serve` running from whichever binary it started, so do this after every `cargo install` too (see "Upgrading to schema V5" in the [README](../README.md) before you point a new binary at an existing vault). After restart, you should see the memex tools in Claude's tools panel. The server exposes 26 tools; the README lists them all. The core ones:
 
 - `search` — hybrid keyword + semantic search across your notes.
 - `get_note` — fetch the full content of a note. Pass `include_backlinks: true` to also receive `links` (outgoing) and `backlinks` (incoming) maps grouped by kind.
 - `create_note` — create a new note (auto-tagged `inbox` + `agent-authored`).
 - `neighbors` — BFS over the link graph from a starting note. Treats edges as undirected for traversal but preserves direction in `EdgeMeta`. Self-edges excluded. Server-side depth clamp to `[1, 3]`. Optional `kind` filter.
 - `add_link` — add a wikilink from one note to another. `kind=references` (default) appends to a `## Auto-added links` section; any other kind (built-in or user-defined kebab-case) writes into YAML frontmatter under that key. Idempotent.
+
+The rest cover canvases (`list_canvases`, `get_canvas`, `create_canvas`, `add_to_canvas`, `remove_from_canvas`, `move_node`, `delete_canvas`), daily-note review (`list_unreviewed_days`, `get_daily_note_changes`, `mark_day_reviewed`), capture and excerpts (`append_to_daily_note`, `add_excerpt`, `remove_excerpt`) and Smart Folders (`list_smart_folders`, `create_smart_folder`, `update_smart_folder`, `delete_smart_folder`, `add_to_smart_folder`, `remove_from_smart_folder`, `get_vault_settings`), plus `update_link`.
+
+The server also offers two prompts, `review_daily_notes` and `capture`. Attach one from the `+` menu in a chat. See [`docs/daily-review.md`](daily-review.md) for what they do.
 
 ## 6. Try it
 
@@ -147,5 +151,5 @@ tail -f ~/Documents/MyMemex/.memex/mcp.log.*
 - Single-vault per Claude Desktop config entry. To switch vaults, edit the config and restart.
 - A live editing UI (Flutter macOS app) is shipped — see the main README. The Flutter app and Claude Desktop can be pointed at the same vault simultaneously; SQLite WAL handles concurrent access.
 - No sync. The vault is single-device.
-- `update_note` and `delete_note` are not yet exposed via MCP — Claude can create + link notes but cannot edit existing prose in this build. (The Flutter app uses both via the CLI.)
-- Schema is versioned; future upgrades will run forward migrations. Don't manually edit `memex.db`.
+- There are no MCP tools to edit, rename or delete an existing note, by design. Claude can create notes, link them, append to daily notes and file excerpts; editing and deleting are yours, through the app or the CLI (`memex update`, `memex rm`).
+- Schema is versioned (currently V5); upgrades run forward migrations when a newer `memex` opens a vault, and older binaries refuse a newer vault. Don't manually edit `memex.db`.
