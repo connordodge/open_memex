@@ -190,4 +190,56 @@ void main() {
     expect(_runToRest(layout), lessThanOrEqualTo(kGraphMaxTicks));
     _expectFinite(layout.positions);
   });
+  test('an empty layout needs no ticks', () {
+    final empty = GraphLayout(nodeIds: const [], links: const []);
+    expect(empty.isSettled, isTrue);
+  });
+
+  test('links to nodes outside the layout are ignored', () {
+    final ids = _ids(6);
+    final plain = GraphLayout(nodeIds: ids, links: _ringLinks(ids));
+    final extra = GraphLayout(
+      nodeIds: ids,
+      links: [..._ringLinks(ids), ('n00', 'elsewhere'), ('nowhere', 'n01')],
+    );
+    _runToRest(plain);
+    _runToRest(extra);
+    expect(extra.positions, plain.positions);
+  });
+
+  test('moving an unknown node is ignored', () {
+    final ids = _ids(4);
+    final layout = GraphLayout(nodeIds: ids, links: _ringLinks(ids));
+    _runToRest(layout);
+    final settled = Map.of(layout.positions);
+    layout.moveNode('ghost', const Offset(10, 10));
+    expect(layout.isSettled, isTrue);
+    expect(layout.positions, settled);
+  });
+
+  test('releasing a node that is not being dragged changes nothing', () {
+    final ids = _ids(4);
+    final layout = GraphLayout(nodeIds: ids, links: _ringLinks(ids));
+    _runToRest(layout);
+    layout.release('n01');
+    expect(layout.isSettled, isTrue);
+  });
+
+  test('a released node settles within the brief reheat budget', () {
+    final ids = _ids(6);
+    final layout = GraphLayout(nodeIds: ids, links: _ringLinks(ids));
+    _runToRest(layout);
+    layout.moveNode('n02', const Offset(400, -250));
+    for (var i = 0; i < 50; i++) {
+      layout.tick();
+    }
+    layout.release('n02');
+    final ticks = _runToRest(layout);
+    expect(ticks, greaterThan(0));
+    expect(
+      ticks,
+      lessThan(kGraphMaxTicks),
+      reason: 'a release reheats briefly',
+    );
+  });
 }

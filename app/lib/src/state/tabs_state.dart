@@ -4,8 +4,8 @@ import '../graph/graph_scope.dart';
 import 'ui_state_store.dart';
 import 'vault_state.dart';
 
-/// One tab in the workspace. A tab is either a note (NoteTab) or a canvas
-/// (CanvasTab). Identity is `(kind, id)`.
+/// One tab in the workspace: a note (NoteTab), a canvas (CanvasTab) or a
+/// Graph view (GraphTab). Identity is `(kind, id)`.
 sealed class WorkspaceTab {
   const WorkspaceTab(this.id);
   final String id;
@@ -17,6 +17,13 @@ sealed class WorkspaceTab {
   static WorkspaceTab? fromPersisted(PersistedTab p) {
     if (p.isNote) return NoteTab(p.id);
     if (p.isCanvas) return CanvasTab(p.id);
+    // A graph entry with an unknown or malformed scope is dropped.
+    if (p.isGraph) {
+      return switch (GraphScope.parse(p.id)) {
+        final scope? => GraphTab(scope),
+        null => null,
+      };
+    }
     return null;
   }
 }
@@ -61,10 +68,17 @@ class GraphTab extends WorkspaceTab {
 
   /// `graph-<scope>:<id>`.
   @override
-  String get tabId => throw UnimplementedError();
+  String get tabId => 'graph-$id';
 
   @override
-  PersistedTab toPersisted() => throw UnimplementedError();
+  PersistedTab toPersisted() =>
+      PersistedTab(kind: PersistedTab.kindGraph, id: id);
+
+  @override
+  bool operator ==(Object other) => other is GraphTab && other.scope == scope;
+
+  @override
+  int get hashCode => Object.hash('graph', scope);
 }
 
 /// Soft cap on open tabs. Past this, opening a new tab evicts the
