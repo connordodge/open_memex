@@ -211,7 +211,7 @@ void main() {
     );
 
     test(
-      'non-JSON version conflict stderr from update keeps today\'s kind and message with a null code',
+      'non-JSON version conflict stderr from update keeps the existing kind and message with a null code',
       () async {
         for (final stderr in [
           'Error: version conflict: expected 3, current 4\n',
@@ -239,7 +239,7 @@ void main() {
     );
 
     test(
-      'non-JSON stderr from update yields code null, kind other and today\'s message',
+      'non-JSON stderr from update yields code null, kind other and the existing message',
       () async {
         final cli = FakeMemexCli()
           ..on(
