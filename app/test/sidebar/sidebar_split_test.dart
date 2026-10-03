@@ -6,6 +6,7 @@
 // Keys, empty states, rail sizing and tab opening all still work.
 import 'dart:io';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -480,5 +481,39 @@ void main() {
       expect(rowColor(tester, 'canvas-row-c1'), OmColors.surface4);
       expect(rowColor(tester, 'canvas-row-c2'), Colors.transparent);
     });
+
+    testWidgets(
+      'hovering a note or canvas row tints it until the mouse leaves',
+      (tester) async {
+        await _pump(
+          tester,
+          build: (h) => SizedBox(
+            width: 268,
+            height: 600,
+            child: Column(
+              children: [
+                CanvasesRail(canvases: _canvases),
+                Expanded(
+                  child: NotesPane(notes: _notes, onNewNote: () {}),
+                ),
+              ],
+            ),
+          ),
+        );
+        final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+        await mouse.addPointer(location: const Offset(1100, 800));
+        addTearDown(mouse.removePointer);
+
+        for (final key in ['note-list-item-n1', 'canvas-row-c2']) {
+          expect(rowColor(tester, key), Colors.transparent, reason: key);
+          await mouse.moveTo(tester.getCenter(find.byKey(Key(key))));
+          await tester.pump();
+          expect(rowColor(tester, key), OmColors.surface3, reason: key);
+          await mouse.moveTo(const Offset(1100, 800));
+          await tester.pump();
+          expect(rowColor(tester, key), Colors.transparent, reason: key);
+        }
+      },
+    );
   });
 }

@@ -96,6 +96,29 @@ class _FakeCli extends MemexCli {
   }
 }
 
+/// Answers each `updateNote` call only when the test completes its entry in
+/// [pending], so saves can overlap.
+class _QueuedCli extends MemexCli {
+  _QueuedCli() : super(binaryPath: '/nonexistent/memex-test-binary');
+
+  final pending = <Completer<NoteUpdateResult>>[];
+
+  @override
+  Future<NoteUpdateResult> updateNote({
+    required String vaultPath,
+    required String noteId,
+    required int expectedVersion,
+    String? title,
+    required String contentMd,
+    bool withEmbeddings = false,
+    bool noRenameLinks = false,
+  }) {
+    final c = Completer<NoteUpdateResult>();
+    pending.add(c);
+    return c.future;
+  }
+}
+
 const _vaultPath = '/vaults/work';
 
 Note _note({
@@ -933,6 +956,88 @@ void main() {
       await tester.pump();
       expect(find.byType(NoteMenu), findsNothing);
     });
+
+    testWidgets('a title edit after a failed save clears the error message', (
+      tester,
+    ) async {
+      final cli = _FakeCli()
+        ..error = MemexException(
+          'conflict',
+          kind: MemexErrorKind.versionConflict,
+        );
+      final container = _container(cli);
+      final controller = container.read(editorControllerProvider.notifier);
+      controller.loadNote(_note());
+      controller.onContentChanged('x');
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pump();
+      expect(container.read(editorControllerProvider).errorMessage, 'conflict');
+
+      cli.error = null;
+      controller.onTitleChanged('Renamed');
+      final s = container.read(editorControllerProvider);
+      expect(s.status, SaveStatus.dirty);
+      expect(s.errorMessage, isNull);
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pump();
+    });
+
+    testWidgets(
+      'a save that succeeds after an overlapping save failed ends without an error',
+      (tester) async {
+        final cli = _QueuedCli();
+        final container = _container(cli);
+        final controller = container.read(editorControllerProvider.notifier);
+        controller.loadNote(_note(version: 7));
+
+        // Save 1 goes out and stays in flight.
+        controller.onContentChanged('x');
+        await tester.pump(const Duration(milliseconds: 500));
+        // Save 2 goes out while save 1 is still pending.
+        controller.onContentChanged('xy');
+        await tester.pump(const Duration(milliseconds: 500));
+        expect(cli.pending, hasLength(2));
+
+        cli.pending[0].completeError(
+          MemexException('conflict', kind: MemexErrorKind.versionConflict),
+        );
+        await tester.pump();
+        expect(
+          container.read(editorControllerProvider).errorMessage,
+          'conflict',
+        );
+
+        cli.pending[1].complete(
+          NoteUpdateResult(noteId: 'n1', version: 8, updatedAt: 1),
+        );
+        await tester.pump();
+        final s = container.read(editorControllerProvider);
+        expect(s.status, SaveStatus.clean);
+        expect(s.lastSavedVersion, 8);
+        expect(s.errorMessage, isNull);
+      },
+    );
+
+    testWidgets(
+      'moving the caret to the start of the body hides the kind chip',
+      (tester) async {
+        await _pumpEditor(tester, note: _note());
+        await tester.enterText(_bodyField(), 'see [[');
+        await tester.pump();
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        final body = tester.widget<TextField>(_bodyField()).controller!;
+        expect(body.text, startsWith('see [[Other note'));
+        expect(find.byKey(const Key('kind-chip')), findsOneWidget);
+
+        body.selection = const TextSelection.collapsed(offset: 0);
+        await tester.pump();
+        expect(find.byKey(const Key('kind-chip')), findsNothing);
+
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.pump();
+      },
+    );
 
     test('formatUpdatedAgo buckets minutes, hours and days', () {
       final now = DateTime.utc(2026, 10, 3, 12);
