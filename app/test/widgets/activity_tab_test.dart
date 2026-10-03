@@ -15,7 +15,8 @@ import '../support/review_fakes.dart';
 
 const _dailyId = 'daily-2026-09-05';
 
-const _eyebrow = 'agent activity · this note';
+// The shared Eyebrow atom renders its text upper-cased.
+const _eyebrow = 'AGENT ACTIVITY · THIS NOTE';
 const _emptyCopy =
     'no activity yet.\nconnect an agent via the MCP server to see what they touch.';
 

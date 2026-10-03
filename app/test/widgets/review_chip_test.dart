@@ -286,7 +286,7 @@ void main() {
         expect(h.read(rightPanelOpenProvider), isTrue);
         expect(h.read(rightPanelTabProvider), RightPanelTab.activity);
         expect(find.byType(RightPanel), findsOneWidget);
-        expect(find.text('agent activity · this note'), findsOneWidget);
+        expect(find.text('AGENT ACTIVITY · THIS NOTE'), findsOneWidget);
       },
     );
 
@@ -303,7 +303,7 @@ void main() {
 
         expect(h.read(rightPanelOpenProvider), isTrue);
         expect(h.read(rightPanelTabProvider), RightPanelTab.activity);
-        expect(find.text('agent activity · this note'), findsOneWidget);
+        expect(find.text('AGENT ACTIVITY · THIS NOTE'), findsOneWidget);
         expect(find.byKey(const Key('backlinks-panel')), findsNothing);
       },
     );
