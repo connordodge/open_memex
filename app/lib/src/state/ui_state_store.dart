@@ -63,12 +63,18 @@ class UiStateStore {
   }
 }
 
+/// The sidebar's two modes (Req 50, WI #23), persisted per vault as
+/// `sidebar_mode` (`days` | `topics`). A missing or unknown value reads as
+/// [SidebarMode.days].
+enum SidebarMode { days, topics }
+
 /// In-memory shape of the per-vault UI state.
 class UiState {
   UiState({
     required this.tabs,
     required this.activeTabIndex,
     required this.canvasViewports,
+    this.sidebarMode = SidebarMode.days,
   });
 
   factory UiState.empty() =>
@@ -77,6 +83,9 @@ class UiState {
   final List<PersistedTab> tabs;
   final int activeTabIndex;
   final Map<String, CanvasViewport> canvasViewports;
+
+  /// The sidebar mode (`sidebar_mode`), [SidebarMode.days] by default.
+  final SidebarMode sidebarMode;
 
   Map<String, dynamic> toJson() => {
     'tabs': tabs.map((t) => t.toJson()).toList(),
