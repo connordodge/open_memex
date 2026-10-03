@@ -4,15 +4,15 @@
 use std::sync::Arc;
 
 use memex_core::canvas;
+use memex_core::excerpts as core_excerpts;
 use memex_core::graph;
 use memex_core::indexer;
 use memex_core::links::{self as core_links, LinkKind, LinkSource};
-use memex_core::notes::{
-    self, update_note_with_options, CreateNote, NoteId, RenameOptions, UpdateNote,
-};
+use memex_core::notes::{self, CreateNote, NoteId, RenameOptions, UpdateNote};
+use memex_core::review as core_review;
 use memex_core::search::{self, SearchFilters, SearchMode, SearchOptions};
 use memex_core::tags;
-use memex_core::CanvasId;
+use memex_core::{Caller, CanvasId, MemexError};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_handler, tool_router, ServerHandler};
@@ -20,8 +20,16 @@ use rusqlite::params;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::cli::Role;
 use crate::md_links;
 use crate::state::AppState;
+
+// One `#[tool_router]` per area (architect ruling D7), composed in `Memex::new`.
+pub mod daily;
+pub mod excerpts;
+pub mod folders;
+pub mod review;
+pub mod settings;
 
 #[derive(Clone)]
 pub struct Memex {
@@ -33,7 +41,12 @@ impl Memex {
     pub fn new(state: Arc<AppState>) -> Self {
         Self {
             state,
-            tool_router: Self::tool_router(),
+            tool_router: Self::tool_router()
+                + Self::daily_router()
+                + Self::excerpts_router()
+                + Self::folders_router()
+                + Self::review_router()
+                + Self::settings_router(),
         }
     }
 }
@@ -99,6 +112,9 @@ pub struct GetNoteEnvelope {
     pub links: Option<serde_json::Map<String, serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backlinks: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Review and transclusion fields, merged into the top level (D7).
+    #[serde(flatten)]
+    pub fields: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -163,6 +179,10 @@ pub struct CreateNoteParams {
     /// Identifier for the agent creating this note. Stored in frontmatter.
     #[serde(default)]
     pub agent_id: Option<String>,
+    /// Optional role, `daily` or `topic`. Stored in frontmatter as `role`;
+    /// any other value is a `role_rule` error.
+    #[serde(default)]
+    pub role: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -363,7 +383,7 @@ impl Memex {
                 truncated: res.truncated,
             })
             .unwrap_or_else(|e| err_payload("search.serialize", &e.to_string())),
-            Err(e) => err_payload("search", &e.to_string()),
+            Err(e) => err_from("search", &e),
         }
     }
 
@@ -379,7 +399,7 @@ impl Memex {
         } = params.0;
         let id = match NoteId::parse(&note_id) {
             Ok(i) => i,
-            Err(e) => return err_payload("get_note.invalid_id", &e.to_string()),
+            Err(e) => return err_from("get_note.invalid_id", &e),
         };
         let vault = self.state.vault.lock().await;
         match notes::get_note(&vault, &id) {
@@ -397,6 +417,14 @@ impl Memex {
                 } else {
                     (None, None)
                 };
+                let mut fields = match core_review::note_review_fields(&vault, &n) {
+                    Ok(m) => m,
+                    Err(e) => return err_from("get_note.review", &e),
+                };
+                match core_excerpts::note_transclusion_fields(&vault, &n) {
+                    Ok(m) => fields.extend(m),
+                    Err(e) => return err_from("get_note.excerpts", &e),
+                }
                 serde_json::to_string(&GetNoteEnvelope {
                     vault_id: vault.vault_id().to_string(),
                     note_id: n.id.to_string(),
@@ -409,10 +437,11 @@ impl Memex {
                     tags,
                     links: links_map,
                     backlinks: backlinks_map,
+                    fields,
                 })
                 .unwrap_or_else(|e| err_payload("get_note.serialize", &e.to_string()))
             }
-            Err(e) => err_payload("get_note", &e.to_string()),
+            Err(e) => err_from("get_note", &e),
         }
     }
 
@@ -436,7 +465,7 @@ impl Memex {
         let kind_normalized = match kind.as_deref() {
             Some(k) => match LinkKind::new(k) {
                 Ok(lk) => Some(lk.as_str().to_string()),
-                Err(e) => return err_payload("neighbors.invalid_kind", &e.to_string()),
+                Err(e) => return err_from("neighbors.invalid_kind", &e),
             },
             None => None,
         };
@@ -456,7 +485,7 @@ impl Memex {
                 results,
             })
             .unwrap_or_else(|e| err_payload("neighbors.serialize", &e.to_string())),
-            Err(e) => err_payload("neighbors", &e.to_string()),
+            Err(e) => err_from("neighbors", &e),
         }
     }
 
@@ -477,16 +506,16 @@ impl Memex {
         } = params.0;
         let from = match NoteId::parse(&from_id) {
             Ok(i) => i,
-            Err(e) => return err_payload("add_link.invalid_from", &e.to_string()),
+            Err(e) => return err_from("add_link.invalid_from", &e),
         };
         let to = match NoteId::parse(&to_id) {
             Ok(i) => i,
-            Err(e) => return err_payload("add_link.invalid_to", &e.to_string()),
+            Err(e) => return err_from("add_link.invalid_to", &e),
         };
         let kind_obj = match kind.as_deref() {
             Some(k) => match LinkKind::new(k) {
                 Ok(lk) => lk,
-                Err(e) => return err_payload("add_link.invalid_kind", &e.to_string()),
+                Err(e) => return err_from("add_link.invalid_kind", &e),
             },
             None => LinkKind::references(),
         };
@@ -496,11 +525,11 @@ impl Memex {
 
         let source = match notes::get_note(&vault, &from) {
             Ok(n) => n,
-            Err(e) => return err_payload("add_link.from_not_found", &e.to_string()),
+            Err(e) => return err_from("add_link.from_not_found", &e),
         };
         let target = match notes::get_note(&vault, &to) {
             Ok(n) => n,
-            Err(e) => return err_payload("add_link.to_not_found", &e.to_string()),
+            Err(e) => return err_from("add_link.to_not_found", &e),
         };
 
         // Idempotency check.
@@ -545,18 +574,19 @@ impl Memex {
             LinkSource::Frontmatter
         };
 
-        let updated = match update_note_with_options(
+        let updated = match notes::update_note_as(
             &mut vault,
             &source.id,
             source.version,
             UpdateNote {
-                content_md: Some(new_md.clone()),
+                content_md: Some(new_md),
                 ..Default::default()
             },
             RenameOptions { rename_links: false },
+            Caller::Agent,
         ) {
             Ok(n) => n,
-            Err(e) => return err_payload("add_link.update", &e.to_string()),
+            Err(e) => return err_from("add_link.update", &e),
         };
 
         let embedder = self.state.embedder.clone();
@@ -564,10 +594,10 @@ impl Memex {
         if let Err(e) = indexer::reindex_note(
             vault.connection_mut(),
             updated.id.as_str(),
-            &new_md,
+            &updated.content_md,
             embedder_ref,
         ) {
-            return err_payload("add_link.index", &e.to_string());
+            return err_from("add_link.index", &e);
         }
 
         let link_id: Option<String> = vault.connection_ref().query_row(
@@ -602,26 +632,40 @@ impl Memex {
             title,
             tags: tag_list,
             agent_id,
+            role,
         } = params.0;
+        let role = match role {
+            None => None,
+            Some(r) => match Role::parse(&r) {
+                Some(role) => Some(role),
+                None => {
+                    let msg = format!("role must be `daily` or `topic`, got `{r}`");
+                    return err_from("create_note", &MemexError::RoleRule(msg));
+                }
+            },
+        };
 
         let mut vault = self.state.vault.lock().await;
         let agent = agent_id.unwrap_or_else(|| "unknown".to_string());
         let now = memex_core::now_unix_ms();
-        let frontmatter = serde_json::json!({
+        let mut frontmatter = serde_json::json!({
             "source": "agent",
             "agent_id": agent,
             "created_at": now,
         });
+        if let Some(r) = role {
+            frontmatter["role"] = r.as_str().into();
+        }
 
         let create = CreateNote {
             title,
-            content_md: content_md.clone(),
+            content_md,
             frontmatter: Some(frontmatter),
         };
 
-        let note = match notes::create_note(&mut vault, create) {
+        let note = match notes::create_note_as(&mut vault, create, Caller::Agent) {
             Ok(n) => n,
-            Err(e) => return err_payload("create_note", &e.to_string()),
+            Err(e) => return err_from("create_note", &e),
         };
 
         let mut all_tags: Vec<String> = tag_list.unwrap_or_default();
@@ -639,10 +683,10 @@ impl Memex {
         if let Err(e) = indexer::reindex_note(
             vault.connection_mut(),
             note.id.as_str(),
-            &content_md,
+            &note.content_md,
             embedder_ref,
         ) {
-            return err_payload("create_note.index", &e.to_string());
+            return err_from("create_note.index", &e);
         }
 
         serde_json::to_string(&CreateNoteEnvelope {
@@ -661,7 +705,7 @@ impl Memex {
         let vault = self.state.vault.lock().await;
         let summaries = match canvas::list_canvases(&vault) {
             Ok(s) => s,
-            Err(e) => return err_payload("list_canvases", &e.to_string()),
+            Err(e) => return err_from("list_canvases", &e),
         };
         let env = ListCanvasesEnvelope {
             vault_id: vault.vault_id().to_string(),
@@ -689,12 +733,12 @@ impl Memex {
     pub async fn get_canvas(&self, params: Parameters<GetCanvasParams>) -> String {
         let cid = match CanvasId::parse(&params.0.canvas_id) {
             Ok(c) => c,
-            Err(e) => return err_payload("get_canvas.invalid_id", &e.to_string()),
+            Err(e) => return err_from("get_canvas.invalid_id", &e),
         };
         let vault = self.state.vault.lock().await;
         let detail = match canvas::get_canvas(&vault, &cid) {
             Ok(d) => d,
-            Err(e) => return err_payload("get_canvas", &e.to_string()),
+            Err(e) => return err_from("get_canvas", &e),
         };
         let env = GetCanvasEnvelope {
             vault_id: vault.vault_id().to_string(),
@@ -753,7 +797,7 @@ impl Memex {
                     ),
                 );
             }
-            Err(e) => return err_payload("create_canvas", &e.to_string()),
+            Err(e) => return err_from("create_canvas", &e),
         };
         let env = CreateCanvasEnvelope {
             vault_id: vault.vault_id().to_string(),
@@ -780,10 +824,10 @@ impl Memex {
         } = params.0;
         let cid = match CanvasId::parse(&canvas_id) {
             Ok(c) => c,
-            Err(e) => return err_payload("add_to_canvas.invalid_canvas", &e.to_string()),
+            Err(e) => return err_from("add_to_canvas.invalid_canvas", &e),
         };
         if let Err(e) = NoteId::parse(&note_id) {
-            return err_payload("add_to_canvas.invalid_note", &e.to_string());
+            return err_from("add_to_canvas.invalid_note", &e);
         }
         let mut vault = self.state.vault.lock().await;
         let node = match canvas::add_to_canvas(
@@ -794,7 +838,7 @@ impl Memex {
             y.unwrap_or(0.0),
         ) {
             Ok(n) => n,
-            Err(e) => return err_payload("add_to_canvas", &e.to_string()),
+            Err(e) => return err_from("add_to_canvas", &e),
         };
         let env = AddToCanvasEnvelope {
             vault_id: vault.vault_id().to_string(),
@@ -821,11 +865,11 @@ impl Memex {
         let RemoveFromCanvasParams { canvas_id, note_id } = params.0;
         let cid = match CanvasId::parse(&canvas_id) {
             Ok(c) => c,
-            Err(e) => return err_payload("remove_from_canvas.invalid_canvas", &e.to_string()),
+            Err(e) => return err_from("remove_from_canvas.invalid_canvas", &e),
         };
         let mut vault = self.state.vault.lock().await;
         if let Err(e) = canvas::remove_from_canvas(&mut vault, &cid, &note_id) {
-            return err_payload("remove_from_canvas", &e.to_string());
+            return err_from("remove_from_canvas", &e);
         }
         let env = RemoveFromCanvasEnvelope {
             vault_id: vault.vault_id().to_string(),
@@ -850,12 +894,12 @@ impl Memex {
         } = params.0;
         let cid = match CanvasId::parse(&canvas_id) {
             Ok(c) => c,
-            Err(e) => return err_payload("move_node.invalid_canvas", &e.to_string()),
+            Err(e) => return err_from("move_node.invalid_canvas", &e),
         };
         let mut vault = self.state.vault.lock().await;
         let node = match canvas::move_node(&mut vault, &cid, &note_id, x, y, z_order) {
             Ok(n) => n,
-            Err(e) => return err_payload("move_node", &e.to_string()),
+            Err(e) => return err_from("move_node", &e),
         };
         let env = AddToCanvasEnvelope {
             vault_id: vault.vault_id().to_string(),
@@ -878,11 +922,11 @@ impl Memex {
     pub async fn delete_canvas(&self, params: Parameters<DeleteCanvasParams>) -> String {
         let cid = match CanvasId::parse(&params.0.canvas_id) {
             Ok(c) => c,
-            Err(e) => return err_payload("delete_canvas.invalid_id", &e.to_string()),
+            Err(e) => return err_from("delete_canvas.invalid_id", &e),
         };
         let mut vault = self.state.vault.lock().await;
         if let Err(e) = canvas::delete_canvas(&mut vault, &cid, params.0.expected_version) {
-            return err_payload("delete_canvas", &e.to_string());
+            return err_from("delete_canvas", &e);
         }
         let env = DeleteCanvasEnvelope {
             vault_id: vault.vault_id().to_string(),
@@ -907,7 +951,7 @@ impl Memex {
         let new_kind = match kind {
             Some(k) => match LinkKind::new(&k) {
                 Ok(lk) => Some(lk),
-                Err(e) => return err_payload("update_link.invalid_kind", &e.to_string()),
+                Err(e) => return err_from("update_link.invalid_kind", &e),
             },
             None => None,
         };
@@ -917,16 +961,17 @@ impl Memex {
             label.map(Some)
         };
         let mut vault = self.state.vault.lock().await;
-        let link = match core_links::update_link(
+        let link = match core_links::update_link_as(
             &mut vault,
             &link_id,
             core_links::UpdateLink {
                 new_kind,
                 new_label,
             },
+            Caller::Agent,
         ) {
             Ok(l) => l,
-            Err(e) => return err_payload("update_link", &e.to_string()),
+            Err(e) => return err_from("update_link", &e),
         };
         let env = UpdateLinkEnvelope {
             vault_id: vault.vault_id().to_string(),
@@ -985,6 +1030,32 @@ fn group_links_by_kind(
         }
     }
     out
+}
+
+/// The tool error for a core failure (architect ruling D4): a rule error
+/// returns its CONTRACTS C1 object with the rule code; any other error keeps
+/// today's `op` code.
+fn err_from(op: &str, e: &MemexError) -> String {
+    let is_rule = matches!(
+        e,
+        MemexError::DailyNoteExists { .. }
+            | MemexError::MarkerRule(_)
+            | MemexError::RoleRule(_)
+            | MemexError::PinnedRule { .. }
+            | MemexError::DepthExceeded { .. }
+            | MemexError::ChangeEntriesInvalid(_)
+            | MemexError::ReviewStale { .. }
+            | MemexError::NameConflict(_)
+            | MemexError::FolderCycle(_)
+            | MemexError::InvalidDate(_)
+            | MemexError::BlockNotFound(_)
+            | MemexError::SettingInvalid(_)
+    );
+    if is_rule {
+        e.to_error_json().to_string()
+    } else {
+        err_payload(op, &e.to_string())
+    }
 }
 
 fn err_payload(code: &str, message: &str) -> String {

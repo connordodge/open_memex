@@ -22,6 +22,10 @@ void main() {
 
   tearDown(() async {
     notifier.dispose();
+    // The notifier persists with unawaited writes. Queue one more write and
+    // await it: the store serializes writes, so this drains every pending one
+    // before the temp dir is deleted (otherwise deleteSync races the rename).
+    await store.write(store.read());
     if (tmp.existsSync()) tmp.deleteSync(recursive: true);
   });
 

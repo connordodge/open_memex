@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::process::ExitCode;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -11,12 +12,14 @@ use memex_core::notes::{
     NoteId, RenameOptions, UpdateNote,
 };
 use memex_core::tags;
+use memex_core::{excerpts, review};
 use memex_core::{CanvasId, Vault};
 use rmcp::transport::stdio;
 use rmcp::ServiceExt;
 use rusqlite::params;
 use tracing_subscriber::EnvFilter;
 
+use memex_mcp::cli::{self, InvalidArgument, Role};
 use memex_mcp::md_links;
 use memex_mcp::state::{build_default_embedder, AppState};
 use memex_mcp::tools;
@@ -50,6 +53,9 @@ enum Commands {
         /// Comma-separated tags.
         #[arg(long, value_delimiter = ',')]
         tags: Vec<String>,
+        /// Note role, stored in frontmatter as `role`.
+        #[arg(long, value_enum)]
+        role: Option<Role>,
         /// Use real embeddings (downloads BGE-small on first call).
         #[arg(long)]
         with_embeddings: bool,
@@ -161,6 +167,20 @@ enum Commands {
         #[command(subcommand)]
         action: CanvasAction,
     },
+    /// Append text to a daily note. Text comes from TEXT or stdin.
+    Append(cli::append::AppendArgs),
+    /// Print an agent prompt's raw text.
+    Prompt(cli::prompt::PromptArgs),
+    /// Delete a note.
+    Rm(cli::rm::RmArgs),
+    /// Excerpt operations on topic notes.
+    Excerpt(cli::excerpt::ExcerptArgs),
+    /// Topic footer operations on daily notes.
+    Footer(cli::footer::FooterArgs),
+    /// Smart Folder operations.
+    Folder(cli::folder::FolderArgs),
+    /// Read or change vault settings.
+    Settings(cli::settings::SettingsArgs),
     /// Run as an MCP server over stdio.
     Serve {
         /// Vault directory.
@@ -255,17 +275,30 @@ enum CanvasAction {
     },
 }
 
+/// Runs one subcommand. Clap usage errors keep clap's output and exit 2; any
+/// other failure prints one line of JSON on stderr and exits 1 (CONTRACTS C1).
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> ExitCode {
     let cli = Cli::parse();
-    match cli.command {
+    match dispatch(cli.command).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{}", cli::error_json(&e));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn dispatch(command: Commands) -> Result<()> {
+    match command {
         Commands::Init { path } => cmd_init(path),
         Commands::Add {
             vault,
             title,
             tags,
+            role,
             with_embeddings,
-        } => cmd_add(vault, title, tags, with_embeddings).await,
+        } => cmd_add(vault, title, tags, role, with_embeddings).await,
         Commands::Ls { vault, limit } => cmd_ls(vault, limit),
         Commands::Update {
             vault,
@@ -313,6 +346,13 @@ async fn main() -> Result<()> {
             with_embeddings,
         } => cmd_update_link(vault, link_id, kind, label, clear_label, with_embeddings).await,
         Commands::Canvas { action } => cmd_canvas(action),
+        Commands::Append(args) => cli::append::run(args),
+        Commands::Prompt(args) => cli::prompt::run(args),
+        Commands::Rm(args) => cli::rm::run(args),
+        Commands::Excerpt(args) => cli::excerpt::run(args),
+        Commands::Footer(args) => cli::footer::run(args),
+        Commands::Folder(args) => cli::folder::run(args),
+        Commands::Settings(args) => cli::settings::run(args),
         Commands::Serve {
             vault,
             with_embeddings,
@@ -335,6 +375,7 @@ async fn cmd_add(
     vault_path: PathBuf,
     title: Option<String>,
     tag_list: Vec<String>,
+    role: Option<Role>,
     with_embeddings: bool,
 ) -> Result<()> {
     use std::io::Read;
@@ -344,7 +385,8 @@ async fn cmd_add(
         .read_to_string(&mut buf)
         .context("read note body from stdin")?;
     if buf.trim().is_empty() {
-        anyhow::bail!("stdin was empty — nothing to add");
+        let msg = "stdin was empty — nothing to add".to_string();
+        return Err(InvalidArgument(msg).into());
     }
 
     let mut vault = Vault::open(&absolute).context("open vault")?;
@@ -352,8 +394,8 @@ async fn cmd_add(
         &mut vault,
         CreateNote {
             title,
-            content_md: buf.clone(),
-            frontmatter: None,
+            content_md: buf,
+            frontmatter: role.map(|r| serde_json::json!({ "role": r.as_str() })),
         },
     )?;
     for t in &tag_list {
@@ -368,7 +410,7 @@ async fn cmd_add(
     indexer::reindex_note(
         vault.connection_mut(),
         note.id.as_str(),
-        &buf,
+        &note.content_md,
         embedder.as_deref(),
     )?;
 
@@ -410,7 +452,7 @@ async fn cmd_update(
         .read_to_string(&mut buf)
         .context("read note body from stdin")?;
 
-    let id = NoteId::parse(&note_id).map_err(|e| anyhow::anyhow!("invalid note_id: {e}"))?;
+    let id = NoteId::parse(&note_id)?;
     let mut vault = Vault::open(&absolute).context("open vault")?;
     let updated = update_note_with_options(
         &mut vault,
@@ -418,7 +460,7 @@ async fn cmd_update(
         expected_version,
         UpdateNote {
             title,
-            content_md: Some(buf.clone()),
+            content_md: Some(buf),
             frontmatter: None,
         },
         RenameOptions {
@@ -434,7 +476,7 @@ async fn cmd_update(
     indexer::reindex_note(
         vault.connection_mut(),
         updated.id.as_str(),
-        &buf,
+        &updated.content_md,
         embedder.as_deref(),
     )?;
 
@@ -451,10 +493,13 @@ async fn cmd_update(
 
 fn cmd_get(vault_path: PathBuf, note_id: String, include_links: bool) -> Result<()> {
     let absolute = make_absolute(&vault_path)?;
-    let id = NoteId::parse(&note_id).map_err(|e| anyhow::anyhow!("invalid note_id: {e}"))?;
+    let id = NoteId::parse(&note_id)?;
     let vault = Vault::open(&absolute)?;
     let note = core_get_note(&vault, &id)?;
     let tag_list = tags::tags_for_note(&vault, note.id.as_str()).unwrap_or_default();
+    // Review and transclusion fields join the top level (D7).
+    let mut fields = review::note_review_fields(&vault, &note)?;
+    fields.extend(excerpts::note_transclusion_fields(&vault, &note)?);
     let mut payload = serde_json::json!({
         "note_id": note.id.to_string(),
         "title": note.title,
@@ -465,6 +510,9 @@ fn cmd_get(vault_path: PathBuf, note_id: String, include_links: bool) -> Result<
         "updated_at": note.updated_at,
         "tags": tag_list,
     });
+    if let Some(obj) = payload.as_object_mut() {
+        obj.extend(fields);
+    }
     if include_links {
         let outgoing = core_links::links_out_for_note(&vault, note.id.as_str())
             .unwrap_or_default();
@@ -491,7 +539,7 @@ fn cmd_links(
     kind_filter: Option<String>,
 ) -> Result<()> {
     let absolute = make_absolute(&vault_path)?;
-    let id = NoteId::parse(&note_id).map_err(|e| anyhow::anyhow!("invalid note_id: {e}"))?;
+    let id = NoteId::parse(&note_id)?;
     let vault = Vault::open(&absolute)?;
     let note = core_get_note(&vault, &id)?;
 
@@ -499,7 +547,7 @@ fn cmd_links(
     let want_in = dir == "in" || dir == "both";
 
     let kind = match kind_filter {
-        Some(k) => Some(LinkKind::new(&k).map_err(|e| anyhow::anyhow!("invalid kind: {e}"))?),
+        Some(k) => Some(LinkKind::new(&k).map_err(|e| invalid_argument("invalid kind", e))?),
         None => None,
     };
 
@@ -639,10 +687,9 @@ async fn cmd_add_link(
     with_embeddings: bool,
 ) -> Result<()> {
     let absolute = make_absolute(&vault_path)?;
-    let from_id = NoteId::parse(&from).map_err(|e| anyhow::anyhow!("invalid --from: {e}"))?;
-    let to_id = NoteId::parse(&to).map_err(|e| anyhow::anyhow!("invalid --to: {e}"))?;
-    let kind_obj = LinkKind::new(&kind)
-        .map_err(|e| anyhow::anyhow!("invalid --kind: {e}"))?;
+    let from_id = NoteId::parse(&from)?;
+    let to_id = NoteId::parse(&to)?;
+    let kind_obj = LinkKind::new(&kind).map_err(|e| invalid_argument("invalid --kind", e))?;
 
     let mut vault = Vault::open(&absolute).context("open vault")?;
     let source = core_get_note(&vault, &from_id)?;
@@ -695,7 +742,7 @@ async fn cmd_add_link(
         &source.id,
         source.version,
         UpdateNote {
-            content_md: Some(new_md.clone()),
+            content_md: Some(new_md),
             ..Default::default()
         },
         RenameOptions { rename_links: false },
@@ -709,7 +756,7 @@ async fn cmd_add_link(
     indexer::reindex_note(
         vault.connection_mut(),
         updated.id.as_str(),
-        &new_md,
+        &updated.content_md,
         embedder.as_deref(),
     )?;
 
@@ -754,7 +801,7 @@ async fn cmd_update_link(
     let absolute = make_absolute(&vault_path)?;
     let mut vault = Vault::open(&absolute).context("open vault")?;
     let new_kind = match kind {
-        Some(k) => Some(LinkKind::new(&k).map_err(|e| anyhow::anyhow!("invalid --kind: {e}"))?),
+        Some(k) => Some(LinkKind::new(&k).map_err(|e| invalid_argument("invalid --kind", e))?),
         None => None,
     };
     let new_label: Option<Option<String>> = if clear_label {
@@ -832,7 +879,7 @@ fn open_vault(vault_path: PathBuf) -> Result<(PathBuf, Vault)> {
 }
 
 fn parse_canvas_id(s: &str) -> Result<CanvasId> {
-    CanvasId::parse(s).map_err(|e| anyhow::anyhow!("invalid --canvas-id: {e}"))
+    Ok(CanvasId::parse(s)?)
 }
 
 fn cmd_canvas_new(vault_path: PathBuf, title: String) -> Result<()> {
@@ -973,7 +1020,7 @@ fn cmd_canvas_add(
 ) -> Result<()> {
     let (_abs, mut vault) = open_vault(vault_path)?;
     let cid = parse_canvas_id(&canvas_id)?;
-    let _ = NoteId::parse(&note_id).map_err(|e| anyhow::anyhow!("invalid --note-id: {e}"))?;
+    NoteId::parse(&note_id)?;
     let node = canvas::add_to_canvas(&mut vault, &cid, &note_id, x, y)?;
     println!(
         "{}",
@@ -1065,6 +1112,12 @@ async fn cmd_serve(vault_path: PathBuf, with_embeddings: bool, log_level: String
         .await
         .context("MCP service exited unexpectedly")?;
     Ok(())
+}
+
+/// A core validation failure on a CLI argument (`--kind`), reported as
+/// `invalid_argument` rather than the core error's code.
+fn invalid_argument(what: &str, e: memex_core::MemexError) -> anyhow::Error {
+    InvalidArgument(format!("{what}: {e}")).into()
 }
 
 fn make_absolute(p: &PathBuf) -> Result<PathBuf> {
