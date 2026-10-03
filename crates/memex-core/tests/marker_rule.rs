@@ -246,6 +246,51 @@ fn agent_update_that_sets_role_daily_fails_with_marker_rule_and_writes_nothing()
     }
 }
 
+/// Lead ruling: the marker rule is checked before the version, so a stale
+/// agent write to a daily note is `MarkerRule`, not `VersionConflict`.
+#[test]
+fn agent_update_of_a_daily_note_with_a_stale_version_fails_with_marker_rule() {
+    let (_dir, mut v) = fresh_vault();
+    let daily = create_daily(&mut v, "2026-10-01", "Morning pages.\n");
+    let loose = create(&mut v, "2026-10-02", "Loose thoughts.\n", None);
+    let before = snapshot(&v, &daily.id);
+
+    for stale in [daily.version - 1, daily.version + 1] {
+        let result = update_note_as(
+            &mut v,
+            &daily.id,
+            stale,
+            body_patch("Agent text.\n"),
+            RenameOptions::default(),
+            Caller::Agent,
+        );
+        assert_marker_rule(result, &format!("stale {stale}"));
+        let result = update_note_as(
+            &mut v,
+            &loose.id,
+            loose.version + 1,
+            fm_patch(json!({ "role": "daily" })),
+            RenameOptions::default(),
+            Caller::Agent,
+        );
+        assert_marker_rule(result, &format!("stale role change {stale}"));
+    }
+    assert_eq!(snapshot(&v, &daily.id), before);
+
+    // A person write with the same stale version is a version conflict.
+    let err = update_note_as(
+        &mut v,
+        &daily.id,
+        daily.version + 1,
+        body_patch("Person text.\n"),
+        RenameOptions::default(),
+        Caller::Person,
+    )
+    .map(|_| ())
+    .unwrap_err();
+    assert!(matches!(err, MemexError::VersionConflict { .. }), "{err:?}");
+}
+
 #[test]
 fn agent_update_of_a_topic_note_still_succeeds_while_a_daily_note_is_guarded() {
     let (_dir, mut v) = fresh_vault();

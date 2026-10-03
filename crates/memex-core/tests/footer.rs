@@ -432,6 +432,77 @@ fn setting_the_same_chip_twice_keeps_one_row_and_one_footer_line() {
     assert_eq!(body.matches("[[Player Loop~about]]").count(), 1, "{body:?}");
 }
 
+/// Lead ruling: a set that changes nothing (the same origin again, or
+/// `excerpt` over `person`) writes nothing and returns the effective origin.
+#[test]
+fn setting_a_chip_that_is_already_stored_writes_nothing() {
+    let (_dir, mut v) = fresh_vault();
+    let p = create_topic(&mut v, "Personal");
+    let e = create_topic(&mut v, "Excerpted");
+    let daily = create_daily(&mut v, "2026-10-01", "Day.\n");
+    set(&mut v, &daily.id, &p.id, ChipOrigin::Person);
+    set(&mut v, &daily.id, &e.id, ChipOrigin::Excerpt);
+    let aged = age(&v, &daily.id);
+    let before = stored(&v, &daily.id);
+
+    for (topic, origin, want) in [
+        (&p, ChipOrigin::Person, ChipOrigin::Person),
+        (&p, ChipOrigin::Excerpt, ChipOrigin::Person),
+        (&e, ChipOrigin::Excerpt, ChipOrigin::Excerpt),
+    ] {
+        let out = set(&mut v, &daily.id, &topic.id, origin);
+        assert_eq!(out.origin, Some(want), "{} {origin:?}", topic.title);
+        assert_eq!(out.note.version, before.version, "no version bump");
+        assert_eq!(out.note.content_md, before.content_md);
+        let now = stored(&v, &daily.id);
+        assert_eq!(now.version, before.version, "{} {origin:?}", topic.title);
+        assert_eq!(now.updated_at, aged, "not written");
+    }
+    assert_eq!(
+        chip_rows(&v, &daily.id),
+        vec![
+            (p.id.to_string(), "person".to_string()),
+            (e.id.to_string(), "excerpt".to_string()),
+        ]
+    );
+}
+
+/// Lead ruling: removing a chip that is not there, or one `ExcerptOnly`
+/// keeps, writes nothing and returns the origin that remains.
+#[test]
+fn remove_chip_that_removes_nothing_writes_nothing() {
+    let (_dir, mut v) = fresh_vault();
+    let p = create_topic(&mut v, "Personal");
+    let absent = create_topic(&mut v, "Absent");
+    let daily = create_daily(&mut v, "2026-10-01", "Day.\n");
+    set(&mut v, &daily.id, &p.id, ChipOrigin::Person);
+    let aged = age(&v, &daily.id);
+    let before = stored(&v, &daily.id);
+
+    for (topic, mode, want) in [
+        (&absent, RemoveMode::AnyOrigin, None),
+        (&absent, RemoveMode::ExcerptOnly, None),
+        (&p, RemoveMode::ExcerptOnly, Some(ChipOrigin::Person)),
+    ] {
+        let out = remove(&mut v, &daily.id, &topic.id, mode);
+        assert_eq!(out.origin, want, "{} {mode:?}", topic.title);
+        assert_eq!(out.note.version, before.version);
+        let now = stored(&v, &daily.id);
+        assert_eq!(now.version, before.version, "{} {mode:?}", topic.title);
+        assert_eq!(now.updated_at, aged, "not written");
+        assert_eq!(now.content_md, before.content_md);
+    }
+    assert_eq!(
+        chip_rows(&v, &daily.id),
+        vec![(p.id.to_string(), "person".to_string())]
+    );
+
+    let err = footer::remove_chip(&mut v, &p.id, &p.id, RemoveMode::AnyOrigin, None)
+        .map(|_| ())
+        .unwrap_err();
+    assert!(matches!(err, MemexError::RoleRule(_)), "{err:?}");
+}
+
 // ---------- AC 9: remove_chip modes ----------
 
 #[test]

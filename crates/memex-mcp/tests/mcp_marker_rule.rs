@@ -223,6 +223,65 @@ async fn mcp_add_link_from_a_daily_note_returns_marker_rule_and_leaves_it_unchan
     }
 }
 
+/// Lead ruling: the guard is on the source and runs before the idempotency
+/// check, so an existing link from a daily note is refused as well.
+#[tokio::test]
+async fn mcp_add_link_from_a_daily_note_when_the_link_exists_returns_marker_rule() {
+    let f = fresh();
+    let topic = person_note(&f.state, "Player Loop", "Topic body.\n", Some("topic")).await;
+    let daily = person_note(
+        &f.state,
+        "2026-10-01",
+        "Thinking about [[Player Loop]] today.\n",
+        Some("daily"),
+    )
+    .await;
+    link_id_from(&f.state, &daily, "Player Loop").await;
+    let before = stored(&f.state, &daily).await;
+
+    let v = mcp_add_link(
+        &f.memex,
+        json!({ "from_id": daily, "to_id": topic, "kind": "references" }),
+    )
+    .await;
+    assert_marker_rule(&v, "add_link of an existing link");
+    assert_eq!(stored(&f.state, &daily).await, before);
+
+    // The same existing link from a topic note answers was_existing.
+    let other = person_note(&f.state, "Sleep", "See [[Player Loop]].\n", Some("topic")).await;
+    let v = mcp_add_link(&f.memex, json!({ "from_id": other, "to_id": topic })).await;
+    assert_eq!(v["was_existing"], json!(true), "{v}");
+}
+
+/// The same for `update_link`: an edit that changes nothing on a daily
+/// source is refused before `update_link_as` would answer it unsaved.
+#[tokio::test]
+async fn mcp_update_link_that_changes_nothing_on_a_daily_source_returns_marker_rule() {
+    let f = fresh();
+    let _topic = person_note(&f.state, "Player Loop", "Topic body.\n", Some("topic")).await;
+    let daily = person_note(
+        &f.state,
+        "2026-10-01",
+        "Thinking about [[Player Loop]] today.\n",
+        Some("daily"),
+    )
+    .await;
+    let link_id = link_id_from(&f.state, &daily, "Player Loop").await;
+    let before = stored(&f.state, &daily).await;
+
+    let v = mcp_update_link(
+        &f.memex,
+        json!({ "link_id": link_id, "kind": "references" }),
+    )
+    .await;
+    assert_marker_rule(&v, "no-op update_link");
+    assert_eq!(stored(&f.state, &daily).await, before);
+
+    // An unknown link keeps its own error.
+    let v = mcp_update_link(&f.memex, json!({ "link_id": "nope", "kind": "extends" })).await;
+    assert_ne!(v["error"]["code"], json!("marker_rule"), "{v}");
+}
+
 // ---------- AC 2: update_link on a link whose source is a daily note ----------
 
 #[tokio::test]
