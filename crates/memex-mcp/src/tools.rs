@@ -13,9 +13,14 @@ use memex_core::review as core_review;
 use memex_core::search::{self, SearchFilters, SearchMode, SearchOptions};
 use memex_core::tags;
 use memex_core::{Caller, CanvasId, MemexError};
+use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::{tool, tool_handler, tool_router, ServerHandler};
+use rmcp::model::{
+    GetPromptRequestParams, GetPromptResult, ListPromptsResult, PaginatedRequestParams,
+};
+use rmcp::service::RequestContext;
+use rmcp::{prompt_handler, tool, tool_handler, tool_router, RoleServer, ServerHandler};
 use rusqlite::params;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -35,6 +40,7 @@ pub mod settings;
 pub struct Memex {
     pub state: Arc<AppState>,
     tool_router: ToolRouter<Self>,
+    prompt_router: PromptRouter<Self>,
 }
 
 impl Memex {
@@ -47,6 +53,7 @@ impl Memex {
                 + Self::folders_router()
                 + Self::review_router()
                 + Self::settings_router(),
+            prompt_router: Self::prompt_router(),
         }
     }
 }
@@ -988,7 +995,10 @@ impl Memex {
     }
 }
 
+// Tools and prompts (D18): `#[tool_handler]` sees the sibling
+// `#[prompt_handler]` and advertises both capabilities in `get_info`.
 #[tool_handler(router = self.tool_router)]
+#[prompt_handler(router = self.prompt_router)]
 impl ServerHandler for Memex {}
 
 fn group_links_by_kind(
