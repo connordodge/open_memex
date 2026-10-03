@@ -159,6 +159,37 @@ void main() {
       },
     );
 
+    test(
+      'orders sibling folders and topics whose names are equal ignoring case by id',
+      () {
+        final tree = buildTopicsTree(
+          SmartFolderData(
+            folders: [
+              _folder('f-3', 'notes'),
+              _folder('f-1', 'Notes'),
+              _folder('f-2', 'NOTES'),
+              _folder('k-2', 'Kid', parent: 'f-1'),
+              _folder('k-1', 'kid', parent: 'f-1'),
+            ],
+            members: [
+              _member('f-1', 'n-3', 'topic'),
+              _member('f-1', 'n-1', 'Topic'),
+              _member('f-1', 'n-2', 'TOPIC'),
+            ],
+          ),
+          const [],
+        );
+
+        expect(tree.folders.map((f) => f.id), ['f-1', 'f-2', 'f-3']);
+        expect(tree.folders.first.children.map((f) => f.id), ['k-1', 'k-2']);
+        expect(tree.folders.first.topics.map((t) => t.noteId), [
+          'n-1',
+          'n-2',
+          'n-3',
+        ]);
+      },
+    );
+
     test('a topic row carries its membership pinned flag per folder', () {
       final tree = buildTopicsTree(
         SmartFolderData(
@@ -218,6 +249,18 @@ void main() {
 
       expect(tree.unsorted.notes.map((n) => n.noteId), ['n1']);
     });
+
+    test(
+      'orders unsorted notes whose titles are equal ignoring case by id',
+      () {
+        final tree = buildTopicsTree(
+          const SmartFolderData(folders: [], members: []),
+          [_loose('u-2', 'same'), _loose('u-3', 'SAME'), _loose('u-1', 'Same')],
+        );
+
+        expect(tree.unsorted.notes.map((n) => n.noteId), ['u-1', 'u-2', 'u-3']);
+      },
+    );
 
     test('is present and empty when every note is in a folder', () {
       final tree = buildTopicsTree(

@@ -340,6 +340,23 @@ void main() {
       },
     );
 
+    testWidgets('when no note is unsorted the Unsorted row is not shown', (
+      tester,
+    ) async {
+      final db = FakeVaultDb.v5()
+        ..seedTopicNote('t-1', 'Filed topic')
+        ..seedSmartFolder('f-1', 'Folder')
+        ..seedFolderMember('f-1', 't-1')
+        ..seedDailyNote('2026-10-02');
+      final r = TopicsRobot(tester);
+      await r.launch(db: db);
+      await r.chooseTopics();
+
+      expect(r.folder('f-1'), findsOneWidget);
+      expect(r.unsorted, findsNothing);
+      expect(r.unsortedRows, findsNothing);
+    });
+
     testWidgets(
       'a note leaves Unsorted once a folder contains it and the tree refreshes',
       (tester) async {
