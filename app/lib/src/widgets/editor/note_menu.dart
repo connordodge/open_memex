@@ -91,11 +91,14 @@ class NoteMenu extends StatelessWidget {
         MenuItemButton(
           key: const Key('note-menu-delete'),
           leadingIcon: const Icon(LucideIcons.trash2, size: 14),
-          onPressed: () => confirmAndDeleteNote(
-            hostContext,
-            ProviderScope.containerOf(hostContext),
-            note,
-          ),
+          // The unsaved virtual Today note (#22) has nothing to delete.
+          onPressed: VirtualTodayTab.dateOf(note.id) != null
+              ? null
+              : () => confirmAndDeleteNote(
+                  hostContext,
+                  ProviderScope.containerOf(hostContext),
+                  note,
+                ),
           child: const Text('Delete note'),
         ),
         if (graphScopeFor(note) case final scope?)
