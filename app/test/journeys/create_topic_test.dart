@@ -237,6 +237,15 @@ void main() {
           greaterThan(revisionBefore),
           reason: 'the app bumps vaultRevisionProvider after success',
         );
+        // The footer chip row of today's note shows the chip.
+        await _openNote(tester, h, _todayId);
+        final chip = find.byKey(const Key('footer-chip-$createdTopicId'));
+        expect(chip, findsOneWidget);
+        expect(
+          find.descendant(of: chip, matching: find.text('PLAYER LOOP')),
+          findsOneWidget,
+          reason: 'the chip shows the topic title (chips upper-case it)',
+        );
       },
     );
   });
