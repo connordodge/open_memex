@@ -7,6 +7,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -23,6 +24,8 @@ import 'package:open_memex_app/src/state/vault_state.dart'
         vaultDbProvider,
         vaultRevisionProvider;
 import 'package:open_memex_app/src/theme/app_theme.dart';
+import 'package:open_memex_app/src/theme/colors.dart';
+import 'package:open_memex_app/src/widgets/atoms.dart';
 import 'package:open_memex_app/src/widgets/editor/daily_date_header.dart';
 import 'package:open_memex_app/src/widgets/editor/editor_toolbar.dart';
 import 'package:open_memex_app/src/widgets/editor/note_header.dart';
@@ -843,5 +846,118 @@ void main() {
         );
       },
     );
+
+    testWidgets('Escape closes the wikilink popover inside SourceSurface', (
+      tester,
+    ) async {
+      await _pumpEditor(tester, note: _note());
+      await tester.enterText(_bodyField(), 'see [[');
+      await tester.pump();
+      expect(find.byKey(const Key('wikilink-popover')), findsOneWidget);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      expect(find.byKey(const Key('wikilink-popover')), findsNothing);
+
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pump();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Implementer additions: behaviour of moved code (mutation coverage).
+  // -------------------------------------------------------------------------
+  group('Moved editor details', () {
+    testWidgets('the breadcrumb dims the vault name and has one separator', (
+      tester,
+    ) async {
+      await _pumpEditor(tester, note: _note());
+      final vault = tester.widget<Text>(_in(_toolbar(), find.text('work')));
+      final file = tester.widget<Text>(
+        _in(_toolbar(), find.text('My Note.md')),
+      );
+      expect(vault.style!.color, OmColors.fg3);
+      expect(file.style!.color, OmColors.fg1);
+      expect(_in(_toolbar(), find.text('/')), findsOneWidget);
+    });
+
+    testWidgets('the right-panel toggle reflects whether the panel is open', (
+      tester,
+    ) async {
+      Color? atomColor() => tester
+          .widget<Icon>(_in(_toolbar(), find.byIcon(LucideIcons.atom)))
+          .color;
+      await _pumpEditor(tester, note: _note(), rightPanelOpen: true);
+      expect(atomColor(), OmColors.fg0);
+      await _pumpEditor(tester, note: _note(), rightPanelOpen: false);
+      expect(atomColor(), OmColors.fg2);
+    });
+
+    testWidgets(
+      'the toolbar shows the save-failed chip only after a failed save',
+      (tester) async {
+        final cli = _FakeCli()..error = MemexException('update failed: disk');
+        await _pumpEditor(tester, note: _note(), cli: cli);
+        expect(_in(_toolbar(), find.text('SAVE FAILED')), findsNothing);
+        expect(_in(_toolbar(), find.text('CONFLICT — RELOAD')), findsNothing);
+
+        await tester.enterText(_bodyField(), 'changed body');
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.pump();
+        expect(_in(_toolbar(), find.text('SAVE FAILED')), findsOneWidget);
+        expect(_in(_toolbar(), find.text('CONFLICT — RELOAD')), findsNothing);
+      },
+    );
+
+    testWidgets('a second tap on note-menu-button closes the NoteMenu', (
+      tester,
+    ) async {
+      await _pumpEditor(tester, note: _note());
+      final button = find.byKey(const Key('note-menu-button'));
+      await tester.tap(button);
+      await tester.pump();
+      expect(find.byType(NoteMenu), findsOneWidget);
+      await tester.tap(button);
+      await tester.pump();
+      expect(find.byType(NoteMenu), findsNothing);
+    });
+
+    testWidgets('note-menu-button is disabled when no note is open', (
+      tester,
+    ) async {
+      await _pumpEditor(tester, note: null);
+      final button = find.byKey(const Key('note-menu-button'));
+      expect(button, findsOneWidget);
+      expect(tester.widget<OmButton>(button).onPressed, isNull);
+      await tester.tap(button, warnIfMissed: false);
+      await tester.pump();
+      expect(find.byType(NoteMenu), findsNothing);
+    });
+
+    test('formatUpdatedAgo buckets minutes, hours and days', () {
+      final now = DateTime.utc(2026, 10, 3, 12);
+      final t = now.millisecondsSinceEpoch;
+      String ago(int ms) => formatUpdatedAgo(t - ms, now: now);
+      const min = 60 * 1000;
+      const hour = 60 * min;
+      const day = 24 * hour;
+      expect(ago(0), 'just now');
+      expect(ago(min - 1), 'just now');
+      expect(ago(min), '1 minute ago');
+      expect(ago(2 * min), '2 minutes ago');
+      expect(ago(hour - 1), '59 minutes ago');
+      expect(ago(hour), '1 hour ago');
+      expect(ago(2 * hour), '2 hours ago');
+      expect(ago(day - 1), '23 hours ago');
+      expect(ago(day), '1 day ago');
+      expect(ago(3 * day), '3 days ago');
+    });
+
+    test('noteWordCount counts whitespace-separated words', () {
+      expect(noteWordCount(''), 0);
+      expect(noteWordCount('   \n '), 0);
+      expect(noteWordCount('one'), 1);
+      expect(noteWordCount('  one\ttwo\n\nthree  '), 3);
+    });
   });
 }

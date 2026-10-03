@@ -16,6 +16,7 @@ import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/state/ui_state_store.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/theme/app_theme.dart';
+import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/widgets/sidebar.dart';
 import 'package:open_memex_app/src/widgets/sidebar/canvases_rail.dart';
 import 'package:open_memex_app/src/widgets/sidebar/notes_pane.dart';
@@ -439,5 +440,45 @@ void main() {
         expect(h.container.read(activeTabProvider), const CanvasTab('c-new'));
       },
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // Implementer additions: active-row highlight of the moved rows.
+  // -------------------------------------------------------------------------
+  group('Sidebar row highlight', () {
+    Color? rowColor(WidgetTester tester, String key) {
+      final box = tester.widget<Container>(find.byKey(Key(key)));
+      return (box.decoration! as BoxDecoration).color;
+    }
+
+    testWidgets('NotesPane highlights only the active note row', (
+      tester,
+    ) async {
+      await _pump(
+        tester,
+        build: (h) => SizedBox(
+          width: 268,
+          height: 600,
+          child: NotesPane(notes: _notes, activeNoteId: 'n2', onNewNote: () {}),
+        ),
+      );
+      expect(rowColor(tester, 'note-list-item-n2'), OmColors.surface4);
+      expect(rowColor(tester, 'note-list-item-n1'), Colors.transparent);
+      expect(rowColor(tester, 'note-list-item-n3'), Colors.transparent);
+    });
+
+    testWidgets('CanvasesRail highlights only the active canvas row', (
+      tester,
+    ) async {
+      await _pump(
+        tester,
+        build: (_) => SizedBox(
+          width: 268,
+          child: CanvasesRail(canvases: _canvases, activeCanvasId: 'c1'),
+        ),
+      );
+      expect(rowColor(tester, 'canvas-row-c1'), OmColors.surface4);
+      expect(rowColor(tester, 'canvas-row-c2'), Colors.transparent);
+    });
   });
 }
