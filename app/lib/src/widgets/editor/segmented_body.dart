@@ -4,17 +4,15 @@ import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show RenderEditable;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../cli/excerpt_cli.dart';
 import '../../db.dart';
 import '../../editor/segments.dart';
 import '../../memex_cli.dart';
-import '../../state/editor_controller.dart';
+import '../../state/tabs_state.dart' show VirtualTodayTab;
+import '../../state/topic_actions.dart';
 import '../../state/vault_state.dart';
-import '../../theme/colors.dart';
-import '../../theme/typography.dart';
-import '../atoms.dart';
+import '../inline_error.dart';
 import 'capture_gutter.dart';
 import 'excerpt_card.dart';
 import 'footer_chip_row.dart';
@@ -396,9 +394,7 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
     if (cli == null) return;
     if (vaultPath == null) return;
     final noteId = widget.note.id;
-    final editor = ref.read(editorControllerProvider.notifier);
     final revision = ref.read(vaultRevisionProvider.notifier);
-    final db = ref.read(vaultDbProvider);
     setState(() {
       _removing = true;
       _error = null;
@@ -426,7 +422,6 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
     if (!mounted) return;
     setState(() => _removing = false);
     if (widget.note.id != noteId) return;
-    final title = ref.read(editorControllerProvider).title;
     // Drop the card locally too (the first card with that token line, as
     // the server did), keeping any unsaved text around it.
     final raw = card.segment.raw;
@@ -437,21 +432,33 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
     // The server removed the token line: its body and the returned version
     // become the editor's base; unsaved edits (and title) are re-applied
     // on top and saved against that version.
-    final stored = db?.getNote(noteId) ?? widget.note;
-    editor.loadNote(
-      Note(
-        id: stored.id,
-        title: stored.title,
-        contentMd: stored.contentMd,
-        frontmatter: stored.frontmatter,
-        version: result.version,
-        createdAt: stored.createdAt,
-        updatedAt: stored.updatedAt,
-        tags: stored.tags,
-      ),
+    rebaseEditorOnVersion(
+      ref,
+      fallback: widget.note,
+      version: result.version,
+      content: _joined,
     );
-    editor.onTitleChanged(title);
-    editor.onContentChanged(_joined);
+  }
+
+  /// True for a daily note that is in the vault (not the virtual Today
+  /// note): the only kind a footer chip can be added to.
+  bool get _isSavedDaily =>
+      _isDaily && VirtualTodayTab.dateOf(widget.note.id) == null;
+
+  /// `memex footer add` changed this daily note on the server (its new
+  /// version is [version]): rebase the editor on it.
+  void _onTopicLinked(int version) {
+    if (!mounted) return;
+    rebaseEditorOnVersion(
+      ref,
+      fallback: widget.note,
+      version: version,
+      content: _joined,
+    );
+  }
+
+  void _onCreateError(String message) {
+    if (mounted) setState(() => _error = message);
   }
 
   @override
@@ -465,12 +472,12 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           if (error != null)
-            _InlineError(
+            InlineError(
               message: error,
               onDismiss: () => setState(() => _error = null),
             ),
           if (widget.errorMessage case final saveError?)
-            _InlineError(
+            InlineError(
               message: saveError,
               onDismiss: () => widget.onDismissError?.call(),
             ),
@@ -492,6 +499,9 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
                         : null,
                     onMoveUp: () => _neighbour(t, forward: false),
                     onMoveDown: () => _neighbour(t, forward: true),
+                    dailyNoteId: _isSavedDaily ? widget.note.id : null,
+                    onTopicLinked: _onTopicLinked,
+                    onCreateError: _onCreateError,
                   ),
                 ),
               ),
@@ -517,43 +527,4 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
           child: _isDaily ? _withGutter(_segs.first as _TextSeg, child) : child,
         )
       : child;
-}
-
-/// A dismissible inline error (Key `inline-error`, dismiss Key
-/// `inline-error-dismiss`) above the segments.
-class _InlineError extends StatelessWidget {
-  const _InlineError({required this.message, required this.onDismiss});
-  final String message;
-  final VoidCallback onDismiss;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      key: const Key('inline-error'),
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.fromLTRB(12, 4, 4, 4),
-      decoration: BoxDecoration(
-        color: OmColors.dangerBg,
-        borderRadius: BorderRadius.circular(4),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              message,
-              style: OmType.mono(size: 11, color: OmColors.danger),
-            ),
-          ),
-          OmButton(
-            key: const Key('inline-error-dismiss'),
-            kind: OmButtonKind.ghost,
-            size: 22,
-            icon: LucideIcons.x,
-            tooltip: 'dismiss',
-            onPressed: onDismiss,
-          ),
-        ],
-      ),
-    );
-  }
 }
