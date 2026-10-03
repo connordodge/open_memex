@@ -723,3 +723,40 @@ fn daily_acceptance_script_uses_glossary_terms_and_none_of_the_avoided_ones() {
     );
     assert_no_avoided_terms("docs/daily-acceptance.md", &doc);
 }
+
+// ======================================================================
+// docs/claude-desktop-setup.md stays in step with the served tools.
+// ======================================================================
+
+#[test]
+fn claude_desktop_setup_doc_names_only_real_tools_and_no_stale_count() {
+    let doc = read_repo_file("docs/claude-desktop-setup.md");
+    let (tools, prompts) = served_names();
+    assert_tool_names_exist("docs/claude-desktop-setup.md", &doc, &tools, true);
+    for stale in [
+        "13 MCP tools",
+        "13 tools",
+        "not yet exposed",
+        "exposed as MCP tools",
+    ] {
+        assert!(
+            !doc.contains(stale),
+            "docs/claude-desktop-setup.md carries the stale claim `{stale}`"
+        );
+    }
+    assert!(
+        doc.contains(&format!("{} tools", tools.len())),
+        "the doc states the served tool count ({})",
+        tools.len()
+    );
+    for prompt in &prompts {
+        assert!(
+            doc.contains(&format!("`{prompt}`")),
+            "docs/claude-desktop-setup.md mentions the `{prompt}` prompt"
+        );
+    }
+    assert!(
+        doc.contains("daily-review.md"),
+        "the doc links the review guide"
+    );
+}
