@@ -410,25 +410,26 @@ fn server_lists_exactly_the_thirteen_existing_tools() {
         .collect();
     let unique: BTreeSet<String> = names.iter().cloned().collect();
     assert_eq!(names.len(), unique.len(), "no duplicate tools: {names:?}");
-    assert_eq!(
-        unique,
-        set(&[
-            "search",
-            "get_note",
-            "neighbors",
-            "add_link",
-            "create_note",
-            "list_canvases",
-            "get_canvas",
-            "create_canvas",
-            "add_to_canvas",
-            "remove_from_canvas",
-            "move_node",
-            "delete_canvas",
-            "update_link",
-        ]),
-    );
-    assert_eq!(names.len(), 13);
+    // Lead ruling (tool count): later WIs register new tools, so this checks
+    // that every one of the 13 existing tools is still listed.
+    let existing = set(&[
+        "search",
+        "get_note",
+        "neighbors",
+        "add_link",
+        "create_note",
+        "list_canvases",
+        "get_canvas",
+        "create_canvas",
+        "add_to_canvas",
+        "remove_from_canvas",
+        "move_node",
+        "delete_canvas",
+        "update_link",
+    ]);
+    assert_eq!(existing.len(), 13);
+    let missing: BTreeSet<&String> = existing.difference(&unique).collect();
+    assert!(missing.is_empty(), "existing tools missing: {missing:?}");
 }
 
 #[test]

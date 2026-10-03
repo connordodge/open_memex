@@ -23,7 +23,10 @@ class MemexCli {
     return null;
   }
 
-  Future<MemexResult> _run(List<String> args, {String? stdinBody}) async {
+  /// Run `memex <args>`, writing [stdinBody] to stdin when given. Public for
+  /// CLI wrapper extensions (`lib/src/cli/<area>_cli.dart`) and test fakes;
+  /// every wrapper in this class goes through it.
+  Future<MemexResult> run(List<String> args, {String? stdinBody}) async {
     final proc = await Process.start(binaryPath, args, runInShell: false);
     if (stdinBody != null) {
       proc.stdin.write(stdinBody);
@@ -44,9 +47,9 @@ class MemexCli {
   }
 
   Future<void> initVault(String vaultPath) async {
-    final r = await _run(['init', vaultPath]);
+    final r = await run(['init', vaultPath]);
     if (r.exitCode != 0) {
-      throw MemexException('init failed: ${r.stderr}');
+      throw MemexException.fromCliFailure('init', r);
     }
   }
 
@@ -56,6 +59,7 @@ class MemexCli {
     List<String> tags = const [],
     required String contentMd,
     bool withEmbeddings = false,
+    String? role,
   }) async {
     final args = <String>[
       'add',
@@ -64,10 +68,11 @@ class MemexCli {
       if (title != null && title.isNotEmpty) ...['--title', title],
       if (tags.isNotEmpty) ...['--tags', tags.join(',')],
       if (withEmbeddings) '--with-embeddings',
+      if (role != null) ...['--role', role],
     ];
-    final r = await _run(args, stdinBody: contentMd);
+    final r = await run(args, stdinBody: contentMd);
     if (r.exitCode != 0) {
-      throw MemexException('add failed: ${r.stderr}');
+      throw MemexException.fromCliFailure('add', r);
     }
     final m = RegExp(r'note_id:\s*([0-9A-Z]{26})').firstMatch(r.stdout);
     if (m == null) {
@@ -99,17 +104,9 @@ class MemexCli {
       if (noRenameLinks) '--no-rename-links',
       if (withEmbeddings) '--with-embeddings',
     ];
-    final r = await _run(args, stdinBody: contentMd);
+    final r = await run(args, stdinBody: contentMd);
     if (r.exitCode != 0) {
-      final isVersionConflict =
-          r.stderr.contains('VersionConflict') ||
-          r.stderr.contains('version conflict');
-      throw MemexException(
-        'update failed: ${r.stderr}',
-        kind: isVersionConflict
-            ? MemexErrorKind.versionConflict
-            : MemexErrorKind.other,
-      );
+      throw MemexException.fromCliFailure('update', r);
     }
     final json = jsonDecode(r.stdout.trim()) as Map<String, dynamic>;
     return NoteUpdateResult(
@@ -143,9 +140,9 @@ class MemexCli {
       if (label != null && label.isNotEmpty) ...['--label', label],
       if (withEmbeddings) '--with-embeddings',
     ];
-    final r = await _run(args);
+    final r = await run(args);
     if (r.exitCode != 0) {
-      throw MemexException('add-link failed: ${r.stderr}');
+      throw MemexException.fromCliFailure('add-link', r);
     }
     final json = jsonDecode(r.stdout.trim()) as Map<String, dynamic>;
     return AddLinkResult(
@@ -177,9 +174,9 @@ class MemexCli {
       if (label != null && !clearLabel) ...['--label', label],
       if (clearLabel) '--clear-label',
     ];
-    final r = await _run(args);
+    final r = await run(args);
     if (r.exitCode != 0) {
-      throw MemexException('update-link failed: ${r.stderr}');
+      throw MemexException.fromCliFailure('update-link', r);
     }
     final json = jsonDecode(r.stdout.trim()) as Map<String, dynamic>;
     return UpdateLinkResult(
@@ -199,7 +196,7 @@ class MemexCli {
     required String vaultPath,
     required String title,
   }) async {
-    final r = await _run([
+    final r = await run([
       'canvas',
       'new',
       '--vault',
@@ -208,7 +205,7 @@ class MemexCli {
       title,
     ]);
     if (r.exitCode != 0) {
-      throw MemexException('canvas new failed: ${r.stderr}');
+      throw MemexException.fromCliFailure('canvas new', r);
     }
     return CanvasInfo._fromJson(
       jsonDecode(r.stdout.trim()) as Map<String, dynamic>,
@@ -216,9 +213,9 @@ class MemexCli {
   }
 
   Future<List<CanvasSummary>> listCanvases({required String vaultPath}) async {
-    final r = await _run(['canvas', 'ls', '--vault', vaultPath]);
+    final r = await run(['canvas', 'ls', '--vault', vaultPath]);
     if (r.exitCode != 0) {
-      throw MemexException('canvas ls failed: ${r.stderr}');
+      throw MemexException.fromCliFailure('canvas ls', r);
     }
     final json = jsonDecode(r.stdout.trim()) as Map<String, dynamic>;
     final arr = (json['canvases'] as List).cast<Map<String, dynamic>>();
@@ -229,7 +226,7 @@ class MemexCli {
     required String vaultPath,
     required String canvasId,
   }) async {
-    final r = await _run([
+    final r = await run([
       'canvas',
       'get',
       '--vault',
@@ -238,7 +235,7 @@ class MemexCli {
       canvasId,
     ]);
     if (r.exitCode != 0) {
-      throw MemexException('canvas get failed: ${r.stderr}');
+      throw MemexException.fromCliFailure('canvas get', r);
     }
     return CanvasDetail._fromJson(
       jsonDecode(r.stdout.trim()) as Map<String, dynamic>,
@@ -251,7 +248,7 @@ class MemexCli {
     required String title,
     required int expectedVersion,
   }) async {
-    final r = await _run([
+    final r = await run([
       'canvas',
       'rename',
       '--vault',
@@ -264,7 +261,7 @@ class MemexCli {
       expectedVersion.toString(),
     ]);
     if (r.exitCode != 0) {
-      throw MemexException('canvas rename failed: ${r.stderr}');
+      throw MemexException.fromCliFailure('canvas rename', r);
     }
     return CanvasInfo._fromJson(
       jsonDecode(r.stdout.trim()) as Map<String, dynamic>,
@@ -276,7 +273,7 @@ class MemexCli {
     required String canvasId,
     required int expectedVersion,
   }) async {
-    final r = await _run([
+    final r = await run([
       'canvas',
       'rm',
       '--vault',
@@ -287,7 +284,7 @@ class MemexCli {
       expectedVersion.toString(),
     ]);
     if (r.exitCode != 0) {
-      throw MemexException('canvas rm failed: ${r.stderr}');
+      throw MemexException.fromCliFailure('canvas rm', r);
     }
   }
 
@@ -298,7 +295,7 @@ class MemexCli {
     double x = 0.0,
     double y = 0.0,
   }) async {
-    final r = await _run([
+    final r = await run([
       'canvas',
       'add',
       '--vault',
@@ -313,7 +310,7 @@ class MemexCli {
       y.toString(),
     ]);
     if (r.exitCode != 0) {
-      throw MemexException('canvas add failed: ${r.stderr}');
+      throw MemexException.fromCliFailure('canvas add', r);
     }
     return CanvasNodeInfo._fromJson(
       jsonDecode(r.stdout.trim()) as Map<String, dynamic>,
@@ -325,7 +322,7 @@ class MemexCli {
     required String canvasId,
     required String noteId,
   }) async {
-    final r = await _run([
+    final r = await run([
       'canvas',
       'remove',
       '--vault',
@@ -336,7 +333,7 @@ class MemexCli {
       noteId,
     ]);
     if (r.exitCode != 0) {
-      throw MemexException('canvas remove failed: ${r.stderr}');
+      throw MemexException.fromCliFailure('canvas remove', r);
     }
   }
 
@@ -348,7 +345,7 @@ class MemexCli {
     required double y,
     int? zOrder,
   }) async {
-    final r = await _run([
+    final r = await run([
       'canvas',
       'move',
       '--vault',
@@ -364,7 +361,7 @@ class MemexCli {
       if (zOrder != null) ...['--z', zOrder.toString()],
     ]);
     if (r.exitCode != 0) {
-      throw MemexException('canvas move failed: ${r.stderr}');
+      throw MemexException.fromCliFailure('canvas move', r);
     }
     return CanvasNodeInfo._fromJson(
       jsonDecode(r.stdout.trim()) as Map<String, dynamic>,
@@ -386,9 +383,9 @@ class MemexCli {
       noteId,
       if (includeLinks) '--include-links',
     ];
-    final r = await _run(args);
+    final r = await run(args);
     if (r.exitCode != 0) {
-      throw MemexException('get failed: ${r.stderr}');
+      throw MemexException.fromCliFailure('get', r);
     }
     final json = jsonDecode(r.stdout.trim()) as Map<String, dynamic>;
     return NoteFetchResult(
@@ -466,9 +463,80 @@ class NoteFetchResult {
 enum MemexErrorKind { other, versionConflict }
 
 class MemexException implements Exception {
-  MemexException(this.message, {this.kind = MemexErrorKind.other});
+  MemexException(
+    this.message, {
+    this.kind = MemexErrorKind.other,
+    this.code,
+    this.fields = const {},
+  });
+
+  /// Build the exception for a failed `memex <operation>` call from its
+  /// result: parses the C1 stderr line `{"error":{"code":…,"message":…,…}}`
+  /// into [code] and [fields]; non-JSON stderr keeps the legacy message
+  /// `'<operation> failed: <stderr>'` with a null [code].
+  ///
+  /// [kind] is [MemexErrorKind.versionConflict] for the C1 code
+  /// `version_conflict`, and, for non-JSON stderr from an older `memex`, when
+  /// stderr mentions `VersionConflict` or `version conflict`.
+  factory MemexException.fromCliFailure(String operation, MemexResult result) {
+    final stderr = result.stderr;
+    final error = _parseErrorLine(stderr);
+    if (error == null) {
+      final legacyConflict =
+          stderr.contains('VersionConflict') ||
+          stderr.contains('version conflict');
+      return MemexException(
+        '$operation failed: $stderr',
+        kind: legacyConflict
+            ? MemexErrorKind.versionConflict
+            : MemexErrorKind.other,
+      );
+    }
+    final code = error['code'] as String;
+    final message = error['message'];
+    return MemexException(
+      '$operation failed: ${message is String ? message : code}',
+      kind: code == 'version_conflict'
+          ? MemexErrorKind.versionConflict
+          : MemexErrorKind.other,
+      code: code,
+      fields: Map.unmodifiable({
+        for (final e in error.entries)
+          if (e.key != 'code' && e.key != 'message') e.key: e.value,
+      }),
+    );
+  }
+
+  /// The C1 error object from the last stderr line of the form
+  /// `{"error":{"code":"<code>",…}}` (log lines may precede it), or null.
+  static Map<String, Object?>? _parseErrorLine(String stderr) {
+    for (final line in stderr.split('\n').reversed) {
+      final trimmed = line.trim();
+      if (!trimmed.startsWith('{')) continue;
+      final Object? decoded;
+      try {
+        decoded = jsonDecode(trimmed);
+      } on FormatException {
+        continue;
+      }
+      if (decoded is! Map<String, Object?>) continue;
+      final error = decoded['error'];
+      if (error is Map<String, Object?> && error['code'] is String) {
+        return error;
+      }
+    }
+    return null;
+  }
+
   final String message;
   final MemexErrorKind kind;
+
+  /// The C1 error code (`version_conflict`, `daily_note_exists`, …), or null
+  /// when stderr was not a JSON error line.
+  final String? code;
+
+  /// The fields of the C1 error object (rule fields such as `existing_id`).
+  final Map<String, Object?> fields;
   @override
   String toString() => message;
 }
