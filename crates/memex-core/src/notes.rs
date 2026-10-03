@@ -304,6 +304,22 @@ pub fn update_note_as(
     get_note(vault, id)
 }
 
+/// The only bypass of the agent guards on a daily note's body (architect
+/// ruling D9): append (#12) and footer writes (#8). Runs the same
+/// normalization and block sync as `update_note_as`, stamping new blocks with
+/// `block_source` (`person`, `agent` or `quick-entry`), and fails with
+/// `VersionConflict` on a stale `expected_version` so callers can retry.
+#[allow(dead_code)] // WI #7 skeleton; #8 and #12 call it.
+pub(crate) fn write_daily_internal(
+    _vault: &mut Vault,
+    _id: &NoteId,
+    _expected_version: i64,
+    _new_body: &str,
+    _block_source: &str,
+) -> Result<Note> {
+    unimplemented!("WI #7: notes::write_daily_internal")
+}
+
 fn validate_title(t: &str) -> Result<()> {
     let trimmed = t.trim();
     if trimmed.is_empty() {
