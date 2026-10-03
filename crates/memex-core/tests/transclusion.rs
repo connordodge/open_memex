@@ -1075,3 +1075,80 @@ fn neighbors_of_daily_note_include_the_transcluding_topic() {
         .iter()
         .all(|e| e.link_kind == "from-day" && e.from_note_id == topic.id.as_str()));
 }
+
+// ---------------------------------------------------------------------------
+// Implementer additions: behavior beyond the ACs
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_date_digits_are_ascii_only_like_dart() {
+    // Dart's `\d` is ASCII-only; the Rust twin must agree (D13), so
+    // Arabic-Indic digits never form a token.
+    let text = "![[\u{662}\u{660}\u{662}\u{666}-\u{660}\u{669}-\u{660}\u{665}#^b7k2m9]]";
+    assert_eq!(parse_transclusions(text), vec![]);
+    assert!(extract(text)
+        .body
+        .iter()
+        .all(|l| l.link_kind.as_str() != "from-day"));
+}
+
+#[test]
+fn extract_wikilink_brackets_around_a_token_never_swallow_it() {
+    // The masked span cannot sit inside any wikilink match, so the outer
+    // `[[ … ]]` is not a link and the token is still one from-day link.
+    let md = "[[Foo ![[2026-09-05#^b7k2m9]] bar]]";
+    let r = extract(md);
+    let got: Vec<_> = r.body.iter().map(summary).collect();
+    assert_eq!(
+        got,
+        vec![("from-day", "2026-09-05", 6, LinkSource::InlineBody)]
+    );
+}
+
+#[test]
+fn extract_body_links_come_back_in_position_order() {
+    let md = "[[Player Loop]]![[2026-09-05#^b7k2m9]] then [[Sleep~about]]";
+    let r = extract(md);
+    let got: Vec<_> = r.body.iter().map(summary).collect();
+    assert_eq!(
+        got,
+        vec![
+            ("references", "Player Loop", 0, LinkSource::InlineBody),
+            ("from-day", "2026-09-05", 15, LinkSource::InlineBody),
+            ("about", "Sleep", 44, LinkSource::InlineBody),
+        ]
+    );
+}
+
+#[test]
+fn frontmatter_about_and_from_day_keys_are_skipped_after_normalizing() {
+    let md = "---\nAbout: \"[[Sleep]]\"\nfrom day: \"[[Rest]]\"\n---\nbody\n";
+    let r = extract(md);
+    assert!(!r.frontmatter_parse_error);
+    assert!(r.frontmatter.is_empty(), "{:?}", r.frontmatter);
+}
+
+// ---------------------------------------------------------------------------
+// AC 13: docs/wikilinks.md documents transclusion and the server-written kinds
+// ---------------------------------------------------------------------------
+
+#[test]
+fn wikilinks_doc_documents_transclusion_syntax_and_server_written_kinds() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/wikilinks.md");
+    let doc = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    for needle in [
+        "`![[2026-09-05#^b7k2m9]]`",
+        "`![[2026-09-05#^b7k2m9..^c3d4e5]]`",
+        "removed from <date>",
+        "`removed from 2026-09-05`",
+        "`from-day`",
+        "`about`",
+        "written only by the server",
+    ] {
+        assert!(doc.contains(needle), "docs/wikilinks.md lacks {needle:?}");
+    }
+    assert!(
+        !doc.contains("reserved for future block-reference / transclusion"),
+        "the caret is no longer reserved for future transclusion"
+    );
+}

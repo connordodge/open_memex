@@ -15,7 +15,24 @@ This doc is the user-facing reference.
 
 The four characters `~`, `|`, `]`, and newline are forbidden inside titles. They're also forbidden in kinds (except `-`).
 
-> Tilde (`~`) is the kind separator on purpose — pipe (`|`) belongs to display aliases (Obsidian-compat), and caret (`^`) is reserved for future block-reference / transclusion features.
+> Tilde (`~`) is the kind separator on purpose — pipe (`|`) belongs to display aliases (Obsidian-compat), and caret (`^`) marks a block id in [block transclusion](#block-transclusion).
+
+## Block transclusion
+
+A transclusion embeds live text from a daily note in another note. It points at blocks (paragraphs, list items) of the daily note for a date, by their block ids:
+
+| Form | What it shows |
+|---|---|
+| `![[2026-09-05#^b7k2m9]]` | The single block `b7k2m9` of the daily note `2026-09-05`. |
+| `![[2026-09-05#^b7k2m9..^c3d4e5]]` | The range of blocks from `b7k2m9` to `c3d4e5`, inclusive, in the order they appear in the day. |
+
+The exact grammar is `![[YYYY-MM-DD#^<id>]]` or `![[YYYY-MM-DD#^<id>..^<id>]]`, where an id is 1–26 characters of `0-9a-z`. Anything else (no `!`, a date that is not `YYYY-MM-DD`, an uppercase id) is not a transclusion; without the `!` it is an ordinary wikilink.
+
+**Rendering.** The date resolves only to the daily note (`role: daily`) with that title, and the ids resolve only to blocks of that note. A range shows every block of the day between the two endpoints, in day order, one per line; the endpoints may be written in either order. The CLI, MCP `get_note` and the app all render a token the same way.
+
+**The `removed from <date>` stub.** When the daily note no longer exists, or either endpoint block is gone (the paragraph was deleted or rewritten so much that it got a new block id), the transclusion renders as the stub `removed from 2026-09-05` instead of text. A light edit keeps the block id, so the transclusion shows the edited text.
+
+**Link.** Each transclusion records one `from-day` link from the note that contains it to the daily note for that date, at the byte offset of the `!`. It never also records a `references` link for the `[[…]]` inside it. If there is no `role: daily` note with that date title, the link is a ghost (`to_note_id = NULL`), even when another note has that title.
 
 ## Kinds: built-in vs user-defined
 
@@ -27,6 +44,13 @@ There are two tiers:
 - `extends` — "this note builds on that note."
 - `contradicts` — "this note disagrees with that note."
 - `example-of` — "this note is a concrete instance of that note's idea."
+
+**Server-written built-in kinds.** Two more built-in kinds are written only by the server. No section heading or frontmatter key creates them: a `## About` heading gives its wikilinks the default `references` kind, and the frontmatter keys `about:` and `from-day:` create no links at all.
+
+- `from-day` — "this note transcludes blocks of that daily note." Written for each [block transclusion](#block-transclusion); it resolves only to a `role: daily` note.
+- `about` — "this daily note is about that topic." The server writes one `[[Topic~about]]` line per topic in a daily note's footer, below the `<!-- memex:topics -->` marker.
+
+Both show up in `neighbors()` queries and the Connections tab like any other kind. Because a `from-day` link sits on a `![[…]]` token rather than a `[[…]]` wikilink, `update_link` cannot change its kind or label.
 
 **User-defined kinds.** Anything matching `^[a-z][a-z0-9-]*$` up to 64 characters. `inspired-by`, `derived-from`, `requested-by`, whatever fits your thinking. They're first-class — they show up in `neighbors()` queries, in the right-panel Connections tab grouped by kind, and in the Flutter app's kind-chip "More…" picker (once you've used a kind once, it's there for next time).
 
@@ -140,7 +164,7 @@ the YAML key).
 - Wikilinks inside fenced code blocks or inline code are still extracted. They're rare in practice; we'll add code-block exclusion in v2.
 - Title matching is case-sensitive. `[[hello]]` does not resolve to a note titled `Hello`.
 - The Flutter editor styles wikilinks as plain text inside the `TextField`. Click-to-navigate today happens via the right-panel Connections tab. Styled `TextSpan` rendering + `Stack`-overlay tap routing on `EditableText` is v2 work.
-- No transclusion (`![[Title]]`) yet.
+- Transclusion covers blocks of daily notes only (`![[YYYY-MM-DD#^id]]`); whole-note transclusion (`![[Title]]`) is not supported.
 - Renaming a note that would collide with another title fails — fix the conflict first.
 - Migration from a v2 vault with duplicate titles auto-renames the duplicates as `"<title> (2)"`, `"<title> (3)"`, etc., with each rename logged in `notes_dedup_log`. Above 1,000 collisions the migration aborts and the Flutter app surfaces a triage screen (recovery: `memex update --title` to dedupe manually, then re-open).
 - Free-form labels in the kind position fall back to `references` and a `tracing` warning.

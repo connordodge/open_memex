@@ -5,7 +5,7 @@
 use std::str::FromStr;
 
 use rusqlite::types::{FromSql, FromSqlError, ToSqlOutput, ValueRef};
-use rusqlite::{params, Connection, ToSql};
+use rusqlite::{params, Connection, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
@@ -16,9 +16,11 @@ use crate::Result;
 
 const MAX_KIND_LEN: usize = 64;
 
-/// Link kinds: four built-ins plus any normalized user-defined kebab-case string.
-/// Stored verbatim in `links.link_kind`. The four built-ins are the ones the
-/// extractor recognizes through curated section headings and frontmatter keys.
+/// Link kinds: six built-ins plus any normalized user-defined kebab-case string.
+/// Stored verbatim in `links.link_kind`. The extractor recognizes four of the
+/// built-ins through curated section headings and frontmatter keys; `from-day`
+/// (a block transclusion) and `about` (a daily note's footer) are written by
+/// the server only, never by a heading or frontmatter key.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct LinkKind(String);
@@ -54,7 +56,12 @@ impl LinkKind {
     pub fn is_built_in(&self) -> bool {
         matches!(
             self.0.as_str(),
-            Self::REFERENCES | Self::EXTENDS | Self::CONTRADICTS | Self::EXAMPLE_OF
+            Self::REFERENCES
+                | Self::EXTENDS
+                | Self::CONTRADICTS
+                | Self::EXAMPLE_OF
+                | Self::FROM_DAY
+                | Self::ABOUT
         )
     }
 }
@@ -190,8 +197,25 @@ pub struct PendingLink {
     pub source: LinkSource,
 }
 
+/// The id of the `role: daily` note titled `title`, if any. A note with that
+/// title but another role (or none) does not count. `json_valid` guards notes
+/// whose frontmatter is not valid JSON, as the V5 daily-note index does.
+pub(crate) fn daily_note_id_for_title(conn: &Connection, title: &str) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT id FROM notes WHERE title = ?
+           AND CASE WHEN json_valid(frontmatter)
+                    THEN json_extract(frontmatter, '$.role') END = 'daily'",
+        params![title],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(MemexError::from)
+}
+
 /// Replace all outgoing links for a note. Used by the indexer on every save.
-/// Resolves `to_note_id` via exact title match against `notes.title`.
+/// Resolves `to_note_id` via exact title match against `notes.title`; a
+/// `from-day` link resolves only to the `role: daily` note with that title
+/// (NULL otherwise).
 pub fn replace_links_for_note(
     conn: &Connection,
     from_note_id: &str,
@@ -204,13 +228,16 @@ pub fn replace_links_for_note(
     let mut inserted = 0usize;
     for p in pending {
         let id = Ulid::new().to_string();
-        let to_note_id: Option<String> = conn
-            .query_row(
+        let to_note_id: Option<String> = if p.link_kind.as_str() == LinkKind::FROM_DAY {
+            daily_note_id_for_title(conn, &p.link_text)?
+        } else {
+            conn.query_row(
                 "SELECT id FROM notes WHERE title = ?",
                 params![p.link_text],
                 |r| r.get(0),
             )
-            .ok();
+            .ok()
+        };
         conn.execute(
             "INSERT INTO links
                 (id, from_note_id, to_note_id, link_text, link_kind, label, position, source)
