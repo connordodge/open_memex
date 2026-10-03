@@ -3,7 +3,10 @@
 // Pure Dart: reads the referenced daily note and its blocks through #21's
 // `DailyReads` and never re-parses the body (the token comes from
 // `segments.dart`).
+import 'dart:math' show max, min;
+
 import '../db.dart';
+import '../db/daily_reads.dart';
 
 /// The rendered text of one transclusion token (C4).
 class RenderedExcerpt {
@@ -36,5 +39,32 @@ RenderedExcerpt renderExcerpt(
   required String from,
   String? to,
 }) {
-  throw UnimplementedError('renderExcerpt (WI #27)');
+  final removed = RenderedExcerpt(
+    date: date,
+    text: 'removed from $date',
+    removed: true,
+  );
+  final daily = db.dailyNoteForDate(date);
+  if (daily == null) return removed;
+  final blocks = db.blocksForNote(daily.noteId);
+  int? ordOf(String id) {
+    for (final b in blocks) {
+      if (b.blockId == id) return b.ord;
+    }
+    return null;
+  }
+
+  final fromOrd = ordOf(from);
+  final toOrd = to == null ? fromOrd : ordOf(to);
+  if (fromOrd == null || toOrd == null) return removed;
+  final lo = min(fromOrd, toOrd);
+  final hi = max(fromOrd, toOrd);
+  return RenderedExcerpt(
+    date: date,
+    text: [
+      for (final b in blocks)
+        if (b.ord >= lo && b.ord <= hi) b.text,
+    ].join('\n'),
+    removed: false,
+  );
 }

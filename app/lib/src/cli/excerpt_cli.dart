@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import '../memex_cli.dart';
 
 /// The parsed `memex excerpt rm` result (C2.4).
@@ -32,6 +34,38 @@ extension ExcerptCli on MemexCli {
     required String fromBlockId,
     String? toBlockId,
   }) async {
-    throw UnimplementedError('removeExcerpt (WI #27)');
+    final r = await run([
+      'excerpt',
+      'rm',
+      '--vault',
+      vaultPath,
+      '--topic-note-id',
+      topicNoteId,
+      '--date',
+      date,
+      '--block-ids',
+      toBlockId == null ? fromBlockId : '$fromBlockId,$toBlockId',
+    ]);
+    if (r.exitCode != 0) {
+      throw MemexException.fromCliFailure('excerpt rm', r);
+    }
+    Object? json;
+    try {
+      json = jsonDecode(r.stdout.trim());
+    } on FormatException {
+      json = null;
+    }
+    final map = json is Map<String, Object?> ? json : null;
+    final vaultId = map?['vault_id'];
+    final noteId = map?['topic_note_id'];
+    final version = map?['version'];
+    if (vaultId is! String || noteId is! String || version is! int) {
+      throw MemexException('excerpt rm: could not parse output: ${r.stdout}');
+    }
+    return ExcerptRemoveResult(
+      vaultId: vaultId,
+      topicNoteId: noteId,
+      version: version,
+    );
   }
 }

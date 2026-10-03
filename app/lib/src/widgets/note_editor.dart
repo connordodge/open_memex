@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -11,11 +13,16 @@ import 'atoms.dart';
 import 'editor/editor_toolbar.dart';
 import 'editor/note_header.dart';
 import 'editor/note_menu.dart';
+import 'editor/segmented_body.dart';
 import 'editor/source_surface.dart';
 
 /// The note editor host: wires the selected note and [EditorController] into
-/// the [EditorToolbar], the [SourceSurface] (with its [NoteHeader]) and the
-/// save status bar.
+/// the [EditorToolbar], the body (with its [NoteHeader]) and the save status
+/// bar.
+///
+/// The body is the [SegmentedBody] by default; the toolbar's `Source` toggle
+/// switches it to the single plain [SourceSurface] field and back (WI #27).
+/// Opening another note starts in the segmented view again.
 ///
 /// The selected note comes from [editorNoteProvider], so a virtual Today tab
 /// (#22) shows as an empty, unsaved daily note. Opening a daily note puts
@@ -44,6 +51,12 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
   final _bodyFocus = FocusNode(debugLabel: 'editor-body');
   String? _hydratedFor;
 
+  /// The note the body was last hydrated for (see [_hydrate]).
+  Note? _hydratedNote;
+
+  /// True while the body shows the plain Source field.
+  bool _sourceMode = false;
+
   @override
   void initState() {
     super.initState();
@@ -62,10 +75,19 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
   void _hydrate(Note? note, EditorController controller) {
     if (note?.id == _hydratedFor) return;
     _hydratedFor = note?.id;
+    _hydratedNote = note;
     // A virtual Today note that just became [note] keeps the editor's text
-    // (typing may still be going on); any other note loads.
+    // (typing may still be going on); any other note loads, in the
+    // segmented view.
     final resolved = note != null && controller.takeResolved(note.id);
-    if (!resolved) controller.loadNote(note);
+    if (!resolved) {
+      controller.loadNote(note);
+      _sourceMode = false;
+    }
+    // Rebuild with the hydrated note (this may run outside a build).
+    scheduleMicrotask(() {
+      if (mounted) setState(() {});
+    });
     final editor = ref.read(editorControllerProvider);
     _titleCtrl.text = editor.title;
     if (_bodyCtrl.text != editor.contentMd) {
@@ -80,6 +102,21 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
       );
       _bodyFocus.requestFocus();
     }
+  }
+
+  /// Switches the body between the segmented view and Source. Source starts
+  /// from the editor's current markdown; coming back re-splits it.
+  void _toggleSource() {
+    final content = ref.read(editorControllerProvider).contentMd;
+    setState(() {
+      _sourceMode = !_sourceMode;
+      if (_sourceMode) {
+        _bodyCtrl.value = TextEditingValue(
+          text: content,
+          selection: TextSelection.collapsed(offset: content.length),
+        );
+      }
+    });
   }
 
   @override
@@ -100,6 +137,14 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
       });
     }
 
+    final header = note == null
+        ? null
+        : NoteHeader(
+            note: note,
+            titleCtrl: _titleCtrl,
+            onTitleChanged: controller.onTitleChanged,
+          );
+
     // Returns a plain Container (not Expanded): each call site places this in
     // its own flex/bounded parent (workspace `_TabBody` inside an Expanded,
     // `_ZoomedNoteView` inside a Positioned.fill). Rooting in Expanded here
@@ -116,22 +161,33 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
             rightOpen: widget.rightPanelOpen,
             onToggleRight: widget.onToggleRightPanel,
             onBackToCanvas: widget.onBackToCanvas,
+            sourceMode: _sourceMode,
+            onToggleSource: note == null ? null : _toggleSource,
           ),
           const OmHairline(),
           if (note != null) NoteDeleteError(noteId: note.id),
           Expanded(
             child: note == null
                 ? _EmptyEditor()
-                : SourceSurface(
+                : _sourceMode
+                ? SourceSurface(
                     bodyCtrl: _bodyCtrl,
                     bodyFocusNode: _bodyFocus,
                     onContentChanged: controller.onContentChanged,
                     errorMessage: editor.errorMessage,
-                    header: NoteHeader(
-                      note: note,
-                      titleCtrl: _titleCtrl,
-                      onTitleChanged: controller.onTitleChanged,
-                    ),
+                    header: header,
+                  )
+                : SegmentedBody(
+                    // Until the post-frame hydrate loads a newly selected
+                    // note, the editor still holds the previous note's text:
+                    // keep the body on the note that text belongs to.
+                    note: _hydratedNote ?? note,
+                    content: editor.contentMd,
+                    savedVersion: editor.lastSavedVersion,
+                    onContentChanged: controller.onContentChanged,
+                    primaryFocusNode: _bodyFocus,
+                    errorMessage: editor.errorMessage,
+                    header: header,
                   ),
           ),
           const OmHairline(),
