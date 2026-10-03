@@ -717,11 +717,8 @@ void main() {
           _in(find.byType(NoteMenu), find.byKey(const Key('note-menu'))),
           findsOneWidget,
         );
-        // Empty: later WIs (#31, #30) add the items.
-        expect(
-          _in(find.byKey(const Key('note-menu')), find.byType(Text)),
-          findsNothing,
-        );
+        // Items are added by later WIs (#31 Delete note, #30 Open graph);
+        // their own tests pin them, so the menu is no longer asserted empty.
       },
     );
   });
