@@ -384,20 +384,48 @@ async fn cmd_add(
     std::io::stdin()
         .read_to_string(&mut buf)
         .context("read note body from stdin")?;
-    if buf.trim().is_empty() {
+    // C2.1: a daily note may start empty; its title defaults to today (local).
+    let daily = role == Some(Role::Daily);
+    if buf.trim().is_empty() && !daily {
         let msg = "stdin was empty — nothing to add".to_string();
         return Err(InvalidArgument(msg).into());
     }
 
     let mut vault = Vault::open(&absolute).context("open vault")?;
-    let note = create_note(
-        &mut vault,
-        CreateNote {
+    let frontmatter = role.map(|r| serde_json::json!({ "role": r.as_str() }));
+    let (note, first_line) = if daily {
+        let clock = memex_core::SystemClock;
+        let date = memex_core::daily::resolve_date(title.as_deref(), &clock)?;
+        let content_md = if buf.trim().is_empty() {
+            String::new()
+        } else {
+            buf
+        };
+        let input = CreateNote {
+            title: Some(date.to_string()),
+            content_md,
+            frontmatter,
+        };
+        let outcome = memex_core::notes::create_or_adopt_note(
+            &mut vault,
+            input,
+            memex_core::Caller::Person,
+            &clock,
+        )?;
+        let first_line = if outcome.adopted {
+            "Adopted note"
+        } else {
+            "Created note"
+        };
+        (outcome.note, first_line)
+    } else {
+        let input = CreateNote {
             title,
             content_md: buf,
-            frontmatter: role.map(|r| serde_json::json!({ "role": r.as_str() })),
-        },
-    )?;
+            frontmatter,
+        };
+        (create_note(&mut vault, input)?, "Created note")
+    };
     for t in &tag_list {
         tags::add_tag(&vault, note.id.as_str(), t)?;
     }
@@ -414,7 +442,7 @@ async fn cmd_add(
         embedder.as_deref(),
     )?;
 
-    println!("Created note");
+    println!("{first_line}");
     println!("  note_id: {}", note.id);
     println!("  title:   {}", note.title);
     if !tag_list.is_empty() {
