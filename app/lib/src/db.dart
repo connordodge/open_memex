@@ -12,8 +12,20 @@ class VaultDb {
   /// Wrap an already-open [Database] (an in-memory test database, or a
   /// handle opened elsewhere). The caller keeps ownership semantics: [close]
   /// still disposes it.
-  VaultDb.fromDatabase(Database db)
-    : db = throw UnimplementedError('VaultDb.fromDatabase');
+  VaultDb.fromDatabase(this.db);
+
+  /// Tables added by schema V5 (daily notes, review, Smart Folders, vault
+  /// settings). V5 reads return empty while any of them is missing.
+  static const v5TableNames = <String>[
+    'blocks',
+    'day_reviews',
+    'day_review_blocks',
+    'footer_chips',
+    'agent_changes',
+    'smart_folders',
+    'smart_folder_members',
+    'vault_settings',
+  ];
 
   final Database db;
 
@@ -145,8 +157,24 @@ class VaultDb {
   /// True when every table in [names] exists in this database. Never caches
   /// a negative answer: the CLI may migrate the vault (V4 → V5) while the
   /// app holds this handle, and a re-probe must see the new tables.
-  bool hasTables(List<String> names) =>
-      throw UnimplementedError('VaultDb.hasTables');
+  bool hasTables(List<String> names) {
+    final placeholders = List.filled(names.length, '?').join(',');
+    final row = db.select(
+      "SELECT COUNT(DISTINCT name) AS n FROM sqlite_master "
+      "WHERE type = 'table' AND name IN ($placeholders)",
+      names,
+    );
+    return (row.first['n'] as int) == names.toSet().length;
+  }
+
+  /// The vault's schema version, `MAX(schema_version.version)`; 0 when the
+  /// table is missing or empty. Read fresh on every call (the CLI may migrate
+  /// the vault while this handle is open).
+  int schemaVersion() {
+    if (!hasTables(const ['schema_version'])) return 0;
+    final row = db.select('SELECT MAX(version) AS v FROM schema_version');
+    return (row.first['v'] as num?)?.toInt() ?? 0;
+  }
 
   // ---------- canvas reads ----------
 
@@ -329,7 +357,17 @@ class Note {
 
   /// The note's role from the frontmatter JSON (`$.role`): `daily`, `topic`,
   /// or null when absent or when the frontmatter is not valid JSON.
-  String? get role => throw UnimplementedError('Note.role');
+  String? get role {
+    final Object? decoded;
+    try {
+      decoded = jsonDecode(frontmatter);
+    } on FormatException {
+      return null;
+    }
+    if (decoded is! Map) return null;
+    final role = decoded['role'];
+    return role is String ? role : null;
+  }
 }
 
 class NoteTitle {

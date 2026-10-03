@@ -16,15 +16,16 @@ class SystemClock implements AppClock {
   const SystemClock();
 
   @override
-  DateTime now() => throw UnimplementedError('SystemClock.now');
+  DateTime now() => DateTime.now();
 
   @override
   Timer periodic(Duration interval, void Function(Timer timer) callback) =>
-      throw UnimplementedError('SystemClock.periodic');
+      Timer.periodic(interval, callback);
 
   @override
   Timer after(Duration delay, void Function() callback) =>
-      throw UnimplementedError('SystemClock.after');
+      Timer(delay, callback);
 }
 
+/// The app's time source. Tests override it with a `FakeClock`.
 final clockProvider = Provider<AppClock>((ref) => const SystemClock());
