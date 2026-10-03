@@ -49,6 +49,13 @@ Finder _bodyField() => find.descendant(
   return (db: db, cli: cli);
 }
 
+/// Switch the body to the Source surface: the segmented view is the
+/// default since WI #27.
+Future<void> _showSource(WidgetTester tester) async {
+  await tester.tap(find.byKey(const Key('editor-source-toggle')));
+  await pumpFrames(tester);
+}
+
 int _contentVersion(FakeVaultDb db) =>
     (db.db.select('SELECT content_version FROM day_reviews WHERE note_id = ?', [
               _noteId,
@@ -64,6 +71,7 @@ void main() {
         final fixture = _reviewedDaily();
         final h = await pumpWorkspace(tester, db: fixture.db, cli: fixture.cli);
         await openNoteTab(tester, h, _noteId);
+        await _showSource(tester);
         expect(_label('Reviewed'), findsOneWidget);
         expect(_label('Changed since review'), findsNothing);
 
@@ -90,6 +98,7 @@ void main() {
         final fixture = _reviewedDaily();
         final h = await pumpWorkspace(tester, db: fixture.db, cli: fixture.cli);
         await openNoteTab(tester, h, _noteId);
+        await _showSource(tester);
 
         await tester.enterText(
           _bodyField(),
