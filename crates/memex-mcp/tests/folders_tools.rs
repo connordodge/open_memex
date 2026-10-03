@@ -781,3 +781,24 @@ fn mcp_server_registers_the_folder_and_settings_tools() {
         );
     }
 }
+
+// ======================================================================
+// Implementer additions.
+// ======================================================================
+
+#[tokio::test]
+async fn mcp_update_with_both_parent_id_and_to_root_is_an_error_and_moves_nothing() {
+    let (_d, state, m) = fresh();
+    let a = create_folder_ok(&m, "Games", None).await;
+    let b = create_folder_ok(&m, "Design", Some(&a)).await;
+    let c = create_folder_ok(&m, "Work", None).await;
+    let got = update_folder(&m, json!({ "id": b, "parent_id": c, "to_root": true })).await;
+    assert_eq!(
+        error_obj(&got)["code"],
+        json!("update_smart_folder.invalid_params")
+    );
+    assert_eq!(
+        folder_row(&state, &b).await,
+        ("Design".to_string(), Some(a), false)
+    );
+}

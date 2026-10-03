@@ -1569,3 +1569,110 @@ fn list_reports_members_and_unsorted_non_daily_notes() {
         "unsorted = non-daily notes with no membership (not {day})"
     );
 }
+
+// ======================================================================
+// Implementer additions: lead rulings and behaviour beyond the ACs.
+// ======================================================================
+
+#[test]
+fn an_update_that_changes_nothing_writes_nothing() {
+    let (_d, mut v) = fresh();
+    let open_f = agent(&mut v, "Inbox", None);
+    let pinned_f = person(&mut v, "Games", None);
+    let later = FakeClock::at(T0 + 1_000);
+    // The agent's `pinned` is ignored, so these change nothing.
+    let got = sf_update(&mut v, &open_f, pin(true), Caller::Agent, &later).unwrap();
+    assert_eq!(got.updated_at, T0, "no write, no updated_at bump");
+    let got = sf_update(&mut v, &pinned_f, pin(false), Caller::Agent, &later).unwrap();
+    assert!(got.pinned);
+    assert_eq!(got.updated_at, T0);
+    // Re-pinning an already pinned folder is a person no-op too.
+    let got = sf_update(&mut v, &pinned_f, pin(true), Caller::Person, &later).unwrap();
+    assert_eq!(got.updated_at, T0);
+    let got = sf_update(
+        &mut v,
+        &pinned_f,
+        FolderUpdate::default(),
+        Caller::Person,
+        &later,
+    )
+    .unwrap();
+    assert_eq!(folder(&v, &pinned_f), got);
+    assert_eq!(got.updated_at, T0);
+}
+
+#[test]
+fn agent_may_delete_an_unpinned_folder_whose_child_folder_is_pinned() {
+    let (_d, mut v) = fresh();
+    let outer = agent(&mut v, "Outer", None);
+    let kept = person(&mut v, "Kept", Some(&outer));
+    sf::delete_folder(&mut v, &outer, Caller::Agent).unwrap();
+    let k = folder(&v, &kept);
+    assert_eq!(k.parent_id, None, "the pinned child moves up, not away");
+    assert!(k.pinned);
+    assert_eq!(folder_ids(&v), BTreeSet::from([kept]));
+}
+
+#[test]
+fn agent_may_move_an_unpinned_folder_into_a_pinned_folder() {
+    let (_d, mut v) = fresh();
+    let pinned_f = person(&mut v, "Games", None);
+    let open_f = agent(&mut v, "Inbox", None);
+    let got = update(&mut v, &open_f, move_under(&pinned_f), Caller::Agent).unwrap();
+    assert_eq!(got.parent_id.as_deref(), Some(pinned_f.as_str()));
+    assert!(!got.pinned);
+}
+
+#[test]
+fn agent_delete_blocked_by_a_pinned_membership_names_it() {
+    let (_d, mut v) = fresh();
+    let (inbox, _t, pinned_n, _o) = inbox_with_pinned_member(&mut v);
+    let e = err(sf::delete_folder(&mut v, &inbox, Caller::Agent), "delete");
+    assert_pinned(
+        &e,
+        &format!("{inbox}/{pinned_n}"),
+        "Player Loop",
+        "delete blocked by a pinned membership",
+    );
+}
+
+#[test]
+fn person_adding_a_note_with_another_role_is_role_rule() {
+    let (_d, mut v) = fresh();
+    let f = person(&mut v, "Games", None);
+    let project = note_with(&mut v, "Project X", "x", json!({"role": "project"}));
+    let before = snapshot(&v);
+    let e = err(
+        sf::add_member(&mut v, &f, &project, None, Caller::Person, None),
+        "person add project",
+    );
+    assert_code(&e, "role_rule", "person add a note whose role is not topic");
+    assert_eq!(snapshot(&v), before, "the role is never overwritten");
+}
+
+#[test]
+fn a_corrupt_stored_max_depth_is_setting_invalid() {
+    let (_d, v) = fresh();
+    v.connection_ref()
+        .execute(
+            "UPDATE vault_settings SET value = 'deep' WHERE key = 'smart_folder_max_depth'",
+            [],
+        )
+        .unwrap();
+    let e = err(vault_settings::smart_folder_max_depth(&v), "corrupt value");
+    assert_code(&e, "setting_invalid", "corrupt stored value");
+}
+
+#[test]
+fn link_kinds_list_built_ins_first_then_used_kinds_once() {
+    let (_d, mut v) = fresh();
+    let built_ins = ["references", "extends", "contradicts", "example-of"];
+    assert_eq!(vault_settings::link_kinds(&v).unwrap(), built_ins);
+    note_with(&mut v, "Target", "Target body.", json!({}));
+    let body = "See [[Target]], [[Target~zeta-kind]] and [[Target~alpha-kind]].";
+    let source = note_with(&mut v, "Source", body, json!({}));
+    memex_core::indexer::reindex_note(v.connection_mut(), &source, body, None).unwrap();
+    let mut expected = built_ins.to_vec();
+    expected.extend(["alpha-kind", "zeta-kind"]);
+    assert_eq!(vault_settings::link_kinds(&v).unwrap(), expected);
+}
