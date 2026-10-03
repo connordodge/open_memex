@@ -36,3 +36,6 @@ app/macos/Frameworks/
 # Secrets
 .env
 .env.local
+
+# Orchestration worktrees
+/worktrees/
