@@ -54,8 +54,11 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
   /// The note the body was last hydrated for (see [_hydrate]).
   Note? _hydratedNote;
 
-  /// True while the body shows the plain Source field.
-  bool _sourceMode = false;
+  /// Which body the editor shows; [_BodyView.segmented] for every newly
+  /// opened note.
+  _BodyView _view = _BodyView.segmented;
+
+  bool get _sourceMode => _view == _BodyView.source;
 
   @override
   void initState() {
@@ -82,7 +85,7 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
     final resolved = note != null && controller.takeResolved(note.id);
     if (!resolved) {
       controller.loadNote(note);
-      _sourceMode = false;
+      _view = _BodyView.segmented;
     }
     // Rebuild with the hydrated note (this may run outside a build).
     scheduleMicrotask(() {
@@ -109,7 +112,7 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
   void _toggleSource() {
     final content = ref.read(editorControllerProvider).contentMd;
     setState(() {
-      _sourceMode = !_sourceMode;
+      _view = _sourceMode ? _BodyView.segmented : _BodyView.source;
       if (_sourceMode) {
         _bodyCtrl.value = TextEditingValue(
           text: content,
@@ -197,6 +200,9 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
     );
   }
 }
+
+/// The editor body: the segmented view (default) or the single Source field.
+enum _BodyView { segmented, source }
 
 class _StatusBar extends StatelessWidget {
   const _StatusBar({required this.status});

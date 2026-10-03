@@ -35,10 +35,15 @@ class ExcerptCard extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     ref.watch(vaultRevisionProvider);
     final db = ref.watch(vaultDbProvider);
+    // No vault open: no note (and no card) to show.
+    if (db == null) return const SizedBox.shrink();
     final date = segment.date;
-    final rendered = db == null
-        ? RenderedExcerpt(date: date, text: 'removed from $date', removed: true)
-        : renderExcerpt(db, date: date, from: segment.from, to: segment.to);
+    final rendered = renderExcerpt(
+      db,
+      date: date,
+      from: segment.from,
+      to: segment.to,
+    );
     return Container(
       key: Key('excerpt-card-$index'),
       margin: const EdgeInsets.symmetric(vertical: 6),

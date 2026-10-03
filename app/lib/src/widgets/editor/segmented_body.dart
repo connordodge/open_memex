@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -104,7 +105,7 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
 
   /// False for a daily note whose body has no Topics marker yet (e.g. the
   /// virtual Today note): its body is saved as the person text alone.
-  bool _withFooter = true;
+  late bool _withFooter;
 
   /// [join] of the segments as they are now.
   String _joined = '';
@@ -227,20 +228,14 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
     _joined = _joinOf(_segs);
   }
 
-  bool _sameShape(List<Segment> next) {
-    if (next.length != _segs.length) return false;
-    for (var i = 0; i < next.length; i++) {
-      final ok = switch ((_segs[i], next[i])) {
-        (_TextSeg(), TextSegment()) => true,
-        (final _CardSeg c, final TransclusionSegment t) =>
-          c.segment.raw == t.raw,
-        (_FooterSeg(), FooterSegment()) => true,
-        _ => false,
-      };
-      if (!ok) return false;
-    }
-    return true;
-  }
+  /// True when [next] has the current segments' shape: the same cards (raw
+  /// token lines) at the same positions. split() alternates text segments
+  /// and cards, and a daily split is always text then footer, so equal card
+  /// positions mean equal kinds everywhere.
+  bool _sameShape(List<Segment> next) => listEquals(
+    [for (final s in _segs) s is _CardSeg ? s.segment.raw : null],
+    [for (final n in next) n is TransclusionSegment ? n.raw : null],
+  );
 
   /// The markdown of text segment [i] of [segs] as [join] gets it: a
   /// non-empty text right before a card always ends its line, so the card's
