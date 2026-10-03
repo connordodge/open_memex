@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db/daily_reads.dart';
 import 'package:open_memex_app/src/state/sidebar_mode_state.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
+import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/theme/review_state_colors.dart';
 
@@ -631,6 +632,22 @@ void main() {
           r.textsUnder(r.todayRow).any((t) => t.contains('Late thoughts')),
           isTrue,
         );
+      },
+    );
+
+    testWidgets(
+      'in Topics mode the tree header sort action toggles between edited and a-z',
+      (tester) async {
+        final r = DaysRobot(tester);
+        await r.launch(db: _threeDays());
+        await r.chooseTopics();
+        expect(r.h.read(sidebarSortProvider), NoteSortMode.lastEdited);
+
+        await r.tap(find.text('SORT: EDITED'));
+        expect(r.h.read(sidebarSortProvider), NoteSortMode.alphabetical);
+
+        await r.tap(find.text('SORT: A–Z'));
+        expect(r.h.read(sidebarSortProvider), NoteSortMode.lastEdited);
       },
     );
 
