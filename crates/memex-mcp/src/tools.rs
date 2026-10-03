@@ -664,6 +664,20 @@ impl Memex {
             frontmatter["role"] = r.as_str().into();
         }
 
+        // D16 / Q4: an agent may create a daily note only empty, with an ISO
+        // title that defaults to today (local). It never adopts (Q2).
+        let is_daily = role == Some(Role::Daily);
+        let (title, content_md) = if is_daily {
+            if !content_md.trim().is_empty() {
+                let msg = "an agent may create a daily note only with empty content".to_string();
+                return err_from("create_note", &MemexError::MarkerRule(msg));
+            }
+            let today = || memex_core::daily::today_with_clock(&canvas::SystemClock).to_string();
+            (Some(title.unwrap_or_else(today)), String::new())
+        } else {
+            (title, content_md)
+        };
+
         let create = CreateNote {
             title,
             content_md,
@@ -672,6 +686,9 @@ impl Memex {
 
         let note = match notes::create_note_as(&mut vault, create, Caller::Agent) {
             Ok(n) => n,
+            Err(e @ MemexError::TitleConflict { .. }) if is_daily => {
+                return e.to_error_json().to_string();
+            }
             Err(e) => return err_from("create_note", &e),
         };
 
