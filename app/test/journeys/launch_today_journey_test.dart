@@ -125,8 +125,13 @@ void main() {
         final delete = find.byKey(const Key('note-menu-delete'));
         if (delete.evaluate().isNotEmpty) {
           final item = tester.widget<MenuItemButton>(
+            // matchRoot: the Key may sit on the MenuItemButton itself (#31).
             find
-                .ancestor(of: delete, matching: find.byType(MenuItemButton))
+                .ancestor(
+                  of: delete,
+                  matching: find.byType(MenuItemButton),
+                  matchRoot: true,
+                )
                 .first,
           );
           expect(

@@ -86,6 +86,9 @@ Future<_Launch> _launch({
   });
   // Build the tabs notifier: this is the launch.
   c.read(tabsProvider);
+  // The launch syncs selectedNoteIdProvider in a microtask: a provider may
+  // not modify another provider while it initializes.
+  await Future<void>.delayed(Duration.zero);
   return launch;
 }
 
