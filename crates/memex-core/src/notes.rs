@@ -4,6 +4,8 @@ use std::str::FromStr;
 use ulid::Ulid;
 
 use crate::caller::Caller;
+use crate::canvas::{Clock, SystemClock};
+use crate::daily;
 use crate::error::MemexError;
 use crate::vault::{now_unix_ms, Vault};
 use crate::Result;
@@ -63,19 +65,72 @@ pub fn create_note(vault: &mut Vault, input: CreateNote) -> Result<Note> {
     create_note_as(vault, input, Caller::Person)
 }
 
-/// Creates a note on behalf of `caller` (architect ruling D3). Rules that
-/// guard agent writes hang off `caller`; today both callers behave the same.
+/// Creates a note on behalf of `caller` (architect ruling D3), reading the
+/// time from the system clock. See [`create_or_adopt_note`].
 pub fn create_note_as(vault: &mut Vault, input: CreateNote, caller: Caller) -> Result<Note> {
-    let _ = caller;
-    let now = now_unix_ms();
+    create_or_adopt_note(vault, input, caller, &SystemClock).map(|outcome| outcome.note)
+}
+
+/// What [`create_or_adopt_note`] did.
+#[derive(Debug, Clone)]
+pub struct CreateOutcome {
+    /// The created or adopted note, as stored.
+    pub note: Note,
+    /// `true` when a person-path daily create adopted an existing role-less
+    /// note titled with the date (Q2) instead of creating one.
+    pub adopted: bool,
+}
+
+/// Creates a note on behalf of `caller` (architect ruling D3).
+///
+/// A title that is already taken fails with `TitleConflict` naming the
+/// existing note. A `role: daily` note (D15) defaults its title to today in
+/// local time (D14), needs an ISO `YYYY-MM-DD` title (`InvalidDate`), and fails
+/// with `DailyNoteExists` when that date already has a daily note. On the
+/// person path it adopts a role-less note titled with the date (Q2): that note
+/// gains `role: daily`, keeps its id and content, and gets `content_md`
+/// appended with the C3.1 separator. Its body is stored in the canonical daily
+/// layout with its blocks and `day_reviews` row, in one transaction (D9).
+pub fn create_or_adopt_note(
+    vault: &mut Vault,
+    input: CreateNote,
+    caller: Caller,
+    clock: &dyn Clock,
+) -> Result<CreateOutcome> {
+    let frontmatter = input.frontmatter.unwrap_or_else(|| serde_json::json!({}));
+    let is_daily = daily::is_daily(&frontmatter);
+    let title = match input.title {
+        Some(title) => title,
+        None if is_daily => daily::today_with_clock(clock).to_string(),
+        None => derive_title(&input.content_md),
+    };
+    if is_daily {
+        daily::parse_iso_date(&title)?;
+    }
+    if let Some((existing_id, existing_fm)) = note_titled(vault.connection_ref(), &title, None)? {
+        if is_daily && daily::is_daily(&existing_fm) {
+            return Err(MemexError::DailyNoteExists {
+                date: title,
+                existing_id,
+            });
+        }
+        if is_daily && caller == Caller::Person && is_role_less(&existing_fm) {
+            let note = adopt_as_daily(vault, &existing_id, existing_fm, &input.content_md)?;
+            return Ok(CreateOutcome {
+                note,
+                adopted: true,
+            });
+        }
+        return Err(MemexError::TitleConflict {
+            existing_id,
+            attempted_title: title,
+        });
+    }
+
+    let now = clock.now_ms();
     let id = NoteId::new();
-    let frontmatter = input
-        .frontmatter
-        .unwrap_or_else(|| serde_json::json!({}));
-    let title = input
-        .title
-        .unwrap_or_else(|| derive_title(&input.content_md));
-    vault.conn().execute(
+    let tx = vault.conn_mut().transaction()?;
+    tx.execute(
         "INSERT INTO notes (id, title, content_md, frontmatter, version, created_at, updated_at)
          VALUES (?, ?, ?, ?, 1, ?, ?)",
         params![
@@ -87,15 +142,96 @@ pub fn create_note_as(vault: &mut Vault, input: CreateNote, caller: Caller) -> R
             now,
         ],
     )?;
-    Ok(Note {
+    let content_md = if is_daily {
+        let source = daily::block_source(caller);
+        let body =
+            daily::sync_daily_note(&tx, id.as_str(), "", &input.content_md, source, 1, now)?;
+        tx.execute(
+            "UPDATE notes SET content_md = ? WHERE id = ?",
+            params![body, id.as_str()],
+        )?;
+        body
+    } else {
+        input.content_md
+    };
+    tx.commit()?;
+    let note = Note {
         id,
         title,
-        content_md: input.content_md,
+        content_md,
         frontmatter,
         version: 1,
         created_at: now,
         updated_at: now,
+    };
+    Ok(CreateOutcome {
+        note,
+        adopted: false,
     })
+}
+
+/// Q2: turns the role-less note `existing_id` into the daily note for its
+/// title. Its frontmatter gains `role: daily`; non-empty `content` (trailing
+/// whitespace trimmed) is appended to its person section with the C3.1
+/// separator; the save runs the daily write hook like any person update.
+fn adopt_as_daily(
+    vault: &mut Vault,
+    existing_id: &str,
+    mut frontmatter: serde_json::Value,
+    content: &str,
+) -> Result<Note> {
+    let id = NoteId::parse(existing_id)?;
+    let current = get_note(vault, &id)?;
+    let mut person = daily::split_body(&current.content_md).person;
+    let text = content.trim_end();
+    if !text.trim_start().is_empty() {
+        person = daily::append_to_person(&person, text);
+    }
+    frontmatter["role"] = "daily".into();
+    let patch = UpdateNote {
+        title: None,
+        content_md: Some(person),
+        frontmatter: Some(frontmatter),
+    };
+    update_note_as(
+        vault,
+        &id,
+        current.version,
+        patch,
+        RenameOptions::default(),
+        Caller::Person,
+    )
+}
+
+/// The note titled `title` (other than `excluding`), as `(id, frontmatter)`.
+/// Frontmatter that is not valid JSON reads as `null`.
+fn note_titled(
+    conn: &rusqlite::Connection,
+    title: &str,
+    excluding: Option<&str>,
+) -> Result<Option<(String, serde_json::Value)>> {
+    let found = conn.query_row(
+        "SELECT id, frontmatter FROM notes WHERE title = ? AND id IS NOT ?",
+        params![title, excluding],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+    );
+    match found {
+        Ok((id, fm)) => Ok(Some((id, lenient_frontmatter(&fm)))),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Parses stored frontmatter, reading malformed JSON as `null`.
+fn lenient_frontmatter(stored: &str) -> serde_json::Value {
+    serde_json::from_str(stored).unwrap_or(serde_json::Value::Null)
+}
+
+/// A note Q2 may adopt: a frontmatter object without a `role`.
+fn is_role_less(frontmatter: &serde_json::Value) -> bool {
+    frontmatter
+        .as_object()
+        .is_some_and(|fm| fm.get("role").is_none_or(serde_json::Value::is_null))
 }
 
 pub fn get_note(vault: &Vault, id: &NoteId) -> Result<Note> {
@@ -169,7 +305,15 @@ pub fn update_note_with_options(
 
 /// Updates a note on behalf of `caller` (architect ruling D3). Every save
 /// path (including `links::update_link_as`) goes through here, so a rule
-/// added for agent writes guards them all; today both callers behave the same.
+/// added for agent writes guards them all.
+///
+/// A note that is (or becomes) `role: daily` keeps an ISO title (`InvalidDate`,
+/// and `DailyNoteExists` when retitled onto another day's daily note) and runs
+/// the daily write hook (D9) in the save transaction: its body is stored
+/// normalized, its blocks are re-synced (new ones stamped with the caller's
+/// source) and its content version is bumped when the person text changed.
+/// Daily notes rewritten by the rename pass are re-synced the same way and
+/// also get a new `version`. Callers reindex from the returned note (D8).
 pub fn update_note_as(
     vault: &mut Vault,
     id: &NoteId,
@@ -178,7 +322,6 @@ pub fn update_note_as(
     options: RenameOptions,
     caller: Caller,
 ) -> Result<Note> {
-    let _ = caller;
     // Read current state up front so we can validate before opening a tx.
     let current_row: Option<(i64, String, String, String)> = vault
         .connection_ref()
@@ -208,20 +351,26 @@ pub fn update_note_as(
         None => serde_json::from_str(&current_fm)?,
     };
     let title_changed = new_title != current_title;
+    let is_daily = daily::is_daily(&new_fm);
+    let becomes_daily = is_daily && !daily::is_daily(&lenient_frontmatter(&current_fm));
 
     if title_changed {
         validate_title(&new_title)?;
-        let collision: Option<String> = vault
-            .connection_ref()
-            .query_row(
-                "SELECT id FROM notes WHERE title = ? AND id != ?",
-                params![new_title, id.as_str()],
-                |r| r.get(0),
-            )
-            .ok();
-        if let Some(existing) = collision {
+    }
+    if is_daily && (title_changed || becomes_daily) {
+        daily::parse_iso_date(&new_title)?;
+    }
+    if title_changed {
+        let collision = note_titled(vault.connection_ref(), &new_title, Some(id.as_str()))?;
+        if let Some((existing_id, existing_fm)) = collision {
+            if is_daily && daily::is_daily(&existing_fm) {
+                return Err(MemexError::DailyNoteExists {
+                    date: new_title,
+                    existing_id,
+                });
+            }
             return Err(MemexError::TitleConflict {
-                existing_id: existing,
+                existing_id,
                 attempted_title: new_title,
             });
         }
@@ -229,12 +378,41 @@ pub fn update_note_as(
 
     let now = now_unix_ms();
     let new_version = current_version + 1;
+    let source = daily::block_source(caller);
     // (linker_id, new_content) — populated in the rewrite pass and reindexed
     // after the transaction commits.
     let mut linker_rewrites: Vec<(String, String)> = Vec::new();
 
     {
         let tx = vault.conn_mut().transaction()?;
+
+        // The note itself first, so a daily linker's footer below renders
+        // the new title.
+        let saved_content = if is_daily {
+            daily::sync_daily_note(
+                &tx,
+                id.as_str(),
+                &current_content,
+                &new_content,
+                source,
+                new_version,
+                now,
+            )?
+        } else {
+            new_content
+        };
+        tx.execute(
+            "UPDATE notes SET title = ?, content_md = ?, frontmatter = ?, version = ?, updated_at = ?
+             WHERE id = ?",
+            params![
+                new_title,
+                saved_content,
+                serde_json::to_string(&new_fm)?,
+                new_version,
+                now,
+                id.as_str(),
+            ],
+        )?;
 
         if title_changed && options.rename_links {
             let linker_ids: Vec<String> = {
@@ -261,15 +439,37 @@ pub fn update_note_as(
                 if linker_id == id.as_str() {
                     continue;
                 }
-                let linker_content: String = tx.query_row(
-                    "SELECT content_md FROM notes WHERE id = ?",
-                    params![linker_id],
-                    |r| r.get(0),
-                )?;
+                let (linker_content, linker_version, linker_fm): (String, i64, String) = tx
+                    .query_row(
+                        "SELECT content_md, version, frontmatter FROM notes WHERE id = ?",
+                        params![linker_id],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )?;
                 let rewritten = rewriter
                     .replace_all(&linker_content, replacement.as_str())
                     .to_string();
-                if rewritten != linker_content {
+                if rewritten == linker_content {
+                    continue;
+                }
+                if daily::is_daily(&lenient_frontmatter(&linker_fm)) {
+                    // A daily linker is re-synced and gets a new version, so
+                    // an open editor sees a conflict and merges (D9).
+                    let version = linker_version + 1;
+                    let body = daily::sync_daily_note(
+                        &tx,
+                        &linker_id,
+                        &linker_content,
+                        &rewritten,
+                        source,
+                        version,
+                        now,
+                    )?;
+                    tx.execute(
+                        "UPDATE notes SET content_md = ?, version = ?, updated_at = ? WHERE id = ?",
+                        params![body, version, now, linker_id],
+                    )?;
+                    linker_rewrites.push((linker_id.clone(), body));
+                } else {
                     tx.execute(
                         "UPDATE notes SET content_md = ?, updated_at = ? WHERE id = ?",
                         params![rewritten, now, linker_id],
@@ -279,18 +479,6 @@ pub fn update_note_as(
             }
         }
 
-        tx.execute(
-            "UPDATE notes SET title = ?, content_md = ?, frontmatter = ?, version = ?, updated_at = ?
-             WHERE id = ?",
-            params![
-                new_title,
-                new_content,
-                serde_json::to_string(&new_fm)?,
-                new_version,
-                now,
-                id.as_str(),
-            ],
-        )?;
         tx.commit()?;
     }
 
@@ -309,15 +497,46 @@ pub fn update_note_as(
 /// normalization and block sync as `update_note_as`, stamping new blocks with
 /// `block_source` (`person`, `agent` or `quick-entry`), and fails with
 /// `VersionConflict` on a stale `expected_version` so callers can retry.
-#[allow(dead_code)] // WI #7 skeleton; #8 and #12 call it.
+/// A note that is not `role: daily` fails with `RoleRule`. The caller
+/// reindexes from the returned note (D8).
+#[allow(dead_code)] // #8 (footer) and #12 (append) call it.
 pub(crate) fn write_daily_internal(
-    _vault: &mut Vault,
-    _id: &NoteId,
-    _expected_version: i64,
-    _new_body: &str,
-    _block_source: &str,
+    vault: &mut Vault,
+    id: &NoteId,
+    expected_version: i64,
+    new_body: &str,
+    block_source: &str,
 ) -> Result<Note> {
-    unimplemented!("WI #7: notes::write_daily_internal")
+    let current = get_note(vault, id)?;
+    if current.version != expected_version {
+        return Err(MemexError::VersionConflict {
+            expected: expected_version,
+            current: current.version,
+        });
+    }
+    if !daily::is_daily(&current.frontmatter) {
+        return Err(MemexError::RoleRule(format!(
+            "note {id} is not a daily note (role: daily)"
+        )));
+    }
+    let now = now_unix_ms();
+    let new_version = current.version + 1;
+    let tx = vault.conn_mut().transaction()?;
+    let body = daily::sync_daily_note(
+        &tx,
+        id.as_str(),
+        &current.content_md,
+        new_body,
+        block_source,
+        new_version,
+        now,
+    )?;
+    tx.execute(
+        "UPDATE notes SET content_md = ?, version = ?, updated_at = ? WHERE id = ?",
+        params![body, new_version, now, id.as_str()],
+    )?;
+    tx.commit()?;
+    get_note(vault, id)
 }
 
 fn validate_title(t: &str) -> Result<()> {

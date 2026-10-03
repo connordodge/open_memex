@@ -2,18 +2,27 @@
 //!
 //! The canonical daily body (architect ruling D10, CONTRACTS C3), the footer
 //! rendered from `footer_chips` (D11), the local-time "today" behind an
-//! injectable clock (D14) and the review state of a day (Req 19).
-//!
-//! WI #7 test skeleton: signatures only, no behaviour yet.
+//! injectable clock (D14), the review state of a day (Req 19) and the single
+//! daily write hook every save of a `role: daily` note runs inside its
+//! transaction (D9).
 
-use chrono::NaiveDate;
-use rusqlite::Connection;
+use std::collections::HashMap;
 
+use chrono::{DateTime, Local, NaiveDate};
+use rusqlite::{params, Connection};
+use ulid::Ulid;
+
+use crate::blocks::{self, Block};
+use crate::caller::Caller;
 use crate::canvas::Clock;
+use crate::error::MemexError;
 use crate::Result;
 
 /// The Topics footer marker line (C3).
 pub const TOPICS_MARKER: &str = "<!-- memex:topics -->";
+
+/// The frontmatter `role` value of a daily note. The match is exact.
+const DAILY_ROLE: &str = "daily";
 
 /// A daily note body split at the Topics footer marker (C3).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -25,31 +34,149 @@ pub struct DailyBody {
     pub chips: Vec<String>,
 }
 
+/// A line without its `\n`, with trailing spaces and `\r` trimmed (C3).
+fn trim_line_end(line: &str) -> &str {
+    line.trim_end_matches([' ', '\r'])
+}
+
+/// The title of a footer chip line (`^\[\[(.+)~about\]\]$`, C3), if it is one.
+fn chip_title(line: &str) -> Option<&str> {
+    line.strip_prefix("[[")
+        .and_then(|rest| rest.strip_suffix("~about]]"))
+        .filter(|title| !title.is_empty())
+}
+
 /// Splits a daily note body into the person section and footer chips (C3).
-pub fn split_body(_body: &str) -> DailyBody {
-    unimplemented!("WI #7: daily::split_body")
+///
+/// Splits at the first marker line; without one the whole body is person.
+/// Below the marker, chip lines become `chips` in order, blank lines and
+/// further marker lines are dropped, and any other line is stray text moved
+/// to the end of the person section (Q1).
+pub fn split_body(body: &str) -> DailyBody {
+    let mut start = 0;
+    let mut marker = None;
+    for line in body.split_inclusive('\n') {
+        let end = start + line.len();
+        if trim_line_end(line.strip_suffix('\n').unwrap_or(line)) == TOPICS_MARKER {
+            marker = Some((start, end));
+            break;
+        }
+        start = end;
+    }
+    let Some((marker_start, marker_end)) = marker else {
+        return DailyBody {
+            person: body.to_string(),
+            chips: Vec::new(),
+        };
+    };
+
+    let mut person = body[..marker_start].to_string();
+    let mut chips = Vec::new();
+    let mut stray = Vec::new();
+    for line in body[marker_end..].split('\n') {
+        let content = trim_line_end(line);
+        if content.is_empty() || content == TOPICS_MARKER {
+            continue;
+        }
+        match chip_title(content) {
+            Some(title) => chips.push(title.to_string()),
+            None => stray.push(line),
+        }
+    }
+    if !stray.is_empty() {
+        end_with_newline(&mut person);
+        for line in stray {
+            person.push_str(line);
+            person.push('\n');
+        }
+    }
+    DailyBody { person, chips }
+}
+
+/// Appends `\n` to a non-empty `text` that does not end with one.
+fn end_with_newline(text: &mut String) {
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
 }
 
 /// Assembles the canonical daily body from a person section and chip titles (C3).
-pub fn assemble<S: AsRef<str>>(_person: &str, _chips: &[S]) -> String {
-    unimplemented!("WI #7: daily::assemble")
+pub fn assemble<S: AsRef<str>>(person: &str, chips: &[S]) -> String {
+    let mut body = person.to_string();
+    end_with_newline(&mut body);
+    body.push_str(TOPICS_MARKER);
+    body.push('\n');
+    for title in chips {
+        body.push_str("[[");
+        body.push_str(title.as_ref());
+        body.push_str("~about]]\n");
+    }
+    body
+}
+
+/// Appends `text` to the end of a person section with the C3.1 separator: a
+/// non-empty person section is first padded to end with `\n\n`, then
+/// `text + "\n"` is appended. Q2 adoption uses it; append (#12) shares it.
+pub fn append_to_person(person: &str, text: &str) -> String {
+    let mut out = person.to_string();
+    if !out.is_empty() {
+        while !out.ends_with("\n\n") {
+            out.push('\n');
+        }
+    }
+    out.push_str(text);
+    out.push('\n');
+    out
 }
 
 /// The footer chip titles of a daily note, from `footer_chips` joined to
 /// `notes`, in rowid order (D11).
-pub fn render_footer(_conn: &Connection, _daily_note_id: &str) -> Result<Vec<String>> {
-    unimplemented!("WI #7: daily::render_footer")
+pub fn render_footer(conn: &Connection, daily_note_id: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT n.title FROM footer_chips f JOIN notes n ON n.id = f.topic_note_id
+         WHERE f.daily_note_id = ? ORDER BY f.rowid",
+    )?;
+    let titles = stmt
+        .query_map([daily_note_id], |r| r.get(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    Ok(titles)
 }
 
 /// Today's date in the machine's local time zone, read from `clock` (D14).
-pub fn today_with_clock(_clock: &dyn Clock) -> NaiveDate {
-    unimplemented!("WI #7: daily::today_with_clock")
+pub fn today_with_clock(clock: &dyn Clock) -> NaiveDate {
+    DateTime::from_timestamp_millis(clock.now_ms())
+        .unwrap_or_default()
+        .with_timezone(&Local)
+        .date_naive()
 }
 
 /// `None` → today (local); `Some(s)` → `s` when it is a real `YYYY-MM-DD`
 /// calendar date, else `InvalidDate` (D14).
-pub fn resolve_date(_date: Option<&str>, _clock: &dyn Clock) -> Result<NaiveDate> {
-    unimplemented!("WI #7: daily::resolve_date")
+pub fn resolve_date(date: Option<&str>, clock: &dyn Clock) -> Result<NaiveDate> {
+    match date {
+        None => Ok(today_with_clock(clock)),
+        Some(s) => parse_iso_date(s),
+    }
+}
+
+/// Parses a strict `YYYY-MM-DD` calendar date (four-digit year, zero-padded
+/// month and day, nothing else), else `InvalidDate`. Daily note titles must
+/// pass it (D15).
+pub fn parse_iso_date(s: &str) -> Result<NaiveDate> {
+    let shaped = s.len() == 10
+        && s.bytes().enumerate().all(|(i, b)| match i {
+            4 | 7 => b == b'-',
+            _ => b.is_ascii_digit(),
+        });
+    shaped
+        .then(|| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+        .flatten()
+        .ok_or_else(|| MemexError::InvalidDate(format!("not a YYYY-MM-DD calendar date: {s:?}")))
+}
+
+/// Whether `frontmatter` marks a daily note: `role` is exactly `daily`.
+pub fn is_daily(frontmatter: &serde_json::Value) -> bool {
+    frontmatter.get("role").and_then(|r| r.as_str()) == Some(DAILY_ROLE)
 }
 
 /// The review state of a daily note (Req 19, CONTRACTS C2).
@@ -66,13 +193,137 @@ pub enum ReviewState {
 impl ReviewState {
     /// The exact C2 label: `Unreviewed`, `Reviewed`, `Changed since review`.
     pub fn as_str(self) -> &'static str {
-        unimplemented!("WI #7: ReviewState::as_str")
+        match self {
+            ReviewState::Unreviewed => "Unreviewed",
+            ReviewState::Reviewed => "Reviewed",
+            ReviewState::ChangedSinceReview => "Changed since review",
+        }
     }
 }
 
 /// The review state of the daily note `note_id`, from its `day_reviews` row.
-pub fn review_state(_conn: &Connection, _note_id: &str) -> Result<ReviewState> {
-    unimplemented!("WI #7: daily::review_state")
+/// A note without a row has never been reviewed: `Unreviewed`.
+pub fn review_state(conn: &Connection, note_id: &str) -> Result<ReviewState> {
+    let row: Option<(i64, Option<i64>)> = conn
+        .query_row(
+            "SELECT content_version, reviewed_content_version FROM day_reviews WHERE note_id = ?",
+            [note_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })?;
+    Ok(match row {
+        None | Some((_, None)) => ReviewState::Unreviewed,
+        Some((current, Some(reviewed))) if reviewed == current => ReviewState::Reviewed,
+        Some(_) => ReviewState::ChangedSinceReview,
+    })
+}
+
+/// The `blocks.source` of a write by `caller`.
+pub(crate) fn block_source(caller: Caller) -> &'static str {
+    match caller {
+        Caller::Person => "person",
+        Caller::Agent => "agent",
+    }
+}
+
+/// The daily write hook (D9). Runs inside the write transaction of every save
+/// of a daily note, before its `notes` row is written, and returns the body to
+/// store:
+///
+/// - normalizes `new_body` (D10): its person section, the marker, then the
+///   footer rendered from `footer_chips` (D11);
+/// - re-splits the person section and matches it against the stored blocks
+///   (D12): matched blocks keep their id, `source`, `created_version` and
+///   `created_at`; new ones get `block_source` and `new_notes_version`;
+/// - creates the `day_reviews` row lazily (`content_version` 1 for a
+///   non-empty person section, else 0), or adds 1 to `content_version` when
+///   `person.trim_end()` differs from that of `previous_body` (Req 19).
+pub(crate) fn sync_daily_note(
+    conn: &Connection,
+    note_id: &str,
+    previous_body: &str,
+    new_body: &str,
+    block_source: &str,
+    new_notes_version: i64,
+    now: i64,
+) -> Result<String> {
+    let person = split_body(new_body).person;
+    let body = assemble(&person, &render_footer(conn, note_id)?);
+
+    let (old, created_at) = stored_blocks(conn, note_id)?;
+    let outcome = blocks::match_blocks(
+        &old,
+        &blocks::split(&person),
+        block_source,
+        new_notes_version,
+        &mut || Ulid::new().random() as u64,
+    );
+    conn.execute("DELETE FROM blocks WHERE note_id = ?", [note_id])?;
+    for b in &outcome.blocks {
+        conn.execute(
+            "INSERT INTO blocks (note_id, block_id, ord, start_byte, end_byte, text,
+                                 content_hash, source, created_version, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                note_id,
+                b.block_id,
+                b.ord as i64,
+                b.start_byte as i64,
+                b.end_byte as i64,
+                b.text,
+                b.content_hash,
+                b.source,
+                b.created_version,
+                created_at.get(&b.block_id).copied().unwrap_or(now),
+            ],
+        )?;
+    }
+
+    let trimmed = person.trim_end();
+    let created = conn.execute(
+        "INSERT OR IGNORE INTO day_reviews (note_id, content_version) VALUES (?, ?)",
+        params![note_id, i64::from(!trimmed.is_empty())],
+    )?;
+    if created == 0 && split_body(previous_body).person.trim_end() != trimmed {
+        conn.execute(
+            "UPDATE day_reviews SET content_version = content_version + 1 WHERE note_id = ?",
+            [note_id],
+        )?;
+    }
+    Ok(body)
+}
+
+/// The stored blocks of a note in `ord` order, and each one's `created_at`.
+fn stored_blocks(conn: &Connection, note_id: &str) -> Result<(Vec<Block>, HashMap<String, i64>)> {
+    let mut stmt = conn.prepare(
+        "SELECT block_id, ord, start_byte, end_byte, text, content_hash, source,
+                created_version, created_at
+         FROM blocks WHERE note_id = ? ORDER BY ord",
+    )?;
+    let rows = stmt
+        .query_map([note_id], |r| {
+            let block = Block {
+                block_id: r.get(0)?,
+                ord: r.get::<_, i64>(1)? as usize,
+                start_byte: r.get::<_, i64>(2)? as usize,
+                end_byte: r.get::<_, i64>(3)? as usize,
+                text: r.get(4)?,
+                content_hash: r.get(5)?,
+                source: r.get(6)?,
+                created_version: r.get(7)?,
+            };
+            Ok((block, r.get::<_, i64>(8)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let created_at = rows
+        .iter()
+        .map(|(b, at)| (b.block_id.clone(), *at))
+        .collect();
+    Ok((rows.into_iter().map(|(b, _)| b).collect(), created_at))
 }
 
 /// AC 21: `notes::write_daily_internal` is crate-private (D9), so its tests
