@@ -122,7 +122,7 @@ pub fn get_daily_note_changes(vault: &Vault, date: &str) -> Result<DailyNoteChan
     let (content_version, _, _) = review_row(conn, &note_id)?;
     let diff = blocks::diff(
         &snapshot_blocks(conn, &note_id)?,
-        &current_blocks(conn, &note_id)?,
+        &daily::stored_blocks(conn, &note_id)?.0,
     );
     Ok(DailyNoteChanges {
         date: date.to_string(),
@@ -235,14 +235,8 @@ pub fn note_review_fields(vault: &Vault, note: &Note) -> Result<Map<String, Valu
 /// strict `YYYY-MM-DD` calendar date, `NotFound` when no daily note has that
 /// title (a role-less note titled with the date does not count).
 fn daily_note_id(conn: &Connection, date: &str) -> Result<String> {
-    daily::parse_iso_date(date)?;
-    conn.query_row(
-        &format!("SELECT id FROM notes WHERE title = ? AND {DAILY_NOTE}"),
-        [date],
-        |r| r.get(0),
-    )
-    .optional()?
-    .ok_or_else(|| MemexError::NotFound(format!("no daily note for {date}")))
+    daily::daily_note_for_date(conn, daily::parse_iso_date(date)?)?
+        .ok_or_else(|| MemexError::NotFound(format!("no daily note for {date}")))
 }
 
 /// `(content_version, reviewed_content_version, reviewed_at)` of the note's
@@ -259,29 +253,6 @@ fn review_row(conn: &Connection, note_id: &str) -> Result<(i64, Option<i64>, Opt
         )
         .optional()?;
     Ok(row.unwrap_or((0, None, None)))
-}
-
-/// The note's current blocks, in `ord` order.
-fn current_blocks(conn: &Connection, note_id: &str) -> Result<Vec<Block>> {
-    let mut stmt = conn.prepare(
-        "SELECT block_id, ord, start_byte, end_byte, text, content_hash, source, created_version
-         FROM blocks WHERE note_id = ? ORDER BY ord",
-    )?;
-    let blocks = stmt
-        .query_map([note_id], |r| {
-            Ok(Block {
-                block_id: r.get(0)?,
-                ord: r.get::<_, i64>(1)? as usize,
-                start_byte: r.get::<_, i64>(2)? as usize,
-                end_byte: r.get::<_, i64>(3)? as usize,
-                text: r.get(4)?,
-                content_hash: r.get(5)?,
-                source: r.get(6)?,
-                created_version: r.get(7)?,
-            })
-        })?
-        .collect::<rusqlite::Result<_>>()?;
-    Ok(blocks)
 }
 
 /// The note's review snapshot, in the block order it was taken in.
