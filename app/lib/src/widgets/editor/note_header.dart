@@ -1,0 +1,126 @@
+import 'package:flutter/material.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
+
+import '../../db.dart';
+import '../../theme/colors.dart';
+import '../../theme/typography.dart';
+import 'daily_date_header.dart';
+import 'review_chip.dart';
+
+/// The top of an open note (Key `note-header`): the meta rail, the
+/// [DailyDateHeader] slot, the title field (Key `editor-title`), the
+/// [ReviewChip] slot and the tags.
+class NoteHeader extends StatelessWidget {
+  const NoteHeader({
+    super.key,
+    required this.note,
+    required this.titleCtrl,
+    required this.onTitleChanged,
+  });
+  final Note note;
+  final TextEditingController titleCtrl;
+  final ValueChanged<String> onTitleChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      key: const Key('note-header'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _MetaRail(note: note),
+        const SizedBox(height: 18),
+        DailyDateHeader(note: note),
+        TextField(
+          key: const Key('editor-title'),
+          controller: titleCtrl,
+          style: OmType.h1Serif(),
+          cursorColor: OmColors.accent,
+          decoration: InputDecoration(
+            hintText: 'Untitled',
+            hintStyle: OmType.serif(
+              size: 36,
+              color: OmColors.fg3,
+              weight: FontWeight.w500,
+            ),
+          ),
+          onChanged: onTitleChanged,
+        ),
+        ReviewChip(note: note),
+        if (note.tags.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 6,
+            runSpacing: 4,
+            children: [
+              for (final t in note.tags)
+                Text(
+                  '#$t',
+                  style: OmType.mono(size: 12, color: OmColors.accentSoft),
+                ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _MetaRail extends StatelessWidget {
+  const _MetaRail({required this.note});
+  final Note note;
+  @override
+  Widget build(BuildContext context) {
+    final updated = formatUpdatedAgo(note.updatedAt, now: DateTime.now());
+    final words = noteWordCount(note.contentMd);
+    return Container(
+      padding: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: OmColors.line1, width: 1)),
+      ),
+      child: Wrap(
+        spacing: 14,
+        runSpacing: 6,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(LucideIcons.clock, size: 11, color: OmColors.fg3),
+              const SizedBox(width: 5),
+              Text(
+                'updated $updated',
+                style: OmType.mono(size: 11, color: OmColors.fg3),
+              ),
+            ],
+          ),
+          Text('·', style: OmType.mono(size: 11, color: OmColors.fg4)),
+          Text(
+            '$words words',
+            style: OmType.mono(size: 11, color: OmColors.fg3),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// How long before [now] the time [unixMs] was, as the meta rail shows it
+/// ("just now", "5 minutes ago", "1 hour ago", "3 days ago").
+@visibleForTesting
+String formatUpdatedAgo(int unixMs, {required DateTime now}) {
+  final delta = now.millisecondsSinceEpoch - unixMs;
+  if (delta < 60 * 1000) return 'just now';
+  final m = delta ~/ 60000;
+  if (m < 60) return '$m minute${m == 1 ? '' : 's'} ago';
+  final h = m ~/ 60;
+  if (h < 24) return '$h hour${h == 1 ? '' : 's'} ago';
+  final d = h ~/ 24;
+  return '$d day${d == 1 ? '' : 's'} ago';
+}
+
+/// The number of whitespace-separated words in [s].
+@visibleForTesting
+int noteWordCount(String s) {
+  final words = s.trim().split(RegExp(r'\s+')).where((w) => w.isNotEmpty);
+  return words.length;
+}
