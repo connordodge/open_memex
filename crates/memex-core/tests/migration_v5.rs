@@ -1385,3 +1385,39 @@ fn footer_chips_is_a_rowid_table() {
     assert_eq!(topics, [N_TOPIC, N_PLAIN, N_AGENT]);
     assert!(rows.windows(2).all(|w| w[0].0 < w[1].0), "{rows:?}");
 }
+
+// ---- implementer: byte-range columns already present ------------------------------------------
+
+/// A V4 database whose `chunks` already carries a byte-range column (for
+/// example from a pre-release build) still migrates: V5 adds a column only when
+/// it is missing, so `ALTER TABLE ADD COLUMN` never fails on a duplicate.
+#[test]
+fn v5_migration_skips_chunk_byte_range_columns_that_already_exist() {
+    let (_dir, db_path) = make_v4_db();
+    {
+        let conn = open(&db_path);
+        conn.execute_batch(
+            "ALTER TABLE chunks ADD COLUMN start_byte INTEGER;
+             UPDATE chunks SET start_byte = 7 WHERE id = 'C-PLAIN-0';",
+        )
+        .unwrap();
+    }
+    let mut conn = open(&db_path);
+    schema::apply(&mut conn).expect("V5 tolerates a pre-existing chunks.start_byte");
+    assert_eq!(schema::current_version(&conn).unwrap(), 5);
+
+    let cols = strings(
+        &conn,
+        "SELECT name FROM pragma_table_info('chunks')
+         WHERE name IN ('start_byte', 'end_byte') ORDER BY name",
+    );
+    assert_eq!(cols, ["end_byte", "start_byte"]);
+    let kept: Option<i64> = conn
+        .query_row(
+            "SELECT start_byte FROM chunks WHERE id = 'C-PLAIN-0'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kept, Some(7), "an existing start_byte value was lost");
+}
