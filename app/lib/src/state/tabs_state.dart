@@ -339,6 +339,7 @@ class TabsNotifier extends StateNotifier<TabsState> {
       tabs: kept.map((t) => t.toPersisted()).toList(),
       activeTabIndex: min(before, max(0, kept.length - 1)),
       canvasViewports: existing.canvasViewports,
+      sidebarMode: existing.sidebarMode,
     );
     // Fire-and-forget; persistence is best-effort and shouldn't block the UI.
     unawaited(store.write(next));

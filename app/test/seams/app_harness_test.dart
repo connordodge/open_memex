@@ -36,6 +36,9 @@ void main() {
         final h = await pumpWorkspace(tester, db: db, cli: cli, clock: clock);
 
         expect(find.byType(Workspace), findsOneWidget);
+        // The sidebar opens in Days mode (#23); the note list is Topics.
+        await tester.tap(find.byKey(const Key('sidebar-mode-topics')));
+        await pumpFrames(tester);
         expect(find.byKey(const Key('notes-rail')), findsOneWidget);
         expect(
           find.byKey(const Key('note-list-item-01J9AAAAAAAAAAAAAAAAAAAAAA')),

@@ -40,6 +40,9 @@ Future<void> _openGraph(WidgetTester tester, GraphScope scope) async {
 }
 
 Future<void> _openNoteMenuFor(WidgetTester tester, String noteId) async {
+  // The sidebar opens in Days mode (#23); the note list is the Topics mode.
+  await tester.tap(find.byKey(const Key('sidebar-mode-topics')));
+  await pumpFrames(tester);
   await tester.tap(find.byKey(_listItem(noteId)));
   await pumpFrames(tester);
   await tester.tap(find.byKey(_menuButton));

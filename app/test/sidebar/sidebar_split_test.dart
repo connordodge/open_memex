@@ -331,10 +331,17 @@ void main() {
     Widget sidebar(_Harness h) =>
         SizedBox(height: 900, child: Sidebar(onNewNote: () => h.newNoteTaps++));
 
+    // #23: the sidebar opens in Days mode; NotesPane is the Topics mode.
+    Future<void> chooseTopics(WidgetTester tester) async {
+      await tester.tap(find.byKey(const Key('sidebar-mode-topics')));
+      await tester.pump();
+    }
+
     testWidgets(
       'the sidebar host composes NotesPane and CanvasesRail and tapping a note row opens that note tab',
       (tester) async {
         final h = await _pump(tester, build: sidebar);
+        await chooseTopics(tester);
 
         expect(
           _in(find.byType(Sidebar), find.byType(NotesPane)),
@@ -376,6 +383,7 @@ void main() {
       tester,
     ) async {
       final h = await _pump(tester, build: sidebar);
+      await chooseTopics(tester);
       h.container.read(tabsProvider.notifier).openOrFocus(const NoteTab('n1'));
       await tester.pump();
       expect(
@@ -405,6 +413,7 @@ void main() {
       'the sidebar host shows the NotesPane empty state and wires new note',
       (tester) async {
         final h = await _pump(tester, build: sidebar, notes: const []);
+        await chooseTopics(tester);
         expect(
           _in(find.byType(NotesPane), find.text('no notes yet.')),
           findsOneWidget,
