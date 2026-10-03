@@ -218,6 +218,9 @@ class _TabChip extends ConsumerWidget {
 
   String _titleFor(WorkspaceTab tab, WidgetRef ref) {
     if (tab is NoteTab) {
+      // The virtual Today note has no row yet: its chip reads its ISO date,
+      // like a real daily note's title.
+      if (VirtualTodayTab.dateOf(tab.id) case final date?) return date;
       final db = ref.watch(vaultDbProvider);
       // No reactive title yet — read once. The rail update on bump will
       // re-render the chip.

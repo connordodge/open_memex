@@ -73,12 +73,16 @@ class NoteMenu extends StatelessWidget {
   final WidgetRef? hostRef;
 
   /// The Graph scope `Open graph` opens: the topic scope for a topic note,
-  /// the day scope for a daily note, none otherwise.
-  static GraphScope? graphScopeFor(Note note) => switch (note.role) {
-    'topic' => GraphScope.topic(note.id),
-    'daily' => GraphScope.day(note.id),
-    _ => null,
-  };
+  /// the day scope for a daily note, none otherwise. The unsaved virtual
+  /// Today note (#22) is in no graph yet, so it has none either.
+  static GraphScope? graphScopeFor(Note note) {
+    if (VirtualTodayTab.dateOf(note.id) case _?) return null;
+    return switch (note.role) {
+      'topic' => GraphScope.topic(note.id),
+      'daily' => GraphScope.day(note.id),
+      _ => null,
+    };
+  }
 
   @override
   Widget build(BuildContext context) {
