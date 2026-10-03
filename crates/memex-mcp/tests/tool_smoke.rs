@@ -33,6 +33,7 @@ async fn create_then_search_then_get_note_round_trip() {
             title: Some("Hybrid search".into()),
             tags: Some(vec!["arch".into()]),
             agent_id: Some("smoke-test".into()),
+            role: None,
         }))
         .await;
     let created: Value = serde_json::from_str(&create_resp).unwrap();
@@ -105,6 +106,7 @@ async fn create_simple_note(memex: &Memex, title: &str, body: &str) -> String {
             title: Some(title.to_string()),
             tags: None,
             agent_id: Some("smoke".into()),
+            role: None,
         }))
         .await;
     let v: Value = serde_json::from_str(&resp).unwrap();
@@ -443,6 +445,7 @@ async fn make_note(memex: &Memex, title: &str, body: &str) -> String {
             title: Some(title.into()),
             tags: None,
             agent_id: Some("smoke".into()),
+            role: None,
         }))
         .await;
     let v: Value = serde_json::from_str(&resp).unwrap();
