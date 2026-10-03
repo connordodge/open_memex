@@ -79,7 +79,9 @@ void main() {
           _bodyField(),
           assembleDailyBody('Morning notes\nplus typed text\n', const []),
         );
-        // The save is debounced by 500 ms; let it fire and complete.
+        // The save is debounced by 500 ms on the clock (D14); let it fire
+        // and complete.
+        h.clock.advance(const Duration(milliseconds: 600));
         await tester.pump(const Duration(milliseconds: 600));
         await pumpFrames(tester);
 
@@ -104,6 +106,7 @@ void main() {
           _bodyField(),
           assembleDailyBody('Morning notes\nplus typed text\n', const []),
         );
+        h.clock.advance(const Duration(milliseconds: 100));
         await tester.pump(const Duration(milliseconds: 100));
 
         // Debounce not elapsed: nothing saved, the review state is unchanged.
@@ -111,6 +114,7 @@ void main() {
         expect(_label('Reviewed'), findsOneWidget);
 
         // Let the pending debounce timer fire so the test ends clean.
+        h.clock.advance(const Duration(milliseconds: 600));
         await tester.pump(const Duration(milliseconds: 600));
         await pumpFrames(tester);
         expect(_label('Changed since review'), findsOneWidget);

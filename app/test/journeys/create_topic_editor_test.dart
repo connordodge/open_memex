@@ -52,7 +52,10 @@ Finder get _bodyField => find.descendant(
 String _bodyText(WidgetTester tester) =>
     tester.widget<EditableText>(_bodyField).controller.text;
 
-Future<void> _drain(WidgetTester tester) async {
+/// Let the editor's 500 ms save debounce (on the harness clock, D14) and any
+/// CLI round trip finish.
+Future<void> _drain(WidgetTester tester, WorkspaceHarness h) async {
+  h.clock.advance(const Duration(milliseconds: 600));
   await tester.pump(const Duration(milliseconds: 600));
   await pumpFrames(tester);
 }
@@ -76,7 +79,7 @@ void main() {
       await pumpFrames(tester);
 
       await _typeLinkAndChooseCreate(tester, 'Slept badly [[Sleep');
-      await _drain(tester);
+      await _drain(tester, h);
 
       final footerVersion = db.db.select(
         'SELECT version FROM notes WHERE id = ?',
@@ -109,7 +112,7 @@ void main() {
         find.byKey(const Key('footer-chip-$createdTopicId')),
         findsOneWidget,
       );
-      await _drain(tester);
+      await _drain(tester, h);
     },
   );
 
@@ -133,7 +136,7 @@ void main() {
         _earlierId,
       );
       expect(_bodyText(tester), 'Slept badly [[Sleep]]');
-      await _drain(tester);
+      await _drain(tester, h);
       expect(find.byKey(const Key('inline-error')), findsNothing);
       expect(
         cli.callsFor('update').single.flag('expected-version'),
@@ -174,7 +177,7 @@ void main() {
       expect(_bodyText(tester), 'Slept badly [[Sleep');
       await _tap(tester, 'inline-error-dismiss');
       expect(find.byKey(const Key('inline-error')), findsNothing);
-      await _drain(tester);
+      await _drain(tester, h);
     },
   );
 
@@ -183,7 +186,7 @@ void main() {
     (tester) async {
       final db = FakeVaultDb.v5();
       final cli = _newCli(db);
-      await _launch(tester, db, cli);
+      final h = await _launch(tester, db, cli);
 
       await _typeLinkAndChooseCreate(tester, 'Slept badly [[Sleep');
 
@@ -192,7 +195,7 @@ void main() {
       expect(add.flag('title'), 'Sleep');
       expect(cli.callsFor('footer add'), isEmpty);
       expect(_bodyText(tester), 'Slept badly [[Sleep]]');
-      await _drain(tester);
+      await _drain(tester, h);
     },
   );
 }
