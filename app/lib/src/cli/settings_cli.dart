@@ -38,4 +38,11 @@ extension SettingsCli on MemexCli {
     }
     return value;
   }
+
+  /// `memex settings set --vault <vaultPath> --key <key> --value <value>` →
+  /// the stored value (C2.11, same stdout shape as `get`). A CLI failure
+  /// throws [MemexException] with the C1 `code` (e.g. `setting_invalid`).
+  Future<int> setSetting(String vaultPath, String key, int value) {
+    throw UnimplementedError();
+  }
 }
