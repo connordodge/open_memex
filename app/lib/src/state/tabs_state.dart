@@ -35,6 +35,17 @@ class NoteTab extends WorkspaceTab {
   int get hashCode => Object.hash('note', id);
 }
 
+/// The virtual (unsaved) Today note (Req 48, WI #22): shown when today has
+/// no daily note yet. It keeps the ISO [date] it opened with across local
+/// midnight (D14) and is never persisted to `ui_state.json` (D26). A
+/// [NoteTab], so the workspace's note branch renders it.
+class VirtualTodayTab extends NoteTab {
+  const VirtualTodayTab(this.date) : super('virtual-today:$date');
+
+  /// The ISO date (`YYYY-MM-DD`) this tab was opened for.
+  final String date;
+}
+
 class CanvasTab extends WorkspaceTab {
   const CanvasTab(super.id);
   @override
@@ -137,6 +148,14 @@ class TabsNotifier extends StateNotifier<TabsState> {
     _persist();
     _emitSelection();
     return newActive;
+  }
+
+  /// Open today's note (#23's `Today` row entry point): focus the tab of
+  /// today's daily note [noteId] when it is open, otherwise open it; when
+  /// [noteId] is null (no daily note for [date] yet), focus the open
+  /// [VirtualTodayTab] for [date] or insert one as the active tab.
+  void openToday({required String date, String? noteId}) {
+    throw UnimplementedError();
   }
 
   void close(WorkspaceTab tab) {
