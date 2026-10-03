@@ -303,6 +303,33 @@ pub fn update_note_with_options(
     update_note_as(vault, id, expected_version, patch, options, Caller::Person)
 }
 
+/// The marker guard (Req 16 / Req 75, D3): an agent may not write a note that
+/// is `role: daily` (`current_frontmatter`), nor make a note `role: daily`
+/// (`new_frontmatter`, the frontmatter the write would store). Either is
+/// `MarkerRule`; person writes always pass. `update_note_as` runs it on every
+/// save, and an agent path that answers without saving (MCP `add_link` on an
+/// existing link) runs it on the source note first.
+pub fn check_agent_write(
+    caller: Caller,
+    current_frontmatter: &serde_json::Value,
+    new_frontmatter: Option<&serde_json::Value>,
+) -> Result<()> {
+    if caller != Caller::Agent {
+        return Ok(());
+    }
+    if daily::is_daily(current_frontmatter) {
+        return Err(MemexError::MarkerRule(
+            "agents may not edit a daily note".into(),
+        ));
+    }
+    if new_frontmatter.is_some_and(daily::is_daily) {
+        return Err(MemexError::MarkerRule(
+            "agents may not make a note a daily note (role: daily)".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Updates a note on behalf of `caller` (architect ruling D3). Every save
 /// path (including `links::update_link_as`) goes through here, so a rule
 /// added for agent writes guards them all.
@@ -337,6 +364,12 @@ pub fn update_note_as(
         })?;
     let (current_version, current_title, current_content, current_fm) = current_row
         .ok_or_else(|| MemexError::NotFound(format!("note {}", id.as_str())))?;
+    // The marker guard wins over a stale version: an agent retry can't help.
+    check_agent_write(
+        caller,
+        &lenient_frontmatter(&current_fm),
+        patch.frontmatter.as_ref(),
+    )?;
     if current_version != expected_version {
         return Err(MemexError::VersionConflict {
             expected: expected_version,
@@ -569,6 +602,42 @@ pub fn delete_note(vault: &mut Vault, id: &NoteId) -> Result<()> {
         .execute("DELETE FROM notes WHERE id = ?", params![id.as_str()])?;
     if n == 0 {
         return Err(MemexError::NotFound(format!("note {}", id.as_str())));
+    }
+    Ok(())
+}
+
+/// Deletes a note on the person path (`memex rm`, architect ruling D24):
+/// checks `expected_version` (`VersionConflict`), purges the note's search
+/// indexes before the delete, deletes it (its blocks, review rows, chips,
+/// change entries and memberships cascade) and re-renders, then reindexes
+/// with `embedder`, the footer of every daily note that held a chip for it.
+/// An unknown id is `NotFound`.
+pub fn delete_note_checked(
+    vault: &mut Vault,
+    id: &NoteId,
+    expected_version: i64,
+    embedder: Option<&dyn crate::embedder::Embedder>,
+) -> Result<()> {
+    let current = get_note(vault, id)?;
+    if current.version != expected_version {
+        return Err(MemexError::VersionConflict {
+            expected: expected_version,
+            current: current.version,
+        });
+    }
+    // Collected before the delete: the chips cascade away with the note.
+    let dailies: Vec<String> = {
+        let mut stmt = vault.connection_ref().prepare(
+            "SELECT daily_note_id FROM footer_chips WHERE topic_note_id = ? ORDER BY rowid",
+        )?;
+        let rows = stmt.query_map([id.as_str()], |r| r.get(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    // The purge reads the note's `chunks`, which the delete cascades away.
+    crate::indexer::purge_note_indexes(vault.conn_mut(), id.as_str())?;
+    delete_note(vault, id)?;
+    for daily_id in dailies {
+        crate::footer::rerender_footer(vault, &NoteId(daily_id), embedder)?;
     }
     Ok(())
 }
