@@ -1,6 +1,5 @@
 // WI #30 (A12): edge geometry and hover hit test of the Graph view's
 // painter (implementer tests for behaviour beyond the ACs).
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/graph/graph_scope.dart';
 import 'package:open_memex_app/src/widgets/graph/graph_painter.dart';
