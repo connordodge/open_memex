@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
+use memex_core::{vault_settings, Vault};
+use serde::Serialize;
 
 /// `memex settings <command>`
 #[derive(Args, Debug)]
@@ -39,47 +41,42 @@ pub struct SettingsSetArgs {
     /// Setting key (e.g. `smart_folder_max_depth`).
     #[arg(long)]
     pub key: String,
-    /// New value.
-    #[arg(long)]
+    /// New value. Hyphen values are accepted so `-1` reaches validation and
+    /// fails as `setting_invalid`, not as a clap usage error.
+    #[arg(long, allow_hyphen_values = true)]
     pub value: String,
+}
+
+/// C2.11: `vault_id` first, then the key and its integer value.
+#[derive(Serialize)]
+struct SettingOut<'a> {
+    vault_id: &'a str,
+    key: &'a str,
+    value: i64,
+}
+
+fn print_setting(vault: &Vault, key: &str, value: i64) -> anyhow::Result<()> {
+    let out = SettingOut {
+        vault_id: vault.vault_id(),
+        key,
+        value,
+    };
+    println!("{}", serde_json::to_string(&out)?);
+    Ok(())
 }
 
 pub fn run(args: SettingsArgs) -> anyhow::Result<()> {
     match args.command {
-        SettingsCommand::Get(_) => super::not_implemented("settings get"),
-        SettingsCommand::Set(_) => super::not_implemented("settings set"),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn stubs_report_not_implemented() {
-        let cases = [
-            (
-                SettingsCommand::Get(SettingsGetArgs {
-                    vault: PathBuf::from("v"),
-                    key: "k".into(),
-                }),
-                "settings get",
-            ),
-            (
-                SettingsCommand::Set(SettingsSetArgs {
-                    vault: PathBuf::from("v"),
-                    key: "k".into(),
-                    value: "3".into(),
-                }),
-                "settings set",
-            ),
-        ];
-        for (command, name) in cases {
-            let err = run(SettingsArgs { command }).unwrap_err();
-            assert_eq!(
-                err.to_string(),
-                format!("memex {name}: not implemented yet")
-            );
+        SettingsCommand::Get(a) => {
+            // `Vault::open` migrates a V4 vault to V5 (#18 relies on this).
+            let vault = Vault::open(&a.vault)?;
+            let value = vault_settings::get_setting(&vault, &a.key)?;
+            print_setting(&vault, &a.key, value)
+        }
+        SettingsCommand::Set(a) => {
+            let mut vault = Vault::open(&a.vault)?;
+            let value = vault_settings::set_setting(&mut vault, &a.key, &a.value)?;
+            print_setting(&vault, &a.key, value)
         }
     }
 }
