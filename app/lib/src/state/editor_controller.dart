@@ -5,7 +5,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../db.dart';
 import '../editor/conflict_merge.dart';
 import '../editor/segments.dart';
+import '../db/daily_reads.dart';
 import '../memex_cli.dart';
+import 'clock.dart';
 import 'tabs_state.dart' show VirtualTodayTab, tabsProvider;
 import 'today_state.dart';
 import 'vault_state.dart';
@@ -26,7 +28,22 @@ class _VirtualDraft {
   String? error;
 }
 
+/// The save debounce: a save runs this long after the last edit (D14: on
+/// [clockProvider]).
+const saveDebounce = Duration(milliseconds: 500);
+
+/// The inline error after a save and its merged retry both hit a
+/// `version_conflict` (Req 60); the next debounce tick merges again.
+const couldNotSaveMessage = "Couldn't save";
+
 /// Editor controller — owns the debounced save state for the open note.
+///
+/// A daily note's save that hits a `version_conflict` refetches the note,
+/// rebuilds the body with [mergeConflict] (the local person text, the
+/// agent / quick-entry blocks the editor has not seen, the server's footer)
+/// and retries once with the refetched version. When the retry conflicts
+/// too, the local text stays, the error reads [couldNotSaveMessage] and the
+/// next debounce tick (re-armed here) merges and saves again.
 ///
 /// For the virtual Today note (a [VirtualTodayTab], #22) the first edit
 /// creates the daily note through [createDailyNote] instead of saving:
@@ -45,6 +62,10 @@ class EditorController extends StateNotifier<EditorStateValue> {
   final Ref _ref;
   Timer? _debounce;
   String? _activeNoteId;
+
+  /// True after a daily note's save and its merged retry both conflicted:
+  /// the next save goes straight to the merge.
+  bool _mergePending = false;
 
   /// The date of the open virtual Today note; null when a real note (or
   /// none) is open.
@@ -66,6 +87,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
   void loadNote(Note? note) {
     final pending = _debounce?.isActive == true;
     _debounce?.cancel();
+    _mergePending = false;
     _resolvedNoteId = null;
     final leaving = _virtualDate;
     _virtualDate = null;
@@ -133,9 +155,36 @@ class EditorController extends StateNotifier<EditorStateValue> {
     _scheduleSave();
   }
 
+  /// Hides the save error (the inline error's dismiss); the status stays.
+  void dismissError() {
+    state = state.copyWith(clearError: true);
+  }
+
+  /// The poller saw note [noteId] change on disk (WI #28). Returns false when
+  /// the stored version is the editor's own base version (its last save or
+  /// load), true for a foreign change. A foreign change to the open note is
+  /// applied when the editor is clean: the server body becomes the editor's
+  /// text and its version the base. A dirty editor keeps its text; its next
+  /// save conflicts and merges.
+  bool serverChanged(String noteId) {
+    final note = _ref.read(vaultDbProvider)?.getNote(noteId);
+    if (note == null) return false;
+    if (_activeNoteId != noteId) return true;
+    if (note.version == state.lastSavedVersion) return false;
+    if (state.status == SaveStatus.clean) {
+      state = state.copyWith(
+        contentMd: note.contentMd,
+        lastSavedVersion: note.version,
+      );
+    }
+    return true;
+  }
+
   void _scheduleSave() {
     _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 500), _save);
+    _debounce = _ref.read(clockProvider).after(saveDebounce, () {
+      unawaited(_save());
+    });
   }
 
   Future<void> _save() async {
@@ -148,28 +197,72 @@ class EditorController extends StateNotifier<EditorStateValue> {
     final version = state.lastSavedVersion;
     if (cli == null || vaultPath == null || version == null) return;
 
+    final local = state.contentMd;
+    final title = state.title.trim().isEmpty ? null : state.title.trim();
+    var merging = _mergePending;
     state = state.copyWith(status: SaveStatus.saving, clearError: true);
     try {
-      final result = await cli.updateNote(
+      ({NoteUpdateResult result, String body})? saved;
+      if (!merging) {
+        try {
+          final result = await cli.updateNote(
+            vaultPath: vaultPath,
+            noteId: id,
+            expectedVersion: version,
+            title: title,
+            contentMd: local,
+          );
+          saved = (result: result, body: local);
+        } on MemexException catch (e) {
+          // Only a daily note merges (Req 60); other conflicts surface.
+          if (e.kind != MemexErrorKind.versionConflict ||
+              _activeNoteId != id ||
+              _ref.read(vaultDbProvider)?.getNote(id)?.role != 'daily') {
+            rethrow;
+          }
+          merging = true;
+        }
+      }
+      saved ??= await _mergeAndSave(
+        cli,
         vaultPath: vaultPath,
         noteId: id,
-        expectedVersion: version,
-        title: state.title.trim().isEmpty ? null : state.title.trim(),
-        contentMd: state.contentMd,
+        baseVersion: version,
+        local: local,
+        title: title,
       );
       if (_activeNoteId != id) return;
-      state = state.copyWith(
-        status: SaveStatus.clean,
-        lastSavedVersion: result.version,
-        clearError: true,
-      );
+      _mergePending = false;
+      if (merging && state.contentMd != local) {
+        // Typed during the merged save: the new text lacks the merged
+        // blocks, so the next save merges again from the same base.
+        _mergePending = true;
+        state = state.copyWith(status: SaveStatus.dirty);
+      } else {
+        state = state.copyWith(
+          contentMd: merging ? saved.body : null,
+          status: SaveStatus.clean,
+          lastSavedVersion: saved.result.version,
+          clearError: true,
+        );
+      }
       _ref.read(vaultRevisionProvider.notifier).state++;
     } on MemexException catch (e) {
       if (_activeNoteId != id) return;
+      final conflict = e.kind == MemexErrorKind.versionConflict;
+      if (merging && conflict) {
+        // The merged retry conflicted too: keep the local text and merge
+        // again on the next debounce tick.
+        _mergePending = true;
+        state = state.copyWith(
+          status: SaveStatus.conflict,
+          errorMessage: couldNotSaveMessage,
+        );
+        _scheduleSave();
+        return;
+      }
       state = state.copyWith(
-        status: e.kind == MemexErrorKind.versionConflict
-            ? SaveStatus.conflict
-            : SaveStatus.error,
+        status: conflict ? SaveStatus.conflict : SaveStatus.error,
         errorMessage: e.message,
       );
     } catch (e) {
@@ -179,6 +272,48 @@ class EditorController extends StateNotifier<EditorStateValue> {
         errorMessage: e.toString(),
       );
     }
+  }
+
+  /// Req 60: refetches daily note [noteId] and saves [local]'s person text,
+  /// then every agent / quick-entry block created after [baseVersion] (the
+  /// version [local] was based on) whose text it lacks, then the server's
+  /// footer ([mergeConflict]), with the refetched version.
+  Future<({NoteUpdateResult result, String body})> _mergeAndSave(
+    MemexCli cli, {
+    required String vaultPath,
+    required String noteId,
+    required int baseVersion,
+    required String local,
+    required String? title,
+  }) async {
+    final db = _ref.read(vaultDbProvider);
+    if (db == null) throw MemexException('update failed: vault not open');
+    final server = db.getNote(noteId);
+    if (server == null) {
+      throw MemexException('update failed: note $noteId not found');
+    }
+    final body = mergeConflict(
+      localPerson: splitDailyBody(local).person,
+      baseVersion: baseVersion,
+      serverBody: server.contentMd,
+      serverBlocks: [
+        for (final b in db.blocksForNote(noteId))
+          ServerBlock(
+            source: b.source,
+            createdVersion: b.createdVersion,
+            ord: b.ord,
+            text: b.text,
+          ),
+      ],
+    );
+    final result = await cli.updateNote(
+      vaultPath: vaultPath,
+      noteId: noteId,
+      expectedVersion: server.version,
+      title: title,
+      contentMd: body,
+    );
+    return (result: result, body: body);
   }
 
   /// The first edit of the virtual Today note for [date]: create the daily

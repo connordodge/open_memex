@@ -6,5 +6,11 @@ import '../db.dart';
 extension PollReads on VaultDb {
   /// The `updated_at` (unix ms) of note [noteId]; null when it does not
   /// exist.
-  int? noteUpdatedAt(String noteId) => throw UnimplementedError();
+  int? noteUpdatedAt(String noteId) {
+    final rows = db.select('SELECT updated_at FROM notes WHERE id = ?', [
+      noteId,
+    ]);
+    if (rows.isEmpty) return null;
+    return (rows.first['updated_at'] as num).toInt();
+  }
 }

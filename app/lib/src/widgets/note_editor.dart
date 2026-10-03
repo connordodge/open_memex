@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../db.dart';
 import '../state/editor_controller.dart';
+import '../state/note_poller_state.dart';
 import '../state/today_state.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
@@ -128,6 +129,9 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
     final editor = ref.watch(editorControllerProvider);
     final controller = ref.read(editorControllerProvider.notifier);
     final vaultPath = ref.watch(currentVaultProvider);
+    // Polls the open daily note for server writes while it is the active
+    // tab (WI #28).
+    ref.watch(notePollerProvider);
 
     ref.listen<Note?>(
       editorNoteProvider,
@@ -190,6 +194,7 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
                     onContentChanged: controller.onContentChanged,
                     primaryFocusNode: _bodyFocus,
                     errorMessage: editor.errorMessage,
+                    onDismissError: controller.dismissError,
                     header: header,
                   ),
           ),

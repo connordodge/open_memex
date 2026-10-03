@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderEditable;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
@@ -14,6 +15,7 @@ import '../../state/vault_state.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import '../atoms.dart';
+import 'capture_gutter.dart';
 import 'excerpt_card.dart';
 import 'footer_chip_row.dart';
 import 'text_segment.dart';
@@ -76,6 +78,7 @@ class SegmentedBody extends ConsumerStatefulWidget {
     this.header,
     this.errorMessage,
     this.primaryFocusNode,
+    this.onDismissError,
   });
 
   /// The note shown (its id and role).
@@ -93,12 +96,19 @@ class SegmentedBody extends ConsumerStatefulWidget {
   /// Focus node of the first text segment, owned by the host.
   final FocusNode? primaryFocusNode;
 
+  /// Dismisses the save [errorMessage] (shown as an inline error).
+  final VoidCallback? onDismissError;
+
   @override
   ConsumerState<SegmentedBody> createState() => _SegmentedBodyState();
 }
 
 class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
   final _kindChips = KindChipHost();
+
+  /// Wraps the first text segment's field, so the capture gutter can measure
+  /// its lines.
+  final _primaryFieldKey = GlobalKey(debugLabel: 'primary-field');
   FocusNode? _ownPrimary;
   List<_Seg> _segs = const [];
   late bool _isDaily;
@@ -133,10 +143,16 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
     final isDaily = widget.note.role == 'daily';
     final content = widget.content;
     if (isDaily != _isDaily || content != _joined) {
+      // A server write to the loaded note (a polled update, a merged save)
+      // keeps the selection; loading a note puts the caret at the end.
+      final serverWrite =
+          old.note.id == widget.note.id &&
+          isDaily == _isDaily &&
+          old.savedVersion != null;
       _isDaily = isDaily;
-      _resplit(content);
+      _resplit(content, keepSelection: serverWrite);
     } else if (widget.savedVersion != old.savedVersion) {
-      _resplit(_joined, keepCaret: true);
+      _resplit(_joined, keepSelection: true);
     }
   }
 
@@ -161,8 +177,9 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
   /// shape (same kinds, same cards) the text controllers are kept and only
   /// their text is replaced; otherwise new segments are built and focus moves
   /// to the text segment holding the caret's position. A replaced text puts
-  /// the caret at its end, or keeps it where it was with [keepCaret].
-  void _resplit(String text, {bool keepCaret = false}) {
+  /// the caret at its end, or keeps the selection (both ends, clamped to the
+  /// new text) with [keepSelection].
+  void _resplit(String text, {bool keepSelection = false}) {
     final next = split(text, isDaily: _isDaily);
     _withFooter = !_isDaily || splitDailyBody(text).person != text;
     if (_sameShape(next)) {
@@ -174,11 +191,9 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
           if (seg is _TextSeg && n is TextSegment && seg.ctrl.text != n.text) {
             seg.ctrl.value = TextEditingValue(
               text: n.text,
-              selection: TextSelection.collapsed(
-                offset: keepCaret
-                    ? seg.ctrl.selection.baseOffset.clamp(0, n.text.length)
-                    : n.text.length,
-              ),
+              selection: keepSelection
+                  ? _clampSelection(seg.ctrl.selection, n.text.length)
+                  : TextSelection.collapsed(offset: n.text.length),
             );
           }
         }
@@ -227,6 +242,51 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
     }
     _joined = _joinOf(_segs);
   }
+
+  /// [selection] with both ends clamped to `0..length`.
+  static TextSelection _clampSelection(TextSelection selection, int length) =>
+      selection.copyWith(
+        baseOffset: selection.baseOffset.clamp(0, length),
+        extentOffset: selection.extentOffset.clamp(0, length),
+      );
+
+  /// The first text segment field's [RenderEditable], once laid out.
+  RenderEditable? _primaryEditable() {
+    RenderEditable? found;
+    void visit(RenderObject node) {
+      if (found != null) return;
+      if (node is RenderEditable) {
+        found = node;
+      } else {
+        node.visitChildren(visit);
+      }
+    }
+
+    final root = _primaryFieldKey.currentContext?.findRenderObject();
+    if (root != null) visit(root);
+    return found;
+  }
+
+  /// The daily person field with the capture gutter beside it (WI #28).
+  Widget _withGutter(_TextSeg seg, Widget field) => Stack(
+    children: [
+      Padding(
+        padding: const EdgeInsets.only(left: captureGutterWidth),
+        child: KeyedSubtree(key: _primaryFieldKey, child: field),
+      ),
+      Positioned(
+        left: 0,
+        top: 0,
+        bottom: 0,
+        width: captureGutterWidth,
+        child: CaptureGutter(
+          noteId: widget.note.id,
+          controller: seg.ctrl,
+          editable: _primaryEditable,
+        ),
+      ),
+    ],
+  );
 
   /// True when [next] has the current segments' shape: the same cards (raw
   /// token lines) at the same positions. split() alternates text segments
@@ -401,7 +461,6 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
     final error = _error;
     return EditorPage(
       header: widget.header,
-      errorMessage: widget.errorMessage,
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -410,24 +469,35 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
               message: error,
               onDismiss: () => setState(() => _error = null),
             ),
+          if (widget.errorMessage case final saveError?)
+            _InlineError(
+              message: saveError,
+              onDismiss: () => widget.onDismissError?.call(),
+            ),
           for (var i = 0; i < _segs.length; i++)
             switch (_segs[i]) {
               final _TextSeg t => KeyedSubtree(
                 key: ValueKey('text-segment-$i'),
                 child: _primaryKeyed(
                   i == 0,
-                  TextSegmentField(
-                    key: ObjectKey(t.ctrl),
-                    controller: t.ctrl,
-                    focusNode: t.focus,
-                    onChanged: (_) => _onTextChanged(),
-                    kindChips: _kindChips,
-                    minLines: single ? 12 : (identical(t, texts.last) ? 4 : 1),
-                    hintText: single
-                        ? 'type [[ to link a note · write markdown…'
-                        : null,
-                    onMoveUp: () => _neighbour(t, forward: false),
-                    onMoveDown: () => _neighbour(t, forward: true),
+                  _daily(
+                    i,
+                    t,
+                    TextSegmentField(
+                      key: ObjectKey(t.ctrl),
+                      controller: t.ctrl,
+                      focusNode: t.focus,
+                      onChanged: (_) => _onTextChanged(),
+                      kindChips: _kindChips,
+                      minLines: single
+                          ? 12
+                          : (identical(t, texts.last) ? 4 : 1),
+                      hintText: single
+                          ? 'type [[ to link a note · write markdown…'
+                          : null,
+                      onMoveUp: () => _neighbour(t, forward: false),
+                      onMoveDown: () => _neighbour(t, forward: true),
+                    ),
                   ),
                 ),
               ),
@@ -443,6 +513,10 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
       overlays: [KindChipLayer(host: _kindChips)],
     );
   }
+
+  /// A daily note's person field (segment 0) gets the capture gutter.
+  Widget _daily(int i, _TextSeg seg, Widget field) =>
+      _isDaily && i == 0 ? _withGutter(seg, field) : field;
 
   /// The first text segment is also the editor's body field (Key
   /// `editor-body`), where launch focus goes.
