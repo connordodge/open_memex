@@ -97,6 +97,7 @@ fn c1_samples() -> Vec<(MemexError, &'static str, Value)> {
         (
             MemexError::PinnedRule {
                 item: "01J9FOLDER0000000000000000/01J9NOTE00000000000000000".into(),
+                name: "Reading List".into(),
             },
             "pinned_rule",
             json!({"item": "01J9FOLDER0000000000000000/01J9NOTE00000000000000000"}),
@@ -330,6 +331,24 @@ fn role_rule_message_contains_role() {
     let msg = e.to_string();
     assert!(msg.contains("role"), "{msg}");
     assert!(msg.contains("target must be a topic note"), "{msg}");
+}
+
+#[test]
+fn pinned_rule_message_contains_name_and_json_omits_it() {
+    let e = MemexError::PinnedRule {
+        item: "01J9FOLDER0000000000000000".into(),
+        name: "Project Atlas".into(),
+    };
+    let msg = e.to_string();
+    assert!(msg.contains("Project Atlas"), "{msg}");
+    assert_eq!(
+        e.to_error_json(),
+        json!({"error": {
+            "code": "pinned_rule",
+            "message": msg,
+            "item": "01J9FOLDER0000000000000000"
+        }})
+    );
 }
 
 #[test]
