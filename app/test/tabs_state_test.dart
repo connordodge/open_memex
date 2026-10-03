@@ -22,10 +22,9 @@ void main() {
 
   tearDown(() async {
     notifier.dispose();
-    // The notifier persists with unawaited writes. Queue one more write and
-    // await it: the store serializes writes, so this drains every pending one
-    // before the temp dir is deleted (otherwise deleteSync races the rename).
-    await store.write(store.read());
+    // The notifier persists with unawaited writes; drain them before the temp
+    // dir is deleted (otherwise deleteSync races the tmp+rename).
+    await store.flush();
     if (tmp.existsSync()) tmp.deleteSync(recursive: true);
   });
 
@@ -85,8 +84,8 @@ void main() {
   test('persists across restart via the store', () async {
     notifier.openOrFocus(const NoteTab('n1'));
     notifier.openOrFocus(const CanvasTab('c1'));
-    // Allow the fire-and-forget write to complete.
-    await Future<void>.delayed(const Duration(milliseconds: 50));
+    // Wait for the fire-and-forget writes to complete.
+    await store.flush();
 
     // Build a fresh notifier with the same store.
     final secondLog = <String?>[];

@@ -47,6 +47,10 @@ class UiStateStore {
     return next;
   }
 
+  /// Completes once every write queued so far has finished (successfully or
+  /// not). Lets callers and tests wait for unawaited persistence.
+  Future<void> flush() => _writeQueue;
+
   Future<void> _doWrite(UiState state) async {
     final dir = Directory(p.dirname(_filePath));
     if (!dir.existsSync()) {
