@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::error::MemexError;
 use crate::Result;
 
-pub const APP_SCHEMA_VERSION: i64 = 4;
+pub const APP_SCHEMA_VERSION: i64 = 5;
 
 pub const MAX_DEDUP_COLLISIONS: i64 = 1000;
 
@@ -128,6 +128,112 @@ CREATE TABLE IF NOT EXISTS canvas_nodes (
 CREATE INDEX IF NOT EXISTS idx_canvas_nodes_note ON canvas_nodes(note_id);
 "#;
 
+// V5 adds daily notes, day review and Smart Folders (Spec #1): stable block
+// identities (`blocks`), review state and its snapshot (`day_reviews`,
+// `day_review_blocks`), footer chips linking a daily note to topics, the agent
+// change log, Smart Folders with their memberships, and vault-wide settings.
+// Every note-owned row cascades on note delete. `smart_folders.parent_id` has
+// no ON DELETE action on purpose: callers re-parent children before deleting a
+// folder, so deleting one that still has children fails. `footer_chips` stays a
+// rowid table because the footer renders in rowid (insertion) order.
+//
+// `idx_notes_daily_title` allows one `role: daily` note per title. The CASE
+// guard keeps a note with malformed frontmatter from raising a JSON error, both
+// while the index is built over existing rows and on later writes.
+//
+// The `chunks` byte-range columns are added by `apply_v5` (ALTER TABLE ADD
+// COLUMN is not idempotent); existing rows stay NULL until the next reindex.
+const V5: &str = r#"
+CREATE TABLE IF NOT EXISTS blocks (
+    note_id          TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    block_id         TEXT NOT NULL,
+    ord              INTEGER NOT NULL,
+    start_byte       INTEGER NOT NULL,
+    end_byte         INTEGER NOT NULL,
+    text             TEXT NOT NULL,
+    content_hash     TEXT NOT NULL,
+    source           TEXT NOT NULL
+                     CHECK (source IN ('person','agent','quick-entry')),
+    created_version  INTEGER NOT NULL,
+    created_at       INTEGER NOT NULL,
+    PRIMARY KEY (note_id, block_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_blocks_note_ord ON blocks(note_id, ord);
+
+CREATE TABLE IF NOT EXISTS day_reviews (
+    note_id                   TEXT PRIMARY KEY REFERENCES notes(id) ON DELETE CASCADE,
+    content_version           INTEGER NOT NULL DEFAULT 0,
+    reviewed_content_version  INTEGER NULL,
+    reviewed_at               INTEGER NULL
+);
+
+CREATE TABLE IF NOT EXISTS day_review_blocks (
+    note_id       TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    block_id      TEXT NOT NULL,
+    content_hash  TEXT NOT NULL,
+    text          TEXT NOT NULL,
+    PRIMARY KEY (note_id, block_id)
+);
+
+CREATE TABLE IF NOT EXISTS footer_chips (
+    daily_note_id  TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    topic_note_id  TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    origin         TEXT NOT NULL CHECK (origin IN ('excerpt','person')),
+    created_at     INTEGER NOT NULL,
+    PRIMARY KEY (daily_note_id, topic_note_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_footer_chips_topic ON footer_chips(topic_note_id);
+
+CREATE TABLE IF NOT EXISTS agent_changes (
+    id            TEXT PRIMARY KEY,
+    note_id       TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    day           TEXT NOT NULL,
+    created_at    INTEGER NOT NULL,
+    bullets_json  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_changes_note ON agent_changes(note_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS smart_folders (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    parent_id   TEXT NULL REFERENCES smart_folders(id),
+    pinned      INTEGER NOT NULL DEFAULT 0,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_smart_folders_sibling_name
+    ON smart_folders(COALESCE(parent_id, ''), name COLLATE NOCASE);
+
+CREATE TABLE IF NOT EXISTS smart_folder_members (
+    smart_folder_id  TEXT NOT NULL REFERENCES smart_folders(id) ON DELETE CASCADE,
+    note_id          TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    pinned           INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (smart_folder_id, note_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_smart_folder_members_note ON smart_folder_members(note_id);
+
+CREATE TABLE IF NOT EXISTS vault_settings (
+    key    TEXT PRIMARY KEY,
+    value  TEXT NOT NULL
+);
+
+INSERT OR IGNORE INTO vault_settings(key, value) VALUES ('smart_folder_max_depth', '2');
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_daily_title ON notes(title)
+    WHERE CASE WHEN json_valid(frontmatter) THEN json_extract(frontmatter, '$.role') END = 'daily';
+"#;
+
+/// Nullable columns V5 adds to existing tables: (table, column, declaration).
+const V5_COLUMNS: [(&str, &str, &str); 2] = [
+    ("chunks", "start_byte", "INTEGER"),
+    ("chunks", "end_byte", "INTEGER"),
+];
+
 pub fn apply(conn: &mut Connection) -> Result<()> {
     // v1, v2: each in its own transaction so partial migrations are durable.
     {
@@ -166,7 +272,37 @@ pub fn apply(conn: &mut Connection) -> Result<()> {
         }
         tx.commit()?;
     }
+
+    // v5: daily notes, review, Smart Folders. One transaction, guarded by the
+    // version so a second apply() is a no-op. No data backfill.
+    {
+        let tx = conn.transaction()?;
+        if current_version(&tx)? < 5 {
+            apply_v5(&tx)?;
+            tx.execute("INSERT INTO schema_version(version) VALUES (5)", [])?;
+        }
+        tx.commit()?;
+    }
     Ok(())
+}
+
+fn apply_v5(conn: &Connection) -> Result<()> {
+    for (table, column, decl) in V5_COLUMNS {
+        if !has_column(conn, table, column)? {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl};"))?;
+        }
+    }
+    conn.execute_batch(V5)?;
+    Ok(())
+}
+
+fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+        [table, column],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
 }
 
 fn apply_v3(conn: &mut Connection) -> Result<()> {

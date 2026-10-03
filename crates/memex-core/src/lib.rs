@@ -14,6 +14,18 @@ pub mod search;
 pub mod tags;
 pub mod vault;
 
+// Registered up front (architect ruling D5); each feature fills its own file.
+pub mod blocks;
+pub mod caller;
+pub mod daily;
+pub mod excerpts;
+pub mod footer;
+pub mod review;
+pub mod smart_folders;
+pub mod transclusion;
+pub mod vault_settings;
+
+pub use caller::Caller;
 pub use canvas::{
     Canvas, CanvasDetail, CanvasEdge, CanvasId, CanvasNode, CanvasSummary, Clock, SystemClock,
 };
