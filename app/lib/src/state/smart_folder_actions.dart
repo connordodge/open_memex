@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../cli/folder_cli.dart';
 import '../cli/settings_cli.dart';
 import '../memex_cli.dart';
+import 'topics_state.dart';
+import 'topics_tree.dart';
 import 'vault_state.dart';
 
 /// The CLI message of the last failed Smart Folder mutation (Req 54), shown
@@ -12,6 +14,14 @@ final smartFolderErrorProvider = StateProvider<String?>((_) => null);
 /// The Smart Folder the person last selected in the Topics tree:
 /// `+ New Smart Folder` creates inside it. Null means root.
 final selectedTopicFolderProvider = StateProvider<String?>((_) => null);
+
+/// [selectedTopicFolderProvider] while that folder is still in the tree;
+/// null (root) once it was deleted, here or by an agent.
+final selectedFolderInTreeProvider = Provider<String?>((ref) {
+  final id = ref.watch(selectedTopicFolderProvider);
+  bool holds(FolderNode f) => f.id == id || f.children.any(holds);
+  return ref.watch(smartFolderTreeProvider).folders.any(holds) ? id : null;
+});
 
 /// Asks the person whether to raise `smart_folder_max_depth` to
 /// [requiredDepth] (the depth dialog, Req 37). Resolves true on Confirm.
@@ -30,10 +40,9 @@ typedef ConfirmDepthRaise = Future<bool> Function(int requiredDepth);
 /// again with the same arguments; on Cancel nothing changes. A failure of
 /// either of those calls is shown inline the same way.
 ///
-/// Resolves true when the write landed. Takes a [ProviderContainer] rather
-/// than a `WidgetRef` because menus and dialogs are gone by the time the
-/// call returns.
-Future<bool> runSmartFolderWrite(
+/// Takes a [ProviderContainer] rather than a `WidgetRef` because menus and
+/// dialogs are gone by the time the call returns.
+Future<void> runSmartFolderWrite(
   ProviderContainer container,
   Future<void> Function(MemexCli cli, String vaultPath) write, {
   ConfirmDepthRaise? confirmDepth,
@@ -43,7 +52,7 @@ Future<bool> runSmartFolderWrite(
   final vaultPath = container.read(currentVaultProvider);
   if (cli == null || vaultPath == null) {
     errors.state = 'The memex CLI is not available.';
-    return false;
+    return;
   }
   try {
     try {
@@ -53,7 +62,7 @@ Future<bool> runSmartFolderWrite(
           ? e.fields['required_depth']
           : null;
       if (confirmDepth == null || required is! int) rethrow;
-      if (!await confirmDepth(required)) return false;
+      if (!await confirmDepth(required)) return;
       await cli.setSetting(vaultPath, smartFolderMaxDepthKey, required);
       await write(cli, vaultPath);
     }
@@ -61,16 +70,15 @@ Future<bool> runSmartFolderWrite(
     // MemexException carries the CLI message; anything else (the binary
     // is missing, …) shows as is.
     errors.state = e is MemexException ? e.message : '$e';
-    return false;
+    return;
   }
   errors.state = null;
   container.read(vaultRevisionProvider.notifier).state++;
-  return true;
 }
 
 /// `+ New Smart Folder`: `memex folder new` named [name], inside [parentId]
 /// or at root when null.
-Future<bool> createSmartFolder(
+Future<void> createSmartFolder(
   ProviderContainer container, {
   required String name,
   String? parentId,
@@ -83,7 +91,7 @@ Future<bool> createSmartFolder(
 );
 
 /// Folder menu Rename: `memex folder update --name` (the server pins it).
-Future<bool> renameSmartFolder(
+Future<void> renameSmartFolder(
   ProviderContainer container, {
   required String id,
   required String name,
@@ -94,7 +102,7 @@ Future<bool> renameSmartFolder(
 
 /// Folder menu Move: `memex folder update` with `--parent-id`, or
 /// `--to-root` when [parentId] is null (the server pins it).
-Future<bool> moveSmartFolder(
+Future<void> moveSmartFolder(
   ProviderContainer container, {
   required String id,
   required String? parentId,
@@ -111,7 +119,7 @@ Future<bool> moveSmartFolder(
 );
 
 /// Folder menu pinned toggle: `memex folder update --pinned`.
-Future<bool> setSmartFolderPinned(
+Future<void> setSmartFolderPinned(
   ProviderContainer container, {
   required String id,
   required bool pinned,
@@ -121,7 +129,7 @@ Future<bool> setSmartFolderPinned(
 );
 
 /// Folder menu Delete: `memex folder rm`.
-Future<bool> deleteSmartFolder(
+Future<void> deleteSmartFolder(
   ProviderContainer container, {
   required String id,
 }) => runSmartFolderWrite(
@@ -132,7 +140,7 @@ Future<bool> deleteSmartFolder(
 /// A drop onto a folder row (no [pinned]: the server pins it and gives a
 /// role-less note `role: topic`, Q3), or the membership pinned toggle:
 /// `memex folder add`.
-Future<bool> addToSmartFolder(
+Future<void> addToSmartFolder(
   ProviderContainer container, {
   required String folderId,
   required String noteId,

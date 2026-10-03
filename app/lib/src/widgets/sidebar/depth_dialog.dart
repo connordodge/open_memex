@@ -15,7 +15,7 @@ Future<bool> showDepthDialog(BuildContext context, int requiredDepth) async {
     context: context,
     builder: (_) => _DepthDialog(requiredDepth: requiredDepth),
   );
-  return confirmed ?? false;
+  return confirmed == true;
 }
 
 class _DepthDialog extends StatelessWidget {
