@@ -185,8 +185,17 @@ class _NewTopicFormState extends ConsumerState<_NewTopicForm> {
       _title.clear();
       open.state = false;
     } catch (e) {
+      // The note was created, only its link failed: a retry must not create
+      // it again.
+      if (e is TopicNotLinkedException) _title.clear();
       if (mounted) {
-        setState(() => _error = e is MemexException ? e.message : e.toString());
+        setState(
+          () => _error = switch (e) {
+            MemexException() => e.message,
+            TopicNotLinkedException() => e.message,
+            _ => e.toString(),
+          },
+        );
       }
     } finally {
       if (mounted) setState(() => _busy = false);

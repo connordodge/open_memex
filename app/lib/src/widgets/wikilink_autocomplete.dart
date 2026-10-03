@@ -386,6 +386,7 @@ class WikilinkAutocompleteState extends ConsumerState<WikilinkAutocomplete> {
           title: title,
           contentMd: topicNoteBody(title),
           dailyNoteId: dailyId,
+          linkTarget: 'this daily note',
         );
         revision.state++;
         if (!mounted) return;
@@ -394,6 +395,11 @@ class WikilinkAutocompleteState extends ConsumerState<WikilinkAutocomplete> {
         );
         widget.onTopicLinked?.call(created.footer.version);
       }
+    } on TopicNotLinkedException catch (e) {
+      // The topic note exists: refresh the vault views. The body stays as it
+      // was; the new topic is now an existing match for the person to pick.
+      revision.state++;
+      if (mounted) _reportError(e.message, daily: true);
     } on MemexException catch (e) {
       if (mounted) _reportError(e.message, daily: dailyId != null);
     } catch (e) {
