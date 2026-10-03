@@ -312,3 +312,27 @@ fn sub_chunk_ranges_after_emoji_are_exact_byte_offsets() {
     let intro = &chunks[0];
     assert!(slice(&input, intro).contains("🎉🎉 naïve intro, café."));
 }
+
+#[test]
+fn multi_block_chunk_content_is_the_exact_input_slice() {
+    let input = "First block.\n\n\n\nSecond block.\n\n\nThird block.\n\n \n\nFourth.";
+    let chunks = chunk(input);
+    assert_eq!(chunks.len(), 1, "precondition: one packed chunk");
+    let c = &chunks[0];
+    assert_eq!((c.start_byte, c.end_byte), (0, input.len()));
+    assert_eq!(
+        c.content, input,
+        "extra blank lines between blocks are kept"
+    );
+}
+
+#[test]
+fn chunk_range_starts_at_the_first_block_and_ends_at_the_last_block() {
+    let input = "\n\n  Alpha block.\n\nBeta block.  \n\n";
+    let chunks = chunk(input);
+    assert_eq!(chunks.len(), 1);
+    let start = input.find("Alpha").unwrap();
+    let end = input.find("block.  ").unwrap() + "block.".len();
+    assert_eq!((chunks[0].start_byte, chunks[0].end_byte), (start, end));
+    assert_eq!(chunks[0].content, "Alpha block.\n\nBeta block.");
+}

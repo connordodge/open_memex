@@ -1065,3 +1065,192 @@ fn serialized_search_results_have_a_via_key_only_on_expanded_hits() {
     );
     assert_eq!(serde_json::to_value(&back).unwrap(), json);
 }
+
+// ---------------------------------------------------------------------------
+// Implementer additions (lead rulings and behaviour beyond the ACs)
+// ---------------------------------------------------------------------------
+
+fn fts_results(vault: &Vault, query: &str, k: usize, filters: SearchFilters) -> SearchResults {
+    search(
+        vault.connection_ref(),
+        SearchOptions {
+            query,
+            k,
+            mode: SearchMode::Fts,
+            filters,
+            embedder: None,
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn topic_already_shown_as_a_direct_hit_above_the_source_is_not_expanded() {
+    let (_d, mut vault) = fresh_vault();
+    fixture_day(&mut vault);
+    create_topic(
+        &mut vault,
+        "Player Loop",
+        "Jump jump jump jump.\n\n![[2026-09-05#^b7k2m9]]\n",
+    );
+
+    assert_eq!(
+        summary(&fts(&vault, "jump", 10)),
+        vec![direct("Player Loop"), direct(DAY)],
+        "the topic is shown once, as its direct hit"
+    );
+}
+
+#[test]
+fn topic_expanded_above_its_own_direct_hit_drops_the_lower_direct_hit() {
+    let (_d, mut vault) = fresh_vault();
+    let day = create_daily(
+        &mut vault,
+        DAY,
+        "Jump jump jump jump.\n\n- tried coyote time\n\nSleep was bad.\n",
+    );
+    pin_ids(&vault, &day);
+    create_topic(
+        &mut vault,
+        "Player Loop",
+        &format!(
+            "One jump here. {}\n\n![[2026-09-05#^b7k2m9]]\n",
+            filler(120)
+        ),
+    );
+    create_plain(
+        &mut vault,
+        "Jump Physics",
+        &format!("A jump is a parabola. {}", filler(160)),
+    );
+
+    assert_eq!(
+        summary(&fts(&vault, "jump", 10)),
+        vec![direct(DAY), via("Player Loop", DAY), direct("Jump Physics")],
+        "the topic appears once, at its higher position"
+    );
+}
+
+#[test]
+fn expanded_topics_must_pass_the_tag_filters() {
+    let (_d, mut vault) = fresh_vault();
+    let day = fixture_day(&mut vault);
+    let tagged = create_topic(&mut vault, "Tagged Loop", "![[2026-09-05#^b7k2m9]]\n");
+    create_topic(&mut vault, "Untagged Loop", "![[2026-09-05#^b7k2m9]]\n");
+    memex_core::tags::add_tag(&vault, day.id.as_str(), "game").unwrap();
+    memex_core::tags::add_tag(&vault, tagged.id.as_str(), "game").unwrap();
+
+    let filters = SearchFilters {
+        tags_all: vec!["game".into()],
+        note_id: None,
+    };
+    assert_eq!(
+        summary(&fts_results(&vault, "jump", 10, filters).hits),
+        vec![direct(DAY), via("Tagged Loop", DAY)]
+    );
+    assert_eq!(
+        summary(&fts(&vault, "jump", 10)),
+        vec![
+            direct(DAY),
+            via("Tagged Loop", DAY),
+            via("Untagged Loop", DAY)
+        ],
+        "without the filter both topics expand"
+    );
+}
+
+#[test]
+fn expanded_topics_must_pass_the_note_id_filter() {
+    let (_d, mut vault) = fresh_vault();
+    let day = fixture_day(&mut vault);
+    create_topic(&mut vault, "Player Loop", "![[2026-09-05#^b7k2m9]]\n");
+
+    let filters = SearchFilters {
+        tags_all: Vec::new(),
+        note_id: Some(day.id.as_str().to_string()),
+    };
+    assert_eq!(
+        summary(&fts_results(&vault, "jump", 10, filters).hits),
+        vec![direct(DAY)]
+    );
+}
+
+#[test]
+fn truncated_reports_expanded_hits_dropped_by_the_k_cap() {
+    let (_d, mut vault) = fresh_vault();
+    fixture_day(&mut vault);
+    for title in ["Topic A", "Topic B", "Topic C"] {
+        create_topic(&mut vault, title, "![[2026-09-05#^b7k2m9]]\n");
+    }
+
+    let r = fts_results(&vault, "jump", 2, SearchFilters::default());
+    assert_eq!(r.hits.len(), 2);
+    assert!(r.truncated, "two expanded hits did not fit");
+
+    let r = fts_results(&vault, "jump", 4, SearchFilters::default());
+    assert_eq!(r.hits.len(), 4);
+    assert!(!r.truncated, "everything fits exactly");
+
+    let r = fts_results(&vault, "jump", 10, SearchFilters::default());
+    assert_eq!(r.hits.len(), 4);
+    assert!(!r.truncated);
+}
+
+#[test]
+fn expanded_hit_points_at_the_topic_chunk_holding_the_token() {
+    let (_d, mut vault) = fresh_vault();
+    fixture_day(&mut vault);
+    let topic = create_topic(
+        &mut vault,
+        "Player Loop",
+        &format!(
+            "Opening thoughts. {}\n\nMore notes here.\n\n![[2026-09-05#^b7k2m9]]\n",
+            filler(300)
+        ),
+    );
+    let chunks = chunk_rows(&vault, &topic.id);
+    assert_eq!(chunks.len(), 2, "precondition: the token is in chunk 1");
+    assert!(chunks[1].1.contains("![[2026-09-05#^b7k2m9]]"));
+    let token_chunk_id: String = vault
+        .connection_ref()
+        .query_row(
+            "SELECT id FROM chunks WHERE note_id = ? AND ord = 1",
+            [topic.id.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    let hits = fts(&vault, "jump", 10);
+    assert_eq!(summary(&hits), vec![direct(DAY), via("Player Loop", DAY)]);
+    let expanded = &hits[1];
+    assert_eq!(expanded.note_id, topic.id.as_str());
+    assert_eq!(expanded.chunk_id, token_chunk_id);
+    assert_eq!(expanded.ord, 1);
+    assert!(
+        expanded.snippet.contains("![[2026-09-05#^b7k2m9]]"),
+        "{:?}",
+        expanded.snippet
+    );
+}
+
+#[test]
+fn hits_on_a_non_daily_note_titled_like_a_date_never_expand() {
+    let (_d, mut vault) = fresh_vault();
+    let day = fixture_day(&mut vault);
+    create_topic(&mut vault, "Player Loop", "![[2026-09-05#^b7k2m9]]\n");
+    assert_eq!(
+        summary(&fts(&vault, "jump", 10)),
+        vec![direct(DAY), via("Player Loop", DAY)],
+        "precondition: the daily note expands"
+    );
+    // The note loses its daily role but keeps its blocks and chunk ranges.
+    vault
+        .connection_ref()
+        .execute(
+            "UPDATE notes SET frontmatter = '{}' WHERE id = ?",
+            [day.id.as_str()],
+        )
+        .unwrap();
+
+    assert_eq!(summary(&fts(&vault, "jump", 10)), vec![direct(DAY)]);
+}
