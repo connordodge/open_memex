@@ -1464,3 +1464,203 @@ fn note_transclusion_fields_follow_an_added_excerpt_and_vanish_after_removal() {
         "the key is absent once the last token is gone: {fields:?}"
     );
 }
+
+// ===========================================================================
+// Implementer additions (#10): lead rulings for untested cases and the exact
+// layout of the topic body around inserted and removed tokens.
+// ===========================================================================
+
+/// Lead ruling: an empty `block_ids` is an error and writes nothing (AC 8).
+#[test]
+fn add_and_remove_excerpt_with_no_block_ids_fail_and_write_nothing() {
+    let mut w = world();
+    add(&mut w, DAY, &["b7k2m9"]);
+    let topic = w.topic.clone();
+    let before = snapshot(&w.vault);
+
+    let e = add_err(&mut w, &topic, DAY, &[]);
+    assert!(matches!(e, MemexError::Io(_)), "{e:?}");
+    let e = remove_err(&mut w, &topic, DAY, &[]);
+    assert!(matches!(e, MemexError::Io(_)), "{e:?}");
+
+    assert_eq!(snapshot(&w.vault), before);
+}
+
+/// Lead ruling: a repeated id counts once, as if listed once (AC 2).
+#[test]
+fn add_excerpt_counts_a_repeated_block_id_once() {
+    let mut w = world();
+
+    add(&mut w, DAY, &["b7k2m9", "b7k2m9", "c3d4e5", "b7k2m9"]);
+
+    assert_eq!(tokens(&body(&w)), [T_B7_C3]);
+}
+
+/// Lead ruling: repeated ids name the same endpoints as listing each once
+/// (AC 11).
+#[test]
+fn remove_excerpt_counts_a_repeated_block_id_once() {
+    let mut w = world();
+    add(&mut w, DAY, &["b7k2m9"]);
+
+    remove(&mut w, DAY, &["b7k2m9", "b7k2m9"]);
+
+    assert_eq!(body(&w).trim_end(), TOPIC_BODY.trim_end());
+}
+
+/// Lead ruling: a role-less note titled with the date is not a daily note,
+/// so the date has none (AC 8).
+#[test]
+fn add_excerpt_ignores_a_roleless_note_titled_with_the_date() {
+    let mut w = world();
+    let loose = create(&mut w.vault, "2026-09-06", "Fixed the jump arc.\n", None);
+    assert!(loose.frontmatter.get("role").is_none(), "role-less");
+    let topic = w.topic.clone();
+    let before = snapshot(&w.vault);
+
+    let e = add_err(&mut w, &topic, "2026-09-06", &["b7k2m9"]);
+
+    assert!(matches!(e, MemexError::NotFound(_)), "{e:?}");
+    assert_eq!(snapshot(&w.vault), before);
+}
+
+/// The retry bound is five attempts (AC 9).
+#[test]
+fn add_excerpt_gives_up_after_exactly_five_attempts() {
+    let mut w = world();
+    let topic = w.topic.clone();
+    let mut calls = 0;
+    let mut hook = |v: &mut Vault| {
+        calls += 1;
+        person_append(v, &topic, &format!("Edit {calls}.\n"));
+    };
+
+    let e = add_excerpt_with_hook(
+        &mut w.vault,
+        &w.topic,
+        DAY,
+        &ids(&["b7k2m9"]),
+        Caller::Agent,
+        None,
+        &mut hook,
+    )
+    .expect_err("every attempt raced");
+
+    assert_eq!(code(&e), "version_conflict");
+    assert_eq!(calls, 5);
+}
+
+/// An exhausted remove keeps the token and the chip (AC 9).
+#[test]
+fn remove_excerpt_gives_up_after_exactly_five_attempts_and_keeps_the_excerpt() {
+    let mut w = world();
+    add(&mut w, DAY, &["b7k2m9"]);
+    let topic = w.topic.clone();
+    let mut calls = 0;
+    let mut hook = |v: &mut Vault| {
+        calls += 1;
+        person_append(v, &topic, &format!("Edit {calls}.\n"));
+    };
+
+    let e = remove_excerpt_with_hook(
+        &mut w.vault,
+        &w.topic,
+        DAY,
+        &ids(&["b7k2m9"]),
+        Caller::Agent,
+        None,
+        &mut hook,
+    )
+    .expect_err("every attempt raced");
+
+    assert_eq!(code(&e), "version_conflict");
+    assert_eq!(calls, 5);
+    assert_eq!(tokens(&body(&w)), [T_B7]);
+    assert_eq!(chip_rows(&w.vault, &w.day), [chip(&w.topic, "excerpt")]);
+}
+
+/// An empty `## <date>` heading gets the token right under it, before the
+/// next section (AC 4).
+#[test]
+fn add_excerpt_fills_an_empty_date_heading_before_the_next_section() {
+    let mut w = world_with_topic_body("Intro.\n\n## 2026-09-05\n\n## Later\n");
+
+    add(&mut w, DAY, &["b7k2m9"]);
+
+    assert_eq!(
+        body(&w),
+        "Intro.\n\n## 2026-09-05\n\n![[2026-09-05#^b7k2m9]]\n\n## Later\n"
+    );
+}
+
+/// A date heading on the last line without a newline (AC 4).
+#[test]
+fn add_excerpt_under_an_unterminated_date_heading() {
+    let mut w = world_with_topic_body("Intro.\n\n## 2026-09-05");
+
+    add(&mut w, DAY, &["b7k2m9"]);
+
+    assert_eq!(
+        body(&w),
+        "Intro.\n\n## 2026-09-05\n\n![[2026-09-05#^b7k2m9]]\n"
+    );
+}
+
+/// The surrounding text stays byte-identical when a token line goes (AC 11).
+#[test]
+fn remove_excerpt_keeps_the_text_around_the_token_byte_identical() {
+    let mut w = world_with_topic_body(
+        "Intro.\n\n## 2026-09-05\n\n![[2026-09-05#^b7k2m9]]\nRight after.\n\n## Later\n\nKeep.\n",
+    );
+
+    remove(&mut w, DAY, &["b7k2m9"]);
+
+    assert_eq!(
+        body(&w),
+        "Intro.\n\n## 2026-09-05\n\nRight after.\n\n## Later\n\nKeep.\n"
+    );
+}
+
+/// An emptied date section goes, the next section stays as it was (AC 11).
+#[test]
+fn remove_excerpt_drops_an_emptied_section_before_the_next_one() {
+    let mut w = world_with_topic_body(
+        "Intro.\n\n## 2026-09-05\n\n![[2026-09-05#^b7k2m9]]\n\n## Later\n\nKeep.\n",
+    );
+
+    remove(&mut w, DAY, &["b7k2m9"]);
+
+    assert_eq!(body(&w), "Intro.\n\n## Later\n\nKeep.\n");
+}
+
+/// A token on the last line without a newline (AC 11).
+#[test]
+fn remove_excerpt_removes_an_unterminated_last_token() {
+    let mut w = world_with_topic_body("Intro.\n\n## 2026-09-05\n\n![[2026-09-05#^b7k2m9]]");
+
+    remove(&mut w, DAY, &["b7k2m9"]);
+
+    assert_eq!(body(&w), "Intro.\n");
+}
+
+/// A token inside a line of text: only the token goes (AC 11).
+#[test]
+fn remove_excerpt_removes_an_inline_token_and_keeps_its_line() {
+    let mut w = world_with_topic_body(
+        "Intro.\n\n## 2026-09-05\n\nSee ![[2026-09-05#^b7k2m9]] here.\n\nEnd.\n",
+    );
+
+    remove(&mut w, DAY, &["b7k2m9"]);
+
+    assert_eq!(body(&w), "Intro.\n\n## 2026-09-05\n\nSee  here.\n\nEnd.\n");
+}
+
+/// A token on the first line takes the blank line after it along (AC 11).
+#[test]
+fn remove_excerpt_removes_a_leading_token_and_the_blank_line_after_it() {
+    let mut w = world_with_topic_body("![[2026-09-05#^b7k2m9]]\n\nText.\n");
+
+    remove(&mut w, DAY, &["b7k2m9"]);
+
+    assert_eq!(body(&w), "Text.\n");
+}

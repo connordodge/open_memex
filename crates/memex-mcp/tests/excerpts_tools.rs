@@ -577,3 +577,27 @@ fn mcp_server_registers_add_excerpt_and_remove_excerpt() {
         assert_eq!(string_set(&schema["required"]), fields, "{name}: {schema}");
     }
 }
+
+// ======================================================================
+// Implementer addition (#10), lead ruling: an empty `block_ids` is C1
+// `invalid_argument` for both tools; nothing is written.
+// ======================================================================
+
+#[tokio::test]
+async fn mcp_excerpt_tools_reject_empty_block_ids_with_invalid_argument() {
+    let f = fresh().await;
+    let added = add_excerpt(&f.memex, &f.topic, DAY, &["b7k2m9"]).await;
+    assert!(added["version"].is_i64(), "add_excerpt failed: {added}");
+    let before = snapshot(&f.state).await;
+
+    assert_c1(
+        &add_excerpt(&f.memex, &f.topic, DAY, &[]).await,
+        "invalid_argument",
+    );
+    assert_c1(
+        &remove_excerpt(&f.memex, &f.topic, DAY, &[]).await,
+        "invalid_argument",
+    );
+
+    assert_eq!(snapshot(&f.state).await, before);
+}

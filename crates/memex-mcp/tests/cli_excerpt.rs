@@ -422,3 +422,21 @@ fn memex_get_drops_transclusions_after_the_last_excerpt_is_removed() {
         "absent once the last token is gone: {v}"
     );
 }
+
+// ---------- Implementer addition (#10), lead ruling: blank ids ----------
+
+#[test]
+fn excerpt_rm_with_a_blank_block_id_fails_with_invalid_argument() {
+    let f = fresh();
+    add_excerpt(&f, &["b7k2m9"]);
+    let before = snapshot(&f);
+
+    for ids in ["", "b7k2m9,", ",b7k2m9"] {
+        assert_c1_failure(
+            &excerpt_rm(f.vault(), &f.topic, DAY, ids),
+            "invalid_argument",
+        );
+    }
+
+    assert_eq!(snapshot(&f), before, "nothing written");
+}
