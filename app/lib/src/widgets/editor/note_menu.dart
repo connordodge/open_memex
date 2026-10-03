@@ -4,8 +4,10 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../cli/note_cli.dart';
 import '../../db.dart';
+import '../../graph/graph_scope.dart';
 import '../../memex_cli.dart';
 import '../../state/editor_controller.dart';
+import '../../state/graph_state.dart';
 import '../../state/tabs_state.dart';
 import '../../state/vault_state.dart';
 import '../../theme/colors.dart';
@@ -14,12 +16,12 @@ import '../atoms.dart';
 
 /// The editor toolbar's ellipsis button (Key `note-menu-button`). It opens
 /// [NoteMenu] for the open note, and is disabled when no note is open.
-class NoteMenuButton extends StatelessWidget {
+class NoteMenuButton extends ConsumerWidget {
   const NoteMenuButton({super.key, required this.note});
   final Note? note;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final note = this.note;
     return MenuAnchor(
       style: MenuStyle(
@@ -32,7 +34,8 @@ class NoteMenuButton extends StatelessWidget {
         ),
       ),
       menuChildren: [
-        if (note != null) NoteMenu(note: note, hostContext: context),
+        if (note != null)
+          NoteMenu(note: note, hostContext: context, hostRef: ref),
       ],
       builder: (context, controller, _) => OmButton(
         key: const Key('note-menu-button'),
@@ -52,7 +55,12 @@ class NoteMenuButton extends StatelessWidget {
 /// Items are [MenuItemButton]s in the column; selecting one closes the menu.
 /// To add an item, append a [MenuItemButton] to the column's children.
 class NoteMenu extends StatelessWidget {
-  const NoteMenu({super.key, required this.note, required this.hostContext});
+  const NoteMenu({
+    super.key,
+    required this.note,
+    required this.hostContext,
+    this.hostRef,
+  });
   final Note note;
 
   /// The context of the widget that hosts the menu ([NoteMenuButton]). Item
@@ -60,8 +68,25 @@ class NoteMenu extends StatelessWidget {
   /// context is deactivated once an item closes the menu.
   final BuildContext hostContext;
 
+  /// The host's [WidgetRef], for item actions that open tabs after the menu
+  /// has closed (`Open graph`). Without one that item is disabled.
+  final WidgetRef? hostRef;
+
+  /// The Graph scope `Open graph` opens: the topic scope for a topic note,
+  /// the day scope for a daily note, none otherwise. The unsaved virtual
+  /// Today note (#22) is in no graph yet, so it has none either.
+  static GraphScope? graphScopeFor(Note note) {
+    if (VirtualTodayTab.dateOf(note.id) case _?) return null;
+    return switch (note.role) {
+      'topic' => GraphScope.topic(note.id),
+      'daily' => GraphScope.day(note.id),
+      _ => null,
+    };
+  }
+
   @override
   Widget build(BuildContext context) {
+    final ref = hostRef;
     return Column(
       key: const Key('note-menu'),
       mainAxisSize: MainAxisSize.min,
@@ -80,6 +105,16 @@ class NoteMenu extends StatelessWidget {
                 ),
           child: const Text('Delete note'),
         ),
+        if (graphScopeFor(note) case final scope?)
+          MenuItemButton(
+            key: const Key('note-menu-open-graph'),
+            leadingIcon: const Icon(LucideIcons.network, size: 14),
+            onPressed: switch (ref) {
+              final ref? => () => openGraph(ref, scope),
+              null => null,
+            },
+            child: const Text('Open graph'),
+          ),
       ],
     );
   }
