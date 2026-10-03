@@ -63,11 +63,13 @@ void main() {
     testWidgets('openGraph opens and activates a Graph tab', (tester) async {
       final h = await _pump(tester);
       expect(find.byKey(_graphView), findsNothing);
+      // The tabs the app launched with (#22's Today tab).
+      final launch = h.read(tabsProvider).tabs;
 
       await _openGraph(tester, const GraphScope.topic(G.alpha));
 
       final tabs = h.read(tabsProvider);
-      expect(tabs.tabs, [GraphTab(const GraphScope.topic(G.alpha))]);
+      expect(tabs.tabs, [...launch, GraphTab(const GraphScope.topic(G.alpha))]);
       expect(tabs.activeTab, GraphTab(const GraphScope.topic(G.alpha)));
       expect(find.byKey(_graphTabChip('topic:${G.alpha}')), findsOneWidget);
       expect(find.byKey(_graphView), findsOneWidget);
@@ -77,6 +79,8 @@ void main() {
       'calling openGraph again with the same scope focuses the existing tab',
       (tester) async {
         final h = await _pump(tester);
+        // The tabs the app launched with (#22's Today tab).
+        final launch = h.read(tabsProvider).tabs;
         await _openGraph(tester, const GraphScope.topic(G.alpha));
         h.read(tabsProvider.notifier).openOrFocus(const NoteTab(G.beta));
         await pumpFrames(tester);
@@ -86,8 +90,12 @@ void main() {
         await _openGraph(tester, const GraphScope.topic(G.alpha));
 
         final tabs = h.read(tabsProvider);
-        expect(tabs.tabs.length, 2);
-        expect(tabs.activeIndex, 0);
+        expect(tabs.tabs, [
+          ...launch,
+          GraphTab(const GraphScope.topic(G.alpha)),
+          const NoteTab(G.beta),
+        ]);
+        expect(tabs.activeIndex, launch.length);
         expect(tabs.activeTab, GraphTab(const GraphScope.topic(G.alpha)));
         expect(find.byKey(_graphTabChip('topic:${G.alpha}')), findsOneWidget);
         expect(find.byKey(_graphView), findsOneWidget);
@@ -98,15 +106,18 @@ void main() {
       tester,
     ) async {
       final h = await _pump(tester);
+      // The tabs the app launched with (#22's Today tab).
+      final launch = h.read(tabsProvider).tabs;
       await _openGraph(tester, const GraphScope.topic(G.alpha));
       await _openGraph(tester, const GraphScope.day(G.alpha));
 
       final tabs = h.read(tabsProvider);
       expect(tabs.tabs, [
+        ...launch,
         GraphTab(const GraphScope.topic(G.alpha)),
         GraphTab(const GraphScope.day(G.alpha)),
       ]);
-      expect(tabs.activeIndex, 1);
+      expect(tabs.activeIndex, launch.length + 1);
     });
 
     testWidgets('a topic Graph tab chip reads Graph · and the note title', (
