@@ -5,7 +5,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../db.dart';
 import '../state/editor_controller.dart';
+import '../state/tabs_state.dart' show VirtualTodayTab;
 import '../state/today_state.dart';
+import '../state/topic_actions.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
@@ -179,6 +181,17 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
                     onContentChanged: controller.onContentChanged,
                     errorMessage: editor.errorMessage,
                     header: header,
+                    dailyNoteId:
+                        note.role == 'daily' &&
+                            VirtualTodayTab.dateOf(note.id) == null
+                        ? note.id
+                        : null,
+                    onTopicLinked: (version) => rebaseEditorOnVersion(
+                      ref,
+                      fallback: note,
+                      version: version,
+                      content: _bodyCtrl.text,
+                    ),
                   )
                 : SegmentedBody(
                     // Until the post-frame hydrate loads a newly selected
