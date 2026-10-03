@@ -13,7 +13,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
 import 'package:open_memex_app/src/state/settings.dart';
+import 'package:open_memex_app/src/db/topics_reads.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
+import 'package:open_memex_app/src/state/topics_state.dart';
+import 'package:open_memex_app/src/state/topics_tree.dart';
 import 'package:open_memex_app/src/state/ui_state_store.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/theme/app_theme.dart';
@@ -21,6 +24,7 @@ import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/widgets/sidebar.dart';
 import 'package:open_memex_app/src/widgets/sidebar/canvases_rail.dart';
 import 'package:open_memex_app/src/widgets/sidebar/notes_pane.dart';
+import 'package:open_memex_app/src/widgets/sidebar/topics_pane.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 // ---------------------------------------------------------------------------
@@ -100,6 +104,13 @@ List<Override> _overrides(
   List<CanvasRow>? canvases,
 }) => [
   settingsProvider.overrideWith((_) => settings),
+  // #24: Topics mode reads the Smart Folder tree; these notes sit in Unsorted.
+  smartFolderTreeProvider.overrideWithValue(
+    buildTopicsTree(const SmartFolderData(folders: [], members: []), [
+      for (final n in notes ?? _notes)
+        UnsortedNoteRow(noteId: n.id, title: n.title, role: null),
+    ]),
+  ),
   currentVaultProvider.overrideWith((ref) => h.vaultDir.path),
   vaultDbProvider.overrideWithValue(null),
   memexCliProvider.overrideWithValue(h.cli),
@@ -179,6 +190,23 @@ Widget _canvasesRailHost(List<CanvasRow> canvases) => SizedBox(
   width: 268,
   child: CanvasesRail(canvases: canvases, activeCanvasId: null),
 );
+
+/// The fill of the decorated box under the Topics row with [key].
+Color? _rowFill(WidgetTester tester, String key) {
+  final box =
+      find
+              .descendant(
+                of: find.byKey(Key(key)),
+                matching: find.byWidgetPredicate(
+                  (w) => w is Container && w.decoration is BoxDecoration,
+                ),
+              )
+              .evaluate()
+              .first
+              .widget
+          as Container;
+  return (box.decoration! as BoxDecoration).color;
+}
 
 Finder _in(Finder parent, Finder child) =>
     find.descendant(of: parent, matching: child);
@@ -343,8 +371,9 @@ void main() {
         final h = await _pump(tester, build: sidebar);
         await chooseTopics(tester);
 
+        // #24: the Topics pane took the Topics-mode slot from NotesPane.
         expect(
-          _in(find.byType(Sidebar), find.byType(NotesPane)),
+          _in(find.byType(Sidebar), find.byType(TopicsPane)),
           findsOneWidget,
         );
         expect(
@@ -352,7 +381,7 @@ void main() {
           findsOneWidget,
         );
         expect(
-          _in(find.byType(NotesPane), find.byKey(const Key('notes-rail'))),
+          _in(find.byType(TopicsPane), find.byKey(const Key('topics-pane'))),
           findsOneWidget,
         );
         expect(
@@ -363,7 +392,7 @@ void main() {
           findsOneWidget,
         );
 
-        await tester.tap(find.byKey(const Key('note-list-item-n2')));
+        await tester.tap(find.byKey(const Key('topics-unsorted-n2')));
         await tester.pump();
 
         expect(h.container.read(activeTabProvider), const NoteTab('n2'));
@@ -371,7 +400,7 @@ void main() {
         expect(h.selections.last, 'n2');
 
         // Tapping a second note opens a second tab and focuses it.
-        await tester.tap(find.byKey(const Key('note-list-item-n3')));
+        await tester.tap(find.byKey(const Key('topics-unsorted-n3')));
         await tester.pump();
         final tabs = h.container.read(tabsProvider);
         expect(tabs.tabs, [const NoteTab('n2'), const NoteTab('n3')]);
@@ -386,10 +415,8 @@ void main() {
       await chooseTopics(tester);
       h.container.read(tabsProvider.notifier).openOrFocus(const NoteTab('n1'));
       await tester.pump();
-      expect(
-        tester.widget<NotesPane>(find.byType(NotesPane)).activeNoteId,
-        'n1',
-      );
+      expect(_rowFill(tester, 'topics-unsorted-n1'), OmColors.surface4);
+      expect(_rowFill(tester, 'topics-unsorted-n2'), Colors.transparent);
       expect(
         tester.widget<CanvasesRail>(find.byType(CanvasesRail)).activeCanvasId,
         isNull,
@@ -399,10 +426,7 @@ void main() {
           .read(tabsProvider.notifier)
           .openOrFocus(const CanvasTab('c1'));
       await tester.pump();
-      expect(
-        tester.widget<NotesPane>(find.byType(NotesPane)).activeNoteId,
-        isNull,
-      );
+      expect(_rowFill(tester, 'topics-unsorted-n1'), Colors.transparent);
       expect(
         tester.widget<CanvasesRail>(find.byType(CanvasesRail)).activeCanvasId,
         'c1',
@@ -412,15 +436,16 @@ void main() {
     testWidgets(
       'the sidebar host shows the NotesPane empty state and wires new note',
       (tester) async {
-        final h = await _pump(tester, build: sidebar, notes: const []);
+        await _pump(tester, build: sidebar, notes: const []);
         await chooseTopics(tester);
+        // #24: an empty vault shows the Topics empty state, not the notes
+        // pane's `no notes yet.` with a new-note button.
         expect(
-          _in(find.byType(NotesPane), find.text('no notes yet.')),
+          _in(find.byType(TopicsPane), find.byKey(const Key('topics-empty'))),
           findsOneWidget,
         );
-        await tester.tap(_in(find.byType(NotesPane), find.text('new note')));
-        await tester.pump();
-        expect(h.newNoteTaps, 1);
+        expect(find.byType(NotesPane), findsNothing);
+        expect(find.byKey(const Key('copy-review-prompt')), findsOneWidget);
       },
     );
 

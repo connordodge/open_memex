@@ -21,7 +21,6 @@ const _menuDelete = Key('note-menu-delete');
 const _menuOpenGraph = Key('note-menu-open-graph');
 
 Key _graphTabChip(String scopeId) => Key('tab-graph-$scopeId');
-Key _listItem(String id) => Key('note-list-item-$id');
 
 /// The Workspace element is a ConsumerStatefulElement, which is a WidgetRef:
 /// the same kind of ref #25's sidebar menus hand to openGraph.
@@ -40,7 +39,8 @@ Future<void> _openGraph(WidgetTester tester, GraphScope scope) async {
 }
 
 Future<void> _openNoteMenuFor(WidgetTester tester, String noteId) async {
-  await tester.tap(find.byKey(_listItem(noteId)));
+  // Open the tab directly: Topics mode lists only notes without a folder.
+  _ref(tester).read(tabsProvider.notifier).openOrFocus(NoteTab(noteId));
   await pumpFrames(tester);
   await tester.tap(find.byKey(_menuButton));
   await pumpFrames(tester);
