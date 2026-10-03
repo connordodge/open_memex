@@ -4,6 +4,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
+import 'package:open_memex_app/src/theme/colors.dart';
 
 import '../robots/topics_robot.dart';
 import '../support/daily_seed.dart';
@@ -434,6 +435,29 @@ void main() {
       },
     );
 
+    testWidgets(
+      'the row of the active note tab is highlighted and no other row is',
+      (tester) async {
+        final r = TopicsRobot(tester);
+        await r.launch(db: _fixture());
+        await r.chooseTopics();
+        await r.toggleFolder(TP.games);
+        expect(_fill(r.topic(TP.games, TP.economy)), isNot(OmColors.surface4));
+
+        await r.openTopic(TP.games, TP.economy);
+
+        expect(_fill(r.topic(TP.games, TP.economy)), OmColors.surface4);
+        expect(_fill(r.topic(TP.games, TP.loop)), isNot(OmColors.surface4));
+        expect(_fill(r.unsortedNote(TP.looseNote)), isNot(OmColors.surface4));
+
+        await r.openUnsorted(TP.looseNote);
+
+        expect(_fill(r.unsortedNote(TP.looseNote)), OmColors.surface4);
+        expect(_fill(r.unsortedNote(TP.orphan)), isNot(OmColors.surface4));
+        expect(_fill(r.topic(TP.games, TP.economy)), isNot(OmColors.surface4));
+      },
+    );
+
     testWidgets('tapping an Unsorted note row opens that note tab', (
       tester,
     ) async {
@@ -695,4 +719,21 @@ Future<void> pumpFramesQuietly(WidgetTester tester) async {
   for (var i = 0; i < 3; i++) {
     await tester.pump(const Duration(milliseconds: 50));
   }
+}
+
+/// The fill colour of the first decorated box under [row].
+Color? _fill(Finder row) {
+  final box =
+      find
+              .descendant(
+                of: row,
+                matching: find.byWidgetPredicate(
+                  (w) => w is Container && w.decoration is BoxDecoration,
+                ),
+              )
+              .evaluate()
+              .first
+              .widget
+          as Container;
+  return (box.decoration! as BoxDecoration).color;
 }
