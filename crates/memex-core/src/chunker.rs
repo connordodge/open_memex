@@ -12,6 +12,10 @@ pub struct Chunk {
     pub ord: i64,
     pub content: String,
     pub token_count: i64,
+    /// UTF-8 byte offset into the chunked input where this chunk starts (D25).
+    pub start_byte: usize,
+    /// UTF-8 byte offset one past the end of this chunk in the input (D25).
+    pub end_byte: usize,
 }
 
 pub fn chunk(content_md: &str) -> Vec<Chunk> {
@@ -62,6 +66,8 @@ fn push_chunk(chunks: &mut Vec<Chunk>, blocks: &[&str], tokens: usize) {
         ord: chunks.len() as i64,
         content,
         token_count: tokens as i64,
+        start_byte: 0,
+        end_byte: 0,
     });
 }
 
@@ -74,6 +80,8 @@ fn push_chunk_owned(chunks: &mut Vec<Chunk>, block: &str, tokens: usize) {
         ord: chunks.len() as i64,
         content,
         token_count: tokens as i64,
+        start_byte: 0,
+        end_byte: 0,
     });
 }
 

@@ -36,6 +36,10 @@ pub struct SearchHit {
     pub snippet: String,
     pub score: f32,
     pub ord: i64,
+    /// The daily-note date a hit came through, set only on hits expanded
+    /// through a transclusion (D25). Absent from JSON when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,6 +206,7 @@ fn enrich_hit(
         snippet: snippet(&content, 280),
         score,
         ord,
+        via: None,
     }))
 }
 
