@@ -204,6 +204,13 @@ Future<_Host> _pumpEditor(
   return host;
 }
 
+/// Switch the body to the Source surface: the segmented view is the
+/// default since WI #27.
+Future<void> _showSource(WidgetTester tester) async {
+  await tester.tap(find.byKey(const Key('editor-source-toggle')));
+  await tester.pump();
+}
+
 Finder _toolbar() => find.byKey(const Key('editor-toolbar'));
 Finder _header() => find.byKey(const Key('note-header'));
 Finder _source() => find.byKey(const Key('editor-source-surface'));
@@ -664,6 +671,7 @@ void main() {
             kind: MemexErrorKind.versionConflict,
           );
         await _pumpEditor(tester, note: _note(), cli: cli);
+        await _showSource(tester);
 
         await tester.enterText(_bodyField(), 'changed body');
         await tester.pump();
@@ -799,6 +807,7 @@ void main() {
           tester,
           note: _note(contentMd: 'body line one\nbody line two'),
         );
+        await _showSource(tester);
 
         expect(_source(), findsOneWidget);
         expect(_in(find.byType(SourceSurface), _source()), findsOneWidget);
@@ -828,6 +837,7 @@ void main() {
       'wikilink autocomplete still opens on [[ inside SourceSurface',
       (tester) async {
         await _pumpEditor(tester, note: _note());
+        await _showSource(tester);
         expect(find.byKey(const Key('wikilink-popover')), findsNothing);
 
         await tester.enterText(_bodyField(), 'see [[');
@@ -850,6 +860,7 @@ void main() {
       (tester) async {
         final cli = _FakeCli();
         await _pumpEditor(tester, note: _note(version: 7), cli: cli);
+        await _showSource(tester);
 
         await tester.enterText(_bodyField(), 'new body');
         await tester.pump(const Duration(milliseconds: 499));
@@ -871,6 +882,7 @@ void main() {
       tester,
     ) async {
       await _pumpEditor(tester, note: _note());
+      await _showSource(tester);
       await tester.enterText(_bodyField(), 'see [[');
       await tester.pump();
       expect(find.byKey(const Key('wikilink-popover')), findsOneWidget);
@@ -918,6 +930,7 @@ void main() {
       (tester) async {
         final cli = _FakeCli()..error = MemexException('update failed: disk');
         await _pumpEditor(tester, note: _note(), cli: cli);
+        await _showSource(tester);
         expect(_in(_toolbar(), find.text('SAVE FAILED')), findsNothing);
         expect(_in(_toolbar(), find.text('CONFLICT — RELOAD')), findsNothing);
 
@@ -1019,6 +1032,7 @@ void main() {
       'moving the caret to the start of the body hides the kind chip',
       (tester) async {
         await _pumpEditor(tester, note: _note());
+        await _showSource(tester);
         await tester.enterText(_bodyField(), 'see [[');
         await tester.pump();
         await tester.sendKeyEvent(LogicalKeyboardKey.enter);
