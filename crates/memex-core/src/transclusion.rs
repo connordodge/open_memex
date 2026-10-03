@@ -57,26 +57,43 @@ fn live_text(conn: &Connection, token: &TransclusionToken) -> Result<Option<Stri
     let Some(note_id) = daily_note_id_for_title(conn, &token.date)? else {
         return Ok(None);
     };
-    let Some(from_ord) = block_ord(conn, &note_id, &token.from)? else {
+    let Some((min_ord, max_ord)) = resolve_span(conn, &note_id, &token.from, token.to.as_deref())?
+    else {
         return Ok(None);
-    };
-    let to_ord = match &token.to {
-        None => from_ord,
-        Some(to) => match block_ord(conn, &note_id, to)? {
-            Some(ord) => ord,
-            None => return Ok(None),
-        },
     };
     let mut stmt = conn.prepare_cached(
         "SELECT text FROM blocks WHERE note_id = ? AND ord BETWEEN ? AND ? ORDER BY ord",
     )?;
     let texts = stmt
-        .query_map(
-            params![note_id, from_ord.min(to_ord), from_ord.max(to_ord)],
-            |r| r.get::<_, String>(0),
-        )?
+        .query_map(params![note_id, min_ord, max_ord], |r| {
+            r.get::<_, String>(0)
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(Some(texts.join("\n")))
+}
+
+/// The inclusive `(min_ord, max_ord)` span of the blocks a transclusion of
+/// `from` (and `to`, for a range) covers in daily note `daily_note_id`, by
+/// the C4 rule: every block with an ord between the endpoints' ords, in
+/// either order. `None` when an endpoint block no longer exists. The one
+/// copy of these semantics (D28): rendering and search expansion both use it.
+pub(crate) fn resolve_span(
+    conn: &Connection,
+    daily_note_id: &str,
+    from: &str,
+    to: Option<&str>,
+) -> Result<Option<(i64, i64)>> {
+    let Some(from_ord) = block_ord(conn, daily_note_id, from)? else {
+        return Ok(None);
+    };
+    let to_ord = match to {
+        None => from_ord,
+        Some(to) => match block_ord(conn, daily_note_id, to)? {
+            Some(ord) => ord,
+            None => return Ok(None),
+        },
+    };
+    Ok(Some((from_ord.min(to_ord), from_ord.max(to_ord))))
 }
 
 /// The `ord` of block `block_id` within note `note_id`.
