@@ -44,7 +44,7 @@ String mergeConflict({
         ..sort((a, b) => a.ord.compareTo(b.ord));
   var person = localPerson;
   for (final block in appended) {
-    person = _appendToPerson(person, block.text);
+    person = appendToPerson(person, block.text);
   }
   return assembleDailyBody(person, splitDailyBody(serverBody).chips);
 }
@@ -55,7 +55,10 @@ const Set<String> _appendableSources = {'agent', 'quick-entry'};
 /// Appends [text] to a daily person section with the C3.1 separator: when
 /// [person] is non-empty it is first padded to end with a blank line (`\n\n`),
 /// then `text + "\n"` is appended.
-String _appendToPerson(String person, String text) {
+///
+/// The app's one C3.1 append: the conflict merge (Req 60) and the virtual
+/// Today note's `daily_note_exists` path (#22) both use it.
+String appendToPerson(String person, String text) {
   final String padded;
   if (person.isEmpty || person.endsWith('\n\n')) {
     padded = person;

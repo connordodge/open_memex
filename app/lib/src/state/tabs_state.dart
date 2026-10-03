@@ -1,5 +1,9 @@
+import 'dart:async' show scheduleMicrotask;
+import 'dart:math' show max, min;
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'daily_state.dart';
 import 'ui_state_store.dart';
 import 'vault_state.dart';
 
@@ -40,10 +44,19 @@ class NoteTab extends WorkspaceTab {
 /// midnight (D14) and is never persisted to `ui_state.json` (D26). A
 /// [NoteTab], so the workspace's note branch renders it.
 class VirtualTodayTab extends NoteTab {
-  const VirtualTodayTab(this.date) : super('virtual-today:$date');
+  const VirtualTodayTab(this.date) : super('$_idPrefix$date');
 
   /// The ISO date (`YYYY-MM-DD`) this tab was opened for.
   final String date;
+
+  static const _idPrefix = 'virtual-today:';
+
+  /// The date of the virtual Today tab whose id is [noteId], or null when
+  /// [noteId] is a real note id (or null).
+  static String? dateOf(String? noteId) {
+    if (noteId == null || !noteId.startsWith(_idPrefix)) return null;
+    return noteId.substring(_idPrefix.length);
+  }
 }
 
 class CanvasTab extends WorkspaceTab {
@@ -83,9 +96,17 @@ class TabsState {
 }
 
 class TabsNotifier extends StateNotifier<TabsState> {
-  TabsNotifier({required this.store, required this.onPersistedSelection})
-    : super(TabsState.empty) {
-    _hydrate();
+  /// Restores the tabs from [store]. With a [todayDate] (the launch, #22),
+  /// today's tab then becomes active: the restored tab of [todayNoteId] when
+  /// it is open, otherwise today's tab ([todayNoteId]'s, or a
+  /// [VirtualTodayTab] for [todayDate] when it is null) is inserted first.
+  TabsNotifier({
+    required this.store,
+    required this.onPersistedSelection,
+    String? todayDate,
+    String? todayNoteId,
+  }) : super(TabsState.empty) {
+    _hydrate(todayDate, todayNoteId);
   }
 
   final UiStateStore store;
@@ -99,25 +120,46 @@ class TabsNotifier extends StateNotifier<TabsState> {
   /// Most-recently-used order, most recent first. Used for LRU eviction.
   final List<WorkspaceTab> _mru = [];
 
-  void _hydrate() {
+  void _hydrate(String? todayDate, String? todayNoteId) {
     final persisted = store.read();
     final restored = persisted.tabs
         .map(WorkspaceTab.fromPersisted)
         .whereType<WorkspaceTab>()
         .toList();
-    if (restored.isEmpty) {
-      state = TabsState.empty;
-      _hydrated = true;
-      return;
-    }
-    final active = persisted.activeTabIndex.clamp(0, restored.length - 1);
-    state = TabsState(tabs: restored, activeIndex: active);
-    _mru
-      ..clear()
-      ..add(restored[active])
-      ..addAll(restored.where((t) => t != restored[active]));
     _hydrated = true;
-    _emitSelection();
+    if (restored.isNotEmpty) {
+      final active = persisted.activeTabIndex.clamp(0, restored.length - 1);
+      state = TabsState(tabs: restored, activeIndex: active);
+      _mru
+        ..clear()
+        ..add(restored[active])
+        ..addAll(restored.where((t) => t != restored[active]));
+    }
+    if (todayDate != null) {
+      _focusToday(_todayTab(todayDate, todayNoteId));
+    }
+    // Deferred: the notifier is built inside `tabsProvider`, and a provider
+    // may not modify another provider (`selectedNoteIdProvider`) while it
+    // initializes.
+    scheduleMicrotask(() {
+      if (mounted) _emitSelection();
+    });
+  }
+
+  static WorkspaceTab _todayTab(String date, String? noteId) =>
+      noteId == null ? VirtualTodayTab(date) : NoteTab(noteId);
+
+  /// Make [today] the active tab: focus it when open, otherwise insert it
+  /// first. Neither persists nor emits.
+  void _focusToday(WorkspaceTab today) {
+    final existing = state.tabs.indexOf(today);
+    if (existing >= 0) {
+      state = state.copyWith(activeIndex: existing);
+    } else {
+      final tabs = _evictOverCap([today, ...state.tabs], today);
+      state = TabsState(tabs: tabs, activeIndex: tabs.indexOf(today));
+    }
+    _touchMru(today);
   }
 
   /// Open a tab for `tab`, or switch to it if already open. Returns the
@@ -131,18 +173,8 @@ class TabsNotifier extends StateNotifier<TabsState> {
       _emitSelection();
       return existing;
     }
-    var newTabs = List<WorkspaceTab>.from(state.tabs)..add(tab);
-    var newActive = newTabs.length - 1;
-    // LRU eviction once over cap.
-    if (newTabs.length > kMaxOpenTabs) {
-      final active = newTabs[newActive];
-      final victim = _pickEvictionVictim(newTabs, active);
-      if (victim != null) {
-        newTabs = newTabs.where((t) => t != victim).toList();
-        newActive = newTabs.indexOf(active);
-        _mru.remove(victim);
-      }
-    }
+    final newTabs = _evictOverCap([...state.tabs, tab], tab);
+    final newActive = newTabs.indexOf(tab);
     state = TabsState(tabs: newTabs, activeIndex: newActive);
     _touchMru(tab);
     _persist();
@@ -155,7 +187,32 @@ class TabsNotifier extends StateNotifier<TabsState> {
   /// [noteId] is null (no daily note for [date] yet), focus the open
   /// [VirtualTodayTab] for [date] or insert one as the active tab.
   void openToday({required String date, String? noteId}) {
-    throw UnimplementedError();
+    _focusToday(_todayTab(date, noteId));
+    _persist();
+    _emitSelection();
+  }
+
+  /// The virtual Today tab for [date] became the real note [noteId] (its
+  /// first edit created or found the daily note, #22): the note's tab takes
+  /// the virtual tab's place, or, when [noteId] is already open, the virtual
+  /// tab closes. The active tab stays the active tab. A no-op when the
+  /// virtual tab was closed meanwhile.
+  void resolveVirtualToday({required String date, required String noteId}) {
+    final virtual = VirtualTodayTab(date);
+    final idx = state.tabs.indexOf(virtual);
+    if (idx < 0) return;
+    final real = NoteTab(noteId);
+    final tabs = List<WorkspaceTab>.from(state.tabs);
+    if (tabs.contains(real)) {
+      tabs.removeAt(idx);
+    } else {
+      tabs[idx] = real;
+    }
+    final active = state.activeTab == virtual ? real : state.activeTab!;
+    state = TabsState(tabs: tabs, activeIndex: tabs.indexOf(active));
+    _mru.remove(virtual);
+    _persist();
+    _emitSelection();
   }
 
   void close(WorkspaceTab tab) {
@@ -196,6 +253,19 @@ class TabsNotifier extends StateNotifier<TabsState> {
     _mru.insert(0, tab);
   }
 
+  /// [tabs] with the least-recently-used tab other than [active] removed
+  /// when they are over [kMaxOpenTabs] (LRU eviction).
+  List<WorkspaceTab> _evictOverCap(
+    List<WorkspaceTab> tabs,
+    WorkspaceTab active,
+  ) {
+    if (tabs.length <= kMaxOpenTabs) return tabs;
+    final victim = _pickEvictionVictim(tabs, active);
+    if (victim == null) return tabs;
+    _mru.remove(victim);
+    return tabs.where((t) => t != victim).toList();
+  }
+
   WorkspaceTab? _pickEvictionVictim(
     List<WorkspaceTab> tabs,
     WorkspaceTab active,
@@ -218,9 +288,17 @@ class TabsNotifier extends StateNotifier<TabsState> {
   void _persist() {
     if (!_hydrated) return;
     final existing = store.read();
+    // The virtual Today tab is never written (D26); the active index moves
+    // onto the remaining tabs (to the next one when the virtual tab is
+    // active).
+    final kept = state.tabs.where((t) => t is! VirtualTodayTab).toList();
+    final before = state.tabs
+        .take(state.activeIndex)
+        .where((t) => t is! VirtualTodayTab)
+        .length;
     final next = UiState(
-      tabs: state.tabs.map((t) => t.toPersisted()).toList(),
-      activeTabIndex: state.activeIndex,
+      tabs: kept.map((t) => t.toPersisted()).toList(),
+      activeTabIndex: min(before, max(0, kept.length - 1)),
       canvasViewports: existing.canvasViewports,
     );
     // Fire-and-forget; persistence is best-effort and shouldn't block the UI.
@@ -253,6 +331,10 @@ final tabsProvider = StateNotifierProvider<TabsNotifier, TabsState>((ref) {
       // right panel) still respond to tab changes.
       ref.read(selectedNoteIdProvider.notifier).state = noteId;
     },
+    // Opening a vault lands on today's note (#22). Read once: the launch
+    // date sticks to the tab across midnight (D14).
+    todayDate: vaultPath == null ? null : ref.read(todayDateProvider),
+    todayNoteId: vaultPath == null ? null : ref.read(todayNoteProvider)?.noteId,
   );
   return notifier;
 });
