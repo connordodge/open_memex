@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../graph/graph_scope.dart';
 import 'ui_state_store.dart';
 import 'vault_state.dart';
 
@@ -48,6 +49,22 @@ class CanvasTab extends WorkspaceTab {
 
   @override
   int get hashCode => Object.hash('canvas', id);
+}
+
+/// A read-only Graph view tab (D26). [id] is the scope's persisted id
+/// (`topic:<noteId>`, `day:<noteId>`, `folder:<smartFolderId>`, `vault:all`);
+/// persisted as kind `graph`.
+class GraphTab extends WorkspaceTab {
+  GraphTab(this.scope) : super(scope.persistedId);
+
+  final GraphScope scope;
+
+  /// `graph-<scope>:<id>`.
+  @override
+  String get tabId => throw UnimplementedError();
+
+  @override
+  PersistedTab toPersisted() => throw UnimplementedError();
 }
 
 /// Soft cap on open tabs. Past this, opening a new tab evicts the
