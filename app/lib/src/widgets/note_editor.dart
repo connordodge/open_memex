@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../db.dart';
 import '../state/editor_controller.dart';
+import '../state/today_state.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
@@ -15,6 +16,10 @@ import 'editor/source_surface.dart';
 /// The note editor host: wires the selected note and [EditorController] into
 /// the [EditorToolbar], the [SourceSurface] (with its [NoteHeader]) and the
 /// save status bar.
+///
+/// The selected note comes from [editorNoteProvider], so a virtual Today tab
+/// (#22) shows as an empty, unsaved daily note. Opening a daily note puts
+/// the cursor at the end of its focused body, ready to type.
 class NoteEditor extends ConsumerStatefulWidget {
   const NoteEditor({
     super.key,
@@ -36,6 +41,7 @@ class NoteEditor extends ConsumerStatefulWidget {
 class _NoteEditorState extends ConsumerState<NoteEditor> {
   late final TextEditingController _titleCtrl;
   late final TextEditingController _bodyCtrl;
+  final _bodyFocus = FocusNode(debugLabel: 'editor-body');
   String? _hydratedFor;
 
   @override
@@ -49,26 +55,42 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
   void dispose() {
     _titleCtrl.dispose();
     _bodyCtrl.dispose();
+    _bodyFocus.dispose();
     super.dispose();
   }
 
   void _hydrate(Note? note, EditorController controller) {
     if (note?.id == _hydratedFor) return;
     _hydratedFor = note?.id;
-    controller.loadNote(note);
-    _titleCtrl.text = note?.title ?? '';
-    _bodyCtrl.text = note?.contentMd ?? '';
+    // A virtual Today note that just became [note] keeps the editor's text
+    // (typing may still be going on); any other note loads.
+    final resolved = note != null && controller.takeResolved(note.id);
+    if (!resolved) controller.loadNote(note);
+    final editor = ref.read(editorControllerProvider);
+    _titleCtrl.text = editor.title;
+    if (_bodyCtrl.text != editor.contentMd) {
+      _bodyCtrl.value = TextEditingValue(
+        text: editor.contentMd,
+        selection: TextSelection.collapsed(offset: editor.contentMd.length),
+      );
+    }
+    if (!resolved && note?.role == 'daily') {
+      _bodyCtrl.selection = TextSelection.collapsed(
+        offset: _bodyCtrl.text.length,
+      );
+      _bodyFocus.requestFocus();
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final note = ref.watch(selectedNoteProvider);
+    final note = ref.watch(editorNoteProvider);
     final editor = ref.watch(editorControllerProvider);
     final controller = ref.read(editorControllerProvider.notifier);
     final vaultPath = ref.watch(currentVaultProvider);
 
     ref.listen<Note?>(
-      selectedNoteProvider,
+      editorNoteProvider,
       (_, curr) => _hydrate(curr, controller),
     );
     if (note != null && _hydratedFor != note.id) {
@@ -102,6 +124,7 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
                 ? _EmptyEditor()
                 : SourceSurface(
                     bodyCtrl: _bodyCtrl,
+                    bodyFocusNode: _bodyFocus,
                     onContentChanged: controller.onContentChanged,
                     errorMessage: editor.errorMessage,
                     header: NoteHeader(
