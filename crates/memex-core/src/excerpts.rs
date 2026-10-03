@@ -432,9 +432,9 @@ fn insert_tokens(body: &str, date: &str, tokens: &[String]) -> String {
 fn remove_tokens(body: &str, date: &str, matched: &[TransclusionToken]) -> String {
     let lines = lines(body);
     let mut text: Vec<String> = Vec::with_capacity(lines.len());
-    let mut deleted = vec![false; lines.len()];
+    let mut deleted: Vec<bool> = Vec::with_capacity(lines.len());
     let mut start = 0;
-    for (i, line) in lines.iter().enumerate() {
+    for line in &lines {
         let end = start + line.len();
         let mut kept = String::new();
         let mut cursor = start;
@@ -445,7 +445,7 @@ fn remove_tokens(body: &str, date: &str, matched: &[TransclusionToken]) -> Strin
             touched = true;
         }
         kept.push_str(&body[cursor..end]);
-        deleted[i] = touched && is_blank(&kept);
+        deleted.push(touched && is_blank(&kept));
         text.push(kept);
         start = end;
     }
