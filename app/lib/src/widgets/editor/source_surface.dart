@@ -18,6 +18,7 @@ class SourceSurface extends StatefulWidget {
     required this.onContentChanged,
     this.header,
     this.errorMessage,
+    this.bodyFocusNode,
   });
   final TextEditingController bodyCtrl;
   final ValueChanged<String> onContentChanged;
@@ -28,6 +29,10 @@ class SourceSurface extends StatefulWidget {
   /// Save error shown just above the body.
   final String? errorMessage;
 
+  /// The body field's focus node, when the host moves focus to the body
+  /// (e.g. on launch, #22). Owned by the host; one is made here otherwise.
+  final FocusNode? bodyFocusNode;
+
   @override
   State<SourceSurface> createState() => _SourceSurfaceState();
 }
@@ -35,7 +40,8 @@ class SourceSurface extends StatefulWidget {
 class _SourceSurfaceState extends State<SourceSurface> {
   final _bodyKey = GlobalKey();
   final _autocompleteKey = GlobalKey<WikilinkAutocompleteState>();
-  final _bodyFocus = FocusNode(debugLabel: 'editor-body');
+  late final _bodyFocus =
+      widget.bodyFocusNode ?? FocusNode(debugLabel: 'editor-body');
   final _kindChipCtrl = KindChipController();
   String _lastSeenBody = '';
 
@@ -58,7 +64,7 @@ class _SourceSurfaceState extends State<SourceSurface> {
   @override
   void dispose() {
     widget.bodyCtrl.removeListener(_onBodyChanged);
-    _bodyFocus.dispose();
+    if (widget.bodyFocusNode == null) _bodyFocus.dispose();
     _kindChipCtrl.dispose();
     super.dispose();
   }
@@ -138,25 +144,28 @@ class _SourceSurfaceState extends State<SourceSurface> {
                       ),
                     ),
                   ],
-                  TextField(
-                    key: _bodyKey,
-                    controller: widget.bodyCtrl,
-                    focusNode: _bodyFocus,
-                    maxLines: null,
-                    minLines: 12,
-                    cursorColor: OmColors.accent,
-                    style: OmType.mono(
-                      size: 13.5,
-                      color: OmColors.fg0,
-                      height: 1.7,
+                  KeyedSubtree(
+                    key: const Key('editor-body'),
+                    child: TextField(
+                      key: _bodyKey,
+                      controller: widget.bodyCtrl,
+                      focusNode: _bodyFocus,
+                      maxLines: null,
+                      minLines: 12,
+                      cursorColor: OmColors.accent,
+                      style: OmType.mono(
+                        size: 13.5,
+                        color: OmColors.fg0,
+                        height: 1.7,
+                      ),
+                      decoration: InputDecoration(
+                        hintText: 'type [[ to link a note · write markdown…',
+                        hintStyle: OmType.mono(size: 13.5, color: OmColors.fg3),
+                      ),
+                      // No onChanged here — the controller listener above
+                      // routes both typed AND programmatic splice updates
+                      // through the save path.
                     ),
-                    decoration: InputDecoration(
-                      hintText: 'type [[ to link a note · write markdown…',
-                      hintStyle: OmType.mono(size: 13.5, color: OmColors.fg3),
-                    ),
-                    // No onChanged here — the controller listener above
-                    // routes both typed AND programmatic splice updates
-                    // through the save path.
                   ),
                 ],
               ),

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../db.dart';
+import '../../state/tabs_state.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import 'daily_date_header.dart';
@@ -10,6 +11,10 @@ import 'review_chip.dart';
 /// The top of an open note (Key `note-header`): the meta rail, the
 /// [DailyDateHeader] slot, the title field (Key `editor-title`), the
 /// [ReviewChip] slot and the tags.
+///
+/// A `role: daily` note's [DailyDateHeader] replaces the title field: its
+/// title is not editable (Req 49). The unsaved virtual Today note has no
+/// meta rail and no review chip.
 class NoteHeader extends StatelessWidget {
   const NoteHeader({
     super.key,
@@ -23,29 +28,32 @@ class NoteHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // The unsaved virtual Today note was never updated or reviewed.
+    final saved = VirtualTodayTab.dateOf(note.id) == null;
     return Column(
       key: const Key('note-header'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _MetaRail(note: note),
+        if (saved) _MetaRail(note: note),
         const SizedBox(height: 18),
         DailyDateHeader(note: note),
-        TextField(
-          key: const Key('editor-title'),
-          controller: titleCtrl,
-          style: OmType.h1Serif(),
-          cursorColor: OmColors.accent,
-          decoration: InputDecoration(
-            hintText: 'Untitled',
-            hintStyle: OmType.serif(
-              size: 36,
-              color: OmColors.fg3,
-              weight: FontWeight.w500,
+        if (note.role != 'daily')
+          TextField(
+            key: const Key('editor-title'),
+            controller: titleCtrl,
+            style: OmType.h1Serif(),
+            cursorColor: OmColors.accent,
+            decoration: InputDecoration(
+              hintText: 'Untitled',
+              hintStyle: OmType.serif(
+                size: 36,
+                color: OmColors.fg3,
+                weight: FontWeight.w500,
+              ),
             ),
+            onChanged: onTitleChanged,
           ),
-          onChanged: onTitleChanged,
-        ),
-        ReviewChip(note: note),
+        if (saved) ReviewChip(note: note),
         if (note.tags.isNotEmpty) ...[
           const SizedBox(height: 12),
           Wrap(

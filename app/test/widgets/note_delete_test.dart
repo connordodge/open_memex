@@ -68,7 +68,15 @@ Future<WorkspaceHarness> _pump(
     ..on('settings get', (_) => FakeMemexCli.ok(settingsGetMaxDepthStdout))
     ..onRm(db);
   configure?.call(cli);
-  return pumpWorkspace(tester, db: db, cli: cli);
+  final h = await pumpWorkspace(tester, db: db, cli: cli);
+  // The launch opens today's daily note (#22); these journeys start from an
+  // empty workspace, so close it.
+  final tabs = h.read(tabsProvider.notifier);
+  for (final tab in [...h.read(tabsProvider).tabs]) {
+    tabs.close(tab);
+  }
+  await pumpFrames(tester);
+  return h;
 }
 
 Future<void> _openNote(WidgetTester tester, String id) async {
