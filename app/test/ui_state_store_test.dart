@@ -104,4 +104,20 @@ void main() {
     final state = UiStateStore(vaultPath: tmp.path).read();
     expect(state.canvasViewports.keys.toList(), ['good']);
   });
+
+  test('flush completes after every queued write has landed', () async {
+    final tmp = await Directory.systemTemp.createTemp('ui_state_flush');
+    addTearDown(() async {
+      if (tmp.existsSync()) tmp.deleteSync(recursive: true);
+    });
+    final store = UiStateStore(vaultPath: tmp.path);
+    final state = store.read();
+    final a = store.write(state);
+    final b = store.write(state);
+    await store.flush();
+    var done = 0;
+    await Future.wait([a.then((_) => done++), b.then((_) => done++)]);
+    expect(done, 2);
+    expect(File('${tmp.path}/.memex/ui_state.json').existsSync(), isTrue);
+  });
 }
