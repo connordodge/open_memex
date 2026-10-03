@@ -362,7 +362,12 @@ fn appended(
     )?;
     let conn = vault.connection_ref();
     Ok(AppendOutcome {
-        block_ids: blocks_created_in(conn, saved.id.as_str(), saved.version)?,
+        block_ids: stored_blocks(conn, saved.id.as_str())?
+            .0
+            .into_iter()
+            .filter(|b| b.created_version == saved.version)
+            .map(|b| b.block_id)
+            .collect(),
         content_version: conn.query_row(
             "SELECT content_version FROM day_reviews WHERE note_id = ?",
             [saved.id.as_str()],
@@ -382,30 +387,22 @@ fn daily_note_for(
     caller: Caller,
     clock: &dyn Clock,
 ) -> Result<Note> {
+    if let Some(id) = daily_note_for_date(vault.connection_ref(), date)? {
+        return notes::get_note(vault, &NoteId::parse(&id)?);
+    }
     let input = CreateNote {
         title: Some(date.to_string()),
         content_md: String::new(),
         frontmatter: Some(serde_json::json!({ "role": DAILY_ROLE })),
     };
-    match notes::create_or_adopt_note(vault, input, caller, clock) {
-        Ok(outcome) => Ok(outcome.note),
-        Err(MemexError::DailyNoteExists { existing_id, .. }) => {
-            notes::get_note(vault, &NoteId::parse(&existing_id)?)
-        }
-        Err(e) => Err(e),
-    }
+    notes::create_or_adopt_note(vault, input, caller, clock).map(|outcome| outcome.note)
 }
 
-/// The ids of the blocks of `note_id` created by the write that made
-/// `version`, in `ord` order.
-fn blocks_created_in(conn: &Connection, note_id: &str, version: i64) -> Result<Vec<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT block_id FROM blocks WHERE note_id = ? AND created_version = ? ORDER BY ord",
-    )?;
-    let ids = stmt
-        .query_map(params![note_id, version], |r| r.get(0))?
-        .collect::<rusqlite::Result<Vec<String>>>()?;
-    Ok(ids)
+/// The id of the `role: daily` note for `date`, if any; a note titled with the
+/// date but another role (or none) does not count. The one lookup of a day's
+/// daily note (D27).
+pub(crate) fn daily_note_for_date(conn: &Connection, date: NaiveDate) -> Result<Option<String>> {
+    crate::links::daily_note_id_for_title(conn, &date.to_string())
 }
 
 /// The `blocks.source` of a write by `caller`.
@@ -484,7 +481,10 @@ pub(crate) fn sync_daily_note(
 }
 
 /// The stored blocks of a note in `ord` order, and each one's `created_at`.
-fn stored_blocks(conn: &Connection, note_id: &str) -> Result<(Vec<Block>, HashMap<String, i64>)> {
+pub(crate) fn stored_blocks(
+    conn: &Connection,
+    note_id: &str,
+) -> Result<(Vec<Block>, HashMap<String, i64>)> {
     let mut stmt = conn.prepare(
         "SELECT block_id, ord, start_byte, end_byte, text, content_hash, source,
                 created_version, created_at
