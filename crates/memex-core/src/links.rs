@@ -9,6 +9,7 @@ use rusqlite::{params, Connection, ToSql};
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
+use crate::caller::Caller;
 use crate::error::MemexError;
 use crate::vault::Vault;
 use crate::Result;
@@ -305,12 +306,24 @@ pub struct UpdateLink {
 ///   supported"). Label changes rewrite the `[[Title|alias]]` token in place.
 ///
 /// After the body is updated, the source note is saved through
-/// `update_note_with_options(rename_links: false)` and reindexed by the caller
-/// (matching the existing add-link path).
+/// `notes::update_note_as(rename_links: false)` and reindexed from the saved
+/// note's body (matching the existing add-link path).
 pub fn update_link(
     vault: &mut Vault,
     link_id: &str,
     patch: UpdateLink,
+) -> Result<Link> {
+    update_link_as(vault, link_id, patch, Caller::Person)
+}
+
+/// [`update_link`] on behalf of `caller` (architect ruling D3). The source note
+/// is saved through `notes::update_note_as` with the same `caller`, so every
+/// rule that guards agent note writes also guards link edits.
+pub fn update_link_as(
+    vault: &mut Vault,
+    link_id: &str,
+    patch: UpdateLink,
+    caller: Caller,
 ) -> Result<Link> {
     let current = get_link(vault, link_id)?;
 
@@ -375,18 +388,22 @@ pub fn update_link(
     new_body.push_str(&source_body[token_end..]);
 
     // Save via the standard update path so existing indexing wires in.
-    crate::notes::update_note_with_options(
+    let saved = crate::notes::update_note_as(
         vault,
         &crate::notes::NoteId::parse(&from_id)?,
         source_version,
         crate::notes::UpdateNote {
-            content_md: Some(new_body.clone()),
+            content_md: Some(new_body),
             ..Default::default()
         },
-        crate::notes::RenameOptions { rename_links: false },
+        crate::notes::RenameOptions {
+            rename_links: false,
+        },
+        caller,
     )?;
-    // Reindex so the `links` row reflects the new kind/label.
-    crate::indexer::reindex_note(vault.conn_mut(), &from_id, &new_body, None)?;
+    // Reindex so the `links` row reflects the new kind/label. Index the body
+    // the save returned, not `new_body`: a save may normalize it (D8).
+    crate::indexer::reindex_note(vault.conn_mut(), &from_id, &saved.content_md, None)?;
 
     // The new link row sits at the same (from_note_id, position) because we
     // edited the `[[...]]` token in place; the leading `[[` byte offset is

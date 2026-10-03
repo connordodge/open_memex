@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use ulid::Ulid;
 
+use crate::caller::Caller;
 use crate::error::MemexError;
 use crate::vault::{now_unix_ms, Vault};
 use crate::Result;
@@ -59,6 +60,13 @@ pub struct CreateNote {
 }
 
 pub fn create_note(vault: &mut Vault, input: CreateNote) -> Result<Note> {
+    create_note_as(vault, input, Caller::Person)
+}
+
+/// Creates a note on behalf of `caller` (architect ruling D3). Rules that
+/// guard agent writes hang off `caller`; today both callers behave the same.
+pub fn create_note_as(vault: &mut Vault, input: CreateNote, caller: Caller) -> Result<Note> {
+    let _ = caller;
     let now = now_unix_ms();
     let id = NoteId::new();
     let frontmatter = input
@@ -156,6 +164,21 @@ pub fn update_note_with_options(
     patch: UpdateNote,
     options: RenameOptions,
 ) -> Result<Note> {
+    update_note_as(vault, id, expected_version, patch, options, Caller::Person)
+}
+
+/// Updates a note on behalf of `caller` (architect ruling D3). Every save
+/// path (including `links::update_link_as`) goes through here, so a rule
+/// added for agent writes guards them all; today both callers behave the same.
+pub fn update_note_as(
+    vault: &mut Vault,
+    id: &NoteId,
+    expected_version: i64,
+    patch: UpdateNote,
+    options: RenameOptions,
+    caller: Caller,
+) -> Result<Note> {
+    let _ = caller;
     // Read current state up front so we can validate before opening a tx.
     let current_row: Option<(i64, String, String, String)> = vault
         .connection_ref()
