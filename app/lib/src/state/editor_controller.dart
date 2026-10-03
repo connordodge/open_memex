@@ -63,9 +63,10 @@ class EditorController extends StateNotifier<EditorStateValue> {
   Timer? _debounce;
   String? _activeNoteId;
 
-  /// True after a daily note's save and its merged retry both conflicted:
-  /// the next save goes straight to the merge.
-  bool _mergePending = false;
+  /// Set (to the base version) after a daily note's save and its merged
+  /// retry both conflicted, or text was typed during a merged save: the next
+  /// save goes straight to the merge. Null when the next save is plain.
+  int? _mergeBase;
 
   /// The date of the open virtual Today note; null when a real note (or
   /// none) is open.
@@ -87,7 +88,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
   void loadNote(Note? note) {
     final pending = _debounce?.isActive == true;
     _debounce?.cancel();
-    _mergePending = false;
+    _mergeBase = null;
     _resolvedNoteId = null;
     final leaving = _virtualDate;
     _virtualDate = null;
@@ -162,15 +163,16 @@ class EditorController extends StateNotifier<EditorStateValue> {
 
   /// The poller saw note [noteId] change on disk (WI #28). Returns false when
   /// the stored version is the editor's own base version (its last save or
-  /// load), true for a foreign change. A foreign change to the open note is
+  /// load) or the editor shows another note, true for a foreign change. A foreign change to the open note is
   /// applied when the editor is clean: the server body becomes the editor's
   /// text and its version the base. A dirty editor keeps its text; its next
   /// save conflicts and merges.
   bool serverChanged(String noteId) {
     final note = _ref.read(vaultDbProvider)?.getNote(noteId);
     if (note == null) return false;
-    if (_activeNoteId != noteId) return true;
-    if (note.version == state.lastSavedVersion) return false;
+    if (_activeNoteId != noteId || note.version == state.lastSavedVersion) {
+      return false;
+    }
     if (state.status == SaveStatus.clean) {
       state = state.copyWith(
         contentMd: note.contentMd,
@@ -199,7 +201,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
 
     final local = state.contentMd;
     final title = state.title.trim().isEmpty ? null : state.title.trim();
-    var merging = _mergePending;
+    var merging = _mergeBase != null;
     state = state.copyWith(status: SaveStatus.saving, clearError: true);
     try {
       ({NoteUpdateResult result, String body})? saved;
@@ -232,11 +234,11 @@ class EditorController extends StateNotifier<EditorStateValue> {
         title: title,
       );
       if (_activeNoteId != id) return;
-      _mergePending = false;
+      _mergeBase = null;
       if (merging && state.contentMd != local) {
         // Typed during the merged save: the new text lacks the merged
         // blocks, so the next save merges again from the same base.
-        _mergePending = true;
+        _mergeBase = version;
         state = state.copyWith(status: SaveStatus.dirty);
       } else {
         state = state.copyWith(
@@ -253,7 +255,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
       if (merging && conflict) {
         // The merged retry conflicted too: keep the local text and merge
         // again on the next debounce tick.
-        _mergePending = true;
+        _mergeBase = version;
         state = state.copyWith(
           status: SaveStatus.conflict,
           errorMessage: couldNotSaveMessage,

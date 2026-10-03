@@ -150,9 +150,9 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
           isDaily == _isDaily &&
           old.savedVersion != null;
       _isDaily = isDaily;
-      _resplit(content, keepSelection: serverWrite);
+      _resplit(content, keepCaret: serverWrite);
     } else if (widget.savedVersion != old.savedVersion) {
-      _resplit(_joined, keepSelection: true);
+      _resplit(_joined, keepCaret: true);
     }
   }
 
@@ -178,8 +178,8 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
   /// their text is replaced; otherwise new segments are built and focus moves
   /// to the text segment holding the caret's position. A replaced text puts
   /// the caret at its end, or keeps the selection (both ends, clamped to the
-  /// new text) with [keepSelection].
-  void _resplit(String text, {bool keepSelection = false}) {
+  /// new text) with [keepCaret].
+  void _resplit(String text, {bool keepCaret = false}) {
     final next = split(text, isDaily: _isDaily);
     _withFooter = !_isDaily || splitDailyBody(text).person != text;
     if (_sameShape(next)) {
@@ -191,7 +191,7 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
           if (seg is _TextSeg && n is TextSegment && seg.ctrl.text != n.text) {
             seg.ctrl.value = TextEditingValue(
               text: n.text,
-              selection: keepSelection
+              selection: keepCaret
                   ? _clampSelection(seg.ctrl.selection, n.text.length)
                   : TextSelection.collapsed(offset: n.text.length),
             );
@@ -480,24 +480,18 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
                 key: ValueKey('text-segment-$i'),
                 child: _primaryKeyed(
                   i == 0,
-                  _daily(
-                    i,
-                    t,
-                    TextSegmentField(
-                      key: ObjectKey(t.ctrl),
-                      controller: t.ctrl,
-                      focusNode: t.focus,
-                      onChanged: (_) => _onTextChanged(),
-                      kindChips: _kindChips,
-                      minLines: single
-                          ? 12
-                          : (identical(t, texts.last) ? 4 : 1),
-                      hintText: single
-                          ? 'type [[ to link a note · write markdown…'
-                          : null,
-                      onMoveUp: () => _neighbour(t, forward: false),
-                      onMoveDown: () => _neighbour(t, forward: true),
-                    ),
+                  TextSegmentField(
+                    key: ObjectKey(t.ctrl),
+                    controller: t.ctrl,
+                    focusNode: t.focus,
+                    onChanged: (_) => _onTextChanged(),
+                    kindChips: _kindChips,
+                    minLines: single ? 12 : (identical(t, texts.last) ? 4 : 1),
+                    hintText: single
+                        ? 'type [[ to link a note · write markdown…'
+                        : null,
+                    onMoveUp: () => _neighbour(t, forward: false),
+                    onMoveDown: () => _neighbour(t, forward: true),
                   ),
                 ),
               ),
@@ -514,14 +508,14 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
     );
   }
 
-  /// A daily note's person field (segment 0) gets the capture gutter.
-  Widget _daily(int i, _TextSeg seg, Widget field) =>
-      _isDaily && i == 0 ? _withGutter(seg, field) : field;
-
   /// The first text segment is also the editor's body field (Key
-  /// `editor-body`), where launch focus goes.
+  /// `editor-body`), where launch focus goes; a daily note's (the person
+  /// field) has the capture gutter beside it.
   Widget _primaryKeyed(bool primary, Widget child) => primary
-      ? KeyedSubtree(key: const Key('editor-body'), child: child)
+      ? KeyedSubtree(
+          key: const Key('editor-body'),
+          child: _isDaily ? _withGutter(_segs.first as _TextSeg, child) : child,
+        )
       : child;
 }
 
