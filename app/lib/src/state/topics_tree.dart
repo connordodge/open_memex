@@ -51,11 +51,69 @@ class TopicsTree {
 
   /// True when the Topics empty state applies: no Smart Folders and no
   /// `role: topic` note.
-  bool get isEmpty => throw UnimplementedError();
+  bool get isEmpty =>
+      folders.isEmpty && !unsorted.notes.any((n) => n.role == 'topic');
 }
 
 /// Builds the Topics tree from the Smart Folder reads (pure, no I/O).
+///
+/// Independent of the input order. Every level sorts case-insensitively by
+/// name / title, ties broken by id so the order is stable. A folder whose
+/// parent is not in [data] is treated as a root. Daily notes never appear.
 TopicsTree buildTopicsTree(
   SmartFolderData data,
   List<UnsortedNoteRow> unsorted,
-) => throw UnimplementedError();
+) {
+  final ids = {for (final f in data.folders) f.id};
+  final childrenOf = <String?, List<SmartFolderRow>>{};
+  for (final f in data.folders) {
+    final parent = ids.contains(f.parentId) ? f.parentId : null;
+    (childrenOf[parent] ??= []).add(f);
+  }
+  final membersOf = <String, List<SmartFolderMemberRow>>{};
+  for (final m in data.members) {
+    (membersOf[m.folderId] ??= []).add(m);
+  }
+
+  List<FolderNode> build(String? parent, int depth) {
+    final rows = [...?childrenOf[parent]]
+      ..sort((a, b) => _byLabel(a.name, a.id, b.name, b.id));
+    return [
+      for (final f in rows)
+        FolderNode(
+          id: f.id,
+          name: f.name,
+          pinned: f.pinned,
+          depth: depth,
+          children: build(f.id, depth + 1),
+          topics:
+              ([...?membersOf[f.id]]..sort(
+                    (a, b) => _byLabel(a.title, a.noteId, b.title, b.noteId),
+                  ))
+                  .map(
+                    (m) => TopicNode(
+                      noteId: m.noteId,
+                      title: m.title,
+                      pinned: m.pinned,
+                    ),
+                  )
+                  .toList(),
+        ),
+    ];
+  }
+
+  final loose = [
+    for (final n in unsorted)
+      if (n.role != 'daily') n,
+  ]..sort((a, b) => _byLabel(a.title, a.noteId, b.title, b.noteId));
+
+  return TopicsTree(
+    folders: build(null, 0),
+    unsorted: UnsortedNode(notes: loose),
+  );
+}
+
+int _byLabel(String a, String aId, String b, String bId) {
+  final c = a.toLowerCase().compareTo(b.toLowerCase());
+  return c != 0 ? c : aId.compareTo(bId);
+}
