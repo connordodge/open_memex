@@ -322,6 +322,48 @@ void main() {
     );
   });
 
+  group('opening a daily note', () {
+    testWidgets(
+      'opening another daily note or reopening one puts the caret at the end of its text',
+      (tester) async {
+        final (r, _) = await _launch(tester);
+        const otherId = 'daily-2026-10-02';
+        r.db.seedLiveDaily(
+          id: otherId,
+          date: '2026-10-02',
+          blocks: const [
+            SeedBlock('p-long', 'A much longer day of notes than today.'),
+          ],
+        );
+        const otherText = 'A much longer day of notes than today.\n';
+        expect(
+          r.bodySelection,
+          TextSelection.collapsed(offset: _person.length),
+        );
+        final tabs = r.h.container.read(tabsProvider.notifier);
+
+        tabs.openOrFocus(const NoteTab(otherId));
+        await r.settle();
+        expect(r.bodyText, otherText);
+        expect(
+          r.bodySelection,
+          const TextSelection.collapsed(offset: otherText.length),
+        );
+
+        tabs.close(const NoteTab(otherId));
+        tabs.close(const NoteTab(liveDailyId));
+        await r.settle();
+        tabs.openOrFocus(const NoteTab(otherId));
+        await r.settle();
+        expect(r.bodyText, otherText);
+        expect(
+          r.bodySelection,
+          const TextSelection.collapsed(offset: otherText.length),
+        );
+      },
+    );
+  });
+
   group('the gutter while editing', () {
     testWidgets(
       'an unsaved edit above an agent block keeps its rule on the agent lines',

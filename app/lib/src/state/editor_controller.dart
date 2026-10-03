@@ -169,8 +169,9 @@ class EditorController extends StateNotifier<EditorStateValue> {
   /// save conflicts and merges.
   bool serverChanged(String noteId) {
     final note = _ref.read(vaultDbProvider)?.getNote(noteId);
-    if (note == null) return false;
-    if (_activeNoteId != noteId || note.version == state.lastSavedVersion) {
+    if (note == null ||
+        _activeNoteId != noteId ||
+        note.version == state.lastSavedVersion) {
       return false;
     }
     if (state.status == SaveStatus.clean) {
