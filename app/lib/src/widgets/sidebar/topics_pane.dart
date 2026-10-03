@@ -5,6 +5,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../cli/prompt_cli.dart';
 import '../../memex_cli.dart';
+import '../../state/smart_folder_actions.dart';
 import '../../state/tabs_state.dart';
 import '../../state/topic_actions.dart';
 import '../../state/topics_state.dart';
@@ -14,6 +15,7 @@ import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import '../atoms.dart';
 import '../inline_error.dart';
+import 'folder_menu.dart';
 
 /// Req 53: the Topics empty-state copy.
 const _emptyCopy =
@@ -28,8 +30,13 @@ const _indentStep = 14.0;
 /// group last.
 ///
 /// Folders start collapsed; the expansion state lives in memory only (see
-/// `expandedTopicFoldersProvider`). Tapping a topic or an Unsorted note opens
-/// its tab. With no Smart Folders and no topic notes the empty state
+/// `expandedTopicFoldersProvider`). Tapping a folder row toggles it and
+/// selects it (`+ New Smart Folder` then creates inside it); tapping the
+/// selected folder again clears the selection. Tapping a topic or an Unsorted
+/// note opens its tab. Topic and Unsorted rows drag onto a folder row
+/// (`folder-row-<id>`) to join that folder; a folder's ellipsis opens its edit
+/// menu and a secondary click on a topic row its membership menu. A failed
+/// Smart Folder write shows above the tree as a dismissible inline error. With no Smart Folders and no topic notes the empty state
 /// (`topics-empty`) shows above Unsorted, with a `Copy review prompt` button.
 ///
 /// Fills the bounded height its parent gives it.
@@ -42,6 +49,8 @@ class TopicsPane extends ConsumerWidget {
     final expanded = ref.watch(expandedTopicFoldersProvider);
     final activeTab = ref.watch(activeTabProvider);
     final activeNoteId = activeTab is NoteTab ? activeTab.id : null;
+    final selectedFolder = ref.watch(selectedTopicFolderProvider);
+    final folderError = ref.watch(smartFolderErrorProvider);
 
     void open(String noteId) =>
         ref.read(tabsProvider.notifier).openOrFocus(NoteTab(noteId));
@@ -53,28 +62,51 @@ class TopicsPane extends ConsumerWidget {
         _FolderRow(
           folder: folder,
           expanded: isOpen,
-          onToggle: () =>
-              ref.read(expandedTopicFoldersProvider.notifier).toggle(folder.id),
+          selected: folder.id == selectedFolder,
+          hostContext: context,
+          onToggle: () {
+            ref.read(expandedTopicFoldersProvider.notifier).toggle(folder.id);
+            ref.read(selectedTopicFolderProvider.notifier).state =
+                folder.id == selectedFolder ? null : folder.id;
+          },
         ),
       );
       if (!isOpen) return;
       folder.children.forEach(addFolder);
       for (final topic in folder.topics) {
         rows.add(
-          _NoteRow(
+          MembershipMenu(
             key: Key('topics-topic-${folder.id}-${topic.noteId}'),
-            title: topic.title,
-            level: folder.depth + 1,
-            active: topic.noteId == activeNoteId,
-            pinGlyphKey: topic.pinned
-                ? Key('pinned-glyph-member-${folder.id}-${topic.noteId}')
-                : null,
-            onTap: () => open(topic.noteId),
+            folderId: folder.id,
+            noteId: topic.noteId,
+            pinned: topic.pinned,
+            child: _NoteRow(
+              noteId: topic.noteId,
+              title: topic.title,
+              level: folder.depth + 1,
+              active: topic.noteId == activeNoteId,
+              pinGlyphKey: topic.pinned
+                  ? Key('pinned-glyph-member-${folder.id}-${topic.noteId}')
+                  : null,
+              onTap: () => open(topic.noteId),
+            ),
           ),
         );
       }
     }
 
+    if (folderError != null) {
+      rows.add(
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: InlineError(
+            message: folderError,
+            onDismiss: () =>
+                ref.read(smartFolderErrorProvider.notifier).state = null,
+          ),
+        ),
+      );
+    }
     if (tree.isEmpty) rows.add(const _EmptyTopics());
     tree.folders.forEach(addFolder);
     if (tree.unsorted.notes.isNotEmpty) {
@@ -83,6 +115,7 @@ class TopicsPane extends ConsumerWidget {
         rows.add(
           _NoteRow(
             key: Key('topics-unsorted-${note.noteId}'),
+            noteId: note.noteId,
             title: note.title,
             level: 1,
             active: note.noteId == activeNoteId,
@@ -109,12 +142,15 @@ class TopicsPane extends ConsumerWidget {
   }
 }
 
-/// The header action row. #25 adds `+ New Smart Folder` and `Graph`, and #26
-/// added `+ New topic`, to [children].
+/// The header action row: #26's `+ New topic`, then #25's Smart Folder
+/// actions (`+ New Smart Folder`, the Whole vault `Graph`, vault settings).
 class _ActionsRow extends StatelessWidget {
   const _ActionsRow();
 
-  static const List<Widget> children = [_NewTopicButton()];
+  static const List<Widget> children = [
+    _NewTopicButton(),
+    SmartFolderHeaderActions(),
+  ];
 
   @override
   Widget build(BuildContext context) {
@@ -249,59 +285,88 @@ class _NewTopicFormState extends ConsumerState<_NewTopicForm> {
   }
 }
 
+/// A Smart Folder row. Its Key `folder-row-<id>` is the drop target for
+/// topic and Unsorted rows: a drop adds that note to the folder (pinned; a
+/// role-less note becomes a topic, Q3).
 class _FolderRow extends StatelessWidget {
   const _FolderRow({
     required this.folder,
     required this.expanded,
+    required this.selected,
+    required this.hostContext,
     required this.onToggle,
   });
 
   final FolderNode folder;
   final bool expanded;
+
+  /// The folder `+ New Smart Folder` creates inside.
+  final bool selected;
+
+  /// The Topics pane's context, for the folder menu's dialogs.
+  final BuildContext hostContext;
   final VoidCallback onToggle;
 
   @override
   Widget build(BuildContext context) {
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      child: GestureDetector(
-        key: Key('topics-folder-${folder.id}'),
-        behavior: HitTestBehavior.opaque,
-        onTap: onToggle,
-        child: Padding(
-          padding: EdgeInsets.fromLTRB(
-            10 + folder.depth * _indentStep,
-            6,
-            10,
-            6,
-          ),
-          child: Row(
-            children: [
-              Icon(
-                expanded ? LucideIcons.chevronDown : LucideIcons.chevronRight,
-                key: Key('topics-folder-toggle-${folder.id}'),
-                size: 13,
-                color: OmColors.fg2,
-              ),
-              const SizedBox(width: 6),
-              const Icon(LucideIcons.folder, size: 13, color: OmColors.fg2),
-              const SizedBox(width: 7),
-              Expanded(
-                child: Text(
-                  folder.name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: OmType.sans(size: 13, color: OmColors.fg0),
-                ),
-              ),
-              if (folder.pinned)
+    return DragTarget<String>(
+      key: Key('folder-row-${folder.id}'),
+      onAcceptWithDetails: (details) => addToSmartFolder(
+        ProviderScope.containerOf(context),
+        folderId: folder.id,
+        noteId: details.data,
+      ),
+      builder: (context, candidates, _) => MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          key: Key('topics-folder-${folder.id}'),
+          behavior: HitTestBehavior.opaque,
+          onTap: onToggle,
+          child: Container(
+            padding: EdgeInsets.fromLTRB(
+              10 + folder.depth * _indentStep,
+              4,
+              4,
+              4,
+            ),
+            decoration: BoxDecoration(
+              color: candidates.isNotEmpty
+                  ? OmColors.selectionBg
+                  : selected
+                  ? OmColors.surface3
+                  : Colors.transparent,
+              borderRadius: BorderRadius.circular(5),
+            ),
+            child: Row(
+              children: [
                 Icon(
-                  LucideIcons.pin,
-                  key: Key('pinned-glyph-folder-${folder.id}'),
-                  size: 11,
+                  expanded ? LucideIcons.chevronDown : LucideIcons.chevronRight,
+                  key: Key('topics-folder-toggle-${folder.id}'),
+                  size: 13,
                   color: OmColors.fg2,
                 ),
-            ],
+                const SizedBox(width: 6),
+                const Icon(LucideIcons.folder, size: 13, color: OmColors.fg2),
+                const SizedBox(width: 7),
+                Expanded(
+                  child: Text(
+                    folder.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: OmType.sans(size: 13, color: OmColors.fg0),
+                  ),
+                ),
+                if (folder.pinned)
+                  Icon(
+                    LucideIcons.pin,
+                    key: Key('pinned-glyph-folder-${folder.id}'),
+                    size: 11,
+                    color: OmColors.fg2,
+                  ),
+                const SizedBox(width: 2),
+                FolderMenuButton(folder: folder, hostContext: hostContext),
+              ],
+            ),
           ),
         ),
       ),
@@ -313,6 +378,7 @@ class _FolderRow extends StatelessWidget {
 class _NoteRow extends StatelessWidget {
   const _NoteRow({
     super.key,
+    required this.noteId,
     required this.title,
     required this.level,
     required this.active,
@@ -320,6 +386,8 @@ class _NoteRow extends StatelessWidget {
     this.pinGlyphKey,
   });
 
+  /// Dragged onto a folder row ([_FolderRow]) to join that folder.
+  final String noteId;
   final String title;
 
   /// Nesting level: 1 under a root folder or under Unsorted.
@@ -332,7 +400,7 @@ class _NoteRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MouseRegion(
+    final row = MouseRegion(
       cursor: SystemMouseCursors.click,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
@@ -368,6 +436,41 @@ class _NoteRow extends StatelessWidget {
                 ),
             ],
           ),
+        ),
+      ),
+    );
+    return Draggable<String>(
+      data: noteId,
+      feedback: _DragFeedback(title: title),
+      childWhenDragging: Opacity(opacity: 0.4, child: row),
+      child: row,
+    );
+  }
+}
+
+/// What follows the pointer while a topic or Unsorted row is dragged.
+class _DragFeedback extends StatelessWidget {
+  const _DragFeedback({required this.title});
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: OmColors.surface4,
+          borderRadius: BorderRadius.circular(5),
+          border: Border.all(color: OmColors.line3),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(LucideIcons.fileText, size: 13, color: OmColors.fg1),
+            const SizedBox(width: 7),
+            Text(title, style: OmType.sans(size: 13, color: OmColors.fg0)),
+          ],
         ),
       ),
     );
