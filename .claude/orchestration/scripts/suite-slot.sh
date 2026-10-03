@@ -38,4 +38,11 @@ done
 trap 'rm -rf "$slot"' EXIT
 trap 'exit 130' INT TERM
 echo "[suite-slot] got $(basename "$slot") after ${waited}s: $*" >&2
-"$@"
+# A hung suite (e.g. flutter_tools after ENOSPC) must not hold a slot forever.
+# SUITE_TIMEOUT_SEC (default 1500 = 25 min) kills the command's process group.
+perl -e '
+  my $t = shift; my $pid = fork; die "fork: $!" unless defined $pid;
+  if ($pid == 0) { setpgrp(0, 0); exec @ARGV; exit 127 }
+  local $SIG{ALRM} = sub { print STDERR "[suite-slot] TIMEOUT after ${t}s; killing\n"; kill "TERM", -$pid; sleep 5; kill "KILL", -$pid; exit 124 };
+  alarm $t; waitpid($pid, 0); alarm 0; exit($? >> 8);
+' "${SUITE_TIMEOUT_SEC:-1500}" "$@"

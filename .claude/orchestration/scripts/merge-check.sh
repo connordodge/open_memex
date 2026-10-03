@@ -458,14 +458,20 @@ else
     echo "CARGO SUITE SKIP: no Rust changes"
   fi
   if [ $APP = 1 ]; then
-    (cd app && with_timeout "$SUITE_TIMEOUT" flutter test) > "$LOGS/suite-flutter.log" 2>&1 < /dev/null
+    # Flutter's suite takes ~1 min; a run past FLUTTER_SUITE_TIMEOUT (default 900s) is hung,
+    # e.g. flutter_tools after ENOSPC (run 20261003-1: a 20-min stall).
+    (cd app && with_timeout "${FLUTTER_SUITE_TIMEOUT:-900}" flutter test) > "$LOGS/suite-flutter.log" 2>&1 < /dev/null; frc=$?
     r=$(tail -1 "$LOGS/suite-flutter.log")
+    [ $frc = 124 ] && r="timed out after ${FLUTTER_SUITE_TIMEOUT:-900}s"
     echo "FLUTTER SUITE: $r"; echo "$r" | grep -q "All tests passed" || { fail "SUITE(flutter)"; grep -E "\[E\]$" "$LOGS/suite-flutter.log" | head -8 | sed 's/^/  /'; }
   else
     echo "FLUTTER SUITE SKIP: no app/ changes"
   fi
 fi
 section_end
+if [ -n "$FAILED" ] && grep -qs "No space left on device" "$LOGS"/suite-*.log; then
+  echo "INFRA: ENOSPC in a suite log (disk full); free space and re-run the gate. Not a code failure."
+fi
 [ -z "$FAILED" ] || verdict_fail "SUITES" "mutation and red-on-main"
 
 # ---- NATIVE (informational: there is no CI to build it) -----------------------------------------
@@ -545,7 +551,7 @@ mutation() {
   s=$((s - e))
   total=$((k + s))
   if [ $total = 0 ]; then echo "MUTATION SKIP: no valid mutants were produced"; return 0; fi
-  allowed=$((total * ${MUTATION_THRESHOLD:-25} / 100)); [ $allowed -lt 1 ] && allowed=1
+  allowed=$((total * ${MUTATION_THRESHOLD:-25} / 100)); [ $allowed -lt 1 ] && [ $total -ge 2 ] && allowed=1
   if [ $s -gt $allowed ]; then echo "MUTATION FAIL: $k killed, $s survived (allowed <= $allowed of $total)"; return 1; fi
   echo "MUTATION OK: $k killed, $s survived (allowed <= $allowed of $total)"
 }
