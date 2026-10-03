@@ -295,7 +295,7 @@ done < "$WORK/order.tsv"
 TREE_AFTER=$(git status --porcelain=v1 --untracked-files=no | shasum; git diff "$FORK" | shasum)
 if [ "$TREE_BEFORE" != "$TREE_AFTER" ]; then echo "MUTATION FAIL: worktree differs from before the run — inspect $WT"; exit 1; fi
 
-allowed=$((evaluated * THRESHOLD / 100)); [ $allowed -lt 1 ] && allowed=1
+allowed=$((evaluated * THRESHOLD / 100)); [ $allowed -lt 1 ] && [ $evaluated -ge 2 ] && allowed=1
 if [ $evaluated = 0 ]; then
   echo "MUTATION SKIP: no valid mutants among $attempts attempts in $PKG"; exit 0
 fi

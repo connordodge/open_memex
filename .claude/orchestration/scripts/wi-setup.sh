@@ -70,6 +70,11 @@ if [ -f app/pubspec.yaml ]; then
 fi
 cargo fetch --quiet >/dev/null 2>&1 || echo "WARN: cargo fetch failed (offline? the first cargo build will retry)"
 
+# ~20 parallel worktrees of cold Rust builds (1.5-4 GB each) filled the disk in run 20261003-1.
+free_gb=$(df -g "$TOP" 2>/dev/null | awk 'NR==2{print $4}')
+if [ -n "$free_gb" ] && [ "$free_gb" -lt "${WI_MIN_FREE_GB:-20}" ]; then
+  echo "WI-SETUP WARN: only ${free_gb} GB free on this volume. Delete finished worktrees' target/ and app/build/ before building." >&2
+fi
 echo "READY worktree=$TOP branch=$(git branch --show-current) base=$BASE head=$(git rev-parse --short HEAD) id=$ID"
 echo "Cargo builds into $TOP/target (per worktree; first build is cold, ~minutes). Do not share CARGO_TARGET_DIR across worktrees."
 echo "Heavy suites (cargo test --workspace, full flutter test in app/): $SCRIPT_DIR/suite-slot.sh <command>"
