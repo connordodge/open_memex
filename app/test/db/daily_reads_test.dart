@@ -113,6 +113,17 @@ void main() {
       },
     );
 
+    test(
+      'preview is empty when the lowest ord block starts with a newline',
+      () {
+        final db = _v5();
+        final id = db.seedDailyNote('2026-10-03');
+        db.seedBlock(id, 'b1', ord: 0, text: '\nSecond line only');
+
+        expect(db.dailyNotes().single.preview, '');
+      },
+    );
+
     test('preview of a single line block is the whole text', () {
       final db = _v5();
       final id = db.seedDailyNote('2026-10-03');
