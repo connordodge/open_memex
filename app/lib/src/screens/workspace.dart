@@ -11,6 +11,7 @@ import '../widgets/canvas_view.dart';
 import '../widgets/note_editor.dart';
 import '../widgets/right_panel.dart';
 import '../widgets/sidebar.dart';
+import '../widgets/vault_schema_banner.dart';
 
 /// Top-level tabbed shell. Replaces the old single-pane `MainWindow`.
 class Workspace extends ConsumerWidget {
@@ -29,6 +30,7 @@ class Workspace extends ConsumerWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                const VaultSchemaBanner(),
                 const _WorkspaceTabBar(),
                 Expanded(
                   child: _TabBody(
