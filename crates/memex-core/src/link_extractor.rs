@@ -2,17 +2,23 @@
 //! the result is what populates the `links` table.
 //!
 //! Wikilink syntax: `[[Title]]`, `[[Title~kind]]`, `[[Title|alias]]`,
-//! `[[Title~kind|alias]]`. The kind separator is tilde (caret is reserved for
-//! future block refs / transclusion); the alias separator is pipe.
+//! `[[Title~kind|alias]]`. The kind separator is tilde (caret marks a block
+//! id in transclusion); the alias separator is pipe.
 //!
-//! Built-in kinds (recognized via curated section headings + frontmatter
-//! keys): `references`, `extends`, `contradicts`, `example-of`. User-defined
-//! kinds (any normalized kebab-case string) are first-class for storage and
-//! `neighbors()` queries but get no curated shortcut.
+//! Block transclusion: `![[YYYY-MM-DD#^from]]` and `![[YYYY-MM-DD#^from..^to]]`
+//! (CONTRACTS C4). Each token yields one `from-day` link at the byte offset of
+//! its `!` and never a plain wikilink for the `[[…]]` inside it.
+//!
+//! Built-in kinds recognized via curated section headings + frontmatter keys:
+//! `references`, `extends`, `contradicts`, `example-of`. The built-in
+//! `from-day` and `about` kinds are server-written: no heading or frontmatter
+//! key creates them. User-defined kinds (any normalized kebab-case string) are
+//! first-class for storage and `neighbors()` queries but get no curated
+//! shortcut.
 
 use std::sync::LazyLock;
 
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 
 use crate::links::{normalize, LinkKind, LinkSource, PendingLink};
 
@@ -30,6 +36,49 @@ impl ExtractedLinks {
     pub fn all(&self) -> impl Iterator<Item = &PendingLink> {
         self.body.iter().chain(self.frontmatter.iter())
     }
+}
+
+/// One block-transclusion token (`![[YYYY-MM-DD#^from]]` or
+/// `![[YYYY-MM-DD#^from..^to]]`, CONTRACTS C4). `start` and `end` are UTF-8
+/// byte offsets into the parsed text: `start` is the `!`, `end` is one past
+/// the closing `]]` (D25; search builds on these ranges).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransclusionToken {
+    pub date: String,
+    pub from: String,
+    pub to: Option<String>,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// The CONTRACTS C4 transclusion regex, verbatim (D13: identical in Rust and
+/// Dart).
+const TRANSCLUSION_PATTERN: &str =
+    r"!\[\[(\d{4}-\d{2}-\d{2})#\^([0-9a-z]{1,26})(?:\.\.\^([0-9a-z]{1,26}))?\]\]";
+
+// Compiled without Unicode classes so `\d` is ASCII-only, as in Dart.
+static TRANSCLUSION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(TRANSCLUSION_PATTERN)
+        .unicode(false)
+        .build()
+        .expect("compile transclusion regex")
+});
+
+/// Every transclusion token in `text`, in order (D13, CONTRACTS C4).
+pub fn parse_transclusions(text: &str) -> Vec<TransclusionToken> {
+    TRANSCLUSION_RE
+        .captures_iter(text)
+        .map(|cap| {
+            let whole = cap.get(0).expect("group 0 always matches");
+            TransclusionToken {
+                date: cap[1].to_string(),
+                from: cap[2].to_string(),
+                to: cap.get(3).map(|m| m.as_str().to_string()),
+                start: whole.start(),
+                end: whole.end(),
+            }
+        })
+        .collect()
 }
 
 // `[[<title>(~<kind>)?(|<alias>)?]]` — title cannot contain `~`, `|`, `]`, or
@@ -136,6 +185,11 @@ fn parse_frontmatter(fm_text: &str, fm_offset: usize) -> std::result::Result<Vec
             "example-of" | "example_of" => "example-of".to_string(),
             other => normalize(other),
         };
+        // `from-day` and `about` are server-written kinds: no frontmatter key
+        // creates them.
+        if kind_str == LinkKind::FROM_DAY || kind_str == LinkKind::ABOUT {
+            continue;
+        }
         let Ok(kind) = LinkKind::new(&kind_str) else {
             continue;
         };
@@ -267,8 +321,28 @@ fn extract_body_links(body: &str, body_offset: usize) -> Vec<PendingLink> {
         })
         .collect();
 
-    let mut out = Vec::new();
-    for cap in WIKILINK_RE.captures_iter(body) {
+    // Each transclusion token is one `from-day` link at its `!`. Mask the
+    // token spans with same-length filler before the wikilink scan so the
+    // `[[…]]` inside a token is never a plain link and every other wikilink
+    // keeps its exact byte offset. Newline is excluded from every wikilink
+    // group, so no match can span a masked token.
+    let tokens = parse_transclusions(body);
+    let mut masked = body.as_bytes().to_vec();
+    let mut out = Vec::with_capacity(tokens.len());
+    for t in &tokens {
+        masked[t.start..t.end].fill(b'\n');
+        out.push(PendingLink {
+            link_text: t.date.clone(),
+            link_kind: LinkKind::new(LinkKind::FROM_DAY).expect("built-in kind valid"),
+            label: None,
+            position: (body_offset + t.start) as i64,
+            source: LinkSource::InlineBody,
+        });
+    }
+    // Tokens are ASCII, so replacing them byte for byte keeps valid UTF-8.
+    let masked = String::from_utf8(masked).expect("masking ASCII spans keeps UTF-8");
+
+    for cap in WIKILINK_RE.captures_iter(&masked) {
         let m = cap.get(0).unwrap();
         let title = cap.name("title").unwrap().as_str().trim().to_string();
         if title.is_empty() {
@@ -316,6 +390,7 @@ fn extract_body_links(body: &str, body_offset: usize) -> Vec<PendingLink> {
             source,
         });
     }
+    out.sort_by_key(|l| l.position);
     out
 }
 
