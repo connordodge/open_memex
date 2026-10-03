@@ -1254,3 +1254,58 @@ fn hits_on_a_non_daily_note_titled_like_a_date_never_expand() {
 
     assert_eq!(summary(&fts(&vault, "jump", 10)), vec![direct(DAY)]);
 }
+
+#[test]
+fn reversed_and_forward_ranges_expand_exactly_the_same_hits() {
+    let (_d, mut vault) = fresh_vault();
+    long_day(&mut vault);
+    create_topic(
+        &mut vault,
+        "Forward Half",
+        "![[2026-09-05#^b7k2m9..^c3d4e5]]\n",
+    );
+    create_topic(
+        &mut vault,
+        "Reversed Half",
+        "![[2026-09-05#^c3d4e5..^b7k2m9]]\n",
+    );
+
+    for query in ["jump", "coyote"] {
+        assert_eq!(
+            summary(&fts(&vault, query, 10)),
+            vec![
+                direct(DAY),
+                via("Forward Half", DAY),
+                via("Reversed Half", DAY)
+            ],
+            "{query}: both spans cover blocks 0 and 1"
+        );
+    }
+    assert_eq!(
+        summary(&fts(&vault, "sleep", 10)),
+        vec![direct(DAY)],
+        "neither span reaches block 2"
+    );
+}
+
+#[test]
+fn dangling_tokens_cover_nothing_and_a_later_live_token_still_expands() {
+    let (_d, mut vault) = fresh_vault();
+    long_day(&mut vault);
+    create_topic(
+        &mut vault,
+        "Player Loop",
+        "![[2026-09-05#^gone11..^b7k2m9]]\n\n![[2026-09-05#^b7k2m9..^gone22]]\n\n![[2026-09-05#^c3d4e5]]\n",
+    );
+
+    assert_eq!(
+        summary(&fts(&vault, "jump", 10)),
+        vec![direct(DAY)],
+        "a range with a missing endpoint does not cover its live endpoint"
+    );
+    assert_eq!(
+        summary(&fts(&vault, "coyote", 10)),
+        vec![direct(DAY), via("Player Loop", DAY)],
+        "the live third token still expands"
+    );
+}
