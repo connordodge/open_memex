@@ -285,4 +285,80 @@ void main() {
       },
     );
   });
+
+  // Implementer additions (#23): one queue and one pending state per file,
+  // so the tabs and the mode never overwrite each other.
+  group('ui_state.json writes across stores', () {
+    test(
+      'a second store on the vault reads the state another store has queued but not written',
+      () async {
+        final dir = _vault('pending');
+        final a = UiStateStore(vaultPath: dir.path);
+        final b = UiStateStore(vaultPath: dir.path);
+        final write = a.write(
+          UiState(
+            tabs: [PersistedTab(kind: PersistedTab.kindNote, id: '01H')],
+            activeTabIndex: 0,
+            canvasViewports: const {},
+            sidebarMode: SidebarMode.topics,
+          ),
+        );
+
+        // Nothing is on disk yet; b sees the queued state.
+        expect(_uiStateFile(dir.path).existsSync(), isFalse);
+        expect(b.read().sidebarMode, SidebarMode.topics);
+        expect(b.read().tabs.single.id, '01H');
+
+        // b's flush waits for a's write.
+        await b.flush();
+        expect(_readJson(dir.path)['sidebar_mode'], 'topics');
+        await write;
+
+        // Once written, reads come from the file again.
+        _writeJson(dir.path, {'sidebar_mode': 'days'});
+        expect(b.read().sidebarMode, SidebarMode.days);
+      },
+    );
+
+    test(
+      'a tab change right after choosing Topics keeps sidebar_mode topics',
+      () async {
+        final dir = _vault('race');
+        final c = _container(dir.path);
+        final tabs = c.read(tabsProvider.notifier);
+
+        // Not awaited: the tab change reads ui_state.json while the mode
+        // write is still queued.
+        final chosen = c
+            .read(sidebarModeProvider.notifier)
+            .select(SidebarMode.topics);
+        tabs.openOrFocus(const NoteTab('01N'));
+        await chosen;
+        await tabs.store.flush();
+
+        final json = _readJson(dir.path);
+        expect(json['sidebar_mode'], 'topics');
+        expect([
+          for (final t in json['tabs'] as List) (t as Map)['id'],
+        ], contains('01N'));
+      },
+    );
+
+    test('choosing a mode with no vault open changes the mode only', () async {
+      final c = ProviderContainer(
+        overrides: [
+          currentVaultProvider.overrideWith((_) => null),
+          vaultDbProvider.overrideWithValue(null),
+          memexCliProvider.overrideWithValue(null),
+          clockProvider.overrideWithValue(FakeClock()),
+        ],
+      );
+      addTearDown(c.dispose);
+      expect(c.read(sidebarModeProvider), SidebarMode.days);
+
+      await c.read(sidebarModeProvider.notifier).select(SidebarMode.topics);
+
+      expect(c.read(sidebarModeProvider), SidebarMode.topics);
+    });
+  });
 }

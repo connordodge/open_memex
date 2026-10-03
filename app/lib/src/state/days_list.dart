@@ -1,3 +1,4 @@
+import '../dates.dart';
 import '../db/daily_reads.dart';
 
 /// The `Today` row of the Days list (Req 49): backed by today's daily
@@ -43,5 +44,45 @@ class DaysList {
 
 /// Group [notes] (from `dailyNotesProvider`, any order) into the Days list
 /// for [today] (ISO date). Days with no daily note are not rows (Req 51).
-DaysList buildDaysList(List<DailyNoteRow> notes, {required String today}) =>
-    throw UnimplementedError();
+///
+/// A note whose title is not a real ISO date has no day to sit on and is
+/// left out. When two notes claim one date, the smallest note id wins (the
+/// note `dailyNoteForDate` resolves), so every date is one row.
+DaysList buildDaysList(List<DailyNoteRow> notes, {required String today}) {
+  final sorted = [
+    for (final n in notes)
+      if (parseIsoDate(n.date) != null) n,
+  ]..sort(_newestFirst);
+  DailyNoteRow? todayNote;
+  final groups = <DaysMonthGroup>[];
+  String? previousDate;
+  for (final row in sorted) {
+    if (row.date == previousDate) continue;
+    previousDate = row.date;
+    if (row.date == today) {
+      todayNote = row;
+      continue;
+    }
+    final month = row.date.substring(0, 7);
+    if (groups.isEmpty || groups.last.month != month) {
+      groups.add(
+        DaysMonthGroup(
+          month: month,
+          header: formatMonthHeader(parseIsoDate(row.date)!),
+          rows: [],
+        ),
+      );
+    }
+    groups.last.rows.add(row);
+  }
+  return DaysList(
+    today: DaysTodayRow(date: today, note: todayNote),
+    groups: groups,
+  );
+}
+
+/// Date descending (ISO dates sort as text), then note id ascending.
+int _newestFirst(DailyNoteRow a, DailyNoteRow b) {
+  final byDate = b.date.compareTo(a.date);
+  return byDate != 0 ? byDate : a.noteId.compareTo(b.noteId);
+}

@@ -233,4 +233,58 @@ void main() {
       },
     );
   });
+
+  // Implementer additions (#23).
+  group('malformed input', () {
+    test('a daily note whose title is not an ISO date is left out', () {
+      final list = buildDaysList([
+        _row('2026-10-02'),
+        _row('Groceries', id: 'odd'),
+        _row('2026-02-30', id: 'not-a-day'),
+        _row('2026-09-30'),
+      ], today: '2026-10-03');
+
+      expect(_months(list), ['2026-10', '2026-09']);
+      expect(_dates(list), [
+        ['2026-10-02'],
+        ['2026-09-30'],
+      ]);
+      expect(list.today.isVirtual, isTrue);
+    });
+
+    test(
+      'two daily notes on one past date give one row backed by the smaller note id',
+      () {
+        final list = buildDaysList([
+          _row('2026-10-01', id: 'n-z'),
+          _row('2026-10-02', id: 'n-m'),
+          _row('2026-10-01', id: 'n-a'),
+        ], today: '2026-10-03');
+
+        expect(_dates(list), [
+          ['2026-10-02', '2026-10-01'],
+        ]);
+        expect(
+          [for (final r in list.groups.single.rows) r.noteId],
+          ['n-m', 'n-a'],
+        );
+      },
+    );
+
+    test(
+      'two daily notes on today give one Today row backed by the smaller note id',
+      () {
+        final list = buildDaysList([
+          _row('2026-10-03', id: 'n-b'),
+          _row('2026-10-03', id: 'n-a'),
+          _row('2026-10-02', id: 'n-c'),
+        ], today: '2026-10-03');
+
+        expect(list.today.note!.noteId, 'n-a');
+        expect(_dates(list), [
+          ['2026-10-02'],
+        ]);
+      },
+    );
+  });
 }

@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db/daily_reads.dart';
 import 'package:open_memex_app/src/state/sidebar_mode_state.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
+import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/theme/review_state_colors.dart';
 
 import '../robots/days_robot.dart';
@@ -560,4 +561,107 @@ void main() {
       expect(r.row('2026-10-02'), findsOneWidget);
     });
   });
+
+  // Implementer additions (#23): behaviour beyond the ACs.
+  group('implementer additions', () {
+    testWidgets(
+      'the switch marks the chosen mode selected for screen readers and in colour',
+      (tester) async {
+        final semantics = tester.ensureSemantics();
+        final r = DaysRobot(tester);
+        await r.launch(db: _threeDays());
+
+        expect(
+          tester.getSemantics(r.daysSwitch),
+          isSemantics(isButton: true, isSelected: true),
+        );
+        expect(
+          tester.getSemantics(r.topicsSwitch),
+          isSemantics(isButton: true, isSelected: false),
+        );
+        expect(_fill(r.daysSwitch), OmColors.surface4);
+        expect(_fill(r.topicsSwitch), isNot(OmColors.surface4));
+
+        await r.chooseTopics();
+
+        expect(
+          tester.getSemantics(r.daysSwitch),
+          isSemantics(isButton: true, isSelected: false),
+        );
+        expect(
+          tester.getSemantics(r.topicsSwitch),
+          isSemantics(isButton: true, isSelected: true),
+        );
+        expect(_fill(r.daysSwitch), isNot(OmColors.surface4));
+        expect(_fill(r.topicsSwitch), OmColors.surface4);
+        semantics.dispose();
+      },
+    );
+
+    testWidgets(
+      'the row of the active tab is highlighted and no other row is',
+      (tester) async {
+        final r = DaysRobot(tester);
+        await r.launch(db: _threeDays());
+        // Launch: the virtual Today tab is active.
+        expect(_fill(r.todayRow), OmColors.surface4);
+        expect(_fill(r.row('2026-09-30')), isNot(OmColors.surface4));
+
+        await r.openRow('2026-09-30');
+
+        expect(_fill(r.todayRow), isNot(OmColors.surface4));
+        expect(_fill(r.row('2026-09-30')), OmColors.surface4);
+        expect(_fill(r.row('2026-10-02')), isNot(OmColors.surface4));
+      },
+    );
+
+    testWidgets(
+      'the Today row backed by the saved note of today is highlighted while its tab is active and carries its dot',
+      (tester) async {
+        final r = DaysRobot(tester);
+        await r.launch(db: _withToday(_threeDays()));
+
+        expect(r.activeTab, const NoteTab(_oct03));
+        expect(_fill(r.todayRow), OmColors.surface4);
+        expect(
+          find.descendant(of: r.todayRow, matching: r.dot('2026-10-03')),
+          findsOneWidget,
+        );
+        expect(
+          r.textsUnder(r.todayRow).any((t) => t.contains('Late thoughts')),
+          isTrue,
+        );
+      },
+    );
+
+    testWidgets(
+      'with past daily notes and no note for today the empty copy is not shown',
+      (tester) async {
+        final r = DaysRobot(tester);
+        await r.launch(db: _threeDays());
+
+        expect(r.todayRow, findsOneWidget);
+        expect(r.datedRows, findsNWidgets(3));
+        expect(r.empty, findsNothing);
+      },
+    );
+  });
+}
+
+/// The fill colour of the first decorated box under [f] (a Days row or a
+/// mode switch segment).
+Color? _fill(Finder f) {
+  final box =
+      find
+              .descendant(
+                of: f,
+                matching: find.byWidgetPredicate(
+                  (w) => w is Container && w.decoration is BoxDecoration,
+                ),
+              )
+              .evaluate()
+              .first
+              .widget
+          as Container;
+  return (box.decoration! as BoxDecoration).color;
 }

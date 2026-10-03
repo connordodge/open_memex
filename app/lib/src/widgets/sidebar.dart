@@ -4,16 +4,19 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:path/path.dart' as p;
 
 import '../state/settings.dart';
+import '../state/sidebar_mode_state.dart';
 import '../state/tabs_state.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
 import 'atoms.dart';
 import 'sidebar/canvases_rail.dart';
+import 'sidebar/days_pane.dart';
 import 'sidebar/notes_pane.dart';
 
 /// Left sidebar: brand header → command/search button → vault pills →
-/// canvases rail → note tree → agent activity footer (placeholder).
+/// canvases rail → the Days/Topics switch over the Days list or the note
+/// tree → agent activity footer (placeholder).
 class Sidebar extends ConsumerWidget {
   const Sidebar({super.key, required this.onNewNote});
   final VoidCallback onNewNote;
@@ -58,25 +61,38 @@ class Sidebar extends ConsumerWidget {
           ),
           CanvasesRail(canvases: canvases, activeCanvasId: activeCanvasId),
           const OmHairline(),
-          PanelHeader(
-            eyebrow: '$vaultName · tree',
-            action: switch (ref.watch(sidebarSortProvider)) {
-              NoteSortMode.lastEdited => 'sort: edited',
-              NoteSortMode.alphabetical => 'sort: a–z',
-            },
-            onAction: () {
-              final n = ref.read(sidebarSortProvider.notifier);
-              n.state = n.state == NoteSortMode.lastEdited
-                  ? NoteSortMode.alphabetical
-                  : NoteSortMode.lastEdited;
-            },
-          ),
+          const _SidebarModeSwitch(),
           Expanded(
-            child: NotesPane(
-              notes: notes,
-              activeNoteId: activeNoteId,
-              onNewNote: onNewNote,
-            ),
+            child: switch (ref.watch(sidebarModeProvider)) {
+              SidebarMode.days => const DaysPane(),
+              // Until #24's Topics tree: the notes pane keeps every note
+              // reachable.
+              SidebarMode.topics => Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  PanelHeader(
+                    eyebrow: '$vaultName · tree',
+                    action: switch (ref.watch(sidebarSortProvider)) {
+                      NoteSortMode.lastEdited => 'sort: edited',
+                      NoteSortMode.alphabetical => 'sort: a–z',
+                    },
+                    onAction: () {
+                      final n = ref.read(sidebarSortProvider.notifier);
+                      n.state = n.state == NoteSortMode.lastEdited
+                          ? NoteSortMode.alphabetical
+                          : NoteSortMode.lastEdited;
+                    },
+                  ),
+                  Expanded(
+                    child: NotesPane(
+                      notes: notes,
+                      activeNoteId: activeNoteId,
+                      onNewNote: onNewNote,
+                    ),
+                  ),
+                ],
+              ),
+            },
           ),
           const OmHairline(),
           const _AgentFooter(),
@@ -137,6 +153,92 @@ class Sidebar extends ConsumerWidget {
     await ref.read(settingsProvider.notifier).clearLastVault();
     ref.read(currentVaultProvider.notifier).state = null;
     ref.read(selectedNoteIdProvider.notifier).state = null;
+  }
+}
+
+/// The sidebar's `Days` / `Topics` switch (Req 50; Keys `sidebar-mode-days`,
+/// `sidebar-mode-topics`). The choice is saved per vault.
+class _SidebarModeSwitch extends ConsumerWidget {
+  const _SidebarModeSwitch();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final mode = ref.watch(sidebarModeProvider);
+    void select(SidebarMode next) =>
+        ref.read(sidebarModeProvider.notifier).select(next).ignore();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+      child: Container(
+        height: 28,
+        padding: const EdgeInsets.all(2),
+        decoration: BoxDecoration(
+          color: OmColors.surface2,
+          border: Border.all(color: OmColors.line2, width: 1),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: _ModeSegment(
+                key: const Key('sidebar-mode-days'),
+                label: 'Days',
+                selected: mode == SidebarMode.days,
+                onTap: () => select(SidebarMode.days),
+              ),
+            ),
+            Expanded(
+              child: _ModeSegment(
+                key: const Key('sidebar-mode-topics'),
+                label: 'Topics',
+                selected: mode == SidebarMode.topics,
+                onTap: () => select(SidebarMode.topics),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ModeSegment extends StatelessWidget {
+  const _ModeSegment({
+    super.key,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      selected: selected,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          onTap: onTap,
+          child: Container(
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: selected ? OmColors.surface4 : Colors.transparent,
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(
+              label,
+              style: OmType.mono(
+                size: 11.5,
+                color: selected ? OmColors.fg0 : OmColors.fg2,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 
