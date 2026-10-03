@@ -43,12 +43,15 @@ String formatDailyHeader(DateTime date) {
   return '${_weekdays[d.weekday - 1]}, ${d.day} ${_monthName(d)} ${d.year}';
 }
 
-/// Reviewed-state hover, e.g. `Reviewed by agent at 5 Sep 2026, 14:32`.
-String formatReviewedAt(DateTime at) {
+/// Date and time, e.g. `5 Sep 2026, 14:32` (the C5 date-time part).
+String formatDateTime(DateTime at) {
   final d = at.toLocal();
-  return 'Reviewed by agent at ${d.day} ${_monthAbbr(d)} ${d.year}, '
-      '${_hhmm(d)}';
+  return '${d.day} ${_monthAbbr(d)} ${d.year}, ${_hhmm(d)}';
 }
+
+/// Reviewed-state hover, e.g. `Reviewed by agent at 5 Sep 2026, 14:32`.
+String formatReviewedAt(DateTime at) =>
+    'Reviewed by agent at ${formatDateTime(at)}';
 
 /// Gutter hover for an agent-captured block, e.g. `captured via agent, 14:32`.
 String formatCapturedViaAgent(DateTime at) =>
