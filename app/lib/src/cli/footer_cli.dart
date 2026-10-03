@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import '../memex_cli.dart';
 
 /// The parsed `memex footer add` result (C2.3).
@@ -33,7 +35,45 @@ extension FooterCli on MemexCli {
     required String vaultPath,
     required String dailyNoteId,
     required String topicNoteId,
-  }) {
-    throw UnimplementedError();
+  }) async {
+    final r = await run([
+      'footer',
+      'add',
+      '--vault',
+      vaultPath,
+      '--daily-note-id',
+      dailyNoteId,
+      '--topic-note-id',
+      topicNoteId,
+    ]);
+    if (r.exitCode != 0) {
+      throw MemexException.fromCliFailure('footer add', r);
+    }
+    Object? json;
+    try {
+      json = jsonDecode(r.stdout.trim());
+    } on FormatException {
+      json = null;
+    }
+    final map = json is Map<String, Object?> ? json : null;
+    final vaultId = map?['vault_id'];
+    final daily = map?['daily_note_id'];
+    final topic = map?['topic_note_id'];
+    final origin = map?['origin'];
+    final version = map?['version'];
+    if (vaultId is! String ||
+        daily is! String ||
+        topic is! String ||
+        origin is! String ||
+        version is! int) {
+      throw MemexException('footer add: could not parse output: ${r.stdout}');
+    }
+    return FooterAddResult(
+      vaultId: vaultId,
+      dailyNoteId: daily,
+      topicNoteId: topic,
+      origin: origin,
+      version: version,
+    );
   }
 }

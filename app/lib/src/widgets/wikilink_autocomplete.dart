@@ -5,6 +5,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../db.dart';
 import '../memex_cli.dart';
+import '../state/topic_actions.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
@@ -31,6 +32,9 @@ class WikilinkAutocomplete extends ConsumerStatefulWidget {
     required this.caretLocator,
     required this.onNoteCreatedSelect,
     this.onInserted,
+    this.dailyNoteId,
+    this.onTopicLinked,
+    this.onCreateError,
   });
 
   final TextEditingController controller;
@@ -46,6 +50,22 @@ class WikilinkAutocomplete extends ConsumerStatefulWidget {
   /// is the byte range of the just-inserted `[[Title]]` token. Used by the
   /// kind chip to anchor itself.
   final void Function(int start, int end)? onInserted;
+
+  /// The id of the open note when it is a saved daily note, else null. In a
+  /// daily note, creating a note makes a `role: topic` note and adds it as a
+  /// `person` chip to this note's Topics footer (Req 17); elsewhere the
+  /// created note has no role and no chip.
+  final String? dailyNoteId;
+
+  /// Called, after the wikilink was inserted, with the daily note's new
+  /// version once its footer chip was added: the host makes that version the
+  /// editor's base. Only for [dailyNoteId] creates.
+  final void Function(int version)? onTopicLinked;
+
+  /// Called with the CLI message when creating the note or its footer chip
+  /// failed (the body is left as it was). Only for [dailyNoteId] creates;
+  /// the host shows it inline (Req 54).
+  final ValueChanged<String>? onCreateError;
 
   @override
   ConsumerState<WikilinkAutocomplete> createState() =>
@@ -347,24 +367,55 @@ class WikilinkAutocompleteState extends ConsumerState<WikilinkAutocomplete> {
     final cli = ref.read(memexCliProvider);
     final vaultPath = ref.read(currentVaultProvider);
     if (cli == null || vaultPath == null) return;
+    final revision = ref.read(vaultRevisionProvider.notifier);
+    final dailyId = widget.dailyNoteId;
     setState(() => _busy = true);
     try {
-      final id = await cli.addNote(
-        vaultPath: vaultPath,
-        title: title,
-        contentMd: '# $title\n\n',
-      );
-      ref.read(vaultRevisionProvider.notifier).state++;
-      _acceptExisting(NoteTitle(id: id, title: title, updatedAt: 0));
-    } on MemexException catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not create note: ${e.message}')),
+      if (dailyId == null) {
+        final id = await cli.addNote(
+          vaultPath: vaultPath,
+          title: title,
+          contentMd: topicNoteBody(title),
         );
+        revision.state++;
+        _acceptExisting(NoteTitle(id: id, title: title, updatedAt: 0));
+      } else {
+        final created = await createLinkedTopic(
+          cli,
+          vaultPath: vaultPath,
+          title: title,
+          contentMd: topicNoteBody(title),
+          dailyNoteId: dailyId,
+        );
+        revision.state++;
+        if (!mounted) return;
+        _acceptExisting(
+          NoteTitle(id: created.topicId, title: title, updatedAt: 0),
+        );
+        widget.onTopicLinked?.call(created.footer.version);
       }
+    } on MemexException catch (e) {
+      if (mounted) _reportError(e.message, daily: dailyId != null);
+    } catch (e) {
+      if (dailyId == null) rethrow;
+      if (mounted) _reportError(e.toString(), daily: true);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  void _reportError(String message, {required bool daily}) {
+    final report = widget.onCreateError;
+    if (daily && report != null) {
+      // The popover's full-screen barrier would swallow the tap on the
+      // error's dismiss button; the body stays as it was.
+      _close();
+      report(message);
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('Could not create note: $message')));
   }
 
   @override

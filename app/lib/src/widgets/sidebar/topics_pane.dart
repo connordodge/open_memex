@@ -6,12 +6,14 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../../cli/prompt_cli.dart';
 import '../../memex_cli.dart';
 import '../../state/tabs_state.dart';
+import '../../state/topic_actions.dart';
 import '../../state/topics_state.dart';
 import '../../state/topics_tree.dart';
 import '../../state/vault_state.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import '../atoms.dart';
+import '../inline_error.dart';
 
 /// Req 53: the Topics empty-state copy.
 const _emptyCopy =
@@ -95,6 +97,7 @@ class TopicsPane extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const _ActionsRow(),
+        const _NewTopicForm(),
         Expanded(
           child: ListView(
             padding: const EdgeInsets.fromLTRB(6, 2, 6, 12),
@@ -106,12 +109,12 @@ class TopicsPane extends ConsumerWidget {
   }
 }
 
-/// The header action row. #25 adds `+ New Smart Folder` and `Graph`, #26 adds
-/// `+ New topic`, to [children].
+/// The header action row. #25 adds `+ New Smart Folder` and `Graph`, and #26
+/// added `+ New topic`, to [children].
 class _ActionsRow extends StatelessWidget {
   const _ActionsRow();
 
-  static const List<Widget> children = [];
+  static const List<Widget> children = [_NewTopicButton()];
 
   @override
   Widget build(BuildContext context) {
@@ -120,6 +123,118 @@ class _ActionsRow extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
       child: Row(
         children: [const Eyebrow('topics'), const Spacer(), ...children],
+      ),
+    );
+  }
+}
+
+/// Whether the `+ New topic` title form is showing.
+final _newTopicOpenProvider = StateProvider<bool>((ref) => false);
+
+/// `+ New topic` (Key `topics-new-topic`): shows or hides the title form.
+class _NewTopicButton extends ConsumerWidget {
+  const _NewTopicButton();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return OmButton(
+      key: const Key('topics-new-topic'),
+      kind: OmButtonKind.ghost,
+      size: 24,
+      icon: LucideIcons.plus,
+      label: 'New topic',
+      onPressed: () => ref.read(_newTopicOpenProvider.notifier).state = !ref
+          .read(_newTopicOpenProvider),
+    );
+  }
+}
+
+/// The `+ New topic` title form (Req 17): a title field
+/// (`new-topic-title-field`) and a confirm button (`new-topic-confirm`).
+/// Confirming creates the topic note and links it from today's daily note
+/// (see [createTopicFromSidebar]); a blank title does nothing. A failure
+/// keeps the form open with the CLI message in a dismissible inline error.
+class _NewTopicForm extends ConsumerStatefulWidget {
+  const _NewTopicForm();
+
+  @override
+  ConsumerState<_NewTopicForm> createState() => _NewTopicFormState();
+}
+
+class _NewTopicFormState extends ConsumerState<_NewTopicForm> {
+  final _title = TextEditingController();
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _title.dispose();
+    super.dispose();
+  }
+
+  Future<void> _confirm() async {
+    final title = _title.text.trim();
+    if (title.isEmpty || _busy) return;
+    final open = ref.read(_newTopicOpenProvider.notifier);
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await createTopicFromSidebar(ref, title);
+      _title.clear();
+      open.state = false;
+    } catch (e) {
+      if (mounted) {
+        setState(() => _error = e is MemexException ? e.message : e.toString());
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!ref.watch(_newTopicOpenProvider)) return const SizedBox.shrink();
+    final error = _error;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (error != null)
+            InlineError(
+              message: error,
+              onDismiss: () => setState(() => _error = null),
+            ),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  key: const Key('new-topic-title-field'),
+                  controller: _title,
+                  autofocus: true,
+                  style: OmType.sans(size: 13, color: OmColors.fg0),
+                  cursorColor: OmColors.accent,
+                  decoration: InputDecoration(
+                    isDense: true,
+                    hintText: 'Topic title',
+                    hintStyle: OmType.sans(size: 13, color: OmColors.fg3),
+                  ),
+                  onSubmitted: (_) => _confirm(),
+                ),
+              ),
+              const SizedBox(width: 8),
+              OmButton(
+                key: const Key('new-topic-confirm'),
+                kind: OmButtonKind.primary,
+                size: 26,
+                label: 'Add',
+                onPressed: _busy ? null : _confirm,
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }

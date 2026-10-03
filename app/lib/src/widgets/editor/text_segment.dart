@@ -174,6 +174,9 @@ class TextSegmentField extends StatefulWidget {
     this.hintText,
     this.onMoveUp,
     this.onMoveDown,
+    this.dailyNoteId,
+    this.onTopicLinked,
+    this.onCreateError,
   });
 
   final TextEditingController controller;
@@ -186,6 +189,13 @@ class TextSegmentField extends StatefulWidget {
   final String? hintText;
   final FocusNode? Function()? onMoveUp;
   final FocusNode? Function()? onMoveDown;
+
+  /// The saved daily note the field belongs to, else null: see
+  /// [WikilinkAutocomplete.dailyNoteId], [WikilinkAutocomplete.onTopicLinked]
+  /// and [WikilinkAutocomplete.onCreateError].
+  final String? dailyNoteId;
+  final void Function(int version)? onTopicLinked;
+  final ValueChanged<String>? onCreateError;
 
   @override
   State<TextSegmentField> createState() => _TextSegmentFieldState();
@@ -301,6 +311,9 @@ class _TextSegmentFieldState extends State<TextSegmentField> {
           controller: widget.controller,
           caretLocator: _caretGlobal,
           onNoteCreatedSelect: (_) {},
+          dailyNoteId: widget.dailyNoteId,
+          onTopicLinked: widget.onTopicLinked,
+          onCreateError: widget.onCreateError,
           onInserted: (start, end) => widget.kindChips.showFor(
             widget.controller,
             start: start,
