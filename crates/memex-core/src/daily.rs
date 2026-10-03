@@ -17,7 +17,8 @@ use crate::caller::Caller;
 use crate::canvas::Clock;
 use crate::embedder::Embedder;
 use crate::error::MemexError;
-use crate::notes::Note;
+use crate::indexer;
+use crate::notes::{self, CreateNote, Note, NoteId};
 use crate::vault::Vault;
 use crate::Result;
 
@@ -252,6 +253,29 @@ pub struct AppendOutcome {
     pub prior_state: ReviewState,
 }
 
+/// Attempts an append makes against a daily note that keeps changing
+/// underneath it before it gives up with `VersionConflict` (Req 31).
+const APPEND_ATTEMPTS: u32 = 5;
+
+impl AppendSource {
+    /// The caller whose rules the append follows when it creates or adopts
+    /// the day's note: quick entry is the person (adopts, Q2), not an agent.
+    fn caller(self) -> Caller {
+        match self {
+            AppendSource::Agent => Caller::Agent,
+            AppendSource::QuickEntry => Caller::Person,
+        }
+    }
+
+    /// The `blocks.source` of the blocks an append adds.
+    fn block_source(self) -> &'static str {
+        match self {
+            AppendSource::Agent => "agent",
+            AppendSource::QuickEntry => "quick-entry",
+        }
+    }
+}
+
 /// Appends `text` verbatim to the end of the person section of the daily note
 /// for `date` (default: today from `clock`), creating the note when absent.
 /// See [`append_to_daily_note_with_hook`].
@@ -263,8 +287,7 @@ pub fn append_to_daily_note(
     clock: &dyn Clock,
     embedder: Option<&dyn Embedder>,
 ) -> Result<AppendOutcome> {
-    let _ = (vault, text, date, source, clock, embedder);
-    unimplemented!("#12: append_to_daily_note")
+    append_to_daily_note_with_hook(vault, text, date, source, clock, embedder, &mut |_, _| {})
 }
 
 /// [`append_to_daily_note`] with a deterministic interleaving seam for tests:
@@ -272,6 +295,16 @@ pub fn append_to_daily_note(
 /// after it has read the latest body and before it writes. A write that
 /// meets a newer version retries against the latest body, at most 5
 /// attempts in all, then fails with `VersionConflict`.
+///
+/// Blank `text` is rejected before anything is read or written, then `date`
+/// must be a strict `YYYY-MM-DD` (`InvalidDate`). One trailing `\n` of
+/// `text` is dropped; the rest lands verbatim after the C3.1 separator
+/// ([`append_to_person`]). A missing daily note is created empty first, and
+/// a role-less note titled with the date is adopted on the quick-entry path
+/// or a `TitleConflict` on the agent path (Q2). The write goes through
+/// `notes::write_daily_internal` (D9), which stamps the new blocks with the
+/// source; the note is reindexed from the stored body (D8). `prior_state`
+/// is the review state read by the attempt that wrote.
 pub fn append_to_daily_note_with_hook(
     vault: &mut Vault,
     text: &str,
@@ -281,8 +314,98 @@ pub fn append_to_daily_note_with_hook(
     embedder: Option<&dyn Embedder>,
     before_write: &mut dyn FnMut(&mut Vault, u32),
 ) -> Result<AppendOutcome> {
-    let _ = (vault, text, date, source, clock, embedder, before_write);
-    unimplemented!("#12: append_to_daily_note_with_hook")
+    if text.trim().is_empty() {
+        return Err(MemexError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "nothing to append: the text is empty",
+        )));
+    }
+    let date = resolve_date(date, clock)?;
+    let text = text.strip_suffix('\n').unwrap_or(text);
+
+    let mut conflict = None;
+    for attempt in 1..=APPEND_ATTEMPTS {
+        let note = daily_note_for(vault, date, source.caller(), clock)?;
+        let prior_state = review_state(vault.connection_ref(), note.id.as_str())?;
+        before_write(vault, attempt);
+
+        let person = append_to_person(&split_body(&note.content_md).person, text);
+        let written = notes::write_daily_internal(
+            vault,
+            &note.id,
+            note.version,
+            &person,
+            source.block_source(),
+        );
+        match written {
+            Ok(saved) => return appended(vault, saved, date, prior_state, embedder),
+            Err(e @ MemexError::VersionConflict { .. }) => conflict = Some(e),
+            Err(e) => return Err(e),
+        }
+    }
+    Err(conflict.expect("APPEND_ATTEMPTS is at least 1"))
+}
+
+/// Reindexes the appended daily note `saved` (D8) and reports the append.
+fn appended(
+    vault: &mut Vault,
+    saved: Note,
+    date: NaiveDate,
+    prior_state: ReviewState,
+    embedder: Option<&dyn Embedder>,
+) -> Result<AppendOutcome> {
+    indexer::reindex_note(
+        vault.conn_mut(),
+        saved.id.as_str(),
+        &saved.content_md,
+        embedder,
+    )?;
+    let conn = vault.connection_ref();
+    Ok(AppendOutcome {
+        block_ids: blocks_created_in(conn, saved.id.as_str(), saved.version)?,
+        content_version: conn.query_row(
+            "SELECT content_version FROM day_reviews WHERE note_id = ?",
+            [saved.id.as_str()],
+            |r| r.get(0),
+        )?,
+        note: saved,
+        date,
+        prior_state,
+    })
+}
+
+/// The latest daily note for `date`, created empty (or, for a person caller,
+/// adopted from a role-less note titled with the date, Q2) when there is none.
+fn daily_note_for(
+    vault: &mut Vault,
+    date: NaiveDate,
+    caller: Caller,
+    clock: &dyn Clock,
+) -> Result<Note> {
+    let input = CreateNote {
+        title: Some(date.to_string()),
+        content_md: String::new(),
+        frontmatter: Some(serde_json::json!({ "role": DAILY_ROLE })),
+    };
+    match notes::create_or_adopt_note(vault, input, caller, clock) {
+        Ok(outcome) => Ok(outcome.note),
+        Err(MemexError::DailyNoteExists { existing_id, .. }) => {
+            notes::get_note(vault, &NoteId::parse(&existing_id)?)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// The ids of the blocks of `note_id` created by the write that made
+/// `version`, in `ord` order.
+fn blocks_created_in(conn: &Connection, note_id: &str, version: i64) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT block_id FROM blocks WHERE note_id = ? AND created_version = ? ORDER BY ord",
+    )?;
+    let ids = stmt
+        .query_map(params![note_id, version], |r| r.get(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    Ok(ids)
 }
 
 /// The `blocks.source` of a write by `caller`.

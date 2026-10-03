@@ -499,7 +499,6 @@ pub fn update_note_as(
 /// `VersionConflict` on a stale `expected_version` so callers can retry.
 /// A note that is not `role: daily` fails with `RoleRule`. The caller
 /// reindexes from the returned note (D8).
-#[allow(dead_code)] // #8 (footer) and #12 (append) call it.
 pub(crate) fn write_daily_internal(
     vault: &mut Vault,
     id: &NoteId,
