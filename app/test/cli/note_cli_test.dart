@@ -134,5 +134,27 @@ void main() {
         );
       },
     );
+
+    test(
+      'rm stdout that is not the C2.2 shape throws with a null code',
+      () async {
+        for (final out in ['not json', '{"note_id":"x"}', '[]']) {
+          final cli = FakeMemexCli()..on('rm', (_) => FakeMemexCli.ok(out));
+          await expectLater(
+            cli.deleteNote(
+              vaultPath: _vault,
+              noteId: _noteId,
+              expectedVersion: 1,
+            ),
+            throwsA(
+              isA<MemexException>()
+                  .having((e) => e.code, 'code', isNull)
+                  .having((e) => e.message, 'message', contains('rm')),
+            ),
+            reason: out,
+          );
+        }
+      },
+    );
   });
 }

@@ -1,8 +1,15 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
+import '../../cli/note_cli.dart';
 import '../../db.dart';
+import '../../memex_cli.dart';
+import '../../state/editor_controller.dart';
+import '../../state/tabs_state.dart';
+import '../../state/vault_state.dart';
 import '../../theme/colors.dart';
+import '../../theme/typography.dart';
 import '../atoms.dart';
 
 /// The editor toolbar's ellipsis button (Key `note-menu-button`). It opens
@@ -24,7 +31,9 @@ class NoteMenuButton extends StatelessWidget {
           ),
         ),
       ),
-      menuChildren: [if (note != null) NoteMenu(note: note)],
+      menuChildren: [
+        if (note != null) NoteMenu(note: note, hostContext: context),
+      ],
       builder: (context, controller, _) => OmButton(
         key: const Key('note-menu-button'),
         kind: OmButtonKind.ghost,
@@ -41,18 +50,142 @@ class NoteMenuButton extends StatelessWidget {
 
 /// The note menu for [note] (Key `note-menu`), shown by [NoteMenuButton].
 /// Items are [MenuItemButton]s in the column; selecting one closes the menu.
-/// Empty for now: later work adds the items.
+/// To add an item, append a [MenuItemButton] to the column's children.
 class NoteMenu extends StatelessWidget {
-  const NoteMenu({super.key, required this.note});
+  const NoteMenu({super.key, required this.note, required this.hostContext});
   final Note note;
+
+  /// The context of the widget that hosts the menu ([NoteMenuButton]). Item
+  /// actions that outlive the menu (dialogs) use it, since the menu's own
+  /// context is deactivated once an item closes the menu.
+  final BuildContext hostContext;
 
   @override
   Widget build(BuildContext context) {
-    return const Column(
-      key: Key('note-menu'),
+    return Column(
+      key: const Key('note-menu'),
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [],
+      children: [
+        MenuItemButton(
+          key: const Key('note-menu-delete'),
+          leadingIcon: const Icon(LucideIcons.trash2, size: 14),
+          onPressed: () => confirmAndDeleteNote(
+            hostContext,
+            ProviderScope.containerOf(hostContext),
+            note,
+          ),
+          child: const Text('Delete note'),
+        ),
+      ],
+    );
+  }
+}
+
+/// The inline error left by a failed note delete: the id of the note it
+/// belongs to and the CLI message. Null when there is none.
+final noteDeleteErrorProvider =
+    StateProvider<({String noteId, String message})?>((_) => null);
+
+/// Asks for confirmation, then runs `memex rm` for [note] with the editor's
+/// last saved version. On success the note's tab closes and the vault reads
+/// refresh. On failure nothing changes except [noteDeleteErrorProvider].
+///
+/// Takes the [container] rather than a `WidgetRef`: the note menu is gone by
+/// the time the person answers the dialog.
+Future<void> confirmAndDeleteNote(
+  BuildContext context,
+  ProviderContainer container,
+  Note note,
+) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (_) => _DeleteNoteDialog(title: note.title),
+  );
+  if (confirmed != true) return;
+
+  final cli = container.read(memexCliProvider);
+  final vaultPath = container.read(currentVaultProvider);
+  if (cli == null || vaultPath == null) return;
+  final errors = container.read(noteDeleteErrorProvider.notifier);
+  final version =
+      container.read(editorControllerProvider).lastSavedVersion ?? note.version;
+  try {
+    await cli.deleteNote(
+      vaultPath: vaultPath,
+      noteId: note.id,
+      expectedVersion: version,
+    );
+  } on MemexException catch (e) {
+    errors.state = (noteId: note.id, message: e.message);
+    return;
+  }
+  errors.state = null;
+  container.read(tabsProvider.notifier).close(NoteTab(note.id));
+  container.read(vaultRevisionProvider.notifier).state++;
+}
+
+class _DeleteNoteDialog extends StatelessWidget {
+  const _DeleteNoteDialog({required this.title});
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      key: const Key('delete-note-dialog'),
+      title: const Text('Delete note?'),
+      content: Text('"$title" will be deleted. This can\'t be undone.'),
+      actions: [
+        TextButton(
+          key: const Key('delete-note-cancel'),
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          key: const Key('delete-note-confirm'),
+          onPressed: () => Navigator.of(context).pop(true),
+          child: Text('Delete', style: TextStyle(color: OmColors.danger)),
+        ),
+      ],
+    );
+  }
+}
+
+/// The dismissible inline error (Key `inline-error`) for a failed delete of
+/// [noteId]; empty when the open note has none.
+class NoteDeleteError extends ConsumerWidget {
+  const NoteDeleteError({super.key, required this.noteId});
+  final String noteId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final error = ref.watch(noteDeleteErrorProvider);
+    if (error == null || error.noteId != noteId) {
+      return const SizedBox.shrink();
+    }
+    return Container(
+      key: const Key('inline-error'),
+      color: OmColors.surface1,
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 6),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              error.message,
+              style: OmType.mono(size: 11, color: OmColors.danger),
+            ),
+          ),
+          OmButton(
+            key: const Key('inline-error-dismiss'),
+            kind: OmButtonKind.ghost,
+            size: 22,
+            icon: LucideIcons.x,
+            tooltip: 'dismiss',
+            onPressed: () =>
+                ref.read(noteDeleteErrorProvider.notifier).state = null,
+          ),
+        ],
+      ),
     );
   }
 }
