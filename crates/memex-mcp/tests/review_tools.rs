@@ -1021,3 +1021,81 @@ fn mcp_server_registers_the_three_review_tools() {
         "{s}"
     );
 }
+
+// ======================================================================
+// Implementer tests for the lead rulings (WI #11).
+// ======================================================================
+
+/// AC 5 (lead ruling): a removed block carries `id` and `text` only; the
+/// snapshot has no `source`.
+#[tokio::test]
+async fn mcp_get_daily_note_changes_removed_blocks_carry_only_id_and_text() {
+    let (_dir, state, memex) = fresh();
+    let day = daily(&state, "2026-09-05", THREE_BLOCKS).await;
+    let before = blocks_of(&state, &day).await;
+    mark_ok(&memex, "2026-09-05", 1, json!([daily_change(&day)])).await;
+    person_set_body(&state, &day, "Sleep was bad.\n").await;
+
+    let got = changes(&memex, "2026-09-05").await;
+    assert_eq!(
+        got["removed"],
+        json!([
+            { "id": before[0].0, "text": "Fixed the jump arc." },
+            { "id": before[1].0, "text": "- tried coyote time" },
+        ]),
+        "{got}"
+    );
+    assert_eq!(got["added"], json!([]), "{got}");
+    assert_eq!(got["changed"], json!([]), "{got}");
+}
+
+/// AC 9 (lead ruling): a version newer than the current one is stale too.
+#[tokio::test]
+async fn mcp_mark_day_reviewed_with_a_newer_version_returns_review_stale() {
+    let (_dir, state, memex) = fresh();
+    let day = daily(&state, "2026-09-05", THREE_BLOCKS).await;
+
+    let got = mark(&memex, "2026-09-05", 2, json!([daily_change(&day)])).await;
+    assert_c1(&got, "review_stale", &["version", "current"]);
+    assert_eq!(got["error"]["version"], json!(2));
+    assert_eq!(got["error"]["current"], json!(1));
+    assert_eq!(day_review_row(&state, &day).await, (1, None, None));
+    assert_eq!(snapshot_count(&state, &day).await, 0);
+    assert!(change_rows(&state).await.is_empty());
+}
+
+/// AC 11 (lead ruling): duplicate entries return `change_entries_invalid` and
+/// an entry for a missing note returns C1 `not_found`; neither writes anything.
+#[tokio::test]
+async fn mcp_mark_day_reviewed_with_duplicate_or_missing_note_entries_returns_c1() {
+    let (_dir, state, memex) = fresh();
+    let player = topic(&state, "Player Loop").await;
+    let day = daily(&state, "2026-09-05", THREE_BLOCKS).await;
+    let ok = daily_change(&day);
+    let ghost = NoteId::new().to_string();
+    let cases = [
+        (
+            json!([
+                ok,
+                { "note_id": player, "bullets": ["Created topic"] },
+                { "note_id": player, "bullets": ["Added excerpt"] },
+            ]),
+            "change_entries_invalid",
+        ),
+        (
+            json!([ok, { "note_id": ghost, "bullets": ["Created topic"] }]),
+            "not_found",
+        ),
+    ];
+    for (changes, code) in cases {
+        let got = mark(&memex, "2026-09-05", 1, changes.clone()).await;
+        assert_c1(&got, code, &[]);
+        assert_eq!(
+            day_review_row(&state, &day).await,
+            (1, None, None),
+            "{changes}"
+        );
+        assert_eq!(snapshot_count(&state, &day).await, 0, "{changes}");
+        assert!(change_rows(&state).await.is_empty(), "{changes}");
+    }
+}

@@ -1258,3 +1258,139 @@ fn note_review_fields_are_absent_for_notes_that_are_not_daily() {
     }
     assert!(fields(&vault, &day)["review"].is_object());
 }
+
+// ======================================================================
+// Implementer tests for the lead rulings (WI #11).
+// ======================================================================
+
+/// AC 9 (lead ruling): `version` must equal the current content version; a
+/// newer one is stale too and writes nothing.
+#[test]
+fn mark_day_reviewed_with_a_newer_version_fails_with_review_stale_and_writes_nothing() {
+    let (_dir, mut vault) = fresh_vault();
+    let clock = FakeClock::at(T1);
+    let day = create_daily(&mut vault, "2026-09-05", THREE_BLOCKS);
+    set_body(&mut vault, &day.id, "Fixed the jump arc.\n");
+    assert_eq!(content_version(&vault, &day.id), 2);
+    let before = review_tables(&vault, &day.id);
+
+    for newer in [3, 4, 100] {
+        match review::mark_day_reviewed(
+            &mut vault,
+            "2026-09-05",
+            newer,
+            &[daily_entry(&day)],
+            &clock,
+        ) {
+            Err(MemexError::ReviewStale { version, current }) => {
+                assert_eq!((version, current), (newer, 2));
+            }
+            other => panic!("expected ReviewStale for v{newer}, got {other:?}"),
+        }
+        assert_eq!(
+            review_tables(&vault, &day.id),
+            before,
+            "nothing written (v{newer})"
+        );
+    }
+}
+
+/// AC 11 (lead ruling): two entries for one note reject the whole call.
+#[test]
+fn mark_day_reviewed_rejects_duplicate_entries_for_one_note() {
+    let (_dir, mut vault, day, topic) = rejection_fixture();
+    assert_rejected(
+        &mut vault,
+        &day,
+        &[
+            daily_entry(&day),
+            entry(&topic.id, &["Created topic"]),
+            entry(&topic.id, &["Added excerpt"]),
+        ],
+        "duplicate",
+    );
+    assert_rejected(
+        &mut vault,
+        &day,
+        &[daily_entry(&day), daily_entry(&day)],
+        "duplicate",
+    );
+}
+
+/// AC 11 (lead ruling): an entry naming a note that does not exist fails with
+/// `not_found` (never a foreign-key error) and writes nothing.
+#[test]
+fn mark_day_reviewed_with_an_entry_for_a_missing_note_fails_with_not_found() {
+    let (_dir, mut vault, day, topic) = rejection_fixture();
+    let clock = FakeClock::at(T2);
+    let before = review_tables(&vault, &day.id);
+    let missing = NoteId::new();
+    for ghost in [missing.as_str(), "not-a-note-id"] {
+        let changes = [
+            daily_entry(&day),
+            entry(&topic.id, &["Added excerpt"]),
+            ChangeEntry {
+                note_id: ghost.to_string(),
+                bullets: vec!["Created topic".into()],
+            },
+        ];
+        match review::mark_day_reviewed(&mut vault, "2026-09-05", 1, &changes, &clock) {
+            Err(e @ MemexError::NotFound(_)) => {
+                assert_eq!(e.code(), "not_found");
+                assert!(e.to_string().contains(ghost), "{e}");
+            }
+            other => panic!("expected NotFound for {ghost}, got {other:?}"),
+        }
+        assert_eq!(
+            review_tables(&vault, &day.id),
+            before,
+            "nothing written ({ghost})"
+        );
+    }
+}
+
+/// AC 11: a carriage return also breaks the one-line rule.
+#[test]
+fn mark_day_reviewed_rejects_a_bullet_containing_a_carriage_return() {
+    let (_dir, mut vault, day, topic) = rejection_fixture();
+    assert_rejected(
+        &mut vault,
+        &day,
+        &[
+            daily_entry(&day),
+            entry(&topic.id, &["Filed 2 blocks\rinto Sleep"]),
+        ],
+        "newline",
+    );
+}
+
+/// AC 13: `latest_change` is the newest row for the note, also when two
+/// reviews share one clock time.
+#[test]
+fn note_review_fields_latest_change_is_the_newest_row_for_the_note() {
+    let (_dir, mut vault) = fresh_vault();
+    let clock = FakeClock::at(T1);
+    let topic = create_topic(&mut vault, "Player Loop");
+    let day = create_daily(&mut vault, "2026-09-05", THREE_BLOCKS);
+    mark(
+        &mut vault,
+        "2026-09-05",
+        1,
+        &[entry(&day.id, &["First pass"])],
+        &clock,
+    );
+    mark(
+        &mut vault,
+        "2026-09-05",
+        1,
+        &[
+            entry(&topic.id, &["Added excerpt"]),
+            entry(&day.id, &["Second pass"]),
+        ],
+        &clock,
+    );
+    assert_eq!(
+        fields(&vault, &day)["latest_change"],
+        json!({ "day": "2026-09-05", "created_at": T1, "bullets": ["Second pass"] })
+    );
+}
