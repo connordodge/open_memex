@@ -9,6 +9,7 @@ import '../theme/typography.dart';
 import 'atoms.dart';
 import 'editor/editor_toolbar.dart';
 import 'editor/note_header.dart';
+import 'editor/note_menu.dart';
 import 'editor/source_surface.dart';
 
 /// The note editor host: wires the selected note and [EditorController] into
@@ -95,6 +96,7 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
             onBackToCanvas: widget.onBackToCanvas,
           ),
           const OmHairline(),
+          if (note != null) NoteDeleteError(noteId: note.id),
           Expanded(
             child: note == null
                 ? _EmptyEditor()
