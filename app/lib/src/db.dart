@@ -9,6 +9,12 @@ import 'package:sqlite3/sqlite3.dart';
 class VaultDb {
   VaultDb._(this.db);
 
+  /// Wrap an already-open [Database] (an in-memory test database, or a
+  /// handle opened elsewhere). The caller keeps ownership semantics: [close]
+  /// still disposes it.
+  VaultDb.fromDatabase(Database db)
+    : db = throw UnimplementedError('VaultDb.fromDatabase');
+
   final Database db;
 
   static VaultDb open(String vaultPath) {
@@ -135,6 +141,12 @@ class VaultDb {
     );
     return rows.map((r) => r['link_kind'] as String).toList();
   }
+
+  /// True when every table in [names] exists in this database. Never caches
+  /// a negative answer: the CLI may migrate the vault (V4 → V5) while the
+  /// app holds this handle, and a re-probe must see the new tables.
+  bool hasTables(List<String> names) =>
+      throw UnimplementedError('VaultDb.hasTables');
 
   // ---------- canvas reads ----------
 
@@ -314,6 +326,10 @@ class Note {
   final int createdAt;
   final int updatedAt;
   final List<String> tags;
+
+  /// The note's role from the frontmatter JSON (`$.role`): `daily`, `topic`,
+  /// or null when absent or when the frontmatter is not valid JSON.
+  String? get role => throw UnimplementedError('Note.role');
 }
 
 class NoteTitle {

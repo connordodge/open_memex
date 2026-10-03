@@ -23,6 +23,12 @@ class MemexCli {
     return null;
   }
 
+  /// Run `memex <args>`, writing [stdinBody] to stdin when given. Public for
+  /// CLI wrapper extensions (`lib/src/cli/<area>_cli.dart`) and test fakes;
+  /// every wrapper in this class goes through it.
+  Future<MemexResult> run(List<String> args, {String? stdinBody}) =>
+      throw UnimplementedError('MemexCli.run');
+
   Future<MemexResult> _run(List<String> args, {String? stdinBody}) async {
     final proc = await Process.start(binaryPath, args, runInShell: false);
     if (stdinBody != null) {
@@ -56,6 +62,7 @@ class MemexCli {
     List<String> tags = const [],
     required String contentMd,
     bool withEmbeddings = false,
+    String? role,
   }) async {
     final args = <String>[
       'add',
@@ -466,9 +473,29 @@ class NoteFetchResult {
 enum MemexErrorKind { other, versionConflict }
 
 class MemexException implements Exception {
-  MemexException(this.message, {this.kind = MemexErrorKind.other});
+  MemexException(
+    this.message, {
+    this.kind = MemexErrorKind.other,
+    this.code,
+    this.fields = const {},
+  });
+
+  /// Build the exception for a failed `memex <operation>` call from its
+  /// result: parses the C1 stderr line `{"error":{"code":…,"message":…,…}}`
+  /// into [code] and [fields]; non-JSON stderr keeps the legacy message
+  /// `'<operation> failed: <stderr>'` with a null [code].
+  factory MemexException.fromCliFailure(String operation, MemexResult result) =>
+      throw UnimplementedError('MemexException.fromCliFailure');
+
   final String message;
   final MemexErrorKind kind;
+
+  /// The C1 error code (`version_conflict`, `daily_note_exists`, …), or null
+  /// when stderr was not a JSON error line.
+  final String? code;
+
+  /// The fields of the C1 error object (rule fields such as `existing_id`).
+  final Map<String, Object?> fields;
   @override
   String toString() => message;
 }
