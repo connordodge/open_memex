@@ -3,6 +3,9 @@
 use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
+use memex_core::footer::{self, ChipOrigin};
+use memex_core::{NoteId, Vault};
+use serde::Serialize;
 
 /// `memex footer <command>`
 #[derive(Args, Debug)]
@@ -31,26 +34,38 @@ pub struct FooterAddArgs {
     pub topic_note_id: String,
 }
 
+/// The C2.3 output line.
+#[derive(Serialize)]
+struct FooterAdded<'a> {
+    vault_id: &'a str,
+    daily_note_id: &'a str,
+    topic_note_id: &'a str,
+    origin: &'static str,
+    /// The daily note's `notes.version` after the call.
+    version: i64,
+}
+
 pub fn run(args: FooterArgs) -> anyhow::Result<()> {
     match args.command {
-        FooterCommand::Add(_) => super::not_implemented("footer add"),
+        FooterCommand::Add(a) => add(a),
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn stub_reports_not_implemented() {
-        let err = run(FooterArgs {
-            command: FooterCommand::Add(FooterAddArgs {
-                vault: PathBuf::from("v"),
-                daily_note_id: "d".into(),
-                topic_note_id: "t".into(),
-            }),
-        })
-        .unwrap_err();
-        assert_eq!(err.to_string(), "memex footer add: not implemented yet");
-    }
+/// `memex footer add`: records a `person` chip (Req 17). Idempotent; an
+/// `excerpt` chip is upgraded in place.
+fn add(args: FooterAddArgs) -> anyhow::Result<()> {
+    let daily = NoteId::parse(&args.daily_note_id)?;
+    let topic = NoteId::parse(&args.topic_note_id)?;
+    let mut vault = Vault::open(&args.vault)?;
+    let written = footer::set_chip(&mut vault, &daily, &topic, ChipOrigin::Person, None)?;
+    let origin = written.origin.unwrap_or(ChipOrigin::Person);
+    let out = FooterAdded {
+        vault_id: vault.vault_id(),
+        daily_note_id: daily.as_str(),
+        topic_note_id: topic.as_str(),
+        origin: origin.as_str(),
+        version: written.note.version,
+    };
+    println!("{}", serde_json::to_string(&out)?);
+    Ok(())
 }

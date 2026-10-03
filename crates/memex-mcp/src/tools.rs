@@ -534,6 +534,10 @@ impl Memex {
             Ok(n) => n,
             Err(e) => return err_from("add_link.from_not_found", &e),
         };
+        // The marker guard is on the source, before the idempotency answer.
+        if let Err(e) = notes::check_agent_write(Caller::Agent, &source.frontmatter, None) {
+            return err_from("add_link.update", &e);
+        }
         let target = match notes::get_note(&vault, &to) {
             Ok(n) => n,
             Err(e) => return err_from("add_link.to_not_found", &e),
@@ -985,6 +989,16 @@ impl Memex {
             label.map(Some)
         };
         let mut vault = self.state.vault.lock().await;
+        // The marker guard is on the source, before update_link_as answers a
+        // no-op edit without saving.
+        let source = core_links::get_link(&vault, &link_id)
+            .and_then(|link| NoteId::parse(&link.from_note_id))
+            .and_then(|id| notes::get_note(&vault, &id));
+        if let Ok(source) = source {
+            if let Err(e) = notes::check_agent_write(Caller::Agent, &source.frontmatter, None) {
+                return err_from("update_link", &e);
+            }
+        }
         let link = match core_links::update_link_as(
             &mut vault,
             &link_id,
