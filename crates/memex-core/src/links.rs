@@ -28,6 +28,8 @@ impl LinkKind {
     pub const EXTENDS: &'static str = "extends";
     pub const CONTRADICTS: &'static str = "contradicts";
     pub const EXAMPLE_OF: &'static str = "example-of";
+    pub const FROM_DAY: &'static str = "from-day";
+    pub const ABOUT: &'static str = "about";
 
     /// Validate + return a `LinkKind`. Input is normalized (lowercased,
     /// whitespace runs collapsed to `-`, leading/trailing `-` stripped) before

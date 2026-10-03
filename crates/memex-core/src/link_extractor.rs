@@ -32,6 +32,24 @@ impl ExtractedLinks {
     }
 }
 
+/// One block-transclusion token (`![[YYYY-MM-DD#^from]]` or
+/// `![[YYYY-MM-DD#^from..^to]]`, CONTRACTS C4). `start` and `end` are UTF-8
+/// byte offsets into the parsed text: `start` is the `!`, `end` is one past
+/// the closing `]]` (D25; search builds on these ranges).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransclusionToken {
+    pub date: String,
+    pub from: String,
+    pub to: Option<String>,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// Every transclusion token in `text`, in order (D13, CONTRACTS C4).
+pub fn parse_transclusions(_text: &str) -> Vec<TransclusionToken> {
+    unimplemented!("WI #9: parse block transclusion tokens")
+}
+
 // `[[<title>(~<kind>)?(|<alias>)?]]` — title cannot contain `~`, `|`, `]`, or
 // newline; kind cannot contain `|`, `]`, or newline; alias cannot contain `]`
 // or newline.
