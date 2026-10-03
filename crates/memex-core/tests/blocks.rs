@@ -612,6 +612,18 @@ fn identical_paragraphs_keep_their_ids_after_insert_before() {
 }
 
 #[test]
+fn identical_paragraphs_pair_by_ord_whatever_the_input_order_of_old() {
+    // Stored rows may arrive in any order: identical blocks still pair by ord.
+    let mut old = stored("ok\n\nok", &["frst01", "scnd02"]);
+    old.reverse();
+    let new_body = "Something new on top.\n\nok\n\nok";
+    let out = rematch(&old, new_body);
+    assert_consistent(&out, new_body);
+    assert_eq!(&ids(&out.blocks)[1..], ["frst01", "scnd02"]);
+    assert!(out.removed.is_empty());
+}
+
+#[test]
 fn deleting_first_of_two_identical_paragraphs_keeps_the_nearest_id() {
     // Old: ok(ord 0), Alpha, Bravo, ok(ord 3). The first `ok` is deleted; the
     // remaining `ok` lands at ord 2, nearest to the old ord 3.
