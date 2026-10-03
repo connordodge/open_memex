@@ -121,20 +121,7 @@ class TabsNotifier extends StateNotifier<TabsState> {
   final List<WorkspaceTab> _mru = [];
 
   void _hydrate(String? todayDate, String? todayNoteId) {
-    final persisted = store.read();
-    final restored = persisted.tabs
-        .map(WorkspaceTab.fromPersisted)
-        .whereType<WorkspaceTab>()
-        .toList();
-    _hydrated = true;
-    if (restored.isNotEmpty) {
-      final active = persisted.activeTabIndex.clamp(0, restored.length - 1);
-      state = TabsState(tabs: restored, activeIndex: active);
-      _mru
-        ..clear()
-        ..add(restored[active])
-        ..addAll(restored.where((t) => t != restored[active]));
-    }
+    _restore();
     if (todayDate != null) {
       _focusToday(_todayTab(todayDate, todayNoteId));
     }
@@ -144,6 +131,27 @@ class TabsNotifier extends StateNotifier<TabsState> {
     scheduleMicrotask(() {
       if (mounted) _emitSelection();
     });
+  }
+
+  /// Restores the tabs written to [store]. Neither persists nor emits.
+  void _restore() {
+    final persisted = store.read();
+    final restored = persisted.tabs
+        .map(WorkspaceTab.fromPersisted)
+        .whereType<WorkspaceTab>()
+        .toList();
+    if (restored.isEmpty) {
+      state = TabsState.empty;
+      _hydrated = true;
+      return;
+    }
+    final active = persisted.activeTabIndex.clamp(0, restored.length - 1);
+    state = TabsState(tabs: restored, activeIndex: active);
+    _mru
+      ..clear()
+      ..add(restored[active])
+      ..addAll(restored.where((t) => t != restored[active]));
+    _hydrated = true;
   }
 
   static WorkspaceTab _todayTab(String date, String? noteId) =>
