@@ -36,16 +36,16 @@ void main() {
         final h = await pumpWorkspace(tester, db: db, cli: cli, clock: clock);
 
         expect(find.byType(Workspace), findsOneWidget);
-        // The sidebar opens in Days mode (#23); the note list is Topics.
+        // The sidebar opens in Days mode (#23); the note list is Topics (#24).
         await tester.tap(find.byKey(const Key('sidebar-mode-topics')));
         await pumpFrames(tester);
-        expect(find.byKey(const Key('notes-rail')), findsOneWidget);
+        expect(find.byKey(const Key('topics-pane')), findsOneWidget);
         expect(
-          find.byKey(const Key('note-list-item-01J9AAAAAAAAAAAAAAAAAAAAAA')),
+          find.byKey(const Key('topics-unsorted-01J9AAAAAAAAAAAAAAAAAAAAAA')),
           findsOneWidget,
         );
         expect(
-          find.byKey(const Key('note-list-item-01J9BBBBBBBBBBBBBBBBBBBBBB')),
+          find.byKey(const Key('topics-unsorted-01J9BBBBBBBBBBBBBBBBBBBBBB')),
           findsOneWidget,
         );
         expect(find.text('Player Loop'), findsWidgets);
