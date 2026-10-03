@@ -1,6 +1,10 @@
 //! `memex prompt` (CONTRACTS C2.13): print a prompt's raw text.
 
+use std::io::Write;
+
 use clap::{Args, Subcommand};
+
+use crate::prompts::{CAPTURE, REVIEW_DAILY_NOTES};
 
 /// `memex prompt review` / `memex prompt capture`
 #[derive(Args, Debug)]
@@ -17,11 +21,23 @@ pub enum PromptCommand {
     Capture,
 }
 
-pub fn run(args: PromptArgs) -> anyhow::Result<()> {
-    match args.command {
-        PromptCommand::Review => super::not_implemented("prompt review"),
-        PromptCommand::Capture => super::not_implemented("prompt capture"),
+impl PromptCommand {
+    /// The `prompts.rs` constant this command prints (D18).
+    pub fn text(&self) -> &'static str {
+        match self {
+            PromptCommand::Review => REVIEW_DAILY_NOTES,
+            PromptCommand::Capture => CAPTURE,
+        }
     }
+}
+
+/// Writes the prompt text byte-for-byte: no JSON and no added newline (the
+/// constants already end with one).
+pub fn run(args: PromptArgs) -> anyhow::Result<()> {
+    let mut stdout = std::io::stdout().lock();
+    stdout.write_all(args.command.text().as_bytes())?;
+    stdout.flush()?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -29,16 +45,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stubs_report_not_implemented() {
-        for (command, name) in [
-            (PromptCommand::Review, "prompt review"),
-            (PromptCommand::Capture, "prompt capture"),
-        ] {
-            let err = run(PromptArgs { command }).unwrap_err();
-            assert_eq!(
-                err.to_string(),
-                format!("memex {name}: not implemented yet")
-            );
+    fn each_command_maps_to_its_own_constant() {
+        assert_eq!(PromptCommand::Review.text(), REVIEW_DAILY_NOTES);
+        assert_eq!(PromptCommand::Capture.text(), CAPTURE);
+        for text in [REVIEW_DAILY_NOTES, CAPTURE] {
+            assert!(text.ends_with('\n') && !text.ends_with("\n\n"));
         }
     }
 }
