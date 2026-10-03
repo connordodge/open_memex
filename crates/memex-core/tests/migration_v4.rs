@@ -123,7 +123,7 @@ fn v4_migration_creates_canvas_tables_and_preserves_prior_data() {
     let v: i64 = conn
         .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(v, 4);
+    assert_eq!(v, schema::APP_SCHEMA_VERSION);
 
     // Prior notes intact.
     let count: i64 = conn
@@ -174,7 +174,7 @@ fn v4_migration_is_idempotent() {
     let v1: i64 = conn
         .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(v1, 4);
+    assert_eq!(v1, schema::APP_SCHEMA_VERSION);
 
     schema::apply(&mut conn).expect("second apply must be a no-op");
     let count_v4: i64 = conn
@@ -206,7 +206,7 @@ fn v4_migrated_vault_supports_canvas_round_trip() {
     std::fs::create_dir_all(dir.path().join("objects")).unwrap();
 
     let mut vault = Vault::open(dir.path()).expect("open v3 vault advances to v4");
-    assert_eq!(vault.schema_version(), 4);
+    assert_eq!(vault.schema_version(), schema::APP_SCHEMA_VERSION);
 
     let c = create_canvas(&mut vault, "Round Trip").unwrap();
     let n = create_note(
