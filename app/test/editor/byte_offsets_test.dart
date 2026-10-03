@@ -1,9 +1,12 @@
 // WI #20 (A3): UTF-8 byte offsets (server `blocks.start_byte`/`end_byte`,
 // Rust side) <-> Dart UTF-16 indexes.
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/byte_offsets.dart';
 
 void main() {
+  _implementerTests();
   group('utf16ToUtf8 / utf8ToUtf16', () {
     test('maps "café ![[" index 5 to byte 6 and back', () {
       expect(utf16ToUtf8('café ![[', 5), 6);
@@ -111,5 +114,54 @@ void main() {
         expect(utf16ToUtf8(content, end), 16);
       },
     );
+  });
+}
+
+void _expectMatchesEncoder(String s) {
+  for (var i = 0; i <= s.length; i++) {
+    final betweenPair =
+        i > 0 &&
+        i < s.length &&
+        _isHigh(s.codeUnitAt(i - 1)) &&
+        _isLow(s.codeUnitAt(i));
+    if (betweenPair) continue;
+    final bytes = utf8.encode(s.substring(0, i)).length;
+    expect(utf16ToUtf8(s, i), bytes, reason: '${s.runes} index $i');
+    expect(utf8ToUtf16(s, bytes), i, reason: '${s.runes} byte $bytes');
+  }
+}
+
+bool _isHigh(int u) => u >= 0xD800 && u <= 0xDBFF;
+bool _isLow(int u) => u >= 0xDC00 && u <= 0xDFFF;
+
+// Implementer additions: encoding-width boundaries and lone surrogates, checked
+// against dart:convert's encoder (which writes a lone surrogate as U+FFFD).
+void _implementerTests() {
+  group('utf16ToUtf8 / utf8ToUtf16 width boundaries', () {
+    test('agrees with utf8.encode at the 1/2/3/4-byte code point limits', () {
+      _expectMatchesEncoder('\u007F\u0080߿ࠀ퟿￿');
+      _expectMatchesEncoder('\u{10000}\u{10FFFF}x');
+    });
+
+    test('counts a lone surrogate as three bytes and never splits it', () {
+      for (final s in [
+        'a\uD800b',
+        'a\uDBFFb',
+        'a\uDC00b',
+        'a\uDFFFb',
+        '\uDC00\uD800',
+        'x\uD800',
+        '\uD800𐀀',
+      ]) {
+        _expectMatchesEncoder(s);
+      }
+      expect(utf16ToUtf8('\uDC00\uD800', 1), 3);
+      expect(() => utf8ToUtf16('a\uD800b', 2), throwsArgumentError);
+    });
+
+    test('throws ArgumentError between the halves of a boundary pair', () {
+      expect(() => utf16ToUtf8('\u{10FFFF}', 1), throwsArgumentError);
+      expect(() => utf16ToUtf8('\u{10000}', 1), throwsArgumentError);
+    });
   });
 }
