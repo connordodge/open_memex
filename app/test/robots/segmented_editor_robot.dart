@@ -213,8 +213,11 @@ class SegmentedEditorRobot {
     await tester.pump();
   }
 
-  /// Let the 500 ms debounce fire and the fake CLI round trip complete.
+  /// Let the 500 ms debounce fire and the fake CLI round trip complete: the
+  /// debounce runs on the [FakeClock] (D14, WI #28), so both it and the
+  /// test binding's time move 600 ms.
   Future<void> waitForSave() async {
+    h.clock.advance(const Duration(milliseconds: 600));
     await tester.pump(const Duration(milliseconds: 600));
     await pumpFrames(tester);
   }

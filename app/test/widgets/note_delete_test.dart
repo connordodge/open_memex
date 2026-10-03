@@ -364,6 +364,8 @@ void main() {
           find.byKey(const Key('editor-title')),
           'Alpha note edited',
         );
+        // The save debounce runs on the clock (D14).
+        h.clock.advance(const Duration(milliseconds: 600));
         await tester.pump(const Duration(milliseconds: 600));
         expect(h.cli.callsFor('update'), hasLength(1));
 
