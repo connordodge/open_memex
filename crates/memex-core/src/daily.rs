@@ -15,7 +15,10 @@ use ulid::Ulid;
 use crate::blocks::{self, Block};
 use crate::caller::Caller;
 use crate::canvas::Clock;
+use crate::embedder::Embedder;
 use crate::error::MemexError;
+use crate::notes::Note;
+use crate::vault::Vault;
 use crate::Result;
 
 /// The Topics footer marker line (C3).
@@ -220,6 +223,66 @@ pub fn review_state(conn: &Connection, note_id: &str) -> Result<ReviewState> {
         Some((current, Some(reviewed))) if reviewed == current => ReviewState::Reviewed,
         Some(_) => ReviewState::ChangedSinceReview,
     })
+}
+
+/// Who is appending to a daily note (R9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppendSource {
+    /// MCP `append_to_daily_note`: new blocks get `source: agent`; a
+    /// role-less note titled with the date is a `TitleConflict` (Q2).
+    Agent,
+    /// `memex append`: new blocks get `source: quick-entry`; a role-less note
+    /// titled with the date is adopted as the daily note (Q2).
+    QuickEntry,
+}
+
+/// What an append did (CONTRACTS C2.12).
+#[derive(Debug, Clone)]
+pub struct AppendOutcome {
+    /// The daily note as stored after the append (`version` is its new
+    /// `notes.version`).
+    pub note: Note,
+    /// The day appended to.
+    pub date: NaiveDate,
+    /// The new blocks' ids, in order.
+    pub block_ids: Vec<String>,
+    /// `day_reviews.content_version` after the append.
+    pub content_version: i64,
+    /// The day's review state immediately before the append.
+    pub prior_state: ReviewState,
+}
+
+/// Appends `text` verbatim to the end of the person section of the daily note
+/// for `date` (default: today from `clock`), creating the note when absent.
+/// See [`append_to_daily_note_with_hook`].
+pub fn append_to_daily_note(
+    vault: &mut Vault,
+    text: &str,
+    date: Option<&str>,
+    source: AppendSource,
+    clock: &dyn Clock,
+    embedder: Option<&dyn Embedder>,
+) -> Result<AppendOutcome> {
+    let _ = (vault, text, date, source, clock, embedder);
+    unimplemented!("#12: append_to_daily_note")
+}
+
+/// [`append_to_daily_note`] with a deterministic interleaving seam for tests:
+/// `before_write(vault, attempt)` runs in every attempt (counted from 1)
+/// after it has read the latest body and before it writes. A write that
+/// meets a newer version retries against the latest body, at most 5
+/// attempts in all, then fails with `VersionConflict`.
+pub fn append_to_daily_note_with_hook(
+    vault: &mut Vault,
+    text: &str,
+    date: Option<&str>,
+    source: AppendSource,
+    clock: &dyn Clock,
+    embedder: Option<&dyn Embedder>,
+    before_write: &mut dyn FnMut(&mut Vault, u32),
+) -> Result<AppendOutcome> {
+    let _ = (vault, text, date, source, clock, embedder, before_write);
+    unimplemented!("#12: append_to_daily_note_with_hook")
 }
 
 /// The `blocks.source` of a write by `caller`.
