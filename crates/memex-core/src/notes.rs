@@ -574,6 +574,22 @@ pub fn delete_note(vault: &mut Vault, id: &NoteId) -> Result<()> {
     Ok(())
 }
 
+/// Deletes a note on the person path (`memex rm`, architect ruling D24):
+/// checks `expected_version` (`VersionConflict`), purges the note's search
+/// indexes before the delete, deletes it (its blocks, review rows, chips,
+/// change entries and memberships cascade) and re-renders, then reindexes
+/// with `embedder`, the footer of every daily note that held a chip for it.
+/// An unknown id is `NotFound`.
+pub fn delete_note_checked(
+    vault: &mut Vault,
+    id: &NoteId,
+    expected_version: i64,
+    embedder: Option<&dyn crate::embedder::Embedder>,
+) -> Result<()> {
+    let _ = (vault, id, expected_version, embedder);
+    unimplemented!("notes::delete_note_checked (#8)")
+}
+
 fn row_to_note(r: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
     let id_s: String = r.get(0)?;
     let title: String = r.get(1)?;
