@@ -12,7 +12,7 @@ import '../theme/typography.dart';
 import 'atoms.dart';
 import 'sidebar/canvases_rail.dart';
 import 'sidebar/days_pane.dart';
-import 'sidebar/notes_pane.dart';
+import 'sidebar/topics_pane.dart';
 
 /// Left sidebar: brand header → command/search button → vault pills →
 /// canvases rail → the Days/Topics switch over the Days list or the note
@@ -25,12 +25,9 @@ class Sidebar extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final settings = ref.watch(settingsProvider);
     final currentVault = ref.watch(currentVaultProvider);
-    final notes = ref.watch(notesListProvider);
     final activeTab = ref.watch(activeTabProvider);
     final canvases = ref.watch(canvasesProvider);
-    final vaultName = currentVault == null ? '' : p.basename(currentVault);
 
-    final activeNoteId = activeTab is NoteTab ? activeTab.id : null;
     final activeCanvasId = activeTab is CanvasTab ? activeTab.id : null;
 
     return Container(
@@ -65,33 +62,7 @@ class Sidebar extends ConsumerWidget {
           Expanded(
             child: switch (ref.watch(sidebarModeProvider)) {
               SidebarMode.days => const DaysPane(),
-              // Until #24's Topics tree: the notes pane keeps every note
-              // reachable.
-              SidebarMode.topics => Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  PanelHeader(
-                    eyebrow: '$vaultName · tree',
-                    action: switch (ref.watch(sidebarSortProvider)) {
-                      NoteSortMode.lastEdited => 'sort: edited',
-                      NoteSortMode.alphabetical => 'sort: a–z',
-                    },
-                    onAction: () {
-                      final n = ref.read(sidebarSortProvider.notifier);
-                      n.state = n.state == NoteSortMode.lastEdited
-                          ? NoteSortMode.alphabetical
-                          : NoteSortMode.lastEdited;
-                    },
-                  ),
-                  Expanded(
-                    child: NotesPane(
-                      notes: notes,
-                      activeNoteId: activeNoteId,
-                      onNewNote: onNewNote,
-                    ),
-                  ),
-                ],
-              ),
+              SidebarMode.topics => const TopicsPane(),
             },
           ),
           const OmHairline(),

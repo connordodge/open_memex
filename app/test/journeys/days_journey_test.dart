@@ -6,7 +6,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db/daily_reads.dart';
 import 'package:open_memex_app/src/state/sidebar_mode_state.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
-import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/theme/review_state_colors.dart';
 
@@ -110,7 +109,8 @@ void main() {
         );
 
         expect(r.h.read(sidebarModeProvider), SidebarMode.topics);
-        expect(r.notesRail, findsOneWidget);
+        // #24: Topics mode shows the Topics pane (it replaced the notes pane).
+        expect(find.byKey(const Key('topics-pane')), findsOneWidget);
         expect(r.daysPane, findsNothing);
         expect(tester.takeException(), isNull);
       },
@@ -534,12 +534,18 @@ void main() {
         await r.chooseTopics();
 
         expect(r.h.read(sidebarModeProvider), SidebarMode.topics);
-        expect(r.notesRail, findsOneWidget);
+        // #24 replaced the interim notes pane with the Topics pane: every
+        // non-daily note without a Smart Folder is reachable under Unsorted.
+        expect(find.byKey(const Key('topics-pane')), findsOneWidget);
+        expect(r.notesRail, findsNothing);
         expect(r.daysPane, findsNothing);
-        expect(find.byKey(const Key('note-list-item-$_plain')), findsOneWidget);
-        expect(find.byKey(const Key('note-list-item-$_oct02')), findsOneWidget);
+        expect(
+          find.byKey(const Key('topics-unsorted-$_plain')),
+          findsOneWidget,
+        );
+        expect(find.byKey(const Key('topics-unsorted-$_oct02')), findsNothing);
 
-        await tester.tap(find.byKey(const Key('note-list-item-$_plain')));
+        await tester.tap(find.byKey(const Key('topics-unsorted-$_plain')));
         await tester.pump();
         expect(r.activeTab, const NoteTab(_plain));
         expect(tester.takeException(), isNull);
@@ -632,22 +638,6 @@ void main() {
           r.textsUnder(r.todayRow).any((t) => t.contains('Late thoughts')),
           isTrue,
         );
-      },
-    );
-
-    testWidgets(
-      'in Topics mode the tree header sort action toggles between edited and a-z',
-      (tester) async {
-        final r = DaysRobot(tester);
-        await r.launch(db: _threeDays());
-        await r.chooseTopics();
-        expect(r.h.read(sidebarSortProvider), NoteSortMode.lastEdited);
-
-        await r.tap(find.text('SORT: EDITED'));
-        expect(r.h.read(sidebarSortProvider), NoteSortMode.alphabetical);
-
-        await r.tap(find.text('SORT: A–Z'));
-        expect(r.h.read(sidebarSortProvider), NoteSortMode.lastEdited);
       },
     );
 

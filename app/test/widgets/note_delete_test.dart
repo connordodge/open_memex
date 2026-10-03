@@ -6,8 +6,10 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
+import 'package:open_memex_app/src/screens/workspace.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 
@@ -28,7 +30,9 @@ const _cancel = Key('delete-note-cancel');
 const _inlineError = Key('inline-error');
 const _inlineErrorDismiss = Key('inline-error-dismiss');
 
-Key _listItem(String id) => Key('note-list-item-$id');
+/// A note's row in the sidebar's Topics mode: the role-less notes of these
+/// journeys sit under Unsorted (#24).
+Key _listItem(String id) => Key('topics-unsorted-$id');
 Key _tab(String id) => Key('tab-note-$id');
 
 FakeVaultDb _seededDb() {
@@ -75,14 +79,23 @@ Future<WorkspaceHarness> _pump(
   for (final tab in [...h.read(tabsProvider).tabs]) {
     tabs.close(tab);
   }
-  // The sidebar opens in Days mode (#23); the note list is the Topics mode.
+  // The sidebar opens in Days mode (#23); the note list is the Topics mode,
+  // where role-less notes show under Unsorted (#24).
   await tester.tap(find.byKey(const Key('sidebar-mode-topics')));
   await pumpFrames(tester);
   return h;
 }
 
 Future<void> _openNote(WidgetTester tester, String id) async {
-  await tester.tap(find.byKey(_listItem(id)));
+  if (id == _dailyId) {
+    // Daily notes are not listed under Unsorted; open the tab directly.
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(Workspace)),
+    );
+    container.read(tabsProvider.notifier).openOrFocus(NoteTab(id));
+  } else {
+    await tester.tap(find.byKey(_listItem(id)));
+  }
   await pumpFrames(tester);
 }
 
