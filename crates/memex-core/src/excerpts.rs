@@ -10,5 +10,5 @@ use crate::Result;
 /// `memex get` (architect ruling D7). Empty for a note without excerpts;
 /// filled by the excerpts Work Item (#10).
 pub fn note_transclusion_fields(_vault: &Vault, _note: &Note) -> Result<Map<String, Value>> {
-    todo!("WI #5: stub returning an empty map")
+    Ok(Map::new())
 }
