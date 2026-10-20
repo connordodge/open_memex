@@ -1,0 +1,6 @@
+Print the review prompt
+
+Usage: memex prompt review
+
+Options:
+  -h, --help  Print help

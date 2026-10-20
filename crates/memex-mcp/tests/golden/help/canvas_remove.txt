@@ -1,0 +1,9 @@
+Remove a note's placement from a canvas
+
+Usage: memex canvas remove --vault <VAULT> --canvas-id <CANVAS_ID> --note-id <NOTE_ID>
+
+Options:
+      --vault <VAULT>          
+      --canvas-id <CANVAS_ID>  
+      --note-id <NOTE_ID>      
+  -h, --help                   Print help
