@@ -100,6 +100,13 @@ struct Opened {
     vault_id: String,
 }
 
+/// Why a vault folder found by the scan could not be opened.
+enum OpenFailed {
+    /// Its vault files were gone by the time it was opened.
+    Gone,
+    Error(ApiError),
+}
+
 /// A served vault folder found on disk.
 struct VaultFolder {
     /// The folder name, as on disk.
@@ -145,11 +152,16 @@ impl Registry {
             return Err(vault_not_found(name));
         }
         let key = name.to_ascii_lowercase();
+        // The slot this scan can speak for: a not-found evicts only it, so
+        // an entry a concurrent request opens meanwhile survives (D8).
+        let seen = self.inner.current(&key);
         let inner = self.inner.clone();
         let lookup = key.clone();
         let found = blocking(move || Ok(inner.find(&lookup))).await?;
         let Some((folder, vault_id)) = found else {
-            self.inner.evict(&key, None);
+            if let Some(seen) = seen {
+                self.inner.evict(&key, Some(&seen));
+            }
             return Err(vault_not_found(name));
         };
 
@@ -164,9 +176,29 @@ impl Registry {
         }
         let inner = self.inner.clone();
         let opened = slot
-            .get_or_try_init(|| async move { blocking(move || inner.open(folder.path)).await })
-            .await?;
-        Ok(opened.entry.clone())
+            .get_or_try_init(|| async move {
+                let path = folder.path;
+                match blocking(move || match inner.open(path.clone()) {
+                    Ok(opened) => Ok(Ok(opened)),
+                    // Deleted between the scan and the open.
+                    Err(_) if !has_vault_files(&path) => Ok(Err(OpenFailed::Gone)),
+                    Err(e) => Err(e),
+                })
+                .await
+                {
+                    Ok(opened) => opened,
+                    Err(e) => Err(OpenFailed::Error(e)),
+                }
+            })
+            .await;
+        match opened {
+            Ok(opened) => Ok(opened.entry.clone()),
+            Err(OpenFailed::Gone) => {
+                self.inner.evict(&key, Some(&slot));
+                Err(vault_not_found(name))
+            }
+            Err(OpenFailed::Error(e)) => Err(e),
+        }
     }
 
     /// Every served vault, sorted by lower-cased name.
@@ -223,6 +255,11 @@ impl Inner {
             .entry(key.to_string())
             .or_insert_with(|| Arc::new(OnceCell::new()))
             .clone()
+    }
+
+    /// The slot in the map for `key` now, if any.
+    fn current(&self, key: &str) -> Option<Arc<Slot>> {
+        lock(&self.vaults).get(key).cloned()
     }
 
     /// Drops the slot for `key`: any slot, or only `only` when given.

@@ -1,0 +1,6 @@
+[
+  {"method": "GET", "path": "/vaults/seed/api/v1/notes", "response": "notes_list.json", "status": 200},
+  {"method": "POST", "path": "/vaults/seed/api/v1/notes", "request": "create_note.request.json",
+   "response": "create_note.json", "status": 201,
+   "headers": {"X-Memex-UTC-Offset": "-00:30"}, "dart_only": true}
+]

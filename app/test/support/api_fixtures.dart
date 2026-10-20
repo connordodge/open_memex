@@ -95,9 +95,44 @@ List<FixtureRow> loadFixtureRows(String domainDir) {
   ];
 }
 
+/// The only keys a row may have (the same set as `ROW_FIELDS` in Rust).
+const _rowFields = {
+  'method',
+  'path',
+  'request',
+  'response',
+  'status',
+  'headers',
+  'dart_only',
+};
+
+/// [file] when it is a bare file name in the domain folder: not empty, not
+/// `.` or `..`, and with no `/` or `\` (so never absolute and never outside
+/// the folder).
+String _bareFileName(String name, String field, String file) {
+  if (file.isEmpty ||
+      file == '.' ||
+      file == '..' ||
+      file.contains('/') ||
+      file.contains(r'\')) {
+    throw FormatException(
+      '$name: field "$field" must be a bare file name in the domain folder, '
+      'got ${jsonEncode(file)}',
+    );
+  }
+  return file;
+}
+
 FixtureRow _parseRow(String domainDir, String name, Object? row) {
   if (row is! Map<String, Object?>) {
     throw FormatException('$name: a row must be a JSON object');
+  }
+  for (final key in row.keys) {
+    if (!_rowFields.contains(key)) {
+      throw FormatException(
+        '$name: unknown field "$key" (a row has only ${_rowFields.join(', ')})',
+      );
+    }
   }
   String requiredString(String field) {
     final v = row[field];
@@ -112,7 +147,7 @@ FixtureRow _parseRow(String domainDir, String name, Object? row) {
 
   final method = requiredString('method');
   final path = requiredString('path');
-  final response = requiredString('response');
+  final response = _bareFileName(name, 'response', requiredString('response'));
 
   final status = row['status'];
   if (status == null) {
@@ -133,6 +168,7 @@ FixtureRow _parseRow(String domainDir, String name, Object? row) {
   if (request != null && request is! String) {
     throw FormatException('$name: field "request" must be a string');
   }
+  if (request is String) _bareFileName(name, 'request', request);
 
   final headers = <String, String>{};
   final rawHeaders = row['headers'];
@@ -166,6 +202,38 @@ FixtureRow _parseRow(String domainDir, String name, Object? row) {
     dartOnly: (dartOnly as bool?) ?? false,
   );
 }
+
+/// Every `api_v1/<domain>/` folder that holds an `index.json`, sorted by
+/// folder name (one level deep; `api_v1` itself is not a domain). The same
+/// set as `all_domain_dirs()` in Rust.
+List<String> allDomainDirs() => [
+  for (final e in Directory(apiV1FixturesDir).listSync())
+    if (e is Directory && File(p.join(e.path, 'index.json')).existsSync())
+      e.path,
+]..sort();
+
+/// Loads `<domainDir>/index.json` and checks that every `request` and
+/// `response` file its rows name exists in the folder. Throws a
+/// [FormatException] listing every missing file as
+/// `<domain>[<i>]: <field> file <name> is missing`.
+void checkDomainFiles(String domainDir) {
+  final domain = p.basename(p.normalize(domainDir));
+  final rows = loadFixtureRows(domainDir);
+  final missing = <String>[];
+  for (var i = 0; i < rows.length; i++) {
+    final files = {'request': rows[i].request, 'response': rows[i].response};
+    files.forEach((field, file) {
+      if (file != null && !File(p.join(domainDir, file)).existsSync()) {
+        missing.add('$domain[$i]: $field file $file is missing');
+      }
+    });
+  }
+  if (missing.isNotEmpty) throw FormatException(missing.join('\n'));
+}
+
+/// The row text both the Rust and the Dart row-loader tests parse (AC5). It
+/// sits outside `api_v1/`, so it is never a domain and names no real files.
+const parityIndexJsonPath = 'test/fixtures/api_fixtures_parity/index.json';
 
 /// The committed seed manifest.
 Map<String, Object?> seedManifest() =>
