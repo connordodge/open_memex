@@ -603,7 +603,13 @@ void main() {
       expect(found, globbed);
       final names = [for (final d in found) d.split('/').last];
       expect(names, contains('compat'));
-      expect(names, isNot(contains('server')));
+      // No folder is special: server/ is a domain exactly when it holds an
+      // index.json (#72 adds one); utc_offsets.json is simply not a row file.
+      expect(
+        names.contains('server'),
+        File('$apiV1FixturesDir/server/index.json').existsSync(),
+        reason: 'server/ is a domain iff it holds an index.json',
+      );
       expect(names, [...names]..sort(), reason: 'sorted by folder name');
       expect(
         names,

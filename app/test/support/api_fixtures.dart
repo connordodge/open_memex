@@ -205,7 +205,9 @@ FixtureRow _parseRow(String domainDir, String name, Object? row) {
 
 /// Every `api_v1/<domain>/` folder that holds an `index.json`, sorted by
 /// folder name (one level deep; `api_v1` itself is not a domain). The same
-/// set as `all_domain_dirs()` in Rust.
+/// set as `all_domain_dirs()` in Rust. No folder is special-cased: `server/`
+/// is a domain once it holds an `index.json`, and files there that no row
+/// names (`utc_offsets.json`) are not row files.
 List<String> allDomainDirs() => [
   for (final e in Directory(apiV1FixturesDir).listSync())
     if (e is Directory && File(p.join(e.path, 'index.json')).existsSync())
