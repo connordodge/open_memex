@@ -9,7 +9,6 @@ import 'package:open_memex_app/src/vault_access/errors.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
 import '../support/footer_cli_fakes.dart';
-import '../support/today_cli_fakes.dart';
 import '../support/topics_access_doubles.dart';
 import '../support/topics_launch.dart';
 
