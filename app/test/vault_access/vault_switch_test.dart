@@ -308,6 +308,45 @@ void main() {
     });
   }
 
+  for (final (name, hosted) in [
+    (
+      'a same-vault reload with an equal but non-identical VaultRef keeps the previous value',
+      false,
+    ),
+    (
+      'a same-vault reload with an equal but non-identical VaultRef keeps the previous value on a hosted vault',
+      true,
+    ),
+  ]) {
+    testWidgets(name, (tester) async {
+      final s = await _pump(tester, hosted: hosted);
+      s.a.gates.single.complete(_notes(['Alpha from A']));
+      await _drain(tester);
+      expect(s.value.valueOrNull?.vault, same(_vaultA));
+
+      // The same vault again as a new, equal ref (as a settings reload
+      // builds it), then a reload whose read stays pending.
+      final again = LocalVaultRef([_vaultA.path].join());
+      s.switchTo(again);
+      s.container.read(vaultRevisionProvider.notifier).state++;
+      await _drain(tester);
+
+      final current = s.container.read(currentVaultProvider);
+      expect(current, _vaultA);
+      expect(identical(current, _vaultA), isFalse);
+      expect(s.value.isLoading, isTrue);
+      expect(s.value.valueOrNull?.vault, same(_vaultA));
+      expect(find.text('Alpha from A'), findsOneWidget);
+      expect(find.text(_emptyText), findsNothing);
+      _expectNoSpinner();
+      expect(_facadeText(tester), 'facade:Alpha from A');
+      expect(
+        [for (final n in s.container.read(_wi70SwitchFacadeProvider)) n.title],
+        ['Alpha from A'],
+      );
+    });
+  }
+
   testWidgets(
     'vaultFacadeValue gives the empty value on first load and the data once loaded',
     (tester) async {
