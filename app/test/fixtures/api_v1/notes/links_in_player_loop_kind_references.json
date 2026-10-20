@@ -1,0 +1,24 @@
+{
+  "links": [
+    {
+      "from_note_id": "01M5DQAYZ4TAPTHDWE5PNWE4W5",
+      "id": "01M5DQAYZHCFX0P4QP3718HC8N",
+      "kind": "references",
+      "label": null,
+      "link_text": "Player Loop",
+      "position": 39,
+      "source": "inline_body",
+      "to_note_id": "01M5DQAYZ3WP7H0NXZZV9M2315"
+    },
+    {
+      "from_note_id": "01M5DQAYZ4YAPYMEDWXP8WCNGJ",
+      "id": "01M5DQAYZDBGZSDQ7X3PJT783V",
+      "kind": "references",
+      "label": "the loop",
+      "link_text": "Player Loop",
+      "position": 171,
+      "source": "inline_body",
+      "to_note_id": "01M5DQAYZ3WP7H0NXZZV9M2315"
+    }
+  ]
+}

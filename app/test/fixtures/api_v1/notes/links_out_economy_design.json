@@ -1,0 +1,24 @@
+{
+  "links": [
+    {
+      "from_note_id": "01M5DQAYZ47QW55S90ZF0A56AH",
+      "id": "01M5DQAYZFCB2T0ECN4HG7XFQM",
+      "kind": "extends",
+      "label": null,
+      "link_text": "Player Loop",
+      "position": 62,
+      "source": "inline_body",
+      "to_note_id": "01M5DQAYZ3WP7H0NXZZV9M2315"
+    },
+    {
+      "from_note_id": "01M5DQAYZ47QW55S90ZF0A56AH",
+      "id": "01M5DQAYZFCJGDA345T48TPSH3",
+      "kind": "from-day",
+      "label": null,
+      "link_text": "2026-10-19",
+      "position": 103,
+      "source": "inline_body",
+      "to_note_id": "01M5DQAYZ51PF87XFZWSV5PWXK"
+    }
+  ]
+}
