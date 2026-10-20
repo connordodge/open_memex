@@ -1,6 +1,8 @@
 // WI #69 review round 1 (finding 4): the picker shows the vault open
 // controller's failure copy for "open existing vault…" and "create new
-// vault…", as main did, and a recent row opens as it did on main.
+// vault…", as main did, and a recent row of a folder that is not a vault
+// has no tap, as on main. Fix round 3: a recent row drawn as a vault whose
+// memex.db is gone by the tap shows the not-a-vault copy and opens nothing.
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
@@ -274,28 +276,32 @@ void main() {
     );
 
     testWidgets(
-      'tapping a recent row of a folder that is not a vault still opens it as today',
+      'tapping a stale recent row whose memex.db was removed shows why and opens nothing',
       (tester) async {
-        // The row was drawn while the folder was a vault; by the tap it no
-        // longer is (memex.db gone, no rebuild in between). On main the tap
-        // opened it with no check: rememberVault, then the current vault.
-        // #92 adds the check (`memex vault check`); until then a recent row
-        // must not check the folder (lead ruling, behaviour-preserving WI).
+        // The row is drawn while the folder is a vault (tappable), then
+        // memex.db goes away before the tap with no rebuild in between.
         final vault = createVaultFolder('om69_recent_stale_');
-        final cli = FakeMemexCli()
-          ..on(
-            'settings get',
-            (_) => FakeMemexCli.ok(settingsGetMaxDepthStdout),
-          );
-        final c = await _pumpPicker(tester, cli: cli, recents: [vault.path]);
+        final c = await _pumpPicker(
+          tester,
+          cli: FakeMemexCli(),
+          recents: [vault.path],
+        );
         File(p.join(vault.path, 'memex.db')).deleteSync();
 
         await tester.tap(find.text(p.basename(vault.path)));
         await _settle(tester);
 
-        expect(c.read(currentVaultProvider), LocalVaultRef(vault.path));
-        expect(c.read(settingsProvider).lastVault, vault.path);
+        expect(
+          find.text(
+            '${vault.path} does not look like a vault (no manifest.json + memex.db).',
+          ),
+          findsOneWidget,
+        );
+        expect(c.read(currentVaultProvider), isNull);
+        expect(c.read(settingsProvider).lastVault, isNull);
         expect(c.read(settingsProvider).recentVaults, [vault.path]);
+        expect(find.byType(VaultPickerScreen), findsOneWidget);
+        expect(tester.takeException(), isNull);
       },
     );
   });
