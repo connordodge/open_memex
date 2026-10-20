@@ -9,7 +9,7 @@ import 'vault_state.dart';
 /// `LocalVaultAccess` for the current path (either handle may be null).
 /// A hosted vault gives null until #96.
 final vaultAccessProvider = Provider<VaultAccess?>((ref) {
-  final path = ref.watch(currentVaultProvider);
+  final path = ref.watch(currentVaultProvider).localPath;
   if (path == null) return null;
   return LocalVaultAccess(
     vaultPath: path,
