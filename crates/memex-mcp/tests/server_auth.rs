@@ -322,6 +322,7 @@ fn status_table_maps_every_c1_code_and_unlisted_codes_to_500() {
         ("block_not_found", 422),
         ("unauthorized", 401),
         ("payload_too_large", 413),
+        ("method_not_allowed", 405),
         ("internal", 500),
         // Unlisted codes are 500; codes match exactly.
         ("bogus_code", 500),
@@ -329,6 +330,7 @@ fn status_table_maps_every_c1_code_and_unlisted_codes_to_500() {
         ("Not_Found", 500),
         (" not_found", 500),
         ("NOT_FOUND", 500),
+        ("Method_Not_Allowed", 500),
     ];
     for (code, status) in table {
         assert_eq!(status_for_code(code).as_u16(), *status, "code {code:?}");
@@ -877,5 +879,78 @@ async fn wrong_method_on_a_known_route_answers_a_c1_error_body() {
             r.status,
             "{method} /api/v1/info: the status follows the C1 code {code:?}"
         );
+    }
+}
+
+/// The methods `/api/v1/info` does not serve.
+fn wrong_methods() -> [Method; 5] {
+    [
+        Method::POST,
+        Method::PUT,
+        Method::DELETE,
+        Method::PATCH,
+        Method::OPTIONS,
+    ]
+}
+
+fn cors_headers(r: &Reply) -> Vec<&(String, String)> {
+    r.headers
+        .iter()
+        .filter(|(k, _)| k.starts_with("access-control-"))
+        .collect()
+}
+
+#[tokio::test]
+async fn wrong_method_with_the_token_is_405_method_not_allowed_without_cors_headers() {
+    let srv = TestServer::start().await;
+    let bearer = srv.bearer();
+    let origin = vec![
+        ("origin", "http://evil.example".to_string()),
+        ("access-control-request-method", "POST".to_string()),
+        (
+            "access-control-request-headers",
+            "authorization".to_string(),
+        ),
+    ];
+    for method in wrong_methods() {
+        for path in ["/api/v1/info", "/api/v1/info?x=1"] {
+            let what = format!("{method} {path} with the token");
+            let r = send(&srv, &method, path, &None, Some(&bearer), &origin).await;
+            assert_eq!(r.status, 405, "{what}: {:?}", r.body);
+            assert_eq!(r.c1_code(), "method_not_allowed", "{what}");
+            assert!(
+                r.header("content-type")
+                    .is_some_and(|ct| ct.starts_with("application/json")),
+                "{what}: a JSON body, got {:?}",
+                r.header("content-type")
+            );
+            assert!(
+                cors_headers(&r).is_empty(),
+                "{what}: no CORS headers, got {:?}",
+                cors_headers(&r)
+            );
+            assert!(!r.body.contains(TEST_TOKEN), "{what}: no token echo");
+        }
+    }
+    // The served method on the same path is unaffected.
+    assert_eq!(
+        get(&srv.url("/api/v1/info"), Some(&bearer)).await.status,
+        200
+    );
+}
+
+#[tokio::test]
+async fn wrong_method_without_the_token_is_401_not_405() {
+    // The 405 fallback sits inside the auth layer, so a request without the
+    // token is refused before the method is checked.
+    let srv = TestServer::start().await;
+    for method in wrong_methods() {
+        for authorization in [None, Some("Bearer wrong-token-4d3c2b1a")] {
+            let what = format!("{method} /api/v1/info with {authorization:?}");
+            let r = send(&srv, &method, "/api/v1/info", &None, authorization, &[]).await;
+            assert_eq!(r.status, 401, "{what}: {:?}", r.body);
+            assert_eq!(r.c1_code(), "unauthorized", "{what}");
+            assert!(cors_headers(&r).is_empty(), "{what}: no CORS headers");
+        }
     }
 }
