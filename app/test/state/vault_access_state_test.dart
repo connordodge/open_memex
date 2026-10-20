@@ -83,6 +83,66 @@ void main() {
     );
   });
 
+  group('AC4 no CLI contracts', () {
+    test(
+      'with no CLI each write throws a StateError saying the CLI is not available',
+      () async {
+        final db = _seeded();
+        final access = _container(db: db, cli: null).read(vaultAccessProvider)!;
+
+        for (final wc in vaultAccessWriteCases) {
+          Object? caught;
+          try {
+            await wc.viaAccess(access);
+          } catch (e) {
+            caught = e;
+          }
+          expect(caught, isA<StateError>(), reason: wc.name);
+          expect(
+            (caught! as StateError).message,
+            'The memex CLI is not available.',
+            reason: wc.name,
+          );
+        }
+      },
+    );
+  });
+
+  group('AC5 no database contracts', () {
+    test(
+      'with no database revision is the constant no-database value',
+      () async {
+        final cli = vaultAccessSampleCli();
+        final access = _container(
+          db: null,
+          cli: cli,
+        ).read(vaultAccessProvider)!;
+
+        expect(LocalVaultAccess.noDatabaseRevision, 'no-database');
+        expect(await access.revision(), LocalVaultAccess.noDatabaseRevision);
+        // Constant: a write through the CLI does not change it.
+        await access.notes.addNote(contentMd: 'x');
+        expect(await access.revision(), 'no-database');
+        expect(cli.calls, hasLength(1), reason: 'revision never shells out');
+      },
+    );
+
+    test(
+      'with no database schemaVersion is the required version and never outdated',
+      () async {
+        final access = _container(
+          db: null,
+          cli: null,
+        ).read(vaultAccessProvider)!;
+
+        final version = await access.schemaVersion();
+        expect(version, requiredVaultSchemaVersion);
+        expect(version, 5);
+        expect(version < requiredVaultSchemaVersion, isFalse);
+      },
+    );
+  });
+
   group('AC5 no database', () {
     test('with no database local writes still run through the CLI', () async {
       final cli = vaultAccessSampleCli();
