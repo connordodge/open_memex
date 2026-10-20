@@ -284,7 +284,8 @@ fn first_block_id(vault: &Vault, note_id: &NoteId) -> String {
 /// a heading-prefixed snippet, a long snippet with a surrogate pair at the
 /// 117-unit cut, a ghost link, daily notes in every review state (reviewed
 /// 2026-10-18, unreviewed 2026-10-19, changed since review 2026-10-17, and
-/// 2026-10-15 with no `day_reviews` row), a daily note whose first block
+/// 2026-10-15 as a pre-V5 daily: no `day_reviews` row, no `blocks` rows, no
+/// topics marker), a daily note whose first block
 /// spans two lines (2026-10-16), a note with invalid-JSON frontmatter
 /// ("Broken Frontmatter"), pinned and unpinned Smart Folders (one nested),
 /// tags, footer chips, an excerpt, typed links and a canvas.
@@ -356,7 +357,7 @@ fn populate(vault: &mut Vault, clock: &StepClock) {
         "Morning playtest with the new crafting tree\nand two fresh players.\n\nNo crashes.\n",
         daily(),
     );
-    // Loses its `day_reviews` row below.
+    // Becomes a pre-V5 daily note below.
     let rowless_day = create(
         vault,
         clock,
@@ -505,17 +506,39 @@ fn populate(vault: &mut Vault, clock: &StepClock) {
     )
     .expect("reindex 2026-10-17");
 
-    // memex-core always gives a daily note its `day_reviews` row (the daily
-    // write hook creates it), but a daily note written before V5 has none and
-    // every reader must treat it as unreviewed. No core function writes that
-    // state, so it is made with raw SQL.
-    vault
-        .connection_ref()
-        .execute(
-            "DELETE FROM day_reviews WHERE note_id = ?",
-            params![rowless_day.as_str()],
+    // A daily note written before V5: no `day_reviews` row, no `blocks` rows
+    // and no topics marker in its body, and every reader must treat it as
+    // unreviewed with an empty preview. memex-core cannot write that state:
+    // the daily write hook (`daily::sync_daily_note`) writes the blocks, the
+    // `day_reviews` row and the marker-bearing body in one transaction, and V5
+    // backfills nothing. So it is made with raw SQL, and the chunks are
+    // rebuilt from the marker-free body as `reindex_note` does for any body.
+    let pre_v5_body = "Read about loot tables.\n";
+    {
+        let conn = vault.connection_ref();
+        for (sql, what) in [
+            (
+                "DELETE FROM day_reviews WHERE note_id = ?",
+                "day_reviews row",
+            ),
+            ("DELETE FROM blocks WHERE note_id = ?", "blocks rows"),
+        ] {
+            conn.execute(sql, params![rowless_day.as_str()])
+                .unwrap_or_else(|e| panic!("drop the {what} of 2026-10-15: {e}"));
+        }
+        conn.execute(
+            "UPDATE notes SET content_md = ? WHERE id = ?",
+            params![pre_v5_body, rowless_day.as_str()],
         )
-        .expect("drop the day_reviews row of 2026-10-15");
+        .expect("write the marker-free body of 2026-10-15");
+    }
+    indexer::reindex_note(
+        vault.connection_mut(),
+        rowless_day.as_str(),
+        pre_v5_body,
+        None,
+    )
+    .expect("reindex 2026-10-15");
 
     // memex-core only stores frontmatter it serialized itself, so it cannot
     // write invalid JSON; the json_valid guards in the app's reads
@@ -852,7 +875,9 @@ pub fn load_rows(domain_dir: &Path) -> Result<Vec<FixtureRow>, String> {
 }
 
 /// Every `api_v1/<domain>/` folder that holds an `index.json`, sorted by
-/// folder name (one level deep; `api_v1` itself is not a domain).
+/// folder name (one level deep; `api_v1` itself is not a domain). No folder
+/// is special-cased: `server/` is a domain once it holds an `index.json`, and
+/// files there that no row names (`utc_offsets.json`) are not row files.
 pub fn all_domain_dirs() -> Vec<PathBuf> {
     let root = api_v1_dir();
     let entries = fs::read_dir(&root).unwrap_or_else(|e| panic!("read {}: {e}", root.display()));
