@@ -1,0 +1,9 @@
+Delete a note
+
+Usage: memex rm --vault <VAULT> --note-id <NOTE_ID> --expected-version <EXPECTED_VERSION>
+
+Options:
+      --vault <VAULT>                        Vault directory
+      --note-id <NOTE_ID>                    Note id (ULID)
+      --expected-version <EXPECTED_VERSION>  Expected current version (optimistic concurrency)
+  -h, --help                                 Print help

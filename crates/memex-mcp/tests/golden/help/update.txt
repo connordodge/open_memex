@@ -1,0 +1,19 @@
+Update an existing note. Body comes from stdin
+
+Usage: memex update [OPTIONS] --vault <VAULT> --note-id <NOTE_ID> --expected-version <EXPECTED_VERSION>
+
+Options:
+      --vault <VAULT>
+          Vault directory
+      --note-id <NOTE_ID>
+          Note id (ULID)
+      --expected-version <EXPECTED_VERSION>
+          Expected current version (optimistic concurrency)
+      --title <TITLE>
+          New title (optional; if omitted, keeps existing title)
+      --no-rename-links
+          Skip the title-rename pass that rewrites `[[OldTitle]]` in linkers
+      --with-embeddings
+          Use real embeddings
+  -h, --help
+          Print help

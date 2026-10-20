@@ -1,0 +1,12 @@
+Add a wikilink from one note to another. Inserts into the source note's markdown per the destination rule and re-indexes
+
+Usage: memex add-link [OPTIONS] --vault <VAULT> --from <FROM> --to <TO>
+
+Options:
+      --vault <VAULT>    Vault directory
+      --from <FROM>      Source note id
+      --to <TO>          Target note id
+      --kind <KIND>      Kind. Built-in (`references`, `extends`, `contradicts`, `example-of`) or any user-defined kebab-case kind. Default: `references` [default: references]
+      --label <LABEL>    Optional display alias (used as the wikilink's `|alias` segment)
+      --with-embeddings  Use real embeddings during the post-write reindex
+  -h, --help             Print help

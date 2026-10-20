@@ -1,0 +1,12 @@
+Rename, re-parent or (un)pin a Smart Folder
+
+Usage: memex folder update [OPTIONS] --vault <VAULT> --id <ID>
+
+Options:
+      --vault <VAULT>          Vault directory
+      --id <ID>                Folder id
+      --name <NAME>            New name
+      --parent-id <PARENT_ID>  New parent folder id
+      --to-root                Move the folder to the top level
+      --pinned <PINNED>        Pin or unpin the folder [possible values: true, false]
+  -h, --help                   Print help

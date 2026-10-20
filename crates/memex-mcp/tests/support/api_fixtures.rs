@@ -16,8 +16,12 @@
 //!   `created_at`). [`materialize_seed`] turns them into a vault folder named
 //!   [`SEED_VAULT_NAME`]. [`run_seed_builder`] builds a new seed with
 //!   memex-core functions.
+//!   [`seed_summary`] is the structural form a seed-drift check compares.
 //! - The row format and loader ([`FixtureRow`], [`load_rows`]), and the row
 //!   runner ([`run_rows`]) that takes the request executor as a parameter.
+//!   [`all_domain_dirs`] and [`check_domain_files`] find every domain and
+//!   check the files its rows name; [`parity_index_path`] is the shared row
+//!   text of the Rust/Dart parse-parity check.
 //! - [`normalize_volatile`] for write responses and [`canonical_json`], the
 //!   byte form every response file is stored in.
 //! - The `api_v1/server/utc_offsets.json` loader ([`load_utc_offsets`]).
@@ -201,21 +205,24 @@ impl Clock for StepClock {
     }
 }
 
-/// The 120-UTF-16-unit snippet cut (`VaultDb._snippet`).
-const SNIPPET_CUT: usize = 120;
+/// `VaultDb._snippet` keeps a first line of at most 120 UTF-16 units whole
+/// and cuts a longer one to its first 117 units (`substring(0, 117)`).
+const SNIPPET_MAX: usize = 120;
+const SNIPPET_CUT: usize = 117;
 
-/// 119 ASCII units, then a surrogate pair at units 119-120 (D10 edge row).
+/// 116 ASCII units, then a surrogate pair at units 116-117 that straddles the
+/// 117-unit cut, in a line longer than 120 units (D10 edge row).
 fn long_snippet_line() -> String {
     let lead = "Pacing is the quiet half of design: each session needs a slow stretch, \
-                a sharp climb, and a short pause before the dice";
-    let line = format!("{lead}\u{1F3B2} decide the next run.");
+                a sharp climb, and a short pause before a die";
+    let line = format!("{lead}\u{1F3B2} decides the next run.");
     let units: Vec<u16> = line.encode_utf16().collect();
     assert!(
-        units.len() > SNIPPET_CUT
-            && line.chars().count() > SNIPPET_CUT
+        units.len() > SNIPPET_MAX
+            && line.chars().count() > SNIPPET_MAX
             && (0xD800..=0xDBFF).contains(&units[SNIPPET_CUT - 1])
             && (0xDC00..=0xDFFF).contains(&units[SNIPPET_CUT]),
-        "the long snippet line must put a surrogate pair at UTF-16 units 119-120"
+        "the long snippet line must put a surrogate pair at UTF-16 units 116-117"
     );
     line
 }
@@ -228,9 +235,20 @@ fn build_seed() -> (String, String) {
     let clock = StepClock(Cell::new(1_760_000_000_000));
     populate(&mut vault, &clock);
     let sql = dump_seed(vault.connection_ref());
+    // Fixture rows pin the frozen `vault_id` (and `created_at`), and no seed
+    // row holds either, so a rebuild keeps the committed values. A freshly
+    // minted pair is used only when there is no committed manifest yet.
+    let committed = fs::read_to_string(api_v1_dir().join(SEED_MANIFEST_FILE))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
+    let frozen = |key: &str| committed.as_ref().and_then(|m| m.get(key)).cloned();
     let manifest = serde_json::json!({
-        "vault_id": vault.vault_id(),
-        "created_at": vault.manifest().created_at,
+        "vault_id": frozen("vault_id")
+            .filter(Value::is_string)
+            .unwrap_or_else(|| Value::from(vault.vault_id())),
+        "created_at": frozen("created_at")
+            .filter(Value::is_i64)
+            .unwrap_or_else(|| Value::from(vault.manifest().created_at)),
     });
     let manifest = format!(
         "{}\n",
@@ -264,9 +282,13 @@ fn first_block_id(vault: &Vault, note_id: &NoteId) -> String {
 
 /// The seed's content. Covers every value both languages compute (D10):
 /// a heading-prefixed snippet, a long snippet with a surrogate pair at the
-/// cut, a ghost link, an unreviewed and a reviewed daily note, pinned and
-/// unpinned Smart Folders (one nested), tags, footer chips, an excerpt, typed
-/// links and a canvas.
+/// 117-unit cut, a ghost link, daily notes in every review state (reviewed
+/// 2026-10-18, unreviewed 2026-10-19, changed since review 2026-10-17, and
+/// 2026-10-15 as a pre-V5 daily: no `day_reviews` row, no `blocks` rows, no
+/// topics marker), a daily note whose first block
+/// spans two lines (2026-10-16), a note with invalid-JSON frontmatter
+/// ("Broken Frontmatter"), pinned and unpinned Smart Folders (one nested),
+/// tags, footer chips, an excerpt, typed links and a canvas.
 fn populate(vault: &mut Vault, clock: &StepClock) {
     let topic = || serde_json::json!({ "role": "topic" });
     let daily = || serde_json::json!({ "role": "daily" });
@@ -317,6 +339,39 @@ fn populate(vault: &mut Vault, clock: &StepClock) {
         "2026-10-19",
         "Sketched a crafting tree.\n\nPrices felt too low in town.\n",
         daily(),
+    );
+    // Reviewed below, then edited by the person: changed since review.
+    let changed_day = create(
+        vault,
+        clock,
+        "2026-10-17",
+        "Tuned the shop prices.\n",
+        daily(),
+    );
+    // The first block is one paragraph over two lines, so the daily preview
+    // (the first block up to its first newline) cuts it.
+    create(
+        vault,
+        clock,
+        "2026-10-16",
+        "Morning playtest with the new crafting tree\nand two fresh players.\n\nNo crashes.\n",
+        daily(),
+    );
+    // Becomes a pre-V5 daily note below.
+    let rowless_day = create(
+        vault,
+        clock,
+        "2026-10-15",
+        "Read about loot tables.\n",
+        daily(),
+    );
+    // Gets invalid-JSON frontmatter below.
+    let broken = create(
+        vault,
+        clock,
+        "Broken Frontmatter",
+        "Its frontmatter is not JSON, so every reader treats it as role-less.\n",
+        serde_json::json!({}),
     );
 
     for (note, tag) in [
@@ -418,6 +473,95 @@ fn populate(vault: &mut Vault, clock: &StepClock) {
     ];
     review::mark_day_reviewed(vault, "2026-10-18", version, &changes, clock)
         .expect("mark 2026-10-18 reviewed");
+
+    // 2026-10-17: reviewed, then the person edits its person section, so
+    // `content_version` moves past `reviewed_content_version`.
+    review::mark_day_reviewed(
+        vault,
+        "2026-10-17",
+        content_version(vault, &changed_day),
+        &[ChangeEntry {
+            note_id: changed_day.as_str().to_string(),
+            bullets: vec!["Noted the price tuning".to_string()],
+        }],
+        clock,
+    )
+    .expect("mark 2026-10-17 reviewed");
+    let current = notes::get_note(vault, &changed_day).expect("read 2026-10-17");
+    let edited = notes::update_note(
+        vault,
+        &changed_day,
+        current.version,
+        notes::UpdateNote {
+            content_md: Some("Tuned the shop prices.\n\nThen undid half of it.\n".to_string()),
+            ..Default::default()
+        },
+    )
+    .expect("edit 2026-10-17 after its review");
+    indexer::reindex_note(
+        vault.connection_mut(),
+        edited.id.as_str(),
+        &edited.content_md,
+        None,
+    )
+    .expect("reindex 2026-10-17");
+
+    // A daily note written before V5: no `day_reviews` row, no `blocks` rows
+    // and no topics marker in its body, and every reader must treat it as
+    // unreviewed with an empty preview. memex-core cannot write that state:
+    // the daily write hook (`daily::sync_daily_note`) writes the blocks, the
+    // `day_reviews` row and the marker-bearing body in one transaction, and V5
+    // backfills nothing. So it is made with raw SQL, and the chunks are
+    // rebuilt from the marker-free body as `reindex_note` does for any body.
+    let pre_v5_body = "Read about loot tables.\n";
+    {
+        let conn = vault.connection_ref();
+        for (sql, what) in [
+            (
+                "DELETE FROM day_reviews WHERE note_id = ?",
+                "day_reviews row",
+            ),
+            ("DELETE FROM blocks WHERE note_id = ?", "blocks rows"),
+        ] {
+            conn.execute(sql, params![rowless_day.as_str()])
+                .unwrap_or_else(|e| panic!("drop the {what} of 2026-10-15: {e}"));
+        }
+        conn.execute(
+            "UPDATE notes SET content_md = ? WHERE id = ?",
+            params![pre_v5_body, rowless_day.as_str()],
+        )
+        .expect("write the marker-free body of 2026-10-15");
+    }
+    indexer::reindex_note(
+        vault.connection_mut(),
+        rowless_day.as_str(),
+        pre_v5_body,
+        None,
+    )
+    .expect("reindex 2026-10-15");
+
+    // memex-core only stores frontmatter it serialized itself, so it cannot
+    // write invalid JSON; the json_valid guards in the app's reads
+    // (daily_reads.dart, topics_reads.dart, graph_reads.dart) and in core
+    // need a row that has it, made with raw SQL.
+    vault
+        .connection_ref()
+        .execute(
+            "UPDATE notes SET frontmatter = '{\"role\": \"topic\"' WHERE id = ?",
+            params![broken.as_str()],
+        )
+        .expect("break the frontmatter of Broken Frontmatter");
+}
+
+fn content_version(vault: &Vault, note_id: &NoteId) -> i64 {
+    vault
+        .connection_ref()
+        .query_row(
+            "SELECT content_version FROM day_reviews WHERE note_id = ?",
+            params![note_id.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap_or_else(|e| panic!("day_reviews row of {note_id}: {e}"))
 }
 
 /// Tables in insertion order (parents before children). Tables not listed
@@ -446,6 +590,31 @@ const SCHEMA_DATA_TABLES: &[&str] = &["schema_version", "vault_settings"];
 /// The seed's data rows as SQL: one `INSERT INTO <table>` per line, rows in
 /// rowid order, no DDL and nothing from the search-index tables.
 fn dump_seed(conn: &Connection) -> String {
+    let mut out = String::new();
+    out.push_str("-- Frozen seed vault (WI #74, D10): data rows on top of vault_schema_v5.sql.\n");
+    out.push_str(
+        "-- Generated by crates/memex-mcp/tests/support/api_fixtures.rs. Do not edit.\n\
+         -- Regenerate (rewrites every id; rebless every domain after it):\n\
+         --   MEMEX_BLESS=1 MEMEX_BLESS_SEED=1 cargo test -p memex-mcp --test api_fixtures \
+         seed_builder_never_writes_committed_fixtures_without_bless\n\n",
+    );
+    for table in seed_tables(conn) {
+        let cols = table_columns(conn, &table);
+        for row in table_rows(conn, &table, &cols) {
+            let values = row.iter().map(sql_literal).collect::<Vec<_>>().join(", ");
+            out.push_str(&format!(
+                "INSERT INTO {table} ({}) VALUES ({values});\n",
+                cols.join(", ")
+            ));
+        }
+    }
+    out
+}
+
+/// The data tables a seed holds, parents before children ([`TABLE_ORDER`],
+/// then the rest by name): every ordinary table except the search-index
+/// tables and the tables `vault_schema_v5.sql` already fills.
+fn seed_tables(conn: &Connection) -> Vec<String> {
     let mut tables: Vec<String> = {
         let mut stmt = conn
             .prepare(
@@ -471,53 +640,36 @@ fn dump_seed(conn: &Connection) -> String {
             .unwrap_or(TABLE_ORDER.len())
     };
     tables.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| a.cmp(b)));
+    tables
+}
 
-    let mut out = String::new();
-    out.push_str("-- Frozen seed vault (WI #74, D10): data rows on top of vault_schema_v5.sql.\n");
-    out.push_str(
-        "-- Generated by crates/memex-mcp/tests/support/api_fixtures.rs. Do not edit.\n\
-         -- Regenerate (rewrites every id; rebless every domain after it):\n\
-         --   MEMEX_BLESS=1 MEMEX_BLESS_SEED=1 cargo test -p memex-mcp --test api_fixtures \
-         seed_builder_never_writes_committed_fixtures_without_bless\n\n",
-    );
-    for table in tables {
-        let cols: Vec<String> = {
-            let mut stmt = conn
-                .prepare("SELECT name FROM pragma_table_info(?1) ORDER BY cid")
-                .unwrap();
-            let rows = stmt.query_map([&table], |r| r.get::<_, String>(0)).unwrap();
-            rows.map(|r| r.unwrap()).collect()
-        };
-        let list = cols
-            .iter()
-            .map(|c| format!("\"{c}\""))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let mut stmt = conn
-            .prepare(&format!("SELECT {list} FROM \"{table}\" ORDER BY rowid"))
-            .unwrap();
-        let n = cols.len();
-        let rows = stmt
-            .query_map([], |r| {
-                (0..n)
-                    .map(|i| r.get::<_, SqlValue>(i))
-                    .collect::<rusqlite::Result<Vec<_>>>()
-            })
-            .unwrap();
-        for row in rows {
-            let values = row
-                .unwrap()
-                .iter()
-                .map(sql_literal)
-                .collect::<Vec<_>>()
-                .join(", ");
-            out.push_str(&format!(
-                "INSERT INTO {table} ({}) VALUES ({values});\n",
-                cols.join(", ")
-            ));
-        }
-    }
-    out
+fn table_columns(conn: &Connection, table: &str) -> Vec<String> {
+    let mut stmt = conn
+        .prepare("SELECT name FROM pragma_table_info(?1) ORDER BY cid")
+        .unwrap();
+    let rows = stmt.query_map([table], |r| r.get::<_, String>(0)).unwrap();
+    rows.map(|r| r.unwrap()).collect()
+}
+
+/// Every row of `table` in rowid order, as the values of `cols`.
+fn table_rows(conn: &Connection, table: &str, cols: &[String]) -> Vec<Vec<SqlValue>> {
+    let list = cols
+        .iter()
+        .map(|c| format!("\"{c}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut stmt = conn
+        .prepare(&format!("SELECT {list} FROM \"{table}\" ORDER BY rowid"))
+        .unwrap();
+    let n = cols.len();
+    let rows = stmt
+        .query_map([], |r| {
+            (0..n)
+                .map(|i| r.get::<_, SqlValue>(i))
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .unwrap();
+    rows.map(|r| r.unwrap()).collect()
 }
 
 /// A SQL literal for `v` that fits on one line: control characters in text
@@ -618,11 +770,40 @@ fn read_index(domain_dir: &Path) -> Result<Vec<Value>, String> {
     }
 }
 
+/// The only keys a row may have.
+const ROW_FIELDS: &[&str] = &[
+    "method",
+    "path",
+    "request",
+    "response",
+    "status",
+    "headers",
+    "dart_only",
+];
+
+/// `file` when it is a bare file name in the domain folder: not empty, not
+/// `.` or `..`, and with no `/` or `\` (so never absolute and never outside
+/// the folder).
+fn bare_file_name(name: &str, field: &str, file: String) -> Result<String, String> {
+    if file.is_empty() || file == "." || file == ".." || file.contains(['/', '\\']) {
+        return Err(format!(
+            "{name}: field \"{field}\" must be a bare file name in the domain folder, got {file:?}"
+        ));
+    }
+    Ok(file)
+}
+
 fn parse_row(domain: &str, i: usize, v: &Value) -> Result<FixtureRow, String> {
     let name = format!("{domain}[{i}]");
     let obj = v
         .as_object()
         .ok_or_else(|| format!("{name}: a row must be a JSON object"))?;
+    if let Some(key) = obj.keys().find(|k| !ROW_FIELDS.contains(&k.as_str())) {
+        return Err(format!(
+            "{name}: unknown field \"{key}\" (a row has only {})",
+            ROW_FIELDS.join(", ")
+        ));
+    }
     let required_str = |field: &str| -> Result<String, String> {
         match obj.get(field) {
             None | Some(Value::Null) => Err(format!("{name}: missing required field \"{field}\"")),
@@ -632,7 +813,7 @@ fn parse_row(domain: &str, i: usize, v: &Value) -> Result<FixtureRow, String> {
     };
     let method = required_str("method")?;
     let path = required_str("path")?;
-    let response = required_str("response")?;
+    let response = bare_file_name(&name, "response", required_str("response")?)?;
     let status = match obj.get("status") {
         None | Some(Value::Null) => {
             return Err(format!("{name}: missing required field \"status\""))
@@ -650,7 +831,7 @@ fn parse_row(domain: &str, i: usize, v: &Value) -> Result<FixtureRow, String> {
     };
     let request = match obj.get("request") {
         None | Some(Value::Null) => None,
-        Some(Value::String(s)) => Some(s.clone()),
+        Some(Value::String(s)) => Some(bare_file_name(&name, "request", s.clone())?),
         Some(_) => return Err(format!("{name}: field \"request\" must be a string")),
     };
     let mut headers = BTreeMap::new();
@@ -691,6 +872,55 @@ pub fn load_rows(domain_dir: &Path) -> Result<Vec<FixtureRow>, String> {
         .enumerate()
         .map(|(i, v)| parse_row(&domain, i, v))
         .collect()
+}
+
+/// Every `api_v1/<domain>/` folder that holds an `index.json`, sorted by
+/// folder name (one level deep; `api_v1` itself is not a domain). No folder
+/// is special-cased: `server/` is a domain once it holds an `index.json`, and
+/// files there that no row names (`utc_offsets.json`) are not row files.
+pub fn all_domain_dirs() -> Vec<PathBuf> {
+    let root = api_v1_dir();
+    let entries = fs::read_dir(&root).unwrap_or_else(|e| panic!("read {}: {e}", root.display()));
+    let mut dirs: Vec<PathBuf> = entries
+        .map(|e| {
+            e.unwrap_or_else(|e| panic!("read {}: {e}", root.display()))
+                .path()
+        })
+        .filter(|p| p.is_dir() && p.join(INDEX_FILE).is_file())
+        .collect();
+    dirs.sort();
+    dirs
+}
+
+/// Loads `<domain_dir>/index.json` and checks that every `request` and
+/// `response` file its rows name exists in the folder. The error lists every
+/// missing file as `<domain>[<i>]: <field> file <name> is missing`.
+pub fn check_domain_files(domain_dir: &Path) -> Result<(), String> {
+    let domain = domain_name(domain_dir);
+    let mut missing = Vec::new();
+    for (i, row) in load_rows(domain_dir)?.iter().enumerate() {
+        let files = [
+            ("request", row.request.as_deref()),
+            ("response", Some(row.response.as_str())),
+        ];
+        for (field, file) in files {
+            if let Some(file) = file.filter(|f| !domain_dir.join(f).is_file()) {
+                missing.push(format!("{domain}[{i}]: {field} file {file} is missing"));
+            }
+        }
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(missing.join("\n"))
+    }
+}
+
+/// `app/test/fixtures/api_fixtures_parity/index.json`: the row text both the
+/// Rust and the Dart row-loader tests parse (AC5). It sits outside `api_v1/`,
+/// so it is never a domain and names no real files.
+pub fn parity_index_path() -> PathBuf {
+    api_v1_dir().join("../api_fixtures_parity/index.json")
 }
 
 /// The bytes a response is compared and stored as: [`canonical_json`] of the
@@ -841,11 +1071,13 @@ pub fn canonical_json(v: &Value) -> String {
 }
 
 /// The values the committed seed holds: every ULID-shaped token and every
-/// integer literal in `seed_vault.sql`, plus the manifest's values.
+/// integer literal in `seed_vault.sql`, plus the manifest's values, and the
+/// block ids of every table with a `block_id` column.
 struct SeedValues {
     text: String,
     ulids: BTreeSet<String>,
     integers: BTreeSet<i64>,
+    block_ids: BTreeSet<String>,
 }
 
 fn ulid_re() -> &'static Regex {
@@ -858,10 +1090,30 @@ fn placeholder_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"^<[a-z_]+(:\d+)?>$").unwrap())
 }
 
+/// A whole block id: 6 lowercase Crockford base32 chars (`blocks::short_id`).
+fn block_id_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^[0-9a-hjkmnp-tv-z]{6}$").unwrap())
+}
+
+/// A `[[...]]` link or `![[...]]` transclusion token.
+fn link_token_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\[\[[^\[\]]*\]\]").unwrap())
+}
+
+/// A `^<block id>` ref inside a link token (`#^from`, `..^to`).
+fn block_ref_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\^([0-9a-hjkmnp-tv-z]{6})\b").unwrap())
+}
+
 fn seed_values() -> &'static SeedValues {
     static SEED: OnceLock<SeedValues> = OnceLock::new();
     SEED.get_or_init(|| {
-        let mut text = seed_sql();
+        let sql = seed_sql();
+        let block_ids = block_ids_of(&seed_connection(&sql));
+        let mut text = sql;
         text.push('\n');
         text.push_str(&read_string(&api_v1_dir().join(SEED_MANIFEST_FILE)));
         let ulids = ulid_re()
@@ -877,12 +1129,62 @@ fn seed_values() -> &'static SeedValues {
             text,
             ulids,
             integers,
+            block_ids,
         }
     })
 }
 
+/// Every value of every `block_id` column in `conn`.
+fn block_ids_of(conn: &Connection) -> BTreeSet<String> {
+    let tables: Vec<String> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT m.name FROM sqlite_master m, pragma_table_info(m.name) c
+                 WHERE m.type = 'table' AND c.name = 'block_id' ORDER BY m.name",
+            )
+            .unwrap();
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
+        rows.map(|r| r.unwrap()).collect()
+    };
+    let mut ids = BTreeSet::new();
+    for table in tables {
+        let mut stmt = conn
+            .prepare(&format!("SELECT block_id FROM \"{table}\""))
+            .unwrap();
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
+        ids.extend(rows.map(|r| r.unwrap()));
+    }
+    ids
+}
+
 const ID_PLACEHOLDER: &str = "id";
+const BLOCK_PLACEHOLDER: &str = "block";
 const TIMESTAMP_PLACEHOLDER: &str = "<timestamp>";
+
+/// The placeholders handed out so far, per kind, keyed by the minted value.
+#[derive(Default)]
+struct Minted {
+    ids: HashMap<String, String>,
+    blocks: HashMap<String, String>,
+}
+
+impl Minted {
+    fn id(&mut self, token: &str) -> String {
+        let next = self.ids.len() + 1;
+        self.ids
+            .entry(token.to_string())
+            .or_insert_with(|| format!("<{ID_PLACEHOLDER}:{next}>"))
+            .clone()
+    }
+
+    fn block(&mut self, token: &str) -> String {
+        let next = self.blocks.len() + 1;
+        self.blocks
+            .entry(token.to_string())
+            .or_insert_with(|| format!("<{BLOCK_PLACEHOLDER}:{next}>"))
+            .clone()
+    }
+}
 
 /// Replaces the values a write mints with stable placeholders, against the
 /// committed seed:
@@ -891,37 +1193,37 @@ const TIMESTAMP_PLACEHOLDER: &str = "<timestamp>";
 ///   that the seed does not hold becomes `<id:N>`, numbered by first
 ///   appearance (object keys visited in sorted order), so the same minted id
 ///   gets the same placeholder everywhere in the value;
+/// - a block id (6 lowercase Crockford base32 chars) that no seed table
+///   holds becomes `<block:N>`, numbered the same way but separately from
+///   `<id:N>`: a whole string under a `block_id` or `block_ids` key (arrays
+///   included), and every `^<block id>` ref inside a `[[...]]` or `![[...]]`
+///   token in any string (`![[2026-10-19#^<block:1>..^<block:2>]]`);
 /// - a number or string under a key ending in `_at` that the seed does not
 ///   hold becomes `"<timestamp>"`.
 ///
-/// Seed ids, seed timestamps, object keys and every other value are left
-/// as they are, and placeholders are themselves left alone, so the function
-/// is idempotent and its output is the same across runs.
+/// Seed ids, seed block ids, seed timestamps, object keys and every other
+/// value are left as they are, and placeholders are themselves left alone,
+/// so the function is idempotent and its output is the same across runs.
 pub fn normalize_volatile(v: &Value) -> Value {
-    let mut ids: HashMap<String, String> = HashMap::new();
-    normalize_value(v, None, seed_values(), &mut ids)
+    normalize_value(v, None, seed_values(), &mut Minted::default())
 }
 
-fn normalize_value(
-    v: &Value,
-    key: Option<&str>,
-    seed: &SeedValues,
-    ids: &mut HashMap<String, String>,
-) -> Value {
+fn normalize_value(v: &Value, key: Option<&str>, seed: &SeedValues, minted: &mut Minted) -> Value {
     let is_time_key = key.is_some_and(|k| k.ends_with("_at"));
+    let is_block_key = key.is_some_and(|k| k == "block_id" || k == "block_ids");
     match v {
         Value::Object(m) => {
             let mut keys: Vec<&String> = m.keys().collect();
             keys.sort();
             let mut out = Map::new();
             for k in keys {
-                out.insert(k.clone(), normalize_value(&m[k], Some(k), seed, ids));
+                out.insert(k.clone(), normalize_value(&m[k], Some(k), seed, minted));
             }
             Value::Object(out)
         }
         Value::Array(a) => Value::Array(
             a.iter()
-                .map(|x| normalize_value(x, key, seed, ids))
+                .map(|x| normalize_value(x, key, seed, minted))
                 .collect(),
         ),
         Value::Number(n) if is_time_key => match n.as_i64() {
@@ -929,16 +1231,33 @@ fn normalize_value(
             _ => Value::String(TIMESTAMP_PLACEHOLDER.to_string()),
         },
         Value::String(s) if placeholder_re().is_match(s) => v.clone(),
+        Value::String(s) if is_block_key && block_id_re().is_match(s) => {
+            if seed.block_ids.contains(s) {
+                v.clone()
+            } else {
+                Value::String(minted.block(s))
+            }
+        }
         Value::String(s) => {
             let replaced = ulid_re().replace_all(s, |c: &regex::Captures| {
                 let token = &c[0];
                 if seed.ulids.contains(token) {
-                    return token.to_string();
+                    token.to_string()
+                } else {
+                    minted.id(token)
                 }
-                let next = ids.len() + 1;
-                ids.entry(token.to_string())
-                    .or_insert_with(|| format!("<{ID_PLACEHOLDER}:{next}>"))
-                    .clone()
+            });
+            let replaced = link_token_re().replace_all(&replaced, |link: &regex::Captures| {
+                block_ref_re()
+                    .replace_all(&link[0], |r: &regex::Captures| {
+                        let id = &r[1];
+                        if seed.block_ids.contains(id) {
+                            r[0].to_string()
+                        } else {
+                            format!("^{}", minted.block(id))
+                        }
+                    })
+                    .into_owned()
             });
             if is_time_key && replaced == *s && !seed.text.contains(s.as_str()) {
                 // A minted string timestamp (e.g. ISO time) under an `_at` key.
@@ -947,6 +1266,143 @@ fn normalize_value(
             Value::String(replaced.into_owned())
         }
         other => other.clone(),
+    }
+}
+
+/// `vault_schema_v5.sql` (schema and its data rows, no search-index tables).
+pub fn schema_v5_sql() -> String {
+    read_string(&api_v1_dir().join("../vault_schema_v5.sql"))
+}
+
+/// An in-memory database holding `vault_schema_v5.sql` plus `seed_sql`,
+/// loaded in one transaction with deferred foreign keys.
+pub fn seed_connection(seed_sql: &str) -> Connection {
+    let mut conn = Connection::open_in_memory().expect("in-memory database");
+    conn.execute_batch(&schema_v5_sql())
+        .expect("load vault_schema_v5.sql");
+    let tx = conn.transaction().expect("begin seed load");
+    tx.pragma_update(None, "defer_foreign_keys", "ON")
+        .expect("defer foreign keys");
+    tx.execute_batch(seed_sql)
+        .unwrap_or_else(|e| panic!("load seed SQL on vault_schema_v5.sql: {e}"));
+    tx.commit().expect("commit seed load");
+    conn
+}
+
+/// A structural summary of a seed, for the seed-drift check: build a seed
+/// into scratch with [`run_seed_builder`] and compare
+/// `seed_summary(&built)` with `seed_summary(&seed_sql())`.
+///
+/// `{"<table>": {"count": N, "rows": [{"<column>": value, ...}, ...]}}` for
+/// every table the seed SQL fills (same tables as the dump), with the values
+/// a rebuild re-mints replaced by stable labels:
+///
+/// - a note id becomes `<note:TITLE>`, a Smart Folder id `<folder:NAME>`, a
+///   canvas id `<canvas:TITLE>`, and a block id `<block:TITLE#ORD>` (the
+///   note title and `ord` of its `blocks` row; `<block>` when no `blocks` row
+///   holds it), both as whole values and as ULID tokens or `^<block id>`
+///   refs inside link tokens of longer text;
+/// - any other ULID becomes `<ulid>`;
+/// - every value of a column ending in `_at` becomes `<timestamp>`;
+/// - a blob becomes its upper-case hex.
+///
+/// Rows are sorted by their canonical JSON, so row order does not matter.
+pub fn seed_summary(seed_sql: &str) -> Value {
+    let conn = seed_connection(seed_sql);
+    let labels = seed_labels(&conn);
+    let mut out = Map::new();
+    for table in seed_tables(&conn) {
+        let cols = table_columns(&conn, &table);
+        let mut rows: Vec<Value> = table_rows(&conn, &table, &cols)
+            .into_iter()
+            .map(|values| {
+                let mut row = Map::new();
+                for (col, value) in cols.iter().zip(values) {
+                    row.insert(col.clone(), summary_value(col, &value, &labels));
+                }
+                Value::Object(row)
+            })
+            .collect();
+        rows.sort_by_cached_key(canonical_json);
+        let mut entry = Map::new();
+        entry.insert("count".to_string(), Value::from(rows.len()));
+        entry.insert("rows".to_string(), Value::Array(rows));
+        out.insert(table, Value::Object(entry));
+    }
+    Value::Object(out)
+}
+
+/// Seed ids and block ids mapped to their stable labels.
+struct SeedLabels {
+    ids: HashMap<String, String>,
+    blocks: HashMap<String, String>,
+}
+
+fn seed_labels(conn: &Connection) -> SeedLabels {
+    let pairs = |sql: &str| -> Vec<(String, String)> {
+        let mut stmt = conn.prepare(sql).unwrap();
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .unwrap();
+        rows.map(|r| r.unwrap()).collect()
+    };
+    let mut ids = HashMap::new();
+    for (sql, kind) in [
+        ("SELECT id, title FROM notes", "note"),
+        ("SELECT id, name FROM smart_folders", "folder"),
+        ("SELECT id, title FROM canvases", "canvas"),
+    ] {
+        for (id, name) in pairs(sql) {
+            ids.insert(id, format!("<{kind}:{name}>"));
+        }
+    }
+    let blocks = pairs(
+        "SELECT b.block_id, n.title || '#' || b.ord FROM blocks b JOIN notes n ON n.id = b.note_id",
+    )
+    .into_iter()
+    .map(|(id, at)| (id, format!("<block:{at}>")))
+    .collect();
+    SeedLabels { ids, blocks }
+}
+
+fn summary_value(col: &str, v: &SqlValue, labels: &SeedLabels) -> Value {
+    if col.ends_with("_at") && *v != SqlValue::Null {
+        return Value::String(TIMESTAMP_PLACEHOLDER.to_string());
+    }
+    match v {
+        SqlValue::Null => Value::Null,
+        SqlValue::Integer(i) => Value::from(*i),
+        SqlValue::Real(f) => Value::from(*f),
+        SqlValue::Blob(b) => Value::String(b.iter().map(|x| format!("{x:02X}")).collect()),
+        SqlValue::Text(s) if col == "block_id" => Value::String(
+            labels
+                .blocks
+                .get(s)
+                .cloned()
+                .unwrap_or_else(|| format!("<{BLOCK_PLACEHOLDER}>")),
+        ),
+        SqlValue::Text(s) => {
+            let text = ulid_re().replace_all(s, |c: &regex::Captures| {
+                labels
+                    .ids
+                    .get(&c[0])
+                    .cloned()
+                    .unwrap_or_else(|| "<ulid>".to_string())
+            });
+            let text = link_token_re().replace_all(&text, |link: &regex::Captures| {
+                block_ref_re()
+                    .replace_all(&link[0], |r: &regex::Captures| {
+                        let label = labels
+                            .blocks
+                            .get(&r[1])
+                            .cloned()
+                            .unwrap_or_else(|| format!("<{BLOCK_PLACEHOLDER}>"));
+                        format!("^{label}")
+                    })
+                    .into_owned()
+            });
+            Value::String(text.into_owned())
+        }
     }
 }
 

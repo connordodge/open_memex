@@ -4,6 +4,7 @@ use std::io::Write;
 
 use clap::{Args, Subcommand};
 
+use crate::ops::prompt::{self, PromptKind};
 use crate::prompts::{CAPTURE, REVIEW_DAILY_NOTES};
 
 /// `memex prompt review` / `memex prompt capture`
@@ -34,8 +35,13 @@ impl PromptCommand {
 /// Writes the prompt text byte-for-byte: no JSON and no added newline (the
 /// constants already end with one).
 pub fn run(args: PromptArgs) -> anyhow::Result<()> {
+    let kind = match args.command {
+        PromptCommand::Review => PromptKind::Review,
+        PromptCommand::Capture => PromptKind::Capture,
+    };
+    let out = prompt::get(kind)?;
     let mut stdout = std::io::stdout().lock();
-    stdout.write_all(args.command.text().as_bytes())?;
+    stdout.write_all(out.text.as_bytes())?;
     stdout.flush()?;
     Ok(())
 }

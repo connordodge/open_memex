@@ -1,0 +1,11 @@
+Append text to a daily note. Text comes from TEXT or stdin
+
+Usage: memex append [OPTIONS] --vault <VAULT> [TEXT]
+
+Arguments:
+  [TEXT]  Text to append (read from stdin when omitted)
+
+Options:
+      --vault <VAULT>  Vault directory
+      --date <DATE>    Daily note date, YYYY-MM-DD (default: today, local time)
+  -h, --help           Print help
