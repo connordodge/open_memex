@@ -4,8 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../dates.dart';
 import '../db/daily_reads.dart';
-import 'clock.dart';
+import '../vault_access/daily_access.dart';
 import '../vault_access/vault_scoped.dart';
+import 'clock.dart';
+import 'vault_access_state.dart';
 import 'vault_state.dart';
 
 /// Today's local ISO date; moves to the next date at local midnight.
@@ -37,87 +39,122 @@ class TodayDateNotifier extends Notifier<String> {
   }
 }
 
-/// Daily notes, newest first. Empty on a vault below V5.
-final dailyNotesProvider = Provider<List<DailyNoteRow>>((ref) {
-  ref.watch(vaultRevisionProvider);
-  if (!ref.watch(vaultV5ReadyProvider)) return const [];
-  return ref.watch(vaultDbProvider)?.dailyNotes() ?? const [];
-});
+// Each daily read goes through `VaultAccess.daily` and carries the vault it
+// was loaded for (D14a); the provider of the same name without `Async` is its
+// synchronous facade. A vault below V5 (or no vault) reads as today's empty
+// values.
 
-/// Today's daily note, or null when it does not exist yet.
-final todayNoteProvider = Provider<DailyNoteRow?>((ref) {
-  final today = ref.watch(todayDateProvider);
-  for (final row in ref.watch(dailyNotesProvider)) {
-    if (row.date == today) return row;
-  }
-  return null;
-});
-
-/// A note's review state; null on a vault below V5.
-final reviewStateProvider = Provider.family<ReviewInfo?, String>((ref, noteId) {
-  ref.watch(vaultRevisionProvider);
-  if (!ref.watch(vaultV5ReadyProvider)) return null;
-  return ref.watch(vaultDbProvider)?.reviewState(noteId);
-});
-
-/// A note's blocks in `ord` order.
-final blocksForNoteProvider = Provider.family<List<BlockRow>, String>((
-  ref,
-  noteId,
-) {
-  ref.watch(vaultRevisionProvider);
-  if (!ref.watch(vaultV5ReadyProvider)) return const [];
-  return ref.watch(vaultDbProvider)?.blocksForNote(noteId) ?? const [];
-});
-
-/// A daily note's footer chips in insertion order.
-final footerChipsProvider = Provider.family<List<FooterChipRow>, String>((
-  ref,
-  dailyNoteId,
-) {
-  ref.watch(vaultRevisionProvider);
-  if (!ref.watch(vaultV5ReadyProvider)) return const [];
-  return ref.watch(vaultDbProvider)?.footerChips(dailyNoteId) ?? const [];
-});
-
-// ---------------------------------------------------------------------------
-// Async versions (D14a, #78). Skeleton: the tests pin these names and types.
-// Each reads through `VaultAccess.daily` and carries the vault it was loaded
-// for; the provider of the same name without `Async` is its facade.
-// ---------------------------------------------------------------------------
+/// The open vault's daily domain when it is V5-ready, else null.
+DailyAccess? _daily(Ref<Object?> ref) {
+  final access = ref.watch(vaultAccessProvider);
+  if (access == null || !ref.watch(vaultV5ReadyProvider)) return null;
+  return access.daily;
+}
 
 /// `VaultAccess.daily.dailyNotes`, newest first; facade [dailyNotesProvider].
 final dailyNotesAsyncProvider = FutureProvider<VaultScoped<List<DailyNoteRow>>>(
-  (ref) {
-    throw UnimplementedError();
+  (ref) async {
+    ref.watch(vaultRevisionProvider);
+    final vault = ref.watch(currentVaultProvider);
+    final daily = _daily(ref);
+    if (daily == null) return VaultScoped(vault, const []);
+    return VaultScoped(vault, await daily.dailyNotes());
   },
 );
 
-/// Today's daily note for [todayDateProvider]'s date, or null; facade
+/// Today's daily note for [todayDateProvider]'s date, or null, from
+/// [dailyNotesAsyncProvider]'s rows (stamped with their vault); facade
 /// [todayNoteProvider].
 final todayNoteAsyncProvider = FutureProvider<VaultScoped<DailyNoteRow?>>((
   ref,
-) {
-  throw UnimplementedError();
+) async {
+  final today = ref.watch(todayDateProvider);
+  final notes = await ref.watch(dailyNotesAsyncProvider.future);
+  for (final row in notes.value) {
+    if (row.date == today) return VaultScoped(notes.vault, row);
+  }
+  return VaultScoped(notes.vault, null);
 });
 
 /// `VaultAccess.daily.reviewState`; facade [reviewStateProvider].
 final reviewStateAsyncProvider =
-    FutureProvider.family<VaultScoped<ReviewInfo?>, String>((ref, noteId) {
-      throw UnimplementedError();
+    FutureProvider.family<VaultScoped<ReviewInfo?>, String>((
+      ref,
+      noteId,
+    ) async {
+      ref.watch(vaultRevisionProvider);
+      final vault = ref.watch(currentVaultProvider);
+      final daily = _daily(ref);
+      if (daily == null) return VaultScoped(vault, null);
+      return VaultScoped(vault, await daily.reviewState(noteId));
     });
 
-/// `VaultAccess.daily.blocksForNote`; facade [blocksForNoteProvider].
+/// `VaultAccess.daily.blocksForNote`, in `ord` order; facade
+/// [blocksForNoteProvider].
 final blocksForNoteAsyncProvider =
-    FutureProvider.family<VaultScoped<List<BlockRow>>, String>((ref, noteId) {
-      throw UnimplementedError();
+    FutureProvider.family<VaultScoped<List<BlockRow>>, String>((
+      ref,
+      noteId,
+    ) async {
+      ref.watch(vaultRevisionProvider);
+      final vault = ref.watch(currentVaultProvider);
+      final daily = _daily(ref);
+      if (daily == null) return VaultScoped(vault, const []);
+      return VaultScoped(vault, await daily.blocksForNote(noteId));
     });
 
-/// `VaultAccess.daily.footerChips`; facade [footerChipsProvider].
+/// `VaultAccess.daily.footerChips`, in insertion order; facade
+/// [footerChipsProvider].
 final footerChipsAsyncProvider =
     FutureProvider.family<VaultScoped<List<FooterChipRow>>, String>((
       ref,
       dailyNoteId,
-    ) {
-      throw UnimplementedError();
+    ) async {
+      ref.watch(vaultRevisionProvider);
+      final vault = ref.watch(currentVaultProvider);
+      final daily = _daily(ref);
+      if (daily == null) return VaultScoped(vault, const []);
+      return VaultScoped(vault, await daily.footerChips(dailyNoteId));
     });
+
+/// Daily notes, newest first. Empty on a vault below V5. Facade of
+/// [dailyNotesAsyncProvider].
+final dailyNotesProvider = Provider<List<DailyNoteRow>>(
+  (ref) => vaultFacadeValue(
+    ref,
+    ref.watch(dailyNotesAsyncProvider),
+    const <DailyNoteRow>[],
+  ),
+);
+
+/// Today's daily note, or null when it does not exist yet. Facade of
+/// [todayNoteAsyncProvider].
+final todayNoteProvider = Provider<DailyNoteRow?>(
+  (ref) => vaultFacadeValue(ref, ref.watch(todayNoteAsyncProvider), null),
+);
+
+/// A note's review state; null on a vault below V5. Facade of
+/// [reviewStateAsyncProvider].
+final reviewStateProvider = Provider.family<ReviewInfo?, String>(
+  (ref, noteId) =>
+      vaultFacadeValue(ref, ref.watch(reviewStateAsyncProvider(noteId)), null),
+);
+
+/// A note's blocks in `ord` order. Facade of [blocksForNoteAsyncProvider].
+final blocksForNoteProvider = Provider.family<List<BlockRow>, String>(
+  (ref, noteId) => vaultFacadeValue(
+    ref,
+    ref.watch(blocksForNoteAsyncProvider(noteId)),
+    const <BlockRow>[],
+  ),
+);
+
+/// A daily note's footer chips in insertion order. Facade of
+/// [footerChipsAsyncProvider].
+final footerChipsProvider = Provider.family<List<FooterChipRow>, String>(
+  (ref, dailyNoteId) => vaultFacadeValue(
+    ref,
+    ref.watch(footerChipsAsyncProvider(dailyNoteId)),
+    const <FooterChipRow>[],
+  ),
+);

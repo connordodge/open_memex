@@ -2,8 +2,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../db.dart';
 import '../memex_cli.dart';
-import 'tabs_state.dart';
+import '../vault_access/notes_access.dart';
 import '../vault_access/vault_scoped.dart';
+import 'tabs_state.dart';
 import 'vault_state.dart';
 
 /// What [createDailyNote] did.
@@ -19,23 +20,22 @@ class DailyCreateResult {
   final bool existed;
 }
 
-/// Create the daily note for [date] (ISO) through
-/// `memex add --role daily --title <date>` with [contentMd] on stdin (#18 `addNote(role:)`). The
-/// first-edit helper of the virtual Today tab (#22), shared with #26.
+/// Create the daily note for [date] (ISO) through [notes]' `addNote` with
+/// role `daily`, the date as title and [contentMd] as the body (on a local
+/// vault `memex add --role daily --title DATE`, #18). The first-edit helper
+/// of the virtual Today tab (#22), shared with #26.
 ///
 /// `Created note` and `Adopted note` (Q2) both return the printed note id
 /// with `existed: false`. A `daily_note_exists` failure returns its
 /// `existing_id` with `existed: true`. Any other failure throws the
 /// [MemexException].
 Future<DailyCreateResult> createDailyNote(
-  MemexCli cli, {
-  required String vaultPath,
+  NotesAccess notes, {
   required String date,
   String contentMd = '',
 }) async {
   try {
-    final id = await cli.addNote(
-      vaultPath: vaultPath,
+    final id = await notes.addNote(
       title: date,
       contentMd: contentMd,
       role: 'daily',
@@ -63,17 +63,20 @@ Note virtualTodayNote(String date) => Note(
   tags: const [],
 );
 
-/// The note the editor shows: [virtualTodayNote] when the selection is a
-/// virtual Today tab, otherwise [selectedNoteProvider]'s note.
-final editorNoteProvider = Provider<Note?>((ref) {
+/// The editor's note, async (D14a): [virtualTodayNote] for a virtual Today
+/// tab (no vault read), else [selectedNoteAsyncProvider]'s note, with the
+/// vault it was loaded for. [editorNoteProvider] is its facade.
+final editorNoteAsyncProvider = FutureProvider<VaultScoped<Note?>>((ref) {
   final date = VirtualTodayTab.dateOf(ref.watch(selectedNoteIdProvider));
-  if (date != null) return virtualTodayNote(date);
-  return ref.watch(selectedNoteProvider);
+  if (date != null) {
+    return VaultScoped(ref.watch(currentVaultProvider), virtualTodayNote(date));
+  }
+  return ref.watch(selectedNoteAsyncProvider.future);
 });
 
-/// The editor's note, async (D14a, #78): [virtualTodayNote] for a virtual
-/// Today tab, else [selectedNoteAsyncProvider]'s note, with the vault it was
-/// loaded for. [editorNoteProvider] is its facade. Skeleton.
-final editorNoteAsyncProvider = FutureProvider<VaultScoped<Note?>>((ref) {
-  throw UnimplementedError();
-});
+/// The note the editor shows: [virtualTodayNote] when the selection is a
+/// virtual Today tab, otherwise [selectedNoteProvider]'s note. Facade of
+/// [editorNoteAsyncProvider].
+final editorNoteProvider = Provider<Note?>(
+  (ref) => vaultFacadeValue(ref, ref.watch(editorNoteAsyncProvider), null),
+);

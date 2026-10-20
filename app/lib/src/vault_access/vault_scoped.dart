@@ -1,6 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../state/vault_ref.dart';
 import '../state/vault_state.dart';
 
 /// The type `currentVaultProvider` holds: the open vault's ref, or null with

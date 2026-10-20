@@ -7,6 +7,7 @@ import 'daily_state.dart';
 import 'editor_controller.dart';
 import 'tabs_state.dart';
 import 'today_state.dart';
+import 'vault_access_state.dart';
 import 'vault_state.dart';
 
 /// The body of a topic note the app creates: a heading with its title.
@@ -89,8 +90,7 @@ Future<String> createTopicFromSidebar(WidgetRef ref, String title) async {
     var dailyId = ref.read(todayNoteProvider)?.noteId;
     if (dailyId == null) {
       final daily = await createDailyNote(
-        cli,
-        vaultPath: vaultPath,
+        ref.read(vaultAccessProvider)!.notes,
         date: ref.read(todayDateProvider),
       );
       dailyId = daily.noteId;

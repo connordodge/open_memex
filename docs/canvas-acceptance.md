@@ -80,7 +80,7 @@ through both the Flutter app and the CLI / MCP server.
    note editor for that note. A `← back to canvas` chip appears in the
    top-left of the editor area.
 3. Edit the body — add a sentence. **Expected**: status indicator
-   transitions `unsaved → saving → synced` like normal.
+   transitions `unsaved → saving → saved` like normal.
 4. Click `← back to canvas`. **Expected**: animation back to the canvas
    at the same pan/zoom; the line is still there.
 
