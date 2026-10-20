@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "setting_invalid",
+    "message": "setting invalid: unknown setting \"unknown_key\"; the only key is smart_folder_max_depth"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "setting_invalid",
+    "message": "setting invalid: smart_folder_max_depth must be an integer from 1 to 5, got \"6\""
+  }
+}
