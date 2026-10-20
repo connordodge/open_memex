@@ -2,9 +2,12 @@
 //!
 //! One axum router serves every route under one bearer-token layer (D7).
 //! From the outside in, a request passes the access log, the auth layer and
-//! the 8 MiB body limit before it reaches a route.
+//! the 8 MiB body limit before it reaches a route. On a `/vaults/{name}/…`
+//! path the vault guard then resolves the vault (or answers 404
+//! `vault_not_found`) before any handler runs.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::extract::DefaultBodyLimit;
@@ -13,20 +16,28 @@ use axum::http::StatusCode;
 use axum::middleware::{from_fn, from_fn_with_state, map_response};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::{Json, Router};
-use memex_core::MemexError;
+use axum::{Extension, Json, Router};
+use memex_core::embedder::Embedder;
+use memex_core::{MemexError, SystemClock};
 use serde_json::{json, Value};
 use tower_http::limit::RequestBodyLimitLayer;
 
 use crate::cli::InvalidArgument;
 
+pub mod api;
 pub mod auth;
 pub mod bridge;
 pub mod error;
 pub mod log;
+pub mod mcp;
+pub mod registry;
+pub mod request_clock;
 pub mod token;
+pub mod vaults;
 
 use error::ApiError;
+use registry::Registry;
+use request_clock::{BaseClock, SharedClock};
 
 /// The app API version this server speaks (the app's `kApiVersion`, D17).
 pub const API_VERSION: u32 = 1;
@@ -41,6 +52,8 @@ pub struct ServerConfig {
     root: PathBuf,
     token: String,
     with_embeddings: bool,
+    embedder: Option<Arc<dyn Embedder>>,
+    clock: SharedClock,
 }
 
 impl ServerConfig {
@@ -50,6 +63,8 @@ impl ServerConfig {
             root: root.into(),
             token: token.into(),
             with_embeddings: false,
+            embedder: None,
+            clock: Arc::new(SystemClock),
         }
     }
 
@@ -68,18 +83,51 @@ impl ServerConfig {
     pub fn embeddings_enabled(&self) -> bool {
         self.with_embeddings
     }
+
+    /// The embedder every served vault shares (`run` passes the one it
+    /// warmed). Without one, `router()` builds one with
+    /// `build_embedder_in(root)` when embeddings are on.
+    pub fn with_embedder(mut self, embedder: Arc<dyn Embedder>) -> Self {
+        self.embedder = Some(embedder);
+        self
+    }
+
+    /// The server's base clock, under every request's `RequestClock`
+    /// (default: `SystemClock`).
+    pub fn with_clock(mut self, clock: SharedClock) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// The server's base clock.
+    pub fn clock(&self) -> SharedClock {
+        self.clock.clone()
+    }
 }
 
 /// The whole vault server: every route, then the auth layer, the body limit
 /// and the access log (D7).
 pub fn router(config: ServerConfig) -> Router {
     let token = auth::AccessToken::new(&config.token);
+    let embedder = match (&config.embedder, config.with_embeddings) {
+        (Some(embedder), _) => Some(embedder.clone()),
+        (None, true) => Some(crate::state::build_embedder_in(&config.root)),
+        (None, false) => None,
+    };
+    let registry = Arc::new(Registry::new(config.root.clone(), embedder));
     Router::new()
         .route("/api/v1/info", get(info))
+        .route("/api/v1/vaults", get(vaults::list).post(vaults::create))
+        .route("/vaults/{name}/api/v1/info", get(vaults::info))
+        .nest("/vaults/{name}/api/v1", api::router())
+        .nest("/vaults/{name}/mcp", mcp::router())
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         // Every route, nest and fallback goes above this line, so that the
         // layers below wrap all of them. Listed inside out.
+        .layer(from_fn_with_state(registry.clone(), vaults::vault_guard))
+        .layer(Extension(registry))
+        .layer(Extension(BaseClock(config.clock())))
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(BODY_LIMIT))
         .layer(map_response(c1_payload_too_large))
@@ -137,6 +185,11 @@ pub struct RunOptions {
 pub async fn run(opts: RunOptions) -> Result<()> {
     let filter = log::filter(&opts.log_level)?;
     let root = vault_root(&opts.root)?;
+    let embedder = if opts.with_embeddings {
+        Some(warm_embedder(&root).await?)
+    } else {
+        None
+    };
     let listener = tokio::net::TcpListener::bind(&opts.listen)
         .await
         .with_context(|| format!("listen on {}", opts.listen))?;
@@ -163,13 +216,28 @@ pub async fn run(opts: RunOptions) -> Result<()> {
     );
     eprintln!("memex serve: vault server listening on http://{addr}");
 
-    let config = ServerConfig::new(root, resolved.token).with_embeddings(opts.with_embeddings);
+    let mut config = ServerConfig::new(root, resolved.token).with_embeddings(opts.with_embeddings);
+    if let Some(embedder) = embedder {
+        config = config.with_embedder(embedder);
+    }
     axum::serve(listener, router(config))
         .with_graceful_shutdown(shutdown_signal())
         .await
         .context("serve")?;
     tracing::info!("vault server stopped");
     Ok(())
+}
+
+/// The embedder every served vault shares, loaded (downloading the model
+/// into `<root>/.memex/models` if needed) before the server binds.
+async fn warm_embedder(root: &Path) -> Result<Arc<dyn Embedder>> {
+    let embedder = crate::state::build_embedder_in(root);
+    let warming = embedder.clone();
+    tokio::task::spawn_blocking(move || warming.embed_batch(&["warm up".to_string()]))
+        .await
+        .context("load the embedding model")?
+        .context("load the embedding model")?;
+    Ok(embedder)
 }
 
 /// `--root` as an absolute, canonical path to an existing directory.
