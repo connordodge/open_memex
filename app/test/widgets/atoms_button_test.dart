@@ -1,6 +1,7 @@
 // WI #69 (lead decisions on design pack #69, board A12): `OmButton` keeps its
 // primary / secondary / ghost / agent styling, dims to 40% when disabled and
 // gains a small (24 px) size.
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -247,5 +248,36 @@ void main() {
       // Border 1 + padding 10.
       expect(left, 11);
     });
+  });
+
+  group('OmButton hover (verify)', () {
+    testWidgets(
+      'a secondary OmButton takes its hover fill on pointer enter and drops it on exit',
+      (tester) async {
+        await _pump(
+          tester,
+          OmButton(
+            kind: OmButtonKind.secondary,
+            label: 'open',
+            onPressed: () {},
+          ),
+        );
+        final button = find.byType(OmButton);
+        expect(_decorationIn(tester, button).color, OmColors.surface3);
+
+        final gesture = await tester.createGesture(
+          kind: PointerDeviceKind.mouse,
+        );
+        await gesture.addPointer(location: Offset.zero);
+        addTearDown(gesture.removePointer);
+        await gesture.moveTo(tester.getCenter(button));
+        await tester.pumpAndSettle();
+        expect(_decorationIn(tester, button).color, OmColors.surface4);
+
+        await gesture.moveTo(Offset.zero);
+        await tester.pumpAndSettle();
+        expect(_decorationIn(tester, button).color, OmColors.surface3);
+      },
+    );
   });
 }
