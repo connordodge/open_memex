@@ -177,7 +177,49 @@ class OmKbd extends StatelessWidget {
   }
 }
 
-enum OmButtonKind { primary, secondary, ghost, agent }
+/// The state a [StatusDot] shows (Req 38, board A12).
+enum StatusDotState { connected, cantReach, tokenRejected, checking }
+
+/// A 6 px status dot for a vault server or hosted vault (board A12): a
+/// filled accent dot when connected, a hollow warn ring when it can't be
+/// reached, a filled danger dot when the token is rejected and a filled fg2
+/// dot while checking. Static; always shown next to text or an icon.
+class StatusDot extends StatelessWidget {
+  const StatusDot({super.key, required this.state});
+
+  final StatusDotState state;
+
+  static const double size = 6;
+
+  @override
+  Widget build(BuildContext context) {
+    final decoration = switch (state) {
+      StatusDotState.connected => const BoxDecoration(
+        shape: BoxShape.circle,
+        color: OmColors.accent,
+      ),
+      StatusDotState.cantReach => BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(color: OmColors.warn, width: 1),
+      ),
+      StatusDotState.tokenRejected => const BoxDecoration(
+        shape: BoxShape.circle,
+        color: OmColors.danger,
+      ),
+      StatusDotState.checking => const BoxDecoration(
+        shape: BoxShape.circle,
+        color: OmColors.fg2,
+      ),
+    };
+    return SizedBox(
+      width: size,
+      height: size,
+      child: DecoratedBox(decoration: decoration),
+    );
+  }
+}
+
+enum OmButtonKind { primary, secondary, ghost, agent, danger }
 
 class OmButton extends StatefulWidget {
   const OmButton({
@@ -232,15 +274,26 @@ class _OmButtonState extends State<OmButton> {
         OmColors.agent.withAlpha(70),
         OmColors.agentBg,
       ),
+      OmButtonKind.danger => (
+        OmColors.dangerBg,
+        OmColors.danger,
+        OmColors.danger.withAlpha(69),
+        OmColors.dangerBg,
+      ),
     };
 
+    // Small buttons (24 px, board A12): 12 px label and icon, padding 10.
+    final small = widget.size <= 24;
     final hasLabel = widget.label != null;
     final child = Padding(
-      padding: EdgeInsets.symmetric(horizontal: hasLabel ? 12 : 0),
+      padding: EdgeInsets.symmetric(
+        horizontal: hasLabel ? (small ? 10 : 12) : 0,
+      ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (widget.icon != null) Icon(widget.icon, size: 14, color: fg),
+          if (widget.icon != null)
+            Icon(widget.icon, size: small ? 12 : 14, color: fg),
           if (widget.icon != null && hasLabel) const SizedBox(width: 7),
           if (hasLabel)
             Flexible(
@@ -249,7 +302,7 @@ class _OmButtonState extends State<OmButton> {
                 overflow: TextOverflow.ellipsis,
                 maxLines: 1,
                 style: OmType.sans(
-                  size: 13,
+                  size: small ? 12 : 13,
                   weight: FontWeight.w500,
                   color: fg,
                 ),
@@ -263,29 +316,32 @@ class _OmButtonState extends State<OmButton> {
       ),
     );
 
-    final core = MouseRegion(
-      cursor: widget.onPressed == null
-          ? SystemMouseCursors.basic
-          : SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.onPressed,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 120),
-          height: widget.size,
-          constraints: BoxConstraints(
-            minWidth: hasLabel ? 0 : widget.size,
-            minHeight: widget.size,
+    final disabled = widget.onPressed == null;
+    // Disabled (any kind, board A12): the whole button at 40% opacity.
+    final core = Opacity(
+      opacity: disabled ? 0.4 : 1.0,
+      child: MouseRegion(
+        cursor: disabled ? SystemMouseCursors.basic : SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: widget.onPressed,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 120),
+            height: widget.size,
+            constraints: BoxConstraints(
+              minWidth: hasLabel ? 0 : widget.size,
+              minHeight: widget.size,
+            ),
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: _hover ? hoverBg : bg,
+              border: Border.all(color: border, width: 1),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: child,
           ),
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: _hover ? hoverBg : bg,
-            border: Border.all(color: border, width: 1),
-            borderRadius: BorderRadius.circular(6),
-          ),
-          child: child,
         ),
       ),
     );

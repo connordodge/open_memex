@@ -365,7 +365,7 @@ class WikilinkAutocompleteState extends ConsumerState<WikilinkAutocomplete> {
     final title = _query.trim();
     if (title.isEmpty) return;
     final cli = ref.read(memexCliProvider);
-    final vaultPath = ref.read(currentVaultProvider);
+    final vaultPath = ref.read(currentVaultProvider).localPath;
     if (cli == null || vaultPath == null) return;
     final revision = ref.read(vaultRevisionProvider.notifier);
     final dailyId = widget.dailyNoteId;

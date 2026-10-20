@@ -130,7 +130,7 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
     final note = ref.watch(editorNoteProvider);
     final editor = ref.watch(editorControllerProvider);
     final controller = ref.read(editorControllerProvider.notifier);
-    final vaultPath = ref.watch(currentVaultProvider);
+    final vaultPath = ref.watch(currentVaultProvider).localPath;
     // Polls the open daily note for server writes while it is the active
     // tab (WI #28).
     ref.watch(notePollerProvider);

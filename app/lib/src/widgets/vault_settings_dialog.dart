@@ -53,7 +53,7 @@ class _VaultSettingsDialogState extends ConsumerState<_VaultSettingsDialog> {
     Future<T> Function(MemexCli cli, String vault) call,
   ) async {
     final cli = ref.read(memexCliProvider);
-    final vault = ref.read(currentVaultProvider);
+    final vault = ref.read(currentVaultProvider).localPath;
     if (cli == null || vault == null) {
       setState(() => _error = 'The memex CLI is not available.');
       return null;

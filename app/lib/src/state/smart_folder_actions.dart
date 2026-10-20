@@ -49,7 +49,7 @@ Future<void> runSmartFolderWrite(
 }) async {
   final errors = container.read(smartFolderErrorProvider.notifier);
   final cli = container.read(memexCliProvider);
-  final vaultPath = container.read(currentVaultProvider);
+  final vaultPath = container.read(currentVaultProvider).localPath;
   if (cli == null || vaultPath == null) {
     errors.state = 'The memex CLI is not available.';
     return;
