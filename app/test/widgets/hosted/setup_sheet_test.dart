@@ -4,6 +4,7 @@
 // ProviderScope). Exact values come from design pack #100; the lead decision
 // there makes `docs/hosted-vault.md` monospace text with a footer copy button.
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -868,5 +869,34 @@ void main() {
         expect(b.top.color, OmColors.line2);
       }
     });
+
+    testWidgets(
+      'an icon button fills with surface3 on hover and clears on exit',
+      (tester) async {
+        await _open(tester);
+        Color? fillOf(String key) {
+          final box = find.descendant(
+            of: find.byKey(Key(key)),
+            matching: find.byType(Container),
+          );
+          final d = tester.widget<Container>(box.first).decoration;
+          return (d as BoxDecoration?)?.color;
+        }
+
+        final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+        addTearDown(mouse.removePointer);
+        await mouse.addPointer(location: Offset.zero);
+        await tester.pump();
+        expect(fillOf('setup-close-x'), isNot(OmColors.surface3));
+        await mouse.moveTo(
+          tester.getCenter(find.byKey(const Key('setup-close-x'))),
+        );
+        await tester.pump();
+        expect(fillOf('setup-close-x'), OmColors.surface3);
+        await mouse.moveTo(const Offset(50, 300));
+        await tester.pump();
+        expect(fillOf('setup-close-x'), isNot(OmColors.surface3));
+      },
+    );
   });
 }
