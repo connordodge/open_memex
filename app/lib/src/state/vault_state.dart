@@ -5,6 +5,8 @@ import '../db.dart';
 import '../memex_cli.dart';
 import 'settings.dart';
 
+export 'vault_ref.dart';
+
 /// The currently open vault path. `null` means no vault is open.
 final currentVaultProvider = StateProvider<String?>((ref) {
   return ref.watch(settingsProvider).lastVault;

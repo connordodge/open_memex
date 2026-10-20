@@ -19,7 +19,9 @@ ProviderContainer _container({
 }) {
   final c = ProviderContainer(
     overrides: [
-      currentVaultProvider.overrideWith((_) => '/tmp/om-fake-vault'),
+      currentVaultProvider.overrideWith(
+        (_) => LocalVaultRef('/tmp/om-fake-vault'),
+      ),
       vaultDbProvider.overrideWithValue(noDb ? null : db),
       memexCliProvider.overrideWithValue(null),
       clockProvider.overrideWithValue(clock ?? FakeClock()),
@@ -134,7 +136,9 @@ void main() {
       final clock = FakeClock(DateTime(2026, 10, 3, 23, 59));
       final c = ProviderContainer(
         overrides: [
-          currentVaultProvider.overrideWith((_) => '/tmp/om-fake-vault'),
+          currentVaultProvider.overrideWith(
+            (_) => LocalVaultRef('/tmp/om-fake-vault'),
+          ),
           vaultDbProvider.overrideWithValue(null),
           memexCliProvider.overrideWithValue(null),
           clockProvider.overrideWithValue(clock),

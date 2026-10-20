@@ -40,7 +40,7 @@ Future<ProviderContainer> _launch({
   }
   final c = ProviderContainer(
     overrides: [
-      currentVaultProvider.overrideWith((_) => dir.path),
+      currentVaultProvider.overrideWith((_) => LocalVaultRef(dir.path)),
       vaultDbProvider.overrideWithValue(db),
       memexCliProvider.overrideWithValue(null),
       clockProvider.overrideWithValue(FakeClock()),
