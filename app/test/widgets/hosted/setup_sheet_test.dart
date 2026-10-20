@@ -855,20 +855,22 @@ void main() {
       }
     });
 
-    testWidgets('the sheet border is a 1 px line2 line on both sides and '
-        'the bottom', (tester) async {
-      await _open(tester);
-      final d = _boxAround(tester, _text(_eyebrow), OmColors.surface2);
-      final b = d.border! as Border;
-      for (final side in [b.left, b.right, b.bottom]) {
-        expect(side.width, 1);
-        expect(side.color, OmColors.line2);
-      }
-      // A top line (if drawn) must be the same quiet line2, never louder.
-      if (b.top.style != BorderStyle.none && b.top.width > 0) {
-        expect(b.top.color, OmColors.line2);
-      }
-    });
+    testWidgets(
+      'the sheet border is a 1 px line2 line on both sides and the bottom',
+      (tester) async {
+        await _open(tester);
+        final d = _boxAround(tester, _text(_eyebrow), OmColors.surface2);
+        final b = d.border! as Border;
+        for (final side in [b.left, b.right, b.bottom]) {
+          expect(side.width, 1);
+          expect(side.color, OmColors.line2);
+        }
+        // A top line (if drawn) must be the same quiet line2, never louder.
+        if (b.top.style != BorderStyle.none && b.top.width > 0) {
+          expect(b.top.color, OmColors.line2);
+        }
+      },
+    );
 
     testWidgets(
       'an icon button fills with surface3 on hover and clears on exit',
