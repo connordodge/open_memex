@@ -27,11 +27,13 @@ import 'package:open_memex_app/src/state/clock.dart';
 import 'package:open_memex_app/src/state/hosted_connection_state.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/vault_access/hosted/notes.dart';
+import 'package:open_memex_app/src/vault_access/local/local_vault_access.dart';
 import 'package:open_memex_app/src/vault_access/notes_access.dart';
 
 import '../../support/api_fixtures.dart';
 import '../../support/fake_clock.dart';
 import '../../support/fake_vault_server.dart';
+import '../../support/vault_access_writes.dart';
 
 const _wi81NotesDir = '$apiV1FixturesDir/notes';
 const _wi81Base = '/vaults/seed/api/v1';
@@ -281,6 +283,52 @@ void main() {
         );
       },
     );
+
+    // L4 parity: the local wrapper joins tags into one `--tags a,b` value
+    // and clap splits it on commas (value_delimiter = ','), so a tag holding
+    // a comma is stored as several tags. POST /notes stores its list as given
+    // (api_notes.rs post_notes_stores_each_tag_as_given), so the hosted body
+    // must carry the tags the local argv stores.
+    test('hosted addNote sends the tags the local add argv stores', () async {
+      for (final tags in const [
+        ['a,b'],
+        ['idea', 'x,y'],
+        ['solo'],
+      ]) {
+        final cli = vaultAccessSampleCli();
+        final local = LocalVaultAccess(vaultPath: '/unused/wi81', cli: cli);
+        await local.notes.addNote(
+          title: 'Tag Probe',
+          tags: tags,
+          contentMd: 'Body.\n',
+        );
+        final args = cli.callsFor('add').single.args;
+        final storedLocally = args[args.indexOf('--tags') + 1].split(',');
+
+        final env = _env(rows: false);
+        env.server.route(
+          'POST',
+          '$_wi81Base/notes',
+          status: 201,
+          json: {
+            'note_id': '01M5DQB000000000000000000A',
+            'title': 'Tag Probe',
+            'tags': storedLocally,
+            'adopted': false,
+          },
+        );
+        await env.notes.addNote(
+          title: 'Tag Probe',
+          tags: tags,
+          contentMd: 'Body.\n',
+        );
+        expect(
+          (env.lastBody! as Map)['tags'],
+          storedLocally,
+          reason: 'addNote(tags: $tags)',
+        );
+      }
+    });
 
     test('hosted addNote with empty content throws invalid_argument', () async {
       final env = _env();
