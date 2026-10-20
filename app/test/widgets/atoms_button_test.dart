@@ -181,18 +181,19 @@ void main() {
     });
   });
 
-  group('OmButton small size (A12, 24 px)', () {
+  group('OmButton small size (A12, 24 px, dense)', () {
     testWidgets(
       'a small OmButton uses a 12 px label, 12 px icon and 10 px horizontal padding',
       (tester) async {
         Future<({double inset, double gap, double iconSize, double label})>
-        measure(double size) async {
+        measure(double size, {bool dense = false}) async {
           await _pump(
             tester,
             OmButton(
               // A fresh button per size: no height animation between them.
-              key: ValueKey(size),
+              key: ValueKey((size, dense)),
               size: size,
+              dense: dense,
               icon: LucideIcons.refreshCw,
               label: 'retry',
               onPressed: () {},
@@ -214,7 +215,7 @@ void main() {
         }
 
         final normal = await measure(30);
-        final small = await measure(24);
+        final small = await measure(24, dense: true);
 
         // Today's default: 13 px label, 14 px icon, padding 12.
         expect(normal.label, 13);
@@ -235,7 +236,12 @@ void main() {
     ) async {
       await _pump(
         tester,
-        OmButton(size: 24, label: 'update token', onPressed: () {}),
+        OmButton(
+          size: 24,
+          dense: true,
+          label: 'update token',
+          onPressed: () {},
+        ),
       );
       final button = find.byType(OmButton);
       final text = find.descendant(
@@ -247,6 +253,107 @@ void main() {
       expect(left, right);
       // Border 1 + padding 10.
       expect(left, 11);
+    });
+  });
+
+  group('OmButton size does not pick the small style (review round 1)', () {
+    // Review findings 2 and 5: only `dense` turns on the small style. Every
+    // size the app already uses (20, 22, 24, 26) keeps label 13, icon 14 and
+    // padding 12, as on main; `dense` is small at any size.
+    final cases = <(String, double, bool, double, double, double)>[
+      (
+        'a 20 px OmButton without dense keeps the 13 px label, 14 px icon and 12 px padding',
+        20,
+        false,
+        13,
+        14,
+        12,
+      ),
+      (
+        'a 22 px OmButton without dense keeps the 13 px label, 14 px icon and 12 px padding',
+        22,
+        false,
+        13,
+        14,
+        12,
+      ),
+      (
+        'a 24 px OmButton without dense keeps the 13 px label, 14 px icon and 12 px padding',
+        24,
+        false,
+        13,
+        14,
+        12,
+      ),
+      (
+        'a 26 px OmButton without dense keeps the 13 px label, 14 px icon and 12 px padding',
+        26,
+        false,
+        13,
+        14,
+        12,
+      ),
+      (
+        'a dense 24 px OmButton uses the 12 px label, 12 px icon and 10 px padding',
+        24,
+        true,
+        12,
+        12,
+        10,
+      ),
+      (
+        'a dense 30 px OmButton uses the 12 px label, 12 px icon and 10 px padding',
+        30,
+        true,
+        12,
+        12,
+        10,
+      ),
+    ];
+    for (final (name, size, dense, label, iconSize, padding) in cases) {
+      testWidgets(name, (tester) async {
+        await _pump(
+          tester,
+          OmButton(
+            size: size,
+            dense: dense,
+            icon: LucideIcons.refreshCw,
+            label: 'retry',
+            onPressed: () {},
+          ),
+        );
+        final button = find.byType(OmButton);
+        final icon = find.byIcon(LucideIcons.refreshCw);
+        final text = find.descendant(of: button, matching: find.text('retry'));
+        expect(tester.getSize(button).height, size);
+        expect(tester.widget<Text>(text).style!.fontSize, label);
+        expect(tester.getSize(icon).width, iconSize);
+        // Border 1 + horizontal padding, on both sides.
+        expect(
+          tester.getTopLeft(icon).dx - tester.getTopLeft(button).dx,
+          1 + padding,
+        );
+        expect(
+          tester.getTopRight(button).dx - tester.getTopRight(text).dx,
+          1 + padding,
+        );
+      });
+    }
+
+    testWidgets('an OmButton is not dense unless asked', (tester) async {
+      // The default of `dense` is behaviour: omitted, a 24 px button is
+      // drawn as on main.
+      await _pump(tester, OmButton(size: 24, label: 'go', onPressed: () {}));
+      final text = find.descendant(
+        of: find.byType(OmButton),
+        matching: find.text('go'),
+      );
+      expect(tester.widget<Text>(text).style!.fontSize, 13);
+      expect(
+        tester.getTopLeft(text).dx -
+            tester.getTopLeft(find.byType(OmButton)).dx,
+        13,
+      );
     });
   });
 
