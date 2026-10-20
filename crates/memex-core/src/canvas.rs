@@ -54,11 +54,11 @@ pub struct CallerClock<B = SystemClock> {
 
 impl<B: Clock> Clock for CallerClock<B> {
     fn now_ms(&self) -> i64 {
-        todo!("#76: the base clock's instant")
+        self.base.now_ms()
     }
 
     fn utc_offset_at(&self, _now_ms: i64) -> FixedOffset {
-        todo!("#76: the fixed caller offset")
+        self.offset
     }
 }
 

@@ -5,12 +5,36 @@
 
 use memex_core::FixedOffset;
 
+/// Largest offset magnitude the grammar allows, in minutes (14:00).
+const MAX_OFFSET_MINUTES: i32 = 14 * 60;
+
 /// Parses an `X-Memex-UTC-Offset` value, or `None` when it is malformed.
-pub fn parse_utc_offset(_header: &str) -> Option<FixedOffset> {
-    todo!("#76: parse ±HH:MM")
+pub fn parse_utc_offset(header: &str) -> Option<FixedOffset> {
+    let &[sign, h1, h2, b':', m1, m2] = header.as_bytes() else {
+        return None;
+    };
+    let sign = match sign {
+        b'+' => 1,
+        b'-' => -1,
+        _ => return None,
+    };
+    let digit = |b: u8| b.is_ascii_digit().then(|| i32::from(b - b'0'));
+    let hours = digit(h1)? * 10 + digit(h2)?;
+    let mins = digit(m1)? * 10 + digit(m2)?;
+    if mins > 59 {
+        return None;
+    }
+    let magnitude = hours * 60 + mins;
+    if magnitude > MAX_OFFSET_MINUTES {
+        return None;
+    }
+    FixedOffset::east_opt(sign * magnitude * 60)
 }
 
 /// Renders `offset` as `±HH:MM` (zero is `+00:00`).
-pub fn format_utc_offset(_offset: FixedOffset) -> String {
-    todo!("#76: format ±HH:MM")
+pub fn format_utc_offset(offset: FixedOffset) -> String {
+    let total_minutes = offset.local_minus_utc() / 60;
+    let sign = if total_minutes < 0 { '-' } else { '+' };
+    let magnitude = total_minutes.abs();
+    format!("{sign}{:02}:{:02}", magnitude / 60, magnitude % 60)
 }
