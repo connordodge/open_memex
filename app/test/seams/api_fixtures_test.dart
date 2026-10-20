@@ -18,7 +18,7 @@
 //   UtcOffsetCases loadUtcOffsetCases();  // api_v1/server/utc_offsets.json
 //
 // The Rust half is crates/memex-mcp/tests/api_fixtures.rs; both parse the
-// same index.json text (`sharedIndexJson`) and assert the same values.
+// same index.json text (`api_fixtures_parity/index.json`) and assert the same values.
 import 'dart:convert';
 import 'dart:io';
 
@@ -28,13 +28,9 @@ import 'package:open_memex_app/src/db/topics_reads.dart';
 
 import '../support/api_fixtures.dart';
 
-/// Kept byte-identical to `SHARED_INDEX_JSON` in the Rust test.
-const sharedIndexJson = '''[
-  {"method": "GET", "path": "/vaults/seed/api/v1/notes", "response": "notes_list.json", "status": 200},
-  {"method": "POST", "path": "/vaults/seed/api/v1/notes", "request": "create_note.request.json",
-   "response": "create_note.json", "status": 201,
-   "headers": {"X-Memex-UTC-Offset": "-00:30"}, "dart_only": true}
-]''';
+/// The shared row text, also parsed by the Rust test.
+String _sharedIndexJson() =>
+    File('test/fixtures/api_fixtures_parity/index.json').readAsStringSync();
 
 String _seedSql() =>
     File('$apiV1FixturesDir/seed_vault.sql').readAsStringSync();
@@ -151,7 +147,8 @@ void main() {
       );
 
       // 2. Over 120 characters with a surrogate pair straddling the
-      //    120-UTF-16-unit cut (high surrogate at unit 119, low at 120).
+      //    117-UTF-16-unit cut of VaultDb._snippet (substring(0, 117) on a
+      //    line over 120 units): high surrogate at unit 116, low at 117.
       bool isHigh(int u) => u >= 0xD800 && u <= 0xDBFF;
       bool isLow(int u) => u >= 0xDC00 && u <= 0xDFFF;
       expect(
@@ -159,11 +156,11 @@ void main() {
           final line = _snippetSourceLine(n.contentMd);
           return line.length > 120 &&
               line.runes.length > 120 &&
-              isHigh(line.codeUnitAt(119)) &&
-              isLow(line.codeUnitAt(120));
+              isHigh(line.codeUnitAt(116)) &&
+              isLow(line.codeUnitAt(117));
         }),
         isTrue,
-        reason: 'no long note with a surrogate pair at units 119-120',
+        reason: 'no long note with a surrogate pair at units 116-117',
       );
 
       // 3. A ghost link: no target, and no note has its text as a title.
@@ -196,7 +193,7 @@ void main() {
 
   group('row loader (AC5)', () {
     test('row loader parses every row field like the Rust loader', () {
-      final dir = _writeDomain(tmp, 'rowsdemo', sharedIndexJson);
+      final dir = _writeDomain(tmp, 'rowsdemo', _sharedIndexJson());
       final rows = loadFixtureRows(dir);
       expect(rows, hasLength(2));
 

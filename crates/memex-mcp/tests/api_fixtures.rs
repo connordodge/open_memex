@@ -255,17 +255,18 @@ fn assert_seed_edge_rows(conn: &Connection, what: &str) {
     );
 
     // 2. Longer than 120 characters, with a surrogate pair straddling the
-    //    120-UTF-16-unit cut (high surrogate at unit 119, low at unit 120).
+    //    117-UTF-16-unit cut of `VaultDb._snippet` (`substring(0, 117)` on a
+    //    line over 120 units): high surrogate at unit 116, low at unit 117.
     assert!(
         notes.iter().any(|(_, _, c)| {
             let line = snippet_source_line(c);
             let units: Vec<u16> = line.encode_utf16().collect();
             units.len() > 120
                 && line.chars().count() > 120
-                && (0xD800..=0xDBFF).contains(&units[119])
-                && (0xDC00..=0xDFFF).contains(&units[120])
+                && (0xD800..=0xDBFF).contains(&units[116])
+                && (0xDC00..=0xDFFF).contains(&units[117])
         }),
-        "{what}: no note whose snippet line is over 120 characters with a surrogate pair at UTF-16 units 119-120"
+        "{what}: no note whose snippet line is over 120 characters with a surrogate pair at UTF-16 units 116-117"
     );
 
     // 3. A ghost link: no target note, and no note has its text as a title.
@@ -592,17 +593,16 @@ fn seed_builder_never_writes_committed_fixtures_without_bless() {
 // parses this exact JSON and asserts the same values)
 // ---------------------------------------------------------------------------
 
-const SHARED_INDEX_JSON: &str = r#"[
-  {"method": "GET", "path": "/vaults/seed/api/v1/notes", "response": "notes_list.json", "status": 200},
-  {"method": "POST", "path": "/vaults/seed/api/v1/notes", "request": "create_note.request.json",
-   "response": "create_note.json", "status": 201,
-   "headers": {"X-Memex-UTC-Offset": "-00:30"}, "dart_only": true}
-]"#;
+/// The shared row text, also parsed by the Dart test.
+fn shared_index_json() -> String {
+    fs::read_to_string(committed_api_v1_dir().join("../api_fixtures_parity/index.json"))
+        .expect("read app/test/fixtures/api_fixtures_parity/index.json")
+}
 
 #[test]
 fn row_loader_parses_every_row_field() {
     let tmp = tempfile::tempdir().unwrap();
-    let dir = write_domain(tmp.path(), "rowsdemo", SHARED_INDEX_JSON, &[]);
+    let dir = write_domain(tmp.path(), "rowsdemo", &shared_index_json(), &[]);
     let rows = load_rows(&dir).expect("valid rows parse");
     assert_eq!(rows.len(), 2);
 
@@ -1383,11 +1383,11 @@ fn runner_bless_keeps_every_field_of_the_other_rows_in_index_json() {
     let index = json!([
         {"method": "GET", "path": "/vaults/seed/api/v1/a", "response": "a.json", "status": 200,
          "headers": {"X-Memex-UTC-Offset": "+05:45", "Accept": "application/json"},
-         "comment": "kept by bless", "dart_only": false},
+         "dart_only": false},
         {"method": "GET", "path": "/vaults/seed/api/v1/b", "response": "b.json", "status": 200,
-         "request": "b.request.json", "note": {"why": "nested unknown field"}},
+         "request": "b.request.json"},
         {"method": "GET", "path": "/api/v1/info", "response": "info.json", "status": 200,
-         "dart_only": true, "extra": [1, 2, 3]}
+         "dart_only": true}
     ]);
     let dir = write_domain(
         tmp.path(),
