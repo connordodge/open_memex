@@ -66,8 +66,10 @@ void main() {
         final access = _container(db: db, cli: null).read(vaultAccessProvider)!;
 
         for (final wc in vaultAccessWriteCases) {
+          // Called directly: a synchronous throw fails the test, so the
+          // error must arrive through the returned Future.
           await expectLater(
-            Future.sync(() => wc.viaAccess(access)),
+            wc.viaAccess(access),
             throwsA(isA<StateError>()),
             reason: wc.name,
           );
@@ -89,16 +91,15 @@ void main() {
         final access = _container(db: db, cli: null).read(vaultAccessProvider)!;
 
         for (final wc in vaultAccessWriteCases) {
-          Object? caught;
-          try {
-            await wc.viaAccess(access);
-          } catch (e) {
-            caught = e;
-          }
-          expect(caught, isA<StateError>(), reason: wc.name);
-          expect(
-            (caught! as StateError).message,
-            'The memex CLI is not available.',
+          await expectLater(
+            wc.viaAccess(access),
+            throwsA(
+              isA<StateError>().having(
+                (e) => e.message,
+                'message',
+                'The memex CLI is not available.',
+              ),
+            ),
             reason: wc.name,
           );
         }
