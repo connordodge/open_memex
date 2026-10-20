@@ -37,6 +37,7 @@ pub fn status_for_code(code: &str) -> StatusCode {
         "unauthorized" => StatusCode::UNAUTHORIZED,
         "payload_too_large" => StatusCode::PAYLOAD_TOO_LARGE,
         "method_not_allowed" => StatusCode::METHOD_NOT_ALLOWED,
+        "network_filesystem" => StatusCode::CONFLICT,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
