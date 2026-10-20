@@ -34,18 +34,21 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::FromRequestParts;
+use axum::http::HeaderName;
 use axum::middleware::from_fn;
 use axum::routing::get;
 use axum::{Extension, Json, Router};
 use memex_core::daily::today_with_clock;
 use memex_core::{CallerClock, Clock, FixedOffset, SystemClock, Vault};
 use memex_mcp::server::request_clock::{
-    caller_utc_offset, BaseClock, CallerUtcOffset, RequestClock, SharedClock,
+    caller_utc_offset, BaseClock, CallerUtcOffset, RequestClock, SharedClock, UTC_OFFSET_HEADER,
 };
 use memex_mcp::server::{router, ServerConfig};
 use memex_mcp::state::AppState;
 use memex_mcp::tools::Memex;
 use rmcp::handler::server::wrapper::Parameters;
+use rmcp::model::CallToolRequestParams;
+use rmcp::ServiceExt;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -1329,6 +1332,226 @@ async fn mcp_offset_never_shifts_created_at_updated_at_or_reviewed_at_from_the_b
             reviewed["reviewed_at"],
             BASE_MS + 9_000,
             "{header:?}: reviewed_at is the base instant"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Verify-mode pins: contracts the implementer's handoff listed as unpinned
+// ---------------------------------------------------------------------------
+
+/// The frontmatter `created_at` of note `id`.
+fn frontmatter_created_at(vault: &Path, id: &str) -> i64 {
+    let fm: String = open_db(vault)
+        .query_row("SELECT frontmatter FROM notes WHERE id = ?", [id], |r| {
+            r.get(0)
+        })
+        .unwrap_or_else(|e| panic!("note {id}: {e}"));
+    let fm: Value = serde_json::from_str(&fm).expect("frontmatter is JSON");
+    fm["created_at"]
+        .as_i64()
+        .unwrap_or_else(|| panic!("frontmatter created_at: {fm}"))
+}
+
+#[tokio::test]
+async fn utc_offset_header_constant_is_the_lower_case_header_name_the_middleware_reads() {
+    assert_eq!(UTC_OFFSET_HEADER, "x-memex-utc-offset");
+    assert_eq!(
+        HeaderName::from_static(UTC_OFFSET_HEADER),
+        HeaderName::from_bytes(HEADER.as_bytes()).expect("a header name"),
+        "the constant names the header req 59 sends, case-insensitively"
+    );
+
+    // A request sending the header under the constant's spelling is read.
+    let probe = Probe::start(Arc::new(Fixed(BASE_MS))).await;
+    let r = get_with(
+        &format!("http://{}/probe", probe.addr),
+        None,
+        &[(UTC_OFFSET_HEADER, "+14:00".to_string())],
+    )
+    .await;
+    assert_eq!(r.status, 200, "{:?}", short(&r.body));
+    assert_eq!(r.json()["caller_offset"], 840);
+    assert_eq!(r.json()["today"], caller_date(840, BASE_MS));
+}
+
+#[tokio::test]
+async fn repeated_offset_header_is_decided_by_its_first_value() {
+    // Neither the WI nor the Spec says how a repeated header is read; the
+    // middleware reads the first value only. This pins that.
+    let probe = Probe::start(Arc::new(Fixed(BASE_MS))).await;
+    let twice =
+        |first: &str, second: &str| vec![(HEADER, first.to_string()), (HEADER, second.to_string())];
+    let url = format!("http://{}/probe", probe.addr);
+
+    let r = get_with(&url, None, &twice("+14:00", "-12:00")).await;
+    assert_eq!(r.status, 200, "{:?}", short(&r.body));
+    assert_eq!(r.json()["caller_offset"], 840, "the first value wins");
+    assert_eq!(r.json()["today"], caller_date(840, BASE_MS));
+
+    let r = get_with(&url, None, &twice("+14:00", "abc")).await;
+    assert_eq!(r.status, 200, "a malformed second value is not read");
+    assert_eq!(r.json()["caller_offset"], 840);
+
+    let r = get_with(&url, None, &twice("abc", "+14:00")).await;
+    assert_invalid_offset(&r, "a malformed first value");
+
+    // End to end over /mcp: the daily title follows the first value.
+    let srv = ClockServer::fixed(BASE_MS).await;
+    srv.vault("work");
+    let r = rpc_with(
+        &srv.url(&mcp_path("work")),
+        &tool_call("create_note", json!({ "content_md": "", "role": "daily" })),
+        Some(&bearer()),
+        &twice("-12:00", "+14:00"),
+    )
+    .await;
+    let v = tool_payload(&rpc_result(&r));
+    let id = v["note_id"].as_str().unwrap_or_else(|| panic!("{v}"));
+    assert_eq!(
+        note_row(&srv.root().join("work"), id).0,
+        caller_date(-720, BASE_MS)
+    );
+}
+
+#[tokio::test]
+async fn unknown_vault_with_a_malformed_offset_is_400_before_the_vault_guard() {
+    // D7: the request clock sits outside the routes, and the vault guard is
+    // part of the routes, so a malformed header is answered before the
+    // vault is looked up.
+    let srv = ClockServer::fixed(BASE_MS).await;
+    srv.vault("work");
+    let bad = with_offset(Some("+15:00"));
+    let r = get_with(&srv.url("/vaults/nope/api/v1/info"), Some(&bearer()), &bad).await;
+    assert_invalid_offset(&r, "GET an unknown vault's info");
+    let r = rpc_with(
+        &srv.url(&mcp_path("nope")),
+        &request(1, "tools/list", json!({})),
+        Some(&bearer()),
+        &bad,
+    )
+    .await;
+    assert_invalid_offset(&r, "POST an unknown vault's /mcp");
+
+    // A valid header on the same paths reaches the guard's 404.
+    let ok = with_offset(Some("+14:00"));
+    let r = get_with(&srv.url("/vaults/nope/api/v1/info"), Some(&bearer()), &ok).await;
+    assert_eq!(r.status, 404, "{:?}", short(&r.body));
+    assert_eq!(r.c1_code(), "vault_not_found");
+    let r = rpc_with(
+        &srv.url(&mcp_path("nope")),
+        &request(1, "tools/list", json!({})),
+        Some(&bearer()),
+        &ok,
+    )
+    .await;
+    assert_eq!(r.status, 404, "{:?}", short(&r.body));
+    assert_eq!(r.c1_code(), "vault_not_found");
+}
+
+/// Calls `tool` through an rmcp client over any transport; returns its
+/// JSON payload.
+async fn rmcp_call(
+    client: &rmcp::service::RunningService<rmcp::RoleClient, ()>,
+    tool: &'static str,
+    args: Value,
+) -> Value {
+    let Value::Object(arguments) = args else {
+        panic!("tool arguments are an object");
+    };
+    let result = client
+        .call_tool(CallToolRequestParams::new(tool).with_arguments(arguments))
+        .await
+        .unwrap_or_else(|e| panic!("call {tool}: {e}"));
+    tool_payload(&serde_json::to_value(result).expect("serialize CallToolResult"))
+}
+
+#[tokio::test]
+async fn mcp_over_a_transport_without_http_parts_uses_the_system_clock() {
+    // `call_clock` with no `http::request::Parts` (stdio, or any transport
+    // other than the streamable-HTTP server) is the SystemClock: the
+    // machine's local date and the system time.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vault");
+    let vault = Vault::create(&path).unwrap();
+    let memex = Memex::new(Arc::new(AppState::new(vault, path.clone(), None)));
+    let (server_io, client_io) = tokio::io::duplex(1 << 20);
+    let server = tokio::spawn(async move {
+        let running = memex.serve(server_io).await.expect("serve over duplex");
+        let _ = running.waiting().await;
+    });
+    let client = ().serve(client_io).await.expect("client over duplex");
+
+    let before_day = local_today();
+    let before_ms = SystemClock.now_ms();
+    let note = rmcp_call(
+        &client,
+        "create_note",
+        json!({ "content_md": "", "role": "daily" }),
+    )
+    .await;
+    let appended = rmcp_call(
+        &client,
+        "append_to_daily_note",
+        json!({ "text": "In process." }),
+    )
+    .await;
+    let folder = rmcp_call(
+        &client,
+        "create_smart_folder",
+        json!({ "name": "In process" }),
+    )
+    .await;
+    let after_ms = SystemClock.now_ms();
+    let after_day = local_today();
+    let _ = client.cancel().await;
+    server.abort();
+
+    let id = note["note_id"].as_str().unwrap_or_else(|| panic!("{note}"));
+    assert_between(
+        &note_row(&path, id).0,
+        &before_day,
+        &after_day,
+        "create_note",
+    );
+    let day = appended["date"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{appended}"));
+    assert_between(day, &before_day, &after_day, "append_to_daily_note");
+    let ms = folder["created_at"]
+        .as_i64()
+        .unwrap_or_else(|| panic!("{folder}"));
+    assert!(
+        (before_ms..=after_ms).contains(&ms),
+        "created_at from the system clock: {before_ms} <= {ms} <= {after_ms}"
+    );
+}
+
+#[tokio::test]
+async fn mcp_create_note_frontmatter_created_at_is_not_shifted_by_the_offset() {
+    // AC 10 for create_note: its frontmatter `created_at` is the time of the
+    // call, whatever offset the caller sends.
+    let srv = ClockServer::start(None).await;
+    let dir = srv.vault("work");
+    for (i, header) in [Some("+14:00"), Some("-12:00"), None]
+        .into_iter()
+        .enumerate()
+    {
+        let before = SystemClock.now_ms();
+        let v = call_ok(
+            &srv,
+            "work",
+            header,
+            "create_note",
+            json!({ "title": format!("Note {i}"), "content_md": "Body." }),
+        )
+        .await;
+        let after = SystemClock.now_ms();
+        let id = v["note_id"].as_str().unwrap_or_else(|| panic!("{v}"));
+        let at = frontmatter_created_at(&dir, id);
+        assert!(
+            (before..=after).contains(&at),
+            "{header:?}: created_at {at} is the call time ({before}..={after})"
         );
     }
 }
