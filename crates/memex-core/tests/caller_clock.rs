@@ -336,6 +336,87 @@ fn today_with_clock_rereads_the_offset_on_every_call() {
     assert_eq!(daily::today_with_clock(&clock), date("2026-03-01"));
 }
 
+/// A clock whose instant advances on every `now_ms` read (a real clock
+/// ticking between two reads), with an offset that changes at `switch_ms`.
+/// It records every read and every instant `utc_offset_at` is asked about.
+struct TickingClock {
+    ticks: std::cell::RefCell<Vec<i64>>,
+    switch_ms: i64,
+    before: FixedOffset,
+    after: FixedOffset,
+    asked: std::cell::RefCell<Vec<i64>>,
+    reads: Cell<usize>,
+}
+
+impl TickingClock {
+    fn new(ticks: &[&str], switch: &str, before: i32, after: i32) -> Self {
+        Self {
+            ticks: std::cell::RefCell::new(ticks.iter().rev().map(|t| ms(t)).collect()),
+            switch_ms: ms(switch),
+            before: offset(before),
+            after: offset(after),
+            asked: std::cell::RefCell::new(Vec::new()),
+            reads: Cell::new(0),
+        }
+    }
+}
+
+impl Clock for TickingClock {
+    fn now_ms(&self) -> i64 {
+        self.reads.set(self.reads.get() + 1);
+        let mut ticks = self.ticks.borrow_mut();
+        // Past the last tick the clock stays on it.
+        if ticks.len() > 1 {
+            ticks.pop().unwrap()
+        } else {
+            *ticks.last().expect("at least one tick")
+        }
+    }
+
+    fn utc_offset_at(&self, now_ms: i64) -> FixedOffset {
+        self.asked.borrow_mut().push(now_ms);
+        if now_ms >= self.switch_ms {
+            self.after
+        } else {
+            self.before
+        }
+    }
+}
+
+/// `today_with_clock` reads the instant once per call and asks the offset at
+/// that same instant: it never maps one instant with the offset of another.
+/// Ticks 23:30Z then 00:30Z, offset +00:00 before 00:00Z and +01:00 after.
+/// Read once, the first tick at +00:00 is 2026-03-01; any mix of the two
+/// ticks (date of one, offset of the other, or the second tick) is 2026-03-02.
+#[test]
+fn today_with_clock_reads_the_instant_once_per_call() {
+    let ticks = ["2026-03-01T23:30:00Z", "2026-03-02T00:30:00Z"];
+    let clock = TickingClock::new(&ticks, "2026-03-02T00:00:00Z", 0, 60);
+    assert_eq!(daily::today_with_clock(&clock), date("2026-03-01"));
+    assert_eq!(clock.reads.get(), 1, "now_ms is read once per call");
+    assert_eq!(
+        *clock.asked.borrow(),
+        vec![ms(ticks[0])],
+        "the offset is asked at the instant that was read"
+    );
+    // The next call reads the next instant (nothing cached).
+    assert_eq!(daily::today_with_clock(&clock), date("2026-03-02"));
+    assert_eq!(clock.reads.get(), 2);
+    assert_eq!(*clock.asked.borrow(), vec![ms(ticks[0]), ms(ticks[1])]);
+
+    // Through a CallerClock the base is read once too.
+    let caller_clock = CallerClock {
+        offset: offset(0),
+        base: TickingClock::new(&ticks, "2026-03-02T00:00:00Z", 0, 60),
+    };
+    assert_eq!(daily::today_with_clock(&caller_clock), date("2026-03-01"));
+    assert_eq!(caller_clock.base.reads.get(), 1, "the base is read once");
+    assert!(
+        caller_clock.base.asked.borrow().is_empty(),
+        "a CallerClock never asks its base for an offset"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // AC 5-7: CallerClock
 // ---------------------------------------------------------------------------

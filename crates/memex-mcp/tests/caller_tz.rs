@@ -215,3 +215,65 @@ fn format_utc_offset_from_runtime_parsed_offsets_is_canonical() {
         "zero always formats as +00:00"
     );
 }
+
+/// Every row of `utc_offsets.json` reaches the tests above: the loader's maps
+/// would silently drop a duplicate header or minute, so each raw row is
+/// checked against the parser and formatter here, straight from the file.
+#[test]
+fn utc_offsets_fixture_rows_are_all_consumed() {
+    let path = api_fixtures::api_v1_dir().join("server/utc_offsets.json");
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("read utc_offsets.json"))
+            .expect("utc_offsets.json is JSON");
+    let rows = |set: &str| raw[set].as_array().cloned().unwrap_or_default();
+    let (valid, invalid, format) = (rows("valid"), rows("invalid"), rows("format"));
+    assert!(
+        !valid.is_empty() && !invalid.is_empty() && !format.is_empty(),
+        "every set has rows"
+    );
+
+    let cases = api_fixtures::load_utc_offsets();
+    assert_eq!(cases.valid.len(), valid.len(), "no valid row is dropped");
+    assert_eq!(
+        cases.invalid.len(),
+        invalid.len(),
+        "no invalid row is dropped"
+    );
+    assert_eq!(cases.format.len(), format.len(), "no format row is dropped");
+
+    for row in &valid {
+        let header = row["header"].as_str().expect("valid header");
+        let want = i32::try_from(row["minutes"].as_i64().expect("valid minutes")).unwrap();
+        assert_eq!(parse_utc_offset(header).map(minutes), Some(want), "{row}");
+    }
+    for row in &invalid {
+        let header = row.as_str().expect("invalid header");
+        assert_eq!(parse_utc_offset(header), None, "{row}");
+    }
+    for row in &format {
+        let mins = i32::try_from(row["minutes"].as_i64().expect("format minutes")).unwrap();
+        let want = row["header"].as_str().expect("format header");
+        assert_eq!(format_utc_offset(offset(mins)), want, "{row}");
+    }
+}
+
+/// The grammar only yields whole minutes, but a `FixedOffset` can carry
+/// seconds. `format_utc_offset` drops them, truncating toward zero: -30 s is
+/// `+00:00` (not `-00:01`), -90 s is `-00:01`, +5430 s (90.5 min) is `+01:30`.
+#[test]
+fn format_utc_offset_truncates_seconds_toward_zero() {
+    let secs = |s: i32| FixedOffset::east_opt(s).unwrap_or_else(|| panic!("bad offset {s} s"));
+    for (seconds, want) in [
+        (-30, "+00:00"),
+        (-59, "+00:00"),
+        (-60, "-00:01"),
+        (-90, "-00:01"),
+        (30, "+00:00"),
+        (5430, "+01:30"),
+        (-5430, "-01:30"),
+        (-1830, "-00:30"),
+        (50_399, "+13:59"),
+    ] {
+        assert_eq!(format_utc_offset(secs(seconds)), want, "{seconds} s");
+    }
+}
