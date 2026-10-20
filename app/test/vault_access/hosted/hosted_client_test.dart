@@ -506,9 +506,11 @@ void main() {
       'a 401 throws code unauthorized and sets the status to token rejected',
       () async {
         final env = _env();
+        // The client keeps the old token; the server rotates it afterwards.
+        final client = env.client();
         env.server.token = 'rotated-on-the-server';
         final e = await _outcome(
-          env.client().serverRequest('GET', '/vaults', operation: 'vault list'),
+          client.serverRequest('GET', '/vaults', operation: 'vault list'),
         );
         expect(e, isA<MemexException>());
         e as MemexException;

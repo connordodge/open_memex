@@ -74,8 +74,10 @@ void main() {
 
   test('a 401 probes unauthorized and sets token rejected', () async {
     final env = _probeEnv();
+    // The client keeps the old token; the server rotates it afterwards.
+    final client = env.client();
     env.server.token = 'rotated-on-the-server';
-    final probe = await env.client().probeServer();
+    final probe = await client.probeServer();
     expect(probe.kind, ServerProbeKind.unauthorized);
     expect(probe.serverVersion, isNull);
     expect(env.status, HostedConnectionStatus.tokenRejected);
