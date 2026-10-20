@@ -13,6 +13,25 @@ import '../support/token_store_fakes.dart';
 const _a = '/Users/test/vaults/alpha';
 const _b = '/Users/test/vaults/bravo';
 
+/// A [FakeTokenStore] whose writes or deletes can fail, as a locked or
+/// denied Keychain would.
+class _FailingTokenStore extends FakeTokenStore {
+  bool failWrites = false;
+  bool failDeletes = false;
+
+  @override
+  Future<void> write(String serverId, String token) async {
+    if (failWrites) throw StateError('keychain write denied');
+    return super.write(serverId, token);
+  }
+
+  @override
+  Future<void> delete(String serverId) async {
+    if (failDeletes) throw StateError('keychain delete denied');
+    return super.delete(serverId);
+  }
+}
+
 Future<(SettingsController, FakeTokenStore)> _fresh([
   Map<String, Object> seed = const {},
 ]) async {
@@ -398,5 +417,254 @@ void main() {
       final s = SavedServer(id: id, name: 'nas', url: 'http://nas.local');
       expect((s.id, s.name, s.url), (id, 'nas', 'http://nas.local'));
     });
+  });
+
+  group('saved server contracts (handoff, lead pinned)', () {
+    test(
+      're-saving a saved URL keeps the first URL string and updates only name and token',
+      () async {
+        final (settings, store) = await _fresh();
+        final first = await settings.saveServer(
+          name: 'nas',
+          url: 'http://nas.local:7878',
+          token: 'tok-first-url-0001',
+        );
+
+        final again = await settings.saveServer(
+          name: 'home nas',
+          url: 'HTTP://NAS.local:7878/',
+          token: 'tok-first-url-0002',
+        );
+
+        expect(
+          (again.id, again.name, again.url),
+          (first.id, 'home nas', 'http://nas.local:7878'),
+        );
+        final listed = settings.state.savedServers.single;
+        expect(listed.url, 'http://nas.local:7878');
+        expect(store.tokens, {first.id: 'tok-first-url-0002'});
+
+        final relaunched = await relaunchSettings(tokenStore: store);
+        expect(
+          relaunched.state.savedServers.single.url,
+          'http://nas.local:7878',
+        );
+      },
+    );
+
+    test(
+      'updateServer with an unknown id throws StateError and changes nothing',
+      () async {
+        final (settings, store) = await _fresh();
+        final s = await settings.saveServer(
+          name: 'nas',
+          url: 'http://nas.local:7878',
+          token: 'tok-unknown-0001',
+        );
+        store.calls.clear();
+        final before = await prefsEntries();
+
+        await expectLater(
+          settings.updateServer(
+            'srv-missing',
+            name: 'ghost',
+            url: 'http://ghost.local',
+            token: 'tok-unknown-0002',
+          ),
+          throwsA(
+            isA<StateError>().having(
+              (e) => e.message,
+              'message',
+              contains('srv-missing'),
+            ),
+          ),
+        );
+
+        expect(store.calls, isEmpty);
+        expect(store.tokens, {s.id: 'tok-unknown-0001'});
+        expect(await prefsEntries(), before);
+        final listed = settings.state.savedServers.single;
+        expect(
+          (listed.id, listed.name, listed.url),
+          (s.id, 'nas', 'http://nas.local:7878'),
+        );
+      },
+    );
+
+    test(
+      'the token is written before prefs so a failed token write saves no server',
+      () async {
+        SharedPreferences.setMockInitialValues({});
+        final store = _FailingTokenStore()..failWrites = true;
+        final settings = await SettingsController.load(tokenStore: store);
+
+        await expectLater(
+          settings.saveServer(
+            name: 'nas',
+            url: 'http://nas.local:7878',
+            token: 'tok-order-0001',
+          ),
+          throwsStateError,
+        );
+
+        expect(settings.state.savedServers, isEmpty);
+        expect(await prefsEntriesContaining('nas.local'), isEmpty);
+        final relaunched = await relaunchSettings(tokenStore: store);
+        expect(relaunched.state.savedServers, isEmpty);
+      },
+    );
+
+    test(
+      'a failed token write on update or re-save leaves the saved server unchanged',
+      () async {
+        SharedPreferences.setMockInitialValues({});
+        final store = _FailingTokenStore();
+        final settings = await SettingsController.load(tokenStore: store);
+        final s = await settings.saveServer(
+          name: 'nas',
+          url: 'http://nas.local:7878',
+          token: 'tok-order-1001',
+        );
+        store.failWrites = true;
+
+        await expectLater(
+          settings.updateServer(
+            s.id,
+            name: 'renamed',
+            url: 'http://moved.local:7878',
+            token: 'tok-order-1002',
+          ),
+          throwsStateError,
+        );
+        await expectLater(
+          settings.saveServer(
+            name: 'renamed',
+            url: 'HTTP://nas.local:7878/',
+            token: 'tok-order-1003',
+          ),
+          throwsStateError,
+        );
+
+        final listed = settings.state.savedServers.single;
+        expect(
+          (listed.id, listed.name, listed.url),
+          (s.id, 'nas', 'http://nas.local:7878'),
+        );
+        expect(store.tokens, {s.id: 'tok-order-1001'});
+        expect(await prefsEntriesContaining('renamed'), isEmpty);
+        expect(await prefsEntriesContaining('moved.local'), isEmpty);
+        final relaunched = await relaunchSettings(tokenStore: store);
+        expect(relaunched.state.savedServers.single.name, 'nas');
+      },
+    );
+
+    test(
+      'the token is deleted before prefs so a failed token delete keeps the server and its recents',
+      () async {
+        SharedPreferences.setMockInitialValues({});
+        final store = _FailingTokenStore();
+        final settings = await SettingsController.load(tokenStore: store);
+        final s = await settings.saveServer(
+          name: 'nas',
+          url: 'http://nas.local:7878',
+          token: 'tok-order-2001',
+        );
+        final hosted = HostedVaultRef(s.id, 'notes');
+        await settings.rememberRef(hosted);
+        store.failDeletes = true;
+
+        await expectLater(settings.removeServer(s.id), throwsStateError);
+
+        expect(settings.state.savedServers.map((x) => x.id), [s.id]);
+        expect(settings.state.recentRefs, [hosted]);
+        expect(settings.state.lastVaultRef, hosted);
+        expect(store.tokens, {s.id: 'tok-order-2001'});
+        final relaunched = await relaunchSettings(tokenStore: store);
+        expect(relaunched.state.savedServers.map((x) => x.id), [s.id]);
+        expect(relaunched.state.recentRefs, [hosted]);
+        expect(relaunched.state.lastVaultRef, hosted);
+      },
+    );
+
+    test('undecodable saved server entries are skipped on load', () async {
+      const good = '{"id":"srv-good","name":"mini","url":"http://mini.local"}';
+      final (settings, _) = await _fresh({
+        'memex.recent_refs': <String>[],
+        'memex.vault_servers': <String>[
+          'not json',
+          '{"id":"srv-a","name":"nas"',
+          '{"id":"srv-b","name":"nas"}',
+          '{"id":"srv-c","name":"nas","url":7}',
+          '["srv-d","nas","http://d.local"]',
+          '"srv-e"',
+          good,
+          '{"id":5,"name":"nas","url":"http://f.local"}',
+        ],
+      });
+
+      final listed = settings.state.savedServers.single;
+      expect(
+        (listed.id, listed.name, listed.url),
+        ('srv-good', 'mini', 'http://mini.local'),
+      );
+    });
+
+    test(
+      'editing a URL to match another saved server is allowed and keeps both servers',
+      () async {
+        // Open risk for #98: updateServer does not dedupe by URL.
+        final (settings, store) = await _fresh();
+        final s1 = await settings.saveServer(
+          name: 'nas',
+          url: 'http://nas.local:7878',
+          token: 'tok-clash-0001',
+        );
+        final s2 = await settings.saveServer(
+          name: 'mini',
+          url: 'http://mini.local:7878',
+          token: 'tok-clash-0002',
+        );
+
+        final edited = await settings.updateServer(
+          s2.id,
+          url: 'HTTP://NAS.local:7878/',
+        );
+
+        expect(edited.id, s2.id);
+        expect(
+          [for (final s in settings.state.savedServers) (s.id, s.url)],
+          [(s1.id, 'http://nas.local:7878'), (s2.id, 'HTTP://NAS.local:7878/')],
+        );
+        expect(store.tokens, {
+          s1.id: 'tok-clash-0001',
+          s2.id: 'tok-clash-0002',
+        });
+        final relaunched = await relaunchSettings(tokenStore: store);
+        expect(relaunched.state.savedServers.map((s) => s.id), [s1.id, s2.id]);
+      },
+    );
+
+    test(
+      'normalizeServerUrl keeps path case and query trims whitespace and leaves a URL without a host alone',
+      () {
+        // (input, normalised form)
+        const table = <(String, String)>[
+          ('HTTP://NAS.local:80/', 'http://nas.local'),
+          ('https://NAS.local:443/', 'https://nas.local'),
+          ('https://nas.local:8443/', 'https://nas.local:8443'),
+          ('http://nas.local:443', 'http://nas.local:443'),
+          ('  http://nas.local/  ', 'http://nas.local'),
+          ('http://nas.local/Memex/', 'http://nas.local/Memex'),
+          ('http://nas.local/memex?v=A', 'http://nas.local/memex?v=A'),
+          ('FTP://Files.local:80/', 'ftp://files.local:80'),
+          ('NAS.local/', 'NAS.local'),
+          ('nas.local', 'nas.local'),
+          ('', ''),
+        ];
+        for (final (input, expected) in table) {
+          expect(normalizeServerUrl(input), expected, reason: '"$input"');
+        }
+      },
+    );
   });
 }

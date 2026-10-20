@@ -490,4 +490,290 @@ void main() {
       expect((await _prefs()).getString('memex.binary_path'), isNull);
     });
   });
+
+  group('recents contracts (handoff, lead pinned)', () {
+    test(
+      'forgetVault of a local path removes the old last vault key when it holds that path even while the last vault is hosted',
+      () async {
+        final (settings, store) = await _load({});
+        final server = await settings.saveServer(
+          name: 'nas',
+          url: 'http://nas.local:7878',
+          token: 'tok-oldlast-0001',
+        );
+        final hosted = HostedVaultRef(server.id, 'notes');
+        final prefs = await _prefs();
+        await settings.rememberVault(_a);
+        await settings.rememberVault(_b);
+        await settings.rememberRef(hosted);
+        expect(prefs.getString(_kOldLast), _b);
+
+        // A local path the old key does not hold leaves it alone.
+        await settings.forgetVault(_a);
+        expect(prefs.getString(_kOldLast), _b);
+
+        await settings.forgetVault(_b);
+        expect(prefs.getString(_kOldLast), isNull);
+        // The typed last vault is hosted and stays.
+        expect(settings.state.lastVaultRef, hosted);
+        expect(settings.state.recentRefs, [hosted]);
+
+        final again = await relaunchSettings(tokenStore: store);
+        expect(again.state.lastVaultRef, hosted);
+      },
+    );
+
+    test(
+      'forgetRef of a local path removes the old last vault key when it holds that path',
+      () async {
+        final (settings, _) = await _load({
+          _kOldRecents: <String>[_a, _b],
+          _kOldLast: _a,
+        });
+        final server = await settings.saveServer(
+          name: 'nas',
+          url: 'http://nas.local:7878',
+          token: 'tok-oldlast-1001',
+        );
+        await settings.rememberRef(HostedVaultRef(server.id, 'notes'));
+        final prefs = await _prefs();
+        expect(prefs.getString(_kOldLast), _a);
+
+        await settings.forgetRef(const LocalVaultRef(_a));
+
+        expect(prefs.getString(_kOldLast), isNull);
+        expect(prefs.getStringList(_kOldRecents), [_b]);
+        expect(settings.state.lastVaultRef, HostedVaultRef(server.id, 'notes'));
+      },
+    );
+
+    test(
+      'clearLastVault removes the old last vault key also while the last vault is hosted',
+      () async {
+        final (settings, store) = await _load({
+          _kOldRecents: <String>[_a],
+          _kOldLast: _a,
+        });
+        final server = await settings.saveServer(
+          name: 'nas',
+          url: 'http://nas.local:7878',
+          token: 'tok-clear-0001',
+        );
+        await settings.rememberRef(HostedVaultRef(server.id, 'notes'));
+        final prefs = await _prefs();
+        expect(prefs.getString(_kOldLast), _a);
+
+        await settings.clearLastVault();
+
+        expect(prefs.getString(_kOldLast), isNull);
+        expect(settings.state.lastVaultRef, isNull);
+        expect(settings.state.recentRefs, [
+          HostedVaultRef(server.id, 'notes'),
+          const LocalVaultRef(_a),
+        ]);
+        final again = await relaunchSettings(tokenStore: store);
+        expect(again.state.lastVaultRef, isNull);
+      },
+    );
+
+    test(
+      'clearing a hosted last vault leaves the old last vault key unchanged',
+      () async {
+        final (settings, store) = await _load({});
+        final s1 = await settings.saveServer(
+          name: 'nas',
+          url: 'http://nas.local:7878',
+          token: 'tok-hostedlast-0001',
+        );
+        final s2 = await settings.saveServer(
+          name: 'mini',
+          url: 'http://mini.local:7878',
+          token: 'tok-hostedlast-0002',
+        );
+        final prefs = await _prefs();
+        await settings.rememberVault(_a);
+
+        // forgetRef of the hosted last vault.
+        await settings.rememberRef(HostedVaultRef(s1.id, 'notes'));
+        await settings.forgetRef(HostedVaultRef(s1.id, 'notes'));
+        expect(settings.state.lastVaultRef, isNull);
+        expect(prefs.getString(_kOldLast), _a);
+
+        // removeServer of the server holding the hosted last vault.
+        await settings.rememberRef(HostedVaultRef(s2.id, 'notes'));
+        await settings.removeServer(s2.id);
+        expect(settings.state.lastVaultRef, isNull);
+        expect(prefs.getString(_kOldLast), _a);
+
+        // The typed keys win on the next load: no last vault.
+        final again = await relaunchSettings(tokenStore: store);
+        expect(again.state.lastVaultRef, isNull);
+        expect(again.state.recentRefs, const [LocalVaultRef(_a)]);
+      },
+    );
+
+    test(
+      'undecodable typed recents and last vault entries are skipped on load',
+      () async {
+        // (stored last vault text, why it is undecodable)
+        const badLasts = <(String, String)>[
+          ('{oops', 'bad JSON'),
+          ('{"kind":"hosted","server":"srv-x"}', 'no vault name'),
+          ('{"kind":"local","path":7}', 'path not a string'),
+          ('{"kind":"cloud","path":"/x"}', 'unknown kind'),
+          ('["local","/x"]', 'not an object'),
+        ];
+        for (final (lastText, why) in badLasts) {
+          final (settings, _) = await _load({
+            'memex.recent_refs': <String>[
+              'nope',
+              '{"kind":"local"}',
+              '{"kind":"local","path":5}',
+              '{"kind":"hosted","server":"srv-x"}',
+              '{"kind":"hosted","server":"srv-x","vault":"notes"}',
+              '{"kind":"cloud","path":"/x"}',
+              '[]',
+              '{"kind":"local","path":"$_a"}',
+              '{"kind":"hosted","server":3,"vault":"notes"}',
+            ],
+            'memex.last_vault_ref': lastText,
+            _kOldRecents: <String>[_c],
+            _kOldLast: _c,
+          });
+
+          expect(settings.state.recentRefs, const [
+            HostedVaultRef('srv-x', 'notes'),
+            LocalVaultRef(_a),
+          ], reason: why);
+          expect(settings.state.lastVaultRef, isNull, reason: why);
+        }
+      },
+    );
+
+    test(
+      'the migration keeps at most 8 old recents in order and leaves the old key whole',
+      () async {
+        final paths = [for (var i = 0; i < 10; i++) '/Users/test/vaults/m$i'];
+        final (settings, store) = await _load({
+          _kOldRecents: paths,
+          _kOldLast: paths.first,
+        });
+
+        final expected = [for (final p in paths.take(8)) LocalVaultRef(p)];
+        expect(settings.state.recentRefs, expected);
+        expect(settings.state.recentVaults, paths.take(8).toList());
+        expect(settings.state.lastVaultRef, LocalVaultRef(paths.first));
+        expect((await _prefs()).getStringList(_kOldRecents), paths);
+
+        final again = await relaunchSettings(tokenStore: store);
+        expect(again.state.recentRefs, expected);
+      },
+    );
+
+    test(
+      'hosted recents for a server id that is not saved are kept on load',
+      () async {
+        final (settings, _) = await _load({
+          'memex.recent_refs': <String>[
+            '{"kind":"hosted","server":"srv-gone","vault":"notes"}',
+            '{"kind":"local","path":"$_a"}',
+          ],
+          'memex.last_vault_ref':
+              '{"kind":"hosted","server":"srv-gone","vault":"notes"}',
+        });
+
+        expect(settings.state.savedServers, isEmpty);
+        expect(settings.state.recentRefs, const [
+          HostedVaultRef('srv-gone', 'notes'),
+          LocalVaultRef(_a),
+        ]);
+        expect(
+          settings.state.lastVaultRef,
+          const HostedVaultRef('srv-gone', 'notes'),
+        );
+        expect(settings.state.lastVault, isNull);
+        expect(settings.state.recentVaults, [_a]);
+      },
+    );
+
+    test(
+      'AppSettings seeds typed local refs from the local path form and copyWith keeps or replaces them',
+      () {
+        final paths = [
+          for (var i = 0; i < 3; i++) '/Users/test/vaults/s${i * 7}',
+        ];
+        final local = AppSettings(
+          memexBinaryPath: '/opt/test/memex',
+          recentVaults: paths,
+          lastVault: paths[1],
+        );
+        expect(local.recentRefs, [for (final p in paths) LocalVaultRef(p)]);
+        expect(local.lastVaultRef, LocalVaultRef(paths[1]));
+        expect(local.recentVaults, paths);
+        expect(local.lastVault, paths[1]);
+        expect(local.savedServers, isEmpty);
+        expect(
+          () => local.recentRefs.add(const LocalVaultRef(_a)),
+          throwsUnsupportedError,
+        );
+        expect(() => local.recentVaults.add(_a), throwsUnsupportedError);
+
+        final empty = AppSettings(memexBinaryPath: null);
+        expect(empty.recentRefs, isEmpty);
+        expect(empty.lastVaultRef, isNull);
+
+        // The typed form wins over the local path form.
+        final server = SavedServer(
+          id: 'srv-${paths.length}',
+          name: 'nas',
+          url: 'http://nas.local',
+        );
+        final hosted = HostedVaultRef(server.id, 'notes');
+        final typed = AppSettings(
+          memexBinaryPath: null,
+          recentVaults: paths,
+          lastVault: paths[0],
+          recentRefs: [hosted, LocalVaultRef(paths[2])],
+          lastVaultRef: hosted,
+          savedServers: [server],
+        );
+        expect(typed.recentRefs, [hosted, LocalVaultRef(paths[2])]);
+        expect(typed.lastVaultRef, hosted);
+        expect(typed.recentVaults, [paths[2]]);
+        expect(typed.lastVault, isNull);
+        expect(typed.savedServers, [server]);
+
+        final kept = typed.copyWith();
+        expect(kept.recentRefs, typed.recentRefs);
+        expect(kept.lastVaultRef, hosted);
+        expect(kept.savedServers, [server]);
+
+        final replaced = typed.copyWith(
+          memexBinaryPath: '/opt/test/memex2',
+          recentVaults: [paths[0]],
+          lastVault: paths[0],
+        );
+        expect(replaced.memexBinaryPath, '/opt/test/memex2');
+        expect(replaced.recentRefs, [LocalVaultRef(paths[0])]);
+        expect(replaced.lastVaultRef, LocalVaultRef(paths[0]));
+        expect(replaced.savedServers, [server]);
+
+        final cleared = typed.copyWith(
+          lastVault: paths[0],
+          clearLastVault: true,
+        );
+        expect(cleared.lastVaultRef, isNull);
+        expect(
+          typed.copyWith(recentRefs: const [], recentVaults: paths).recentRefs,
+          isEmpty,
+        );
+        expect(
+          typed
+              .copyWith(lastVaultRef: LocalVaultRef(paths[2]), lastVault: _a)
+              .lastVaultRef,
+          LocalVaultRef(paths[2]),
+        );
+      },
+    );
+  });
 }
