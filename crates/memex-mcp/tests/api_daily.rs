@@ -671,6 +671,62 @@ async fn daily_router_serves_exactly_the_table_routes_and_no_prompt_append_or_re
     task.abort();
 }
 
+/// Every `/notes/…` route names its parameter `{note_id}`, as the notes
+/// slice (#81) does, because axum panics when merged routers name one
+/// segment differently. The name is internal: the wire URLs stay
+/// `/notes/<id>/…` on the merged `api::router()`, and the id a handler acts
+/// on is the URL segment.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn daily_routes_keep_their_wire_urls_on_the_merged_api_router() {
+    // Merging every domain router panics here on a parameter-name clash.
+    let app = Router::new().nest("/vaults/{name}/api/v1", memex_mcp::server::api::router());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let http = client();
+    for (method, path) in ROUTES {
+        let concrete = path.replace("{id}", DAY_19).replace("{date}", "2026-10-19");
+        let url = format!("http://{addr}{BASE}{concrete}");
+        let status = http
+            .request(
+                reqwest::Method::from_bytes(method.as_bytes()).unwrap(),
+                &url,
+            )
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16();
+        assert!(
+            status != 404 && status != 405,
+            "{method} {concrete} is served by the merged api router (got {status})"
+        );
+    }
+    task.abort();
+
+    // Through the real server, the writes act on the id in the URL.
+    let env = Env::start().await;
+    let added = env.footer_add(DAY_17, PLAYER_LOOP).await;
+    assert_eq!(added.status, 200, "{}", added.body);
+    assert_eq!(added.json()["daily_note_id"], DAY_17);
+    let removed = env.excerpt_rm(ECONOMY, "2026-10-19", "et8g8y").await;
+    assert_eq!(removed.status, 200, "{}", removed.body);
+    assert_eq!(removed.json()["topic_note_id"], ECONOMY);
+    // A literal template segment is just a note id no note has.
+    for literal in ["%7Bnote_id%7D", "%7Bid%7D"] {
+        let reply = env
+            .call("GET", &format!("/notes/{literal}/blocks"), None)
+            .await;
+        assert_eq!(
+            (reply.status, reply.json()),
+            (200, json!({ "blocks": [] })),
+            "{literal}"
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn daily_routes_answer_wrong_methods_with_the_c1_405() {
     let env = Env::start().await;

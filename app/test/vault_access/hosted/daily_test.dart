@@ -285,6 +285,94 @@ void main() {
         expect((e! as MemexException).code, 'internal');
       }
     });
+
+    test('hosted daily read errors are labelled get', () async {
+      final env = _env(rows: false);
+      final paths = [
+        '/daily-notes',
+        '/daily-notes/2026-10-19',
+        '/notes/$_wi82Day19/review',
+        '/notes/$_wi82Day19/blocks',
+        '/notes/$_wi82Day19/footer-chips',
+      ];
+      final calls = <Future<Object?> Function()>[
+        env.daily.dailyNotes,
+        () => env.daily.dailyNoteForDate('2026-10-19'),
+        () => env.daily.reviewState(_wi82Day19),
+        () => env.daily.blocksForNote(_wi82Day19),
+        () => env.daily.footerChips(_wi82Day19),
+      ];
+      // A C1 body.
+      for (final path in paths) {
+        env.server.route(
+          'GET',
+          '$_wi82Base$path',
+          status: 500,
+          json: {
+            'error': {'code': 'internal', 'message': 'disk on fire'},
+          },
+        );
+      }
+      for (final call in calls) {
+        final e = await _outcome(call());
+        expect(e, isA<MemexException>());
+        expect((e! as MemexException).message, 'get failed: disk on fire');
+      }
+      // A failure without a C1 body.
+      for (final path in paths) {
+        env.server.route('GET', '$_wi82Base$path', status: 502, json: []);
+      }
+      for (final call in calls) {
+        final e = await _outcome(call());
+        expect(e, isA<MemexException>());
+        expect((e! as MemexException).message, 'get failed: HTTP 502');
+        expect((e as MemexException).code, isNull);
+      }
+    });
+
+    test(
+      'an unknown review state label throws a MemexException with a null code',
+      () async {
+        final env = _env(rows: false);
+        Map<String, Object?> day(String state) => {
+          'date': '2026-10-19',
+          'note_id': _wi82Day19,
+          'preview': 'p',
+          'review_state': state,
+        };
+        env.server
+          ..route(
+            'GET',
+            '$_wi82Base/notes/$_wi82Day19/review',
+            json: {'state': 'reviewed', 'reviewed_at': null},
+          )
+          ..route(
+            'GET',
+            '$_wi82Base/daily-notes',
+            json: {
+              'daily_notes': [day('Archived')],
+            },
+          )
+          ..route(
+            'GET',
+            '$_wi82Base/daily-notes/2026-10-19',
+            json: {'daily_note': day('Reviewed ')},
+          );
+        final cases = <String, Future<Object?> Function()>{
+          'reviewed': () => env.daily.reviewState(_wi82Day19),
+          'Archived': env.daily.dailyNotes,
+          'Reviewed ': () => env.daily.dailyNoteForDate('2026-10-19'),
+        };
+        for (final MapEntry(key: label, value: call) in cases.entries) {
+          final e = await _outcome(call());
+          expect(e, isA<MemexException>(), reason: label);
+          final m = e! as MemexException;
+          expect(m.message, 'get: unknown review state: $label');
+          expect(m.code, isNull, reason: label);
+          expect(m.kind, MemexErrorKind.other, reason: label);
+        }
+      },
+    );
   });
 
   group('addFooterChip', () {
