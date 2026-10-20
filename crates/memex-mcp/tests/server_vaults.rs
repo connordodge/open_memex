@@ -300,19 +300,20 @@ async fn case_only_duplicate_vault_folders_are_neither_listed_nor_served() {
 
 const LOG_TOKEN: &str = "wi72-log-token-8b7a6c5d4e3f2a1b0c9d8e7f";
 
+/// `memex serve --root <root>` on a port the child binds itself (never a
+/// probed-then-released one another process could take first).
 async fn start_binary(root: &Path) -> (ServeChild, SocketAddr) {
-    let addr: SocketAddr = format!("127.0.0.1:{}", free_port()).parse().unwrap();
     let mut child = ServeCommand::new(&[
         "--root",
         root.to_str().unwrap(),
         "--listen",
-        &addr.to_string(),
+        ANY_PORT,
         "--log-level",
         "info",
     ])
     .env(TOKEN_ENV, LOG_TOKEN)
     .spawn();
-    child.wait_ready(addr).await;
+    let addr = child.ready().await;
     (child, addr)
 }
 
