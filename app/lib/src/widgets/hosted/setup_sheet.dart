@@ -49,7 +49,7 @@ class _SetUpVaultServerSheet extends StatelessWidget {
                 border: Border.all(color: OmColors.line2),
                 boxShadow: [
                   BoxShadow(
-                    color: const Color(0xFF000000).withAlpha(153),
+                    color: OmColors.dialogShadow,
                     offset: const Offset(0, 24),
                     blurRadius: 64,
                   ),
