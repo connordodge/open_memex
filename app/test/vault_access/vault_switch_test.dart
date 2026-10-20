@@ -16,8 +16,8 @@ import 'package:open_memex_app/src/vault_access/local/local_vault_access.dart';
 import 'package:open_memex_app/src/vault_access/vault_async_view.dart';
 import 'package:open_memex_app/src/vault_access/vault_scoped.dart';
 
-const _vaultA = '/tmp/om-70-vault-a';
-const _vaultB = '/tmp/om-70-vault-b';
+const _vaultA = LocalVaultRef('/tmp/om-70-vault-a');
+const _vaultB = LocalVaultRef('/tmp/om-70-vault-b');
 const _emptyText = 'no notes yet';
 const _facadeKey = Key('wi70-facade');
 
@@ -86,12 +86,12 @@ class _Wi70Switch {
   _Wi70Switch(this.container, this.notes);
 
   final ProviderContainer container;
-  final Map<String, _Wi70SwitchGatedNotes> notes;
+  final Map<VaultRef, _Wi70SwitchGatedNotes> notes;
 
   _Wi70SwitchGatedNotes get a => notes[_vaultA]!;
   _Wi70SwitchGatedNotes get b => notes[_vaultB]!;
 
-  void switchTo(String? vault) =>
+  void switchTo(VaultRef? vault) =>
       container.read(currentVaultProvider.notifier).state = vault;
 
   AsyncValue<VaultScoped<List<NoteListItem>>> get value =>
@@ -106,8 +106,8 @@ Future<_Wi70Switch> _pump(
   bool fixed = false,
 }) async {
   final notes = {
-    _vaultA: _Wi70SwitchGatedNotes(_vaultA),
-    _vaultB: _Wi70SwitchGatedNotes(_vaultB),
+    _vaultA: _Wi70SwitchGatedNotes(_vaultA.path),
+    _vaultB: _Wi70SwitchGatedNotes(_vaultB.path),
   };
   final container = ProviderContainer(
     overrides: [
@@ -116,8 +116,9 @@ Future<_Wi70Switch> _pump(
       memexCliProvider.overrideWithValue(null),
       vaultAccessProvider.overrideWith((ref) {
         final vault = ref.watch(currentVaultProvider);
-        if (vault == null) return null;
-        return LocalVaultAccess(vaultPath: vault, notes: notes[vault]);
+        final path = vault.localPath;
+        if (path == null) return null;
+        return LocalVaultAccess(vaultPath: path, notes: notes[vault]);
       }),
       _wi70HostedState.overrideWith((_) => hosted),
       vaultIsHostedProvider.overrideWith((ref) => ref.watch(_wi70HostedState)),
@@ -383,7 +384,7 @@ void main() {
 
   group('currentVaultData', () {
     // Built from run-time values so the VaultScoped constructor runs.
-    final vaultA = [_vaultA].join();
+    final vaultA = LocalVaultRef([_vaultA.path].join());
     final scopedA = VaultScoped<List<String>>(vaultA, ['row from A']);
 
     test('currentVaultData is null when there is no data', () {

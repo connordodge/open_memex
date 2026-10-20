@@ -23,7 +23,9 @@ ProviderContainer _container({
 }) {
   final c = ProviderContainer(
     overrides: [
-      currentVaultProvider.overrideWith((_) => vault),
+      currentVaultProvider.overrideWith(
+        (_) => vault == null ? null : LocalVaultRef(vault),
+      ),
       vaultDbProvider.overrideWithValue(db),
       memexCliProvider.overrideWithValue(cli),
     ],
@@ -220,7 +222,9 @@ void main() {
 
         expect(c.read(vaultAccessProvider), isNull);
 
-        c.read(currentVaultProvider.notifier).state = _vault;
+        c.read(currentVaultProvider.notifier).state = const LocalVaultRef(
+          _vault,
+        );
         expect(c.read(vaultAccessProvider), isA<LocalVaultAccess>());
 
         c.read(currentVaultProvider.notifier).state = null;
@@ -234,7 +238,9 @@ void main() {
         final cliState = StateProvider<MemexCli?>((_) => null);
         final c = ProviderContainer(
           overrides: [
-            currentVaultProvider.overrideWith((_) => _vault),
+            currentVaultProvider.overrideWith(
+              (_) => const LocalVaultRef(_vault),
+            ),
             vaultDbProvider.overrideWithValue(null),
             memexCliProvider.overrideWith((ref) => ref.watch(cliState)),
           ],
@@ -264,7 +270,9 @@ void main() {
         final dbState = StateProvider<VaultDb?>((_) => dbA);
         final c = ProviderContainer(
           overrides: [
-            currentVaultProvider.overrideWith((_) => _vault),
+            currentVaultProvider.overrideWith(
+              (_) => const LocalVaultRef(_vault),
+            ),
             vaultDbProvider.overrideWith((ref) => ref.watch(dbState)),
             memexCliProvider.overrideWithValue(null),
           ],
@@ -295,13 +303,17 @@ void main() {
         overrides: [
           vaultDbProvider.overrideWithValue(null),
           memexCliProvider.overrideWithValue(cli),
-          currentVaultProvider.overrideWith((_) => '/tmp/om-70-first'),
+          currentVaultProvider.overrideWith(
+            (_) => const LocalVaultRef('/tmp/om-70-first'),
+          ),
         ],
       );
       addTearDown(c.dispose);
 
       await c.read(vaultAccessProvider)!.topics.createFolder(name: 'A');
-      c.read(currentVaultProvider.notifier).state = '/tmp/om-70-second';
+      c.read(currentVaultProvider.notifier).state = const LocalVaultRef(
+        '/tmp/om-70-second',
+      );
       await c.read(vaultAccessProvider)!.topics.createFolder(name: 'B');
 
       expect(
