@@ -3,8 +3,9 @@
 use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
-use memex_core::{vault_settings, Vault};
-use serde::Serialize;
+use memex_core::{SystemClock, Vault};
+
+use crate::ops::settings;
 
 /// `memex settings <command>`
 #[derive(Args, Debug)]
@@ -47,36 +48,23 @@ pub struct SettingsSetArgs {
     pub value: String,
 }
 
-/// C2.11: `vault_id` first, then the key and its integer value.
-#[derive(Serialize)]
-struct SettingOut<'a> {
-    vault_id: &'a str,
-    key: &'a str,
-    value: i64,
-}
-
-fn print_setting(vault: &Vault, key: &str, value: i64) -> anyhow::Result<()> {
-    let out = SettingOut {
-        vault_id: vault.vault_id(),
-        key,
-        value,
-    };
-    println!("{}", serde_json::to_string(&out)?);
-    Ok(())
-}
-
 pub fn run(args: SettingsArgs) -> anyhow::Result<()> {
-    match args.command {
+    let out = match args.command {
         SettingsCommand::Get(a) => {
             // `Vault::open` migrates a V4 vault to V5 (#18 relies on this).
-            let vault = Vault::open(&a.vault)?;
-            let value = vault_settings::get_setting(&vault, &a.key)?;
-            print_setting(&vault, &a.key, value)
+            let mut vault = Vault::open(&a.vault)?;
+            let input = settings::GetInput { key: a.key };
+            settings::get(&mut vault, input, &SystemClock, None)?
         }
         SettingsCommand::Set(a) => {
             let mut vault = Vault::open(&a.vault)?;
-            let value = vault_settings::set_setting(&mut vault, &a.key, &a.value)?;
-            print_setting(&vault, &a.key, value)
+            let input = settings::SetInput {
+                key: a.key,
+                value: a.value,
+            };
+            settings::set(&mut vault, input, &SystemClock, None)?
         }
-    }
+    };
+    println!("{}", serde_json::to_string(&out)?);
+    Ok(())
 }

@@ -1,0 +1,7 @@
+List every Smart Folder with its members, plus unsorted notes
+
+Usage: memex folder ls --vault <VAULT>
+
+Options:
+      --vault <VAULT>  Vault directory
+  -h, --help           Print help

@@ -1,0 +1,10 @@
+Remove one transclusion from a topic note
+
+Usage: memex excerpt rm --vault <VAULT> --topic-note-id <TOPIC_NOTE_ID> --date <DATE> --block-ids <BLOCK_IDS>
+
+Options:
+      --vault <VAULT>                  Vault directory
+      --topic-note-id <TOPIC_NOTE_ID>  Topic note id (ULID)
+      --date <DATE>                    The daily note's date, YYYY-MM-DD
+      --block-ids <BLOCK_IDS>          The transclusion's endpoint block ids: one id, or `from,to` for a range
+  -h, --help                           Print help
