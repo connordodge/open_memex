@@ -21,9 +21,11 @@ use axum::response::IntoResponse;
 use memex_core::daily::today_with_clock;
 use memex_core::embedder::{Embedder, FakeEmbedder};
 use memex_core::{Clock, SystemClock};
-use memex_mcp::server::registry::{validate_vault_name, Registry, VaultEntry};
-use memex_mcp::server::request_clock::{BaseClock, RequestClock, SharedClock};
-use memex_mcp::server::ServerConfig;
+use memex_mcp::server::registry::{
+    validate_vault_name, with_vault, Registry, ServedVault, VaultEntry,
+};
+use memex_mcp::server::request_clock::{BaseClock, CallerUtcOffset, RequestClock, SharedClock};
+use memex_mcp::server::{router, ServerConfig};
 use memex_mcp::state::build_embedder_in;
 use serde_json::Value;
 use tokio::sync::Barrier;
@@ -382,4 +384,367 @@ async fn request_clock_reads_the_base_clock_on_every_call_even_when_it_jumps_bac
         "no clamping or caching"
     );
     assert_eq!(clock.now_ms(), FIXED_MS + 1);
+}
+
+// ---------------------------------------------------------------------------
+// Verify: contracts from the implementer's handoff
+// ---------------------------------------------------------------------------
+
+/// What a handler extracts from `req`, whatever its extensions hold.
+async fn extract_from(req: axum::http::Request<()>) -> RequestClock {
+    let (mut parts, ()) = req.into_parts();
+    match RequestClock::from_request_parts(&mut parts, &()).await {
+        Ok(clock) => clock,
+        Err(_) => panic!("RequestClock extraction failed"),
+    }
+}
+
+/// A request with nothing in its extensions.
+fn bare_request() -> axum::http::Request<()> {
+    axum::http::Request::builder()
+        .uri("/vaults/work/api/v1/info")
+        .body(())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn request_clock_without_a_base_clock_extension_falls_back_to_system_time() {
+    let before = SystemClock.now_ms();
+    let day_before = today_with_clock(&SystemClock);
+    let clock = extract_from(bare_request()).await;
+    let now = clock.now_ms();
+    let today = today_with_clock(&clock);
+    let after = SystemClock.now_ms();
+    let day_after = today_with_clock(&SystemClock);
+    assert!(
+        (before..=after).contains(&now),
+        "{before} <= {now} <= {after}"
+    );
+    assert_eq!(clock.caller_offset(), None);
+    assert!(
+        today == day_before || today == day_after,
+        "the server's local date: {today} vs {day_before}/{day_after}"
+    );
+}
+
+#[tokio::test]
+async fn request_clock_caller_offset_is_none_by_default_and_the_inserted_offset_otherwise() {
+    let fixed: SharedClock = Arc::new(FixedClock(FIXED_MS));
+    let clock = extract(fixed.clone()).await;
+    assert_eq!(clock.caller_offset(), None, "no offset unless inserted");
+    assert_eq!(clock.now_ms(), FIXED_MS);
+
+    for minutes in [330, -480, 0, 765, -720] {
+        let req = axum::http::Request::builder()
+            .uri("/vaults/work/api/v1/info")
+            .extension(BaseClock(fixed.clone()))
+            .extension(CallerUtcOffset(minutes))
+            .body(())
+            .unwrap();
+        let clock = extract_from(req).await;
+        assert_eq!(clock.caller_offset(), Some(CallerUtcOffset(minutes)));
+        assert_eq!(
+            clock.now_ms(),
+            FIXED_MS,
+            "the offset never moves the instant"
+        );
+    }
+
+    // An offset but no base clock: the system time, offset kept.
+    let req = axum::http::Request::builder()
+        .uri("/")
+        .extension(CallerUtcOffset(60))
+        .body(())
+        .unwrap();
+    let before = SystemClock.now_ms();
+    let clock = extract_from(req).await;
+    let now = clock.now_ms();
+    assert!((before..=SystemClock.now_ms()).contains(&now));
+    assert_eq!(clock.caller_offset(), Some(CallerUtcOffset(60)));
+}
+
+#[tokio::test]
+async fn served_vault_outside_the_vault_guard_is_500_internal() {
+    let (mut parts, ()) = bare_request().into_parts();
+    match ServedVault::from_request_parts(&mut parts, &()).await {
+        Ok(_) => panic!("no vault was resolved for this request"),
+        Err(e) => assert_eq!(
+            reply_of(e.into_response()).await,
+            (500, "internal".to_string())
+        ),
+    }
+}
+
+#[tokio::test]
+async fn a_vault_replaced_on_disk_is_reopened_with_a_new_open_id() {
+    let root = tempfile::tempdir().unwrap();
+    let old_id = make_vault(root.path(), "work");
+    let registry = Registry::new(root.path().to_path_buf(), None);
+    let old = get_entry(&registry, "work").await;
+    assert_eq!(old.state.vault.lock().await.manifest().vault_id, old_id);
+
+    // Replaced at the same folder with no request in between, so nothing
+    // ever saw it missing.
+    std::fs::remove_dir_all(root.path().join("work")).unwrap();
+    let new_id = make_vault(root.path(), "work");
+    assert_ne!(new_id, old_id);
+
+    let new = get_entry(&registry, "WORK").await;
+    assert!(!Arc::ptr_eq(&old, &new), "not the old handle");
+    assert_ne!(new.open_id, old.open_id, "a reopen mints a new open_id");
+    assert_eq!(new.state.vault.lock().await.manifest().vault_id, new_id);
+    let again = get_entry(&registry, "work").await;
+    assert!(Arc::ptr_eq(&new, &again), "then kept");
+}
+
+#[tokio::test]
+async fn an_unreadable_manifest_on_an_open_vault_keeps_its_entry() {
+    let root = tempfile::tempdir().unwrap();
+    let id = make_vault(root.path(), "work");
+    let registry = Registry::new(root.path().to_path_buf(), None);
+    let open = get_entry(&registry, "work").await;
+    // Mid-rewrite or damaged: still a file, but not a manifest.
+    std::fs::write(root.path().join("work/manifest.json"), b"{not json").unwrap();
+    let again = get_entry(&registry, "work").await;
+    assert!(Arc::ptr_eq(&open, &again), "kept, not reopened");
+    assert_eq!(again.state.vault.lock().await.manifest().vault_id, id);
+}
+
+#[tokio::test]
+async fn a_symlink_to_a_vault_inside_the_root_is_never_served() {
+    let root = tempfile::tempdir().unwrap();
+    let r = root.path();
+    let work = make_vault(r, "work");
+    std::fs::create_dir(r.join(".incoming")).unwrap();
+    make_vault(&r.join(".incoming"), "staged");
+    std::os::unix::fs::symlink(r.join("work"), r.join("alias")).unwrap();
+    std::os::unix::fs::symlink("work", r.join("relalias")).unwrap();
+    std::os::unix::fs::symlink(r.join(".incoming/staged"), r.join("staged")).unwrap();
+    let registry = Registry::new(r.to_path_buf(), None);
+
+    let listed: Vec<(String, String)> = match registry.list().await {
+        Ok(vaults) => vaults.into_iter().map(|v| (v.name, v.vault_id)).collect(),
+        Err(_) => panic!("list failed"),
+    };
+    assert_eq!(listed, [("work".to_string(), work)]);
+    for name in ["alias", "ALIAS", "relalias", "staged"] {
+        assert_get_is_vault_not_found(&registry, name).await;
+    }
+    assert!(
+        !r.join(".incoming/staged/memex.db-wal").exists(),
+        "never opened"
+    );
+    get_entry(&registry, "work").await;
+}
+
+/// A current-thread runtime with one blocking thread, so blocking tasks
+/// run one at a time in the order they were queued.
+fn one_blocking_thread() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+        .unwrap()
+}
+
+/// Polls `fut` once, on `rt`; true if it is still pending.
+fn poll_once<F: std::future::Future>(
+    rt: &tokio::runtime::Runtime,
+    fut: &mut std::pin::Pin<Box<F>>,
+) -> bool {
+    rt.block_on(std::future::poll_fn(|cx| {
+        std::task::Poll::Ready(fut.as_mut().poll(cx).is_pending())
+    }))
+}
+
+/// Waits until every blocking task queued on `rt` before this call has run.
+fn drain_blocking(rt: &tokio::runtime::Runtime) {
+    rt.block_on(rt.spawn_blocking(|| ())).unwrap();
+}
+
+#[test]
+fn a_vault_deleted_between_the_scan_and_the_open_is_vault_not_found() {
+    let rt = one_blocking_thread();
+    let root = tempfile::tempdir().unwrap();
+    make_vault(root.path(), "work");
+    let registry = Registry::new(root.path().to_path_buf(), None);
+
+    let mut first = Box::pin(registry.get("work"));
+    assert!(poll_once(&rt, &mut first), "waiting on the scan");
+    drain_blocking(&rt); // the scan has seen the vault
+    std::fs::remove_dir_all(root.path().join("work")).unwrap();
+    // The open runs now, on a folder that is gone. AC 9 / D8: a missing
+    // manifest is 404 `vault_not_found`, never 500.
+    match rt.block_on(first) {
+        Ok(_) => panic!("served a deleted vault"),
+        Err(e) => assert_eq!(
+            rt.block_on(reply_of(e.into_response())),
+            (404, "vault_not_found".to_string())
+        ),
+    }
+    match rt.block_on(registry.get("work")) {
+        Ok(_) => panic!("served a deleted vault"),
+        Err(e) => assert_eq!(
+            rt.block_on(reply_of(e.into_response())),
+            (404, "vault_not_found".to_string()),
+            "the next request"
+        ),
+    }
+    assert!(!root.path().join("work").exists(), "nothing recreated");
+}
+
+#[test]
+fn an_eviction_racing_a_reopen_keeps_one_entry_per_vault() {
+    let rt = one_blocking_thread();
+    let root = tempfile::tempdir().unwrap();
+    let registry = Registry::new(root.path().to_path_buf(), None);
+
+    // A request scans while the folder is not there yet...
+    let mut late = Box::pin(registry.get("work"));
+    assert!(poll_once(&rt, &mut late), "waiting on the scan");
+    drain_blocking(&rt);
+    // ...the vault appears and another request opens it...
+    make_vault(root.path(), "work");
+    let opened = match rt.block_on(registry.get("work")) {
+        Ok(entry) => entry,
+        Err(_) => panic!("open work"),
+    };
+    // ...then the first request finishes: 404 for what it saw.
+    assert!(rt.block_on(late).is_err(), "the scan saw no vault");
+    // D8: one connection per vault; the open entry stays.
+    let next = match rt.block_on(registry.get("work")) {
+        Ok(entry) => entry,
+        Err(_) => panic!("get work"),
+    };
+    assert!(
+        Arc::ptr_eq(&opened, &next),
+        "a stale not-found evicted the entry another request opened \
+         (open_id {} then {}): two connections to one vault",
+        opened.open_id,
+        next.open_id
+    );
+}
+
+#[tokio::test]
+async fn with_vault_runs_the_closure_off_the_async_worker() {
+    // One runtime thread: a closure run on it would stall every request.
+    let root = tempfile::tempdir().unwrap();
+    make_vault(root.path(), "work");
+    let other_id = make_vault(root.path(), "other");
+    let registry = Arc::new(Registry::new(root.path().to_path_buf(), None));
+    let work = get_entry(&registry, "work").await;
+
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let held = tokio::spawn(async move {
+        with_vault(&work, move |_vault| {
+            started_tx.send(()).ok();
+            Ok(release_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .is_ok())
+        })
+        .await
+    });
+    started_rx.await.expect("the closure started");
+
+    // While `work` is held, a request for another vault completes on this
+    // same runtime thread.
+    let other = get_entry(&registry, "other").await;
+    let id = match with_vault(&other, |vault| Ok(vault.manifest().vault_id.clone())).await {
+        Ok(id) => id,
+        Err(_) => panic!("with_vault other failed"),
+    };
+    assert_eq!(id, other_id);
+    release_tx.send(()).unwrap();
+
+    match held.await.unwrap() {
+        Ok(released) => assert!(released, "the runtime stalled while the vault was held"),
+        Err(_) => panic!("with_vault work failed"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_vault_gives_one_closure_the_vault_at_a_time() {
+    let root = tempfile::tempdir().unwrap();
+    make_vault(root.path(), "work");
+    let registry = Registry::new(root.path().to_path_buf(), None);
+    let entry = get_entry(&registry, "work").await;
+    let inside = Arc::new(AtomicUsize::new(0));
+    let most = Arc::new(AtomicUsize::new(0));
+    let tasks: Vec<_> = (0..8)
+        .map(|_| {
+            let entry = entry.clone();
+            let inside = inside.clone();
+            let most = most.clone();
+            tokio::spawn(async move {
+                with_vault(&entry, move |vault| {
+                    let now = inside.fetch_add(1, Ordering::SeqCst) + 1;
+                    most.fetch_max(now, Ordering::SeqCst);
+                    vault
+                        .connection_mut()
+                        .execute_batch(
+                            "CREATE TABLE IF NOT EXISTS wi72_probe (x);
+                             INSERT INTO wi72_probe VALUES (1);",
+                        )
+                        .map_err(|e| anyhow::anyhow!("write: {e}"))?;
+                    std::thread::yield_now();
+                    inside.fetch_sub(1, Ordering::SeqCst);
+                    Ok(())
+                })
+                .await
+            })
+        })
+        .collect();
+    for t in tasks {
+        if t.await.unwrap().is_err() {
+            panic!("with_vault failed");
+        }
+    }
+    assert_eq!(most.load(Ordering::SeqCst), 1, "never two at once");
+}
+
+#[tokio::test]
+async fn with_vault_releases_the_vault_after_a_panicking_closure() {
+    let root = tempfile::tempdir().unwrap();
+    let id = make_vault(root.path(), "work");
+    let registry = Registry::new(root.path().to_path_buf(), None);
+    let entry = get_entry(&registry, "work").await;
+    let failed: Result<(), _> = with_vault(&entry, |_vault| panic!("wi72 closure panic")).await;
+    match failed {
+        Ok(()) => panic!("a panicking closure succeeded"),
+        Err(e) => assert_eq!(
+            reply_of(e.into_response()).await,
+            (500, "internal".to_string())
+        ),
+    }
+    let got = with_vault(&entry, |vault| Ok(vault.manifest().vault_id.clone())).await;
+    assert_eq!(got.ok(), Some(id), "the vault is usable again");
+}
+
+#[test]
+fn router_builds_the_root_embedder_only_when_embeddings_are_on_and_none_was_given() {
+    let off = tempfile::tempdir().unwrap();
+    drop(router(ServerConfig::new(off.path().to_path_buf(), "token")));
+    assert!(!off.path().join(".memex").exists(), "embeddings off");
+
+    let given = tempfile::tempdir().unwrap();
+    let shared: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new(8));
+    drop(router(
+        ServerConfig::new(given.path().to_path_buf(), "token")
+            .with_embeddings(true)
+            .with_embedder(shared),
+    ));
+    assert!(
+        !given.path().join(".memex").exists(),
+        "the given embedder wins over building one"
+    );
+
+    let on = tempfile::tempdir().unwrap();
+    drop(router(
+        ServerConfig::new(on.path().to_path_buf(), "token").with_embeddings(true),
+    ));
+    assert!(
+        on.path().join(".memex/models").is_dir(),
+        "with_embeddings(true) alone builds build_embedder_in(root)"
+    );
 }

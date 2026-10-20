@@ -31,7 +31,7 @@ use tokio::sync::Barrier;
 use server::{
     client, encode_segment, free_port, get, make_v4_vault, make_vault, post_json, raw_get,
     raw_request, set_manifest_schema_version, tree_snapshot, wait_for_logs, CaseSensitiveDir,
-    Reply, ServeChild, ServeCommand, TestServer, BODY_LIMIT, TOKEN_ENV,
+    Reply, ServeChild, ServeCommand, TestServer, ANY_PORT, BODY_LIMIT, TOKEN_ENV,
 };
 
 // ---------------------------------------------------------------------------
@@ -300,19 +300,20 @@ async fn case_only_duplicate_vault_folders_are_neither_listed_nor_served() {
 
 const LOG_TOKEN: &str = "wi72-log-token-8b7a6c5d4e3f2a1b0c9d8e7f";
 
+/// `memex serve --root <root>` on a port the child binds itself (never a
+/// probed-then-released one another process could take first).
 async fn start_binary(root: &Path) -> (ServeChild, SocketAddr) {
-    let addr: SocketAddr = format!("127.0.0.1:{}", free_port()).parse().unwrap();
     let mut child = ServeCommand::new(&[
         "--root",
         root.to_str().unwrap(),
         "--listen",
-        &addr.to_string(),
+        ANY_PORT,
         "--log-level",
         "info",
     ])
     .env(TOKEN_ENV, LOG_TOKEN)
     .spawn();
-    child.wait_ready(addr).await;
+    let addr = child.ready().await;
     (child, addr)
 }
 
@@ -887,4 +888,185 @@ async fn a_chunked_create_body_under_the_limit_is_accepted() {
     assert_eq!(r.status, 201, "{}", r.body);
     assert_eq!(r.json()["name"], json!("small"));
     assert_eq!(listed(&srv).await, ["small"]);
+}
+
+// ---------------------------------------------------------------------------
+// Verify: contracts from the implementer's handoff
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_percent_encoded_vault_name_is_decoded_before_lookup() {
+    let outer = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir_in(outer.path()).unwrap();
+    let id = make_vault(root.path(), "work");
+    make_vault(outer.path(), "secret");
+    let srv = TestServer::start_in(root).await;
+    let secret = outer.path().join("secret");
+    let before = tree_snapshot(&secret);
+
+    // A valid name, escaped in part or whole and in any case, serves it.
+    for segment in ["%77ork", "wo%72k", "%77%6F%72%6B", "%57%4F%52%4B", "W%4fRK"] {
+        let r = raw_get(&srv, "GET", &format!("/vaults/{segment}/api/v1/info")).await;
+        assert_eq!(r.status, 200, "{segment}: {}", r.body);
+        assert_eq!(
+            r.json(),
+            json!({ "name": "work", "vault_id": id, "schema_version": 5 }),
+            "{segment}"
+        );
+        // Past the guard: an unrouted path under it is a plain not_found.
+        let r = raw_get(&srv, "GET", &format!("/vaults/{segment}/mcp")).await;
+        assert_eq!(r.status, 404, "{segment}/mcp: {}", r.body);
+        assert_eq!(r.c1_code(), "not_found", "{segment}/mcp");
+    }
+    // Lower-case encoded traversal and a malformed escape (kept as written,
+    // so not a valid name) never resolve.
+    for segment in [
+        "%2e%2e",
+        "%2e%2e%2fsecret",
+        "%2f",
+        "work%2f",
+        "work%2f..%2f..%2fsecret",
+        "%zz",
+        "wo%7",
+        "work%",
+        "%%77ork",
+    ] {
+        for suffix in ["/api/v1/info", "/mcp"] {
+            let path = format!("/vaults/{segment}{suffix}");
+            assert_vault_not_found(&raw_get(&srv, "GET", &path).await, &path);
+        }
+    }
+    assert_eq!(
+        tree_snapshot(&secret),
+        before,
+        "the outside vault untouched"
+    );
+    assert_eq!(
+        dir_names(outer.path()).len(),
+        2,
+        "nothing created beside the root"
+    );
+}
+
+#[tokio::test]
+async fn a_symlinked_vault_folder_inside_the_root_is_not_served_and_logged_once_at_warn() {
+    let root = tempfile::tempdir().unwrap();
+    let r = root.path();
+    make_vault(r, "work");
+    std::fs::create_dir(r.join(".incoming")).unwrap();
+    make_vault(&r.join(".incoming"), "staged");
+    std::os::unix::fs::symlink(r.join("work"), r.join("alias")).unwrap();
+    std::os::unix::fs::symlink(r.join(".incoming/staged"), r.join("staged")).unwrap();
+    let (mut child, addr) = start_binary(r).await;
+    let bearer = format!("Bearer {LOG_TOKEN}");
+
+    for _ in 0..3 {
+        let resp = get(&format!("http://{addr}/api/v1/vaults"), Some(&bearer)).await;
+        assert_eq!(resp.status, 200, "{}", resp.body);
+        assert_eq!(names_of(&resp.json()), ["work"]);
+    }
+    for name in ["alias", "staged"] {
+        let path = format!("/vaults/{name}/api/v1/info");
+        let resp = get(&format!("http://{addr}{path}"), Some(&bearer)).await;
+        assert_vault_not_found(&resp, &path);
+    }
+    let logs = wait_for_logs(r, |l| {
+        access_lines(l, "/api/v1/vaults") >= 3
+            && access_lines(l, "/vaults/alias/api/v1/info") >= 1
+            && access_lines(l, "/vaults/staged/api/v1/info") >= 1
+    })
+    .await;
+    for name in ["alias", "staged"] {
+        let word = Regex::new(&format!(r"\b{name}\b")).unwrap();
+        let lines: Vec<&str> = logs
+            .lines()
+            .filter(|l| !l.contains("memex::access") && word.is_match(l))
+            .collect();
+        assert_eq!(lines.len(), 1, "{name} logged once; logs=\n{logs}");
+        assert!(lines[0].contains("WARN"), "at WARN: {}", lines[0]);
+    }
+    child.stop();
+}
+
+#[tokio::test]
+async fn a_failed_vault_create_removes_its_half_made_folder() {
+    let root = tempfile::tempdir().unwrap();
+    // The log dir exists already; under this umask the server could not
+    // add to a folder it made itself.
+    std::fs::create_dir(root.path().join(".memex")).unwrap();
+    // Every folder the server makes is r-x for its owner only, so
+    // `Vault::create` can't fill `<root>/work` after `create_dir` made it.
+    let mut child = ServeCommand::under_umask(
+        "0277",
+        &[
+            "--root",
+            root.path().to_str().unwrap(),
+            "--listen",
+            ANY_PORT,
+            "--log-level",
+            "info",
+        ],
+    )
+    .env(TOKEN_ENV, LOG_TOKEN)
+    .spawn();
+    let addr = child.ready().await;
+    let bearer = format!("Bearer {LOG_TOKEN}");
+    let url = format!("http://{addr}/api/v1/vaults");
+
+    for attempt in 0..2 {
+        let resp = post_json(&url, &json!({ "name": "work" }), Some(&bearer)).await;
+        assert_eq!(resp.status, 500, "attempt {attempt}: {}", resp.body);
+        assert_eq!(resp.c1_code(), "internal", "attempt {attempt}");
+        assert!(
+            !root.path().join("work").exists(),
+            "attempt {attempt}: the half-made folder was removed"
+        );
+    }
+    let resp = get(&url, Some(&bearer)).await;
+    assert_eq!(resp.json(), json!({ "vaults": [] }));
+    child.stop();
+}
+
+#[test]
+fn with_embeddings_startup_fails_before_binding_when_the_model_cannot_load() {
+    let root = tempfile::tempdir().unwrap();
+    let listen = format!("127.0.0.1:{}", free_port());
+    // Nothing listens there: the model download is refused at once, with
+    // no network needed.
+    let hub = format!("http://127.0.0.1:{}", free_port());
+    let done = ServeCommand::new(&[
+        "--root",
+        root.path().to_str().unwrap(),
+        "--listen",
+        &listen,
+        "--with-embeddings",
+    ])
+    .env(TOKEN_ENV, LOG_TOKEN)
+    .env("HF_ENDPOINT", &hub)
+    .env_remove("HF_HOME")
+    .run_within(server::WAIT);
+    assert_eq!(done.code, Some(1), "{}", done.describe());
+    // One C1 error line naming the embedder. (The run's "load the embedding
+    // model" context is dropped by `cli::error_json`, which reports the
+    // MemexError in the chain.)
+    let lines = done.stderr_lines();
+    assert_eq!(lines.len(), 1, "{}", done.describe());
+    let err: Value = serde_json::from_str(lines[0]).expect("C1 JSON on stderr");
+    assert_eq!(
+        err["error"]["code"],
+        json!("internal"),
+        "{}",
+        done.describe()
+    );
+    let message = err["error"]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("embedder"), "{}", done.describe());
+    assert!(
+        !done.stderr.contains("listening"),
+        "failed before binding: {}",
+        done.describe()
+    );
+    assert!(
+        std::net::TcpListener::bind(&listen).is_ok(),
+        "{listen} was left free"
+    );
 }
