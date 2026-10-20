@@ -791,4 +791,82 @@ void main() {
       },
     );
   });
+
+  group('setup sheet dismissal and pinned tokens', () {
+    testWidgets('Esc returns false and closes the sheet', (tester) async {
+      final o = await _open(tester);
+      expect(o.results, isEmpty, reason: 'pending while open');
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(o.results, [false]);
+      expect(_sheet, findsNothing);
+      expect(o.routes.popped, 1);
+    });
+
+    testWidgets('tapping the scrim outside the sheet returns false', (
+      tester,
+    ) async {
+      final o = await _open(tester);
+      final r = tester.getRect(_sheet);
+      // Left of the sheet, inside the window: only the barrier is there.
+      expect(r.left, greaterThan(100));
+      await tester.tapAt(Offset(50, 300));
+      await tester.pumpAndSettle();
+      expect(o.results, [false]);
+      expect(_sheet, findsNothing);
+      expect(o.routes.popped, 1);
+    });
+
+    testWidgets('tapping inside the sheet does not dismiss it', (tester) async {
+      final o = await _open(tester);
+      final r = tester.getRect(_sheet);
+      // The gap between the header and the first step is plain sheet fill.
+      await tester.tapAt(Offset(r.left + 2, r.top + 200));
+      await tester.pumpAndSettle();
+      expect(o.results, isEmpty);
+      expect(_sheet, findsOneWidget);
+    });
+
+    test('OmColors.dialogShadow is black at 60 percent alpha', () {
+      expect(OmColors.dialogShadow, const Color(0xFF000000).withAlpha(153));
+      expect(OmColors.dialogShadow, const Color(0x99000000));
+    });
+
+    testWidgets('the sheet shadow colour is OmColors.dialogShadow', (
+      tester,
+    ) async {
+      await _open(tester);
+      final d = _boxAround(tester, _text(_eyebrow), OmColors.surface2);
+      expect(d.boxShadow, hasLength(1));
+      expect(d.boxShadow!.single.color, OmColors.dialogShadow);
+    });
+
+    testWidgets('the docs path is monospace 12 fg1 in step 1 and the footer', (
+      tester,
+    ) async {
+      await _open(tester);
+      final pieces = _pieces(tester, _docs);
+      expect(pieces, hasLength(2));
+      for (final p in pieces) {
+        expect(p.style?.color, OmColors.fg1);
+        expect(p.style?.fontSize, 12);
+        expect(_isMono(p.style), isTrue);
+      }
+    });
+
+    testWidgets('the sheet border is a 1 px line2 line on both sides and '
+        'the bottom', (tester) async {
+      await _open(tester);
+      final d = _boxAround(tester, _text(_eyebrow), OmColors.surface2);
+      final b = d.border! as Border;
+      for (final side in [b.left, b.right, b.bottom]) {
+        expect(side.width, 1);
+        expect(side.color, OmColors.line2);
+      }
+      // A top line (if drawn) must be the same quiet line2, never louder.
+      if (b.top.style != BorderStyle.none && b.top.width > 0) {
+        expect(b.top.color, OmColors.line2);
+      }
+    });
+  });
 }
