@@ -1,0 +1,9 @@
+Create a Smart Folder
+
+Usage: memex folder new [OPTIONS] --vault <VAULT> --name <NAME>
+
+Options:
+      --vault <VAULT>          Vault directory
+      --name <NAME>            Folder name
+      --parent-id <PARENT_ID>  Parent folder id (default: a top-level folder)
+  -h, --help                   Print help
