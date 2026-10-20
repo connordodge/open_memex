@@ -1,6 +1,7 @@
 import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart' show AppLifecycleListener;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// The app's window method channel (macOS `MainFlutterWindow.swift`).
@@ -35,18 +36,31 @@ abstract interface class AppExitHost {
 /// The real host: window close arrives as `windowShouldClose` on
 /// [appWindowChannel]; quit arrives through
 /// `AppLifecycleListener.onExitRequested`.
+///
+/// Native close fallback (MainFlutterWindow.swift): a `true` reply closes
+/// the window; `false`, an error or any other reply keeps it open; no Dart
+/// handler (not attached yet, or detached) closes it, since nothing is
+/// guarding then.
 class PlatformAppExitHost implements AppExitHost {
+  AppLifecycleListener? _listener;
+
   @override
   void attach({
     required WindowCloseHandler onWindowClose,
     required QuitHandler onQuit,
   }) {
-    throw UnimplementedError();
+    appWindowChannel.setMethodCallHandler((call) async {
+      if (call.method == 'windowShouldClose') return onWindowClose();
+      throw MissingPluginException('open_memex/window: ${call.method}');
+    });
+    _listener = AppLifecycleListener(onExitRequested: onQuit);
   }
 
   @override
   void detach() {
-    throw UnimplementedError();
+    appWindowChannel.setMethodCallHandler(null);
+    _listener?.dispose();
+    _listener = null;
   }
 }
 
@@ -64,8 +78,12 @@ class PlatformWindowTitle implements WindowTitle {
   const PlatformWindowTitle();
 
   @override
-  Future<void> setTitle(String title) {
-    throw UnimplementedError();
+  Future<void> setTitle(String title) async {
+    try {
+      await appWindowChannel.invokeMethod<void>('setTitle', title);
+    } on MissingPluginException {
+      // No native window (widget tests, other platforms): nothing to title.
+    }
   }
 }
 
