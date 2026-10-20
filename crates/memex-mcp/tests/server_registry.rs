@@ -562,6 +562,30 @@ fn drain_blocking(rt: &tokio::runtime::Runtime) {
     rt.block_on(rt.spawn_blocking(|| ())).unwrap();
 }
 
+/// A task holding `rt`'s one blocking thread. The blocking pool starts a
+/// task as soon as it is queued, so a scan or open queued by a poll can
+/// finish before the poll returns; queued behind this task, it waits (in
+/// order) until [`release`].
+struct Held {
+    release: std::sync::mpsc::Sender<()>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+fn hold_blocking(rt: &tokio::runtime::Runtime) -> Held {
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let task = rt.spawn_blocking(move || {
+        held.recv().ok();
+    });
+    Held { release, task }
+}
+
+/// Lets every blocking task queued behind `held` run, and waits for them.
+fn release(rt: &tokio::runtime::Runtime, held: Held) {
+    held.release.send(()).unwrap();
+    rt.block_on(held.task).unwrap();
+    drain_blocking(rt);
+}
+
 #[test]
 fn a_vault_deleted_between_the_scan_and_the_open_is_vault_not_found() {
     let rt = one_blocking_thread();
@@ -570,8 +594,9 @@ fn a_vault_deleted_between_the_scan_and_the_open_is_vault_not_found() {
     let registry = Registry::new(root.path().to_path_buf(), None);
 
     let mut first = Box::pin(registry.get("work"));
+    let held = hold_blocking(&rt);
     assert!(poll_once(&rt, &mut first), "waiting on the scan");
-    drain_blocking(&rt); // the scan has seen the vault
+    release(&rt, held); // the scan has seen the vault
     std::fs::remove_dir_all(root.path().join("work")).unwrap();
     // The open runs now, on a folder that is gone. AC 9 / D8: a missing
     // manifest is 404 `vault_not_found`, never 500.
@@ -601,8 +626,9 @@ fn an_eviction_racing_a_reopen_keeps_one_entry_per_vault() {
 
     // A request scans while the folder is not there yet...
     let mut late = Box::pin(registry.get("work"));
+    let held = hold_blocking(&rt);
     assert!(poll_once(&rt, &mut late), "waiting on the scan");
-    drain_blocking(&rt);
+    release(&rt, held);
     // ...the vault appears and another request opens it...
     make_vault(root.path(), "work");
     let opened = match rt.block_on(registry.get("work")) {
