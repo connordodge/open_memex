@@ -1,7 +1,7 @@
 //! Settings ops: `memex settings get|set` (C2.11).
 
 use memex_core::embedder::Embedder;
-use memex_core::{Clock, Vault};
+use memex_core::{vault_settings, Clock, Vault};
 use serde::Serialize;
 
 /// The input of [`get`].
@@ -33,8 +33,13 @@ pub fn get(
     clock: &dyn Clock,
     embedder: Option<&dyn Embedder>,
 ) -> anyhow::Result<SettingOutput> {
-    let _ = (vault, input, clock, embedder);
-    anyhow::bail!("ops::settings::get is not implemented yet (#73)")
+    let _ = (clock, embedder);
+    let value = vault_settings::get_setting(vault, &input.key)?;
+    Ok(SettingOutput {
+        vault_id: vault.vault_id().to_string(),
+        key: input.key,
+        value,
+    })
 }
 
 /// Changes one setting.
@@ -44,6 +49,11 @@ pub fn set(
     clock: &dyn Clock,
     embedder: Option<&dyn Embedder>,
 ) -> anyhow::Result<SettingOutput> {
-    let _ = (vault, input, clock, embedder);
-    anyhow::bail!("ops::settings::set is not implemented yet (#73)")
+    let _ = (clock, embedder);
+    let value = vault_settings::set_setting(vault, &input.key, &input.value)?;
+    Ok(SettingOutput {
+        vault_id: vault.vault_id().to_string(),
+        key: input.key,
+        value,
+    })
 }

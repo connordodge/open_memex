@@ -2,8 +2,10 @@
 //! (C2.5–C2.10).
 
 use memex_core::embedder::Embedder;
-use memex_core::smart_folders::{Membership, SmartFolder, SmartFolderList};
-use memex_core::{Clock, Vault};
+use memex_core::smart_folders::{
+    self as sf, FolderUpdate, Membership, NewParent, SmartFolder, SmartFolderList,
+};
+use memex_core::{Caller, Clock, Vault};
 use serde::Serialize;
 
 /// `vault_id` first on the wire, then the body's own fields.
@@ -29,6 +31,13 @@ pub struct Removed {
     pub removed: bool,
 }
 
+fn scoped<T>(vault: &Vault, body: T) -> VaultScoped<T> {
+    VaultScoped {
+        vault_id: vault.vault_id().to_string(),
+        body,
+    }
+}
+
 pub type LsOutput = VaultScoped<SmartFolderList>;
 pub type NewOutput = VaultScoped<SmartFolder>;
 pub type UpdateOutput = VaultScoped<SmartFolder>;
@@ -47,8 +56,9 @@ pub fn ls(
     clock: &dyn Clock,
     embedder: Option<&dyn Embedder>,
 ) -> anyhow::Result<LsOutput> {
-    let _ = (vault, input, clock, embedder);
-    anyhow::bail!("ops::folder::ls is not implemented yet (#73)")
+    let _ = (input, clock, embedder);
+    let body = sf::list_folders(vault)?;
+    Ok(scoped(vault, body))
 }
 
 /// The input of [`new`].
@@ -66,8 +76,15 @@ pub fn new(
     clock: &dyn Clock,
     embedder: Option<&dyn Embedder>,
 ) -> anyhow::Result<NewOutput> {
-    let _ = (vault, input, clock, embedder);
-    anyhow::bail!("ops::folder::new is not implemented yet (#73)")
+    let _ = embedder;
+    let folder = sf::create_folder(
+        vault,
+        &input.name,
+        input.parent_id.as_deref(),
+        Caller::Person,
+        clock,
+    )?;
+    Ok(scoped(vault, folder))
 }
 
 /// The input of [`update`].
@@ -92,8 +109,19 @@ pub fn update(
     clock: &dyn Clock,
     embedder: Option<&dyn Embedder>,
 ) -> anyhow::Result<UpdateOutput> {
-    let _ = (vault, input, clock, embedder);
-    anyhow::bail!("ops::folder::update is not implemented yet (#73)")
+    let _ = embedder;
+    let parent = if input.to_root {
+        Some(NewParent::Root)
+    } else {
+        input.parent_id.map(NewParent::Folder)
+    };
+    let update = FolderUpdate {
+        name: input.name,
+        parent,
+        pinned: input.pinned,
+    };
+    let folder = sf::update_folder(vault, &input.id, update, Caller::Person, clock)?;
+    Ok(scoped(vault, folder))
 }
 
 /// The input of [`rm`].
@@ -109,8 +137,13 @@ pub fn rm(
     clock: &dyn Clock,
     embedder: Option<&dyn Embedder>,
 ) -> anyhow::Result<RmOutput> {
-    let _ = (vault, input, clock, embedder);
-    anyhow::bail!("ops::folder::rm is not implemented yet (#73)")
+    let _ = (clock, embedder);
+    sf::delete_folder(vault, &input.id, Caller::Person)?;
+    let body = Deleted {
+        id: input.id,
+        deleted: true,
+    };
+    Ok(scoped(vault, body))
 }
 
 /// The input of [`add`].
@@ -129,8 +162,16 @@ pub fn add(
     clock: &dyn Clock,
     embedder: Option<&dyn Embedder>,
 ) -> anyhow::Result<AddOutput> {
-    let _ = (vault, input, clock, embedder);
-    anyhow::bail!("ops::folder::add is not implemented yet (#73)")
+    let _ = clock;
+    let membership = sf::add_member(
+        vault,
+        &input.id,
+        &input.note_id,
+        Some(input.pinned),
+        Caller::Person,
+        embedder,
+    )?;
+    Ok(scoped(vault, membership))
 }
 
 /// The input of [`remove`].
@@ -147,6 +188,12 @@ pub fn remove(
     clock: &dyn Clock,
     embedder: Option<&dyn Embedder>,
 ) -> anyhow::Result<RemoveOutput> {
-    let _ = (vault, input, clock, embedder);
-    anyhow::bail!("ops::folder::remove is not implemented yet (#73)")
+    let _ = (clock, embedder);
+    sf::remove_member(vault, &input.id, &input.note_id, Caller::Person)?;
+    let body = Removed {
+        smart_folder_id: input.id,
+        note_id: input.note_id,
+        removed: true,
+    };
+    Ok(scoped(vault, body))
 }

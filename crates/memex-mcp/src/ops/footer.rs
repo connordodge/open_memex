@@ -1,7 +1,8 @@
 //! Footer ops: `memex footer add` (C2.3).
 
 use memex_core::embedder::Embedder;
-use memex_core::{Clock, Vault};
+use memex_core::footer::{self, ChipOrigin};
+use memex_core::{Clock, NoteId, Vault};
 use serde::Serialize;
 
 /// The input of [`add`].
@@ -31,6 +32,16 @@ pub fn add(
     clock: &dyn Clock,
     embedder: Option<&dyn Embedder>,
 ) -> anyhow::Result<AddOutput> {
-    let _ = (vault, input, clock, embedder);
-    anyhow::bail!("ops::footer::add is not implemented yet (#73)")
+    let _ = clock;
+    let daily = NoteId::parse(&input.daily_note_id)?;
+    let topic = NoteId::parse(&input.topic_note_id)?;
+    let written = footer::set_chip(vault, &daily, &topic, ChipOrigin::Person, embedder)?;
+    let origin = written.origin.unwrap_or(ChipOrigin::Person);
+    Ok(AddOutput {
+        vault_id: vault.vault_id().to_string(),
+        daily_note_id: daily.to_string(),
+        topic_note_id: topic.to_string(),
+        origin: origin.as_str().to_string(),
+        version: written.note.version,
+    })
 }

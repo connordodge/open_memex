@@ -2,8 +2,9 @@
 //!
 //! Output fields are declared in the order `memex canvas` prints them.
 
+use memex_core::canvas as core_canvas;
 use memex_core::embedder::Embedder;
-use memex_core::{Clock, Vault};
+use memex_core::{CanvasId, Clock, NoteId, Vault};
 use serde::Serialize;
 
 /// The input of [`new`].
@@ -30,8 +31,16 @@ pub fn new(
     clock: &dyn Clock,
     embedder: Option<&dyn Embedder>,
 ) -> anyhow::Result<NewOutput> {
-    let _ = (vault, input, clock, embedder);
-    anyhow::bail!("ops::canvas::new is not implemented yet (#73)")
+    let _ = embedder;
+    let c = core_canvas::create_canvas_with_clock(vault, input.title, clock)?;
+    Ok(NewOutput {
+        canvas_id: c.id.to_string(),
+        created_at: c.created_at,
+        title: c.title,
+        updated_at: c.updated_at,
+        vault_id: vault.vault_id().to_string(),
+        version: c.version,
+    })
 }
 
 /// The input of [`ls`].
@@ -63,8 +72,22 @@ pub fn ls(
     clock: &dyn Clock,
     embedder: Option<&dyn Embedder>,
 ) -> anyhow::Result<LsOutput> {
-    let _ = (vault, input, clock, embedder);
-    anyhow::bail!("ops::canvas::ls is not implemented yet (#73)")
+    let _ = (input, clock, embedder);
+    let canvases = core_canvas::list_canvases(vault)?
+        .into_iter()
+        .map(|s| CanvasRow {
+            canvas_id: s.id.to_string(),
+            created_at: s.created_at,
+            node_count: s.node_count,
+            title: s.title,
+            updated_at: s.updated_at,
+            version: s.version,
+        })
+        .collect();
+    Ok(LsOutput {
+        canvases,
+        vault_id: vault.vault_id().to_string(),
+    })
 }
 
 /// The input of [`get`].
@@ -117,8 +140,45 @@ pub fn get(
     clock: &dyn Clock,
     embedder: Option<&dyn Embedder>,
 ) -> anyhow::Result<GetOutput> {
-    let _ = (vault, input, clock, embedder);
-    anyhow::bail!("ops::canvas::get is not implemented yet (#73)")
+    let _ = (clock, embedder);
+    let cid = CanvasId::parse(&input.canvas_id)?;
+    let d = core_canvas::get_canvas(vault, &cid)?;
+    let nodes = d
+        .nodes
+        .into_iter()
+        .map(|n| NodeOut {
+            note_id: n.note_id,
+            note_title: n.note_title,
+            placed_at: n.placed_at,
+            x: n.x,
+            y: n.y,
+            z_order: n.z_order,
+        })
+        .collect();
+    let edges = d
+        .edges
+        .into_iter()
+        .map(|e| EdgeOut {
+            from_note_id: e.from_note_id,
+            kind: e.link_kind.as_str().to_string(),
+            label: e.label,
+            link_id: e.link_id,
+            link_text: e.link_text,
+            position: e.position,
+            source: e.source.as_str().to_string(),
+            to_note_id: e.to_note_id,
+        })
+        .collect();
+    Ok(GetOutput {
+        canvas_id: d.canvas.id.to_string(),
+        created_at: d.canvas.created_at,
+        edges,
+        nodes,
+        title: d.canvas.title,
+        updated_at: d.canvas.updated_at,
+        vault_id: vault.vault_id().to_string(),
+        version: d.canvas.version,
+    })
 }
 
 /// The input of [`rename`].
@@ -146,8 +206,22 @@ pub fn rename(
     clock: &dyn Clock,
     embedder: Option<&dyn Embedder>,
 ) -> anyhow::Result<RenameOutput> {
-    let _ = (vault, input, clock, embedder);
-    anyhow::bail!("ops::canvas::rename is not implemented yet (#73)")
+    let _ = embedder;
+    let cid = CanvasId::parse(&input.canvas_id)?;
+    let c = core_canvas::rename_canvas_with_clock(
+        vault,
+        &cid,
+        input.title,
+        input.expected_version,
+        clock,
+    )?;
+    Ok(RenameOutput {
+        canvas_id: c.id.to_string(),
+        title: c.title,
+        updated_at: c.updated_at,
+        vault_id: vault.vault_id().to_string(),
+        version: c.version,
+    })
 }
 
 /// The input of [`rm`].
@@ -171,8 +245,13 @@ pub fn rm(
     clock: &dyn Clock,
     embedder: Option<&dyn Embedder>,
 ) -> anyhow::Result<RmOutput> {
-    let _ = (vault, input, clock, embedder);
-    anyhow::bail!("ops::canvas::rm is not implemented yet (#73)")
+    let _ = (clock, embedder);
+    let cid = CanvasId::parse(&input.canvas_id)?;
+    core_canvas::delete_canvas(vault, &cid, input.expected_version)?;
+    Ok(RmOutput {
+        canvas_id: input.canvas_id,
+        vault_id: vault.vault_id().to_string(),
+    })
 }
 
 /// The input of [`add`].
@@ -204,8 +283,27 @@ pub fn add(
     clock: &dyn Clock,
     embedder: Option<&dyn Embedder>,
 ) -> anyhow::Result<AddOutput> {
-    let _ = (vault, input, clock, embedder);
-    anyhow::bail!("ops::canvas::add is not implemented yet (#73)")
+    let _ = embedder;
+    let cid = CanvasId::parse(&input.canvas_id)?;
+    NoteId::parse(&input.note_id)?;
+    let node = core_canvas::add_to_canvas_with_clock(
+        vault,
+        &cid,
+        &input.note_id,
+        input.x,
+        input.y,
+        clock,
+    )?;
+    Ok(AddOutput {
+        canvas_id: node.canvas_id.to_string(),
+        note_id: node.note_id,
+        note_title: node.note_title,
+        placed_at: node.placed_at,
+        vault_id: vault.vault_id().to_string(),
+        x: node.x,
+        y: node.y,
+        z_order: node.z_order,
+    })
 }
 
 /// The input of [`remove`].
@@ -230,8 +328,14 @@ pub fn remove(
     clock: &dyn Clock,
     embedder: Option<&dyn Embedder>,
 ) -> anyhow::Result<RemoveOutput> {
-    let _ = (vault, input, clock, embedder);
-    anyhow::bail!("ops::canvas::remove is not implemented yet (#73)")
+    let _ = embedder;
+    let cid = CanvasId::parse(&input.canvas_id)?;
+    core_canvas::remove_from_canvas_with_clock(vault, &cid, &input.note_id, clock)?;
+    Ok(RemoveOutput {
+        canvas_id: input.canvas_id,
+        note_id: input.note_id,
+        vault_id: vault.vault_id().to_string(),
+    })
 }
 
 /// The input of [`move_node`] (`memex canvas move`).
@@ -264,6 +368,24 @@ pub fn move_node(
     clock: &dyn Clock,
     embedder: Option<&dyn Embedder>,
 ) -> anyhow::Result<MoveOutput> {
-    let _ = (vault, input, clock, embedder);
-    anyhow::bail!("ops::canvas::move_node is not implemented yet (#73)")
+    let _ = embedder;
+    let cid = CanvasId::parse(&input.canvas_id)?;
+    let node = core_canvas::move_node_with_clock(
+        vault,
+        &cid,
+        &input.note_id,
+        input.x,
+        input.y,
+        input.z,
+        clock,
+    )?;
+    Ok(MoveOutput {
+        canvas_id: node.canvas_id.to_string(),
+        note_id: node.note_id,
+        note_title: node.note_title,
+        vault_id: vault.vault_id().to_string(),
+        x: node.x,
+        y: node.y,
+        z_order: node.z_order,
+    })
 }

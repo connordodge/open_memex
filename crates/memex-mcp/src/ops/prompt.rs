@@ -4,6 +4,8 @@
 
 use serde::Serialize;
 
+use crate::prompts::{CAPTURE, REVIEW_DAILY_NOTES};
+
 /// Which prompt to read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptKind {
@@ -21,6 +23,11 @@ pub struct PromptOutput {
 
 /// Returns the `prompts.rs` constant for `kind` (D18).
 pub fn get(kind: PromptKind) -> anyhow::Result<PromptOutput> {
-    let _ = kind;
-    anyhow::bail!("ops::prompt::get is not implemented yet (#73)")
+    let text = match kind {
+        PromptKind::Review => REVIEW_DAILY_NOTES,
+        PromptKind::Capture => CAPTURE,
+    };
+    Ok(PromptOutput {
+        text: text.to_string(),
+    })
 }
