@@ -477,10 +477,21 @@ class MemexException implements Exception {
   /// string message), [fields] are the object's keys other than `code` and
   /// `message`, and [kind] is [MemexErrorKind.versionConflict] exactly for
   /// `version_conflict`. Unknown codes give a plain exception with that code.
-  factory MemexException.fromC1(
-    String operation,
-    Map<String, Object?> error,
-  ) => throw UnimplementedError();
+  factory MemexException.fromC1(String operation, Map<String, Object?> error) {
+    final code = error['code'] as String;
+    final message = error['message'];
+    return MemexException(
+      '$operation failed: ${message is String ? message : code}',
+      kind: code == 'version_conflict'
+          ? MemexErrorKind.versionConflict
+          : MemexErrorKind.other,
+      code: code,
+      fields: Map.unmodifiable({
+        for (final e in error.entries)
+          if (e.key != 'code' && e.key != 'message') e.key: e.value,
+      }),
+    );
+  }
 
   /// Build the exception for a failed `memex <operation>` call from its
   /// result: parses the C1 stderr line `{"error":{"code":…,"message":…,…}}`
@@ -504,19 +515,7 @@ class MemexException implements Exception {
             : MemexErrorKind.other,
       );
     }
-    final code = error['code'] as String;
-    final message = error['message'];
-    return MemexException(
-      '$operation failed: ${message is String ? message : code}',
-      kind: code == 'version_conflict'
-          ? MemexErrorKind.versionConflict
-          : MemexErrorKind.other,
-      code: code,
-      fields: Map.unmodifiable({
-        for (final e in error.entries)
-          if (e.key != 'code' && e.key != 'message') e.key: e.value,
-      }),
-    );
+    return MemexException.fromC1(operation, error);
   }
 
   /// The C1 error object from the last stderr line of the form
