@@ -11,7 +11,6 @@ import 'hosted_client.dart';
 class HostedRevision {
   HostedRevision(this._client, this.vaultName);
 
-  // ignore: unused_field
   final HostedClient _client;
 
   /// The served vault's name on the server.
@@ -19,5 +18,13 @@ class HostedRevision {
 
   /// The vault's opaque revision. It changes after every committed write by
   /// any writer, and may change with no visible change.
-  Future<String> revision() => throw UnimplementedError();
+  Future<String> revision() async {
+    final body = await _client.vaultRequest(
+      'GET',
+      vaultName,
+      '/revision',
+      operation: 'revision',
+    );
+    return body['revision'] as String;
+  }
 }
