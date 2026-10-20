@@ -50,7 +50,9 @@ use api_fixtures::{
     api_v1_dir, bless_requested, load_rows, materialize_seed, run_rows, FixtureRequest,
     FixtureResponse, SEED_VAULT_NAME,
 };
-use server::{get, make_vault, raw_request, Reply, TestServer, TEST_TOKEN};
+use server::{
+    assert_wrong_method_is_c1_405, get, make_vault, raw_request, Reply, TestServer, TEST_TOKEN,
+};
 
 /// How long a revision read may take while the vault is busy (AC 4).
 const BUSY_BOUND: Duration = Duration::from_secs(1);
@@ -656,16 +658,9 @@ async fn wrong_methods_on_the_revision_route_are_c1_405_method_not_allowed() {
     let srv = TestServer::start().await;
     make_vault(srv.root(), VAULT);
     let path = format!("/vaults/{VAULT}/api/v1/revision");
-    for method in ["POST", "PUT", "PATCH", "DELETE"] {
-        let head = format!(
-            "{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\
-             Authorization: {}\r\nContent-Length: 0\r\n",
-            srv.bearer()
-        );
-        let r = raw_request(srv.addr(), &head, b"").await;
-        assert_eq!(r.status, 405, "{method} {path}: {:?}", r.body);
-        assert_eq!(r.c1_code(), "method_not_allowed", "{method}");
-    }
+    // POST, PUT, DELETE, PATCH and OPTIONS: a JSON C1 405, no CORS headers,
+    // no token echo.
+    assert_wrong_method_is_c1_405(&srv, &[(&path, &["GET"])]).await;
     let r = get(&srv.url(&path), Some(&srv.bearer())).await;
     revision_of(&r);
 }

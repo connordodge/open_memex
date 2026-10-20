@@ -82,3 +82,68 @@ async fn revision(
     .map_err(|e| ApiError::from(anyhow::anyhow!("revision task failed: {e}")))??;
     Ok(Json(json!({ "revision": revision })))
 }
+
+#[cfg(test)]
+mod tests {
+    //! The cache's memory hygiene (#94). Not observable over HTTP: an
+    //! evicted open is one no request can reach any more.
+
+    use super::*;
+    use crate::state::AppState;
+    use memex_core::Vault;
+
+    fn open_entry(root: &std::path::Path) -> Arc<VaultEntry> {
+        let vault = Vault::create(root).expect("create vault");
+        Arc::new(VaultEntry {
+            open_id: Ulid::new(),
+            state: AppState::new(vault, root.to_path_buf(), None),
+        })
+    }
+
+    fn cached(last: &LastRevisions) -> usize {
+        last.0.lock().unwrap().len()
+    }
+
+    #[test]
+    fn last_revisions_drops_the_value_of_an_evicted_open_on_the_next_set() {
+        let a_dir = tempfile::tempdir().unwrap();
+        let b_dir = tempfile::tempdir().unwrap();
+        let last = LastRevisions::default();
+        let a = open_entry(a_dir.path());
+        let a_open = a.open_id;
+        last.set(&a, format!("{a_open}-3-2"));
+        assert_eq!(last.get(a_open), Some(format!("{a_open}-3-2")));
+
+        drop(a);
+        // Kept until the next insert prunes it.
+        assert_eq!(last.get(a_open), Some(format!("{a_open}-3-2")));
+
+        let b = open_entry(b_dir.path());
+        let b_open = b.open_id;
+        last.set(&b, format!("{b_open}-0-2"));
+        assert_eq!(last.get(a_open), None, "the evicted open is forgotten");
+        assert_eq!(last.get(b_open), Some(format!("{b_open}-0-2")));
+        assert_eq!(cached(&last), 1, "only the live open is cached");
+    }
+
+    #[test]
+    fn last_revisions_keeps_every_live_open_when_another_is_recorded() {
+        let dirs: Vec<_> = (0..3).map(|_| tempfile::tempdir().unwrap()).collect();
+        let last = LastRevisions::default();
+        let entries: Vec<_> = dirs.iter().map(|d| open_entry(d.path())).collect();
+        for (i, e) in entries.iter().enumerate() {
+            last.set(e, format!("{}-{i}-2", e.open_id));
+        }
+        // A newer value for one open replaces its old one.
+        last.set(&entries[0], format!("{}-9-2", entries[0].open_id));
+
+        assert_eq!(cached(&last), 3);
+        assert_eq!(
+            last.get(entries[0].open_id),
+            Some(format!("{}-9-2", entries[0].open_id))
+        );
+        for (i, e) in entries.iter().enumerate().skip(1) {
+            assert_eq!(last.get(e.open_id), Some(format!("{}-{i}-2", e.open_id)));
+        }
+    }
+}

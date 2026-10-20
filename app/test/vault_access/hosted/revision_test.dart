@@ -270,6 +270,59 @@ void main() {
       });
     }
 
+    test(
+      'a 200 revision body that is not a JSON object is the HostedClient error',
+      () async {
+        final env = _env();
+        env.server.route(
+          'GET',
+          '/vaults/seed/api/v1/revision',
+          json: ['01JAAAAAAAAAAAAAAAAAAAAAAA-0-2'],
+        );
+        final e = await _outcome(env.revision().revision());
+        expect(e, isA<MemexException>());
+        expect(
+          (e! as MemexException).message,
+          'revision failed: the server response is not a JSON object',
+        );
+        expect(env.server.requests, hasLength(1), reason: 'no retry');
+      },
+    );
+
+    // A 200 object without a string `revision` is not a C1 error, so
+    // HostedClient returns it and the cast in HostedRevision throws a
+    // TypeError. Neither the WI nor D17 asks HostedRevision to map it (it
+    // adds no parsing of its own), and the poller (#79) treats any other
+    // error as unreachable. Pinned as-is: a change to a MemexException is a
+    // deliberate TEST-CHANGE.
+    for (final (name, json) in [
+      (
+        'a 200 revision body without a revision field throws and returns nothing',
+        <String, Object?>{'revisions': 'a-1-1'},
+      ),
+      (
+        'a 200 revision body with a null revision throws and returns nothing',
+        <String, Object?>{'revision': null},
+      ),
+      (
+        'a 200 revision body with a number revision throws and returns nothing',
+        <String, Object?>{'revision': 7},
+      ),
+    ]) {
+      test(name, () async {
+        final env = _env();
+        env.server.route('GET', '/vaults/seed/api/v1/revision', json: json);
+        final e = await _outcome(env.revision().revision());
+        expect(e, isA<TypeError>());
+        expect(env.server.requests, hasLength(1), reason: 'no retry');
+        expect(
+          env.status(),
+          HostedConnectionStatus.connected,
+          reason: 'the server answered',
+        );
+      });
+    }
+
     test('a revision read with no answer is unreachable at 10 s', () async {
       final env = _env();
       env.server.failure = FakeServerFailure.timeout;
