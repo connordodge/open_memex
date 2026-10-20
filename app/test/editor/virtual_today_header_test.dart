@@ -21,7 +21,7 @@ Future<void> _pump(WidgetTester tester, Note note) async {
     ProviderScope(
       overrides: [
         clockProvider.overrideWithValue(FakeClock()),
-        currentVaultProvider.overrideWith((_) => '/vaults/v'),
+        currentVaultProvider.overrideWith((_) => LocalVaultRef('/vaults/v')),
         vaultDbProvider.overrideWithValue(db),
         memexCliProvider.overrideWithValue(null),
       ],

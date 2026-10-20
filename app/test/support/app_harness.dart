@@ -51,6 +51,8 @@ class WorkspaceHarness {
 /// Defaults: a fresh V5 [FakeVaultDb], a [FakeMemexCli] whose only handler
 /// answers `settings get` with the C2.11 sample, and a [FakeClock] at
 /// 2026-10-03 09:00 local. A caller-supplied [cli] gets no default handlers.
+/// [overrides] are appended to the seams (e.g. `leaveVaultGuardProvider`);
+/// they must not repeat a provider the harness already overrides.
 Future<WorkspaceHarness> pumpWorkspace(
   WidgetTester tester, {
   FakeVaultDb? db,
@@ -58,6 +60,7 @@ Future<WorkspaceHarness> pumpWorkspace(
   FakeClock? clock,
   bool memexConfigured = true,
   Size surfaceSize = const Size(1600, 1000),
+  List<Override> overrides = const [],
 }) async {
   final vaultDir = Directory.systemTemp.createTempSync('omv');
   final fakeDb = db ?? FakeVaultDb.v5();
@@ -86,10 +89,11 @@ Future<WorkspaceHarness> pumpWorkspace(
   final container = ProviderContainer(
     overrides: [
       settingsProvider.overrideWith((_) => settings),
-      currentVaultProvider.overrideWith((_) => vaultDir.path),
+      currentVaultProvider.overrideWith((_) => LocalVaultRef(vaultDir.path)),
       vaultDbProvider.overrideWithValue(fakeDb),
       memexCliProvider.overrideWithValue(memexConfigured ? fakeCli : null),
       clockProvider.overrideWithValue(fakeClock),
+      ...overrides,
     ],
   );
 

@@ -1,7 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'ui_state_store.dart';
-import 'vault_state.dart';
 
 export 'ui_state_store.dart' show SidebarMode;
 
@@ -15,7 +14,7 @@ final sidebarModeProvider = NotifierProvider<SidebarModeNotifier, SidebarMode>(
 class SidebarModeNotifier extends Notifier<SidebarMode> {
   @override
   SidebarMode build() {
-    final store = _store(ref.watch(currentVaultProvider));
+    final store = ref.watch(uiStateStoreProvider);
     return store == null ? SidebarMode.days : store.read().sidebarMode;
   }
 
@@ -23,7 +22,7 @@ class SidebarModeNotifier extends Notifier<SidebarMode> {
   /// future completes once `ui_state.json` holds the new mode.
   Future<void> select(SidebarMode mode) {
     state = mode;
-    final store = _store(ref.read(currentVaultProvider));
+    final store = ref.read(uiStateStoreProvider);
     if (store == null) return Future<void>.value();
     // Read-modify-write: keep the tabs and canvas viewports already stored.
     final existing = store.read();
@@ -36,9 +35,4 @@ class SidebarModeNotifier extends Notifier<SidebarMode> {
       ),
     );
   }
-
-  /// The UI state store of the vault at [vaultPath]; null with no vault
-  /// open.
-  static UiStateStore? _store(String? vaultPath) =>
-      vaultPath == null ? null : UiStateStore(vaultPath: vaultPath);
 }
