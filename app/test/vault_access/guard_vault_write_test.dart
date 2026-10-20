@@ -97,6 +97,53 @@ void main() {
   );
 
   testWidgets(
+    'guardVaultWrite shows couldnt confirm after the write unmounts the calling context',
+    (tester) async {
+      final showEditor = ValueNotifier(true);
+      addTearDown(showEditor.dispose);
+      late BuildContext editorContext;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildOmTheme(),
+          home: Scaffold(
+            body: ValueListenableBuilder<bool>(
+              valueListenable: showEditor,
+              builder: (context, show, _) => show
+                  ? Builder(
+                      builder: (context) {
+                        editorContext = context;
+                        return const Text('editor');
+                      },
+                    )
+                  : const Text('list'),
+            ),
+          ),
+        ),
+      );
+      var calls = 0;
+
+      final result = await guardVaultWrite<String>(editorContext, () async {
+        calls++;
+        // The write replaces the Scaffold body (e.g. the editor closes),
+        // unmounting the context guardVaultWrite was given.
+        showEditor.value = false;
+        await tester.pump();
+        expect(editorContext.mounted, isFalse);
+        throw const VaultUnreachableException(
+          serverName: 'nas',
+          mayHaveCommitted: true,
+        );
+      });
+      await tester.pump();
+
+      expect(result, isNull);
+      expect(calls, 1);
+      expect(find.text('list'), findsOneWidget);
+      expect(find.text(_confirmNas), findsOneWidget);
+    },
+  );
+
+  testWidgets(
     'guardVaultWrite returns a successful write result with no snackbar',
     (tester) async {
       final context = await _pumpHost(tester);

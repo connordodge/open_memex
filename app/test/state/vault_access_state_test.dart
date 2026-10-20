@@ -221,6 +221,67 @@ void main() {
       },
     );
 
+    test(
+      'vaultAccessProvider rebuilds when the CLI handle changes so canWrite flips',
+      () async {
+        final cliState = StateProvider<MemexCli?>((_) => null);
+        final c = ProviderContainer(
+          overrides: [
+            currentVaultProvider.overrideWith((_) => _vault),
+            vaultDbProvider.overrideWithValue(null),
+            memexCliProvider.overrideWith((ref) => ref.watch(cliState)),
+          ],
+        );
+        addTearDown(c.dispose);
+
+        expect(c.read(vaultAccessProvider)!.canWrite, isFalse);
+
+        final cli = vaultAccessSampleCli();
+        c.read(cliState.notifier).state = cli;
+        final access = c.read(vaultAccessProvider)!;
+        expect(access.canWrite, isTrue);
+        await access.notes.addNote(contentMd: 'x');
+        expect(cli.callsFor('add'), hasLength(1), reason: 'the new CLI runs');
+
+        c.read(cliState.notifier).state = null;
+        expect(c.read(vaultAccessProvider)!.canWrite, isFalse);
+      },
+    );
+
+    test(
+      'vaultAccessProvider rebuilds when the database handle changes so reads come from the new one',
+      () async {
+        final dbA = FakeVaultDb.v5();
+        addTearDown(dbA.close);
+        final dbB = _seeded();
+        final dbState = StateProvider<VaultDb?>((_) => dbA);
+        final c = ProviderContainer(
+          overrides: [
+            currentVaultProvider.overrideWith((_) => _vault),
+            vaultDbProvider.overrideWith((ref) => ref.watch(dbState)),
+            memexCliProvider.overrideWithValue(null),
+          ],
+        );
+        addTearDown(c.dispose);
+
+        expect(await c.read(vaultAccessProvider)!.notes.listNotes(), isEmpty);
+
+        c.read(dbState.notifier).state = dbB;
+        final fromB = await c.read(vaultAccessProvider)!.notes.listNotes();
+        expect(fromB, isNotEmpty);
+        expect(
+          vaultAccessShape(fromB),
+          equals(vaultAccessShape(dbB.listNotes())),
+        );
+
+        c.read(dbState.notifier).state = null;
+        expect(
+          await c.read(vaultAccessProvider)!.revision(),
+          LocalVaultAccess.noDatabaseRevision,
+        );
+      },
+    );
+
     test('vaultAccessProvider writes target the current vault path', () async {
       final cli = vaultAccessSampleCli();
       final c = ProviderContainer(
