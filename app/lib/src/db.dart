@@ -176,6 +176,16 @@ class VaultDb {
     return (row.first['v'] as num?)?.toInt() ?? 0;
   }
 
+  /// The local vault revision (D9, Req 22): `<handle instance id>-<data_version>`,
+  /// where data_version is this handle's `PRAGMA data_version`. It changes
+  /// after another connection (the CLI) commits a write, stays the same while
+  /// nothing is written, and differs between two handles (the value resets
+  /// when the handle is reopened, so the instance id keeps it unique).
+  String dataVersion() {
+    // RED SKELETON (#70 test author): placeholder; the implementer writes it.
+    return '';
+  }
+
   // ---------- canvas reads ----------
 
   /// True if the canvas layer (V4 migration) has been applied to this vault.
