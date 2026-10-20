@@ -29,9 +29,10 @@ use serde_json::{json, Value};
 use tokio::sync::Barrier;
 
 use server::{
-    client, encode_segment, free_port, get, make_v4_vault, make_vault, post_json, raw_get,
-    raw_request, set_manifest_schema_version, tree_snapshot, wait_for_logs, CaseSensitiveDir,
-    Reply, ServeChild, ServeCommand, TestServer, ANY_PORT, BODY_LIMIT, TOKEN_ENV,
+    assert_wrong_method_is_c1_405, client, encode_segment, free_port, get, make_v4_vault,
+    make_vault, post_json, raw_get, raw_request, set_manifest_schema_version, tree_snapshot,
+    wait_for_logs, CaseSensitiveDir, Reply, ServeChild, ServeCommand, TestServer, ANY_PORT,
+    BODY_LIMIT, TOKEN_ENV,
 };
 
 // ---------------------------------------------------------------------------
@@ -632,6 +633,46 @@ async fn vault_info_lookup_is_case_insensitive_and_answers_with_the_folder_name(
             json!({ "name": folder, "vault_id": id, "schema_version": 5 }),
             "info {asked}"
         );
+    }
+}
+
+#[tokio::test]
+async fn wrong_methods_on_the_vault_routes_are_c1_405_method_not_allowed() {
+    let root = tempfile::tempdir().unwrap();
+    let id = make_vault(root.path(), "work");
+    let srv = TestServer::start_in(root).await;
+    let before = dir_names(srv.root());
+    // The nested `/vaults/{name}/api/v1` and `/vaults/{name}/mcp` routers
+    // hold no routes yet (#80, #81 add them and call this helper).
+    assert_wrong_method_is_c1_405(
+        &srv,
+        &[
+            ("/api/v1/vaults", &["GET", "POST"]),
+            ("/vaults/work/api/v1/info", &["GET"]),
+            ("/vaults/WORK/api/v1/info", &["GET"]),
+        ],
+    )
+    .await;
+    // The served methods on the same paths are unaffected, and nothing was
+    // created or removed.
+    assert_eq!(listed(&srv).await, vec!["work".to_string()]);
+    let r = info(&srv, "work").await;
+    assert_eq!(r.status, 200, "{}", r.body);
+    assert_eq!(r.json()["vault_id"], json!(id));
+    assert_eq!(dir_names(srv.root()), before);
+}
+
+#[tokio::test]
+async fn a_wrong_method_on_an_unknown_vault_is_404_vault_not_found_not_405() {
+    // The vault guard answers before routing, so a name that is not served
+    // is `vault_not_found` whatever the method.
+    let root = tempfile::tempdir().unwrap();
+    make_vault(root.path(), "work");
+    let srv = TestServer::start_in(root).await;
+    for method in ["POST", "PUT", "DELETE", "PATCH", "OPTIONS"] {
+        let path = "/vaults/nope/api/v1/info";
+        let r = raw_get(&srv, method, path).await;
+        assert_vault_not_found(&r, &format!("{method} {path}"));
     }
 }
 
