@@ -21,7 +21,7 @@ use memex_mcp::server::token::{resolve, token_path};
 use regex::Regex;
 use serde_json::Value;
 
-use server::{free_port, get, ServeChild, ServeCommand, TOKEN_ENV};
+use server::{free_port, get, ServeChild, ServeCommand, ANY_PORT, TOKEN_ENV};
 
 const LIMIT: Duration = Duration::from_secs(30);
 
@@ -34,22 +34,18 @@ fn write_token_file(root: &Path, contents: &str) {
     std::fs::write(token_file(root), contents).unwrap();
 }
 
-/// `memex serve --root <root> --listen 127.0.0.1:<free port>`.
-fn vault_server(root: &Path) -> (ServeCommand, SocketAddr) {
-    let addr: SocketAddr = format!("127.0.0.1:{}", free_port()).parse().unwrap();
-    let cmd = ServeCommand::new(&[
-        "--root",
-        root.to_str().unwrap(),
-        "--listen",
-        &addr.to_string(),
-    ]);
-    (cmd, addr)
+/// `memex serve --root <root> --listen 127.0.0.1:0`: the child binds a
+/// port of its own, so no other process can take it between a probe and
+/// the bind.
+fn vault_server(root: &Path) -> ServeCommand {
+    ServeCommand::new(&["--root", root.to_str().unwrap(), "--listen", ANY_PORT])
 }
 
-async fn started(cmd: ServeCommand, addr: SocketAddr) -> ServeChild {
+/// Spawns `cmd` and returns it serving, with the address it bound.
+async fn started(cmd: ServeCommand) -> (ServeChild, SocketAddr) {
     let mut child = cmd.spawn();
-    child.wait_ready(addr).await;
-    child
+    let addr = child.ready().await;
+    (child, addr)
 }
 
 async fn info_status(addr: SocketAddr, token: &str) -> u16 {
@@ -174,8 +170,8 @@ fn startup_failures_exit_1_with_one_c1_line_and_nothing_listening() {
 async fn env_token_wins_and_the_file_token_then_gets_401() {
     let dir = tempfile::tempdir().unwrap();
     write_token_file(dir.path(), "file-token-4c1d2e3f\n");
-    let (cmd, addr) = vault_server(dir.path());
-    let child = started(cmd.env(TOKEN_ENV, "env-token-7a6b5c4d"), addr).await;
+    let cmd = vault_server(dir.path());
+    let (child, addr) = started(cmd.env(TOKEN_ENV, "env-token-7a6b5c4d")).await;
 
     assert_eq!(info_status(addr, "env-token-7a6b5c4d").await, 200);
     assert_eq!(info_status(addr, "file-token-4c1d2e3f").await, 401);
@@ -191,8 +187,8 @@ async fn env_token_wins_and_the_file_token_then_gets_401() {
 async fn file_token_authenticates_when_the_env_is_unset() {
     let dir = tempfile::tempdir().unwrap();
     write_token_file(dir.path(), "file-only-token-0e9d8c7b");
-    let (cmd, addr) = vault_server(dir.path());
-    let child = started(cmd, addr).await;
+    let cmd = vault_server(dir.path());
+    let (child, addr) = started(cmd).await;
 
     assert_eq!(info_status(addr, "file-only-token-0e9d8c7b").await, 200);
     assert_eq!(info_status(addr, "file-only-token-0e9d8c7").await, 401);
@@ -209,16 +205,16 @@ async fn tokens_are_trimmed_from_the_env_and_the_file() {
     let dir = tempfile::tempdir().unwrap();
     let env_root = dir.path().join("env");
     std::fs::create_dir(&env_root).unwrap();
-    let (cmd, addr) = vault_server(&env_root);
-    let child = started(cmd.env(TOKEN_ENV, "  tok-env-1f2e\n"), addr).await;
+    let cmd = vault_server(&env_root);
+    let (child, addr) = started(cmd.env(TOKEN_ENV, "  tok-env-1f2e\n")).await;
     assert_eq!(info_status(addr, "tok-env-1f2e").await, 200, "env trimmed");
     drop(child);
 
     let file_root = dir.path().join("file");
     std::fs::create_dir(&file_root).unwrap();
     write_token_file(&file_root, "\t  tok-file-3d4c \n\n");
-    let (cmd, addr) = vault_server(&file_root);
-    let child = started(cmd, addr).await;
+    let cmd = vault_server(&file_root);
+    let (child, addr) = started(cmd).await;
     assert_eq!(
         info_status(addr, "tok-file-3d4c").await,
         200,
@@ -266,8 +262,8 @@ async fn generated_token_file_is_0600_its_path_printed_once_and_the_token_never(
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("root");
     std::fs::create_dir(&root).unwrap();
-    let (cmd, addr) = vault_server(&root);
-    let child = started(cmd, addr).await;
+    let cmd = vault_server(&root);
+    let (child, addr) = started(cmd).await;
 
     assert!(root.join(".memex").is_dir(), "<root>/.memex/ is created");
     let token = read_generated_token(&root);
@@ -300,8 +296,8 @@ async fn generated_token_file_is_0600_its_path_printed_once_and_the_token_never(
 
     let other = dir.path().join("other-root");
     std::fs::create_dir(&other).unwrap();
-    let (cmd, addr) = vault_server(&other);
-    let child = started(cmd, addr).await;
+    let cmd = vault_server(&other);
+    let (child, addr) = started(cmd).await;
     let other_token = read_generated_token(&other);
     assert_ne!(other_token, token, "a fresh root gets a fresh token");
     assert_eq!(info_status(addr, &other_token).await, 200);
@@ -312,13 +308,13 @@ async fn generated_token_file_is_0600_its_path_printed_once_and_the_token_never(
 #[tokio::test]
 async fn generated_token_is_kept_across_restarts() {
     let dir = tempfile::tempdir().unwrap();
-    let (cmd, addr) = vault_server(dir.path());
-    let child = started(cmd, addr).await;
+    let cmd = vault_server(dir.path());
+    let (child, _addr) = started(cmd).await;
     let token = read_generated_token(dir.path());
     drop(child);
 
-    let (cmd, addr) = vault_server(dir.path());
-    let child = started(cmd, addr).await;
+    let cmd = vault_server(dir.path());
+    let (child, addr) = started(cmd).await;
     assert_eq!(
         read_generated_token(dir.path()),
         token,
@@ -332,10 +328,9 @@ async fn generated_token_is_kept_across_restarts() {
 async fn generated_token_path_is_absolute_for_a_relative_root() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("rel-root")).unwrap();
-    let addr: SocketAddr = format!("127.0.0.1:{}", free_port()).parse().unwrap();
-    let cmd = ServeCommand::new(&["--root", "rel-root", "--listen", &addr.to_string()])
-        .current_dir(dir.path());
-    let child = started(cmd, addr).await;
+    let cmd =
+        ServeCommand::new(&["--root", "rel-root", "--listen", ANY_PORT]).current_dir(dir.path());
+    let (child, _addr) = started(cmd).await;
     let stderr = child.stderr();
     let printed = printed_token_paths(&stderr);
     assert_eq!(printed.len(), 1, "one absolute path printed: {stderr}");
@@ -550,4 +545,123 @@ fn invalid_log_level_exits_1_invalid_argument_before_binding_or_creating() {
             "{level}: no token file or log is created"
         );
     }
+}
+
+// ---------- Fix-round contracts: atomic token creation ----------
+
+/// The sorted entry names in `<root>/.memex/` (empty when it is missing).
+fn memex_entries(root: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(root.join(".memex"))
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+/// `.access-token.*.tmp` (or any `*.tmp`) entries in `<root>/.memex/`.
+fn temp_files(root: &Path) -> Vec<String> {
+    memex_entries(root)
+        .into_iter()
+        .filter(|n| n.starts_with(".access-token.") || n.ends_with(".tmp"))
+        .collect()
+}
+
+#[tokio::test]
+async fn generated_tokens_leave_no_temp_file_after_a_start_or_a_race() {
+    // In process: a generated token leaves exactly the token file.
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = resolve(dir.path(), None).expect("generate a token");
+    assert!(resolved.generated.is_some());
+    assert_eq!(memex_entries(dir.path()), vec!["access-token".to_string()]);
+
+    // A link that loses to an existing path (the `AlreadyExists` branch,
+    // forced here with a dangling symlink) still removes its temp file.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".memex")).unwrap();
+    std::os::unix::fs::symlink(dir.path().join("gone"), token_file(dir.path())).unwrap();
+    assert!(resolve(dir.path(), None).is_err());
+    assert_eq!(
+        memex_entries(dir.path()),
+        vec!["access-token".to_string()],
+        "only the pre-existing symlink is left"
+    );
+
+    // The binary: a generated start leaves no temp file beside the token.
+    let dir = tempfile::tempdir().unwrap();
+    let (child, _addr) = started(vault_server(dir.path())).await;
+    read_generated_token(dir.path());
+    assert!(
+        temp_files(dir.path()).is_empty(),
+        "no temp file after a generated start: {:?}",
+        memex_entries(dir.path())
+    );
+    drop(child);
+
+    // A race: winners and losers all remove their temp files.
+    const THREADS: usize = 8;
+    for trial in 0..50 {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(THREADS));
+        let handles: Vec<_> = (0..THREADS)
+            .map(|_| {
+                let root = root.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    resolve(&root, None)
+                        .map(|_| ())
+                        .map_err(|e| format!("{e:#}"))
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join()
+                .unwrap()
+                .unwrap_or_else(|e| panic!("trial {trial}: every racer gets a token: {e}"));
+        }
+        assert_eq!(
+            memex_entries(&root),
+            vec!["access-token".to_string()],
+            "trial {trial}: only the token file is left after a race"
+        );
+    }
+}
+
+#[test]
+fn a_failed_token_write_leaves_no_access_token_and_no_temp_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let memex = dir.path().join(".memex");
+    std::fs::create_dir_all(&memex).unwrap();
+    std::fs::set_permissions(&memex, std::fs::Permissions::from_mode(0o500)).unwrap();
+    // Root ignores directory modes; there the fault can't be injected.
+    let probe = memex.join("probe");
+    if std::fs::write(&probe, "x").is_ok() {
+        std::fs::remove_file(&probe).unwrap();
+        std::fs::set_permissions(&memex, std::fs::Permissions::from_mode(0o700)).unwrap();
+        eprintln!("skipped: a read-only directory is writable here (running as root?)");
+        return;
+    }
+    let result = resolve(dir.path(), None);
+    let entries = memex_entries(dir.path());
+    std::fs::set_permissions(&memex, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let err = match result {
+        Ok(_) => panic!("a token that can't be written is an error"),
+        Err(e) => format!("{e:#}"),
+    };
+    assert!(entries.is_empty(), "nothing is left behind: {entries:?}");
+    assert!(!token_file(dir.path()).exists(), "no access-token file");
+    assert!(
+        !Regex::new(r"[0-9a-f]{64}").unwrap().is_match(&err),
+        "the error never carries the token: {err}"
+    );
+    // The next start, with a writable directory, generates normally.
+    let resolved = resolve(dir.path(), None).expect("generate once writable");
+    assert!(resolved.generated.is_some());
+    assert_eq!(memex_entries(dir.path()), vec!["access-token".to_string()]);
 }

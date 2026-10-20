@@ -15,17 +15,16 @@ use std::path::Path;
 
 use regex::Regex;
 
-use server::{client, free_port, get, wait_for_logs, ServeChild, ServeCommand, TOKEN_ENV};
+use server::{client, get, wait_for_logs, ServeChild, ServeCommand, ANY_PORT, TOKEN_ENV};
 
 const TOKEN: &str = "log-test-token-6d5c4b3a2918f7e6d5c4b3a2";
 
 async fn start(root: &Path, log_level: &str, tz: Option<&str>) -> (ServeChild, SocketAddr) {
-    let addr: SocketAddr = format!("127.0.0.1:{}", free_port()).parse().unwrap();
     let mut cmd = ServeCommand::new(&[
         "--root",
         root.to_str().unwrap(),
         "--listen",
-        &addr.to_string(),
+        ANY_PORT,
         "--log-level",
         log_level,
     ])
@@ -34,7 +33,7 @@ async fn start(root: &Path, log_level: &str, tz: Option<&str>) -> (ServeChild, S
         cmd = cmd.env("TZ", tz);
     }
     let mut child = cmd.spawn();
-    child.wait_ready(addr).await;
+    let addr = child.ready().await;
     (child, addr)
 }
 

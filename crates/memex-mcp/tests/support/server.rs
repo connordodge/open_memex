@@ -291,7 +291,15 @@ fn dechunk(mut data: &[u8]) -> Vec<u8> {
 // The built binary
 // ---------------------------------------------------------------------------
 
-/// A localhost port that was free a moment ago.
+/// `--listen` for a child that serves: the OS picks the port at bind time,
+/// and [`ServeChild::ready`] reads it back from the listening line. A port
+/// probed with [`free_port`] can be taken before the child binds it
+/// (`Address already in use`), so [`free_port`] is only for children that
+/// must never listen.
+pub const ANY_PORT: &str = "127.0.0.1:0";
+
+/// A localhost port that was free a moment ago. Use it only where nothing
+/// should end up listening; see [`ANY_PORT`].
 pub fn free_port() -> u16 {
     StdTcpListener::bind("127.0.0.1:0")
         .expect("bind probe port")
@@ -421,6 +429,41 @@ impl ServeChild {
 
     pub fn stdout(&self) -> String {
         std::fs::read_to_string(&self.stdout_path).unwrap_or_default()
+    }
+
+    /// Waits for the child's `vault server listening on http://<addr>`
+    /// stderr line and returns `<addr>`; panics if the child exits first or
+    /// [`WAIT`] passes. With `--listen` [`ANY_PORT`] this is the port the
+    /// child itself bound.
+    pub async fn listening_addr(&mut self) -> SocketAddr {
+        const PREFIX: &str = "vault server listening on http://";
+        let started = Instant::now();
+        loop {
+            let stderr = self.stderr();
+            if let Some(addr) = stderr
+                .lines()
+                .filter_map(|l| l.split_once(PREFIX).map(|(_, rest)| rest.trim()))
+                .find_map(|rest| rest.parse::<SocketAddr>().ok())
+            {
+                return addr;
+            }
+            if let Some(status) = self.child.try_wait().expect("try_wait") {
+                panic!("memex serve exited before listening: {status}; stderr={stderr}");
+            }
+            assert!(
+                started.elapsed() < WAIT,
+                "memex serve printed no listening line after {WAIT:?}; stderr={stderr}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// [`Self::listening_addr`], then [`Self::wait_ready`] on it.
+    pub async fn ready(&mut self) -> SocketAddr {
+        let addr = self.listening_addr().await;
+        assert_ne!(addr.port(), 0, "the listening line names the bound port");
+        self.wait_ready(addr).await;
+        addr
     }
 
     /// Waits until `addr` answers any HTTP request; panics if the child exits
