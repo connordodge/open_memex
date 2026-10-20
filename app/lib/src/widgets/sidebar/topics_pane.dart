@@ -3,14 +3,16 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
-import '../../cli/prompt_cli.dart';
+import '../../db/topics_reads.dart';
+import '../../vault_access/vault_async_view.dart';
 import '../../memex_cli.dart';
 import '../../state/smart_folder_actions.dart';
 import '../../state/tabs_state.dart';
 import '../../state/topic_actions.dart';
 import '../../state/topics_state.dart';
 import '../../state/topics_tree.dart';
-import '../../state/vault_state.dart';
+import '../../state/vault_access_state.dart';
+import '../../vault_access/errors.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import '../atoms.dart';
@@ -44,8 +46,17 @@ class TopicsPane extends ConsumerWidget {
   const TopicsPane({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final tree = ref.watch(smartFolderTreeProvider);
+  Widget build(BuildContext context, WidgetRef ref) =>
+      VaultAsyncView<TopicsTree>(
+        value: ref.watch(smartFolderTreeAsyncProvider),
+        empty: buildTopicsTree(
+          const SmartFolderData(folders: [], members: []),
+          [],
+        ),
+        builder: (c, tree) => _build(c, ref, tree),
+      );
+
+  Widget _build(BuildContext context, WidgetRef ref, TopicsTree tree) {
     final expanded = ref.watch(expandedTopicFoldersProvider);
     final activeTab = ref.watch(activeTabProvider);
     final activeNoteId = activeTab is NoteTab ? activeTab.id : null;
@@ -217,7 +228,11 @@ class _NewTopicFormState extends ConsumerState<_NewTopicForm> {
       _error = null;
     });
     try {
-      await createTopicFromSidebar(ref, title);
+      final id = await guardVaultWrite(
+        context,
+        () => createTopicFromSidebar(ref, title),
+      );
+      if (id == null) return;
       _title.clear();
       open.state = false;
     } catch (e) {
@@ -313,6 +328,7 @@ class _FolderRow extends StatelessWidget {
       key: Key('folder-row-${folder.id}'),
       onAcceptWithDetails: (details) => addToSmartFolder(
         ProviderScope.containerOf(context),
+        context,
         folderId: folder.id,
         noteId: details.data,
       ),
@@ -519,13 +535,13 @@ class _EmptyTopicsState extends ConsumerState<_EmptyTopics> {
 
   Future<void> _copy() async {
     setState(() => _error = null);
-    final cli = ref.read(memexCliProvider);
+    final access = ref.read(vaultAccessProvider);
     String? error;
-    if (cli == null) {
+    if (access == null || !access.canWrite) {
       error = 'The memex CLI is not available.';
     } else {
       try {
-        final text = await cli.reviewPrompt();
+        final text = await access.topics.reviewPrompt();
         await Clipboard.setData(ClipboardData(text: text));
       } on MemexException catch (e) {
         error = e.message;

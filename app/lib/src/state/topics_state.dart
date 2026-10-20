@@ -3,24 +3,40 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../db/topics_reads.dart';
 import '../vault_access/vault_scoped.dart';
 import 'topics_tree.dart';
+import 'vault_access_state.dart';
 import 'vault_state.dart';
 
-/// The Topics tree read through `VaultAccess.topics`, stamped with the vault it
-/// was loaded for (D14a). WI #87 skeleton: the implementation replaces it.
-final smartFolderTreeAsyncProvider = FutureProvider<VaultScoped<TopicsTree>>(
-  (ref) => throw UnimplementedError(),
-);
+/// A tree with no folders and no unsorted notes: the value below V5, with no
+/// vault access, and before the first read of the open vault completes.
+TopicsTree emptyTopicsTree() =>
+    buildTopicsTree(const SmartFolderData(folders: [], members: []), []);
 
-/// The Topics tree, re-read on every `vaultRevisionProvider` bump. Empty on a
-/// vault below V5 or with no database.
-final smartFolderTreeProvider = Provider<TopicsTree>((ref) {
+/// The Topics tree read through `VaultAccess.topics`, re-read on every
+/// `vaultRevisionProvider` bump and stamped with the vault it was loaded for
+/// (D14a). Empty on a vault below V5 or with no vault access.
+final smartFolderTreeAsyncProvider = FutureProvider<VaultScoped<TopicsTree>>((
+  ref,
+) async {
   ref.watch(vaultRevisionProvider);
-  final db = ref.watch(vaultDbProvider);
-  if (db == null || !ref.watch(vaultV5ReadyProvider)) {
-    return buildTopicsTree(const SmartFolderData(folders: [], members: []), []);
+  final vault = ref.watch(currentVaultProvider);
+  final access = ref.watch(vaultAccessProvider);
+  if (access == null || !ref.watch(vaultV5ReadyProvider)) {
+    return VaultScoped(vault, emptyTopicsTree());
   }
-  return buildTopicsTree(db.smartFolders(), db.unsortedNotes());
+  final folders = await access.topics.smartFolders();
+  final unsorted = await access.topics.unsortedNotes();
+  return VaultScoped(vault, buildTopicsTree(folders, unsorted));
 });
+
+/// The synchronous facade over [smartFolderTreeAsyncProvider] (D14a): the
+/// open vault's tree, or the empty tree before its first read completes.
+final smartFolderTreeProvider = Provider<TopicsTree>(
+  (ref) => vaultFacadeValue(
+    ref,
+    ref.watch(smartFolderTreeAsyncProvider),
+    emptyTopicsTree(),
+  ),
+);
 
 /// The ids of the Smart Folders the person has expanded in the Topics tree.
 /// In memory only: every folder starts collapsed and nothing is persisted.

@@ -7,6 +7,8 @@ import 'daily_state.dart';
 import 'editor_controller.dart';
 import 'tabs_state.dart';
 import 'today_state.dart';
+import 'vault_access_state.dart';
+import '../vault_access/vault_access.dart';
 import 'vault_state.dart';
 
 /// The body of a topic note the app creates: a heading with its title.
@@ -42,23 +44,20 @@ class TopicNotLinkedException implements Exception {
 /// fails the topic note exists, and a [TopicNotLinkedException] (with
 /// [linkTarget] in its message) is thrown.
 Future<({String topicId, FooterAddResult footer})> createLinkedTopic(
-  MemexCli cli, {
-  required String vaultPath,
+  VaultAccess access, {
   required String title,
   required String contentMd,
   required String dailyNoteId,
   required String linkTarget,
 }) async {
-  final topicId = await cli.addNote(
-    vaultPath: vaultPath,
+  final topicId = await access.notes.addNote(
     title: title,
     contentMd: contentMd,
     role: 'topic',
   );
   final FooterAddResult footer;
   try {
-    footer = await cli.addFooterChip(
-      vaultPath: vaultPath,
+    footer = await access.daily.addFooterChip(
       dailyNoteId: dailyNoteId,
       topicNoteId: topicId,
     );
@@ -81,7 +80,8 @@ Future<({String topicId, FooterAddResult footer})> createLinkedTopic(
 Future<String> createTopicFromSidebar(WidgetRef ref, String title) async {
   final cli = ref.read(memexCliProvider);
   final vaultPath = ref.read(currentVaultProvider).localPath;
-  if (cli == null || vaultPath == null) {
+  final access = ref.read(vaultAccessProvider);
+  if (cli == null || vaultPath == null || access == null || !access.canWrite) {
     throw MemexException('The memex CLI is not available.');
   }
   var createdDaily = false;
@@ -97,8 +97,7 @@ Future<String> createTopicFromSidebar(WidgetRef ref, String title) async {
       createdDaily = !daily.existed;
     }
     final created = await createLinkedTopic(
-      cli,
-      vaultPath: vaultPath,
+      access,
       title: title,
       contentMd: topicNoteBody(title),
       dailyNoteId: dailyId,
@@ -124,15 +123,17 @@ Future<String> createTopicFromSidebar(WidgetRef ref, String title) async {
 /// base and keeps the unsaved [content] (and title) on top of it, so the next
 /// save is not a version conflict. [fallback] is also the stored note's
 /// stand-in when the vault cannot be read.
-void rebaseEditorOnVersion(
+Future<void> rebaseEditorOnVersion(
   WidgetRef ref, {
   required Note fallback,
   required int version,
   required String content,
-}) {
+}) async {
   final editor = ref.read(editorControllerProvider.notifier);
   final title = ref.read(editorControllerProvider).title;
-  final stored = ref.read(vaultDbProvider)?.getNote(fallback.id) ?? fallback;
+  final stored =
+      await ref.read(vaultAccessProvider)?.notes.getNote(fallback.id) ??
+      fallback;
   editor.loadNote(
     Note(
       id: stored.id,

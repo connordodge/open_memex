@@ -77,6 +77,7 @@ class SmartFolderHeaderActions extends ConsumerWidget {
     if (name == null || !context.mounted) return;
     await createSmartFolder(
       container,
+      context,
       name: name,
       parentId: parentId,
       confirmDepth: (depth) => showDepthDialog(context, depth),
@@ -125,8 +126,12 @@ class FolderMenuButton extends ConsumerWidget {
             folder.pinned ? LucideIcons.pinOff : LucideIcons.pin,
             size: 14,
           ),
-          onPressed: () =>
-              setSmartFolderPinned(container, id: id, pinned: !folder.pinned),
+          onPressed: () => setSmartFolderPinned(
+            container,
+            hostContext,
+            id: id,
+            pinned: !folder.pinned,
+          ),
           child: Text(folder.pinned ? 'Unpin' : 'Pin'),
         ),
         MenuItemButton(
@@ -161,8 +166,8 @@ class FolderMenuButton extends ConsumerWidget {
       confirmLabel: 'Rename',
       initial: folder.name,
     );
-    if (name == null) return;
-    await renameSmartFolder(container, id: folder.id, name: name);
+    if (name == null || !hostContext.mounted) return;
+    await renameSmartFolder(container, hostContext, id: folder.id, name: name);
   }
 
   Future<void> _move(ProviderContainer container) async {
@@ -174,6 +179,7 @@ class FolderMenuButton extends ConsumerWidget {
     if (target == null || !hostContext.mounted) return;
     await moveSmartFolder(
       container,
+      hostContext,
       id: folder.id,
       parentId: target.parentId,
       confirmDepth: (depth) => showDepthDialog(hostContext, depth),
@@ -185,8 +191,8 @@ class FolderMenuButton extends ConsumerWidget {
       context: hostContext,
       builder: (_) => _DeleteFolderDialog(name: folder.name),
     );
-    if (confirmed != true) return;
-    await deleteSmartFolder(container, id: folder.id);
+    if (confirmed != true || !hostContext.mounted) return;
+    await deleteSmartFolder(container, hostContext, id: folder.id);
   }
 }
 
@@ -234,6 +240,7 @@ class _MembershipMenuState extends State<MembershipMenu> {
           ),
           onPressed: () => addToSmartFolder(
             container,
+            context,
             folderId: widget.folderId,
             noteId: widget.noteId,
             pinned: !widget.pinned,
