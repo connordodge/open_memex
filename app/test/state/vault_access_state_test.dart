@@ -68,8 +68,10 @@ void main() {
         final access = _container(db: db, cli: null).read(vaultAccessProvider)!;
 
         for (final wc in vaultAccessWriteCases) {
+          // Called directly: a synchronous throw fails the test, so the
+          // error must arrive through the returned Future.
           await expectLater(
-            Future.sync(() => wc.viaAccess(access)),
+            wc.viaAccess(access),
             throwsA(isA<StateError>()),
             reason: wc.name,
           );
@@ -91,16 +93,15 @@ void main() {
         final access = _container(db: db, cli: null).read(vaultAccessProvider)!;
 
         for (final wc in vaultAccessWriteCases) {
-          Object? caught;
-          try {
-            await wc.viaAccess(access);
-          } catch (e) {
-            caught = e;
-          }
-          expect(caught, isA<StateError>(), reason: wc.name);
-          expect(
-            (caught! as StateError).message,
-            'The memex CLI is not available.',
+          await expectLater(
+            wc.viaAccess(access),
+            throwsA(
+              isA<StateError>().having(
+                (e) => e.message,
+                'message',
+                'The memex CLI is not available.',
+              ),
+            ),
             reason: wc.name,
           );
         }
@@ -222,6 +223,67 @@ void main() {
 
         c.read(currentVaultProvider.notifier).state = null;
         expect(c.read(vaultAccessProvider), isNull);
+      },
+    );
+
+    test(
+      'vaultAccessProvider rebuilds when the CLI handle changes so canWrite flips',
+      () async {
+        final cliState = StateProvider<MemexCli?>((_) => null);
+        final c = ProviderContainer(
+          overrides: [
+            currentVaultProvider.overrideWith((_) => _vault),
+            vaultDbProvider.overrideWithValue(null),
+            memexCliProvider.overrideWith((ref) => ref.watch(cliState)),
+          ],
+        );
+        addTearDown(c.dispose);
+
+        expect(c.read(vaultAccessProvider)!.canWrite, isFalse);
+
+        final cli = vaultAccessSampleCli();
+        c.read(cliState.notifier).state = cli;
+        final access = c.read(vaultAccessProvider)!;
+        expect(access.canWrite, isTrue);
+        await access.notes.addNote(contentMd: 'x');
+        expect(cli.callsFor('add'), hasLength(1), reason: 'the new CLI runs');
+
+        c.read(cliState.notifier).state = null;
+        expect(c.read(vaultAccessProvider)!.canWrite, isFalse);
+      },
+    );
+
+    test(
+      'vaultAccessProvider rebuilds when the database handle changes so reads come from the new one',
+      () async {
+        final dbA = FakeVaultDb.v5();
+        addTearDown(dbA.close);
+        final dbB = _seeded();
+        final dbState = StateProvider<VaultDb?>((_) => dbA);
+        final c = ProviderContainer(
+          overrides: [
+            currentVaultProvider.overrideWith((_) => _vault),
+            vaultDbProvider.overrideWith((ref) => ref.watch(dbState)),
+            memexCliProvider.overrideWithValue(null),
+          ],
+        );
+        addTearDown(c.dispose);
+
+        expect(await c.read(vaultAccessProvider)!.notes.listNotes(), isEmpty);
+
+        c.read(dbState.notifier).state = dbB;
+        final fromB = await c.read(vaultAccessProvider)!.notes.listNotes();
+        expect(fromB, isNotEmpty);
+        expect(
+          vaultAccessShape(fromB),
+          equals(vaultAccessShape(dbB.listNotes())),
+        );
+
+        c.read(dbState.notifier).state = null;
+        expect(
+          await c.read(vaultAccessProvider)!.revision(),
+          LocalVaultAccess.noDatabaseRevision,
+        );
       },
     );
 
