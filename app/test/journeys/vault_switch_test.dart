@@ -77,7 +77,87 @@ Future<(WorkspaceHarness, String)> _workspaceWithSecondVault(
   return (h, other.path);
 }
 
+/// The app as `main()` runs it, with the last vault set to [lastVault] and
+/// fakes for the CLI, database and clock. [overrides] go last.
+Future<ProviderContainer> _launchApp(
+  WidgetTester tester, {
+  required String lastVault,
+  List<Override> overrides = const [],
+}) async {
+  SharedPreferences.setMockInitialValues({
+    'memex.binary_path': 'fake-memex',
+    'memex.recent_vaults': <String>[lastVault],
+    'memex.last_vault': lastVault,
+  });
+  final settings = (await tester.runAsync(SettingsController.load))!;
+  final db = FakeVaultDb.v5();
+  final cli = FakeMemexCli()
+    ..on('settings get', (_) => FakeMemexCli.ok(settingsGetMaxDepthStdout));
+  tester.view.physicalSize = const Size(1600, 1000);
+  tester.view.devicePixelRatio = 1.0;
+  tester.platformDispatcher.textScaleFactorTestValue = 0.5;
+  final container = ProviderContainer(
+    overrides: [
+      settingsProvider.overrideWith((_) => settings),
+      vaultDbProvider.overrideWithValue(db),
+      memexCliProvider.overrideWithValue(cli),
+      clockProvider.overrideWithValue(FakeClock()),
+      ...overrides,
+    ],
+  );
+  addTearDown(db.close);
+  addTearDown(container.dispose);
+  addTearDown(tester.view.reset);
+  addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+  await tester.pumpWidget(
+    UncontrolledProviderScope(
+      container: container,
+      child: const OpenMemexApp(),
+    ),
+  );
+  return container;
+}
+
 void main() {
+  group('launch reopen (review round 1)', () {
+    testWidgets('the first frame at launch already shows the last vault', (
+      tester,
+    ) async {
+      final vault = createVaultFolder('om69_launch_');
+      final c = await _launchApp(tester, lastVault: vault.path);
+
+      // One frame only: the reopen is the provider default, not the
+      // post-frame launchReopen call.
+      expect(c.read(currentVaultProvider), LocalVaultRef(vault.path));
+      expect(find.byType(Workspace), findsOneWidget);
+      expect(find.byType(VaultPickerScreen), findsNothing);
+      await pumpFrames(tester);
+      expect(c.read(currentVaultProvider), LocalVaultRef(vault.path));
+      expect(c.read(settingsProvider).recentVaults, [vault.path]);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('the app root calls launchReopen after the first frame', (
+      tester,
+    ) async {
+      // No vault open on the first frame but a last vault set: only the
+      // app root's launchReopen call can open it.
+      final vault = createVaultFolder('om69_launch_');
+      final c = await _launchApp(
+        tester,
+        lastVault: vault.path,
+        overrides: [currentVaultProvider.overrideWith((_) => null)],
+      );
+      expect(find.byType(VaultPickerScreen), findsOneWidget);
+
+      await pumpFrames(tester);
+
+      expect(c.read(currentVaultProvider), LocalVaultRef(vault.path));
+      expect(find.byType(Workspace), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
   group('picker recent row (AC5)', () {
     testWidgets('tapping a recent row opens that vault as a LocalVaultRef', (
       tester,
