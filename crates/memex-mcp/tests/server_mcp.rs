@@ -34,8 +34,8 @@ use rmcp::{RoleClient, ServiceExt};
 use serde_json::{json, Value};
 
 use server::{
-    client, make_vault, raw_request, server_logs, wait_for_logs, Reply, ServeCommand, TestServer,
-    ANY_PORT, BODY_LIMIT, TEST_TOKEN, TOKEN_ENV, WAIT,
+    assert_wrong_method_is_c1_405, client, make_vault, raw_request, server_logs, wait_for_logs,
+    Reply, ServeCommand, TestServer, ANY_PORT, BODY_LIMIT, TEST_TOKEN, TOKEN_ENV, WAIT,
 };
 
 /// The number of tools `Memex::new` composes (tools.rs 13 + daily 1 +
@@ -1103,6 +1103,16 @@ async fn mcp_wrong_method_is_c1_405_and_without_the_token_401() {
         assert_eq!(r.status, 401, "{method} without the token");
         assert_eq!(r.c1_code(), "unauthorized", "{method}");
     }
+    // #71's shared probe: every non-POST method (OPTIONS too) is the JSON
+    // C1 405, with no CORS headers, in any case of the vault name.
+    assert_wrong_method_is_c1_405(
+        &srv,
+        &[
+            ("/vaults/work/mcp", &["POST"]),
+            ("/vaults/WORK/mcp", &["POST"]),
+        ],
+    )
+    .await;
     // POST on the same path is served.
     rpc_result(&rpc(&srv, "work", &request(1, "tools/list", json!({}))).await);
 }

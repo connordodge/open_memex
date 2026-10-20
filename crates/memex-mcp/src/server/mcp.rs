@@ -98,3 +98,99 @@ async fn handle(
         .map(Body::new)
         .into_response()
 }
+
+#[cfg(test)]
+mod tests {
+    use memex_core::Vault;
+
+    use super::*;
+    use crate::state::AppState;
+
+    /// A fresh vault in `dir/<name>`, as an entry with a new `open_id`.
+    fn wi80_entry(dir: &std::path::Path, name: &str) -> Arc<VaultEntry> {
+        let path = dir.join(name);
+        let vault = Vault::create(&path).expect("create vault");
+        Arc::new(VaultEntry {
+            open_id: Ulid::new(),
+            state: AppState::new(vault, path, None),
+        })
+    }
+
+    /// The `open_id`s the cache holds a service for, sorted.
+    fn cached(services: &Services) -> Vec<Ulid> {
+        let mut ids: Vec<Ulid> = services
+            .by_open_id
+            .lock()
+            .unwrap()
+            .keys()
+            .copied()
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    fn sorted(mut ids: Vec<Ulid>) -> Vec<Ulid> {
+        ids.sort();
+        ids
+    }
+
+    #[test]
+    fn mcp_service_cache_drops_a_service_whose_vault_entry_is_gone_and_releases_its_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let services = Services::default();
+        let old = wi80_entry(dir.path(), "work");
+        let old_id = old.open_id;
+        let old_conn = Arc::downgrade(&old.state.vault);
+        drop(services.get(&old));
+        assert_eq!(cached(&services), vec![old_id]);
+
+        // The registry evicts the entry and no request holds it: only the
+        // cached service still holds the vault's connection.
+        drop(old);
+        assert!(
+            old_conn.upgrade().is_some(),
+            "the cached service holds the connection until the next lookup"
+        );
+
+        // The next lookup, for any vault, drops the dead vault's service.
+        let other = wi80_entry(dir.path(), "other");
+        drop(services.get(&other));
+        assert_eq!(cached(&services), vec![other.open_id]);
+        assert!(
+            old_conn.upgrade().is_none(),
+            "the deleted vault's connection is closed, not kept by its old service"
+        );
+    }
+
+    #[test]
+    fn mcp_service_cache_keeps_one_service_per_live_vault_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let services = Services::default();
+        let a = wi80_entry(dir.path(), "a");
+        let b = wi80_entry(dir.path(), "b");
+        for _ in 0..3 {
+            drop(services.get(&a));
+        }
+        drop(services.get(&b));
+        drop(services.get(&a));
+        assert_eq!(
+            cached(&services),
+            sorted(vec![a.open_id, b.open_id]),
+            "a live vault's service is kept while other vaults are served"
+        );
+        // One service per vault: the entry and one cached service hold each
+        // connection.
+        assert_eq!(Arc::strong_count(&a.state.vault), 2);
+        assert_eq!(Arc::strong_count(&b.state.vault), 2);
+
+        // A reopened vault (a new open_id over a new AppState) gets its own
+        // service, never the old one's; the old entry's goes once it is gone.
+        let reopened = wi80_entry(dir.path(), "a2");
+        let a_conn = Arc::downgrade(&a.state.vault);
+        drop(a);
+        drop(services.get(&reopened));
+        assert_eq!(cached(&services), sorted(vec![b.open_id, reopened.open_id]));
+        assert_eq!(Arc::strong_count(&reopened.state.vault), 2);
+        assert!(a_conn.upgrade().is_none());
+    }
+}
