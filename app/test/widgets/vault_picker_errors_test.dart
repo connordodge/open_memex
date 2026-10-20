@@ -1,6 +1,7 @@
 // WI #69 review round 1 (finding 4): the picker shows the vault open
 // controller's failure copy for "open existing vault…" and "create new
-// vault…", as main did. #92: a recent row opens through openVault (folder
+// vault…", as main did, and a recent row of a folder that is not a vault
+// has no tap, as on main. #92: a recent row opens through openVault (folder
 // shape check, then `memex vault check`).
 import 'dart:io';
 
@@ -282,9 +283,9 @@ void main() {
     );
 
     // #92 TEST-CHANGE (lead ruling on #108): a recent row now opens through
-    // openVault (the folder shape check, then `memex vault check`), so the
-    // #69 test "tapping a recent row of a folder that is not a vault still
-    // opens it as today" is deleted; this pins the new behaviour.
+    // openVault (the folder shape check, then `memex vault check`); this
+    // replaces the deleted #69 test "tapping a recent row of a folder that
+    // is not a vault still opens it as today".
     testWidgets(
       'tapping a recent row of a folder that is no longer a vault shows the not a vault error and opens nothing',
       (tester) async {

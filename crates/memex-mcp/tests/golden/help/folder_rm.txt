@@ -1,0 +1,8 @@
+Delete a Smart Folder
+
+Usage: memex folder rm --vault <VAULT> --id <ID>
+
+Options:
+      --vault <VAULT>  Vault directory
+      --id <ID>        Folder id
+  -h, --help           Print help

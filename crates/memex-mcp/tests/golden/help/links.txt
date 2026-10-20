@@ -1,0 +1,10 @@
+Print outgoing + incoming links for a note as a tree
+
+Usage: memex links [OPTIONS] --vault <VAULT> --note-id <NOTE_ID>
+
+Options:
+      --vault <VAULT>      Vault directory
+      --note-id <NOTE_ID>  Note id (ULID)
+      --dir <DIR>          Direction: in, out, or both (default) [default: both] [possible values: in, out, both]
+      --kind <KIND>        Optional kind filter (e.g. `extends`, `inspired-by`)
+  -h, --help               Print help

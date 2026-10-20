@@ -1,0 +1,6 @@
+Print the capture prompt
+
+Usage: memex prompt capture
+
+Options:
+  -h, --help  Print help
