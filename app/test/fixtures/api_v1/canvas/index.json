@@ -1,0 +1,90 @@
+[
+  {
+    "method": "GET",
+    "path": "/vaults/seed/api/v1/canvases",
+    "response": "list_canvases.json",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/vaults/seed/api/v1/canvases/01M5DQAYZJET989N2YR8341XAN",
+    "response": "get_canvas.json",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/vaults/seed/api/v1/canvases/01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+    "response": "get_canvas_not_found.json",
+    "status": 404
+  },
+  {
+    "method": "POST",
+    "path": "/vaults/seed/api/v1/canvases",
+    "request": "create_canvas.request.json",
+    "response": "create_canvas.json",
+    "status": 201
+  },
+  {
+    "method": "POST",
+    "path": "/vaults/seed/api/v1/canvases",
+    "request": "create_canvas_title_conflict.request.json",
+    "response": "create_canvas_title_conflict.json",
+    "status": 409
+  },
+  {
+    "method": "POST",
+    "path": "/vaults/seed/api/v1/canvases/01M5DQAYZJET989N2YR8341XAN/nodes",
+    "request": "add_node.request.json",
+    "response": "add_node.json",
+    "status": 200
+  },
+  {
+    "method": "POST",
+    "path": "/vaults/seed/api/v1/canvases/01M5DQAYZJET989N2YR8341XAN/nodes",
+    "request": "add_node_existing.request.json",
+    "response": "add_node_existing.json",
+    "status": 200
+  },
+  {
+    "method": "POST",
+    "path": "/vaults/seed/api/v1/canvases/01J9Z8Y7X6W5V4T3S2R1Q0P9N8/nodes",
+    "request": "add_node.request.json",
+    "response": "add_node_unknown_canvas.json",
+    "status": 404
+  },
+  {
+    "method": "POST",
+    "path": "/vaults/seed/api/v1/canvases/01M5DQAYZJET989N2YR8341XAN/nodes",
+    "request": "add_node_unknown_note.request.json",
+    "response": "add_node_unknown_note.json",
+    "status": 404
+  },
+  {
+    "method": "PATCH",
+    "path": "/vaults/seed/api/v1/canvases/01M5DQAYZJET989N2YR8341XAN/nodes/01M5DQAYZ47QW55S90ZF0A56AH",
+    "request": "move_node.request.json",
+    "response": "move_node.json",
+    "status": 200
+  },
+  {
+    "method": "PATCH",
+    "path": "/vaults/seed/api/v1/canvases/01M5DQAYZJET989N2YR8341XAN/nodes/01M5DQAYZ3WP7H0NXZZV9M2315",
+    "request": "move_node_z.request.json",
+    "response": "move_node_z.json",
+    "status": 200
+  },
+  {
+    "method": "PATCH",
+    "path": "/vaults/seed/api/v1/canvases/01M5DQAYZJET989N2YR8341XAN/nodes/01M5DQAYZ4RYSGA8T0YEEF8QRS",
+    "request": "move_node_not_placed.request.json",
+    "response": "move_node_not_placed.json",
+    "status": 404
+  },
+  {
+    "method": "PATCH",
+    "path": "/vaults/seed/api/v1/canvases/01J9Z8Y7X6W5V4T3S2R1Q0P9N8/nodes/01M5DQAYZ47QW55S90ZF0A56AH",
+    "request": "move_node.request.json",
+    "response": "move_node_unknown_canvas.json",
+    "status": 404
+  }
+]
