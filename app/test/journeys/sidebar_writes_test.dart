@@ -318,6 +318,7 @@ void main() {
           ),
         );
         final h = await _pump(tester, writes: writes);
+        final revisionBefore = h.read(vaultRevisionProvider);
 
         await _newNote(tester);
 
@@ -326,6 +327,10 @@ void main() {
         expect(_textStarting('Could not create note'), findsNothing);
         expect(h.read(tabsProvider).tabs, isEmpty);
         expect(h.cli.callsFor('add'), isEmpty);
+        // guardVaultWrite returned null: no bump, even when the write may
+        // have committed. The revision poll (Req 22-24) shows a committed
+        // write, not the write site.
+        expect(h.read(vaultRevisionProvider), revisionBefore);
       });
     }
 
@@ -349,6 +354,7 @@ void main() {
           ),
         );
         final h = await _pump(tester, writes: writes);
+        final revisionBefore = h.read(vaultRevisionProvider);
 
         await _newCanvas(tester, 'Fresh board');
 
@@ -357,8 +363,93 @@ void main() {
         expect(_textStarting('Could not create canvas'), findsNothing);
         expect(h.read(tabsProvider).tabs, isEmpty);
         expect(h.cli.callsFor('canvas new'), isEmpty);
+        expect(h.read(vaultRevisionProvider), revisionBefore);
       });
     }
+  });
+
+  group('the new canvas dialog outlives the sidebar', () {
+    testWidgets(
+      'closing the vault while the new canvas dialog is open creates no canvas',
+      (tester) async {
+        final writes = _Wi86Writes();
+        final h = await _pump(tester, writes: writes);
+        final revisionBefore = h.read(vaultRevisionProvider);
+
+        await tester.tap(_newCanvasButton);
+        await pumpFrames(tester);
+        expect(find.byKey(_canvasConfirm), findsOneWidget);
+
+        // The vault closes under the open dialog: the picker replaces the
+        // workspace and the sidebar that asked for the title unmounts.
+        h.container.read(currentVaultProvider.notifier).state = null;
+        await pumpFrames(tester);
+        expect(find.byType(Sidebar), findsNothing);
+        expect(find.byKey(_canvasConfirm), findsOneWidget);
+
+        await tester.enterText(
+          find.descendant(
+            of: find.byType(AlertDialog),
+            matching: find.byType(TextField),
+          ),
+          'Late board',
+        );
+        await tester.tap(find.byKey(_canvasConfirm));
+        await pumpFrames(tester);
+
+        expect(writes.canvasCreates, isEmpty);
+        expect(h.cli.callsFor('canvas new'), isEmpty);
+        expect(h.read(vaultRevisionProvider), revisionBefore);
+        expect(h.read(tabsProvider).tabs, isEmpty);
+        expect(_textStarting('Could not create canvas'), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  });
+
+  group('the real vault access with no override (AC6, AC7)', () {
+    testWidgets(
+      'new note and new canvas through the real vault access send the CLI calls of today',
+      (tester) async {
+        final db = FakeVaultDb.v5();
+        final h = await pumpWorkspace(tester, db: db, cli: _writingCli(db));
+        final tabs = h.read(tabsProvider.notifier);
+        for (final tab in [...h.read(tabsProvider).tabs]) {
+          tabs.close(tab);
+        }
+        await pumpFrames(tester);
+        expect(h.read(vaultAccessProvider), isA<LocalVaultAccess>());
+        final revisionBefore = h.read(vaultRevisionProvider);
+
+        await _newNote(tester);
+
+        final add = h.cli.callsFor('add').single;
+        expect(add.args, [
+          'add',
+          '--vault',
+          h.vaultPath,
+          '--title',
+          'Untitled',
+        ]);
+        expect(add.stdinBody, '# Untitled\n\n');
+        expect(h.read(vaultRevisionProvider), revisionBefore + 1);
+        expect(h.read(activeTabProvider), const NoteTab(_newNoteId));
+
+        await _newCanvas(tester, 'Fresh board');
+
+        expect(h.cli.callsFor('canvas new').single.args, [
+          'canvas',
+          'new',
+          '--vault',
+          h.vaultPath,
+          '--title',
+          'Fresh board',
+        ]);
+        expect(h.read(vaultRevisionProvider), revisionBefore + 2);
+        expect(h.read(activeTabProvider), const CanvasTab(_newCanvasId));
+        expect(find.byType(SnackBar), findsNothing);
+      },
+    );
   });
 
   group('no memex binary configured (AC10)', () {
