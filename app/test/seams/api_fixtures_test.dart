@@ -292,7 +292,7 @@ void main() {
       },
     );
 
-    test('the seed daily note with no day_reviews row reads as unreviewed', () {
+    test('the seed pre-V5 daily note has no review row, blocks or marker', () {
       final db = seededFakeVaultDb();
       addTearDown(db.close);
       final row = db.dailyNoteForDate('2026-10-15');
@@ -308,6 +308,21 @@ void main() {
       final info = db.reviewState(row.noteId)!;
       expect(info.state, ReviewState.unreviewed);
       expect(info.reviewedAt, isNull);
+      // A real pre-V5 daily note: no blocks rows, so an empty preview, and
+      // no topics marker in its body or its chunks.
+      expect(db.blocksForNote(row.noteId), isEmpty);
+      expect(row.preview, '');
+      final body = db.db.select('SELECT content_md FROM notes WHERE id = ?', [
+        row.noteId,
+      ]);
+      expect(body.single['content_md'], 'Read about loot tables.\n');
+      final chunks = db.db.select(
+        'SELECT content FROM chunks WHERE note_id = ? ORDER BY ord',
+        [row.noteId],
+      );
+      expect(chunks.map((c) => c['content']).toList(), [
+        'Read about loot tables.',
+      ]);
     });
 
     test('the seed daily preview stops at the first newline of the block', () {
