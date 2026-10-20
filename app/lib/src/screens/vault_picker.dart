@@ -251,9 +251,14 @@ class _RecentVaultRowState extends ConsumerState<_RecentVaultRow> {
       onExit: (_) => setState(() => _hover = false),
       child: GestureDetector(
         onTap: exists
-            ? () => ref
-                  .read(vaultOpenControllerProvider)
-                  .openVault(LocalVaultRef(widget.path))
+            ? () async {
+                final outcome = await ref
+                    .read(vaultOpenControllerProvider)
+                    .openVault(LocalVaultRef(widget.path));
+                if (outcome is VaultOpenFailure && context.mounted) {
+                  _showError(context, outcome.message);
+                }
+              }
             : null,
         child: Container(
           padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
