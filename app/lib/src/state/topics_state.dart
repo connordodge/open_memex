@@ -1,8 +1,15 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../db/topics_reads.dart';
+import '../vault_access/vault_scoped.dart';
 import 'topics_tree.dart';
 import 'vault_state.dart';
+
+/// The Topics tree read through `VaultAccess.topics`, stamped with the vault it
+/// was loaded for (D14a). WI #87 skeleton: the implementation replaces it.
+final smartFolderTreeAsyncProvider = FutureProvider<VaultScoped<TopicsTree>>(
+  (ref) => throw UnimplementedError(),
+);
 
 /// The Topics tree, re-read on every `vaultRevisionProvider` bump. Empty on a
 /// vault below V5 or with no database.
