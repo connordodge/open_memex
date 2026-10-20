@@ -75,13 +75,15 @@ class VaultOpenController {
   /// that vault. With no vault open and no last vault it completes
   /// [NoVaultToReopen]. Otherwise it opens the last vault as a
   /// [LocalVaultRef] through `memex vault check`, as a vault pill does (no
-  /// folder shape check), and completes with that open's outcome.
+  /// folder shape check), and completes with that open's outcome. Launch
+  /// writes no settings: the last vault and the recents order stay as they
+  /// were.
   Future<VaultOpenOutcome> launchReopen() async {
     final current = _ref.read(currentVaultProvider);
     if (current != null) return VaultOpened(current);
     final last = _ref.read(settingsProvider).lastVault;
     if (last == null) return const NoVaultToReopen();
-    return _openVault(LocalVaultRef(last), checkFolder: false);
+    return _openVault(LocalVaultRef(last), checkFolder: false, remember: false);
   }
 
   /// Opens [vault] after checking it: a local folder must hold
@@ -89,16 +91,18 @@ class VaultOpenController {
   /// success the vault is remembered (recents and last vault) and becomes
   /// the current vault; on any other outcome nothing changes.
   Future<VaultOpenOutcome> openVault(VaultRef vault) =>
-      _openVault(vault, checkFolder: true);
+      _openVault(vault, checkFolder: true, remember: true);
 
   /// The one open path behind [openVault], [switchToVault] and
   /// [launchReopen]. Every local open runs `memex vault check` before the
   /// vault becomes current, so before any SQLite handle opens.
   /// [checkFolder] is false for a vault pill and for launch, which have
-  /// never checked the folder's shape.
+  /// never checked the folder's shape. [remember] is false only for launch,
+  /// which reopens the last vault without a settings write.
   Future<VaultOpenOutcome> _openVault(
     VaultRef vault, {
     required bool checkFolder,
+    required bool remember,
   }) async {
     switch (vault) {
       case HostedVaultRef():
@@ -120,7 +124,7 @@ class VaultOpenController {
         }
         final refused = await _checkLocal(cli, path);
         if (refused != null) return refused;
-        return _open(vault);
+        return _open(vault, remember: remember);
     }
   }
 
@@ -200,7 +204,7 @@ class VaultOpenController {
     if (refused != null) return refused;
     try {
       await cli.initVault(fullPath);
-      return await _open(LocalVaultRef(fullPath));
+      return await _open(LocalVaultRef(fullPath), remember: true);
     } catch (e) {
       return VaultOpenFailure('Could not create vault: $e');
     }
@@ -232,7 +236,7 @@ class VaultOpenController {
     if (!await _ref.read(leaveVaultGuardProvider)(context)) {
       return const VaultOpenCancelled();
     }
-    final outcome = await _openVault(vault, checkFolder: false);
+    final outcome = await _openVault(vault, checkFolder: false, remember: true);
     if (outcome is VaultOpened) {
       _ref.read(selectedNoteIdProvider.notifier).state = null;
     } else if (context.mounted) {
@@ -241,8 +245,13 @@ class VaultOpenController {
     return outcome;
   }
 
-  Future<VaultOpenOutcome> _open(LocalVaultRef vault) async {
-    await _ref.read(settingsProvider.notifier).rememberVault(vault.path);
+  Future<VaultOpenOutcome> _open(
+    LocalVaultRef vault, {
+    required bool remember,
+  }) async {
+    if (remember) {
+      await _ref.read(settingsProvider.notifier).rememberVault(vault.path);
+    }
     // Reopening the vault that is already current writes nothing: an equal
     // but not identical ref would notify every dependent again
     // (StateProvider compares by identity).
