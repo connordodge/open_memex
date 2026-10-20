@@ -46,6 +46,8 @@ Future<ProviderContainer> _app({
 
 /// A CLI whose `init` creates the vault files, as the real `memex init` does.
 FakeMemexCli _initCli() => FakeMemexCli()
+  // #92: every local open runs `memex vault check` first; the folder is safe.
+  ..on('vault check', (_) => FakeMemexCli.ok())
   ..on('init', (call) {
     initVaultFolder(call.args[1]);
     return FakeMemexCli.ok();
@@ -147,7 +149,9 @@ void main() {
         final parent = createPlainFolder('om69_parent_');
         final path = p.join(parent.path, 'Broken');
         final failure = FakeMemexCli.error('io', 'permission denied');
-        final cli = FakeMemexCli()..on('init', (_) => failure);
+        final cli = FakeMemexCli()
+          ..on('vault check', (_) => FakeMemexCli.ok())
+          ..on('init', (_) => failure);
         final c = await _app(
           cli: cli,
           lastVault: open.path,

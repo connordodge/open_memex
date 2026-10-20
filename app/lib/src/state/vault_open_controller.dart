@@ -118,3 +118,25 @@ class VaultOpenController {
     return VaultOpened(vault);
   }
 }
+
+/// #92: `memex vault check` refused the folder at [path]: it is on a network
+/// drive (exit 1, C1 `network_filesystem`). Nothing opened.
+class VaultOnNetworkDrive extends VaultOpenFailure {
+  const VaultOnNetworkDrive(this.path, super.message);
+
+  final String path;
+}
+
+/// #92: the installed `memex` is too old to run `vault check` (exit 2), so
+/// the folder at [path] was not opened.
+class VaultMemexTooOld extends VaultOpenFailure {
+  const VaultMemexTooOld(this.path, super.message);
+
+  final String path;
+}
+
+/// #92: no `memex` binary is configured, or it could not be started. No
+/// local vault opened.
+class VaultBinaryNotFound extends VaultOpenFailure {
+  const VaultBinaryNotFound(super.message);
+}

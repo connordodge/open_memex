@@ -59,6 +59,10 @@ Future<(WorkspaceHarness, String)> _workspaceWithSecondVault(
 }) async {
   final h = await pumpWorkspace(
     tester,
+    // #92: a pill tap runs `memex vault check` first; the folder is safe.
+    cli: FakeMemexCli()
+      ..on('vault check', (_) => FakeMemexCli.ok())
+      ..on('settings get', (_) => FakeMemexCli.ok(settingsGetMaxDepthStdout)),
     overrides: [
       if (guard != null) leaveVaultGuardProvider.overrideWithValue(guard.call),
     ],
@@ -90,6 +94,8 @@ void main() {
       final settings = await SettingsController.load();
       final db = FakeVaultDb.v5();
       final cli = FakeMemexCli()
+        // #92: a recent row runs `memex vault check` first.
+        ..on('vault check', (_) => FakeMemexCli.ok())
         ..on('settings get', (_) => FakeMemexCli.ok(settingsGetMaxDepthStdout));
       tester.view.physicalSize = const Size(1600, 1000);
       tester.view.devicePixelRatio = 1.0;
