@@ -14,8 +14,12 @@ export 'vault_ref.dart';
 
 /// The open vault. `null` means no vault is open. At launch it is the last
 /// vault (`memex.last_vault`) as a [LocalVaultRef], which reopens it.
+///
+/// Rebuilds only when the last vault changes: a settings write that keeps
+/// `lastVault` (binary path, recents) notifies no dependent, as before the
+/// path became a [VaultRef].
 final currentVaultProvider = StateProvider<VaultRef?>((ref) {
-  final last = ref.watch(settingsProvider).lastVault;
+  final last = ref.watch(settingsProvider.select((s) => s.lastVault));
   return last == null ? null : LocalVaultRef(last);
 });
 
