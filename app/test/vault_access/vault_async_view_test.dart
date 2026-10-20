@@ -63,7 +63,7 @@ Future<(ProviderContainer, _Wi70GatedNotesAccess)> _pump(
   final gated = _Wi70GatedNotesAccess();
   final container = ProviderContainer(
     overrides: [
-      currentVaultProvider.overrideWith((_) => _vault),
+      currentVaultProvider.overrideWith((_) => const LocalVaultRef(_vault)),
       vaultDbProvider.overrideWithValue(null),
       memexCliProvider.overrideWithValue(null),
       vaultAccessProvider.overrideWithValue(

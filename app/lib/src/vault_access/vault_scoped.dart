@@ -5,7 +5,7 @@ import '../state/vault_state.dart';
 /// The type `currentVaultProvider` holds: the open vault's ref, or null with
 /// no open vault. A path today; #69's adaptation flips this one alias to
 /// `VaultRef?`, and everything stamped with it follows.
-typedef CurrentVault = String?;
+typedef CurrentVault = VaultRef?;
 
 /// A vault read stamped with the vault it was loaded for (D14a).
 ///
