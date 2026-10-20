@@ -56,19 +56,29 @@ _Wi81Pair _pair() {
   );
 }
 
-/// A [Note] as plain values, with its frontmatter decoded.
+/// A [Note] as plain values, with its frontmatter decoded (kept as text when
+/// it is not JSON, like the seed's Broken Frontmatter note).
 Object? _wi81NoteShape(Note? n) => n == null
     ? null
     : {
         'id': n.id,
         'title': n.title,
         'contentMd': n.contentMd,
-        'frontmatter': jsonDecode(n.frontmatter),
+        'frontmatter': _wi81Frontmatter(n.frontmatter),
+        'role': n.role,
         'version': n.version,
         'createdAt': n.createdAt,
         'updatedAt': n.updatedAt,
         'tags': n.tags,
       };
+
+Object? _wi81Frontmatter(String text) {
+  try {
+    return jsonDecode(text);
+  } on FormatException {
+    return {'not json': text};
+  }
+}
 
 /// The read rows: every GET, plus `POST /titles/lookup`.
 List<FixtureRow> _readRows() => [
@@ -127,10 +137,23 @@ void main() {
       );
       expect(hosted == null, row.status == 404, reason: row.path);
     }
-    // Every seed note but Broken Frontmatter (memex get cannot read invalid
-    // frontmatter), plus the unknown id.
-    expect(rows, 10);
+    // Every seed note (Broken Frontmatter included, ruling D11b), plus the
+    // unknown id.
+    expect(rows, 11);
   });
+
+  test(
+    'hosted getNote of the Broken Frontmatter note keeps the stored text',
+    () async {
+      final p = _pair();
+      final hosted = (await p.hosted.getNote(_wi81Broken))!;
+      final local = (await p.local.getNote(_wi81Broken))!;
+      expect(hosted.frontmatter, local.frontmatter);
+      expect(hosted.frontmatter, '{"role": "topic"');
+      expect(hosted.role, isNull);
+      expect(_wi81NoteShape(hosted), _wi81NoteShape(local));
+    },
+  );
 
   test('hosted getNote of an unknown id is null like the local read', () async {
     final p = _pair();

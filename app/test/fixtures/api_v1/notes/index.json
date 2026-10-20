@@ -10,6 +10,7 @@
   {"method": "GET", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ5T5B865CDF2RWAC37", "response": "get_note_daily_2026_10_17.json", "status": 200},
   {"method": "GET", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ50YGKE126FXV02TEY", "response": "get_note_daily_2026_10_16.json", "status": 200},
   {"method": "GET", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ592W2515HPSDF5Q16", "response": "get_note_daily_2026_10_15.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ5RH88SRZGPY15XXVM", "response": "get_note_broken_frontmatter.json", "status": 200},
   {"method": "GET", "path": "/vaults/seed/api/v1/notes/01J9Z8Y7X6W5V4T3S2R1Q0P9N8", "response": "get_note_not_found.json", "status": 404},
   {"method": "GET", "path": "/vaults/seed/api/v1/titles?limit=1000", "response": "titles.json", "status": 200},
   {"method": "GET", "path": "/vaults/seed/api/v1/titles?limit=3", "response": "titles_limit_3.json", "status": 200},
