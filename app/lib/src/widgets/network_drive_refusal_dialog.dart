@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
+import '../state/vault_open_controller.dart' show networkDriveRefusalMessage;
 import '../theme/colors.dart';
 import '../theme/typography.dart';
 import 'atoms.dart';
@@ -9,11 +10,6 @@ import 'atoms.dart';
 /// #105 binds [setUpServer] and [connectServer] to the set-up sheet and the
 /// connect dialog; until then they only close the dialog.
 enum NetworkDriveRefusalChoice { cancel, setUpServer, connectServer }
-
-/// The network-drive refusal copy (req 31).
-const networkDriveRefusalMessage =
-    'this folder is on a network drive. vaults on network drives can be '
-    'corrupted — connect to a vault server instead.';
 
 /// Shows the network-drive refusal for the folder at [path] under [eyebrow]
 /// ("OPEN LOCAL VAULT", or "CREATE NEW VAULT" in the create flow) and

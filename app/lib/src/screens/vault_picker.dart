@@ -14,6 +14,7 @@ import '../theme/colors.dart';
 import '../theme/typography.dart';
 import '../widgets/atoms.dart';
 import '../widgets/memex_too_old_dialog.dart';
+import '../widgets/vault_open_refusal.dart';
 
 class VaultPickerScreen extends ConsumerStatefulWidget {
   const VaultPickerScreen({super.key});
@@ -63,8 +64,7 @@ class _VaultPickerScreenState extends ConsumerState<VaultPickerScreen> {
     required String eyebrow,
   }) async {
     if (!mounted || outcome is! VaultOpenFailure) return;
-    final controller = ref.read(vaultOpenControllerProvider);
-    if (await controller.showRefusal(context, outcome, eyebrow: eyebrow)) {
+    if (await showVaultOpenRefusal(context, outcome, eyebrow: eyebrow)) {
       return;
     }
     if (!mounted) return;

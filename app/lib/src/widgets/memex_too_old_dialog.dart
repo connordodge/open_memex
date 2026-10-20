@@ -5,14 +5,11 @@ import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../state/settings.dart';
+import '../state/vault_open_controller.dart' show memexTooOldMessage;
 import 'network_drive_refusal_dialog.dart';
 
 /// What the person chose in the too-old-memex refusal (L20).
 enum MemexTooOldChoice { cancel, locateBinary }
-
-/// The too-old-memex refusal copy (req 31).
-const memexTooOldMessage =
-    'this memex is too old to open vaults safely. update memex, then try again.';
 
 /// Shows the too-old-memex refusal (the A9 state-1 layout) for the folder at
 /// [path] under [eyebrow] and completes with the choice that closed it.

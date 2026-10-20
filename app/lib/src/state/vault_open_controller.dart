@@ -6,8 +6,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../cli/vault_cli.dart';
 import '../db.dart';
 import '../memex_cli.dart';
-import '../widgets/memex_too_old_dialog.dart';
-import '../widgets/network_drive_refusal_dialog.dart';
 import 'settings.dart';
 import 'vault_state.dart';
 
@@ -151,39 +149,6 @@ class VaultOpenController {
     };
   }
 
-  /// Shows the refusal dialog for a refused local open: the network-drive
-  /// refusal for [VaultOnNetworkDrive], the too-old-memex refusal for
-  /// [VaultMemexTooOld] (whose "locate memex binary…" stores the picked
-  /// binary). [eyebrow] heads the dialog. Completes true when [outcome] was
-  /// a refusal, false (showing nothing) for any other outcome.
-  Future<bool> showRefusal(
-    BuildContext context,
-    VaultOpenOutcome outcome, {
-    required String eyebrow,
-  }) async {
-    switch (outcome) {
-      case VaultOnNetworkDrive(:final path):
-        await showNetworkDriveRefusalDialog(
-          context,
-          path: path,
-          eyebrow: eyebrow,
-        );
-        return true;
-      case VaultMemexTooOld(:final path):
-        final choice = await showMemexTooOldDialog(
-          context,
-          path: path,
-          eyebrow: eyebrow,
-        );
-        if (choice == MemexTooOldChoice.locateBinary) {
-          await locateMemexBinary(_ref.read(settingsProvider.notifier));
-        }
-        return true;
-      default:
-        return false;
-    }
-  }
-
   /// Creates a local vault at [fullPath] with `memex init`, then opens it as
   /// [openVault] does. A non-empty existing folder fails before anything
   /// runs. `memex vault check` runs on [fullPath] before `init`, and a
@@ -226,9 +191,8 @@ class VaultOpenController {
   /// [VaultOpenCancelled] and changes nothing. Otherwise opens [vault] through
   /// the [openVault] path with `memex vault check` but without the folder
   /// shape check (pills have never checked it), and clears the selected note
-  /// on [VaultOpened]. A refused folder shows its refusal dialog
-  /// ([showRefusal]) over the workspace. Completes with the open's outcome,
-  /// after any refusal dialog closed.
+  /// on [VaultOpened]. Shows nothing: the caller presents a refusal (see
+  /// `showVaultOpenRefusal`). Completes with the open's outcome.
   Future<VaultOpenOutcome> switchToVault(
     BuildContext context,
     LocalVaultRef vault,
@@ -239,8 +203,6 @@ class VaultOpenController {
     final outcome = await _openVault(vault, checkFolder: false, remember: true);
     if (outcome is VaultOpened) {
       _ref.read(selectedNoteIdProvider.notifier).state = null;
-    } else if (context.mounted) {
-      await showRefusal(context, outcome, eyebrow: 'OPEN LOCAL VAULT');
     }
     return outcome;
   }
@@ -260,6 +222,15 @@ class VaultOpenController {
     return VaultOpened(vault);
   }
 }
+
+/// The network-drive refusal copy (req 31).
+const networkDriveRefusalMessage =
+    'this folder is on a network drive. vaults on network drives can be '
+    'corrupted — connect to a vault server instead.';
+
+/// The too-old-memex refusal copy (req 31).
+const memexTooOldMessage =
+    'this memex is too old to open vaults safely. update memex, then try again.';
 
 /// #92: `memex vault check` refused the folder at [path]: it is on a network
 /// drive (exit 1, C1 `network_filesystem`). Nothing opened.
