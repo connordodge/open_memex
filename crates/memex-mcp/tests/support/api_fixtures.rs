@@ -875,7 +875,9 @@ pub fn load_rows(domain_dir: &Path) -> Result<Vec<FixtureRow>, String> {
 }
 
 /// Every `api_v1/<domain>/` folder that holds an `index.json`, sorted by
-/// folder name (one level deep; `api_v1` itself is not a domain).
+/// folder name (one level deep; `api_v1` itself is not a domain). No folder
+/// is special-cased: `server/` is a domain once it holds an `index.json`, and
+/// files there that no row names (`utc_offsets.json`) are not row files.
 pub fn all_domain_dirs() -> Vec<PathBuf> {
     let root = api_v1_dir();
     let entries = fs::read_dir(&root).unwrap_or_else(|e| panic!("read {}: {e}", root.display()));

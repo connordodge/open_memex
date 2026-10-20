@@ -2126,9 +2126,12 @@ fn every_api_v1_domain_loads_and_names_only_files_that_exist() {
         .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
     assert!(names.contains(&"compat".to_string()), "{names:?}");
-    assert!(
-        !names.contains(&"server".to_string()),
-        "server/ holds no index.json, so it is not a domain: {names:?}"
+    // No folder is special: server/ is a domain exactly when it holds an
+    // index.json (#72 adds one); its utc_offsets.json is simply not a row file.
+    assert_eq!(
+        names.contains(&"server".to_string()),
+        api_v1_dir().join("server/index.json").is_file(),
+        "server/ is a domain iff it holds an index.json: {names:?}"
     );
     let mut sorted = names.clone();
     sorted.sort();
