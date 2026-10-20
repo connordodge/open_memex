@@ -173,7 +173,9 @@ class HostedNotesAccess implements NotesAccess {
       operation: 'add',
       body: {
         if (title != null && title.isNotEmpty) 'title': title,
-        if (tags.isNotEmpty) 'tags': tags,
+        // Match the local argv (`--tags tags.join(',')`, clap value_delimiter
+        // ','): a tag containing a comma is stored as several tags.
+        if (tags.isNotEmpty) 'tags': tags.join(',').split(','),
         'role': ?role,
         'content_md': contentMd,
       },
