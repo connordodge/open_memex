@@ -506,9 +506,11 @@ void main() {
       'a 401 throws code unauthorized and sets the status to token rejected',
       () async {
         final env = _env();
+        // The client keeps the old token; the server rotates it afterwards.
+        final client = env.client();
         env.server.token = 'rotated-on-the-server';
         final e = await _outcome(
-          env.client().serverRequest('GET', '/vaults', operation: 'vault list'),
+          client.serverRequest('GET', '/vaults', operation: 'vault list'),
         );
         expect(e, isA<MemexException>());
         e as MemexException;
@@ -962,6 +964,443 @@ void main() {
       },
     );
   });
+
+  group('pinned contracts', () {
+    for (final (name, url, base) in [
+      (
+        'request URLs keep the path prefix of a saved URL',
+        'http://nas.local:7878/memex',
+        'http://nas.local:7878/memex',
+      ),
+      (
+        'request URLs keep the path prefix of a saved URL that ends in a slash',
+        'http://nas.local:7878/memex/',
+        'http://nas.local:7878/memex',
+      ),
+      (
+        'request URLs drop every trailing slash of a saved URL',
+        'http://nas.local:7878/memex///',
+        'http://nas.local:7878/memex',
+      ),
+      (
+        'request URLs drop every trailing slash of a saved URL without a prefix',
+        'http://nas.local:7878//',
+        'http://nas.local:7878',
+      ),
+    ]) {
+      test(name, () async {
+        final env = _env(
+          server: FakeVaultServer(token: _wi77Token, url: base)
+            ..serveDomain('server')
+            ..serveDomain('errors'),
+        );
+        final client = env.client(serverUrl: url);
+        final vaults = await client.serverRequest(
+          'GET',
+          '/vaults',
+          operation: 'vault list',
+        );
+        expect(vaults['vaults'], isA<List<Object?>>());
+        await client.vaultRequest('GET', 'seed', '/info', operation: 'info');
+        await client.probeServer();
+        expect(
+          [for (final r in env.server.requests) r.url.toString()],
+          [
+            '$base/api/v1/vaults',
+            '$base/vaults/seed/api/v1/info',
+            '$base/api/v1/info',
+          ],
+        );
+        expect(env.status(), HostedConnectionStatus.connected);
+      });
+    }
+
+    test('an empty query map adds no question mark to the URL', () async {
+      final env = _env();
+      final client = env.client();
+      await client.serverRequest(
+        'GET',
+        '/vaults',
+        operation: 'vault list',
+        query: {},
+      );
+      await client.vaultRequest(
+        'GET',
+        'seed',
+        '/info',
+        operation: 'info',
+        query: {},
+      );
+      expect(
+        [for (final r in env.server.requests) r.url.toString()],
+        [
+          'http://nas.local:7878/api/v1/vaults',
+          'http://nas.local:7878/vaults/seed/api/v1/info',
+        ],
+      );
+      for (final r in env.server.requests) {
+        expect(r.url.hasQuery, isFalse, reason: '${r.url}');
+      }
+    });
+
+    test('query values are percent-encoded in the URL', () async {
+      final env = _env();
+      await _outcome(
+        env.client().vaultRequest(
+          'GET',
+          'seed',
+          '/search',
+          operation: 'search',
+          query: {'q': 'a b&c=d', 'limit': '5'},
+        ),
+      );
+      final url = env.server.requests.single.url;
+      expect(url.path, '/vaults/seed/api/v1/search');
+      expect(url.queryParameters, {'q': 'a b&c=d', 'limit': '5'});
+      expect(url.query, isNot(contains(' ')));
+    });
+
+    test('the vault name is percent-encoded as one path segment', () async {
+      final env = _env();
+      const name = 'my vault/x?y#z';
+      await _outcome(
+        env.client().vaultRequest('GET', name, '/info', operation: 'info'),
+      );
+      final url = env.server.requests.single.url;
+      expect(
+        url.toString(),
+        'http://nas.local:7878/vaults/my%20vault%2Fx%3Fy%23z/api/v1/info',
+      );
+      expect(url.pathSegments, ['vaults', name, 'api', 'v1', 'info']);
+      expect(url.hasQuery, isFalse);
+      expect(url.hasFragment, isFalse);
+    });
+
+    test('a 2xx body is decoded as UTF-8 whatever its content type', () async {
+      final env = _env();
+      for (final headers in [
+        <String, String>{},
+        {'content-type': 'text/plain'},
+        {'content-type': 'application/json'},
+      ]) {
+        final client = _wi77ClientOver(
+          env,
+          MockClient(
+            (request) async => http.Response.bytes(
+              utf8.encode('{"title":"café ☕ naïve"}'),
+              200,
+              request: request,
+              headers: headers,
+            ),
+          ),
+        );
+        final got = await client.vaultRequest(
+          'GET',
+          'seed',
+          '/info',
+          operation: 'info',
+        );
+        expect(got, {'title': 'café ☕ naïve'}, reason: '$headers');
+      }
+    });
+
+    test(
+      'a 2xx body that is not UTF-8 throws a null-code MemexException',
+      () async {
+        final env = _env();
+        // Valid JSON in Latin-1 but not in UTF-8 (0xE9 is a lone byte).
+        final latin1Json = latin1.encode('{"title":"café"}');
+        final client = _wi77ClientOver(
+          env,
+          MockClient(
+            (request) async =>
+                http.Response.bytes(latin1Json, 200, request: request),
+          ),
+        );
+        final e = await _outcome(
+          client.vaultRequest('GET', 'seed', '/info', operation: 'info'),
+        );
+        expect(e, isA<MemexException>());
+        e as MemexException;
+        expect(e.code, isNull);
+        expect(e.message, startsWith('info failed: '));
+        expect(env.status(), HostedConnectionStatus.connected);
+      },
+    );
+
+    test(
+      'a non-2xx C1 body that is not UTF-8 throws a null-code MemexException naming the status',
+      () async {
+        final env = _env();
+        final latin1C1 = latin1.encode(
+          '{"error":{"code":"invalid_argument","message":"café"}}',
+        );
+        final client = _wi77ClientOver(
+          env,
+          MockClient(
+            (request) async =>
+                http.Response.bytes(latin1C1, 400, request: request),
+          ),
+        );
+        final e = await _outcome(
+          client.vaultRequest('GET', 'seed', '/info', operation: 'info'),
+        );
+        expect(e, isA<MemexException>());
+        e as MemexException;
+        expect(e.code, isNull);
+        expect(e.message, 'info failed: HTTP 400');
+      },
+    );
+
+    test(
+      'a 401 with a C1 body of another code still throws code unauthorized',
+      () async {
+        final env = _env();
+        env.server.route(
+          'GET',
+          '/api/v1/vaults',
+          status: 401,
+          json: {
+            'error': {
+              'code': 'token_expired',
+              'message': 'the access token expired',
+              'expired_at': '2026-10-01',
+            },
+          },
+        );
+        env.server.route(
+          'GET',
+          '/vaults/seed/api/v1/info',
+          status: 401,
+          json: {
+            'error': {'code': 'not_found'},
+          },
+        );
+        final client = env.client();
+
+        final expired = await _outcome(
+          client.serverRequest('GET', '/vaults', operation: 'vault list'),
+        );
+        expect(expired, isA<MemexException>());
+        expired as MemexException;
+        expect(expired.code, 'unauthorized');
+        expect(expired.kind, MemexErrorKind.other);
+        expect(expired.message, 'vault list failed: the access token expired');
+        expect(expired.fields, {'expired_at': '2026-10-01'});
+        expect(env.status(), HostedConnectionStatus.tokenRejected);
+
+        final noMessage = await _outcome(
+          client.vaultRequest('GET', 'seed', '/info', operation: 'info'),
+        );
+        expect(noMessage, isA<MemexException>());
+        noMessage as MemexException;
+        expect(noMessage.code, 'unauthorized');
+        expect(noMessage.message, 'info failed: unauthorized');
+        expect(noMessage.fields, isEmpty);
+      },
+    );
+
+    test(
+      'a 401 with a version_conflict body is not a version conflict',
+      () async {
+        final env = _env();
+        env.server.route(
+          'GET',
+          '/api/v1/vaults',
+          status: 401,
+          json: {'error': _wi77VersionConflict},
+        );
+        final e = await _outcome(
+          env.client().serverRequest('GET', '/vaults', operation: 'l'),
+        );
+        expect(e, isA<MemexException>());
+        e as MemexException;
+        expect(e.code, 'unauthorized');
+        expect(e.kind, MemexErrorKind.other);
+        expect(env.status(), HostedConnectionStatus.tokenRejected);
+      },
+    );
+
+    test('a timeout aborts the request it gave up on', () async {
+      final env = _env();
+      final held = _Wi77HeldClient(failOnAbort: true);
+      final client = _wi77ClientOver(env, held);
+      final outcomes = <Object?>[];
+      unawaited(
+        _outcome(
+          client.vaultRequest('POST', 'seed', '/notes', operation: 'add'),
+        ).then(outcomes.add),
+      );
+      await pumpEventQueue();
+      expect(held.requests, hasLength(1));
+      expect(held.requests.single, isA<http.Abortable>());
+
+      env.clock.advance(const Duration(seconds: 9));
+      await pumpEventQueue();
+      expect(held.aborts, 0, reason: 'no abort before 10 s');
+
+      env.clock.advance(const Duration(seconds: 1));
+      await pumpEventQueue();
+      expect(held.aborts, 1, reason: 'aborted at 10 s');
+      expect(outcomes, hasLength(1), reason: 'one outcome only');
+      expect(outcomes.single, isA<VaultUnreachableException>());
+      expect(
+        (outcomes.single! as VaultUnreachableException).mayHaveCommitted,
+        isTrue,
+      );
+      expect(env.status(), HostedConnectionStatus.unreachable);
+    });
+
+    test('a response that arrives after the timeout is ignored', () async {
+      final env = _env();
+      final held = _Wi77HeldClient();
+      final client = _wi77ClientOver(env, held);
+      final outcomes = <Object?>[];
+      unawaited(
+        _outcome(
+          client.serverRequest('GET', '/vaults', operation: 'l'),
+        ).then(outcomes.add),
+      );
+      await pumpEventQueue();
+      env.clock.advance(const Duration(seconds: 10));
+      await pumpEventQueue();
+      expect(outcomes.single, isA<VaultUnreachableException>());
+      expect(env.status(), HostedConnectionStatus.unreachable);
+
+      // A late 401 would set token rejected if it were read.
+      held.respond(0, 401, '{"error":{"code":"unauthorized"}}');
+      await pumpEventQueue();
+      expect(outcomes, hasLength(1), reason: 'no second outcome');
+      expect(env.status(), HostedConnectionStatus.unreachable);
+
+      final second = _outcome(
+        client.serverRequest('GET', '/vaults', operation: 'l'),
+      );
+      await pumpEventQueue();
+      held.respond(1, 200, '{"vaults":[]}');
+      expect(await second, {'vaults': <Object?>[]});
+      expect(env.status(), HostedConnectionStatus.connected);
+      expect(env.clock.pendingTimers, 0);
+    });
+
+    test('a failure that arrives after the timeout is ignored', () async {
+      final env = _env();
+      final held = _Wi77HeldClient();
+      final client = _wi77ClientOver(env, held);
+      final outcomes = <Object?>[];
+      unawaited(
+        _outcome(
+          client.serverRequest('GET', '/vaults', operation: 'l'),
+        ).then(outcomes.add),
+      );
+      await pumpEventQueue();
+      env.clock.advance(const Duration(seconds: 10));
+      await pumpEventQueue();
+      expect(outcomes.single, isA<VaultUnreachableException>());
+
+      // The next request succeeds before the first one's late failure.
+      final second = _outcome(
+        client.serverRequest('GET', '/vaults', operation: 'l'),
+      );
+      await pumpEventQueue();
+      held.respond(1, 200, '{"vaults":[]}');
+      await second;
+      expect(env.status(), HostedConnectionStatus.connected);
+
+      held.fail(
+        0,
+        http.ClientException('Connection reset by peer', held.requests[0].url),
+      );
+      await pumpEventQueue();
+      expect(outcomes, hasLength(1), reason: 'no second outcome');
+      expect(
+        env.status(),
+        HostedConnectionStatus.connected,
+        reason: 'a late failure never overwrites a newer status',
+      );
+    });
+
+    test('a transport failure before 10 s cancels the timeout', () async {
+      final env = _env();
+      env.server.failure = FakeServerFailure.refused;
+      await _outcome(
+        env.client().serverRequest('GET', '/vaults', operation: 'l'),
+      );
+      expect(env.status(), HostedConnectionStatus.unreachable);
+      expect(env.clock.pendingTimers, 0, reason: 'the timeout was cancelled');
+    });
+
+    test('a failed body read cancels the timeout', () async {
+      final env = _env();
+      final client = _wi77ClientOver(
+        env,
+        MockClient.streaming(
+          (request, _) async => http.StreamedResponse(
+            Stream<List<int>>.error(
+              http.ClientException('Connection closed', request.url),
+            ),
+            200,
+            request: request,
+          ),
+        ),
+      );
+      await _outcome(
+        client.vaultRequest('GET', 'seed', '/info', operation: 'info'),
+      );
+      expect(env.status(), HostedConnectionStatus.unreachable);
+      expect(env.clock.pendingTimers, 0);
+    });
+
+    test('with no overrides the status of a saved server is null', () {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      expect(container.read(hostedConnectionStatusProvider('srv-a')), isNull);
+      expect(container.read(hostedConnectionStatusProvider('srv-b')), isNull);
+    });
+  });
+}
+
+/// An `http.Client` that holds every response until the test answers it,
+/// and records when a request's abort trigger fires. With [failOnAbort] it
+/// fails an aborted request the way `IOClient` does.
+class _Wi77HeldClient extends http.BaseClient {
+  _Wi77HeldClient({this.failOnAbort = false});
+
+  final bool failOnAbort;
+  final List<http.BaseRequest> requests = [];
+  final List<Completer<http.StreamedResponse>> _pending = [];
+  int aborts = 0;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) {
+    requests.add(request);
+    final pending = Completer<http.StreamedResponse>();
+    _pending.add(pending);
+    if (request case http.Abortable(:final abortTrigger?)) {
+      unawaited(
+        abortTrigger.then((_) {
+          aborts++;
+          if (failOnAbort && !pending.isCompleted) {
+            pending.completeError(http.RequestAbortedException(request.url));
+          }
+        }),
+      );
+    }
+    return pending.future;
+  }
+
+  /// Answers request [i] with [status] and [body].
+  void respond(int i, int status, String body) => _pending[i].complete(
+    http.StreamedResponse(
+      Stream.value(utf8.encode(body)),
+      status,
+      request: requests[i],
+      headers: {'content-type': 'application/json'},
+    ),
+  );
+
+  /// Fails request [i] with [error].
+  void fail(int i, Object error) => _pending[i].completeError(error);
 }
 
 /// Builds a [HostedClient] in [env]'s container over another `http.Client`
