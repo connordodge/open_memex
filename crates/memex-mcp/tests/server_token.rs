@@ -17,6 +17,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use memex_mcp::server::token::{resolve, token_path};
 use regex::Regex;
 use serde_json::Value;
 
@@ -345,4 +346,208 @@ async fn generated_token_path_is_absolute_for_a_relative_root() {
             .canonicalize()
             .unwrap()
     );
+}
+
+// ---------- Handoff contracts: token::resolve in-process ----------
+
+fn is_lower_hex_64(token: &str) -> bool {
+    token.len() == 64
+        && token
+            .chars()
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+}
+
+#[test]
+fn generated_token_is_64_lowercase_hex_chars_and_fresh_per_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut seen = std::collections::BTreeSet::new();
+    for i in 0..16 {
+        let root = dir.path().join(format!("root-{i}"));
+        std::fs::create_dir(&root).unwrap();
+        let resolved = resolve(&root, None).expect("generate a token");
+        assert!(
+            is_lower_hex_64(&resolved.token),
+            "256 random bits as 64 lower-case hex chars, got {} chars",
+            resolved.token.len()
+        );
+        assert_eq!(
+            resolved.generated.as_deref(),
+            Some(token_path(&root).as_path()),
+            "the generated file is reported once"
+        );
+        assert_eq!(token_path(&root), token_file(&root));
+        let on_disk = std::fs::read_to_string(token_file(&root)).unwrap();
+        assert_eq!(on_disk.trim(), resolved.token, "the file holds the token");
+        let mode = std::fs::metadata(token_file(&root))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "mode 0600, got {mode:o}");
+        let distinct: std::collections::BTreeSet<char> = resolved.token.chars().collect();
+        assert!(
+            distinct.len() >= 8,
+            "the token is random, not a constant pattern"
+        );
+        assert!(
+            seen.insert(resolved.token.clone()),
+            "a fresh token per root"
+        );
+
+        let again = resolve(&root, None).expect("read the token file");
+        assert_eq!(again.token, resolved.token, "the file is reused");
+        assert!(
+            again.generated.is_none(),
+            "an existing file is not reported"
+        );
+        assert_eq!(
+            std::fs::read_to_string(token_file(&root)).unwrap(),
+            on_disk,
+            "an existing file is never rewritten"
+        );
+    }
+}
+
+#[test]
+fn env_token_resolves_trimmed_without_touching_the_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = resolve(dir.path(), Some(" \tenv-tok-5a4b\n".into())).unwrap();
+    assert_eq!(resolved.token, "env-tok-5a4b");
+    assert!(resolved.generated.is_none());
+    assert!(
+        !dir.path().join(".memex").exists(),
+        "an env token creates nothing under the root"
+    );
+    for blank in ["", "  ", "\n\t "] {
+        assert!(
+            resolve(dir.path(), Some(blank.into())).is_err(),
+            "{blank:?} is an error"
+        );
+    }
+    use std::os::unix::ffi::OsStringExt;
+    let not_utf8 = std::ffi::OsString::from_vec(vec![b't', 0xff, b'k']);
+    assert!(
+        resolve(dir.path(), Some(not_utf8)).is_err(),
+        "a non-UTF-8 env token is an error"
+    );
+    assert!(!dir.path().join(".memex").exists());
+}
+
+#[test]
+fn an_unreadable_token_path_is_an_error_and_is_never_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(token_file(dir.path())).unwrap();
+    std::fs::write(token_file(dir.path()).join("keep"), "x").unwrap();
+    assert!(
+        resolve(dir.path(), None).is_err(),
+        "a directory at the token path is an error"
+    );
+    assert!(token_file(dir.path()).is_dir(), "it is left as it was");
+    assert_eq!(
+        std::fs::read_to_string(token_file(dir.path()).join("keep")).unwrap(),
+        "x"
+    );
+}
+
+#[test]
+fn a_dangling_symlink_at_the_token_path_is_never_written_through() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root");
+    std::fs::create_dir_all(root.join(".memex")).unwrap();
+    let target = dir.path().join("elsewhere").join("stolen-token");
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&target, token_file(&root)).unwrap();
+
+    // The path reads as missing but already exists for `create_new`: the
+    // same shape as another process creating the file first.
+    let result = resolve(&root, None);
+    assert!(
+        result.is_err(),
+        "an unreadable pre-existing token path is an error"
+    );
+    assert!(
+        !target.exists(),
+        "the token is never written through a symlink"
+    );
+    assert!(
+        std::fs::symlink_metadata(token_file(&root))
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the pre-existing path is left as it was"
+    );
+}
+
+#[test]
+fn concurrent_starts_on_one_root_agree_on_one_token() {
+    const THREADS: usize = 8;
+    for trial in 0..200 {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(THREADS));
+        let handles: Vec<_> = (0..THREADS)
+            .map(|_| {
+                let root = root.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    resolve(&root, None)
+                        .map(|r| (r.token, r.generated.is_some()))
+                        .map_err(|e| format!("{e:#}"))
+                })
+            })
+            .collect();
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let on_disk = std::fs::read_to_string(token_file(&root))
+            .unwrap()
+            .trim()
+            .to_string();
+        let mut generated = 0;
+        for result in &results {
+            let (token, was_generated) = result
+                .as_ref()
+                .unwrap_or_else(|e| panic!("trial {trial}: every racer gets a token: {e}"));
+            assert_eq!(token, &on_disk, "trial {trial}: every racer uses the file");
+            generated += usize::from(*was_generated);
+        }
+        assert_eq!(generated, 1, "trial {trial}: exactly one racer generates");
+    }
+}
+
+// ---------- Handoff contract: invalid --log-level ----------
+
+#[test]
+fn invalid_log_level_exits_1_invalid_argument_before_binding_or_creating() {
+    for level in ["memex=loud", "warn,memex_mcp=verbose"] {
+        let dir = tempfile::tempdir().unwrap();
+        let listen = format!("127.0.0.1:{}", free_port());
+        let out = ServeCommand::new(&[
+            "--root",
+            dir.path().to_str().unwrap(),
+            "--listen",
+            &listen,
+            "--log-level",
+            level,
+        ])
+        .run_within(LIMIT);
+        assert_eq!(out.code, Some(1), "{level}: exit 1\n{}", out.describe());
+        let lines = out.stderr_lines();
+        assert_eq!(
+            lines.len(),
+            1,
+            "{level}: one stderr line\n{}",
+            out.describe()
+        );
+        let v: Value = serde_json::from_str(lines[0])
+            .unwrap_or_else(|e| panic!("{level}: stderr is C1 JSON ({e})\n{}", out.describe()));
+        assert_eq!(v["error"]["code"], "invalid_argument", "{level}: {v}");
+        assert!(v["error"]["message"].is_string(), "{level}: {v}");
+        assert!(
+            std::net::TcpStream::connect(&listen).is_err(),
+            "{level}: nothing listens on {listen}"
+        );
+        assert!(
+            !dir.path().join(".memex").exists(),
+            "{level}: no token file or log is created"
+        );
+    }
 }

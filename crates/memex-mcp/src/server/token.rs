@@ -77,46 +77,57 @@ fn from_file(path: &Path, contents: &str) -> Result<ResolvedToken> {
     })
 }
 
-/// Writes a fresh token to `path` with `create_new` and mode `0600`. If
-/// another process created the file first, its token is used instead.
+/// Writes a fresh token to `path` with mode `0600`. The token is written and
+/// synced to a unique temp file beside `path`, then hard-linked to `path`,
+/// which creates `path` only if it is absent, so `path` never exists
+/// half-written. If another process created `path` first (or anything, even
+/// a dangling symlink, is already there), that file's token is used instead.
+/// A temp file this call created is always removed.
 fn generate(path: &Path) -> Result<ResolvedToken> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    let dir = path
+        .parent()
+        .context("the access token path has no parent directory")?;
+    std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    let token = random_hex(TOKEN_BYTES)?;
+    let tmp = dir.join(format!(".access-token.{}.tmp", random_hex(8)?));
+    if let Err(e) = write_new(&tmp, &token) {
+        // `AlreadyExists` here means `tmp` is someone else's: leave it.
+        if e.kind() != ErrorKind::AlreadyExists {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        return Err(e).with_context(|| format!("write access token file {}", tmp.display()));
     }
-    let token = random_token()?;
-    let mut file = match OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-    {
-        Ok(file) => file,
+    let linked = std::fs::hard_link(&tmp, path);
+    let _ = std::fs::remove_file(&tmp);
+    match linked {
+        Ok(()) => Ok(ResolvedToken {
+            token,
+            generated: Some(path.to_path_buf()),
+        }),
         Err(e) if e.kind() == ErrorKind::AlreadyExists => {
             let contents = std::fs::read_to_string(path)
                 .with_context(|| format!("read access token file {}", path.display()))?;
-            return from_file(path, &contents);
+            from_file(path, &contents)
         }
-        Err(e) => {
-            return Err(e).with_context(|| format!("create access token file {}", path.display()))
-        }
-    };
-    if let Err(e) = file
-        .write_all(format!("{token}\n").as_bytes())
-        .and_then(|()| file.sync_all())
-    {
-        // Leave no half-written file behind to fail the next start.
-        let _ = std::fs::remove_file(path);
-        return Err(e).with_context(|| format!("write access token file {}", path.display()));
+        Err(e) => Err(e).with_context(|| format!("create access token file {}", path.display())),
     }
-    Ok(ResolvedToken {
-        token,
-        generated: Some(path.to_path_buf()),
-    })
 }
 
-/// [`TOKEN_BYTES`] bytes from the OS random source, lower-case hex.
-fn random_token() -> Result<String> {
-    let mut bytes = [0u8; TOKEN_BYTES];
+/// Creates `tmp` (which must not exist) with mode `0600` and writes
+/// `token` and a newline to it, synced to disk.
+fn write_new(tmp: &Path, token: &str) -> std::io::Result<()> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(tmp)?;
+    file.write_all(format!("{token}\n").as_bytes())?;
+    file.sync_all()
+}
+
+/// `len` bytes from the OS random source, lower-case hex.
+fn random_hex(len: usize) -> Result<String> {
+    let mut bytes = vec![0u8; len];
     getrandom::fill(&mut bytes).map_err(|e| anyhow::anyhow!("read the OS random source: {e}"))?;
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }

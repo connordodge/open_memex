@@ -36,6 +36,7 @@ pub fn status_for_code(code: &str) -> StatusCode {
         | "block_not_found" => StatusCode::UNPROCESSABLE_ENTITY,
         "unauthorized" => StatusCode::UNAUTHORIZED,
         "payload_too_large" => StatusCode::PAYLOAD_TOO_LARGE,
+        "method_not_allowed" => StatusCode::METHOD_NOT_ALLOWED,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
@@ -44,7 +45,8 @@ pub fn status_for_code(code: &str) -> StatusCode {
 ///
 /// The body is `cli::error_json`'s, so a `MemexError` (even under
 /// `.context(…)`) keeps its code and rule fields. Codes only the vault server
-/// raises (`unauthorized`, `payload_too_large`, …) come from
+/// raises (`unauthorized`, `payload_too_large`, `method_not_allowed`, …)
+/// come from
 /// [`ApiError::new`].
 #[derive(Debug)]
 pub struct ApiError(anyhow::Error);
