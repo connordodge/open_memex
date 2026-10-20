@@ -676,3 +676,206 @@ async fn no_response_carries_cors_headers() {
         200
     );
 }
+
+// ---------- Handoff contracts (verify mode) ----------
+
+fn get_head(path: &str, authorizations: &[&str]) -> String {
+    let mut head = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n");
+    for value in authorizations {
+        head.push_str(&format!("Authorization: {value}\r\n"));
+    }
+    head
+}
+
+#[tokio::test]
+async fn two_authorization_headers_are_401_even_when_both_carry_the_token() {
+    let srv = TestServer::start().await;
+    let right = srv.bearer();
+    let right = right.as_str();
+    let wrong = "Bearer wrong-token-0a1b2c3d";
+    let r = raw_request(srv.addr(), &get_head("/api/v1/info", &[right]), b"").await;
+    assert_eq!(r.status, 200, "one header with the token: {:?}", r.body);
+    for (case, headers) in [
+        ("right twice", [right, right]),
+        ("right then wrong", [right, wrong]),
+        ("wrong then right", [wrong, right]),
+    ] {
+        let r = raw_request(srv.addr(), &get_head("/api/v1/info", &headers), b"").await;
+        assert_eq!(r.status, 401, "{case}: {:?}", r.body);
+        assert_eq!(r.c1_code(), "unauthorized", "{case}");
+    }
+}
+
+#[tokio::test]
+async fn unauthorized_replies_carry_no_www_authenticate_header() {
+    let srv = TestServer::start().await;
+    for (method, path, body) in route_classes() {
+        for authorization in [
+            None,
+            Some("Bearer wrong-token-9f8e"),
+            Some("Basic Zm9vOmJhcg=="),
+        ] {
+            let r = send(&srv, &method, path, &body, authorization, &[]).await;
+            assert_eq!(r.status, 401, "{method} {path} {authorization:?}");
+            assert_eq!(
+                r.header("www-authenticate"),
+                None,
+                "{method} {path} {authorization:?}: no WWW-Authenticate challenge"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn extractor_server_fault_stays_500_internal_and_skips_the_handler() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let h = hits.clone();
+    // `ApiPath` on a route with no path parameters: axum's own 500.
+    let app: Router = Router::new().route(
+        "/no-params",
+        get_route(move |ApiPath(n): ApiPath<u32>| {
+            let hits = h.clone();
+            async move {
+                hits.fetch_add(1, Ordering::SeqCst);
+                format!("item {n}")
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let r = Reply::read(
+        client()
+            .get(format!("http://{addr}/no-params"))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(r.status, 500, "{:?}", r.body);
+    assert_eq!(
+        r.c1_code(),
+        "internal",
+        "a server-side fault is not the caller's"
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 0, "the handler did not run");
+    task.abort();
+}
+
+/// `{"name": "<n bytes of a>", "count": 1}`.
+fn widget_json(name_len: usize) -> String {
+    format!("{{\"name\": \"{}\", \"count\": 1}}", "a".repeat(name_len))
+}
+
+/// `body` in 1 MiB chunks.
+fn chunked(body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for part in body.chunks(1024 * 1024) {
+        out.extend_from_slice(format!("{:x}\r\n", part.len()).as_bytes());
+        out.extend_from_slice(part);
+        out.extend_from_slice(b"\r\n");
+    }
+    out.extend_from_slice(b"0\r\n\r\n");
+    out
+}
+
+fn chunked_post_head(path: &str) -> String {
+    format!(
+        "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n\
+         Transfer-Encoding: chunked\r\nConnection: close\r\n"
+    )
+}
+
+#[tokio::test]
+async fn api_json_rejects_a_body_over_its_limit_as_413_payload_too_large() {
+    // With no layers, axum's default 2 MiB limit applies to `ApiJson`.
+    let hits = Arc::new(AtomicUsize::new(0));
+    let app = extractor_router(hits.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let body = widget_json(3 * 1024 * 1024);
+    let r = raw_request(addr, &chunked_post_head("/json"), &chunked(body.as_bytes())).await;
+    assert_eq!(r.status, 413, "{:?}", &r.body[..r.body.len().min(200)]);
+    assert_eq!(r.c1_code(), "payload_too_large");
+    assert_eq!(hits.load(Ordering::SeqCst), 0, "the handler did not run");
+    task.abort();
+}
+
+#[tokio::test]
+async fn api_json_under_the_server_body_layers_takes_3_mib_and_refuses_chunked_9_mib() {
+    // The server's own layers (D7): axum's 2 MiB default off, the 8 MiB
+    // limit on. router() has no body-reading route until #72, so this
+    // builds the same two layers over the extractor router.
+    let hits = Arc::new(AtomicUsize::new(0));
+    let app = extractor_router(hits.clone())
+        .layer(axum::extract::DefaultBodyLimit::disable())
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(BODY_LIMIT));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let name_len = 3 * 1024 * 1024;
+    let r = raw_request(
+        addr,
+        &chunked_post_head("/json"),
+        &chunked(widget_json(name_len).as_bytes()),
+    )
+    .await;
+    assert_eq!(r.status, 200, "3 MiB is under 8 MiB");
+    assert_eq!(
+        r.body.len(),
+        name_len + ":1".len(),
+        "the handler saw it all"
+    );
+
+    let r = raw_request(
+        addr,
+        &chunked_post_head("/json"),
+        &chunked(widget_json(BODY_LIMIT + 1024 * 1024).as_bytes()),
+    )
+    .await;
+    assert_eq!(r.status, 413, "{:?}", &r.body[..r.body.len().min(200)]);
+    assert_eq!(
+        r.c1_code(),
+        "payload_too_large",
+        "a chunked body over 8 MiB"
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 1, "only the 3 MiB request ran");
+    task.abort();
+}
+
+#[tokio::test]
+async fn wrong_method_on_a_known_route_answers_a_c1_error_body() {
+    // Req 18: errors on every app API route use the C1 body, and the
+    // status follows the code (status_for_code).
+    let srv = TestServer::start().await;
+    let bearer = srv.bearer();
+    let origin = vec![("origin", "http://evil.example".to_string())];
+    for method in [
+        Method::POST,
+        Method::PUT,
+        Method::DELETE,
+        Method::PATCH,
+        Method::OPTIONS,
+    ] {
+        let r = send(&srv, &method, "/api/v1/info", &None, Some(&bearer), &origin).await;
+        assert!(
+            (400..500).contains(&r.status),
+            "{method} /api/v1/info is a client error: {} {:?}",
+            r.status,
+            r.body
+        );
+        assert!(
+            !r.body.is_empty(),
+            "{method} /api/v1/info: status {} with an empty body, not a C1 body",
+            r.status
+        );
+        let code = r.c1_code();
+        assert_eq!(
+            status_for_code(&code).as_u16(),
+            r.status,
+            "{method} /api/v1/info: the status follows the C1 code {code:?}"
+        );
+    }
+}

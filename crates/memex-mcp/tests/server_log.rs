@@ -197,3 +197,46 @@ async fn debug_log_and_stderr_never_hold_tokens_or_bodies() {
     }
     drop(child);
 }
+
+// ---------- Graceful shutdown (handoff contract) ----------
+
+#[tokio::test]
+async fn sigterm_and_sigint_shut_the_vault_server_down_gracefully() {
+    for signal in ["TERM", "INT"] {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut child, addr) = start(dir.path(), "info", None).await;
+        let r = get(
+            &format!("http://{addr}/api/v1/info"),
+            Some(&format!("Bearer {TOKEN}")),
+        )
+        .await;
+        assert_eq!(r.status, 200, "SIG{signal}: serving before the signal");
+        assert!(
+            child
+                .stderr()
+                .contains(&format!("vault server listening on http://{addr}")),
+            "SIG{signal}: the listening line names the address: {}",
+            child.stderr()
+        );
+
+        child.signal(signal);
+        let status = child
+            .wait_exit(server::WAIT)
+            .unwrap_or_else(|| panic!("SIG{signal}: still running after {:?}", server::WAIT));
+        assert_eq!(
+            status.code(),
+            Some(0),
+            "SIG{signal}: a clean exit, not death by signal ({status}); stderr={}",
+            child.stderr()
+        );
+        assert!(
+            std::net::TcpStream::connect(addr).is_err(),
+            "SIG{signal}: the listener is closed"
+        );
+        let logs = server::server_logs(dir.path());
+        assert!(
+            logs.contains("vault server stopped"),
+            "SIG{signal}: the shutdown is logged and the log flushed:\n{logs}"
+        );
+    }
+}

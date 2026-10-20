@@ -452,6 +452,31 @@ impl ServeChild {
         }
     }
 
+    /// Sends signal `name` (`TERM`, `INT`, …) to this child only, by its own
+    /// pid, through `kill -s <name> <pid>`.
+    pub fn signal(&self, name: &str) {
+        let status = Command::new("kill")
+            .args(["-s", name, &self.child.id().to_string()])
+            .status()
+            .expect("run kill");
+        assert!(status.success(), "kill -s {name} {}", self.child.id());
+    }
+
+    /// Waits up to `limit` for the child to exit on its own; `None` if it is
+    /// still running.
+    pub fn wait_exit(&mut self, limit: Duration) -> Option<std::process::ExitStatus> {
+        let started = Instant::now();
+        loop {
+            if let Some(status) = self.child.try_wait().expect("try_wait") {
+                return Some(status);
+            }
+            if started.elapsed() > limit {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     /// Kills the child and waits for it.
     pub fn stop(&mut self) {
         let _ = self.child.kill();
