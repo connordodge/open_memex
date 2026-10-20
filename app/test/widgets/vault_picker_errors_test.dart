@@ -287,7 +287,9 @@ void main() {
     // #92 TEST-CHANGE (lead ruling on #108): a recent row now opens through
     // openVault (the folder shape check, then `memex vault check`); this
     // replaces the deleted #69 test "tapping a recent row of a folder that
-    // is not a vault still opens it as today".
+    // is not a vault still opens it as today". It also covers #69's fix
+    // round 3 stale-row case (deduped in #92 verify): the not-a-vault copy
+    // shows exactly once and nothing opens.
     testWidgets(
       'tapping a recent row of a folder that is no longer a vault shows the not a vault error and opens nothing',
       (tester) async {
@@ -314,35 +316,6 @@ void main() {
         );
         // The shape check runs before `memex vault check`: no CLI call.
         expect(cli.calls, isEmpty);
-        expect(c.read(currentVaultProvider), isNull);
-        expect(c.read(settingsProvider).lastVault, isNull);
-        expect(c.read(settingsProvider).recentVaults, [vault.path]);
-        expect(find.byType(VaultPickerScreen), findsOneWidget);
-      },
-    );
-
-    testWidgets(
-      'tapping a stale recent row whose memex.db was removed shows why and opens nothing',
-      (tester) async {
-        // The row is drawn while the folder is a vault (tappable), then
-        // memex.db goes away before the tap with no rebuild in between.
-        final vault = createVaultFolder('om69_recent_stale_');
-        final c = await _pumpPicker(
-          tester,
-          cli: FakeMemexCli(),
-          recents: [vault.path],
-        );
-        File(p.join(vault.path, 'memex.db')).deleteSync();
-
-        await tester.tap(find.text(p.basename(vault.path)));
-        await _settle(tester);
-
-        expect(
-          find.text(
-            '${vault.path} does not look like a vault (no manifest.json + memex.db).',
-          ),
-          findsOneWidget,
-        );
         expect(c.read(currentVaultProvider), isNull);
         expect(c.read(settingsProvider).lastVault, isNull);
         expect(c.read(settingsProvider).recentVaults, [vault.path]);

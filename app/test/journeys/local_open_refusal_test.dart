@@ -15,6 +15,7 @@ import 'package:open_memex_app/src/screens/vault_picker.dart';
 import 'package:open_memex_app/src/screens/workspace.dart';
 import 'package:open_memex_app/src/state/clock.dart';
 import 'package:open_memex_app/src/state/settings.dart';
+import 'package:open_memex_app/src/state/vault_open_controller.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/theme/app_theme.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
@@ -22,6 +23,7 @@ import 'package:open_memex_app/src/widgets/atoms.dart';
 import 'package:open_memex_app/src/widgets/memex_too_old_dialog.dart';
 import 'package:open_memex_app/src/widgets/network_drive_refusal_dialog.dart';
 import 'package:open_memex_app/src/widgets/sidebar.dart';
+import 'package:open_memex_app/src/widgets/vault_open_refusal.dart';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -693,40 +695,6 @@ void main() {
         expect(result, choice);
       });
     }
-
-    testWidgets(
-      'a pill on a network drive shows the refusal and cancel leaves the workspace as it was',
-      (tester) async {
-        final cli = _cli((_) => _networkDrive());
-        final h = await pumpWorkspace(tester, cli: cli);
-        final other = createVaultFolder('om92_pillnas_');
-        final settings = h.read(settingsProvider.notifier);
-        await tester.runAsync(() async {
-          await settings.rememberVault(other.path);
-          await settings.rememberVault(h.vaultPath);
-        });
-        await pumpFrames(tester);
-
-        await tester.tap(_pill(other.path));
-        await _settle(tester);
-
-        expect(find.byKey(_refusal), findsOneWidget);
-        expect(_inside(_refusal, find.text(other.path)), findsOneWidget);
-        expect(h.read(currentVaultProvider), LocalVaultRef(h.vaultPath));
-
-        await tester.tap(find.byKey(_refusalCancel));
-        await _settle(tester);
-
-        _expectNoRefusal();
-        expect(find.byType(Workspace), findsOneWidget);
-        expect(h.read(currentVaultProvider), LocalVaultRef(h.vaultPath));
-        expect(h.read(settingsProvider).lastVault, h.vaultPath);
-        expect(h.read(settingsProvider).recentVaults, [
-          h.vaultPath,
-          other.path,
-        ]);
-      },
-    );
   });
 
   group('too old memex refusal', () {
@@ -1070,115 +1038,215 @@ void main() {
 
   // Verify-mode pins: contracts the implementer handoff listed as unpinned.
   group('pill refusals (verify)', () {
-    for (final (name, check, dialog) in [
+    // Orchestrator ruling: switchToVault returns data only and shows
+    // nothing; the caller (the pills once #96 wires them) presents the
+    // refusal with showVaultOpenRefusal under the OPEN LOCAL VAULT eyebrow.
+
+    /// Pumps the workspace with [other] remembered after the open vault, so
+    /// its sidebar pill shows.
+    Future<WorkspaceHarness> pumpWithOther(
+      WidgetTester tester,
+      FakeMemexCli cli,
+      String other, {
+      List<Override> overrides = const [],
+    }) async {
+      final h = await pumpWorkspace(tester, cli: cli, overrides: overrides);
+      final settings = h.read(settingsProvider.notifier);
+      await tester.runAsync(() async {
+        await settings.rememberVault(other);
+        await settings.rememberVault(h.vaultPath);
+      });
+      await pumpFrames(tester);
+      return h;
+    }
+
+    /// Runs `switchToVault` from the workspace's context and returns its
+    /// outcome once the frames settled.
+    Future<VaultOpenOutcome> switchFromWorkspace(
+      WidgetTester tester,
+      WorkspaceHarness h,
+      String path,
+    ) async {
+      final pending = h
+          .read(vaultOpenControllerProvider)
+          .switchToVault(
+            tester.element(find.byType(Workspace)),
+            LocalVaultRef(path),
+          );
+      await _settle(tester);
+      // Checked before awaiting: a shown refusal would hold the switch open.
+      expect(
+        find.byType(Dialog),
+        findsNothing,
+        reason: 'switchToVault shows nothing',
+      );
+      return pending;
+    }
+
+    void expectWorkspaceAsItWas(WorkspaceHarness h, String other) {
+      expect(find.byType(Workspace), findsOneWidget);
+      expect(h.read(currentVaultProvider), LocalVaultRef(h.vaultPath));
+      expect(h.read(settingsProvider).lastVault, h.vaultPath);
+      expect(h.read(settingsProvider).recentVaults, [h.vaultPath, other]);
+      expect(h.read(settingsProvider).memexBinaryPath, 'fake-memex');
+    }
+
+    for (final (name, check, matcher) in [
       (
-        'a pill network drive refusal has the OPEN LOCAL VAULT eyebrow',
+        'switchToVault on a network drive returns the refusal and leaves the workspace as it was',
         (FakeCliCall _) => _networkDrive(),
-        _refusal,
+        isA<VaultOnNetworkDrive>(),
       ),
       (
-        'a pill too old refusal has the OPEN LOCAL VAULT eyebrow',
+        'switchToVault with a memex that exits 2 returns the too old refusal and leaves the workspace as it was',
         (FakeCliCall _) => _tooOldMemex(),
-        _tooOld,
+        isA<VaultMemexTooOld>(),
       ),
     ]) {
       testWidgets(name, (tester) async {
         final cli = _cli(check);
-        final h = await pumpWorkspace(tester, cli: cli);
-        final other = createVaultFolder('om92_pilleyebrow_');
-        final settings = h.read(settingsProvider.notifier);
-        await tester.runAsync(() async {
-          await settings.rememberVault(other.path);
-          await settings.rememberVault(h.vaultPath);
-        });
-        await pumpFrames(tester);
+        final other = createVaultFolder('om92_switchrefused_').path;
+        final h = await pumpWithOther(tester, cli, other);
+        cli.calls.clear();
 
-        await tester.tap(_pill(other.path));
+        final outcome = await switchFromWorkspace(tester, h, other);
+
+        expect(outcome, matcher);
+        expect(switch (outcome) {
+          VaultOnNetworkDrive(:final path) => path,
+          VaultMemexTooOld(:final path) => path,
+          _ => null,
+        }, other);
+        expect(cli.calls.single.args, ['vault', 'check', '--vault', other]);
+        expect(find.byType(Dialog), findsNothing);
+        _expectNoRefusal();
+        expectWorkspaceAsItWas(h, other);
+      });
+    }
+
+    testWidgets('switchToVault shows nothing for a refusal', (tester) async {
+      final nas = createVaultFolder('om92_pillnas_').path;
+      final old = createVaultFolder('om92_pillold_').path;
+      final cli = _cli(
+        (call) => call.flag('vault') == nas ? _networkDrive() : _tooOldMemex(),
+      );
+      final h = await pumpWorkspace(tester, cli: cli);
+      final settings = h.read(settingsProvider.notifier);
+      await tester.runAsync(() async {
+        await settings.rememberVault(old);
+        await settings.rememberVault(nas);
+        await settings.rememberVault(h.vaultPath);
+      });
+      await pumpFrames(tester);
+      cli.calls.clear();
+
+      for (final path in [nas, old]) {
+        await tester.tap(_pill(path));
+        await _settle(tester);
+        // Past any dialog's entrance (the workspace never settles).
+        await tester.pump(const Duration(seconds: 1));
+
+        expect(find.byType(Dialog), findsNothing, reason: path);
+        _expectNoRefusal();
+        expect(find.byType(Workspace), findsOneWidget);
+        expect(h.read(currentVaultProvider), LocalVaultRef(h.vaultPath));
+      }
+      expect(cli.callsFor('vault check').map((c) => c.flag('vault')).toList(), [
+        nas,
+        old,
+      ], reason: 'both pill taps ran vault check and were refused');
+      expect(h.read(settingsProvider).lastVault, h.vaultPath);
+      expect(h.read(settingsProvider).recentVaults, [h.vaultPath, nas, old]);
+    });
+
+    for (final (name, check, dialog, copy, cancel) in [
+      (
+        'showVaultOpenRefusal over the workspace shows the network drive refusal with the OPEN LOCAL VAULT eyebrow',
+        (FakeCliCall _) => _networkDrive(),
+        _refusal,
+        _networkCopy,
+        _refusalCancel,
+      ),
+      (
+        'showVaultOpenRefusal over the workspace shows the too old refusal with the OPEN LOCAL VAULT eyebrow',
+        (FakeCliCall _) => _tooOldMemex(),
+        _tooOld,
+        _tooOldCopy,
+        _tooOldCancel,
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final cli = _cli(check);
+        final other = createVaultFolder('om92_pilleyebrow_').path;
+        final h = await pumpWithOther(tester, cli, other);
+        final outcome = await switchFromWorkspace(tester, h, other);
+        bool? shown;
+
+        unawaited(
+          showVaultOpenRefusal(
+            tester.element(find.byType(Workspace)),
+            outcome,
+            eyebrow: 'OPEN LOCAL VAULT',
+          ).then((v) => shown = v),
+        );
         await _settle(tester);
 
         expect(find.byKey(dialog), findsOneWidget);
         expect(_inside(dialog, find.text('OPEN LOCAL VAULT')), findsOneWidget);
         expect(_inside(dialog, find.text('CREATE NEW VAULT')), findsNothing);
-        expect(_inside(dialog, find.text(other.path)), findsOneWidget);
-        expect(cli.callsFor('vault check').single.args, [
-          'vault',
-          'check',
-          '--vault',
-          other.path,
-        ]);
-        expect(h.read(currentVaultProvider), LocalVaultRef(h.vaultPath));
+        expect(_inside(dialog, find.text(other)), findsOneWidget);
+        expect(_inside(dialog, find.text(copy)), findsOneWidget);
+        expect(find.byType(Workspace), findsOneWidget);
+        expect(shown, isNull, reason: 'completes only once the dialog closes');
+
+        await tester.tap(find.byKey(cancel));
+        await _settle(tester);
+
+        expect(shown, isTrue);
+        _expectNoRefusal();
+        expectWorkspaceAsItWas(h, other);
       });
     }
 
     testWidgets(
-      'a pill with a memex that exits 2 shows the too old refusal and cancel leaves the workspace as it was',
-      (tester) async {
-        final cli = _cli((_) => _tooOldMemex());
-        final h = await pumpWorkspace(tester, cli: cli);
-        final other = createVaultFolder('om92_pillold_');
-        final settings = h.read(settingsProvider.notifier);
-        await tester.runAsync(() async {
-          await settings.rememberVault(other.path);
-          await settings.rememberVault(h.vaultPath);
-        });
-        await pumpFrames(tester);
-
-        await tester.tap(_pill(other.path));
-        await _settle(tester);
-
-        expect(find.byKey(_tooOld), findsOneWidget);
-        expect(_inside(_tooOld, find.text(_tooOldCopy)), findsOneWidget);
-        expect(find.byType(Workspace), findsOneWidget);
-
-        await tester.tap(find.byKey(_tooOldCancel));
-        await _settle(tester);
-
-        _expectNoRefusal();
-        expect(find.byType(Workspace), findsOneWidget);
-        expect(h.read(currentVaultProvider), LocalVaultRef(h.vaultPath));
-        expect(h.read(settingsProvider).lastVault, h.vaultPath);
-        expect(h.read(settingsProvider).recentVaults, [
-          h.vaultPath,
-          other.path,
-        ]);
-        expect(h.read(settingsProvider).memexBinaryPath, 'fake-memex');
-      },
-    );
-
-    testWidgets(
-      'locate memex binary from a pill too old refusal stores the picked binary and the next pill tap runs vault check with it',
+      'locate memex binary from a too old refusal over the workspace stores the picked binary and the next openVault runs vault check with it',
       (tester) async {
         final binDir = createPlainFolder('om92_pillbin_');
         final newBinary = p.join(binDir.path, 'memex');
         File(newBinary).writeAsStringSync('#!/bin/sh\n');
         final picker = installFakeFilePicker()..files.add(newBinary);
         final oldCli = _cli((_) => _tooOldMemex());
-        final newCli = _cli((_) => FakeMemexCli.ok());
+        final newCli = _cli((_) => FakeMemexCli.ok(), binaryPath: newBinary);
         final clis = {'fake-memex': oldCli, newBinary: newCli};
-        final h = await pumpWorkspace(
+        final other = createVaultFolder('om92_pilllocate_').path;
+        final h = await pumpWithOther(
           tester,
-          cli: oldCli,
+          oldCli,
+          other,
           overrides: [
             memexCliProvider.overrideWith(
               (ref) => clis[ref.watch(settingsProvider).memexBinaryPath],
             ),
           ],
         );
-        final other = createVaultFolder('om92_pilllocate_');
-        final settings = h.read(settingsProvider.notifier);
-        await tester.runAsync(() async {
-          await settings.rememberVault(other.path);
-          await settings.rememberVault(h.vaultPath);
-        });
-        await pumpFrames(tester);
+        final outcome = await switchFromWorkspace(tester, h, other);
+        expect(outcome, isA<VaultMemexTooOld>());
+        bool? shown;
 
-        await tester.tap(_pill(other.path));
+        unawaited(
+          showVaultOpenRefusal(
+            tester.element(find.byType(Workspace)),
+            outcome,
+            eyebrow: 'OPEN LOCAL VAULT',
+          ).then((v) => shown = v),
+        );
         await _settle(tester);
         expect(find.byKey(_tooOld), findsOneWidget);
 
         await tester.tap(find.byKey(_tooOldLocate));
         await _settle(tester);
 
+        expect(shown, isTrue);
         expect(picker.calls.single.method, 'pickFiles');
         expect(h.read(settingsProvider).memexBinaryPath, newBinary);
         final prefs = await tester.runAsync(SharedPreferences.getInstance);
@@ -1187,18 +1255,21 @@ void main() {
         expect(h.read(currentVaultProvider), LocalVaultRef(h.vaultPath));
         expect(newCli.callsFor('vault check'), isEmpty);
 
-        await tester.tap(_pill(other.path));
+        final pending = h
+            .read(vaultOpenControllerProvider)
+            .openVault(LocalVaultRef(other));
         await _settle(tester);
+        final next = await pending;
 
         expect(oldCli.callsFor('vault check'), hasLength(1));
         expect(newCli.callsFor('vault check').single.args, [
           'vault',
           'check',
           '--vault',
-          other.path,
+          other,
         ]);
-        expect(h.read(currentVaultProvider), LocalVaultRef(other.path));
-        expect(find.byType(Workspace), findsOneWidget);
+        expect(next, isA<VaultOpened>());
+        expect(h.read(currentVaultProvider), LocalVaultRef(other));
       },
     );
   });

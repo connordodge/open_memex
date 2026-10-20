@@ -13,6 +13,7 @@ import 'package:open_memex_app/src/state/settings.dart';
 import 'package:open_memex_app/src/state/vault_open_controller.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/theme/app_theme.dart';
+import 'package:open_memex_app/src/widgets/vault_open_refusal.dart';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -687,7 +688,7 @@ void main() {
     );
   });
 
-  group('showRefusal (verify)', () {
+  group('showVaultOpenRefusal (verify)', () {
     /// Pumps a bare app on [c] and returns a context under its navigator.
     Future<BuildContext> pumpHost(
       WidgetTester tester,
@@ -713,23 +714,23 @@ void main() {
 
     for (final (name, outcome) in [
       (
-        'showRefusal returns false and shows nothing for a plain failure',
+        'showVaultOpenRefusal returns false and shows nothing for a plain failure',
         VaultOpenFailure(['Could not open', 'x'].join(' ')),
       ),
       (
-        'showRefusal returns false and shows nothing for binary not found',
+        'showVaultOpenRefusal returns false and shows nothing for binary not found',
         VaultBinaryNotFound(['memex binary not found:', 'x'].join(' ')),
       ),
       (
-        'showRefusal returns false and shows nothing for an opened vault',
+        'showVaultOpenRefusal returns false and shows nothing for an opened vault',
         VaultOpened(LocalVaultRef(['', 'tmp', 'om92'].join('/'))),
       ),
       (
-        'showRefusal returns false and shows nothing for a cancelled open',
+        'showVaultOpenRefusal returns false and shows nothing for a cancelled open',
         const VaultOpenCancelled(),
       ),
       (
-        'showRefusal returns false and shows nothing for no vault to reopen',
+        'showVaultOpenRefusal returns false and shows nothing for no vault to reopen',
         const NoVaultToReopen(),
       ),
     ]) {
@@ -737,9 +738,11 @@ void main() {
         final c = (await tester.runAsync(() => _app(cli: FakeMemexCli())))!;
         final context = await pumpHost(tester, c);
 
-        final shown = await c
-            .read(vaultOpenControllerProvider)
-            .showRefusal(context, outcome, eyebrow: 'OPEN LOCAL VAULT');
+        final shown = await showVaultOpenRefusal(
+          context,
+          outcome,
+          eyebrow: 'OPEN LOCAL VAULT',
+        );
         await tester.pumpAndSettle();
 
         expect(shown, isFalse);
@@ -752,13 +755,13 @@ void main() {
 
     for (final (name, outcome, dialog, cancel) in [
       (
-        'showRefusal shows the network drive refusal under the eyebrow and returns true once it closes',
+        'showVaultOpenRefusal shows the network drive refusal under the eyebrow and returns true once it closes',
         VaultOnNetworkDrive(['', 'nas', 'om92'].join('/'), 'refused'),
         const Key('network-drive-refusal'),
         const Key('network-drive-refusal-cancel'),
       ),
       (
-        'showRefusal shows the too old refusal under the eyebrow and returns true once it closes',
+        'showVaultOpenRefusal shows the too old refusal under the eyebrow and returns true once it closes',
         VaultMemexTooOld(['', 'nas', 'om92'].join('/'), 'too old'),
         const Key('memex-too-old-refusal'),
         const Key('memex-too-old-cancel'),
@@ -769,10 +772,13 @@ void main() {
         final context = await pumpHost(tester, c);
         bool? shown;
 
-        c
-            .read(vaultOpenControllerProvider)
-            .showRefusal(context, outcome, eyebrow: 'SOME EYEBROW')
-            .then((v) => shown = v);
+        unawaited(
+          showVaultOpenRefusal(
+            context,
+            outcome,
+            eyebrow: 'SOME EYEBROW',
+          ).then((v) => shown = v),
+        );
         await tester.pumpAndSettle();
 
         expect(find.byKey(dialog), findsOneWidget);
