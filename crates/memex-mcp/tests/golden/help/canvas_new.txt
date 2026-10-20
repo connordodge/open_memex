@@ -1,0 +1,8 @@
+Create a new canvas
+
+Usage: memex canvas new --vault <VAULT> --title <TITLE>
+
+Options:
+      --vault <VAULT>  
+      --title <TITLE>  
+  -h, --help           Print help

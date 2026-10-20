@@ -1,0 +1,12 @@
+Rewrite the `kind` and/or `label` on an existing wikilink in place
+
+Usage: memex update-link [OPTIONS] --vault <VAULT> --link-id <LINK_ID>
+
+Options:
+      --vault <VAULT>      Vault directory
+      --link-id <LINK_ID>  Link id (ULID-style id from the `links` table)
+      --kind <KIND>        New kind. If omitted, kind is unchanged
+      --label <LABEL>      New label. If omitted, label is unchanged
+      --clear-label        Clear the label (overrides --label)
+      --with-embeddings    Use real embeddings during the post-write reindex
+  -h, --help               Print help
