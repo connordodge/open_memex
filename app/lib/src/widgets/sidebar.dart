@@ -6,10 +6,12 @@ import 'package:path/path.dart' as p;
 import '../state/settings.dart';
 import '../state/sidebar_mode_state.dart';
 import '../state/tabs_state.dart';
+import '../state/vault_access_state.dart';
 import '../state/vault_open_controller.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
+import '../vault_access/errors.dart';
 import 'atoms.dart';
 import 'sidebar/canvases_rail.dart';
 import 'sidebar/days_pane.dart';
@@ -74,13 +76,16 @@ class Sidebar extends ConsumerWidget {
   }
 
   Future<void> _newCanvas(BuildContext context, WidgetRef ref) async {
-    final cli = ref.read(memexCliProvider);
-    final vaultPath = ref.read(currentVaultProvider).localPath;
-    if (cli == null || vaultPath == null) return;
+    final access = ref.read(vaultAccessProvider);
+    if (access == null || !access.canWrite) return;
     final title = await _promptCanvasTitle(context);
-    if (title == null || title.isEmpty) return;
+    if (title == null || title.isEmpty || !context.mounted) return;
     try {
-      final c = await cli.createCanvas(vaultPath: vaultPath, title: title);
+      final c = await guardVaultWrite(
+        context,
+        () => access.canvas.createCanvas(title: title),
+      );
+      if (c == null) return;
       ref.read(vaultRevisionProvider.notifier).state++;
       ref.read(tabsProvider.notifier).openOrFocus(CanvasTab(c.canvasId));
     } catch (e) {
