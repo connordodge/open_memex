@@ -181,10 +181,21 @@ class VaultDb {
   /// after another connection (the CLI) commits a write, stays the same while
   /// nothing is written, and differs between two handles (the value resets
   /// when the handle is reopened, so the instance id keeps it unique).
+  ///
+  /// A single `PRAGMA` read outside any transaction: nothing here opens a
+  /// read transaction or holds one across an await.
   String dataVersion() {
-    // RED SKELETON (#70 test author): placeholder; the implementer writes it.
-    return '';
+    final row = db.select('PRAGMA data_version');
+    final version = (row.first.values.first as num).toInt();
+    return '$_handleInstanceId-$version';
   }
+
+  /// Process-wide counter behind [_handleInstanceId].
+  static int _nextHandleInstanceId = 1;
+
+  /// This handle's id within the process, unique per `VaultDb` instance (both
+  /// constructors), so [dataVersion] differs between handles.
+  final int _handleInstanceId = _nextHandleInstanceId++;
 
   // ---------- canvas reads ----------
 

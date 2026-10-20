@@ -1,5 +1,6 @@
 import '../../db.dart';
 import '../../memex_cli.dart';
+import '../../state/vault_state.dart' show requiredVaultSchemaVersion;
 import '../vault_access.dart';
 import 'canvas.dart';
 import 'daily.dart';
@@ -54,15 +55,22 @@ class LocalVaultAccess implements VaultAccess {
   @override
   final LocalGraphAccess graph;
 
-  // RED SKELETON (#70 test author): placeholders until the implementer
-  // delegates to [db] / [cli].
+  /// The revision of a local vault with no database handle. Constant: with no
+  /// handle every read is empty, so there is nothing to reload.
+  static const noDatabaseRevision = 'no-database';
 
+  /// `VaultDb.dataVersion()`; [noDatabaseRevision] with no [db].
   @override
-  Future<String> revision() async => '';
+  Future<String> revision() async => db?.dataVersion() ?? noDatabaseRevision;
 
+  /// `VaultDb.schemaVersion()`. With no [db] it is
+  /// [requiredVaultSchemaVersion], so a missing handle never reads as an
+  /// outdated schema (today's `vaultOpenProvider` treats it as not outdated).
   @override
-  Future<int> schemaVersion() async => 0;
+  Future<int> schemaVersion() async =>
+      db?.schemaVersion() ?? requiredVaultSchemaVersion;
 
+  /// True when a `memex` CLI is configured.
   @override
-  bool get canWrite => false;
+  bool get canWrite => cli != null;
 }

@@ -1,6 +1,7 @@
 import '../../db.dart';
 import '../../memex_cli.dart';
 import '../canvas_access.dart';
+import 'write_guard.dart';
 
 /// [CanvasAccess] for a local vault: reads from [db], writes through [cli]
 /// with `--vault` [vaultPath] (D13). Either may be null (see `CanvasAccess`).
@@ -11,33 +12,23 @@ class LocalCanvasAccess implements CanvasAccess {
   final VaultDb? db;
   final MemexCli? cli;
 
-  // RED SKELETON (#70 test author): bodies are placeholders; the implementer
-  // replaces every one with the delegation to [db] / [cli].
+  MemexCli get _cli => requireLocalCli(cli);
 
-  static CanvasNodeInfo _placeholderNode() => CanvasNodeInfo(
-    canvasId: '',
-    noteId: '',
-    noteTitle: '',
-    x: 0,
-    y: 0,
-    zOrder: 0,
-    placedAt: 0,
-  );
+  // ---------- reads ----------
 
   @override
-  Future<List<CanvasRow>> listCanvases() async => const [];
+  Future<List<CanvasRow>> listCanvases() async =>
+      db?.listCanvases() ?? const [];
 
   @override
-  Future<CanvasDetailRow?> getCanvasDetail(String canvasId) async => null;
+  Future<CanvasDetailRow?> getCanvasDetail(String canvasId) async =>
+      db?.getCanvasDetail(canvasId);
+
+  // ---------- writes ----------
 
   @override
-  Future<CanvasInfo> createCanvas({required String title}) async => CanvasInfo(
-    canvasId: '',
-    title: '',
-    version: 0,
-    createdAt: 0,
-    updatedAt: 0,
-  );
+  Future<CanvasInfo> createCanvas({required String title}) async =>
+      _cli.createCanvas(vaultPath: vaultPath, title: title);
 
   @override
   Future<CanvasNodeInfo> addToCanvas({
@@ -45,7 +36,13 @@ class LocalCanvasAccess implements CanvasAccess {
     required String noteId,
     double x = 0.0,
     double y = 0.0,
-  }) async => _placeholderNode();
+  }) async => _cli.addToCanvas(
+    vaultPath: vaultPath,
+    canvasId: canvasId,
+    noteId: noteId,
+    x: x,
+    y: y,
+  );
 
   @override
   Future<CanvasNodeInfo> moveNode({
@@ -54,5 +51,12 @@ class LocalCanvasAccess implements CanvasAccess {
     required double x,
     required double y,
     int? zOrder,
-  }) async => _placeholderNode();
+  }) async => _cli.moveNode(
+    vaultPath: vaultPath,
+    canvasId: canvasId,
+    noteId: noteId,
+    x: x,
+    y: y,
+    zOrder: zOrder,
+  );
 }

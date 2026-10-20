@@ -2,6 +2,7 @@ import '../../cli/note_cli.dart';
 import '../../db.dart';
 import '../../memex_cli.dart';
 import '../notes_access.dart';
+import 'write_guard.dart';
 
 /// [NotesAccess] for a local vault: reads from [db], writes through [cli]
 /// with `--vault` [vaultPath] (D13). Either may be null (see `NotesAccess`).
@@ -12,30 +13,38 @@ class LocalNotesAccess implements NotesAccess {
   final VaultDb? db;
   final MemexCli? cli;
 
-  // RED SKELETON (#70 test author): bodies are placeholders; the implementer
-  // replaces every one with the delegation to [db] / [cli].
+  MemexCli get _cli => requireLocalCli(cli);
+
+  // ---------- reads ----------
 
   @override
-  Future<List<NoteListItem>> listNotes({int limit = 200}) async => const [];
+  Future<List<NoteListItem>> listNotes({int limit = 200}) async =>
+      db?.listNotes(limit: limit) ?? const [];
 
   @override
-  Future<Note?> getNote(String id) async => null;
+  Future<Note?> getNote(String id) async => db?.getNote(id);
 
   @override
-  Future<List<NoteTitle>> allTitles({int limit = 1000}) async => const [];
+  Future<List<NoteTitle>> allTitles({int limit = 1000}) async =>
+      db?.allTitles(limit: limit) ?? const [];
 
   @override
-  Future<List<LinkRow>> linksOutFor(String noteId) async => const [];
+  Future<List<LinkRow>> linksOutFor(String noteId) async =>
+      db?.linksOutFor(noteId) ?? const [];
 
   @override
   Future<List<LinkRow>> linksInFor(String noteId, {String? kind}) async =>
-      const [];
+      db?.linksInFor(noteId, kind: kind) ?? const [];
 
   @override
-  Future<Map<String, String>> titlesForIds(List<String> ids) async => const {};
+  Future<Map<String, String>> titlesForIds(List<String> ids) async =>
+      db?.titlesForIds(ids) ?? const {};
 
   @override
-  Future<List<String>> distinctLinkKinds() async => const [];
+  Future<List<String>> distinctLinkKinds() async =>
+      db?.distinctLinkKinds() ?? const [];
+
+  // ---------- writes ----------
 
   @override
   Future<String> addNote({
@@ -43,7 +52,13 @@ class LocalNotesAccess implements NotesAccess {
     List<String> tags = const [],
     required String contentMd,
     String? role,
-  }) async => '';
+  }) async => _cli.addNote(
+    vaultPath: vaultPath,
+    title: title,
+    tags: tags,
+    contentMd: contentMd,
+    role: role,
+  );
 
   @override
   Future<NoteUpdateResult> updateNote({
@@ -52,13 +67,24 @@ class LocalNotesAccess implements NotesAccess {
     String? title,
     required String contentMd,
     bool noRenameLinks = false,
-  }) async => NoteUpdateResult(noteId: '', version: 0, updatedAt: 0);
+  }) async => _cli.updateNote(
+    vaultPath: vaultPath,
+    noteId: noteId,
+    expectedVersion: expectedVersion,
+    title: title,
+    contentMd: contentMd,
+    noRenameLinks: noRenameLinks,
+  );
 
   @override
   Future<NoteDeleteResult> deleteNote({
     required String noteId,
     required int expectedVersion,
-  }) async => NoteDeleteResult(vaultId: '', noteId: '', deleted: false);
+  }) async => _cli.deleteNote(
+    vaultPath: vaultPath,
+    noteId: noteId,
+    expectedVersion: expectedVersion,
+  );
 
   @override
   Future<AddLinkResult> addLink({
@@ -66,14 +92,12 @@ class LocalNotesAccess implements NotesAccess {
     required String toNoteId,
     String kind = 'references',
     String? label,
-  }) async => AddLinkResult(
-    linkId: null,
-    fromNoteId: '',
-    toNoteId: '',
-    kind: '',
-    source: '',
-    wasExisting: false,
-    noteVersion: 0,
+  }) async => _cli.addLink(
+    vaultPath: vaultPath,
+    fromNoteId: fromNoteId,
+    toNoteId: toNoteId,
+    kind: kind,
+    label: label,
   );
 
   @override
@@ -82,13 +106,11 @@ class LocalNotesAccess implements NotesAccess {
     String? kind,
     String? label,
     bool clearLabel = false,
-  }) async => UpdateLinkResult(
-    linkId: '',
-    fromNoteId: '',
-    toNoteId: null,
-    kind: '',
-    label: null,
-    source: '',
-    position: 0,
+  }) async => _cli.updateLink(
+    vaultPath: vaultPath,
+    linkId: linkId,
+    kind: kind,
+    label: label,
+    clearLabel: clearLabel,
   );
 }

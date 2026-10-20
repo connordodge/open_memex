@@ -11,15 +11,13 @@ class LocalGraphAccess implements GraphAccess {
   final String vaultPath;
   final VaultDb? db;
 
-  // RED SKELETON (#70 test author): bodies are placeholders; the implementer
-  // replaces every one with the delegation to [db].
+  @override
+  Future<List<GraphNoteRow>> graphNotes() async => db?.graphNotes() ?? const [];
 
   @override
-  Future<List<GraphNoteRow>> graphNotes() async => const [];
+  Future<List<GraphLinkRow>> graphLinks() async => db?.graphLinks() ?? const [];
 
   @override
-  Future<List<GraphLinkRow>> graphLinks() async => const [];
-
-  @override
-  Future<List<AgentChangeRow>> agentChanges(String noteId) async => const [];
+  Future<List<AgentChangeRow>> agentChanges(String noteId) async =>
+      db?.agentChanges(noteId) ?? const [];
 }

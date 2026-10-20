@@ -38,6 +38,21 @@ Future<T?> guardVaultWrite<T>(
   BuildContext context,
   Future<T> Function() write,
 ) async {
-  // RED SKELETON (#70 test author): placeholder; the implementer writes it.
-  return null;
+  final messenger = ScaffoldMessenger.maybeOf(context);
+  try {
+    return await write();
+  } on VaultUnreachableException catch (e) {
+    messenger?.showSnackBar(
+      SnackBar(
+        content: Text(_unreachableMessage(e)),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      ),
+    );
+    return null;
+  }
 }
+
+/// The L17 snackbar copy for [e] (Req 50): names only the server.
+String _unreachableMessage(VaultUnreachableException e) => e.mayHaveCommitted
+    ? "couldn't confirm with ${e.serverName} — check before trying again"
+    : "couldn't reach ${e.serverName}. try again.";
