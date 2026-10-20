@@ -28,8 +28,10 @@ pub mod vault_settings;
 
 pub use caller::Caller;
 pub use canvas::{
-    Canvas, CanvasDetail, CanvasEdge, CanvasId, CanvasNode, CanvasSummary, Clock, SystemClock,
+    CallerClock, Canvas, CanvasDetail, CanvasEdge, CanvasId, CanvasNode, CanvasSummary, Clock,
+    SystemClock,
 };
+pub use chrono::FixedOffset;
 pub use error::{MemexError, Result};
 pub use notes::{Note, NoteId};
 pub use search::{search, SearchFilters, SearchHit, SearchMode, SearchOptions, SearchResults};
