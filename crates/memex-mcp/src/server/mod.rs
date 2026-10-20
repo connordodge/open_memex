@@ -77,6 +77,7 @@ pub fn router(config: ServerConfig) -> Router {
     Router::new()
         .route("/api/v1/info", get(info))
         .fallback(not_found)
+        .method_not_allowed_fallback(method_not_allowed)
         // Every route, nest and fallback goes above this line, so that the
         // layers below wrap all of them. Listed inside out.
         .layer(DefaultBodyLimit::disable())
@@ -97,6 +98,15 @@ async fn info() -> Json<Value> {
 /// Any path no route serves: 404 `not_found`.
 async fn not_found() -> ApiError {
     ApiError::from(MemexError::NotFound("no route for this path".into()))
+}
+
+/// A known path asked with a method no route there serves: 405
+/// `method_not_allowed`.
+async fn method_not_allowed() -> ApiError {
+    ApiError::new(
+        "method_not_allowed",
+        "this path does not serve this HTTP method",
+    )
 }
 
 /// Gives the body limit's own 413 (and any other 413 without a JSON body)
