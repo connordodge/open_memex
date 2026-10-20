@@ -107,7 +107,7 @@ class LeaveConfirmDialog extends StatelessWidget {
             borderRadius: BorderRadius.circular(10),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withAlpha(153),
+                color: OmColors.dialogShadow,
                 offset: const Offset(0, 24),
                 blurRadius: 64,
               ),
