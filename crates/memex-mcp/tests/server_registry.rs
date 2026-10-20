@@ -774,3 +774,122 @@ fn router_builds_the_root_embedder_only_when_embeddings_are_on_and_none_was_give
         "with_embeddings(true) alone builds build_embedder_in(root)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Verify (fix round): an eviction removes only the slot its request saw
+// ---------------------------------------------------------------------------
+
+/// `(status, C1 code)` of a `get` that must fail, on `rt`.
+fn failed_get(
+    rt: &tokio::runtime::Runtime,
+    got: Result<Arc<VaultEntry>, memex_mcp::server::error::ApiError>,
+    what: &str,
+) -> (u16, String) {
+    match got {
+        Ok(entry) => panic!("{what}: served entry {}", entry.open_id),
+        Err(e) => rt.block_on(reply_of(e.into_response())),
+    }
+}
+
+/// The entry `get(name)` returns, on `rt`.
+fn entry_on(rt: &tokio::runtime::Runtime, registry: &Registry, name: &str) -> Arc<VaultEntry> {
+    match rt.block_on(registry.get(name)) {
+        Ok(entry) => entry,
+        Err(e) => panic!("get {name}: {:?}", rt.block_on(reply_of(e.into_response()))),
+    }
+}
+
+#[test]
+fn a_vault_gone_at_its_open_evicts_only_its_own_slot_not_a_later_entry() {
+    let rt = one_blocking_thread();
+    let root = tempfile::tempdir().unwrap();
+    make_vault(root.path(), "work");
+    let registry = Registry::new(root.path().to_path_buf(), None);
+
+    // A scans and sees the vault, then queues its open, which can't start
+    // until the blocking thread is released.
+    let mut a = Box::pin(registry.get("work"));
+    let held = hold_blocking(&rt);
+    assert!(poll_once(&rt, &mut a), "A waits on its scan");
+    release(&rt, held);
+    let held = hold_blocking(&rt);
+    assert!(poll_once(&rt, &mut a), "A waits on its open");
+    // The vault is deleted before A's open runs: A's open finds it gone.
+    std::fs::remove_dir_all(root.path().join("work")).unwrap();
+    release(&rt, held);
+    // C scans the empty root and evicts A's slot (the one it saw).
+    assert_eq!(
+        failed_get(&rt, rt.block_on(registry.get("work")), "C"),
+        (404, "vault_not_found".to_string())
+    );
+    // The vault is recreated and B opens it in a new slot.
+    make_vault(root.path(), "work");
+    let b = entry_on(&rt, &registry, "work");
+    // Only now does A finish: 404, and its eviction must not touch B's slot.
+    assert_eq!(
+        failed_get(&rt, rt.block_on(a), "A"),
+        (404, "vault_not_found".to_string())
+    );
+    let next = entry_on(&rt, &registry, "work");
+    assert!(
+        Arc::ptr_eq(&b, &next),
+        "A's gone-at-open eviction removed the entry B opened \
+         (open_id {} then {}): two connections to one vault",
+        b.open_id,
+        next.open_id
+    );
+}
+
+#[test]
+fn a_not_found_scan_evicts_only_the_slot_it_saw_not_a_newer_one() {
+    let rt = one_blocking_thread();
+    let root = tempfile::tempdir().unwrap();
+    make_vault(root.path(), "work");
+    let registry = Registry::new(root.path().to_path_buf(), None);
+    let first = entry_on(&rt, &registry, "work");
+
+    // The vault is deleted; L notes the old slot, then scans an empty root.
+    std::fs::remove_dir_all(root.path().join("work")).unwrap();
+    let mut late = Box::pin(registry.get("work"));
+    let held = hold_blocking(&rt);
+    assert!(poll_once(&rt, &mut late), "L waits on its scan");
+    release(&rt, held);
+    // A new vault takes the name; M replaces the old slot with its own.
+    make_vault(root.path(), "work");
+    let reopened = entry_on(&rt, &registry, "work");
+    assert_ne!(reopened.open_id, first.open_id, "M reopened the new vault");
+    // L finishes: 404 for what it saw; the slot it saw is already gone.
+    assert_eq!(
+        failed_get(&rt, rt.block_on(late), "L"),
+        (404, "vault_not_found".to_string())
+    );
+    let next = entry_on(&rt, &registry, "work");
+    assert!(
+        Arc::ptr_eq(&reopened, &next),
+        "L's stale not-found evicted the slot M opened \
+         (open_id {} then {}): two connections to one vault",
+        reopened.open_id,
+        next.open_id
+    );
+}
+
+#[test]
+fn an_open_failure_with_the_vault_files_present_is_500_and_never_404() {
+    let rt = one_blocking_thread();
+    let root = tempfile::tempdir().unwrap();
+    make_vault(root.path(), "work");
+    // Both vault files are there, but the manifest is not JSON.
+    std::fs::write(root.path().join("work/manifest.json"), b"{ not json").unwrap();
+    let registry = Registry::new(root.path().to_path_buf(), None);
+    for attempt in 0..2 {
+        assert_eq!(
+            failed_get(&rt, rt.block_on(registry.get("work")), "corrupt manifest"),
+            (500, "internal".to_string()),
+            "attempt {attempt}"
+        );
+    }
+    assert!(
+        root.path().join("work/memex.db").is_file(),
+        "nothing removed"
+    );
+}
