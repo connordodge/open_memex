@@ -4,9 +4,10 @@ use std::path::PathBuf;
 
 use clap::{ArgAction, Args, Subcommand};
 use memex_core::canvas::SystemClock;
-use memex_core::smart_folders::{self as sf, FolderUpdate, NewParent};
-use memex_core::{Caller, Vault};
+use memex_core::Vault;
 use serde::Serialize;
+
+use crate::ops::folder;
 
 /// `memex folder <command>`
 #[derive(Args, Debug)]
@@ -119,105 +120,60 @@ pub struct FolderRemoveArgs {
     pub note_id: String,
 }
 
-/// `vault_id` first on the wire, then the core object's own fields.
-#[derive(Serialize)]
-struct WithVault<'a, T: Serialize> {
-    vault_id: &'a str,
-    #[serde(flatten)]
-    body: T,
-}
-
-#[derive(Serialize)]
-struct Deleted<'a> {
-    id: &'a str,
-    deleted: bool,
-}
-
-#[derive(Serialize)]
-struct Removed<'a> {
-    smart_folder_id: &'a str,
-    note_id: &'a str,
-    removed: bool,
-}
-
 /// One JSON line on stdout.
-fn print_json<T: Serialize>(vault: &Vault, body: T) -> anyhow::Result<()> {
-    let out = WithVault {
-        vault_id: vault.vault_id(),
-        body,
-    };
-    println!("{}", serde_json::to_string(&out)?);
+fn print_json<T: Serialize>(out: &T) -> anyhow::Result<()> {
+    println!("{}", serde_json::to_string(out)?);
     Ok(())
 }
 
 pub fn run(args: FolderArgs) -> anyhow::Result<()> {
-    // The person's CLI: `Caller::Person` and the wall clock.
+    // The person's CLI: `Caller::Person` (inside the ops) and the wall clock.
     let clock = SystemClock;
     match args.command {
         FolderCommand::Ls(a) => {
-            let vault = Vault::open(&a.vault)?;
-            print_json(&vault, sf::list_folders(&vault)?)
+            let mut vault = Vault::open(&a.vault)?;
+            print_json(&folder::ls(&mut vault, folder::LsInput, &clock, None)?)
         }
         FolderCommand::New(a) => {
             let mut vault = Vault::open(&a.vault)?;
-            let folder = sf::create_folder(
-                &mut vault,
-                &a.name,
-                a.parent_id.as_deref(),
-                Caller::Person,
-                &clock,
-            )?;
-            print_json(&vault, folder)
+            let input = folder::NewInput {
+                name: a.name,
+                parent_id: a.parent_id,
+            };
+            print_json(&folder::new(&mut vault, input, &clock, None)?)
         }
         FolderCommand::Update(a) => {
             let mut vault = Vault::open(&a.vault)?;
-            let parent = if a.to_root {
-                Some(NewParent::Root)
-            } else {
-                a.parent_id.map(NewParent::Folder)
-            };
-            let update = FolderUpdate {
+            let input = folder::UpdateInput {
+                id: a.id,
                 name: a.name,
-                parent,
+                parent_id: a.parent_id,
+                to_root: a.to_root,
                 pinned: a.pinned,
             };
-            let folder = sf::update_folder(&mut vault, &a.id, update, Caller::Person, &clock)?;
-            print_json(&vault, folder)
+            print_json(&folder::update(&mut vault, input, &clock, None)?)
         }
         FolderCommand::Rm(a) => {
             let mut vault = Vault::open(&a.vault)?;
-            sf::delete_folder(&mut vault, &a.id, Caller::Person)?;
-            print_json(
-                &vault,
-                Deleted {
-                    id: &a.id,
-                    deleted: true,
-                },
-            )
+            let input = folder::RmInput { id: a.id };
+            print_json(&folder::rm(&mut vault, input, &clock, None)?)
         }
         FolderCommand::Add(a) => {
             let mut vault = Vault::open(&a.vault)?;
-            let membership = sf::add_member(
-                &mut vault,
-                &a.id,
-                &a.note_id,
-                Some(a.pinned),
-                Caller::Person,
-                None,
-            )?;
-            print_json(&vault, membership)
+            let input = folder::AddInput {
+                id: a.id,
+                note_id: a.note_id,
+                pinned: a.pinned,
+            };
+            print_json(&folder::add(&mut vault, input, &clock, None)?)
         }
         FolderCommand::Remove(a) => {
             let mut vault = Vault::open(&a.vault)?;
-            sf::remove_member(&mut vault, &a.id, &a.note_id, Caller::Person)?;
-            print_json(
-                &vault,
-                Removed {
-                    smart_folder_id: &a.id,
-                    note_id: &a.note_id,
-                    removed: true,
-                },
-            )
+            let input = folder::RemoveInput {
+                id: a.id,
+                note_id: a.note_id,
+            };
+            print_json(&folder::remove(&mut vault, input, &clock, None)?)
         }
     }
 }

@@ -1,0 +1,9 @@
+Delete a canvas (cascades placements only)
+
+Usage: memex canvas rm --vault <VAULT> --canvas-id <CANVAS_ID> --expected-version <EXPECTED_VERSION>
+
+Options:
+      --vault <VAULT>                        
+      --canvas-id <CANVAS_ID>                
+      --expected-version <EXPECTED_VERSION>  
+  -h, --help                                 Print help

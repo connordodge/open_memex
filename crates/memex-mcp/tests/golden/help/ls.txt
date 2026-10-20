@@ -1,0 +1,8 @@
+List notes in a vault
+
+Usage: memex ls [OPTIONS] --vault <VAULT>
+
+Options:
+      --vault <VAULT>  Vault directory
+      --limit <LIMIT>  Max notes to show [default: 20]
+  -h, --help           Print help

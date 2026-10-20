@@ -1,0 +1,10 @@
+Rename a canvas
+
+Usage: memex canvas rename --vault <VAULT> --canvas-id <CANVAS_ID> --title <TITLE> --expected-version <EXPECTED_VERSION>
+
+Options:
+      --vault <VAULT>                        
+      --canvas-id <CANVAS_ID>                
+      --title <TITLE>                        
+      --expected-version <EXPECTED_VERSION>  
+  -h, --help                                 Print help
