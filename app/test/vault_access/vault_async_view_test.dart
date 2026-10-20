@@ -13,6 +13,7 @@ import 'package:open_memex_app/src/theme/app_theme.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/vault_access/local/local_vault_access.dart';
 import 'package:open_memex_app/src/vault_access/vault_async_view.dart';
+import 'package:open_memex_app/src/vault_access/vault_scoped.dart';
 
 const _vault = '/tmp/om-70-vault';
 const _emptyText = 'no notes yet';
@@ -33,13 +34,16 @@ class _Wi70GatedNotesAccess extends LocalNotesAccess {
 }
 
 /// A reader as #86–#90 will write it: an async provider that re-reads on
-/// every vault revision.
-final _wi70NotesAsyncProvider = FutureProvider<List<NoteListItem>>((ref) {
-  ref.watch(vaultRevisionProvider);
-  final access = ref.watch(vaultAccessProvider);
-  if (access == null) return const <NoteListItem>[];
-  return access.notes.listNotes();
-});
+/// every vault revision and stamps its result with the vault it read.
+final _wi70NotesAsyncProvider = FutureProvider<VaultScoped<List<NoteListItem>>>(
+  (ref) async {
+    ref.watch(vaultRevisionProvider);
+    final vault = ref.watch(currentVaultProvider);
+    final access = ref.watch(vaultAccessProvider);
+    if (access == null) return VaultScoped(vault, const <NoteListItem>[]);
+    return VaultScoped(vault, await access.notes.listNotes());
+  },
+);
 
 List<NoteListItem> _notes(List<String> titles) => [
   for (final (i, t) in titles.indexed)
