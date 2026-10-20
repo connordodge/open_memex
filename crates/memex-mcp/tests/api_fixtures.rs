@@ -443,6 +443,41 @@ fn assert_review_and_frontmatter_edge_rows(conn: &Connection, what: &str) {
         Some("unreviewed"),
         "{what}: 2026-10-15 must be a daily note read as unreviewed: {daily:?}"
     );
+    // A real pre-V5 daily note: no blocks rows (so an empty preview), no
+    // topics marker in its body, and chunks built from that body.
+    let (block_rows, body): (i64, String) = conn
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM blocks b WHERE b.note_id = n.id), n.content_md
+             FROM notes n WHERE n.title = '2026-10-15'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap_or_else(|e| panic!("{what}: notes row of 2026-10-15: {e}"));
+    assert_eq!(block_rows, 0, "{what}: 2026-10-15 must have no blocks rows");
+    assert_eq!(
+        daily.get("2026-10-15").map(|(_, p)| p.as_str()),
+        Some(""),
+        "{what}: 2026-10-15 preview must be empty: {daily:?}"
+    );
+    assert_eq!(
+        body, "Read about loot tables.\n",
+        "{what}: 2026-10-15 body must be marker-free"
+    );
+    let chunks: Vec<String> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT c.content FROM chunks c JOIN notes n ON n.id = c.note_id
+                 WHERE n.title = '2026-10-15' ORDER BY c.ord",
+            )
+            .unwrap();
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
+        rows.map(|r| r.unwrap()).collect()
+    };
+    assert_eq!(
+        chunks,
+        vec!["Read about loot tables.".to_string()],
+        "{what}: 2026-10-15 chunks must come from the marker-free body"
+    );
 
     // 8. A first block over two lines: the preview stops at its newline.
     let preview = daily.get("2026-10-16").map(|(_, p)| p.as_str());
@@ -2091,9 +2126,12 @@ fn every_api_v1_domain_loads_and_names_only_files_that_exist() {
         .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
     assert!(names.contains(&"compat".to_string()), "{names:?}");
-    assert!(
-        !names.contains(&"server".to_string()),
-        "server/ holds no index.json, so it is not a domain: {names:?}"
+    // No folder is special: server/ is a domain exactly when it holds an
+    // index.json (#72 adds one); its utc_offsets.json is simply not a row file.
+    assert_eq!(
+        names.contains(&"server".to_string()),
+        api_v1_dir().join("server/index.json").is_file(),
+        "server/ is a domain iff it holds an index.json: {names:?}"
     );
     let mut sorted = names.clone();
     sorted.sort();
