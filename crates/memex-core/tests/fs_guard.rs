@@ -544,6 +544,11 @@ fn assert_probe_error(err: &MemexError, what: &str) {
         "network_filesystem",
         "{what}"
     );
+    let eio = io::Error::from_raw_os_error(5).to_string();
+    assert!(
+        err.to_string().contains(&eio),
+        "{what}: the statfs failure itself is reported: {err}"
+    );
 }
 
 #[test]

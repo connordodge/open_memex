@@ -28,7 +28,7 @@ use memex_mcp::cli;
 use memex_mcp::server::RunOptions;
 use serde_json::{json, Value};
 
-use server::{free_port, ServeCommand, TOKEN_ENV};
+use server::{free_port, ServeCommand, ANY_PORT, TOKEN_ENV};
 
 const LIMIT: Duration = Duration::from_secs(30);
 
@@ -332,17 +332,30 @@ fn vault_check_handler_reports_a_probe_error_as_a_non_network_error() {
 #[tokio::test]
 async fn server_root_probe_error_is_not_reported_as_network() {
     let root = tempfile::tempdir().unwrap();
+    // Hold the port, so a server that wrongly went on to bind fails fast
+    // (with a bind error, not the probe's EIO) instead of serving forever.
+    let held = TcpListener::bind("127.0.0.1:0").expect("hold a port");
     let opts = RunOptions {
         root: root.path().to_path_buf(),
-        listen: format!("127.0.0.1:{}", free_port()),
+        listen: held.local_addr().unwrap().to_string(),
         with_embeddings: false,
         log_level: "info".to_string(),
     };
-    let err = memex_mcp::server::run_with_probe(opts, &failing_probe)
-        .await
-        .expect_err("a statfs failure on --root is never treated as safe");
+    let err = tokio::time::timeout(
+        LIMIT,
+        memex_mcp::server::run_with_probe(opts, &failing_probe),
+    )
+    .await
+    .expect("run_with_probe returned")
+    .expect_err("a statfs failure on --root is never treated as safe");
     let body = cli::error_json(&err);
     assert_ne!(body["error"]["code"], "network_filesystem", "{body}");
+    let eio = io::Error::from_raw_os_error(5).to_string();
+    assert!(
+        format!("{err:#}").contains(&eio),
+        "the statfs failure itself is reported: {err:#}"
+    );
+    drop(held);
     assert!(
         tree(root.path()).is_empty(),
         "nothing was created in --root"
@@ -539,11 +552,10 @@ async fn server_root_on_network_fails_with_network_filesystem_before_binding() {
 #[tokio::test]
 async fn server_with_a_local_root_still_starts() {
     let root = tempfile::tempdir().unwrap();
-    let addr: std::net::SocketAddr = format!("127.0.0.1:{}", free_port()).parse().unwrap();
-    let mut child = ServeCommand::new(&["--root", s(root.path()), "--listen", &addr.to_string()])
+    let mut child = ServeCommand::new(&["--root", s(root.path()), "--listen", ANY_PORT])
         .env(TOKEN_ENV, "wi75-local-root-token")
         .spawn();
-    child.wait_ready(addr).await;
+    let addr = child.ready().await;
     let status = reqwest::Client::builder()
         .no_proxy()
         .timeout(LIMIT)
