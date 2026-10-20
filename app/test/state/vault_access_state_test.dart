@@ -232,7 +232,9 @@ void main() {
         final cliState = StateProvider<MemexCli?>((_) => null);
         final c = ProviderContainer(
           overrides: [
-            currentVaultProvider.overrideWith((_) => _vault),
+            currentVaultProvider.overrideWith(
+              (_) => const LocalVaultRef(_vault),
+            ),
             vaultDbProvider.overrideWithValue(null),
             memexCliProvider.overrideWith((ref) => ref.watch(cliState)),
           ],
@@ -262,7 +264,9 @@ void main() {
         final dbState = StateProvider<VaultDb?>((_) => dbA);
         final c = ProviderContainer(
           overrides: [
-            currentVaultProvider.overrideWith((_) => _vault),
+            currentVaultProvider.overrideWith(
+              (_) => const LocalVaultRef(_vault),
+            ),
             vaultDbProvider.overrideWith((ref) => ref.watch(dbState)),
             memexCliProvider.overrideWithValue(null),
           ],
