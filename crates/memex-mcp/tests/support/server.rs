@@ -175,6 +175,82 @@ pub async fn get(url: &str, authorization: Option<&str>) -> Reply {
 }
 
 // ---------------------------------------------------------------------------
+// Wrong methods on registered routes
+// ---------------------------------------------------------------------------
+
+/// The methods [`assert_wrong_method_is_c1_405`] tries on each route. HEAD
+/// is left out: a GET route serves it, and its reply has no body to check.
+pub const PROBE_METHODS: [&str; 6] = ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"];
+
+/// For each `(path, served methods)` in `routes`, sends every
+/// [`PROBE_METHODS`] method the route doesn't serve to `path` with the
+/// token, and asserts the C1 `method_not_allowed` 405: a JSON body with
+/// that code, no CORS headers, no token echo.
+///
+/// Every Work Item that adds routes calls this for each of them, e.g.
+/// `assert_wrong_method_is_c1_405(&srv, &[("/api/v1/vaults", &["GET", "POST"])])`.
+/// A route registered after `router()`'s `.method_not_allowed_fallback`
+/// answers axum's bodiless 405 instead, and fails here.
+pub async fn assert_wrong_method_is_c1_405(srv: &TestServer, routes: &[(&str, &[&str])]) {
+    assert_wrong_method_is_c1_405_at(srv.addr(), &srv.bearer(), routes).await;
+}
+
+/// [`assert_wrong_method_is_c1_405`] against any server at `addr`, sending
+/// `authorization` as the `Authorization` header value.
+pub async fn assert_wrong_method_is_c1_405_at(
+    addr: SocketAddr,
+    authorization: &str,
+    routes: &[(&str, &[&str])],
+) {
+    assert!(!routes.is_empty(), "no routes to check");
+    let http = client();
+    for (path, served) in routes {
+        let served: Vec<String> = served.iter().map(|m| m.to_ascii_uppercase()).collect();
+        assert!(!served.is_empty(), "{path}: name the methods it serves");
+        let wrong: Vec<&str> = PROBE_METHODS
+            .iter()
+            .copied()
+            .filter(|m| !served.iter().any(|s| s == m))
+            .collect();
+        assert!(!wrong.is_empty(), "{path}: serves every probe method");
+        for method in wrong {
+            let what = format!("{method} {path} with the token");
+            let req = http
+                .request(
+                    reqwest::Method::from_bytes(method.as_bytes()).expect("method"),
+                    format!("http://{addr}{path}"),
+                )
+                .header("authorization", authorization)
+                .header("origin", "http://evil.example");
+            let r = Reply::read(req.send().await.unwrap_or_else(|e| panic!("{what}: {e}"))).await;
+            assert_eq!(r.status, 405, "{what}: {:?}", r.body);
+            assert!(
+                r.header("content-type")
+                    .is_some_and(|ct| ct.starts_with("application/json")),
+                "{what}: a JSON C1 body, got content-type {:?} body {:?}",
+                r.header("content-type"),
+                r.body
+            );
+            assert_eq!(r.c1_code(), "method_not_allowed", "{what}");
+            assert!(
+                !r.headers
+                    .iter()
+                    .any(|(k, _)| k.starts_with("access-control-")),
+                "{what}: no CORS headers, got {:?}",
+                r.headers
+            );
+            let credentials = authorization
+                .split_once(' ')
+                .map_or(authorization, |(_, c)| c.trim());
+            assert!(
+                credentials.is_empty() || !r.body.contains(credentials),
+                "{what}: the token is not echoed"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Raw HTTP/1.1
 // ---------------------------------------------------------------------------
 

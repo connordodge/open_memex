@@ -12,8 +12,11 @@ mod server;
 
 use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use regex::Regex;
+use tracing::Level;
+use tracing_subscriber::layer::SubscriberExt;
 
 use server::{client, get, wait_for_logs, ServeChild, ServeCommand, ANY_PORT, TOKEN_ENV};
 
@@ -238,4 +241,330 @@ async fn sigterm_and_sigint_shut_the_vault_server_down_gracefully() {
             "SIG{signal}: the shutdown is logged and the log flushed:\n{logs}"
         );
     }
+}
+
+// ---------- Review round 1: the dependency cap holds for any --log-level ----------
+//
+// `server::log::filter` is driven directly: the probe events below go
+// through a subscriber built from the filter, and a recording layer keeps
+// the (target, level) of each event the filter let through.
+
+/// The dependency crates whose events never pass above `info` (D7).
+const WI71_CAPPED: [&str; 7] = [
+    "rmcp",
+    "hyper",
+    "hyper_util",
+    "h2",
+    "tower_http",
+    "axum",
+    "reqwest",
+];
+
+/// Whether `target` belongs to a capped crate (the crate or a submodule).
+fn wi71_is_capped(target: &str) -> bool {
+    WI71_CAPPED
+        .iter()
+        .any(|c| target == *c || target.starts_with(&format!("{c}::")))
+}
+
+#[derive(Clone, Default)]
+struct Wi71Recorder(Arc<Mutex<Vec<(String, Level)>>>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Wi71Recorder {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        let meta = event.metadata();
+        self.0
+            .lock()
+            .unwrap()
+            .push((meta.target().to_string(), *meta.level()));
+    }
+}
+
+/// One info, one debug and one trace event for each literal target.
+macro_rules! wi71_emit {
+    ($($target:literal),* $(,)?) => {
+        $(
+            tracing::event!(target: $target, Level::INFO, "probe");
+            tracing::event!(target: $target, Level::DEBUG, "probe");
+            tracing::event!(target: $target, Level::TRACE, "probe");
+        )*
+    };
+}
+
+/// Every capped crate, some of their submodules, and our own crate.
+fn wi71_emit_probes() {
+    wi71_emit!(
+        "rmcp",
+        "rmcp::transport",
+        "rmcp::transport::streamable_http_server",
+        "rmcp::wi71sub",
+        "hyper",
+        "hyper::proto::h1::io",
+        "hyper::wi71sub",
+        "hyper_util",
+        "hyper_util::client::legacy::pool",
+        "hyper_util::wi71sub",
+        "h2",
+        "h2::codec::framed_read",
+        "h2::wi71sub",
+        "tower_http",
+        "tower_http::trace::on_request",
+        "tower_http::wi71sub",
+        "axum",
+        "axum::rejection",
+        "axum::wi71sub",
+        "reqwest",
+        "reqwest::connect",
+        "reqwest::wi71sub",
+        "memex_mcp",
+        "memex_mcp::server",
+    );
+}
+
+/// The (target, level) of every probe event `filter(log_level)` lets
+/// through. With `in_span`, the probes run inside a `memex_mcp` info span
+/// named `wi71span` with a `wi71field` field.
+fn wi71_events(log_level: &str, in_span: bool) -> Vec<(String, Level)> {
+    let filter = memex_mcp::server::log::filter(log_level)
+        .unwrap_or_else(|e| panic!("--log-level {log_level:?} is accepted: {e:#}"));
+    let recorder = Wi71Recorder::default();
+    let subscriber = tracing_subscriber::registry()
+        .with(filter)
+        .with(recorder.clone());
+    tracing::subscriber::with_default(subscriber, || {
+        if in_span {
+            let span = tracing::info_span!(target: "memex_mcp", "wi71span", wi71field = 1);
+            span.in_scope(wi71_emit_probes);
+        } else {
+            wi71_emit_probes();
+        }
+    });
+    let events = recorder.0.lock().unwrap().clone();
+    events
+}
+
+/// The capped events above `info` among `events`.
+fn wi71_leaks(events: &[(String, Level)]) -> Vec<&(String, Level)> {
+    events
+        .iter()
+        .filter(|(t, l)| wi71_is_capped(t) && *l > Level::INFO)
+        .collect()
+}
+
+fn wi71_has(events: &[(String, Level)], target: &str, level: Level) -> bool {
+    events.iter().any(|(t, l)| t == target && *l == level)
+}
+
+/// Asserts no capped event above `info` passed `log_level`, and that each
+/// `(target, level)` in `must` did (so the probes ran and the filter is not
+/// simply closed).
+fn wi71_assert_capped(log_level: &str, in_span: bool, must: &[(&str, Level)]) {
+    let events = wi71_events(log_level, in_span);
+    let what = format!("--log-level {log_level:?} (in span: {in_span})");
+    assert!(
+        wi71_leaks(&events).is_empty(),
+        "{what}: dependency events above info passed: {:?}",
+        wi71_leaks(&events)
+    );
+    for (target, level) in must {
+        assert!(
+            wi71_has(&events, target, *level),
+            "{what}: {target} {level} should pass; passed: {events:?}"
+        );
+    }
+}
+
+#[test]
+fn log_filter_caps_dependency_targets_and_submodules_at_info_for_any_directive() {
+    use Level as L;
+    let every_capped_info: Vec<(&str, Level)> = WI71_CAPPED.iter().map(|c| (*c, L::INFO)).collect();
+    let with = |mut m: Vec<(&'static str, Level)>, extra: (&'static str, Level)| {
+        m.push(extra);
+        m
+    };
+    let mut cases: Vec<(String, Vec<(&str, Level)>)> = vec![
+        // Bare global levels.
+        (
+            "debug".into(),
+            with(every_capped_info.clone(), ("memex_mcp", L::DEBUG)),
+        ),
+        (
+            "trace".into(),
+            with(every_capped_info.clone(), ("memex_mcp", L::TRACE)),
+        ),
+        // A submodule of a capped crate.
+        (
+            "rmcp::transport=debug".into(),
+            vec![("rmcp::transport", L::INFO)],
+        ),
+        (
+            "trace,rmcp::transport=trace".into(),
+            vec![("rmcp::transport", L::INFO), ("memex_mcp", L::TRACE)],
+        ),
+        (
+            "hyper_util=trace".into(),
+            vec![
+                ("hyper_util", L::INFO),
+                ("hyper_util::client::legacy::pool", L::INFO),
+            ],
+        ),
+        (
+            "hyper_util::client=trace".into(),
+            vec![("hyper_util::client::legacy::pool", L::INFO)],
+        ),
+        // A bare target and an empty level both mean trace to EnvFilter.
+        (
+            "rmcp".into(),
+            vec![("rmcp", L::INFO), ("rmcp::transport", L::INFO)],
+        ),
+        (
+            "rmcp=".into(),
+            vec![("rmcp", L::INFO), ("rmcp::transport", L::INFO)],
+        ),
+        ("rmcp::transport".into(), vec![("rmcp::transport", L::INFO)]),
+        (
+            "rmcp::transport=".into(),
+            vec![("rmcp::transport", L::INFO)],
+        ),
+        // Other level spellings.
+        ("rmcp=DEBUG".into(), vec![("rmcp", L::INFO)]),
+        ("rmcp=5".into(), vec![("rmcp", L::INFO)]),
+        // Several capped directives at once, with our own crate.
+        (
+            "hyper=debug,h2=trace,tower_http=debug,axum=trace,reqwest=debug,memex_mcp=trace".into(),
+            vec![
+                ("hyper", L::INFO),
+                ("h2", L::INFO),
+                ("tower_http", L::INFO),
+                ("axum", L::INFO),
+                ("reqwest", L::INFO),
+                ("memex_mcp", L::TRACE),
+            ],
+        ),
+    ];
+    // Each capped crate on its own, and a submodule of it.
+    for c in WI71_CAPPED {
+        cases.push((format!("{c}=trace"), vec![(c, L::INFO)]));
+        cases.push((format!("info,{c}=debug"), vec![(c, L::INFO)]));
+        cases.push((format!("{c}::wi71sub=trace"), vec![]));
+    }
+    for (log_level, must) in &cases {
+        wi71_assert_capped(log_level, false, must);
+    }
+}
+
+#[test]
+fn log_filter_clamps_span_scoped_directives_so_dependencies_stay_at_info_inside_the_span() {
+    // Inside a span that a span-scoped directive matches, EnvFilter enables
+    // events of every target at that directive's level, so the directive
+    // itself is capped at info. Its info level still applies: memex_mcp's
+    // info probe (off without the span directive, since none of these sets
+    // a global level of info) passes inside the span.
+    for log_level in [
+        "[wi71span]=debug",
+        "[wi71span]=trace",
+        "[wi71span]",
+        "[wi71span]=",
+        "memex_mcp[wi71span]=trace",
+        "[{wi71field}]=debug",
+        "[wi71span{wi71field}]=trace",
+        "warn,[wi71span]=trace",
+    ] {
+        wi71_assert_capped(
+            log_level,
+            true,
+            &[("memex_mcp", Level::INFO), ("rmcp", Level::INFO)],
+        );
+    }
+    // A span-scoped directive on a capped target.
+    wi71_assert_capped("rmcp[wi71span]=debug", true, &[("rmcp", Level::INFO)]);
+}
+
+#[test]
+fn log_filter_keeps_debug_for_memex_mcp() {
+    let events = wi71_events("memex_mcp=debug", false);
+    assert!(wi71_has(&events, "memex_mcp", Level::DEBUG), "{events:?}");
+    assert!(
+        wi71_has(&events, "memex_mcp::server", Level::DEBUG),
+        "{events:?}"
+    );
+    assert!(
+        !wi71_has(&events, "memex_mcp", Level::TRACE),
+        "debug, not trace: {events:?}"
+    );
+    assert!(wi71_leaks(&events).is_empty(), "{events:?}");
+
+    let events = wi71_events("info,memex_mcp=trace,rmcp=debug", false);
+    assert!(wi71_has(&events, "memex_mcp", Level::TRACE), "{events:?}");
+    assert!(wi71_has(&events, "rmcp", Level::INFO), "{events:?}");
+    assert!(wi71_leaks(&events).is_empty(), "{events:?}");
+}
+
+#[test]
+fn log_filter_rejects_an_unparsable_list_as_invalid_argument() {
+    for log_level in [
+        "rmcp=loud",
+        "rmcp::transport=verbose",
+        "memex_mcp=debug,hyper=noisy",
+        "[wi71span=debug",
+    ] {
+        let err = match memex_mcp::server::log::filter(log_level) {
+            Ok(_) => panic!("--log-level {log_level:?} is rejected"),
+            Err(e) => e,
+        };
+        assert!(
+            err.downcast_ref::<memex_mcp::cli::InvalidArgument>()
+                .is_some(),
+            "{log_level:?}: an InvalidArgument (exit 1 invalid_argument), got {err:#}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_clamped_log_level_starts_silently_and_logs_no_dependency_debug() {
+    // Clamping is silent: no stderr line beyond the listening line and no
+    // WARN in server.log, and no capped crate logs above info while the
+    // server answers requests.
+    let dir = tempfile::tempdir().unwrap();
+    let (child, addr) = start(
+        dir.path(),
+        "trace,rmcp::transport=trace,hyper=trace,hyper_util=debug,[wi71span]=trace",
+        None,
+    )
+    .await;
+    let bearer = format!("Bearer {TOKEN}");
+    for path in ["/api/v1/info", "/clamp-silent-last"] {
+        let _ = get(&format!("http://{addr}{path}"), Some(&bearer)).await;
+    }
+    let logs = wait_for_logs(dir.path(), |logs| logs.contains("/clamp-silent-last")).await;
+
+    let stderr = child.stderr();
+    let lines: Vec<&str> = stderr.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(lines.len(), 1, "only the listening line: {stderr}");
+    assert!(
+        lines[0].contains("vault server listening on http://"),
+        "{stderr}"
+    );
+    assert!(
+        !logs.lines().any(|l| l.contains(" WARN ")),
+        "no warning about the clamp:\n{logs}"
+    );
+    let level_target = Regex::new(r"\b(DEBUG|TRACE)\s+([A-Za-z0-9_:]+)").unwrap();
+    let leaks: Vec<&str> = logs
+        .lines()
+        .filter(|l| {
+            level_target
+                .captures(l)
+                .is_some_and(|c| wi71_is_capped(c[2].trim_end_matches(':')))
+        })
+        .collect();
+    assert!(
+        leaks.is_empty(),
+        "dependency debug in server.log: {leaks:#?}"
+    );
+    assert!(
+        logs.contains("vault server started"),
+        "the server logged its start:\n{logs}"
+    );
+    drop(child);
 }
