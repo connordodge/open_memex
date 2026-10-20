@@ -1,0 +1,34 @@
+{
+  "description": "X-Memex-UTC-Offset cases (D5, D10a). Grammar: ^[+-]\\d{2}:\\d{2}$, minutes 00-59, magnitude at most 14:00. valid: header -> signed minutes the parser returns. invalid: headers the parser rejects. format: signed minutes -> the one header the formatter writes (zero is +00:00). Owned by #74; #76 (Rust) and #77 (Dart) must pass it unchanged.",
+  "valid": [
+    {"header": "-00:30", "minutes": -30},
+    {"header": "+14:00", "minutes": 840},
+    {"header": "-12:00", "minutes": -720},
+    {"header": "-14:00", "minutes": -840},
+    {"header": "+00:00", "minutes": 0},
+    {"header": "+05:45", "minutes": 345},
+    {"header": "+05:30", "minutes": 330},
+    {"header": "-09:30", "minutes": -570}
+  ],
+  "invalid": [
+    "+15:00",
+    "+5:00",
+    "+05:60",
+    "+14:01",
+    "-14:01",
+    "05:30",
+    "+0530",
+    "",
+    "Z",
+    "+05:3"
+  ],
+  "format": [
+    {"minutes": -30, "header": "-00:30"},
+    {"minutes": 0, "header": "+00:00"},
+    {"minutes": 345, "header": "+05:45"},
+    {"minutes": -720, "header": "-12:00"},
+    {"minutes": 840, "header": "+14:00"},
+    {"minutes": -840, "header": "-14:00"},
+    {"minutes": 330, "header": "+05:30"}
+  ]
+}
