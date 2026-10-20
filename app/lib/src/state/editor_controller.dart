@@ -25,8 +25,13 @@ class _VirtualDraft {
   /// The text sent with the in-flight `memex add`; null when none is.
   String? sent;
 
-  /// The CLI message of the last failed `memex add`.
+  /// The CLI message of the last failed `memex add` or read-back.
   String? error;
+
+  /// The daily note an earlier `memex add` created (and [createdText], the
+  /// text it was created with) when reading it back failed; null otherwise.
+  String? createdId;
+  String? createdText;
 }
 
 /// The save debounce: a save runs this long after the last edit (D14: on
@@ -330,40 +335,73 @@ class EditorController extends StateNotifier<EditorStateValue> {
   /// The first edit of the virtual Today note for [date]: create the daily
   /// note with the draft's text through `VaultAccess.notes`, read it back,
   /// then [_resolve] the tab onto it. On any failure other than
-  /// `daily_note_exists` the text stays in the editor with the CLI message,
-  /// and the next edit tries again.
+  /// `daily_note_exists` (including a read-back that fails or finds no
+  /// note) the text stays in the editor with the message, the status is
+  /// [SaveStatus.error], and the next edit tries again.
+  ///
+  /// A retry after a failed read-back that answers `daily_note_exists` with
+  /// the id the earlier add created resolves as that add (the note holds its
+  /// text, which the editor text replaces), so the text is not appended
+  /// twice.
   Future<void> _createDaily(String date) async {
     final draft = _drafts[date];
     final access = _ref.read(vaultAccessProvider);
     if (draft == null || access == null || !access.canWrite) return;
-    final sent = draft.sent = draft.text;
+    var sent = draft.sent = draft.text;
     if (_virtualDate == date) state = state.copyWith(status: SaveStatus.saving);
-    final DailyCreateResult result;
+    DailyCreateResult result;
     try {
       result = await createDailyNote(access.notes, date: date, contentMd: sent);
     } catch (e) {
-      draft
-        ..sent = null
-        ..error = e is MemexException ? e.message : e.toString();
-      if (_virtualDate == date) {
-        state = state.copyWith(
-          status: SaveStatus.error,
-          errorMessage: draft.error,
-        );
-      }
+      _failDraft(date, draft, e);
       return;
+    }
+    final createdText = draft.createdText;
+    if (result.existed &&
+        result.noteId == draft.createdId &&
+        createdText != null) {
+      // Our own earlier add made this note: it holds that add's text.
+      result = DailyCreateResult(noteId: result.noteId, existed: false);
+      sent = createdText;
     }
     // Read the note back while the draft still holds the add: text typed
     // meanwhile stays in the draft and goes with [_resolve].
     Note? stored;
+    Object? readError;
     try {
       stored = await access.notes.getNote(result.noteId);
-    } on Exception {
-      stored = null;
+    } catch (e) {
+      readError = e;
+    }
+    if (stored == null) {
+      if (!result.existed) {
+        draft
+          ..createdId = result.noteId
+          ..createdText = sent;
+      }
+      _failDraft(
+        date,
+        draft,
+        readError ?? 'read failed: note ${result.noteId} not found',
+      );
+      return;
     }
     _drafts.remove(date);
-    if (stored == null) return;
     _resolve(date, result, stored, sent: sent, latest: draft.text);
+  }
+
+  /// Records [error] on the virtual Today [draft] for [date]: nothing is in
+  /// flight, and the open editor shows the message with [SaveStatus.error].
+  void _failDraft(String date, _VirtualDraft draft, Object error) {
+    draft
+      ..sent = null
+      ..error = error is MemexException ? error.message : error.toString();
+    if (_virtualDate == date) {
+      state = state.copyWith(
+        status: SaveStatus.error,
+        errorMessage: draft.error,
+      );
+    }
   }
 
   /// Moves the virtual Today note for [date] onto the daily note [result]
