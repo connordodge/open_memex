@@ -6,12 +6,16 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
+import 'package:open_memex_app/src/state/clock.dart';
 import 'package:open_memex_app/src/state/settings.dart';
+import 'package:open_memex_app/src/state/tabs_state.dart';
+import 'package:open_memex_app/src/state/ui_state_store.dart';
 import 'package:open_memex_app/src/state/vault_open_controller.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../support/fake_clock.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
 import '../support/vault_folders.dart';
@@ -419,8 +423,11 @@ void main() {
     }
 
     for (final (name, allow) in [
-      ('switchToVault completes true when the guard allows', true),
-      ('switchToVault completes false when the guard denies', false),
+      ('switchToVault completes VaultOpened when the guard allows', true),
+      (
+        'switchToVault completes VaultOpenCancelled when the guard denies',
+        false,
+      ),
     ]) {
       testWidgets(name, (tester) async {
         final open = createVaultFolder('om69_open_');
@@ -457,9 +464,16 @@ void main() {
               .switchToVault(context, LocalVaultRef(other.path)),
         );
 
-        expect(switched, allow);
         expect(asked, 1);
         if (allow) {
+          expect(
+            switched,
+            isA<VaultOpened>().having(
+              (o) => o.vault,
+              'vault',
+              LocalVaultRef(other.path),
+            ),
+          );
           expect(c.read(currentVaultProvider), LocalVaultRef(other.path));
           expect(c.read(settingsProvider).lastVault, other.path);
           expect(c.read(settingsProvider).recentVaults, [
@@ -468,10 +482,14 @@ void main() {
           ]);
           expect(c.read(selectedNoteIdProvider), isNull);
         } else {
+          expect(switched, isA<VaultOpenCancelled>());
           expect(c.read(currentVaultProvider), LocalVaultRef(open.path));
           expect(c.read(settingsProvider).lastVault, open.path);
           expect(c.read(settingsProvider).recentVaults, [open.path]);
           expect(c.read(selectedNoteIdProvider), '01KEEP');
+          final prefs = await tester.runAsync(_prefs);
+          expect(prefs!.getString('memex.last_vault'), open.path);
+          expect(prefs.getStringList('memex.recent_vaults'), [open.path]);
         }
       });
     }
@@ -501,4 +519,308 @@ void main() {
       expect(c!.read(currentVaultProvider), isNull);
     });
   });
+
+  group('launchReopen (review round 1)', () {
+    test(
+      'launchReopen with a vault open completes VaultOpened with it and writes nothing',
+      () async {
+        final open = createVaultFolder('om69_open_');
+        final other = createVaultFolder('om69_other_');
+        // The open vault is not first in the recents: a rememberVault would
+        // move it to the front.
+        final cli = _initCli();
+        final c = await _app(
+          cli: cli,
+          lastVault: open.path,
+          recents: [other.path, open.path],
+        );
+        final before = c.read(currentVaultProvider);
+        expect(before, LocalVaultRef(open.path));
+        var notified = 0;
+        c.listen(currentVaultProvider, (_, _) => notified++);
+
+        final outcome = await c
+            .read(vaultOpenControllerProvider)
+            .launchReopen();
+
+        expect(
+          outcome,
+          isA<VaultOpened>().having((o) => o.vault, 'vault', same(before)),
+        );
+        expect(c.read(currentVaultProvider), same(before));
+        expect(notified, 0);
+        expect(c.read(settingsProvider).recentVaults, [other.path, open.path]);
+        final prefs = await _prefs();
+        expect(prefs.getStringList('memex.recent_vaults'), [
+          other.path,
+          open.path,
+        ]);
+        expect(prefs.getString('memex.last_vault'), open.path);
+        expect(cli.calls, isEmpty);
+      },
+    );
+
+    test(
+      'launchReopen keeps an open vault that is not the last vault',
+      () async {
+        final open = createVaultFolder('om69_open_');
+        final last = createVaultFolder('om69_last_');
+        final c = await _app(
+          cli: _initCli(),
+          lastVault: last.path,
+          recents: [last.path, open.path],
+          overrides: [
+            currentVaultProvider.overrideWith((_) => LocalVaultRef(open.path)),
+          ],
+        );
+
+        final outcome = await c
+            .read(vaultOpenControllerProvider)
+            .launchReopen();
+
+        expect(
+          outcome,
+          isA<VaultOpened>().having(
+            (o) => o.vault,
+            'vault',
+            LocalVaultRef(open.path),
+          ),
+        );
+        expect(c.read(currentVaultProvider), LocalVaultRef(open.path));
+        expect(c.read(settingsProvider).lastVault, last.path);
+      },
+    );
+
+    test(
+      'launchReopen with no vault open and a last vault opens it without a folder check or settings write',
+      () async {
+        // Not a vault folder: launch has never checked it (#92 adds that).
+        final last = createPlainFolder('om69_last_plain_');
+        final other = createVaultFolder('om69_other_');
+        final cli = _initCli();
+        final c = await _app(
+          cli: cli,
+          lastVault: last.path,
+          recents: [other.path, last.path],
+          overrides: [currentVaultProvider.overrideWith((_) => null)],
+        );
+        expect(c.read(currentVaultProvider), isNull);
+
+        final outcome = await c
+            .read(vaultOpenControllerProvider)
+            .launchReopen();
+
+        expect(
+          outcome,
+          isA<VaultOpened>().having(
+            (o) => o.vault,
+            'vault',
+            LocalVaultRef(last.path),
+          ),
+        );
+        expect(c.read(currentVaultProvider), LocalVaultRef(last.path));
+        final settings = c.read(settingsProvider);
+        expect(settings.lastVault, last.path);
+        expect(settings.recentVaults, [other.path, last.path]);
+        final prefs = await _prefs();
+        expect(prefs.getStringList('memex.recent_vaults'), [
+          other.path,
+          last.path,
+        ]);
+        expect(cli.calls, isEmpty);
+      },
+    );
+
+    test(
+      'launchReopen with no vault open and no last vault completes NoVaultToReopen',
+      () async {
+        final other = createVaultFolder('om69_other_');
+        final c = await _app(cli: _initCli(), recents: [other.path]);
+        expect(c.read(currentVaultProvider), isNull);
+        var notified = 0;
+        c.listen(currentVaultProvider, (_, _) => notified++);
+
+        final outcome = await c
+            .read(vaultOpenControllerProvider)
+            .launchReopen();
+
+        expect(outcome, isA<NoVaultToReopen>());
+        expect(c.read(currentVaultProvider), isNull);
+        expect(notified, 0);
+        expect(c.read(settingsProvider).lastVault, isNull);
+        expect(c.read(settingsProvider).recentVaults, [other.path]);
+      },
+    );
+  });
+
+  group('switchToVault (review round 1)', () {
+    testWidgets(
+      'switchToVault with the default guard opens a pill folder that is not a vault without checking it',
+      (tester) async {
+        final open = createVaultFolder('om69_open_');
+        final plain = createPlainFolder('om69_pill_plain_');
+        final context = await _wi69Context(tester);
+        // No guard override: the default guard is read as shipped.
+        final c = await tester.runAsync(
+          () => _app(
+            cli: _initCli(),
+            lastVault: open.path,
+            recents: [open.path, plain.path],
+          ),
+        );
+        c!.read(selectedNoteIdProvider.notifier).state = '01KEEP';
+
+        final outcome = await tester.runAsync(
+          () => c
+              .read(vaultOpenControllerProvider)
+              .switchToVault(context, LocalVaultRef(plain.path)),
+        );
+
+        expect(
+          outcome,
+          isA<VaultOpened>().having(
+            (o) => o.vault,
+            'vault',
+            LocalVaultRef(plain.path),
+          ),
+        );
+        expect(c.read(currentVaultProvider), LocalVaultRef(plain.path));
+        expect(c.read(settingsProvider).lastVault, plain.path);
+        expect(c.read(settingsProvider).recentVaults, [plain.path, open.path]);
+        expect(c.read(selectedNoteIdProvider), isNull);
+      },
+    );
+  });
+
+  group('current vault notifications (review round 1)', () {
+    test(
+      'a settings write that keeps the last vault notifies no current vault dependent',
+      () async {
+        final open = createVaultFolder('om69_open_');
+        final other = createVaultFolder('om69_other_');
+        SharedPreferences.setMockInitialValues({
+          'memex.binary_path': 'fake-memex',
+          'memex.recent_vaults': [open.path, other.path],
+          'memex.last_vault': open.path,
+        });
+        final settings = await SettingsController.load();
+        // The real vaultDbProvider and tabsProvider: only the settings, the
+        // CLI and the clock are faked.
+        final c = ProviderContainer(
+          overrides: [
+            settingsProvider.overrideWith((_) => settings),
+            memexCliProvider.overrideWithValue(null),
+            clockProvider.overrideWithValue(FakeClock()),
+          ],
+        );
+        addTearDown(c.dispose);
+        final vault = c.read(currentVaultProvider);
+        final db = c.read(vaultDbProvider);
+        expect(db, isNotNull);
+        final store = c.read(uiStateStoreProvider);
+        final tabs = c.read(tabsProvider.notifier);
+        // Let the tabs notifier emit its first selection, then pick a note.
+        await Future<void>.delayed(Duration.zero);
+        c.read(selectedNoteIdProvider.notifier).state = '01KEEP';
+        var vaultNotified = 0;
+        var dbNotified = 0;
+        var selectionNotified = 0;
+        c.listen(currentVaultProvider, (_, _) => vaultNotified++);
+        c.listen(vaultDbProvider, (_, _) => dbNotified++);
+        c.listen(selectedNoteIdProvider, (_, _) => selectionNotified++);
+
+        await settings.setMemexBinary('/elsewhere/memex');
+        await settings.forgetVault(other.path);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(c.read(settingsProvider).memexBinaryPath, '/elsewhere/memex');
+        expect(c.read(settingsProvider).recentVaults, [open.path]);
+        expect(vaultNotified, 0);
+        expect(dbNotified, 0);
+        expect(selectionNotified, 0);
+        expect(c.read(currentVaultProvider), same(vault));
+        expect(c.read(vaultDbProvider), same(db));
+        expect(c.read(uiStateStoreProvider), same(store));
+        expect(c.read(tabsProvider.notifier), same(tabs));
+        expect(c.read(selectedNoteIdProvider), '01KEEP');
+      },
+    );
+
+    testWidgets('a pill switch notifies current vault listeners once', (
+      tester,
+    ) async {
+      final open = createVaultFolder('om69_open_');
+      final other = createVaultFolder('om69_other_');
+      final context = await _wi69Context(tester);
+      final c = await tester.runAsync(
+        () => _app(
+          cli: _initCli(),
+          lastVault: open.path,
+          recents: [open.path, other.path],
+        ),
+      );
+      final seen = <VaultRef?>[];
+      c!.listen(currentVaultProvider, (_, next) => seen.add(next));
+
+      await tester.runAsync(
+        () => c
+            .read(vaultOpenControllerProvider)
+            .switchToVault(context, LocalVaultRef(other.path)),
+      );
+
+      expect(seen, [LocalVaultRef(other.path)]);
+    });
+
+    test('openVault notifies current vault listeners once', () async {
+      final open = createVaultFolder('om69_open_');
+      final other = createVaultFolder('om69_other_');
+      final c = await _app(
+        cli: _initCli(),
+        lastVault: open.path,
+        recents: [open.path],
+      );
+      final seen = <VaultRef?>[];
+      c.listen(currentVaultProvider, (_, next) => seen.add(next));
+
+      await c
+          .read(vaultOpenControllerProvider)
+          .openVault(LocalVaultRef(other.path));
+
+      expect(seen, [LocalVaultRef(other.path)]);
+    });
+
+    test('opening the vault already open notifies no listener', () async {
+      final open = createVaultFolder('om69_open_');
+      final c = await _app(
+        cli: _initCli(),
+        lastVault: open.path,
+        recents: [open.path],
+      );
+      final before = c.read(currentVaultProvider);
+      var notified = 0;
+      c.listen(currentVaultProvider, (_, _) => notified++);
+
+      final outcome = await c
+          .read(vaultOpenControllerProvider)
+          .openVault(LocalVaultRef(open.path));
+
+      expect(outcome, isA<VaultOpened>());
+      expect(notified, 0);
+      expect(c.read(currentVaultProvider), same(before));
+    });
+  });
+}
+
+/// A widget context for the guard (it takes a BuildContext).
+Future<BuildContext> _wi69Context(WidgetTester tester) async {
+  late BuildContext context;
+  await tester.pumpWidget(
+    Builder(
+      builder: (ctx) {
+        context = ctx;
+        return const SizedBox();
+      },
+    ),
+  );
+  return context;
 }
