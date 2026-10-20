@@ -390,7 +390,7 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
 
   Future<void> _remove(_CardSeg card) async {
     final cli = ref.read(memexCliProvider);
-    final vaultPath = ref.read(currentVaultProvider);
+    final vaultPath = ref.read(currentVaultProvider).localPath;
     if (cli == null) return;
     if (vaultPath == null) return;
     final noteId = widget.note.id;

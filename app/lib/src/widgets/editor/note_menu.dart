@@ -143,7 +143,7 @@ Future<void> confirmAndDeleteNote(
   if (confirmed != true) return;
 
   final cli = container.read(memexCliProvider);
-  final vaultPath = container.read(currentVaultProvider);
+  final vaultPath = container.read(currentVaultProvider).localPath;
   if (cli == null || vaultPath == null) return;
   final errors = container.read(noteDeleteErrorProvider.notifier);
   final version =

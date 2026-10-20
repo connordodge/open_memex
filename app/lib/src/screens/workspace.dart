@@ -57,7 +57,7 @@ class Workspace extends ConsumerWidget {
 
   Future<void> _createNote(BuildContext context, WidgetRef ref) async {
     final cli = ref.read(memexCliProvider);
-    final vaultPath = ref.read(currentVaultProvider);
+    final vaultPath = ref.read(currentVaultProvider).localPath;
     if (cli == null || vaultPath == null) return;
     try {
       final id = await cli.addNote(

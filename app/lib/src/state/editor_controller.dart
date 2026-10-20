@@ -196,7 +196,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
     final id = _activeNoteId;
     if (id == null) return;
     final cli = _ref.read(memexCliProvider);
-    final vaultPath = _ref.read(currentVaultProvider);
+    final vaultPath = _ref.read(currentVaultProvider).localPath;
     final version = state.lastSavedVersion;
     if (cli == null || vaultPath == null || version == null) return;
 
@@ -326,7 +326,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
   Future<void> _createDaily(String date) async {
     final draft = _drafts[date];
     final cli = _ref.read(memexCliProvider);
-    final vaultPath = _ref.read(currentVaultProvider);
+    final vaultPath = _ref.read(currentVaultProvider).localPath;
     if (draft == null || cli == null || vaultPath == null) return;
     final sent = draft.sent = draft.text;
     if (_virtualDate == date) state = state.copyWith(status: SaveStatus.saving);
@@ -407,7 +407,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
   /// to report to). A failure leaves the stored note as it is.
   Future<void> _saveElsewhere(String id, int version, String content) async {
     final cli = _ref.read(memexCliProvider)!;
-    final vaultPath = _ref.read(currentVaultProvider)!;
+    final vaultPath = _ref.read(currentVaultProvider).localPath!;
     try {
       await cli.updateNote(
         vaultPath: vaultPath,

@@ -96,7 +96,7 @@ Future<_Graph> _pumpGraph(
   final cli = FakeMemexCli();
   final container = ProviderContainer(
     overrides: [
-      currentVaultProvider.overrideWith((_) => vaultDir.path),
+      currentVaultProvider.overrideWith((_) => LocalVaultRef(vaultDir.path)),
       vaultDbProvider.overrideWithValue(db),
       vaultV5ReadyProvider.overrideWithValue(true),
       memexCliProvider.overrideWithValue(cli),
