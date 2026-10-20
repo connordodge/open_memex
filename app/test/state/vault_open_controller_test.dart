@@ -20,13 +20,17 @@ import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
 import '../support/vault_folders.dart';
 
-/// App state as `main()` builds it, with a fake CLI and database. The last
-/// vault (if any) is open through `currentVaultProvider`'s default.
+/// App state with a fake CLI and database. The last vault (if any) is open.
+/// #92 TEST-CHANGE: `currentVaultProvider` starts null and only launchReopen
+/// (through `memex vault check`) opens the last vault, so the helper seeds
+/// it as the state after a passed launch. [openLastVault] false leaves no
+/// vault open (or lets [overrides] pick it).
 Future<ProviderContainer> _app({
   required FakeMemexCli? cli,
   List<Override> overrides = const [],
   String? lastVault,
   List<String> recents = const [],
+  bool openLastVault = true,
 }) async {
   SharedPreferences.setMockInitialValues({
     'memex.binary_path': 'fake-memex',
@@ -40,6 +44,8 @@ Future<ProviderContainer> _app({
       settingsProvider.overrideWith((_) => settings),
       memexCliProvider.overrideWithValue(cli),
       vaultDbProvider.overrideWithValue(db),
+      if (lastVault != null && openLastVault)
+        currentVaultProvider.overrideWith((_) => LocalVaultRef(lastVault)),
       ...overrides,
     ],
   );
@@ -573,6 +579,7 @@ void main() {
           cli: _initCli(),
           lastVault: last.path,
           recents: [last.path, open.path],
+          openLastVault: false,
           overrides: [
             currentVaultProvider.overrideWith((_) => LocalVaultRef(open.path)),
           ],
@@ -598,7 +605,8 @@ void main() {
     test(
       'launchReopen with no vault open and a last vault opens it without a folder check or settings write',
       () async {
-        // Not a vault folder: launch has never checked it (#92 adds that).
+        // Not a vault folder: launch never checks the folder shape; #92 runs
+        // `memex vault check` instead.
         final last = createPlainFolder('om69_last_plain_');
         final other = createVaultFolder('om69_other_');
         final cli = _initCli();
@@ -606,7 +614,7 @@ void main() {
           cli: cli,
           lastVault: last.path,
           recents: [other.path, last.path],
-          overrides: [currentVaultProvider.overrideWith((_) => null)],
+          openLastVault: false,
         );
         expect(c.read(currentVaultProvider), isNull);
 
@@ -631,7 +639,11 @@ void main() {
           other.path,
           last.path,
         ]);
-        expect(cli.calls, isEmpty);
+        // #92 TEST-CHANGE: launch runs `memex vault check` on the last vault
+        // and nothing else (no folder shape check, no settings write).
+        expect(cli.calls.map((call) => call.args), [
+          ['vault', 'check', '--vault', last.path],
+        ]);
       },
     );
 
@@ -715,6 +727,9 @@ void main() {
             settingsProvider.overrideWith((_) => settings),
             memexCliProvider.overrideWithValue(null),
             clockProvider.overrideWithValue(FakeClock()),
+            // #92 TEST-CHANGE: the vault is open as after a passed launch
+            // (`currentVaultProvider` starts null).
+            currentVaultProvider.overrideWith((_) => LocalVaultRef(open.path)),
           ],
         );
         addTearDown(c.dispose);

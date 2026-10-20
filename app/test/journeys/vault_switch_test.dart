@@ -1,10 +1,13 @@
 // WI #69 (D12): the picker recent row, the sidebar vault pills and the vaults
 // header "+ new" (switch vault) go through the vault open controller, and
 // leaving the current vault asks `leaveVaultGuardProvider` first.
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/main.dart';
+import 'package:open_memex_app/src/memex_cli.dart';
 import 'package:open_memex_app/src/screens/vault_picker.dart';
 import 'package:open_memex_app/src/screens/workspace.dart';
 import 'package:open_memex_app/src/state/clock.dart';
@@ -81,12 +84,25 @@ Future<(WorkspaceHarness, String)> _workspaceWithSecondVault(
   return (h, other.path);
 }
 
+/// Counts launchReopen calls (#92: only the picker makes one).
+class _Wi92CountingController extends VaultOpenController {
+  _Wi92CountingController(super.ref);
+  int launches = 0;
+
+  @override
+  Future<VaultOpenOutcome> launchReopen() {
+    launches++;
+    return super.launchReopen();
+  }
+}
+
 /// The app as `main()` runs it, with the last vault set to [lastVault] and
 /// fakes for the CLI, database and clock. [overrides] go last.
 Future<ProviderContainer> _launchApp(
   WidgetTester tester, {
   required String lastVault,
   List<Override> overrides = const [],
+  FakeCliHandler? vaultCheck,
 }) async {
   SharedPreferences.setMockInitialValues({
     'memex.binary_path': 'fake-memex',
@@ -96,6 +112,8 @@ Future<ProviderContainer> _launchApp(
   final settings = (await tester.runAsync(SettingsController.load))!;
   final db = FakeVaultDb.v5();
   final cli = FakeMemexCli()
+    // #92: launch reopens the last vault through `memex vault check`.
+    ..on('vault check', vaultCheck ?? (_) => FakeMemexCli.ok())
     ..on('settings get', (_) => FakeMemexCli.ok(settingsGetMaxDepthStdout));
   tester.view.physicalSize = const Size(1600, 1000);
   tester.view.devicePixelRatio = 1.0;
@@ -124,42 +142,98 @@ Future<ProviderContainer> _launchApp(
 
 void main() {
   group('launch reopen (review round 1)', () {
-    testWidgets('the first frame at launch already shows the last vault', (
-      tester,
-    ) async {
-      final vault = createVaultFolder('om69_launch_');
-      final c = await _launchApp(tester, lastVault: vault.path);
+    // #92 TEST-CHANGE (lead ruling): `currentVaultProvider` starts null, so
+    // the first frame is the picker with the last vault row opening, and the
+    // picker (not the app root) starts launchReopen.
+    testWidgets(
+      'the first frame at launch shows the picker with the last vault row opening',
+      (tester) async {
+        final vault = createVaultFolder('om69_launch_');
+        final gate = Completer<MemexResult>();
+        final c = await _launchApp(
+          tester,
+          lastVault: vault.path,
+          vaultCheck: (_) => gate.future,
+        );
 
-      // One frame only: the reopen is the provider default, not the
-      // post-frame launchReopen call.
-      expect(c.read(currentVaultProvider), LocalVaultRef(vault.path));
-      expect(find.byType(Workspace), findsOneWidget);
-      expect(find.byType(VaultPickerScreen), findsNothing);
-      await pumpFrames(tester);
-      expect(c.read(currentVaultProvider), LocalVaultRef(vault.path));
-      expect(c.read(settingsProvider).recentVaults, [vault.path]);
-      expect(tester.takeException(), isNull);
-    });
+        // One frame only: no vault is open yet.
+        expect(c.read(currentVaultProvider), isNull);
+        expect(find.byType(VaultPickerScreen), findsOneWidget);
+        expect(find.byType(Workspace), findsNothing);
+        expect(find.byKey(const Key('recent-row-opening')), findsOneWidget);
+        await pumpFrames(tester);
+        expect(c.read(currentVaultProvider), isNull);
+        expect(find.byKey(const Key('recent-row-opening')), findsOneWidget);
 
-    testWidgets('the app root calls launchReopen after the first frame', (
-      tester,
-    ) async {
-      // No vault open on the first frame but a last vault set: only the
-      // app root's launchReopen call can open it.
-      final vault = createVaultFolder('om69_launch_');
-      final c = await _launchApp(
-        tester,
-        lastVault: vault.path,
-        overrides: [currentVaultProvider.overrideWith((_) => null)],
-      );
-      expect(find.byType(VaultPickerScreen), findsOneWidget);
+        gate.complete(FakeMemexCli.ok());
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+        await pumpFrames(tester);
 
-      await pumpFrames(tester);
+        expect(c.read(currentVaultProvider), LocalVaultRef(vault.path));
+        expect(find.byType(Workspace), findsOneWidget);
+        expect(c.read(settingsProvider).recentVaults, [vault.path]);
+        expect(tester.takeException(), isNull);
+      },
+    );
 
-      expect(c.read(currentVaultProvider), LocalVaultRef(vault.path));
-      expect(find.byType(Workspace), findsOneWidget);
-      expect(tester.takeException(), isNull);
-    });
+    testWidgets(
+      'the picker calls launchReopen once after its first frame and the app root never does',
+      (tester) async {
+        final vault = createVaultFolder('om69_launch_');
+        final counting = <_Wi92CountingController>[];
+        final c = await _launchApp(
+          tester,
+          lastVault: vault.path,
+          overrides: [
+            vaultOpenControllerProvider.overrideWith((ref) {
+              final controller = _Wi92CountingController(ref);
+              counting.add(controller);
+              return controller;
+            }),
+          ],
+        );
+        // The first frame drew the picker; its post-frame callback started
+        // the one launchReopen.
+        expect(find.byType(VaultPickerScreen), findsOneWidget);
+        expect(counting.fold(0, (n, e) => n + e.launches), 1);
+
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+        await pumpFrames(tester);
+
+        expect(c.read(currentVaultProvider), LocalVaultRef(vault.path));
+        expect(find.byType(Workspace), findsOneWidget);
+        expect(counting.fold(0, (n, e) => n + e.launches), 1);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'with a vault already open the app root shows the workspace and calls no launchReopen',
+      (tester) async {
+        final vault = createVaultFolder('om69_launch_');
+        final counting = <_Wi92CountingController>[];
+        final c = await _launchApp(
+          tester,
+          lastVault: vault.path,
+          overrides: [
+            currentVaultProvider.overrideWith((_) => LocalVaultRef(vault.path)),
+            vaultOpenControllerProvider.overrideWith((ref) {
+              final controller = _Wi92CountingController(ref);
+              counting.add(controller);
+              return controller;
+            }),
+          ],
+        );
+        expect(find.byType(Workspace), findsOneWidget);
+
+        await pumpFrames(tester);
+
+        expect(find.byType(VaultPickerScreen), findsNothing);
+        expect(c.read(currentVaultProvider), LocalVaultRef(vault.path));
+        expect(counting.fold(0, (n, e) => n + e.launches), 0);
+        expect(tester.takeException(), isNull);
+      },
+    );
   });
 
   group('picker recent row (AC5)', () {
