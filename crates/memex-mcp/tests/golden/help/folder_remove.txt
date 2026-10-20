@@ -1,0 +1,9 @@
+Remove a note from a Smart Folder
+
+Usage: memex folder remove --vault <VAULT> --id <ID> --note-id <NOTE_ID>
+
+Options:
+      --vault <VAULT>      Vault directory
+      --id <ID>            Folder id
+      --note-id <NOTE_ID>  Note id (ULID)
+  -h, --help               Print help

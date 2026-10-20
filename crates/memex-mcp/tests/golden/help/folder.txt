@@ -1,0 +1,15 @@
+Smart Folder operations
+
+Usage: memex folder <COMMAND>
+
+Commands:
+  ls      List every Smart Folder with its members, plus unsorted notes
+  new     Create a Smart Folder
+  update  Rename, re-parent or (un)pin a Smart Folder
+  rm      Delete a Smart Folder
+  add     Add a note to a Smart Folder, or change its membership pin
+  remove  Remove a note from a Smart Folder
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help
