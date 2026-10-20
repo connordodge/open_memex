@@ -1,0 +1,10 @@
+Add a note to a Smart Folder, or change its membership pin
+
+Usage: memex folder add [OPTIONS] --vault <VAULT> --id <ID> --note-id <NOTE_ID>
+
+Options:
+      --vault <VAULT>      Vault directory
+      --id <ID>            Folder id
+      --note-id <NOTE_ID>  Note id (ULID)
+      --pinned <PINNED>    Pin the membership [default: true] [possible values: true, false]
+  -h, --help               Print help

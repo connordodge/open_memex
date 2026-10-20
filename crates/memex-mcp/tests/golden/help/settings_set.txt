@@ -1,0 +1,9 @@
+Change one setting
+
+Usage: memex settings set --vault <VAULT> --key <KEY> --value <VALUE>
+
+Options:
+      --vault <VAULT>  Vault directory
+      --key <KEY>      Setting key (e.g. `smart_folder_max_depth`)
+      --value <VALUE>  New value. Hyphen values are accepted so `-1` reaches validation and fails as `setting_invalid`, not as a clap usage error
+  -h, --help           Print help

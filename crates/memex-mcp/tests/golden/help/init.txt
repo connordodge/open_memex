@@ -1,0 +1,9 @@
+Create a new vault at <path>
+
+Usage: memex init <PATH>
+
+Arguments:
+  <PATH>  Vault directory (created if it doesn't exist)
+
+Options:
+  -h, --help  Print help

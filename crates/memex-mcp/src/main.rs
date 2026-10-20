@@ -3,20 +3,12 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use memex_core::canvas;
-use memex_core::indexer;
-use memex_core::links::{self as core_links, LinkKind, LinkSource, PendingLink};
-use memex_core::notes::{
-    create_note, get_note as core_get_note, list_notes, update_note_with_options, CreateNote,
-    NoteId, RenameOptions, UpdateNote,
-};
-use memex_core::tags;
-use memex_core::{excerpts, review};
-use memex_core::{CanvasId, Vault};
-use rusqlite::params;
+use memex_core::links::{self as core_links, LinkKind};
+use memex_core::notes::{get_note as core_get_note, list_notes, NoteId};
+use memex_core::{SystemClock, Vault};
 
 use memex_mcp::cli::{self, InvalidArgument, Role};
-use memex_mcp::md_links;
+use memex_mcp::ops;
 use memex_mcp::state::build_default_embedder;
 
 #[derive(Parser, Debug)]
@@ -366,69 +358,34 @@ async fn cmd_add(
     std::io::stdin()
         .read_to_string(&mut buf)
         .context("read note body from stdin")?;
-    // C2.1: a daily note may start empty; its title defaults to today (local).
-    let daily = role == Some(Role::Daily);
-    if buf.trim().is_empty() && !daily {
-        let msg = "stdin was empty — nothing to add".to_string();
-        return Err(InvalidArgument(msg).into());
-    }
+    let input = ops::notes::AddInput {
+        title,
+        content_md: buf,
+        tags: tag_list,
+        role,
+    };
+    // C2.1: an empty body fails before the vault opens (a daily note may
+    // start empty; its title defaults to today, local).
+    input.validate()?;
 
     let mut vault = Vault::open(&absolute).context("open vault")?;
-    let frontmatter = role.map(|r| serde_json::json!({ "role": r.as_str() }));
-    let (note, first_line) = if daily {
-        let clock = memex_core::SystemClock;
-        let date = memex_core::daily::resolve_date(title.as_deref(), &clock)?;
-        let content_md = if buf.trim().is_empty() {
-            String::new()
-        } else {
-            buf
-        };
-        let input = CreateNote {
-            title: Some(date.to_string()),
-            content_md,
-            frontmatter,
-        };
-        let outcome = memex_core::notes::create_or_adopt_note(
-            &mut vault,
-            input,
-            memex_core::Caller::Person,
-            &clock,
-        )?;
-        let first_line = if outcome.adopted {
-            "Adopted note"
-        } else {
-            "Created note"
-        };
-        (outcome.note, first_line)
-    } else {
-        let input = CreateNote {
-            title,
-            content_md: buf,
-            frontmatter,
-        };
-        (create_note(&mut vault, input)?, "Created note")
-    };
-    for t in &tag_list {
-        tags::add_tag(&vault, note.id.as_str(), t)?;
-    }
-
     let embedder = if with_embeddings {
         Some(build_default_embedder(&absolute))
     } else {
         None
     };
-    indexer::reindex_note(
-        vault.connection_mut(),
-        note.id.as_str(),
-        &note.content_md,
-        embedder.as_deref(),
-    )?;
+    let out = ops::notes::add(&mut vault, input, &SystemClock, embedder.as_deref())?;
 
+    let first_line = if out.adopted {
+        "Adopted note"
+    } else {
+        "Created note"
+    };
     println!("{first_line}");
-    println!("  note_id: {}", note.id);
-    println!("  title:   {}", note.title);
-    if !tag_list.is_empty() {
-        println!("  tags:    {}", tag_list.join(", "));
+    println!("  note_id: {}", out.note_id);
+    println!("  title:   {}", out.title);
+    if !out.tags.is_empty() {
+        println!("  tags:    {}", out.tags.join(", "));
     }
     Ok(())
 }
@@ -462,84 +419,37 @@ async fn cmd_update(
         .read_to_string(&mut buf)
         .context("read note body from stdin")?;
 
-    let id = NoteId::parse(&note_id)?;
+    NoteId::parse(&note_id)?;
     let mut vault = Vault::open(&absolute).context("open vault")?;
-    let updated = update_note_with_options(
-        &mut vault,
-        &id,
-        expected_version,
-        UpdateNote {
-            title,
-            content_md: Some(buf),
-            frontmatter: None,
-        },
-        RenameOptions {
-            rename_links: !no_rename_links,
-        },
-    )?;
-
     let embedder = if with_embeddings {
         Some(build_default_embedder(&absolute))
     } else {
         None
     };
-    indexer::reindex_note(
-        vault.connection_mut(),
-        updated.id.as_str(),
-        &updated.content_md,
-        embedder.as_deref(),
-    )?;
-
-    println!(
-        "{}",
-        serde_json::to_string(&UpdateOutput {
-            note_id: updated.id.to_string(),
-            version: updated.version,
-            updated_at: updated.updated_at,
-        })?
-    );
+    let input = ops::notes::UpdateInput {
+        note_id,
+        expected_version,
+        title,
+        content_md: buf,
+        no_rename_links,
+    };
+    let out = ops::notes::update(&mut vault, input, &SystemClock, embedder.as_deref())?;
+    println!("{}", serde_json::to_string(&out)?);
     Ok(())
 }
 
 fn cmd_get(vault_path: PathBuf, note_id: String, include_links: bool) -> Result<()> {
     let absolute = make_absolute(&vault_path)?;
-    let id = NoteId::parse(&note_id)?;
-    let vault = Vault::open(&absolute)?;
-    let note = core_get_note(&vault, &id)?;
-    let tag_list = tags::tags_for_note(&vault, note.id.as_str()).unwrap_or_default();
-    // Review and transclusion fields join the top level (D7).
-    let mut fields = review::note_review_fields(&vault, &note)?;
-    fields.extend(excerpts::note_transclusion_fields(&vault, &note)?);
-    let mut payload = serde_json::json!({
-        "note_id": note.id.to_string(),
-        "title": note.title,
-        "content_md": note.content_md,
-        "frontmatter": note.frontmatter,
-        "version": note.version,
-        "created_at": note.created_at,
-        "updated_at": note.updated_at,
-        "tags": tag_list,
-    });
-    if let Some(obj) = payload.as_object_mut() {
-        obj.extend(fields);
-    }
-    if include_links {
-        let outgoing = core_links::links_out_for_note(&vault, note.id.as_str())
-            .unwrap_or_default();
-        let incoming = core_links::links_in_for_note(&vault, note.id.as_str(), None)
-            .unwrap_or_default();
-        payload["links"] = serde_json::json!(group_links_by_kind(&outgoing));
-        payload["backlinks"] = serde_json::json!(group_links_by_kind(&incoming));
-    }
-    println!("{}", serde_json::to_string(&payload)?);
+    NoteId::parse(&note_id)?;
+    let mut vault = Vault::open(&absolute)?;
+    let input = ops::notes::GetInput {
+        note_id,
+        include_links,
+    };
+    let out = ops::notes::get(&mut vault, input, &SystemClock, None)?;
+    // Through a `Value` so the keys print sorted, as they always have.
+    println!("{}", serde_json::to_string(&serde_json::to_value(&out)?)?);
     Ok(())
-}
-
-#[derive(serde::Serialize)]
-struct UpdateOutput {
-    note_id: String,
-    version: i64,
-    updated_at: i64,
 }
 
 fn cmd_links(
@@ -599,7 +509,7 @@ fn print_link_tree(
             .or_default()
             .push(l);
     }
-    let order = ordered_kinds(by_kind.keys().cloned().collect());
+    let order = ops::notes::ordered_kinds(by_kind.keys().cloned().collect());
     for k in order {
         let items = by_kind.get(&k).cloned().unwrap_or_default();
         println!("│   {k} ({})", items.len());
@@ -628,66 +538,6 @@ fn print_link_tree(
     Ok(())
 }
 
-fn ordered_kinds(kinds: Vec<String>) -> Vec<String> {
-    const BUILT_IN: [&str; 4] = ["references", "extends", "contradicts", "example-of"];
-    let mut out: Vec<String> = Vec::new();
-    let mut user_defined: Vec<String> = Vec::new();
-    for k in &kinds {
-        if BUILT_IN.contains(&k.as_str()) {
-            // skip; we'll add in canonical order
-        } else {
-            user_defined.push(k.clone());
-        }
-    }
-    user_defined.sort();
-    for b in BUILT_IN {
-        if kinds.iter().any(|k| k == b) {
-            out.push(b.to_string());
-        }
-    }
-    out.extend(user_defined);
-    out
-}
-
-fn group_links_by_kind(links: &[core_links::Link]) -> serde_json::Map<String, serde_json::Value> {
-    use std::collections::BTreeMap;
-    let mut by_kind: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
-    for l in links {
-        by_kind
-            .entry(l.link_kind.as_str().to_string())
-            .or_default()
-            .push(serde_json::json!({
-                "link_id": l.id,
-                "from_note_id": l.from_note_id,
-                "to_note_id": l.to_note_id,
-                "link_text": l.link_text,
-                "label": l.label,
-                "source": l.source.as_str(),
-                "position": l.position,
-            }));
-    }
-    let mut out = serde_json::Map::new();
-    let order = ordered_kinds(by_kind.keys().cloned().collect());
-    for k in order {
-        if let Some(v) = by_kind.remove(&k) {
-            out.insert(k, serde_json::Value::Array(v));
-        }
-    }
-    out
-}
-
-#[derive(serde::Serialize)]
-struct AddLinkOutput {
-    vault_id: String,
-    link_id: Option<String>,
-    from: String,
-    to: String,
-    kind: String,
-    source: String,
-    was_existing: bool,
-    note_version: i64,
-}
-
 async fn cmd_add_link(
     vault_path: PathBuf,
     from: String,
@@ -697,106 +547,22 @@ async fn cmd_add_link(
     with_embeddings: bool,
 ) -> Result<()> {
     let absolute = make_absolute(&vault_path)?;
-    let from_id = NoteId::parse(&from)?;
-    let to_id = NoteId::parse(&to)?;
-    let kind_obj = LinkKind::new(&kind).map_err(|e| invalid_argument("invalid --kind", e))?;
+    let input = ops::links::AddLinkInput {
+        from,
+        to,
+        kind,
+        label,
+    };
+    input.validate()?;
 
     let mut vault = Vault::open(&absolute).context("open vault")?;
-    let source = core_get_note(&vault, &from_id)?;
-    let target = core_get_note(&vault, &to_id)?;
-    let vault_id = vault.vault_id().to_string();
-
-    // Idempotency: if a link of this kind already exists from source to target,
-    // return early.
-    let existing = vault.connection_ref().query_row(
-        "SELECT id FROM links WHERE from_note_id = ? AND to_note_id = ? AND link_kind = ? LIMIT 1",
-        params![source.id.as_str(), target.id.as_str(), kind_obj.as_str()],
-        |r| r.get::<_, String>(0),
-    );
-    if let Ok(link_id) = existing {
-        let chosen_source = if kind_obj.as_str() == LinkKind::REFERENCES {
-            LinkSource::AutoAdded
-        } else {
-            LinkSource::Frontmatter
-        };
-        let payload = AddLinkOutput {
-            vault_id,
-            link_id: Some(link_id),
-            from: source.id.to_string(),
-            to: target.id.to_string(),
-            kind: kind_obj.as_str().to_string(),
-            source: chosen_source.as_str().to_string(),
-            was_existing: true,
-            note_version: source.version,
-        };
-        println!("{}", serde_json::to_string(&payload)?);
-        return Ok(());
-    }
-
-    // Insert into the source note's markdown.
-    let new_md = md_links::insert_link_into_markdown(
-        &source.content_md,
-        &target.title,
-        kind_obj.as_str(),
-        label.as_deref(),
-    );
-    let chosen_source = if kind_obj.as_str() == LinkKind::REFERENCES {
-        LinkSource::AutoAdded
-    } else {
-        LinkSource::Frontmatter
-    };
-
-    // Apply the update without firing the title-rename pass.
-    let updated = update_note_with_options(
-        &mut vault,
-        &source.id,
-        source.version,
-        UpdateNote {
-            content_md: Some(new_md),
-            ..Default::default()
-        },
-        RenameOptions { rename_links: false },
-    )?;
-
     let embedder = if with_embeddings {
         Some(build_default_embedder(&absolute))
     } else {
         None
     };
-    indexer::reindex_note(
-        vault.connection_mut(),
-        updated.id.as_str(),
-        &updated.content_md,
-        embedder.as_deref(),
-    )?;
-
-    // Find the new link's id.
-    let link_id: Option<String> = vault.connection_ref().query_row(
-        "SELECT id FROM links
-            WHERE from_note_id = ? AND to_note_id = ? AND link_kind = ?
-            ORDER BY position DESC LIMIT 1",
-        params![source.id.as_str(), target.id.as_str(), kind_obj.as_str()],
-        |r| r.get(0),
-    ).ok();
-
-    // Feed `label` through to the row if provided. The extractor parses
-    // `[[Title|alias]]` into `label` automatically.
-    let _ = label;
-    // PendingLink import keeps the type wired in case the public API needs
-    // direct insertion later.
-    let _ = std::marker::PhantomData::<PendingLink>;
-
-    let payload = AddLinkOutput {
-        vault_id,
-        link_id,
-        from: source.id.to_string(),
-        to: target.id.to_string(),
-        kind: kind_obj.as_str().to_string(),
-        source: chosen_source.as_str().to_string(),
-        was_existing: false,
-        note_version: updated.version,
-    };
-    println!("{}", serde_json::to_string(&payload)?);
+    let out = ops::links::add_link(&mut vault, input, &SystemClock, embedder.as_deref())?;
+    println!("{}", serde_json::to_string(&out)?);
     Ok(())
 }
 
@@ -810,67 +576,86 @@ async fn cmd_update_link(
 ) -> Result<()> {
     let absolute = make_absolute(&vault_path)?;
     let mut vault = Vault::open(&absolute).context("open vault")?;
-    let new_kind = match kind {
-        Some(k) => Some(LinkKind::new(&k).map_err(|e| invalid_argument("invalid --kind", e))?),
-        None => None,
+    let input = ops::links::UpdateLinkInput {
+        link_id,
+        kind,
+        label,
+        clear_label,
     };
-    let new_label: Option<Option<String>> = if clear_label {
-        Some(None)
-    } else {
-        label.map(Some)
-    };
-    let link = core_links::update_link(
-        &mut vault,
-        &link_id,
-        core_links::UpdateLink {
-            new_kind,
-            new_label,
-        },
-    )?;
-    println!(
-        "{}",
-        serde_json::to_string(&serde_json::json!({
-            "vault_id": vault.vault_id(),
-            "link_id": link.id,
-            "from_note_id": link.from_note_id,
-            "to_note_id": link.to_note_id,
-            "kind": link.link_kind.as_str(),
-            "label": link.label,
-            "source": link.source.as_str(),
-            "position": link.position,
-        }))?
-    );
+    let out = ops::links::update_link(&mut vault, input, &SystemClock, None)?;
+    println!("{}", serde_json::to_string(&out)?);
     Ok(())
 }
 
 fn cmd_canvas(action: CanvasAction) -> Result<()> {
+    let clock = SystemClock;
     match action {
-        CanvasAction::New { vault, title } => cmd_canvas_new(vault, title),
-        CanvasAction::Ls { vault } => cmd_canvas_ls(vault),
-        CanvasAction::Get { vault, canvas_id } => cmd_canvas_get(vault, canvas_id),
+        CanvasAction::New { vault, title } => {
+            let mut vault = open_vault(vault)?;
+            let input = ops::canvas::NewInput { title };
+            print_json(&ops::canvas::new(&mut vault, input, &clock, None)?)
+        }
+        CanvasAction::Ls { vault } => {
+            let mut vault = open_vault(vault)?;
+            let input = ops::canvas::LsInput;
+            print_json(&ops::canvas::ls(&mut vault, input, &clock, None)?)
+        }
+        CanvasAction::Get { vault, canvas_id } => {
+            let mut vault = open_vault(vault)?;
+            let input = ops::canvas::GetInput { canvas_id };
+            print_json(&ops::canvas::get(&mut vault, input, &clock, None)?)
+        }
         CanvasAction::Rename {
             vault,
             canvas_id,
             title,
             expected_version,
-        } => cmd_canvas_rename(vault, canvas_id, title, expected_version),
+        } => {
+            let mut vault = open_vault(vault)?;
+            let input = ops::canvas::RenameInput {
+                canvas_id,
+                title,
+                expected_version,
+            };
+            print_json(&ops::canvas::rename(&mut vault, input, &clock, None)?)
+        }
         CanvasAction::Rm {
             vault,
             canvas_id,
             expected_version,
-        } => cmd_canvas_rm(vault, canvas_id, expected_version),
+        } => {
+            let mut vault = open_vault(vault)?;
+            let input = ops::canvas::RmInput {
+                canvas_id,
+                expected_version,
+            };
+            print_json(&ops::canvas::rm(&mut vault, input, &clock, None)?)
+        }
         CanvasAction::Add {
             vault,
             canvas_id,
             note_id,
             x,
             y,
-        } => cmd_canvas_add(vault, canvas_id, note_id, x, y),
+        } => {
+            let mut vault = open_vault(vault)?;
+            let input = ops::canvas::AddInput {
+                canvas_id,
+                note_id,
+                x,
+                y,
+            };
+            print_json(&ops::canvas::add(&mut vault, input, &clock, None)?)
+        }
         CanvasAction::Remove {
             vault,
             canvas_id,
             note_id,
-        } => cmd_canvas_remove(vault, canvas_id, note_id),
+        } => {
+            let mut vault = open_vault(vault)?;
+            let input = ops::canvas::RemoveInput { canvas_id, note_id };
+            print_json(&ops::canvas::remove(&mut vault, input, &clock, None)?)
+        }
         CanvasAction::Move {
             vault,
             canvas_id,
@@ -878,218 +663,28 @@ fn cmd_canvas(action: CanvasAction) -> Result<()> {
             x,
             y,
             z,
-        } => cmd_canvas_move(vault, canvas_id, note_id, x, y, z),
+        } => {
+            let mut vault = open_vault(vault)?;
+            let input = ops::canvas::MoveInput {
+                canvas_id,
+                note_id,
+                x,
+                y,
+                z,
+            };
+            print_json(&ops::canvas::move_node(&mut vault, input, &clock, None)?)
+        }
     }
 }
 
-fn open_vault(vault_path: PathBuf) -> Result<(PathBuf, Vault)> {
+fn open_vault(vault_path: PathBuf) -> Result<Vault> {
     let absolute = make_absolute(&vault_path)?;
-    let vault = Vault::open(&absolute).context("open vault")?;
-    Ok((absolute, vault))
+    Vault::open(&absolute).context("open vault")
 }
 
-fn parse_canvas_id(s: &str) -> Result<CanvasId> {
-    Ok(CanvasId::parse(s)?)
-}
-
-fn cmd_canvas_new(vault_path: PathBuf, title: String) -> Result<()> {
-    let (_abs, mut vault) = open_vault(vault_path)?;
-    let c = canvas::create_canvas(&mut vault, title)?;
-    println!(
-        "{}",
-        serde_json::to_string(&serde_json::json!({
-            "vault_id": vault.vault_id(),
-            "canvas_id": c.id.to_string(),
-            "title": c.title,
-            "version": c.version,
-            "created_at": c.created_at,
-            "updated_at": c.updated_at,
-        }))?
-    );
-    Ok(())
-}
-
-fn cmd_canvas_ls(vault_path: PathBuf) -> Result<()> {
-    let (_abs, vault) = open_vault(vault_path)?;
-    let summaries = canvas::list_canvases(&vault)?;
-    let arr: Vec<serde_json::Value> = summaries
-        .into_iter()
-        .map(|s| {
-            serde_json::json!({
-                "canvas_id": s.id.to_string(),
-                "title": s.title,
-                "created_at": s.created_at,
-                "updated_at": s.updated_at,
-                "version": s.version,
-                "node_count": s.node_count,
-            })
-        })
-        .collect();
-    println!(
-        "{}",
-        serde_json::to_string(&serde_json::json!({
-            "vault_id": vault.vault_id(),
-            "canvases": arr,
-        }))?
-    );
-    Ok(())
-}
-
-fn cmd_canvas_get(vault_path: PathBuf, canvas_id: String) -> Result<()> {
-    let (_abs, vault) = open_vault(vault_path)?;
-    let cid = parse_canvas_id(&canvas_id)?;
-    let d = canvas::get_canvas(&vault, &cid)?;
-    let nodes: Vec<serde_json::Value> = d
-        .nodes
-        .into_iter()
-        .map(|n| {
-            serde_json::json!({
-                "note_id": n.note_id,
-                "note_title": n.note_title,
-                "x": n.x,
-                "y": n.y,
-                "z_order": n.z_order,
-                "placed_at": n.placed_at,
-            })
-        })
-        .collect();
-    let edges: Vec<serde_json::Value> = d
-        .edges
-        .into_iter()
-        .map(|e| {
-            serde_json::json!({
-                "link_id": e.link_id,
-                "from_note_id": e.from_note_id,
-                "to_note_id": e.to_note_id,
-                "link_text": e.link_text,
-                "kind": e.link_kind.as_str(),
-                "label": e.label,
-                "source": e.source.as_str(),
-                "position": e.position,
-            })
-        })
-        .collect();
-    println!(
-        "{}",
-        serde_json::to_string(&serde_json::json!({
-            "vault_id": vault.vault_id(),
-            "canvas_id": d.canvas.id.to_string(),
-            "title": d.canvas.title,
-            "created_at": d.canvas.created_at,
-            "updated_at": d.canvas.updated_at,
-            "version": d.canvas.version,
-            "nodes": nodes,
-            "edges": edges,
-        }))?
-    );
-    Ok(())
-}
-
-fn cmd_canvas_rename(
-    vault_path: PathBuf,
-    canvas_id: String,
-    title: String,
-    expected_version: i64,
-) -> Result<()> {
-    let (_abs, mut vault) = open_vault(vault_path)?;
-    let cid = parse_canvas_id(&canvas_id)?;
-    let c = canvas::rename_canvas(&mut vault, &cid, title, expected_version)?;
-    println!(
-        "{}",
-        serde_json::to_string(&serde_json::json!({
-            "vault_id": vault.vault_id(),
-            "canvas_id": c.id.to_string(),
-            "title": c.title,
-            "version": c.version,
-            "updated_at": c.updated_at,
-        }))?
-    );
-    Ok(())
-}
-
-fn cmd_canvas_rm(vault_path: PathBuf, canvas_id: String, expected_version: i64) -> Result<()> {
-    let (_abs, mut vault) = open_vault(vault_path)?;
-    let cid = parse_canvas_id(&canvas_id)?;
-    canvas::delete_canvas(&mut vault, &cid, expected_version)?;
-    println!(
-        "{}",
-        serde_json::to_string(&serde_json::json!({
-            "vault_id": vault.vault_id(),
-            "canvas_id": canvas_id,
-        }))?
-    );
-    Ok(())
-}
-
-fn cmd_canvas_add(
-    vault_path: PathBuf,
-    canvas_id: String,
-    note_id: String,
-    x: f64,
-    y: f64,
-) -> Result<()> {
-    let (_abs, mut vault) = open_vault(vault_path)?;
-    let cid = parse_canvas_id(&canvas_id)?;
-    NoteId::parse(&note_id)?;
-    let node = canvas::add_to_canvas(&mut vault, &cid, &note_id, x, y)?;
-    println!(
-        "{}",
-        serde_json::to_string(&serde_json::json!({
-            "vault_id": vault.vault_id(),
-            "canvas_id": node.canvas_id.to_string(),
-            "note_id": node.note_id,
-            "note_title": node.note_title,
-            "x": node.x,
-            "y": node.y,
-            "z_order": node.z_order,
-            "placed_at": node.placed_at,
-        }))?
-    );
-    Ok(())
-}
-
-fn cmd_canvas_remove(
-    vault_path: PathBuf,
-    canvas_id: String,
-    note_id: String,
-) -> Result<()> {
-    let (_abs, mut vault) = open_vault(vault_path)?;
-    let cid = parse_canvas_id(&canvas_id)?;
-    canvas::remove_from_canvas(&mut vault, &cid, &note_id)?;
-    println!(
-        "{}",
-        serde_json::to_string(&serde_json::json!({
-            "vault_id": vault.vault_id(),
-            "canvas_id": canvas_id,
-            "note_id": note_id,
-        }))?
-    );
-    Ok(())
-}
-
-fn cmd_canvas_move(
-    vault_path: PathBuf,
-    canvas_id: String,
-    note_id: String,
-    x: f64,
-    y: f64,
-    z: Option<i64>,
-) -> Result<()> {
-    let (_abs, mut vault) = open_vault(vault_path)?;
-    let cid = parse_canvas_id(&canvas_id)?;
-    let node = canvas::move_node(&mut vault, &cid, &note_id, x, y, z)?;
-    println!(
-        "{}",
-        serde_json::to_string(&serde_json::json!({
-            "vault_id": vault.vault_id(),
-            "canvas_id": node.canvas_id.to_string(),
-            "note_id": node.note_id,
-            "note_title": node.note_title,
-            "x": node.x,
-            "y": node.y,
-            "z_order": node.z_order,
-        }))?
-    );
+/// One JSON line on stdout.
+fn print_json<T: serde::Serialize>(out: &T) -> Result<()> {
+    println!("{}", serde_json::to_string(out)?);
     Ok(())
 }
 

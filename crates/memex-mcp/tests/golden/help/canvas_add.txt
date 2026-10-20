@@ -1,0 +1,11 @@
+Place a note on a canvas at (x, y)
+
+Usage: memex canvas add [OPTIONS] --vault <VAULT> --canvas-id <CANVAS_ID> --note-id <NOTE_ID>
+
+Options:
+      --vault <VAULT>          
+      --canvas-id <CANVAS_ID>  
+      --note-id <NOTE_ID>      
+      --x <X>                  [default: 0.0]
+      --y <Y>                  [default: 0.0]
+  -h, --help                   Print help
