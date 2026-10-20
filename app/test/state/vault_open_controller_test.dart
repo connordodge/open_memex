@@ -419,8 +419,11 @@ void main() {
     }
 
     for (final (name, allow) in [
-      ('switchToVault completes true when the guard allows', true),
-      ('switchToVault completes false when the guard denies', false),
+      ('switchToVault completes VaultOpened when the guard allows', true),
+      (
+        'switchToVault completes VaultOpenCancelled when the guard denies',
+        false,
+      ),
     ]) {
       testWidgets(name, (tester) async {
         final open = createVaultFolder('om69_open_');
@@ -457,9 +460,16 @@ void main() {
               .switchToVault(context, LocalVaultRef(other.path)),
         );
 
-        expect(switched, allow);
         expect(asked, 1);
         if (allow) {
+          expect(
+            switched,
+            isA<VaultOpened>().having(
+              (o) => o.vault,
+              'vault',
+              LocalVaultRef(other.path),
+            ),
+          );
           expect(c.read(currentVaultProvider), LocalVaultRef(other.path));
           expect(c.read(settingsProvider).lastVault, other.path);
           expect(c.read(settingsProvider).recentVaults, [
@@ -468,10 +478,14 @@ void main() {
           ]);
           expect(c.read(selectedNoteIdProvider), isNull);
         } else {
+          expect(switched, isA<VaultOpenCancelled>());
           expect(c.read(currentVaultProvider), LocalVaultRef(open.path));
           expect(c.read(settingsProvider).lastVault, open.path);
           expect(c.read(settingsProvider).recentVaults, [open.path]);
           expect(c.read(selectedNoteIdProvider), '01KEEP');
+          final prefs = await tester.runAsync(_prefs);
+          expect(prefs!.getString('memex.last_vault'), open.path);
+          expect(prefs.getStringList('memex.recent_vaults'), [open.path]);
         }
       });
     }

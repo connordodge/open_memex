@@ -181,18 +181,19 @@ void main() {
     });
   });
 
-  group('OmButton small size (A12, 24 px)', () {
+  group('OmButton small size (A12, 24 px, dense)', () {
     testWidgets(
       'a small OmButton uses a 12 px label, 12 px icon and 10 px horizontal padding',
       (tester) async {
         Future<({double inset, double gap, double iconSize, double label})>
-        measure(double size) async {
+        measure(double size, {bool dense = false}) async {
           await _pump(
             tester,
             OmButton(
               // A fresh button per size: no height animation between them.
-              key: ValueKey(size),
+              key: ValueKey((size, dense)),
               size: size,
+              dense: dense,
               icon: LucideIcons.refreshCw,
               label: 'retry',
               onPressed: () {},
@@ -214,7 +215,7 @@ void main() {
         }
 
         final normal = await measure(30);
-        final small = await measure(24);
+        final small = await measure(24, dense: true);
 
         // Today's default: 13 px label, 14 px icon, padding 12.
         expect(normal.label, 13);
@@ -235,7 +236,12 @@ void main() {
     ) async {
       await _pump(
         tester,
-        OmButton(size: 24, label: 'update token', onPressed: () {}),
+        OmButton(
+          size: 24,
+          dense: true,
+          label: 'update token',
+          onPressed: () {},
+        ),
       );
       final button = find.byType(OmButton);
       final text = find.descendant(
