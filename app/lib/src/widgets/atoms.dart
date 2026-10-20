@@ -231,10 +231,16 @@ class OmButton extends StatefulWidget {
     this.icon,
     this.kbd,
     this.tooltip,
+    this.dense = false,
   });
   final VoidCallback? onPressed;
   final OmButtonKind kind;
   final double size;
+
+  /// The small button style (board A12): 12 px label, 12 px icon and 10 px
+  /// horizontal padding instead of 13, 14 and 12. Opt-in and independent of
+  /// [size]; A12's small buttons pass `size: 24, dense: true`.
+  final bool dense;
   final String? label;
   final IconData? icon;
   final String? kbd;
@@ -282,8 +288,8 @@ class _OmButtonState extends State<OmButton> {
       ),
     };
 
-    // Small buttons (24 px, board A12): 12 px label and icon, padding 10.
-    final small = widget.size <= 24;
+    // Small buttons (opt-in, board A12): 12 px label and icon, padding 10.
+    final small = widget.dense;
     final hasLabel = widget.label != null;
     final child = Padding(
       padding: EdgeInsets.symmetric(
