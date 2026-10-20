@@ -353,6 +353,29 @@ impl ServeCommand {
         }
     }
 
+    /// [`Self::new`], but the child runs under `umask <mask>` (set by
+    /// `/bin/sh`, which then execs `memex`, so the pid is still memex's).
+    pub fn under_umask(mask: &str, args: &[&str]) -> Self {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg(format!("umask {mask} && exec \"$0\" serve \"$@\""))
+            .arg(env!("CARGO_BIN_EXE_memex"))
+            .args(args);
+        cmd.env_remove(TOKEN_ENV);
+        cmd.env_remove("RUST_LOG");
+        cmd.stdin(Stdio::null());
+        Self {
+            cmd,
+            scratch: tempfile::tempdir().expect("scratch dir"),
+        }
+    }
+
+    /// Removes `key` from the child's environment.
+    pub fn env_remove(mut self, key: &str) -> Self {
+        self.cmd.env_remove(key);
+        self
+    }
+
     /// Sets `key=value` on the child only.
     pub fn env(mut self, key: &str, value: &str) -> Self {
         self.cmd.env(key, value);
