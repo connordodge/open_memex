@@ -108,4 +108,12 @@ void main() {
     addTearDown(container.dispose);
     expect(container.read(utcOffsetProvider)(), start.timeZoneOffset);
   });
+
+  test('with no overrides utcOffsetProvider gives the machine offset', () {
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final offset = container.read(utcOffsetProvider);
+    expect(offset(), DateTime.now().timeZoneOffset);
+    expect(formatUtcOffset(offset()), matches(RegExp(r'^[+-]\d{2}:\d{2}$')));
+  });
 }
