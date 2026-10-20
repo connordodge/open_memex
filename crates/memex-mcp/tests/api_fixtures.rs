@@ -10,6 +10,7 @@
 //! pub const SEED_VAULT_NAME: &str;            // fixed vault name in every row path
 //! pub fn api_v1_dir() -> PathBuf;             // <repo>/app/test/fixtures/api_v1
 //! pub fn bless_requested() -> bool;           // MEMEX_BLESS == "1"
+//! pub fn seed_bless_requested() -> bool;      // MEMEX_BLESS == "1" && MEMEX_BLESS_SEED == "1"
 //! pub fn materialize_seed(root: &Path) -> PathBuf;  // creates <root>/<SEED_VAULT_NAME>/
 //! pub fn run_seed_builder(api_v1_dir: &Path, scratch: &Path, bless: bool) -> PathBuf;
 //!     // builds the seed with memex-core and writes seed_vault.sql + seed_manifest.json
@@ -40,8 +41,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use api_fixtures::{
-    api_v1_dir, bless_requested, canonical_json, load_rows, load_utc_offsets, materialize_seed,
-    normalize_volatile, run_rows, run_seed_builder, FixtureRequest, FixtureResponse, FixtureRow,
+    api_v1_dir, canonical_json, load_rows, load_utc_offsets, materialize_seed, normalize_volatile,
+    run_rows, run_seed_builder, seed_bless_requested, FixtureRequest, FixtureResponse, FixtureRow,
     SEED_VAULT_NAME,
 };
 use memex_core::Vault;
@@ -558,8 +559,10 @@ fn seed_builder_with_bless_rewrites_the_seed_files() {
     assert_built_seed(&api);
 }
 
-/// Entry point for blessing the committed seed (`MEMEX_BLESS=1`); in a normal
-/// run it proves nothing under `app/test/fixtures/` is written.
+/// Entry point for blessing the committed seed (`MEMEX_BLESS=1
+/// MEMEX_BLESS_SEED=1`, lead ruling on AC4); in any other run, including
+/// `MEMEX_BLESS=1` alone, it proves nothing under `app/test/fixtures/` is
+/// written.
 #[test]
 fn seed_builder_never_writes_committed_fixtures_without_bless() {
     assert_eq!(
@@ -568,7 +571,7 @@ fn seed_builder_never_writes_committed_fixtures_without_bless() {
         "api_v1_dir() is app/test/fixtures/api_v1"
     );
     let scratch = tempfile::tempdir().unwrap();
-    if bless_requested() {
+    if seed_bless_requested() {
         let out = run_seed_builder(&api_v1_dir(), scratch.path(), true);
         assert_eq!(out, api_v1_dir());
         return;
@@ -580,7 +583,7 @@ fn seed_builder_never_writes_committed_fixtures_without_bless() {
     assert_eq!(
         snapshot(&fixtures),
         before,
-        "a run without MEMEX_BLESS wrote under app/test/fixtures/"
+        "a run without MEMEX_BLESS=1 MEMEX_BLESS_SEED=1 wrote under app/test/fixtures/"
     );
 }
 
@@ -1151,4 +1154,637 @@ fn compat_domain_has_one_dart_only_info_row_and_the_runner_skips_it() {
     });
     assert_eq!(result, Ok(()));
     assert_eq!(calls, 0, "the Rust runner never executes compat/");
+}
+
+// ---------------------------------------------------------------------------
+// Contracts the support module documents (verify-mode pins)
+// ---------------------------------------------------------------------------
+
+/// Runs `f`, which must panic; returns the panic message.
+fn panic_message(f: impl FnOnce()) -> String {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(()) => panic!("expected a panic"),
+        Err(e) => e
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default(),
+    }
+}
+
+/// Names in `dir` that look like a leftover temp file of `write_atomic`.
+fn temp_leftovers(dir: &Path) -> Vec<String> {
+    fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains(".tmp"))
+        .collect()
+}
+
+/// File names directly in `dir`, sorted.
+fn file_names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn seed_builder_refuses_the_committed_dir_without_both_bless_switches() {
+    if seed_bless_requested() {
+        // The real regeneration run; the refusal can't be observed here.
+        return;
+    }
+    let fixtures = committed_api_v1_dir().join("..");
+    let before = snapshot(&fixtures);
+    // The committed dir, spelled two ways: the refusal compares real paths.
+    let spellings = [api_v1_dir(), committed_api_v1_dir().join("../api_v1")];
+    for dir in spellings {
+        let scratch = tempfile::tempdir().unwrap();
+        let msg = panic_message(|| {
+            run_seed_builder(&dir, scratch.path(), true);
+        });
+        assert!(
+            msg.contains("MEMEX_BLESS=1") && msg.contains("MEMEX_BLESS_SEED=1"),
+            "the refusal names both switches: {msg:?}"
+        );
+        assert!(
+            file_names(scratch.path()).is_empty(),
+            "a refused build writes nothing to scratch either"
+        );
+    }
+    assert_eq!(
+        snapshot(&fixtures),
+        before,
+        "a refused seed bless wrote under app/test/fixtures/"
+    );
+}
+
+/// Re-runs this test binary with `MEMEX_BLESS=1` alone, so the lead ruling on
+/// AC4 is checked in every normal run, not only when someone sets the switch.
+#[test]
+fn memex_bless_alone_never_regenerates_the_committed_seed() {
+    let tests = [
+        "seed_builder_refuses_the_committed_dir_without_both_bless_switches",
+        "seed_builder_never_writes_committed_fixtures_without_bless",
+    ];
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(tests)
+        .args(["--exact", "--test-threads=1"])
+        .env("MEMEX_BLESS", "1")
+        .env_remove("MEMEX_BLESS_SEED")
+        .output()
+        .expect("re-run the test binary");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "under MEMEX_BLESS=1 alone:\n{stdout}\n{stderr}"
+    );
+    assert!(
+        stdout.contains("2 passed"),
+        "both tests ran under MEMEX_BLESS=1 alone:\n{stdout}"
+    );
+}
+
+#[test]
+fn seed_builder_bless_replaces_the_seed_files_by_rename_and_leaves_no_temp_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api = fake_api_dir_with_stale_seed(tmp.path());
+    let scratch = tmp.path().join("scratch");
+    fs::create_dir_all(&scratch).unwrap();
+    // A hard link keeps the old inode: an in-place write would change it too,
+    // a write-then-rename leaves it holding the old bytes.
+    let held = tmp.path().join("held");
+    fs::create_dir_all(&held).unwrap();
+    fs::hard_link(api.join("seed_vault.sql"), held.join("seed_vault.sql")).unwrap();
+    fs::hard_link(
+        api.join("seed_manifest.json"),
+        held.join("seed_manifest.json"),
+    )
+    .unwrap();
+
+    run_seed_builder(&api, &scratch, true);
+
+    assert_eq!(
+        fs::read_to_string(held.join("seed_vault.sql")).unwrap(),
+        "-- stale\n",
+        "seed_vault.sql was rewritten in place, not renamed over"
+    );
+    assert_eq!(
+        fs::read_to_string(held.join("seed_manifest.json")).unwrap(),
+        "{\"stale\": true}\n",
+        "seed_manifest.json was rewritten in place, not renamed over"
+    );
+    assert_ne!(
+        fs::read_to_string(api.join("seed_vault.sql")).unwrap(),
+        "-- stale\n"
+    );
+    assert_eq!(
+        file_names(&api),
+        vec!["seed_manifest.json", "seed_vault.sql"],
+        "only the two seed files remain, no temp file"
+    );
+}
+
+#[test]
+fn seed_builder_without_bless_creates_a_missing_scratch_dir_with_only_the_seed_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api = fake_api_dir_with_stale_seed(tmp.path());
+    let scratch = tmp.path().join("not").join("yet");
+    let out = run_seed_builder(&api, &scratch, false);
+    assert_eq!(out, scratch);
+    assert_eq!(
+        file_names(&scratch),
+        vec!["seed_manifest.json", "seed_vault.sql"]
+    );
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(scratch.join("seed_manifest.json")).unwrap()).unwrap();
+    assert!(
+        !manifest["created_at"].is_null(),
+        "the manifest carries created_at: {manifest}"
+    );
+}
+
+#[test]
+fn runner_bless_replaces_response_and_index_files_by_rename() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = write_domain(
+        tmp.path(),
+        "renamedemo",
+        r#"[{"method": "GET", "path": "/vaults/seed/api/v1/things", "response": "things.json", "status": 200}]"#,
+        &[("things.json", "{\"stale\": true}\n")],
+    );
+    let held = tmp.path().join("held");
+    fs::create_dir_all(&held).unwrap();
+    fs::hard_link(dir.join("things.json"), held.join("things.json")).unwrap();
+    fs::hard_link(dir.join("index.json"), held.join("index.json")).unwrap();
+    let index_before = fs::read(dir.join("index.json")).unwrap();
+
+    let result = run_rows(&dir, true, |_| response(201, things_body()));
+    assert_eq!(result, Ok(()));
+
+    assert_eq!(
+        fs::read_to_string(held.join("things.json")).unwrap(),
+        "{\"stale\": true}\n",
+        "the response file was rewritten in place, not renamed over"
+    );
+    assert_eq!(
+        fs::read(held.join("index.json")).unwrap(),
+        index_before,
+        "index.json was rewritten in place, not renamed over"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("things.json")).unwrap(),
+        canonical_json(&things_body())
+    );
+    assert_eq!(load_rows(&dir).unwrap()[0].status, 201);
+    assert_eq!(
+        file_names(&dir),
+        vec!["index.json", "things.json"],
+        "no temp file left"
+    );
+}
+
+#[test]
+fn runner_bless_cleans_up_its_temp_file_when_the_rename_fails() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = write_domain(
+        tmp.path(),
+        "renamefaildemo",
+        r#"[{"method": "GET", "path": "/vaults/seed/api/v1/things", "response": "blocked.json", "status": 200}]"#,
+        &[],
+    );
+    // A non-empty directory where the response file goes: rename can't
+    // replace it.
+    fs::create_dir_all(dir.join("blocked.json")).unwrap();
+    fs::write(dir.join("blocked.json").join("keep"), "x").unwrap();
+
+    let msg = panic_message(|| {
+        let _ = run_rows(&dir, true, |_| response(200, things_body()));
+    });
+    assert!(msg.contains("blocked.json"), "names the target: {msg:?}");
+    assert!(
+        temp_leftovers(&dir).is_empty(),
+        "temp file left behind: {:?}",
+        temp_leftovers(&dir)
+    );
+    assert_eq!(
+        fs::read(dir.join("blocked.json").join("keep")).unwrap(),
+        b"x"
+    );
+}
+
+#[test]
+fn runner_bless_keeps_every_field_of_the_other_rows_in_index_json() {
+    let tmp = tempfile::tempdir().unwrap();
+    let index = json!([
+        {"method": "GET", "path": "/vaults/seed/api/v1/a", "response": "a.json", "status": 200,
+         "headers": {"X-Memex-UTC-Offset": "+05:45", "Accept": "application/json"},
+         "comment": "kept by bless", "dart_only": false},
+        {"method": "GET", "path": "/vaults/seed/api/v1/b", "response": "b.json", "status": 200,
+         "request": "b.request.json", "note": {"why": "nested unknown field"}},
+        {"method": "GET", "path": "/api/v1/info", "response": "info.json", "status": 200,
+         "dart_only": true, "extra": [1, 2, 3]}
+    ]);
+    let dir = write_domain(
+        tmp.path(),
+        "keepfields",
+        &serde_json::to_string_pretty(&index).unwrap(),
+        &[
+            ("a.json", &canonical_json(&json!({"a": 1}))),
+            ("b.json", &canonical_json(&json!({"b": 1}))),
+            ("b.request.json", "{}\n"),
+            ("info.json", "{}\n"),
+        ],
+    );
+    let exec = |req: &FixtureRequest| match req.path.as_str() {
+        "/vaults/seed/api/v1/a" => response(200, json!({"a": 1})),
+        "/vaults/seed/api/v1/b" => response(404, json!({"b": 1})),
+        other => panic!("executor called for {other}"),
+    };
+    assert_eq!(run_rows(&dir, true, exec), Ok(()));
+
+    let after: Value = serde_json::from_slice(&fs::read(dir.join("index.json")).unwrap())
+        .expect("blessed index.json is JSON");
+    let mut expected = index.clone();
+    expected[1]["status"] = json!(404);
+    assert_eq!(
+        after, expected,
+        "only row 1's status changed; every other field of every row kept"
+    );
+    assert_eq!(run_rows(&dir, false, exec), Ok(()));
+}
+
+#[test]
+fn runner_bless_leaves_index_json_bytes_alone_when_no_status_changed() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Hand-written formatting that a re-serialization would change.
+    let index = "[ {\"status\": 200, \"method\": \"GET\", \"path\": \"/vaults/seed/api/v1/a\", \"response\": \"a.json\"} ]";
+    let dir = write_domain(
+        tmp.path(),
+        "untouchedindex",
+        index,
+        &[("a.json", "{\"stale\": 1}\n")],
+    );
+    assert_eq!(
+        run_rows(&dir, true, |_| response(200, json!({"fresh": 1}))),
+        Ok(())
+    );
+    assert_eq!(fs::read_to_string(dir.join("index.json")).unwrap(), index);
+    assert_eq!(
+        fs::read_to_string(dir.join("a.json")).unwrap(),
+        canonical_json(&json!({"fresh": 1}))
+    );
+}
+
+#[test]
+fn runner_normalizes_the_expected_file_and_the_actual_body_before_comparing() {
+    assert_not_in_seed(&[MINT_A, MINT_B, &TS_1.to_string(), &TS_2.to_string()]);
+    let written = |id: &str, ts: i64| json!({"id": id, "self": format!("/vaults/seed/api/v1/notes/{id}"), "created_at": ts});
+    let tmp = tempfile::tempdir().unwrap();
+    // The expected file holds raw minted values, not placeholders.
+    let dir = write_domain(
+        tmp.path(),
+        "rawexpected",
+        r#"[{"method": "POST", "path": "/vaults/seed/api/v1/notes", "response": "created.json", "status": 201}]"#,
+        &[("created.json", &written(MINT_A, TS_1).to_string())],
+    );
+    assert_eq!(
+        run_rows(&dir, false, |_| response(201, written(MINT_B, TS_2))),
+        Ok(()),
+        "raw expected and raw actual match after normalizing both"
+    );
+
+    // A real difference beside the minted values still fails.
+    let err = err_of(
+        run_rows(&dir, false, |_| {
+            let mut v = written(MINT_B, TS_2);
+            v["extra"] = json!(true);
+            response(201, v)
+        }),
+        "extra key beside minted values",
+    );
+    assert!(err.contains("extra"), "{err}");
+}
+
+#[test]
+fn runner_bless_stores_the_normalized_canonical_response() {
+    assert_not_in_seed(&[MINT_A, &TS_1.to_string()]);
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = write_domain(
+        tmp.path(),
+        "blessnormalized",
+        r#"[{"method": "POST", "path": "/vaults/seed/api/v1/notes", "response": "created.json", "status": 201}]"#,
+        &[],
+    );
+    let actual = json!({"id": MINT_A, "created_at": TS_1, "title": "Fresh"});
+    assert_eq!(
+        run_rows(&dir, true, |_| response(201, actual.clone())),
+        Ok(())
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("created.json")).unwrap(),
+        "{\n  \"created_at\": \"<timestamp>\",\n  \"id\": \"<id:1>\",\n  \"title\": \"Fresh\"\n}\n"
+    );
+}
+
+#[test]
+fn runner_compares_non_json_bodies_byte_for_byte() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = write_domain(
+        tmp.path(),
+        "rawbody",
+        r#"[{"method": "GET", "path": "/vaults/seed/api/v1/raw", "response": "raw.txt", "status": 200}]"#,
+        &[("raw.txt", "not json at all\n")],
+    );
+    let raw = |body: &str| FixtureResponse {
+        status: 200,
+        body: body.as_bytes().to_vec(),
+    };
+    assert_eq!(run_rows(&dir, false, |_| raw("not json at all\n")), Ok(()));
+    let err = err_of(
+        run_rows(&dir, false, |_| raw("not json at all")),
+        "a missing newline in a raw body",
+    );
+    assert!(
+        err.contains("rawbody[0]") && err.contains("raw.txt"),
+        "{err}"
+    );
+}
+
+#[test]
+fn runner_reports_every_failing_row_in_one_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = write_domain(
+        tmp.path(),
+        "manyfail",
+        r#"[
+  {"method": "GET", "path": "/vaults/seed/api/v1/one", "response": "one.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/two", "response": "two.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/three", "response": "three.json", "status": 200}
+]"#,
+        &[
+            ("one.json", "{\"n\": 1}\n"),
+            ("two.json", "{\"n\": 2}\n"),
+            ("three.json", "{\"n\": 3}\n"),
+        ],
+    );
+    let err = err_of(
+        run_rows(&dir, false, |req| match req.path.as_str() {
+            "/vaults/seed/api/v1/one" => response(500, json!({"n": 1})),
+            "/vaults/seed/api/v1/two" => response(200, json!({"n": 2})),
+            _ => response(200, json!({"n": 33})),
+        }),
+        "two failing rows",
+    );
+    assert!(err.contains("2 fixture row(s)"), "{err}");
+    assert!(
+        err.contains("manyfail[0] GET /vaults/seed/api/v1/one"),
+        "{err}"
+    );
+    assert!(
+        err.contains("manyfail[2] GET /vaults/seed/api/v1/three"),
+        "{err}"
+    );
+    assert!(
+        !err.contains("manyfail[1]"),
+        "a passing row is not reported: {err}"
+    );
+    assert!(err.contains("MEMEX_BLESS=1"), "says how to rebless: {err}");
+}
+
+#[test]
+fn runner_fails_a_row_whose_request_file_is_missing_without_calling_the_executor() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = write_domain(
+        tmp.path(),
+        "norequest",
+        r#"[{"method": "POST", "path": "/vaults/seed/api/v1/things", "request": "absent.request.json", "response": "made.json", "status": 201}]"#,
+        &[("made.json", "{}\n")],
+    );
+    for bless in [false, true] {
+        let mut calls = 0;
+        let err = err_of(
+            run_rows(&dir, bless, |_| {
+                calls += 1;
+                response(201, json!({}))
+            }),
+            "missing request file",
+        );
+        assert!(
+            err.contains("norequest[0]") && err.contains("absent.request.json"),
+            "bless={bless}: {err}"
+        );
+        assert_eq!(calls, 0, "bless={bless}: executor not called");
+    }
+}
+
+#[test]
+fn row_loader_accepts_statuses_100_to_599_only() {
+    for (status, ok) in [
+        (99, false),
+        (100, true),
+        (599, true),
+        (600, false),
+        (70000, false),
+        (-1, false),
+    ] {
+        let index = format!(
+            r#"[{{"method": "GET", "path": "/api/v1/info", "response": "info.json", "status": {status}}}]"#
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = write_domain(tmp.path(), "statusrange", &index, &[]);
+        match load_rows(&dir) {
+            Ok(rows) => {
+                assert!(ok, "status {status} must be rejected");
+                assert_eq!(i64::from(rows[0].status), status);
+            }
+            Err(e) => {
+                assert!(!ok, "status {status} must be accepted: {e}");
+                assert!(
+                    e.contains("statusrange[0]") && e.contains("status"),
+                    "{status}: {e}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn row_loader_rejects_optional_fields_of_the_wrong_type() {
+    for (field, value) in [
+        ("request", json!(1)),
+        ("headers", json!(["X-Memex-UTC-Offset"])),
+        ("headers", json!({"X-Memex-UTC-Offset": 30})),
+        ("dart_only", json!("yes")),
+        ("method", json!(1)),
+    ] {
+        let mut row = json!({"method": "GET", "path": "/api/v1/info", "response": "info.json", "status": 200});
+        row[field] = value.clone();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = write_domain(
+            tmp.path(),
+            "wrongtype",
+            &serde_json::to_string(&json!([row])).unwrap(),
+            &[],
+        );
+        let err = err_of(load_rows(&dir), field);
+        assert!(
+            err.contains("wrongtype[0]") && err.contains(field),
+            "{field}={value}: {err}"
+        );
+    }
+    // Explicit nulls read as absent.
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = write_domain(
+        tmp.path(),
+        "nulls",
+        r#"[{"method": "GET", "path": "/api/v1/info", "response": "info.json", "status": 200, "request": null, "headers": null, "dart_only": null}]"#,
+        &[],
+    );
+    let rows = load_rows(&dir).unwrap();
+    assert_eq!(
+        (
+            rows[0].request.clone(),
+            rows[0].headers.len(),
+            rows[0].dart_only
+        ),
+        (None, 0, false)
+    );
+}
+
+#[test]
+fn normalize_volatile_replaces_minted_ids_inside_longer_strings() {
+    assert_not_in_seed(&[MINT_A, MINT_B]);
+    let (seed_id, _) = a_seed_note();
+    let v = json!({
+        "id": MINT_A,
+        "self": format!("/vaults/seed/api/v1/notes/{MINT_A}"),
+        "pair": format!("{MINT_A}->{MINT_B}"),
+        "seed_link": format!("/vaults/seed/api/v1/notes/{seed_id}")
+    });
+    assert_eq!(
+        normalize_volatile(&v),
+        json!({
+            "id": "<id:1>",
+            "pair": "<id:1>-><id:2>",
+            "self": "/vaults/seed/api/v1/notes/<id:1>",
+            "seed_link": format!("/vaults/seed/api/v1/notes/{seed_id}")
+        })
+    );
+}
+
+#[test]
+fn normalize_volatile_never_changes_object_keys() {
+    assert_not_in_seed(&[MINT_A, MINT_B]);
+    let v = json!({
+        MINT_A: {"id": MINT_B},
+        "created_at": {"nested_at": 5}
+    });
+    let out = normalize_volatile(&v);
+    let keys: Vec<&String> = out.as_object().unwrap().keys().collect();
+    assert_eq!(keys, vec![MINT_A, "created_at"]);
+    assert_eq!(
+        out[MINT_A],
+        json!({"id": "<id:1>"}),
+        "the key is not numbered"
+    );
+    assert_eq!(
+        out["created_at"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>(),
+        vec!["nested_at"]
+    );
+}
+
+#[test]
+fn normalize_volatile_numbers_placeholders_by_first_appearance_in_sorted_key_order() {
+    assert_not_in_seed(&[MINT_A, MINT_B, MINT_C]);
+    // Insertion order says c, b, a; sorted keys say a, b, c.
+    let v = json!({"c": MINT_A, "b": [MINT_C, MINT_B], "a": {"z": MINT_B, "y": MINT_C}});
+    assert_eq!(
+        normalize_volatile(&v),
+        json!({"a": {"y": "<id:1>", "z": "<id:2>"}, "b": ["<id:1>", "<id:2>"], "c": "<id:3>"})
+    );
+}
+
+#[test]
+fn normalize_volatile_turns_minted_timestamps_under_at_keys_into_the_timestamp_placeholder() {
+    let (_, seed_created_at) = a_seed_note();
+    assert_not_in_seed(&[&TS_1.to_string(), "2031-01-01T00:00:00Z"]);
+    assert!(committed_seed_sql().contains("'2026-10-18'"));
+    let v = json!({
+        "created_at": TS_1,
+        "reviewed_at": "2031-01-01T00:00:00Z",
+        "seen_at": [TS_1, seed_created_at],
+        "updated_at": seed_created_at,
+        "day_at": "2026-10-18",
+        "deleted_at": null,
+        "count": TS_1,
+        "label": "2031-01-01T00:00:00Z",
+        "at": TS_1,
+        "chat": TS_1
+    });
+    assert_eq!(
+        normalize_volatile(&v),
+        json!({
+            "created_at": "<timestamp>",
+            "reviewed_at": "<timestamp>",
+            "seen_at": ["<timestamp>", seed_created_at],
+            "updated_at": seed_created_at,
+            "day_at": "2026-10-18",
+            "deleted_at": null,
+            "count": TS_1,
+            "label": "2031-01-01T00:00:00Z",
+            "at": TS_1,
+            "chat": TS_1
+        }),
+        "only non-seed values under keys ending in _at change; the placeholder is <timestamp>"
+    );
+}
+
+#[test]
+fn normalize_volatile_leaves_placeholders_and_non_string_values_alone() {
+    let v = json!({
+        "id": "<id:7>",
+        "created_at": "<timestamp>",
+        "custom": "<vault_id>",
+        "n": 1.5,
+        "flag": true,
+        "list": [null, 0, "plain"]
+    });
+    assert_eq!(normalize_volatile(&v), v);
+}
+
+#[test]
+fn materialize_seed_indexes_the_seed_chunks_for_search() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = materialize_seed(root.path());
+    let vault = Vault::open(&dir).unwrap();
+    let conn = vault.connection_ref();
+    assert!(count(conn, "chunks") > 0);
+    assert_eq!(
+        count(conn, "chunk_fts"),
+        count(conn, "chunks"),
+        "one search row per seed chunk"
+    );
+    let hits: Vec<String> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT n.title FROM chunk_fts f JOIN notes n ON n.id = f.note_id
+                 WHERE chunk_fts MATCH 'sinks' ORDER BY n.title",
+            )
+            .unwrap();
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
+        rows.map(|r| r.unwrap()).collect()
+    };
+    assert!(
+        hits.iter().any(|t| t == "Economy Design"),
+        "searching the seed finds Economy Design: {hits:?}"
+    );
 }
