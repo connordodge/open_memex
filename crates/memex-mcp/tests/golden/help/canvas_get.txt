@@ -1,0 +1,8 @@
+Print one canvas as JSON
+
+Usage: memex canvas get --vault <VAULT> --canvas-id <CANVAS_ID>
+
+Options:
+      --vault <VAULT>          
+      --canvas-id <CANVAS_ID>  
+  -h, --help                   Print help

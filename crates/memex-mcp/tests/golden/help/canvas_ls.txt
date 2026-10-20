@@ -1,0 +1,7 @@
+List all canvases
+
+Usage: memex canvas ls --vault <VAULT>
+
+Options:
+      --vault <VAULT>  
+  -h, --help           Print help

@@ -6,8 +6,8 @@ import 'vault_state.dart';
 
 /// The open vault's [VaultAccess] (D13), built from `currentVaultProvider`,
 /// `vaultDbProvider` and `memexCliProvider`: null with no open vault, else a
-/// `LocalVaultAccess` for the current path (either handle may be null).
-/// A hosted vault gives null until #96.
+/// `LocalVaultAccess` for a [LocalVaultRef]'s folder (either handle may be
+/// null). A [HostedVaultRef] gives null until #96.
 final vaultAccessProvider = Provider<VaultAccess?>((ref) {
   final path = ref.watch(currentVaultProvider).localPath;
   if (path == null) return null;
@@ -18,7 +18,9 @@ final vaultAccessProvider = Provider<VaultAccess?>((ref) {
   );
 });
 
-/// True when the open vault is a hosted vault. `VaultAsyncView` reads it to
-/// pick the first-load state. Always false until hosted refs exist (#69 adapts
-/// it to `currentVaultProvider`'s `HostedVaultRef`).
-final vaultIsHostedProvider = Provider<bool>((ref) => false);
+/// True when the open vault is a hosted vault: `currentVaultProvider` holds a
+/// [HostedVaultRef]. False with no vault or a local vault. `VaultAsyncView`
+/// reads it to pick the first-load state.
+final vaultIsHostedProvider = Provider<bool>(
+  (ref) => ref.watch(currentVaultProvider) is HostedVaultRef,
+);

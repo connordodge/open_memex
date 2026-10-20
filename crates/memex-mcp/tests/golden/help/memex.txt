@@ -1,0 +1,27 @@
+Open Memex — local-first AI-native notes
+
+Usage: memex <COMMAND>
+
+Commands:
+  init         Create a new vault at <path>
+  add          Append a note to a vault from CLI input. Body comes from stdin
+  ls           List notes in a vault
+  update       Update an existing note. Body comes from stdin
+  get          Print a single note as JSON to stdout
+  links        Print outgoing + incoming links for a note as a tree
+  add-link     Add a wikilink from one note to another. Inserts into the source note's markdown per the destination rule and re-indexes
+  update-link  Rewrite the `kind` and/or `label` on an existing wikilink in place
+  canvas       Canvas operations: create/list/get/rename/delete canvases and place, remove, or move notes on them
+  append       Append text to a daily note. Text comes from TEXT or stdin
+  prompt       Print an agent prompt's raw text
+  rm           Delete a note
+  excerpt      Excerpt operations on topic notes
+  footer       Topic footer operations on daily notes
+  folder       Smart Folder operations
+  settings     Read or change vault settings
+  serve        Run as an MCP server over stdio
+  help         Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version

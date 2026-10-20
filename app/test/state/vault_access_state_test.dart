@@ -198,6 +198,52 @@ void main() {
     );
   });
 
+  group('WI69 hosted vault ref', () {
+    // Built from run-time values so the HostedVaultRef constructor runs.
+    final hosted = HostedVaultRef(
+      ['srv-', '1'].join(),
+      ['team', 'vault'].join('-'),
+    );
+
+    ProviderContainer hostedContainer() {
+      final c = ProviderContainer(
+        overrides: [
+          // A database and a CLI are both present: only the ref decides.
+          vaultDbProvider.overrideWithValue(_seeded()),
+          memexCliProvider.overrideWithValue(vaultAccessSampleCli()),
+          currentVaultProvider.overrideWith((_) => hosted),
+        ],
+      );
+      addTearDown(c.dispose);
+      return c;
+    }
+
+    test('a HostedVaultRef gives a null vaultAccessProvider', () {
+      final c = hostedContainer();
+      expect(c.read(currentVaultProvider), hosted);
+      expect(c.read(vaultAccessProvider), isNull);
+
+      // And it follows the ref: local gives access, hosted gives null again.
+      c.read(currentVaultProvider.notifier).state = const LocalVaultRef(_vault);
+      expect(c.read(vaultAccessProvider), isA<LocalVaultAccess>());
+      c.read(currentVaultProvider.notifier).state = hosted;
+      expect(c.read(vaultAccessProvider), isNull);
+    });
+
+    test('vaultIsHostedProvider is true for a HostedVaultRef', () {
+      // No override of vaultIsHostedProvider: its own default.
+      final c = hostedContainer();
+      expect(c.read(vaultIsHostedProvider), isTrue);
+
+      c.read(currentVaultProvider.notifier).state = const LocalVaultRef(_vault);
+      expect(c.read(vaultIsHostedProvider), isFalse);
+      c.read(currentVaultProvider.notifier).state = null;
+      expect(c.read(vaultIsHostedProvider), isFalse);
+      c.read(currentVaultProvider.notifier).state = hosted;
+      expect(c.read(vaultIsHostedProvider), isTrue);
+    });
+  });
+
   group('AC6 no open vault', () {
     test('vaultIsHostedProvider is false with no override', () {
       // No override of vaultIsHostedProvider: its own default.

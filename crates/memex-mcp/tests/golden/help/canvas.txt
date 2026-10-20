@@ -1,0 +1,17 @@
+Canvas operations: create/list/get/rename/delete canvases and place, remove, or move notes on them
+
+Usage: memex canvas <COMMAND>
+
+Commands:
+  new     Create a new canvas
+  ls      List all canvases
+  get     Print one canvas as JSON
+  rename  Rename a canvas
+  rm      Delete a canvas (cascades placements only)
+  add     Place a note on a canvas at (x, y)
+  remove  Remove a note's placement from a canvas
+  move    Move a placed node to new coordinates
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help

@@ -16,8 +16,8 @@ import 'package:open_memex_app/src/vault_access/local/local_vault_access.dart';
 import 'package:open_memex_app/src/vault_access/vault_async_view.dart';
 import 'package:open_memex_app/src/vault_access/vault_scoped.dart';
 
-const _vaultA = '/tmp/om-70-vault-a';
-const _vaultB = '/tmp/om-70-vault-b';
+const _vaultA = LocalVaultRef('/tmp/om-70-vault-a');
+const _vaultB = LocalVaultRef('/tmp/om-70-vault-b');
 const _emptyText = 'no notes yet';
 const _facadeKey = Key('wi70-facade');
 
@@ -86,15 +86,13 @@ class _Wi70Switch {
   _Wi70Switch(this.container, this.notes);
 
   final ProviderContainer container;
-  final Map<String, _Wi70SwitchGatedNotes> notes;
+  final Map<VaultRef, _Wi70SwitchGatedNotes> notes;
 
   _Wi70SwitchGatedNotes get a => notes[_vaultA]!;
   _Wi70SwitchGatedNotes get b => notes[_vaultB]!;
 
-  void switchTo(String? vault) =>
-      container.read(currentVaultProvider.notifier).state = vault == null
-      ? null
-      : LocalVaultRef(vault);
+  void switchTo(VaultRef? vault) =>
+      container.read(currentVaultProvider.notifier).state = vault;
 
   AsyncValue<VaultScoped<List<NoteListItem>>> get value =>
       container.read(_wi70SwitchNotesProvider);
@@ -108,18 +106,19 @@ Future<_Wi70Switch> _pump(
   bool fixed = false,
 }) async {
   final notes = {
-    _vaultA: _Wi70SwitchGatedNotes(_vaultA),
-    _vaultB: _Wi70SwitchGatedNotes(_vaultB),
+    _vaultA: _Wi70SwitchGatedNotes(_vaultA.path),
+    _vaultB: _Wi70SwitchGatedNotes(_vaultB.path),
   };
   final container = ProviderContainer(
     overrides: [
-      currentVaultProvider.overrideWith((_) => const LocalVaultRef(_vaultA)),
+      currentVaultProvider.overrideWith((_) => _vaultA),
       vaultDbProvider.overrideWithValue(null),
       memexCliProvider.overrideWithValue(null),
       vaultAccessProvider.overrideWith((ref) {
-        final vault = ref.watch(currentVaultProvider).localPath;
-        if (vault == null) return null;
-        return LocalVaultAccess(vaultPath: vault, notes: notes[vault]);
+        final vault = ref.watch(currentVaultProvider);
+        final path = vault.localPath;
+        if (path == null) return null;
+        return LocalVaultAccess(vaultPath: path, notes: notes[vault]);
       }),
       _wi70HostedState.overrideWith((_) => hosted),
       vaultIsHostedProvider.overrideWith((ref) => ref.watch(_wi70HostedState)),
@@ -206,7 +205,7 @@ Future<_Wi70Switch> _loadAThenSwitch(
   expect(s.b.gates, hasLength(1), reason: 'the switch started a read of B');
   // The reader still carries A's value while B loads: the case under test.
   expect(s.value.isLoading, isTrue);
-  expect(s.value.valueOrNull?.vault, const LocalVaultRef(_vaultA));
+  expect(s.value.valueOrNull?.vault, _vaultA);
   return s;
 }
 
@@ -271,7 +270,7 @@ void main() {
 
       // The error still carries A's value: the view must not render it.
       expect(s.value.hasError, isTrue);
-      expect(s.value.valueOrNull?.vault, const LocalVaultRef(_vaultA));
+      expect(s.value.valueOrNull?.vault, _vaultA);
       _expectNoVaultARows(tester);
       expect(find.text(_emptyText), findsOneWidget);
       _expectNoSpinner();
@@ -298,6 +297,45 @@ void main() {
 
       expect(s.a.gates, hasLength(2), reason: 'the bump started a new read');
       expect(s.value.isLoading, isTrue);
+      expect(find.text('Alpha from A'), findsOneWidget);
+      expect(find.text(_emptyText), findsNothing);
+      _expectNoSpinner();
+      expect(_facadeText(tester), 'facade:Alpha from A');
+      expect(
+        [for (final n in s.container.read(_wi70SwitchFacadeProvider)) n.title],
+        ['Alpha from A'],
+      );
+    });
+  }
+
+  for (final (name, hosted) in [
+    (
+      'a same-vault reload with an equal but non-identical VaultRef keeps the previous value',
+      false,
+    ),
+    (
+      'a same-vault reload with an equal but non-identical VaultRef keeps the previous value on a hosted vault',
+      true,
+    ),
+  ]) {
+    testWidgets(name, (tester) async {
+      final s = await _pump(tester, hosted: hosted);
+      s.a.gates.single.complete(_notes(['Alpha from A']));
+      await _drain(tester);
+      expect(s.value.valueOrNull?.vault, same(_vaultA));
+
+      // The same vault again as a new, equal ref (as a settings reload
+      // builds it), then a reload whose read stays pending.
+      final again = LocalVaultRef([_vaultA.path].join());
+      s.switchTo(again);
+      s.container.read(vaultRevisionProvider.notifier).state++;
+      await _drain(tester);
+
+      final current = s.container.read(currentVaultProvider);
+      expect(current, _vaultA);
+      expect(identical(current, _vaultA), isFalse);
+      expect(s.value.isLoading, isTrue);
+      expect(s.value.valueOrNull?.vault, same(_vaultA));
       expect(find.text('Alpha from A'), findsOneWidget);
       expect(find.text(_emptyText), findsNothing);
       _expectNoSpinner();
@@ -342,7 +380,7 @@ void main() {
     (tester) async {
       final s = await _pump(tester, hosted: false, fixed: true);
       s.container.read(_wi70FixedValue.notifier).state = AsyncData(
-        VaultScoped(const LocalVaultRef(_vaultA), _notes(['Alpha from A'])),
+        VaultScoped(_vaultA, _notes(['Alpha from A'])),
       );
       await _drain(tester);
       expect(find.text('Alpha from A'), findsOneWidget);
@@ -385,21 +423,18 @@ void main() {
 
   group('currentVaultData', () {
     // Built from run-time values so the VaultScoped constructor runs.
-    final vaultA = LocalVaultRef([_vaultA].join());
+    final vaultA = LocalVaultRef([_vaultA.path].join());
     final scopedA = VaultScoped<List<String>>(vaultA, ['row from A']);
 
     test('currentVaultData is null when there is no data', () {
       expect(
-        currentVaultData<List<String>>(
-          const AsyncLoading(),
-          const LocalVaultRef(_vaultA),
-        ),
+        currentVaultData<List<String>>(const AsyncLoading(), _vaultA),
         isNull,
       );
       expect(
         currentVaultData<List<String>>(
           AsyncError(StateError('x'), StackTrace.empty),
-          const LocalVaultRef(_vaultA),
+          _vaultA,
         ),
         isNull,
       );
@@ -408,16 +443,13 @@ void main() {
     test(
       'currentVaultData is null when the data was loaded for another vault',
       () {
-        expect(scopedA.vault, const LocalVaultRef(_vaultA));
-        expect(
-          currentVaultData(AsyncData(scopedA), const LocalVaultRef(_vaultB)),
-          isNull,
-        );
+        expect(scopedA.vault, _vaultA);
+        expect(currentVaultData(AsyncData(scopedA), _vaultB), isNull);
         expect(currentVaultData(AsyncData(scopedA), null), isNull);
         expect(
           currentVaultData(
             AsyncData(const VaultScoped<List<String>>(null, [])),
-            const LocalVaultRef(_vaultA),
+            _vaultA,
           ),
           isNull,
         );
@@ -427,7 +459,7 @@ void main() {
             const AsyncLoading<VaultScoped<List<String>>>().copyWithPrevious(
               AsyncData(scopedA),
             ),
-            const LocalVaultRef(_vaultB),
+            _vaultB,
           ),
           isNull,
         );
@@ -437,7 +469,7 @@ void main() {
               StateError('x'),
               StackTrace.empty,
             ).copyWithPrevious(AsyncData(scopedA)),
-            const LocalVaultRef(_vaultB),
+            _vaultB,
           ),
           isNull,
         );
@@ -447,16 +479,13 @@ void main() {
     test(
       'currentVaultData returns the data loaded for the current vault also during a reload or after a reload error',
       () {
-        expect(
-          currentVaultData(AsyncData(scopedA), const LocalVaultRef(_vaultA)),
-          same(scopedA),
-        );
+        expect(currentVaultData(AsyncData(scopedA), _vaultA), same(scopedA));
         expect(
           currentVaultData(
             const AsyncLoading<VaultScoped<List<String>>>().copyWithPrevious(
               AsyncData(scopedA),
             ),
-            const LocalVaultRef(_vaultA),
+            _vaultA,
           ),
           same(scopedA),
         );
@@ -466,7 +495,7 @@ void main() {
               StateError('x'),
               StackTrace.empty,
             ).copyWithPrevious(AsyncData(scopedA)),
-            const LocalVaultRef(_vaultA),
+            _vaultA,
           ),
           same(scopedA),
         );
