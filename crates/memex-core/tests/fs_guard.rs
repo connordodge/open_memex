@@ -667,3 +667,163 @@ fn real_probe_reports_the_autofs_home_mount_as_not_local() {
         "got {err:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Verify-mode pins: documented contracts of `check_with` and `probe`
+// ---------------------------------------------------------------------------
+
+/// Runs `check_with` on `path` with a local probe and returns the one path
+/// it probed.
+fn probed_path(path: &Path) -> PathBuf {
+    let calls = RefCell::new(Vec::new());
+    let probe = |p: &Path| {
+        calls.borrow_mut().push(p.to_path_buf());
+        local_probe(p)
+    };
+    fs_guard::check_with(path, &probe)
+        .unwrap_or_else(|e| panic!("{}: a local probe is safe: {e}", path.display()));
+    let calls = calls.into_inner();
+    assert_eq!(calls.len(), 1, "{}: probed once: {calls:?}", path.display());
+    calls.into_iter().next().unwrap()
+}
+
+#[test]
+fn relative_path_with_no_existing_ancestor_probes_the_current_dir() {
+    // Tests run in the crate directory, where `src` exists and these names
+    // don't.
+    let missing = format!("wi75-no-such-dir-{}", std::process::id());
+    assert!(!Path::new(&missing).exists(), "precondition: {missing}");
+    for path in [
+        PathBuf::from(&missing),
+        Path::new(&missing).join("a").join("b"),
+    ] {
+        assert_eq!(
+            probed_path(&path),
+            PathBuf::from("."),
+            "{}: no existing ancestor, so `.` is probed",
+            path.display()
+        );
+    }
+    assert_eq!(
+        probed_path(&Path::new("src").join(&missing).join("x")),
+        PathBuf::from("src"),
+        "a relative path with an existing ancestor probes that ancestor"
+    );
+    assert!(!Path::new(&missing).exists(), "the check creates nothing");
+}
+
+#[test]
+fn network_refusal_message_is_one_line_naming_the_path_and_filesystem() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("a").join("b");
+    let cases: [(FsInfo, &str); 7] = [
+        (mac("smbfs", true), "smbfs"),
+        (mac("nfs", false), "nfs, not a local mount"),
+        (mac("apfs", false), "apfs, not a local mount"),
+        (mac("macfuse", true), "macfuse"),
+        (linux(LINUX_FUSE, false), "fuse"),
+        (linux(0x6969, false), "f_type 0x6969"),
+        (linux(0xFF53_4D42, true), "f_type 0xff534d42"),
+    ];
+    for target in [dir.path().to_path_buf(), missing] {
+        for (info, fs_name) in &cases {
+            let answer = info.clone();
+            let probe = move |_: &Path| Ok(answer.clone());
+            let err = fs_guard::check_with(&target, &probe).expect_err("network is refused");
+            let detail = format!("{} ({fs_name})", target.display());
+            match &err {
+                MemexError::NetworkFilesystem(d) => assert_eq!(d, &detail, "{info:?}"),
+                other => panic!("{info:?}: got {other:?}"),
+            }
+            let message = err.to_string();
+            assert_eq!(
+                message,
+                format!("vault folder is on a network filesystem: {detail}"),
+                "{info:?}"
+            );
+            assert!(!message.contains('\n'), "one line: {message:?}");
+            let json = err.to_error_json();
+            assert_eq!(json["error"]["code"], "network_filesystem");
+            assert_eq!(json["error"]["message"], message.as_str());
+        }
+    }
+}
+
+#[test]
+fn probe_error_is_an_io_error_naming_the_path_the_probed_ancestor_and_the_cause() {
+    let dir = tempfile::tempdir().unwrap();
+    let cases = [
+        (dir.path().to_path_buf(), dir.path().to_path_buf()),
+        (dir.path().join("a").join("b"), dir.path().to_path_buf()),
+    ];
+    for (target, ancestor) in cases {
+        let probe = |_: &Path| -> io::Result<FsInfo> {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "wi75 statfs denied",
+            ))
+        };
+        let err = fs_guard::check_with(&target, &probe).expect_err("a probe error is an error");
+        let MemexError::Io(io_err) = &err else {
+            panic!(
+                "{}: a probe error is MemexError::Io: {err:?}",
+                target.display()
+            );
+        };
+        assert_eq!(
+            io_err.kind(),
+            io::ErrorKind::PermissionDenied,
+            "the probe's error kind is kept"
+        );
+        assert_eq!(
+            io_err.to_string(),
+            format!(
+                "cannot tell which filesystem holds {}: statfs {}: wi75 statfs denied",
+                target.display(),
+                ancestor.display()
+            )
+        );
+        assert_eq!(err.code(), "internal");
+        assert_eq!(err.to_error_json()["error"]["code"], "internal");
+        assert!(
+            err.to_string().contains(&io_err.to_string()),
+            "the message carries the detail: {err}"
+        );
+    }
+    assert!(tree(dir.path()).is_empty(), "the check creates nothing");
+}
+
+#[test]
+fn real_probe_of_a_path_with_a_nul_byte_is_an_invalid_input_error() {
+    let err = fs_guard::probe(Path::new("wi75\0nul")).expect_err("no C path has a NUL");
+    assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{err}");
+}
+
+#[test]
+fn real_vault_open_refuses_the_autofs_home_mount() {
+    // `Vault::open` with no probe override reads the real `statfs` probe.
+    let Some(home) = autofs_home() else { return };
+    let absent = home.join(format!("wi75-absent-open-{}", std::process::id()));
+    let err = Vault::open(&absent)
+        .err()
+        .expect("open on a non-local mount is refused");
+    assert!(
+        matches!(err, MemexError::NetworkFilesystem(_)),
+        "got {err:?}"
+    );
+    assert_eq!(err.code(), "network_filesystem");
+}
+
+/// Not built on the macOS gate: a platform without a `statfs`
+/// classification fails closed (an error, never safe, never
+/// `network_filesystem`).
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[test]
+fn real_probe_fails_closed_on_an_unsupported_platform() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = fs_guard::probe(dir.path()).expect_err("no classification here");
+    assert_eq!(err.kind(), io::ErrorKind::Unsupported);
+    let err = fs_guard::check(dir.path()).expect_err("never safe");
+    assert!(matches!(err, MemexError::Io(_)), "got {err:?}");
+    assert!(Vault::create(dir.path().join("v")).is_err());
+}

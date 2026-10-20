@@ -589,3 +589,86 @@ fn serve_root_on_a_non_local_mount_exits_1_with_network_filesystem() {
         finished.describe()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Verify-mode pins: documented contracts
+// ---------------------------------------------------------------------------
+
+#[test]
+fn vault_check_success_prints_nothing_on_stdout_or_stderr() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("folder");
+    std::fs::create_dir(&folder).unwrap();
+    let vault = closed_vault(dir.path());
+    let targets = [
+        dir.path().to_path_buf(),
+        folder,
+        vault,
+        dir.path().join("missing").join("v"),
+    ];
+    for target in targets {
+        let out = memex(&["vault", "check", "--vault", s(&target)]);
+        let what = format!("vault check --vault {}", target.display());
+        assert_eq!(out.status.code(), Some(0), "{what}: {}", describe(&out));
+        assert!(out.stdout.is_empty(), "{what}: stdout: {}", describe(&out));
+        assert!(out.stderr.is_empty(), "{what}: stderr: {}", describe(&out));
+    }
+    assert!(!dir.path().join("missing").exists(), "nothing was created");
+}
+
+#[test]
+fn vault_check_handler_makes_a_relative_path_absolute_before_probing() {
+    // Tests run in the crate directory; this name doesn't exist there.
+    let relative = PathBuf::from(format!("wi75-rel-missing-{}", std::process::id())).join("x");
+    let probed = std::cell::RefCell::new(Vec::<PathBuf>::new());
+    let probe = |p: &Path| {
+        probed.borrow_mut().push(p.to_path_buf());
+        local_probe(p)
+    };
+
+    cli::vault::check_with(&relative, &probe).expect("local is safe");
+
+    let probed = probed.into_inner();
+    assert_eq!(probed.len(), 1, "probed once: {probed:?}");
+    assert!(probed[0].is_absolute(), "probed {:?}", probed[0]);
+    assert_eq!(
+        std::fs::canonicalize(&probed[0]).unwrap(),
+        std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap(),
+        "the nearest existing ancestor of <cwd>/{} is <cwd>",
+        relative.display()
+    );
+    assert!(!relative.parent().unwrap().exists(), "nothing was created");
+}
+
+/// Compiles only when `T: Send`.
+fn wi75_assert_send<T: Send>(value: T) -> T {
+    value
+}
+
+#[test]
+fn server_run_and_run_with_probe_futures_are_send() {
+    // `memex serve --root` runs the vault server on a multi-threaded tokio
+    // runtime, so its future must stay `Send` with a probe in it. Never
+    // polled: this is a compile-time check.
+    let opts = || RunOptions {
+        root: PathBuf::from("/wi75-never-polled"),
+        listen: ANY_PORT.to_string(),
+        with_embeddings: false,
+        log_level: "info".to_string(),
+    };
+    let recorded = std::sync::Mutex::new(Vec::<PathBuf>::new());
+    let capturing = |p: &Path| {
+        recorded.lock().unwrap().push(p.to_path_buf());
+        local_probe(p)
+    };
+    drop(wi75_assert_send(memex_mcp::server::run_with_probe(
+        opts(),
+        &local_probe,
+    )));
+    drop(wi75_assert_send(memex_mcp::server::run_with_probe(
+        opts(),
+        &capturing,
+    )));
+    drop(wi75_assert_send(memex_mcp::server::run(opts())));
+    assert!(recorded.lock().unwrap().is_empty(), "never polled");
+}
