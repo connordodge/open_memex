@@ -1,0 +1,5 @@
+{
+  "api_version": 1,
+  "future_field": "a key this app does not know yet; codecs ignore it",
+  "server_version": "0.0.0"
+}

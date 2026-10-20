@@ -1,8 +1,10 @@
 // WI #69 review round 1 (finding 4): the picker shows the vault open
 // controller's failure copy for "open existing vault…" and "create new
 // vault…", as main did, and a recent row of a folder that is not a vault
-// has no tap, as on main. #92: a recent row opens through openVault (folder
-// shape check, then `memex vault check`).
+// has no tap, as on main. Fix round 3: a recent row drawn as a vault whose
+// memex.db is gone by the tap shows the not-a-vault copy and opens nothing.
+// #92: a recent row opens through openVault (folder shape check, then
+// `memex vault check`).
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
@@ -316,6 +318,36 @@ void main() {
         expect(c.read(settingsProvider).lastVault, isNull);
         expect(c.read(settingsProvider).recentVaults, [vault.path]);
         expect(find.byType(VaultPickerScreen), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'tapping a stale recent row whose memex.db was removed shows why and opens nothing',
+      (tester) async {
+        // The row is drawn while the folder is a vault (tappable), then
+        // memex.db goes away before the tap with no rebuild in between.
+        final vault = createVaultFolder('om69_recent_stale_');
+        final c = await _pumpPicker(
+          tester,
+          cli: FakeMemexCli(),
+          recents: [vault.path],
+        );
+        File(p.join(vault.path, 'memex.db')).deleteSync();
+
+        await tester.tap(find.text(p.basename(vault.path)));
+        await _settle(tester);
+
+        expect(
+          find.text(
+            '${vault.path} does not look like a vault (no manifest.json + memex.db).',
+          ),
+          findsOneWidget,
+        );
+        expect(c.read(currentVaultProvider), isNull);
+        expect(c.read(settingsProvider).lastVault, isNull);
+        expect(c.read(settingsProvider).recentVaults, [vault.path]);
+        expect(find.byType(VaultPickerScreen), findsOneWidget);
+        expect(tester.takeException(), isNull);
       },
     );
   });
