@@ -131,6 +131,7 @@ pub fn router(config: ServerConfig) -> Router {
         .layer(from_fn_with_state(registry.clone(), vaults::vault_guard))
         .layer(Extension(registry))
         .layer(Extension(BaseClock(config.clock())))
+        .layer(from_fn(request_clock::caller_utc_offset))
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(BODY_LIMIT))
         .layer(map_response(c1_payload_too_large))

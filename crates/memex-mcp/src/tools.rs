@@ -12,7 +12,7 @@ use memex_core::notes::{self, CreateNote, NoteId, RenameOptions, UpdateNote};
 use memex_core::review as core_review;
 use memex_core::search::{self, SearchFilters, SearchMode, SearchOptions};
 use memex_core::tags;
-use memex_core::{Caller, CanvasId, MemexError};
+use memex_core::{Caller, CanvasId, Clock, MemexError, SystemClock};
 use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cli::Role;
 use crate::md_links;
+use crate::server::request_clock::RequestClock;
 use crate::state::AppState;
 
 // One `#[tool_router]` per area (architect ruling D7), composed in `Memex::new`.
@@ -358,6 +359,17 @@ pub struct UpdateLinkEnvelope {
     pub position: i64,
 }
 
+/// The clock a tool call reads (D6). Over `/mcp` it is the request's
+/// [`RequestClock`] (the server's base clock, plus the caller's
+/// `X-Memex-UTC-Offset`), from the HTTP request parts rmcp hands the tool.
+/// Over stdio there are no parts, and it is the `SystemClock` (local time).
+pub(crate) fn call_clock(ctx: &RequestContext<RoleServer>) -> Box<dyn Clock + Send + Sync> {
+    match ctx.extensions.get::<axum::http::request::Parts>() {
+        Some(parts) => Box::new(RequestClock::from_parts(parts)),
+        None => Box::new(SystemClock),
+    }
+}
+
 #[tool_router(router = tool_router)]
 impl Memex {
     /// Hybrid search (FTS + vector) over the user's notes. Returns ranked chunks.
@@ -634,10 +646,33 @@ impl Memex {
     }
 
     /// Create a new note. Indexes it for FTS + (optional) vector search.
-    #[tool(description = "Create a new note in the user's vault. \
-        Returns the new note_id. Notes you create are tagged 'agent-authored' \
-        and 'inbox' by default so the user can review them.")]
+    /// A direct call titles a daily note with today in the machine's local
+    /// time; the MCP tool is [`Self::create_note_tool`].
     pub async fn create_note(&self, params: Parameters<CreateNoteParams>) -> String {
+        self.create_note_impl(params, &SystemClock).await
+    }
+
+    /// The `create_note` tool: a daily note's default title is today on the
+    /// call's clock ([`call_clock`]).
+    #[tool(
+        name = "create_note",
+        description = "Create a new note in the user's vault. \
+        Returns the new note_id. Notes you create are tagged 'agent-authored' \
+        and 'inbox' by default so the user can review them."
+    )]
+    async fn create_note_tool(
+        &self,
+        params: Parameters<CreateNoteParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> String {
+        self.create_note_impl(params, &*call_clock(&ctx)).await
+    }
+
+    async fn create_note_impl(
+        &self,
+        params: Parameters<CreateNoteParams>,
+        clock: &(dyn Clock + Sync),
+    ) -> String {
         let CreateNoteParams {
             content_md,
             title,
@@ -676,7 +711,7 @@ impl Memex {
                 let msg = "an agent may create a daily note only with empty content".to_string();
                 return err_from("create_note", &MemexError::MarkerRule(msg));
             }
-            let today = || memex_core::daily::today_with_clock(&canvas::SystemClock).to_string();
+            let today = || memex_core::daily::today_with_clock(clock).to_string();
             (Some(title.unwrap_or_else(today)), String::new())
         } else {
             (title, content_md)
