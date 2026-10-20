@@ -125,6 +125,31 @@
       "name": "61 emoji are 122 units and back off to 116",
       "content_md": "🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲\n",
       "snippet": "🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲…"
+    },
+    {
+      "name": "carriage return starts a line for the marker strip",
+      "content_md": "Intro\r# Marker\n",
+      "snippet": "Intro\rMarker"
+    },
+    {
+      "name": "line separator U+2028 starts a line for the marker strip",
+      "content_md": "Intro # Marker\n",
+      "snippet": "Intro Marker"
+    },
+    {
+      "name": "paragraph separator U+2029 starts a line for the marker strip",
+      "content_md": "Intro # Marker\n",
+      "snippet": "Intro Marker"
+    },
+    {
+      "name": "next line U+0085 does not start a line for the marker strip",
+      "content_md": "Intro# Marker\n",
+      "snippet": "Intro# Marker"
+    },
+    {
+      "name": "next line U+0085 after a marker is kept and counts toward the limit",
+      "content_md": "#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+      "snippet": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa…"
     }
   ]
 }

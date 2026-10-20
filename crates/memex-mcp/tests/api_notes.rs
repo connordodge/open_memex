@@ -1234,3 +1234,76 @@ async fn broken_frontmatter_note_stays_listed_and_titled() {
         json!({"titles": {BROKEN: "Broken Frontmatter"}})
     );
 }
+
+// ---------------------------------------------------------------------------
+// Verify-mode pins (the handoff's unpinned contracts)
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_notes_route_answers_c1_405_for_a_method_it_does_not_serve() {
+    let env = Env::start().await;
+    let mut paths: Vec<(String, Vec<&str>)> = Vec::new();
+    for (method, path) in ROUTES {
+        let full = format!("{BASE}{}", path.replace("{id}", LOOSE));
+        match paths.iter_mut().find(|(p, _)| *p == full) {
+            Some((_, served)) => served.push(method),
+            None => paths.push((full, vec![method])),
+        }
+    }
+    let routes: Vec<(&str, &[&str])> = paths
+        .iter()
+        .map(|(p, served)| (p.as_str(), served.as_slice()))
+        .collect();
+    assert_eq!(routes.len(), 9, "the nine notes paths");
+    server::assert_wrong_method_is_c1_405(&env.srv, &routes).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_and_titles_reads_without_a_limit_are_invalid_argument() {
+    let env = Env::start().await;
+    for path in ["/notes", "/titles", "/notes?limit=", "/titles?limit="] {
+        let reply = env.call("GET", path, None).await;
+        assert_c1(&reply, 400, "invalid_argument");
+    }
+    // The same reads with a limit answer.
+    for path in ["/notes?limit=3", "/titles?limit=3"] {
+        let reply = env.call("GET", path, None).await;
+        assert_eq!(reply.status, 200, "{path}: {}", reply.body);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unknown_role_is_invalid_argument_naming_the_role() {
+    let env = Env::start().await;
+    let before = note_count(&env.server_vault());
+    // Exact and case-sensitive: only `daily` and `topic` are roles.
+    for role in ["weekly", "Daily", "TOPIC", ""] {
+        let body = json!({"title": "Role Probe", "role": role, "content_md": "x\n"});
+        let reply = env.call("POST", "/notes", Some(&body)).await;
+        assert_c1(&reply, 400, "invalid_argument");
+        assert_eq!(
+            reply.json()["error"]["message"],
+            format!("invalid role: {role} (daily or topic)"),
+            "role {role:?}"
+        );
+    }
+    assert_eq!(note_count(&env.server_vault()), before, "nothing written");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn post_notes_stores_each_tag_as_given() {
+    // The JSON list is the stored tag list: a tag is never split on commas.
+    // Only clap's `--tags a,b` splits, so the hosted client must send the
+    // tags the local wrapper's argv would store.
+    let env = Env::start().await;
+    let body = json!({
+        "title": "Tag Probe",
+        "tags": ["solo", "x,y"],
+        "content_md": "Tags as given.\n",
+    });
+    let reply = env.call("POST", "/notes", Some(&body)).await;
+    assert_eq!(reply.status, 201, "{}", reply.body);
+    assert_eq!(reply.json()["tags"], json!(["solo", "x,y"]));
+    let id = id_of(&env.server_vault(), "Tag Probe");
+    assert_eq!(tags_of(&env.server_vault(), &id), vec!["solo", "x,y"]);
+}

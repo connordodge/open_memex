@@ -155,6 +155,33 @@ void main() {
     },
   );
 
+  test(
+    'the Broken Frontmatter get fixture holds the local getNote fields',
+    () async {
+      // The D11b row was blessed from the server read; it must be exactly
+      // what VaultDb.getNote returns on the seed, field by field.
+      final db = seededFakeVaultDb();
+      addTearDown(db.close);
+      final local = db.getNote(_wi81Broken)!;
+      final row = loadFixtureRows(
+        _wi81NotesDir,
+      ).singleWhere((r) => r.response == 'get_note_broken_frontmatter.json');
+      expect(row.method, 'GET');
+      expect(row.path, '/vaults/seed/api/v1/notes/$_wi81Broken');
+      expect(row.status, 200);
+      expect(row.readResponseJson(), {
+        'note_id': local.id,
+        'title': local.title,
+        'content_md': local.contentMd,
+        'frontmatter': local.frontmatter,
+        'version': local.version,
+        'created_at': local.createdAt,
+        'updated_at': local.updatedAt,
+        'tags': local.tags,
+      });
+    },
+  );
+
   test('hosted getNote of an unknown id is null like the local read', () async {
     final p = _pair();
     expect(await p.local.getNote(_wi81Unknown), isNull);
