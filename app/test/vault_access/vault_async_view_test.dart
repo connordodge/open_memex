@@ -58,7 +58,7 @@ List<NoteListItem> _notes(List<String> titles) => [
 
 Future<(ProviderContainer, _Wi70GatedNotesAccess)> _pump(
   WidgetTester tester, {
-  required bool hosted,
+  required bool? hosted,
 }) async {
   final gated = _Wi70GatedNotesAccess();
   final container = ProviderContainer(
@@ -69,7 +69,8 @@ Future<(ProviderContainer, _Wi70GatedNotesAccess)> _pump(
       vaultAccessProvider.overrideWithValue(
         LocalVaultAccess(vaultPath: _vault, notes: gated),
       ),
-      vaultIsHostedProvider.overrideWithValue(hosted),
+      // null leaves vaultIsHostedProvider at its real default.
+      if (hosted != null) vaultIsHostedProvider.overrideWithValue(hosted),
     ],
   );
   addTearDown(container.dispose);
@@ -126,6 +127,18 @@ void main() {
     expect(find.text('Alpha'), findsOneWidget);
     expect(find.text(_emptyText), findsNothing);
   });
+
+  testWidgets(
+    'with no vaultIsHostedProvider override the first load is local and renders the empty state',
+    (tester) async {
+      final (container, gated) = await _pump(tester, hosted: null);
+
+      expect(container.read(vaultIsHostedProvider), isFalse);
+      expect(gated.gates, hasLength(1), reason: 'the read is still in flight');
+      expect(find.text(_emptyText), findsOneWidget);
+      _expectNoSpinner();
+    },
+  );
 
   testWidgets('hosted first load renders the loading state', (tester) async {
     final (_, gated) = await _pump(tester, hosted: true);
