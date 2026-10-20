@@ -77,6 +77,14 @@ fn from_file(path: &Path, contents: &str) -> Result<ResolvedToken> {
     })
 }
 
+/// The permission bits of the token file at `path` when its group or others
+/// may read it, else `None` (also when it can't be read).
+pub fn readable_by_others(path: &Path) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(path).ok()?.permissions().mode() & 0o777;
+    (mode & 0o044 != 0).then_some(mode)
+}
+
 /// Writes a fresh token to `path` with mode `0600`. The token is written and
 /// synced to a unique temp file beside `path`, then hard-linked to `path`,
 /// which creates `path` only if it is absent, so `path` never exists

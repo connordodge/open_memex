@@ -18,23 +18,61 @@
 //   UtcOffsetCases loadUtcOffsetCases();  // api_v1/server/utc_offsets.json
 //
 // The Rust half is crates/memex-mcp/tests/api_fixtures.rs; both parse the
-// same index.json text (`sharedIndexJson`) and assert the same values.
+// same index.json text (`api_fixtures_parity/index.json`) and assert the same values.
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db/daily_reads.dart';
+import 'package:open_memex_app/src/db/graph_reads.dart';
 import 'package:open_memex_app/src/db/topics_reads.dart';
 
 import '../support/api_fixtures.dart';
 
-/// Kept byte-identical to `SHARED_INDEX_JSON` in the Rust test.
-const sharedIndexJson = '''[
-  {"method": "GET", "path": "/vaults/seed/api/v1/notes", "response": "notes_list.json", "status": 200},
-  {"method": "POST", "path": "/vaults/seed/api/v1/notes", "request": "create_note.request.json",
-   "response": "create_note.json", "status": 201,
-   "headers": {"X-Memex-UTC-Offset": "-00:30"}, "dart_only": true}
-]''';
+/// The shared row text, also parsed by the Rust test.
+String _sharedIndexJson() => File(parityIndexJsonPath).readAsStringSync();
+
+/// `api_fixtures_parity/row_cases.json`: the accepted and rejected row cases
+/// the Rust row-loader tests run too.
+Map<String, Object?> _sharedRowCases() =>
+    jsonDecode(
+          File(
+            'test/fixtures/api_fixtures_parity/row_cases.json',
+          ).readAsStringSync(),
+        )
+        as Map<String, Object?>;
+
+/// The rejected cases whose first error starts with [prefix], as
+/// (why, row, error substrings).
+List<(String, Map<String, Object?>, List<String>)> _rejectedCases(
+  String prefix,
+) => [
+  for (final c
+      in (_sharedRowCases()['rejected']! as List<Object?>)
+          .cast<Map<String, Object?>>())
+    if ((c['error']! as List<Object?>).first.toString().startsWith(prefix))
+      (
+        c['why']! as String,
+        c['row']! as Map<String, Object?>,
+        [for (final e in c['error']! as List<Object?>) e! as String],
+      ),
+];
+
+/// A valid row put before each case, so the error must name row `[1]`.
+const _leadingGoodRow = {
+  'method': 'GET',
+  'path': '/x',
+  'response': 'x.json',
+  'status': 200,
+};
+
+/// A matcher for an error whose text holds every one of [parts].
+Matcher _errorWith(List<String> parts) => throwsA(
+  predicate((Object e) {
+    final s = e.toString();
+    return parts.every(s.contains);
+  }, 'an error containing $parts'),
+);
 
 String _seedSql() =>
     File('$apiV1FixturesDir/seed_vault.sql').readAsStringSync();
@@ -151,7 +189,8 @@ void main() {
       );
 
       // 2. Over 120 characters with a surrogate pair straddling the
-      //    120-UTF-16-unit cut (high surrogate at unit 119, low at 120).
+      //    117-UTF-16-unit cut of VaultDb._snippet (substring(0, 117) on a
+      //    line over 120 units): high surrogate at unit 116, low at 117.
       bool isHigh(int u) => u >= 0xD800 && u <= 0xDBFF;
       bool isLow(int u) => u >= 0xDC00 && u <= 0xDFFF;
       expect(
@@ -159,11 +198,11 @@ void main() {
           final line = _snippetSourceLine(n.contentMd);
           return line.length > 120 &&
               line.runes.length > 120 &&
-              isHigh(line.codeUnitAt(119)) &&
-              isLow(line.codeUnitAt(120));
+              isHigh(line.codeUnitAt(116)) &&
+              isLow(line.codeUnitAt(117));
         }),
         isTrue,
-        reason: 'no long note with a surrogate pair at units 119-120',
+        reason: 'no long note with a surrogate pair at units 116-117',
       );
 
       // 3. A ghost link: no target, and no note has its text as a title.
@@ -192,11 +231,127 @@ void main() {
         reason: 'no pinned Smart Folder',
       );
     });
+
+    test(
+      'the Pacing Notes snippet cuts its surrogate pair at 117 units unlike a cut by code points',
+      () {
+        final db = seededFakeVaultDb();
+        addTearDown(db.close);
+        final item = db
+            .listNotes(limit: 1000000)
+            .singleWhere((n) => n.title == 'Pacing Notes');
+        final line = _snippetSourceLine(db.getNote(item.id)!.contentMd);
+        expect(line.length, greaterThan(120));
+        final unitCut = line.substring(0, 117);
+        final runeCut = String.fromCharCodes(line.runes.take(117));
+        expect(
+          runeCut,
+          isNot(unitCut),
+          reason: 'a cut by code points must differ from the UTF-16 cut',
+        );
+        final last = unitCut.codeUnitAt(116);
+        expect(
+          last >= 0xD800 && last <= 0xDBFF,
+          isTrue,
+          reason: 'the 117-unit cut ends on the lone high surrogate',
+        );
+        expect(item.snippet, '${unitCut.trim()}…');
+      },
+    );
+
+    test(
+      'the seed daily notes have every review state as dailyNotes computes it',
+      () {
+        final db = seededFakeVaultDb();
+        addTearDown(db.close);
+        final byDate = {for (final d in db.dailyNotes()) d.date: d};
+        expect(byDate['2026-10-18']?.reviewState, ReviewState.reviewed);
+        expect(byDate['2026-10-19']?.reviewState, ReviewState.unreviewed);
+        expect(
+          byDate['2026-10-17']?.reviewState,
+          ReviewState.changedSinceReview,
+          reason: '2026-10-17 was edited after its review',
+        );
+        final changed = db.db.select(
+          'SELECT r.content_version, r.reviewed_content_version '
+          'FROM day_reviews r JOIN notes n ON n.id = r.note_id '
+          "WHERE n.title = '2026-10-17'",
+        );
+        expect(changed, hasLength(1));
+        expect(
+          (
+            changed.first['content_version'],
+            changed.first['reviewed_content_version'],
+          ),
+          (2, 1),
+        );
+        expect(
+          db.reviewState(byDate['2026-10-17']!.noteId)!.state,
+          ReviewState.changedSinceReview,
+        );
+      },
+    );
+
+    test('the seed daily note with no day_reviews row reads as unreviewed', () {
+      final db = seededFakeVaultDb();
+      addTearDown(db.close);
+      final row = db.dailyNoteForDate('2026-10-15');
+      expect(row, isNotNull, reason: '2026-10-15 is a daily note');
+      expect(row!.reviewState, ReviewState.unreviewed);
+      expect(
+        db.db.select('SELECT 1 FROM day_reviews WHERE note_id = ?', [
+          row.noteId,
+        ]),
+        isEmpty,
+        reason: '2026-10-15 has no day_reviews row',
+      );
+      final info = db.reviewState(row.noteId)!;
+      expect(info.state, ReviewState.unreviewed);
+      expect(info.reviewedAt, isNull);
+    });
+
+    test('the seed daily preview stops at the first newline of the block', () {
+      final db = seededFakeVaultDb();
+      addTearDown(db.close);
+      final row = db.dailyNoteForDate('2026-10-16');
+      expect(row, isNotNull);
+      final first = db.blocksForNote(row!.noteId).first.text;
+      expect(first, contains('\n'), reason: 'the first block spans two lines');
+      expect(row.preview, 'Morning playtest with the new crafting tree');
+    });
+
+    test(
+      'the Broken Frontmatter note reads as role-less and unsorted through VaultDb reads',
+      () {
+        final db = seededFakeVaultDb();
+        addTearDown(db.close);
+        final raw = db.db.select(
+          "SELECT json_valid(frontmatter) AS ok FROM notes "
+          "WHERE title = 'Broken Frontmatter'",
+        );
+        expect(raw, hasLength(1));
+        expect(raw.first['ok'], 0, reason: 'its frontmatter is not JSON');
+
+        final graph = db.graphNotes().singleWhere(
+          (n) => n.title == 'Broken Frontmatter',
+        );
+        expect(graph.role, isNull);
+        final unsorted = db.unsortedNotes().where(
+          (n) => n.title == 'Broken Frontmatter',
+        );
+        expect(unsorted, hasLength(1));
+        expect(unsorted.single.role, isNull);
+        expect(
+          db.dailyNotes().map((d) => d.date),
+          isNot(contains('Broken Frontmatter')),
+        );
+      },
+    );
   });
 
   group('row loader (AC5)', () {
     test('row loader parses every row field like the Rust loader', () {
-      final dir = _writeDomain(tmp, 'rowsdemo', sharedIndexJson);
+      final dir = _writeDomain(tmp, 'rowsdemo', _sharedIndexJson());
       final rows = loadFixtureRows(dir);
       expect(rows, hasLength(2));
 
@@ -294,6 +449,206 @@ void main() {
       expect(row.readResponseJson(), {
         'a': [1, 'two', null],
       });
+    });
+
+    test(
+      'row loader rejects request and response names that are not bare file names',
+      () {
+        final cases = _rejectedCases('field "re');
+        expect(cases, hasLength(15), reason: 'every bare-name case');
+        var n = 0;
+        for (final (why, row, errors) in cases) {
+          final field = errors.first.contains('"request"')
+              ? 'request'
+              : 'response';
+          final dir = _writeDomain(
+            Directory('${tmp.path}/${n++}')..createSync(),
+            'barenames',
+            jsonEncode([_leadingGoodRow, row]),
+          );
+          expect(
+            () => loadFixtureRows(dir),
+            _errorWith(['barenames[1]', ...errors, jsonEncode(row[field])]),
+            reason: why,
+          );
+        }
+        for (final c
+            in (_sharedRowCases()['accepted']! as List<Object?>)
+                .cast<Map<String, Object?>>()) {
+          final row = c['row']! as Map<String, Object?>;
+          final dir = _writeDomain(
+            Directory('${tmp.path}/${n++}')..createSync(),
+            'barenames',
+            jsonEncode([row]),
+          );
+          final parsed = loadFixtureRows(dir).single;
+          expect(parsed.response, row['response'], reason: c['why'] as String);
+          expect(parsed.request, row['request'], reason: c['why'] as String);
+        }
+      },
+    );
+
+    test(
+      'row loader rejects an unknown row key naming the row and the key',
+      () {
+        final cases = _rejectedCases('unknown field');
+        expect(cases, hasLength(4), reason: 'every unknown-key case');
+        var n = 0;
+        for (final (why, row, errors) in cases) {
+          final dir = _writeDomain(
+            Directory('${tmp.path}/${n++}')..createSync(),
+            'unknownkeys',
+            jsonEncode([_leadingGoodRow, row]),
+          );
+          expect(
+            () => loadFixtureRows(dir),
+            _errorWith(['unknownkeys[1]', ...errors]),
+            reason: why,
+          );
+        }
+      },
+    );
+
+    test('row loader accepts statuses 100 to 599 only', () {
+      const cases = [
+        (99, false),
+        (100, true),
+        (599, true),
+        (600, false),
+        (70000, false),
+        (-1, false),
+      ];
+      for (final (status, ok) in cases) {
+        final dir = _writeDomain(
+          Directory('${tmp.path}/$status')..createSync(),
+          'statusrange',
+          '[{"method": "GET", "path": "/api/v1/info", '
+              '"response": "info.json", "status": $status}]',
+        );
+        if (ok) {
+          expect(loadFixtureRows(dir).single.status, status);
+        } else {
+          expect(
+            () => loadFixtureRows(dir),
+            _errorWith(['statusrange[0]', 'status']),
+            reason: '$status',
+          );
+        }
+      }
+    });
+
+    test('row loader rejects optional fields of the wrong type', () {
+      final cases = <(String, Object)>[
+        ('request', 1),
+        ('headers', ['X-Memex-UTC-Offset']),
+        ('headers', {'X-Memex-UTC-Offset': 30}),
+        ('dart_only', 'yes'),
+        ('method', 1),
+      ];
+      var n = 0;
+      for (final (field, value) in cases) {
+        final row = <String, Object?>{
+          'method': 'GET',
+          'path': '/api/v1/info',
+          'response': 'info.json',
+          'status': 200,
+        }..[field] = value;
+        final dir = _writeDomain(
+          Directory('${tmp.path}/${n++}')..createSync(),
+          'wrongtype',
+          jsonEncode([row]),
+        );
+        expect(
+          () => loadFixtureRows(dir),
+          _errorWith(['wrongtype[0]', field]),
+          reason: '$field=$value',
+        );
+      }
+      // Explicit nulls read as absent.
+      final dir = _writeDomain(
+        tmp,
+        'nulls',
+        '[{"method": "GET", "path": "/api/v1/info", "response": "info.json", '
+            '"status": 200, "request": null, "headers": null, '
+            '"dart_only": null}]',
+      );
+      final row = loadFixtureRows(dir).single;
+      expect((row.request, row.headers.length, row.dartOnly), (null, 0, false));
+    });
+  });
+
+  group('domain discovery', () {
+    test('every api_v1 domain loads and names only files that exist', () {
+      final globbed = [
+        for (final e in Directory(apiV1FixturesDir).listSync())
+          if (e is Directory && File('${e.path}/index.json').existsSync())
+            e.path,
+      ]..sort();
+      final found = allDomainDirs();
+      expect(found, globbed);
+      final names = [for (final d in found) d.split('/').last];
+      expect(names, contains('compat'));
+      expect(names, isNot(contains('server')));
+      expect(names, [...names]..sort(), reason: 'sorted by folder name');
+      expect(
+        names,
+        isNot(contains('api_fixtures_parity')),
+        reason: 'the parity file is never a domain',
+      );
+      for (final d in found) {
+        expect(() => checkDomainFiles(d), returnsNormally, reason: d);
+      }
+    });
+
+    test('checkDomainFiles lists every missing request and response file', () {
+      final dir = _writeDomain(tmp, 'missingfiles', '''
+[
+  {"method": "GET", "path": "/a", "response": "a.json", "status": 200},
+  {"method": "POST", "path": "/b", "request": "b.request.json", "response": "b.json", "status": 201},
+  {"method": "POST", "path": "/c", "request": "c.request.json", "response": "c.json", "status": 201}
+]''');
+      File('$dir/a.json').writeAsStringSync('{}\n');
+      File('$dir/c.request.json').writeAsStringSync('{}\n');
+      expect(
+        () => checkDomainFiles(dir),
+        throwsA(
+          isA<FormatException>()
+              .having((e) => e.message.split('\n'), 'missing lines', [
+                'missingfiles[1]: request file b.request.json is missing',
+                'missingfiles[1]: response file b.json is missing',
+                'missingfiles[2]: response file c.json is missing',
+              ]),
+        ),
+      );
+      for (final f in ['b.request.json', 'b.json', 'c.json']) {
+        File('$dir/$f').writeAsStringSync('{}\n');
+      }
+      expect(() => checkDomainFiles(dir), returnsNormally);
+      final bad = _writeDomain(
+        tmp,
+        'badrow',
+        '[{"method": "GET", "path": "/a", "response": "../a.json", "status": 200}]',
+      );
+      expect(
+        () => checkDomainFiles(bad),
+        _errorWith(['badrow[0]', 'response']),
+      );
+    });
+
+    test('the parity rows come from the one shared file', () {
+      expect(
+        parityIndexJsonPath,
+        'test/fixtures/api_fixtures_parity/index.json',
+      );
+      expect(File(parityIndexJsonPath).existsSync(), isTrue);
+      final rust = File(
+        '../crates/memex-mcp/tests/support/api_fixtures.rs',
+      ).readAsStringSync();
+      expect(
+        rust,
+        contains('api_v1_dir().join("../api_fixtures_parity/index.json")'),
+        reason: 'the Rust parity_index_path names the same file',
+      );
     });
   });
 

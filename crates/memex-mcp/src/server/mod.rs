@@ -122,9 +122,12 @@ pub fn router(config: ServerConfig) -> Router {
         .nest("/vaults/{name}/api/v1", api::router())
         .nest("/vaults/{name}/mcp", mcp::router())
         .fallback(not_found)
+        // Every route, nest, merge and fallback goes above this line: axum
+        // applies `method_not_allowed_fallback` only to the routes already
+        // registered, so it must stay the last call before the layers. The
+        // layers below wrap everything above them; they are listed inside
+        // out.
         .method_not_allowed_fallback(method_not_allowed)
-        // Every route, nest and fallback goes above this line, so that the
-        // layers below wrap all of them. Listed inside out.
         .layer(from_fn_with_state(registry.clone(), vaults::vault_guard))
         .layer(Extension(registry))
         .layer(Extension(BaseClock(config.clock())))
@@ -196,8 +199,21 @@ pub async fn run(opts: RunOptions) -> Result<()> {
     let addr = listener
         .local_addr()
         .context("read the listening address")?;
-    let resolved = token::resolve(&root, std::env::var_os(token::TOKEN_ENV))?;
+    let env_token = std::env::var_os(token::TOKEN_ENV);
+    let from_file = env_token.is_none();
+    let resolved = token::resolve(&root, env_token)?;
     let _log_guard = log::init(&root, filter)?;
+
+    if from_file && resolved.generated.is_none() {
+        let path = token::token_path(&root);
+        if let Some(mode) = token::readable_by_others(&path) {
+            tracing::warn!(
+                path = %path.display(),
+                mode = %format!("{mode:04o}"),
+                "the access token file is readable by group or others; chmod 600 it"
+            );
+        }
+    }
 
     if let Some(path) = &resolved.generated {
         eprintln!(
