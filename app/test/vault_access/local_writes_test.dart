@@ -1,8 +1,11 @@
 // WI #70 (W0a) AC2, AC3: every local write sends today's argv and stdin and
 // returns today's result; a failing write throws today's MemexException.
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/src/cli/folder_cli.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
 import 'package:open_memex_app/src/vault_access/local/local_vault_access.dart';
+import 'package:open_memex_app/src/vault_access/notes_access.dart';
+import 'package:open_memex_app/src/vault_access/topics_access.dart';
 
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
@@ -54,6 +57,64 @@ void _expectSameCalls(FakeMemexCli today, FakeMemexCli local, String reason) {
     equals([for (final c in today.calls) c.stdinBody]),
     reason: '$reason: stdin',
   );
+}
+
+/// A [NotesAccess] that relays each interface call, with every argument the
+/// call carries, to a [LocalNotesAccess], the way a proxy or RPC client of
+/// the interface would. It declares no defaults of its own: a Dart call takes
+/// the implementation's defaults, so only a noSuchMethod forwarder (which
+/// fills in the interface's) observes the defaults [NotesAccess] declares.
+class _Wi70NotesInterfaceRelay implements NotesAccess {
+  _Wi70NotesInterfaceRelay(this.local);
+
+  final LocalNotesAccess local;
+  final invocations = <Invocation>[];
+
+  @override
+  dynamic noSuchMethod(Invocation i) {
+    invocations.add(i);
+    final n = i.namedArguments;
+    return switch (i.memberName) {
+      #updateNote => local.updateNote(
+        noteId: n[#noteId] as String,
+        expectedVersion: n[#expectedVersion] as int,
+        title: n[#title] as String?,
+        contentMd: n[#contentMd] as String,
+        noRenameLinks: n[#noRenameLinks] as bool,
+      ),
+      #updateLink => local.updateLink(
+        linkId: n[#linkId] as String,
+        kind: n[#kind] as String?,
+        label: n[#label] as String?,
+        clearLabel: n[#clearLabel] as bool,
+      ),
+      _ => super.noSuchMethod(i),
+    };
+  }
+}
+
+/// [_Wi70NotesInterfaceRelay] for [TopicsAccess].
+class _Wi70TopicsInterfaceRelay implements TopicsAccess {
+  _Wi70TopicsInterfaceRelay(this.local);
+
+  final LocalTopicsAccess local;
+  final invocations = <Invocation>[];
+
+  @override
+  dynamic noSuchMethod(Invocation i) {
+    invocations.add(i);
+    final n = i.namedArguments;
+    return switch (i.memberName) {
+      #updateFolder => local.updateFolder(
+        id: n[#id] as String,
+        name: n[#name] as String?,
+        parentId: n[#parentId] as String?,
+        toRoot: n[#toRoot] as bool,
+        pinned: n[#pinned] as bool?,
+      ),
+      _ => super.noSuchMethod(i),
+    };
+  }
 }
 
 void main() {
@@ -167,6 +228,104 @@ void main() {
       }
       expect(cli.calls, hasLength(vaultAccessWriteCases.length));
     });
+  });
+
+  group('AC2 interface defaults', () {
+    test(
+      'NotesAccess updateNote called without noRenameLinks sends no rename links flag',
+      () async {
+        final today = vaultAccessSampleCli();
+        final cli = vaultAccessSampleCli();
+        final relay = _Wi70NotesInterfaceRelay(
+          LocalNotesAccess(vaultPath: _vault, cli: cli),
+        );
+        final NotesAccess notes = relay;
+
+        final result = await notes.updateNote(
+          noteId: 'n-70',
+          expectedVersion: 7,
+          title: 'Renamed',
+          contentMd: 'new body',
+        );
+        final todayResult = await today.updateNote(
+          vaultPath: _vault,
+          noteId: 'n-70',
+          expectedVersion: 7,
+          title: 'Renamed',
+          contentMd: 'new body',
+        );
+
+        expect(
+          relay.invocations.single.namedArguments[#noRenameLinks],
+          isFalse,
+          reason: 'the interface default',
+        );
+        final call = cli.callsFor('update').single;
+        expect(call.args, isNot(contains('--no-rename-links')));
+        expect(call.args, today.callsFor('update').single.args);
+        expect(call.stdinBody, 'new body');
+        expect(vaultAccessShape(result), vaultAccessShape(todayResult));
+      },
+    );
+
+    test(
+      'NotesAccess updateLink called without clearLabel keeps the label',
+      () async {
+        final today = vaultAccessSampleCli();
+        final cli = vaultAccessSampleCli();
+        final relay = _Wi70NotesInterfaceRelay(
+          LocalNotesAccess(vaultPath: _vault, cli: cli),
+        );
+        final NotesAccess notes = relay;
+
+        final result = await notes.updateLink(linkId: 'l-70', label: 'why');
+        final todayResult = await today.updateLink(
+          vaultPath: _vault,
+          linkId: 'l-70',
+          label: 'why',
+        );
+
+        expect(
+          relay.invocations.single.namedArguments[#clearLabel],
+          isFalse,
+          reason: 'the interface default',
+        );
+        final call = cli.callsFor('update-link').single;
+        expect(call.args, isNot(contains('--clear-label')));
+        expect(call.args, today.callsFor('update-link').single.args);
+        expect(vaultAccessShape(result), vaultAccessShape(todayResult));
+      },
+    );
+
+    test(
+      'TopicsAccess updateFolder called without toRoot reparents and does not move to root',
+      () async {
+        final today = vaultAccessSampleCli();
+        final cli = vaultAccessSampleCli();
+        final relay = _Wi70TopicsInterfaceRelay(
+          LocalTopicsAccess(vaultPath: _vault, cli: cli),
+        );
+        final TopicsAccess topics = relay;
+
+        final result = await topics.updateFolder(id: 'f-70', parentId: 'p-70');
+        final todayResult = await today.updateFolder(
+          vaultPath: _vault,
+          id: 'f-70',
+          parentId: 'p-70',
+        );
+
+        expect(
+          relay.invocations.single.namedArguments[#toRoot],
+          isFalse,
+          reason: 'the interface default',
+        );
+        final call = cli.callsFor('folder update').single;
+        expect(call.args, isNot(contains('--to-root')));
+        expect(call.args, containsAllInOrder(['--parent-id', 'p-70']));
+        expect(call.args, today.callsFor('folder update').single.args);
+        expect(vaultAccessShape(result), vaultAccessShape(todayResult));
+      },
+    );
   });
 
   group('AC3 failing writes', () {
