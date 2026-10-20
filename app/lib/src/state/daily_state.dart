@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../dates.dart';
 import '../db/daily_reads.dart';
 import 'clock.dart';
+import '../vault_access/vault_scoped.dart';
 import 'vault_state.dart';
 
 /// Today's local ISO date; moves to the next date at local midnight.
@@ -78,3 +79,45 @@ final footerChipsProvider = Provider.family<List<FooterChipRow>, String>((
   if (!ref.watch(vaultV5ReadyProvider)) return const [];
   return ref.watch(vaultDbProvider)?.footerChips(dailyNoteId) ?? const [];
 });
+
+// ---------------------------------------------------------------------------
+// Async versions (D14a, #78). Skeleton: the tests pin these names and types.
+// Each reads through `VaultAccess.daily` and carries the vault it was loaded
+// for; the provider of the same name without `Async` is its facade.
+// ---------------------------------------------------------------------------
+
+/// `VaultAccess.daily.dailyNotes`, newest first; facade [dailyNotesProvider].
+final dailyNotesAsyncProvider = FutureProvider<VaultScoped<List<DailyNoteRow>>>(
+  (ref) {
+    throw UnimplementedError();
+  },
+);
+
+/// Today's daily note for [todayDateProvider]'s date, or null; facade
+/// [todayNoteProvider].
+final todayNoteAsyncProvider = FutureProvider<VaultScoped<DailyNoteRow?>>((
+  ref,
+) {
+  throw UnimplementedError();
+});
+
+/// `VaultAccess.daily.reviewState`; facade [reviewStateProvider].
+final reviewStateAsyncProvider =
+    FutureProvider.family<VaultScoped<ReviewInfo?>, String>((ref, noteId) {
+      throw UnimplementedError();
+    });
+
+/// `VaultAccess.daily.blocksForNote`; facade [blocksForNoteProvider].
+final blocksForNoteAsyncProvider =
+    FutureProvider.family<VaultScoped<List<BlockRow>>, String>((ref, noteId) {
+      throw UnimplementedError();
+    });
+
+/// `VaultAccess.daily.footerChips`; facade [footerChipsProvider].
+final footerChipsAsyncProvider =
+    FutureProvider.family<VaultScoped<List<FooterChipRow>>, String>((
+      ref,
+      dailyNoteId,
+    ) {
+      throw UnimplementedError();
+    });

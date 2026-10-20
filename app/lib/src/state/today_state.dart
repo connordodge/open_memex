@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../db.dart';
 import '../memex_cli.dart';
 import 'tabs_state.dart';
+import '../vault_access/vault_scoped.dart';
 import 'vault_state.dart';
 
 /// What [createDailyNote] did.
@@ -68,4 +69,11 @@ final editorNoteProvider = Provider<Note?>((ref) {
   final date = VirtualTodayTab.dateOf(ref.watch(selectedNoteIdProvider));
   if (date != null) return virtualTodayNote(date);
   return ref.watch(selectedNoteProvider);
+});
+
+/// The editor's note, async (D14a, #78): [virtualTodayNote] for a virtual
+/// Today tab, else [selectedNoteAsyncProvider]'s note, with the vault it was
+/// loaded for. [editorNoteProvider] is its facade. Skeleton.
+final editorNoteAsyncProvider = FutureProvider<VaultScoped<Note?>>((ref) {
+  throw UnimplementedError();
 });
