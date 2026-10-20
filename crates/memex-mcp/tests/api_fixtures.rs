@@ -10,6 +10,7 @@
 //! pub const SEED_VAULT_NAME: &str;            // fixed vault name in every row path
 //! pub fn api_v1_dir() -> PathBuf;             // <repo>/app/test/fixtures/api_v1
 //! pub fn bless_requested() -> bool;           // MEMEX_BLESS == "1"
+//! pub fn seed_bless_requested() -> bool;      // MEMEX_BLESS == "1" && MEMEX_BLESS_SEED == "1"
 //! pub fn materialize_seed(root: &Path) -> PathBuf;  // creates <root>/<SEED_VAULT_NAME>/
 //! pub fn run_seed_builder(api_v1_dir: &Path, scratch: &Path, bless: bool) -> PathBuf;
 //!     // builds the seed with memex-core and writes seed_vault.sql + seed_manifest.json
@@ -40,8 +41,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use api_fixtures::{
-    api_v1_dir, bless_requested, canonical_json, load_rows, load_utc_offsets, materialize_seed,
-    normalize_volatile, run_rows, run_seed_builder, FixtureRequest, FixtureResponse, FixtureRow,
+    api_v1_dir, canonical_json, load_rows, load_utc_offsets, materialize_seed, normalize_volatile,
+    run_rows, run_seed_builder, seed_bless_requested, FixtureRequest, FixtureResponse, FixtureRow,
     SEED_VAULT_NAME,
 };
 use memex_core::Vault;
@@ -558,8 +559,10 @@ fn seed_builder_with_bless_rewrites_the_seed_files() {
     assert_built_seed(&api);
 }
 
-/// Entry point for blessing the committed seed (`MEMEX_BLESS=1`); in a normal
-/// run it proves nothing under `app/test/fixtures/` is written.
+/// Entry point for blessing the committed seed (`MEMEX_BLESS=1
+/// MEMEX_BLESS_SEED=1`, lead ruling on AC4); in any other run, including
+/// `MEMEX_BLESS=1` alone, it proves nothing under `app/test/fixtures/` is
+/// written.
 #[test]
 fn seed_builder_never_writes_committed_fixtures_without_bless() {
     assert_eq!(
@@ -568,7 +571,7 @@ fn seed_builder_never_writes_committed_fixtures_without_bless() {
         "api_v1_dir() is app/test/fixtures/api_v1"
     );
     let scratch = tempfile::tempdir().unwrap();
-    if bless_requested() {
+    if seed_bless_requested() {
         let out = run_seed_builder(&api_v1_dir(), scratch.path(), true);
         assert_eq!(out, api_v1_dir());
         return;
@@ -580,7 +583,7 @@ fn seed_builder_never_writes_committed_fixtures_without_bless() {
     assert_eq!(
         snapshot(&fixtures),
         before,
-        "a run without MEMEX_BLESS wrote under app/test/fixtures/"
+        "a run without MEMEX_BLESS=1 MEMEX_BLESS_SEED=1 wrote under app/test/fixtures/"
     );
 }
 
