@@ -1,0 +1,9 @@
+[
+  {"method": "POST", "path": "/api/v1/vaults", "request": "invalid_vault_name.request.json", "response": "invalid_vault_name.json", "status": 400, "headers": {"Content-Type": "application/json"}},
+  {"method": "POST", "path": "/api/v1/vaults", "request": "invalid_argument.request.txt", "response": "invalid_argument.json", "status": 400, "headers": {"Content-Type": "application/json"}},
+  {"method": "GET", "path": "/api/v1/vaults", "response": "unauthorized.json", "status": 401, "headers": {"Authorization": "Bearer wrong-token-not-the-server-token"}},
+  {"method": "GET", "path": "/vaults/nope/api/v1/info", "response": "vault_not_found.json", "status": 404},
+  {"method": "GET", "path": "/api/v1/nope", "response": "not_found.json", "status": 404},
+  {"method": "POST", "path": "/api/v1/vaults", "request": "vault_exists.request.json", "response": "vault_exists.json", "status": 409, "headers": {"Content-Type": "application/json"}},
+  {"method": "POST", "path": "/api/v1/vaults", "response": "payload_too_large.json", "status": 413, "headers": {"Content-Type": "application/json", "Content-Length": "8388609"}}
+]
