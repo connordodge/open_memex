@@ -72,3 +72,18 @@ _Avoid_: spiderweb, canvas, map
 
 **Canvas**:
 A user-curated board where notes are placed as draggable nodes and wikilinks between placed notes render as labelled lines.
+
+**Vault server**:
+A `memex` process that owns one vault on its own disk and serves it over the network to apps and agents, through MCP over HTTP and the app API.
+_Avoid_: sync server, cloud, backend, NAS mode
+
+**Hosted vault**:
+A vault the app opens by URL through a vault server.
+_Avoid_: remote vault, shared vault, network vault, synced vault
+
+**Local vault**:
+A vault the app opens by directory path on the same machine.
+
+**Access token**:
+The one shared secret every client presents to a vault server.
+_Avoid_: API key, password
