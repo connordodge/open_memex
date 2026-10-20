@@ -54,7 +54,7 @@ void main() {
         expect(identical(h.read(vaultDbProvider), db), isTrue);
         expect(identical(h.read(memexCliProvider), cli), isTrue);
         expect(identical(h.read(clockProvider), clock), isTrue);
-        expect(h.read(currentVaultProvider), h.vaultPath);
+        expect(h.read(currentVaultProvider), LocalVaultRef(h.vaultPath));
         expect(h.read(clockProvider).now(), DateTime(2026, 10, 3, 9, 5));
         expect(tester.takeException(), isNull);
       },

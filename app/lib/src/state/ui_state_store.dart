@@ -2,7 +2,18 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
+
+import 'vault_state.dart';
+
+/// The UI state store of the open vault (Req 35):
+/// `<vault>/.memex/ui_state.json` for a local vault. Null with no vault
+/// open, and for a hosted vault until it gets its own store (D19).
+final uiStateStoreProvider = Provider<UiStateStore?>((ref) {
+  final path = ref.watch(currentVaultProvider).localPath;
+  return path == null ? null : UiStateStore(vaultPath: path);
+});
 
 /// Per-vault, machine-local UI state: open tabs, active tab, and per-canvas
 /// viewport (pan + zoom). Lives outside the vault DB so MCP clients never see

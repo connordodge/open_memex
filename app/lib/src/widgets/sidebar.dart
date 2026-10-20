@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 import '../state/settings.dart';
 import '../state/sidebar_mode_state.dart';
 import '../state/tabs_state.dart';
+import '../state/vault_open_controller.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
@@ -24,7 +25,7 @@ class Sidebar extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final settings = ref.watch(settingsProvider);
-    final currentVault = ref.watch(currentVaultProvider);
+    final currentVault = ref.watch(currentVaultProvider).localPath;
     final activeTab = ref.watch(activeTabProvider);
     final canvases = ref.watch(canvasesProvider);
 
@@ -46,7 +47,7 @@ class Sidebar extends ConsumerWidget {
             eyebrow: 'vaults',
             count: settings.recentVaults.length,
             action: '+ new',
-            onAction: () => _switchVault(ref),
+            onAction: () => _switchVault(context, ref),
           ),
           _VaultPillsRow(currentVault: currentVault),
           const OmHairline(),
@@ -74,7 +75,7 @@ class Sidebar extends ConsumerWidget {
 
   Future<void> _newCanvas(BuildContext context, WidgetRef ref) async {
     final cli = ref.read(memexCliProvider);
-    final vaultPath = ref.read(currentVaultProvider);
+    final vaultPath = ref.read(currentVaultProvider).localPath;
     if (cli == null || vaultPath == null) return;
     final title = await _promptCanvasTitle(context);
     if (title == null || title.isEmpty) return;
@@ -120,11 +121,8 @@ class Sidebar extends ConsumerWidget {
     );
   }
 
-  Future<void> _switchVault(WidgetRef ref) async {
-    await ref.read(settingsProvider.notifier).clearLastVault();
-    ref.read(currentVaultProvider.notifier).state = null;
-    ref.read(selectedNoteIdProvider.notifier).state = null;
-  }
+  Future<void> _switchVault(BuildContext context, WidgetRef ref) =>
+      ref.read(vaultOpenControllerProvider).leaveVault(context);
 }
 
 /// The sidebar's `Days` / `Topics` switch (Req 50; Keys `sidebar-mode-days`,
@@ -326,11 +324,9 @@ class _VaultPill extends ConsumerWidget {
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       child: GestureDetector(
-        onTap: () async {
-          await ref.read(settingsProvider.notifier).rememberVault(path);
-          ref.read(currentVaultProvider.notifier).state = path;
-          ref.read(selectedNoteIdProvider.notifier).state = null;
-        },
+        onTap: () => ref
+            .read(vaultOpenControllerProvider)
+            .switchToVault(context, LocalVaultRef(path)),
         child: Container(
           height: 26,
           padding: const EdgeInsets.fromLTRB(8, 0, 10, 0),

@@ -81,7 +81,7 @@ class _CanvasViewState extends ConsumerState<CanvasView> {
     _moveDebounce?.cancel();
     _moveDebounce = Timer(config.persistDebounce, () async {
       final cli = ref.read(memexCliProvider);
-      final vaultPath = ref.read(currentVaultProvider);
+      final vaultPath = ref.read(currentVaultProvider).localPath;
       if (cli == null || vaultPath == null) return;
       try {
         await cli.moveNode(
@@ -136,7 +136,7 @@ class _CanvasViewState extends ConsumerState<CanvasView> {
           final local = localBox.globalToLocal(details.offset);
           final canvasCoord = _localToCanvas(local);
           final cli = ref.read(memexCliProvider);
-          final vaultPath = ref.read(currentVaultProvider);
+          final vaultPath = ref.read(currentVaultProvider).localPath;
           if (cli == null || vaultPath == null) return;
           final messenger = ScaffoldMessenger.maybeOf(context);
           try {
@@ -358,7 +358,7 @@ class _CanvasViewState extends ConsumerState<CanvasView> {
     );
     if (result == null) return;
     final cli = ref.read(memexCliProvider);
-    final vaultPath = ref.read(currentVaultProvider);
+    final vaultPath = ref.read(currentVaultProvider).localPath;
     if (cli == null || vaultPath == null) return;
     try {
       await cli.addLink(
@@ -632,7 +632,7 @@ class _EdgeInspectorState extends ConsumerState<_EdgeInspector> {
 
   Future<void> _save() async {
     final cli = ref.read(memexCliProvider);
-    final vaultPath = ref.read(currentVaultProvider);
+    final vaultPath = ref.read(currentVaultProvider).localPath;
     if (cli == null || vaultPath == null) return;
     try {
       await cli.updateLink(

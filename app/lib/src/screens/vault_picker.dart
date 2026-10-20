@@ -8,6 +8,7 @@ import 'package:path/path.dart' as p;
 
 import '../db.dart';
 import '../state/settings.dart';
+import '../state/vault_open_controller.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
@@ -142,23 +143,11 @@ class VaultPickerScreen extends ConsumerWidget {
     );
     if (result == null) return;
     final fullPath = p.join(result.parentDir, result.name);
-    if (Directory(fullPath).existsSync() &&
-        Directory(fullPath).listSync().isNotEmpty) {
-      if (context.mounted) {
-        _showError(context, '$fullPath already exists and is not empty.');
-      }
-      return;
-    }
-    final cli = ref.read(memexCliProvider);
-    if (cli == null) return;
-    try {
-      await cli.initVault(fullPath);
-      await ref.read(settingsProvider.notifier).rememberVault(fullPath);
-      ref.read(currentVaultProvider.notifier).state = fullPath;
-    } catch (e) {
-      if (context.mounted) {
-        _showError(context, 'Could not create vault: $e');
-      }
+    final outcome = await ref
+        .read(vaultOpenControllerProvider)
+        .createLocalVault(fullPath);
+    if (outcome is VaultOpenFailure && context.mounted) {
+      _showError(context, outcome.message);
     }
   }
 
@@ -167,17 +156,12 @@ class VaultPickerScreen extends ConsumerWidget {
       dialogTitle: 'Choose a vault folder',
     );
     if (selected == null) return;
-    if (!VaultDb.isVault(selected)) {
-      if (context.mounted) {
-        _showError(
-          context,
-          '$selected does not look like a vault (no manifest.json + memex.db).',
-        );
-      }
-      return;
+    final outcome = await ref
+        .read(vaultOpenControllerProvider)
+        .openVault(LocalVaultRef(selected));
+    if (outcome is VaultOpenFailure && context.mounted) {
+      _showError(context, outcome.message);
     }
-    await ref.read(settingsProvider.notifier).rememberVault(selected);
-    ref.read(currentVaultProvider.notifier).state = selected;
   }
 }
 
@@ -268,10 +252,12 @@ class _RecentVaultRowState extends ConsumerState<_RecentVaultRow> {
       child: GestureDetector(
         onTap: exists
             ? () async {
-                await ref
-                    .read(settingsProvider.notifier)
-                    .rememberVault(widget.path);
-                ref.read(currentVaultProvider.notifier).state = widget.path;
+                final outcome = await ref
+                    .read(vaultOpenControllerProvider)
+                    .openVault(LocalVaultRef(widget.path));
+                if (outcome is VaultOpenFailure && context.mounted) {
+                  _showError(context, outcome.message);
+                }
               }
             : null,
         child: Container(

@@ -19,7 +19,9 @@ import '../support/topics_seed.dart';
 ProviderContainer _container({VaultDb? db}) {
   final c = ProviderContainer(
     overrides: [
-      currentVaultProvider.overrideWith((_) => '/tmp/om-fake-vault'),
+      currentVaultProvider.overrideWith(
+        (_) => LocalVaultRef('/tmp/om-fake-vault'),
+      ),
       vaultDbProvider.overrideWithValue(db),
       memexCliProvider.overrideWithValue(null),
       clockProvider.overrideWithValue(FakeClock()),

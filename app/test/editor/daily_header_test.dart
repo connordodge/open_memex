@@ -37,7 +37,7 @@ Future<void> _pump(
     ProviderScope(
       overrides: [
         clockProvider.overrideWithValue(clock ?? FakeClock()),
-        currentVaultProvider.overrideWith((_) => '/vaults/v'),
+        currentVaultProvider.overrideWith((_) => LocalVaultRef('/vaults/v')),
         vaultDbProvider.overrideWithValue(db),
         memexCliProvider.overrideWithValue(null),
       ],

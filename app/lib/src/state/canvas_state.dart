@@ -1,6 +1,9 @@
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../db.dart';
+import 'vault_state.dart';
+
 /// Pan + zoom for one canvas, kept in memory across tab switches.
 class CanvasViewport {
   const CanvasViewport({required this.offset, required this.zoom});
@@ -77,3 +80,23 @@ class CanvasAnimationConfig {
 final canvasAnimationConfigProvider = Provider<CanvasAnimationConfig>(
   (_) => const CanvasAnimationConfig(),
 );
+
+/// All canvases in the current vault, ordered by `updated_at DESC`.
+final canvasesProvider = Provider<List<CanvasRow>>((ref) {
+  ref.watch(vaultRevisionProvider);
+  final db = ref.watch(vaultDbProvider);
+  if (db == null) return const [];
+  return db.listCanvases();
+});
+
+/// Hydrated canvas (metadata + placed nodes + edges). Provider.family keyed
+/// on canvas id.
+final canvasDetailProvider = Provider.family<CanvasDetailRow?, String>((
+  ref,
+  canvasId,
+) {
+  ref.watch(vaultRevisionProvider);
+  final db = ref.watch(vaultDbProvider);
+  if (db == null) return null;
+  return db.getCanvasDetail(canvasId);
+});
