@@ -38,6 +38,9 @@ ProviderContainer _withVault(VaultRef? vault, {FakeMemexCli? cli}) {
   return c;
 }
 
+/// Reads `localPath` through a `VaultRef?`, as the lib sites do.
+String? _localPathOf(VaultRef? ref) => ref.localPath;
+
 void main() {
   group('VaultRef value equality', () {
     test('two LocalVaultRefs with the same path are equal', () {
@@ -145,6 +148,35 @@ void main() {
     test('no vault gives null', () {
       final c = _withVault(null);
       expect(c.read(vaultDbProvider), isNull);
+    });
+  });
+
+  group('localPath (verify)', () {
+    test('localPath gives the folder of a LocalVaultRef', () {
+      final path = ['', 'tmp', 'om69-local'].join('/');
+      expect(_localPathOf(LocalVaultRef(path)), '/tmp/om69-local');
+    });
+
+    test('localPath gives null for a HostedVaultRef', () {
+      expect(
+        _localPathOf(HostedVaultRef(['srv', '1'].join('-'), 'work')),
+        isNull,
+      );
+    });
+
+    test('a VaultRef describes itself by kind and value', () {
+      expect(
+        LocalVaultRef(['', 'tmp', 'a'].join('/')).toString(),
+        'LocalVaultRef(/tmp/a)',
+      );
+      expect(
+        HostedVaultRef(['srv', '1'].join('-'), 'work').toString(),
+        'HostedVaultRef(srv-1, work)',
+      );
+    });
+
+    test('localPath gives null for no vault', () {
+      expect(_localPathOf(null), isNull);
     });
   });
 }
