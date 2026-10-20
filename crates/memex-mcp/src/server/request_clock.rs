@@ -12,8 +12,10 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use axum::extract::FromRequestParts;
+use axum::extract::{FromRequestParts, Request};
 use axum::http::request::Parts;
+use axum::middleware::Next;
+use axum::response::Response;
 use memex_core::{Clock, SystemClock};
 
 /// A clock the server shares between requests.
@@ -48,6 +50,18 @@ impl Clock for RequestClock {
     fn now_ms(&self) -> i64 {
         self.base.now_ms()
     }
+}
+
+/// The `X-Memex-UTC-Offset` middleware (D6), layered with
+/// `axum::middleware::from_fn` in D7's request-clock slot. It parses the
+/// header once per request with `caller_tz::parse_utc_offset`: a valid value
+/// is inserted as a [`CallerUtcOffset`], a malformed one is answered with 400
+/// `invalid_utc_offset` before any handler runs, and no header leaves the
+/// request as it is (server-local dates).
+///
+/// Skeleton (#93 red): passes every request through unchanged.
+pub async fn caller_utc_offset(req: Request, next: Next) -> Response {
+    next.run(req).await
 }
 
 impl<S> FromRequestParts<S> for RequestClock
