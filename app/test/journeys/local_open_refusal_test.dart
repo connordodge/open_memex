@@ -73,13 +73,14 @@ Never _spawnFailure(FakeCliCall _) => throw const ProcessException(
 
 /// A fake CLI whose `vault check` answers [check] and whose `settings get`
 /// answers the C2.11 sample.
-FakeMemexCli _cli(FakeCliHandler check) => FakeMemexCli()
-  ..on('vault check', check)
-  ..on('settings get', (_) => FakeMemexCli.ok(settingsGetMaxDepthStdout))
-  ..on('init', (call) {
-    initVaultFolder(call.args[1]);
-    return FakeMemexCli.ok();
-  });
+FakeMemexCli _cli(FakeCliHandler check, {String binaryPath = 'fake-memex'}) =>
+    FakeMemexCli(binaryPath: binaryPath)
+      ..on('vault check', check)
+      ..on('settings get', (_) => FakeMemexCli.ok(settingsGetMaxDepthStdout))
+      ..on('init', (call) {
+        initVaultFolder(call.args[1]);
+        return FakeMemexCli.ok();
+      });
 
 List<String> _subcommands(FakeMemexCli cli) =>
     cli.calls.map((c) => c.subcommand).toList();
@@ -1065,5 +1066,259 @@ void main() {
         _expectNoRefusal();
       },
     );
+  });
+
+  // Verify-mode pins: contracts the implementer handoff listed as unpinned.
+  group('pill refusals (verify)', () {
+    for (final (name, check, dialog) in [
+      (
+        'a pill network drive refusal has the OPEN LOCAL VAULT eyebrow',
+        (FakeCliCall _) => _networkDrive(),
+        _refusal,
+      ),
+      (
+        'a pill too old refusal has the OPEN LOCAL VAULT eyebrow',
+        (FakeCliCall _) => _tooOldMemex(),
+        _tooOld,
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final cli = _cli(check);
+        final h = await pumpWorkspace(tester, cli: cli);
+        final other = createVaultFolder('om92_pilleyebrow_');
+        final settings = h.read(settingsProvider.notifier);
+        await tester.runAsync(() async {
+          await settings.rememberVault(other.path);
+          await settings.rememberVault(h.vaultPath);
+        });
+        await pumpFrames(tester);
+
+        await tester.tap(_pill(other.path));
+        await _settle(tester);
+
+        expect(find.byKey(dialog), findsOneWidget);
+        expect(_inside(dialog, find.text('OPEN LOCAL VAULT')), findsOneWidget);
+        expect(_inside(dialog, find.text('CREATE NEW VAULT')), findsNothing);
+        expect(_inside(dialog, find.text(other.path)), findsOneWidget);
+        expect(cli.callsFor('vault check').single.args, [
+          'vault',
+          'check',
+          '--vault',
+          other.path,
+        ]);
+        expect(h.read(currentVaultProvider), LocalVaultRef(h.vaultPath));
+      });
+    }
+
+    testWidgets(
+      'a pill with a memex that exits 2 shows the too old refusal and cancel leaves the workspace as it was',
+      (tester) async {
+        final cli = _cli((_) => _tooOldMemex());
+        final h = await pumpWorkspace(tester, cli: cli);
+        final other = createVaultFolder('om92_pillold_');
+        final settings = h.read(settingsProvider.notifier);
+        await tester.runAsync(() async {
+          await settings.rememberVault(other.path);
+          await settings.rememberVault(h.vaultPath);
+        });
+        await pumpFrames(tester);
+
+        await tester.tap(_pill(other.path));
+        await _settle(tester);
+
+        expect(find.byKey(_tooOld), findsOneWidget);
+        expect(_inside(_tooOld, find.text(_tooOldCopy)), findsOneWidget);
+        expect(find.byType(Workspace), findsOneWidget);
+
+        await tester.tap(find.byKey(_tooOldCancel));
+        await _settle(tester);
+
+        _expectNoRefusal();
+        expect(find.byType(Workspace), findsOneWidget);
+        expect(h.read(currentVaultProvider), LocalVaultRef(h.vaultPath));
+        expect(h.read(settingsProvider).lastVault, h.vaultPath);
+        expect(h.read(settingsProvider).recentVaults, [
+          h.vaultPath,
+          other.path,
+        ]);
+        expect(h.read(settingsProvider).memexBinaryPath, 'fake-memex');
+      },
+    );
+
+    testWidgets(
+      'locate memex binary from a pill too old refusal stores the picked binary and the next pill tap runs vault check with it',
+      (tester) async {
+        final binDir = createPlainFolder('om92_pillbin_');
+        final newBinary = p.join(binDir.path, 'memex');
+        File(newBinary).writeAsStringSync('#!/bin/sh\n');
+        final picker = installFakeFilePicker()..files.add(newBinary);
+        final oldCli = _cli((_) => _tooOldMemex());
+        final newCli = _cli((_) => FakeMemexCli.ok());
+        final clis = {'fake-memex': oldCli, newBinary: newCli};
+        final h = await pumpWorkspace(
+          tester,
+          cli: oldCli,
+          overrides: [
+            memexCliProvider.overrideWith(
+              (ref) => clis[ref.watch(settingsProvider).memexBinaryPath],
+            ),
+          ],
+        );
+        final other = createVaultFolder('om92_pilllocate_');
+        final settings = h.read(settingsProvider.notifier);
+        await tester.runAsync(() async {
+          await settings.rememberVault(other.path);
+          await settings.rememberVault(h.vaultPath);
+        });
+        await pumpFrames(tester);
+
+        await tester.tap(_pill(other.path));
+        await _settle(tester);
+        expect(find.byKey(_tooOld), findsOneWidget);
+
+        await tester.tap(find.byKey(_tooOldLocate));
+        await _settle(tester);
+
+        expect(picker.calls.single.method, 'pickFiles');
+        expect(h.read(settingsProvider).memexBinaryPath, newBinary);
+        final prefs = await tester.runAsync(SharedPreferences.getInstance);
+        expect(prefs!.getString('memex.binary_path'), newBinary);
+        _expectNoRefusal();
+        expect(h.read(currentVaultProvider), LocalVaultRef(h.vaultPath));
+        expect(newCli.callsFor('vault check'), isEmpty);
+
+        await tester.tap(_pill(other.path));
+        await _settle(tester);
+
+        expect(oldCli.callsFor('vault check'), hasLength(1));
+        expect(newCli.callsFor('vault check').single.args, [
+          'vault',
+          'check',
+          '--vault',
+          other.path,
+        ]);
+        expect(h.read(currentVaultProvider), LocalVaultRef(other.path));
+        expect(find.byType(Workspace), findsOneWidget);
+      },
+    );
+  });
+
+  group('picker outcomes (verify)', () {
+    testWidgets(
+      'the binary not found card hides once a different binary is located after a spawn failure',
+      (tester) async {
+        final vault = createVaultFolder('om92_spawnlocate_');
+        final binDir = createPlainFolder('om92_spawnbin_');
+        final newBinary = p.join(binDir.path, 'memex');
+        File(newBinary).writeAsStringSync('#!/bin/sh\n');
+        final picker = installFakeFilePicker()
+          ..directories.add(vault.path)
+          ..files.add(newBinary);
+        // Each fake reports its own binary, as the real memexCliProvider
+        // builds the CLI from the configured path.
+        final brokenCli = _cli(_spawnFailure, binaryPath: 'broken-memex');
+        final newCli = _cli((_) => FakeMemexCli.ok(), binaryPath: newBinary);
+        final c = await _pumpApp(
+          tester,
+          clis: {'broken-memex': brokenCli, newBinary: newCli},
+          binaryPath: 'broken-memex',
+        );
+        expect(find.text('memex binary not found'), findsNothing);
+
+        await _tapOpenLocalVault(tester);
+        expect(find.text('memex binary not found'), findsOneWidget);
+
+        await tester.tap(find.text(_locateLabel));
+        await _settle(tester);
+
+        expect(picker.calls.last.method, 'pickFiles');
+        expect(c.read(settingsProvider).memexBinaryPath, newBinary);
+        expect(find.text('memex binary not found'), findsNothing);
+        expect(find.text('memex binary  $newBinary'), findsOneWidget);
+        expect(c.read(currentVaultProvider), isNull);
+      },
+    );
+
+    testWidgets(
+      'the binary not found card stays while the binary that could not start is still configured',
+      (tester) async {
+        final vault = createVaultFolder('om92_spawnstay_');
+        installFakeFilePicker().directories.add(vault.path);
+        final c = await _pumpApp(tester, cli: _cli(_spawnFailure));
+
+        await _tapOpenLocalVault(tester);
+        expect(find.text('memex binary not found'), findsOneWidget);
+        // A settings write that keeps the binary does not hide the card.
+        await tester.runAsync(
+          () => c.read(settingsProvider.notifier).rememberVault('/elsewhere'),
+        );
+        await pumpFrames(tester);
+
+        expect(find.text('memex binary not found'), findsOneWidget);
+        expect(c.read(currentVaultProvider), isNull);
+      },
+    );
+
+    testWidgets(
+      'at launch a plain vault check failure clears the opening row and shows the open error in a snackbar',
+      (tester) async {
+        final vault = createVaultFolder('om92_launchfail_');
+        final failure = FakeMemexCli.error('not_found', 'no such folder here');
+        final cli = _cli((_) => failure);
+        final c = await _pumpApp(
+          tester,
+          cli: cli,
+          recents: [vault.path],
+          lastVault: vault.path,
+        );
+        await _settle(tester);
+
+        expect(find.byKey(_openingRow), findsNothing);
+        expect(find.text(p.basename(vault.path)), findsOneWidget);
+        final error = MemexException.fromCliFailure('vault check', failure);
+        expect(
+          find.descendant(
+            of: find.byType(SnackBar),
+            matching: find.text(
+              'Could not open ${vault.path}: ${error.message}',
+            ),
+          ),
+          findsOneWidget,
+        );
+        _expectNoRefusal();
+        expect(find.byType(VaultPickerScreen), findsOneWidget);
+        expect(c.read(currentVaultProvider), isNull);
+        expect(c.read(settingsProvider).recentVaults, [vault.path]);
+        expect(_subcommands(cli), ['vault check']);
+      },
+    );
+
+    testWidgets('the opening row spinner turns once per second', (
+      tester,
+    ) async {
+      final vault = createVaultFolder('om92_spin_');
+      final gate = Completer<MemexResult>();
+      await _pumpApp(
+        tester,
+        cli: _cli((_) => gate.future),
+        recents: [vault.path],
+        lastVault: vault.path,
+      );
+      final spin = tester.widget<RotationTransition>(
+        find.descendant(
+          of: find.byKey(_openingRow),
+          matching: find.byType(RotationTransition),
+        ),
+      );
+      final start = spin.turns.value;
+
+      await tester.pump(const Duration(milliseconds: 250));
+      expect((spin.turns.value - start) % 1.0, closeTo(0.25, 0.01));
+      await tester.pump(const Duration(milliseconds: 750));
+      expect((spin.turns.value - start) % 1.0, closeTo(0.0, 0.01));
+
+      gate.complete(FakeMemexCli.ok());
+      await _settle(tester);
+    });
   });
 }

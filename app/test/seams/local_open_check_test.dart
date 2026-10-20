@@ -5,12 +5,14 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
 import 'package:open_memex_app/src/state/settings.dart';
 import 'package:open_memex_app/src/state/vault_open_controller.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
+import 'package:open_memex_app/src/theme/app_theme.dart';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -32,10 +34,12 @@ Future<ProviderContainer> _app({
   Map<String, FakeMemexCli>? clis,
   String binaryPath = 'fake-memex',
   List<String> recents = const [],
+  String? lastVault,
 }) async {
   SharedPreferences.setMockInitialValues({
     'memex.binary_path': binaryPath,
     'memex.recent_vaults': recents,
+    'memex.last_vault': ?lastVault,
   });
   final settings = await SettingsController.load();
   final c = ProviderContainer(
@@ -497,6 +501,334 @@ void main() {
         expect(state.smartFolderMaxDepth, 2);
         expect(c.read(vaultRevisionProvider), 1);
         expect(c.read(vaultDbProvider), isNotNull);
+      },
+    );
+  });
+
+  // Verify-mode pins: contracts the implementer handoff listed as unpinned.
+  group('folder shape check order (verify)', () {
+    test(
+      'openVault on a folder that is not a vault fails before vault check and runs no CLI call',
+      () async {
+        final plain = createPlainFolder('om92_shape_');
+        final cli = FakeMemexCli()..on('vault check', (_) => FakeMemexCli.ok());
+        final c = await _app(cli: cli);
+
+        final outcome = await c
+            .read(vaultOpenControllerProvider)
+            .openVault(LocalVaultRef(plain.path));
+
+        expect(
+          outcome,
+          isA<VaultOpenFailure>().having(
+            (o) => o.message,
+            'message',
+            '${plain.path} does not look like a vault (no manifest.json + memex.db).',
+          ),
+        );
+        expect(outcome, isNot(isA<VaultBinaryNotFound>()));
+        expect(cli.calls, isEmpty);
+        await _expectNothingOpened(c, recents: const []);
+      },
+    );
+
+    test(
+      'openVault on a folder that is not a vault with no memex binary reports the folder shape',
+      () async {
+        final plain = createPlainFolder('om92_shape_nobin_');
+        final c = await _app(cli: null);
+
+        final outcome = await c
+            .read(vaultOpenControllerProvider)
+            .openVault(LocalVaultRef(plain.path));
+
+        expect(outcome, isNot(isA<VaultBinaryNotFound>()));
+        expect(
+          (outcome as VaultOpenFailure).message,
+          '${plain.path} does not look like a vault (no manifest.json + memex.db).',
+        );
+      },
+    );
+
+    testWidgets(
+      'a pill switch to a folder that is not a vault skips the shape check and runs vault check',
+      (tester) async {
+        final plain = createPlainFolder('om92_pillshape_');
+        final cli = FakeMemexCli()..on('vault check', (_) => FakeMemexCli.ok());
+        late BuildContext context;
+        await tester.pumpWidget(
+          Builder(
+            builder: (ctx) {
+              context = ctx;
+              return const SizedBox();
+            },
+          ),
+        );
+        final c = (await tester.runAsync(() => _app(cli: cli)))!;
+
+        final outcome = await tester.runAsync(
+          () => c
+              .read(vaultOpenControllerProvider)
+              .switchToVault(context, LocalVaultRef(plain.path)),
+        );
+
+        expect(
+          outcome,
+          isA<VaultOpened>().having(
+            (o) => o.vault,
+            'vault',
+            LocalVaultRef(plain.path),
+          ),
+        );
+        expect(cli.calls.map((call) => call.args), [
+          ['vault', 'check', '--vault', plain.path],
+        ]);
+        expect(c.read(currentVaultProvider), LocalVaultRef(plain.path));
+      },
+    );
+
+    test(
+      'launchReopen of a last vault that is not a vault folder skips the shape check and runs vault check',
+      () async {
+        final plain = createPlainFolder('om92_launchshape_');
+        final cli = FakeMemexCli()..on('vault check', (_) => FakeMemexCli.ok());
+        final c = await _app(
+          cli: cli,
+          lastVault: plain.path,
+          recents: [plain.path],
+        );
+
+        final outcome = await c
+            .read(vaultOpenControllerProvider)
+            .launchReopen();
+
+        expect(outcome, isA<VaultOpened>());
+        expect(cli.calls.map((call) => call.args), [
+          ['vault', 'check', '--vault', plain.path],
+        ]);
+      },
+    );
+  });
+
+  group('launch writes no settings (verify)', () {
+    test(
+      'launchReopen that opens the last vault writes no settings and keeps the recents order',
+      () async {
+        final last = createVaultFolder('om92_launchlast_');
+        final other = createVaultFolder('om92_launchother_');
+        final cli = FakeMemexCli()
+          ..on('vault check', (_) => FakeMemexCli.ok())
+          ..on(
+            'settings get',
+            (_) => FakeMemexCli.ok(settingsGetMaxDepthStdout),
+          );
+        final c = await _app(
+          cli: cli,
+          lastVault: last.path,
+          recents: [other.path, last.path],
+        );
+        final before = c.read(settingsProvider);
+        var settingsNotified = 0;
+        c.listen(settingsProvider, (_, _) => settingsNotified++);
+
+        final outcome = await c
+            .read(vaultOpenControllerProvider)
+            .launchReopen();
+
+        expect(
+          outcome,
+          isA<VaultOpened>().having(
+            (o) => o.vault,
+            'vault',
+            LocalVaultRef(last.path),
+          ),
+        );
+        expect(c.read(currentVaultProvider), LocalVaultRef(last.path));
+        expect(settingsNotified, 0);
+        expect(c.read(settingsProvider), same(before));
+        expect(c.read(settingsProvider).recentVaults, [other.path, last.path]);
+        final prefs = await SharedPreferences.getInstance();
+        expect(prefs.getString('memex.last_vault'), last.path);
+        expect(prefs.getStringList('memex.recent_vaults'), [
+          other.path,
+          last.path,
+        ]);
+      },
+    );
+
+    test(
+      'a refused launch leaves no vault open and the settings as they were',
+      () async {
+        final last = createVaultFolder('om92_launchrefused_');
+        final cli = FakeMemexCli()
+          ..on(
+            'vault check',
+            (_) => FakeMemexCli.error('network_filesystem', 'network drive'),
+          );
+        final c = await _app(
+          cli: cli,
+          lastVault: last.path,
+          recents: [last.path],
+        );
+        final before = c.read(settingsProvider);
+
+        final outcome = await c
+            .read(vaultOpenControllerProvider)
+            .launchReopen();
+
+        expect(
+          outcome,
+          isA<VaultOnNetworkDrive>().having((o) => o.path, 'path', last.path),
+        );
+        expect(c.read(currentVaultProvider), isNull);
+        expect(c.read(vaultDbProvider), isNull);
+        expect(c.read(settingsProvider), same(before));
+      },
+    );
+  });
+
+  group('showRefusal (verify)', () {
+    /// Pumps a bare app on [c] and returns a context under its navigator.
+    Future<BuildContext> pumpHost(
+      WidgetTester tester,
+      ProviderContainer c,
+    ) async {
+      late BuildContext context;
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: c,
+          child: MaterialApp(
+            theme: buildOmTheme(),
+            home: Builder(
+              builder: (ctx) {
+                context = ctx;
+                return const SizedBox();
+              },
+            ),
+          ),
+        ),
+      );
+      return context;
+    }
+
+    for (final (name, outcome) in [
+      (
+        'showRefusal returns false and shows nothing for a plain failure',
+        VaultOpenFailure(['Could not open', 'x'].join(' ')),
+      ),
+      (
+        'showRefusal returns false and shows nothing for binary not found',
+        VaultBinaryNotFound(['memex binary not found:', 'x'].join(' ')),
+      ),
+      (
+        'showRefusal returns false and shows nothing for an opened vault',
+        VaultOpened(LocalVaultRef(['', 'tmp', 'om92'].join('/'))),
+      ),
+      (
+        'showRefusal returns false and shows nothing for a cancelled open',
+        const VaultOpenCancelled(),
+      ),
+      (
+        'showRefusal returns false and shows nothing for no vault to reopen',
+        const NoVaultToReopen(),
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final c = (await tester.runAsync(() => _app(cli: FakeMemexCli())))!;
+        final context = await pumpHost(tester, c);
+
+        final shown = await c
+            .read(vaultOpenControllerProvider)
+            .showRefusal(context, outcome, eyebrow: 'OPEN LOCAL VAULT');
+        await tester.pumpAndSettle();
+
+        expect(shown, isFalse);
+        expect(find.byType(Dialog), findsNothing);
+        expect(find.byKey(const Key('network-drive-refusal')), findsNothing);
+        expect(find.byKey(const Key('memex-too-old-refusal')), findsNothing);
+        expect(find.text('OPEN LOCAL VAULT'), findsNothing);
+      });
+    }
+
+    for (final (name, outcome, dialog, cancel) in [
+      (
+        'showRefusal shows the network drive refusal under the eyebrow and returns true once it closes',
+        VaultOnNetworkDrive(['', 'nas', 'om92'].join('/'), 'refused'),
+        const Key('network-drive-refusal'),
+        const Key('network-drive-refusal-cancel'),
+      ),
+      (
+        'showRefusal shows the too old refusal under the eyebrow and returns true once it closes',
+        VaultMemexTooOld(['', 'nas', 'om92'].join('/'), 'too old'),
+        const Key('memex-too-old-refusal'),
+        const Key('memex-too-old-cancel'),
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final c = (await tester.runAsync(() => _app(cli: FakeMemexCli())))!;
+        final context = await pumpHost(tester, c);
+        bool? shown;
+
+        c
+            .read(vaultOpenControllerProvider)
+            .showRefusal(context, outcome, eyebrow: 'SOME EYEBROW')
+            .then((v) => shown = v);
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(dialog), findsOneWidget);
+        expect(
+          find.descendant(
+            of: find.byKey(dialog),
+            matching: find.text('SOME EYEBROW'),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: find.byKey(dialog),
+            matching: find.text('/nas/om92'),
+          ),
+          findsOneWidget,
+        );
+        expect(shown, isNull, reason: 'completes only once the dialog closes');
+
+        await tester.tap(find.byKey(cancel));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(dialog), findsNothing);
+        expect(shown, isTrue);
+        expect(c.read(settingsProvider).memexBinaryPath, 'fake-memex');
+      });
+    }
+  });
+
+  group('create on a missing target (verify)', () {
+    test(
+      'createLocalVault on a target that does not exist yet runs vault check on that missing path',
+      () async {
+        final parent = createPlainFolder('om92_missing_parent_');
+        final target = p.join(parent.path, 'NotYet');
+        final existedAtCheck = <bool>[];
+        final cli = FakeMemexCli()
+          ..on('vault check', (call) {
+            existedAtCheck.add(Directory(call.flag('vault')!).existsSync());
+            return FakeMemexCli.ok();
+          })
+          ..on('init', _init)
+          ..on(
+            'settings get',
+            (_) => FakeMemexCli.ok(settingsGetMaxDepthStdout),
+          );
+        final c = await _app(cli: cli);
+
+        final outcome = await c
+            .read(vaultOpenControllerProvider)
+            .createLocalVault(target);
+
+        expect(outcome, isA<VaultOpened>());
+        expect(cli.callsFor('vault check').single.flag('vault'), target);
+        expect(existedAtCheck, [isFalse]);
+        expect(cli.calls.first.subcommand, 'vault check');
       },
     );
   });
