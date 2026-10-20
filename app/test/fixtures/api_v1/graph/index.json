@@ -1,0 +1,15 @@
+[
+  {"method": "GET", "path": "/vaults/seed/api/v1/graph/notes", "response": "graph_notes.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/graph/links", "response": "graph_links.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ3WP7H0NXZZV9M2315/agent-changes", "response": "agent_changes_player_loop.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ47QW55S90ZF0A56AH/agent-changes", "response": "agent_changes_economy_design.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ4YAPYMEDWXP8WCNGJ/agent-changes", "response": "agent_changes_pacing_notes.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ4RYSGA8T0YEEF8QRS/agent-changes", "response": "agent_changes_loose_thought.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ592W2515HPSDF5Q16/agent-changes", "response": "agent_changes_daily_2026_10_15.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ50YGKE126FXV02TEY/agent-changes", "response": "agent_changes_daily_2026_10_16.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ5T5B865CDF2RWAC37/agent-changes", "response": "agent_changes_daily_2026_10_17.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ4TAPTHDWE5PNWE4W5/agent-changes", "response": "agent_changes_daily_2026_10_18.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ51PF87XFZWSV5PWXK/agent-changes", "response": "agent_changes_daily_2026_10_19.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ5RH88SRZGPY15XXVM/agent-changes", "response": "agent_changes_broken_frontmatter.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/notes/01J9Z8Y7X6W5V4T3S2R1Q0P9N8/agent-changes", "response": "agent_changes_unknown_note.json", "status": 200}
+]
