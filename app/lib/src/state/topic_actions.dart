@@ -43,18 +43,24 @@ class TopicNotLinkedException implements Exception {
 /// A failed `add` throws its [MemexException]. When only the footer call
 /// fails the topic note exists, and a [TopicNotLinkedException] (with
 /// [linkTarget] in its message) is thrown.
+///
+/// [onTopicCreated] runs right after the topic note exists, before the footer
+/// call, so a caller can tell "nothing created" from "created but the footer
+/// call failed" for failures that are not a [MemexException].
 Future<({String topicId, FooterAddResult footer})> createLinkedTopic(
   VaultAccess access, {
   required String title,
   required String contentMd,
   required String dailyNoteId,
   required String linkTarget,
+  void Function()? onTopicCreated,
 }) async {
   final topicId = await access.notes.addNote(
     title: title,
     contentMd: contentMd,
     role: 'topic',
   );
+  onTopicCreated?.call();
   final FooterAddResult footer;
   try {
     footer = await access.daily.addFooterChip(
@@ -75,8 +81,9 @@ Future<({String topicId, FooterAddResult footer})> createLinkedTopic(
 ///
 /// A failure throws the [MemexException] (or the error) with no tab opened;
 /// the revision is bumped when something was created on the way (a daily
-/// note, or the topic note when only its footer chip failed, which throws a
-/// [TopicNotLinkedException]).
+/// note, or the topic note when its footer chip failed: a
+/// [TopicNotLinkedException], or any other failure such as
+/// `VaultUnreachableException`).
 Future<String> createTopicFromSidebar(WidgetRef ref, String title) async {
   final cli = ref.read(memexCliProvider);
   final vaultPath = ref.read(currentVaultProvider).localPath;
@@ -102,6 +109,9 @@ Future<String> createTopicFromSidebar(WidgetRef ref, String title) async {
       contentMd: topicNoteBody(title),
       dailyNoteId: dailyId,
       linkTarget: 'today',
+      // The topic note exists from here on: whatever the footer call does,
+      // the tree must see it.
+      onTopicCreated: () => createdDaily = true,
     );
     createdDaily = false;
     ref.read(vaultRevisionProvider.notifier).state++;
@@ -134,6 +144,9 @@ Future<void> rebaseEditorOnVersion(
   final stored =
       await ref.read(vaultAccessProvider)?.notes.getNote(fallback.id) ??
       fallback;
+  // The user may have opened another note while the read was in flight:
+  // loading the first note back would clobber the editor.
+  if (editor.activeNoteId != fallback.id) return;
   editor.loadNote(
     Note(
       id: stored.id,
