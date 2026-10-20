@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "payload_too_large",
+    "message": "the request body is larger than 8 MiB"
+  }
+}
