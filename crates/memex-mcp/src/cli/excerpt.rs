@@ -3,11 +3,9 @@
 use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
-use memex_core::excerpts;
-use memex_core::{Caller, NoteId, Vault};
+use memex_core::{SystemClock, Vault};
 
-use super::InvalidArgument;
-use crate::tools::excerpts::ExcerptWritten;
+use crate::ops::excerpt;
 
 /// `memex excerpt <command>`
 #[derive(Args, Debug)]
@@ -49,21 +47,14 @@ pub fn run(args: ExcerptArgs) -> anyhow::Result<()> {
 /// `memex excerpt rm`: the person removes one transclusion (Req 14). The
 /// topic's `excerpt` chip on that day goes with its last excerpt from it.
 fn rm(args: ExcerptRmArgs) -> anyhow::Result<()> {
-    if args.block_ids.iter().any(|id| id.trim().is_empty()) {
-        let msg = "--block-ids must list one or two non-empty block ids".to_string();
-        return Err(InvalidArgument(msg).into());
-    }
-    let topic = NoteId::parse(&args.topic_note_id)?;
+    let input = excerpt::RmInput {
+        topic_note_id: args.topic_note_id,
+        date: args.date,
+        block_ids: args.block_ids,
+    };
+    input.validate()?;
     let mut vault = Vault::open(&args.vault)?;
-    let written = excerpts::remove_excerpt(
-        &mut vault,
-        &topic,
-        &args.date,
-        &args.block_ids,
-        Caller::Person,
-        None,
-    )?;
-    let line = ExcerptWritten::new(&vault, &written);
-    println!("{}", serde_json::to_string(&line)?);
+    let out = excerpt::rm(&mut vault, input, &SystemClock, None)?;
+    println!("{}", serde_json::to_string(&out)?);
     Ok(())
 }

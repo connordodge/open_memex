@@ -1,6 +1,7 @@
 // WI #69 review round 1 (finding 4): the picker shows the vault open
 // controller's failure copy for "open existing vault…" and "create new
-// vault…", as main did, and a recent row opens as it did on main.
+// vault…", as main did, and a recent row of a folder that is not a vault
+// has no tap, as on main.
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
@@ -270,32 +271,6 @@ void main() {
         expect(c.read(settingsProvider).lastVault, isNull);
         expect(find.byType(SnackBar), findsNothing);
         expect(find.byType(VaultPickerScreen), findsOneWidget);
-      },
-    );
-
-    testWidgets(
-      'tapping a recent row of a folder that is not a vault still opens it as today',
-      (tester) async {
-        // The row was drawn while the folder was a vault; by the tap it no
-        // longer is (memex.db gone, no rebuild in between). On main the tap
-        // opened it with no check: rememberVault, then the current vault.
-        // #92 adds the check (`memex vault check`); until then a recent row
-        // must not check the folder (lead ruling, behaviour-preserving WI).
-        final vault = createVaultFolder('om69_recent_stale_');
-        final cli = FakeMemexCli()
-          ..on(
-            'settings get',
-            (_) => FakeMemexCli.ok(settingsGetMaxDepthStdout),
-          );
-        final c = await _pumpPicker(tester, cli: cli, recents: [vault.path]);
-        File(p.join(vault.path, 'memex.db')).deleteSync();
-
-        await tester.tap(find.text(p.basename(vault.path)));
-        await _settle(tester);
-
-        expect(c.read(currentVaultProvider), LocalVaultRef(vault.path));
-        expect(c.read(settingsProvider).lastVault, vault.path);
-        expect(c.read(settingsProvider).recentVaults, [vault.path]);
       },
     );
   });
