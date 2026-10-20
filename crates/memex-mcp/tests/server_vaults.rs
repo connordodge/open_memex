@@ -635,6 +635,60 @@ async fn vault_info_lookup_is_case_insensitive_and_answers_with_the_folder_name(
     }
 }
 
+/// A C1 405 `method_not_allowed` with a JSON body.
+fn assert_c1_405(r: &Reply, what: &str) {
+    assert_eq!(r.status, 405, "{what}: {}", r.body);
+    assert_eq!(r.c1_code(), "method_not_allowed", "{what}");
+    assert!(
+        r.header("content-type")
+            .is_some_and(|ct| ct.starts_with("application/json")),
+        "{what}: a JSON body, got {:?}",
+        r.header("content-type")
+    );
+}
+
+#[tokio::test]
+async fn wrong_methods_on_the_vault_routes_are_c1_405_method_not_allowed() {
+    let root = tempfile::tempdir().unwrap();
+    let id = make_vault(root.path(), "work");
+    let srv = TestServer::start_in(root).await;
+    let before = dir_names(srv.root());
+    for (path, wrong) in [
+        ("/api/v1/vaults", &["PUT", "DELETE", "PATCH", "OPTIONS"][..]),
+        (
+            "/vaults/work/api/v1/info",
+            &["POST", "PUT", "DELETE", "PATCH", "OPTIONS"][..],
+        ),
+        ("/vaults/WORK/api/v1/info", &["POST", "DELETE"][..]),
+    ] {
+        for method in wrong {
+            let r = raw_get(&srv, method, path).await;
+            assert_c1_405(&r, &format!("{method} {path}"));
+        }
+    }
+    // The served methods on the same paths are unaffected, and nothing was
+    // created or removed.
+    assert_eq!(listed(&srv).await, vec!["work".to_string()]);
+    let r = info(&srv, "work").await;
+    assert_eq!(r.status, 200, "{}", r.body);
+    assert_eq!(r.json()["vault_id"], json!(id));
+    assert_eq!(dir_names(srv.root()), before);
+}
+
+#[tokio::test]
+async fn a_wrong_method_on_an_unknown_vault_is_404_vault_not_found_not_405() {
+    // The vault guard answers before routing, so a name that is not served
+    // is `vault_not_found` whatever the method.
+    let root = tempfile::tempdir().unwrap();
+    make_vault(root.path(), "work");
+    let srv = TestServer::start_in(root).await;
+    for method in ["POST", "PUT", "DELETE", "PATCH", "OPTIONS"] {
+        let path = "/vaults/nope/api/v1/info";
+        let r = raw_get(&srv, method, path).await;
+        assert_vault_not_found(&r, &format!("{method} {path}"));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // AC 8: unknown names and traversal
 // ---------------------------------------------------------------------------
