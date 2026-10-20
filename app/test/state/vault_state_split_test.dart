@@ -109,7 +109,7 @@ void main() {
       );
     });
 
-    test('the moved providers still read the open vault', () {
+    test('the moved providers still read the open vault', () async {
       final db = FakeVaultDb.v5()
         ..seedNote(
           id: '01J9BBBBBBBBBBBBBBBBBBBBBB',
@@ -122,13 +122,20 @@ void main() {
           content: 'a\n',
         );
       final c = ProviderContainer(
-        overrides: [vault.vaultDbProvider.overrideWithValue(db)],
+        overrides: [
+          vault.vaultDbProvider.overrideWithValue(db),
+          vault.currentVaultProvider.overrideWith(
+            (_) => const vault.LocalVaultRef('/tmp/om-86-split'),
+          ),
+          vault.memexCliProvider.overrideWithValue(null),
+        ],
       );
       addTearDown(db.close);
       addTearDown(c.dispose);
 
       c.read(notes_list.sidebarSortProvider.notifier).state =
           notes_list.NoteSortMode.alphabetical;
+      await c.read(notes_list.notesListAsyncProvider.future);
       expect(
         [for (final n in c.read(notes_list.notesListProvider)) n.title],
         ['alpha', 'Beta'],

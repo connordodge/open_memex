@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../db.dart';
+import '../vault_access/vault_scoped.dart';
 import 'vault_state.dart';
 
 /// How the sidebar's note list is ordered. Persisted choice between
@@ -11,6 +12,14 @@ enum NoteSortMode { lastEdited, alphabetical }
 
 final sidebarSortProvider = StateProvider<NoteSortMode>(
   (_) => NoteSortMode.lastEdited,
+);
+
+/// The open vault's notes for the sidebar (D14a), read through
+/// `vaultAccessProvider` (`notes.listNotes(limit: 200)`) and ordered by
+/// [sidebarSortProvider], stamped with the vault they were loaded for.
+/// Re-reads on every `vaultRevisionProvider` bump and on a vault switch.
+final notesListAsyncProvider = FutureProvider<VaultScoped<List<NoteListItem>>>(
+  (ref) => throw UnimplementedError(),
 );
 
 /// Sorted list of notes in the current vault.
