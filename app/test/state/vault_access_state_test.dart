@@ -199,6 +199,12 @@ void main() {
   });
 
   group('AC6 no open vault', () {
+    test('vaultIsHostedProvider is false with no override', () {
+      // No override of vaultIsHostedProvider: its own default.
+      expect(_container().read(vaultIsHostedProvider), isFalse);
+      expect(_container(vault: null).read(vaultIsHostedProvider), isFalse);
+    });
+
     test(
       'vaultAccessProvider is null with no open vault and set once one opens',
       () {

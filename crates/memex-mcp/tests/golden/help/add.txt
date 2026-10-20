@@ -1,0 +1,11 @@
+Append a note to a vault from CLI input. Body comes from stdin
+
+Usage: memex add [OPTIONS] --vault <VAULT>
+
+Options:
+      --vault <VAULT>    Vault directory
+      --title <TITLE>    Title (default: derived from first line)
+      --tags <TAGS>      Comma-separated tags
+      --role <ROLE>      Note role, stored in frontmatter as `role` [possible values: daily, topic]
+      --with-embeddings  Use real embeddings (downloads BGE-small on first call)
+  -h, --help             Print help
