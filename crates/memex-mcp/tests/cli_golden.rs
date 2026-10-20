@@ -261,6 +261,59 @@ fn golden_update_prints_note_id_version_updated_at() {
     );
 }
 
+/// `memex update --title` (the app sends it, memex_cli.dart) must reach the op.
+fn update_title(f: &Fx, id: &str, title: &str, extra: &[&str], body: &str) {
+    let mut args = vec![
+        "update",
+        "--vault",
+        f.v(),
+        "--note-id",
+        id,
+        "--expected-version",
+        "1",
+        "--title",
+        title,
+    ];
+    args.extend_from_slice(extra);
+    f.ok(&args, Some(body));
+}
+
+#[test]
+fn golden_update_title_reaches_the_stored_note() {
+    let mut f = Fx::new();
+    let a = f.add("<A>", &["--title", "Alpha"], "v1\n");
+    update_title(&f, &a, "Alpha Two", &[], "v2\n");
+    let got = f.json(&["get", "--vault", f.v(), "--note-id", &a]);
+    assert_eq!(got["title"], "Alpha Two");
+    assert_eq!(got["content_md"], "v2\n");
+    assert_eq!(got["version"], 2);
+}
+
+#[test]
+fn golden_update_title_rewrites_linkers_by_default() {
+    let mut f = Fx::new();
+    let a = f.add("<A>", &["--title", "Alpha"], "a\n");
+    let l = f.add("<L>", &["--title", "Linker"], "See [[Alpha]].\n");
+    update_title(&f, &a, "Alpha Two", &[], "a\n");
+    let got = f.json(&["get", "--vault", f.v(), "--note-id", &l]);
+    assert_eq!(got["content_md"], "See [[Alpha Two]].\n");
+    let got = f.json(&["get", "--vault", f.v(), "--note-id", &a]);
+    assert_eq!(got["title"], "Alpha Two");
+}
+
+#[test]
+fn golden_update_no_rename_links_leaves_linkers_alone() {
+    let mut f = Fx::new();
+    let a = f.add("<A>", &["--title", "Alpha"], "a\n");
+    let l = f.add("<L>", &["--title", "Linker"], "See [[Alpha]].\n");
+    update_title(&f, &a, "Alpha Two", &["--no-rename-links"], "a\n");
+    let got = f.json(&["get", "--vault", f.v(), "--note-id", &l]);
+    assert_eq!(got["content_md"], "See [[Alpha]].\n");
+    assert_eq!(got["version"], 1);
+    let got = f.json(&["get", "--vault", f.v(), "--note-id", &a]);
+    assert_eq!(got["title"], "Alpha Two");
+}
+
 #[test]
 fn golden_get_prints_the_note_object_with_and_without_links() {
     let mut f = Fx::new();
@@ -390,6 +443,35 @@ fn golden_add_link_prints_new_and_existing_links() {
         None,
     );
     assert_eq!(out, "{\"vault_id\":\"<VAULT>\",\"link_id\":\"<ULID>\",\"from\":\"<B>\",\"to\":\"<A>\",\"kind\":\"references\",\"source\":\"auto_added\",\"was_existing\":false,\"note_version\":2}\n");
+}
+
+/// `memex add-link --label` (the app sends it, memex_cli.dart) must reach the op.
+#[test]
+fn golden_add_link_label_reaches_the_source_note() {
+    let mut f = Fx::new();
+    let a = f.add("<A>", &["--title", "Alpha"], "Alpha body.\n");
+    let b = f.add("<B>", &["--title", "Beta"], "Beta body.\n");
+    f.ok(
+        &[
+            "add-link",
+            "--vault",
+            f.v(),
+            "--from",
+            &a,
+            "--to",
+            &b,
+            "--kind",
+            "references",
+            "--label",
+            "more",
+        ],
+        None,
+    );
+    // A `references` link lands in the body, where the label is the alias.
+    let got = f.json(&["get", "--vault", f.v(), "--note-id", &a, "--include-links"]);
+    let content = got["content_md"].as_str().unwrap();
+    assert!(content.contains("[[Beta|more]]"), "{content}");
+    assert_eq!(got["links"]["references"][0]["label"], "more");
 }
 
 #[test]
