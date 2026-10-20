@@ -330,6 +330,60 @@ void main() {
       }
     });
 
+    // clap's value_delimiter keeps empty segments (verified on a temp vault:
+    // `memex add --tags a,,b` stores [a, "", b]; `--tags ,a` stores ["", a];
+    // `--tags ''` stores [""]), so the hosted body must keep them too.
+    test(
+      'hosted addNote keeps empty comma segments like the local add argv',
+      () async {
+        const cases = <(List<String>, List<String>)>[
+          (['a,,b'], ['a', '', 'b']),
+          ([',a'], ['', 'a']),
+          (['a,'], ['a', '']),
+          ([''], ['']),
+          (['', 'x'], ['', 'x']),
+        ];
+        for (final (tags, clapStores) in cases) {
+          final cli = vaultAccessSampleCli();
+          final local = LocalVaultAccess(vaultPath: '/unused/wi81', cli: cli);
+          await local.notes.addNote(
+            title: 'Tag Probe',
+            tags: tags,
+            contentMd: 'B\n',
+          );
+          final args = cli.callsFor('add').single.args;
+          expect(
+            args[args.indexOf('--tags') + 1].split(','),
+            clapStores,
+            reason: 'local argv for $tags',
+          );
+
+          final env = _env(rows: false);
+          env.server.route(
+            'POST',
+            '$_wi81Base/notes',
+            status: 201,
+            json: {
+              'note_id': '01M5DQB000000000000000000A',
+              'title': 'Tag Probe',
+              'tags': clapStores,
+              'adopted': false,
+            },
+          );
+          await env.notes.addNote(
+            title: 'Tag Probe',
+            tags: tags,
+            contentMd: 'B\n',
+          );
+          expect(
+            (env.lastBody! as Map)['tags'],
+            clapStores,
+            reason: 'hosted body for $tags',
+          );
+        }
+      },
+    );
+
     test('hosted addNote with empty content throws invalid_argument', () async {
       final env = _env();
       final e = await _outcome(env.notes.addNote(contentMd: '   \n'));
