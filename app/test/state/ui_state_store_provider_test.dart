@@ -161,4 +161,52 @@ void main() {
       },
     );
   });
+
+  group('no store fallback (verify)', () {
+    for (final (name, vault) in [
+      (
+        'tabsProvider with no vault open keeps tabs in memory on the dev null store',
+        null,
+      ),
+      (
+        'tabsProvider for a HostedVaultRef keeps tabs in memory on the dev null store',
+        HostedVaultRef('srv-1', 'work'),
+      ),
+    ]) {
+      test(name, () async {
+        final c = _container(vault);
+        expect(c.read(uiStateStoreProvider), isNull);
+
+        final tabs = c.read(tabsProvider.notifier);
+        expect(tabs.store.vaultPath, '/dev/null');
+        tabs.openOrFocus(const NoteTab('01MEM'));
+        // A write that cannot land must not surface as an error.
+        await tabs.store.flush();
+
+        expect(c.read(tabsProvider).tabs, contains(const NoteTab('01MEM')));
+        expect(c.read(tabsProvider).activeTab, const NoteTab('01MEM'));
+        expect(c.read(selectedNoteIdProvider), '01MEM');
+      });
+    }
+
+    for (final (name, vault) in [
+      (
+        'sidebarModeProvider with no vault open starts in Days and selects without a store',
+        null,
+      ),
+      (
+        'sidebarModeProvider for a HostedVaultRef starts in Days and selects without a store',
+        HostedVaultRef('srv-1', 'work'),
+      ),
+    ]) {
+      test(name, () async {
+        final c = _container(vault);
+        expect(c.read(sidebarModeProvider), SidebarMode.days);
+
+        await c.read(sidebarModeProvider.notifier).select(SidebarMode.topics);
+
+        expect(c.read(sidebarModeProvider), SidebarMode.topics);
+      });
+    }
+  });
 }
