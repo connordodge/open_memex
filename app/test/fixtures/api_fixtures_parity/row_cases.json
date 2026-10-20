@@ -1,0 +1,27 @@
+{
+  "accepted": [
+    {"why": "dots inside a bare name", "row": {"method": "GET", "path": "/x", "response": "a..b.json", "status": 200}},
+    {"why": "a bare request name", "row": {"method": "POST", "path": "/x", "request": "x.request.json", "response": "x.json", "status": 201}}
+  ],
+  "rejected": [
+    {"why": "empty response", "row": {"method": "GET", "path": "/x", "response": "", "status": 200}, "error": ["field \"response\" must be a bare file name"]},
+    {"why": "response .", "row": {"method": "GET", "path": "/x", "response": ".", "status": 200}, "error": ["field \"response\" must be a bare file name"]},
+    {"why": "response ..", "row": {"method": "GET", "path": "/x", "response": "..", "status": 200}, "error": ["field \"response\" must be a bare file name"]},
+    {"why": "response with a slash", "row": {"method": "GET", "path": "/x", "response": "a/b.json", "status": 200}, "error": ["field \"response\" must be a bare file name"]},
+    {"why": "response outside the folder", "row": {"method": "GET", "path": "/x", "response": "../x.json", "status": 200}, "error": ["field \"response\" must be a bare file name", "../x.json"]},
+    {"why": "response with a backslash", "row": {"method": "GET", "path": "/x", "response": "a\\b.json", "status": 200}, "error": ["field \"response\" must be a bare file name"]},
+    {"why": "absolute response", "row": {"method": "GET", "path": "/x", "response": "/abs/x.json", "status": 200}, "error": ["field \"response\" must be a bare file name"]},
+    {"why": "absolute Windows response", "row": {"method": "GET", "path": "/x", "response": "C:\\x.json", "status": 200}, "error": ["field \"response\" must be a bare file name"]},
+    {"why": "empty request", "row": {"method": "POST", "path": "/x", "request": "", "response": "x.json", "status": 201}, "error": ["field \"request\" must be a bare file name"]},
+    {"why": "request .", "row": {"method": "POST", "path": "/x", "request": ".", "response": "x.json", "status": 201}, "error": ["field \"request\" must be a bare file name"]},
+    {"why": "request ..", "row": {"method": "POST", "path": "/x", "request": "..", "response": "x.json", "status": 201}, "error": ["field \"request\" must be a bare file name"]},
+    {"why": "request with a slash", "row": {"method": "POST", "path": "/x", "request": "a/b.json", "response": "x.json", "status": 201}, "error": ["field \"request\" must be a bare file name"]},
+    {"why": "request outside the folder", "row": {"method": "POST", "path": "/x", "request": "../x.request.json", "response": "x.json", "status": 201}, "error": ["field \"request\" must be a bare file name", "../x.request.json"]},
+    {"why": "request with a backslash", "row": {"method": "POST", "path": "/x", "request": "a\\b.json", "response": "x.json", "status": 201}, "error": ["field \"request\" must be a bare file name"]},
+    {"why": "absolute request", "row": {"method": "POST", "path": "/x", "request": "/abs/x.json", "response": "x.json", "status": 201}, "error": ["field \"request\" must be a bare file name"]},
+    {"why": "unknown key note", "row": {"method": "GET", "path": "/x", "response": "x.json", "status": 200, "note": "why"}, "error": ["unknown field \"note\""]},
+    {"why": "unknown key comment", "row": {"method": "GET", "path": "/x", "response": "x.json", "status": 200, "comment": "x"}, "error": ["unknown field \"comment\""]},
+    {"why": "a key that differs only in case", "row": {"method": "GET", "path": "/x", "response": "x.json", "status": 200, "Status": 200}, "error": ["unknown field \"Status\""]},
+    {"why": "a dashed spelling of dart_only", "row": {"method": "GET", "path": "/x", "response": "x.json", "status": 200, "dart-only": true}, "error": ["unknown field \"dart-only\""]}
+  ]
+}
