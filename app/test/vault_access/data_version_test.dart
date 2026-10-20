@@ -134,6 +134,36 @@ void main() {
   });
 
   test(
+    'dataVersion instance ids are distinct across FakeVaultDb and both VaultDb constructors',
+    () {
+      String handleId(VaultDb db) {
+        final v = db.dataVersion();
+        return v.substring(0, v.lastIndexOf('-'));
+      }
+
+      final vault = _tempVault();
+      final opened = _open(vault);
+      final raw = sqlite3.openInMemory();
+      final fromDatabase = VaultDb.fromDatabase(raw);
+      addTearDown(fromDatabase.close);
+      final fake = FakeVaultDb.v5();
+      addTearDown(fake.close);
+      final opened2 = _open(vault);
+
+      final ids = [
+        for (final db in [opened, fromDatabase, fake, opened2]) handleId(db),
+      ];
+      for (final id in ids) {
+        expect(id, isNotEmpty);
+      }
+      expect(ids.toSet(), hasLength(ids.length), reason: '$ids');
+      // Each handle keeps its id across reads.
+      expect(handleId(fake), ids[2]);
+      expect(handleId(opened), ids[0]);
+    },
+  );
+
+  test(
     'local revision returns the handle dataVersion and changes after a commit',
     () async {
       final vault = _tempVault();
