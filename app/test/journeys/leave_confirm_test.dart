@@ -722,4 +722,217 @@ void main() {
       },
     );
   });
+
+  group('stacked leave requests (verify)', () {
+    for (final (name, first) in [
+      (
+        'with the close confirm up a second close or quit answers no and opens no second dialog',
+        _Via.close,
+      ),
+      (
+        'with the quit confirm up a second close or quit answers no and opens no second dialog',
+        _Via.quit,
+      ),
+      (
+        'with the switch confirm up a close or quit answers no and opens no second dialog',
+        _Via.pill,
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final (h, exit, other) = await _pump(tester, unsent: _boardSample);
+        await _leave(tester, first, exit, other);
+        expect(find.byKey(_confirm), findsOneWidget);
+
+        unawaited(exit.requestClose());
+        await _settle(tester);
+        expect(find.byKey(_confirm), findsOneWidget);
+        expect(exit.closeAnswers, [false]);
+
+        unawaited(exit.requestQuit());
+        await _settle(tester);
+        expect(find.byKey(_confirm), findsOneWidget);
+        expect(exit.quitAnswers, [AppExitResponse.cancel]);
+
+        // The first confirm still answers for its own request.
+        await tester.tap(find.byKey(_cancel));
+        await _settle(tester);
+        expect(find.byKey(_confirm), findsNothing);
+        switch (first) {
+          case _Via.close:
+            expect(exit.closeAnswers, [false, false]);
+            expect(exit.quitAnswers, [AppExitResponse.cancel]);
+          case _Via.quit:
+            expect(exit.closeAnswers, [false]);
+            expect(exit.quitAnswers, [
+              AppExitResponse.cancel,
+              AppExitResponse.cancel,
+            ]);
+          case _Via.pill || _Via.switchVault:
+            expect(exit.closeAnswers, [false]);
+            expect(exit.quitAnswers, [AppExitResponse.cancel]);
+        }
+        expect(h.read(currentVaultProvider), LocalVaultRef(h.vaultPath));
+      });
+    }
+
+    testWidgets('after a cancelled close confirm the next close asks again', (
+      tester,
+    ) async {
+      final (_, exit, other) = await _pump(tester, unsent: _boardSample);
+      await _leave(tester, _Via.close, exit, other);
+      await tester.tap(find.byKey(_cancel));
+      await _settle(tester);
+      expect(exit.closeAnswers, [false]);
+
+      await _leave(tester, _Via.close, exit, other);
+
+      expect(find.byKey(_confirm), findsOneWidget);
+      expect(exit.closeAnswers, [false]);
+      await tester.tap(find.byKey(_proceed));
+      await _settle(tester);
+      expect(exit.closeAnswers, [false, true]);
+    });
+  });
+
+  group('quit after an allowed close (verify)', () {
+    testWidgets(
+      'after close anyway a quit answers exit with no dialog even with unsent text',
+      (tester) async {
+        final (_, exit, other) = await _pump(tester, unsent: _boardSample);
+        await _leave(tester, _Via.close, exit, other);
+        await tester.tap(find.byKey(_proceed));
+        await _settle(tester);
+        expect(exit.closeAnswers, [true]);
+
+        await _leave(tester, _Via.quit, exit, other);
+
+        expect(find.byKey(_confirm), findsNothing);
+        expect(exit.quitAnswers, [AppExitResponse.exit]);
+      },
+    );
+
+    testWidgets(
+      'after a close with no unsent text a quit answers exit with no dialog once text is unsent',
+      (tester) async {
+        final unsentNow = StateProvider<bool>((_) => false);
+        final exit = FakeAppExitHost();
+        await pumpWorkspace(
+          tester,
+          overrides: [
+            appExitHostProvider.overrideWithValue(exit),
+            hasUnsentHostedTextProvider.overrideWith(
+              (ref) => ref.watch(unsentNow),
+            ),
+            unsentHostedTextProvider.overrideWithValue(_boardSample),
+          ],
+        );
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(Workspace)),
+        );
+        unawaited(exit.requestClose());
+        await _settle(tester);
+        expect(exit.closeAnswers, [true]);
+
+        container.read(unsentNow.notifier).state = true;
+        await pumpFrames(tester);
+        unawaited(exit.requestQuit());
+        await _settle(tester);
+
+        expect(find.byKey(_confirm), findsNothing);
+        expect(exit.quitAnswers, [AppExitResponse.exit]);
+      },
+    );
+
+    testWidgets('after a cancelled close a quit still shows the quit confirm', (
+      tester,
+    ) async {
+      final (_, exit, other) = await _pump(tester, unsent: _boardSample);
+      await _leave(tester, _Via.close, exit, other);
+      await tester.tap(find.byKey(_cancel));
+      await _settle(tester);
+      expect(exit.closeAnswers, [false]);
+
+      await _leave(tester, _Via.quit, exit, other);
+
+      expect(_inConfirm(find.text(_question('nas', 'quit'))), findsOneWidget);
+      expect(exit.quitAnswers, isEmpty);
+      await tester.tap(find.byKey(_cancel));
+      await _settle(tester);
+      expect(exit.quitAnswers, [AppExitResponse.cancel]);
+    });
+  });
+
+  group('row list boundary and spacing (verify)', () {
+    testWidgets(
+      'with exactly 5 unsent notes the rows scroll in a 156 high box',
+      (tester) async {
+        final (_, exit, other) = await _pump(tester, unsent: _manyNotes(5));
+        await _leave(tester, _Via.close, exit, other);
+
+        final list = _inConfirm(find.byType(Scrollable));
+        expect(list, findsOneWidget);
+        final box = tester.getRect(list);
+        expect(box.height, moreOrLessEquals(156, epsilon: 0.5));
+        expect(
+          tester.getRect(find.byKey(_row(0))).top,
+          moreOrLessEquals(box.top, epsilon: 0.5),
+        );
+        expect(
+          tester.getRect(find.byKey(_row(4))).bottom,
+          greaterThan(box.bottom),
+        );
+        // The actions sit 20 below the scroll box.
+        expect(
+          tester.getRect(_buttonAt(_cancel)).top - box.bottom,
+          moreOrLessEquals(20, epsilon: 0.5),
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets('with exactly 4 unsent notes the rows do not scroll', (
+      tester,
+    ) async {
+      final (_, exit, other) = await _pump(tester, unsent: _manyNotes(4));
+      await _leave(tester, _Via.close, exit, other);
+
+      expect(_inConfirm(find.byType(Scrollable)), findsNothing);
+      for (var n = 1; n < 4; n++) {
+        expect(
+          tester.getRect(find.byKey(_row(n))).top -
+              tester.getRect(find.byKey(_row(n - 1))).bottom,
+          moreOrLessEquals(6, epsilon: 0.5),
+          reason: 'gap above row $n',
+        );
+      }
+      expect(
+        tester.getRect(_buttonAt(_cancel)).top -
+            tester.getRect(find.byKey(_row(3))).bottom,
+        moreOrLessEquals(20, epsilon: 0.5),
+      );
+    });
+
+    testWidgets(
+      'the question sits 16 below the eyebrow and the first row 16 below the question',
+      (tester) async {
+        final (_, exit, other) = await _pump(tester, unsent: _boardSample);
+        await _leave(tester, _Via.close, exit, other);
+
+        final eyebrow = tester.getRect(_inConfirm(find.text('MEMEX · NAS')));
+        final question = tester.getRect(
+          _inConfirm(find.text(_question('nas', 'close'))),
+        );
+        final row0 = tester.getRect(find.byKey(_row(0)));
+
+        expect(
+          question.top - eyebrow.bottom,
+          moreOrLessEquals(16, epsilon: 0.5),
+        );
+        expect(row0.top - question.bottom, moreOrLessEquals(16, epsilon: 0.5));
+        // Row height 34.5 and dialog height 204 come from the real fonts'
+        // line heights; the test font measures differently, so only the
+        // fixed gaps are pinned here.
+      },
+    );
+  });
 }

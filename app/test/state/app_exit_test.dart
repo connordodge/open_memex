@@ -150,6 +150,40 @@ void main() {
     );
   });
 
+  group('window channel unknown methods (verify)', () {
+    testWidgets(
+      'an unknown method on the window channel gets not implemented back',
+      (tester) async {
+        await pumpWorkspace(tester, overrides: unsentTextOverrides(_unsent));
+        const codec = StandardMethodCodec();
+        var replied = false;
+        ByteData? raw;
+        tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+          appWindowChannel.name,
+          codec.encodeMethodCall(const MethodCall('windowWillMiniaturize')),
+          (data) {
+            replied = true;
+            raw = data;
+          },
+        );
+        await pumpFrames(tester);
+
+        // An empty reply is FlutterMethodNotImplemented on the native side.
+        expect(replied, isTrue);
+        expect(raw, isNull);
+        expect(find.byKey(_confirm), findsNothing);
+
+        // The close request still works after it.
+        final close = sendWindowShouldClose(tester);
+        await pumpFrames(tester);
+        expect(find.byKey(_confirm), findsOneWidget);
+        await tester.tap(find.byKey(_cancel));
+        await pumpFrames(tester);
+        expect(close.decoded, false);
+      },
+    );
+  });
+
   group('app root registration', () {
     testWidgets(
       'the app root attaches the app-exit seam once and keeps it across a vault switch',
