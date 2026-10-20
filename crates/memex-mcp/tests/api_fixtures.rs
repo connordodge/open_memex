@@ -41,8 +41,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use api_fixtures::{
-    api_v1_dir, canonical_json, load_rows, load_utc_offsets, materialize_seed, normalize_volatile,
-    run_rows, run_seed_builder, seed_bless_requested, FixtureRequest, FixtureResponse, FixtureRow,
+    all_domain_dirs, api_v1_dir, canonical_json, check_domain_files, load_rows, load_utc_offsets,
+    materialize_seed, normalize_volatile, parity_index_path, run_rows, run_seed_builder,
+    seed_bless_requested, seed_summary, FixtureRequest, FixtureResponse, FixtureRow,
     SEED_VAULT_NAME,
 };
 use memex_core::Vault;
@@ -268,6 +269,32 @@ fn assert_seed_edge_rows(conn: &Connection, what: &str) {
         }),
         "{what}: no note whose snippet line is over 120 characters with a surrogate pair at UTF-16 units 116-117"
     );
+    // ... and on that row a cut by chars (what a naive Rust port would do)
+    // differs from the app's 117-UTF-16-unit cut: the unit cut ends on the
+    // lone high surrogate, the chars cut keeps the whole pair.
+    let pacing = notes
+        .iter()
+        .find(|(_, t, _)| t == "Pacing Notes")
+        .unwrap_or_else(|| panic!("{what}: no Pacing Notes note"));
+    let line = snippet_source_line(&pacing.2);
+    let units: Vec<u16> = line.encode_utf16().collect();
+    let unit_cut = &units[..117];
+    let chars_cut: Vec<u16> = line
+        .chars()
+        .take(117)
+        .collect::<String>()
+        .encode_utf16()
+        .collect();
+    assert_ne!(
+        chars_cut, unit_cut,
+        "{what}: a chars cut equals the UTF-16 cut on the Pacing Notes line"
+    );
+    assert!(
+        (0xD800..=0xDBFF).contains(unit_cut.last().unwrap()),
+        "{what}: the 117-unit cut of Pacing Notes must end on a high surrogate"
+    );
+
+    assert_review_and_frontmatter_edge_rows(conn, what);
 
     // 3. A ghost link: no target note, and no note has its text as a title.
     let titles: Vec<String> = notes.iter().map(|(_, t, _)| t.to_lowercase()).collect();
@@ -307,6 +334,159 @@ fn assert_seed_edge_rows(conn: &Connection, what: &str) {
         )
         .unwrap();
     assert!(pinned > 0, "{what}: no pinned Smart Folder");
+}
+
+/// The app's daily-note read (`daily_reads.dart` `_dailyNoteSelect` and
+/// `_stateOf`, `_dailyRow` preview): title → (review state, preview).
+fn app_daily_rows(conn: &Connection) -> BTreeMap<String, (&'static str, String)> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT n.title, r.content_version, r.reviewed_content_version,
+                    (SELECT b.text FROM blocks b WHERE b.note_id = n.id ORDER BY b.ord LIMIT 1)
+             FROM notes n LEFT JOIN day_reviews r ON r.note_id = n.id
+             WHERE (CASE WHEN json_valid(n.frontmatter)
+                    THEN json_extract(n.frontmatter, '$.role') END) = 'daily'",
+        )
+        .unwrap();
+    let rows = stmt
+        .query_map([], |r| {
+            let cv: Option<i64> = r.get(1)?;
+            let rcv: Option<i64> = r.get(2)?;
+            let first: Option<String> = r.get(3)?;
+            let state = match (cv, rcv) {
+                (Some(c), Some(rc)) if c == rc => "reviewed",
+                (Some(_), Some(_)) => "changedSinceReview",
+                _ => "unreviewed",
+            };
+            let text = first.unwrap_or_default();
+            let preview = text.split('\n').next().unwrap_or("").to_string();
+            Ok((r.get::<_, String>(0)?, (state, preview)))
+        })
+        .unwrap();
+    rows.map(|r| r.unwrap()).collect()
+}
+
+/// The app's role read (`graph_reads.dart` / `topics_reads.dart`): title →
+/// role, with invalid-JSON frontmatter read as no role.
+fn app_roles(conn: &Connection) -> BTreeMap<String, Option<String>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT title, (CASE WHEN json_valid(frontmatter)
+                    THEN json_extract(frontmatter, '$.role') END) FROM notes",
+        )
+        .unwrap();
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get(1)?)))
+        .unwrap();
+    rows.map(|r| r.unwrap()).collect()
+}
+
+/// The app's `unsortedNotes` read (`topics_reads.dart`): titles of the
+/// non-daily notes in no Smart Folder.
+fn app_unsorted_titles(conn: &Connection) -> Vec<String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT title FROM (
+               SELECT n.title AS title, (CASE WHEN json_valid(n.frontmatter)
+                      THEN json_extract(n.frontmatter, '$.role') END) AS role
+               FROM notes n WHERE NOT EXISTS (
+                 SELECT 1 FROM smart_folder_members m WHERE m.note_id = n.id))
+             WHERE role IS NULL OR role != 'daily' ORDER BY title",
+        )
+        .unwrap();
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
+    rows.map(|r| r.unwrap()).collect()
+}
+
+/// The review-round-1 edge rows (D10), computed as the app computes them.
+fn assert_review_and_frontmatter_edge_rows(conn: &Connection, what: &str) {
+    let daily = app_daily_rows(conn);
+    let state = |day: &str| daily.get(day).map(|(s, _)| *s);
+
+    // 6. Every review state: reviewed, unreviewed, changed since review.
+    assert_eq!(state("2026-10-18"), Some("reviewed"), "{what}: {daily:?}");
+    assert_eq!(state("2026-10-19"), Some("unreviewed"), "{what}: {daily:?}");
+    assert_eq!(
+        state("2026-10-17"),
+        Some("changedSinceReview"),
+        "{what}: 2026-10-17 must be changed since review: {daily:?}"
+    );
+    let versions: (Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT r.content_version, r.reviewed_content_version
+             FROM notes n JOIN day_reviews r ON r.note_id = n.id WHERE n.title = '2026-10-17'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap_or_else(|e| panic!("{what}: day_reviews row of 2026-10-17: {e}"));
+    assert_eq!(
+        versions,
+        (Some(2), Some(1)),
+        "{what}: 2026-10-17 day_reviews (content_version, reviewed_content_version)"
+    );
+
+    // 7. A daily note with no day_reviews row at all reads as unreviewed.
+    let rowless: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM day_reviews r JOIN notes n ON n.id = r.note_id
+             WHERE n.title = '2026-10-15'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        rowless, 0,
+        "{what}: 2026-10-15 must have no day_reviews row"
+    );
+    assert_eq!(
+        state("2026-10-15"),
+        Some("unreviewed"),
+        "{what}: 2026-10-15 must be a daily note read as unreviewed: {daily:?}"
+    );
+
+    // 8. A first block over two lines: the preview stops at its newline.
+    let preview = daily.get("2026-10-16").map(|(_, p)| p.as_str());
+    assert_eq!(
+        preview,
+        Some("Morning playtest with the new crafting tree"),
+        "{what}: 2026-10-16 preview: {daily:?}"
+    );
+    let first_block: String = conn
+        .query_row(
+            "SELECT b.text FROM blocks b JOIN notes n ON n.id = b.note_id
+             WHERE n.title = '2026-10-16' ORDER BY b.ord LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        first_block.contains('\n'),
+        "{what}: the first block of 2026-10-16 spans two lines: {first_block:?}"
+    );
+
+    // 9. Invalid-JSON frontmatter: no role, not daily, listed as unsorted.
+    let valid: i64 = conn
+        .query_row(
+            "SELECT json_valid(frontmatter) FROM notes WHERE title = 'Broken Frontmatter'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or_else(|e| panic!("{what}: no Broken Frontmatter note: {e}"));
+    assert_eq!(
+        valid, 0,
+        "{what}: Broken Frontmatter must hold invalid JSON"
+    );
+    assert_eq!(
+        app_roles(conn).get("Broken Frontmatter"),
+        Some(&None),
+        "{what}: Broken Frontmatter reads as role-less"
+    );
+    assert!(!daily.contains_key("Broken Frontmatter"), "{what}");
+    assert!(
+        app_unsorted_titles(conn).contains(&"Broken Frontmatter".to_string()),
+        "{what}: Broken Frontmatter must be unsorted: {:?}",
+        app_unsorted_titles(conn)
+    );
 }
 
 /// Every file under `dir`, path → bytes.
@@ -1787,4 +1967,373 @@ fn materialize_seed_indexes_the_seed_chunks_for_search() {
         hits.iter().any(|t| t == "Economy Design"),
         "searching the seed finds Economy Design: {hits:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// REVIEW #109 round 1 pins
+// ---------------------------------------------------------------------------
+
+/// `app/test/fixtures/api_fixtures_parity/row_cases.json`: row cases both the
+/// Rust and the Dart loader tests run (`accepted` rows parse, `rejected` rows
+/// fail with every `error` substring).
+fn shared_row_cases() -> Value {
+    let path = committed_api_v1_dir().join("../api_fixtures_parity/row_cases.json");
+    let raw = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    serde_json::from_str(&raw).expect("row_cases.json is JSON")
+}
+
+/// A valid row put before each case, so the error must name row `[1]`.
+fn leading_good_row() -> Value {
+    json!({"method": "GET", "path": "/x", "response": "x.json", "status": 200})
+}
+
+/// The rejected cases of row_cases.json whose first error starts with
+/// `prefix`, as (why, row, error substrings).
+fn rejected_cases(prefix: &str) -> Vec<(String, Value, Vec<String>)> {
+    shared_row_cases()["rejected"]
+        .as_array()
+        .expect("rejected cases")
+        .iter()
+        .map(|c| {
+            let errors: Vec<String> = c["error"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| e.as_str().unwrap().to_string())
+                .collect();
+            (
+                c["why"].as_str().unwrap().to_string(),
+                c["row"].clone(),
+                errors,
+            )
+        })
+        .filter(|(_, _, errors)| errors[0].starts_with(prefix))
+        .collect()
+}
+
+#[test]
+fn row_loader_rejects_request_and_response_names_that_are_not_bare_file_names() {
+    let cases = rejected_cases("field \"re");
+    assert_eq!(cases.len(), 15, "every bare-name case of row_cases.json");
+    for (why, row, errors) in cases {
+        let tmp = tempfile::tempdir().unwrap();
+        let index = serde_json::to_string(&json!([leading_good_row(), row])).unwrap();
+        let dir = write_domain(tmp.path(), "barenames", &index, &[]);
+        let err = err_of(load_rows(&dir), &why);
+        assert!(err.contains("barenames[1]"), "{why}: names the row: {err}");
+        for want in &errors {
+            assert!(err.contains(want.as_str()), "{why}: {want:?} in {err}");
+        }
+        let field = if errors[0].contains("\"request\"") {
+            "request"
+        } else {
+            "response"
+        };
+        let bad = row[field].to_string();
+        assert!(err.contains(&bad), "{why}: shows the bad name {bad}: {err}");
+    }
+
+    for case in shared_row_cases()["accepted"].as_array().unwrap() {
+        let why = case["why"].as_str().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let index = serde_json::to_string(&json!([case["row"]])).unwrap();
+        let dir = write_domain(tmp.path(), "barenames", &index, &[]);
+        let rows = load_rows(&dir).unwrap_or_else(|e| panic!("{why}: {e}"));
+        assert_eq!(rows[0].response, case["row"]["response"].as_str().unwrap());
+        assert_eq!(rows[0].request.as_deref(), case["row"]["request"].as_str());
+    }
+}
+
+#[test]
+fn row_loader_rejects_an_unknown_row_key_naming_the_row_and_the_key() {
+    let cases = rejected_cases("unknown field");
+    assert_eq!(cases.len(), 4, "every unknown-key case of row_cases.json");
+    for (why, row, errors) in cases {
+        let tmp = tempfile::tempdir().unwrap();
+        let index = serde_json::to_string(&json!([leading_good_row(), row])).unwrap();
+        let dir = write_domain(tmp.path(), "unknownkeys", &index, &[]);
+        let err = err_of(load_rows(&dir), &why);
+        assert!(
+            err.contains("unknownkeys[1]"),
+            "{why}: names the row: {err}"
+        );
+        for want in &errors {
+            assert!(err.contains(want.as_str()), "{why}: {want:?} in {err}");
+        }
+    }
+}
+
+/// `app/test/fixtures/api_v1/<domain>/index.json` folders, found without the
+/// support module.
+fn globbed_domain_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = fs::read_dir(committed_api_v1_dir())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.join("index.json").is_file())
+        .collect();
+    dirs.sort();
+    dirs
+}
+
+#[test]
+fn every_api_v1_domain_loads_and_names_only_files_that_exist() {
+    let found = all_domain_dirs();
+    let canon = |ps: &[PathBuf]| -> Vec<PathBuf> {
+        ps.iter().map(|p| fs::canonicalize(p).unwrap()).collect()
+    };
+    assert_eq!(
+        canon(&found),
+        canon(&globbed_domain_dirs()),
+        "all_domain_dirs is every api_v1/<domain>/index.json, sorted"
+    );
+    let names: Vec<String> = found
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert!(names.contains(&"compat".to_string()), "{names:?}");
+    assert!(
+        !names.contains(&"server".to_string()),
+        "server/ holds no index.json, so it is not a domain: {names:?}"
+    );
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(names, sorted, "sorted by folder name");
+    for dir in &found {
+        check_domain_files(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+    }
+}
+
+#[test]
+fn check_domain_files_lists_every_missing_request_and_response_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = write_domain(
+        tmp.path(),
+        "missingfiles",
+        r#"[
+  {"method": "GET", "path": "/a", "response": "a.json", "status": 200},
+  {"method": "POST", "path": "/b", "request": "b.request.json", "response": "b.json", "status": 201},
+  {"method": "POST", "path": "/c", "request": "c.request.json", "response": "c.json", "status": 201}
+]"#,
+        &[("a.json", "{}\n"), ("c.request.json", "{}\n")],
+    );
+    let err = err_of(check_domain_files(&dir), "missing files");
+    let lines: Vec<&str> = err.lines().collect();
+    assert_eq!(
+        lines,
+        vec![
+            "missingfiles[1]: request file b.request.json is missing",
+            "missingfiles[1]: response file b.json is missing",
+            "missingfiles[2]: response file c.json is missing",
+        ],
+        "{err}"
+    );
+
+    // With every file present it passes; a malformed row still fails.
+    for f in ["b.request.json", "b.json", "c.json"] {
+        fs::write(dir.join(f), "{}\n").unwrap();
+    }
+    assert_eq!(check_domain_files(&dir), Ok(()));
+    let bad = write_domain(
+        tmp.path(),
+        "badrow",
+        r#"[{"method": "GET", "path": "/a", "response": "../a.json", "status": 200}]"#,
+        &[],
+    );
+    let err = err_of(check_domain_files(&bad), "bad row");
+    assert!(
+        err.contains("badrow[0]") && err.contains("response"),
+        "{err}"
+    );
+}
+
+/// Asserts no seed table holds any of `ids` as a block id.
+fn assert_block_ids_not_in_seed(ids: &[&str]) {
+    let conn = load_on_schema(&committed_seed_sql());
+    for id in ids {
+        let n: i64 = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM blocks WHERE block_id = ?1)
+                      + (SELECT COUNT(*) FROM day_review_blocks WHERE block_id = ?1)",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0, "{id} must not be a seed block id");
+    }
+}
+
+fn a_seed_block_id() -> String {
+    load_on_schema(&committed_seed_sql())
+        .query_row(
+            "SELECT block_id FROM blocks ORDER BY block_id LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn normalize_volatile_replaces_minted_block_ids_and_block_refs_with_block_placeholders() {
+    let (b1, b2, b3) = ("zzzzz1", "zzzzz2", "zzzzz3");
+    assert_block_ids_not_in_seed(&[b1, b2, b3]);
+    assert_not_in_seed(&[MINT_A, MINT_B]);
+    let seed_block = a_seed_block_id();
+    // `a_id` sorts first, so an <id:N> is handed out before any <block:N>.
+    let v = json!({
+        "a_id": MINT_A,
+        "bare": format!("^{b1} outside any link"),
+        "block_id": b1,
+        "block_ids": [b2, seed_block],
+        "content": format!("![[2026-10-19#^{b1}..^{b3}]] and [[Player Loop#^{seed_block}]]"),
+        "id": MINT_B,
+        "other": b1
+    });
+    assert_eq!(
+        normalize_volatile(&v),
+        json!({
+            "a_id": "<id:1>",
+            "bare": format!("^{b1} outside any link"),
+            "block_id": "<block:1>",
+            "block_ids": ["<block:2>", seed_block],
+            "content": format!(
+                "![[2026-10-19#^<block:1>..^<block:3>]] and [[Player Loop#^{seed_block}]]"
+            ),
+            "id": "<id:2>",
+            "other": b1
+        }),
+        "minted block ids become <block:N> (own counter, shared across both forms); \
+         seed block ids, bare ^refs and other keys stay"
+    );
+}
+
+#[test]
+fn normalize_volatile_leaves_seed_block_ids_untouched_in_both_forms() {
+    let seed_block = a_seed_block_id();
+    let v = json!({
+        "block_id": seed_block,
+        "block_ids": [seed_block],
+        "text": format!("![[2026-10-18#^{seed_block}]]")
+    });
+    assert_eq!(normalize_volatile(&v), v);
+}
+
+#[test]
+fn committed_seed_matches_a_fresh_build_by_seed_summary() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api = fake_api_dir_with_stale_seed(tmp.path());
+    let scratch = tmp.path().join("scratch");
+    let out = run_seed_builder(&api, &scratch, false);
+    let built = fs::read_to_string(out.join("seed_vault.sql")).unwrap();
+    let committed = committed_seed_sql();
+    assert_ne!(built, committed, "a rebuild re-mints every id");
+
+    assert_eq!(
+        canonical_json(&seed_summary(&built)),
+        canonical_json(&seed_summary(&committed)),
+        "seed drift: the builder no longer produces the committed seed \
+         (rebless with MEMEX_BLESS=1 MEMEX_BLESS_SEED=1)"
+    );
+
+    // The builder keeps the committed vault_id and created_at.
+    let built_manifest: Value =
+        serde_json::from_slice(&fs::read(out.join("seed_manifest.json")).unwrap()).unwrap();
+    let committed_manifest: Value = serde_json::from_slice(
+        &fs::read(committed_api_v1_dir().join("seed_manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(built_manifest["vault_id"], json!(committed_seed_vault_id()));
+    assert_eq!(
+        built_manifest["created_at"],
+        committed_manifest["created_at"]
+    );
+}
+
+#[test]
+fn seed_summary_counts_rows_per_table_and_labels_every_volatile_value() {
+    let committed = committed_seed_sql();
+    let summary = seed_summary(&committed);
+    let counts = insert_counts(&committed);
+    let tables: Vec<&String> = summary.as_object().unwrap().keys().collect();
+    let filled: Vec<&String> = counts.keys().collect();
+    for t in &filled {
+        assert!(tables.contains(t), "{t} is in the summary: {tables:?}");
+    }
+    for (table, entry) in summary.as_object().unwrap() {
+        let n = *counts.get(table).unwrap_or(&0);
+        assert_eq!(entry["count"], json!(n), "{table} count");
+        assert_eq!(
+            entry["rows"].as_array().unwrap().len() as i64,
+            n,
+            "{table} rows"
+        );
+    }
+    let text = canonical_json(&summary);
+    let ulid = Regex::new(r"\b[0-7][0-9A-HJKMNP-TV-Z]{25}\b").unwrap();
+    assert!(!ulid.is_match(&text), "no raw ULID in the summary");
+    let has_row = |table: &str, col: &str, v: Value| {
+        summary[table]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r[col] == v)
+    };
+    assert!(has_row("notes", "id", json!("<note:Player Loop>")));
+    assert!(has_row("notes", "created_at", json!("<timestamp>")));
+    assert!(has_row("smart_folders", "id", json!("<folder:Design>")));
+    assert!(has_row(
+        "smart_folders",
+        "parent_id",
+        json!("<folder:Design>")
+    ));
+    assert!(has_row("canvases", "id", json!("<canvas:Prototype Map>")));
+    assert!(has_row("blocks", "block_id", json!("<block:2026-10-16#0>")));
+    assert!(has_row("blocks", "note_id", json!("<note:2026-10-16>")));
+
+    // A content change or a dropped row shows in the summary.
+    let mutated = committed.replacen("Sources and sinks", "Sources and drains", 1);
+    assert_ne!(mutated, committed);
+    assert_ne!(seed_summary(&mutated), summary, "a content change is drift");
+    let dropped: String = committed
+        .lines()
+        .filter(|l| !l.contains("'Inbox'"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_ne!(dropped, committed);
+    assert_ne!(seed_summary(&dropped), summary, "a dropped row is drift");
+}
+
+#[test]
+fn parity_rows_are_read_from_the_one_shared_file_by_both_languages() {
+    let shared = committed_api_v1_dir().join("../api_fixtures_parity/index.json");
+    assert_eq!(
+        fs::canonicalize(parity_index_path()).unwrap(),
+        fs::canonicalize(&shared).unwrap(),
+        "parity_index_path is app/test/fixtures/api_fixtures_parity/index.json"
+    );
+    let app = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../app");
+    let dart_support = fs::read_to_string(app.join("test/support/api_fixtures.dart")).unwrap();
+    assert!(
+        dart_support
+            .contains("parityIndexJsonPath = 'test/fixtures/api_fixtures_parity/index.json'"),
+        "the Dart support names the same shared file"
+    );
+    let dart_test = fs::read_to_string(app.join("test/seams/api_fixtures_test.dart")).unwrap();
+    assert!(
+        dart_test.contains("_sharedIndexJson() => File(parityIndexJsonPath)"),
+        "the Dart row-loader test reads the shared file"
+    );
+    let rust_test = include_str!("api_fixtures.rs");
+    for (src, inline) in [
+        (dart_test.as_str(), concat!("shared", "IndexJson =")),
+        (rust_test, concat!("SHARED_", "INDEX_JSON")),
+    ] {
+        assert!(
+            !src.contains(inline),
+            "an inline copy of the parity rows ({inline}) is back"
+        );
+    }
+    // The parity file is never a domain.
+    assert!(all_domain_dirs()
+        .iter()
+        .all(|d| !d.ends_with("api_fixtures_parity")));
 }
