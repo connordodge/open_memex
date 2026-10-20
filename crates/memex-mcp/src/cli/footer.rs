@@ -3,9 +3,9 @@
 use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
-use memex_core::footer::{self, ChipOrigin};
-use memex_core::{NoteId, Vault};
-use serde::Serialize;
+use memex_core::{NoteId, SystemClock, Vault};
+
+use crate::ops::footer;
 
 /// `memex footer <command>`
 #[derive(Args, Debug)]
@@ -34,17 +34,6 @@ pub struct FooterAddArgs {
     pub topic_note_id: String,
 }
 
-/// The C2.3 output line.
-#[derive(Serialize)]
-struct FooterAdded<'a> {
-    vault_id: &'a str,
-    daily_note_id: &'a str,
-    topic_note_id: &'a str,
-    origin: &'static str,
-    /// The daily note's `notes.version` after the call.
-    version: i64,
-}
-
 pub fn run(args: FooterArgs) -> anyhow::Result<()> {
     match args.command {
         FooterCommand::Add(a) => add(a),
@@ -54,18 +43,14 @@ pub fn run(args: FooterArgs) -> anyhow::Result<()> {
 /// `memex footer add`: records a `person` chip (Req 17). Idempotent; an
 /// `excerpt` chip is upgraded in place.
 fn add(args: FooterAddArgs) -> anyhow::Result<()> {
-    let daily = NoteId::parse(&args.daily_note_id)?;
-    let topic = NoteId::parse(&args.topic_note_id)?;
+    NoteId::parse(&args.daily_note_id)?;
+    NoteId::parse(&args.topic_note_id)?;
     let mut vault = Vault::open(&args.vault)?;
-    let written = footer::set_chip(&mut vault, &daily, &topic, ChipOrigin::Person, None)?;
-    let origin = written.origin.unwrap_or(ChipOrigin::Person);
-    let out = FooterAdded {
-        vault_id: vault.vault_id(),
-        daily_note_id: daily.as_str(),
-        topic_note_id: topic.as_str(),
-        origin: origin.as_str(),
-        version: written.note.version,
+    let input = footer::AddInput {
+        daily_note_id: args.daily_note_id,
+        topic_note_id: args.topic_note_id,
     };
+    let out = footer::add(&mut vault, input, &SystemClock, None)?;
     println!("{}", serde_json::to_string(&out)?);
     Ok(())
 }

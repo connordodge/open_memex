@@ -1,0 +1,12 @@
+Move a placed node to new coordinates
+
+Usage: memex canvas move [OPTIONS] --vault <VAULT> --canvas-id <CANVAS_ID> --note-id <NOTE_ID> --x <X> --y <Y>
+
+Options:
+      --vault <VAULT>          
+      --canvas-id <CANVAS_ID>  
+      --note-id <NOTE_ID>      
+      --x <X>                  
+      --y <Y>                  
+      --z <Z>                  
+  -h, --help                   Print help
