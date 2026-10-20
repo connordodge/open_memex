@@ -665,3 +665,165 @@ fn a_failed_token_write_leaves_no_access_token_and_no_temp_file() {
     assert!(resolved.generated.is_some());
     assert_eq!(memex_entries(dir.path()), vec!["access-token".to_string()]);
 }
+
+// ---------- Review round 1: a loose token file mode is warned about ----------
+
+/// The `WARN` lines in the server log once the startup line is written
+/// (the warning, if any, is logged before it).
+async fn startup_warn_lines(root: &Path) -> Vec<String> {
+    let logs = server::wait_for_logs(root, |l| l.contains("vault server started")).await;
+    logs.lines()
+        .filter(|l| l.contains(" WARN "))
+        .map(str::to_string)
+        .collect()
+}
+
+#[tokio::test]
+async fn a_group_or_world_readable_token_file_logs_one_warn_with_its_path_and_mode() {
+    for (mode, shown) in [
+        (0o644, "0644"),
+        (0o640, "0640"),
+        (0o604, "0604"),
+        (0o666, "0666"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let token = format!("loose-mode-token-{shown}-7a6b5c4d3e2f");
+        write_token_file(dir.path(), &token);
+        let file = token_file(dir.path());
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(mode)).unwrap();
+
+        let (child, addr) = started(vault_server(dir.path())).await;
+        assert_eq!(
+            info_status(addr, &token).await,
+            200,
+            "{shown}: still serves"
+        );
+        let warns = startup_warn_lines(dir.path()).await;
+        assert_eq!(warns.len(), 1, "{shown}: one WARN line: {warns:?}");
+        let canonical = token_path(&std::fs::canonicalize(dir.path()).unwrap());
+        let line = &warns[0];
+        assert!(
+            line.contains(canonical.to_str().unwrap()),
+            "{shown}: names the token file {}: {line}",
+            canonical.display()
+        );
+        assert!(
+            line.contains(shown),
+            "{shown}: names the octal mode: {line}"
+        );
+        let logs = server::server_logs(dir.path());
+        assert!(!logs.contains(&token), "{shown}: the token is never logged");
+        assert!(
+            !child.stderr().contains(&token),
+            "{shown}: nor printed: {}",
+            child.stderr()
+        );
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            mode,
+            "{shown}: the file mode is left alone"
+        );
+    }
+}
+
+#[tokio::test]
+async fn no_token_mode_warn_for_0600_an_env_token_or_a_generated_file() {
+    // A 0600 (or 0400) token file.
+    for mode in [0o600, 0o400] {
+        let dir = tempfile::tempdir().unwrap();
+        write_token_file(dir.path(), "tight-mode-token-1b2c3d4e");
+        std::fs::set_permissions(
+            token_file(dir.path()),
+            std::fs::Permissions::from_mode(mode),
+        )
+        .unwrap();
+        let (_child, _addr) = started(vault_server(dir.path())).await;
+        let warns = startup_warn_lines(dir.path()).await;
+        assert!(warns.is_empty(), "{mode:o}: no WARN: {warns:?}");
+    }
+
+    // The env token wins, so a loose token file beside it isn't the token.
+    let dir = tempfile::tempdir().unwrap();
+    write_token_file(dir.path(), "unused-file-token-5e6f7a8b");
+    std::fs::set_permissions(
+        token_file(dir.path()),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    let cmd = vault_server(dir.path()).env(TOKEN_ENV, "env-token-9c8d7e6f");
+    let (_child, _addr) = started(cmd).await;
+    let warns = startup_warn_lines(dir.path()).await;
+    assert!(warns.is_empty(), "env token: no WARN: {warns:?}");
+
+    // A token file this start generated.
+    let dir = tempfile::tempdir().unwrap();
+    let (child, _addr) = started(vault_server(dir.path())).await;
+    assert!(
+        child.stderr().contains("generated a new access token"),
+        "{}",
+        child.stderr()
+    );
+    let warns = startup_warn_lines(dir.path()).await;
+    assert!(warns.is_empty(), "generated file: no WARN: {warns:?}");
+}
+
+#[test]
+fn readable_by_others_reports_group_or_world_read_bits_only() {
+    use memex_mcp::server::token::readable_by_others;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("access-token");
+    std::fs::write(&file, "t").unwrap();
+    for (mode, expected) in [
+        (0o644, Some(0o644)),
+        (0o640, Some(0o640)),
+        (0o604, Some(0o604)),
+        (0o744, Some(0o744)),
+        (0o755, Some(0o755)),
+        (0o600, None),
+        (0o400, None),
+        (0o700, None),
+        (0o000, None),
+        (0o620, None),
+        (0o602, None),
+        (0o622, None),
+        (0o611, None),
+    ] {
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(mode)).unwrap();
+        assert_eq!(readable_by_others(&file), expected, "mode {mode:04o}");
+    }
+    // Bits above 0o777 are not part of the reported mode.
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o4644)).unwrap();
+    let full = std::fs::metadata(&file).unwrap().permissions().mode();
+    if full & 0o4000 != 0 {
+        assert_eq!(
+            readable_by_others(&file),
+            Some(0o644),
+            "setuid is masked off"
+        );
+    }
+}
+
+#[test]
+fn readable_by_others_is_none_when_the_file_cannot_be_read() {
+    use memex_mcp::server::token::readable_by_others;
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(readable_by_others(&dir.path().join("missing")), None);
+
+    // A 0644 file whose directory can't be searched: its metadata can't be
+    // read.
+    let sub = dir.path().join("locked");
+    std::fs::create_dir(&sub).unwrap();
+    let file = sub.join("access-token");
+    std::fs::write(&file, "t").unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(readable_by_others(&file), Some(0o644), "readable first");
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let locked = std::fs::metadata(&file).is_err();
+    let got = readable_by_others(&file);
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o700)).unwrap();
+    if locked {
+        assert_eq!(got, None, "unreadable metadata is None");
+    } else {
+        eprintln!("skipped the locked-directory case: metadata is readable here (root?)");
+    }
+}

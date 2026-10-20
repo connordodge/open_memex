@@ -954,3 +954,94 @@ async fn wrong_method_without_the_token_is_401_not_405() {
         }
     }
 }
+
+// ---------- Review round 1 ----------
+
+#[tokio::test]
+async fn every_registered_route_answers_a_wrong_method_with_the_c1_405() {
+    // The shared helper later Work Items call for their own routes.
+    let srv = TestServer::start().await;
+    server::assert_wrong_method_is_c1_405(&srv, &[("/api/v1/info", &["GET"])]).await;
+}
+
+/// A router with one route registered before the C1 405 fallback and one
+/// after it: the order a misplaced `.method_not_allowed_fallback` in
+/// `router()` would give.
+fn wi71_misordered_router() -> Router {
+    Router::new()
+        .route("/wi71-before", get_route(|| async { "ok" }))
+        .method_not_allowed_fallback(|| async {
+            ApiError::new("method_not_allowed", "this path does not serve this method")
+        })
+        .route("/wi71-after", get_route(|| async { "ok" }))
+}
+
+#[tokio::test]
+async fn the_405_helper_fails_for_a_route_registered_after_the_fallback() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, wi71_misordered_router())
+            .await
+            .unwrap();
+    });
+    const AUTH: &str = "Bearer wi71-helper-token";
+
+    // The route registered before the fallback passes the helper.
+    server::assert_wrong_method_is_c1_405_at(addr, AUTH, &[("/wi71-before", &["GET"])]).await;
+
+    // The one registered after it gets axum's bodiless 405, and the helper
+    // fails on it.
+    let late = tokio::spawn(async move {
+        server::assert_wrong_method_is_c1_405_at(
+            addr,
+            AUTH,
+            &[("/wi71-before", &["GET"]), ("/wi71-after", &["GET"])],
+        )
+        .await;
+    })
+    .await;
+    assert!(
+        late.as_ref().is_err_and(|e| e.is_panic()),
+        "the helper must fail for /wi71-after: {late:?}"
+    );
+    let r = client()
+        .post(format!("http://{addr}/wi71-after"))
+        .header("authorization", AUTH)
+        .send()
+        .await
+        .unwrap();
+    let r = Reply::read(r).await;
+    assert_eq!(r.status, 405, "axum still answers 405 there");
+    assert!(
+        r.body.is_empty(),
+        "but with no C1 body, which is what the helper catches: {:?}",
+        r.body
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn tokenless_wrong_method_401_keeps_the_allow_get_head_header() {
+    // Lead ruling: the 401 to a wrong method without a valid token keeps
+    // axum's `Allow` header naming the methods the path serves.
+    let srv = TestServer::start().await;
+    for method in wrong_methods() {
+        for authorization in [None, Some("Bearer wrong-token-4d3c2b1a")] {
+            let what = format!("{method} /api/v1/info with {authorization:?}");
+            let r = send(&srv, &method, "/api/v1/info", &None, authorization, &[]).await;
+            assert_eq!(r.status, 401, "{what}: {:?}", r.body);
+            assert_eq!(
+                r.header("allow"),
+                Some("GET,HEAD"),
+                "{what}: {:?}",
+                r.headers
+            );
+        }
+    }
+}
+
+#[test]
+fn network_filesystem_maps_to_409_conflict() {
+    assert_eq!(status_for_code("network_filesystem").as_u16(), 409);
+}
