@@ -1,0 +1,9 @@
+Print a single note as JSON to stdout
+
+Usage: memex get [OPTIONS] --vault <VAULT> --note-id <NOTE_ID>
+
+Options:
+      --vault <VAULT>      Vault directory
+      --note-id <NOTE_ID>  Note id (ULID)
+      --include-links      Include outgoing links + backlinks in the JSON output
+  -h, --help               Print help

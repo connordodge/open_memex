@@ -1,0 +1,8 @@
+Print one setting
+
+Usage: memex settings get --vault <VAULT> --key <KEY>
+
+Options:
+      --vault <VAULT>  Vault directory
+      --key <KEY>      Setting key (e.g. `smart_folder_max_depth`)
+  -h, --help           Print help
