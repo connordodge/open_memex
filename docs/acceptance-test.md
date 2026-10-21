@@ -16,7 +16,7 @@ Manual journey to confirm the wikilinks slice (Phases 1–4) works end-to-end th
 3. Hit `+` again, name the new note "Note B". In its body type `Some prose, see [[Note A]]`.
 4. **Expected**: while typing `[[`, a popover opens; "Note A" appears as a match. Press Enter. The body becomes `…see [[Note A]]` with the caret after `]]`.
 5. **Expected**: a chip appears near the editor with `REFERENCES / EXTENDS / CONTRADICTS / EXAMPLE-OF` buttons + `MORE…`. Click `EXTENDS`. The body rewrites to `…see [[Note A~extends]]`.
-6. Save propagates within 500ms; status indicator goes `unsaved → saving → synced`.
+6. Save propagates within 500ms; status indicator goes `unsaved → saving → saved`.
 
 ## 2. See the link in the Connections panel
 
