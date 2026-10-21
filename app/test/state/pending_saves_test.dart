@@ -1,0 +1,941 @@
+// WI #102 (H8): the hosted editor's pending-save queue (L16), its automatic
+// retry once the vault server answers, and the L17 self-heal. The notes
+// domain is a hosted double (`extends LocalNotesAccess`, D21) over a
+// FakeVaultDb / FakeMemexCli that fails writes the way the hosted client
+// does and records each write's outcome in `hostedConnectionStatusProvider`
+// like the client's response hook (D17). Time is a FakeClock (D14).
+import 'dart:async';
+import 'dart:io';
+
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/src/db.dart';
+import 'package:open_memex_app/src/editor/segments.dart';
+import 'package:open_memex_app/src/memex_cli.dart';
+import 'package:open_memex_app/src/state/clock.dart';
+import 'package:open_memex_app/src/state/editor_controller.dart';
+import 'package:open_memex_app/src/state/hosted_connection_state.dart';
+import 'package:open_memex_app/src/state/pending_saves.dart';
+import 'package:open_memex_app/src/state/tabs_state.dart';
+import 'package:open_memex_app/src/state/today_state.dart';
+import 'package:open_memex_app/src/state/vault_access_state.dart';
+import 'package:open_memex_app/src/state/vault_state.dart';
+
+import '../support/daily_seed.dart';
+import '../support/fake_clock.dart';
+import '../support/fake_memex_cli.dart';
+import '../support/fake_vault_db.dart';
+import '../support/hosted_notes_fakes.dart';
+import '../support/today_cli_fakes.dart';
+
+const _planId = '01J9PLAN0000000000000000102';
+const _otherId = '01J9OTHER000000000000000102';
+const _dailyId = '01J9DAILY000000000000000102';
+const _agentDailyId = '01J9AGENT000000000000000102';
+const _today = '2026-10-03';
+
+/// The FakeClock's start (the harness's 09:00 local).
+final _start = DateTime(2026, 10, 3, 9);
+
+/// When the first debounced save after an edit at [_start] runs and fails.
+final _firstFailure = _start.add(saveDebounce);
+
+class _H {
+  _H(this.c, this.doubles, this.db, this.cli, this.clock);
+  final ProviderContainer c;
+  final HostedVaultDoubles doubles;
+  final FakeVaultDb db;
+  final FakeMemexCli cli;
+  final FakeClock clock;
+
+  EditorController get ctrl => c.read(editorControllerProvider.notifier);
+  EditorStateValue get state => c.read(editorControllerProvider);
+  int get revision => c.read(vaultRevisionProvider);
+  List<PendingSave> get queue => c.read(pendingSavesProvider);
+  HostedNotesAccess get notes =>
+      doubles.notesFor(c.read(currentVaultProvider)!);
+
+  /// The stored note, read straight from the database.
+  Note stored(String id) => db.getNote(id)!;
+
+  PendingSave? queued(String noteId) {
+    for (final p in queue) {
+      if (p.noteId == noteId) return p;
+    }
+    return null;
+  }
+
+  /// Fire the 500 ms save debounce and let every write and read finish.
+  Future<void> fireDebounce() async {
+    clock.advance(saveDebounce);
+    await pumpEventQueue();
+  }
+
+  /// Make every write fail with [error] (the server can't be reached).
+  void serverDown([Object? error]) {
+    notes.writeError = error ?? nasUnreachable();
+  }
+
+  /// The server answers again: writes succeed, and the next request's
+  /// outcome (e.g. the revision poll) records `connected`.
+  Future<void> serverAnswers() async {
+    notes
+      ..writeError = null
+      ..commitBeforeError = false;
+    setHostedStatus(c, HostedConnectionStatus.connected);
+    await pumpEventQueue();
+  }
+
+  /// The server is still unreachable, but the poll records `connected`
+  /// again: a retry runs and fails.
+  Future<void> recoveryThatFails() async {
+    setHostedStatus(c, HostedConnectionStatus.connected);
+    await pumpEventQueue();
+  }
+
+  /// Edit the open note to [text] and let its debounced save run.
+  Future<void> typeAndSave(String text) async {
+    ctrl.onContentChanged(text);
+    await fireDebounce();
+  }
+}
+
+Future<_H> _hosted(
+  FakeVaultDb db, {
+  FakeMemexCli? cli,
+  VaultRef vault = hostedPlanVault,
+  List<Override> overrides = const [],
+}) async {
+  final dir = await Directory.systemTemp.createTemp('om102_pending');
+  final fakeCli = cli ?? (FakeMemexCli()..onUpdateWrites(db));
+  final clock = FakeClock(_start);
+  final doubles = HostedVaultDoubles(db: db, cli: fakeCli, vaultPath: dir.path);
+  final c = ProviderContainer(
+    overrides: [
+      currentVaultProvider.overrideWith((_) => vault),
+      vaultDbProvider.overrideWithValue(null),
+      memexCliProvider.overrideWithValue(fakeCli),
+      clockProvider.overrideWithValue(clock),
+      hostedAccessOverride(doubles),
+      ...overrides,
+    ],
+  );
+  recordHostedOutcomes(doubles, c);
+  addTearDown(() {
+    c.dispose();
+    db.close();
+    if (dir.existsSync()) dir.deleteSync(recursive: true);
+  });
+  c.read(vaultAccessProvider);
+  c.listen(tabsProvider, (_, _) {});
+  c.listen(editorControllerProvider, (_, _) {});
+  if (vault is HostedVaultRef) {
+    setHostedStatus(c, HostedConnectionStatus.connected);
+  }
+  await pumpEventQueue();
+  return _H(c, doubles, db, fakeCli, clock);
+}
+
+/// A vault with the plain notes "Plan" (`old`, version 3) and "Other"
+/// (`other body`, version 7).
+FakeVaultDb _plainVault() => FakeVaultDb.v5()
+  ..seedNote(id: _planId, title: 'Plan', content: 'old', version: 3)
+  ..seedNote(id: _otherId, title: 'Other', content: 'other body', version: 7);
+
+/// A daily note [_dailyId] for [_today] at version 3 holding `Morning pages`
+/// (one person block).
+FakeVaultDb _dailyVault() {
+  final db = FakeVaultDb.v5()..seedDailyNote(_today, id: _dailyId, version: 3);
+  db.db.execute('UPDATE notes SET content_md = ? WHERE id = ?', [
+    assembleDailyBody('Morning pages\n', const []),
+    _dailyId,
+  ]);
+  db.seedBlock(_dailyId, 'p-morning', ord: 0, text: 'Morning pages');
+  return db;
+}
+
+/// Another writer changes [id] on the server to [body] at [version].
+void _foreignWrite(FakeVaultDb db, String id, String body, int version) {
+  db.db.execute('UPDATE notes SET content_md = ?, version = ? WHERE id = ?', [
+    body,
+    version,
+    id,
+  ]);
+}
+
+/// The number of times [needle] occurs in [haystack].
+int _count(String haystack, String needle) =>
+    needle.allMatches(haystack).length;
+
+/// A daily note's stored canonical body (C3): the person text, the marker.
+String _canonicalDaily(String body) =>
+    assembleDailyBody(splitDailyBody(body).person, splitDailyBody(body).chips);
+
+void _expectNoErrorState(_H h) {
+  expect(h.state.status, isNot(SaveStatus.error));
+  expect(h.state.status, isNot(SaveStatus.conflict));
+  expect(h.state.errorMessage, isNull);
+}
+
+void main() {
+  group('a hosted save that cannot reach the server is queued (AC1)', () {
+    for (final (name, mayHaveCommitted) in [
+      (
+        'a hosted save refused by the server keeps the text and queues it with its base version and since time',
+        false,
+      ),
+      (
+        'a hosted save that timed out after sending keeps the text and queues it with its base version and since time',
+        true,
+      ),
+    ]) {
+      test(name, () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown(nasUnreachable(mayHaveCommitted: mayHaveCommitted));
+
+        await h.typeAndSave('new text');
+
+        expect(h.notes.writes, ['updateNote:$_planId@3']);
+        expect(h.state.contentMd, 'new text');
+        _expectNoErrorState(h);
+        expect(h.queue, hasLength(1));
+        final p = h.queue.single;
+        expect(p.noteId, _planId);
+        expect(p.title, 'Plan');
+        expect(p.text, 'new text');
+        expect(p.baseVersion, 3);
+        expect(p.since, _firstFailure);
+        expect(p.serverName, hostedServerName);
+      });
+    }
+
+    test(
+      'further edits while a save is queued replace the queued text and send nothing while the server is unreachable',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        await h.typeAndSave('new text');
+
+        h.clock.advance(const Duration(minutes: 3));
+        await h.typeAndSave('newer text');
+        await h.typeAndSave('newest text');
+
+        expect(h.notes.writes, ['updateNote:$_planId@3']);
+        expect(h.state.contentMd, 'newest text');
+        _expectNoErrorState(h);
+        final p = h.queued(_planId)!;
+        expect(p.text, 'newest text');
+        expect(p.baseVersion, 3);
+        expect(p.since, _firstFailure);
+        expect(h.queue, hasLength(1));
+      },
+    );
+
+    test(
+      'the since time stays the first failure time when the clock jumps backward and a retry fails again',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        await h.typeAndSave('new text');
+
+        // NTP or a manual clock change moves wall time back an hour.
+        h.clock.advance(const Duration(hours: -1));
+        await h.recoveryThatFails();
+
+        expect(h.notes.updatesOf(_planId), hasLength(2));
+        expect(h.queued(_planId)!.since, _firstFailure);
+
+        h.clock.advance(const Duration(hours: 2));
+        await h.recoveryThatFails();
+        expect(h.notes.updatesOf(_planId), hasLength(3));
+        expect(h.queued(_planId)!.since, _firstFailure);
+      },
+    );
+  });
+
+  group('every queued note retries when the server answers (AC2)', () {
+    test(
+      'when the server answers again every queued note retries once with its expected version and the queue empties',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.serverDown();
+        h.ctrl.loadNote(h.stored(_planId));
+        await h.typeAndSave('plan text');
+        h.ctrl.loadNote(h.stored(_otherId));
+        await h.typeAndSave('other text');
+        expect(h.queue.map((p) => p.noteId), [_planId, _otherId]);
+        final writesBefore = h.notes.writes.length;
+        final revisionBefore = h.revision;
+
+        await h.serverAnswers();
+        await pumpEventQueue();
+
+        final retries = h.notes.writes.sublist(writesBefore);
+        expect(
+          retries,
+          unorderedEquals(['updateNote:$_planId@3', 'updateNote:$_otherId@7']),
+        );
+        expect(h.stored(_planId).contentMd, 'plan text');
+        expect(h.stored(_planId).version, 4);
+        expect(h.stored(_otherId).contentMd, 'other text');
+        expect(h.stored(_otherId).version, 8);
+        expect(h.queue, isEmpty);
+        expect(h.revision, greaterThan(revisionBefore));
+        // The open note's editor is saved at the new version.
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 8);
+        expect(h.state.contentMd, 'other text');
+      },
+    );
+
+    test(
+      'a successful retry of the open note sets its saved version and bumps the vault revision once',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        await h.typeAndSave('new text');
+        final revisionBefore = h.revision;
+
+        await h.serverAnswers();
+
+        expect(h.notes.updatesOf(_planId), hasLength(2));
+        expect(h.notes.updateBodies.last, 'new text');
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 4);
+        expect(h.state.errorMessage, isNull);
+        expect(h.revision, revisionBefore + 1);
+        expect(h.queue, isEmpty);
+
+        // The next edit saves against the version the retry got.
+        await h.typeAndSave('more text');
+        expect(h.notes.writes.last, 'updateNote:$_planId@4');
+        expect(h.stored(_planId).contentMd, 'more text');
+      },
+    );
+
+    test(
+      'a retry that fails again stays queued and retries on the next recovery',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        await h.typeAndSave('new text');
+
+        await h.recoveryThatFails();
+        expect(h.notes.updatesOf(_planId), hasLength(2));
+        expect(h.queued(_planId)!.text, 'new text');
+        _expectNoErrorState(h);
+        await pumpEventQueue();
+        // One retry per recovery, not a loop.
+        expect(h.notes.updatesOf(_planId), hasLength(2));
+
+        await h.serverAnswers();
+        expect(h.notes.updatesOf(_planId), [
+          'updateNote:$_planId@3',
+          'updateNote:$_planId@3',
+          'updateNote:$_planId@3',
+        ]);
+        expect(h.queue, isEmpty);
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.stored(_planId).contentMd, 'new text');
+      },
+    );
+
+    test(
+      'several edits while queued go out as one save of the latest text when the server answers',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        await h.typeAndSave('one');
+        await h.typeAndSave('one two');
+        await h.typeAndSave('one two three');
+        final writesBefore = h.notes.writes.length;
+
+        await h.serverAnswers();
+        await h.fireDebounce();
+
+        expect(h.notes.writes.sublist(writesBefore), ['updateNote:$_planId@3']);
+        expect(h.notes.updateBodies.last, 'one two three');
+        expect(h.stored(_planId).contentMd, 'one two three');
+        expect(h.queue, isEmpty);
+      },
+    );
+
+    test(
+      'a save that fails after the status already reads connected again still retries',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        // The save's own failure records unreachable, then a revision poll
+        // answers before the failure reaches the editor: by the time the
+        // note is queued the status already reads connected.
+        var once = true;
+        h.doubles.onOutcome = (vault, status) {
+          setHostedStatus(h.c, status);
+          if (once && status == HostedConnectionStatus.unreachable) {
+            once = false;
+            h.notes.writeError = null;
+            setHostedStatus(h.c, HostedConnectionStatus.connected);
+          }
+        };
+        h.serverDown();
+
+        await h.typeAndSave('new text');
+        await h.fireDebounce();
+        await pumpEventQueue();
+
+        expect(h.notes.updatesOf(_planId), hasLength(2));
+        expect(h.stored(_planId).contentMd, 'new text');
+        expect(h.queue, isEmpty);
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 4);
+      },
+    );
+
+    test(
+      'typing during an in-flight retry keeps the newer text and saves it next',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        await h.typeAndSave('new text');
+        final gate = Completer<void>();
+        h.notes.writeGate = gate;
+
+        await h.serverAnswers();
+        h.ctrl.onContentChanged('newer text');
+        h.notes.writeGate = null;
+        gate.complete();
+        await pumpEventQueue();
+
+        expect(h.state.contentMd, 'newer text');
+        expect(h.stored(_planId).contentMd, 'new text');
+        expect(h.stored(_planId).version, 4);
+
+        await h.fireDebounce();
+        expect(h.notes.writes.last, 'updateNote:$_planId@4');
+        expect(h.stored(_planId).contentMd, 'newer text');
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.contentMd, 'newer text');
+        expect(h.queue, isEmpty);
+      },
+    );
+
+    test(
+      'a retry that fails after typing during it queues the newer text',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        await h.typeAndSave('new text');
+        final gate = Completer<void>();
+        h.notes.writeGate = gate;
+
+        await h.recoveryThatFails();
+        h.ctrl.onContentChanged('newer text');
+        h.notes.writeGate = null;
+        gate.complete();
+        await pumpEventQueue();
+        await h.fireDebounce();
+
+        expect(h.state.contentMd, 'newer text');
+        _expectNoErrorState(h);
+        expect(h.queued(_planId)!.text, 'newer text');
+        expect(h.queued(_planId)!.baseVersion, 3);
+        expect(h.stored(_planId).contentMd, 'old');
+      },
+    );
+  });
+
+  group('self-heal (AC3)', () {
+    test(
+      'a retried save that gets version_conflict while the server body equals the queued text counts as saved',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        // The first attempt timed out after the server committed it.
+        h.serverDown(nasUnreachable(mayHaveCommitted: true));
+        h.notes.commitBeforeError = true;
+        await h.typeAndSave('new text');
+        expect(h.stored(_planId).version, 4);
+        expect(h.queued(_planId), isNotNull);
+
+        await h.serverAnswers();
+
+        expect(h.notes.updatesOf(_planId), [
+          'updateNote:$_planId@3',
+          'updateNote:$_planId@3',
+        ]);
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.errorMessage, isNull);
+        expect(h.state.contentMd, 'new text');
+        expect(h.state.lastSavedVersion, 4);
+        expect(h.queue, isEmpty);
+        // Nothing was written again.
+        expect(h.stored(_planId).version, 4);
+        expect(h.stored(_planId).contentMd, 'new text');
+
+        await h.typeAndSave('more text');
+        expect(h.notes.writes.last, 'updateNote:$_planId@4');
+        expect(h.state.status, SaveStatus.clean);
+      },
+    );
+  });
+
+  group('daily notes merge on a retried conflict (AC4)', () {
+    test(
+      'a retried daily note save whose stored canonical body differs from the local text merges and ends saved without a conflict',
+      () async {
+        final h = await _hosted(_dailyVault());
+        h.ctrl.loadNote(h.stored(_dailyId));
+        h.notes.storedForm = _canonicalDaily;
+        h.serverDown(nasUnreachable(mayHaveCommitted: true));
+        h.notes.commitBeforeError = true;
+        const local = 'Morning pages\nLunch with Sam.';
+        await h.typeAndSave(local);
+        expect(h.stored(_dailyId).contentMd, isNot(local));
+        expect(h.queued(_dailyId), isNotNull);
+
+        await h.serverAnswers();
+        await h.fireDebounce();
+
+        final stored = h.stored(_dailyId);
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.errorMessage, isNull);
+        expect(h.queue, isEmpty);
+        expect(
+          splitDailyBody(stored.contentMd).person.trimRight(),
+          'Morning pages\nLunch with Sam.',
+        );
+        expect(_count(stored.contentMd, 'Lunch with Sam.'), 1);
+        expect(h.state.lastSavedVersion, stored.version);
+      },
+    );
+  });
+
+  group('a non-daily conflict on retry (AC5)', () {
+    test(
+      'a non-daily retried save that gets version_conflict with a different server body shows the conflict state',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        await h.typeAndSave('new text');
+        _foreignWrite(h.db, _planId, 'their text', 4);
+
+        await h.serverAnswers();
+
+        expect(h.notes.updatesOf(_planId), hasLength(2));
+        expect(h.state.status, SaveStatus.conflict);
+        expect(h.state.errorMessage, isNotNull);
+        expect(h.state.contentMd, 'new text');
+        expect(h.stored(_planId).contentMd, 'their text');
+        expect(h.stored(_planId).version, 4);
+      },
+    );
+  });
+
+  group('switching notes with a queued save (AC6, AC7)', () {
+    test(
+      'switching notes keeps the failed note queued and the other note opens normally',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        await h.typeAndSave('new text');
+
+        h.ctrl.loadNote(h.stored(_otherId));
+
+        expect(h.state.contentMd, 'other body');
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 7);
+        expect(h.queued(_planId)!.text, 'new text');
+        expect(h.queued(_otherId), isNull);
+      },
+    );
+
+    test(
+      'returning to a queued note fills the editor from the queue even after a revision bump reloaded it',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        await h.typeAndSave('new text');
+        h.ctrl.loadNote(h.stored(_otherId));
+        _foreignWrite(h.db, _planId, 'server copy', 5);
+        h.c.read(vaultRevisionProvider.notifier).state++;
+        await pumpEventQueue();
+
+        // The host reloads the note: the server copy, at version 5.
+        h.ctrl.loadNote(h.stored(_planId));
+
+        expect(h.state.contentMd, 'new text');
+        _expectNoErrorState(h);
+        expect(h.queued(_planId)!.text, 'new text');
+
+        // Typing on the returned note replaces the queued text.
+        await h.typeAndSave('newer text');
+        expect(h.queued(_planId)!.text, 'newer text');
+        expect(h.queued(_planId)!.baseVersion, 3);
+      },
+    );
+
+    test(
+      'serverChanged and a revision bump for a queued note never replace its editor or queued text',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        await h.typeAndSave('new text');
+        _foreignWrite(h.db, _planId, 'server copy', 5);
+
+        await h.ctrl.serverChanged(_planId);
+        h.c.read(vaultRevisionProvider.notifier).state++;
+        await pumpEventQueue();
+
+        expect(h.state.contentMd, 'new text');
+        expect(h.queued(_planId)!.text, 'new text');
+        expect(h.queued(_planId)!.baseVersion, 3);
+      },
+    );
+  });
+
+  group('a 401 save is queued like an unreachable one (AC8)', () {
+    test('a save rejected with 401 is queued the same way', () async {
+      final h = await _hosted(
+        _plainVault(),
+        overrides: [hostedServerNameProvider.overrideWithValue('nas')],
+      );
+      h.ctrl.loadNote(h.stored(_planId));
+      h.serverDown(unauthorized401());
+
+      await h.typeAndSave('new text');
+
+      expect(
+        h.c.read(hostedConnectionStatusProvider(hostedServerId)),
+        HostedConnectionStatus.tokenRejected,
+      );
+      expect(h.state.contentMd, 'new text');
+      _expectNoErrorState(h);
+      final p = h.queued(_planId)!;
+      expect(p.text, 'new text');
+      expect(p.baseVersion, 3);
+      expect(p.since, _firstFailure);
+      expect(p.serverName, 'nas');
+    });
+
+    test(
+      'a queued 401 save retries once the token is updated and the server answers',
+      () async {
+        final h = await _hosted(
+          _plainVault(),
+          overrides: [hostedServerNameProvider.overrideWithValue('nas')],
+        );
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown(unauthorized401());
+        await h.typeAndSave('new text');
+
+        await h.serverAnswers();
+
+        expect(h.notes.updatesOf(_planId), hasLength(2));
+        expect(h.stored(_planId).contentMd, 'new text');
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.queue, isEmpty);
+      },
+    );
+
+    test(
+      'a 401 save takes the server name from the hosted server name seam whose default is the server id',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown(unauthorized401());
+
+        await h.typeAndSave('new text');
+
+        expect(h.c.read(hostedServerNameProvider), hostedServerId);
+        expect(h.queued(_planId)!.serverName, hostedServerId);
+      },
+    );
+  });
+
+  group('the virtual Today create is queued like a save (AC9)', () {
+    Future<_H> virtualToday(FakeVaultDb db) async {
+      final cli = FakeMemexCli()
+        ..onUpdateWrites(db)
+        ..onAddDailyCreatesOnce(db);
+      final h = await _hosted(db, cli: cli);
+      h.c.read(tabsProvider.notifier).openToday(date: _today);
+      h.ctrl.loadNote(virtualTodayNote(_today));
+      return h;
+    }
+
+    final virtualId = const VirtualTodayTab(_today).id;
+
+    test(
+      'a virtual Today create that cannot reach the server keeps its text queued',
+      () async {
+        final h = await virtualToday(FakeVaultDb.v5());
+        h.serverDown();
+
+        await h.typeAndSave('Morning pages');
+
+        expect(h.notes.writes, ['addNote:$_today:daily']);
+        expect(h.state.contentMd, 'Morning pages');
+        _expectNoErrorState(h);
+        final p = h.queued(virtualId)!;
+        expect(p.text, 'Morning pages');
+        expect(p.title, _today);
+        expect(p.baseVersion, isNull);
+        expect(p.since, _firstFailure);
+        expect(p.serverName, hostedServerName);
+        expect(h.c.read(tabsProvider).activeTab, const VirtualTodayTab(_today));
+      },
+    );
+
+    test(
+      'a queued virtual Today create retries when the server answers and resolves the tab',
+      () async {
+        final h = await virtualToday(FakeVaultDb.v5());
+        h.serverDown();
+        await h.typeAndSave('Morning pages');
+
+        await h.serverAnswers();
+        await h.fireDebounce();
+
+        expect(h.notes.writes.where((w) => w.startsWith('addNote:')), [
+          'addNote:$_today:daily',
+          'addNote:$_today:daily',
+        ]);
+        final stored = h.stored(createdDailyId);
+        expect(
+          splitDailyBody(stored.contentMd).person.trimRight(),
+          'Morning pages',
+        );
+        expect(h.queue, isEmpty);
+        expect(h.c.read(tabsProvider).activeTab, const NoteTab(createdDailyId));
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.errorMessage, isNull);
+      },
+    );
+
+    for (final (name, committedFirst) in [
+      (
+        'a retried virtual Today create that gets daily_note_exists after its own timed out create merges the queued text once',
+        true,
+      ),
+      (
+        'a retried virtual Today create that gets daily_note_exists for an agent created note merges the queued text into it',
+        false,
+      ),
+    ]) {
+      test(name, () async {
+        final db = FakeVaultDb.v5();
+        final h = await virtualToday(db);
+        h.serverDown(nasUnreachable(mayHaveCommitted: committedFirst));
+        h.notes.commitBeforeError = committedFirst;
+        await h.typeAndSave('Morning pages');
+        late final String existingId;
+        if (committedFirst) {
+          existingId = createdDailyId;
+          expect(h.stored(existingId), isNotNull);
+        } else {
+          // An agent creates today's note while the server is unreachable
+          // to this app.
+          existingId = _agentDailyId;
+          db.seedNote(
+            id: existingId,
+            title: _today,
+            content: assembleDailyBody('Agent saw it.\n', const []),
+            role: 'daily',
+            version: 1,
+          );
+          db.seedBlock(
+            existingId,
+            'a-agent',
+            ord: 0,
+            text: 'Agent saw it.',
+            source: 'agent',
+          );
+        }
+
+        await h.serverAnswers();
+        await h.fireDebounce();
+        await h.fireDebounce();
+
+        final body = h.stored(existingId).contentMd;
+        expect(_count(body, 'Morning pages'), 1);
+        if (!committedFirst) expect(_count(body, 'Agent saw it.'), 1);
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.errorMessage, isNull);
+        expect(h.queue, isEmpty);
+        expect(h.c.read(tabsProvider).activeTab, NoteTab(existingId));
+        expect(h.state.lastSavedVersion, h.stored(existingId).version);
+      });
+    }
+  });
+
+  group('a save elsewhere is queued on a hosted vault (AC10)', () {
+    test(
+      'a hosted virtual Today note resolved after the person left it queues its text when that save fails',
+      () async {
+        final db = _plainVault();
+        final gate = Completer<void>();
+        final cli = FakeMemexCli()
+          ..onUpdateWrites(db)
+          ..onAddDailyCreates(db, gate: gate);
+        final h = await _hosted(db, cli: cli);
+        h.c.read(tabsProvider.notifier).openToday(date: _today);
+        h.ctrl.loadNote(virtualTodayNote(_today));
+        await h.typeAndSave('Morning pages');
+        // Typed while the create is in flight, then the person leaves.
+        h.ctrl.onContentChanged('Morning pages\nMore.');
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+
+        gate.complete();
+        await pumpEventQueue();
+
+        expect(h.notes.updatesOf(createdDailyId), [
+          'updateNote:$createdDailyId@1',
+        ]);
+        final p = h.queued(createdDailyId)!;
+        expect(p.text, 'Morning pages\nMore.');
+        expect(p.baseVersion, 1);
+        expect(p.serverName, hostedServerName);
+        // The open note is untouched.
+        expect(h.state.contentMd, 'old');
+        expect(h.state.status, SaveStatus.clean);
+
+        await h.serverAnswers();
+        expect(
+          splitDailyBody(h.stored(createdDailyId).contentMd).person.trimRight(),
+          'Morning pages\nMore.',
+        );
+        expect(h.queue, isEmpty);
+      },
+    );
+  });
+
+  group('the queue lists what is unsent (AC11)', () {
+    test(
+      'the queue lists each queued note with its title since time and server name and is empty once saved',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.serverDown();
+        h.ctrl.loadNote(h.stored(_planId));
+        await h.typeAndSave('plan text');
+        h.clock.advance(const Duration(minutes: 4));
+        h.ctrl.loadNote(h.stored(_otherId));
+        await h.typeAndSave('other text');
+
+        expect(h.queue.map((p) => (p.noteId, p.title, p.since, p.serverName)), [
+          (_planId, 'Plan', _firstFailure, hostedServerName),
+          (
+            _otherId,
+            'Other',
+            _firstFailure.add(const Duration(minutes: 4)).add(saveDebounce),
+            hostedServerName,
+          ),
+        ]);
+
+        await h.serverAnswers();
+        expect(h.queue, isEmpty);
+      },
+    );
+
+    test('the queue is empty on a fresh hosted vault', () async {
+      final h = await _hosted(_plainVault());
+      expect(h.queue, isEmpty);
+    });
+  });
+
+  group('a queued save stays in its vault', () {
+    test(
+      'a queued save never retries into another vault after a vault switch',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        await h.typeAndSave('new text');
+        expect(h.queued(_planId)!.text, 'new text');
+        const other = HostedVaultRef(hostedServerId, 'other');
+
+        h.c.read(currentVaultProvider.notifier).state = other;
+        h.c.read(vaultAccessProvider);
+        await pumpEventQueue();
+        setHostedStatus(h.c, HostedConnectionStatus.connected);
+        await pumpEventQueue();
+        await h.fireDebounce();
+
+        expect(h.doubles.notesFor(other).writes, isEmpty);
+      },
+    );
+  });
+
+  group('local vaults are unchanged (AC12)', () {
+    for (final (name, error) in [
+      (
+        'a failed save on a local vault shows the error state and queues nothing',
+        MemexException('update failed: disk full'),
+      ),
+      (
+        'a local save that throws VaultUnreachableException shows the error state and queues nothing',
+        nasUnreachable(),
+      ),
+    ]) {
+      test(name, () async {
+        final dir = await Directory.systemTemp.createTemp('om102_local');
+        addTearDown(() {
+          if (dir.existsSync()) dir.deleteSync(recursive: true);
+        });
+        final h = await _hosted(_plainVault(), vault: LocalVaultRef(dir.path));
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown(error);
+
+        await h.typeAndSave('new text');
+
+        expect(h.state.status, SaveStatus.error);
+        expect(h.state.errorMessage, isNotNull);
+        expect(h.state.contentMd, 'new text');
+        expect(h.queue, isEmpty);
+      });
+    }
+
+    test(
+      'a failed save elsewhere on a local vault is still swallowed and queues nothing',
+      () async {
+        final dir = await Directory.systemTemp.createTemp('om102_local');
+        addTearDown(() {
+          if (dir.existsSync()) dir.deleteSync(recursive: true);
+        });
+        final db = _plainVault();
+        final gate = Completer<void>();
+        final cli = FakeMemexCli()
+          ..onUpdateWrites(db)
+          ..onAddDailyCreates(db, gate: gate);
+        final h = await _hosted(db, cli: cli, vault: LocalVaultRef(dir.path));
+        h.c.read(tabsProvider.notifier).openToday(date: _today);
+        h.ctrl.loadNote(virtualTodayNote(_today));
+        await h.typeAndSave('Morning pages');
+        h.ctrl.onContentChanged('Morning pages\nMore.');
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown(MemexException('update failed: disk full'));
+
+        gate.complete();
+        await pumpEventQueue();
+
+        expect(h.notes.updatesOf(createdDailyId), hasLength(1));
+        expect(h.queue, isEmpty);
+        expect(h.state.contentMd, 'old');
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.errorMessage, isNull);
+      },
+    );
+  });
+}
