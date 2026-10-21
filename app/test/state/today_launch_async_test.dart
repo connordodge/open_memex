@@ -1,4 +1,4 @@
-// WI #78 (W2) AC3: with `todayNoteProvider` async, opening a vault still
+// WI #78 (W2) AC3: with the today note read async, opening a vault still
 // lands on today's stored daily note (architect risk), and on the virtual
 // Today tab when there is none. The daily reads come from a Completer-gated
 // daily domain over its own database; `vaultDbProvider` is an empty V5
@@ -79,7 +79,7 @@ Future<_Launch> _launch({
 }
 
 void main() {
-  group('launch with an async todayNoteProvider (AC3)', () {
+  group('launch with an async today note read (AC3)', () {
     test(
       'opening a vault lands on the stored daily note for today once the daily read completes',
       () async {

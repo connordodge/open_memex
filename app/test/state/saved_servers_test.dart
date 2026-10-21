@@ -32,6 +32,33 @@ class _FailingTokenStore extends FakeTokenStore {
   }
 }
 
+/// What settings and prefs held when the token store's delete ran.
+typedef _Wi105AtDelete = ({
+  List<String> servers,
+  List<VaultRef> recents,
+  VaultRef? lastVault,
+  List<String> prefsWithId,
+});
+
+/// Records the settings state and the prefs entries naming the server at
+/// the moment its token is deleted.
+class _Wi105OrderingTokenStore extends FakeTokenStore {
+  SettingsController? settings;
+  _Wi105AtDelete? atDelete;
+
+  @override
+  Future<void> delete(String serverId) async {
+    final st = settings!.state;
+    atDelete = (
+      servers: [for (final s in st.savedServers) s.id],
+      recents: st.recentRefs,
+      lastVault: st.lastVaultRef,
+      prefsWithId: await prefsEntriesContaining(serverId),
+    );
+    return super.delete(serverId);
+  }
+}
+
 Future<(SettingsController, FakeTokenStore)> _fresh([
   Map<String, Object> seed = const {},
 ]) async {
@@ -558,8 +585,40 @@ void main() {
       },
     );
 
+    // TEST-CHANGE (#105, lead follow-up from #98): removeServer drops the
+    // server, its hosted recents and the last vault before it deletes the
+    // token, so a failed Keychain delete never leaves the removed server
+    // saved (#98's cancelled-connect undo removes a just-saved server). This
+    // replaces #91's token-first ordering test.
     test(
-      'the token is deleted before prefs so a failed token delete keeps the server and its recents',
+      'removeServer drops the server and its recents from prefs before it deletes the token',
+      () async {
+        SharedPreferences.setMockInitialValues({});
+        final store = _Wi105OrderingTokenStore();
+        final settings = await SettingsController.load(tokenStore: store);
+        final s = await settings.saveServer(
+          name: 'nas',
+          url: 'http://nas.local:7878',
+          token: 'tok-order-2001',
+        );
+        final hosted = HostedVaultRef(s.id, 'notes');
+        await settings.rememberRef(hosted);
+        store.settings = settings;
+
+        await settings.removeServer(s.id);
+
+        expect(store.atDelete, isNotNull, reason: 'the token was deleted');
+        final atDelete = store.atDelete!;
+        expect(atDelete.servers, isEmpty);
+        expect(atDelete.recents, isEmpty);
+        expect(atDelete.lastVault, isNull);
+        expect(atDelete.prefsWithId, isEmpty);
+        expect(store.tokens, isEmpty);
+      },
+    );
+
+    test(
+      'a failed token delete leaves no saved server and no hosted recents of it',
       () async {
         SharedPreferences.setMockInitialValues({});
         final store = _FailingTokenStore();
@@ -569,20 +628,27 @@ void main() {
           url: 'http://nas.local:7878',
           token: 'tok-order-2001',
         );
+        final other = await settings.saveServer(
+          name: 'mini',
+          url: 'http://mini.local:7878',
+          token: 'tok-order-2002',
+        );
         final hosted = HostedVaultRef(s.id, 'notes');
+        final kept = HostedVaultRef(other.id, 'work');
+        await settings.rememberRef(kept);
         await settings.rememberRef(hosted);
         store.failDeletes = true;
 
         await expectLater(settings.removeServer(s.id), throwsStateError);
 
-        expect(settings.state.savedServers.map((x) => x.id), [s.id]);
-        expect(settings.state.recentRefs, [hosted]);
-        expect(settings.state.lastVaultRef, hosted);
-        expect(store.tokens, {s.id: 'tok-order-2001'});
+        expect(settings.state.savedServers.map((x) => x.id), [other.id]);
+        expect(settings.state.recentRefs, [kept]);
+        expect(settings.state.lastVaultRef, isNull);
         final relaunched = await relaunchSettings(tokenStore: store);
-        expect(relaunched.state.savedServers.map((x) => x.id), [s.id]);
-        expect(relaunched.state.recentRefs, [hosted]);
-        expect(relaunched.state.lastVaultRef, hosted);
+        expect(relaunched.state.savedServers.map((x) => x.id), [other.id]);
+        expect(relaunched.state.recentRefs, [kept]);
+        expect(relaunched.state.lastVaultRef, isNull);
+        expect(store.tokens[other.id], 'tok-order-2002');
       },
     );
 

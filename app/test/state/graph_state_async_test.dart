@@ -20,6 +20,7 @@ import '../support/daily_seed.dart';
 import '../support/fake_vault_db.dart';
 import '../support/graph_access_doubles.dart';
 import '../support/graph_seeds.dart';
+import '../support/vault_scoped_reads.dart';
 
 const _vaultA = LocalVaultRef('/tmp/om-88-vault-a');
 const _vaultB = LocalVaultRef('/tmp/om-88-vault-b');
@@ -61,14 +62,14 @@ ProviderContainer _container(
   return container;
 }
 
-/// Keeps the autoDispose reader and facade for [scope] alive.
+/// Keeps the autoDispose read for [scope] and a reader view of it alive.
 void _listen(ProviderContainer c, GraphScope scope) {
   c.listen(graphDataAsyncProvider(scope), (_, _) {});
-  c.listen(graphDataProvider(scope), (_, _) {});
+  listenScoped(c, graphDataAsyncProvider(scope), GraphData.empty, (_, _) {});
 }
 
 GraphData _facade(ProviderContainer c, GraphScope scope) =>
-    c.read(graphDataProvider(scope));
+    readScoped(c, graphDataAsyncProvider(scope), GraphData.empty);
 
 Set<String> _ids(GraphData g) => g.nodes.map((n) => n.id).toSet();
 

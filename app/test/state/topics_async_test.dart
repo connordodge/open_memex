@@ -1,8 +1,8 @@
 // WI #87 (W3): the Topics tree reads through VaultAccess.topics (D13, D14a).
 // smartFolderTreeAsyncProvider returns a VaultScoped<TopicsTree> stamped with
-// the vault it loaded for; smartFolderTreeProvider stays as the synchronous
-// facade and never shows another vault's rows; selectedFolderInTreeProvider
-// is derived from the tree.
+// the vault it loaded for; read the way a reader shows it (`readScoped`) it
+// never shows another vault's rows; selectedFolderInTreeProvider is derived
+// from the tree.
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db.dart';
@@ -17,6 +17,7 @@ import '../support/fake_clock.dart';
 import '../support/fake_vault_db.dart';
 import '../support/topics_access_doubles.dart';
 import '../support/topics_seed.dart';
+import '../support/vault_scoped_reads.dart';
 
 const _pathA = '/tmp/om-87-vault-a';
 const _pathB = '/tmp/om-87-vault-b';
@@ -46,7 +47,12 @@ ProviderContainer _container({
   addTearDown(c.dispose);
   // A mounted pane keeps the tree provider alive, so a bump or a vault switch
   // re-reads it without anyone reading it again.
-  final keepAlive = c.listen(smartFolderTreeProvider, (_, _) {});
+  final keepAlive = listenScoped(
+    c,
+    smartFolderTreeAsyncProvider,
+    emptyTopicsTree(),
+    (_, _) {},
+  );
   addTearDown(keepAlive.close);
   return c;
 }
@@ -82,10 +88,16 @@ void main() {
         expect(topics.callsTo('smartFolders'), hasLength(1));
         expect(topics.callsTo('unsortedNotes'), hasLength(1));
         // The facade serves the same tree.
-        expect(_ids(c.read(smartFolderTreeProvider).folders), [
-          TP.games,
-          TP.health,
-        ]);
+        expect(
+          _ids(
+            readScoped(
+              c,
+              smartFolderTreeAsyncProvider,
+              emptyTopicsTree(),
+            ).folders,
+          ),
+          [TP.games, TP.health],
+        );
       },
     );
 
@@ -98,22 +110,56 @@ void main() {
         );
         final c = _container(db: db, doubles: doubles);
 
-        expect(c.read(smartFolderTreeProvider).isEmpty, isTrue);
-        expect(c.read(smartFolderTreeProvider).folders, isEmpty);
-        expect(c.read(smartFolderTreeProvider).unsorted.notes, isEmpty);
+        expect(
+          readScoped(
+            c,
+            smartFolderTreeAsyncProvider,
+            emptyTopicsTree(),
+          ).isEmpty,
+          isTrue,
+        );
+        expect(
+          readScoped(
+            c,
+            smartFolderTreeAsyncProvider,
+            emptyTopicsTree(),
+          ).folders,
+          isEmpty,
+        );
+        expect(
+          readScoped(
+            c,
+            smartFolderTreeAsyncProvider,
+            emptyTopicsTree(),
+          ).unsorted.notes,
+          isEmpty,
+        );
         await _settle();
         final topics = doubles.topicsAt(_pathA);
         expect(topics.gates['smartFolders'], hasLength(1));
         expect(c.read(smartFolderTreeAsyncProvider).isLoading, isTrue);
-        expect(c.read(smartFolderTreeProvider).folders, isEmpty);
+        expect(
+          readScoped(
+            c,
+            smartFolderTreeAsyncProvider,
+            emptyTopicsTree(),
+          ).folders,
+          isEmpty,
+        );
 
         topics.gates['smartFolders']!.single.complete();
         await c.read(smartFolderTreeAsyncProvider.future);
 
-        expect(_ids(c.read(smartFolderTreeProvider).folders), [
-          TP.games,
-          TP.health,
-        ]);
+        expect(
+          _ids(
+            readScoped(
+              c,
+              smartFolderTreeAsyncProvider,
+              emptyTopicsTree(),
+            ).folders,
+          ),
+          [TP.games, TP.health],
+        );
       },
     );
 
@@ -121,10 +167,19 @@ void main() {
       final doubles = AccessDoubles();
       final c = _container(db: null, doubles: doubles, vault: null);
 
-      expect(c.read(smartFolderTreeProvider).isEmpty, isTrue);
+      expect(
+        readScoped(c, smartFolderTreeAsyncProvider, emptyTopicsTree()).isEmpty,
+        isTrue,
+      );
       await _settle();
-      expect(c.read(smartFolderTreeProvider).isEmpty, isTrue);
-      expect(c.read(smartFolderTreeProvider).folders, isEmpty);
+      expect(
+        readScoped(c, smartFolderTreeAsyncProvider, emptyTopicsTree()).isEmpty,
+        isTrue,
+      );
+      expect(
+        readScoped(c, smartFolderTreeAsyncProvider, emptyTopicsTree()).folders,
+        isEmpty,
+      );
       expect(doubles.topics, isEmpty, reason: 'no vault, no domain reads');
     });
 
@@ -160,19 +215,31 @@ void main() {
 
         expect(topics.gates['smartFolders'], hasLength(1));
         expect(c.read(smartFolderTreeAsyncProvider).isLoading, isTrue);
-        expect(_ids(c.read(smartFolderTreeProvider).folders), [
-          TP.games,
-          TP.health,
-        ], reason: 'the previous tree stays while the reload is pending');
+        expect(
+          _ids(
+            readScoped(
+              c,
+              smartFolderTreeAsyncProvider,
+              emptyTopicsTree(),
+            ).folders,
+          ),
+          [TP.games, TP.health],
+          reason: 'the previous tree stays while the reload is pending',
+        );
 
         topics.gates['smartFolders']!.single.complete();
         await c.read(smartFolderTreeAsyncProvider.future);
 
-        expect(_ids(c.read(smartFolderTreeProvider).folders), [
-          'f-new',
-          TP.games,
-          TP.health,
-        ]);
+        expect(
+          _ids(
+            readScoped(
+              c,
+              smartFolderTreeAsyncProvider,
+              emptyTopicsTree(),
+            ).folders,
+          ),
+          ['f-new', TP.games, TP.health],
+        );
       },
     );
 
@@ -189,25 +256,61 @@ void main() {
         );
         final c = _container(db: dbA, doubles: doubles);
         await c.read(smartFolderTreeAsyncProvider.future);
-        expect(_ids(c.read(smartFolderTreeProvider).folders), [
-          TP.games,
-          TP.health,
-        ]);
+        expect(
+          _ids(
+            readScoped(
+              c,
+              smartFolderTreeAsyncProvider,
+              emptyTopicsTree(),
+            ).folders,
+          ),
+          [TP.games, TP.health],
+        );
 
         c.read(currentVaultProvider.notifier).state = _vaultB;
         await _settle();
 
         final b = doubles.topicsAt(_pathB);
         expect(b.gates['smartFolders'], hasLength(1), reason: 'B is loading');
-        expect(c.read(smartFolderTreeProvider).folders, isEmpty);
-        expect(c.read(smartFolderTreeProvider).unsorted.notes, isEmpty);
-        expect(c.read(smartFolderTreeProvider).isEmpty, isTrue);
+        expect(
+          readScoped(
+            c,
+            smartFolderTreeAsyncProvider,
+            emptyTopicsTree(),
+          ).folders,
+          isEmpty,
+        );
+        expect(
+          readScoped(
+            c,
+            smartFolderTreeAsyncProvider,
+            emptyTopicsTree(),
+          ).unsorted.notes,
+          isEmpty,
+        );
+        expect(
+          readScoped(
+            c,
+            smartFolderTreeAsyncProvider,
+            emptyTopicsTree(),
+          ).isEmpty,
+          isTrue,
+        );
 
         b.gates['smartFolders']!.single.complete();
         final scoped = await c.read(smartFolderTreeAsyncProvider.future);
 
         expect(scoped.vault, _vaultB);
-        expect(_ids(c.read(smartFolderTreeProvider).folders), ['f-b-only']);
+        expect(
+          _ids(
+            readScoped(
+              c,
+              smartFolderTreeAsyncProvider,
+              emptyTopicsTree(),
+            ).folders,
+          ),
+          ['f-b-only'],
+        );
       },
     );
 
@@ -231,8 +334,22 @@ void main() {
         await _settle();
 
         expect(c.read(smartFolderTreeAsyncProvider).hasError, isTrue);
-        expect(c.read(smartFolderTreeProvider).folders, isEmpty);
-        expect(c.read(smartFolderTreeProvider).isEmpty, isTrue);
+        expect(
+          readScoped(
+            c,
+            smartFolderTreeAsyncProvider,
+            emptyTopicsTree(),
+          ).folders,
+          isEmpty,
+        );
+        expect(
+          readScoped(
+            c,
+            smartFolderTreeAsyncProvider,
+            emptyTopicsTree(),
+          ).isEmpty,
+          isTrue,
+        );
       },
     );
   });

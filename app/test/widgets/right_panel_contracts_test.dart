@@ -19,6 +19,7 @@ import 'package:open_memex_app/src/widgets/right_panel.dart';
 import '../support/app_harness.dart';
 import '../support/fake_vault_db.dart';
 import '../support/links_seeds.dart';
+import '../support/vault_scoped_reads.dart';
 
 const _note = 'n90c-target';
 const VaultRef _localVault = LocalVaultRef('/tmp/om-90c-vault');
@@ -233,7 +234,14 @@ void main() {
         expect(scoped.vault, _localVault);
         expect(scoped.value, isEmpty);
         expect(graph.gate.calls, 0);
-        expect(c.read(agentChangesProvider(_note)), isEmpty);
+        expect(
+          readScoped(
+            c,
+            agentChangesAsyncProvider(_note),
+            const <AgentChangeRow>[],
+          ),
+          isEmpty,
+        );
       },
     );
 

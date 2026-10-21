@@ -36,7 +36,6 @@ const _hostedSubtitle =
 const _localSubtitle =
     'a vault is a folder of your notes (manifest.json + memex.db). open one '
     'you have, or create a new one.';
-const _hostedCardLine = "local vaults need it. hosted vaults don't.";
 
 const _unreachable = HostedServerUnreachable(
   _memex,
@@ -84,71 +83,13 @@ void _fakeOpen(Wi97OpenController o) =>
 void main() {
   wi97HoldFontFetches();
 
-  group('flag off', () {
-    testWidgets(
-      'with the flag off hosted recents are hidden and row indexes count shown rows only',
-      (tester) async {
-        final local = createVaultFolder();
-        await pumpVaultPicker(
-          tester,
-          hosted: false,
-          recents: [
-            _memex,
-            LocalVaultRef(local.path),
-            const HostedVaultRef(fakeServerId, 'work'),
-          ],
-        );
-
-        expect(find.text('memex'), findsNothing);
-        expect(find.text('work'), findsNothing);
-        expect(
-          wi97Inside('recent-row-0', find.text(p.basename(local.path))),
-          findsOneWidget,
-        );
-        expect(find.byKey(const Key('recent-row-1')), findsNothing);
-        expect(find.byKey(const Key('recent-row-2')), findsNothing);
-        expect(find.byType(StatusDot), findsNothing);
-      },
-    );
-
-    testWidgets(
-      'with the flag off and only hosted recents there is no RECENT section',
-      (tester) async {
-        await pumpVaultPicker(tester, hosted: false, recents: const [_memex]);
-
-        expect(find.text('RECENT'), findsNothing);
-        expect(find.byKey(const Key('recent-row-0')), findsNothing);
-      },
-    );
-
-    testWidgets('with the flag off the subtitle keeps the local copy', (
-      tester,
-    ) async {
-      await pumpVaultPicker(tester, hosted: false);
-
-      expect(find.text(_localSubtitle), findsOneWidget);
-      expect(find.text(_hostedSubtitle), findsNothing);
-    });
-
-    testWidgets('with the flag on the subtitle names vault servers', (
-      tester,
-    ) async {
+  group('subtitle', () {
+    testWidgets('the subtitle names vault servers', (tester) async {
       await pumpVaultPicker(tester);
 
       expect(find.text(_hostedSubtitle), findsOneWidget);
       expect(find.text(_localSubtitle), findsNothing);
     });
-
-    testWidgets(
-      'with the flag off the binary card omits the hosted vaults line',
-      (tester) async {
-        await pumpVaultPicker(tester, hosted: false, binary: false);
-
-        expect(find.text('memex binary not found'), findsOneWidget);
-        expect(find.text('locate memex binary…'), findsOneWidget);
-        expect(find.text(_hostedCardLine), findsNothing);
-      },
-    );
   });
 
   group('recorded outcome over probe status', () {

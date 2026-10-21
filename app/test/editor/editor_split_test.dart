@@ -19,12 +19,9 @@ import 'package:open_memex_app/src/state/vault_state.dart'
         LocalVaultRef,
         currentVaultProvider,
         linkKindsAsyncProvider,
-        linkKindsProvider,
         memexCliProvider,
         noteTitlesAsyncProvider,
-        noteTitlesProvider,
         selectedNoteAsyncProvider,
-        selectedNoteProvider,
         vaultDbProvider,
         vaultRevisionProvider;
 import 'package:open_memex_app/src/theme/app_theme.dart';
@@ -188,20 +185,16 @@ Future<_Host> _pumpEditor(
   await tester.pumpWidget(
     ProviderScope(
       overrides: [
-        // #78 (D14a): the editor's widgets read the async providers; the
-        // facades keep their overrides for the readers #105 converts.
-        selectedNoteProvider.overrideWithValue(note),
+        // #78 (D14a): the editor's widgets read the async providers.
         selectedNoteAsyncProvider.overrideWith(
           (ref) => VaultScoped(const LocalVaultRef(_vaultPath), note),
         ),
         currentVaultProvider.overrideWith((ref) => LocalVaultRef(_vaultPath)),
         memexCliProvider.overrideWithValue(cli ?? _FakeCli()),
         vaultDbProvider.overrideWithValue(null),
-        noteTitlesProvider.overrideWithValue(_titles),
         noteTitlesAsyncProvider.overrideWith(
           (ref) => VaultScoped(const LocalVaultRef(_vaultPath), _titles),
         ),
-        linkKindsProvider.overrideWithValue(const []),
         linkKindsAsyncProvider.overrideWith(
           (ref) => const VaultScoped(LocalVaultRef(_vaultPath), <String>[]),
         ),

@@ -9,9 +9,9 @@ import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/theme/review_state_colors.dart';
 
 import '../support/daily_seed.dart';
-import '../support/editor_access_doubles.dart';
 import '../support/fake_clock.dart';
 import '../support/fake_vault_db.dart';
+import '../support/vault_scoped_reads.dart';
 
 ProviderContainer _container({
   VaultDb? db,
@@ -154,7 +154,7 @@ void main() {
     });
   });
 
-  group('todayNoteProvider (AC10)', () {
+  group('the today note read (AC10)', () {
     test(
       'is null with no daily note for today and the note once seeded and the revision is bumped',
       () async {
@@ -163,12 +163,12 @@ void main() {
         final c = _container(db: db, clock: clock);
         db.seedDailyNote('2026-10-02', id: 'yesterday');
 
-        expect(await settled(c, todayNoteProvider), isNull);
+        expect(await settledScoped(c, todayNoteAsyncProvider, null), isNull);
 
         db.seedDailyNote('2026-10-03', id: 'today');
         _bump(c);
 
-        final note = (await settled(c, todayNoteProvider))!;
+        final note = (await settledScoped(c, todayNoteAsyncProvider, null))!;
         expect(note.noteId, 'today');
         expect(note.date, '2026-10-03');
       },
@@ -180,13 +180,19 @@ void main() {
       final c = _container(db: db, clock: clock);
       db.seedDailyNote('2026-10-03', id: 'oct3');
       db.seedDailyNote('2026-10-04', id: 'oct4');
-      c.listen(todayNoteProvider, (_, _) {});
+      listenScoped(c, todayNoteAsyncProvider, null, (_, _) {});
 
-      expect((await settled(c, todayNoteProvider))!.noteId, 'oct3');
+      expect(
+        (await settledScoped(c, todayNoteAsyncProvider, null))!.noteId,
+        'oct3',
+      );
 
       clock.advance(const Duration(minutes: 2));
 
-      expect((await settled(c, todayNoteProvider))!.noteId, 'oct4');
+      expect(
+        (await settledScoped(c, todayNoteAsyncProvider, null))!.noteId,
+        'oct4',
+      );
     });
 
     test('is null after midnight when the new day has no note yet', () async {
@@ -194,12 +200,15 @@ void main() {
       final clock = FakeClock(DateTime(2026, 10, 3, 23, 59));
       final c = _container(db: db, clock: clock);
       db.seedDailyNote('2026-10-03', id: 'oct3');
-      c.listen(todayNoteProvider, (_, _) {});
-      expect((await settled(c, todayNoteProvider))!.noteId, 'oct3');
+      listenScoped(c, todayNoteAsyncProvider, null, (_, _) {});
+      expect(
+        (await settledScoped(c, todayNoteAsyncProvider, null))!.noteId,
+        'oct3',
+      );
 
       clock.advance(const Duration(minutes: 2));
 
-      expect(await settled(c, todayNoteProvider), isNull);
+      expect(await settledScoped(c, todayNoteAsyncProvider, null), isNull);
     });
 
     test('ignores a role-less note titled with today', () async {
@@ -207,46 +216,55 @@ void main() {
       final c = _container(db: db, clock: FakeClock(DateTime(2026, 10, 3, 9)));
       db.seedNote(id: 'plain', title: '2026-10-03');
 
-      expect(await settled(c, todayNoteProvider), isNull);
+      expect(await settledScoped(c, todayNoteAsyncProvider, null), isNull);
     });
 
     test('is null when no vault database is open', () async {
       final c = _container(noDb: true);
 
-      expect(await settled(c, todayNoteProvider), isNull);
+      expect(await settledScoped(c, todayNoteAsyncProvider, null), isNull);
     });
   });
 
-  group('dailyNotesProvider and reviewStateProvider (AC11)', () {
+  group('the daily notes read and the review state read (AC11)', () {
     test(
-      'dailyNotesProvider re-reads after a vaultRevisionProvider bump',
+      'the daily notes read re-reads after a vaultRevisionProvider bump',
       () async {
         final db = _v5();
         final c = _container(db: db);
         db.seedDailyNote('2026-10-02');
-        expect((await settled(c, dailyNotesProvider)).map((r) => r.date), [
-          '2026-10-02',
-        ]);
+        expect(
+          (await settledScoped(
+            c,
+            dailyNotesAsyncProvider,
+            const <DailyNoteRow>[],
+          )).map((r) => r.date),
+          ['2026-10-02'],
+        );
 
         db.seedDailyNote('2026-10-03');
         _bump(c);
 
-        expect((await settled(c, dailyNotesProvider)).map((r) => r.date), [
-          '2026-10-03',
-          '2026-10-02',
-        ]);
+        expect(
+          (await settledScoped(
+            c,
+            dailyNotesAsyncProvider,
+            const <DailyNoteRow>[],
+          )).map((r) => r.date),
+          ['2026-10-03', '2026-10-02'],
+        );
       },
     );
 
     test(
-      'reviewStateProvider flips from Unreviewed to Reviewed after a seeded review and a bump',
+      'the review state read flips from Unreviewed to Reviewed after a seeded review and a bump',
       () async {
         final db = _v5();
         final c = _container(db: db);
         final id = db.seedDailyNote('2026-10-03');
 
         expect(
-          (await settled(c, reviewStateProvider(id)))!.state,
+          (await settledScoped(c, reviewStateAsyncProvider(id), null))!.state,
           ReviewState.unreviewed,
         );
 
@@ -258,13 +276,17 @@ void main() {
         );
         _bump(c);
 
-        final info = (await settled(c, reviewStateProvider(id)))!;
+        final info = (await settledScoped(
+          c,
+          reviewStateAsyncProvider(id),
+          null,
+        ))!;
         expect(info.state, ReviewState.reviewed);
         expect(info.reviewedAt, 1759500123000);
       },
     );
 
-    test('reviewStateProvider is keyed by note id', () async {
+    test('the review state read is keyed by note id', () async {
       final db = _v5();
       final c = _container(db: db);
       final a = db.seedDailyNote('2026-10-03');
@@ -273,34 +295,56 @@ void main() {
       db.seedDayReview(b, contentVersion: 2, reviewedContentVersion: 1);
 
       expect(
-        (await settled(c, reviewStateProvider(a)))!.state,
+        (await settledScoped(c, reviewStateAsyncProvider(a), null))!.state,
         ReviewState.reviewed,
       );
       expect(
-        (await settled(c, reviewStateProvider(b)))!.state,
+        (await settledScoped(c, reviewStateAsyncProvider(b), null))!.state,
         ReviewState.changedSinceReview,
       );
     });
 
     test(
-      'blocksForNoteProvider and footerChipsProvider re-read after a bump',
+      'the blocks read and the footer chips read re-read after a bump',
       () async {
         final db = _v5();
         final c = _container(db: db);
         final day = db.seedDailyNote('2026-10-03');
         db.seedTopicNote('t1', 'Roadmap');
-        expect(await settled(c, blocksForNoteProvider(day)), isEmpty);
-        expect(await settled(c, footerChipsProvider(day)), isEmpty);
+        expect(
+          await settledScoped(
+            c,
+            blocksForNoteAsyncProvider(day),
+            const <BlockRow>[],
+          ),
+          isEmpty,
+        );
+        expect(
+          await settledScoped(
+            c,
+            footerChipsAsyncProvider(day),
+            const <FooterChipRow>[],
+          ),
+          isEmpty,
+        );
 
         db.seedBlock(day, 'b1', ord: 0, text: 'First');
         db.seedFooterChip(day, 't1', origin: 'person');
         _bump(c);
 
         expect(
-          (await settled(c, blocksForNoteProvider(day))).map((b) => b.blockId),
+          (await settledScoped(
+            c,
+            blocksForNoteAsyncProvider(day),
+            const <BlockRow>[],
+          )).map((b) => b.blockId),
           ['b1'],
         );
-        final chips = (await settled(c, footerChipsProvider(day)));
+        final chips = (await settledScoped(
+          c,
+          footerChipsAsyncProvider(day),
+          const <FooterChipRow>[],
+        ));
         expect(chips.map((x) => x.topicTitle), ['Roadmap']);
         expect(chips.single.origin, 'person');
       },
@@ -318,21 +362,53 @@ void main() {
         );
         db.seedDailyNote('2026-10-03', id: 'd1');
 
-        expect(await settled(c, dailyNotesProvider), isEmpty);
-        expect(await settled(c, todayNoteProvider), isNull);
-        expect(await settled(c, reviewStateProvider('d1')), isNull);
-        expect(await settled(c, blocksForNoteProvider('d1')), isEmpty);
-        expect(await settled(c, footerChipsProvider('d1')), isEmpty);
+        expect(
+          await settledScoped(
+            c,
+            dailyNotesAsyncProvider,
+            const <DailyNoteRow>[],
+          ),
+          isEmpty,
+        );
+        expect(await settledScoped(c, todayNoteAsyncProvider, null), isNull);
+        expect(
+          await settledScoped(c, reviewStateAsyncProvider('d1'), null),
+          isNull,
+        );
+        expect(
+          await settledScoped(
+            c,
+            blocksForNoteAsyncProvider('d1'),
+            const <BlockRow>[],
+          ),
+          isEmpty,
+        );
+        expect(
+          await settledScoped(
+            c,
+            footerChipsAsyncProvider('d1'),
+            const <FooterChipRow>[],
+          ),
+          isEmpty,
+        );
 
         db.migrateToV5();
         _bump(c);
 
-        expect((await settled(c, dailyNotesProvider)).map((r) => r.noteId), [
-          'd1',
-        ]);
-        expect((await settled(c, todayNoteProvider))!.noteId, 'd1');
         expect(
-          (await settled(c, reviewStateProvider('d1')))!.state,
+          (await settledScoped(
+            c,
+            dailyNotesAsyncProvider,
+            const <DailyNoteRow>[],
+          )).map((r) => r.noteId),
+          ['d1'],
+        );
+        expect(
+          (await settledScoped(c, todayNoteAsyncProvider, null))!.noteId,
+          'd1',
+        );
+        expect(
+          (await settledScoped(c, reviewStateAsyncProvider('d1'), null))!.state,
           ReviewState.unreviewed,
         );
       },
@@ -341,11 +417,31 @@ void main() {
     test('providers are empty when no vault database is open', () async {
       final c = _container(noDb: true);
 
-      expect(await settled(c, dailyNotesProvider), isEmpty);
-      expect(await settled(c, todayNoteProvider), isNull);
-      expect(await settled(c, reviewStateProvider('d1')), isNull);
-      expect(await settled(c, blocksForNoteProvider('d1')), isEmpty);
-      expect(await settled(c, footerChipsProvider('d1')), isEmpty);
+      expect(
+        await settledScoped(c, dailyNotesAsyncProvider, const <DailyNoteRow>[]),
+        isEmpty,
+      );
+      expect(await settledScoped(c, todayNoteAsyncProvider, null), isNull);
+      expect(
+        await settledScoped(c, reviewStateAsyncProvider('d1'), null),
+        isNull,
+      );
+      expect(
+        await settledScoped(
+          c,
+          blocksForNoteAsyncProvider('d1'),
+          const <BlockRow>[],
+        ),
+        isEmpty,
+      );
+      expect(
+        await settledScoped(
+          c,
+          footerChipsAsyncProvider('d1'),
+          const <FooterChipRow>[],
+        ),
+        isEmpty,
+      );
     });
   });
 }

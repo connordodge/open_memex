@@ -1,4 +1,4 @@
-// WI #24 (A7): smartFolderTreeProvider and the PromptCli wrapper (TD8, D18,
+// WI #24 (A7): the Smart Folder tree read and the PromptCli wrapper (TD8, D18,
 // D21; Req 52, 53).
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -15,6 +15,7 @@ import '../support/fake_clock.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
 import '../support/topics_seed.dart';
+import '../support/vault_scoped_reads.dart';
 
 ProviderContainer _container({VaultDb? db}) {
   final c = ProviderContainer(
@@ -43,13 +44,13 @@ void _bump(ProviderContainer c) =>
 /// The tree facade once the async read for the current vault has completed.
 Future<TopicsTree> _loadedTree(ProviderContainer c) async {
   await c.read(smartFolderTreeAsyncProvider.future);
-  return c.read(smartFolderTreeProvider);
+  return readScoped(c, smartFolderTreeAsyncProvider, emptyTopicsTree());
 }
 
 List<String> _ids(List<FolderNode> nodes) => [for (final n in nodes) n.id];
 
 void main() {
-  group('smartFolderTreeProvider (AC1)', () {
+  group('the Smart Folder tree read (AC1)', () {
     test('builds the tree from the Smart Folder reads', () async {
       final db = _v5()..seedTopicsFixture();
       final c = _container(db: db);
@@ -85,8 +86,10 @@ void main() {
         final db = _v5()..seedTopicsFixture();
         final c = _container(db: db);
         final seen = <List<String>>[];
-        c.listen<TopicsTree>(
-          smartFolderTreeProvider,
+        listenScoped<TopicsTree>(
+          c,
+          smartFolderTreeAsyncProvider,
+          emptyTopicsTree(),
           (_, next) => seen.add(_ids(next.folders)),
           fireImmediately: true,
         );
@@ -96,20 +99,31 @@ void main() {
 
         db.seedSmartFolder('f-new', 'Archive');
         // Nothing changes until the revision moves.
-        expect(_ids(c.read(smartFolderTreeProvider).folders), [
-          TP.games,
-          TP.health,
-        ]);
+        expect(
+          _ids(
+            readScoped(
+              c,
+              smartFolderTreeAsyncProvider,
+              emptyTopicsTree(),
+            ).folders,
+          ),
+          [TP.games, TP.health],
+        );
 
         _bump(c);
         await c.read(smartFolderTreeAsyncProvider.future);
         await pumpEventQueue();
 
-        expect(_ids(c.read(smartFolderTreeProvider).folders), [
-          'f-new',
-          TP.games,
-          TP.health,
-        ]);
+        expect(
+          _ids(
+            readScoped(
+              c,
+              smartFolderTreeAsyncProvider,
+              emptyTopicsTree(),
+            ).folders,
+          ),
+          ['f-new', TP.games, TP.health],
+        );
         expect(seen.last, ['f-new', TP.games, TP.health]);
       },
     );

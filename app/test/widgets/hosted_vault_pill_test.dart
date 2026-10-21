@@ -608,15 +608,5 @@ void main() {
       expect(c.read(hostedHttpClientProvider), isA<http.Client>());
       expect(c.read(hostedHttpClientProvider), isNot(isA<MockClient>()));
     });
-
-    test('the default update token seam does nothing', () async {
-      final h = await hostedContainer();
-      // No override: the seam's own default.
-      expect(
-        () => h.read(updateTokenSeamProvider)(fakeServerId),
-        returnsNormally,
-      );
-      expect(h.read(settingsProvider).savedServers.single.id, fakeServerId);
-    });
   });
 }

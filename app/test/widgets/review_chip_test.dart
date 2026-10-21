@@ -1,5 +1,5 @@
 // WI #29 (A11): the Reviewed chip in the note header. State, label and colour
-// come from #21 (`reviewStateProvider`, `ReviewState.label`,
+// come from #21 (`reviewStateAsyncProvider`, `ReviewState.label`,
 // `reviewStateColor`); the chip is read-only, hover shows the review time and
 // a tap opens the right panel's Activity tab.
 import 'package:flutter/gestures.dart';

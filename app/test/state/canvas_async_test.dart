@@ -1,9 +1,9 @@
 // WI #89 (W5): the canvas readers move onto VaultAccess (D13, D14a, Req 33).
 // `canvasesAsyncProvider` / `canvasDetailAsyncProvider` return data stamped
-// with the vault it was read for (`VaultScoped`); `canvasesProvider` /
-// `canvasDetailProvider` stay as synchronous facades that never show another
-// vault's data (`vaultFacadeValue`). The sidebar rail and the canvas tab chip
-// still read the facades.
+// with the vault it was read for (`VaultScoped`). Readers never show another
+// vault's data: these tests read them the way a reader renders them
+// (`readScoped`, D14a). The sidebar rail and the canvas tab chip read them
+// too.
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -20,6 +20,7 @@ import 'package:open_memex_app/src/state/ui_state_store.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/theme/app_theme.dart';
 import 'package:open_memex_app/src/vault_access/vault_async_view.dart';
+import 'package:open_memex_app/src/vault_access/vault_scoped.dart';
 import 'package:open_memex_app/src/widgets/atoms.dart';
 import 'package:open_memex_app/src/widgets/sidebar.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -28,6 +29,7 @@ import '../support/app_harness.dart';
 import '../support/canvas_robot.dart';
 import '../support/canvas_seeds.dart';
 import '../support/fake_vault_db.dart';
+import '../support/vault_scoped_reads.dart';
 
 const _a = LocalVaultRef('/tmp/om-89-vault-a');
 const _b = LocalVaultRef('/tmp/om-89-vault-b');
@@ -70,10 +72,12 @@ FakeVaultDb _fixtureDb() {
   return db;
 }
 
-/// Keeps the facades alive and tracking, as a mounted widget would.
+/// Keeps the canvas reads alive and tracking, as a mounted widget would.
 void _keepAlive(ProviderContainer c, [String? detailId]) {
-  c.listen(canvasesProvider, (_, _) {});
-  if (detailId != null) c.listen(canvasDetailProvider(detailId), (_, _) {});
+  listenScoped(c, canvasesAsyncProvider, const <CanvasRow>[], (_, _) {});
+  if (detailId != null) {
+    listenScoped(c, canvasDetailAsyncProvider(detailId), null, (_, _) {});
+  }
 }
 
 void main() {
@@ -151,21 +155,24 @@ void main() {
     );
   });
 
-  group('canvasesProvider facade', () {
-    test(
-      'canvasesProvider facade yields an empty list with no vault',
-      () async {
-        final c = _dbContainer(_fixtureDb(), vault: null);
-        _keepAlive(c);
+  group('the canvases read', () {
+    test('the canvases read yields an empty list with no vault', () async {
+      final c = _dbContainer(_fixtureDb(), vault: null);
+      _keepAlive(c);
 
-        expect(c.read(canvasesProvider), isEmpty);
-        await c.read(canvasesAsyncProvider.future);
-        expect(c.read(canvasesProvider), isEmpty);
-      },
-    );
+      expect(
+        readScoped(c, canvasesAsyncProvider, const <CanvasRow>[]),
+        isEmpty,
+      );
+      await c.read(canvasesAsyncProvider.future);
+      expect(
+        readScoped(c, canvasesAsyncProvider, const <CanvasRow>[]),
+        isEmpty,
+      );
+    });
 
     test(
-      'canvasesProvider facade yields an empty list on a vault without canvas tables',
+      'the canvases read yields an empty list on a vault without canvas tables',
       () async {
         final db = FakeVaultDb.v5()..dropCanvasTables();
         addTearDown(db.close);
@@ -174,21 +181,30 @@ void main() {
 
         await c.read(canvasesAsyncProvider.future);
 
-        expect(c.read(canvasesProvider), isEmpty);
+        expect(
+          readScoped(c, canvasesAsyncProvider, const <CanvasRow>[]),
+          isEmpty,
+        );
       },
     );
 
     test(
-      'canvasesProvider facade yields an empty list before the first load completes and the rows after',
+      'the canvases read yields an empty list before the first load completes and the rows after',
       () async {
         final canvas = _held();
         final c = _doubleContainer({_a: canvas});
         _keepAlive(c);
 
-        expect(c.read(canvasesProvider), isEmpty);
+        expect(
+          readScoped(c, canvasesAsyncProvider, const <CanvasRow>[]),
+          isEmpty,
+        );
         await pumpEventQueue();
         expect(canvas.heldLists, hasLength(1));
-        expect(c.read(canvasesProvider), isEmpty);
+        expect(
+          readScoped(c, canvasesAsyncProvider, const <CanvasRow>[]),
+          isEmpty,
+        );
 
         canvas.heldLists.single.complete([
           wi89CanvasRow('c1', 'One'),
@@ -196,29 +212,41 @@ void main() {
         ]);
         await c.read(canvasesAsyncProvider.future);
 
-        expect(_ids(c.read(canvasesProvider)), ['c1', 'c2']);
+        expect(
+          _ids(readScoped(c, canvasesAsyncProvider, const <CanvasRow>[])),
+          ['c1', 'c2'],
+        );
       },
     );
 
     test(
-      'canvasesProvider facade keeps its rows during a reload until the new list arrives',
+      'the canvases read keeps its rows during a reload until the new list arrives',
       () async {
         final canvas = Wi89Canvas(canvases: [wi89CanvasRow('c1', 'One')]);
         final c = _doubleContainer({_a: canvas});
         _keepAlive(c);
         await c.read(canvasesAsyncProvider.future);
-        expect(_ids(c.read(canvasesProvider)), ['c1']);
+        expect(
+          _ids(readScoped(c, canvasesAsyncProvider, const <CanvasRow>[])),
+          ['c1'],
+        );
 
         canvas.hold = true;
         c.read(vaultRevisionProvider.notifier).state++;
         await pumpEventQueue();
         expect(canvas.heldLists, hasLength(1));
-        expect(_ids(c.read(canvasesProvider)), ['c1']);
+        expect(
+          _ids(readScoped(c, canvasesAsyncProvider, const <CanvasRow>[])),
+          ['c1'],
+        );
 
         canvas.heldLists.single.complete([wi89CanvasRow('c2', 'Two')]);
         await c.read(canvasesAsyncProvider.future);
 
-        expect(_ids(c.read(canvasesProvider)), ['c2']);
+        expect(
+          _ids(readScoped(c, canvasesAsyncProvider, const <CanvasRow>[])),
+          ['c2'],
+        );
       },
     );
 
@@ -230,18 +258,30 @@ void main() {
         final c = _doubleContainer({_a: a, _b: b}, first: _a);
         _keepAlive(c);
         await c.read(canvasesAsyncProvider.future);
-        expect(_ids(c.read(canvasesProvider)), ['c-a']);
+        expect(
+          _ids(readScoped(c, canvasesAsyncProvider, const <CanvasRow>[])),
+          ['c-a'],
+        );
 
         c.read(currentVaultProvider.notifier).state = _b;
-        expect(c.read(canvasesProvider), isEmpty);
+        expect(
+          readScoped(c, canvasesAsyncProvider, const <CanvasRow>[]),
+          isEmpty,
+        );
         await pumpEventQueue();
         expect(b.heldLists, hasLength(1));
-        expect(c.read(canvasesProvider), isEmpty);
+        expect(
+          readScoped(c, canvasesAsyncProvider, const <CanvasRow>[]),
+          isEmpty,
+        );
 
         b.heldLists.single.complete([wi89CanvasRow('c-b', 'Vault B')]);
         await c.read(canvasesAsyncProvider.future);
 
-        expect(_ids(c.read(canvasesProvider)), ['c-b']);
+        expect(
+          _ids(readScoped(c, canvasesAsyncProvider, const <CanvasRow>[])),
+          ['c-b'],
+        );
       },
     );
 
@@ -260,10 +300,16 @@ void main() {
         a.heldLists.single.complete([wi89CanvasRow('c-a', 'Vault A')]);
         await pumpEventQueue();
 
-        expect(c.read(canvasesProvider), isEmpty);
+        expect(
+          readScoped(c, canvasesAsyncProvider, const <CanvasRow>[]),
+          isEmpty,
+        );
         b.heldLists.single.complete([wi89CanvasRow('c-b', 'Vault B')]);
         await c.read(canvasesAsyncProvider.future);
-        expect(_ids(c.read(canvasesProvider)), ['c-b']);
+        expect(
+          _ids(readScoped(c, canvasesAsyncProvider, const <CanvasRow>[])),
+          ['c-b'],
+        );
       },
     );
   });
@@ -345,9 +391,9 @@ void main() {
     );
   });
 
-  group('canvasDetailProvider facade', () {
+  group('the canvas detail read', () {
     test(
-      'canvasDetailProvider facade yields null before the first load and the detail after',
+      'the canvas detail read yields null before the first load and the detail after',
       () async {
         final detail = wi89BoardDetail('cv-x');
         final canvas = _held();
@@ -355,46 +401,55 @@ void main() {
         final c = _doubleContainer({_a: canvas});
         _keepAlive(c, 'cv-x');
 
-        expect(c.read(canvasDetailProvider('cv-x')), isNull);
+        expect(readScoped(c, canvasDetailAsyncProvider('cv-x'), null), isNull);
         await pumpEventQueue();
         expect(canvas.heldDetails, hasLength(1));
-        expect(c.read(canvasDetailProvider('cv-x')), isNull);
+        expect(readScoped(c, canvasDetailAsyncProvider('cv-x'), null), isNull);
 
         canvas.heldDetails.single.complete(detail);
         await c.read(canvasDetailAsyncProvider('cv-x').future);
 
-        expect(c.read(canvasDetailProvider('cv-x')), same(detail));
+        expect(
+          readScoped(c, canvasDetailAsyncProvider('cv-x'), null),
+          same(detail),
+        );
       },
     );
 
     test(
-      'canvasDetailProvider facade yields null for an unknown id and on a vault without canvas tables',
+      'the canvas detail read yields null for an unknown id and on a vault without canvas tables',
       () async {
         final c = _dbContainer(_fixtureDb());
         _keepAlive(c, 'no-such');
         await c.read(canvasDetailAsyncProvider('no-such').future);
-        expect(c.read(canvasDetailProvider('no-such')), isNull);
+        expect(
+          readScoped(c, canvasDetailAsyncProvider('no-such'), null),
+          isNull,
+        );
 
         final bare = FakeVaultDb.v5()..dropCanvasTables();
         addTearDown(bare.close);
         final d = _dbContainer(bare);
         _keepAlive(d, C89.newer);
         await d.read(canvasDetailAsyncProvider(C89.newer).future);
-        expect(d.read(canvasDetailProvider(C89.newer)), isNull);
+        expect(
+          readScoped(d, canvasDetailAsyncProvider(C89.newer), null),
+          isNull,
+        );
       },
     );
 
-    test('canvasDetailProvider facade yields null with no vault', () async {
+    test('the canvas detail read yields null with no vault', () async {
       final c = _dbContainer(_fixtureDb(), vault: null);
       _keepAlive(c, C89.newer);
 
       await c.read(canvasDetailAsyncProvider(C89.newer).future);
 
-      expect(c.read(canvasDetailProvider(C89.newer)), isNull);
+      expect(readScoped(c, canvasDetailAsyncProvider(C89.newer), null), isNull);
     });
 
     test(
-      'canvasDetailProvider facade keeps its detail during a reload until the new detail arrives',
+      'the canvas detail read keeps its detail during a reload until the new detail arrives',
       () async {
         final canvas = Wi89Canvas(
           details: {'cv-x': wi89Detail('cv-x', title: 'One')},
@@ -402,18 +457,27 @@ void main() {
         final c = _doubleContainer({_a: canvas});
         _keepAlive(c, 'cv-x');
         await c.read(canvasDetailAsyncProvider('cv-x').future);
-        expect(c.read(canvasDetailProvider('cv-x'))!.title, 'One');
+        expect(
+          readScoped(c, canvasDetailAsyncProvider('cv-x'), null)!.title,
+          'One',
+        );
 
         canvas.hold = true;
         c.read(vaultRevisionProvider.notifier).state++;
         await pumpEventQueue();
         expect(canvas.heldDetails, hasLength(1));
-        expect(c.read(canvasDetailProvider('cv-x'))!.title, 'One');
+        expect(
+          readScoped(c, canvasDetailAsyncProvider('cv-x'), null)!.title,
+          'One',
+        );
 
         canvas.heldDetails.single.complete(wi89Detail('cv-x', title: 'Two'));
         await c.read(canvasDetailAsyncProvider('cv-x').future);
 
-        expect(c.read(canvasDetailProvider('cv-x'))!.title, 'Two');
+        expect(
+          readScoped(c, canvasDetailAsyncProvider('cv-x'), null)!.title,
+          'Two',
+        );
       },
     );
 
@@ -427,18 +491,24 @@ void main() {
         final c = _doubleContainer({_a: a, _b: b}, first: _a);
         _keepAlive(c, 'cv-x');
         await c.read(canvasDetailAsyncProvider('cv-x').future);
-        expect(c.read(canvasDetailProvider('cv-x'))!.title, 'Vault A');
+        expect(
+          readScoped(c, canvasDetailAsyncProvider('cv-x'), null)!.title,
+          'Vault A',
+        );
 
         c.read(currentVaultProvider.notifier).state = _b;
-        expect(c.read(canvasDetailProvider('cv-x')), isNull);
+        expect(readScoped(c, canvasDetailAsyncProvider('cv-x'), null), isNull);
         await pumpEventQueue();
         expect(b.heldDetails, hasLength(1));
-        expect(c.read(canvasDetailProvider('cv-x')), isNull);
+        expect(readScoped(c, canvasDetailAsyncProvider('cv-x'), null), isNull);
 
         b.heldDetails.single.complete(wi89Detail('cv-x', title: 'Vault B'));
         await c.read(canvasDetailAsyncProvider('cv-x').future);
 
-        expect(c.read(canvasDetailProvider('cv-x'))!.title, 'Vault B');
+        expect(
+          readScoped(c, canvasDetailAsyncProvider('cv-x'), null)!.title,
+          'Vault B',
+        );
       },
     );
   });
@@ -477,7 +547,10 @@ void main() {
         expect(find.byKey(const Key('canvas-row-c2')), findsOneWidget);
         expect(find.text('Board one'), findsOneWidget);
         expect(_canvasCount(tester), 2);
-        expect(c.read(canvasesProvider), hasLength(2));
+        expect(
+          readScoped(c, canvasesAsyncProvider, const <CanvasRow>[]),
+          hasLength(2),
+        );
       });
     }
 
@@ -678,13 +751,21 @@ Future<ProviderContainer> _pumpSidebarWith(
     ProviderScope(
       overrides: [
         settingsProvider.overrideWith((_) => settings),
-        smartFolderTreeProvider.overrideWithValue(
-          buildTopicsTree(
-            const SmartFolderData(folders: [], members: []),
-            const [],
+        smartFolderTreeAsyncProvider.overrideWith(
+          (ref) => VaultScoped(
+            ref.watch(currentVaultProvider),
+            buildTopicsTree(
+              const SmartFolderData(folders: [], members: []),
+              const [],
+            ),
           ),
         ),
-        notesListProvider.overrideWithValue(const []),
+        notesListAsyncProvider.overrideWith(
+          (ref) => VaultScoped(
+            ref.watch(currentVaultProvider),
+            const <NoteListItem>[],
+          ),
+        ),
         tabsProvider.overrideWith(
           (ref) => TabsNotifier(
             store: UiStateStore(vaultPath: vaultDir.path),

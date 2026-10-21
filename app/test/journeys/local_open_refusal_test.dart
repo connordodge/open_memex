@@ -640,31 +640,6 @@ void main() {
       expect(c.read(settingsProvider).recentVaults, [other.path]);
     });
 
-    for (final (name, key) in [
-      (
-        'set up a vault server closes the refusal and leaves the picker as it was',
-        _refusalSetup,
-      ),
-      (
-        'connect to a vault server closes the refusal and leaves the picker as it was',
-        _refusalConnect,
-      ),
-    ]) {
-      testWidgets(name, (tester) async {
-        final vault = createVaultFolder('om92_naschoice_');
-        installFakeFilePicker().directories.add(vault.path);
-        final c = await _pumpApp(tester, cli: _cli((_) => _networkDrive()));
-
-        await _tapOpenLocalVault(tester);
-        await tester.tap(find.byKey(key));
-        await _settle(tester);
-
-        _expectNoRefusal();
-        expect(find.byType(VaultPickerScreen), findsOneWidget);
-        expect(c.read(currentVaultProvider), isNull);
-      });
-    }
-
     for (final (name, key, choice) in [
       (
         'the refusal returns setUpServer from set up a vault server',

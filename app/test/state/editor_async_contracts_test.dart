@@ -22,6 +22,7 @@ import '../support/daily_seed.dart';
 import '../support/editor_access_doubles.dart';
 import '../support/fake_clock.dart';
 import '../support/fake_vault_db.dart';
+import '../support/vault_scoped_reads.dart';
 
 const _today = '2026-10-03';
 const _aTodayId = '01J9ATODAY0000000000000078';
@@ -118,7 +119,7 @@ void main() {
         await pumpEventQueue();
 
         expect(
-          l.c.read(todayNoteProvider)?.noteId,
+          readScoped(l.c, todayNoteAsyncProvider, null)?.noteId,
           _oct4Id,
           reason: 'the read landed, for the new date',
         );

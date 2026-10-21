@@ -182,25 +182,6 @@ HostedClient _clientFor(Ref ref, FakeVaultServer server) => HostedClient(
 
 void main() {
   group('seam defaults', () {
-    test('hostedServerNameProvider defaults to the saved server id', () {
-      final c = ProviderContainer();
-      addTearDown(c.dispose);
-      expect(c.read(hostedServerNameProvider('srv-x')), 'srv-x');
-      expect(c.read(hostedServerNameProvider('other')), 'other');
-    });
-
-    test('hostedUpdateTokenProvider defaults to doing nothing', () {
-      final c = ProviderContainer();
-      addTearDown(c.dispose);
-      c.read(hostedUpdateTokenProvider)('srv-x');
-    });
-
-    test('hostedClientForServerProvider defaults to no client', () {
-      final c = ProviderContainer();
-      addTearDown(c.dispose);
-      expect(c.read(hostedClientForServerProvider('srv-x')), isNull);
-    });
-
     test('hostedVaultGoneProvider defaults to false per vault', () {
       final c = ProviderContainer();
       addTearDown(c.dispose);

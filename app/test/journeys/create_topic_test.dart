@@ -22,6 +22,7 @@ import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
 import '../support/footer_cli_fakes.dart';
 import '../support/today_cli_fakes.dart';
+import '../support/vault_scoped_reads.dart';
 
 const _today = '2026-10-03';
 const _todayId = 'daily-2026-10-03';
@@ -184,7 +185,7 @@ void main() {
           ..onAddCreates(db)
           ..onFooterAdd(db);
         final h = await _launch(tester, db, cli);
-        expect(h.read(todayNoteProvider), isNull);
+        expect(readScoped(h.container, todayNoteAsyncProvider, null), isNull);
 
         await _newTopic(tester, 'Player Loop');
 
@@ -199,7 +200,7 @@ void main() {
         expect(footer.flag('daily-note-id'), createdDailyId);
         expect(footer.flag('topic-note-id'), createdTopicId);
         expect(
-          h.read(todayNoteProvider)?.noteId,
+          readScoped(h.container, todayNoteAsyncProvider, null)?.noteId,
           createdDailyId,
           reason: 'today now has a daily note and the app re-read the vault',
         );
@@ -227,7 +228,11 @@ void main() {
           findsOneWidget,
         );
         expect(find.byKey(const Key('topics-unsorted')), findsOneWidget);
-        final chips = h.read(footerChipsProvider(_todayId));
+        final chips = readScoped(
+          h.container,
+          footerChipsAsyncProvider(_todayId),
+          const <FooterChipRow>[],
+        );
         expect(chips, hasLength(1));
         expect(chips.single.topicTitle, 'Player Loop');
         expect(chips.single.topicNoteId, createdTopicId);
@@ -365,7 +370,7 @@ void main() {
         );
         expect(cli.callsFor('footer add'), isEmpty);
         expect(h.read(tabsProvider).tabs, tabsBefore);
-        expect(h.read(todayNoteProvider), isNull);
+        expect(readScoped(h.container, todayNoteAsyncProvider, null), isNull);
       },
     );
 

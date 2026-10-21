@@ -3,6 +3,8 @@
 // vault_state.dart. These imports fail to load until the split exists.
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/src/db.dart'
+    show CanvasRow, LinkRow, NoteListItem, NoteTitle;
 import 'package:open_memex_app/src/state/canvas_state.dart' as canvas;
 import 'package:open_memex_app/src/state/links_state.dart' as links;
 import 'package:open_memex_app/src/state/note_state.dart' as note;
@@ -10,8 +12,8 @@ import 'package:open_memex_app/src/state/notes_list_state.dart' as notes_list;
 import 'package:open_memex_app/src/state/vault_ref.dart';
 import 'package:open_memex_app/src/state/vault_state.dart' as vault;
 
-import '../support/editor_access_doubles.dart' show settled;
 import '../support/fake_vault_db.dart';
+import '../support/vault_scoped_reads.dart';
 
 void main() {
   group('vault_state split (AC8)', () {
@@ -19,7 +21,10 @@ void main() {
       'notes list state imports from notes_list_state and from vault_state',
       () {
         expect(
-          identical(notes_list.notesListProvider, vault.notesListProvider),
+          identical(
+            notes_list.notesListAsyncProvider,
+            vault.notesListAsyncProvider,
+          ),
           isTrue,
         );
         expect(
@@ -36,15 +41,18 @@ void main() {
 
     test('note state imports from note_state and from vault_state', () {
       expect(
-        identical(note.selectedNoteProvider, vault.selectedNoteProvider),
+        identical(
+          note.selectedNoteAsyncProvider,
+          vault.selectedNoteAsyncProvider,
+        ),
         isTrue,
       );
       expect(
-        identical(note.noteTitlesProvider, vault.noteTitlesProvider),
+        identical(note.noteTitlesAsyncProvider, vault.noteTitlesAsyncProvider),
         isTrue,
       );
       expect(
-        identical(note.linkKindsProvider, vault.linkKindsProvider),
+        identical(note.linkKindsAsyncProvider, vault.linkKindsAsyncProvider),
         isTrue,
       );
     });
@@ -52,14 +60,6 @@ void main() {
     test(
       'canvas list state imports from canvas_state and from vault_state',
       () {
-        expect(
-          identical(canvas.canvasesProvider, vault.canvasesProvider),
-          isTrue,
-        );
-        expect(
-          identical(canvas.canvasDetailProvider, vault.canvasDetailProvider),
-          isTrue,
-        );
         // canvas_state.dart keeps its viewport, selection and zoom state.
         expect(canvas.canvasViewportProvider, isNotNull);
         expect(canvas.canvasSelectionProvider, isNotNull);
@@ -68,9 +68,12 @@ void main() {
     );
 
     test('links state imports from links_state and from vault_state', () {
-      expect(identical(links.linksOutProvider, vault.linksOutProvider), isTrue);
       expect(
-        identical(links.backlinksProvider, vault.backlinksProvider),
+        identical(links.linksOutAsyncProvider, vault.linksOutAsyncProvider),
+        isTrue,
+      );
+      expect(
+        identical(links.backlinksAsyncProvider, vault.backlinksAsyncProvider),
         isTrue,
       );
       expect(identical(links.orderedLinkKinds, vault.orderedLinkKinds), isTrue);
@@ -123,8 +126,8 @@ void main() {
           title: 'alpha',
           content: 'a\n',
         );
-      // TEST-CHANGE (#78): noteTitlesProvider is a facade over an async read
-      // through vaultAccessProvider, which needs an open vault.
+      // TEST-CHANGE (#78): the note titles read is an async read through
+      // vaultAccessProvider, which needs an open vault.
       final c = ProviderContainer(
         overrides: [
           vault.currentVaultProvider.overrideWith(
@@ -141,13 +144,34 @@ void main() {
           notes_list.NoteSortMode.alphabetical;
       await c.read(notes_list.notesListAsyncProvider.future);
       expect(
-        [for (final n in c.read(notes_list.notesListProvider)) n.title],
+        [
+          for (final n in readScoped(
+            c,
+            notes_list.notesListAsyncProvider,
+            const <NoteListItem>[],
+          ))
+            n.title,
+        ],
         ['alpha', 'Beta'],
       );
-      expect(await settled(c, note.noteTitlesProvider), hasLength(2));
-      expect(c.read(canvas.canvasesProvider), isEmpty);
       expect(
-        c.read(links.linksOutProvider('01J9AAAAAAAAAAAAAAAAAAAAAA')),
+        await settledScoped(
+          c,
+          note.noteTitlesAsyncProvider,
+          const <NoteTitle>[],
+        ),
+        hasLength(2),
+      );
+      expect(
+        readScoped(c, canvas.canvasesAsyncProvider, const <CanvasRow>[]),
+        isEmpty,
+      );
+      expect(
+        readScoped(
+          c,
+          links.linksOutAsyncProvider('01J9AAAAAAAAAAAAAAAAAAAAAA'),
+          const <LinkRow>[],
+        ),
         isEmpty,
       );
       expect(links.orderedLinkKinds(['zeta', 'extends', 'references']), [

@@ -1,6 +1,6 @@
 // WI #90 (W6): agentChangesAsyncProvider reads through VaultAccess.graph
-// (D11, D14a) and agentChangesProvider stays a synchronous facade that never
-// shows another vault's entries.
+// (D11, D14a); a reader of it (`readScoped`) never shows another vault's
+// entries.
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -15,6 +15,7 @@ import '../support/activity_seeds.dart';
 import '../support/daily_seed.dart';
 import '../support/fake_vault_db.dart';
 import '../support/links_seeds.dart';
+import '../support/vault_scoped_reads.dart';
 
 const _vaultA = LocalVaultRef('/tmp/om-90-vault-a');
 const _vaultB = LocalVaultRef('/tmp/om-90-vault-b');
@@ -96,14 +97,21 @@ void main() {
 
         expect(scoped.value, isEmpty);
         expect(scoped.vault, isNull);
-        expect(c.read(agentChangesProvider('n1')), isEmpty);
+        expect(
+          readScoped(
+            c,
+            agentChangesAsyncProvider('n1'),
+            const <AgentChangeRow>[],
+          ),
+          isEmpty,
+        );
       },
     );
   });
 
-  group('agentChangesProvider', () {
+  group('the agent changes read', () {
     test(
-      'agentChangesProvider is empty before the first load completes and equals the rows after',
+      'the agent changes read is empty before the first load completes and equals the rows after',
       () async {
         final c = _switching({
           _vaultA: Wi90GatedGraph(
@@ -113,16 +121,32 @@ void main() {
           ),
         });
 
-        expect(c.read(agentChangesProvider('n1')), isEmpty);
+        expect(
+          readScoped(
+            c,
+            agentChangesAsyncProvider('n1'),
+            const <AgentChangeRow>[],
+          ),
+          isEmpty,
+        );
 
         await c.read(agentChangesAsyncProvider('n1').future);
 
-        expect(_ids(c.read(agentChangesProvider('n1'))), ['new', 'old']);
+        expect(
+          _ids(
+            readScoped(
+              c,
+              agentChangesAsyncProvider('n1'),
+              const <AgentChangeRow>[],
+            ),
+          ),
+          ['new', 'old'],
+        );
       },
     );
 
     test(
-      'agentChangesProvider keeps its previous entries while a reload is pending',
+      'the agent changes read keeps its previous entries while a reload is pending',
       () async {
         final gate = Wi90Gate();
         final graph = Wi90GatedGraph(
@@ -132,7 +156,16 @@ void main() {
         );
         final c = _switching({_vaultA: graph});
         await c.read(agentChangesAsyncProvider('n1').future);
-        expect(_ids(c.read(agentChangesProvider('n1'))), ['first']);
+        expect(
+          _ids(
+            readScoped(
+              c,
+              agentChangesAsyncProvider('n1'),
+              const <AgentChangeRow>[],
+            ),
+          ),
+          ['first'],
+        );
 
         gate.close();
         graph.changes = [_change('second')];
@@ -140,16 +173,34 @@ void main() {
         await pumpEventQueue();
 
         expect(c.read(agentChangesAsyncProvider('n1')).isLoading, isTrue);
-        expect(_ids(c.read(agentChangesProvider('n1'))), ['first']);
+        expect(
+          _ids(
+            readScoped(
+              c,
+              agentChangesAsyncProvider('n1'),
+              const <AgentChangeRow>[],
+            ),
+          ),
+          ['first'],
+        );
 
         gate.open();
         await c.read(agentChangesAsyncProvider('n1').future);
-        expect(_ids(c.read(agentChangesProvider('n1'))), ['second']);
+        expect(
+          _ids(
+            readScoped(
+              c,
+              agentChangesAsyncProvider('n1'),
+              const <AgentChangeRow>[],
+            ),
+          ),
+          ['second'],
+        );
       },
     );
 
     test(
-      'agentChangesProvider switching vaults never shows the previous vault rows',
+      'the agent changes read switching vaults never shows the previous vault rows',
       () async {
         final gateB = Wi90Gate(open: false);
         final c = _switching({
@@ -165,12 +216,28 @@ void main() {
           ),
         });
         await c.read(agentChangesAsyncProvider('n1').future);
-        expect(_ids(c.read(agentChangesProvider('n1'))), ['from-a']);
+        expect(
+          _ids(
+            readScoped(
+              c,
+              agentChangesAsyncProvider('n1'),
+              const <AgentChangeRow>[],
+            ),
+          ),
+          ['from-a'],
+        );
 
         c.read(currentVaultProvider.notifier).state = _vaultB;
         await pumpEventQueue();
 
-        expect(c.read(agentChangesProvider('n1')), isEmpty);
+        expect(
+          readScoped(
+            c,
+            agentChangesAsyncProvider('n1'),
+            const <AgentChangeRow>[],
+          ),
+          isEmpty,
+        );
         expect(
           currentVaultData(c.read(agentChangesAsyncProvider('n1')), _vaultB),
           isNull,
@@ -179,7 +246,16 @@ void main() {
         gateB.open();
         final scoped = await c.read(agentChangesAsyncProvider('n1').future);
         expect(scoped.vault, _vaultB);
-        expect(_ids(c.read(agentChangesProvider('n1'))), ['from-b']);
+        expect(
+          _ids(
+            readScoped(
+              c,
+              agentChangesAsyncProvider('n1'),
+              const <AgentChangeRow>[],
+            ),
+          ),
+          ['from-b'],
+        );
       },
     );
   });

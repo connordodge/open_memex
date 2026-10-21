@@ -12,6 +12,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
+import 'package:open_memex_app/src/state/canvas_state.dart';
 import 'package:open_memex_app/src/state/settings.dart';
 import 'package:open_memex_app/src/db/topics_reads.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
@@ -118,8 +119,13 @@ List<Override> _overrides(
   currentVaultProvider.overrideWith((ref) => LocalVaultRef(h.vaultDir.path)),
   vaultDbProvider.overrideWithValue(null),
   memexCliProvider.overrideWithValue(h.cli),
-  notesListProvider.overrideWithValue(notes ?? _notes),
-  canvasesProvider.overrideWithValue(canvases ?? _canvases),
+  notesListAsyncProvider.overrideWith(
+    (ref) => VaultScoped(ref.watch(currentVaultProvider), notes ?? _notes),
+  ),
+  canvasesAsyncProvider.overrideWith(
+    (ref) =>
+        VaultScoped(ref.watch(currentVaultProvider), canvases ?? _canvases),
+  ),
   tabsProvider.overrideWith((ref) {
     return TabsNotifier(
       store: UiStateStore(vaultPath: h.vaultDir.path),

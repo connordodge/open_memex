@@ -9,6 +9,7 @@ import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:open_memex_app/src/db.dart';
 import 'package:open_memex_app/src/editor/conflict_merge.dart';
 import 'package:open_memex_app/src/editor/segments.dart';
@@ -17,6 +18,7 @@ import 'package:open_memex_app/src/state/clock.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';
 import 'package:open_memex_app/src/state/hosted_connection_state.dart';
 import 'package:open_memex_app/src/state/pending_saves.dart';
+import 'package:open_memex_app/src/state/settings.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/state/today_state.dart';
 import 'package:open_memex_app/src/state/vault_access_state.dart';
@@ -28,6 +30,7 @@ import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
 import '../support/hosted_notes_fakes.dart';
 import '../support/today_cli_fakes.dart';
+import '../support/token_store_fakes.dart';
 
 const _planId = '01J9PLAN0000000000000000102';
 const _otherId = '01J9OTHER000000000000000102';
@@ -689,9 +692,18 @@ void main() {
     );
 
     test(
-      'a 401 save takes the server name from the hosted server name seam whose default is the server id',
+      'a 401 save takes the server name from the hosted server name seam which gives the id of a server that is not saved',
       () async {
-        final h = await _hosted(_plainVault());
+        // TEST-CHANGE (#105): the seam is bound to the saved servers, so the
+        // container needs settings; none is saved for the vault's server.
+        SharedPreferences.setMockInitialValues({});
+        final settings = await SettingsController.load(
+          tokenStore: FakeTokenStore(),
+        );
+        final h = await _hosted(
+          _plainVault(),
+          overrides: [settingsProvider.overrideWith((_) => settings)],
+        );
         h.ctrl.loadNote(h.stored(_planId));
         h.serverDown(unauthorized401());
 

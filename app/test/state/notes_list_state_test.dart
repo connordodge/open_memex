@@ -2,10 +2,9 @@
 //
 // `notesListAsyncProvider` reads `notes.listNotes(limit: 200)` through
 // `vaultAccessProvider`, orders by `sidebarSortProvider` and stamps its
-// result with the vault it was loaded for (`VaultScoped`). `notesListProvider`
-// stays a synchronous facade over it (`vaultFacadeValue`): empty with no vault
-// and before the first load, the previous list during a same-vault reload,
-// and never another vault's rows.
+// result with the vault it was loaded for (`VaultScoped`). A reader of it
+// (`readScoped`, D14a): empty with no vault and before the first load, the
+// previous list during a same-vault reload, and never another vault's rows.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -21,6 +20,7 @@ import 'package:open_memex_app/src/vault_access/vault_async_view.dart';
 import 'package:open_memex_app/src/widgets/sidebar/notes_pane.dart';
 
 import '../support/fake_vault_db.dart';
+import '../support/vault_scoped_reads.dart';
 
 const _vaultA = LocalVaultRef('/tmp/om-86-vault-a');
 const _vaultB = LocalVaultRef('/tmp/om-86-vault-b');
@@ -121,7 +121,13 @@ ProviderContainer _gatedContainer(
   );
   addTearDown(c.dispose);
   // Keep the facade (and through it the reader) alive, as a sidebar would.
-  c.listen(notesListProvider, (_, _) {}, fireImmediately: true);
+  listenScoped(
+    c,
+    notesListAsyncProvider,
+    const <NoteListItem>[],
+    (_, _) {},
+    fireImmediately: true,
+  );
   return c;
 }
 
@@ -185,32 +191,38 @@ void main() {
     );
 
     test(
-      'the notesListProvider facade follows the sidebar sort once the read completes',
+      'the notes list read follows the sidebar sort once the read completes',
       () async {
         final c = _realAccessContainer(vault: _vaultA, db: _seededDb());
-        c.listen(notesListProvider, (_, _) {}, fireImmediately: true);
+        listenScoped(
+          c,
+          notesListAsyncProvider,
+          const <NoteListItem>[],
+          (_, _) {},
+          fireImmediately: true,
+        );
         await c.read(notesListAsyncProvider.future);
-        expect(_titles(c.read(notesListProvider)), [
-          'beta',
-          'Delta',
-          'Alpha',
-          'charlie',
-        ]);
+        expect(
+          _titles(
+            readScoped(c, notesListAsyncProvider, const <NoteListItem>[]),
+          ),
+          ['beta', 'Delta', 'Alpha', 'charlie'],
+        );
 
         c.read(sidebarSortProvider.notifier).state = NoteSortMode.alphabetical;
         await c.read(notesListAsyncProvider.future);
-        expect(_titles(c.read(notesListProvider)), [
-          'Alpha',
-          'beta',
-          'charlie',
-          'Delta',
-        ]);
+        expect(
+          _titles(
+            readScoped(c, notesListAsyncProvider, const <NoteListItem>[]),
+          ),
+          ['Alpha', 'beta', 'charlie', 'Delta'],
+        );
       },
     );
   });
 
-  group('the notesListProvider facade first load (AC2)', () {
-    test('the notesListProvider facade is empty with no vault open', () async {
+  group('the notes list read first load (AC2)', () {
+    test('the notes list read is empty with no vault open', () async {
       // A database handle with rows, but no open vault: the read goes
       // through vaultAccessProvider (null), never the handle directly.
       final c = _realAccessContainer(vault: null, db: _seededDb());
@@ -219,48 +231,56 @@ void main() {
 
       expect(scoped.vault, isNull);
       expect(scoped.value, isEmpty);
-      expect(c.read(notesListProvider), isEmpty);
+      expect(
+        readScoped(c, notesListAsyncProvider, const <NoteListItem>[]),
+        isEmpty,
+      );
     });
 
     test(
-      'the notesListProvider facade is empty before the first load completes and then shows the loaded list',
+      'the notes list read is empty before the first load completes and then shows the loaded list',
       () async {
         final a = _Wi86GatedNotes(_vaultA.path);
         final c = _gatedContainer({_vaultA: a});
 
         expect(a.gates, hasLength(1), reason: 'the first read is in flight');
         expect(c.read(notesListAsyncProvider).isLoading, isTrue);
-        expect(c.read(notesListProvider), isEmpty);
+        expect(
+          readScoped(c, notesListAsyncProvider, const <NoteListItem>[]),
+          isEmpty,
+        );
 
         a.gates.single.complete(_rows('a', ['Alpha from A', 'Beta from A']));
         await _drain();
 
-        expect(_titles(c.read(notesListProvider)), [
-          'Alpha from A',
-          'Beta from A',
-        ]);
+        expect(
+          _titles(
+            readScoped(c, notesListAsyncProvider, const <NoteListItem>[]),
+          ),
+          ['Alpha from A', 'Beta from A'],
+        );
         expect(c.read(notesListAsyncProvider).value?.vault, _vaultA);
       },
     );
 
-    test(
-      'a failed first load leaves the notesListProvider facade empty',
-      () async {
-        final a = _Wi86GatedNotes(_vaultA.path);
-        final c = _gatedContainer({_vaultA: a});
+    test('a failed first load leaves the notes list read empty', () async {
+      final a = _Wi86GatedNotes(_vaultA.path);
+      final c = _gatedContainer({_vaultA: a});
 
-        a.gates.single.completeError(StateError('read of A failed'));
-        await _drain();
+      a.gates.single.completeError(StateError('read of A failed'));
+      await _drain();
 
-        final value = c.read(notesListAsyncProvider);
-        expect(value.hasError, isTrue);
-        expect(value.error, isA<StateError>());
-        expect(c.read(notesListProvider), isEmpty);
-      },
-    );
+      final value = c.read(notesListAsyncProvider);
+      expect(value.hasError, isTrue);
+      expect(value.error, isA<StateError>());
+      expect(
+        readScoped(c, notesListAsyncProvider, const <NoteListItem>[]),
+        isEmpty,
+      );
+    });
   });
 
-  group('the notesListProvider facade reloads (AC3)', () {
+  group('the notes list read reloads (AC3)', () {
     test(
       'after a vault revision bump the facade keeps the previous list until the new read completes',
       () async {
@@ -268,26 +288,38 @@ void main() {
         final c = _gatedContainer({_vaultA: a});
         a.gates.single.complete(_rows('a', ['Alpha from A']));
         await _drain();
-        expect(_titles(c.read(notesListProvider)), ['Alpha from A']);
+        expect(
+          _titles(
+            readScoped(c, notesListAsyncProvider, const <NoteListItem>[]),
+          ),
+          ['Alpha from A'],
+        );
 
         c.read(vaultRevisionProvider.notifier).state++;
         await _drain();
 
         expect(a.gates, hasLength(2), reason: 'the bump started a new read');
         expect(c.read(notesListAsyncProvider).isLoading, isTrue);
-        expect(_titles(c.read(notesListProvider)), ['Alpha from A']);
+        expect(
+          _titles(
+            readScoped(c, notesListAsyncProvider, const <NoteListItem>[]),
+          ),
+          ['Alpha from A'],
+        );
 
         a.gates[1].complete(_rows('a', ['Alpha from A', 'New from A']));
         await _drain();
-        expect(_titles(c.read(notesListProvider)), [
-          'Alpha from A',
-          'New from A',
-        ]);
+        expect(
+          _titles(
+            readScoped(c, notesListAsyncProvider, const <NoteListItem>[]),
+          ),
+          ['Alpha from A', 'New from A'],
+        );
       },
     );
 
     test(
-      'a failed reload keeps the previous list in the notesListProvider facade',
+      'a failed reload keeps the previous list in the notes list read',
       () async {
         final a = _Wi86GatedNotes(_vaultA.path);
         final c = _gatedContainer({_vaultA: a});
@@ -300,7 +332,12 @@ void main() {
         await _drain();
 
         expect(c.read(notesListAsyncProvider).hasError, isTrue);
-        expect(_titles(c.read(notesListProvider)), ['Alpha from A']);
+        expect(
+          _titles(
+            readScoped(c, notesListAsyncProvider, const <NoteListItem>[]),
+          ),
+          ['Alpha from A'],
+        );
       },
     );
   });
@@ -312,10 +349,10 @@ void main() {
       final c = _gatedContainer({_vaultA: a, _vaultB: b});
       a.gates.single.complete(_rows('a', ['Alpha from A', 'Beta from A']));
       await _drain();
-      expect(_titles(c.read(notesListProvider)), [
-        'Alpha from A',
-        'Beta from A',
-      ]);
+      expect(
+        _titles(readScoped(c, notesListAsyncProvider, const <NoteListItem>[])),
+        ['Alpha from A', 'Beta from A'],
+      );
 
       c.read(currentVaultProvider.notifier).state = _vaultB;
       await _drain();
@@ -325,21 +362,33 @@ void main() {
       final pending = c.read(notesListAsyncProvider);
       expect(pending.isLoading, isTrue);
       expect(pending.valueOrNull?.vault, _vaultA);
-      expect(c.read(notesListProvider), isEmpty);
+      expect(
+        readScoped(c, notesListAsyncProvider, const <NoteListItem>[]),
+        isEmpty,
+      );
 
       b.gates.single.complete(_rows('b', ['Gamma from B']));
       await _drain();
-      expect(_titles(c.read(notesListProvider)), ['Gamma from B']);
+      expect(
+        _titles(readScoped(c, notesListAsyncProvider, const <NoteListItem>[])),
+        ['Gamma from B'],
+      );
       expect(c.read(notesListAsyncProvider).value?.vault, _vaultB);
 
       // And back to A: B's rows never show while A re-reads.
       c.read(currentVaultProvider.notifier).state = _vaultA;
       await _drain();
       expect(a.gates, hasLength(2));
-      expect(c.read(notesListProvider), isEmpty);
+      expect(
+        readScoped(c, notesListAsyncProvider, const <NoteListItem>[]),
+        isEmpty,
+      );
       a.gates[1].complete(_rows('a', ['Alpha from A']));
       await _drain();
-      expect(_titles(c.read(notesListProvider)), ['Alpha from A']);
+      expect(
+        _titles(readScoped(c, notesListAsyncProvider, const <NoteListItem>[])),
+        ['Alpha from A'],
+      );
     });
 
     test(
@@ -355,11 +404,19 @@ void main() {
         await _drain();
 
         expect(h.gates, hasLength(1));
-        expect(c.read(notesListProvider), isEmpty);
+        expect(
+          readScoped(c, notesListAsyncProvider, const <NoteListItem>[]),
+          isEmpty,
+        );
 
         h.gates.single.complete(_rows('h', ['Hosted note']));
         await _drain();
-        expect(_titles(c.read(notesListProvider)), ['Hosted note']);
+        expect(
+          _titles(
+            readScoped(c, notesListAsyncProvider, const <NoteListItem>[]),
+          ),
+          ['Hosted note'],
+        );
         expect(c.read(notesListAsyncProvider).value?.vault, _hosted);
       },
     );
@@ -375,7 +432,10 @@ void main() {
         c.read(currentVaultProvider.notifier).state = null;
         await _drain();
 
-        expect(c.read(notesListProvider), isEmpty);
+        expect(
+          readScoped(c, notesListAsyncProvider, const <NoteListItem>[]),
+          isEmpty,
+        );
         final closed = c.read(notesListAsyncProvider).value;
         expect(closed?.vault, isNull);
         expect(closed?.value, isEmpty);

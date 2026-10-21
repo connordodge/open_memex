@@ -18,6 +18,7 @@ import '../support/fake_vault_db.dart';
 import '../support/topics_access_doubles.dart';
 import '../support/topics_launch.dart';
 import '../support/topics_seed.dart';
+import '../support/vault_scoped_reads.dart';
 
 /// Completes every gate of `smartFolders` that is still open.
 Future<void> _release(
@@ -221,9 +222,30 @@ void main() {
         expect(r.topics.folder(TP.health), findsNothing);
         expect(r.topics.unsortedNote(TP.orphan), findsNothing);
         expect(r.topics.unsortedNote(TP.looseNote), findsNothing);
-        expect(r.h.read(smartFolderTreeProvider).isEmpty, isTrue);
-        expect(r.h.read(smartFolderTreeProvider).folders, isEmpty);
-        expect(r.h.read(smartFolderTreeProvider).unsorted.notes, isEmpty);
+        expect(
+          readScoped(
+            r.h.container,
+            smartFolderTreeAsyncProvider,
+            emptyTopicsTree(),
+          ).isEmpty,
+          isTrue,
+        );
+        expect(
+          readScoped(
+            r.h.container,
+            smartFolderTreeAsyncProvider,
+            emptyTopicsTree(),
+          ).folders,
+          isEmpty,
+        );
+        expect(
+          readScoped(
+            r.h.container,
+            smartFolderTreeAsyncProvider,
+            emptyTopicsTree(),
+          ).unsorted.notes,
+          isEmpty,
+        );
         if (hosted) {
           expect(_loading, findsOneWidget);
         } else {
