@@ -396,11 +396,15 @@ final tabsProvider = StateNotifierProvider<TabsNotifier, TabsState>((ref) {
 });
 
 /// Today's daily note as loaded for the open vault right now (no
-/// subscription), or null before it loads or when there is none.
-DailyNoteRow? _readTodayNote(Ref<Object?> ref) => currentVaultData(
-  ref.read(todayNoteAsyncProvider),
-  ref.read(currentVaultProvider),
-)?.value;
+/// subscription), or null before it loads, while it reloads, or when there is
+/// none. Nothing listens to today's note, so a value being reloaded can be
+/// the note of the day before midnight; the launch then waits for the fresh
+/// read instead.
+DailyNoteRow? _readTodayNote(Ref<Object?> ref) {
+  final today = ref.read(todayNoteAsyncProvider);
+  if (today.isLoading) return null;
+  return currentVaultData(today, ref.read(currentVaultProvider))?.value;
+}
 
 /// Lookup the active tab from anywhere in the widget tree.
 final activeTabProvider = Provider<WorkspaceTab?>(
