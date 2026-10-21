@@ -14,13 +14,15 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{ArgGroup, Args};
-use memex_core::Vault;
+use memex_core::{SystemClock, Vault};
 use rmcp::transport::stdio;
 use rmcp::ServiceExt;
 use tracing_subscriber::EnvFilter;
 
-use super::InvalidArgument;
+use super::{CodedError, InvalidArgument};
 use crate::server;
+use crate::server::bridge::{self, BridgeOptions};
+use crate::server::token::TOKEN_ENV;
 use crate::state::{build_default_embedder, AppState};
 use crate::tools;
 
@@ -43,9 +45,11 @@ pub struct ServeArgs {
     /// Address the vault server listens on, as <host:port> (needs --root).
     #[arg(long, requires = "root", conflicts_with_all = ["vault", "remote"])]
     pub listen: Option<String>,
-    /// Bridge stdio MCP to a hosted vault's /mcp URL.
+    /// Bridge stdio MCP to a hosted vault's /mcp URL,
+    /// <server-url>/vaults/<name>/mcp (token from MEMEX_ACCESS_TOKEN).
     #[arg(
         long,
+        value_parser = remote_url,
         conflicts_with_all = ["vault", "root", "listen", "with_embeddings", "log_level"]
     )]
     pub remote: Option<String>,
@@ -74,13 +78,78 @@ pub async fn run(args: ServeArgs) -> Result<()> {
             })
             .await
         }
-        (None, None, None, Some(_remote)) => super::not_implemented("serve --remote"),
+        (None, None, None, Some(remote)) => serve_remote(remote).await,
         // clap's mode group and conflicts rule out every other combination.
         _ => Err(InvalidArgument(
             "memex serve: pass --vault, --root with --listen, or --remote".into(),
         )
         .into()),
     }
+}
+
+/// The `--remote` value parser: a URL whose path is exactly
+/// `/vaults/<name>/mcp`. Anything else is a clap usage error (exit 2).
+fn remote_url(raw: &str) -> Result<String, String> {
+    bridge::check_remote_url(raw).map(|()| raw.to_string())
+}
+
+/// `memex serve --remote <url>`: the stdio bridge, with the token from
+/// `MEMEX_ACCESS_TOKEN` (trimmed). Unset, empty or whitespace-only is C1
+/// `access_token_missing`, before any request.
+async fn serve_remote(url: String) -> Result<()> {
+    let token = match std::env::var(TOKEN_ENV) {
+        Ok(value) => value.trim().to_string(),
+        Err(std::env::VarError::NotPresent) => String::new(),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(InvalidArgument(format!("{TOKEN_ENV} is not valid UTF-8")).into())
+        }
+    };
+    if token.is_empty() {
+        return Err(CodedError::new(
+            "access_token_missing",
+            format!("set {TOKEN_ENV} to the vault server's access token"),
+        )
+        .into());
+    }
+    bridge::run(
+        BridgeOptions {
+            url,
+            token,
+            clock: Arc::new(SystemClock),
+        },
+        stdin_reader(),
+        tokio::io::stdout(),
+    )
+    .await
+}
+
+/// The process's stdin as an `AsyncRead`, read on a plain thread.
+/// `tokio::io::stdin()` reads on the blocking pool, and a read that never
+/// returns would hold up runtime shutdown when the bridge exits on a 401
+/// while the client keeps stdin open.
+fn stdin_reader() -> tokio::io::DuplexStream {
+    use std::io::Read;
+    use tokio::io::AsyncWriteExt;
+
+    let (reader, mut writer) = tokio::io::duplex(64 * 1024);
+    let runtime = tokio::runtime::Handle::current();
+    std::thread::spawn(move || {
+        let mut stdin = std::io::stdin().lock();
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            let n = match stdin.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            };
+            if runtime.block_on(writer.write_all(&buf[..n])).is_err() {
+                break;
+            }
+        }
+        // Dropping the writer is EOF for the bridge.
+    });
+    reader
 }
 
 /// `memex serve --vault <path>`: the stdio MCP server, as before the vault
