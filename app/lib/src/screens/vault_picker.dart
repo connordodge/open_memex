@@ -13,14 +13,84 @@ import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
 import '../widgets/atoms.dart';
+import '../widgets/memex_too_old_dialog.dart';
+import '../widgets/vault_open_refusal.dart';
 
-class VaultPickerScreen extends ConsumerWidget {
+class VaultPickerScreen extends ConsumerStatefulWidget {
   const VaultPickerScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<VaultPickerScreen> createState() => _VaultPickerScreenState();
+}
+
+const _openEyebrow = 'OPEN LOCAL VAULT';
+const _createEyebrow = 'CREATE NEW VAULT';
+
+class _VaultPickerScreenState extends ConsumerState<VaultPickerScreen> {
+  /// The last vault while the launch `memex vault check` runs; its recent
+  /// row shows as opening.
+  String? _launchPath;
+
+  /// The binary that could not be started on the last open (a spawn
+  /// failure); while it is still the configured one the picker shows the
+  /// "memex binary not found" card.
+  String? _unstartableBinary;
+
+  @override
+  void initState() {
+    super.initState();
+    // Launch reopen (#92): with a last vault and no vault open, reopen it
+    // once through `memex vault check`, after the first frame.
+    final last = ref.read(settingsProvider).lastVault;
+    if (last != null && ref.read(currentVaultProvider) == null) {
+      _launchPath = last;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _launch());
+    }
+  }
+
+  Future<void> _launch() async {
+    if (!mounted) return;
+    final outcome = await ref.read(vaultOpenControllerProvider).launchReopen();
+    if (!mounted) return;
+    setState(() => _launchPath = null);
+    await _present(outcome, eyebrow: _openEyebrow);
+  }
+
+  /// Shows what a local open gave: a refusal dialog for a refused folder,
+  /// the binary-not-found card for a binary that could not start, and the
+  /// open error in a SnackBar for any other failure.
+  Future<void> _present(
+    VaultOpenOutcome outcome, {
+    required String eyebrow,
+  }) async {
+    if (!mounted || outcome is! VaultOpenFailure) return;
+    if (await showVaultOpenRefusal(context, outcome, eyebrow: eyebrow)) {
+      return;
+    }
+    if (!mounted) return;
+    if (outcome is VaultBinaryNotFound) {
+      setState(
+        () => _unstartableBinary = ref.read(memexCliProvider)?.binaryPath,
+      );
+      return;
+    }
+    _showError(context, outcome.message);
+  }
+
+  Future<void> _openRecent(String path) async {
+    final outcome = await ref
+        .read(vaultOpenControllerProvider)
+        .openVault(LocalVaultRef(path));
+    await _present(outcome, eyebrow: _openEyebrow);
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
     final cli = ref.watch(memexCliProvider);
+    final binaryNotFound =
+        cli == null ||
+        (_unstartableBinary != null && cli.binaryPath == _unstartableBinary);
 
     return Scaffold(
       backgroundColor: OmColors.surface1,
@@ -85,7 +155,7 @@ class VaultPickerScreen extends ConsumerWidget {
                   ),
                 ),
                 const SizedBox(height: 28),
-                if (cli == null)
+                if (binaryNotFound)
                   _BinaryNotFoundCard()
                 else
                   _BinaryFoundLine(path: cli.binaryPath),
@@ -94,7 +164,10 @@ class VaultPickerScreen extends ConsumerWidget {
                   Text('RECENT', style: OmType.eyebrow()),
                   const SizedBox(height: 10),
                   for (final v in settings.recentVaults)
-                    _RecentVaultRow(path: v),
+                    if (v == _launchPath)
+                      _OpeningVaultRow(path: v)
+                    else
+                      _RecentVaultRow(path: v, onOpen: () => _openRecent(v)),
                   const SizedBox(height: 24),
                 ],
                 Row(
@@ -107,9 +180,7 @@ class VaultPickerScreen extends ConsumerWidget {
                           size: 36,
                           icon: LucideIcons.folderPlus,
                           label: 'create new vault…',
-                          onPressed: cli == null
-                              ? null
-                              : () => _createVault(context, ref),
+                          onPressed: cli == null ? null : _createVault,
                         ),
                       ),
                     ),
@@ -122,7 +193,7 @@ class VaultPickerScreen extends ConsumerWidget {
                           size: 36,
                           icon: LucideIcons.folderOpen,
                           label: 'open existing vault…',
-                          onPressed: () => _openExistingVault(context, ref),
+                          onPressed: _openExistingVault,
                         ),
                       ),
                     ),
@@ -136,32 +207,28 @@ class VaultPickerScreen extends ConsumerWidget {
     );
   }
 
-  Future<void> _createVault(BuildContext context, WidgetRef ref) async {
+  Future<void> _createVault() async {
     final result = await showDialog<_CreateVaultResult>(
       context: context,
       builder: (_) => const _CreateVaultDialog(),
     );
-    if (result == null) return;
+    if (result == null || !mounted) return;
     final fullPath = p.join(result.parentDir, result.name);
     final outcome = await ref
         .read(vaultOpenControllerProvider)
         .createLocalVault(fullPath);
-    if (outcome is VaultOpenFailure && context.mounted) {
-      _showError(context, outcome.message);
-    }
+    await _present(outcome, eyebrow: _createEyebrow);
   }
 
-  Future<void> _openExistingVault(BuildContext context, WidgetRef ref) async {
+  Future<void> _openExistingVault() async {
     final selected = await FilePicker.platform.getDirectoryPath(
       dialogTitle: 'Choose a vault folder',
     );
-    if (selected == null) return;
+    if (selected == null || !mounted) return;
     final outcome = await ref
         .read(vaultOpenControllerProvider)
         .openVault(LocalVaultRef(selected));
-    if (outcome is VaultOpenFailure && context.mounted) {
-      _showError(context, outcome.message);
-    }
+    await _present(outcome, eyebrow: _openEyebrow);
   }
 }
 
@@ -216,16 +283,81 @@ class _BinaryNotFoundCard extends ConsumerWidget {
           OmButton(
             kind: OmButtonKind.secondary,
             label: 'locate memex binary…',
-            onPressed: () async {
-              final r = await FilePicker.platform.pickFiles(
-                dialogTitle: 'Locate the memex binary',
-                type: FileType.any,
-              );
-              final path = r?.files.singleOrNull?.path;
-              if (path != null && File(path).existsSync()) {
-                await ref.read(settingsProvider.notifier).setMemexBinary(path);
-              }
-            },
+            onPressed: () =>
+                locateMemexBinary(ref.read(settingsProvider.notifier)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A recent row while the launch `memex vault check` runs on it (A3 state 3,
+/// A12 "opening · fg2, spinner"): a spinning loader in place of the folder
+/// icon, the name and the path, no remove button, no hover, not tappable.
+class _OpeningVaultRow extends StatefulWidget {
+  const _OpeningVaultRow({required this.path});
+  final String path;
+  @override
+  State<_OpeningVaultRow> createState() => _OpeningVaultRowState();
+}
+
+class _OpeningVaultRowState extends State<_OpeningVaultRow>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _spin = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 1),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _spin.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      key: const Key('recent-row-opening'),
+      padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+      margin: const EdgeInsets.only(bottom: 6),
+      decoration: BoxDecoration(
+        color: OmColors.surface2,
+        border: Border.all(color: OmColors.line2, width: 1),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        children: [
+          RotationTransition(
+            turns: _spin,
+            child: const Icon(
+              LucideIcons.loader2,
+              size: 14,
+              color: OmColors.fg2,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  p.basename(widget.path),
+                  style: OmType.sans(
+                    size: 13.5,
+                    weight: FontWeight.w500,
+                    color: OmColors.fg0,
+                    height: 18.23 / 13.5,
+                  ),
+                ),
+                Text(
+                  widget.path,
+                  style: OmType.mono(size: 10.5, color: OmColors.fg2),
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                ),
+              ],
+            ),
           ),
         ],
       ),
@@ -234,8 +366,11 @@ class _BinaryNotFoundCard extends ConsumerWidget {
 }
 
 class _RecentVaultRow extends ConsumerStatefulWidget {
-  const _RecentVaultRow({required this.path});
+  const _RecentVaultRow({required this.path, required this.onOpen});
   final String path;
+
+  /// Opens this vault (through `memex vault check`) and shows the outcome.
+  final VoidCallback onOpen;
   @override
   ConsumerState<_RecentVaultRow> createState() => _RecentVaultRowState();
 }
@@ -250,16 +385,7 @@ class _RecentVaultRowState extends ConsumerState<_RecentVaultRow> {
       onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
       child: GestureDetector(
-        onTap: exists
-            ? () async {
-                final outcome = await ref
-                    .read(vaultOpenControllerProvider)
-                    .openVault(LocalVaultRef(widget.path));
-                if (outcome is VaultOpenFailure && context.mounted) {
-                  _showError(context, outcome.message);
-                }
-              }
-            : null,
+        onTap: exists ? widget.onOpen : null,
         child: Container(
           padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
           margin: const EdgeInsets.only(bottom: 6),
