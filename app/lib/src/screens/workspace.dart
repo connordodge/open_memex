@@ -236,11 +236,8 @@ class _TabChip extends ConsumerWidget {
       // The virtual Today note has no row yet: its chip reads its ISO date,
       // like a real daily note's title.
       if (VirtualTodayTab.dateOf(tab.id) case final date?) return date;
-      final db = ref.watch(vaultDbProvider);
-      // No reactive title yet — read once. The rail update on bump will
-      // re-render the chip.
-      final note = db?.getNote(tab.id);
-      return note?.title ?? 'note';
+      // Read through VaultAccess; `note` until it loads or when it's gone.
+      return ref.watch(noteTitleProvider(tab.id)).valueOrNull ?? 'note';
     }
     if (tab is CanvasTab) {
       final summary = ref
@@ -251,7 +248,7 @@ class _TabChip extends ConsumerWidget {
       return 'canvas';
     }
     if (tab is GraphTab) {
-      return graphTabTitle(ref.watch(vaultDbProvider), tab.scope);
+      return ref.watch(graphTabTitleProvider(tab.scope)).valueOrNull ?? 'Graph';
     }
     return tab.id;
   }

@@ -30,7 +30,16 @@ Future<void> _pump(
   addTearDown(db.close);
   seed(db);
   final container = ProviderContainer(
-    overrides: [vaultDbProvider.overrideWithValue(db)],
+    overrides: [
+      // WI #88 TEST-CHANGE: the graph reads through vaultAccessProvider, which
+      // watches currentVaultProvider and memexCliProvider (whose defaults
+      // read the unoverridden settingsProvider).
+      currentVaultProvider.overrideWith(
+        (_) => const LocalVaultRef('/tmp/om-88-graph-fit'),
+      ),
+      memexCliProvider.overrideWithValue(null),
+      vaultDbProvider.overrideWithValue(db),
+    ],
   );
   addTearDown(container.dispose);
   await tester.pumpWidget(
