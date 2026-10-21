@@ -48,7 +48,9 @@ typedef FakeCliHandler = FutureOr<MemexResult> Function(FakeCliCall call);
 ///       '{"vault_id":"01HV…","key":"smart_folder_max_depth","value":2}'));
 /// ```
 class FakeMemexCli extends MemexCli {
-  FakeMemexCli() : super(binaryPath: 'fake-memex');
+  /// [binaryPath] is what `MemexCli.binaryPath` reports (the configured
+  /// binary a real `memexCliProvider` would build the CLI from).
+  FakeMemexCli({super.binaryPath = 'fake-memex'});
 
   final Map<String, FakeCliHandler> _handlers = {};
 
