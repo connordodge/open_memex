@@ -48,7 +48,7 @@ class Sidebar extends ConsumerWidget {
           _CommandRow(onTap: () {}),
           PanelHeader(
             eyebrow: 'vaults',
-            count: settings.recentVaults.length,
+            count: _vaultPillCount(settings),
             action: '+ new',
             onAction: () => _switchVault(context, ref),
           ),
@@ -295,6 +295,23 @@ class _CommandRow extends StatelessWidget {
       ),
     );
   }
+}
+
+/// The number of pills [_VaultPillsRow] renders (board A10): every local
+/// recent, and every hosted recent whose server is saved.
+int _vaultPillCount(AppSettings settings) {
+  var count = 0;
+  for (final r in settings.recentRefs) {
+    switch (r) {
+      case LocalVaultRef():
+        count++;
+      case HostedVaultRef(:final serverId):
+        for (final s in settings.savedServers) {
+          if (s.id == serverId) count++;
+        }
+    }
+  }
+  return count;
 }
 
 class _VaultPillsRow extends ConsumerWidget {

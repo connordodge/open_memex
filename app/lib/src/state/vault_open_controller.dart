@@ -221,6 +221,8 @@ class VaultOpenController {
     LocalVaultRef vault, {
     required bool remember,
   }) async {
+    // A hosted open still running must not replace this vault later.
+    supersedeHostedOpens(_ref);
     if (remember) {
       await _ref.read(settingsProvider.notifier).rememberVault(vault.path);
     }
