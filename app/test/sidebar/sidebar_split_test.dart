@@ -21,6 +21,7 @@ import 'package:open_memex_app/src/state/ui_state_store.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/theme/app_theme.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
+import 'package:open_memex_app/src/vault_access/vault_scoped.dart';
 import 'package:open_memex_app/src/widgets/sidebar.dart';
 import 'package:open_memex_app/src/widgets/sidebar/canvases_rail.dart';
 import 'package:open_memex_app/src/widgets/sidebar/notes_pane.dart';
@@ -105,11 +106,14 @@ List<Override> _overrides(
 }) => [
   settingsProvider.overrideWith((_) => settings),
   // #24: Topics mode reads the Smart Folder tree; these notes sit in Unsorted.
-  smartFolderTreeProvider.overrideWithValue(
-    buildTopicsTree(const SmartFolderData(folders: [], members: []), [
-      for (final n in notes ?? _notes)
-        UnsortedNoteRow(noteId: n.id, title: n.title, role: null),
-    ]),
+  smartFolderTreeAsyncProvider.overrideWith(
+    (ref) => VaultScoped(
+      ref.watch(currentVaultProvider),
+      buildTopicsTree(const SmartFolderData(folders: [], members: []), [
+        for (final n in notes ?? _notes)
+          UnsortedNoteRow(noteId: n.id, title: n.title, role: null),
+      ]),
+    ),
   ),
   currentVaultProvider.overrideWith((ref) => LocalVaultRef(h.vaultDir.path)),
   vaultDbProvider.overrideWithValue(null),

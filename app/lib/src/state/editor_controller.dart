@@ -95,6 +95,9 @@ class EditorController extends StateNotifier<EditorStateValue> {
   Timer? _debounce;
   String? _activeNoteId;
 
+  /// The id of the note the editor currently holds, or null when none.
+  String? get activeNoteId => _activeNoteId;
+
   /// Bumped by every [loadNote]: a save that lands after the editor
   /// switched notes (and maybe back) can tell.
   int _loadSeq = 0;
