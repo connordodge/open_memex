@@ -1,0 +1,48 @@
+{
+  "canvas_id": "01M5DQAYZJET989N2YR8341XAN",
+  "created_at": 1760000780000,
+  "edges": [
+    {
+      "from_note_id": "01M5DQAYZ3WP7H0NXZZV9M2315",
+      "kind": "references",
+      "label": null,
+      "link_id": "01M5DQAYZC5FQW4HVPK8ZE5SXW",
+      "link_text": "Economy Design",
+      "position": 66,
+      "source": "inline_body",
+      "to_note_id": "01M5DQAYZ47QW55S90ZF0A56AH"
+    },
+    {
+      "from_note_id": "01M5DQAYZ47QW55S90ZF0A56AH",
+      "kind": "extends",
+      "label": null,
+      "link_id": "01M5DQAYZFCB2T0ECN4HG7XFQM",
+      "link_text": "Player Loop",
+      "position": 62,
+      "source": "inline_body",
+      "to_note_id": "01M5DQAYZ3WP7H0NXZZV9M2315"
+    }
+  ],
+  "nodes": [
+    {
+      "note_id": "01M5DQAYZ3WP7H0NXZZV9M2315",
+      "note_title": "Player Loop",
+      "placed_at": 1760000840000,
+      "x": 0.0,
+      "y": 0.0,
+      "z_order": 0
+    },
+    {
+      "note_id": "01M5DQAYZ47QW55S90ZF0A56AH",
+      "note_title": "Economy Design",
+      "placed_at": 1760000900000,
+      "x": 240.5,
+      "y": 120.0,
+      "z_order": 0
+    }
+  ],
+  "title": "Prototype Map",
+  "updated_at": 1760000900000,
+  "vault_id": "01M5DK9Z8CWPQGFA893JX9VRZF",
+  "version": 3
+}
