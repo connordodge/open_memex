@@ -337,7 +337,8 @@ class VaultDb {
         .split('\n')
         .firstWhere((l) => l.trim().isNotEmpty, orElse: () => '');
     if (firstLine.length <= 120) return firstLine.trim();
-    return '${firstLine.substring(0, 117).trim()}…';
+    final cut = (firstLine.codeUnitAt(116) & 0xFC00) == 0xD800 ? 116 : 117;
+    return '${firstLine.substring(0, cut).trim()}…';
   }
 }
 

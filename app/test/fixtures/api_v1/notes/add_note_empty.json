@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "invalid_argument",
+    "message": "stdin was empty — nothing to add"
+  }
+}

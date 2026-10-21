@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "invalid_argument",
+    "message": "invalid --kind: invalid link kind: bad_kind"
+  }
+}

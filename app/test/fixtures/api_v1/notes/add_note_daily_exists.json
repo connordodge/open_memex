@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "daily_note_exists",
+    "date": "2026-10-19",
+    "existing_id": "01M5DQAYZ51PF87XFZWSV5PWXK",
+    "message": "a daily note for 2026-10-19 already exists: 01M5DQAYZ51PF87XFZWSV5PWXK"
+  }
+}

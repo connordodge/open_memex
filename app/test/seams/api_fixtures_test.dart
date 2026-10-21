@@ -233,7 +233,7 @@ void main() {
     });
 
     test(
-      'the Pacing Notes snippet cuts its surrogate pair at 117 units unlike a cut by code points',
+      'the Pacing Notes snippet backs off to 116 units instead of splitting its surrogate pair',
       () {
         final db = seededFakeVaultDb();
         addTearDown(db.close);
@@ -253,9 +253,11 @@ void main() {
         expect(
           last >= 0xD800 && last <= 0xDBFF,
           isTrue,
-          reason: 'the 117-unit cut ends on the lone high surrogate',
+          reason: 'a 117-unit cut would end on a lone high surrogate',
         );
-        expect(item.snippet, '${unitCut.trim()}…');
+        // WI #81 TEST-CHANGE (ruling D10b): the snippet backs off one unit
+        // rather than keep the lone high surrogate.
+        expect(item.snippet, '${line.substring(0, 116).trim()}…');
       },
     );
 
