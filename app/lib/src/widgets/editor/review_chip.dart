@@ -28,7 +28,11 @@ class ReviewChip extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final info = note.role == 'daily'
-        ? ref.watch(reviewStateProvider(note.id))
+        ? watchVaultValue<ReviewInfo?>(
+            ref,
+            reviewStateAsyncProvider(note.id),
+            null,
+          )
         : null;
     if (info == null) return const SizedBox.shrink();
 
