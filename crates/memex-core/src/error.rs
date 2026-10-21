@@ -90,6 +90,10 @@ pub enum MemexError {
 
     #[error("setting invalid: {0}")]
     SettingInvalid(String),
+
+    /// The detail names the path and the filesystem type (req 30).
+    #[error("vault folder is on a network filesystem: {0}")]
+    NetworkFilesystem(String),
 }
 
 impl MemexError {
@@ -113,6 +117,7 @@ impl MemexError {
             MemexError::InvalidDate(_) => "invalid_date",
             MemexError::BlockNotFound(_) => "block_not_found",
             MemexError::SettingInvalid(_) => "setting_invalid",
+            MemexError::NetworkFilesystem(_) => "network_filesystem",
             MemexError::Io(_)
             | MemexError::Sqlite(_)
             | MemexError::Json(_)
@@ -181,6 +186,7 @@ impl MemexError {
             | MemexError::InvalidDate(_)
             | MemexError::BlockNotFound(_)
             | MemexError::SettingInvalid(_)
+            | MemexError::NetworkFilesystem(_)
             | MemexError::Io(_)
             | MemexError::Sqlite(_)
             | MemexError::Json(_)
