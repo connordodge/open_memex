@@ -4,10 +4,12 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../state/canvas_state.dart';
 import '../state/graph_state.dart';
+import '../state/pending_saves.dart';
 import '../state/tabs_state.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
+import '../widgets/atoms.dart';
 import '../widgets/canvas_view.dart';
 import '../widgets/graph/graph_view.dart';
 import '../widgets/note_editor.dart';
@@ -127,6 +129,9 @@ class _TabChip extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final title = _titleFor(tab, ref);
+    // A hosted save of this note waits for the vault server (#102).
+    final pending =
+        tab is NoteTab && ref.watch(notePendingSaveProvider(tab.id));
     return Padding(
       padding: const EdgeInsets.only(right: 4),
       child: MouseRegion(
@@ -171,6 +176,16 @@ class _TabChip extends ConsumerWidget {
                         ),
                       ),
                     ),
+                    if (pending) ...[
+                      const SizedBox(width: 6),
+                      Tooltip(
+                        message: 'not saved yet',
+                        child: StatusDot(
+                          key: Key('tab-pending-${tab.tabId}'),
+                          state: StatusDotState.cantReach,
+                        ),
+                      ),
+                    ],
                     const SizedBox(width: 4),
                     // GestureDetector with opaque hit-test, not InkWell — InkWell
                     // defers hits to its child so the outer tab GestureDetector

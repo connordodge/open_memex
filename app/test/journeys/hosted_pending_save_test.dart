@@ -167,7 +167,9 @@ void main() {
     ) async {
       final w = await _workspace(
         tester,
-        overrides: [hostedServerNameProvider.overrideWithValue('nas')],
+        overrides: [
+          hostedServerNameProvider(hostedServerId).overrideWithValue('nas'),
+        ],
       );
       await w.open(_planId);
       w.notes.writeError = unauthorized401();

@@ -609,7 +609,9 @@ void main() {
     test('a save rejected with 401 is queued the same way', () async {
       final h = await _hosted(
         _plainVault(),
-        overrides: [hostedServerNameProvider.overrideWithValue('nas')],
+        overrides: [
+          hostedServerNameProvider(hostedServerId).overrideWithValue('nas'),
+        ],
       );
       h.ctrl.loadNote(h.stored(_planId));
       h.serverDown(unauthorized401());
@@ -634,7 +636,9 @@ void main() {
       () async {
         final h = await _hosted(
           _plainVault(),
-          overrides: [hostedServerNameProvider.overrideWithValue('nas')],
+          overrides: [
+            hostedServerNameProvider(hostedServerId).overrideWithValue('nas'),
+          ],
         );
         h.ctrl.loadNote(h.stored(_planId));
         h.serverDown(unauthorized401());
@@ -658,7 +662,10 @@ void main() {
 
         await h.typeAndSave('new text');
 
-        expect(h.c.read(hostedServerNameProvider), hostedServerId);
+        expect(
+          h.c.read(hostedServerNameProvider(hostedServerId)),
+          hostedServerId,
+        );
         expect(h.queued(_planId)!.serverName, hostedServerId);
       },
     );

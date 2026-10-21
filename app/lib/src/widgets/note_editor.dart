@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../db.dart';
 import '../state/editor_controller.dart';
 import '../state/note_poller_state.dart';
+import '../state/pending_saves.dart';
 import '../state/tabs_state.dart' show VirtualTodayTab;
 import '../state/today_state.dart';
 import '../state/topic_actions.dart';
@@ -157,6 +158,7 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
             note: note,
             titleCtrl: _titleCtrl,
             onTitleChanged: controller.onTitleChanged,
+            pendingLabel: ref.watch(pendingSaveLabelProvider(note.id)),
           );
 
     // Returns a plain Container (not Expanded): each call site places this in
