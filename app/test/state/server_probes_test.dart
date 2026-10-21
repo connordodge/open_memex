@@ -4,14 +4,14 @@
 // `hostedConnectionStatusProvider` (through HostedClient's response hook)
 // and `serverProbeResultProvider`.
 //
-// API under test:
-//   final hostedHttpClientProvider = Provider<http.Client>
+// API under test (#97):
 //   final serverProbeResultProvider = StateProvider.family<ServerProbe?, String>
 //   final serverProbesProvider = Provider.autoDispose<void>   (watch it)
 //   class PickerActions { connect / editServer / openOnServer /
 //       createOnServer / setUp }   default: does nothing
-//   final recordedOpenOutcomeProvider =
-//       StateProvider.family<VaultOpenOutcome?, VaultRef>
+// Used from #96 (not owned here): `hostedHttpClientProvider`
+// (vault_access/hosted/hosted_vault_access.dart), `recentRowOutcomeProvider`
+// and the hosted failures (state/vault_open_hosted.dart).
 import 'dart:convert';
 
 import 'package:flutter/widgets.dart';
@@ -27,9 +27,10 @@ import 'package:open_memex_app/src/state/server_probes.dart';
 import 'package:open_memex_app/src/state/settings.dart';
 import 'package:open_memex_app/src/state/token_store.dart';
 import 'package:open_memex_app/src/state/vault_open_controller.dart';
-import 'package:open_memex_app/src/state/vault_open_outcomes.dart';
+import 'package:open_memex_app/src/state/vault_open_hosted.dart';
 import 'package:open_memex_app/src/state/vault_ref.dart';
 import 'package:open_memex_app/src/vault_access/hosted/hosted_client.dart';
+import 'package:open_memex_app/src/vault_access/hosted/hosted_vault_access.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../support/fake_clock.dart';
@@ -109,6 +110,8 @@ Future<_Wi97ProbeEnv> _env({
   addTearDown(container.dispose);
   return _Wi97ProbeEnv(container, servers, tokens, routed);
 }
+
+const _memexRef = HostedVaultRef(fakeServerId, 'memex');
 
 /// Lets fake server responses and token reads finish.
 Future<void> _drain() => pumpEventQueue();
@@ -395,11 +398,11 @@ void main() {
       addTearDown(c.dispose);
       expect(c.read(serverProbeResultProvider('srv-x')), isNull);
       expect(
-        c.read(recordedOpenOutcomeProvider(const HostedVaultRef('srv-x', 'v'))),
+        c.read(recentRowOutcomeProvider(const HostedVaultRef('srv-x', 'v'))),
         isNull,
       );
       expect(
-        c.read(recordedOpenOutcomeProvider(const LocalVaultRef('/v'))),
+        c.read(recentRowOutcomeProvider(const LocalVaultRef('/v'))),
         isNull,
       );
     });
@@ -409,16 +412,19 @@ void main() {
       addTearDown(c.dispose);
       final name = ['me', 'mex'].join();
       final hosted = HostedVaultRef(fakeServerId, name);
-      c.read(recordedOpenOutcomeProvider(hosted).notifier).state =
-          HostedVaultGone('no vault named $name');
+      c.read(recentRowOutcomeProvider(hosted).notifier).state = RecentRowFailed(
+        HostedVaultGone(hosted, fakeServerName, '$name is no longer on nas'),
+      );
 
       final read = c.read(
-        recordedOpenOutcomeProvider(HostedVaultRef(fakeServerId, name)),
+        recentRowOutcomeProvider(HostedVaultRef(fakeServerId, name)),
       );
-      expect(read, isA<HostedVaultGone>());
-      expect((read! as VaultOpenFailure).message, 'no vault named memex');
+      expect(read, isA<RecentRowFailed>());
+      final failure = (read! as RecentRowFailed).failure;
+      expect(failure, isA<HostedVaultGone>());
+      expect(failure.message, 'memex is no longer on nas');
       expect(
-        c.read(recordedOpenOutcomeProvider(HostedVaultRef('srv-mini', name))),
+        c.read(recentRowOutcomeProvider(HostedVaultRef('srv-mini', name))),
         isNull,
       );
     });
@@ -439,21 +445,36 @@ void main() {
 
     test('hosted outcomes carry their message and the server version', () {
       final version = ['0', '9', '3'].join('.');
-      final outcomes = <VaultOpenFailure>[
-        HostedServerUnreachable('could not reach nas ($version)'),
-        HostedTokenRejected('rejected $version'),
-        HostedApiMismatch('mismatch $version', serverVersion: version),
-        HostedVaultGone('gone $version'),
-        HostedSchemaRefused('schema $version'),
+      final vault = HostedVaultRef(fakeServerId, ['me', 'mex'].join());
+      final server = fakeServerName;
+      final outcomes = <HostedVaultOpenFailure>[
+        HostedServerUnreachable(
+          vault,
+          server,
+          'could not reach nas ($version)',
+        ),
+        HostedTokenRejected(vault, server, 'rejected $version'),
+        HostedNotMemexServer(vault, server, 'not memex $version'),
+        HostedApiMismatch(
+          vault,
+          server,
+          'mismatch $version',
+          serverVersion: version,
+        ),
+        HostedVaultGone(vault, server, 'gone $version'),
+        HostedSchemaRefused(vault, server, 'schema $version'),
       ];
       expect(outcomes.map((o) => o.message), [
         'could not reach nas (0.9.3)',
         'rejected 0.9.3',
+        'not memex 0.9.3',
         'mismatch 0.9.3',
         'gone 0.9.3',
         'schema 0.9.3',
       ]);
-      expect((outcomes[2] as HostedApiMismatch).serverVersion, '0.9.3');
+      expect((outcomes[3] as HostedApiMismatch).serverVersion, '0.9.3');
+      expect(outcomes.map((o) => o.vault), everyElement(_memexRef));
+      expect(outcomes.map((o) => o.serverName), everyElement('nas'));
       expect(outcomes, everyElement(isA<VaultOpenOutcome>()));
     });
   });

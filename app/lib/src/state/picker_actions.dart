@@ -14,8 +14,9 @@ class PickerActions {
   Future<SavedServer?> connect(BuildContext context) =>
       throw UnimplementedError();
 
-  /// Opens the edit dialog for the saved server [serverId] (also "update
-  /// token"). The default does nothing.
+  /// Opens the edit dialog for the saved server [serverId] (also a recent
+  /// row's "update token"). The default does nothing; #105 binds it to
+  /// #98's `showConnectServerDialog(context, edit: server)`.
   Future<void> editServer(BuildContext context, String serverId) =>
       throw UnimplementedError();
 

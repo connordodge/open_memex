@@ -1,8 +1,9 @@
 // WI #97 (H3): vault picker states (board A3 states 1 to 3, pack
 // design/66-hosted-vault/packs/97.md). Hosted row states from probes and
-// from the opening state, launch outcomes from the recorded
-// `VaultOpenOutcome` per entry (`recordedOpenOutcomeProvider`, injected),
-// binary not found and no saved servers.
+// from the opening state, launch outcomes from the row outcome per entry
+// (#96's `recentRowOutcomeProvider`, injected as `RecentRowFailed` of #96's
+// hosted failures, or `RecentRowOpening`), binary not found and no saved
+// servers.
 //
 // Seams: test/support/vault_picker_harness.dart.
 import 'dart:async';
@@ -11,7 +12,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:open_memex_app/src/state/vault_open_controller.dart';
-import 'package:open_memex_app/src/state/vault_open_outcomes.dart';
+import 'package:open_memex_app/src/state/vault_open_hosted.dart';
 import 'package:open_memex_app/src/state/vault_ref.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/widgets/atoms.dart';
@@ -22,6 +23,13 @@ import '../support/vault_folders.dart';
 import '../support/vault_picker_harness.dart';
 
 const _hostedMemex = HostedVaultRef(fakeServerId, 'memex');
+
+/// #96's unreachable failure for nas/memex, with #96's copy.
+const _unreachable = HostedServerUnreachable(
+  _hostedMemex,
+  fakeServerName,
+  "can't reach nas",
+);
 
 /// Keeps nas's probe in flight, so the row shows only its recorded outcome.
 void _holdNas(Map<String, FakeVaultServer> s) => s[fakeServerId]!.hold();
@@ -36,9 +44,7 @@ void main() {
           recents: const [_hostedMemex],
           beforePump: (s) =>
               s[fakeServerId]!.failure = FakeServerFailure.refused,
-          configureOpener: (o) =>
-              o.onOpen = (_) async =>
-                  const HostedServerUnreachable('could not reach nas'),
+          configureOpener: (o) => o.onOpen = (_) async => _unreachable,
         );
 
         expect(wi97Inside('recent-row-0', find.text('memex')), findsOneWidget);
@@ -133,9 +139,7 @@ void main() {
       final env = await pumpVaultPicker(
         tester,
         recents: const [_hostedMemex],
-        configureOpener: (o) =>
-            o.onOpen = (_) async =>
-                const HostedServerUnreachable('could not reach nas'),
+        configureOpener: (o) => o.onOpen = (_) async => _unreachable,
       );
       // The probe found the server, so the row starts connected.
       expect(wi97DotIn(tester, 'recent-row-0'), StatusDotState.connected);
@@ -149,8 +153,12 @@ void main() {
       );
       expect(find.byKey(const Key('recent-row-retry-0')), findsOneWidget);
       expect(
-        env.container.read(recordedOpenOutcomeProvider(_hostedMemex)),
-        isA<HostedServerUnreachable>(),
+        env.container.read(recentRowOutcomeProvider(_hostedMemex)),
+        isA<RecentRowFailed>().having(
+          (r) => r.failure,
+          'failure',
+          isA<HostedServerUnreachable>(),
+        ),
       );
     });
   });
@@ -172,7 +180,7 @@ void main() {
         expect(find.text('connecting to nas…'), findsOneWidget);
         expect(find.byKey(const Key('recent-row-remove-0')), findsNothing);
 
-        launch.complete(const HostedServerUnreachable('could not reach nas'));
+        launch.complete(_unreachable);
         await wi97Settle(tester);
 
         expect(find.text('connecting to nas…'), findsNothing);
@@ -191,11 +199,7 @@ void main() {
         tester,
         recents: const [_hostedMemex],
         beforePump: _holdNas,
-        recorded: {
-          _hostedMemex: HostedServerUnreachable(
-            ['could not reach', 'nas'].join(' '),
-          ),
-        },
+        recorded: {_hostedMemex: const RecentRowFailed(_unreachable)},
         configureOpener: (o) =>
             o.onOpen = (_) async => const VaultOpenFailure('still down'),
       );
@@ -216,7 +220,15 @@ void main() {
           tester,
           recents: const [_hostedMemex],
           beforePump: _holdNas,
-          recorded: {_hostedMemex: HostedTokenRejected('401 from ${'nas'}')},
+          recorded: {
+            _hostedMemex: const RecentRowFailed(
+              HostedTokenRejected(
+                _hostedMemex,
+                fakeServerName,
+                'nas rejected the access token',
+              ),
+            ),
+          },
         );
 
         expect(wi97DotIn(tester, 'recent-row-0'), StatusDotState.tokenRejected);
@@ -242,9 +254,13 @@ void main() {
           recents: const [_hostedMemex],
           beforePump: _holdNas,
           recorded: {
-            _hostedMemex: HostedApiMismatch(
-              'api_version 2',
-              serverVersion: version,
+            _hostedMemex: RecentRowFailed(
+              HostedApiMismatch(
+                _hostedMemex,
+                fakeServerName,
+                wi97L9(fakeServerName, version),
+                serverVersion: version,
+              ),
             ),
           },
         );
@@ -273,7 +289,13 @@ void main() {
           tester,
           recents: [_hostedMemex, LocalVaultRef(local.path)],
           recorded: {
-            _hostedMemex: HostedVaultGone('no vault named ${'memex'}'),
+            _hostedMemex: const RecentRowFailed(
+              HostedVaultGone(
+                _hostedMemex,
+                fakeServerName,
+                'memex is no longer on nas',
+              ),
+            ),
           },
         );
 
@@ -329,11 +351,8 @@ void main() {
           recents: const [_hostedMemex],
           beforePump: _holdNas,
           recorded: {
-            _hostedMemex: HostedSchemaRefused(
-              [
-                'vault schema 7 is newer',
-                'than this server supports',
-              ].join(' '),
+            _hostedMemex: const RecentRowFailed(
+              HostedSchemaRefused(_hostedMemex, fakeServerName, serverText),
             ),
           },
         );
@@ -355,6 +374,71 @@ void main() {
       },
     );
 
+    testWidgets(
+      'a recorded not memex outcome shows the danger dot and the isnt a memex vault server text',
+      (tester) async {
+        const text = "http://nas.local:7878 isn't a memex vault server";
+        final env = await pumpVaultPicker(
+          tester,
+          recents: const [_hostedMemex],
+          beforePump: _holdNas,
+          recorded: {
+            _hostedMemex: const RecentRowFailed(
+              HostedNotMemexServer(_hostedMemex, fakeServerName, text),
+            ),
+          },
+        );
+
+        expect(wi97Inside('recent-row-0', find.text(text)), findsOneWidget);
+        expect(wi97TextColorIn(tester, 'recent-row-0', text), OmColors.danger);
+        expect(wi97DotIn(tester, 'recent-row-0'), StatusDotState.tokenRejected);
+        // The probe is still in flight, so the server row has no verdict.
+        expect(
+          wi97DotIn(tester, 'server-row-srv-nas'),
+          StatusDotState.checking,
+        );
+        _expectNoRowAction(0);
+
+        await tester.tap(find.byKey(const Key('recent-row-0')));
+        await wi97Settle(tester);
+        expect(env.opener.opened, isEmpty);
+      },
+    );
+
+    testWidgets(
+      'a recorded opening outcome shows the spinner and connecting to the server with no x',
+      (tester) async {
+        final env = await pumpVaultPicker(
+          tester,
+          recents: const [_hostedMemex],
+          recorded: {_hostedMemex: const RecentRowOpening()},
+        );
+
+        expect(
+          wi97Inside('recent-row-0', find.text('connecting to nas…')),
+          findsOneWidget,
+        );
+        expect(
+          wi97Inside('recent-row-0', find.byIcon(LucideIcons.loader2)),
+          findsOneWidget,
+        );
+        expect(find.byKey(const Key('recent-row-remove-0')), findsNothing);
+        expect(env.opener.opened, isEmpty);
+
+        // The open controller clears it when the open ends.
+        env.container
+                .read(recentRowOutcomeProvider(_hostedMemex).notifier)
+                .state =
+            null;
+        await wi97Settle(tester);
+        expect(find.text('connecting to nas…'), findsNothing);
+        expect(
+          wi97Inside('recent-row-0', find.text('nas · nas.local:7878')),
+          findsOneWidget,
+        );
+      },
+    );
+
     testWidgets('a recorded outcome shows only on its own entry', (
       tester,
     ) async {
@@ -362,7 +446,15 @@ void main() {
       await pumpVaultPicker(
         tester,
         recents: const [_hostedMemex, other],
-        recorded: {_hostedMemex: HostedVaultGone('no vault named memex')},
+        recorded: {
+          _hostedMemex: const RecentRowFailed(
+            HostedVaultGone(
+              _hostedMemex,
+              fakeServerName,
+              'memex is no longer on nas',
+            ),
+          ),
+        },
       );
 
       expect(

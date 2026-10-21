@@ -1,8 +1,9 @@
 // WI #97 (H3): the vault picker with hosted seams. Saved servers and typed
 // recents in mock prefs, one FakeVaultServer per saved server behind one
-// routing MockClient (`hostedHttpClientProvider`), FakeTokenStore, FakeClock,
-// FakeAppFocus, a recording picker-actions seam and a recording open
-// controller. No real network, Keychain or `memex` binary.
+// routing MockClient (#96's `hostedHttpClientProvider`), FakeTokenStore,
+// FakeClock, FakeAppFocus, a recording picker-actions seam and a recording
+// open controller. Row outcomes go through #96's `recentRowOutcomeProvider`.
+// No real network, Keychain or `memex` binary.
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -17,12 +18,12 @@ import 'package:open_memex_app/src/state/clock.dart';
 import 'package:open_memex_app/src/state/hosted_connection_state.dart';
 import 'package:open_memex_app/src/state/hosted_vaults_flag.dart';
 import 'package:open_memex_app/src/state/picker_actions.dart';
-import 'package:open_memex_app/src/state/server_probes.dart';
 import 'package:open_memex_app/src/state/settings.dart';
 import 'package:open_memex_app/src/state/token_store.dart';
 import 'package:open_memex_app/src/state/vault_open_controller.dart';
-import 'package:open_memex_app/src/state/vault_open_outcomes.dart';
+import 'package:open_memex_app/src/state/vault_open_hosted.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
+import 'package:open_memex_app/src/vault_access/hosted/hosted_vault_access.dart';
 import 'package:open_memex_app/src/widgets/atoms.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -89,10 +90,14 @@ class Wi97PickerActions extends PickerActions {
 }
 
 /// The open controller with every `openVault` / `launchReopen` call
-/// recorded. [onOpen] / [onLaunch] replace the real path when set.
+/// recorded. [onOpen] / [onLaunch] replace the real path when set; the
+/// replacement still writes `recentRowOutcomeProvider` for a hosted vault
+/// as #96's open controller does (opening while it runs, then failed or
+/// null).
 class Wi97OpenController extends VaultOpenController {
-  Wi97OpenController(super.ref);
+  Wi97OpenController(super.ref) : _wi97Ref = ref;
 
+  final Ref _wi97Ref;
   final List<VaultRef> opened = [];
   int launches = 0;
 
@@ -103,14 +108,35 @@ class Wi97OpenController extends VaultOpenController {
   Future<VaultOpenOutcome> openVault(VaultRef vault) {
     opened.add(vault);
     final f = onOpen;
-    return f == null ? super.openVault(vault) : f(vault);
+    return f == null
+        ? super.openVault(vault)
+        : _wi97Record(vault, () => f(vault));
   }
 
   @override
   Future<VaultOpenOutcome> launchReopen() {
     launches++;
     final f = onLaunch;
-    return f == null ? super.launchReopen() : f();
+    if (f == null) return super.launchReopen();
+    final last = _wi97Ref.read(settingsProvider).lastVaultRef;
+    return last == null ? f() : _wi97Record(last, f);
+  }
+
+  /// #96's row-outcome contract for a hosted [vault]: [RecentRowOpening]
+  /// while [run] runs, then [RecentRowFailed] for a hosted failure, else
+  /// null. A local vault records nothing.
+  Future<VaultOpenOutcome> _wi97Record(
+    VaultRef vault,
+    Future<VaultOpenOutcome> Function() run,
+  ) async {
+    if (vault is! HostedVaultRef) return run();
+    final row = _wi97Ref.read(recentRowOutcomeProvider(vault).notifier);
+    row.state = const RecentRowOpening();
+    final outcome = await run();
+    row.state = outcome is HostedVaultOpenFailure
+        ? RecentRowFailed(outcome)
+        : null;
+    return outcome;
   }
 }
 
@@ -176,8 +202,8 @@ String _encodeRef(VaultRef ref) => jsonEncode(switch (ref) {
 ///   found);
 /// - a FakeVaultServer per saved server serving the `server` fixtures, with
 ///   access token [wi97TokenFor] saved in the FakeTokenStore;
-/// - [recorded] outcomes written to `recordedOpenOutcomeProvider` before the
-///   first frame;
+/// - [recorded] row outcomes written to #96's `recentRowOutcomeProvider`
+///   before the first frame;
 /// - [beforePump] runs on the fakes before the picker first builds (e.g.
 ///   `hold()` a server so its probe stays in flight).
 Future<Wi97Picker> pumpVaultPicker(
@@ -188,7 +214,7 @@ Future<Wi97Picker> pumpVaultPicker(
   VaultRef? last,
   bool binary = true,
   Size size = const Size(1280, 800),
-  Map<VaultRef, VaultOpenOutcome> recorded = const {},
+  Map<VaultRef, RecentRowOutcome> recorded = const {},
   void Function(Map<String, FakeVaultServer> servers)? beforePump,
   void Function(Wi97OpenController opener)? configureOpener,
 }) async {
@@ -251,7 +277,7 @@ Future<Wi97Picker> pumpVaultPicker(
   addTearDown(container.dispose);
   addTearDown(tester.view.reset);
   for (final MapEntry(:key, :value) in recorded.entries) {
-    container.read(recordedOpenOutcomeProvider(key).notifier).state = value;
+    container.read(recentRowOutcomeProvider(key).notifier).state = value;
   }
 
   await tester.pumpWidget(
