@@ -199,6 +199,9 @@ void main() {
         final footer = cli.callsFor('footer add').single;
         expect(footer.flag('daily-note-id'), createdDailyId);
         expect(footer.flag('topic-note-id'), createdTopicId);
+        // Read today's note as a subscribed reader does, once its read lands.
+        h.container.listen(todayNoteAsyncProvider, (_, _) {});
+        await pumpFrames(tester);
         expect(
           readScoped(h.container, todayNoteAsyncProvider, null)?.noteId,
           createdDailyId,

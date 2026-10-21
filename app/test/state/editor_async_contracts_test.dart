@@ -119,7 +119,7 @@ void main() {
         await pumpEventQueue();
 
         expect(
-          readScoped(l.c, todayNoteAsyncProvider, null)?.noteId,
+          (await settledScoped(l.c, todayNoteAsyncProvider, null))?.noteId,
           _oct4Id,
           reason: 'the read landed, for the new date',
         );
