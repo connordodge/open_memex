@@ -1428,10 +1428,18 @@ async fn serve_remote_does_not_follow_a_preflight_redirect() {
             status,
             elsewhere.url(&info_path("work")),
         )));
+        let before = proxy.seen().len();
         let mut b = Bridge::spawn(&proxy.url(&mcp_path("work")), Some(TEST_TOKEN), "UTC");
         assert_eq!(b.exit_code(), Some(1), "HTTP {status}\n{}", b.describe());
         one_c1_code(&b.stderr());
         assert_token_not_printed("redirect", TEST_TOKEN, &b.stdout(), &b.stderr());
+        let seen = proxy.seen();
+        assert_eq!(
+            seen.len(),
+            before + 1,
+            "HTTP {status}: the preflight was sent once: {seen:?}"
+        );
+        assert_eq!(seen[before].path, info_path("work"), "{seen:?}");
     }
     assert!(
         elsewhere.seen().is_empty(),
