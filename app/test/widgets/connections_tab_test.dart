@@ -83,8 +83,10 @@ Future<WorkspaceHarness> _open(
   RightPanelTab tab = RightPanelTab.connections,
   bool select = true,
 }) async {
+  final db = _dbWithTargetOnly();
   final notes = Wi90GatedNotes(
     vaultPath: '/unused',
+    db: db,
     gate: Wi90Gate(),
     out: out ?? _outgoing(),
     incoming: incoming ?? _incoming(),
@@ -92,12 +94,13 @@ Future<WorkspaceHarness> _open(
   );
   final graph = Wi90GatedGraph(
     vaultPath: '/unused',
+    db: db,
     gate: Wi90Gate(),
     changes: changes,
   );
   final h = await pumpWorkspace(
     tester,
-    db: _dbWithTargetOnly(),
+    db: db,
     overrides: [
       vaultAccessProvider.overrideWith(
         (ref) => LocalVaultAccess(

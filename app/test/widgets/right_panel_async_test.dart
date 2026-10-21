@@ -24,8 +24,13 @@ const _note = 'n90-target';
 class _Side {
   _Side(this.vault, {required String tag, bool open = true})
     : gate = Wi90Gate(open: open) {
+    // The selected note is read through the notes domain (#78), so each
+    // side's notes double needs a database holding it.
+    db = FakeVaultDb.v5()
+      ..seedNote(id: _note, title: 'Target', tags: const ['t1']);
     notes = Wi90GatedNotes(
       vaultPath: '/unused-$tag',
+      db: db,
       gate: gate,
       out: [wi90Link('$tag-out', from: _note, to: 'x-$tag', text: '$tag out')],
       incoming: [wi90Link('$tag-in', from: 's-$tag', to: _note)],
@@ -48,6 +53,7 @@ class _Side {
 
   final VaultRef vault;
   final Wi90Gate gate;
+  late final FakeVaultDb db;
   late final Wi90GatedNotes notes;
   late final Wi90GatedGraph graph;
 
@@ -87,6 +93,8 @@ Future<_Panel> _pump(
   final db = FakeVaultDb.v5();
   addTearDown(db.close);
   db.seedNote(id: _note, title: 'Target', tags: const ['t1']);
+  addTearDown(a.db.close);
+  addTearDown(b.db.close);
   final sides = {a.vault: a, b.vault: b};
   final container = ProviderContainer(
     overrides: [
