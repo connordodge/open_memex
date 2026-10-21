@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
+import 'package:open_memex_app/main.dart';
 import 'package:open_memex_app/src/screens/vault_picker.dart';
 import 'package:open_memex_app/src/screens/workspace.dart';
 import 'package:open_memex_app/src/state/app_exit.dart';
@@ -109,6 +110,9 @@ Future<String> _addSecondVault(WidgetTester tester, WorkspaceHarness h) async {
 
 /// The workspace with a [FakeAppExitHost], a second vault in the recents,
 /// and the unsent-text seam reporting [unsent] (null: the default seam).
+/// The app root's overrides are present as main.dart wires them (the switch
+/// confirm), and the fake CLI answers `memex vault check` with safe so a
+/// pill switch reaches #92's local open.
 Future<(WorkspaceHarness, FakeAppExitHost, String)> _pump(
   WidgetTester tester, {
   UnsentHostedText? unsent,
@@ -116,7 +120,11 @@ Future<(WorkspaceHarness, FakeAppExitHost, String)> _pump(
   final exit = FakeAppExitHost();
   final h = await pumpWorkspace(
     tester,
+    cli: FakeMemexCli()
+      ..on('settings get', (_) => FakeMemexCli.ok(settingsGetMaxDepthStdout))
+      ..on('vault check', (_) => FakeMemexCli.ok()),
     overrides: [
+      ...appRootOverrides,
       appExitHostProvider.overrideWithValue(exit),
       if (unsent != null) ...unsentTextOverrides(unsent),
     ],
@@ -158,13 +166,16 @@ Future<(LiveRobot, String)> _liveWithTypedText(
   final db = FakeVaultDb.v5()
     ..seedLiveDaily(blocks: const [SeedBlock('p-morning', 'Morning pages')]);
   final clock = FakeClock(DateTime(2026, 10, 3, 9));
-  final cli = FakeMemexCli()..onUpdateServer(db, clock: clock);
+  final cli = FakeMemexCli()
+    ..onUpdateServer(db, clock: clock)
+    ..on('vault check', (_) => FakeMemexCli.ok());
   final r = await pumpLiveWorkspace(
     tester,
     db: db,
     cli: cli,
     clock: clock,
     overrides: [
+      ...appRootOverrides,
       appExitHostProvider.overrideWithValue(FakeAppExitHost()),
       ...unsentTextOverrides(_boardSample),
     ],

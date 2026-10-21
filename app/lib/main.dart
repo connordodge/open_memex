@@ -9,6 +9,7 @@ import 'src/screens/workspace.dart';
 import 'src/state/app_exit.dart';
 import 'src/state/app_support_dir.dart';
 import 'src/state/settings.dart';
+import 'src/state/vault_open_controller.dart';
 import 'src/state/vault_open_hosted.dart';
 import 'src/state/vault_state.dart';
 import 'src/theme/app_theme.dart';
@@ -24,11 +25,25 @@ Future<void> main() async {
       overrides: [
         settingsProvider.overrideWith((_) => settings),
         appSupportDirProvider.overrideWithValue(appSupport.path),
+        ...appRootOverrides,
       ],
       child: const OpenMemexApp(),
     ),
   );
 }
+
+/// The overrides the app root adds to its [ProviderScope]: the widget-layer
+/// wiring of state seams, kept here so state/ imports no widget.
+///
+/// `leaveVaultGuardProvider` becomes the switch confirm (#103): with no
+/// unsent hosted text (read when the switch is asked for) it allows at once;
+/// otherwise it shows the leave confirm and allows only on "switch anyway".
+final List<Override> appRootOverrides = [
+  leaveVaultGuardProvider.overrideWith(
+    (ref) =>
+        (context) => confirmLeave(context, LeaveAction.switchVault, ref.read),
+  ),
+];
 
 class OpenMemexApp extends ConsumerStatefulWidget {
   const OpenMemexApp({super.key});
