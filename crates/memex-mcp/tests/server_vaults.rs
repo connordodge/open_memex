@@ -642,8 +642,9 @@ async fn wrong_methods_on_the_vault_routes_are_c1_405_method_not_allowed() {
     let id = make_vault(root.path(), "work");
     let srv = TestServer::start_in(root).await;
     let before = dir_names(srv.root());
-    // The nested `/vaults/{name}/api/v1` and `/vaults/{name}/mcp` routers
-    // hold no routes yet (#80, #81 add them and call this helper).
+    // The nested `/vaults/{name}/api/v1` router holds no routes yet (#81
+    // adds them and calls this helper); #80 probes `/vaults/{name}/mcp` in
+    // server_mcp.rs.
     assert_wrong_method_is_c1_405(
         &srv,
         &[
@@ -955,9 +956,9 @@ async fn a_percent_encoded_vault_name_is_decoded_before_lookup() {
             "{segment}"
         );
         // Past the guard: an unrouted path under it is a plain not_found.
-        let r = raw_get(&srv, "GET", &format!("/vaults/{segment}/mcp")).await;
-        assert_eq!(r.status, 404, "{segment}/mcp: {}", r.body);
-        assert_eq!(r.c1_code(), "not_found", "{segment}/mcp");
+        let r = raw_get(&srv, "GET", &format!("/vaults/{segment}/nope")).await;
+        assert_eq!(r.status, 404, "{segment}/nope: {}", r.body);
+        assert_eq!(r.c1_code(), "not_found", "{segment}/nope");
     }
     // Lower-case encoded traversal and a malformed escape (kept as written,
     // so not a valid name) never resolve.
