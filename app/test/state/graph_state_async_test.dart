@@ -7,6 +7,7 @@
 // the database directly would come back empty.
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/src/db.dart' show Note;
 import 'package:open_memex_app/src/graph/graph_scope.dart';
 import 'package:open_memex_app/src/state/graph_state.dart';
 import 'package:open_memex_app/src/state/vault_access_state.dart';
@@ -587,4 +588,159 @@ void main() {
       },
     );
   });
+
+  // WI #88 review fix (#135): the note chip and the topic/day graph chip
+  // read titles through `notes.titlesForIds([id])`, never `getNote` (the
+  // editor owns the getNote reads; #87's rebase tests count them).
+  group('chip titles read through titlesForIds (WI 88)', () {
+    ({ProviderContainer c, _Wi88CountingNotes notes}) counted({
+      Set<String> omitFromTitles = const {},
+    }) {
+      final db = _db(seedGraphFixture);
+      final notes = _Wi88CountingNotes(
+        vaultPath: _vaultA.path,
+        db: db,
+        titles: {G.alpha: 'Alpha one'},
+        omitFromTitles: omitFromTitles,
+      );
+      final access = LocalVaultAccess(
+        vaultPath: _vaultA.path,
+        db: db,
+        notes: notes,
+      );
+      return (c: _container({_vaultA: access}), notes: notes);
+    }
+
+    test(
+      'the note chip and graph chip titles make no getNote calls and still refresh on a revision bump',
+      () async {
+        final (:c, :notes) = counted();
+        const topic = GraphScope.topic(G.alpha);
+        const day = GraphScope.day(G.day0905);
+        c.listen(noteTitleProvider(G.alpha), (_, _) {});
+        c.listen(graphTabTitleProvider(topic), (_, _) {});
+        c.listen(graphTabTitleProvider(day), (_, _) {});
+
+        expect(await c.read(noteTitleProvider(G.alpha).future), 'Alpha one');
+        expect(
+          await c.read(graphTabTitleProvider(topic).future),
+          'Graph · Alpha one',
+        );
+        expect(
+          await c.read(graphTabTitleProvider(day).future),
+          'Graph · 2026-09-05',
+        );
+        expect(notes.getNoteCalls, 0);
+        expect(
+          notes.titleRequests,
+          unorderedEquals([
+            [G.alpha],
+            [G.alpha],
+            [G.day0905],
+          ]),
+          reason: 'one titlesForIds call per chip, for that one id',
+        );
+
+        notes.titles[G.alpha] = 'Alpha two';
+        _bump(c);
+
+        expect(await c.read(noteTitleProvider(G.alpha).future), 'Alpha two');
+        expect(
+          await c.read(graphTabTitleProvider(topic).future),
+          'Graph · Alpha two',
+        );
+        expect(
+          await c.read(graphTabTitleProvider(day).future),
+          'Graph · 2026-09-05',
+        );
+        expect(notes.getNoteCalls, 0, reason: 'no getNote after the bump');
+        expect(notes.titleRequests, hasLength(6));
+      },
+    );
+
+    test(
+      'the chip titles fall back when titlesForIds leaves the id out even though getNote finds the note',
+      () async {
+        final (:c, :notes) = counted(omitFromTitles: {G.alpha, G.day0905});
+
+        expect(
+          await notes.getNote(G.alpha),
+          isNotNull,
+          reason: 'the note exists; only titlesForIds leaves it out',
+        );
+        notes.getNoteCalls = 0;
+
+        expect(await c.read(noteTitleProvider(G.alpha).future), isNull);
+        expect(
+          await c.read(
+            graphTabTitleProvider(const GraphScope.topic(G.alpha)).future,
+          ),
+          'Graph · ${G.alpha}',
+        );
+        expect(
+          await c.read(
+            graphTabTitleProvider(const GraphScope.day(G.day0905)).future,
+          ),
+          'Graph · ${G.day0905}',
+        );
+        expect(notes.getNoteCalls, 0);
+      },
+    );
+
+    test(
+      'the chip titles are null or the scope id with a null access',
+      () async {
+        expect(
+          await graphTabTitle(null, const GraphScope.topic(G.alpha)),
+          'Graph · ${G.alpha}',
+        );
+        expect(
+          await graphTabTitle(null, const GraphScope.day(G.day0905)),
+          'Graph · ${G.day0905}',
+        );
+        final c = _container(const {});
+        expect(c.read(vaultAccessProvider), isNull);
+        expect(await c.read(noteTitleProvider(G.alpha).future), isNull);
+        expect(
+          await c.read(
+            graphTabTitleProvider(const GraphScope.topic(G.alpha)).future,
+          ),
+          'Graph · ${G.alpha}',
+        );
+      },
+    );
+  });
+}
+
+/// A [Wi88RewritingNotes] that counts `getNote` calls and records each
+/// `titlesForIds` request. Its `titlesForIds` leaves out [omitFromTitles]
+/// (while `getNote` still finds them) and adds an unrelated entry, so a read
+/// that took any title other than the requested id's would show.
+class _Wi88CountingNotes extends Wi88RewritingNotes {
+  _Wi88CountingNotes({
+    required super.vaultPath,
+    super.db,
+    required super.titles,
+    this.omitFromTitles = const {},
+  });
+
+  final Set<String> omitFromTitles;
+  int getNoteCalls = 0;
+  final titleRequests = <List<String>>[];
+
+  @override
+  Future<Note?> getNote(String id) {
+    getNoteCalls++;
+    return super.getNote(id);
+  }
+
+  @override
+  Future<Map<String, String>> titlesForIds(List<String> ids) async {
+    titleRequests.add(List.of(ids));
+    return {
+      'note-unrelated': 'Unrelated',
+      for (final e in (await super.titlesForIds(ids)).entries)
+        if (!omitFromTitles.contains(e.key)) e.key: e.value,
+    };
+  }
 }
