@@ -22,7 +22,7 @@ import '../robots/hosted_workspace_robot.dart';
 import '../support/fake_vault_server.dart';
 import '../support/hosted_harness.dart';
 import '../support/journey_harness.dart';
-import '../support/vault_picker_harness.dart' show wi97HoldFontFetches;
+import '../support/font_fetch_hold.dart';
 
 /// Queues a save of [noteId] ([title]) in [vault] that couldn't reach the
 /// server at [since], as #102's editor does.
@@ -45,7 +45,7 @@ void _queue(
     );
 
 void main() {
-  wi97HoldFontFetches();
+  holdFontFetches();
 
   group('hostedServerNameProvider is bound to the saved servers', () {
     test(

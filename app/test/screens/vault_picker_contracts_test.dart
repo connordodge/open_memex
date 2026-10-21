@@ -26,6 +26,7 @@ import 'package:path/path.dart' as p;
 
 import '../support/fake_vault_server.dart';
 import '../support/vault_folders.dart';
+import '../support/font_fetch_hold.dart';
 import '../support/vault_picker_harness.dart';
 
 const _memex = HostedVaultRef(fakeServerId, 'memex');
@@ -81,7 +82,7 @@ void _fakeOpen(Wi97OpenController o) =>
     o.onOpen = (_) async => const VaultOpenFailure('fake open');
 
 void main() {
-  wi97HoldFontFetches();
+  holdFontFetches();
 
   group('subtitle', () {
     testWidgets('the subtitle names vault servers', (tester) async {
