@@ -1,13 +1,16 @@
 // WI #30 (A12) with #22's virtual Today note: its tab chip reads its ISO
 // date, and its note menu offers no Open graph item (the unsaved note is in
 // no graph yet). Implementer tests, launched through #22's TodayRobot.
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/screens/workspace.dart';
+import 'package:open_memex_app/src/state/graph_state.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
+import 'package:open_memex_app/src/state/vault_state.dart';
 
 import '../robots/today_robot.dart';
 import '../support/app_harness.dart';
@@ -119,6 +122,71 @@ void main() {
     test('the workspace screen reads no vaultDbProvider', () {
       final source = File('lib/src/screens/workspace.dart').readAsStringSync();
       expect(source, isNot(contains('vaultDbProvider')));
+    });
+
+    // WI #88 verify: the chip shows `note` until its title read resolves,
+    // and when that read fails.
+    testWidgets('a note tab chip reads note while its title is loading', (
+      tester,
+    ) async {
+      final title = Completer<String?>();
+      await pumpWorkspace(
+        tester,
+        db: seeded(),
+        overrides: [
+          noteTitleProvider.overrideWith(
+            (ref, id) => id == G.alpha ? title.future : null,
+          ),
+        ],
+      );
+      await openNote(tester, G.alpha);
+
+      expect(chipText(G.alpha, 'note'), findsOneWidget);
+      expect(chipText(G.alpha, 'Alpha'), findsNothing);
+
+      title.complete('Alpha arrived');
+      await pumpFrames(tester);
+
+      expect(chipText(G.alpha, 'Alpha arrived'), findsOneWidget);
+      expect(chipText(G.alpha, 'note'), findsNothing);
+    });
+
+    testWidgets('a note tab chip reads note when its title read fails', (
+      tester,
+    ) async {
+      await pumpWorkspace(
+        tester,
+        db: seeded(),
+        overrides: [
+          noteTitleProvider.overrideWith(
+            (ref, id) => Future<String?>.error(StateError('title read failed')),
+          ),
+        ],
+      );
+      await openNote(tester, G.alpha);
+
+      expect(chipText(G.alpha, 'note'), findsOneWidget);
+      expect(chipText(G.alpha, 'Alpha'), findsNothing);
+    });
+
+    testWidgets('a note tab chip shows the new title after a revision bump', (
+      tester,
+    ) async {
+      final titles = <String, String>{G.alpha: 'Alpha one'};
+      final h = await pumpWorkspace(
+        tester,
+        db: seeded(),
+        overrides: [wi88RewritingAccessOverride(noteTitles: titles)],
+      );
+      await openNote(tester, G.alpha);
+      expect(chipText(G.alpha, 'Alpha one'), findsOneWidget);
+
+      titles[G.alpha] = 'Alpha two';
+      h.container.read(vaultRevisionProvider.notifier).state++;
+      await pumpFrames(tester);
+
+      expect(chipText(G.alpha, 'Alpha two'), findsOneWidget);
+      expect(chipText(G.alpha, 'Alpha one'), findsNothing);
     });
   });
 }

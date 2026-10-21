@@ -432,4 +432,159 @@ void main() {
       },
     );
   });
+
+  // WI #88 verify: the chip title providers themselves, read with no
+  // override of their own (only vaultAccessProvider is overridden), and
+  // re-read after a revision bump. The access doubles hold mutable name
+  // maps, so a rename reaches the providers only if they read again.
+  group('chip title providers (WI 88)', () {
+    ({
+      ProviderContainer c,
+      Map<String, String> titles,
+      Map<String, String> names,
+    })
+    titled({VaultRef? current = _vaultA}) {
+      final db = _db(seedGraphFixture);
+      final titles = <String, String>{G.alpha: 'Alpha one'};
+      final names = <String, String>{G.projects: 'Projects one'};
+      final access = LocalVaultAccess(
+        vaultPath: _vaultA.path,
+        db: db,
+        notes: Wi88RewritingNotes(
+          vaultPath: _vaultA.path,
+          db: db,
+          titles: titles,
+          hidden: {G.beta},
+        ),
+        topics: Wi88RewritingTopics(
+          vaultPath: _vaultA.path,
+          db: db,
+          names: names,
+        ),
+      );
+      return (
+        c: _container({_vaultA: access}, current: current),
+        titles: titles,
+        names: names,
+      );
+    }
+
+    test(
+      'the note title provider reads the note title through VaultAccess',
+      () async {
+        final (:c, titles: _, names: _) = titled();
+
+        expect(await c.read(noteTitleProvider(G.alpha).future), 'Alpha one');
+        expect(await c.read(noteTitleProvider(G.gamma).future), 'Gamma');
+        expect(
+          await c.read(noteTitleProvider(G.beta).future),
+          isNull,
+          reason: 'VaultAccess has no such note',
+        );
+        expect(await c.read(noteTitleProvider('note-missing').future), isNull);
+      },
+    );
+
+    test('the note title provider is null with no vault open', () async {
+      final (:c, titles: _, names: _) = titled(current: null);
+
+      expect(await c.read(noteTitleProvider(G.alpha).future), isNull);
+    });
+
+    test(
+      'the graph tab title provider reads the chip label through VaultAccess',
+      () async {
+        final (:c, titles: _, names: _) = titled();
+
+        expect(
+          await c.read(
+            graphTabTitleProvider(const GraphScope.folder(G.projects)).future,
+          ),
+          'Graph · Projects one',
+        );
+        expect(
+          await c.read(
+            graphTabTitleProvider(const GraphScope.topic(G.alpha)).future,
+          ),
+          'Graph · Alpha one',
+        );
+        expect(
+          await c.read(graphTabTitleProvider(const GraphScope.vault()).future),
+          'Graph · Whole vault',
+        );
+        expect(
+          await c.read(
+            graphTabTitleProvider(const GraphScope.topic(G.beta)).future,
+          ),
+          'Graph · ${G.beta}',
+        );
+      },
+    );
+
+    test(
+      'the graph tab title provider falls back to the scope id with no vault open',
+      () async {
+        final (:c, titles: _, names: _) = titled(current: null);
+
+        expect(
+          await c.read(
+            graphTabTitleProvider(const GraphScope.folder(G.projects)).future,
+          ),
+          'Graph · ${G.projects}',
+        );
+      },
+    );
+
+    test(
+      'the note title provider reads the new title after a revision bump',
+      () async {
+        final (:c, :titles, names: _) = titled();
+        c.listen(noteTitleProvider(G.alpha), (_, _) {});
+        expect(await c.read(noteTitleProvider(G.alpha).future), 'Alpha one');
+
+        titles[G.alpha] = 'Alpha two';
+        await pumpEventQueue();
+        expect(
+          c.read(noteTitleProvider(G.alpha)).valueOrNull,
+          'Alpha one',
+          reason: 'no re-read without a revision bump',
+        );
+
+        _bump(c);
+        expect(await c.read(noteTitleProvider(G.alpha).future), 'Alpha two');
+      },
+    );
+
+    test(
+      'the graph tab title provider reads the new name after a revision bump',
+      () async {
+        final (:c, :titles, :names) = titled();
+        const folder = GraphScope.folder(G.projects);
+        const topic = GraphScope.topic(G.alpha);
+        c.listen(graphTabTitleProvider(folder), (_, _) {});
+        c.listen(graphTabTitleProvider(topic), (_, _) {});
+        expect(
+          await c.read(graphTabTitleProvider(folder).future),
+          'Graph · Projects one',
+        );
+        expect(
+          await c.read(graphTabTitleProvider(topic).future),
+          'Graph · Alpha one',
+        );
+
+        names[G.projects] = 'Projects two';
+        titles[G.alpha] = 'Alpha two';
+        _bump(c);
+
+        expect(
+          await c.read(graphTabTitleProvider(folder).future),
+          'Graph · Projects two',
+        );
+        expect(
+          await c.read(graphTabTitleProvider(topic).future),
+          'Graph · Alpha two',
+        );
+      },
+    );
+  });
 }

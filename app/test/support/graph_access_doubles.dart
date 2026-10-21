@@ -165,3 +165,88 @@ Override wi88RewritingAccessOverride({
     ),
   );
 });
+
+/// Holds every read made through the [Wi88HeldGraph], [Wi88HeldTopics] and
+/// [Wi88HeldDaily] doubles that share it, and records the order the reads
+/// started in. Nothing a held read returns arrives until the test releases
+/// it, so a reader that awaited one read before starting the next would
+/// show a single started read.
+class Wi88ReadGates {
+  final _gates = <String, Completer<void>>{};
+
+  /// The reads started so far, in order (`footerChips` carries its note id).
+  final started = <String>[];
+
+  Future<void> hold(String read) {
+    started.add(read);
+    return (_gates[read] = Completer<void>()).future;
+  }
+
+  /// Lets [read] through.
+  void release(String read) => _gates[read]!.complete();
+
+  /// Fails [read] with [error].
+  void fail(String read, Object error) => _gates[read]!.completeError(error);
+
+  /// Lets every read still held through.
+  void releaseAll() {
+    for (final gate in _gates.values) {
+      if (!gate.isCompleted) gate.complete();
+    }
+  }
+}
+
+/// A graph domain whose `graphNotes` and `graphLinks` wait on [gates].
+class Wi88HeldGraph extends LocalGraphAccess {
+  Wi88HeldGraph({required super.vaultPath, super.db, required this.gates});
+
+  final Wi88ReadGates gates;
+
+  @override
+  Future<List<GraphNoteRow>> graphNotes() async {
+    await gates.hold('graphNotes');
+    return super.graphNotes();
+  }
+
+  @override
+  Future<List<GraphLinkRow>> graphLinks() async {
+    await gates.hold('graphLinks');
+    return super.graphLinks();
+  }
+}
+
+/// A topics domain whose `smartFolders` waits on [gates].
+class Wi88HeldTopics extends LocalTopicsAccess {
+  Wi88HeldTopics({
+    required super.vaultPath,
+    super.db,
+    super.cli,
+    required this.gates,
+  });
+
+  final Wi88ReadGates gates;
+
+  @override
+  Future<SmartFolderData> smartFolders() async {
+    await gates.hold('smartFolders');
+    return super.smartFolders();
+  }
+}
+
+/// A daily domain whose `footerChips` waits on [gates].
+class Wi88HeldDaily extends LocalDailyAccess {
+  Wi88HeldDaily({
+    required super.vaultPath,
+    super.db,
+    super.cli,
+    required this.gates,
+  });
+
+  final Wi88ReadGates gates;
+
+  @override
+  Future<List<FooterChipRow>> footerChips(String dailyNoteId) async {
+    await gates.hold('footerChips:$dailyNoteId');
+    return super.footerChips(dailyNoteId);
+  }
+}

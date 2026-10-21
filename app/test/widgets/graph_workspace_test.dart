@@ -3,6 +3,8 @@
 //
 // Runs through the #18 harness (FakeVaultDb, FakeMemexCli, FakeClock). Never
 // pumpAndSettle the workspace (OmDot pulses forever): pumpFrames only.
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -10,6 +12,7 @@ import 'package:open_memex_app/src/graph/graph_scope.dart';
 import 'package:open_memex_app/src/screens/workspace.dart';
 import 'package:open_memex_app/src/state/graph_state.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
+import 'package:open_memex_app/src/state/vault_state.dart';
 
 import '../support/app_harness.dart';
 import '../support/fake_vault_db.dart';
@@ -373,6 +376,113 @@ void main() {
         expect(
           find.byKey(const Key('graph-hull-${G.archive}')),
           findsOneWidget,
+        );
+      },
+    );
+
+    // WI #88 verify: the chip shows `Graph` until its title read resolves,
+    // and when that read fails.
+    testWidgets('a Graph tab chip reads Graph while its title is loading', (
+      tester,
+    ) async {
+      final title = Completer<String>();
+      await _pump(
+        tester,
+        overrides: [
+          graphTabTitleProvider.overrideWith((ref, scope) => title.future),
+        ],
+      );
+      await _openGraph(tester, const GraphScope.folder(G.projects));
+
+      expect(_chipText('folder:${G.projects}', 'Graph'), findsOneWidget);
+      expect(
+        _chipText('folder:${G.projects}', 'Graph · Projects'),
+        findsNothing,
+      );
+
+      title.complete('Graph · Projects arrived');
+      await pumpFrames(tester);
+
+      expect(
+        _chipText('folder:${G.projects}', 'Graph · Projects arrived'),
+        findsOneWidget,
+      );
+      expect(_chipText('folder:${G.projects}', 'Graph'), findsNothing);
+    });
+
+    testWidgets('a Graph tab chip reads Graph when its title read fails', (
+      tester,
+    ) async {
+      await _pump(
+        tester,
+        overrides: [
+          graphTabTitleProvider.overrideWith(
+            (ref, scope) => Future<String>.error(StateError('title failed')),
+          ),
+        ],
+      );
+      await _openGraph(tester, const GraphScope.topic(G.alpha));
+
+      expect(_chipText('topic:${G.alpha}', 'Graph'), findsOneWidget);
+      expect(_chipText('topic:${G.alpha}', 'Graph · Alpha'), findsNothing);
+    });
+
+    // WI #88 verify: a rename through VaultAccess reaches the chip once the
+    // vault revision moves.
+    testWidgets(
+      'a Graph tab chip shows the new folder name after a revision bump',
+      (tester) async {
+        final names = <String, String>{G.projects: 'Projects one'};
+        final h = await _pump(
+          tester,
+          overrides: [wi88RewritingAccessOverride(folderNames: names)],
+        );
+        await _openGraph(tester, const GraphScope.folder(G.projects));
+        expect(
+          _chipText('folder:${G.projects}', 'Graph · Projects one'),
+          findsOneWidget,
+        );
+
+        names[G.projects] = 'Projects two';
+        h.container.read(vaultRevisionProvider.notifier).state++;
+        await pumpFrames(tester);
+
+        expect(
+          _chipText('folder:${G.projects}', 'Graph · Projects two'),
+          findsOneWidget,
+        );
+        expect(
+          _chipText('folder:${G.projects}', 'Graph · Projects one'),
+          findsNothing,
+        );
+      },
+    );
+
+    testWidgets(
+      'a topic Graph tab chip shows the new note title after a revision bump',
+      (tester) async {
+        final titles = <String, String>{G.alpha: 'Alpha one'};
+        final h = await _pump(
+          tester,
+          overrides: [wi88RewritingAccessOverride(noteTitles: titles)],
+        );
+        await _openGraph(tester, const GraphScope.topic(G.alpha));
+        expect(
+          _chipText('topic:${G.alpha}', 'Graph · Alpha one'),
+          findsOneWidget,
+        );
+
+        titles[G.alpha] = 'Alpha two';
+        h.container.read(vaultRevisionProvider.notifier).state++;
+        await pumpFrames(tester);
+
+        expect(
+          _chipText('topic:${G.alpha}', 'Graph · Alpha two'),
+          findsOneWidget,
+        );
+        expect(
+          _chipText('topic:${G.alpha}', 'Graph · Alpha one'),
+          findsNothing,
         );
       },
     );

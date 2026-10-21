@@ -422,4 +422,119 @@ void main() {
       }
     });
   });
+
+  // WI #88 verify: buildGraph's documented contract, reads "all at once" and
+  // "a failed read fails the returned future". Every read is held open by
+  // Wi88ReadGates, so a reader that awaited one read before the next starts
+  // only one.
+  group('buildGraph reads (WI 88)', () {
+    ({VaultAccess access, Wi88ReadGates gates}) held() {
+      final db = FakeVaultDb.v5();
+      addTearDown(db.close);
+      seedGraphFixture(db);
+      final gates = Wi88ReadGates();
+      return (
+        access: LocalVaultAccess(
+          vaultPath: _vaultPath,
+          db: db,
+          graph: Wi88HeldGraph(vaultPath: _vaultPath, db: db, gates: gates),
+          topics: Wi88HeldTopics(vaultPath: _vaultPath, db: db, gates: gates),
+          daily: Wi88HeldDaily(vaultPath: _vaultPath, db: db, gates: gates),
+        ),
+        gates: gates,
+      );
+    }
+
+    test(
+      'buildGraph starts every read of a day scope before any read completes',
+      () async {
+        final (:access, :gates) = held();
+        var done = false;
+        final future = buildGraph(
+          access,
+          const GraphScope.day(G.day0905),
+        ).whenComplete(() => done = true);
+        await pumpEventQueue();
+
+        expect(gates.started.toSet(), {
+          'graphNotes',
+          'graphLinks',
+          'smartFolders',
+          'footerChips:${G.day0905}',
+        }, reason: 'all four reads are in flight while none has returned');
+        expect(done, isFalse);
+
+        gates.releaseAll();
+        final g = await future;
+        expect(_ids(g), {G.day0905, G.alpha, G.gamma, G.beta});
+      },
+    );
+
+    test(
+      'buildGraph starts every read of a Whole vault scope at once and reads no footer chips',
+      () async {
+        final (:access, :gates) = held();
+        final future = buildGraph(access, const GraphScope.vault());
+        await pumpEventQueue();
+
+        expect(gates.started.toSet(), {
+          'graphNotes',
+          'graphLinks',
+          'smartFolders',
+        });
+        expect(gates.started, hasLength(3), reason: 'each read starts once');
+
+        gates.releaseAll();
+        expect(_ids(await future), G.allNotes);
+      },
+    );
+
+    for (final (name, read) in [
+      ('buildGraph rethrows a failed graph notes read unchanged', 'graphNotes'),
+      ('buildGraph rethrows a failed graph links read unchanged', 'graphLinks'),
+      (
+        'buildGraph rethrows a failed Smart Folders read unchanged',
+        'smartFolders',
+      ),
+    ]) {
+      test(name, () async {
+        final (:access, :gates) = held();
+        final error = StateError('$read failed');
+        final future = buildGraph(access, const GraphScope.day(G.day0905));
+        await pumpEventQueue();
+
+        gates.fail(read, error);
+        gates.releaseAll();
+
+        await expectLater(future, throwsA(same(error)));
+      });
+    }
+
+    test('buildGraph rethrows a failed footer chips read unchanged', () async {
+      final (:access, :gates) = held();
+      final error = StateError('footerChips failed');
+      final future = buildGraph(access, const GraphScope.day(G.day0905));
+      await pumpEventQueue();
+
+      gates.fail('footerChips:${G.day0905}', error);
+      gates.releaseAll();
+
+      await expectLater(future, throwsA(same(error)));
+    });
+
+    test('buildGraph rethrows the first error when two reads fail', () async {
+      final (:access, :gates) = held();
+      final first = StateError('smartFolders failed first');
+      final second = StateError('graphNotes failed second');
+      final future = buildGraph(access, const GraphScope.vault());
+      await pumpEventQueue();
+
+      gates.fail('smartFolders', first);
+      await pumpEventQueue();
+      gates.fail('graphNotes', second);
+      gates.releaseAll();
+
+      await expectLater(future, throwsA(same(first)));
+    });
+  });
 }
