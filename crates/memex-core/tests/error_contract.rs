@@ -42,10 +42,11 @@ fn variant_name(e: &MemexError) -> &'static str {
         MemexError::InvalidDate(_) => "InvalidDate",
         MemexError::BlockNotFound(_) => "BlockNotFound",
         MemexError::SettingInvalid(_) => "SettingInvalid",
+        MemexError::NetworkFilesystem(_) => "NetworkFilesystem",
     }
 }
 
-const VARIANT_COUNT: usize = 28;
+const VARIANT_COUNT: usize = 29;
 
 /// The variants listed in the C1 table, with their code and extra fields.
 fn c1_samples() -> Vec<(MemexError, &'static str, Value)> {
@@ -146,6 +147,11 @@ fn c1_samples() -> Vec<(MemexError, &'static str, Value)> {
         (
             MemexError::SettingInvalid("smart_folder_max_depth must be >= 1".into()),
             "setting_invalid",
+            json!({}),
+        ),
+        (
+            MemexError::NetworkFilesystem("/Volumes/share/vault (smbfs)".into()),
+            "network_filesystem",
             json!({}),
         ),
     ]
@@ -366,6 +372,7 @@ fn message_only_variants_keep_their_detail_in_the_message() {
         MemexError::InvalidDate("detail-date".into()),
         MemexError::BlockNotFound("detail-block".into()),
         MemexError::SettingInvalid("detail-setting".into()),
+        MemexError::NetworkFilesystem("detail-network".into()),
     ];
     for e in cases {
         let detail = match &e {
@@ -373,11 +380,28 @@ fn message_only_variants_keep_their_detail_in_the_message() {
             | MemexError::FolderCycle(s)
             | MemexError::InvalidDate(s)
             | MemexError::BlockNotFound(s)
-            | MemexError::SettingInvalid(s) => s.clone(),
+            | MemexError::SettingInvalid(s)
+            | MemexError::NetworkFilesystem(s) => s.clone(),
             _ => unreachable!(),
         };
         let json = e.to_error_json();
         let msg = error_object(&json)["message"].as_str().unwrap().to_string();
         assert!(msg.contains(&detail), "{}: {msg}", variant_name(&e));
     }
+}
+
+#[test]
+fn network_filesystem_json_is_c1_with_code_and_message_only() {
+    let e = MemexError::NetworkFilesystem("/Volumes/share/vault (smbfs)".into());
+    let got = e.to_error_json();
+    assert_eq!(
+        got,
+        json!({"error": {"code": "network_filesystem", "message": e.to_string()}})
+    );
+    let msg = error_object(&got)["message"].as_str().unwrap();
+    assert!(msg.contains("/Volumes/share/vault (smbfs)"), "{msg}");
+    assert!(
+        !msg.contains('\n'),
+        "the message fits on the one C1 stderr line: {msg:?}"
+    );
 }

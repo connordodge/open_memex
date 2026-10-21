@@ -29,6 +29,8 @@ enum Commands {
         /// Vault directory (created if it doesn't exist).
         path: PathBuf,
     },
+    /// Vault folder checks (`vault check`).
+    Vault(cli::vault::VaultArgs),
     /// Append a note to a vault from CLI input. Body comes from stdin.
     Add {
         /// Vault directory.
@@ -270,6 +272,7 @@ async fn main() -> ExitCode {
 async fn dispatch(command: Commands) -> Result<()> {
     match command {
         Commands::Init { path } => cmd_init(path),
+        Commands::Vault(args) => cli::vault::run(args),
         Commands::Add {
             vault,
             title,
