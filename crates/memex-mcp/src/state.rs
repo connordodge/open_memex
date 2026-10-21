@@ -37,7 +37,15 @@ impl AppState {
 /// scoped to the vault so multi-vault setups don't collide and the user can
 /// nuke it cheaply.
 pub fn build_default_embedder(vault_path: &Path) -> Arc<dyn Embedder> {
-    let cache_dir = vault_path.join(".memex").join("models");
+    build_embedder_in(vault_path)
+}
+
+/// Build a FastEmbedder backed by BGE-small-en-v1.5 whose model cache is
+/// `<root>/.memex/models` (created here). Nothing is downloaded until the
+/// first embed. The vault server builds one for its whole vault root and
+/// shares it between every served vault.
+pub fn build_embedder_in(root: &Path) -> Arc<dyn Embedder> {
+    let cache_dir = root.join(".memex").join("models");
     std::fs::create_dir_all(&cache_dir).ok();
     Arc::new(FastEmbedder::bge_small_en_v15(Some(cache_dir)))
 }
