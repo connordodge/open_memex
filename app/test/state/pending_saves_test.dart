@@ -2148,4 +2148,396 @@ void main() {
       },
     );
   });
+
+  // Fix rounds 3 and 4: how a save that lands late meets the editor and the
+  // queue, and how a failed save elsewhere meets an older queued edit.
+  group('a late save meets the editor and the queue', () {
+    /// Plan open; its first save (`new text` on version 3) is held at the
+    /// returned gate.
+    Future<Completer<void>> firstSaveHeld(_H h) async {
+      h.ctrl.loadNote(h.stored(_planId));
+      final first = Completer<void>();
+      h.notes.writeGate = first;
+      await h.typeAndSave('new text');
+      h.notes.writeGate = null;
+      expect(h.state.status, SaveStatus.saving);
+      return first;
+    }
+
+    test(
+      'a save that lands after the note was opened again and not edited shows what it saved and is clean',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        final first = Completer<void>();
+        h.notes.writeGate = first;
+        h.ctrl.onTitleChanged('Plan B');
+        await h.typeAndSave('new text');
+        h.notes.writeGate = null;
+        h.ctrl.loadNote(h.stored(_otherId));
+        h.ctrl.loadNote(h.stored(_planId));
+        expect(h.state.title, 'Plan');
+        expect(h.state.contentMd, 'old');
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 3);
+
+        first.complete();
+        await pumpEventQueue();
+
+        expect(h.stored(_planId).contentMd, 'new text');
+        expect(h.stored(_planId).version, 4);
+        expect(h.state.title, 'Plan B');
+        expect(h.state.contentMd, 'new text');
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 4);
+        _expectNoErrorState(h);
+
+        // Nothing is left to save.
+        await h.fireDebounce();
+        expect(h.notes.updatesOf(_planId), ['updateNote:$_planId@3']);
+        expect(h.queue, isEmpty);
+      },
+    );
+
+    test(
+      'a save that lands while a later save of the note is in flight leaves the editor saving',
+      () async {
+        final h = await _hosted(_plainVault());
+        final first = await firstSaveHeld(h);
+        final second = Completer<void>();
+        h.notes.writeGate = second;
+        await h.typeAndSave('newer text');
+        h.notes.writeGate = null;
+        expect(h.notes.updatesOf(_planId), hasLength(2));
+
+        first.complete();
+        await pumpEventQueue();
+
+        expect(h.stored(_planId).contentMd, 'new text');
+        expect(h.state.contentMd, 'newer text');
+        expect(h.state.status, SaveStatus.saving);
+        expect(h.state.lastSavedVersion, 3);
+        _expectNoErrorState(h);
+        // No third save is scheduled by the first save landing.
+        await h.fireDebounce();
+        expect(h.notes.updatesOf(_planId), hasLength(2));
+        second.complete();
+        await pumpEventQueue();
+      },
+    );
+
+    test(
+      'a save that lands after an edit typed during it leaves the editor dirty and the edit saves on its own debounce',
+      () async {
+        final h = await _hosted(_plainVault());
+        final first = await firstSaveHeld(h);
+        // Typed during the save; its debounce is 400 ms in when the save
+        // lands.
+        h.ctrl.onContentChanged('newer text');
+        h.clock.advance(const Duration(milliseconds: 400));
+        await pumpEventQueue();
+
+        first.complete();
+        await pumpEventQueue();
+
+        expect(h.stored(_planId).contentMd, 'new text');
+        expect(h.stored(_planId).version, 4);
+        expect(h.state.contentMd, 'newer text');
+        expect(h.state.status, SaveStatus.dirty);
+        expect(h.state.lastSavedVersion, 4);
+        _expectNoErrorState(h);
+
+        // The edit's own debounce fires on time (not restarted).
+        h.clock.advance(const Duration(milliseconds: 100));
+        await pumpEventQueue();
+
+        expect(h.notes.updatesOf(_planId), [
+          'updateNote:$_planId@3',
+          'updateNote:$_planId@4',
+        ]);
+        expect(h.stored(_planId).contentMd, 'newer text');
+        expect(h.stored(_planId).version, 5);
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 5);
+        _expectNoErrorState(h);
+      },
+    );
+
+    test(
+      'a save that lands after a later save of an edit failed schedules the edit to save again',
+      () async {
+        final h = await _hosted(_plainVault());
+        final first = await firstSaveHeld(h);
+        // The edit typed during the save is sent and fails at once.
+        h.notes.writeError = MemexException('update failed: disk full');
+        await h.typeAndSave('newer text');
+        expect(h.state.status, SaveStatus.error);
+        h.notes.writeError = null;
+
+        first.complete();
+        await pumpEventQueue();
+
+        expect(h.stored(_planId).contentMd, 'new text');
+        expect(h.stored(_planId).version, 4);
+        expect(h.state.contentMd, 'newer text');
+        expect(h.state.status, SaveStatus.dirty);
+        expect(h.state.lastSavedVersion, 4);
+
+        await h.fireDebounce();
+
+        expect(h.notes.writes.last, 'updateNote:$_planId@4');
+        expect(h.stored(_planId).contentMd, 'newer text');
+        expect(h.stored(_planId).version, 5);
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 5);
+        _expectNoErrorState(h);
+      },
+    );
+
+    test(
+      'an edit of a queued note waits for an older save of the note still in flight and then saves on the version it stored',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        final first = Completer<void>();
+        h.notes.writeGate = first;
+        await h.typeAndSave('new text');
+        h.ctrl.loadNote(h.stored(_otherId));
+        h.ctrl.loadNote(h.stored(_planId));
+        // The status keeps reading connected: only the test changes it.
+        h.notes
+          ..onOutcome = null
+          ..writeGate = null;
+        // The newer save can't reach the server and queues on version 3.
+        h.serverDown();
+        await h.typeAndSave('newer text');
+        expect(h.queued(_planId)!.text, 'newer text');
+        expect(h.queued(_planId)!.baseVersion, 3);
+        h.notes.writeError = null;
+
+        // The person edits the queued note while the first save is held:
+        // nothing is sent yet.
+        await h.typeAndSave('newest text');
+        expect(h.notes.updatesOf(_planId), hasLength(2));
+        expect(h.queued(_planId)!.text, 'newest text');
+        expect(h.state.status, SaveStatus.dirty);
+        _expectNoErrorState(h);
+
+        first.complete();
+        await pumpEventQueue();
+
+        expect(h.notes.updatesOf(_planId), [
+          'updateNote:$_planId@3',
+          'updateNote:$_planId@3',
+          'updateNote:$_planId@4',
+        ]);
+        expect(h.notes.updateBodies.last, 'newest text');
+        expect(h.stored(_planId).contentMd, 'newest text');
+        expect(h.stored(_planId).version, 5);
+        expect(h.queue, isEmpty);
+        expect(h.state.contentMd, 'newest text');
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 5);
+        _expectNoErrorState(h);
+      },
+    );
+
+    // The save elsewhere of a virtual Today edit (held) lands after the
+    // person queued an edit of the created note; [open]: that note is
+    // still open when it lands (else Plan is).
+    for (final (name, open) in [
+      (
+        'a save elsewhere that lands while a later queued edit of the note is open moves the editor onto the queued base',
+        true,
+      ),
+      (
+        'a save elsewhere that lands while a later queued edit of the note is not open leaves the open editor alone',
+        false,
+      ),
+    ]) {
+      test(name, () async {
+        final db = _plainVault();
+        final create = Completer<void>();
+        final cli = FakeMemexCli()
+          ..onUpdateWrites(db)
+          ..onAddDailyCreates(db, gate: create);
+        final h = await _hosted(db, cli: cli);
+        h.c.read(tabsProvider.notifier).openToday(date: _today);
+        h.ctrl.loadNote(virtualTodayNote(_today));
+        await h.typeAndSave('Morning pages');
+        h.ctrl.onContentChanged('Morning pages\nMore.');
+        h.ctrl.loadNote(h.stored(_planId));
+        final elsewhere = Completer<void>();
+        h.notes.writeGate = elsewhere;
+        create.complete();
+        await pumpEventQueue();
+
+        h.notes.writeGate = null;
+        h.ctrl.loadNote(h.stored(createdDailyId));
+        final mine = assembleDailyBody('Mine.\n', const []);
+        h.serverDown();
+        await h.typeAndSave(mine);
+        expect(h.queued(createdDailyId)!.baseVersion, 1);
+        if (!open) h.ctrl.loadNote(h.stored(_planId));
+
+        // It lands; the status keeps reading unreachable, so no retry.
+        h.notes
+          ..onOutcome = null
+          ..writeError = null;
+        elsewhere.complete();
+        await pumpEventQueue();
+
+        expect(h.stored(createdDailyId).version, 2);
+        expect(h.queued(createdDailyId)!.text, mine);
+        expect(h.queued(createdDailyId)!.baseVersion, 2);
+        if (open) {
+          expect(h.state.contentMd, mine);
+          expect(h.state.lastSavedVersion, 2);
+          expect(h.state.status, SaveStatus.dirty);
+        } else {
+          expect(h.state.contentMd, 'old');
+          expect(h.state.lastSavedVersion, 3);
+          expect(h.state.status, SaveStatus.clean);
+        }
+        _expectNoErrorState(h);
+      });
+    }
+
+    /// Daily note [_agentDailyId] (`Agent saw it.`, version 1) queues the
+    /// person's edit [mine] (server down); the status reads unreachable and
+    /// only changes when the test sets it. With [hold], the queued save's
+    /// retry then reaches the server and fails: it is held.
+    Future<_H> agentEditQueued(String mine, {bool hold = false}) async {
+      final db = _plainVault()
+        ..seedNote(
+          id: _agentDailyId,
+          title: _today,
+          content: assembleDailyBody('Agent saw it.\n', const []),
+          role: 'daily',
+          version: 1,
+        );
+      final cli = FakeMemexCli()
+        ..onUpdateWrites(db)
+        ..onAddDailyCreatesOnce(db);
+      final h = await _hosted(db, cli: cli);
+      h.ctrl.loadNote(h.stored(_agentDailyId));
+      h.serverDown();
+      await h.typeAndSave(mine);
+      expect(h.queued(_agentDailyId)!.text, mine);
+      if (hold) {
+        h.notes.writeError = MemexException('update failed: disk full');
+        await h.recoveryThatFails();
+        expect(h.c.read(pendingSaveLabelProvider(_agentDailyId)), isNull);
+        expect(h.notes.updatesOf(_agentDailyId), hasLength(2));
+        setHostedStatus(h.c, HostedConnectionStatus.unreachable);
+      }
+      h.notes
+        ..onOutcome = null
+        ..writeError = null;
+      return h;
+    }
+
+    /// The virtual Today note's create of [typed] answers
+    /// daily_note_exists after the person left it for [leaveTo]; the server
+    /// then stops answering, so its save elsewhere can't reach it.
+    Future<void> saveElsewhereFails(_H h, String typed, Note leaveTo) async {
+      h.c.read(tabsProvider.notifier).openToday(date: _today);
+      h.ctrl.loadNote(virtualTodayNote(_today));
+      final create = Completer<void>();
+      h.notes.writeGate = create;
+      await h.typeAndSave(typed);
+      h.ctrl.loadNote(leaveTo);
+      final writes = h.notes.updatesOf(_agentDailyId).length;
+      h.notes
+        ..writeGate = null
+        ..onOutcome = (_) {
+          h.notes.onOutcome = null;
+          h.serverDown();
+        };
+      create.complete();
+      await pumpEventQueue();
+      expect(h.notes.updatesOf(_agentDailyId), hasLength(writes + 1));
+      expect(h.stored(_agentDailyId).version, 1);
+    }
+
+    test(
+      'a failed save elsewhere adds nothing to a queued edit whose person section already holds the text',
+      () async {
+        final mine = assembleDailyBody('Mine.\nMorning pages\n', ['Plan']);
+        final h = await agentEditQueued(mine);
+
+        await saveElsewhereFails(h, 'Morning pages\n\n', h.stored(_planId));
+
+        expect(h.queued(_agentDailyId)!.text, mine);
+        expect(h.queued(_agentDailyId)!.baseVersion, 1);
+      },
+    );
+
+    test(
+      'a failed save elsewhere appends to a queued edit and keeps its topic chips',
+      () async {
+        final mine = assembleDailyBody('Mine.\n', ['Plan']);
+        final h = await agentEditQueued(mine);
+
+        await saveElsewhereFails(h, 'Morning pages', h.stored(_planId));
+
+        expect(
+          h.queued(_agentDailyId)!.text,
+          assembleDailyBody(appendToPerson('Mine.\n', 'Morning pages'), [
+            'Plan',
+          ]),
+        );
+      },
+    );
+
+    test(
+      'a failed save elsewhere releases a held older queued edit so it waits for the server again',
+      () async {
+        final mine = assembleDailyBody('Mine.\n', const []);
+        final h = await agentEditQueued(mine, hold: true);
+
+        await saveElsewhereFails(h, 'Morning pages', h.stored(_planId));
+
+        final appended = assembleDailyBody(
+          appendToPerson('Mine.\n', 'Morning pages'),
+          const [],
+        );
+        expect(h.queued(_agentDailyId)!.text, appended);
+        expect(
+          h.c.read(pendingSaveLabelProvider(_agentDailyId)),
+          pendingLabelNas,
+        );
+
+        // The next recovery retries it.
+        await h.serverAnswers();
+        expect(h.stored(_agentDailyId).contentMd, appended);
+        expect(h.queue, isEmpty);
+      },
+    );
+
+    test(
+      'a failed save elsewhere shows the appended text in the open editor of the queued note',
+      () async {
+        final mine = assembleDailyBody('Mine.\n', const []);
+        final h = await agentEditQueued(mine);
+
+        await saveElsewhereFails(h, 'Morning pages', h.stored(_agentDailyId));
+
+        final appended = assembleDailyBody(
+          appendToPerson('Mine.\n', 'Morning pages'),
+          const [],
+        );
+        expect(h.queued(_agentDailyId)!.text, appended);
+        expect(h.state.contentMd, appended);
+        expect(h.state.lastSavedVersion, 1);
+        _expectNoErrorState(h);
+
+        await h.serverAnswers();
+        expect(h.stored(_agentDailyId).contentMd, appended);
+        expect(h.queue, isEmpty);
+        expect(h.state.contentMd, appended);
+        expect(h.state.status, SaveStatus.clean);
+      },
+    );
+  });
 }
