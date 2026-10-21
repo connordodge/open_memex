@@ -563,4 +563,313 @@ mod tests {
         assert_eq!(r.body.len(), 5);
         assert!(elapsed.as_millis() < 200, "extractor too slow: {:?}", elapsed);
     }
+
+    // ---------- WI #141: frontmatter positions are each link's own token ----------
+
+    /// Expected frontmatter links as `(kind, nth occurrence of the needle)`.
+    type Wi141Own = &'static [(&'static str, usize)];
+
+    /// Byte offsets of every occurrence of `needle` in `md`, in order.
+    fn wi141_offsets(md: &str, needle: &str) -> Vec<i64> {
+        md.match_indices(needle).map(|(i, _)| i as i64).collect()
+    }
+
+    /// The frontmatter links as sorted `(kind, position)` pairs.
+    fn wi141_fm_kind_positions(r: &ExtractedLinks) -> Vec<(String, i64)> {
+        let mut got: Vec<(String, i64)> = r
+            .frontmatter
+            .iter()
+            .map(|l| (l.link_kind.as_str().to_string(), l.position))
+            .collect();
+        got.sort();
+        got
+    }
+
+    /// `expected` names each link by kind and by which occurrence of `needle`
+    /// in `md` (0-based) is its own token.
+    fn wi141_assert_own_tokens(case: &str, md: &str, needle: &str, expected: &[(&str, usize)]) {
+        let r = extract(md);
+        assert!(!r.frontmatter_parse_error, "{case}: frontmatter must parse");
+        let offsets = wi141_offsets(md, needle);
+        let mut want: Vec<(String, i64)> = expected
+            .iter()
+            .map(|(kind, nth)| ((*kind).to_string(), offsets[*nth]))
+            .collect();
+        want.sort();
+        assert_eq!(
+            wi141_fm_kind_positions(&r),
+            want,
+            "{case}: each frontmatter link sits at its own token in {md:?}"
+        );
+    }
+
+    /// Every link on the note (body and frontmatter) has a distinct position.
+    fn wi141_assert_all_positions_distinct(case: &str, r: &ExtractedLinks) {
+        let mut all: Vec<i64> = r.all().map(|l| l.position).collect();
+        let n = all.len();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), n, "{case}: positions must be unique: {r:?}");
+    }
+
+    #[test]
+    fn frontmatter_same_target_under_two_kinds_gets_own_token_positions() {
+        let md = "---\nextends:\n  - [[Alpha]]\ncontradicts:\n  - [[Alpha]]\n---\nbody";
+        wi141_assert_own_tokens(
+            "two kinds",
+            md,
+            "[[Alpha]]",
+            &[("extends", 0), ("contradicts", 1)],
+        );
+    }
+
+    #[test]
+    fn frontmatter_same_target_under_four_kinds_gets_four_distinct_positions() {
+        let md = "---\nextends:\n  - [[Alpha]]\ncontradicts:\n  - [[Alpha]]\n\
+                  example-of:\n  - [[Alpha]]\ninspired-by:\n  - [[Alpha]]\n---\nbody\n";
+        wi141_assert_own_tokens(
+            "four kinds",
+            md,
+            "[[Alpha]]",
+            &[
+                ("extends", 0),
+                ("contradicts", 1),
+                ("example-of", 2),
+                ("inspired-by", 3),
+            ],
+        );
+    }
+
+    #[test]
+    fn frontmatter_hand_written_link_repeated_under_two_keys_gets_own_positions() {
+        // The WI's hand-written `memex add` body: `notes` is a valid
+        // user-defined kind, so both keys yield a link.
+        let md = "---\nnotes: see [[Alpha]]\nextends:\n  - [[Alpha]]\n---\nbody";
+        wi141_assert_own_tokens(
+            "notes + extends",
+            md,
+            "[[Alpha]]",
+            &[("notes", 0), ("extends", 1)],
+        );
+    }
+
+    #[test]
+    fn frontmatter_link_ignores_identical_text_under_skipped_keys() {
+        let cases: [(&str, &str, Wi141Own); 7] = [
+            (
+                "about above",
+                "---\nabout: [[Alpha]]\nextends:\n  - [[Alpha]]\n---\nbody",
+                &[("extends", 1)],
+            ),
+            (
+                "from-day above",
+                "---\nfrom-day: [[Alpha]]\nextends:\n  - [[Alpha]]\n---\nbody",
+                &[("extends", 1)],
+            ),
+            (
+                "invalid kind key above",
+                "---\n9lives: [[Alpha]]\nextends:\n  - [[Alpha]]\n---\nbody",
+                &[("extends", 1)],
+            ),
+            (
+                "non-string key above",
+                "---\n42: [[Alpha]]\nextends:\n  - [[Alpha]]\n---\nbody",
+                &[("extends", 1)],
+            ),
+            (
+                "nested mapping above",
+                "---\nmeta:\n  extends: [[Alpha]]\nextends:\n  - [[Alpha]]\n---\nbody",
+                &[("extends", 1)],
+            ),
+            (
+                "about between two kinds",
+                "---\nextends: [[Alpha]]\nabout: [[Alpha]]\ncontradicts: [[Alpha]]\n---\nbody",
+                &[("extends", 0), ("contradicts", 2)],
+            ),
+            (
+                "about below",
+                "---\nextends:\n  - [[Alpha]]\nabout: [[Alpha]]\n---\nbody",
+                &[("extends", 0)],
+            ),
+        ];
+        for (case, md, expected) in cases {
+            wi141_assert_own_tokens(case, md, "[[Alpha]]", expected);
+        }
+    }
+
+    #[test]
+    fn frontmatter_repeated_token_under_one_key_gets_successive_offsets() {
+        let cases: [(&str, &str, Wi141Own); 4] = [
+            (
+                "quoted flow list",
+                "---\nextends: [\"[[A]]\", \"[[A]]\"]\n---\nbody",
+                &[("extends", 0), ("extends", 1)],
+            ),
+            (
+                "block list",
+                "---\nextends:\n  - [[A]]\n  - [[A]]\n---\nbody",
+                &[("extends", 0), ("extends", 1)],
+            ),
+            (
+                "one scalar holding two tokens",
+                "---\nextends: \"[[A]] and [[A]]\"\n---\nbody",
+                &[("extends", 0), ("extends", 1)],
+            ),
+            (
+                "block list of three after another kind",
+                "---\ncontradicts: [[A]]\nextends:\n  - [[A]]\n  - [[A]]\n  - [[A]]\n---\nbody",
+                &[
+                    ("contradicts", 0),
+                    ("extends", 1),
+                    ("extends", 2),
+                    ("extends", 3),
+                ],
+            ),
+        ];
+        for (case, md, expected) in cases {
+            wi141_assert_own_tokens(case, md, "[[A]]", expected);
+        }
+    }
+
+    #[test]
+    fn frontmatter_quoted_synonym_and_crlf_keys_point_at_own_tokens() {
+        let cases: [(&str, &str, &str, Wi141Own); 6] = [
+            (
+                "double-quoted keys",
+                "---\n\"extends\":\n  - [[Alpha]]\n\"contradicts\": [[Alpha]]\n---\nbody",
+                "[[Alpha]]",
+                &[("extends", 0), ("contradicts", 1)],
+            ),
+            (
+                "single-quoted key",
+                "---\n'extends': [[Alpha]]\ncontradicts: [[Alpha]]\n---\nbody",
+                "[[Alpha]]",
+                &[("extends", 0), ("contradicts", 1)],
+            ),
+            (
+                "example_of synonym",
+                "---\nexample_of: [[Alpha]]\nextends: [[Alpha]]\n---\nbody",
+                "[[Alpha]]",
+                &[("example-of", 0), ("extends", 1)],
+            ),
+            (
+                "crlf line endings",
+                "---\r\nextends:\r\n  - [[Alpha]]\r\ncontradicts:\r\n  - [[Alpha]]\r\n---\r\nbody",
+                "[[Alpha]]",
+                &[("extends", 0), ("contradicts", 1)],
+            ),
+            (
+                "multibyte title",
+                "---\nextends: [[Café]]\ncontradicts: [[Café]]\n---\nbody",
+                "[[Café]]",
+                &[("extends", 0), ("contradicts", 1)],
+            ),
+            (
+                "labelled then plain",
+                "---\nextends: [[Alpha|shown]]\ncontradicts: [[Alpha]]\n\
+                 example-of: [[Alpha]]\n---\nb",
+                "[[Alpha",
+                &[("extends", 0), ("contradicts", 1), ("example-of", 2)],
+            ),
+        ];
+        for (case, md, needle, expected) in cases {
+            wi141_assert_own_tokens(case, md, needle, expected);
+        }
+    }
+
+    #[test]
+    fn frontmatter_token_without_verbatim_occurrence_gets_unique_non_token_position() {
+        // (case, markdown, needle, kinds whose token has no verbatim
+        //  occurrence, verbatim links as (kind, nth occurrence of needle)).
+        let cases: [(&str, &str, &str, &[&str], Wi141Own); 4] = [
+            (
+                "escaped next to a verbatim token",
+                "---\nextends: \"\\x5B\\x5BAlpha]]\"\ncontradicts:\n  - [[Alpha]]\n---\nbody",
+                "[[Alpha]]",
+                &["extends"],
+                &[("contradicts", 0)],
+            ),
+            (
+                "two escaped tokens",
+                "---\nextends: \"\\x5B\\x5BAlpha]]\"\n\
+                 contradicts: \"\\x5B\\x5BAlpha]]\"\n---\nbody",
+                "[[Alpha]]",
+                &["extends", "contradicts"],
+                &[],
+            ),
+            (
+                "folded scalar",
+                "---\nextends: >-\n  [[Alpha\n  Beta]]\ncontradicts: [[Alpha Beta]]\n---\nbody",
+                "[[Alpha Beta]]",
+                &["extends"],
+                &[("contradicts", 0)],
+            ),
+            (
+                "escaped with the same link in the body",
+                "---\nextends: \"\\x5B\\x5BAlpha]]\"\n---\nSee [[Alpha]] here.\n",
+                "[[Alpha]]",
+                &["extends"],
+                &[],
+            ),
+        ];
+        for (case, md, needle, unverbatim, verbatim) in cases {
+            let r = extract(md);
+            assert!(!r.frontmatter_parse_error, "{case}: frontmatter must parse");
+            assert_eq!(
+                r.frontmatter.len(),
+                unverbatim.len() + verbatim.len(),
+                "{case}: {r:?}"
+            );
+            wi141_assert_all_positions_distinct(case, &r);
+            let offsets = wi141_offsets(md, needle);
+            for (kind, nth) in verbatim {
+                let l = r
+                    .frontmatter
+                    .iter()
+                    .find(|l| l.link_kind.as_str() == *kind)
+                    .unwrap_or_else(|| panic!("{case}: no {kind} link"));
+                assert_eq!(l.position, offsets[*nth], "{case}: {kind} at its own token");
+            }
+            for kind in unverbatim {
+                let l = r
+                    .frontmatter
+                    .iter()
+                    .find(|l| l.link_kind.as_str() == *kind)
+                    .unwrap_or_else(|| panic!("{case}: no {kind} link"));
+                let at = usize::try_from(l.position)
+                    .ok()
+                    .and_then(|p| md.get(p..))
+                    .unwrap_or("");
+                assert!(
+                    !at.starts_with("[["),
+                    "{case}: {kind} has no verbatim token, so its position {} must not \
+                     start a `[[` token: {at:?}",
+                    l.position
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn body_positions_keep_regex_offsets_when_frontmatter_repeats_tokens() {
+        let md = "---\nextends: [[Alpha]]\ncontradicts: [[Alpha]]\n---\n\
+                  See [[Alpha]] and [[Alpha~extends]] and ![[2026-10-01#^ab]].\n";
+        let r = extract(md);
+        let body_start = md.find("See ").unwrap();
+        let want: Vec<(String, i64)> = vec![
+            ("references".into(), (body_start + "See ".len()) as i64),
+            (
+                "extends".into(),
+                md.find("[[Alpha~extends]]").unwrap() as i64,
+            ),
+            ("from-day".into(), md.find("![[2026-10-01").unwrap() as i64),
+        ];
+        let got: Vec<(String, i64)> = r
+            .body
+            .iter()
+            .map(|l| (l.link_kind.as_str().to_string(), l.position))
+            .collect();
+        assert_eq!(got, want, "body positions are the regex offsets");
+        wi141_assert_all_positions_distinct("body + repeated frontmatter", &r);
+    }
 }

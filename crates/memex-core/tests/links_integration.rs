@@ -802,3 +802,207 @@ fn schema_v3_migration_is_idempotent_on_fresh_vault() {
         )
         .unwrap_or(0);
 }
+
+// ---------- WI #141: frontmatter positions stay unique ----------
+
+/// A `Target` note plus a `Source` note holding `content`, both saved. The
+/// source is NOT indexed, so the caller sees the reindex result.
+fn wi141_source_and_target(content: &str) -> (tempfile::TempDir, Vault, String) {
+    let (dir, mut vault) = fresh_vault();
+    create_note(
+        &mut vault,
+        CreateNote {
+            title: Some("Target".into()),
+            content_md: "# Target\n".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let src = create_note(
+        &mut vault,
+        CreateNote {
+            title: Some("Source".into()),
+            content_md: content.into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    (dir, vault, src.id.as_str().to_string())
+}
+
+fn wi141_content_and_version(vault: &Vault, id: &str) -> (String, i64) {
+    vault
+        .connection_ref()
+        .query_row(
+            "SELECT content_md, version FROM notes WHERE id = ?",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+}
+
+/// `(kind, position, label)` of every outgoing link, by position.
+fn wi141_links(vault: &Vault, id: &str) -> Vec<(String, i64, Option<String>)> {
+    links::links_out_for_note(vault, id)
+        .unwrap()
+        .into_iter()
+        .map(|l| (l.link_kind.as_str().to_string(), l.position, l.label))
+        .collect()
+}
+
+fn wi141_offsets(md: &str, needle: &str) -> Vec<i64> {
+    md.match_indices(needle).map(|(i, _)| i as i64).collect()
+}
+
+#[test]
+fn reindex_indexes_same_wikilink_under_two_frontmatter_kind_keys() {
+    let content = "---\nnotes: see [[Target]]\nextends:\n  - [[Target]]\n---\nbody\n";
+    let (_dir, mut vault, src) = wi141_source_and_target(content);
+
+    indexer::reindex_note(vault.connection_mut(), &src, content, None)
+        .expect("a note repeating a wikilink under two kind keys must index");
+
+    let at = wi141_offsets(content, "[[Target]]");
+    assert_eq!(
+        wi141_links(&vault, &src),
+        vec![
+            ("notes".to_string(), at[0], None),
+            ("extends".to_string(), at[1], None),
+        ]
+    );
+}
+
+#[test]
+fn reindex_indexes_repeated_token_under_one_key_at_successive_offsets() {
+    let content = "---\nextends:\n  - [[Target]]\n  - [[Target]]\n---\nbody\n";
+    let (_dir, mut vault, src) = wi141_source_and_target(content);
+
+    indexer::reindex_note(vault.connection_mut(), &src, content, None)
+        .expect("two identical tokens under one key must index");
+
+    let at = wi141_offsets(content, "[[Target]]");
+    assert_eq!(
+        wi141_links(&vault, &src),
+        vec![
+            ("extends".to_string(), at[0], None),
+            ("extends".to_string(), at[1], None),
+        ]
+    );
+}
+
+#[test]
+fn update_link_label_below_skipped_about_key_rewrites_only_its_own_token() {
+    let content = "---\nabout: [[Target]]\nextends:\n  - [[Target]]\n---\n# Source\n";
+    let (_dir, mut vault, src) = wi141_source_and_target(content);
+    indexer::reindex_note(vault.connection_mut(), &src, content, None).unwrap();
+
+    let own = content.rfind("[[Target]]").unwrap() as i64;
+    let link = links::links_out_for_note(&vault, &src).unwrap()[0].clone();
+    assert_eq!(link.link_kind.as_str(), "extends");
+    assert_eq!(link.position, own, "the extends link sits at its own token");
+
+    let updated = links::update_link(
+        &mut vault,
+        &link.id,
+        links::UpdateLink {
+            new_kind: None,
+            new_label: Some(Some("X".into())),
+        },
+    )
+    .expect("update-link on the extends link succeeds");
+    assert_eq!(updated.label.as_deref(), Some("X"));
+    assert_eq!(updated.position, own);
+
+    let (body, _) = wi141_content_and_version(&vault, &src);
+    assert_eq!(
+        body,
+        "---\nabout: [[Target]]\nextends:\n  - [[Target|X]]\n---\n# Source\n"
+    );
+    assert_eq!(
+        wi141_links(&vault, &src),
+        vec![("extends".to_string(), own, Some("X".to_string()))]
+    );
+}
+
+#[test]
+fn update_link_on_frontmatter_token_without_verbatim_occurrence_is_not_found() {
+    // `\x5B\x5BTarget]]` decodes to `[[Target]]` but never appears verbatim.
+    let content =
+        "---\nextends: \"\\x5B\\x5BTarget]]\"\ncontradicts:\n  - [[Target]]\n---\n# Source\n";
+    let (_dir, mut vault, src) = wi141_source_and_target(content);
+    indexer::reindex_note(vault.connection_mut(), &src, content, None)
+        .expect("an escaped token next to a verbatim one must index");
+
+    let all = links::links_out_for_note(&vault, &src).unwrap();
+    assert_eq!(all.len(), 2, "{all:?}");
+    let contradicts = all
+        .iter()
+        .find(|l| l.link_kind.as_str() == "contradicts")
+        .unwrap();
+    assert_eq!(
+        contradicts.position,
+        content.find("[[Target]]").unwrap() as i64
+    );
+    let escaped = all
+        .iter()
+        .find(|l| l.link_kind.as_str() == "extends")
+        .unwrap()
+        .clone();
+    assert_ne!(escaped.position, contradicts.position);
+
+    let before = wi141_content_and_version(&vault, &src);
+    let links_before = wi141_links(&vault, &src);
+    let err = links::update_link(
+        &mut vault,
+        &escaped.id,
+        links::UpdateLink {
+            new_kind: None,
+            new_label: Some(Some("X".into())),
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, MemexError::NotFound(_)), "got {err:?}");
+    assert_eq!(wi141_content_and_version(&vault, &src), before);
+    assert_eq!(wi141_links(&vault, &src), links_before);
+}
+
+#[test]
+fn next_save_of_note_left_with_repeated_tokens_reindexes_links_and_fts() {
+    // The state a failed reindex leaves on main: the note's content holds two
+    // identical frontmatter tokens, but its index is stale (never written).
+    let stale = "---\nextends:\n  - [[Target]]\ncontradicts:\n  - [[Target]]\n---\nold\n";
+    let (_dir, mut vault, src) = wi141_source_and_target(stale);
+    let (_, version) = wi141_content_and_version(&vault, &src);
+
+    let next = "---\nextends:\n  - [[Target]]\ncontradicts:\n  - [[Target]]\n---\nzebrafinch\n";
+    let saved = update_note(
+        &mut vault,
+        &memex_core::notes::NoteId::parse(&src).unwrap(),
+        version,
+        UpdateNote {
+            content_md: Some(next.into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    indexer::reindex_note(vault.connection_mut(), &src, &saved.content_md, None)
+        .expect("the next save reindexes cleanly, with no migration");
+
+    let at = wi141_offsets(next, "[[Target]]");
+    assert_eq!(
+        wi141_links(&vault, &src),
+        vec![
+            ("extends".to_string(), at[0], None),
+            ("contradicts".to_string(), at[1], None),
+        ]
+    );
+    let hits: i64 = vault
+        .connection_ref()
+        .query_row(
+            "SELECT COUNT(*) FROM chunk_fts WHERE note_id = ? AND chunk_fts MATCH 'zebrafinch'",
+            params![src],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(hits > 0, "FTS holds the saved content");
+}
