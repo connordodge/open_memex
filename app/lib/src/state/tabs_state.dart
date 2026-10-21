@@ -377,6 +377,19 @@ final tabsProvider = StateNotifierProvider<TabsNotifier, TabsState>((ref) {
     todayDate: vaultPath == null ? null : ref.read(todayDateProvider),
     todayNoteId: vaultPath == null ? null : ref.read(todayNoteProvider)?.noteId,
   );
+  // Today's note is an async read (#78, D14a): until it lands the launch
+  // shows the virtual Today tab, which then resolves onto today's stored
+  // daily note when there is one.
+  final launchDate = vaultPath == null ? null : ref.read(todayDateProvider);
+  if (launchDate != null && ref.read(todayNoteProvider) == null) {
+    final vault = ref.read(currentVaultProvider);
+    ref.read(todayNoteAsyncProvider.future).then((today) {
+      final row = today.value;
+      if (!notifier.mounted || today.vault != vault || row == null) return;
+      if (row.date != launchDate) return;
+      notifier.resolveVirtualToday(date: launchDate, noteId: row.noteId);
+    }, onError: (Object _) {});
+  }
   return notifier;
 });
 

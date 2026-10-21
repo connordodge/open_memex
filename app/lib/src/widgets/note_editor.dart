@@ -5,12 +5,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../db.dart';
 import '../state/editor_controller.dart';
+import '../state/pending_saves.dart';
 import '../state/tabs_state.dart' show VirtualTodayTab;
 import '../state/today_state.dart';
 import '../state/topic_actions.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
+import '../vault_access/vault_scoped.dart';
 import 'atoms.dart';
 import 'editor/editor_toolbar.dart';
 import 'editor/note_header.dart';
@@ -26,7 +28,8 @@ import 'editor/source_surface.dart';
 /// switches it to the single plain [SourceSurface] field and back (WI #27).
 /// Opening another note starts in the segmented view again.
 ///
-/// The selected note comes from [editorNoteProvider], so a virtual Today tab
+/// The selected note comes from [editorNoteAsyncProvider] (D14a: nothing
+/// while a vault's first read is pending or from another vault), so a virtual Today tab
 /// (#22) shows as an empty, unsaved daily note. Opening a daily note puts
 /// the cursor at the end of its focused body, ready to type.
 class NoteEditor extends ConsumerStatefulWidget {
@@ -126,14 +129,17 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
 
   @override
   Widget build(BuildContext context) {
-    final note = ref.watch(editorNoteProvider);
+    final note = watchVaultValue(ref, editorNoteAsyncProvider, null);
     final editor = ref.watch(editorControllerProvider);
     final controller = ref.read(editorControllerProvider.notifier);
     final vaultPath = ref.watch(currentVaultProvider).localPath;
 
-    ref.listen<Note?>(
-      editorNoteProvider,
-      (_, curr) => _hydrate(curr, controller),
+    ref.listen<AsyncValue<VaultScoped<Note?>>>(
+      editorNoteAsyncProvider,
+      (_, curr) => _hydrate(
+        currentVaultData(curr, ref.read(currentVaultProvider))?.value,
+        controller,
+      ),
     );
     if (note != null && _hydratedFor != note.id) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -148,6 +154,7 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
             note: note,
             titleCtrl: _titleCtrl,
             onTitleChanged: controller.onTitleChanged,
+            pendingLabel: ref.watch(pendingSaveLabelProvider(note.id)),
           );
 
     // Returns a plain Container (not Expanded): each call site places this in
@@ -227,7 +234,7 @@ class _StatusBar extends StatelessWidget {
       SaveStatus.idle => ('idle', OmColors.fg3),
       SaveStatus.dirty => ('unsaved', OmColors.warn),
       SaveStatus.saving => ('saving…', OmColors.fg2),
-      SaveStatus.clean => ('synced', OmColors.accent),
+      SaveStatus.clean => ('saved', OmColors.accent),
       SaveStatus.error => ('save failed', OmColors.danger),
       SaveStatus.conflict => ('conflict', OmColors.danger),
     };

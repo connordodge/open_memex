@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';
+import 'package:open_memex_app/src/state/vault_state.dart';
 
 Note _note(String id) => Note(
   id: id,
@@ -20,7 +21,10 @@ void main() {
   test(
     'activeNoteId is null with nothing open and the open note id otherwise',
     () {
-      final container = ProviderContainer();
+      // The editor follows the open vault (#102): no vault is open here.
+      final container = ProviderContainer(
+        overrides: [currentVaultProvider.overrideWith((_) => null)],
+      );
       addTearDown(container.dispose);
       final editor = container.read(editorControllerProvider.notifier);
 
