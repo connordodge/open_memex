@@ -1359,6 +1359,171 @@ void main() {
     }
   });
 
+  group('undo steps (verify)', () {
+    testWidgets(
+      'a failed token restore still restores the saved server name and url',
+      (tester) async {
+        final tokens = Wi98GatedTokenStore();
+        final env = await pumpWi98Host(
+          tester,
+          server: _server(),
+          seed: [(name: 'old nas', url: _url, token: 'tok-old-98')],
+          tokenStore: tokens,
+        );
+        final id = env.saved.single.id;
+        await env.open();
+        await env.fill(name: 'nas home', url: _url, token: _token);
+        tokens.hold();
+
+        await env.submit();
+        expect(wi98Connecting(), findsOneWidget, reason: 'save in flight');
+        await tester.tap(find.byKey(kWi98Cancel));
+        await tester.pumpAndSettle();
+
+        // The save lands; the undo's token restore hits a Keychain error.
+        final callsBefore = tokens.calls.length;
+        tokens.failWrites = true;
+        tokens.release();
+        await env.pumpFrames();
+        await tester.pumpAndSettle();
+
+        expect(tester.takeException(), isNull);
+        expect(
+          tokens.calls.skip(callsBefore),
+          contains('write $id'),
+          reason: 'the token restore ran and failed',
+        );
+        expect(
+          [for (final s in env.saved) (s.id, s.name, s.url)],
+          [(id, 'old nas', _url)],
+          reason: 'the name and url are restored although the token was not',
+        );
+        expect(await env.prefsWith('nas home'), isEmpty);
+      },
+    );
+
+    testWidgets(
+      'a failed token restore in edit still restores the name and url',
+      (tester) async {
+        final tokens = Wi98GatedTokenStore();
+        final env = await pumpWi98Host(
+          tester,
+          server: _server(),
+          seed: [(name: 'old nas', url: _url, token: 'tok-old-98')],
+          editIndex: 0,
+          tokenStore: tokens,
+        );
+        final id = env.edit!.id;
+        await env.open();
+        await env.fill(
+          name: 'nas home',
+          url: 'http://nas2.local:7878',
+          token: _token,
+        );
+        tokens.hold();
+
+        await env.submit();
+        expect(wi98Connecting(), findsOneWidget, reason: 'update in flight');
+        await tester.tap(find.byKey(kWi98Cancel));
+        await tester.pumpAndSettle();
+        expect(env.result, isNull);
+
+        final callsBefore = tokens.calls.length;
+        tokens.failWrites = true;
+        tokens.release();
+        await env.pumpFrames();
+        await tester.pumpAndSettle();
+
+        expect(tester.takeException(), isNull);
+        expect(
+          tokens.calls.skip(callsBefore),
+          contains('write $id'),
+          reason: 'the token restore ran and failed',
+        );
+        expect(
+          [for (final s in env.saved) (s.id, s.name, s.url)],
+          [(id, 'old nas', _url)],
+          reason: 'the name and url are restored although the token was not',
+        );
+        expect(await env.prefsWith('nas2.local'), isEmpty);
+      },
+    );
+
+    testWidgets(
+      'the undo of a cancelled new server save removes it through removeServer',
+      (tester) async {
+        final tokens = Wi98GatedTokenStore();
+        final env = await pumpWi98Host(
+          tester,
+          server: _server(),
+          tokenStore: tokens,
+        );
+        await env.open();
+        await env.fill(name: 'nas', url: _url, token: _token);
+        final callsBefore = tokens.calls.length;
+        tokens.hold();
+
+        await env.submit();
+        expect(wi98Connecting(), findsOneWidget, reason: 'save in flight');
+        await tester.tap(find.byKey(kWi98Cancel));
+        await tester.pumpAndSettle();
+        tokens.release();
+        await env.pumpFrames();
+        await tester.pumpAndSettle();
+
+        final calls = tokens.calls.skip(callsBefore).toList();
+        expect(calls, hasLength(2), reason: 'the save write, then the undo');
+        expect(calls.first, startsWith('write '));
+        final id = calls.first.substring('write '.length);
+        expect(
+          calls.last,
+          'delete $id',
+          reason: 'removeServer deletes the new server token',
+        );
+        _expectNothingSaved(env);
+      },
+    );
+
+    testWidgets(
+      'cancel during the save of a connect to a saved url with an empty token restores its token',
+      (tester) async {
+        final tokens = Wi98GatedTokenStore();
+        final env = await pumpWi98Host(
+          tester,
+          server: FakeVaultServer(token: '')..serveDomain('server'),
+          seed: [(name: 'old nas', url: _url, token: 'tok-old-98')],
+          tokenStore: tokens,
+        );
+        final id = env.saved.single.id;
+        await env.open();
+        await env.fill(name: 'nas home', url: _url);
+        tokens.hold();
+
+        await env.submit();
+        expect(env.server.requests, hasLength(1), reason: 'probe answered');
+        expect(wi98Connecting(), findsOneWidget, reason: 'save in flight');
+        await tester.tap(find.byKey(kWi98Cancel));
+        await tester.pumpAndSettle();
+        expect(env.result, isNull);
+
+        tokens.release();
+        await env.pumpFrames();
+        await tester.pumpAndSettle();
+
+        expect(
+          [for (final s in env.saved) (s.id, s.name, s.url)],
+          [(id, 'old nas', _url)],
+        );
+        expect(
+          env.tokens.tokens,
+          {id: 'tok-old-98'},
+          reason:
+              'connect wrote the empty token, so the undo writes the old one back',
+        );
+      },
+    );
+  });
+
   group('seams', () {
     test(
       'the connect dialog http client seam defaults to a real http client',
