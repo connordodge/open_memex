@@ -12,6 +12,7 @@
 //   and still opens.
 //
 // Seams: test/support/vault_picker_harness.dart.
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -498,6 +499,60 @@ void main() {
       expect(find.byKey(const Key('recent-row-opening')), findsNothing);
     });
   });
+
+  group('row hover', () {
+    testWidgets(
+      'hovering a row that opens fills it surface3 and leaving restores surface2',
+      (tester) async {
+        await pumpVaultPicker(tester, recents: const [_memex]);
+        expect(_rowFill(tester, 0), OmColors.surface2);
+
+        final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+        addTearDown(mouse.removePointer);
+        await mouse.addPointer(location: Offset.zero);
+        await mouse.moveTo(
+          tester.getTopLeft(find.byKey(const Key('recent-row-0'))) +
+              const Offset(18, 18),
+        );
+        await tester.pump();
+        expect(_rowFill(tester, 0), OmColors.surface3);
+
+        await mouse.moveTo(Offset.zero);
+        await tester.pump();
+        expect(_rowFill(tester, 0), OmColors.surface2);
+      },
+    );
+
+    testWidgets('hovering a row that does not open keeps it surface2', (
+      tester,
+    ) async {
+      await pumpVaultPicker(
+        tester,
+        recents: const [_memex],
+        beforePump: _holdNas,
+        recorded: {_memex: const RecentRowFailed(_schema)},
+      );
+
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      addTearDown(mouse.removePointer);
+      await mouse.addPointer(location: Offset.zero);
+      await mouse.moveTo(
+        tester.getTopLeft(find.byKey(const Key('recent-row-0'))) +
+            const Offset(18, 18),
+      );
+      await tester.pump();
+      expect(_rowFill(tester, 0), OmColors.surface2);
+    });
+  });
+}
+
+/// The fill of row [n]'s decorated container.
+Color? _rowFill(WidgetTester tester, int n) {
+  final boxes = tester.widgetList<Container>(
+    wi97Inside('recent-row-$n', find.byType(Container)),
+  );
+  final decorated = boxes.firstWhere((c) => c.decoration is BoxDecoration);
+  return (decorated.decoration! as BoxDecoration).color;
 }
 
 /// Taps row [n] on its icon, clear of the trailing buttons (the test font
