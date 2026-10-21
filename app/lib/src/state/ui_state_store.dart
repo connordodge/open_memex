@@ -12,20 +12,27 @@ import 'vault_state.dart';
 /// `<vault>/.memex/ui_state.json` for a local vault; for a hosted vault a
 /// store under `<app support>/hosted/<serverId>/<vaultName>` (D19), so two
 /// vaults of one name on different servers keep separate state and nothing
-/// is written in any vault folder. Null with no vault open.
+/// is written in any vault folder. Null with no vault open, and for a
+/// hosted vault while no app-support dir is set (`appSupportDirProvider`
+/// not overridden, as in tests that never open one through `main()`).
 final uiStateStoreProvider = Provider<UiStateStore?>((ref) {
   final vault = ref.watch(currentVaultProvider);
-  return switch (vault) {
-    null => null,
-    LocalVaultRef(:final path) => UiStateStore(vaultPath: path),
-    HostedVaultRef(:final serverId, :final vaultName) => UiStateStore(
-      vaultPath: hostedUiStateDir(
-        ref.watch(appSupportDirProvider),
-        serverId,
-        vaultName,
-      ),
-    ),
-  };
+  switch (vault) {
+    case null:
+      return null;
+    case LocalVaultRef(:final path):
+      return UiStateStore(vaultPath: path);
+    case HostedVaultRef(:final serverId, :final vaultName):
+      final String appSupport;
+      try {
+        appSupport = ref.watch(appSupportDirProvider);
+      } on UnimplementedError {
+        return null;
+      }
+      return UiStateStore(
+        vaultPath: hostedUiStateDir(appSupport, serverId, vaultName),
+      );
+  }
 });
 
 /// `<appSupport>/hosted/<serverId>/<vaultName>`, each name one encoded path
