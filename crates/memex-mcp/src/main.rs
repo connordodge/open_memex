@@ -1,20 +1,15 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use memex_core::links::{self as core_links, LinkKind};
 use memex_core::notes::{get_note as core_get_note, list_notes, NoteId};
 use memex_core::{SystemClock, Vault};
-use rmcp::transport::stdio;
-use rmcp::ServiceExt;
-use tracing_subscriber::EnvFilter;
 
 use memex_mcp::cli::{self, InvalidArgument, Role};
 use memex_mcp::ops;
-use memex_mcp::state::{build_default_embedder, AppState};
-use memex_mcp::tools;
+use memex_mcp::state::build_default_embedder;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -34,6 +29,8 @@ enum Commands {
         /// Vault directory (created if it doesn't exist).
         path: PathBuf,
     },
+    /// Vault folder checks (`vault check`).
+    Vault(cli::vault::VaultArgs),
     /// Append a note to a vault from CLI input. Body comes from stdin.
     Add {
         /// Vault directory.
@@ -173,18 +170,9 @@ enum Commands {
     Folder(cli::folder::FolderArgs),
     /// Read or change vault settings.
     Settings(cli::settings::SettingsArgs),
-    /// Run as an MCP server over stdio.
-    Serve {
-        /// Vault directory.
-        #[arg(long)]
-        vault: PathBuf,
-        /// Use real embeddings (downloads BGE-small on first search/index).
-        #[arg(long)]
-        with_embeddings: bool,
-        /// Log level filter (default: info). Logs go to <vault>/.memex/mcp.log.
-        #[arg(long, default_value = "info")]
-        log_level: String,
-    },
+    /// Run as an MCP server over stdio, as the vault server over HTTP, or as
+    /// a stdio bridge to a hosted vault.
+    Serve(cli::serve::ServeArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -284,6 +272,7 @@ async fn main() -> ExitCode {
 async fn dispatch(command: Commands) -> Result<()> {
     match command {
         Commands::Init { path } => cmd_init(path),
+        Commands::Vault(args) => cli::vault::run(args),
         Commands::Add {
             vault,
             title,
@@ -345,11 +334,7 @@ async fn dispatch(command: Commands) -> Result<()> {
         Commands::Footer(args) => cli::footer::run(args),
         Commands::Folder(args) => cli::folder::run(args),
         Commands::Settings(args) => cli::settings::run(args),
-        Commands::Serve {
-            vault,
-            with_embeddings,
-            log_level,
-        } => cmd_serve(vault, with_embeddings, log_level).await,
+        Commands::Serve(args) => cli::serve::run(args).await,
     }
 }
 
@@ -703,37 +688,6 @@ fn open_vault(vault_path: PathBuf) -> Result<Vault> {
 /// One JSON line on stdout.
 fn print_json<T: serde::Serialize>(out: &T) -> Result<()> {
     println!("{}", serde_json::to_string(out)?);
-    Ok(())
-}
-
-async fn cmd_serve(vault_path: PathBuf, with_embeddings: bool, log_level: String) -> Result<()> {
-    let absolute = make_absolute(&vault_path)?;
-    let log_dir = absolute.join(".memex");
-    std::fs::create_dir_all(&log_dir).context("create .memex log dir")?;
-    let file_appender = tracing_appender::rolling::daily(&log_dir, "mcp.log");
-    let (nonblocking, _guard) = tracing_appender::non_blocking(file_appender);
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::new(log_level))
-        .with_writer(nonblocking)
-        .with_ansi(false)
-        .try_init();
-
-    tracing::info!(?absolute, with_embeddings, "starting memex-mcp");
-
-    let vault = Vault::open(&absolute).context("open vault")?;
-    let embedder = if with_embeddings {
-        Some(build_default_embedder(&absolute))
-    } else {
-        None
-    };
-    let state = Arc::new(AppState::new(vault, absolute, embedder));
-    let memex = tools::Memex::new(state);
-
-    let service = memex.serve(stdio()).await.context("start MCP service")?;
-    service
-        .waiting()
-        .await
-        .context("MCP service exited unexpectedly")?;
     Ok(())
 }
 

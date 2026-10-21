@@ -7,8 +7,10 @@ import 'package:open_memex_app/src/state/canvas_state.dart' as canvas;
 import 'package:open_memex_app/src/state/links_state.dart' as links;
 import 'package:open_memex_app/src/state/note_state.dart' as note;
 import 'package:open_memex_app/src/state/notes_list_state.dart' as notes_list;
+import 'package:open_memex_app/src/state/vault_ref.dart';
 import 'package:open_memex_app/src/state/vault_state.dart' as vault;
 
+import '../support/editor_access_doubles.dart' show settled;
 import '../support/fake_vault_db.dart';
 
 void main() {
@@ -121,12 +123,14 @@ void main() {
           title: 'alpha',
           content: 'a\n',
         );
+      // TEST-CHANGE (#78): noteTitlesProvider is a facade over an async read
+      // through vaultAccessProvider, which needs an open vault.
       final c = ProviderContainer(
         overrides: [
-          vault.vaultDbProvider.overrideWithValue(db),
           vault.currentVaultProvider.overrideWith(
-            (_) => const vault.LocalVaultRef('/tmp/om-86-split'),
+            (_) => const LocalVaultRef('/om78-split-vault'),
           ),
+          vault.vaultDbProvider.overrideWithValue(db),
           vault.memexCliProvider.overrideWithValue(null),
         ],
       );
@@ -140,7 +144,7 @@ void main() {
         [for (final n in c.read(notes_list.notesListProvider)) n.title],
         ['alpha', 'Beta'],
       );
-      expect(c.read(note.noteTitlesProvider), hasLength(2));
+      expect(await settled(c, note.noteTitlesProvider), hasLength(2));
       expect(c.read(canvas.canvasesProvider), isEmpty);
       expect(
         c.read(links.linksOutProvider('01J9AAAAAAAAAAAAAAAAAAAAAA')),

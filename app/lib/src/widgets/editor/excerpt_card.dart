@@ -2,14 +2,38 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
-import '../../db/daily_reads.dart';
 import '../../editor/excerpt_render.dart';
 import '../../editor/segments.dart';
 import '../../state/tabs_state.dart';
+import '../../state/vault_access_state.dart';
 import '../../state/vault_state.dart';
+import '../../vault_access/vault_scoped.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import '../atoms.dart';
+
+/// The rendered text of one transclusion token through the open vault's
+/// daily domain ([renderExcerpt]), re-read on every vault revision, with the
+/// vault it was rendered for (D14a). Null with no vault open.
+final excerptRenderProvider = FutureProvider.autoDispose
+    .family<
+      VaultScoped<RenderedExcerpt?>,
+      ({String date, String from, String? to})
+    >((ref, token) async {
+      ref.watch(vaultRevisionProvider);
+      final vault = ref.watch(currentVaultProvider);
+      final access = ref.watch(vaultAccessProvider);
+      if (access == null) return VaultScoped(vault, null);
+      return VaultScoped(
+        vault,
+        await renderExcerpt(
+          access.daily,
+          date: token.date,
+          from: token.from,
+          to: token.to,
+        ),
+      );
+    });
 
 /// A read-only excerpt card (Key `excerpt-card-<index>`) for one
 /// transclusion [segment]: the live text of the referenced daily-note blocks
@@ -33,16 +57,14 @@ class ExcerptCard extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    ref.watch(vaultRevisionProvider);
-    final db = ref.watch(vaultDbProvider);
     // No vault open: no note (and no card) to show.
-    if (db == null) return const SizedBox.shrink();
+    if (ref.watch(vaultAccessProvider) == null) return const SizedBox.shrink();
     final date = segment.date;
-    final rendered = renderExcerpt(
-      db,
-      date: date,
-      from: segment.from,
-      to: segment.to,
+    // Until the first render lands the card shows no text.
+    final rendered = watchVaultValue<RenderedExcerpt?>(
+      ref,
+      excerptRenderProvider((date: date, from: segment.from, to: segment.to)),
+      null,
     );
     return Container(
       key: Key('excerpt-card-$index'),
@@ -84,10 +106,10 @@ class ExcerptCard extends ConsumerWidget {
           const SizedBox(height: 4),
           // One text run: the blocks joined with `\n` (C4).
           Text(
-            rendered.text,
+            rendered?.text ?? '',
             style: OmType.mono(
               size: 13.5,
-              color: rendered.removed ? OmColors.fg3 : OmColors.fg1,
+              color: rendered?.removed ?? false ? OmColors.fg3 : OmColors.fg1,
               height: 1.7,
             ),
           ),
@@ -96,10 +118,14 @@ class ExcerptCard extends ConsumerWidget {
     );
   }
 
-  /// Opens the daily note of the card's date as the active tab.
-  void _openDay(WidgetRef ref) {
-    final id = ref.read(vaultDbProvider)?.dailyNoteForDate(segment.date);
-    if (id == null) return;
-    ref.read(tabsProvider.notifier).openOrFocus(NoteTab(id.noteId));
+  /// Opens the daily note of the card's date as the active tab, looked up
+  /// through the daily domain.
+  Future<void> _openDay(WidgetRef ref) async {
+    final access = ref.read(vaultAccessProvider);
+    if (access == null) return;
+    final tabs = ref.read(tabsProvider.notifier);
+    final row = await access.daily.dailyNoteForDate(segment.date);
+    if (row == null || !tabs.mounted) return;
+    tabs.openOrFocus(NoteTab(row.noteId));
   }
 }
