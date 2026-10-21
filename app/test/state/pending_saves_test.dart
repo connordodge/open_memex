@@ -10,6 +10,7 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db.dart';
+import 'package:open_memex_app/src/editor/conflict_merge.dart';
 import 'package:open_memex_app/src/editor/segments.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
 import 'package:open_memex_app/src/state/clock.dart';
@@ -2013,6 +2014,78 @@ void main() {
           splitDailyBody(h.stored(_agentDailyId).contentMd).person,
           contains('Mine.'),
         );
+        expect(h.queue, isEmpty);
+      },
+    );
+
+    // Lead ruling (fix round 4): a failed save elsewhere never puts its
+    // content over an older queued edit of the note; the virtual Today
+    // text it carried is appended to the queued person section (C3.1).
+    test(
+      'a save elsewhere that fails while an older edit of the note is queued keeps the queued text',
+      () async {
+        final db = _plainVault()
+          ..seedNote(
+            id: _agentDailyId,
+            title: _today,
+            content: assembleDailyBody('Agent saw it.\n', const []),
+            role: 'daily',
+            version: 1,
+          );
+        final cli = FakeMemexCli()
+          ..onUpdateWrites(db)
+          ..onAddDailyCreatesOnce(db);
+        final h = await _hosted(db, cli: cli);
+        // Today's note, opened as a note, queues an edit.
+        h.ctrl.loadNote(h.stored(_agentDailyId));
+        final mine = assembleDailyBody('Mine.\n', const []);
+        h.serverDown();
+        await h.typeAndSave(mine);
+        expect(h.queued(_agentDailyId)!.text, mine);
+        // The status changes only when the test sets it.
+        h.notes
+          ..onOutcome = null
+          ..writeError = null;
+
+        // The virtual Today note's create answers daily_note_exists after
+        // the person left it; the server then stops answering, so its save
+        // elsewhere can't reach it.
+        h.c.read(tabsProvider.notifier).openToday(date: _today);
+        h.ctrl.loadNote(virtualTodayNote(_today));
+        final create = Completer<void>();
+        h.notes.writeGate = create;
+        await h.typeAndSave('Morning pages');
+        h.ctrl.loadNote(h.stored(_planId));
+        h.notes
+          ..writeGate = null
+          ..onOutcome = (_) {
+            h.notes.onOutcome = null;
+            h.serverDown();
+          };
+        create.complete();
+        await pumpEventQueue();
+        expect(h.notes.updatesOf(_agentDailyId), hasLength(2));
+        expect(h.stored(_agentDailyId).version, 1);
+
+        // The queued edit keeps its text and base; the virtual Today text
+        // is appended to its person section.
+        final queued = h.queued(_agentDailyId)!;
+        expect(
+          queued.text,
+          assembleDailyBody(
+            appendToPerson('Mine.\n', 'Morning pages'),
+            const [],
+          ),
+        );
+        expect(queued.baseVersion, 1);
+        expect(h.c.read(notePendingSaveProvider(_agentDailyId)), isTrue);
+
+        // The server answers: the queued edit retries and saves both.
+        await h.serverAnswers();
+        final person = splitDailyBody(h.stored(_agentDailyId).contentMd).person;
+        expect(person, contains('Mine.'));
+        expect(person, contains('Morning pages'));
+        expect(person, isNot(contains('Agent saw it.')));
         expect(h.queue, isEmpty);
       },
     );
