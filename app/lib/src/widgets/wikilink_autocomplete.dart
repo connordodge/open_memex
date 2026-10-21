@@ -394,8 +394,7 @@ class WikilinkAutocompleteState extends ConsumerState<WikilinkAutocomplete> {
       } else {
         if (cli == null || vaultPath == null) return;
         final created = await createLinkedTopic(
-          cli,
-          vaultPath: vaultPath,
+          ref.read(vaultAccessProvider)!,
           title: title,
           contentMd: topicNoteBody(title),
           dailyNoteId: dailyId,

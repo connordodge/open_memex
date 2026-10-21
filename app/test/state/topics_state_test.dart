@@ -40,15 +40,21 @@ FakeVaultDb _v5() {
 void _bump(ProviderContainer c) =>
     c.read(vaultRevisionProvider.notifier).state++;
 
+/// The tree facade once the async read for the current vault has completed.
+Future<TopicsTree> _loadedTree(ProviderContainer c) async {
+  await c.read(smartFolderTreeAsyncProvider.future);
+  return c.read(smartFolderTreeProvider);
+}
+
 List<String> _ids(List<FolderNode> nodes) => [for (final n in nodes) n.id];
 
 void main() {
   group('smartFolderTreeProvider (AC1)', () {
-    test('builds the tree from the Smart Folder reads', () {
+    test('builds the tree from the Smart Folder reads', () async {
       final db = _v5()..seedTopicsFixture();
       final c = _container(db: db);
 
-      final tree = c.read(smartFolderTreeProvider);
+      final tree = await _loadedTree(c);
 
       // Sorted case-insensitively: Games before health.
       expect(_ids(tree.folders), [TP.games, TP.health]);
@@ -75,7 +81,7 @@ void main() {
 
     test(
       'rebuilds after a vault revision bump so a seeded new folder appears',
-      () {
+      () async {
         final db = _v5()..seedTopicsFixture();
         final c = _container(db: db);
         final seen = <List<String>>[];
@@ -84,6 +90,8 @@ void main() {
           (_, next) => seen.add(_ids(next.folders)),
           fireImmediately: true,
         );
+        await c.read(smartFolderTreeAsyncProvider.future);
+        await pumpEventQueue();
         expect(seen.last, [TP.games, TP.health]);
 
         db.seedSmartFolder('f-new', 'Archive');
@@ -94,6 +102,8 @@ void main() {
         ]);
 
         _bump(c);
+        await c.read(smartFolderTreeAsyncProvider.future);
+        await pumpEventQueue();
 
         expect(_ids(c.read(smartFolderTreeProvider).folders), [
           'f-new',
@@ -104,66 +114,68 @@ void main() {
       },
     );
 
-    test('a membership added after the first read shows after a bump', () {
-      final db = _v5()..seedTopicsFixture();
-      final c = _container(db: db);
-      expect(
-        c.read(smartFolderTreeProvider).unsorted.notes.map((n) => n.noteId),
-        contains(TP.looseNote),
-      );
+    test(
+      'a membership added after the first read shows after a bump',
+      () async {
+        final db = _v5()..seedTopicsFixture();
+        final c = _container(db: db);
+        expect(
+          (await _loadedTree(c)).unsorted.notes.map((n) => n.noteId),
+          contains(TP.looseNote),
+        );
 
-      db.seedFolderMember(TP.health, TP.looseNote);
-      _bump(c);
+        db.seedFolderMember(TP.health, TP.looseNote);
+        _bump(c);
 
-      final tree = c.read(smartFolderTreeProvider);
-      expect(tree.unsorted.notes.map((n) => n.noteId), [TP.orphan]);
-      final health = tree.folders.firstWhere((f) => f.id == TP.health);
-      expect(health.topics.map((t) => t.noteId), contains(TP.looseNote));
-    });
+        final tree = await _loadedTree(c);
+        expect(tree.unsorted.notes.map((n) => n.noteId), [TP.orphan]);
+        final health = tree.folders.firstWhere((f) => f.id == TP.health);
+        expect(health.topics.map((t) => t.noteId), contains(TP.looseNote));
+      },
+    );
 
-    test('an empty V5 vault gives an empty tree', () {
+    test('an empty V5 vault gives an empty tree', () async {
       final c = _container(db: _v5());
 
-      final tree = c.read(smartFolderTreeProvider);
+      final tree = await _loadedTree(c);
 
       expect(tree.isEmpty, isTrue);
       expect(tree.folders, isEmpty);
       expect(tree.unsorted.notes, isEmpty);
     });
 
-    test('a vault below V5 gives an empty tree and does not throw', () {
+    test('a vault below V5 gives an empty tree and does not throw', () async {
       final db = FakeVaultDb.v4();
       addTearDown(db.close);
       db.seedNote(id: 'n1', title: 'Old note');
       final c = _container(db: db);
 
-      final tree = c.read(smartFolderTreeProvider);
+      final tree = await _loadedTree(c);
 
       expect(tree.isEmpty, isTrue);
       expect(tree.folders, isEmpty);
       expect(tree.unsorted.notes, isEmpty);
     });
 
-    test('a vault migrated to V5 fills the tree after a bump', () {
+    test('a vault migrated to V5 fills the tree after a bump', () async {
       final db = FakeVaultDb.v4();
       addTearDown(db.close);
       db.seedNote(id: 'n1', title: 'Old note');
       final c = _container(db: db);
-      expect(c.read(smartFolderTreeProvider).unsorted.notes, isEmpty);
+      expect((await _loadedTree(c)).unsorted.notes, isEmpty);
 
       db.migrateToV5();
       _bump(c);
 
-      expect(
-        c.read(smartFolderTreeProvider).unsorted.notes.map((n) => n.noteId),
-        ['n1'],
-      );
+      expect((await _loadedTree(c)).unsorted.notes.map((n) => n.noteId), [
+        'n1',
+      ]);
     });
 
-    test('no open database gives an empty tree', () {
+    test('no open database gives an empty tree', () async {
       final c = _container(db: null);
 
-      final tree = c.read(smartFolderTreeProvider);
+      final tree = await _loadedTree(c);
 
       expect(tree.isEmpty, isTrue);
       expect(tree.unsorted.notes, isEmpty);
