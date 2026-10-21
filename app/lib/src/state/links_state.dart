@@ -1,7 +1,15 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../db.dart';
+import '../vault_access/vault_scoped.dart';
 import 'vault_state.dart';
+
+/// Outgoing links for a note through `VaultAccess`, stamped with the vault
+/// they were loaded for (D14a). Skeleton: the WI #90 implementation fills it.
+final linksOutAsyncProvider =
+    FutureProvider.family<VaultScoped<List<LinkRow>>, String>(
+      (ref, noteId) => throw UnimplementedError(),
+    );
 
 /// Outgoing links for a note. Provider.family keyed on note id.
 final linksOutProvider = Provider.family<List<LinkRow>, String>((ref, noteId) {
@@ -29,6 +37,14 @@ class BacklinkEntry {
   final String? label;
   final String source;
 }
+
+/// Incoming links for a note, grouped by kind, through `VaultAccess`, stamped
+/// with the vault they were loaded for (D14a). Skeleton: WI #90 fills it.
+final backlinksAsyncProvider =
+    FutureProvider.family<
+      VaultScoped<Map<String, List<BacklinkEntry>>>,
+      String
+    >((ref, noteId) => throw UnimplementedError());
 
 /// Incoming links for a note, grouped by kind. Source titles are pre-joined
 /// so the UI can render in one pass.
