@@ -438,3 +438,148 @@ fn agent_changes_are_only_the_given_notes_rows_and_none_for_an_unknown_note() {
         );
     }
 }
+
+// ---------- bullets the one writer can store ----------
+//
+// `dart_string` and Dart's `'$b'` part ways on bullet items no writer
+// stores: `-0` (Rust "-0.0", Dart "0"), numbers past i64 or JSON overflow
+// (`1e400`: Rust `[]`, Dart "Infinity"), large doubles below 1e21 (Rust prints
+// the exact value, Dart the shortest digits padded with zeros) and objects
+// (serde_json sorts keys, Dart keeps insertion order). The only writer of
+// `agent_changes` is `review::mark_day_reviewed` (core; the MCP
+// `mark_day_reviewed` tool and the CLI call it), which stores
+// `serde_json::to_string(&Vec<String>)`: a JSON list of strings, which both
+// sides return verbatim. These two tests pin that, so a new writer that could
+// store a non-string item has to face the parity gap.
+
+/// Every `.rs` / `.dart` file under `dir`, recursively.
+fn source_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            source_files(&path, out);
+        } else if matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("rs" | "dart")
+        ) {
+            out.push(path);
+        }
+    }
+}
+
+#[test]
+fn agent_changes_have_one_writer_the_day_review_in_core() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut files = Vec::new();
+    source_files(&root.join("crates"), &mut files);
+    source_files(&root.join("app/lib"), &mut files);
+    let mut writers: Vec<String> = files
+        .iter()
+        .filter(|f| !f.components().any(|c| c.as_os_str() == "tests"))
+        .filter(|f| writes_agent_changes(&std::fs::read_to_string(f).unwrap()))
+        .map(|f| {
+            f.strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect();
+    writers.sort();
+    assert_eq!(writers, vec!["crates/memex-core/src/review.rs".to_string()]);
+}
+
+/// Whether `source` writes the `agent_changes` table (an INSERT, REPLACE or
+/// UPDATE naming it), whatever the case and spacing.
+fn writes_agent_changes(source: &str) -> bool {
+    let flat: String = source
+        .to_ascii_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    [
+        "insert into agent_changes",
+        "insert or replace into agent_changes",
+        "insert or ignore into agent_changes",
+        "replace into agent_changes",
+        "update agent_changes",
+    ]
+    .iter()
+    .any(|w| flat.contains(w))
+}
+
+#[test]
+fn agent_changes_from_the_day_review_store_strings_that_read_back_verbatim() {
+    use memex_core::canvas::Clock;
+    use memex_core::notes::{create_note_as, CreateNote};
+    use memex_core::review::{mark_day_reviewed, ChangeEntry};
+    use memex_core::Caller;
+
+    struct At(i64);
+    impl Clock for At {
+        fn now_ms(&self) -> i64 {
+            self.0
+        }
+    }
+
+    let (_dir, mut vault) = fresh_vault();
+    let mut create = |title: &str, body: &str, frontmatter: serde_json::Value| {
+        create_note_as(
+            &mut vault,
+            CreateNote {
+                title: Some(title.into()),
+                content_md: body.into(),
+                frontmatter: Some(frontmatter),
+            },
+            Caller::Person,
+        )
+        .unwrap()
+        .id
+        .to_string()
+    };
+    let topic = create(
+        "Economy",
+        "A topic.",
+        serde_json::json!({ "role": "topic" }),
+    );
+    let day = create(
+        "2026-10-18",
+        "Tuned prices.\n",
+        serde_json::json!({ "role": "daily" }),
+    );
+    // Bullets that would be the divergent items if stored as JSON values.
+    let day_bullets = ["1.0", "-0", "1e400"];
+    let topic_bullets = [
+        r#"{"b":1,"a":"x"}"#,
+        "9223372036854775808",
+        r#"[2, {"z":0,"y":1}]"#,
+    ];
+    let entry = |note_id: &str, bullets: &[&str]| ChangeEntry {
+        note_id: note_id.to_string(),
+        bullets: bullets.iter().map(|b| b.to_string()).collect(),
+    };
+    mark_day_reviewed(
+        &mut vault,
+        "2026-10-18",
+        1,
+        &[entry(&day, &day_bullets), entry(&topic, &topic_bullets)],
+        &At(1760000960000),
+    )
+    .unwrap();
+
+    for (note_id, bullets) in [(&day, &day_bullets), (&topic, &topic_bullets)] {
+        let raw: String = vault
+            .connection_ref()
+            .query_row(
+                "SELECT bullets_json FROM agent_changes WHERE note_id = ?",
+                [note_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let stored: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let items = stored.as_array().expect("bullets_json is a JSON list");
+        assert!(items.iter().all(|i| i.is_string()), "{raw}");
+        let rows = agent_changes(&vault, note_id).unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].bullets, bullets.to_vec(), "{raw}");
+    }
+}
