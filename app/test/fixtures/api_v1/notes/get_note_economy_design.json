@@ -1,0 +1,20 @@
+{
+  "content_md": "Sources and sinks keep prices honest.\n\nEvery sink extends the [[Player Loop~extends]].\n\n## 2026-10-19\n\n![[2026-10-19#^et8g8y]]\n",
+  "created_at": 1760000060000,
+  "frontmatter": {
+    "role": "topic"
+  },
+  "note_id": "01M5DQAYZ47QW55S90ZF0A56AH",
+  "tags": [],
+  "title": "Economy Design",
+  "transclusions": [
+    {
+      "date": "2026-10-19",
+      "from": "et8g8y",
+      "text": "Sketched a crafting tree.",
+      "to": null
+    }
+  ],
+  "updated_at": 1792535788527,
+  "version": 2
+}

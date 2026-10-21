@@ -7,9 +7,14 @@
 //   version + 1, a new `updated_at`, new block rows.
 // - [PollCliFakes] answers `memex update` against the FakeVaultDb with a hook
 //   that can race a server write in before the version check.
-// - [pumpLiveWorkspace] is `pumpWorkspace` with extra provider overrides (to
-//   count the poller's reads) and returns a [LiveRobot] that finds widgets by
-//   the WI's stable Keys only.
+// - [pumpLiveWorkspace] is `pumpWorkspace` with the revision-reader seam set
+//   to [fakeRevisionReader] (WI #79, D15: counted by a [PollReadCounter]) and
+//   returns a [LiveRobot] that finds widgets by the WI's stable Keys only.
+// - WI #79 (D15) poller seams: [fakeRevisionReader] / [PollSeed.fakeRevision]
+//   (every write to the FakeVaultDb moves it), [ScriptedRevisionReader]
+//   (counting, Completer-gated or throwing), [FakeAppFocus] (the app-focus
+//   seam) and [RecordingClock] (a FakeClock that keeps every timer it made).
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -21,7 +26,9 @@ import 'package:open_memex_app/main.dart';
 import 'package:open_memex_app/src/editor/conflict_merge.dart';
 import 'package:open_memex_app/src/editor/segments.dart';
 import 'package:open_memex_app/src/state/clock.dart';
+import 'package:open_memex_app/src/state/app_focus.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';
+import 'package:open_memex_app/src/state/revision_poller.dart';
 import 'package:open_memex_app/src/state/settings.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
@@ -212,6 +219,29 @@ extension PollSeed on FakeVaultDb {
     return next;
   }
 
+  /// The server rewrites note [noteId]'s whole body to [content] (a plain
+  /// `memex update` from another writer): version + 1, `updated_at` = [at].
+  /// Returns the new version.
+  int serverEdit(String noteId, String content, {required DateTime at}) {
+    final next = liveNote(noteId).version + 1;
+    db.execute(
+      'UPDATE notes SET content_md = ?, version = ?, updated_at = ? '
+      'WHERE id = ?',
+      [content, next, at.millisecondsSinceEpoch, noteId],
+    );
+    return next;
+  }
+
+  /// The fake vault revision (WI #79, D9 test seam): this in-memory
+  /// connection's `total_changes()`. A FakeVaultDb's writes come from the
+  /// app's own connection, so `PRAGMA data_version` never moves; this does
+  /// after every INSERT, UPDATE or DELETE (every [PollSeed] server write, a
+  /// seed, and [PollCliFakes.onUpdateServer]'s saves).
+  String fakeRevision() {
+    final n = db.select('SELECT total_changes() AS n').first['n'] as num;
+    return 'fake-${n.toInt()}';
+  }
+
   /// The stored content, version and `updated_at` of note [id].
   ({String content, int version, int updatedAt}) liveNote(String id) {
     final r = db.select(
@@ -311,27 +341,135 @@ extension PollCliFakes on FakeMemexCli {
   }
 }
 
-/// Counts the poller's `updated_at` reads (through
-/// `noteUpdatedAtReaderProvider`).
+/// Counts the revision poller's reads (WI #79: through
+/// `revisionReaderProvider`; before #79 it counted per-note `updated_at`
+/// reads).
 class PollReadCounter {
   int reads = 0;
-  final List<String> noteIds = [];
 
-  void record(String noteId) {
+  void record() => reads++;
+}
+
+/// The revision-reader seam over [db] (WI #79, D15): each call records one
+/// read on [counter] and answers [PollSeed.fakeRevision].
+RevisionReader fakeRevisionReader(FakeVaultDb db, [PollReadCounter? counter]) =>
+    () async {
+      counter?.record();
+      return db.fakeRevision();
+    };
+
+/// A scripted revision reader for poller tests (WI #79, D15). Counts every
+/// call in [reads] and answers:
+/// - by throwing [error] while it is set (asynchronously, or synchronously
+///   from the call itself when [throwSync] is true);
+/// - with a pending future while [gated] is true, completed by [release] or
+///   [fail] in call order;
+/// - otherwise with [revision].
+class ScriptedRevisionReader {
+  ScriptedRevisionReader([this.revision = 'rev-0']);
+
+  /// The answer of an ungated read (and of [release] with no value).
+  String revision;
+
+  /// While set, every read throws it.
+  Object? error;
+
+  /// Throw [error] from the call itself instead of from its future.
+  bool throwSync = false;
+
+  /// While true, every read waits for [release] or [fail].
+  bool gated = false;
+
+  /// Reads started so far.
+  int reads = 0;
+
+  final List<Completer<String>> _pending = [];
+
+  /// Gated reads not yet released.
+  int get pending => _pending.length;
+
+  /// The reader, for `revisionReaderProvider`.
+  Future<String> read() {
     reads++;
-    noteIds.add(noteId);
+    final e = error;
+    if (e != null) {
+      if (throwSync) throw e;
+      return Future<String>.error(e);
+    }
+    if (gated) {
+      final c = Completer<String>();
+      _pending.add(c);
+      return c.future;
+    }
+    return Future<String>.value(revision);
+  }
+
+  /// Completes the oldest pending read with [value] (default [revision]).
+  void release([String? value]) =>
+      _pending.removeAt(0).complete(value ?? revision);
+
+  /// Fails the oldest pending read with [error].
+  void fail(Object error) => _pending.removeAt(0).completeError(error);
+}
+
+/// The app-focus seam for tests (WI #79): no `AppLifecycleListener`; the
+/// window starts [focused] and [set] moves it. Override with
+/// `appFocusProvider.overrideWith(() => FakeAppFocus())` and reach it through
+/// `container.read(appFocusProvider.notifier) as FakeAppFocus`.
+class FakeAppFocus extends AppFocus {
+  FakeAppFocus([this._initial = true]);
+
+  final bool _initial;
+
+  @override
+  bool build() => _initial;
+
+  /// The window gains ([focused] true) or loses focus.
+  void set(bool focused) => state = focused;
+}
+
+/// One timer a [RecordingClock] made: its delay or interval, and whether it
+/// repeats.
+typedef RecordedTimer = ({Duration duration, bool periodic, Timer timer});
+
+/// A [FakeClock] that keeps every timer it made, so a test can tell the
+/// poller's timers (2 s / 30 s) from others (the 500 ms save debounce).
+class RecordingClock extends FakeClock {
+  RecordingClock([super.start]);
+
+  final List<RecordedTimer> timers = [];
+
+  /// Active timers whose delay or interval is [duration].
+  Iterable<RecordedTimer> activeWith(Duration duration) =>
+      timers.where((t) => t.timer.isActive && t.duration == duration);
+
+  @override
+  Timer after(Duration delay, void Function() callback) {
+    final t = super.after(delay, callback);
+    timers.add((duration: delay, periodic: false, timer: t));
+    return t;
+  }
+
+  @override
+  Timer periodic(Duration interval, void Function(Timer timer) callback) {
+    final t = super.periodic(interval, callback);
+    timers.add((duration: interval, periodic: true, timer: t));
+    return t;
   }
 }
 
 /// [pumpWorkspace] with extra [overrides]: SharedPreferences mock settings,
-/// a temp-dir vault, [db], [cli] (a `settings get` handler is added), and
-/// [clock] (default 2026-10-03 09:00 local). The workspace launches on the
-/// Today tab, i.e. today's daily note when [db] holds one.
+/// a temp-dir vault, [db], [cli] (a `settings get` handler is added),
+/// [clock] (default 2026-10-03 09:00 local) and the revision-reader seam set
+/// to [fakeRevisionReader] over [db], counted on [reads] (WI #79). The
+/// workspace launches on the Today tab, i.e. today's daily note when [db]
+/// holds one.
 Future<LiveRobot> pumpLiveWorkspace(
   WidgetTester tester, {
   required FakeVaultDb db,
   required FakeMemexCli cli,
   FakeClock? clock,
+  PollReadCounter? reads,
   List<Override> overrides = const [],
 }) async {
   final vaultDir = Directory.systemTemp.createTempSync('omv-live');
@@ -356,6 +494,7 @@ Future<LiveRobot> pumpLiveWorkspace(
       vaultDbProvider.overrideWithValue(db),
       memexCliProvider.overrideWithValue(cli),
       clockProvider.overrideWithValue(fakeClock),
+      revisionReaderProvider.overrideWithValue(fakeRevisionReader(db, reads)),
       ...overrides,
     ],
   );
@@ -476,10 +615,18 @@ class LiveRobot {
     }
   }
 
-  /// Move only the [FakeClock] (fires the poller) and settle.
+  /// Move only the [FakeClock] (fires the poller) and settle, in steps of
+  /// at most 1 s with a settle after each, so a revision read completes
+  /// before the next poll tick (one read in flight, WI #79 AC5).
   Future<void> advance(Duration by) async {
-    clock.advance(by);
-    await settle();
+    const maxStep = Duration(seconds: 1);
+    var left = by;
+    while (left > Duration.zero) {
+      final step = left < maxStep ? left : maxStep;
+      clock.advance(step);
+      left -= step;
+      await settle();
+    }
   }
 
   /// One poll interval (2 s) on the [FakeClock].

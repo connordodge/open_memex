@@ -1,0 +1,24 @@
+{
+  "links": [
+    {
+      "from_note_id": "01M5DQAYZ3WP7H0NXZZV9M2315",
+      "id": "01M5DQAYZC5FQW4HVPK8ZE5SXW",
+      "kind": "references",
+      "label": null,
+      "link_text": "Economy Design",
+      "position": 66,
+      "source": "inline_body",
+      "to_note_id": "01M5DQAYZ47QW55S90ZF0A56AH"
+    },
+    {
+      "from_note_id": "01M5DQAYZ3WP7H0NXZZV9M2315",
+      "id": "01M5DQAYZCV1DXWK1CFVDNP0SS",
+      "kind": "references",
+      "label": null,
+      "link_text": "Unwritten Idea",
+      "position": 121,
+      "source": "inline_body",
+      "to_note_id": null
+    }
+  ]
+}

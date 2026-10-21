@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "version_conflict",
+    "current": 2,
+    "expected": 1,
+    "message": "version conflict: expected 1, current 2"
+  }
+}
