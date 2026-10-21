@@ -3,6 +3,8 @@
 // vault…", as main did, and a recent row of a folder that is not a vault
 // has no tap, as on main. Fix round 3: a recent row drawn as a vault whose
 // memex.db is gone by the tap shows the not-a-vault copy and opens nothing.
+// #92: a recent row opens through openVault (folder shape check, then
+// `memex vault check`).
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
@@ -149,6 +151,8 @@ void main() {
       (tester) async {
         final vault = createVaultFolder('om69_pick_vault_');
         final cli = FakeMemexCli()
+          // #92 TEST-CHANGE: every local open runs `memex vault check`.
+          ..on('vault check', (_) => FakeMemexCli.ok())
           ..on(
             'settings get',
             (_) => FakeMemexCli.ok(settingsGetMaxDepthStdout),
@@ -209,7 +213,10 @@ void main() {
       (tester) async {
         final parent = createPlainFolder('om69_pick_parent_');
         final failure = FakeMemexCli.error('io', 'permission denied');
-        final cli = FakeMemexCli()..on('init', (_) => failure);
+        final cli = FakeMemexCli()
+          // #92 TEST-CHANGE: create runs `memex vault check` before init.
+          ..on('vault check', (_) => FakeMemexCli.ok())
+          ..on('init', (_) => failure);
         final c = await _pumpPicker(tester, cli: cli);
 
         await _createVault(tester, picker, parent: parent.path, name: 'Broken');
@@ -234,6 +241,8 @@ void main() {
     ) async {
       final parent = createPlainFolder('om69_pick_parent_');
       final cli = FakeMemexCli()
+        // #92 TEST-CHANGE: create runs `memex vault check` before init.
+        ..on('vault check', (_) => FakeMemexCli.ok())
         ..on('init', (call) {
           initVaultFolder(call.args[1]);
           return FakeMemexCli.ok();
@@ -275,17 +284,25 @@ void main() {
       },
     );
 
+    // #92 TEST-CHANGE (lead ruling on #108): a recent row now opens through
+    // openVault (the folder shape check, then `memex vault check`); this
+    // replaces the deleted #69 test "tapping a recent row of a folder that
+    // is not a vault still opens it as today". It also covers #69's fix
+    // round 3 stale-row case (deduped in #92 verify): the not-a-vault copy
+    // shows exactly once and nothing opens.
     testWidgets(
-      'tapping a stale recent row whose memex.db was removed shows why and opens nothing',
+      'tapping a recent row of a folder that is no longer a vault shows the not a vault error and opens nothing',
       (tester) async {
-        // The row is drawn while the folder is a vault (tappable), then
-        // memex.db goes away before the tap with no rebuild in between.
-        final vault = createVaultFolder('om69_recent_stale_');
-        final c = await _pumpPicker(
-          tester,
-          cli: FakeMemexCli(),
-          recents: [vault.path],
-        );
+        // The row was drawn while the folder was a vault; by the tap it no
+        // longer is (memex.db gone, no rebuild in between).
+        final vault = createVaultFolder('om92_recent_stale_');
+        final cli = FakeMemexCli()
+          ..on('vault check', (_) => FakeMemexCli.ok())
+          ..on(
+            'settings get',
+            (_) => FakeMemexCli.ok(settingsGetMaxDepthStdout),
+          );
+        final c = await _pumpPicker(tester, cli: cli, recents: [vault.path]);
         File(p.join(vault.path, 'memex.db')).deleteSync();
 
         await tester.tap(find.text(p.basename(vault.path)));
@@ -297,6 +314,8 @@ void main() {
           ),
           findsOneWidget,
         );
+        // The shape check runs before `memex vault check`: no CLI call.
+        expect(cli.calls, isEmpty);
         expect(c.read(currentVaultProvider), isNull);
         expect(c.read(settingsProvider).lastVault, isNull);
         expect(c.read(settingsProvider).recentVaults, [vault.path]);

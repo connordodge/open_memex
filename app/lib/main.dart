@@ -7,7 +7,6 @@ import 'src/screens/vault_picker.dart';
 import 'src/screens/workspace.dart';
 import 'src/state/app_exit.dart';
 import 'src/state/settings.dart';
-import 'src/state/vault_open_controller.dart';
 import 'src/state/vault_state.dart';
 import 'src/theme/app_theme.dart';
 import 'src/widgets/hosted/leave_confirm_dialog.dart';
@@ -30,6 +29,8 @@ class OpenMemexApp extends ConsumerStatefulWidget {
   ConsumerState<OpenMemexApp> createState() => _OpenMemexAppState();
 }
 
+// Launch reopen lives in the vault picker (#92): no vault is open at launch,
+// so the picker shows and reopens the last vault through `memex vault check`.
 class _OpenMemexAppState extends ConsumerState<OpenMemexApp> {
   final _navigatorKey = GlobalKey<NavigatorState>();
 
@@ -46,12 +47,6 @@ class _OpenMemexAppState extends ConsumerState<OpenMemexApp> {
     super.initState();
     _exitHost = ref.read(appExitHostProvider)
       ..attach(onWindowClose: _onWindowClose, onQuit: _onQuit);
-    // Launch reopen: the last vault is already open through
-    // `currentVaultProvider`'s default, so the first frame is unchanged.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      ref.read(vaultOpenControllerProvider).launchReopen();
-    });
   }
 
   @override
