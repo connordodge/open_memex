@@ -7,6 +7,7 @@ import '../../dates.dart';
 import '../../db/daily_reads.dart';
 import '../../editor/byte_offsets.dart';
 import '../../state/daily_state.dart';
+import '../../state/vault_state.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 
@@ -155,7 +156,11 @@ class _CaptureGutterState extends ConsumerState<CaptureGutter> {
 
   @override
   Widget build(BuildContext context) {
-    _blocks = ref.watch(blocksForNoteProvider(widget.noteId));
+    _blocks = watchVaultValue(
+      ref,
+      blocksForNoteAsyncProvider(widget.noteId),
+      const <BlockRow>[],
+    );
     return LayoutBuilder(
       builder: (context, constraints) {
         _scheduleMeasure();
