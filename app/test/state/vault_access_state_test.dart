@@ -218,18 +218,10 @@ void main() {
       return c;
     }
 
-    test('a HostedVaultRef gives a null vaultAccessProvider', () {
-      final c = hostedContainer();
-      expect(c.read(currentVaultProvider), hosted);
-      expect(c.read(vaultAccessProvider), isNull);
-
-      // And it follows the ref: local gives access, hosted gives null again.
-      c.read(currentVaultProvider.notifier).state = const LocalVaultRef(_vault);
-      expect(c.read(vaultAccessProvider), isA<LocalVaultAccess>());
-      c.read(currentVaultProvider.notifier).state = hosted;
-      expect(c.read(vaultAccessProvider), isNull);
-    });
-
+    // #96 TEST-CHANGE: the hosted branch of vaultAccessProvider now gives
+    // the hosted composite (test/state/vault_open_hosted_test.dart, AC3), so
+    // the pre-#96 "a HostedVaultRef gives a null vaultAccessProvider" test is
+    // gone.
     test('vaultIsHostedProvider is true for a HostedVaultRef', () {
       // No override of vaultIsHostedProvider: its own default.
       final c = hostedContainer();

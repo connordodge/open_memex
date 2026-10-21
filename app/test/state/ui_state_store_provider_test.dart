@@ -69,10 +69,10 @@ void main() {
       },
     );
 
-    test('uiStateStoreProvider gives no store for a HostedVaultRef', () {
-      final c = _container(HostedVaultRef('srv-1', 'work'));
-      expect(c.read(uiStateStoreProvider), isNull);
-    });
+    // #96 TEST-CHANGE: a HostedVaultRef now has its own store under
+    // `<app support>/hosted/<serverId>/<vaultName>`
+    // (test/state/hosted_ui_state_test.dart), so the pre-#96 "no store for a
+    // HostedVaultRef" test is gone.
 
     test('uiStateStoreProvider gives no store with no vault open', () {
       final c = _container(null);
@@ -162,15 +162,13 @@ void main() {
     );
   });
 
+  // #96 TEST-CHANGE: the HostedVaultRef rows left these tables, since a
+  // hosted vault now has a store; only "no vault open" keeps the fallback.
   group('no store fallback (verify)', () {
     for (final (name, vault) in [
       (
         'tabsProvider with no vault open keeps tabs in memory on the dev null store',
         null,
-      ),
-      (
-        'tabsProvider for a HostedVaultRef keeps tabs in memory on the dev null store',
-        HostedVaultRef('srv-1', 'work'),
       ),
     ]) {
       test(name, () async {
@@ -193,10 +191,6 @@ void main() {
       (
         'sidebarModeProvider with no vault open starts in Days and selects without a store',
         null,
-      ),
-      (
-        'sidebarModeProvider for a HostedVaultRef starts in Days and selects without a store',
-        HostedVaultRef('srv-1', 'work'),
       ),
     ]) {
       test(name, () async {

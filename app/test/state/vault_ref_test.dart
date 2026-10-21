@@ -135,7 +135,9 @@ void main() {
       final dir = createVaultFolder();
       final c = _withVault(HostedVaultRef('srv-1', dir.path));
       expect(c.read(vaultDbProvider), isNull);
-      expect(c.read(vaultV5ReadyProvider), isFalse);
+      // #96 TEST-CHANGE: vaultV5ReadyProvider is true for a hosted vault
+      // (D12a: the server owns its migrations), so this no longer asserts
+      // false; see test/state/vault_open_hosted_test.dart.
     });
 
     test(
