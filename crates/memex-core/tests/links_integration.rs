@@ -1007,6 +1007,189 @@ fn next_save_of_note_left_with_repeated_tokens_reindexes_links_and_fts() {
     assert!(hits > 0, "FTS holds the saved content");
 }
 
+// ---------- WI #145: frontmatter keeps non-ASCII text ----------
+
+/// Notes titled `targets`, then a `Source` note holding `content`, all saved.
+/// Returns the target ids in order and the source id; the source is NOT
+/// indexed, so the caller sees the reindex result.
+fn wi145_notes(targets: &[&str], content: &str) -> (tempfile::TempDir, Vault, Vec<String>, String) {
+    let (dir, mut vault) = fresh_vault();
+    let mut ids = Vec::new();
+    for t in targets {
+        let n = create_note(
+            &mut vault,
+            CreateNote {
+                title: Some((*t).into()),
+                content_md: format!("# {t}\n"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        ids.push(n.id.as_str().to_string());
+    }
+    let src = create_note(
+        &mut vault,
+        CreateNote {
+            title: Some("Source".into()),
+            content_md: content.into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    (dir, vault, ids, src.id.as_str().to_string())
+}
+
+fn wi145_parse_error_flag(vault: &Vault, id: &str) -> i64 {
+    vault
+        .connection_ref()
+        .query_row(
+            "SELECT frontmatter_parse_error FROM notes WHERE id = ?",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+/// `(kind, link_text, label, to_note_id, position)` of every outgoing link,
+/// by position.
+type Wi145Row = (String, String, Option<String>, Option<String>, i64);
+
+fn wi145_rows(vault: &Vault, id: &str) -> Vec<Wi145Row> {
+    let mut rows: Vec<Wi145Row> = links::links_out_for_note(vault, id)
+        .unwrap()
+        .into_iter()
+        .map(|l| {
+            (
+                l.link_kind.as_str().to_string(),
+                l.link_text,
+                l.label,
+                l.to_note_id,
+                l.position,
+            )
+        })
+        .collect();
+    rows.sort_by_key(|r| r.4);
+    rows
+}
+
+/// A resolved link row, as [`wi145_rows`] returns it.
+fn wi145_row(kind: &str, text: &str, label: Option<&str>, to: &str, position: i64) -> Wi145Row {
+    (
+        kind.to_string(),
+        text.to_string(),
+        label.map(str::to_string),
+        Some(to.to_string()),
+        position,
+    )
+}
+
+fn wi145_token_starts(md: &str) -> Vec<i64> {
+    md.match_indices("[[").map(|(i, _)| i as i64).collect()
+}
+
+#[test]
+fn reindex_note_with_non_ascii_title_has_no_parse_error_and_indexes_extends_link() {
+    let content = "---\ntitle: Ünïcødé\nextends:\n  - [[Alpha]]\n---\nbody\n";
+    let (_dir, mut vault, ids, src) = wi145_notes(&["Alpha"], content);
+
+    indexer::reindex_note(vault.connection_mut(), &src, content, None).unwrap();
+
+    assert_eq!(
+        wi145_parse_error_flag(&vault, &src),
+        0,
+        "a non-ASCII title must not set frontmatter_parse_error"
+    );
+    assert_eq!(
+        wi145_rows(&vault, &src),
+        vec![(
+            "extends".to_string(),
+            "Alpha".to_string(),
+            None,
+            Some(ids[0].clone()),
+            content.find("[[Alpha]]").unwrap() as i64,
+        )]
+    );
+}
+
+#[test]
+fn reindex_resolves_bare_and_quoted_non_ascii_token_titles_to_their_notes() {
+    let content = "---\nextends: [[Café]]\ncontradicts:\n  - [[日本語]]\n\
+                   example-of: \"[[Café]]\"\ninspired-by: '[[日本語]]'\n---\nbody\n";
+    let (_dir, mut vault, ids, src) = wi145_notes(&["Café", "日本語"], content);
+
+    indexer::reindex_note(vault.connection_mut(), &src, content, None).unwrap();
+
+    assert_eq!(wi145_parse_error_flag(&vault, &src), 0);
+    let at = wi145_token_starts(content);
+    let (cafe, nihongo) = (&ids[0], &ids[1]);
+    assert_eq!(
+        wi145_rows(&vault, &src),
+        vec![
+            wi145_row("extends", "Café", None, cafe, at[0]),
+            wi145_row("contradicts", "日本語", None, nihongo, at[1]),
+            wi145_row("example-of", "Café", None, cafe, at[2]),
+            wi145_row("inspired-by", "日本語", None, nihongo, at[3]),
+        ]
+    );
+}
+
+#[test]
+fn reindex_round_trips_non_ascii_frontmatter_label_to_links_label() {
+    let label = "Ünïcode – dash";
+    let content = "---\nextends: [[Alpha|Ünïcode – dash]]\n\
+                   contradicts: \"[[Alpha|Ünïcode – dash]]\"\n---\nbody\n";
+    let (_dir, mut vault, ids, src) = wi145_notes(&["Alpha"], content);
+
+    indexer::reindex_note(vault.connection_mut(), &src, content, None).unwrap();
+
+    let at = wi145_token_starts(content);
+    assert_eq!(
+        wi145_rows(&vault, &src),
+        vec![
+            wi145_row("extends", "Alpha", Some(label), &ids[0], at[0]),
+            wi145_row("contradicts", "Alpha", Some(label), &ids[0], at[1]),
+        ]
+    );
+}
+
+#[test]
+fn update_link_writes_non_ascii_label_into_quoted_frontmatter_token_and_links_label() {
+    let content = "---\nsummary: \"Crème brûlée\"\nextends: \"[[Alpha]]\"\n---\n# Source\n";
+    let (_dir, mut vault, ids, src) = wi145_notes(&["Alpha"], content);
+    indexer::reindex_note(vault.connection_mut(), &src, content, None).unwrap();
+    let rows = links::links_out_for_note(&vault, &src).unwrap();
+    assert_eq!(rows.len(), 1, "the quoted token indexes: {rows:?}");
+    let own = content.find("[[Alpha]]").unwrap() as i64;
+
+    let updated = links::update_link(
+        &mut vault,
+        &rows[0].id,
+        links::UpdateLink {
+            new_kind: None,
+            new_label: Some(Some("Ünïcode – dash 😀".into())),
+        },
+    )
+    .expect("update-link with a non-ASCII label succeeds");
+    assert_eq!(updated.label.as_deref(), Some("Ünïcode – dash 😀"));
+
+    let (body, _) = wi141_content_and_version(&vault, &src);
+    assert_eq!(
+        body,
+        "---\nsummary: \"Crème brûlée\"\nextends: \"[[Alpha|Ünïcode – dash 😀]]\"\n---\n# Source\n"
+    );
+    assert_eq!(wi145_parse_error_flag(&vault, &src), 0);
+    assert_eq!(
+        wi145_rows(&vault, &src),
+        vec![(
+            "extends".into(),
+            "Alpha".into(),
+            Some("Ünïcode – dash 😀".into()),
+            Some(ids[0].clone()),
+            own,
+        )]
+    );
+}
+
 #[test]
 fn update_link_on_block_scalar_hash_line_token_is_not_found_and_leaves_note_unchanged() {
     // Pinned current behaviour (WI #141 open risk): a `|` block-scalar line
