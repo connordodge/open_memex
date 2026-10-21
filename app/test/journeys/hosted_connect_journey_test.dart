@@ -11,7 +11,7 @@ import '../support/fake_vault_server.dart';
 import '../support/hosted_harness.dart';
 import '../support/journey_harness.dart';
 import '../support/token_store_fakes.dart';
-import '../support/vault_picker_harness.dart' show wi97HoldFontFetches;
+import '../support/font_fetch_hold.dart';
 
 const _url = 'http://nas.local:7878';
 const _token = 'fresh-token-105';
@@ -43,7 +43,7 @@ void _expectNothingSaved(PickerRobot r) {
 }
 
 void main() {
-  wi97HoldFontFetches();
+  holdFontFetches();
 
   group('connect from the picker (AC3)', () {
     testWidgets(

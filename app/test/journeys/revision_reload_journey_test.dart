@@ -24,7 +24,7 @@ import '../support/hosted_harness.dart';
 import '../support/journey_harness.dart';
 import '../support/poll_fakes.dart';
 import '../support/vault_folders.dart';
-import '../support/vault_picker_harness.dart' show wi97HoldFontFetches;
+import '../support/font_fetch_hold.dart';
 
 const _newCanvasId = '01M5DQAYZJET989N2YR8341XAB';
 const _newDailyId = '01M5DQAYZ592W2515HPSDF5Q14';
@@ -77,7 +77,7 @@ Future<HostedWorkspaceRobot> _hosted(WidgetTester tester) async {
 }
 
 void main() {
-  wi97HoldFontFetches();
+  holdFontFetches();
 
   group('hosted vault (fake server revision bump)', () {
     testWidgets(

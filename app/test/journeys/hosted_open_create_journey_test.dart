@@ -14,7 +14,7 @@ import '../robots/picker_robot.dart';
 import '../support/fake_vault_server.dart';
 import '../support/hosted_harness.dart';
 import '../support/journey_harness.dart';
-import '../support/vault_picker_harness.dart' show wi97HoldFontFetches;
+import '../support/font_fetch_hold.dart';
 
 const _token = 'fresh-token-105';
 
@@ -47,7 +47,7 @@ void _expectOpened(PickerRobot r, HostedVaultRef ref) {
 }
 
 void main() {
-  wi97HoldFontFetches();
+  holdFontFetches();
 
   group('open on a server (AC4)', () {
     testWidgets(

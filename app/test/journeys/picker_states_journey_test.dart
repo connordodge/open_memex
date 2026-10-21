@@ -13,10 +13,10 @@ import '../support/fake_vault_server.dart';
 import '../support/hosted_harness.dart';
 import '../support/journey_harness.dart';
 import '../support/vault_folders.dart';
-import '../support/vault_picker_harness.dart' show wi97HoldFontFetches;
+import '../support/font_fetch_hold.dart';
 
 void main() {
-  wi97HoldFontFetches();
+  holdFontFetches();
 
   group('remove server (AC5)', () {
     testWidgets(

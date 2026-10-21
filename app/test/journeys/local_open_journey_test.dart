@@ -22,7 +22,7 @@ import '../support/file_picker_fakes.dart';
 import '../support/hosted_harness.dart';
 import '../support/journey_harness.dart';
 import '../support/vault_folders.dart';
-import '../support/vault_picker_harness.dart' show wi97HoldFontFetches;
+import '../support/font_fetch_hold.dart';
 
 /// clap's answer from a memex without `vault check` (exit 2).
 const _clapUsageError =
@@ -39,7 +39,7 @@ List<String> _subcommands(FakeMemexCli cli) => [
 ];
 
 void main() {
-  wi97HoldFontFetches();
+  holdFontFetches();
 
   group('local open runs vault check first (AC6)', () {
     testWidgets(

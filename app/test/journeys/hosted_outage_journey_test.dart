@@ -22,7 +22,7 @@ import '../support/api_fixtures.dart';
 import '../support/fake_vault_server.dart';
 import '../support/hosted_harness.dart';
 import '../support/journey_harness.dart';
-import '../support/vault_picker_harness.dart' show wi97HoldFontFetches;
+import '../support/font_fetch_hold.dart';
 
 const _looseBody = 'Maybe the map folds like paper?\n';
 const _pending = 'not saved yet · will save when nas is back';
@@ -81,7 +81,7 @@ List<String> _patchBodies(FakeVaultServer s, String noteId) => [
 ];
 
 void main() {
-  wi97HoldFontFetches();
+  holdFontFetches();
 
   group('unreachable then recovery (AC7)', () {
     testWidgets(

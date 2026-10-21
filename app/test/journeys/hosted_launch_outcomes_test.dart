@@ -13,7 +13,7 @@ import '../robots/picker_robot.dart';
 import '../support/fake_vault_server.dart';
 import '../support/hosted_harness.dart';
 import '../support/journey_harness.dart';
-import '../support/vault_picker_harness.dart' show wi97HoldFontFetches;
+import '../support/font_fetch_hold.dart';
 
 /// Launches with seed on [nas] as the last vault; the launch reopen fails
 /// and the picker shows.
@@ -43,7 +43,7 @@ Future<void> _expectRowDoesNotOpen(PickerRobot r) async {
 }
 
 void main() {
-  wi97HoldFontFetches();
+  holdFontFetches();
 
   group('launch outcomes on the RECENT row (AC11)', () {
     testWidgets(
