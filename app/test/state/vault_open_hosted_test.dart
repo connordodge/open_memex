@@ -26,6 +26,7 @@ import '../support/api_fixtures.dart';
 import '../support/app_harness.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_server.dart';
+import '../support/font_fetch_hold.dart';
 import '../support/hosted_harness.dart';
 import '../support/token_store_fakes.dart';
 import '../support/vault_folders.dart';
@@ -65,6 +66,8 @@ TypeMatcher<T> _failed<T extends VaultOpenFailure>(String message) =>
 String _line(dynamic r) => '${r.method} ${r.url}';
 
 void main() {
+  holdFontFetches();
+
   group('hosted open path (AC2)', () {
     test(
       'opening a hosted ref probes the server then reads the vault info with the bearer token and utc offset',
@@ -327,11 +330,9 @@ void main() {
               '/api/v1/info',
               json: {'api_version': 2, 'server_version': '0.9.0'},
             ),
-            _failed<HostedApiMismatch>(_l9Nas).having(
-              (o) => o.serverVersion,
-              'serverVersion',
-              '0.9.0',
-            ),
+            _failed<HostedApiMismatch>(
+              _l9Nas,
+            ).having((o) => o.serverVersion, 'serverVersion', '0.9.0'),
             false,
           ),
           (
