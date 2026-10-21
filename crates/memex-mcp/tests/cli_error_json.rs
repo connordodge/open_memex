@@ -652,3 +652,293 @@ fn cli_add_update_and_add_link_reindex_from_stored_content() {
     )));
     assert_indexed_from_stored_content(&vault, &role_id);
 }
+
+// ---------- WI #142 (X3): update-link and add-link reject unwritable kinds ----------
+
+/// The kinds a person or agent may not write: syntactically invalid input
+/// plus the server-written `from-day` and `about` (also in the spellings
+/// that normalise to them).
+const WI142_BAD_KINDS: [&str; 12] = [
+    "Bad_Kind", "9x", "a.b", "", "x~y", "a|b", "from-day", "about", "About", "ABOUT", "From Day",
+    "FROM-DAY",
+];
+
+type Wi142LinkRow = (String, String, Option<String>, String, Option<String>);
+
+/// The stored state of a source note: its markdown, version and every link
+/// row it owns (`id, link_kind, label, source, to_note_id`).
+#[derive(Debug, PartialEq)]
+struct Wi142Snapshot {
+    content_md: String,
+    version: i64,
+    links: Vec<Wi142LinkRow>,
+}
+
+fn wi142_snapshot(vault: &str, note_id: &str) -> Wi142Snapshot {
+    let v = Vault::open(vault).expect("open vault");
+    let note = notes::get_note(&v, &NoteId::parse(note_id).unwrap()).unwrap();
+    let mut stmt = v
+        .connection_ref()
+        .prepare(
+            "SELECT id, link_kind, label, source, to_note_id FROM links
+             WHERE from_note_id = ? ORDER BY position, id",
+        )
+        .unwrap();
+    let links = stmt
+        .query_map([note_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    Wi142Snapshot {
+        content_md: note.content_md,
+        version: note.version,
+        links,
+    }
+}
+
+/// `memex add-link` with `kind`, success path; returns `(link_id, source)`
+/// from the stdout JSON.
+fn wi142_add_link_ok(vault: &str, from: &str, to: &str, kind: &str) -> (String, String) {
+    let out = ok_stdout(run(
+        &[
+            "add-link", "--vault", vault, "--from", from, "--to", to, "--kind", kind,
+        ],
+        None,
+    ));
+    let v: Value = serde_json::from_str(out.trim_end()).expect("add-link stdout JSON");
+    (
+        v["link_id"].as_str().expect("link_id").to_string(),
+        v["source"].as_str().expect("source").to_string(),
+    )
+}
+
+/// A vault with notes A and B and a body link A -> B (`[[Beta]]`).
+/// Returns `(dir, vault, a, b, body_link_id)`.
+fn wi142_body_link_fixture() -> (TempDir, String, String, String, String) {
+    let (dir, vault) = init_vault();
+    let a = add_note(&vault, "Alpha", "alpha\n");
+    let b = add_note(&vault, "Beta", "beta\n");
+    let (link_id, source) = wi142_add_link_ok(&vault, &a, &b, "references");
+    assert_eq!(source, "auto_added", "fixture: a body link");
+    (dir, vault, a, b, link_id)
+}
+
+fn wi142_update_link(vault: &str, link_id: &str, kind: &str) -> Output {
+    run(
+        &[
+            "update-link",
+            "--vault",
+            vault,
+            "--link-id",
+            link_id,
+            "--kind",
+            kind,
+        ],
+        None,
+    )
+}
+
+fn wi142_add_link(vault: &str, from: &str, to: &str, kind: &str) -> Output {
+    run(
+        &[
+            "add-link", "--vault", vault, "--from", from, "--to", to, "--kind", kind,
+        ],
+        None,
+    )
+}
+
+#[test]
+fn update_link_with_server_written_kind_is_invalid_argument_and_changes_nothing() {
+    let (_dir, vault, a, _b, link_id) = wi142_body_link_fixture();
+    let before = wi142_snapshot(&vault, &a);
+    for kind in ["from-day", "about"] {
+        let out = wi142_update_link(&vault, &link_id, kind);
+        let v = error_json(&out);
+        assert_eq!(v["error"]["code"], "invalid_argument", "{kind}: {v}");
+        assert!(
+            v["error"]["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("invalid --kind: "),
+            "{kind}: {v}"
+        );
+        assert!(
+            out.stdout.is_empty(),
+            "{kind}: a failure prints nothing on stdout; {}",
+            describe(&out)
+        );
+        assert_eq!(
+            wi142_snapshot(&vault, &a),
+            before,
+            "{kind}: the link row, content_md and version are unchanged"
+        );
+    }
+}
+
+#[test]
+fn add_link_with_server_written_kind_is_invalid_argument_and_changes_nothing() {
+    let (_dir, vault) = init_vault();
+    let a = add_note(&vault, "Alpha", "alpha\n");
+    let b = add_note(&vault, "Beta", "beta\n");
+    let before = wi142_snapshot(&vault, &a);
+    for kind in ["from-day", "about"] {
+        let out = wi142_add_link(&vault, &a, &b, kind);
+        let v = error_json(&out);
+        assert_eq!(v["error"]["code"], "invalid_argument", "{kind}: {v}");
+        assert!(
+            v["error"]["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("invalid --kind: "),
+            "{kind}: {v}"
+        );
+        assert_eq!(
+            wi142_snapshot(&vault, &a),
+            before,
+            "{kind}: content_md, version and links of the source are unchanged"
+        );
+    }
+}
+
+#[test]
+fn update_link_bad_kinds_match_add_link_byte_for_byte() {
+    let (_dir, vault, a, b, link_id) = wi142_body_link_fixture();
+    let before = wi142_snapshot(&vault, &a);
+    for kind in WI142_BAD_KINDS {
+        let update = wi142_update_link(&vault, &link_id, kind);
+        let v = error_json(&update);
+        assert_eq!(v["error"]["code"], "invalid_argument", "{kind:?}: {v}");
+        let add = wi142_add_link(&vault, &a, &b, kind);
+        assert_eq!(add.status.code(), Some(1), "{kind:?}: {}", describe(&add));
+        assert_eq!(
+            update.stderr,
+            add.stderr,
+            "{kind:?}: update-link and add-link print the same error line\nupdate: {}\nadd: {}",
+            String::from_utf8_lossy(&update.stderr),
+            String::from_utf8_lossy(&add.stderr)
+        );
+        assert_eq!(
+            wi142_snapshot(&vault, &a),
+            before,
+            "{kind:?}: the stored link and note are unchanged"
+        );
+    }
+}
+
+#[test]
+fn update_link_validates_kind_before_opening_the_vault() {
+    let dir = tempfile::tempdir().unwrap();
+    let not_a_vault = dir.path().to_str().unwrap();
+    let add = wi142_add_link(not_a_vault, ABSENT_ULID, ABSENT_ULID, "Bad_Kind");
+    let add_err = error_json(&add);
+    assert_eq!(add_err["error"]["code"], "invalid_argument", "{add_err}");
+    for kind in ["Bad_Kind", "from-day", "about", ""] {
+        let out = wi142_update_link(not_a_vault, ABSENT_ULID, kind);
+        let v = error_json(&out);
+        assert_eq!(
+            v["error"]["code"], "invalid_argument",
+            "{kind:?}: a bad kind wins over a bad --vault: {v}"
+        );
+        assert!(
+            v["error"]["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("invalid --kind: "),
+            "{kind:?}: {v}"
+        );
+    }
+    let same_as_add = wi142_update_link(not_a_vault, ABSENT_ULID, "Bad_Kind");
+    assert_eq!(
+        same_as_add.stderr, add.stderr,
+        "update-link reports it exactly as add-link does"
+    );
+}
+
+#[test]
+fn update_link_kind_change_on_a_frontmatter_link_is_invalid_argument_and_changes_nothing() {
+    let (_dir, vault) = init_vault();
+    let a = add_note(&vault, "Alpha", "alpha\n");
+    let b = add_note(&vault, "Beta", "beta\n");
+    let (link_id, _) = wi142_add_link_ok(&vault, &a, &b, "extends");
+    let before = wi142_snapshot(&vault, &a);
+    assert_eq!(
+        before.links.len(),
+        1,
+        "fixture: one link: {:?}",
+        before.links
+    );
+    assert_eq!(
+        before.links[0].3, "frontmatter",
+        "fixture: a frontmatter link"
+    );
+    let out = wi142_update_link(&vault, &link_id, "contradicts");
+    let v = error_json(&out);
+    assert_eq!(v["error"]["code"], "invalid_argument", "{v}");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("frontmatter link kind cannot be changed"),
+        "the refusal message is kept, only its code changes: {v}"
+    );
+    assert!(out.stdout.is_empty(), "{}", describe(&out));
+    assert_eq!(
+        wi142_snapshot(&vault, &a),
+        before,
+        "the link row, content_md and version are unchanged"
+    );
+}
+
+#[test]
+fn update_link_and_add_link_still_accept_normalised_kinds() {
+    let (_dir, vault, a, b, mut link_id) = wi142_body_link_fixture();
+    // update-link normalises exactly as add-link does.
+    for (given, stored) in [("EXTENDS", "extends"), ("Has Space", "has-space")] {
+        let out = ok_stdout(wi142_update_link(&vault, &link_id, given));
+        let v: Value = serde_json::from_str(out.trim_end()).expect("update-link stdout JSON");
+        assert_eq!(v["kind"], stored, "update-link {given:?}: {v}");
+        // A rewrite re-extracts the note's links: the row has a new id.
+        link_id = v["link_id"].as_str().expect("link_id").to_string();
+        let snap = wi142_snapshot(&vault, &a);
+        assert!(
+            snap.content_md.contains(&format!("[[Beta~{stored}]]")),
+            "update-link {given:?}: {}",
+            snap.content_md
+        );
+        assert_eq!(snap.links.len(), 1, "{:?}", snap.links);
+        assert_eq!(snap.links[0].1, stored);
+    }
+    // add-link: two more targets so each kind adds a fresh link.
+    let c = add_note(&vault, "Gamma", "gamma\n");
+    let d = add_note(&vault, "Delta", "delta\n");
+    for (to, given, stored) in [(&c, "EXTENDS", "extends"), (&d, "Has Space", "has-space")] {
+        let out = ok_stdout(wi142_add_link(&vault, &b, to, given));
+        let v: Value = serde_json::from_str(out.trim_end()).expect("add-link stdout JSON");
+        assert_eq!(v["kind"], stored, "add-link {given:?}: {v}");
+    }
+}
+
+#[test]
+fn update_link_still_accepts_built_in_and_user_kinds() {
+    let (_dir, vault, a, _b, mut link_id) = wi142_body_link_fixture();
+    for kind in ["contradicts", "example-of", "inspired-by", "references"] {
+        let out = ok_stdout(wi142_update_link(&vault, &link_id, kind));
+        let v: Value = serde_json::from_str(out.trim_end()).expect("update-link stdout JSON");
+        assert_eq!(v["kind"], kind, "{v}");
+        link_id = v["link_id"].as_str().expect("link_id").to_string();
+        assert_eq!(wi142_snapshot(&vault, &a).links[0].1, kind);
+    }
+}
+
+#[test]
+fn links_kind_filter_still_accepts_server_written_kinds() {
+    let (_dir, vault, a, _b, _link_id) = wi142_body_link_fixture();
+    for kind in ["about", "from-day"] {
+        ok_stdout(run(
+            &["links", "--vault", &vault, "--note-id", &a, "--kind", kind],
+            None,
+        ));
+    }
+}

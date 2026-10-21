@@ -48,7 +48,8 @@ final class NoVaultToReopen extends VaultOpenOutcome {
 typedef LeaveVaultGuard = Future<bool> Function(BuildContext context);
 
 /// The guard asked before the current vault is left. The default always
-/// allows; #103 supplies the confirm.
+/// allows. The app root overrides it with the switch confirm (#103,
+/// `appRootOverrides` in main.dart), so state/ never imports a widget.
 final leaveVaultGuardProvider = Provider<LeaveVaultGuard>((_) => _allowLeaving);
 
 Future<bool> _allowLeaving(BuildContext _) async => true;

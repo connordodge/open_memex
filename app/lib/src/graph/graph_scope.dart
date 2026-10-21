@@ -1,7 +1,7 @@
-import '../db.dart';
 import '../db/daily_reads.dart';
 import '../db/graph_reads.dart';
 import '../db/topics_reads.dart';
+import '../vault_access/vault_access.dart';
 
 /// Where a Graph view was opened from (Req 64). Persisted in `ui_state.json`
 /// as `<kind>:<id>` (D26): `folder:<smartFolderId>`, `topic:<noteId>`,
@@ -135,13 +135,37 @@ class GraphData {
   final List<GraphHull> hulls;
 }
 
-/// The nodes, edges and hulls of [scope] in [db] (Req 64). Pure: reads only,
-/// no positions. V5-only data (Smart Folders, footer chips) is empty on a
-/// vault below V5; never throws for a missing scope target.
-GraphData buildGraph(VaultDb db, GraphScope scope) {
-  final notes = db.graphNotes();
-  final links = db.graphLinks();
-  final folders = db.smartFolders();
+/// The nodes, edges and hulls of [scope] in the vault behind [access]
+/// (Req 64). Reads only, no positions: graph notes and links, Smart Folders
+/// and, for a day scope, the day's footer chips, all at once. V5-only data
+/// (Smart Folders, footer chips) is empty on a vault below V5; a missing
+/// scope target gives an empty or partial graph, never an error. A failed
+/// read fails the returned future.
+Future<GraphData> buildGraph(VaultAccess access, GraphScope scope) async {
+  final reads = await Future.wait<Object>([
+    access.graph.graphNotes(),
+    access.graph.graphLinks(),
+    access.topics.smartFolders(),
+    if (scope.kind == GraphScopeKind.day) access.daily.footerChips(scope.id),
+  ]);
+  return _assemble(
+    scope,
+    notes: reads[0] as List<GraphNoteRow>,
+    links: reads[1] as List<GraphLinkRow>,
+    folders: reads[2] as SmartFolderData,
+    footerChips: reads.length > 3
+        ? reads[3] as List<FooterChipRow>
+        : const <FooterChipRow>[],
+  );
+}
+
+GraphData _assemble(
+  GraphScope scope, {
+  required List<GraphNoteRow> notes,
+  required List<GraphLinkRow> links,
+  required SmartFolderData folders,
+  required List<FooterChipRow> footerChips,
+}) {
   final id = scope.id;
 
   final Set<String> wanted = switch (scope.kind) {
@@ -155,7 +179,7 @@ GraphData buildGraph(VaultDb db, GraphScope scope) {
     },
     GraphScopeKind.day => {
       id,
-      for (final chip in db.footerChips(id)) chip.topicNoteId,
+      for (final chip in footerChips) chip.topicNoteId,
       for (final l in links)
         if (l.to == id && l.kind == _fromDay) l.from,
     },
