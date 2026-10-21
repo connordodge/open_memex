@@ -1189,3 +1189,46 @@ fn update_link_writes_non_ascii_label_into_quoted_frontmatter_token_and_links_la
         )]
     );
 }
+
+#[test]
+fn update_link_on_block_scalar_hash_line_token_is_not_found_and_leaves_note_unchanged() {
+    // Pinned current behaviour (WI #141 open risk): a `|` block-scalar line
+    // starting with `#` reads as a comment, so its token gets a past-the-end
+    // position. update-link answers not_found and leaves the note untouched;
+    // the next key's link keeps its own token.
+    let content = "---\nextends: |\n  # [[Target]]\ncontradicts: [[Target]]\n---\n# Source\n";
+    let (_dir, mut vault, src) = wi141_source_and_target(content);
+    indexer::reindex_note(vault.connection_mut(), &src, content, None)
+        .expect("a block scalar holding a `#` line must index");
+
+    let all = links::links_out_for_note(&vault, &src).unwrap();
+    assert_eq!(all.len(), 2, "{all:?}");
+    let by_kind = |kind: &str| {
+        all.iter()
+            .find(|l| l.link_kind.as_str() == kind)
+            .unwrap_or_else(|| panic!("no {kind} link: {all:?}"))
+            .clone()
+    };
+    let contradicts = by_kind("contradicts");
+    assert_eq!(
+        contradicts.position,
+        wi141_offsets(content, "[[Target]]")[1]
+    );
+    let block = by_kind("extends");
+    assert_eq!(block.position, content.len() as i64);
+
+    let before = wi141_content_and_version(&vault, &src);
+    let links_before = wi141_links(&vault, &src);
+    let err = links::update_link(
+        &mut vault,
+        &block.id,
+        links::UpdateLink {
+            new_kind: None,
+            new_label: Some(Some("X".into())),
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, MemexError::NotFound(_)), "got {err:?}");
+    assert_eq!(wi141_content_and_version(&vault, &src), before);
+    assert_eq!(wi141_links(&vault, &src), links_before);
+}

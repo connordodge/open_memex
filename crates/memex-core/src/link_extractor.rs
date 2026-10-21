@@ -1417,4 +1417,245 @@ mod tests {
             assert_eq!(wi145_fm_links(&r), want, "{case}: {md:?}");
         }
     }
+
+    // ---------- WI #141 verify: every `FmPositions` branch ----------
+
+    /// Expected frontmatter links as `(kind, needle, nth occurrence of needle)`.
+    type Wi141At = &'static [(&'static str, &'static str, usize)];
+
+    /// Each frontmatter link sits at the `nth` occurrence of its `needle` in
+    /// `md`, and every position on the note is distinct.
+    fn wi141_assert_fm_at(case: &str, md: &str, expected: &[(&str, &str, usize)]) {
+        let r = extract(md);
+        assert!(!r.frontmatter_parse_error, "{case}: frontmatter must parse");
+        let mut want: Vec<(String, i64)> = expected
+            .iter()
+            .map(|(kind, needle, nth)| {
+                let at = wi141_offsets(md, needle);
+                assert!(*nth < at.len(), "{case}: fixture lacks {needle} #{nth}");
+                ((*kind).to_string(), at[*nth])
+            })
+            .collect();
+        want.sort();
+        assert_eq!(
+            wi141_fm_kind_positions(&r),
+            want,
+            "{case}: each frontmatter link sits at its own token in {md:?}"
+        );
+        wi141_assert_all_positions_distinct(case, &r);
+    }
+
+    #[test]
+    fn frontmatter_key_scan_finds_spaced_quoted_escaped_and_indented_keys() {
+        // A skipped `about: [[A]]` sits above each kind key: if the line scan
+        // misses the kind key, the whole-frontmatter fallback claims the
+        // `about` token instead of the link's own.
+        let cases: [(&str, &str, Wi141At); 10] = [
+            (
+                "plain key with a space before the colon",
+                "---\nabout: [[A]]\nextends : [[A]]\n---\nb",
+                &[("extends", "[[A]]", 1)],
+            ),
+            (
+                "tab after the colon",
+                "---\nabout: [[A]]\nextends:\t[[A]]\n---\nb",
+                &[("extends", "[[A]]", 1)],
+            ),
+            (
+                "double-quoted key with a space before the colon",
+                "---\nabout: [[A]]\n\"extends\" : [[A]]\n---\nb",
+                &[("extends", "[[A]]", 1)],
+            ),
+            (
+                "double-quoted key holding an escape",
+                "---\nabout: [[A]]\n\"inspired\\ by\": [[A]]\n---\nb",
+                &[("inspired-by", "[[A]]", 1)],
+            ),
+            (
+                "single-quoted key holding a space",
+                "---\nabout: [[A]]\n'inspired by': [[A]]\n---\nb",
+                &[("inspired-by", "[[A]]", 1)],
+            ),
+            (
+                "indented frontmatter",
+                "---\n  about: [[A]]\n  extends: [[A]]\n---\nb",
+                &[("extends", "[[A]]", 1)],
+            ),
+            (
+                "blank and indented comment lines before the first key",
+                "---\n  \n  # [[A]]\nabout: [[A]]\nextends:\n  - [[A]]\n---\nb",
+                &[("extends", "[[A]]", 2)],
+            ),
+            (
+                "top-level comment shaped like a key inside a span",
+                "---\nabout: [[A]]\nextends:\n# todo: more\n  - [[A]]\n---\nb",
+                &[("extends", "[[A]]", 1)],
+            ),
+            (
+                "zero-indented sequence item shaped like a key",
+                "---\nabout: [[A]]\nextends:\n- note: x\n- [[A]]\n---\nb",
+                &[("extends", "[[A]]", 1)],
+            ),
+            (
+                "key after a skipped nested mapping",
+                "---\nabout:\n  extends: [[A]]\n  more: [[A]]\nextends: [[A]]\n---\nb",
+                &[("extends", "[[A]]", 2)],
+            ),
+        ];
+        for (case, md, expected) in cases {
+            wi141_assert_fm_at(case, md, expected);
+        }
+    }
+
+    #[test]
+    fn frontmatter_comment_detection_respects_quotes_escapes_and_separators() {
+        let cases: [(&str, &str, Wi141At); 10] = [
+            (
+                "single-quoted scalar with an escaped quote",
+                "---\nextends: 'it''s # [[A]]'\ncontradicts: [[A]]\n---\nb",
+                &[("extends", "[[A]]", 0), ("contradicts", "[[A]]", 1)],
+            ),
+            (
+                "double-quoted scalar with escaped quotes",
+                "---\nextends: \"a \\\" b \\\" # [[A]]\"\ncontradicts: [[A]]\n---\nb",
+                &[("extends", "[[A]]", 0), ("contradicts", "[[A]]", 1)],
+            ),
+            (
+                "quote right after a flow sequence opens",
+                "---\nextends: ['x # [[A]]', [[A]]]\n---\nb",
+                &[("extends", "[[A]]", 0), ("extends", "[[A]]", 1)],
+            ),
+            (
+                "quote right after a flow comma",
+                "---\nextends: [\"b\",'x # [[A]]']\ncontradicts: [[A]]\n---\nb",
+                &[("extends", "[[A]]", 0), ("contradicts", "[[A]]", 1)],
+            ),
+            (
+                "quote right after a tab",
+                "---\nextends:\t'x # [[A]]'\ncontradicts: [[A]]\n---\nb",
+                &[("extends", "[[A]]", 0), ("contradicts", "[[A]]", 1)],
+            ),
+            (
+                "apostrophe inside a word opens no quote",
+                "---\nextends:\n  - don't # [[A]] it's\n  - [[A]]\n---\nb",
+                &[("extends", "[[A]]", 1)],
+            ),
+            (
+                "double quote inside a word opens no quote",
+                "---\nextends:\n  - say\"hi # [[A]] \"\n  - [[A]]\n---\nb",
+                &[("extends", "[[A]]", 1)],
+            ),
+            (
+                "hash after a tab starts a comment",
+                "---\nextends:\t# [[A]]\n  - [[A]]\n---\nb",
+                &[("extends", "[[A]]", 1)],
+            ),
+            (
+                "hash glued to a word is not a comment",
+                "---\nextends: see#[[A]]\ncontradicts: [[A]]\n---\nb",
+                &[("extends", "[[A]]", 0), ("contradicts", "[[A]]", 1)],
+            ),
+            (
+                "token after a token holding a hash",
+                "---\nextends: [ [[A #x]], [[A #x]] ]\n---\nb",
+                &[("extends", "[[A #x]]", 0), ("extends", "[[A #x]]", 1)],
+            ),
+        ];
+        for (case, md, expected) in cases {
+            wi141_assert_fm_at(case, md, expected);
+        }
+    }
+
+    #[test]
+    fn frontmatter_cursor_claims_after_the_previous_token_in_its_span() {
+        // The `{k: [[A]]}` item is a mapping, which yields no link. The cursor
+        // sits past `[[B]]` when `[[A]]` is claimed, so `[[A]]` gets the third
+        // item's token, not the mapping's.
+        let md = "---\nextends:\n  - {k: [[A]]}\n  - [[B]]\n  - [[A]]\n---\nb";
+        wi141_assert_fm_at(
+            "cursor",
+            md,
+            &[("extends", "[[B]]", 0), ("extends", "[[A]]", 1)],
+        );
+    }
+
+    #[test]
+    fn frontmatter_unscanned_key_searches_whole_frontmatter_without_reusing_claims() {
+        // Keys the line scan cannot find (a flow-mapping frontmatter, an
+        // anchored key) search the whole frontmatter and skip claimed tokens.
+        let cases: [(&str, &str, Wi141At); 3] = [
+            (
+                "flow mapping, two kinds",
+                "---\n{extends: [[A]], contradicts: [[A]]}\n---\nb",
+                &[("extends", "[[A]]", 0), ("contradicts", "[[A]]", 1)],
+            ),
+            (
+                "flow mapping, three kinds",
+                "---\n{extends: [[A]], contradicts: [[A]], example-of: [[A]]}\n---\nb",
+                &[
+                    ("extends", "[[A]]", 0),
+                    ("contradicts", "[[A]]", 1),
+                    ("example-of", "[[A]]", 2),
+                ],
+            ),
+            (
+                "anchored key after a scanned key",
+                "---\nextends: [[A]]\n&k contradicts: [[A]]\n---\nb",
+                &[("extends", "[[A]]", 0), ("contradicts", "[[A]]", 1)],
+            ),
+        ];
+        for (case, md, expected) in cases {
+            wi141_assert_fm_at(case, md, expected);
+        }
+    }
+
+    #[test]
+    fn frontmatter_flow_mapping_link_never_claims_a_skipped_key_token() {
+        // Lead ruling: a link never claims a skipped key's identical token
+        // when its own occurrence exists, in a flow-mapping frontmatter too.
+        let cases: [(&str, &str, Wi141At); 2] = [
+            (
+                "about first",
+                "---\n{about: [[A]], extends: [[A]]}\n---\nb",
+                &[("extends", "[[A]]", 1)],
+            ),
+            (
+                "from-day first",
+                "---\n{from-day: [[A]], extends: [[A]], contradicts: [[A]]}\n---\nb",
+                &[("extends", "[[A]]", 1), ("contradicts", "[[A]]", 2)],
+            ),
+        ];
+        for (case, md, expected) in cases {
+            wi141_assert_fm_at(case, md, expected);
+        }
+    }
+
+    #[test]
+    fn frontmatter_unverbatim_token_never_claims_a_later_key_token() {
+        // The escaped token's span ends at the next key, so it never reaches
+        // the skipped `about` token below it.
+        let md = "---\nextends: \"\\x5B\\x5BA]]\"\nabout: [[A]]\n---\nb";
+        let r = extract(md);
+        assert_eq!(r.frontmatter.len(), 1, "{r:?}");
+        assert_eq!(r.frontmatter[0].position, md.len() as i64, "{r:?}");
+    }
+
+    #[test]
+    fn frontmatter_block_scalar_line_starting_with_hash_gets_fallback_position() {
+        // Pinned current behaviour (WI #141 open risk): a `|` block-scalar
+        // line whose content starts with `#` reads as a comment, so its token
+        // gets a past-the-end position; the next key still gets its own token.
+        let md = "---\nextends: |\n  # [[A]]\ncontradicts: [[A]]\n---\nb";
+        let r = extract(md);
+        assert!(!r.frontmatter_parse_error);
+        let pos = |kind: &str| {
+            r.frontmatter
+                .iter()
+                .find(|l| l.link_kind.as_str() == kind)
+                .unwrap_or_else(|| panic!("no {kind} link: {r:?}"))
+                .position
+        };
+        assert_eq!(pos("extends"), md.len() as i64, "{r:?}");
+        assert_eq!(pos("contradicts"), wi141_offsets(md, "[[A]]")[1], "{r:?}");
+    }
 }
