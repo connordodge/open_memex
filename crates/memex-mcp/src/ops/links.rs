@@ -3,7 +3,7 @@
 use memex_core::embedder::Embedder;
 use memex_core::links::{self as core_links, LinkKind, LinkSource};
 use memex_core::notes::{get_note, update_note_with_options, RenameOptions, UpdateNote};
-use memex_core::{indexer, Clock, NoteId, Vault};
+use memex_core::{indexer, Clock, MemexError, NoteId, Vault};
 use rusqlite::params;
 use serde::Serialize;
 
@@ -11,9 +11,11 @@ use crate::cli::InvalidArgument;
 use crate::md_links;
 
 /// Parses a `--kind` value. A malformed kind is `invalid_argument`
-/// (`invalid --kind: …`), not the core error's code.
+/// (`invalid --kind: …`), not the core error's code. A kind only the server
+/// writes (`from-day`, `about`) is refused too.
 pub fn parse_kind(kind: &str) -> anyhow::Result<LinkKind> {
-    LinkKind::new(kind).map_err(|e| InvalidArgument(format!("invalid --kind: {e}")).into())
+    LinkKind::new_user_written(kind)
+        .map_err(|e| InvalidArgument(format!("invalid --kind: {e}")).into())
 }
 
 /// The input of [`add_link`].
@@ -159,6 +161,14 @@ pub struct UpdateLinkInput {
     pub clear_label: bool,
 }
 
+impl UpdateLinkInput {
+    /// The check `memex update-link` makes before it opens the vault: a
+    /// given `kind` must parse. [`update_link`] makes the same check.
+    pub fn validate(&self) -> anyhow::Result<Option<LinkKind>> {
+        self.kind.as_deref().map(parse_kind).transpose()
+    }
+}
+
 /// The `memex update-link` output line.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct UpdateLinkOutput {
@@ -180,10 +190,7 @@ pub fn update_link(
     embedder: Option<&dyn Embedder>,
 ) -> anyhow::Result<UpdateLinkOutput> {
     let _ = (clock, embedder);
-    let new_kind = match input.kind {
-        Some(k) => Some(parse_kind(&k)?),
-        None => None,
-    };
+    let new_kind = input.validate()?;
     let new_label: Option<Option<String>> = if input.clear_label {
         Some(None)
     } else {
@@ -196,7 +203,17 @@ pub fn update_link(
             new_kind,
             new_label,
         },
-    )?;
+    )
+    .map_err(|e| match e {
+        // A kind change on a frontmatter link is a usage error, not
+        // `internal` (core maps `InvalidLinkKind` there).
+        MemexError::InvalidLinkKind(m)
+            if m.starts_with(core_links::FRONTMATTER_KIND_CHANGE_REFUSED) =>
+        {
+            anyhow::Error::from(InvalidArgument(format!("invalid link kind: {m}")))
+        }
+        other => other.into(),
+    })?;
     Ok(UpdateLinkOutput {
         from_note_id: link.from_note_id,
         kind: link.link_kind.as_str().to_string(),
