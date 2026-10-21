@@ -2,6 +2,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../db.dart';
+import '../vault_access/vault_scoped.dart';
 import 'vault_state.dart';
 
 /// Pan + zoom for one canvas, kept in memory across tab switches.
@@ -100,3 +101,18 @@ final canvasDetailProvider = Provider.family<CanvasDetailRow?, String>((
   if (db == null) return null;
   return db.getCanvasDetail(canvasId);
 });
+
+/// Test skeleton (WI #89, red): the canvas list read through `VaultAccess`,
+/// stamped with the vault it was read for (D14a). The implementer replaces
+/// the body.
+final canvasesAsyncProvider = FutureProvider<VaultScoped<List<CanvasRow>>>(
+  (ref) => throw UnimplementedError('canvasesAsyncProvider'),
+);
+
+/// Test skeleton (WI #89, red): one hydrated canvas read through
+/// `VaultAccess`, or null for an unknown id, stamped with the vault it was
+/// read for (D14a). The implementer replaces the body.
+final canvasDetailAsyncProvider =
+    FutureProvider.family<VaultScoped<CanvasDetailRow?>, String>(
+      (ref, canvasId) => throw UnimplementedError('canvasDetailAsyncProvider'),
+    );
