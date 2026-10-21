@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../db.dart';
 import '../memex_cli.dart';
+import '../vault_access/errors.dart';
 import '../vault_access/notes_access.dart';
 import '../vault_access/vault_scoped.dart';
 import 'editor_controller.dart' show editorControllerProvider;
@@ -88,6 +89,15 @@ Note _queuedNote(QueuedSave queued) => Note(
   tags: const [],
 );
 
+/// The last copy of each hosted note the editor's read loaded, by (vault,
+/// note id). It starts empty for each open vault: opening another vault
+/// drops every copy (D14a). [editorNoteAsyncProvider] fills it and shows a
+/// copy only for the same note in the same vault.
+final _loadedNotesProvider = Provider<Map<(VaultRef, String), Note>>((ref) {
+  ref.watch(currentVaultProvider);
+  return {};
+});
+
 /// The editor's note, async (D14a), keyed by the selected note id:
 /// [virtualTodayNote] for a virtual Today tab (no vault read), else
 /// [selectedNoteAsyncProvider]'s note, with the vault it was loaded for.
@@ -99,19 +109,37 @@ Note _queuedNote(QueuedSave queued) => Note(
 /// note, or when the editor already holds the selected note (a virtual
 /// Today note that just became it). On a hosted vault a failed read of a
 /// newly selected note with a queued save yields the queued note
-/// ([_queuedNote]) instead of the error. [editorNoteProvider] is its facade.
+/// ([_queuedNote]) instead of the error. Without a queued save, a read that
+/// could not reach the server (`VaultUnreachableException`) yields the last
+/// copy of that same note loaded in this vault, when there is one (#105
+/// AC7: a note loaded before the outage keeps its text). Its edits save on
+/// that copy's version. [editorNoteProvider] is its facade.
 final editorNoteAsyncProvider = Provider<AsyncValue<VaultScoped<Note?>>>((ref) {
   final read = ref.watch(_editorNoteReadProvider);
   final id = ref.watch(selectedNoteIdProvider);
+  final loaded = ref.watch(_loadedNotesProvider);
   final shown = read.valueOrNull?.value;
-  if (read is AsyncData || (shown != null && shown.id == id)) return read;
+  if (read is AsyncData) {
+    final vault = read.value!.vault;
+    if (vault is HostedVaultRef && shown != null && shown.id == id) {
+      loaded[(vault, shown.id)] = shown;
+    }
+    return read;
+  }
+  if (shown != null && shown.id == id) return read;
   if (read.hasError) {
     final vault = ref.read(currentVaultProvider);
-    final queued = vault is HostedVaultRef && id != null
-        ? ref.read(pendingSaveQueueProvider.notifier).entryFor(vault, id)
-        : null;
-    if (queued != null) {
-      return AsyncData(VaultScoped(vault, _queuedNote(queued)));
+    if (vault is HostedVaultRef && id != null) {
+      final queued = ref
+          .read(pendingSaveQueueProvider.notifier)
+          .entryFor(vault, id);
+      if (queued != null) {
+        return AsyncData(VaultScoped(vault, _queuedNote(queued)));
+      }
+      final copy = loaded[(vault, id)];
+      if (copy != null && read.error is VaultUnreachableException) {
+        return AsyncData(VaultScoped(vault, copy));
+      }
     }
   }
   if (shown == null ||
