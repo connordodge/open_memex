@@ -96,8 +96,7 @@ Future<String> createTopicFromSidebar(WidgetRef ref, String title) async {
     var dailyId = ref.read(todayNoteProvider)?.noteId;
     if (dailyId == null) {
       final daily = await createDailyNote(
-        cli,
-        vaultPath: vaultPath,
+        ref.read(vaultAccessProvider)!.notes,
         date: ref.read(todayDateProvider),
       );
       dailyId = daily.noteId;

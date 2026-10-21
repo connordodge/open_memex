@@ -69,7 +69,7 @@ void main() {
         expect(r.db.liveNote(liveDailyId).content, merged);
         expect(r.db.liveNote(liveDailyId).version, serverVersion + 1);
         expect(r.editor.status, SaveStatus.clean);
-        expect(r.saveIndicatorShows('synced'), isTrue);
+        expect(r.saveIndicatorShows('saved'), isTrue);
         expect(r.inlineError, findsNothing);
         expect(tester.takeException(), isNull);
       },
@@ -264,7 +264,7 @@ void main() {
         );
         expect(r.db.liveNote(liveDailyId).version, 6);
         expect(r.editor.status, SaveStatus.clean);
-        expect(r.saveIndicatorShows('synced'), isTrue);
+        expect(r.saveIndicatorShows('saved'), isTrue);
         expect(r.inlineError, findsNothing);
         expect(r.bodyText, mergedPerson);
       },
