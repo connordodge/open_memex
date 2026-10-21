@@ -9,6 +9,8 @@ import '../state/activity_state.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
+import '../vault_access/vault_async_view.dart';
+import '../vault_access/vault_scoped.dart';
 import 'atoms.dart';
 
 enum RightPanelTab { connections, echoes, activity }
@@ -164,6 +166,13 @@ class _TabBody extends ConsumerWidget {
   }
 }
 
+/// The Connections tab's two reads, composed so they render together.
+class _Connections {
+  const _Connections(this.outgoing, this.backlinksByKind);
+  final List<LinkRow> outgoing;
+  final Map<String, List<BacklinkEntry>> backlinksByKind;
+}
+
 class _ConnectionsTab extends ConsumerWidget {
   const _ConnectionsTab();
   @override
@@ -177,8 +186,41 @@ class _ConnectionsTab extends ConsumerWidget {
       );
     }
 
-    final outgoing = ref.watch(linksOutProvider(selected.id));
-    final backlinksByKind = ref.watch(backlinksProvider(selected.id));
+    // Both reads must have current-vault data before rows render, so the
+    // hosted loading state covers either one still loading (WI #90 ruling).
+    final current = ref.watch(currentVaultProvider);
+    final outAsync = ref.watch(linksOutAsyncProvider(selected.id));
+    final inAsync = ref.watch(backlinksAsyncProvider(selected.id));
+    final outData = currentVaultData(outAsync, current);
+    final inData = currentVaultData(inAsync, current);
+    final AsyncValue<VaultScoped<_Connections>> combined =
+        outData != null && inData != null
+        ? AsyncData(
+            VaultScoped(current, _Connections(outData.value, inData.value)),
+          )
+        : outAsync.hasError || inAsync.hasError
+        ? AsyncError(
+            (outAsync.error ?? inAsync.error)!,
+            outAsync.stackTrace ?? inAsync.stackTrace ?? StackTrace.current,
+          )
+        : const AsyncLoading();
+
+    return VaultAsyncView<_Connections>(
+      value: combined,
+      empty: const _Connections([], {}),
+      builder: (context, data) => _connectionsList(
+        selected.tags.length,
+        data.outgoing,
+        data.backlinksByKind,
+      ),
+    );
+  }
+
+  Widget _connectionsList(
+    int tagCount,
+    List<LinkRow> outgoing,
+    Map<String, List<BacklinkEntry>> backlinksByKind,
+  ) {
     final outCount = outgoing.length;
     final inCount = backlinksByKind.values.fold<int>(
       0,
@@ -196,7 +238,7 @@ class _ConnectionsTab extends ConsumerWidget {
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
           child: Text(
-            '$outCount outgoing · $inCount backlinks · ${selected.tags.length} tags',
+            '$outCount outgoing · $inCount backlinks · $tagCount tags',
             style: OmType.mono(size: 10.5, color: OmColors.fg3, height: 1.6),
           ),
         ),
@@ -413,27 +455,30 @@ class _ActivityTab extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final selected = ref.watch(selectedNoteProvider);
-    final entries = selected == null
-        ? const <AgentChangeRow>[]
-        : ref.watch(agentChangesProvider(selected.id));
-    if (selected == null || entries.isEmpty) {
-      return const _PlaceholderTab(
-        eyebrow: _activityEyebrow,
-        subtitle: _activitySubtitle,
-        empty: _activityEmpty,
-        emptyKey: Key('activity-empty'),
-      );
-    }
-    return ListView(
-      children: [
-        const PanelHeader(eyebrow: _activityEyebrow),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-          child: Text(_activitySubtitle, style: _activitySubtitleStyle),
-        ),
-        const OmHairline(),
-        for (final entry in entries) _ActivityEntry(entry: entry),
-      ],
+    const emptyTab = _PlaceholderTab(
+      eyebrow: _activityEyebrow,
+      subtitle: _activitySubtitle,
+      empty: _activityEmpty,
+      emptyKey: Key('activity-empty'),
+    );
+    if (selected == null) return emptyTab;
+    return VaultAsyncView<List<AgentChangeRow>>(
+      value: ref.watch(agentChangesAsyncProvider(selected.id)),
+      empty: const <AgentChangeRow>[],
+      builder: (context, entries) {
+        if (entries.isEmpty) return emptyTab;
+        return ListView(
+          children: [
+            const PanelHeader(eyebrow: _activityEyebrow),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: Text(_activitySubtitle, style: _activitySubtitleStyle),
+            ),
+            const OmHairline(),
+            for (final entry in entries) _ActivityEntry(entry: entry),
+          ],
+        );
+      },
     );
   }
 }
