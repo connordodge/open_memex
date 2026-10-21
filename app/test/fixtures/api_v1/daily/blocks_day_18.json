@@ -1,0 +1,24 @@
+{
+  "blocks": [
+    {
+      "block_id": "6v4mr7",
+      "created_at": 1760000240000,
+      "created_version": 1,
+      "end_byte": 33,
+      "ord": 0,
+      "source": "person",
+      "start_byte": 0,
+      "text": "Played the prototype for an hour."
+    },
+    {
+      "block_id": "65a642",
+      "created_at": 1760000240000,
+      "created_version": 1,
+      "end_byte": 81,
+      "ord": 1,
+      "source": "person",
+      "start_byte": 35,
+      "text": "The [[Player Loop]] drags after the third run."
+    }
+  ]
+}

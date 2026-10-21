@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../state/canvas_state.dart';
+import '../state/revision_poller.dart';
 import '../state/tab_not_loaded.dart';
 import '../state/tabs_state.dart';
 import '../state/vault_state.dart';
@@ -22,6 +23,8 @@ class Workspace extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // The vault-wide revision poller (WI #79) runs while the workspace is up.
+    ref.watch(revisionPollerProvider);
     final rightOpen = ref.watch(rightPanelOpenProvider);
     return Scaffold(
       backgroundColor: OmColors.surface1,

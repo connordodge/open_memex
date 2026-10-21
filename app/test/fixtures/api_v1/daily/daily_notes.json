@@ -1,0 +1,34 @@
+{
+  "daily_notes": [
+    {
+      "date": "2026-10-19",
+      "note_id": "01M5DQAYZ51PF87XFZWSV5PWXK",
+      "preview": "Sketched a crafting tree.",
+      "review_state": "Unreviewed"
+    },
+    {
+      "date": "2026-10-18",
+      "note_id": "01M5DQAYZ4TAPTHDWE5PNWE4W5",
+      "preview": "Played the prototype for an hour.",
+      "review_state": "Reviewed"
+    },
+    {
+      "date": "2026-10-17",
+      "note_id": "01M5DQAYZ5T5B865CDF2RWAC37",
+      "preview": "Tuned the shop prices.",
+      "review_state": "Changed since review"
+    },
+    {
+      "date": "2026-10-16",
+      "note_id": "01M5DQAYZ50YGKE126FXV02TEY",
+      "preview": "Morning playtest with the new crafting tree",
+      "review_state": "Unreviewed"
+    },
+    {
+      "date": "2026-10-15",
+      "note_id": "01M5DQAYZ592W2515HPSDF5Q16",
+      "preview": "",
+      "review_state": "Unreviewed"
+    }
+  ]
+}
