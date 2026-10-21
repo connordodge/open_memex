@@ -1446,4 +1446,83 @@ mod tests {
         assert_eq!(pos("extends"), md.len() as i64, "{r:?}");
         assert_eq!(pos("contradicts"), wi141_offsets(md, "[[A]]")[1], "{r:?}");
     }
+
+    #[test]
+    fn frontmatter_flow_mapping_nested_mapping_token_is_reserved() {
+        // `reserve_value` contract: a nested mapping yields no link, but its
+        // tokens (keys and values) are claimed, so a later link in a
+        // flow-mapping frontmatter takes its own occurrence.
+        let cases: [(&str, &str, Wi141At); 3] = [
+            (
+                "nested mapping under a kind key",
+                "---\n{extends: {k: [[A]]}, contradicts: [[A]]}\n---\nb",
+                &[("contradicts", "[[A]]", 1)],
+            ),
+            (
+                "nested mapping under a skipped key",
+                "---\n{about: {k: [[A]]}, extends: [[A]]}\n---\nb",
+                &[("extends", "[[A]]", 1)],
+            ),
+            (
+                "quoted token as a nested mapping key",
+                "---\n{extends: {\"[[A]]\": x}, contradicts: [[A]]}\n---\nb",
+                &[("contradicts", "[[A]]", 1)],
+            ),
+        ];
+        for (case, md, expected) in cases {
+            wi141_assert_fm_at(case, md, expected);
+        }
+    }
+
+    #[test]
+    fn frontmatter_flow_mapping_invalid_kind_key_token_is_reserved() {
+        // A key whose kind fails validation is skipped, and its token is
+        // still claimed, so the later link takes its own occurrence.
+        let cases: [(&str, &str, Wi141At); 2] = [
+            (
+                "invalid kind first",
+                "---\n{\"bad kind!\": [[A]], extends: [[A]]}\n---\nb",
+                &[("extends", "[[A]]", 1)],
+            ),
+            (
+                "invalid kind sequence first",
+                "---\n{\"bad kind!\": [\"[[A]]\", \"[[A]]\"], extends: [[A]]}\n---\nb",
+                &[("extends", "[[A]]", 2)],
+            ),
+        ];
+        for (case, md, expected) in cases {
+            wi141_assert_fm_at(case, md, expected);
+        }
+    }
+
+    #[test]
+    fn frontmatter_skipped_token_without_verbatim_occurrence_takes_no_fallback() {
+        // `reserve_value` contract: a skipped token with no verbatim
+        // occurrence takes no fallback position, so the first link that
+        // needs one still gets `content_md.len()`.
+        let cases: [(&str, &str); 3] = [
+            (
+                "skipped about",
+                "---\nabout: \"\\x5B\\x5BA]]\"\nextends: \"\\x5B\\x5BB]]\"\n---\nb",
+            ),
+            (
+                "skipped invalid kind",
+                "---\n\"bad kind!\": \"\\x5B\\x5BA]]\"\nextends: \"\\x5B\\x5BB]]\"\n---\nb",
+            ),
+            (
+                "nested mapping",
+                "---\nextends:\n  - {k: \"\\x5B\\x5BA]]\"}\n  - \"\\x5B\\x5BB]]\"\n---\nb",
+            ),
+        ];
+        for (case, md) in cases {
+            let r = extract(md);
+            assert!(!r.frontmatter_parse_error, "{case}: frontmatter must parse");
+            assert_eq!(r.frontmatter.len(), 1, "{case}: {r:?}");
+            assert_eq!(
+                r.frontmatter[0].position,
+                md.len() as i64,
+                "{case}: the link takes the first fallback position: {r:?}"
+            );
+        }
+    }
 }
