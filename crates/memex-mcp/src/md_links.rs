@@ -287,4 +287,132 @@ mod tests {
         let out = insert_link_into_markdown(original, "Bush", "inspired-by", None);
         assert!(out.contains("inspired-by:\n  - [[Bush]]"));
     }
+
+    // WI #140: the label is kept for every kind, in every frontmatter shape.
+
+    #[test]
+    fn label_kept_for_every_kind() {
+        let cases = [
+            (
+                "references",
+                "body\n\n## Auto-added links\n\n[[Foo|Lbl-references]]\n",
+            ),
+            (
+                "extends",
+                "---\nextends:\n  - [[Foo|Lbl-extends]]\n---\nbody",
+            ),
+            (
+                "contradicts",
+                "---\ncontradicts:\n  - [[Foo|Lbl-contradicts]]\n---\nbody",
+            ),
+            (
+                "example-of",
+                "---\nexample-of:\n  - [[Foo|Lbl-example-of]]\n---\nbody",
+            ),
+            (
+                "inspired-by",
+                "---\ninspired-by:\n  - [[Foo|Lbl-inspired-by]]\n---\nbody",
+            ),
+        ];
+        for (kind, expected) in cases {
+            let label = format!("Lbl-{kind}");
+            let out = insert_link_into_markdown("body", "Foo", kind, Some(&label));
+            assert_eq!(out, expected, "kind {kind}");
+        }
+    }
+
+    #[test]
+    fn frontmatter_label_kept_when_frontmatter_absent() {
+        let original = "# Title\nbody";
+        let out = insert_link_into_markdown(original, "Foo", "extends", Some("Lbl"));
+        assert_eq!(out, "---\nextends:\n  - [[Foo|Lbl]]\n---\n# Title\nbody");
+    }
+
+    #[test]
+    fn frontmatter_label_kept_when_appending_to_block_list() {
+        let original = "---\ntitle: T\nextends:\n  - [[A]]\n  - [[B|b label]]\ntags: x\n---\nbody";
+        let out = insert_link_into_markdown(original, "Foo", "extends", Some("Lbl"));
+        assert_eq!(
+            out,
+            "---\ntitle: T\nextends:\n  - [[A]]\n  - [[B|b label]]\n  - [[Foo|Lbl]]\ntags: x\n---\nbody"
+        );
+    }
+
+    #[test]
+    fn frontmatter_label_kept_when_converting_inline_scalar() {
+        let original = "---\ntitle: T\nextends: [[A|a label]]\n---\nbody";
+        let out = insert_link_into_markdown(original, "Foo", "extends", Some("Lbl"));
+        assert_eq!(
+            out,
+            "---\ntitle: T\nextends:\n  - [[A|a label]]\n  - [[Foo|Lbl]]\n---\nbody"
+        );
+    }
+
+    #[test]
+    fn frontmatter_label_kept_when_adding_new_key() {
+        let original = "---\nextends:\n  - [[A]]\n---\nbody";
+        let out = insert_link_into_markdown(original, "B", "contradicts", Some("Lbl"));
+        assert_eq!(
+            out,
+            "---\nextends:\n  - [[A]]\ncontradicts:\n  - [[B|Lbl]]\n---\nbody"
+        );
+    }
+
+    #[test]
+    fn frontmatter_label_kept_when_frontmatter_unclosed() {
+        let original = "---\nnot closed\nbody";
+        let out = insert_link_into_markdown(original, "Foo", "extends", Some("Lbl"));
+        assert_eq!(
+            out,
+            "---\nextends:\n  - [[Foo|Lbl]]\n---\n---\nnot closed\nbody"
+        );
+    }
+
+    #[test]
+    fn no_label_or_empty_label_writes_no_pipe() {
+        let cases = [
+            (
+                "body",
+                "references",
+                "body\n\n## Auto-added links\n\n[[Foo]]\n",
+            ),
+            (
+                "# T\nbody",
+                "extends",
+                "---\nextends:\n  - [[Foo]]\n---\n# T\nbody",
+            ),
+            (
+                "---\nextends:\n  - [[A]]\n---\nbody",
+                "extends",
+                "---\nextends:\n  - [[A]]\n  - [[Foo]]\n---\nbody",
+            ),
+            (
+                "---\nextends: [[A]]\n---\nbody",
+                "extends",
+                "---\nextends:\n  - [[A]]\n  - [[Foo]]\n---\nbody",
+            ),
+            (
+                "---\nextends:\n  - [[A]]\n---\nbody",
+                "inspired-by",
+                "---\nextends:\n  - [[A]]\ninspired-by:\n  - [[Foo]]\n---\nbody",
+            ),
+        ];
+        for (original, kind, expected) in cases {
+            for label in [None, Some("")] {
+                let out = insert_link_into_markdown(original, "Foo", kind, label);
+                assert_eq!(out, expected, "kind {kind}, label {label:?}");
+                assert!(!out.contains('|'), "no pipe: {out:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn frontmatter_label_special_characters_written_verbatim() {
+        let label = "a: b # c 'd' \"e\"";
+        let out = insert_link_into_markdown("body", "Foo", "extends", Some(label));
+        assert_eq!(
+            out,
+            "---\nextends:\n  - [[Foo|a: b # c 'd' \"e\"]]\n---\nbody"
+        );
+    }
 }
