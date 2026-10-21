@@ -1,0 +1,24 @@
+{
+  "blocks": [
+    {
+      "block_id": "3nf3ca",
+      "created_at": 1760000420000,
+      "created_version": 1,
+      "end_byte": 66,
+      "ord": 0,
+      "source": "person",
+      "start_byte": 0,
+      "text": "Morning playtest with the new crafting tree\nand two fresh players."
+    },
+    {
+      "block_id": "xf7m2b",
+      "created_at": 1760000420000,
+      "created_version": 1,
+      "end_byte": 79,
+      "ord": 1,
+      "source": "person",
+      "start_byte": 68,
+      "text": "No crashes."
+    }
+  ]
+}
