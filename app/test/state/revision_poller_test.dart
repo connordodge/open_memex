@@ -31,6 +31,7 @@ import 'package:open_memex_app/src/state/revision_poller.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/vault_access/errors.dart';
+import 'package:open_memex_app/src/vault_access/hosted/hosted_client.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqlite3/sqlite3.dart';
 
@@ -38,6 +39,7 @@ import '../support/app_harness.dart';
 import '../support/daily_seed.dart';
 import '../support/fake_clock.dart';
 import '../support/fake_memex_cli.dart';
+import '../support/fake_vault_server.dart';
 import '../support/fake_vault_db.dart';
 import '../support/poll_fakes.dart';
 import '../support/vault_folders.dart';
@@ -937,6 +939,91 @@ void main() {
     );
   });
 
+  group('unauthorized with the real hosted client (AC10)', () {
+    test(
+      'with the real hosted client a 401 leaves the server token rejected and a later connected probe resumes polling',
+      () async {
+        const vault = HostedVaultRef(fakeServerId, 'work');
+        const revisionPath = '/vaults/work/api/v1/revision';
+        final server = FakeVaultServer()
+          ..route('GET', revisionPath, json: {'revision': 'r1'})
+          ..route(
+            'GET',
+            '/api/v1/info',
+            json: {'server_version': '0.1.0', 'api_version': kApiVersion},
+          );
+        final clock = FakeClock(DateTime(2026, 10, 20, 9));
+        late final HostedClient client;
+        final c = ProviderContainer(
+          overrides: [
+            clockProvider.overrideWithValue(clock),
+            appFocusProvider.overrideWith(() => FakeAppFocus()),
+            currentVaultProvider.overrideWith((_) => vault),
+            vaultDbProvider.overrideWithValue(null),
+            memexCliProvider.overrideWithValue(null),
+            revisionReaderProvider.overrideWith(
+              (_) => () async {
+                final body = await client.vaultRequest(
+                  'GET',
+                  'work',
+                  '/revision',
+                  operation: 'revision',
+                );
+                return body['revision']! as String;
+              },
+            ),
+          ],
+        );
+        addTearDown(c.dispose);
+        client = server.connect(c);
+        HostedConnectionStatus? status() =>
+            c.read(hostedConnectionStatusProvider(fakeServerId));
+        int revisionReads() =>
+            server.requests.where((r) => r.url.path == revisionPath).length;
+        Future<void> advance(Duration by) async {
+          for (var left = by; left > Duration.zero; left -= _step) {
+            clock.advance(left < _step ? left : _step);
+            await pumpEventQueue();
+          }
+        }
+
+        c.listen<void>(revisionPollerProvider, (_, _) {});
+        await pumpEventQueue();
+        await advance(_s2);
+        expect(revisionReads(), 2);
+        expect(status(), HostedConnectionStatus.connected);
+
+        // The token is rotated on the server: the next read gets a 401.
+        server.token = 'rotated-on-the-server';
+        await advance(_s2);
+        expect(revisionReads(), 3);
+        expect(
+          status(),
+          HostedConnectionStatus.tokenRejected,
+          reason:
+              'the 401 hook marks the server before the poller stops, so a '
+              'later connected is a change the poller hears',
+        );
+        await advance(const Duration(seconds: 20));
+        expect(revisionReads(), 3, reason: 'polling stopped');
+
+        // The token is updated and the re-probe (#98) connects.
+        server
+          ..token = fakeServerToken
+          ..route('GET', revisionPath, json: {'revision': 'r2'});
+        final probe = await client.probeServer();
+        await pumpEventQueue();
+        expect(probe.kind, ServerProbeKind.connected);
+        expect(status(), HostedConnectionStatus.connected);
+        expect(revisionReads(), 4, reason: 'one immediate read on resume');
+        expect(c.read(vaultRevisionProvider), 1);
+        await advance(_s2);
+        expect(revisionReads(), 5);
+        expect(c.read(vaultRevisionProvider), 1);
+      },
+    );
+  });
+
   group('vault_not_found stops polling (AC11)', () {
     test(
       'a revision read that fails with vault_not_found stops polling and nothing restarts it',
@@ -1136,6 +1223,67 @@ void main() {
 
         expect(env.readerFor(_vaultA).reads, reads);
         expect(env.clock.pendingTimers, 0);
+      },
+    );
+
+    test(
+      'with no open vault the poller holds no timer even when a revision reader is supplied',
+      () async {
+        final reader = ScriptedRevisionReader('a');
+        final clock = FakeClock(DateTime(2026, 10, 20, 9));
+        final c = ProviderContainer(
+          overrides: [
+            clockProvider.overrideWithValue(clock),
+            appFocusProvider.overrideWith(() => FakeAppFocus()),
+            currentVaultProvider.overrideWith((_) => null),
+            vaultDbProvider.overrideWithValue(null),
+            memexCliProvider.overrideWithValue(null),
+            revisionReaderProvider.overrideWith((_) => reader.read),
+          ],
+        );
+        addTearDown(c.dispose);
+
+        c.listen<void>(revisionPollerProvider, (_, _) {});
+        await pumpEventQueue();
+        expect(clock.pendingTimers, 0);
+        clock.advance(const Duration(seconds: 10));
+        await pumpEventQueue();
+
+        expect(reader.reads, 0);
+        expect(clock.pendingTimers, 0);
+        expect(c.read(vaultRevisionProvider), 0);
+      },
+    );
+
+    test(
+      'closing the vault while a revision reader stays supplied stops the poller timer',
+      () async {
+        final reader = ScriptedRevisionReader('a');
+        final clock = FakeClock(DateTime(2026, 10, 20, 9));
+        final c = ProviderContainer(
+          overrides: [
+            clockProvider.overrideWithValue(clock),
+            appFocusProvider.overrideWith(() => FakeAppFocus()),
+            currentVaultProvider.overrideWith((_) => _vaultA),
+            vaultDbProvider.overrideWithValue(null),
+            memexCliProvider.overrideWithValue(null),
+            revisionReaderProvider.overrideWith((_) => reader.read),
+          ],
+        );
+        addTearDown(c.dispose);
+        c.listen<void>(revisionPollerProvider, (_, _) {});
+        await pumpEventQueue();
+        expect(reader.reads, 1);
+        expect(clock.pendingTimers, 1);
+
+        c.read(currentVaultProvider.notifier).state = null;
+        await pumpEventQueue();
+        expect(clock.pendingTimers, 0);
+        clock.advance(const Duration(seconds: 10));
+        await pumpEventQueue();
+
+        expect(reader.reads, 1);
+        expect(c.read(vaultRevisionProvider), 0);
       },
     );
   });
