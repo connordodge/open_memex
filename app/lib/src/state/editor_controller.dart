@@ -170,13 +170,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
     // server copy (D16).
     final queued = _queuedOf(note.id);
     if (queued != null) {
-      state = EditorStateValue(
-        title: queued.save.title,
-        contentMd: queued.save.text,
-        status: queued.heldStatus ?? SaveStatus.dirty,
-        errorMessage: queued.heldMessage,
-        lastSavedVersion: queued.save.baseVersion,
-      );
+      _showQueued(queued);
       return;
     }
     state = EditorStateValue(
@@ -279,10 +273,17 @@ class EditorController extends StateNotifier<EditorStateValue> {
         // Queued: the text waits in the queue until the server answers,
         // then goes as the retry.
         _queue.updateText(hosted, id, local, title: rawTitle, sendTitle: title);
-        if (!_connected(hosted) || _retrying.contains((hosted, id))) {
+        if (_retrying.contains((hosted, id))) {
           if (queued.heldStatus == null) {
             state = state.copyWith(status: SaveStatus.dirty, clearError: true);
           }
+          return;
+        }
+        if (!_connected(hosted)) {
+          // The edit can't be sent now: a held save waits for the server
+          // again, with its label.
+          _queue.release(hosted, id);
+          state = state.copyWith(status: SaveStatus.dirty, clearError: true);
           return;
         }
         _debounce?.cancel();
@@ -395,7 +396,11 @@ class EditorController extends StateNotifier<EditorStateValue> {
   /// load [seq], titled [rawTitle], sending [sendTitle]) couldn't reach the
   /// server: queue the latest text with the base version and the first
   /// failure's time. The editor keeps its text and shows no error. When the
-  /// status already reads connected again the queued save retries now.
+  /// person left the note and opened it again while the save was in flight
+  /// (and nothing saved since), the editor shows the queued text instead,
+  /// as [loadNote] does for a queued note. An entry a later save of the
+  /// note already queued is kept. When the status already reads connected
+  /// again the queued save retries now.
   void _queueFailedSave(
     HostedVaultRef vault,
     String id,
@@ -406,7 +411,18 @@ class EditorController extends StateNotifier<EditorStateValue> {
     int baseVersion,
     Object error,
   ) {
-    final open = _activeNoteId == id && _loadSeq == seq && _virtualDate == null;
+    final shown = _activeNoteId == id && _virtualDate == null;
+    final open = shown && _loadSeq == seq;
+    if (!open && _queue.entryFor(vault, id) != null) {
+      // A later save of this note (sent after this one) already queued
+      // newer text: it stays.
+      if (_connected(vault)) _retryQueued(vault);
+      return;
+    }
+    // Opened again (from the server copy) while this save was in flight,
+    // with nothing saved since: the editor shows the queued text instead,
+    // as opening a queued note does (AC6).
+    final reopened = shown && !open && state.lastSavedVersion == baseVersion;
     _queue.put(
       vault: vault,
       noteId: id,
@@ -423,6 +439,9 @@ class EditorController extends StateNotifier<EditorStateValue> {
       // The retry merges from the base itself.
       _mergeBase = null;
       state = state.copyWith(status: SaveStatus.dirty, clearError: true);
+    } else if (reopened) {
+      _mergeBase = null;
+      _showQueued(_queue.entryFor(vault, id)!);
     }
     if (_connected(vault)) _retryQueued(vault);
   }
@@ -514,8 +533,10 @@ class EditorController extends StateNotifier<EditorStateValue> {
       _ref.read(vaultRevisionProvider.notifier).state++;
     } on Object catch (e) {
       if (_couldNotReach(e)) {
-        // Still queued; the next recovery retries.
-        if (isOpen() && _queue.entryFor(vault, id)?.heldStatus == null) {
+        // Still queued (a held save waits for the server again, with its
+        // label); the next recovery retries.
+        _queue.release(vault, id);
+        if (isOpen()) {
           state = state.copyWith(status: SaveStatus.dirty, clearError: true);
         }
         return;
@@ -554,7 +575,8 @@ class EditorController extends StateNotifier<EditorStateValue> {
   }
 
   /// Follows [vault]'s server connection status: on its return to
-  /// connected every queued save retries.
+  /// connected every queued save retries. Opening [vault] while its status
+  /// already reads connected retries its queued saves once too.
   void _watchServer(VaultRef? vault) {
     _serverSub?.close();
     _serverSub = null;
@@ -567,6 +589,26 @@ class EditorController extends StateNotifier<EditorStateValue> {
           _retryQueued(vault);
         }
       },
+    );
+    // Back in a vault whose server already answers (it may have answered
+    // while another vault was open): its queued saves retry once (AC2).
+    if (_queue.entriesOf(vault).isEmpty) return;
+    scheduleMicrotask(() {
+      if (!mounted || _ref.read(currentVaultProvider) != vault) return;
+      if (_connected(vault)) _retryQueued(vault);
+    });
+  }
+
+  /// Fills the editor from queued save [queued] of the open note: its text,
+  /// title and base version, never the server copy (D16), and its held
+  /// status and message when held.
+  void _showQueued(QueuedSave queued) {
+    state = EditorStateValue(
+      title: queued.save.title,
+      contentMd: queued.save.text,
+      status: queued.heldStatus ?? SaveStatus.dirty,
+      errorMessage: queued.heldMessage,
+      lastSavedVersion: queued.save.baseVersion,
     );
   }
 
@@ -680,7 +722,11 @@ class EditorController extends StateNotifier<EditorStateValue> {
     if (hosted != null && queued != null) {
       _queue.updateText(hosted, queueId, draft.text);
       if (!_connected(hosted)) {
-        if (_virtualDate == date && queued.heldStatus == null) {
+        // The edit can't be sent now: a held create waits for the server
+        // again, with its label.
+        _queue.release(hosted, queueId);
+        draft.error = null;
+        if (_virtualDate == date) {
           state = state.copyWith(status: SaveStatus.dirty, clearError: true);
         }
         return;

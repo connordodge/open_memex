@@ -195,6 +195,15 @@ class PendingSaveQueue extends StateNotifier<List<QueuedSave>> {
     _replace(q, q._copyWith(heldStatus: status, heldMessage: message));
   }
 
+  /// A held save of [noteId] in [vault] waits for the server again (its next
+  /// send couldn't reach it): the label shows and the next recovery retries
+  /// it. Nothing when it is not queued or not held.
+  void release(VaultRef vault, String noteId) {
+    final q = entryFor(vault, noteId);
+    if (q == null || q.heldStatus == null) return;
+    _replace(q, q._copyWith(clearHeld: true));
+  }
+
   /// Removes [noteId] from [vault]'s queue.
   void remove(VaultRef vault, String noteId) {
     final q = entryFor(vault, noteId);
