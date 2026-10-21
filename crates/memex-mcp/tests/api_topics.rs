@@ -1331,3 +1331,38 @@ async fn topics_router_serves_exactly_the_table_routes() {
         memberships(&env.cli_vault())
     );
 }
+
+// ---------------------------------------------------------------------------
+// Verify-mode pins (contracts the handoff listed as unpinned)
+// ---------------------------------------------------------------------------
+
+/// `PUT /settings/{key}` passes the value's JSON text to the core, so a
+/// JSON null or a JSON string (even `"3"`) is `setting_invalid`, never a
+/// missing-value `invalid_argument` and never coerced.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn put_settings_with_a_null_or_string_value_is_c1_setting_invalid() {
+    let env = Env::start().await;
+    let path = format!("/settings/{MAX_DEPTH}");
+    for value in [Value::Null, json!("3"), json!("1")] {
+        let reply = env.call("PUT", &path, Some(&json!({"value": value}))).await;
+        assert_c1(&reply, 400, "setting_invalid");
+        let reply = env.call("GET", &path, None).await;
+        assert_eq!(reply.json()["value"], 2, "nothing stored for {value}");
+    }
+}
+
+/// A note whose frontmatter `role` is valid JSON but not a string fails
+/// `GET /unsorted` with a 500, as the app's local read throws on it
+/// (parity of failure; `app_reads_topics.rs` pins the core half).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn get_unsorted_answers_500_on_a_non_string_role() {
+    let env = Env::start().await;
+    db(&env.server_vault())
+        .execute(
+            "UPDATE notes SET frontmatter = ?1 WHERE id = ?2",
+            params![r#"{"role": 5}"#, LOOSE],
+        )
+        .unwrap();
+    let reply = env.call("GET", "/unsorted", None).await;
+    assert_c1(&reply, 500, "internal");
+}

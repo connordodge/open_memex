@@ -38,8 +38,62 @@ class HostedTopicsAccess implements TopicsAccess {
 
   static String _setting(String key) => '/settings/${Uri.encodeComponent(key)}';
 
-  static List<Map<String, Object?>> _rows(Object? list) =>
-      (list as List).cast<Map<String, Object?>>();
+  /// Every element of [list] through [parse], or null when [list] is not a
+  /// list or any element is not an object [parse] accepts.
+  static List<T>? _rowsOf<T>(Object? list, T? Function(Map row) parse) {
+    if (list is! List) return null;
+    final rows = <T>[];
+    for (final r in list) {
+      final row = r is Map ? parse(r) : null;
+      if (row == null) return null;
+      rows.add(row);
+    }
+    return rows;
+  }
+
+  static SmartFolderRow? _folderRow(Map r) {
+    if (r case {
+      'id': final String id,
+      'name': final String name,
+      'pinned': final bool pinned,
+    }) {
+      if (r['parent_id'] case final String? parentId) {
+        return SmartFolderRow(
+          id: id,
+          name: name,
+          parentId: parentId,
+          pinned: pinned,
+        );
+      }
+    }
+    return null;
+  }
+
+  static SmartFolderMemberRow? _memberRow(Map r) {
+    if (r case {
+      'folder_id': final String folderId,
+      'note_id': final String noteId,
+      'title': final String title,
+      'pinned': final bool pinned,
+    }) {
+      return SmartFolderMemberRow(
+        folderId: folderId,
+        noteId: noteId,
+        title: title,
+        pinned: pinned,
+      );
+    }
+    return null;
+  }
+
+  static UnsortedNoteRow? _unsortedRow(Map r) {
+    if (r case {'note_id': final String noteId, 'title': final String title}) {
+      if (r['role'] case final String? role) {
+        return UnsortedNoteRow(noteId: noteId, title: title, role: role);
+      }
+    }
+    return null;
+  }
 
   /// [parse]'s result, or a null-code [MemexException] like the CLI
   /// wrapper's when the response is not the contract shape.
@@ -61,45 +115,22 @@ class HostedTopicsAccess implements TopicsAccess {
   /// [SmartFolderData] has no field for them.
   @override
   Future<SmartFolderData> smartFolders() async {
-    final json = await _call(
-      'GET',
-      '/smart-folders',
-      operation: 'smart folders',
-    );
-    return SmartFolderData(
-      folders: [
-        for (final r in _rows(json['folders']))
-          SmartFolderRow(
-            id: r['id'] as String,
-            name: r['name'] as String,
-            parentId: r['parent_id'] as String?,
-            pinned: r['pinned'] as bool,
-          ),
-      ],
-      members: [
-        for (final r in _rows(json['members']))
-          SmartFolderMemberRow(
-            folderId: r['folder_id'] as String,
-            noteId: r['note_id'] as String,
-            title: r['title'] as String,
-            pinned: r['pinned'] as bool,
-          ),
-      ],
-    );
+    const op = 'smart folders';
+    final json = await _call('GET', '/smart-folders', operation: op);
+    return _parsed(op, json, (json) {
+      final folders = _rowsOf(json['folders'], _folderRow);
+      final members = _rowsOf(json['members'], _memberRow);
+      if (folders == null || members == null) return null;
+      return SmartFolderData(folders: folders, members: members);
+    });
   }
 
   /// `GET /unsorted`.
   @override
   Future<List<UnsortedNoteRow>> unsortedNotes() async {
-    final json = await _call('GET', '/unsorted', operation: 'unsorted notes');
-    return [
-      for (final r in _rows(json['notes']))
-        UnsortedNoteRow(
-          noteId: r['note_id'] as String,
-          title: r['title'] as String,
-          role: r['role'] as String?,
-        ),
-    ];
+    const op = 'unsorted notes';
+    final json = await _call('GET', '/unsorted', operation: op);
+    return _parsed(op, json, (json) => _rowsOf(json['notes'], _unsortedRow));
   }
 
   // ---------- writes (and CLI-served reads) ----------
@@ -117,7 +148,7 @@ class HostedTopicsAccess implements TopicsAccess {
       operation: op,
       body: {'name': name, 'parent_id': ?parentId},
     );
-    return _parsed(op, json, _parseFolder);
+    return _parsed(op, json, parseFolderResult);
   }
 
   /// `PATCH /smart-folders/{id}`: `to_root: true` wins over `parent_id`;
@@ -141,7 +172,7 @@ class HostedTopicsAccess implements TopicsAccess {
         'pinned': ?pinned,
       },
     );
-    return _parsed(op, json, _parseFolder);
+    return _parsed(op, json, parseFolderResult);
   }
 
   /// `DELETE /smart-folders/{id}` (no body).
@@ -149,16 +180,7 @@ class HostedTopicsAccess implements TopicsAccess {
   Future<FolderDeleteResult> deleteFolder({required String id}) async {
     const op = 'folder rm';
     final json = await _call('DELETE', _folder(id), operation: op);
-    return _parsed(op, json, (json) {
-      if (json case {
-        'vault_id': final String vaultId,
-        'id': final String id,
-        'deleted': final bool deleted,
-      }) {
-        return FolderDeleteResult(vaultId: vaultId, id: id, deleted: deleted);
-      }
-      return null;
-    });
+    return _parsed(op, json, parseFolderDeleteResult);
   }
 
   /// `POST /smart-folders/{id}/members {note_id[, pinned]}`: [pinned] null
@@ -176,24 +198,7 @@ class HostedTopicsAccess implements TopicsAccess {
       operation: op,
       body: {'note_id': noteId, 'pinned': ?pinned},
     );
-    return _parsed(op, json, (json) {
-      if (json case {
-        'vault_id': final String vaultId,
-        'smart_folder_id': final String smartFolderId,
-        'note_id': final String noteId,
-        'pinned': final bool pinned,
-        'role_set': final bool roleSet,
-      }) {
-        return FolderMembershipResult(
-          vaultId: vaultId,
-          smartFolderId: smartFolderId,
-          noteId: noteId,
-          pinned: pinned,
-          roleSet: roleSet,
-        );
-      }
-      return null;
-    });
+    return _parsed(op, json, parseFolderMembershipResult);
   }
 
   /// `GET /settings/{key}`: the integer `value`.
@@ -239,30 +244,4 @@ class HostedTopicsAccess implements TopicsAccess {
     }
     return text;
   }
-}
-
-/// The `memex folder new|update` object, or null for any other shape.
-SmartFolderResult? _parseFolder(Map<String, Object?> json) {
-  if (json case {
-    'vault_id': final String vaultId,
-    'id': final String id,
-    'name': final String name,
-    'parent_id': final String? parentId,
-    'pinned': final bool pinned,
-    'depth': final int depth,
-    'created_at': final int createdAt,
-    'updated_at': final int updatedAt,
-  }) {
-    return SmartFolderResult(
-      vaultId: vaultId,
-      id: id,
-      name: name,
-      parentId: parentId,
-      pinned: pinned,
-      depth: depth,
-      createdAt: createdAt,
-      updatedAt: updatedAt,
-    );
-  }
-  return null;
 }

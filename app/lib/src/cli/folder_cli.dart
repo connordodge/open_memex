@@ -94,7 +94,7 @@ extension FolderCli on MemexCli {
     '--name',
     name,
     if (parentId != null) ...['--parent-id', parentId],
-  ], _parseFolder);
+  ], parseFolderResult);
 
   /// `memex folder update --vault V --id F [--name NAME]
   /// [--parent-id P | --to-root] [--pinned true|false]` (C2.7). [toRoot]
@@ -119,22 +119,18 @@ extension FolderCli on MemexCli {
       parentId,
     ],
     if (pinned != null) ...['--pinned', '$pinned'],
-  ], _parseFolder);
+  ], parseFolderResult);
 
   /// `memex folder rm --vault V --id F` (C2.8).
   Future<FolderDeleteResult> deleteFolder({
     required String vaultPath,
     required String id,
-  }) => _folderCall('rm', ['--vault', vaultPath, '--id', id], (json) {
-    if (json case {
-      'vault_id': final String vaultId,
-      'id': final String id,
-      'deleted': final bool deleted,
-    }) {
-      return FolderDeleteResult(vaultId: vaultId, id: id, deleted: deleted);
-    }
-    return null;
-  });
+  }) => _folderCall('rm', [
+    '--vault',
+    vaultPath,
+    '--id',
+    id,
+  ], parseFolderDeleteResult);
 
   /// `memex folder add --vault V --id F --note-id N [--pinned true|false]`
   /// (C2.9). [pinned] null omits the flag (the CLI default is pinned).
@@ -143,36 +139,15 @@ extension FolderCli on MemexCli {
     required String folderId,
     required String noteId,
     bool? pinned,
-  }) => _folderCall(
-    'add',
-    [
-      '--vault',
-      vaultPath,
-      '--id',
-      folderId,
-      '--note-id',
-      noteId,
-      if (pinned != null) ...['--pinned', '$pinned'],
-    ],
-    (json) {
-      if (json case {
-        'vault_id': final String vaultId,
-        'smart_folder_id': final String smartFolderId,
-        'note_id': final String noteId,
-        'pinned': final bool pinned,
-        'role_set': final bool roleSet,
-      }) {
-        return FolderMembershipResult(
-          vaultId: vaultId,
-          smartFolderId: smartFolderId,
-          noteId: noteId,
-          pinned: pinned,
-          roleSet: roleSet,
-        );
-      }
-      return null;
-    },
-  );
+  }) => _folderCall('add', [
+    '--vault',
+    vaultPath,
+    '--id',
+    folderId,
+    '--note-id',
+    noteId,
+    if (pinned != null) ...['--pinned', '$pinned'],
+  ], parseFolderMembershipResult);
 
   /// `memex folder remove --vault V --id F --note-id N` (C2.10).
   Future<FolderMemberRemoveResult> removeFromFolder({
@@ -227,8 +202,9 @@ extension FolderCli on MemexCli {
   }
 }
 
-/// The C2.6 / C2.7 folder object, or null for any other shape.
-SmartFolderResult? _parseFolder(Map<String, Object?> json) {
+/// The C2.6 / C2.7 folder object, or null for any other shape. Shared by
+/// the CLI wrapper and the hosted `POST|PATCH /smart-folders` calls.
+SmartFolderResult? parseFolderResult(Map<String, Object?> json) {
   if (json case {
     'vault_id': final String vaultId,
     'id': final String id,
@@ -248,6 +224,40 @@ SmartFolderResult? _parseFolder(Map<String, Object?> json) {
       depth: depth,
       createdAt: createdAt,
       updatedAt: updatedAt,
+    );
+  }
+  return null;
+}
+
+/// The C2.8 `folder rm` object, or null for any other shape. Shared by the
+/// CLI wrapper and the hosted `DELETE /smart-folders/{id}` call.
+FolderDeleteResult? parseFolderDeleteResult(Map<String, Object?> json) {
+  if (json case {
+    'vault_id': final String vaultId,
+    'id': final String id,
+    'deleted': final bool deleted,
+  }) {
+    return FolderDeleteResult(vaultId: vaultId, id: id, deleted: deleted);
+  }
+  return null;
+}
+
+/// The C2.9 `folder add` object, or null for any other shape. Shared by the
+/// CLI wrapper and the hosted `POST /smart-folders/{id}/members` call.
+FolderMembershipResult? parseFolderMembershipResult(Map<String, Object?> json) {
+  if (json case {
+    'vault_id': final String vaultId,
+    'smart_folder_id': final String smartFolderId,
+    'note_id': final String noteId,
+    'pinned': final bool pinned,
+    'role_set': final bool roleSet,
+  }) {
+    return FolderMembershipResult(
+      vaultId: vaultId,
+      smartFolderId: smartFolderId,
+      noteId: noteId,
+      pinned: pinned,
+      roleSet: roleSet,
     );
   }
   return null;
