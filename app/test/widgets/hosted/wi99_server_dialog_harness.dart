@@ -69,10 +69,14 @@ class Wi99OpenRecorder extends VaultOpenController {
 
   final List<VaultRef> opened = [];
 
+  /// When set, every open is recorded and then fails with this message.
+  String? failWith;
+
   @override
   Future<VaultOpenOutcome> openVault(VaultRef vault) async {
     opened.add(vault);
-    return VaultOpened(vault);
+    final message = failWith;
+    return message == null ? VaultOpened(vault) : VaultOpenFailure(message);
   }
 }
 
@@ -113,6 +117,9 @@ class Wi99Env {
   }
 
   late BuildContext _context;
+
+  /// A context under the host app's navigator, for calling a `show…` function.
+  BuildContext get context => _context;
 
   /// Opens the open dialog and lets the list request run.
   Future<void> openOpenDialog({
