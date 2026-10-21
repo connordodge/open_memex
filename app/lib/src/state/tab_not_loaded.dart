@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../db.dart';
 import '../vault_access/errors.dart';
 import '../vault_access/vault_access.dart';
 import 'graph_state.dart';
@@ -17,7 +18,14 @@ String workspaceTabTitle(WidgetRef ref, WorkspaceTab tab) {
     // like a real daily note's title.
     if (VirtualTodayTab.dateOf(tab.id) case final date?) return date;
     // Read through VaultAccess; `note` until it loads or when it's gone.
-    return ref.watch(noteTitleProvider(tab.id)).valueOrNull ?? 'note';
+    final read = ref.watch(noteTitleProvider(tab.id));
+    if (read.valueOrNull case final title?) return title;
+    // The vault server can't be reached: the title the app already holds
+    // for the note, so the not-loaded state can still name it.
+    if (read.error is VaultUnreachableException) {
+      return _knownNoteTitle(ref, tab.id) ?? 'note';
+    }
+    return 'note';
   }
   if (tab is CanvasTab) {
     final summary = ref
@@ -31,6 +39,19 @@ String workspaceTabTitle(WidgetRef ref, WorkspaceTab tab) {
     return ref.watch(graphTabTitleProvider(tab.scope)).valueOrNull ?? 'Graph';
   }
   return tab.id;
+}
+
+/// Note [id]'s title in the every-title list the editor already loaded
+/// (`noteTitlesAsyncProvider`, which keeps its last same-vault value when a
+/// re-read fails), or null when it holds none. Never starts that read: a
+/// list nothing has read yet counts as holding no title.
+String? _knownNoteTitle(WidgetRef ref, String id) {
+  if (!ref.exists(noteTitlesAsyncProvider)) return null;
+  return watchVaultValue(
+    ref,
+    noteTitlesAsyncProvider,
+    const <NoteTitle>[],
+  ).where((t) => t.id == id).firstOrNull?.title;
 }
 
 /// The tabs (per vault) whose content a read has loaded at least once. A tab
