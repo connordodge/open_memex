@@ -669,7 +669,7 @@ void main() {
         expect(source, contains('OmColors.'), reason: path);
         expect(source, isNot(contains('Color(0x')), reason: path);
         expect(
-          RegExp(r'Colors\.(?!transparent)\w+').hasMatch(source),
+          RegExp(r'(?<!Om)Colors\.(?!transparent)\w+').hasMatch(source),
           isFalse,
           reason: path,
         );
