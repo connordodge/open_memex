@@ -61,6 +61,13 @@ class HostedNotesAccess extends LocalNotesAccess {
   /// The bodies sent with each `updateNote`, in order.
   final updateBodies = <String>[];
 
+  /// The `title` sent with each `updateNote`, in order (null: unchanged).
+  final updateTitles = <String?>[];
+
+  /// When set, every `getNote` records itself and the outcome, then throws
+  /// this (a read that can't reach the server).
+  Object? readError;
+
   /// When set, every write records itself and then throws this.
   Object? writeError;
 
@@ -82,6 +89,11 @@ class HostedNotesAccess extends LocalNotesAccess {
   @override
   Future<Note?> getNote(String id) async {
     reads.add('getNote:$id');
+    final error = readError;
+    if (error != null) {
+      _record(error);
+      throw error;
+    }
     return super.getNote(id);
   }
 
@@ -125,6 +137,7 @@ class HostedNotesAccess extends LocalNotesAccess {
   }) {
     writes.add('updateNote:$noteId@$expectedVersion');
     updateBodies.add(contentMd);
+    updateTitles.add(title);
     return _write(
       () => super.updateNote(
         noteId: noteId,
