@@ -115,6 +115,21 @@ String hostedApiMismatchMessage(String serverName, String serverVersion) =>
 String hostedVaultGoneMessage(String vaultName, String serverName) =>
     '$vaultName is no longer on $serverName';
 
+/// The number of the newest hosted open; one per container.
+class _HostedOpenSequence {
+  int latest = 0;
+}
+
+final _hostedOpenSequenceProvider = Provider<_HostedOpenSequence>(
+  (_) => _HostedOpenSequence(),
+);
+
+/// Marks every hosted open still running as superseded, so none of them
+/// changes the open vault when it finishes (the later open wins). Returns
+/// the new sequence number. A local open calls it before it becomes current.
+int supersedeHostedOpens(Ref ref) =>
+    ++ref.read(_hostedOpenSequenceProvider).latest;
+
 /// The open hosted vault's client (D19): set by a successful hosted open,
 /// which read the access token, so `vaultAccessProvider` can build the
 /// composite synchronously. Memory only: the token is never persisted.
@@ -156,11 +171,17 @@ final windowTitleTextProvider = Provider<String>((ref) {
 /// on success. Any failure leaves the open vault, the last vault and the
 /// recents as they were. Runs no `memex` CLI and checks no schema (Req 34,
 /// Req 53).
+///
+/// The later open wins (lead ruling): an open that is superseded by a newer
+/// one (see [supersedeHostedOpens]) before it finishes changes nothing more:
+/// no current vault, last vault, recents, session or row outcome. It
+/// returns [VaultOpenCancelled].
 Future<VaultOpenOutcome> openHostedVault(
   Ref ref,
   HostedVaultRef vault, {
   required bool remember,
 }) async {
+  final ticket = supersedeHostedOpens(ref);
   final row = ref.read(recentRowOutcomeProvider(vault).notifier);
   final settings = ref.read(settingsProvider);
   SavedServer? server;
@@ -175,7 +196,17 @@ Future<VaultOpenOutcome> openHostedVault(
     return failure;
   }
   row.state = const RecentRowOpening();
-  final outcome = await _probeAndOpen(ref, vault, server, remember: remember);
+  final outcome = await _probeAndOpen(
+    ref,
+    vault,
+    server,
+    remember: remember,
+    superseded: () => ref.read(_hostedOpenSequenceProvider).latest != ticket,
+  );
+  if (outcome is VaultOpenCancelled) return outcome;
+  if (ref.read(_hostedOpenSequenceProvider).latest != ticket) {
+    return const VaultOpenCancelled();
+  }
   if (outcome is VaultOpenFailure) {
     row.state = RecentRowFailed(outcome);
   } else {
@@ -189,6 +220,7 @@ Future<VaultOpenOutcome> _probeAndOpen(
   HostedVaultRef vault,
   SavedServer server, {
   required bool remember,
+  required bool Function() superseded,
 }) async {
   final name = server.name;
   String? token;
@@ -264,8 +296,10 @@ Future<VaultOpenOutcome> _probeAndOpen(
     };
   }
 
+  if (superseded()) return const VaultOpenCancelled();
   if (remember) {
     await ref.read(settingsProvider.notifier).rememberRef(vault);
+    if (superseded()) return const VaultOpenCancelled();
   }
   ref.read(hostedSessionProvider.notifier).state = HostedSession(vault, client);
   final current = ref.read(currentVaultProvider.notifier);
