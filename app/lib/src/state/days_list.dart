@@ -42,8 +42,9 @@ class DaysList {
   final List<DaysMonthGroup> groups;
 }
 
-/// Group [notes] (from `dailyNotesProvider`, any order) into the Days list
-/// for [today] (ISO date). Days with no daily note are not rows (Req 51).
+/// Group [notes] (from `dailyNotesAsyncProvider`, any order) into the Days
+/// list for [today] (ISO date). Days with no daily note are not rows
+/// (Req 51).
 ///
 /// A note whose title is not a real ISO date has no day to sit on and is
 /// left out. When two notes claim one date, the smallest note id wins (the

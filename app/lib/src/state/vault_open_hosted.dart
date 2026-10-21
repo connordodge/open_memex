@@ -5,6 +5,7 @@ import '../memex_cli.dart';
 import '../vault_access/errors.dart';
 import '../vault_access/hosted/hosted_client.dart';
 import '../vault_access/hosted/hosted_vault_access.dart';
+import 'hosted_identity.dart';
 import 'settings.dart';
 import 'token_store.dart';
 import 'vault_open_controller.dart';
@@ -85,8 +86,8 @@ final recentRowOutcomeProvider =
     StateProvider.family<RecentRowOutcome?, VaultRef>((ref, _) => null);
 
 /// Asks for a new access token for the saved server with the given id (a
-/// failed open's "update token"). #105 binds it to the edit-server dialog;
-/// the default does nothing.
+/// failed open's "update token"). The app root binds it to the edit-server
+/// dialog (`appRootOverrides` in main.dart); the default does nothing.
 final updateTokenSeamProvider = Provider<void Function(String serverId)>(
   (_) => (_) {},
 );
@@ -296,11 +297,7 @@ Future<VaultOpenOutcome> _probeAndOpen(
         name,
         hostedTokenRejectedMessage(name),
       ),
-      vaultNotFoundCode => HostedVaultGone(
-        vault,
-        name,
-        hostedVaultGoneMessage(vault.vaultName, name),
-      ),
+      vaultNotFoundCode => _gone(ref, vault, name),
       // Any other refusal of the vault: the server's own error text.
       _ => HostedSchemaRefused(vault, name, _serverText(e, operation)),
     };
@@ -312,9 +309,21 @@ Future<VaultOpenOutcome> _probeAndOpen(
     if (superseded()) return const VaultOpenCancelled();
   }
   ref.read(hostedSessionProvider.notifier).state = HostedSession(vault, client);
+  ref.read(hostedVaultGoneProvider(vault).notifier).state = false;
   final current = ref.read(currentVaultProvider.notifier);
   if (current.state != vault) current.state = vault;
   return VaultOpened(vault);
+}
+
+/// The open path found [vault] gone from its server: sets
+/// [hostedVaultGoneProvider] for it and returns the failure.
+HostedVaultGone _gone(Ref ref, HostedVaultRef vault, String serverName) {
+  ref.read(hostedVaultGoneProvider(vault).notifier).state = true;
+  return HostedVaultGone(
+    vault,
+    serverName,
+    hostedVaultGoneMessage(vault.vaultName, serverName),
+  );
 }
 
 /// The server's error text of [e]: its message without the
@@ -326,12 +335,32 @@ String _serverText(MemexException e, String operation) {
       : e.message;
 }
 
+/// The saved server [serverId]'s access token was replaced (the edit-server
+/// dialog saved): the open hosted vault's session, when it is on that
+/// server, sends its later requests (polls, reads, saves) with the token now
+/// in the token store, starting with one `probeServer` so the server's
+/// status reflects the new token. The dialog's own probe already set the
+/// status to connected, and a poll the revision poller resumed on that may
+/// have gone out with the old token and been refused (401 stops the poller
+/// again); this probe's answer resumes it.
+Future<void> hostedServerTokenChanged(Ref ref, String serverId) async {
+  final session = ref.read(hostedSessionProvider);
+  if (session == null || session.vault.serverId != serverId) return;
+  final token = await ref.read(tokenStoreProvider).read(serverId);
+  if (token == null || token.isEmpty) return;
+  if (ref.read(hostedSessionProvider) != session) return;
+  session.client.useAccessToken(token);
+  await session.client.probeServer();
+}
+
 /// The open hosted [vault] went away (a `vault_not_found` on any request,
-/// Req 53a): records its row as vault gone and returns to the picker at once
-/// (no timer). The last vault is cleared so the picker does not reopen it.
+/// Req 53a): sets [hostedVaultGoneProvider], records its row as vault gone
+/// and returns to the picker at once (no timer). The last vault is cleared so
+/// the picker does not reopen it.
 /// Does nothing once another vault is open.
 Future<void> hostedVaultGone(Ref ref, HostedVaultRef vault) async {
   if (ref.read(currentVaultProvider) != vault) return;
+  ref.read(hostedVaultGoneProvider(vault).notifier).state = true;
   final settings = ref.read(settingsProvider);
   var serverName = vault.serverId;
   for (final s in settings.savedServers) {

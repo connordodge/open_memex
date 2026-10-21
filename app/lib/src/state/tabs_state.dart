@@ -3,7 +3,9 @@ import 'dart:math' show max, min;
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../db/daily_reads.dart' show DailyNoteRow;
 import '../graph/graph_scope.dart';
+import '../vault_access/vault_scoped.dart';
 import 'daily_state.dart';
 import 'ui_state_store.dart';
 import 'vault_state.dart';
@@ -375,13 +377,13 @@ final tabsProvider = StateNotifierProvider<TabsNotifier, TabsState>((ref) {
     // Opening a vault lands on today's note (#22). Read once: the launch
     // date sticks to the tab across midnight (D14).
     todayDate: vaultPath == null ? null : ref.read(todayDateProvider),
-    todayNoteId: vaultPath == null ? null : ref.read(todayNoteProvider)?.noteId,
+    todayNoteId: vaultPath == null ? null : _readTodayNote(ref)?.noteId,
   );
   // Today's note is an async read (#78, D14a): until it lands the launch
   // shows the virtual Today tab, which then resolves onto today's stored
   // daily note when there is one.
   final launchDate = vaultPath == null ? null : ref.read(todayDateProvider);
-  if (launchDate != null && ref.read(todayNoteProvider) == null) {
+  if (launchDate != null && _readTodayNote(ref) == null) {
     final vault = ref.read(currentVaultProvider);
     ref.read(todayNoteAsyncProvider.future).then((today) {
       final row = today.value;
@@ -392,6 +394,13 @@ final tabsProvider = StateNotifierProvider<TabsNotifier, TabsState>((ref) {
   }
   return notifier;
 });
+
+/// Today's daily note as loaded for the open vault right now (no
+/// subscription), or null before it loads or when there is none.
+DailyNoteRow? _readTodayNote(Ref<Object?> ref) => currentVaultData(
+  ref.read(todayNoteAsyncProvider),
+  ref.read(currentVaultProvider),
+)?.value;
 
 /// Lookup the active tab from anywhere in the widget tree.
 final activeTabProvider = Provider<WorkspaceTab?>(

@@ -27,14 +27,3 @@ final agentChangesAsyncProvider =
       }
       return VaultScoped(vault, await access.graph.agentChanges(noteId));
     });
-
-/// A note's agent change log, newest first. Synchronous facade over
-/// [agentChangesAsyncProvider]: empty before the first load, below V5, with no
-/// entries, and for another vault's data.
-final agentChangesProvider = Provider.family<List<AgentChangeRow>, String>(
-  (ref, noteId) => vaultFacadeValue(
-    ref,
-    ref.watch(agentChangesAsyncProvider(noteId)),
-    const <AgentChangeRow>[],
-  ),
-);

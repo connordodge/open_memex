@@ -39,10 +39,3 @@ final notesListAsyncProvider = FutureProvider<VaultScoped<List<NoteListItem>>>((
   }
   return VaultScoped(vault, notes);
 });
-
-/// Synchronous facade over [notesListAsyncProvider] (D14a): the current
-/// vault's loaded list; today's empty list before the first load, with no
-/// vault open, or while a switched-to vault's read is pending.
-final notesListProvider = Provider<List<NoteListItem>>(
-  (ref) => vaultFacadeValue(ref, ref.watch(notesListAsyncProvider), const []),
-);

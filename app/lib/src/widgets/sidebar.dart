@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:path/path.dart' as p;
 
+import '../db.dart' show CanvasRow;
+import '../state/canvas_state.dart';
 import '../state/hosted_connection_state.dart';
 import '../state/settings.dart';
 import '../state/sidebar_mode_state.dart';
@@ -14,6 +16,7 @@ import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
 import '../vault_access/errors.dart';
+import '../vault_access/vault_async_view.dart';
 import 'atoms.dart';
 import 'sidebar/canvases_rail.dart';
 import 'sidebar/days_pane.dart';
@@ -32,7 +35,12 @@ class Sidebar extends ConsumerWidget {
     final settings = ref.watch(settingsProvider);
     final currentVault = ref.watch(currentVaultProvider).localPath;
     final activeTab = ref.watch(activeTabProvider);
-    final canvases = ref.watch(canvasesProvider);
+    final canvasesRead = ref.watch(canvasesAsyncProvider);
+    final canvases = watchVaultValue(
+      ref,
+      canvasesAsyncProvider,
+      const <CanvasRow>[],
+    );
 
     final activeCanvasId = activeTab is CanvasTab ? activeTab.id : null;
 
@@ -62,7 +70,14 @@ class Sidebar extends ConsumerWidget {
             action: '+ new',
             onAction: () => _newCanvas(context, ref),
           ),
-          CanvasesRail(canvases: canvases, activeCanvasId: activeCanvasId),
+          VaultAsyncView<List<CanvasRow>>(
+            value: canvasesRead,
+            empty: const <CanvasRow>[],
+            builder: (_, canvases) => CanvasesRail(
+              canvases: canvases,
+              activeCanvasId: activeCanvasId,
+            ),
+          ),
           const OmHairline(),
           const _SidebarModeSwitch(),
           Expanded(

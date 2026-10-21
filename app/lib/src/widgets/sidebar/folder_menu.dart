@@ -7,8 +7,10 @@ import '../../state/graph_state.dart';
 import '../../state/smart_folder_actions.dart';
 import '../../state/topics_state.dart';
 import '../../state/topics_tree.dart';
+import '../../state/vault_state.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
+import '../../vault_access/vault_scoped.dart';
 import '../atoms.dart';
 import '../vault_settings_dialog.dart';
 import 'depth_dialog.dart';
@@ -173,7 +175,12 @@ class FolderMenuButton extends ConsumerWidget {
   Future<void> _move(ProviderContainer container) async {
     final target = await showFolderMoveDialog(
       hostContext,
-      tree: container.read(smartFolderTreeProvider),
+      tree:
+          currentVaultData(
+            container.read(smartFolderTreeAsyncProvider),
+            container.read(currentVaultProvider),
+          )?.value ??
+          emptyTopicsTree(),
       folderId: folder.id,
     );
     if (target == null || !hostContext.mounted) return;

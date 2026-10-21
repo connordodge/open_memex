@@ -35,11 +35,12 @@ VaultScoped<T>? currentVaultData<T>(
   return scoped;
 }
 
-/// The value a D14a synchronous facade returns for an async reader's
-/// [value]: its data when that was loaded for `currentVaultProvider`'s
-/// vault (a same-vault reload keeps the previous data), else [empty]
-/// (first load in flight, a first-load error, or data from the previous
-/// vault after a switch). Watches `currentVaultProvider` through [ref].
+/// What a provider that watches an async vault read sees of its [value]
+/// (the [Ref] counterpart of `watchVaultValue`): its data when that was
+/// loaded for `currentVaultProvider`'s vault (a same-vault reload keeps the
+/// previous data), else [empty] (first load in flight, a first-load error,
+/// or data from the previous vault after a switch). Watches
+/// `currentVaultProvider` through [ref].
 T vaultFacadeValue<T>(
   Ref<Object?> ref,
   AsyncValue<VaultScoped<T>> value,

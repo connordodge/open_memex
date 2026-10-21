@@ -10,15 +10,16 @@ import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import '../../vault_access/errors.dart';
 import '../../vault_access/hosted/hosted_client.dart';
+import '../../vault_access/hosted/hosted_vault_access.dart'
+    show hostedHttpClientProvider;
 
 /// The HTTP client the open and create "on a server" dialogs send their
-/// `HostedClient` requests with. Tests override it with a fake vault
-/// server's client.
-final serverDialogHttpClientProvider = Provider<http.Client>((ref) {
-  final client = http.Client();
-  ref.onDispose(client.close);
-  return client;
-});
+/// `HostedClient` requests with: the app's one hosted HTTP client,
+/// `hostedHttpClientProvider`. Tests override it with a fake vault server's
+/// client.
+final serverDialogHttpClientProvider = Provider<http.Client>(
+  (ref) => ref.watch(hostedHttpClientProvider),
+);
 
 /// Builds the `HostedClient` of a saved server for the dialogs.
 final _serverDialogClientFactoryProvider =

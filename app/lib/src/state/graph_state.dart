@@ -25,18 +25,6 @@ final graphDataAsyncProvider = FutureProvider.autoDispose
       return VaultScoped(vault, await buildGraph(access, scope));
     });
 
-/// The D14a synchronous facade over [graphDataAsyncProvider]: the current
-/// vault's graph (a same-vault reload keeps the previous one), else
-/// `GraphData.empty` (no vault, first load in flight or failed, or data from
-/// the previous vault after a switch).
-final graphDataProvider = Provider.autoDispose.family<GraphData, GraphScope>(
-  (ref, scope) => vaultFacadeValue(
-    ref,
-    ref.watch(graphDataAsyncProvider(scope)),
-    GraphData.empty,
-  ),
-);
-
 /// The Graph tab chip label: `Graph · <folder name | note title | Whole
 /// vault>`, read through [access]. Falls back to the scope id when the
 /// folder or note is gone, or with no vault open.

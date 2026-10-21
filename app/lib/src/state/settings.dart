@@ -272,18 +272,20 @@ class SettingsController extends StateNotifier<AppSettings> {
     return server;
   }
 
-  /// Removes the saved server [id]: deletes its access token, drops its hosted
-  /// recents, and clears the last vault if it was one of them.
+  /// Removes the saved server [id]: drops it, its hosted recents and the last
+  /// vault if it was one of them, then deletes its access token. Settings are
+  /// written first, so a failed token delete (which still throws) never
+  /// leaves the removed server saved.
   Future<void> removeServer(String id) async {
     bool onServer(VaultRef? r) => r is HostedVaultRef && r.serverId == id;
 
-    await _tokens.delete(id);
     await _writeServers(state.savedServers.where((s) => s.id != id).toList());
     final refs = state.recentRefs.where((r) => !onServer(r)).toList();
     await _writeRecents(refs);
     final clearLast = onServer(state.lastVaultRef);
     if (clearLast) await _prefs.remove(_kLastRef);
     state = state.copyWith(recentRefs: refs, clearLastVault: clearLast);
+    await _tokens.delete(id);
   }
 
   /// Writes the typed recents and mirrors their local paths, in order, to

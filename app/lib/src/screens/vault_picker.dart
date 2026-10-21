@@ -6,7 +6,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:path/path.dart' as p;
 
-import '../state/hosted_vaults_flag.dart';
 import '../state/picker_actions.dart';
 import '../state/server_probes.dart';
 import '../state/settings.dart';
@@ -32,13 +31,10 @@ class VaultPickerScreen extends ConsumerStatefulWidget {
 const _openEyebrow = 'OPEN LOCAL VAULT';
 const _createEyebrow = 'CREATE NEW VAULT';
 
-/// The subtitle (board A1); without hosted vaults, today's copy.
+/// The subtitle (board A1).
 const _subtitle =
     'a vault is a folder of your notes. open one on this mac, or one hosted '
     'by a vault server.';
-const _localSubtitle =
-    'a vault is a folder of your notes (manifest.json + memex.db). open one '
-    'you have, or create a new one.';
 
 class _VaultPickerScreenState extends ConsumerState<VaultPickerScreen> {
   /// The last vault while the launch reopen runs on it; its recent row
@@ -130,16 +126,12 @@ class _VaultPickerScreenState extends ConsumerState<VaultPickerScreen> {
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
     final cli = ref.watch(memexCliProvider);
-    final hosted = ref.watch(hostedVaultsEnabledProvider);
-    // The picker probes each saved server while it shows (flag on only).
-    if (hosted) ref.watch(serverProbesProvider);
+    // The picker probes each saved server while it shows.
+    ref.watch(serverProbesProvider);
     final binaryNotFound =
         cli == null ||
         (_unstartableBinary != null && cli.binaryPath == _unstartableBinary);
-    final recents = [
-      for (final r in settings.recentRefs)
-        if (hosted || r is LocalVaultRef) r,
-    ];
+    final recents = settings.recentRefs;
     final servers = settings.savedServers;
 
     return Scaffold(
@@ -198,7 +190,7 @@ class _VaultPickerScreenState extends ConsumerState<VaultPickerScreen> {
                 Text('CHOOSE A VAULT', style: OmType.eyebrow()),
                 const SizedBox(height: 10),
                 Text(
-                  hosted ? _subtitle : _localSubtitle,
+                  _subtitle,
                   style: OmType.sans(
                     size: 13,
                     color: OmColors.fg2,
@@ -207,7 +199,7 @@ class _VaultPickerScreenState extends ConsumerState<VaultPickerScreen> {
                 ),
                 const SizedBox(height: 24),
                 if (binaryNotFound)
-                  _BinaryNotFoundCard(hosted: hosted)
+                  const _BinaryNotFoundCard()
                 else
                   _BinaryFoundLine(path: cli.binaryPath),
                 if (recents.isNotEmpty) ...[
@@ -225,28 +217,26 @@ class _VaultPickerScreenState extends ConsumerState<VaultPickerScreen> {
                     ),
                   ],
                 ],
-                if (hosted) ...[
-                  const SizedBox(height: 24),
-                  _ServersHeader(count: servers.length, onConnect: _connect),
-                  const SizedBox(height: 10),
-                  if (servers.isEmpty)
-                    _NoServersBox(
-                      onConnect: _connect,
-                      onSetUp: () =>
-                          ref.read(pickerActionsProvider).setUp(context),
-                    )
-                  else
-                    for (var i = 0; i < servers.length; i++) ...[
-                      if (i > 0) const SizedBox(height: 6),
-                      ServerRow(
-                        server: servers[i],
-                        onEdit: () => ref
-                            .read(pickerActionsProvider)
-                            .editServer(context, servers[i].id),
-                        onRemove: () => _removeServer(servers[i]),
-                      ),
-                    ],
-                ],
+                const SizedBox(height: 24),
+                _ServersHeader(count: servers.length, onConnect: _connect),
+                const SizedBox(height: 10),
+                if (servers.isEmpty)
+                  _NoServersBox(
+                    onConnect: _connect,
+                    onSetUp: () =>
+                        ref.read(pickerActionsProvider).setUp(context),
+                  )
+                else
+                  for (var i = 0; i < servers.length; i++) ...[
+                    if (i > 0) const SizedBox(height: 6),
+                    ServerRow(
+                      server: servers[i],
+                      onEdit: () => ref
+                          .read(pickerActionsProvider)
+                          .editServer(context, servers[i].id),
+                      onRemove: () => _removeServer(servers[i]),
+                    ),
+                  ],
                 const SizedBox(height: 24),
                 _GridRow(
                   label: 'THIS MAC',
@@ -273,38 +263,35 @@ class _VaultPickerScreenState extends ConsumerState<VaultPickerScreen> {
                     ),
                   ),
                 ),
-                if (hosted) ...[
-                  const SizedBox(height: 8),
-                  _GridRow(
-                    label: 'VAULT SERVER',
-                    left: KeyedSubtree(
-                      key: const Key('vault-picker-open-on-server'),
-                      child: OmButton(
-                        // Binary not found (A3 state 1): the first server
-                        // action takes the primary style.
-                        kind: binaryNotFound
-                            ? OmButtonKind.primary
-                            : OmButtonKind.secondary,
-                        size: 36,
-                        icon: LucideIcons.server,
-                        label: 'open vault on a server…',
-                        onPressed: () =>
-                            _serverFlow((a, c) => a.openOnServer(c)),
-                      ),
-                    ),
-                    right: KeyedSubtree(
-                      key: const Key('vault-picker-create-on-server'),
-                      child: OmButton(
-                        kind: OmButtonKind.secondary,
-                        size: 36,
-                        icon: LucideIcons.plus,
-                        label: 'create vault on a server…',
-                        onPressed: () =>
-                            _serverFlow((a, c) => a.createOnServer(c)),
-                      ),
+                const SizedBox(height: 8),
+                _GridRow(
+                  label: 'VAULT SERVER',
+                  left: KeyedSubtree(
+                    key: const Key('vault-picker-open-on-server'),
+                    child: OmButton(
+                      // Binary not found (A3 state 1): the first server
+                      // action takes the primary style.
+                      kind: binaryNotFound
+                          ? OmButtonKind.primary
+                          : OmButtonKind.secondary,
+                      size: 36,
+                      icon: LucideIcons.server,
+                      label: 'open vault on a server…',
+                      onPressed: () => _serverFlow((a, c) => a.openOnServer(c)),
                     ),
                   ),
-                ],
+                  right: KeyedSubtree(
+                    key: const Key('vault-picker-create-on-server'),
+                    child: OmButton(
+                      kind: OmButtonKind.secondary,
+                      size: 36,
+                      icon: LucideIcons.plus,
+                      label: 'create vault on a server…',
+                      onPressed: () =>
+                          _serverFlow((a, c) => a.createOnServer(c)),
+                    ),
+                  ),
+                ),
               ],
             ),
           ),
@@ -522,12 +509,10 @@ class _BinaryFoundLine extends StatelessWidget {
   }
 }
 
-/// A3 state 1: the binary-not-found card. With hosted vaults on it says
-/// hosted vaults don't need the binary.
+/// A3 state 1: the binary-not-found card. It says hosted vaults don't need
+/// the binary.
 class _BinaryNotFoundCard extends ConsumerWidget {
-  const _BinaryNotFoundCard({required this.hosted});
-
-  final bool hosted;
+  const _BinaryNotFoundCard();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -554,13 +539,11 @@ class _BinaryNotFoundCard extends ConsumerWidget {
             'install with:\n  cargo install --path crates/memex-mcp --locked',
             style: OmType.mono(size: 11.5, color: OmColors.fg1, height: 1.5),
           ),
-          if (hosted) ...[
-            const SizedBox(height: 8),
-            Text(
-              "local vaults need it. hosted vaults don't.",
-              style: OmType.sans(size: 12, color: OmColors.fg2, height: 1.5),
-            ),
-          ],
+          const SizedBox(height: 8),
+          Text(
+            "local vaults need it. hosted vaults don't.",
+            style: OmType.sans(size: 12, color: OmColors.fg2, height: 1.5),
+          ),
           const SizedBox(height: 8),
           OmButton(
             kind: OmButtonKind.secondary,

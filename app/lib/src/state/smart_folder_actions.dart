@@ -5,6 +5,7 @@ import '../cli/settings_cli.dart';
 import '../memex_cli.dart';
 import '../vault_access/errors.dart';
 import '../vault_access/vault_access.dart';
+import '../vault_access/vault_scoped.dart';
 import 'topics_state.dart';
 import 'topics_tree.dart';
 import 'vault_access_state.dart';
@@ -23,7 +24,12 @@ final selectedTopicFolderProvider = StateProvider<String?>((_) => null);
 final selectedFolderInTreeProvider = Provider<String?>((ref) {
   final id = ref.watch(selectedTopicFolderProvider);
   bool holds(FolderNode f) => f.id == id || f.children.any(holds);
-  return ref.watch(smartFolderTreeProvider).folders.any(holds) ? id : null;
+  final tree = vaultFacadeValue(
+    ref,
+    ref.watch(smartFolderTreeAsyncProvider),
+    emptyTopicsTree(),
+  );
+  return tree.folders.any(holds) ? id : null;
 });
 
 /// Asks the person whether to raise `smart_folder_max_depth` to

@@ -103,6 +103,9 @@ class _ComposedClient implements HostedClient {
   String get serverName => _inner.serverName;
 
   @override
+  void useAccessToken(String token) => _inner.useAccessToken(token);
+
+  @override
   Future<ServerProbe> probeServer() =>
       _guard(() => _inner.probeServer(), 'probeServer');
 
