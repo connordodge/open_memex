@@ -29,6 +29,7 @@ const VaultRef _hostedVault = HostedVaultRef('srv', 'a');
 class _Wi90cFailingNotes extends Wi90GatedNotes {
   _Wi90cFailingNotes({
     required super.vaultPath,
+    super.db,
     required super.gate,
     super.out,
     super.incoming,
@@ -66,6 +67,7 @@ Future<void> _pumpConnections(
   db.seedNote(id: _note, title: 'Target', tags: const ['t1', 't2']);
   final notes = _Wi90cFailingNotes(
     vaultPath: '/unused-c',
+    db: db,
     gate: Wi90Gate(),
     failOut: failOut,
     failIn: failIn,
