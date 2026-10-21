@@ -197,10 +197,14 @@ fn parse_frontmatter(
         };
         // `from-day` and `about` are server-written kinds: no frontmatter key
         // creates them.
+        // A skipped key's tokens are still claimed, so no later link takes
+        // them when its key has no span of its own.
         if kind_str == LinkKind::FROM_DAY || kind_str == LinkKind::ABOUT {
+            positions.reserve_value(&value, &mut span);
             continue;
         }
         let Ok(kind) = LinkKind::new(&kind_str) else {
+            positions.reserve_value(&value, &mut span);
             continue;
         };
         collect_wikilinks_from_value(&value, &kind, &mut span, &mut positions, &mut out);
@@ -215,7 +219,9 @@ fn parse_frontmatter(
 /// (from the key to the next top-level key). Within a span, occurrences are
 /// claimed in order with a cursor, so a token repeated under one key gets
 /// successive offsets; an occurrence on a YAML comment is never claimed.
-/// `serde_yaml::Mapping` keeps key order and sequences keep item order, so
+/// Tokens that yield no link (a skipped key's value, a nested mapping) are
+/// claimed too, so a key the line scan missed, which searches the whole
+/// frontmatter, never takes them. `serde_yaml::Mapping` keeps key order and sequences keep item order, so
 /// decoded order matches text order.
 ///
 /// A token with no verbatim occurrence in its span (an escaped or folded YAML
@@ -288,23 +294,60 @@ impl<'a> FmPositions<'a> {
     /// The position (into `content_md`) of `token`'s next unclaimed,
     /// uncommented occurrence in `span`, or a fresh past-the-end position.
     fn claim(&mut self, token: &str, span: &mut SpanCursor) -> i64 {
+        match self.take(token, span) {
+            Some(p) => (self.fm_offset + p) as i64,
+            None => {
+                let pos = self.next_fallback;
+                self.next_fallback += 1;
+                pos as i64
+            }
+        }
+    }
+
+    /// Claims, in text order, every `[[` token in a value that yields no
+    /// link (a skipped key's value, a nested mapping), so no later link
+    /// claims it. A token with no verbatim occurrence takes no fallback.
+    fn reserve_value(&mut self, value: &serde_yaml::Value, span: &mut SpanCursor) {
+        use serde_yaml::Value;
+        match value {
+            Value::String(s) => {
+                for m in WIKILINK_RE.find_iter(s) {
+                    self.take(m.as_str(), span);
+                }
+            }
+            Value::Sequence(seq) => {
+                for v in seq {
+                    self.reserve_value(v, span);
+                }
+            }
+            Value::Mapping(map) => {
+                for (k, v) in map {
+                    self.reserve_value(k, span);
+                    self.reserve_value(v, span);
+                }
+            }
+            Value::Tagged(t) => self.reserve_value(&t.value, span),
+            _ => {}
+        }
+    }
+
+    /// Marks `token`'s next unclaimed, uncommented occurrence in `span` as
+    /// claimed, moves the cursor past it and returns its start (relative to
+    /// `fm_text`).
+    fn take(&mut self, token: &str, span: &mut SpanCursor) -> Option<usize> {
         let mut from = span.at;
         while from < span.end {
-            let Some(rel) = self.fm_text[from..span.end].find(token) else {
-                break;
-            };
+            let rel = self.fm_text[from..span.end].find(token)?;
             let p = from + rel;
             if !self.claimed.contains(&p) && !in_yaml_comment(self.fm_text, p) {
                 self.claimed.insert(p);
                 span.at = p + token.len();
-                return (self.fm_offset + p) as i64;
+                return Some(p);
             }
             // Tokens start with the one-byte `[`, so `p + 1` is a char boundary.
             from = p + 1;
         }
-        let pos = self.next_fallback;
-        self.next_fallback += 1;
-        pos as i64
+        None
     }
 }
 
@@ -459,6 +502,8 @@ fn collect_wikilinks_from_value(
                 collect_wikilinks_from_value(v, kind, span, positions, out);
             }
         }
+        // A nested mapping yields no link; its tokens are still claimed.
+        serde_yaml::Value::Mapping(_) => positions.reserve_value(value, span),
         _ => {}
     }
 }
