@@ -20,7 +20,8 @@ rusqlite = { workspace = true }
 rmcp = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
+# float_roundtrip: request coordinates parse to the exact f64 (#84).
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 clap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
