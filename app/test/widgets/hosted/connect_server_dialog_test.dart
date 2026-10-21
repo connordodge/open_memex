@@ -998,6 +998,52 @@ void main() {
     );
 
     testWidgets(
+      'a server just connected to a new url reads connected and the temporary key holds no status',
+      (tester) async {
+        final env = await pumpWi98Host(tester, server: _server());
+        await env.open();
+        await env.fill(name: 'nas', url: _url, token: _token);
+
+        await env.submit();
+        await tester.pumpAndSettle();
+
+        final added = env.result!;
+        expect(
+          env.container.read(hostedConnectionStatusProvider(added.id)),
+          HostedConnectionStatus.connected,
+          reason: 'just proved reachable: the picker does not show checking',
+        );
+        expect(
+          env.container.read(
+            hostedConnectionStatusProvider('connect-server-dialog'),
+          ),
+          isNull,
+          reason: 'the temporary probe key keeps no stale status',
+        );
+      },
+    );
+
+    testWidgets(
+      'a rejected probe of a new url leaves no status under the temporary key',
+      (tester) async {
+        final env = await pumpWi98Host(tester, server: _server());
+        await env.open();
+        await env.fill(name: 'nas', url: _url, token: 'tok-wrong-98');
+
+        await env.submit();
+        await tester.pumpAndSettle();
+
+        expect(find.text(kWi98TokenRejected), findsOneWidget);
+        expect(
+          env.container.read(
+            hostedConnectionStatusProvider('connect-server-dialog'),
+          ),
+          isNull,
+        );
+      },
+    );
+
+    testWidgets(
       'connecting to a saved url reports the probe under that server id',
       (tester) async {
         final env = await pumpWi98Host(

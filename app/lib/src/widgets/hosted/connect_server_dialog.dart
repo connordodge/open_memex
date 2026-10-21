@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
+import '../../state/hosted_connection_state.dart';
 import '../../state/settings.dart';
 import '../../state/token_store.dart';
 import '../../theme/colors.dart';
@@ -150,9 +151,27 @@ class _ConnectServerDialogState extends ConsumerState<_ConnectServerDialog>
     }
   }
 
+  /// The dialog's route; inactive as soon as the dialog is popped (cancel,
+  /// a barrier tap or Escape), while its widget may stay mounted for the
+  /// pop transition.
+  ModalRoute<Object?>? _route;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _route = ModalRoute.of(context);
+  }
+
+  /// Whether the dialog was dismissed: a late probe answer or write then
+  /// changes nothing.
+  bool get _dismissed => !mounted || !(_route?.isActive ?? true);
+
   Future<void> _submit() async {
     if (_connecting) return;
-    final settings = ref.read(settingsProvider.notifier);
+    // Captured up front: the undo of a cancelled save runs after unmount.
+    final container = ProviderScope.containerOf(context, listen: false);
+    final settings = container.read(settingsProvider.notifier);
+    final tokens = container.read(tokenStoreProvider);
     final edit = widget.edit;
 
     setState(() {
@@ -174,7 +193,7 @@ class _ConnectServerDialogState extends ConsumerState<_ConnectServerDialog>
     // A URL that is already saved: connect updates that server (D18); an
     // edit may not take another saved server's URL.
     SavedServer? match;
-    for (final s in ref.read(settingsProvider).savedServers) {
+    for (final s in container.read(settingsProvider).savedServers) {
       if (normalizeServerUrl(s.url) == url) match = s;
     }
     if (edit != null && match != null && match.id != edit.id) {
@@ -182,20 +201,29 @@ class _ConnectServerDialogState extends ConsumerState<_ConnectServerDialog>
       return;
     }
 
+    // The saved server this submit overwrites (edit, or connect to a saved
+    // url), and its stored token: what a cancelled write is undone to.
+    final target = edit ?? match;
     setState(() => _setConnecting(true));
+    final storedToken = target == null ? null : await tokens.read(target.id);
+    if (_dismissed) return;
     final token = pasted.isNotEmpty || edit == null
         ? pasted
-        : await ref.read(tokenStoreProvider).read(edit.id) ?? '';
-    if (!mounted) return;
+        : storedToken ?? '';
 
-    final probe = await ref.read(_probeProvider)(
-      serverId: edit?.id ?? match?.id ?? _unsavedServerId,
+    final probeId = target?.id ?? _unsavedServerId;
+    final probe = await container.read(_probeProvider)(
+      serverId: probeId,
       serverName: name,
       serverUrl: url,
       accessToken: token,
     );
+    // The temporary key never keeps a status once its probe answered.
+    if (probeId == _unsavedServerId) {
+      container.invalidate(hostedConnectionStatusProvider(_unsavedServerId));
+    }
     // Cancelled while connecting: a late answer changes nothing.
-    if (!mounted) return;
+    if (_dismissed) return;
 
     switch (probe.kind) {
       case ServerProbeKind.unreachable:
@@ -222,6 +250,14 @@ class _ConnectServerDialogState extends ConsumerState<_ConnectServerDialog>
               'the same release.';
         });
       case ServerProbeKind.connected:
+        // Read right before the write: the name and url to restore.
+        final before = target == null
+            ? null
+            : container
+                  .read(settingsProvider)
+                  .savedServers
+                  .firstWhere((s) => s.id == target.id, orElse: () => target);
+        final tokenWritten = edit == null || pasted.isNotEmpty;
         final saved = edit == null
             ? await settings.saveServer(name: name, url: url, token: token)
             : await settings.updateServer(
@@ -230,7 +266,31 @@ class _ConnectServerDialogState extends ConsumerState<_ConnectServerDialog>
                 url: url,
                 token: pasted.isEmpty ? null : pasted,
               );
-        if (!mounted) return;
+        if (!mounted || _dismissed) {
+          // Cancelled during the write: cancel changes nothing (AC4).
+          if (before == null) {
+            await settings.removeServer(saved.id);
+          } else {
+            await settings.updateServer(
+              before.id,
+              name: before.name,
+              url: before.url,
+              token: tokenWritten ? storedToken : null,
+            );
+            if (tokenWritten && storedToken == null) {
+              await tokens.delete(before.id);
+            }
+          }
+          return;
+        }
+        if (target == null) {
+          // The probe reported under the temporary key; the new server was
+          // just proved reachable, so it doesn't read "checking".
+          container
+                  .read(hostedConnectionStatusProvider(saved.id).notifier)
+                  .state =
+              HostedConnectionStatus.connected;
+        }
         Navigator.of(context).pop(saved);
     }
   }
