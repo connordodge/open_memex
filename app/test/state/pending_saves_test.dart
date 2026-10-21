@@ -3106,7 +3106,17 @@ void main() {
     test(
       'a plain save that conflicts after the note was left is kept as a held conflict and not lost',
       () async {
-        final h = await _hosted(_plainVault());
+        // TEST-CHANGE (#105): a conflict that is queued reads the hosted
+        // server name seam, which is bound to the saved servers, so the
+        // container needs settings (as the 401 seam test above has).
+        SharedPreferences.setMockInitialValues({});
+        final settings = await SettingsController.load(
+          tokenStore: FakeTokenStore(),
+        );
+        final h = await _hosted(
+          _plainVault(),
+          overrides: [settingsProvider.overrideWith((_) => settings)],
+        );
         h.ctrl.loadNote(h.stored(_planId));
         final slow = Completer<void>();
         h.notes.writeGate = slow;
