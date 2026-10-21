@@ -128,6 +128,14 @@ class PickerRobot {
     );
   }
 
+  /// The state of the single StatusDot inside the widget keyed [k].
+  StatusDotState dotIn(String k) =>
+      tester.widget<StatusDot>(inside(k, find.byType(StatusDot))).state;
+
+  /// The text [text] shows inside [of].
+  bool shows(Finder of, String text) =>
+      within(of, find.text(text)).evaluate().isNotEmpty;
+
   /// The OmButton at or under the widget keyed [k].
   OmButton button(String k) {
     final self = key(k);

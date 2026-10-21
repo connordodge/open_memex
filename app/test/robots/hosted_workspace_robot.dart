@@ -21,7 +21,7 @@ const seedCanvasId = '01M5DQAYZJET989N2YR8341XAN';
 ///   `save-indicator`, tab chips `tab-<tabId>` and their ring
 ///   `tab-pending-<tabId>`;
 /// - sidebar: `sidebar-mode-topics`, `topics-unsorted-<noteId>`,
-///   `topics-new-topic`, `new-topic-title-field`, `new-topic-confirm`,
+///   `topics-new-folder`, `folder-name-field`, `folder-name-confirm`,
 ///   vault pills `vault-pill-<serverId>-<vault>`, `pill-open-failed-snackbar`;
 /// - leave confirm (#103): `leave-confirm`, `leave-confirm-cancel`,
 ///   `leave-confirm-proceed`.
@@ -106,18 +106,19 @@ class HostedWorkspaceRobot {
     await app.advance(const Duration(milliseconds: 600));
   }
 
-  /// "+ new topic" in the Topics pane with [title] (a new note write).
-  Future<void> newTopic(String title) async {
-    await tap(key('topics-new-topic'));
+  /// "+ New Smart Folder" in the Topics header with [name] (a folder write,
+  /// Req 50: not queued, not retried).
+  Future<void> newSmartFolder(String name) async {
+    await tap(key('topics-new-folder'));
     await tester.enterText(
       find.descendant(
-        of: key('new-topic-title-field'),
+        of: key('folder-name-field'),
         matching: find.byType(EditableText),
         matchRoot: true,
       ),
-      title,
+      name,
     );
     await tester.pump();
-    await tap(key('new-topic-confirm'));
+    await tap(key('folder-name-confirm'));
   }
 }
