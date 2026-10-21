@@ -66,7 +66,7 @@ from the handle to another node. On drop, a popover lets you pick the
 `kind` (`references`, `extends`, `contradicts`, `example-of`, or any
 existing user-defined kebab-case kind) and an optional label. Confirming
 writes `[[Target~kind|label]]` into the source note via the same path
-as `memex add-link` — the wikilink graph and the canvas stay in sync.
+as `memex add-link` — the wikilink graph and the canvas never disagree.
 
 Dropping back onto the source node is silently rejected ("can't link a
 note to itself").
@@ -163,7 +163,9 @@ machine-local UI state.
 
 ## Documented limitations (v1)
 
-- Canvas positions are last-write-wins; no CRDT, no multi-device sync.
+- Canvas positions are last-write-wins; no CRDT, so two devices moving the same
+  node at once are not merged. To use one vault from several devices, see
+  [Hosted vault](hosted-vault.md).
 - No marquee multi-select on the canvas; one node moves at a time.
 - No auto-layout (force-directed, hierarchical, etc.). Positions are
   always manual.
