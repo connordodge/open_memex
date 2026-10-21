@@ -1403,5 +1403,287 @@ void main() {
         expect(h.state.status, SaveStatus.clean);
       },
     );
+
+    // Verify mode (fix round 1): `_createDaily` releases a held create when
+    // the edit can't be sent because the status isn't connected.
+    test(
+      'an edit of a held virtual Today create while the server cannot be reached waits for the server with the label',
+      () async {
+        final h = await virtualToday(_plainVault());
+        h.serverDown();
+        await h.typeAndSave('Morning pages');
+        h.notes.writeError = MemexException('add failed: disk full');
+        await h.recoveryThatFails();
+        expect(h.state.status, SaveStatus.error);
+        expect(h.c.read(pendingSaveLabelProvider(virtualId)), isNull);
+
+        // The poll sees the server drop before the next edit.
+        setHostedStatus(h.c, HostedConnectionStatus.unreachable);
+        await h.typeAndSave('Morning pages\nMore.');
+
+        expect(adds(h), hasLength(2));
+        expect(h.state.contentMd, 'Morning pages\nMore.');
+        expect(h.state.status, SaveStatus.dirty);
+        _expectNoErrorState(h);
+        expect(h.queued(virtualId)!.text, 'Morning pages\nMore.');
+        expect(h.c.read(pendingSaveLabelProvider(virtualId)), pendingLabelNas);
+
+        // Away and back: the old error is gone too.
+        h.ctrl.loadNote(h.stored(_planId));
+        h.ctrl.loadNote(virtualTodayNote(_today));
+        expect(h.state.contentMd, 'Morning pages\nMore.');
+        _expectNoErrorState(h);
+
+        await h.serverAnswers();
+        await h.fireDebounce();
+
+        expect(adds(h), hasLength(3));
+        expect(
+          splitDailyBody(h.stored(createdDailyId).contentMd).person.trimRight(),
+          'Morning pages\nMore.',
+        );
+        expect(h.queue, isEmpty);
+        expect(h.c.read(tabsProvider).activeTab, const NoteTab(createdDailyId));
+        expect(h.state.status, SaveStatus.clean);
+      },
+    );
+  });
+
+  // Verify mode (fix round 1): contracts the fix round added.
+  group('fix round contracts', () {
+    test(
+      'an edit of a held save while the server cannot be reached waits for the server with the label and retries on the next recovery',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        await h.typeAndSave('new text');
+        h.notes.writeError = MemexException('update failed: disk full');
+        await h.recoveryThatFails();
+        expect(h.state.status, SaveStatus.error);
+        expect(h.c.read(pendingSaveLabelProvider(_planId)), isNull);
+
+        // The poll sees the server drop before the next edit.
+        setHostedStatus(h.c, HostedConnectionStatus.unreachable);
+        await h.typeAndSave('newer text');
+
+        expect(h.notes.updatesOf(_planId), hasLength(2));
+        expect(h.state.contentMd, 'newer text');
+        expect(h.state.status, SaveStatus.dirty);
+        _expectNoErrorState(h);
+        expect(h.queued(_planId)!.text, 'newer text');
+        expect(h.c.read(pendingSaveLabelProvider(_planId)), pendingLabelNas);
+
+        await h.serverAnswers();
+
+        expect(h.notes.updatesOf(_planId), hasLength(3));
+        expect(h.notes.writes.last, 'updateNote:$_planId@3');
+        expect(h.stored(_planId).contentMd, 'newer text');
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 4);
+        expect(h.queue, isEmpty);
+      },
+    );
+
+    test(
+      'an older first save that fails after a later save of the same note queued keeps the newer queued text',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        final older = Completer<void>();
+        h.notes.writeGate = older;
+        await h.typeAndSave('new text');
+
+        // Away and back while the first save is in flight; the next edit's
+        // save goes out and fails first.
+        h.ctrl.loadNote(h.stored(_otherId));
+        h.ctrl.loadNote(h.stored(_planId));
+        final newer = Completer<void>();
+        h.notes.writeGate = newer;
+        await h.typeAndSave('newer text');
+        expect(h.notes.updatesOf(_planId), hasLength(2));
+        h.notes.writeGate = null;
+        newer.complete();
+        await pumpEventQueue();
+        expect(h.queued(_planId)!.text, 'newer text');
+
+        older.complete();
+        await pumpEventQueue();
+
+        expect(h.queued(_planId)!.text, 'newer text');
+        expect(h.queued(_planId)!.baseVersion, 3);
+        expect(h.state.contentMd, 'newer text');
+        _expectNoErrorState(h);
+
+        await h.serverAnswers();
+
+        expect(h.notes.updateBodies.last, 'newer text');
+        expect(h.stored(_planId).contentMd, 'newer text');
+        expect(h.state.contentMd, 'newer text');
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.queue, isEmpty);
+      },
+    );
+
+    test(
+      'returning to a note whose server copy changed while its first save was in flight does not fill the editor from the queue',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        final gate = Completer<void>();
+        h.notes.writeGate = gate;
+        await h.typeAndSave('new text');
+        // Another writer changes the note on the server meanwhile.
+        _foreignWrite(h.db, _planId, 'their text', 4);
+
+        // Away and back: the host loads the newer server copy.
+        h.ctrl.loadNote(h.stored(_otherId));
+        h.ctrl.loadNote(h.stored(_planId));
+        expect(h.state.lastSavedVersion, 4);
+        h.notes.writeGate = null;
+        gate.complete();
+        await pumpEventQueue();
+
+        // The failed save is queued on its own base; the editor keeps the
+        // copy it loaded.
+        expect(h.queued(_planId)!.text, 'new text');
+        expect(h.queued(_planId)!.baseVersion, 3);
+        expect(h.state.contentMd, 'their text');
+        expect(h.state.lastSavedVersion, 4);
+      },
+    );
+
+    test(
+      'returning to a vault whose server already reads connected retries its queued saves once per open',
+      () async {
+        const otherVault = HostedVaultRef(hostedServerId, 'other');
+        Future<void> openVault(_H h, VaultRef vault) async {
+          h.c.read(currentVaultProvider.notifier).state = vault;
+          h.c.read(vaultAccessProvider);
+          await pumpEventQueue();
+        }
+
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        await h.typeAndSave('new text');
+        final planNotes = h.notes;
+
+        await openVault(h, otherVault);
+        h.ctrl.loadNote(null);
+        // The poll records connected while the other vault is open; the
+        // server still drops writes, and their outcome is not recorded, so
+        // the status keeps reading connected.
+        setHostedStatus(h.c, HostedConnectionStatus.connected);
+        planNotes.onOutcome = null;
+        await pumpEventQueue();
+        expect(planNotes.updatesOf(_planId), hasLength(1));
+
+        await openVault(h, hostedPlanVault);
+        expect(planNotes.updatesOf(_planId), hasLength(2));
+        expect(h.queued(_planId)!.text, 'new text');
+
+        // Note loads, revision bumps, a rebuilt vault access and setting the
+        // same vault again retry nothing more.
+        h.ctrl.loadNote(h.stored(_planId));
+        h.ctrl.loadNote(h.stored(_otherId));
+        h.ctrl.loadNote(h.stored(_planId));
+        h.c.read(vaultRevisionProvider.notifier).state++;
+        h.c.invalidate(vaultAccessProvider);
+        h.c.read(vaultAccessProvider);
+        h.c.read(currentVaultProvider.notifier).state = hostedPlanVault;
+        await pumpEventQueue();
+        h.clock.advance(const Duration(minutes: 5));
+        await pumpEventQueue();
+        expect(planNotes.updatesOf(_planId), hasLength(2));
+
+        // The next open retries once again.
+        await openVault(h, otherVault);
+        await openVault(h, hostedPlanVault);
+        expect(planNotes.updatesOf(_planId), hasLength(3));
+        expect(h.doubles.notesFor(otherVault).writes, isEmpty);
+      },
+    );
+  });
+
+  // Lead ruling (verify, fix round 1): a later successful save of the same
+  // note never leaves older text queued; the newer text is on the server.
+  group('a later successful save supersedes an older failed one', () {
+    test(
+      'an older first save that fails after a newer save of the same note succeeded leaves nothing queued',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        final older = Completer<void>();
+        h.notes.writeGate = older;
+        await h.typeAndSave('new text');
+
+        // Away and back while the first save is in flight; the next edit
+        // saves.
+        h.ctrl.loadNote(h.stored(_otherId));
+        h.ctrl.loadNote(h.stored(_planId));
+        h.notes.writeGate = null;
+        await h.typeAndSave('newer text');
+        expect(h.stored(_planId).contentMd, 'newer text');
+        expect(h.stored(_planId).version, 4);
+
+        // The first save then fails as unreachable.
+        h.serverDown();
+        older.complete();
+        await pumpEventQueue();
+
+        expect(h.queue, isEmpty);
+        expect(h.c.read(pendingSaveLabelProvider(_planId)), isNull);
+        expect(h.c.read(notePendingSaveProvider(_planId)), isFalse);
+        expect(h.state.contentMd, 'newer text');
+        expect(h.state.lastSavedVersion, 4);
+        _expectNoErrorState(h);
+
+        await h.serverAnswers();
+        await h.fireDebounce();
+
+        expect(h.notes.updatesOf(_planId), hasLength(2));
+        expect(h.stored(_planId).contentMd, 'newer text');
+        expect(h.queue, isEmpty);
+        expect(h.state.status, SaveStatus.clean);
+        _expectNoErrorState(h);
+      },
+    );
+
+    test(
+      'an older first save that fails while a newer save of the same note is in flight leaves nothing queued once the newer save succeeds',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        final older = Completer<void>();
+        h.notes.writeGate = older;
+        await h.typeAndSave('new text');
+
+        h.ctrl.loadNote(h.stored(_otherId));
+        h.ctrl.loadNote(h.stored(_planId));
+        final newer = Completer<void>();
+        h.notes.writeGate = newer;
+        await h.typeAndSave('newer text');
+        h.notes.writeGate = null;
+
+        // The first save fails as unreachable while the newer one is in
+        // flight; then the newer one lands.
+        h.serverDown();
+        older.complete();
+        await pumpEventQueue();
+        h.notes.writeError = null;
+        newer.complete();
+        await pumpEventQueue();
+        await h.fireDebounce();
+
+        expect(h.stored(_planId).contentMd, 'newer text');
+        expect(h.queue, isEmpty);
+        expect(h.c.read(pendingSaveLabelProvider(_planId)), isNull);
+        expect(h.c.read(notePendingSaveProvider(_planId)), isFalse);
+        _expectNoErrorState(h);
+      },
+    );
   });
 }
