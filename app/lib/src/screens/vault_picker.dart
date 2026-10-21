@@ -6,14 +6,20 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:path/path.dart' as p;
 
-import '../db.dart';
+import '../state/hosted_vaults_flag.dart';
+import '../state/picker_actions.dart';
+import '../state/server_probes.dart';
 import '../state/settings.dart';
 import '../state/vault_open_controller.dart';
+import '../state/vault_open_hosted.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
 import '../widgets/atoms.dart';
 import '../widgets/memex_too_old_dialog.dart';
+import '../widgets/picker/recent_row.dart';
+import '../widgets/picker/remove_server_dialog.dart';
+import '../widgets/picker/server_row.dart';
 import '../widgets/vault_open_refusal.dart';
 
 class VaultPickerScreen extends ConsumerStatefulWidget {
@@ -26,10 +32,18 @@ class VaultPickerScreen extends ConsumerStatefulWidget {
 const _openEyebrow = 'OPEN LOCAL VAULT';
 const _createEyebrow = 'CREATE NEW VAULT';
 
+/// The subtitle (board A1); without hosted vaults, today's copy.
+const _subtitle =
+    'a vault is a folder of your notes. open one on this mac, or one hosted '
+    'by a vault server.';
+const _localSubtitle =
+    'a vault is a folder of your notes (manifest.json + memex.db). open one '
+    'you have, or create a new one.';
+
 class _VaultPickerScreenState extends ConsumerState<VaultPickerScreen> {
-  /// The last vault while the launch `memex vault check` runs; its recent
-  /// row shows as opening.
-  String? _launchPath;
+  /// The last vault while the launch reopen runs on it; its recent row
+  /// shows as opening.
+  VaultRef? _launchRef;
 
   /// The binary that could not be started on the last open (a spawn
   /// failure); while it is still the configured one the picker shows the
@@ -39,11 +53,11 @@ class _VaultPickerScreenState extends ConsumerState<VaultPickerScreen> {
   @override
   void initState() {
     super.initState();
-    // Launch reopen (#92): with a last vault and no vault open, reopen it
-    // once through `memex vault check`, after the first frame.
+    // Launch reopen (#92, #96): with a last vault and no vault open, reopen
+    // it once, after the first frame.
     final last = ref.read(settingsProvider).lastVaultRef;
     if (last != null && ref.read(currentVaultProvider) == null) {
-      _launchPath = last.localPath;
+      _launchRef = last;
       WidgetsBinding.instance.addPostFrameCallback((_) => _launch());
     }
   }
@@ -52,18 +66,23 @@ class _VaultPickerScreenState extends ConsumerState<VaultPickerScreen> {
     if (!mounted) return;
     final outcome = await ref.read(vaultOpenControllerProvider).launchReopen();
     if (!mounted) return;
-    setState(() => _launchPath = null);
+    setState(() => _launchRef = null);
     await _present(outcome, eyebrow: _openEyebrow);
   }
 
-  /// Shows what a local open gave: a refusal dialog for a refused folder,
-  /// the binary-not-found card for a binary that could not start, and the
-  /// open error in a SnackBar for any other failure.
+  /// Shows what an open gave: nothing for a hosted failure (its recent row
+  /// shows it, D19), a refusal dialog for a refused folder, the
+  /// binary-not-found card for a binary that could not start, and the open
+  /// error in a SnackBar for any other failure.
   Future<void> _present(
     VaultOpenOutcome outcome, {
     required String eyebrow,
   }) async {
-    if (!mounted || outcome is! VaultOpenFailure) return;
+    if (!mounted ||
+        outcome is! VaultOpenFailure ||
+        outcome is HostedVaultOpenFailure) {
+      return;
+    }
     if (await showVaultOpenRefusal(context, outcome, eyebrow: eyebrow)) {
       return;
     }
@@ -77,26 +96,58 @@ class _VaultPickerScreenState extends ConsumerState<VaultPickerScreen> {
     _showError(context, outcome.message);
   }
 
-  Future<void> _openRecent(String path) async {
+  Future<void> _openRecent(VaultRef vault) async {
     final outcome = await ref
         .read(vaultOpenControllerProvider)
-        .openVault(LocalVaultRef(path));
+        .openVault(vault);
     await _present(outcome, eyebrow: _openEyebrow);
+  }
+
+  /// Req 42: with no saved server, "connect" first; [flow] runs once it
+  /// saved one. A cancelled connect runs nothing else.
+  Future<void> _serverFlow(
+    Future<void> Function(PickerActions actions, BuildContext context) flow,
+  ) async {
+    final actions = ref.read(pickerActionsProvider);
+    if (ref.read(settingsProvider).savedServers.isEmpty) {
+      final saved = await actions.connect(context);
+      if (saved == null || !mounted) return;
+    }
+    await flow(actions, context);
+  }
+
+  Future<void> _connect() => ref.read(pickerActionsProvider).connect(context);
+
+  /// Req 46: the remove confirm, then `removeServer` (token, server and its
+  /// hosted recents).
+  Future<void> _removeServer(SavedServer server) async {
+    final settings = ref.read(settingsProvider.notifier);
+    if (!await confirmRemoveServer(context, serverName: server.name)) return;
+    await settings.removeServer(server.id);
   }
 
   @override
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
     final cli = ref.watch(memexCliProvider);
+    final hosted = ref.watch(hostedVaultsEnabledProvider);
+    // The picker probes each saved server while it shows (flag on only).
+    if (hosted) ref.watch(serverProbesProvider);
     final binaryNotFound =
         cli == null ||
         (_unstartableBinary != null && cli.binaryPath == _unstartableBinary);
+    final recents = [
+      for (final r in settings.recentRefs)
+        if (hosted || r is LocalVaultRef) r,
+    ];
+    final servers = settings.savedServers;
 
     return Scaffold(
       backgroundColor: OmColors.surface1,
       body: Center(
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 560),
+          // Pack 97: a 560 px content column inside 40 px padding.
+          constraints: const BoxConstraints(maxWidth: 640),
           child: SingleChildScrollView(
             padding: const EdgeInsets.all(40),
             child: Column(
@@ -147,58 +198,113 @@ class _VaultPickerScreenState extends ConsumerState<VaultPickerScreen> {
                 Text('CHOOSE A VAULT', style: OmType.eyebrow()),
                 const SizedBox(height: 10),
                 Text(
-                  'a vault is a folder of your notes (manifest.json + memex.db). open one you have, or create a new one.',
+                  hosted ? _subtitle : _localSubtitle,
                   style: OmType.sans(
                     size: 13,
                     color: OmColors.fg2,
-                    height: 1.65,
+                    height: 21.45 / 13,
                   ),
                 ),
-                const SizedBox(height: 28),
+                const SizedBox(height: 24),
                 if (binaryNotFound)
-                  _BinaryNotFoundCard()
+                  _BinaryNotFoundCard(hosted: hosted)
                 else
                   _BinaryFoundLine(path: cli.binaryPath),
-                const SizedBox(height: 24),
-                if (settings.recentVaults.isNotEmpty) ...[
+                if (recents.isNotEmpty) ...[
+                  const SizedBox(height: 24),
                   Text('RECENT', style: OmType.eyebrow()),
                   const SizedBox(height: 10),
-                  for (final v in settings.recentVaults)
-                    if (v == _launchPath)
-                      _OpeningVaultRow(path: v)
-                    else
-                      _RecentVaultRow(path: v, onOpen: () => _openRecent(v)),
-                  const SizedBox(height: 24),
-                ],
-                Row(
-                  children: [
-                    Expanded(
-                      child: KeyedSubtree(
-                        key: const Key('vault-picker-create'),
-                        child: OmButton(
-                          kind: OmButtonKind.primary,
-                          size: 36,
-                          icon: LucideIcons.folderPlus,
-                          label: 'create new vault…',
-                          onPressed: cli == null ? null : _createVault,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: KeyedSubtree(
-                        key: const Key('vault-picker-open'),
-                        child: OmButton(
-                          kind: OmButtonKind.secondary,
-                          size: 36,
-                          icon: LucideIcons.folderOpen,
-                          label: 'open existing vault…',
-                          onPressed: _openExistingVault,
-                        ),
-                      ),
+                  for (var i = 0; i < recents.length; i++) ...[
+                    if (i > 0) const SizedBox(height: 6),
+                    RecentRow(
+                      index: i,
+                      entry: recents[i],
+                      opening: recents[i] == _launchRef,
+                      binaryMissing: binaryNotFound,
+                      onOpen: () => _openRecent(recents[i]),
                     ),
                   ],
+                ],
+                if (hosted) ...[
+                  const SizedBox(height: 24),
+                  _ServersHeader(count: servers.length, onConnect: _connect),
+                  const SizedBox(height: 10),
+                  if (servers.isEmpty)
+                    _NoServersBox(
+                      onConnect: _connect,
+                      onSetUp: () =>
+                          ref.read(pickerActionsProvider).setUp(context),
+                    )
+                  else
+                    for (var i = 0; i < servers.length; i++) ...[
+                      if (i > 0) const SizedBox(height: 6),
+                      ServerRow(
+                        server: servers[i],
+                        onEdit: () => ref
+                            .read(pickerActionsProvider)
+                            .editServer(context, servers[i].id),
+                        onRemove: () => _removeServer(servers[i]),
+                      ),
+                    ],
+                ],
+                const SizedBox(height: 24),
+                _GridRow(
+                  label: 'THIS MAC',
+                  left: KeyedSubtree(
+                    key: const Key('vault-picker-create'),
+                    child: OmButton(
+                      kind: binaryNotFound
+                          ? OmButtonKind.secondary
+                          : OmButtonKind.primary,
+                      size: 36,
+                      icon: LucideIcons.folderPlus,
+                      label: 'create local vault…',
+                      onPressed: binaryNotFound ? null : _createVault,
+                    ),
+                  ),
+                  right: KeyedSubtree(
+                    key: const Key('vault-picker-open'),
+                    child: OmButton(
+                      kind: OmButtonKind.secondary,
+                      size: 36,
+                      icon: LucideIcons.folderOpen,
+                      label: 'open local vault…',
+                      onPressed: binaryNotFound ? null : _openExistingVault,
+                    ),
+                  ),
                 ),
+                if (hosted) ...[
+                  const SizedBox(height: 8),
+                  _GridRow(
+                    label: 'VAULT SERVER',
+                    left: KeyedSubtree(
+                      key: const Key('vault-picker-open-on-server'),
+                      child: OmButton(
+                        // Binary not found (A3 state 1): the first server
+                        // action takes the primary style.
+                        kind: binaryNotFound
+                            ? OmButtonKind.primary
+                            : OmButtonKind.secondary,
+                        size: 36,
+                        icon: LucideIcons.server,
+                        label: 'open vault on a server…',
+                        onPressed: () =>
+                            _serverFlow((a, c) => a.openOnServer(c)),
+                      ),
+                    ),
+                    right: KeyedSubtree(
+                      key: const Key('vault-picker-create-on-server'),
+                      child: OmButton(
+                        kind: OmButtonKind.secondary,
+                        size: 36,
+                        icon: LucideIcons.plus,
+                        label: 'create vault on a server…',
+                        onPressed: () =>
+                            _serverFlow((a, c) => a.createOnServer(c)),
+                      ),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
@@ -232,6 +338,169 @@ class _VaultPickerScreenState extends ConsumerState<VaultPickerScreen> {
   }
 }
 
+/// A row of the action grid (pack 97): a 92 px upper-case mono label, then
+/// two equal 36 px buttons, gaps 8.
+class _GridRow extends StatelessWidget {
+  const _GridRow({
+    required this.label,
+    required this.left,
+    required this.right,
+  });
+
+  final String label;
+  final Widget left;
+  final Widget right;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 36,
+      child: Row(
+        children: [
+          SizedBox(
+            width: 92,
+            child: Text(
+              label,
+              style: OmType.mono(
+                size: 10.5,
+                weight: FontWeight.w500,
+                color: OmColors.fg2,
+                letterSpacing: 0.8,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(child: left),
+          const SizedBox(width: 8),
+          Expanded(child: right),
+        ],
+      ),
+    );
+  }
+}
+
+/// "SERVERS · n" with "+ CONNECT" (key `picker-servers-connect`).
+class _ServersHeader extends StatelessWidget {
+  const _ServersHeader({required this.count, required this.onConnect});
+
+  final int count;
+  final VoidCallback onConnect;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 16.5,
+      child: Row(
+        children: [
+          Text('SERVERS', style: OmType.eyebrow()),
+          Padding(
+            padding: const EdgeInsets.only(left: 8),
+            child: Text(
+              '· $count',
+              style: OmType.mono(
+                size: 11,
+                weight: FontWeight.w500,
+                color: OmColors.fg2,
+                letterSpacing: 0.6,
+              ),
+            ),
+          ),
+          const Spacer(),
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              key: const Key('picker-servers-connect'),
+              behavior: HitTestBehavior.opaque,
+              onTap: onConnect,
+              child: Text(
+                '+ CONNECT',
+                style: OmType.mono(
+                  size: 10.5,
+                  color: OmColors.fg2,
+                  letterSpacing: 0.8,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// No saved server (A3 state 2): the copy, "connect to a vault server…"
+/// (`picker-no-servers-connect`) and "how do I set one up?"
+/// (`picker-no-servers-setup`).
+class _NoServersBox extends StatelessWidget {
+  const _NoServersBox({required this.onConnect, required this.onSetUp});
+
+  final VoidCallback onConnect;
+  final VoidCallback onSetUp;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        border: Border.all(color: OmColors.line3),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'no vault servers yet. connect to one to open its vaults on this '
+            'mac.',
+            style: OmType.sans(size: 13, color: OmColors.fg1, height: 1.5),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 14,
+            runSpacing: 10,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              OmButton(
+                key: const Key('picker-no-servers-connect'),
+                kind: OmButtonKind.secondary,
+                icon: LucideIcons.server,
+                label: 'connect to a vault server…',
+                onPressed: onConnect,
+              ),
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: GestureDetector(
+                  key: const Key('picker-no-servers-setup'),
+                  behavior: HitTestBehavior.opaque,
+                  onTap: onSetUp,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        LucideIcons.circleHelp,
+                        size: 12,
+                        color: OmColors.info,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'how do I set one up?',
+                        style: OmType.sans(
+                          size: 12,
+                          color: OmColors.info,
+                          height: 1.4,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _BinaryFoundLine extends StatelessWidget {
   const _BinaryFoundLine({required this.path});
   final String path;
@@ -253,14 +522,20 @@ class _BinaryFoundLine extends StatelessWidget {
   }
 }
 
+/// A3 state 1: the binary-not-found card. With hosted vaults on it says
+/// hosted vaults don't need the binary.
 class _BinaryNotFoundCard extends ConsumerWidget {
+  const _BinaryNotFoundCard({required this.hosted});
+
+  final bool hosted;
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: OmColors.dangerBg,
-        border: Border.all(color: OmColors.danger.withAlpha(70), width: 1),
+        border: Border.all(color: OmColors.danger.withAlpha(69), width: 1),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Column(
@@ -279,7 +554,14 @@ class _BinaryNotFoundCard extends ConsumerWidget {
             'install with:\n  cargo install --path crates/memex-mcp --locked',
             style: OmType.mono(size: 11.5, color: OmColors.fg1, height: 1.5),
           ),
-          const SizedBox(height: 12),
+          if (hosted) ...[
+            const SizedBox(height: 8),
+            Text(
+              "local vaults need it. hosted vaults don't.",
+              style: OmType.sans(size: 12, color: OmColors.fg2, height: 1.5),
+            ),
+          ],
+          const SizedBox(height: 8),
           OmButton(
             kind: OmButtonKind.secondary,
             label: 'locate memex binary…',
@@ -287,155 +569,6 @@ class _BinaryNotFoundCard extends ConsumerWidget {
                 locateMemexBinary(ref.read(settingsProvider.notifier)),
           ),
         ],
-      ),
-    );
-  }
-}
-
-/// A recent row while the launch `memex vault check` runs on it (A3 state 3,
-/// A12 "opening · fg2, spinner"): a spinning loader in place of the folder
-/// icon, the name and the path, no remove button, no hover, not tappable.
-class _OpeningVaultRow extends StatefulWidget {
-  const _OpeningVaultRow({required this.path});
-  final String path;
-  @override
-  State<_OpeningVaultRow> createState() => _OpeningVaultRowState();
-}
-
-class _OpeningVaultRowState extends State<_OpeningVaultRow>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _spin = AnimationController(
-    vsync: this,
-    duration: const Duration(seconds: 1),
-  )..repeat();
-
-  @override
-  void dispose() {
-    _spin.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      key: const Key('recent-row-opening'),
-      padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
-      margin: const EdgeInsets.only(bottom: 6),
-      decoration: BoxDecoration(
-        color: OmColors.surface2,
-        border: Border.all(color: OmColors.line2, width: 1),
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Row(
-        children: [
-          RotationTransition(
-            turns: _spin,
-            child: const Icon(
-              LucideIcons.loader2,
-              size: 14,
-              color: OmColors.fg2,
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  p.basename(widget.path),
-                  style: OmType.sans(
-                    size: 13.5,
-                    weight: FontWeight.w500,
-                    color: OmColors.fg0,
-                    height: 18.23 / 13.5,
-                  ),
-                ),
-                Text(
-                  widget.path,
-                  style: OmType.mono(size: 10.5, color: OmColors.fg2),
-                  overflow: TextOverflow.ellipsis,
-                  maxLines: 1,
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _RecentVaultRow extends ConsumerStatefulWidget {
-  const _RecentVaultRow({required this.path, required this.onOpen});
-  final String path;
-
-  /// Opens this vault (through `memex vault check`) and shows the outcome.
-  final VoidCallback onOpen;
-  @override
-  ConsumerState<_RecentVaultRow> createState() => _RecentVaultRowState();
-}
-
-class _RecentVaultRowState extends ConsumerState<_RecentVaultRow> {
-  bool _hover = false;
-  @override
-  Widget build(BuildContext context) {
-    final exists = VaultDb.isVault(widget.path);
-    return MouseRegion(
-      cursor: exists ? SystemMouseCursors.click : SystemMouseCursors.basic,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        onTap: exists ? widget.onOpen : null,
-        child: Container(
-          padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
-          margin: const EdgeInsets.only(bottom: 6),
-          decoration: BoxDecoration(
-            color: _hover ? OmColors.surface3 : OmColors.surface2,
-            border: Border.all(color: OmColors.line2, width: 1),
-            borderRadius: BorderRadius.circular(6),
-          ),
-          child: Row(
-            children: [
-              Icon(
-                exists ? LucideIcons.folder : LucideIcons.folderX,
-                size: 14,
-                color: exists ? OmColors.fg2 : OmColors.danger,
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      p.basename(widget.path),
-                      style: OmType.sans(
-                        size: 13.5,
-                        weight: FontWeight.w500,
-                        color: exists ? OmColors.fg0 : OmColors.fg2,
-                      ),
-                    ),
-                    Text(
-                      widget.path,
-                      style: OmType.mono(size: 10.5, color: OmColors.fg3),
-                      overflow: TextOverflow.ellipsis,
-                      maxLines: 1,
-                    ),
-                  ],
-                ),
-              ),
-              IconButton(
-                tooltip: 'remove from recents',
-                splashRadius: 14,
-                iconSize: 12,
-                color: OmColors.fg3,
-                icon: const Icon(LucideIcons.x),
-                onPressed: () => ref
-                    .read(settingsProvider.notifier)
-                    .forgetVault(widget.path),
-              ),
-            ],
-          ),
-        ),
       ),
     );
   }
