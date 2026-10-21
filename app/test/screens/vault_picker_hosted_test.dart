@@ -36,6 +36,8 @@ double _top(Finder f) => f.evaluate().isEmpty
           .dy;
 
 void main() {
+  wi97HoldFontFetches();
+
   group('layout', () {
     for (final (name, size) in [
       (

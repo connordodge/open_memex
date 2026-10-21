@@ -35,6 +35,8 @@ const _unreachable = HostedServerUnreachable(
 void _holdNas(Map<String, FakeVaultServer> s) => s[fakeServerId]!.hold();
 
 void main() {
+  wi97HoldFontFetches();
+
   group('hosted row states', () {
     testWidgets(
       'an unreachable hosted row has warn styling cant reach and a retry that reruns the open',

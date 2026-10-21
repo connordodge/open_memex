@@ -92,7 +92,12 @@ Future<_Wi97ProbeEnv> _env({
     routed.add(request);
     for (final s in servers.values) {
       if (s.url.host == request.url.host && s.url.port == request.url.port) {
-        return http.Response.fromStream(await s.client.send(request));
+        // MockClient hands over a finalized Request; the fake server's own
+        // MockClient finalizes again, so forward a fresh copy.
+        final copy = http.Request(request.method, request.url)
+          ..headers.addAll(request.headers)
+          ..bodyBytes = request.bodyBytes;
+        return http.Response.fromStream(await s.client.send(copy));
       }
     }
     throw StateError('no fake vault server for ${request.url}');
