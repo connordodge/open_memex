@@ -5,6 +5,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../../state/hosted_connection_state.dart';
 import '../../state/server_probes.dart';
 import '../../state/settings.dart';
+import '../../state/vault_open_hosted.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import '../../vault_access/hosted/hosted_client.dart';
@@ -17,20 +18,6 @@ String serverHostPort(String url) {
   if (uri == null || uri.host.isEmpty) return url;
   return uri.hasPort ? '${uri.host}:${uri.port}' : uri.host;
 }
-
-/// Req 39: an unreachable server.
-String cantReachCopy(String server) => "can't reach $server";
-
-/// Req 39: a rejected access token.
-String tokenRejectedCopy(String server) => '$server rejected the access token';
-
-/// Coordinator ruling: a URL that does not answer as a memex vault server.
-String notMemexCopy(String url) => "$url isn't a memex vault server";
-
-/// L9: a server whose `api_version` this app can't use.
-String apiMismatchCopy(String server, String version) =>
-    "$server runs memex $version, which this app can't use. update the app "
-    'or memex on the server so both are the same release.';
 
 /// The status dot for a saved server's connection [status] (Req 38): null is
 /// checking; an incompatible server shows the danger dot.
@@ -46,8 +33,8 @@ StatusDotState statusDotFor(HostedConnectionStatus? status) => switch (status) {
 /// memex vault server, or an api mismatch).
 String incompatibleCopy(SavedServer server, ServerProbe? probe) =>
     probe?.kind == ServerProbeKind.apiMismatch
-    ? apiMismatchCopy(server.name, probe!.serverVersion ?? '?')
-    : notMemexCopy(server.url);
+    ? hostedApiMismatchMessage(server.name, probe!.serverVersion ?? '?')
+    : hostedNotMemexMessage(server.url);
 
 /// The shared chrome of a picker row (pack 97 "Row chrome"): min height 56,
 /// padding 12/10/8/10, `surface2` fill (`surface3` on hover), a 1 px

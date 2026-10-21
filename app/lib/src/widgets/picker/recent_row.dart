@@ -129,7 +129,7 @@ class RecentRow extends ConsumerWidget {
                 ? serverName
                 : '$serverName · ${serverHostPort(server.url)}',
             incompatible: () => server == null
-                ? notMemexCopy(serverName)
+                ? hostedNotMemexMessage(serverName)
                 : incompatibleCopy(
                     server,
                     ref.watch(serverProbeResultProvider(server.id)),
@@ -312,11 +312,11 @@ class _HostedView {
       textColor: OmColors.fg2,
     ),
     HostedConnectionStatus.unreachable => _HostedView.unreachable(
-      cantReachCopy(serverName),
+      hostedUnreachableMessage(serverName),
     ),
     HostedConnectionStatus.tokenRejected => _HostedView.danger(
       LucideIcons.keyRound,
-      tokenRejectedCopy(serverName),
+      hostedTokenRejectedMessage(serverName),
       action: _HostedAction.updateToken,
     ),
     HostedConnectionStatus.incompatible => _HostedView.danger(
