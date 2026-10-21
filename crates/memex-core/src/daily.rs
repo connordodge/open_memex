@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use chrono::{DateTime, Local, NaiveDate};
+use chrono::{DateTime, NaiveDate};
 use rusqlite::{params, Connection};
 use ulid::Ulid;
 
@@ -146,11 +146,15 @@ pub fn render_footer(conn: &Connection, daily_note_id: &str) -> Result<Vec<Strin
     Ok(titles)
 }
 
-/// Today's date in the machine's local time zone, read from `clock` (D14).
+/// Today's date at `clock`'s instant, in the UTC offset `clock` reports for
+/// that instant (D14, D5): the machine's local offset unless the clock
+/// overrides `utc_offset_at` (a `CallerClock`). Both are read on every call;
+/// this is the only instant-to-date mapping.
 pub fn today_with_clock(clock: &dyn Clock) -> NaiveDate {
-    DateTime::from_timestamp_millis(clock.now_ms())
+    let now = clock.now_ms();
+    DateTime::from_timestamp_millis(now)
         .unwrap_or_default()
-        .with_timezone(&Local)
+        .with_timezone(&clock.utc_offset_at(now))
         .date_naive()
 }
 

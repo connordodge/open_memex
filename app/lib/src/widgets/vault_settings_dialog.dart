@@ -3,7 +3,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../cli/settings_cli.dart';
 import '../memex_cli.dart';
+import '../state/vault_access_state.dart';
 import '../state/vault_state.dart';
+import '../vault_access/errors.dart';
+import '../vault_access/vault_access.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
 import 'inline_error.dart';
@@ -50,16 +53,19 @@ class _VaultSettingsDialogState extends ConsumerState<_VaultSettingsDialog> {
 
   /// Runs [call] against the open vault; a failure lands in [_error].
   Future<T?> _cli<T>(
-    Future<T> Function(MemexCli cli, String vault) call,
-  ) async {
-    final cli = ref.read(memexCliProvider);
-    final vault = ref.read(currentVaultProvider);
-    if (cli == null || vault == null) {
+    Future<T> Function(TopicsAccess topics) call, {
+    bool guarded = false,
+  }) async {
+    final access = ref.read(vaultAccessProvider);
+    if (access == null || !access.canWrite) {
       setState(() => _error = 'The memex CLI is not available.');
       return null;
     }
     try {
-      return await call(cli, vault);
+      if (guarded) {
+        return await guardVaultWrite(context, () => call(access.topics));
+      }
+      return await call(access.topics);
     } on Exception catch (e) {
       if (mounted) {
         setState(() => _error = e is MemexException ? e.message : '$e');
@@ -69,9 +75,7 @@ class _VaultSettingsDialogState extends ConsumerState<_VaultSettingsDialog> {
   }
 
   Future<void> _load() async {
-    final value = await _cli(
-      (cli, vault) => cli.getSetting(vault, smartFolderMaxDepthKey),
-    );
+    final value = await _cli((t) => t.getSetting(smartFolderMaxDepthKey));
     if (value != null && mounted) setState(() => _depth.text = '$value');
   }
 
@@ -87,7 +91,8 @@ class _VaultSettingsDialogState extends ConsumerState<_VaultSettingsDialog> {
     });
     if (value == null || invalid) return;
     final saved = await _cli(
-      (cli, vault) => cli.setSetting(vault, smartFolderMaxDepthKey, value),
+      (t) => t.setSetting(smartFolderMaxDepthKey, value),
+      guarded: true,
     );
     if (saved == null || !mounted) return;
     ref.read(vaultRevisionProvider.notifier).state++;

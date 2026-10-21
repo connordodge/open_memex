@@ -23,7 +23,9 @@ ProviderContainer _container({
 }) {
   final c = ProviderContainer(
     overrides: [
-      currentVaultProvider.overrideWith((_) => vaultPath),
+      currentVaultProvider.overrideWith(
+        (_) => vaultPath == null ? null : LocalVaultRef(vaultPath),
+      ),
       vaultDbProvider.overrideWithValue(db),
       memexCliProvider.overrideWithValue(cli),
     ],

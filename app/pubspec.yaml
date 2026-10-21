@@ -19,6 +19,8 @@ dependencies:
   path: ^1.9.0
   google_fonts: ^6.2.1
   lucide_icons_flutter: ^3.0.0
+  http: ^1.6.0
+  flutter_secure_storage: ^10.3.4
 
 dev_dependencies:
   flutter_test:

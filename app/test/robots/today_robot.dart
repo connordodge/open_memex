@@ -69,7 +69,7 @@ class TodayRobot {
     final container = ProviderContainer(
       overrides: [
         settingsProvider.overrideWith((_) => settings),
-        currentVaultProvider.overrideWith((_) => vaultDir.path),
+        currentVaultProvider.overrideWith((_) => LocalVaultRef(vaultDir.path)),
         vaultDbProvider.overrideWithValue(db),
         memexCliProvider.overrideWithValue(cli),
         clockProvider.overrideWithValue(fakeClock),
