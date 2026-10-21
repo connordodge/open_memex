@@ -359,7 +359,7 @@ void main() {
 
         expect(r.updates, hasLength(3));
         expect(r.editor.status, SaveStatus.clean);
-        expect(r.saveIndicatorShows('synced'), isTrue);
+        expect(r.saveIndicatorShows('saved'), isTrue);
       },
     );
   });
