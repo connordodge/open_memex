@@ -16,7 +16,9 @@ pub mod folder;
 pub mod footer;
 pub mod prompt;
 pub mod rm;
+pub mod serve;
 pub mod settings;
+pub mod vault;
 
 /// A note role (`role` frontmatter key): `--role` on `memex add` and the
 /// `role` parameter of MCP `create_note`.

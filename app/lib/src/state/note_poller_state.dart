@@ -53,12 +53,15 @@ class NotePoller {
   void _stop() => _timer?.cancel();
 
   /// One poll: reads `updated_at` once and handles a change.
-  void poll() {
+  Future<void> poll() async {
     final updatedAt = _ref.read(noteUpdatedAtReaderProvider)(noteId);
     if (updatedAt == null || updatedAt == _seen) return;
     _seen = updatedAt;
-    if (_ref.read(editorControllerProvider.notifier).serverChanged(noteId)) {
-      _ref.read(vaultRevisionProvider.notifier).state++;
+    final revision = _ref.read(vaultRevisionProvider.notifier);
+    if (await _ref
+        .read(editorControllerProvider.notifier)
+        .serverChanged(noteId)) {
+      revision.state++;
     }
   }
 }
