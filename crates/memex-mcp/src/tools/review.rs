@@ -3,14 +3,15 @@
 
 use memex_core::blocks::{Block, SnapshotBlock};
 use memex_core::review::{self as core_review, ChangeEntry};
-use memex_core::{MemexError, SystemClock};
+use memex_core::{Clock, MemexError, SystemClock};
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::{tool, tool_router};
+use rmcp::service::RequestContext;
+use rmcp::{tool, tool_router, RoleServer};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::Memex;
+use super::{call_clock, Memex};
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ListUnreviewedDaysParams {}
@@ -115,15 +116,38 @@ impl Memex {
         }
     }
 
-    #[tool(description = "Mark a daily note (date YYYY-MM-DD) reviewed at \
+    /// Marks a daily note reviewed on the system clock. The MCP tool is
+    /// [`Self::mark_day_reviewed_tool`].
+    pub async fn mark_day_reviewed(&self, params: Parameters<MarkDayReviewedParams>) -> String {
+        self.mark_day_reviewed_impl(params, &SystemClock).await
+    }
+
+    /// The `mark_day_reviewed` tool, on the call's clock ([`call_clock`]).
+    #[tool(
+        name = "mark_day_reviewed",
+        description = "Mark a daily note (date YYYY-MM-DD) reviewed at \
         `version`, the content_version from get_daily_note_changes; if the \
         person edited the day since, this fails with review_stale. `changes` \
         has one entry per note you touched, including the daily note itself: \
         {note_id, bullets} with 1 to 3 bullets, each one line of plain \
         markdown, at most 200 characters, without a leading \"- \". Any \
         invalid entry rejects the whole call (change_entries_invalid) and \
-        nothing is recorded.")]
-    pub async fn mark_day_reviewed(&self, params: Parameters<MarkDayReviewedParams>) -> String {
+        nothing is recorded."
+    )]
+    async fn mark_day_reviewed_tool(
+        &self,
+        params: Parameters<MarkDayReviewedParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> String {
+        self.mark_day_reviewed_impl(params, &*call_clock(&ctx))
+            .await
+    }
+
+    async fn mark_day_reviewed_impl(
+        &self,
+        params: Parameters<MarkDayReviewedParams>,
+        clock: &(dyn Clock + Sync),
+    ) -> String {
         let MarkDayReviewedParams {
             date,
             version,
@@ -137,7 +161,7 @@ impl Memex {
             })
             .collect();
         let mut vault = self.state.vault.lock().await;
-        match core_review::mark_day_reviewed(&mut vault, &date, version, &changes, &SystemClock) {
+        match core_review::mark_day_reviewed(&mut vault, &date, version, &changes, clock) {
             Ok(r) => json!({
                 "vault_id": vault.vault_id(),
                 "date": r.date,
