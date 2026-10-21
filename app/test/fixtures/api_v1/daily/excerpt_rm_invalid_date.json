@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "invalid_date",
+    "message": "invalid date: not a YYYY-MM-DD calendar date: \"2026-13-01\""
+  }
+}

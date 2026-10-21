@@ -1,5 +1,6 @@
 // WI #28 (implementer): edges of the live daily note beyond the ACs. Typing
-// during a merged save, the poller on a dirty editor and on a topic note,
+// during a merged save, the poller on a dirty editor and on a topic note
+// (WI #79: the vault-wide revision poller reaches every open stored note),
 // non-daily conflicts, non-conflict failures, a note deleted mid-merge,
 // dismissing the inline error, and the gutter following unsaved edits.
 import 'dart:async';
@@ -7,12 +8,10 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:open_memex_app/src/db/poll_reads.dart';
 import 'package:open_memex_app/src/editor/conflict_merge.dart';
 import 'package:open_memex_app/src/editor/segments.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';
-import 'package:open_memex_app/src/state/note_poller_state.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
 
 import '../support/fake_clock.dart';
@@ -49,14 +48,7 @@ Future<(LiveRobot, PollReadCounter)> _launch(
     db: db,
     cli: cli,
     clock: clock,
-    overrides: [
-      noteUpdatedAtReaderProvider.overrideWith(
-        (ref) => (noteId) {
-          counter.record(noteId);
-          return db.noteUpdatedAt(noteId);
-        },
-      ),
-    ],
+    reads: counter,
   );
   return (r, counter);
 }
@@ -149,15 +141,24 @@ void main() {
       },
     );
 
-    testWidgets('a topic note tab is never polled', (tester) async {
-      final (r, counter) = await _launch(tester);
-      await _openTopic(r);
-      counter.reads = 0;
+    testWidgets(
+      'a foreign change to the open clean topic note reaches the editor after the next poll',
+      (tester) async {
+        final (r, counter) = await _launch(tester);
+        await _openTopic(r);
+        final base = counter.reads;
+        const edited = '${_topicBody}Edited by an agent.\n';
+        final v = r.db.serverEdit(_topicId, edited, at: r.clock.now());
 
-      await r.advance(const Duration(seconds: 10));
+        await r.poll();
 
-      expect(counter.reads, 0);
-    });
+        expect(counter.reads, base + 1);
+        expect(r.editor.contentMd, edited);
+        expect(r.editor.lastSavedVersion, v);
+        expect(r.editor.status, SaveStatus.clean);
+        expect(r.updates, isEmpty);
+      },
+    );
   });
 
   group('saves that do not merge', () {
