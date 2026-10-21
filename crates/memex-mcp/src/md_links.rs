@@ -18,28 +18,22 @@ pub fn insert_link_into_markdown(
     kind: &str,
     label: Option<&str>,
 ) -> String {
-    let token = render_wikilink(target_title, kind, label);
+    let token = render_wikilink(target_title, label);
     if kind == "references" {
         insert_into_auto_added(content, &token)
     } else {
-        insert_into_frontmatter(content, target_title, kind)
+        insert_into_frontmatter(content, &token, kind)
     }
 }
 
-/// Render the wikilink token to insert. For frontmatter-bound kinds we omit
-/// the `~kind` segment because the kind is encoded in the YAML key; we still
-/// preserve `|alias` if present.
-fn render_wikilink(title: &str, kind: &str, label: Option<&str>) -> String {
-    let alias = match label {
-        Some(l) if !l.is_empty() => format!("|{l}"),
-        _ => String::new(),
-    };
-    if kind == "references" {
-        format!("[[{title}{alias}]]")
-    } else {
-        // Caller drops these into frontmatter, where the YAML key carries the
-        // kind. We render a plain `[[Title]]` with optional alias.
-        format!("[[{title}{alias}]]")
+/// Render the wikilink token to insert: `[[Title]]`, or `[[Title|alias]]` when
+/// a non-empty label is given. Every kind uses the same token; no `~kind`
+/// segment is written because frontmatter-bound kinds carry the kind in the
+/// YAML key.
+fn render_wikilink(title: &str, label: Option<&str>) -> String {
+    match label {
+        Some(l) if !l.is_empty() => format!("[[{title}|{l}]]"),
+        _ => format!("[[{title}]]"),
     }
 }
 
@@ -91,9 +85,10 @@ fn insert_into_auto_added(content: &str, token: &str) -> String {
     out
 }
 
-fn insert_into_frontmatter(content: &str, title: &str, kind: &str) -> String {
+/// Insert the already-rendered `token` under the `kind` key in the note's YAML
+/// frontmatter, creating the frontmatter, the key or the list as needed.
+fn insert_into_frontmatter(content: &str, token: &str, kind: &str) -> String {
     // Detect a `---\n...\n---\n` block at the very start.
-    let token = format!("[[{title}]]");
     if !content.starts_with("---\n") && !content.starts_with("---\r\n") {
         // No frontmatter — prepend a fresh one.
         return format!("---\n{kind}:\n  - {token}\n---\n{content}");
@@ -143,7 +138,7 @@ fn insert_into_frontmatter(content: &str, title: &str, kind: &str) -> String {
                     j += 1;
                 }
                 new_fm.push_str("  - ");
-                new_fm.push_str(&token);
+                new_fm.push_str(token);
                 new_fm.push('\n');
                 inserted = true;
                 i = j;
@@ -158,7 +153,7 @@ fn insert_into_frontmatter(content: &str, title: &str, kind: &str) -> String {
                 new_fm.push_str(after_colon);
                 new_fm.push('\n');
                 new_fm.push_str("  - ");
-                new_fm.push_str(&token);
+                new_fm.push_str(token);
                 new_fm.push('\n');
                 inserted = true;
                 i += 1;
@@ -174,7 +169,7 @@ fn insert_into_frontmatter(content: &str, title: &str, kind: &str) -> String {
         // Append a fresh key.
         new_fm.push_str(kind);
         new_fm.push_str(":\n  - ");
-        new_fm.push_str(&token);
+        new_fm.push_str(token);
         new_fm.push('\n');
     }
 
