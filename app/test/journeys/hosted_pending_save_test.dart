@@ -8,6 +8,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/src/editor/segments.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
 import 'package:open_memex_app/src/state/hosted_connection_state.dart';
 import 'package:open_memex_app/src/state/pending_saves.dart';
@@ -19,6 +20,7 @@ import 'package:open_memex_app/src/widgets/atoms.dart';
 
 import '../robots/segmented_editor_robot.dart';
 import '../support/app_harness.dart';
+import '../support/daily_seed.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
 import '../support/hosted_notes_fakes.dart';
@@ -378,6 +380,215 @@ void main() {
         expect(find.byKey(const Key('note-header')), findsNothing);
         await w.r.waitForSave();
         expect(w.notes.updatesOf(_planId), isEmpty);
+        expect(w.h.read(pendingSavesProvider), isEmpty);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  });
+
+  group('a note loaded before the server became unreachable (#105 AC7)', () {
+    /// Every editable text field the editor shows right now.
+    List<String> shownTexts(WidgetTester tester) => [
+      for (final e in tester.widgetList<EditableText>(
+        find.byType(EditableText),
+      ))
+        e.controller.text,
+    ];
+
+    /// The server stops answering reads and writes of the open vault.
+    Future<void> serverStops(_Hosted w) async {
+      w.notes
+        ..writeError = nasUnreachable()
+        ..readError = nasUnreachable();
+      setHostedStatus(w.h.container, HostedConnectionStatus.unreachable);
+      await pumpFrames(w.tester);
+    }
+
+    testWidgets(
+      'a note loaded before the server became unreachable still shows its text when switched back to while unreachable',
+      (tester) async {
+        final w = await _workspace(tester);
+        await w.open(_planId);
+        expect(w.r.segmentText(0), 'old');
+        await w.open(_otherId);
+        expect(w.r.segmentText(0), 'other body');
+        await serverStops(w);
+
+        await w.open(_planId);
+        expect(find.byKey(const Key('note-header')), findsOneWidget);
+        expect(w.r.segmentText(0), 'old');
+        expect(shownTexts(tester), contains('Plan'));
+
+        // Switching on shows the other loaded note, never this one.
+        await w.open(_otherId);
+        expect(w.r.segmentText(0), 'other body');
+        expect(shownTexts(tester), isNot(contains('old')));
+        expect(shownTexts(tester), isNot(contains('Plan')));
+
+        await w.open(_planId);
+        expect(w.r.segmentText(0), 'old');
+        expect(shownTexts(tester), isNot(contains('other body')));
+
+        await w.typeAndSave('typed offline');
+
+        final queue = w.h.read(pendingSavesProvider);
+        final plan = queue.singleWhere((p) => p.noteId == _planId);
+        expect(plan.text, 'typed offline');
+        expect(plan.title, 'Plan');
+        expect(queue.where((p) => p.noteId == _otherId), isEmpty);
+        expect(w.label, findsOneWidget);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'an edit typed on a loaded note while unreachable is based on its loaded version and meets a later server change as a conflict',
+      (tester) async {
+        final w = await _workspace(tester);
+        await w.open(_planId);
+        await w.open(_otherId);
+        await serverStops(w);
+        // Someone else saves Plan on the server meanwhile.
+        w.doubles.db.db.execute(
+          'UPDATE notes SET content_md = ?, version = ? WHERE id = ?',
+          ['their text', 4, _planId],
+        );
+
+        await w.open(_planId);
+        expect(w.r.segmentText(0), 'old');
+        await w.typeAndSave('typed offline');
+
+        expect(
+          w.h.read(pendingSavesProvider).single.baseVersion,
+          3,
+          reason: 'the queued save is based on the loaded version',
+        );
+        expect(w.notes.updatesOf(_planId), everyElement(endsWith('@3')));
+
+        w.notes.readError = null;
+        await w.serverAnswers();
+        await pumpFrames(tester);
+
+        expect(w.notes.updatesOf(_planId).last, 'updateNote:$_planId@3');
+        final stored = w.doubles.db.getNote(_planId)!;
+        expect(stored.contentMd, 'their text');
+        expect(stored.version, 4);
+        final entry = w.h
+            .read(pendingSaveQueueProvider)
+            .singleWhere((q) => q.save.noteId == _planId);
+        expect(entry.heldStatus, SaveStatus.conflict);
+        expect(entry.save.text, 'typed offline');
+        expect(w.r.segmentText(0), 'typed offline');
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'an edit typed on a loaded daily note while unreachable merges with a later server change when the server answers',
+      (tester) async {
+        const dailyId = '01J9DAILYJ00000000000000102';
+        final w = await _workspace(tester);
+        final db = w.doubles.db
+          ..seedDailyNote('2026-10-01', id: dailyId, version: 3);
+        db.db.execute('UPDATE notes SET content_md = ? WHERE id = ?', [
+          assembleDailyBody('Morning pages\n', const []),
+          dailyId,
+        ]);
+        db.seedBlock(dailyId, 'p-morning', ord: 0, text: 'Morning pages');
+        await w.open(dailyId);
+        expect(w.r.segmentText(0), 'Morning pages\n');
+        await w.open(_otherId);
+        await serverStops(w);
+        // An agent appends to the daily note on the server meanwhile.
+        db.db.execute(
+          'UPDATE notes SET content_md = ?, version = ? WHERE id = ?',
+          [
+            assembleDailyBody('Morning pages\nAgent note.\n', const []),
+            4,
+            dailyId,
+          ],
+        );
+        db.seedBlock(
+          dailyId,
+          'a-agent',
+          ord: 1,
+          text: 'Agent note.',
+          source: 'agent',
+          createdVersion: 4,
+        );
+
+        await w.open(dailyId);
+        expect(w.r.segmentText(0), 'Morning pages\n');
+        await w.typeAndSave('Morning pages and lunch');
+        expect(w.h.read(pendingSavesProvider).single.baseVersion, 3);
+
+        w.notes.readError = null;
+        await w.serverAnswers();
+        await pumpFrames(tester);
+
+        expect(w.notes.updatesOf(dailyId).first, 'updateNote:$dailyId@3');
+        final stored = db.getNote(dailyId)!;
+        expect(stored.version, greaterThan(4));
+        expect(stored.contentMd, contains('Agent note.'));
+        expect(stored.contentMd, contains('Morning pages and lunch'));
+        expect(w.h.read(pendingSavesProvider), isEmpty);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'a note loaded in one hosted vault never shows in another hosted vault with the same note id while unreachable',
+      (tester) async {
+        final w = await _workspace(tester);
+        await w.open(_planId);
+        expect(w.r.segmentText(0), 'old');
+        const archive = HostedVaultRef(hostedServerId, 'archive');
+        // The poll already saw the server unreachable (a read's outcome
+        // can't be recorded while the vault's first read builds).
+        setHostedStatus(w.h.container, HostedConnectionStatus.unreachable);
+        w.doubles.notesFor(archive)
+          ..onOutcome = null
+          ..writeError = nasUnreachable()
+          ..readError = nasUnreachable();
+
+        w.h.container.read(currentVaultProvider.notifier).state = archive;
+        await pumpFrames(tester);
+        await w.open(_planId);
+        await pumpFrames(tester);
+
+        expect(shownTexts(tester), isNot(contains('old')));
+        expect(shownTexts(tester), isNot(contains('Plan')));
+        expect(find.byKey(const Key('note-header')), findsNothing);
+        await w.r.waitForSave();
+        expect(w.doubles.notesFor(archive).writes, isEmpty);
+        expect(w.h.read(pendingSavesProvider), isEmpty);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'a note loaded before another vault was opened does not show when its vault is opened again while unreachable',
+      (tester) async {
+        final w = await _workspace(tester);
+        await w.open(_planId);
+        expect(w.r.segmentText(0), 'old');
+        const archive = HostedVaultRef(hostedServerId, 'archive');
+        w.h.container.read(currentVaultProvider.notifier).state = archive;
+        await pumpFrames(tester);
+
+        setHostedStatus(w.h.container, HostedConnectionStatus.unreachable);
+        w.doubles.notesFor(hostedPlanVault)
+          ..onOutcome = null
+          ..writeError = nasUnreachable()
+          ..readError = nasUnreachable();
+        w.h.container.read(currentVaultProvider.notifier).state =
+            hostedPlanVault;
+        await pumpFrames(tester);
+        await w.open(_planId);
+        await pumpFrames(tester);
+
+        expect(shownTexts(tester), isNot(contains('old')));
+        expect(find.byKey(const Key('note-header')), findsNothing);
         expect(w.h.read(pendingSavesProvider), isEmpty);
         expect(tester.takeException(), isNull);
       },
