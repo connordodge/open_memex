@@ -122,7 +122,10 @@ void main() {
           content: 'a\n',
         );
       final c = ProviderContainer(
-        overrides: [vault.vaultDbProvider.overrideWithValue(db)],
+        overrides: [
+          vault.currentVaultProvider.overrideWith((_) => null),
+          vault.vaultDbProvider.overrideWithValue(db),
+        ],
       );
       addTearDown(db.close);
       addTearDown(c.dispose);
