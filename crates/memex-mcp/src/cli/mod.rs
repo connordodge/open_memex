@@ -55,13 +55,43 @@ impl fmt::Display for InvalidArgument {
 
 impl std::error::Error for InvalidArgument {}
 
+/// A failure that names its own C1 code, such as the `memex serve --remote`
+/// bridge's `access_token_missing`, `server_unreachable`, `unauthorized` and
+/// `vault_not_found`.
+#[derive(Debug)]
+pub struct CodedError {
+    pub code: String,
+    pub message: String,
+}
+
+impl CodedError {
+    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for CodedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for CodedError {}
+
 /// The CONTRACTS C1 object for a failed subcommand. A [`MemexError`] anywhere
 /// it can be downcast (including under `.context(…)`) maps through
-/// `to_error_json()`; an [`InvalidArgument`] is `invalid_argument`; anything
-/// else is `internal`, with the full context chain as the message.
+/// `to_error_json()`; a [`CodedError`] keeps its code and message; an
+/// [`InvalidArgument`] is `invalid_argument`; anything else is `internal`,
+/// with the full context chain as the message.
 pub fn error_json(err: &anyhow::Error) -> Value {
     if let Some(e) = err.downcast_ref::<MemexError>() {
         return e.to_error_json();
+    }
+    if let Some(e) = err.downcast_ref::<CodedError>() {
+        return json!({ "error": { "code": e.code, "message": e.message } });
     }
     let code = if err.downcast_ref::<InvalidArgument>().is_some() {
         "invalid_argument"
