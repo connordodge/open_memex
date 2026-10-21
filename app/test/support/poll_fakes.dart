@@ -615,10 +615,18 @@ class LiveRobot {
     }
   }
 
-  /// Move only the [FakeClock] (fires the poller) and settle.
+  /// Move only the [FakeClock] (fires the poller) and settle, in steps of
+  /// at most 1 s with a settle after each, so a revision read completes
+  /// before the next poll tick (one read in flight, WI #79 AC5).
   Future<void> advance(Duration by) async {
-    clock.advance(by);
-    await settle();
+    const maxStep = Duration(seconds: 1);
+    var left = by;
+    while (left > Duration.zero) {
+      final step = left < maxStep ? left : maxStep;
+      clock.advance(step);
+      left -= step;
+      await settle();
+    }
   }
 
   /// One poll interval (2 s) on the [FakeClock].

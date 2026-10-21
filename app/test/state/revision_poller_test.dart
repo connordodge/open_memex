@@ -51,6 +51,9 @@ const _s1 = Duration(milliseconds: 1);
 const _s2 = Duration(seconds: 2);
 const _s30 = Duration(seconds: 30);
 
+/// The largest single [FakeClock] step [_Wi79Env.advance] takes.
+const _step = Duration(seconds: 1);
+
 /// A [FakeClock] whose `now()` can be skewed from its timers' time: a wall
 /// clock that jumps (NTP, a manual change) while timers keep their pace.
 class _Wi79SkewedClock extends FakeClock {
@@ -80,9 +83,19 @@ class _Wi79Env {
 
   Future<void> settle() => pumpEventQueue();
 
+  /// Moves the [FakeClock] by [by] in steps of at most 1 s, draining the
+  /// event queue after each step. A real read completes between two ticks;
+  /// one synchronous jump over several intervals would fire every tick while
+  /// the first read is still pending, and AC5 (one read in flight) rightly
+  /// skips those.
   Future<void> advance(Duration by) async {
-    clock.advance(by);
-    await pumpEventQueue();
+    var left = by;
+    while (left > Duration.zero) {
+      final step = left < _step ? left : _step;
+      clock.advance(step);
+      left -= step;
+      await pumpEventQueue();
+    }
   }
 
   Future<void> setFocused(bool focused) async {
