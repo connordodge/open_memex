@@ -267,18 +267,26 @@ class _ConnectServerDialogState extends ConsumerState<_ConnectServerDialog>
                 token: pasted.isEmpty ? null : pasted,
               );
         if (!mounted || _dismissed) {
-          // Cancelled during the write: cancel changes nothing (AC4).
+          // Cancelled during the write: cancel changes nothing (AC4). The
+          // dialog is gone, so a failed undo step is swallowed (lead ruling);
+          // each step runs on its own so a failed token restore still leaves
+          // the name and url restored.
           if (before == null) {
-            await settings.removeServer(saved.id);
+            await _undoStep(() => settings.removeServer(saved.id));
           } else {
-            await settings.updateServer(
-              before.id,
-              name: before.name,
-              url: before.url,
-              token: tokenWritten ? storedToken : null,
+            await _undoStep(
+              () => settings.updateServer(
+                before.id,
+                name: before.name,
+                url: before.url,
+              ),
             );
-            if (tokenWritten && storedToken == null) {
-              await tokens.delete(before.id);
+            if (tokenWritten) {
+              await _undoStep(
+                () => storedToken == null
+                    ? tokens.delete(before.id)
+                    : tokens.write(before.id, storedToken),
+              );
             }
           }
           return;
@@ -292,6 +300,16 @@ class _ConnectServerDialogState extends ConsumerState<_ConnectServerDialog>
               HostedConnectionStatus.connected;
         }
         Navigator.of(context).pop(saved);
+    }
+  }
+
+  /// Runs one step of a cancelled save's undo. Nobody is left to show an
+  /// error to, so a failure is dropped and the next step still runs.
+  static Future<void> _undoStep(Future<void> Function() step) async {
+    try {
+      await step();
+    } on Object catch (_) {
+      // Swallowed: the dialog is gone (lead ruling, undo failures).
     }
   }
 
