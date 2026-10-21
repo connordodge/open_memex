@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
 use crate::error::MemexError;
+use crate::fs_guard::{self, FsInfo};
 use crate::{schema, Result};
 
 const MANIFEST_FILENAME: &str = "manifest.json";
@@ -47,7 +48,17 @@ pub struct Vault {
 
 impl Vault {
     /// Create a new vault at `root`. The directory must not already contain a vault.
+    /// Refused with `NetworkFilesystem` on a network filesystem (req 30).
     pub fn create(root: impl AsRef<Path>) -> Result<Self> {
+        Self::create_with_probe(root, &fs_guard::probe)
+    }
+
+    /// [`Vault::create`] with the network-drive guard asking `probe` instead
+    /// of `statfs`. The guard runs before anything is created.
+    pub fn create_with_probe(
+        root: impl AsRef<Path>,
+        probe: &dyn Fn(&Path) -> std::io::Result<FsInfo>,
+    ) -> Result<Self> {
         ensure_sqlite_vec_registered();
         let root = root.as_ref().to_path_buf();
         if !root.is_absolute() {
@@ -56,6 +67,7 @@ impl Vault {
                 root.display()
             )));
         }
+        fs_guard::check_with(&root, probe)?;
         fs::create_dir_all(&root)?;
         let manifest_path = root.join(MANIFEST_FILENAME);
         if manifest_path.exists() {
@@ -84,8 +96,18 @@ impl Vault {
         })
     }
 
-    /// Open an existing vault at `root`.
+    /// Open an existing vault at `root`. Refused with `NetworkFilesystem` on
+    /// a network filesystem (req 30).
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with_probe(root, &fs_guard::probe)
+    }
+
+    /// [`Vault::open`] with the network-drive guard asking `probe` instead of
+    /// `statfs`. The guard runs before the manifest is read or SQLite opened.
+    pub fn open_with_probe(
+        root: impl AsRef<Path>,
+        probe: &dyn Fn(&Path) -> std::io::Result<FsInfo>,
+    ) -> Result<Self> {
         ensure_sqlite_vec_registered();
         let root = root.as_ref().to_path_buf();
         if !root.is_absolute() {
@@ -94,6 +116,7 @@ impl Vault {
                 root.display()
             )));
         }
+        fs_guard::check_with(&root, probe)?;
         let manifest_path = root.join(MANIFEST_FILENAME);
         if !manifest_path.exists() {
             return Err(MemexError::ManifestInvalid(format!(

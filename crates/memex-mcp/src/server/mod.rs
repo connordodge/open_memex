@@ -14,6 +14,7 @@ use axum::middleware::{from_fn, from_fn_with_state, map_response};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
+use memex_core::fs_guard::{self, FsInfo};
 use memex_core::MemexError;
 use serde_json::{json, Value};
 use tower_http::limit::RequestBodyLimitLayer;
@@ -138,8 +139,17 @@ pub struct RunOptions {
 /// Runs the vault server until SIGINT or SIGTERM. Every startup failure is
 /// returned before anything listens or is served.
 pub async fn run(opts: RunOptions) -> Result<()> {
+    run_with_probe(opts, &fs_guard::probe).await
+}
+
+/// [`run`] with the network-drive guard on `--root` asking `probe` instead
+/// of `statfs`.
+pub async fn run_with_probe(
+    opts: RunOptions,
+    probe: &(dyn Fn(&Path) -> std::io::Result<FsInfo> + Sync),
+) -> Result<()> {
     let filter = log::filter(&opts.log_level)?;
-    let root = vault_root(&opts.root)?;
+    let root = vault_root(&opts.root, probe)?;
     let listener = tokio::net::TcpListener::bind(&opts.listen)
         .await
         .with_context(|| format!("listen on {}", opts.listen))?;
@@ -188,12 +198,16 @@ pub async fn run(opts: RunOptions) -> Result<()> {
     Ok(())
 }
 
-/// `--root` as an absolute, canonical path to an existing directory.
-fn vault_root(root: &Path) -> Result<PathBuf> {
+/// `--root` as an absolute, canonical path to an existing directory on a
+/// local filesystem (req 8, 30).
+fn vault_root(root: &Path, probe: &dyn Fn(&Path) -> std::io::Result<FsInfo>) -> Result<PathBuf> {
     let shown = root.display();
     match std::fs::metadata(root) {
         Ok(meta) if meta.is_dir() => {
-            std::fs::canonicalize(root).with_context(|| format!("resolve --root {shown}"))
+            let canonical =
+                std::fs::canonicalize(root).with_context(|| format!("resolve --root {shown}"))?;
+            fs_guard::check_with(&canonical, probe)?;
+            Ok(canonical)
         }
         Ok(_) => Err(InvalidArgument(format!("--root {shown} is not a directory")).into()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
