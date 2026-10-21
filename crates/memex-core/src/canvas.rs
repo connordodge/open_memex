@@ -7,6 +7,7 @@
 
 use std::str::FromStr;
 
+use chrono::{DateTime, FixedOffset, Local, Offset, TimeZone};
 use rusqlite::params;
 use rusqlite::types::ToSql;
 use serde::{Deserialize, Serialize};
@@ -23,6 +24,15 @@ const MAX_TITLE_LEN: usize = 200;
 /// monkey-patching the system clock.
 pub trait Clock {
     fn now_ms(&self) -> i64;
+
+    /// The UTC offset "today" is computed in at the instant `now_ms` (D5).
+    /// The default is the machine's local offset at that instant.
+    fn utc_offset_at(&self, now_ms: i64) -> FixedOffset {
+        let utc = DateTime::from_timestamp_millis(now_ms)
+            .unwrap_or_default()
+            .naive_utc();
+        Local.offset_from_utc_datetime(&utc).fix()
+    }
 }
 
 /// Default clock that reads the system clock via `now_unix_ms()`.
@@ -31,6 +41,24 @@ pub struct SystemClock;
 impl Clock for SystemClock {
     fn now_ms(&self) -> i64 {
         now_unix_ms()
+    }
+}
+
+/// A clock that computes "today" in a caller's fixed UTC offset (D5): its
+/// instant comes from `base`, its offset is always `offset`.
+#[derive(Debug, Clone)]
+pub struct CallerClock<B = SystemClock> {
+    pub offset: FixedOffset,
+    pub base: B,
+}
+
+impl<B: Clock> Clock for CallerClock<B> {
+    fn now_ms(&self) -> i64 {
+        self.base.now_ms()
+    }
+
+    fn utc_offset_at(&self, _now_ms: i64) -> FixedOffset {
+        self.offset
     }
 }
 
