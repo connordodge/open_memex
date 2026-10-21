@@ -42,6 +42,31 @@ class _VirtualDraft {
   final List<String> maybeCreated = [];
 }
 
+/// A plain save of a hosted note held back while an earlier save of the
+/// note typed in the same editor load is in flight (see
+/// `EditorController._deferredSaves`): its text and title, the editor load
+/// it was typed in, and its base version.
+class _DeferredSave {
+  _DeferredSave({
+    required this.access,
+    required this.loadSeq,
+    required this.text,
+    required this.rawTitle,
+    required this.title,
+    required this.baseVersion,
+  });
+
+  final VaultAccess access;
+  final int loadSeq;
+  final String text;
+  final String rawTitle;
+  final String? title;
+
+  /// Moves onto the version the earlier save stored when it landed on this
+  /// base without a merge.
+  int baseVersion;
+}
+
 /// The save debounce: a save runs this long after the last edit (D14: on
 /// [clockProvider]).
 const saveDebounce = Duration(milliseconds: 500);
@@ -128,6 +153,17 @@ class EditorController extends StateNotifier<EditorStateValue> {
   /// The queued saves whose retry waits for an older write of the note
   /// still in flight; it runs once that write's outcome is applied.
   final Set<(HostedVaultRef, String)> _deferred = {};
+
+  /// The editor load each hosted plain save in flight was typed in, by its
+  /// send number.
+  final Map<int, int> _sentInLoad = {};
+
+  /// The plain save of each hosted (vault, note id) held back while an
+  /// earlier save of the note typed in the same editor load is in flight:
+  /// its text was typed on top of that save's, and a save on the same base
+  /// would conflict with it. One per note (the latest text); it goes once
+  /// that save's outcome is applied ([_sendDeferred]).
+  final Map<(HostedVaultRef, String), _DeferredSave> _deferredSaves = {};
 
   /// Set (to the base version) after a daily note's save and its merged
   /// retry both conflicted, or text was typed during a merged save: the next
@@ -320,12 +356,57 @@ class EditorController extends StateNotifier<EditorStateValue> {
         }
         return _retry(hosted, access, _queue.entryFor(hosted, id)!);
       }
+      if (_waitsForOwnSave(hosted, id, _loadSeq)) {
+        // An earlier save of this text is still in flight: this save goes
+        // once it lands, on the version it stored, never beside it.
+        _debounce?.cancel();
+        _deferredSaves[(hosted, id)] = _DeferredSave(
+          access: access,
+          loadSeq: _loadSeq,
+          text: local,
+          rawTitle: rawTitle,
+          title: title,
+          baseVersion: version,
+        );
+        return;
+      }
     }
-    final seq = _loadSeq;
+    return _send(
+      access,
+      hosted,
+      id,
+      seq: _loadSeq,
+      local: local,
+      rawTitle: rawTitle,
+      title: title,
+      version: version,
+      merging: _mergeBase != null,
+    );
+  }
+
+  /// Sends [local] (titled [rawTitle], sending [title]) as note [id]'s
+  /// save on [version] through [access], typed in editor load [seq];
+  /// [merging] goes straight to the daily merge. The outcome reaches the
+  /// editor only while it shows note [id].
+  Future<void> _send(
+    VaultAccess access,
+    HostedVaultRef? hosted,
+    String id, {
+    required int seq,
+    required String local,
+    required String rawTitle,
+    required String? title,
+    required int version,
+    required bool merging,
+  }) async {
     final sendSeq = hosted == null ? 0 : _sent(hosted, id);
-    if (hosted != null) _sending(hosted, id, sendSeq);
-    var merging = _mergeBase != null;
-    state = state.copyWith(status: SaveStatus.saving, clearError: true);
+    if (hosted != null) {
+      _sending(hosted, id, sendSeq);
+      _sentInLoad[sendSeq] = seq;
+    }
+    if (_activeNoteId == id && _virtualDate == null && _loadSeq == seq) {
+      state = state.copyWith(status: SaveStatus.saving, clearError: true);
+    }
     try {
       ({NoteUpdateResult result, String body})? saved;
       Note? refetched;
@@ -358,6 +439,10 @@ class EditorController extends StateNotifier<EditorStateValue> {
         title: title,
         server: refetched,
       );
+      final deferred = hosted == null ? null : _deferredSaves[(hosted, id)];
+      if (deferred != null && !merging && deferred.baseVersion == version) {
+        deferred.baseVersion = saved.result.version;
+      }
       final stillQueued =
           hosted != null &&
           _afterSave(
@@ -689,7 +774,13 @@ class EditorController extends StateNotifier<EditorStateValue> {
     if (pending != null && pending.remove(sendSeq) && pending.isEmpty) {
       _inFlight.remove(key);
     }
-    if (!mounted || _waitsForOlderWrite(vault, id)) return;
+    _sentInLoad.remove(sendSeq);
+    if (!mounted) return;
+    final held = _deferredSaves[key];
+    if (held != null && !_waitsForOwnSave(vault, id, held.loadSeq)) {
+      _sendDeferred(vault, id);
+    }
+    if (_waitsForOlderWrite(vault, id)) return;
     if (!_deferred.remove(key)) return;
     final q = _queue.entryFor(vault, id);
     if (q == null || !_connected(vault)) return;
@@ -697,6 +788,55 @@ class EditorController extends StateNotifier<EditorStateValue> {
     final access = _ref.read(vaultAccessProvider);
     if (access == null || !access.canWrite) return;
     _retryNow(vault, access, q);
+  }
+
+  /// True while a plain save of note [id] in [vault] typed in editor load
+  /// [load] is in flight.
+  bool _waitsForOwnSave(HostedVaultRef vault, String id, int load) =>
+      _inFlight[(vault, id)]?.any((s) => _sentInLoad[s] == load) ?? false;
+
+  /// The earlier save note [id]'s held-back plain save in [vault] waited for
+  /// is done: it goes now. While the editor still shows the note in the
+  /// same load, the editor's latest text goes on the editor's base (the
+  /// version the earlier save stored), unless the editor is clean; a queued
+  /// entry of the note takes the text instead (its retry sends it);
+  /// otherwise the held-back text goes on its base.
+  void _sendDeferred(HostedVaultRef vault, String id) {
+    final d = _deferredSaves.remove((vault, id))!;
+    final open =
+        _activeNoteId == id &&
+        _virtualDate == null &&
+        _loadSeq == d.loadSeq &&
+        _ref.read(currentVaultProvider) == vault;
+    if (open) {
+      if (state.status == SaveStatus.clean) return;
+      _debounce?.cancel();
+      unawaited(_save());
+      return;
+    }
+    if (_queue.entryFor(vault, id) != null) {
+      _queue.updateText(
+        vault,
+        id,
+        d.text,
+        title: d.rawTitle,
+        sendTitle: d.title,
+      );
+      return;
+    }
+    unawaited(
+      _send(
+        d.access,
+        vault,
+        id,
+        seq: d.loadSeq,
+        local: d.text,
+        rawTitle: d.rawTitle,
+        title: d.title,
+        version: d.baseVersion,
+        merging: false,
+      ),
+    );
   }
 
   /// Follows [vault]'s server connection status: on its return to
