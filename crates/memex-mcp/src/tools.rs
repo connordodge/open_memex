@@ -520,7 +520,7 @@ impl Memex {
             Err(e) => return err_from("add_link.invalid_to", &e),
         };
         let kind_obj = match kind.as_deref() {
-            Some(k) => match LinkKind::new(k) {
+            Some(k) => match LinkKind::new_user_written(k) {
                 Ok(lk) => lk,
                 Err(e) => return err_from("add_link.invalid_kind", &e),
             },
@@ -977,7 +977,7 @@ impl Memex {
             clear_label,
         } = params.0;
         let new_kind = match kind {
-            Some(k) => match LinkKind::new(&k) {
+            Some(k) => match LinkKind::new_user_written(&k) {
                 Ok(lk) => Some(lk),
                 Err(e) => return err_from("update_link.invalid_kind", &e),
             },

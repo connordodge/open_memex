@@ -4,6 +4,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../state/canvas_state.dart';
 import '../state/graph_state.dart';
+import '../state/revision_poller.dart';
 import '../state/tabs_state.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
@@ -21,6 +22,8 @@ class Workspace extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // The vault-wide revision poller (WI #79) runs while the workspace is up.
+    ref.watch(revisionPollerProvider);
     final rightOpen = ref.watch(rightPanelOpenProvider);
     return Scaffold(
       backgroundColor: OmColors.surface1,
@@ -221,11 +224,8 @@ class _TabChip extends ConsumerWidget {
       // The virtual Today note has no row yet: its chip reads its ISO date,
       // like a real daily note's title.
       if (VirtualTodayTab.dateOf(tab.id) case final date?) return date;
-      final db = ref.watch(vaultDbProvider);
-      // No reactive title yet — read once. The rail update on bump will
-      // re-render the chip.
-      final note = db?.getNote(tab.id);
-      return note?.title ?? 'note';
+      // Read through VaultAccess; `note` until it loads or when it's gone.
+      return ref.watch(noteTitleProvider(tab.id)).valueOrNull ?? 'note';
     }
     if (tab is CanvasTab) {
       final summary = ref
@@ -236,7 +236,7 @@ class _TabChip extends ConsumerWidget {
       return 'canvas';
     }
     if (tab is GraphTab) {
-      return graphTabTitle(ref.watch(vaultDbProvider), tab.scope);
+      return ref.watch(graphTabTitleProvider(tab.scope)).valueOrNull ?? 'Graph';
     }
     return tab.id;
   }

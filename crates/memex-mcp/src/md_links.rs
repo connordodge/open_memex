@@ -18,28 +18,22 @@ pub fn insert_link_into_markdown(
     kind: &str,
     label: Option<&str>,
 ) -> String {
-    let token = render_wikilink(target_title, kind, label);
+    let token = render_wikilink(target_title, label);
     if kind == "references" {
         insert_into_auto_added(content, &token)
     } else {
-        insert_into_frontmatter(content, target_title, kind)
+        insert_into_frontmatter(content, &token, kind)
     }
 }
 
-/// Render the wikilink token to insert. For frontmatter-bound kinds we omit
-/// the `~kind` segment because the kind is encoded in the YAML key; we still
-/// preserve `|alias` if present.
-fn render_wikilink(title: &str, kind: &str, label: Option<&str>) -> String {
-    let alias = match label {
-        Some(l) if !l.is_empty() => format!("|{l}"),
-        _ => String::new(),
-    };
-    if kind == "references" {
-        format!("[[{title}{alias}]]")
-    } else {
-        // Caller drops these into frontmatter, where the YAML key carries the
-        // kind. We render a plain `[[Title]]` with optional alias.
-        format!("[[{title}{alias}]]")
+/// Render the wikilink token to insert: `[[Title]]`, or `[[Title|alias]]` when
+/// a non-empty label is given. Every kind uses the same token; no `~kind`
+/// segment is written because frontmatter-bound kinds carry the kind in the
+/// YAML key.
+fn render_wikilink(title: &str, label: Option<&str>) -> String {
+    match label {
+        Some(l) if !l.is_empty() => format!("[[{title}|{l}]]"),
+        _ => format!("[[{title}]]"),
     }
 }
 
@@ -91,9 +85,10 @@ fn insert_into_auto_added(content: &str, token: &str) -> String {
     out
 }
 
-fn insert_into_frontmatter(content: &str, title: &str, kind: &str) -> String {
+/// Insert the already-rendered `token` under the `kind` key in the note's YAML
+/// frontmatter, creating the frontmatter, the key or the list as needed.
+fn insert_into_frontmatter(content: &str, token: &str, kind: &str) -> String {
     // Detect a `---\n...\n---\n` block at the very start.
-    let token = format!("[[{title}]]");
     if !content.starts_with("---\n") && !content.starts_with("---\r\n") {
         // No frontmatter — prepend a fresh one.
         return format!("---\n{kind}:\n  - {token}\n---\n{content}");
@@ -143,7 +138,7 @@ fn insert_into_frontmatter(content: &str, title: &str, kind: &str) -> String {
                     j += 1;
                 }
                 new_fm.push_str("  - ");
-                new_fm.push_str(&token);
+                new_fm.push_str(token);
                 new_fm.push('\n');
                 inserted = true;
                 i = j;
@@ -158,7 +153,7 @@ fn insert_into_frontmatter(content: &str, title: &str, kind: &str) -> String {
                 new_fm.push_str(after_colon);
                 new_fm.push('\n');
                 new_fm.push_str("  - ");
-                new_fm.push_str(&token);
+                new_fm.push_str(token);
                 new_fm.push('\n');
                 inserted = true;
                 i += 1;
@@ -174,7 +169,7 @@ fn insert_into_frontmatter(content: &str, title: &str, kind: &str) -> String {
         // Append a fresh key.
         new_fm.push_str(kind);
         new_fm.push_str(":\n  - ");
-        new_fm.push_str(&token);
+        new_fm.push_str(token);
         new_fm.push('\n');
     }
 
@@ -286,5 +281,133 @@ mod tests {
         let original = "body";
         let out = insert_link_into_markdown(original, "Bush", "inspired-by", None);
         assert!(out.contains("inspired-by:\n  - [[Bush]]"));
+    }
+
+    // WI #140: the label is kept for every kind, in every frontmatter shape.
+
+    #[test]
+    fn label_kept_for_every_kind() {
+        let cases = [
+            (
+                "references",
+                "body\n\n## Auto-added links\n\n[[Foo|Lbl-references]]\n",
+            ),
+            (
+                "extends",
+                "---\nextends:\n  - [[Foo|Lbl-extends]]\n---\nbody",
+            ),
+            (
+                "contradicts",
+                "---\ncontradicts:\n  - [[Foo|Lbl-contradicts]]\n---\nbody",
+            ),
+            (
+                "example-of",
+                "---\nexample-of:\n  - [[Foo|Lbl-example-of]]\n---\nbody",
+            ),
+            (
+                "inspired-by",
+                "---\ninspired-by:\n  - [[Foo|Lbl-inspired-by]]\n---\nbody",
+            ),
+        ];
+        for (kind, expected) in cases {
+            let label = format!("Lbl-{kind}");
+            let out = insert_link_into_markdown("body", "Foo", kind, Some(&label));
+            assert_eq!(out, expected, "kind {kind}");
+        }
+    }
+
+    #[test]
+    fn frontmatter_label_kept_when_frontmatter_absent() {
+        let original = "# Title\nbody";
+        let out = insert_link_into_markdown(original, "Foo", "extends", Some("Lbl"));
+        assert_eq!(out, "---\nextends:\n  - [[Foo|Lbl]]\n---\n# Title\nbody");
+    }
+
+    #[test]
+    fn frontmatter_label_kept_when_appending_to_block_list() {
+        let original = "---\ntitle: T\nextends:\n  - [[A]]\n  - [[B|b label]]\ntags: x\n---\nbody";
+        let out = insert_link_into_markdown(original, "Foo", "extends", Some("Lbl"));
+        assert_eq!(
+            out,
+            "---\ntitle: T\nextends:\n  - [[A]]\n  - [[B|b label]]\n  - [[Foo|Lbl]]\ntags: x\n---\nbody"
+        );
+    }
+
+    #[test]
+    fn frontmatter_label_kept_when_converting_inline_scalar() {
+        let original = "---\ntitle: T\nextends: [[A|a label]]\n---\nbody";
+        let out = insert_link_into_markdown(original, "Foo", "extends", Some("Lbl"));
+        assert_eq!(
+            out,
+            "---\ntitle: T\nextends:\n  - [[A|a label]]\n  - [[Foo|Lbl]]\n---\nbody"
+        );
+    }
+
+    #[test]
+    fn frontmatter_label_kept_when_adding_new_key() {
+        let original = "---\nextends:\n  - [[A]]\n---\nbody";
+        let out = insert_link_into_markdown(original, "B", "contradicts", Some("Lbl"));
+        assert_eq!(
+            out,
+            "---\nextends:\n  - [[A]]\ncontradicts:\n  - [[B|Lbl]]\n---\nbody"
+        );
+    }
+
+    #[test]
+    fn frontmatter_label_kept_when_frontmatter_unclosed() {
+        let original = "---\nnot closed\nbody";
+        let out = insert_link_into_markdown(original, "Foo", "extends", Some("Lbl"));
+        assert_eq!(
+            out,
+            "---\nextends:\n  - [[Foo|Lbl]]\n---\n---\nnot closed\nbody"
+        );
+    }
+
+    #[test]
+    fn no_label_or_empty_label_writes_no_pipe() {
+        let cases = [
+            (
+                "body",
+                "references",
+                "body\n\n## Auto-added links\n\n[[Foo]]\n",
+            ),
+            (
+                "# T\nbody",
+                "extends",
+                "---\nextends:\n  - [[Foo]]\n---\n# T\nbody",
+            ),
+            (
+                "---\nextends:\n  - [[A]]\n---\nbody",
+                "extends",
+                "---\nextends:\n  - [[A]]\n  - [[Foo]]\n---\nbody",
+            ),
+            (
+                "---\nextends: [[A]]\n---\nbody",
+                "extends",
+                "---\nextends:\n  - [[A]]\n  - [[Foo]]\n---\nbody",
+            ),
+            (
+                "---\nextends:\n  - [[A]]\n---\nbody",
+                "inspired-by",
+                "---\nextends:\n  - [[A]]\ninspired-by:\n  - [[Foo]]\n---\nbody",
+            ),
+        ];
+        for (original, kind, expected) in cases {
+            for label in [None, Some("")] {
+                let out = insert_link_into_markdown(original, "Foo", kind, label);
+                assert_eq!(out, expected, "kind {kind}, label {label:?}");
+                assert!(!out.contains('|'), "no pipe: {out:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn frontmatter_label_special_characters_written_verbatim() {
+        let label = "a: b # c 'd' \"e\"";
+        let out = insert_link_into_markdown("body", "Foo", "extends", Some(label));
+        assert_eq!(
+            out,
+            "---\nextends:\n  - [[Foo|a: b # c 'd' \"e\"]]\n---\nbody"
+        );
     }
 }

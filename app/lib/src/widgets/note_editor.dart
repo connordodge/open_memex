@@ -5,7 +5,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../db.dart';
 import '../state/editor_controller.dart';
-import '../state/note_poller_state.dart';
 import '../state/tabs_state.dart' show VirtualTodayTab;
 import '../state/today_state.dart';
 import '../state/topic_actions.dart';
@@ -133,9 +132,6 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
     final editor = ref.watch(editorControllerProvider);
     final controller = ref.read(editorControllerProvider.notifier);
     final vaultPath = ref.watch(currentVaultProvider).localPath;
-    // Polls the open daily note for server writes while it is the active
-    // tab (WI #28).
-    ref.watch(notePollerProvider);
 
     ref.listen<AsyncValue<VaultScoped<Note?>>>(
       editorNoteAsyncProvider,

@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "invalid_argument",
+    "message": "--block-ids must list one or two non-empty block ids"
+  }
+}
