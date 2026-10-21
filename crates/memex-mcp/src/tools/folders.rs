@@ -2,13 +2,14 @@
 //! the impl below; `Memex::new` already composes `folders_router`.
 
 use memex_core::smart_folders::{self as sf, FolderUpdate, NewParent};
-use memex_core::{Caller, SystemClock};
+use memex_core::{Caller, Clock, SystemClock};
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::{tool, tool_router};
+use rmcp::service::RequestContext;
+use rmcp::{tool, tool_router, RoleServer};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{err_from, err_payload, Memex};
+use super::{call_clock, err_from, err_payload, Memex};
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ListSmartFoldersParams {}
@@ -87,11 +88,34 @@ impl Memex {
         }
     }
 
-    #[tool(description = "Create a Smart Folder, at the top level or under \
+    /// Creates a Smart Folder on the system clock. The MCP tool is
+    /// [`Self::create_smart_folder_tool`].
+    pub async fn create_smart_folder(&self, params: Parameters<CreateSmartFolderParams>) -> String {
+        self.create_smart_folder_impl(params, &SystemClock).await
+    }
+
+    /// The `create_smart_folder` tool, on the call's clock ([`call_clock`]).
+    #[tool(
+        name = "create_smart_folder",
+        description = "Create a Smart Folder, at the top level or under \
         parent_id. Names are unique among siblings ignoring case, and the tree \
         may not nest deeper than the vault's smart_folder_max_depth. Folders \
-        you create are unpinned. Returns the folder.")]
-    pub async fn create_smart_folder(&self, params: Parameters<CreateSmartFolderParams>) -> String {
+        you create are unpinned. Returns the folder."
+    )]
+    async fn create_smart_folder_tool(
+        &self,
+        params: Parameters<CreateSmartFolderParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> String {
+        self.create_smart_folder_impl(params, &*call_clock(&ctx))
+            .await
+    }
+
+    async fn create_smart_folder_impl(
+        &self,
+        params: Parameters<CreateSmartFolderParams>,
+        clock: &(dyn Clock + Sync),
+    ) -> String {
         let CreateSmartFolderParams { name, parent_id } = params.0;
         let mut vault = self.state.vault.lock().await;
         match sf::create_folder(
@@ -99,17 +123,40 @@ impl Memex {
             &name,
             parent_id.as_deref(),
             Caller::Agent,
-            &SystemClock,
+            clock,
         ) {
             Ok(folder) => in_vault("create_smart_folder", vault.vault_id(), folder),
             Err(e) => err_from("create_smart_folder", &e),
         }
     }
 
-    #[tool(description = "Rename a Smart Folder, move it under parent_id, or \
-        move it to the top level with to_root: true. A folder the user pinned \
-        cannot be renamed or moved (pinned_rule). Returns the folder.")]
+    /// Renames or moves a Smart Folder on the system clock. The MCP tool is
+    /// [`Self::update_smart_folder_tool`].
     pub async fn update_smart_folder(&self, params: Parameters<UpdateSmartFolderParams>) -> String {
+        self.update_smart_folder_impl(params, &SystemClock).await
+    }
+
+    /// The `update_smart_folder` tool, on the call's clock ([`call_clock`]).
+    #[tool(
+        name = "update_smart_folder",
+        description = "Rename a Smart Folder, move it under parent_id, or \
+        move it to the top level with to_root: true. A folder the user pinned \
+        cannot be renamed or moved (pinned_rule). Returns the folder."
+    )]
+    async fn update_smart_folder_tool(
+        &self,
+        params: Parameters<UpdateSmartFolderParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> String {
+        self.update_smart_folder_impl(params, &*call_clock(&ctx))
+            .await
+    }
+
+    async fn update_smart_folder_impl(
+        &self,
+        params: Parameters<UpdateSmartFolderParams>,
+        clock: &(dyn Clock + Sync),
+    ) -> String {
         let UpdateSmartFolderParams {
             id,
             name,
@@ -132,7 +179,7 @@ impl Memex {
             pinned: None,
         };
         let mut vault = self.state.vault.lock().await;
-        match sf::update_folder(&mut vault, &id, update, Caller::Agent, &SystemClock) {
+        match sf::update_folder(&mut vault, &id, update, Caller::Agent, clock) {
             Ok(folder) => in_vault("update_smart_folder", vault.vault_id(), folder),
             Err(e) => err_from("update_smart_folder", &e),
         }

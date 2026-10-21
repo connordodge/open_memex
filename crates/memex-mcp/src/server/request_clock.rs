@@ -6,15 +6,24 @@
 //! `&dyn Clock`. With no caller offset in the extensions, dates are mapped
 //! in the server's local time, exactly as `SystemClock` maps them (req 59).
 //!
-//! The caller-offset middleware (`X-Memex-UTC-Offset`) is #93's; it inserts
-//! a [`CallerUtcOffset`] that this extractor picks up.
+//! The caller-offset middleware ([`caller_utc_offset`], `X-Memex-UTC-Offset`)
+//! inserts a [`CallerUtcOffset`] that this extractor picks up; the
+//! `RequestClock` then maps dates in that offset (D6).
 
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use axum::extract::FromRequestParts;
+use axum::extract::{FromRequestParts, Request};
 use axum::http::request::Parts;
-use memex_core::{Clock, SystemClock};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
+use memex_core::{Clock, FixedOffset, SystemClock};
+
+use super::error::ApiError;
+use crate::caller_tz::parse_utc_offset;
+
+/// The request header that carries the caller's UTC offset (req 59).
+pub const UTC_OFFSET_HEADER: &str = "x-memex-utc-offset";
 
 /// A clock the server shares between requests.
 pub type SharedClock = Arc<dyn Clock + Send + Sync>;
@@ -37,6 +46,19 @@ pub struct RequestClock {
 }
 
 impl RequestClock {
+    /// The clock for the request `parts` belong to: its [`BaseClock`] (or a
+    /// `SystemClock` when it has none) and its [`CallerUtcOffset`], if any.
+    pub fn from_parts(parts: &Parts) -> Self {
+        let base = match parts.extensions.get::<BaseClock>() {
+            Some(BaseClock(clock)) => clock.clone(),
+            None => Arc::new(SystemClock),
+        };
+        Self {
+            base,
+            offset: parts.extensions.get::<CallerUtcOffset>().copied(),
+        }
+    }
+
     /// The caller's UTC offset, or `None` when dates map in the server's
     /// local time.
     pub fn caller_offset(&self) -> Option<CallerUtcOffset> {
@@ -48,6 +70,41 @@ impl Clock for RequestClock {
     fn now_ms(&self) -> i64 {
         self.base.now_ms()
     }
+
+    /// The caller's offset at every instant when the request carried one
+    /// (like a `CallerClock` over the base clock); otherwise the server's
+    /// local offset at `now_ms`, as `SystemClock` reports it.
+    fn utc_offset_at(&self, now_ms: i64) -> FixedOffset {
+        match self
+            .offset
+            .and_then(|CallerUtcOffset(minutes)| FixedOffset::east_opt(minutes.checked_mul(60)?))
+        {
+            Some(offset) => offset,
+            None => SystemClock.utc_offset_at(now_ms),
+        }
+    }
+}
+
+/// The `X-Memex-UTC-Offset` middleware (D6), layered with
+/// `axum::middleware::from_fn` in D7's request-clock slot. It parses the
+/// header once per request with `caller_tz::parse_utc_offset`: a valid value
+/// is inserted as a [`CallerUtcOffset`], a malformed one is answered with 400
+/// `invalid_utc_offset` before any handler runs, and no header leaves the
+/// request as it is (server-local dates).
+pub async fn caller_utc_offset(mut req: Request, next: Next) -> Response {
+    if let Some(value) = req.headers().get(UTC_OFFSET_HEADER) {
+        let parsed = value.to_str().ok().and_then(parse_utc_offset);
+        let Some(offset) = parsed else {
+            return ApiError::new(
+                "invalid_utc_offset",
+                "X-Memex-UTC-Offset must be +HH:MM or -HH:MM, at most 14:00",
+            )
+            .into_response();
+        };
+        let minutes = offset.local_minus_utc() / 60;
+        req.extensions_mut().insert(CallerUtcOffset(minutes));
+    }
+    next.run(req).await
 }
 
 impl<S> FromRequestParts<S> for RequestClock
@@ -57,13 +114,6 @@ where
     type Rejection = Infallible;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        let base = match parts.extensions.get::<BaseClock>() {
-            Some(BaseClock(clock)) => clock.clone(),
-            None => Arc::new(SystemClock),
-        };
-        Ok(Self {
-            base,
-            offset: parts.extensions.get::<CallerUtcOffset>().copied(),
-        })
+        Ok(Self::from_parts(parts))
     }
 }
