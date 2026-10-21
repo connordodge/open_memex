@@ -2,6 +2,8 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../db.dart';
+import '../vault_access/vault_scoped.dart';
+import 'vault_access_state.dart';
 import 'vault_state.dart';
 
 /// Pan + zoom for one canvas, kept in memory across tab switches.
@@ -81,22 +83,51 @@ final canvasAnimationConfigProvider = Provider<CanvasAnimationConfig>(
   (_) => const CanvasAnimationConfig(),
 );
 
-/// All canvases in the current vault, ordered by `updated_at DESC`.
-final canvasesProvider = Provider<List<CanvasRow>>((ref) {
+/// The canvas list read through `VaultAccess`, newest `updated_at` first,
+/// stamped with the vault it was read for (D14a). No open vault gives an empty
+/// list. Re-reads on every revision bump.
+final canvasesAsyncProvider = FutureProvider<VaultScoped<List<CanvasRow>>>((
+  ref,
+) async {
   ref.watch(vaultRevisionProvider);
-  final db = ref.watch(vaultDbProvider);
-  if (db == null) return const [];
-  return db.listCanvases();
+  final vault = ref.watch(currentVaultProvider);
+  final access = ref.watch(vaultAccessProvider);
+  if (access == null) return VaultScoped(vault, const <CanvasRow>[]);
+  return VaultScoped(vault, await access.canvas.listCanvases());
 });
 
-/// Hydrated canvas (metadata + placed nodes + edges). Provider.family keyed
-/// on canvas id.
-final canvasDetailProvider = Provider.family<CanvasDetailRow?, String>((
-  ref,
-  canvasId,
-) {
-  ref.watch(vaultRevisionProvider);
-  final db = ref.watch(vaultDbProvider);
-  if (db == null) return null;
-  return db.getCanvasDetail(canvasId);
-});
+/// One hydrated canvas (metadata + placed nodes + edges) read through
+/// `VaultAccess`, or null for an unknown id or no open vault, stamped with the
+/// vault it was read for (D14a). Family keyed on canvas id.
+final canvasDetailAsyncProvider =
+    FutureProvider.family<VaultScoped<CanvasDetailRow?>, String>((
+      ref,
+      canvasId,
+    ) async {
+      ref.watch(vaultRevisionProvider);
+      final vault = ref.watch(currentVaultProvider);
+      final access = ref.watch(vaultAccessProvider);
+      if (access == null) return VaultScoped<CanvasDetailRow?>(vault, null);
+      return VaultScoped(vault, await access.canvas.getCanvasDetail(canvasId));
+    });
+
+/// All canvases in the current vault, newest first: a synchronous facade over
+/// [canvasesAsyncProvider] (D14a). Empty with no vault, before the first load
+/// and while another vault's data is all there is.
+final canvasesProvider = Provider<List<CanvasRow>>(
+  (ref) => vaultFacadeValue(
+    ref,
+    ref.watch(canvasesAsyncProvider),
+    const <CanvasRow>[],
+  ),
+);
+
+/// Hydrated canvas facade over [canvasDetailAsyncProvider] (D14a): null for an
+/// unknown id, with no vault, and before the first load.
+final canvasDetailProvider = Provider.family<CanvasDetailRow?, String>(
+  (ref, canvasId) => vaultFacadeValue<CanvasDetailRow?>(
+    ref,
+    ref.watch(canvasDetailAsyncProvider(canvasId)),
+    null,
+  ),
+);
