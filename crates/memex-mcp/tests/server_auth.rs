@@ -1045,3 +1045,32 @@ async fn tokenless_wrong_method_401_keeps_the_allow_get_head_header() {
 fn network_filesystem_maps_to_409_conflict() {
     assert_eq!(status_for_code("network_filesystem").as_u16(), 409);
 }
+
+// ---------- Mutation round: ServerConfig defaults ----------
+
+#[test]
+fn server_config_has_embeddings_off_until_with_embeddings_turns_them_on() {
+    // Built from run-time values so the constructor itself runs.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join(format!("root-{}", std::process::id()));
+    let token = format!("cfg-token-{}", std::process::id());
+
+    let config = memex_mcp::server::ServerConfig::new(root.clone(), token.clone());
+    assert!(
+        !config.embeddings_enabled(),
+        "ServerConfig::new serves vaults without real embeddings by default"
+    );
+    assert_eq!(config.root(), root.as_path());
+
+    let on = config.clone().with_embeddings(true);
+    assert!(
+        on.embeddings_enabled(),
+        "with_embeddings(true) turns them on"
+    );
+    let off = on.with_embeddings(false);
+    assert!(
+        !off.embeddings_enabled(),
+        "with_embeddings(false) turns them off"
+    );
+    assert_eq!(off.root(), root.as_path());
+}

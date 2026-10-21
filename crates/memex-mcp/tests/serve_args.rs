@@ -370,3 +370,35 @@ fn serve_remote_alone_is_accepted_and_exits_1_not_implemented() {
     );
     assert_eq!(tree(dir.path()), before, "creates nothing");
 }
+
+// ---------- Mutation round: the stdio log is plain text ----------
+
+#[test]
+fn serve_vault_stdio_log_file_holds_no_ansi_escape_bytes() {
+    // mcp.log is a file, not a terminal: tracing's colour codes (ESC [ ... m
+    // around the level, dimmed targets) must never be written into it.
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("vault");
+    Vault::create(&vault).unwrap();
+    // Stdin is closed, so the session ends before initialize (exit 1); the
+    // startup line is logged before that.
+    let out = ServeCommand::new(&["--vault", vault.to_str().unwrap(), "--log-level", "debug"])
+        .run_within(LIMIT);
+    assert!(out.code.is_some(), "exited on its own\n{}", out.describe());
+
+    let mut logs = Vec::new();
+    for entry in std::fs::read_dir(vault.join(".memex")).unwrap().flatten() {
+        if entry.file_name().to_string_lossy().starts_with("mcp.log") {
+            logs.extend(std::fs::read(entry.path()).unwrap());
+        }
+    }
+    let text = String::from_utf8_lossy(&logs);
+    assert!(
+        text.contains("starting memex-mcp") && text.contains("INFO"),
+        "the startup line was logged at info:\n{text}"
+    );
+    assert!(
+        !logs.contains(&0x1b),
+        "mcp.log holds no ANSI escape (0x1b) bytes:\n{text:?}"
+    );
+}

@@ -87,6 +87,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
 /// server existed.
 async fn serve_stdio(vault_path: PathBuf, with_embeddings: bool, log_level: String) -> Result<()> {
     let absolute = std::path::absolute(&vault_path).context("resolve --vault")?;
+    memex_core::fs_guard::check(&absolute)?;
     let log_dir = absolute.join(".memex");
     std::fs::create_dir_all(&log_dir).context("create .memex log dir")?;
     let file_appender = tracing_appender::rolling::daily(&log_dir, "mcp.log");
