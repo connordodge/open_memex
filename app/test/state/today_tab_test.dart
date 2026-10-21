@@ -11,8 +11,10 @@ import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/state/today_state.dart';
 import 'package:open_memex_app/src/state/ui_state_store.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
+import 'package:open_memex_app/src/vault_access/local/local_vault_access.dart';
 
 import '../support/daily_seed.dart';
+import '../support/editor_access_doubles.dart';
 import '../support/fake_clock.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
@@ -89,6 +91,9 @@ Future<_Launch> _launch({
   // The launch syncs selectedNoteIdProvider in a microtask: a provider may
   // not modify another provider while it initializes.
   await Future<void>.delayed(Duration.zero);
+  // Today's daily note is read through the async daily domain (#78): let
+  // the launch's reads finish.
+  await pumpEventQueue();
   return launch;
 }
 
@@ -289,6 +294,47 @@ void main() {
 
   group('createDailyNote (AC3, AC4, AC5)', () {
     test(
+      'createDailyNote creates the daily note through the notes domain addNote with role daily and the date as title',
+      () async {
+        final db = FakeVaultDb.v5();
+        addTearDown(db.close);
+        final cli = FakeMemexCli()..onAddDailyCreates(db);
+        final notes = EditorNotesAccess(vaultPath: '/vaults/v', cli: cli);
+
+        final result = await createDailyNote(
+          notes,
+          date: '2026-10-03',
+          contentMd: 'hi',
+        );
+
+        expect(notes.writes, ['addNote:2026-10-03:daily']);
+        expect(result.noteId, createdDailyId);
+        expect(result.existed, isFalse);
+      },
+    );
+
+    test(
+      'createDailyNote through the notes domain returns existing_id with existed true on daily_note_exists',
+      () async {
+        final cli = FakeMemexCli()
+          ..onAddReturns(
+            FakeMemexCli.error(
+              'daily_note_exists',
+              'a daily note for 2026-10-03 already exists: $_existingId',
+              {'date': '2026-10-03', 'existing_id': _existingId},
+            ),
+          );
+        final notes = EditorNotesAccess(vaultPath: '/vaults/v', cli: cli);
+
+        final result = await createDailyNote(notes, date: '2026-10-03');
+
+        expect(notes.writes, ['addNote:2026-10-03:daily']);
+        expect(result.noteId, _existingId);
+        expect(result.existed, isTrue);
+      },
+    );
+
+    test(
       'createDailyNote runs add with role daily, the date as title and the text on stdin, and returns the created id',
       () async {
         final db = FakeVaultDb.v5();
@@ -296,8 +342,7 @@ void main() {
         final cli = FakeMemexCli()..onAddDailyCreates(db);
 
         final result = await createDailyNote(
-          cli,
-          vaultPath: '/vaults/v',
+          LocalNotesAccess(vaultPath: '/vaults/v', cli: cli),
           date: '2026-10-03',
           contentMd: 'hi',
         );
@@ -323,8 +368,7 @@ void main() {
           );
 
         final result = await createDailyNote(
-          cli,
-          vaultPath: '/vaults/v',
+          LocalNotesAccess(vaultPath: '/vaults/v', cli: cli),
           date: '2026-10-03',
           contentMd: 'hi',
         );
@@ -348,8 +392,7 @@ void main() {
           );
 
         final result = await createDailyNote(
-          cli,
-          vaultPath: '/vaults/v',
+          LocalNotesAccess(vaultPath: '/vaults/v', cli: cli),
           date: '2026-10-03',
           contentMd: 'hi',
         );
@@ -368,8 +411,7 @@ void main() {
 
         await expectLater(
           createDailyNote(
-            cli,
-            vaultPath: '/vaults/v',
+            LocalNotesAccess(vaultPath: '/vaults/v', cli: cli),
             date: '2026-10-03',
             contentMd: 'hi',
           ),
@@ -398,8 +440,7 @@ void main() {
 
         await expectLater(
           createDailyNote(
-            cli,
-            vaultPath: '/vaults/v',
+            LocalNotesAccess(vaultPath: '/vaults/v', cli: cli),
             date: '2026-10-03',
             contentMd: 'hi',
           ),
