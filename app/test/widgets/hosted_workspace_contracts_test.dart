@@ -51,6 +51,10 @@ class _C101Gate {
   /// What the canvas list read serves (the canvas chip title reads it).
   List<CanvasRow> canvases = const [];
 
+  /// Where the note chip title reads from: `notes.titlesForIds` answers from
+  /// the harness db, like the local notes domain does. Set after the pump.
+  VaultDb? db;
+
   void check() {
     if (error != null) throw error!;
   }
@@ -66,6 +70,10 @@ const _unreachable = VaultUnreachableException(
 class _C101Notes extends LocalNotesAccess {
   _C101Notes(this.gate) : super(vaultPath: '/tmp/om-101c');
   final _C101Gate gate;
+
+  @override
+  Future<Map<String, String>> titlesForIds(List<String> ids) async =>
+      gate.db?.titlesForIds(ids) ?? const {};
 
   @override
   Future<Note?> getNote(String id) async {
@@ -174,6 +182,7 @@ Future<(WorkspaceHarness, _C101Gate)> _pumpHosted(
       ),
     ],
   );
+  gate.db = h.db;
   h.container.read(currentVaultProvider.notifier).state = vault;
   await pumpFrames(tester);
   h.container.read(hostedConnectionStatusProvider(_server).notifier).state =
@@ -284,15 +293,32 @@ void main() {
     }
 
     testWidgets('a local vault tab makes no not loaded read', (tester) async {
-      final (h, gate) = await _pumpHosted(
-        tester,
-        vault: const LocalVaultRef('/tmp/om-101c-local'),
-        status: HostedConnectionStatus.unreachable,
-      );
-      await _open(tester, h, const NoteTab('x1'));
-      await _bump(tester, h);
-      expect(gate.total, 0);
-      expect(find.byType(NoteEditor), findsOneWidget);
+      // The editor loads the note through the vault access itself, so the
+      // gate's total includes its reads. The check adds none when the run
+      // with it reads exactly what the run without it does.
+      Future<int> run({required bool withCheck}) async {
+        final (h, gate) = await _pumpHosted(
+          tester,
+          vault: const LocalVaultRef('/tmp/om-101c-local'),
+          status: HostedConnectionStatus.unreachable,
+          extraOverrides: [
+            if (!withCheck)
+              tabNotLoadedProvider.overrideWith((ref, tab) => null),
+          ],
+        );
+        await _open(tester, h, const NoteTab('x1'));
+        await _bump(tester, h);
+        expect(find.byType(NoteEditor), findsOneWidget);
+        final total = gate.total;
+        await tester.pumpWidget(const SizedBox());
+        await pumpFrames(tester);
+        return total;
+      }
+
+      final withCheck = await run(withCheck: true);
+      final bodyOnly = await run(withCheck: false);
+      expect(bodyOnly, greaterThan(0));
+      expect(withCheck, bodyOnly);
     });
   });
 
@@ -492,7 +518,7 @@ void main() {
         tester,
         status: HostedConnectionStatus.connected,
       );
-      // Note titles read the vault db; canvas titles read the canvas list
+      // Note titles read the harness db through titlesForIds; canvas titles read the canvas list
       // through the vault access (the canvas async migration), so the canvas
       // double serves the list.
       h.db.seedNote(id: 'n-weekly', title: 'weekly review');
