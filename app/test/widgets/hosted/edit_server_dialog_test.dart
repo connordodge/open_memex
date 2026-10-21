@@ -7,8 +7,10 @@
 //
 // Lead update (#91 verify): `updateServer` doesn't dedupe by URL, so this
 // dialog refuses an edit whose URL normalises to another saved server's URL.
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/hosted_connection_state.dart';
+import 'package:open_memex_app/src/theme/colors.dart';
 
 import '../../support/fake_vault_server.dart';
 import 'wi98_connect_harness.dart';
@@ -350,6 +352,172 @@ void main() {
 
         expect(_servers(env), before);
         expect(env.tokens.tokens, {env.edit!.id: _stored});
+      },
+    );
+
+    testWidgets(
+      'cancel after the edit probe answers but before the update finishes changes nothing',
+      (tester) async {
+        final tokens = Wi98GatedTokenStore();
+        final env = await pumpWi98Host(
+          tester,
+          server: _server(token: _fresh),
+          seed: [(name: 'nas', url: _url, token: _stored)],
+          editIndex: 0,
+          tokenStore: tokens,
+        );
+        await env.open();
+        final before = _servers(env);
+        await env.fill(name: 'renamed', token: _fresh);
+        tokens.hold();
+
+        await env.submit();
+        expect(env.server.requests, hasLength(1), reason: 'probe answered');
+        expect(
+          wi98Connecting(),
+          findsOneWidget,
+          reason: 'the update is in flight: the dialog still reads connecting',
+        );
+
+        await tester.tap(find.byKey(kWi98Cancel));
+        await tester.pumpAndSettle();
+        expect(find.byKey(kWi98Dialog), findsNothing);
+        expect(env.result, isNull);
+
+        tokens.release();
+        await env.pumpFrames();
+        await tester.pumpAndSettle();
+
+        expect(_servers(env), before, reason: 'name and url unchanged');
+        expect(env.tokens.tokens, {
+          env.edit!.id: _stored,
+        }, reason: 'token kept');
+      },
+    );
+  });
+
+  group('edit contracts (verify)', () {
+    testWidgets('edit shows connecting while save re-probes', (tester) async {
+      final env = await _openEdit(tester);
+      env.server.hold();
+
+      await env.submit();
+
+      expect(wi98Connecting(), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(kWi98Submit),
+          matching: find.text('save'),
+        ),
+        findsNothing,
+      );
+      for (final key in [kWi98Name, kWi98Url, kWi98Token]) {
+        expect(wi98EditableOf(tester, key).readOnly, isTrue);
+      }
+
+      env.server.release();
+      await env.pumpFrames();
+      await tester.pumpAndSettle();
+      expect(env.returned, isTrue);
+    });
+
+    for (final (name, typed) in [
+      ('edit save with an empty token writes no token', ''),
+      (
+        'edit save with a whitespace only token uses the stored token and writes no token',
+        '   ',
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final env = await _openEdit(tester);
+        final id = env.edit!.id;
+        final callsBefore = env.tokens.calls.length;
+        await env.fill(name: 'nas home', token: typed);
+
+        await env.submit();
+        await tester.pumpAndSettle();
+
+        expect(
+          env.server.requests.single.headers['Authorization'],
+          'Bearer $_stored',
+        );
+        expect(env.result?.id, id);
+        expect(_servers(env), [(id, 'nas home', _url)]);
+        expect(
+          env.tokens.calls
+              .skip(callsBefore)
+              .where((c) => c.startsWith('write')),
+          isEmpty,
+          reason: 'updateServer gets a token only when one was pasted',
+        );
+        expect(env.tokens.tokens, {id: _stored});
+      });
+    }
+
+    testWidgets('edit save trims a pasted token', (tester) async {
+      final env = await _openEdit(tester, server: _server(token: _fresh));
+      final id = env.edit!.id;
+      await env.fill(token: '  $_fresh  ');
+
+      await env.submit();
+      await tester.pumpAndSettle();
+
+      expect(
+        env.server.requests.single.headers['Authorization'],
+        'Bearer $_fresh',
+      );
+      expect(env.tokens.tokens, {id: _fresh});
+      expect(env.tokens.calls.last, 'write $id');
+    });
+
+    testWidgets('the edit token field shows a 26 bullet placeholder in fg2', (
+      tester,
+    ) async {
+      await _openEdit(tester);
+
+      final placeholder = find.descendant(
+        of: find.byKey(kWi98Token),
+        matching: find.text('•' * 26),
+      );
+      expect(placeholder, findsOneWidget);
+      final style = tester.widget<Text>(placeholder).style;
+      expect(style?.color, OmColors.fg2);
+      expect(style?.letterSpacing, 2);
+    });
+
+    testWidgets('the connect token field has no placeholder', (tester) async {
+      final env = await pumpWi98Host(tester, server: _server());
+      await env.open();
+
+      expect(
+        find.descendant(
+          of: find.byKey(kWi98Token),
+          matching: find.textContaining('•'),
+        ),
+        findsNothing,
+      );
+    });
+
+    testWidgets('the edit dialog autofocuses the access token field', (
+      tester,
+    ) async {
+      await _openEdit(tester);
+
+      expect(wi98Focused(tester, kWi98Token), isTrue);
+      expect(wi98Focused(tester, kWi98Url), isFalse);
+      expect(wi98Focused(tester, kWi98Name), isFalse);
+    });
+
+    testWidgets(
+      'the edit refusal names the normalised url and the other server',
+      (tester) async {
+        final env = await _openEdit(tester, withMini: true);
+        await env.fill(url: 'http://Mini.LOCAL:7878/');
+
+        await env.submit();
+        await tester.pumpAndSettle();
+
+        expectWi98A5Error(tester, '$_miniUrl is already saved as mini');
       },
     );
   });

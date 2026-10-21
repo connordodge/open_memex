@@ -3,6 +3,8 @@
 // through `connectServerHttpClientProvider`; settings use a mock
 // SharedPreferences and a FakeTokenStore (never the real Keychain); time is a
 // FakeClock (the 10 s probe timeout).
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -125,13 +127,14 @@ Future<Wi98Env> pumpWi98Host(
   List<Wi98Seed> seed = const [],
   int? editIndex,
   FakeVaultServer? server,
+  FakeTokenStore? tokenStore,
 }) async {
   tester.view.physicalSize = const Size(1200, 900);
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.reset);
 
   SharedPreferences.setMockInitialValues({'memex.binary_path': 'fake-memex'});
-  final tokens = FakeTokenStore();
+  final tokens = tokenStore ?? FakeTokenStore();
   final settings = (await tester.runAsync(
     () => SettingsController.load(tokenStore: tokens),
   ))!;
@@ -188,6 +191,54 @@ Future<Wi98Env> pumpWi98Host(
   );
   return env;
 }
+
+/// A [FakeTokenStore] whose writes wait while [hold] is on: a slow Keychain
+/// write (or a Keychain access prompt) that is still pending when the user
+/// taps cancel.
+class Wi98GatedTokenStore extends FakeTokenStore {
+  Completer<void>? _gate;
+
+  /// Holds every later write until [release].
+  void hold() => _gate ??= Completer<void>();
+
+  /// Lets held writes through.
+  void release() {
+    _gate?.complete();
+    _gate = null;
+  }
+
+  @override
+  Future<void> write(String serverId, String token) async {
+    final gate = _gate;
+    if (gate != null) await gate.future;
+    await super.write(serverId, token);
+  }
+}
+
+/// The input box decoration of the dialog field keyed [key] (the outermost
+/// DecoratedBox inside it).
+BoxDecoration wi98BoxOf(WidgetTester tester, Key key) =>
+    tester
+            .widget<DecoratedBox>(
+              find
+                  .descendant(
+                    of: find.byKey(key),
+                    matching: find.byType(DecoratedBox),
+                  )
+                  .first,
+            )
+            .decoration
+        as BoxDecoration;
+
+/// Whether the EditableText of the dialog field keyed [key] has focus.
+bool wi98Focused(WidgetTester tester, Key key) =>
+    wi98EditableOf(tester, key).focusNode.hasFocus;
+
+/// The primary button reads "connecting…".
+Finder wi98Connecting() => find.descendant(
+  of: find.byKey(kWi98Submit),
+  matching: find.text('connecting…'),
+);
 
 /// [f] sits below [below] and above [above] (an inline error "under" a
 /// field).

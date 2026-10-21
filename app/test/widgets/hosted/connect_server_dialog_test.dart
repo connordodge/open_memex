@@ -16,6 +16,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:lucide_icons_flutter/lucide_icons.dart';
+import 'package:open_memex_app/src/state/hosted_connection_state.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/widgets/hosted/connect_server_dialog.dart';
 
@@ -721,6 +722,344 @@ void main() {
     });
   });
 
+  group('normalised url and scheme check (verify)', () {
+    testWidgets('cant reach names the normalised url', (tester) async {
+      final env = await pumpWi98Host(tester, server: _server());
+      await env.open();
+      await env.fill(name: 'nas', url: 'http://NAS.local:7878/', token: _token);
+      env.server.failure = FakeServerFailure.refused;
+
+      await env.submit();
+      await tester.pumpAndSettle();
+
+      expectWi98A5Error(tester, wi98CantReach(_url));
+      expect(find.text(wi98CantReach('http://NAS.local:7878/')), findsNothing);
+      _expectNothingSaved(env);
+    });
+
+    testWidgets('isnt a memex vault server names the normalised url', (
+      tester,
+    ) async {
+      final env = await pumpWi98Host(tester, server: _server());
+      env.server.servesHtml = true;
+      await env.open();
+      await env.fill(name: 'nas', url: 'HTTP://Nas.Local:7878/', token: _token);
+
+      await env.submit();
+      await tester.pumpAndSettle();
+
+      expectWi98A5Error(tester, wi98NotMemex(_url));
+      _expectNothingSaved(env);
+    });
+
+    for (final (name, typed) in [
+      (
+        'an uppercase HTTP scheme passes the url check and saves the normalised url',
+        'HTTP://nas.local:7878',
+      ),
+      (
+        'a mixed case scheme and host pass the url check and save the normalised url',
+        'Http://NAS.Local:7878/',
+      ),
+      (
+        'a url padded with spaces passes the url check and saves the trimmed url',
+        '  http://nas.local:7878  ',
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final env = await pumpWi98Host(tester, server: _server());
+        await env.open();
+        await env.fill(name: 'nas', url: typed, token: _token);
+
+        await env.submit();
+        await tester.pumpAndSettle();
+
+        expect(find.text(kWi98SchemeError), findsNothing);
+        expect(env.server.requests.single.url, Uri.parse('$_url/api/v1/info'));
+        expect(env.returned, isTrue);
+        expect(env.result?.url, _url);
+        expect(env.saved.single.url, _url);
+        expect(env.saved.single.name, 'nas');
+      });
+    }
+  });
+
+  group('token handling (verify)', () {
+    testWidgets('the pasted token is trimmed before the probe and the save', (
+      tester,
+    ) async {
+      final env = await pumpWi98Host(tester, server: _server());
+      await env.open();
+      await env.fill(name: 'nas', url: _url, token: '  $_token  ');
+
+      await env.submit();
+      await tester.pumpAndSettle();
+
+      expect(
+        env.server.requests.single.headers['Authorization'],
+        'Bearer $_token',
+      );
+      expect(env.returned, isTrue);
+      expect(env.tokens.tokens, {env.result!.id: _token});
+    });
+
+    testWidgets('an empty token still probes and shows access token rejected', (
+      tester,
+    ) async {
+      final env = await pumpWi98Host(tester, server: _server());
+      await env.open();
+      await env.fill(name: 'nas', url: _url);
+
+      await env.submit();
+      await tester.pumpAndSettle();
+
+      expect(env.server.requests, hasLength(1));
+      expectWi98A5Error(tester, kWi98TokenRejected);
+      _expectNothingSaved(env);
+    });
+  });
+
+  group('errors clear (verify)', () {
+    testWidgets(
+      'editing the url clears the url error and editing the token does not',
+      (tester) async {
+        final env = await pumpWi98Host(tester, server: _server());
+        await env.open();
+        await env.fill(name: 'nas', url: _url, token: _token);
+        env.server.failure = FakeServerFailure.refused;
+        await env.submit();
+        await tester.pumpAndSettle();
+        expect(find.text(wi98CantReach(_url)), findsOneWidget);
+
+        await env.fill(token: 'tok-other-98');
+        expect(
+          find.text(wi98CantReach(_url)),
+          findsOneWidget,
+          reason: 'a token edit leaves the url error',
+        );
+
+        await env.fill(url: 'http://nas.local:7879');
+        expect(find.text(wi98CantReach(_url)), findsNothing);
+        expect(
+          wi98BorderColorsOf(tester, kWi98Url),
+          isNot(contains(kWi98InvalidBorder)),
+          reason: 'the url input is no longer red',
+        );
+      },
+    );
+
+    testWidgets(
+      'editing the token clears the token error and editing the url does not',
+      (tester) async {
+        final env = await pumpWi98Host(tester, server: _server());
+        await env.open();
+        await env.fill(name: 'nas', url: _url, token: 'tok-wrong-98');
+        await env.submit();
+        await tester.pumpAndSettle();
+        expect(find.text(kWi98TokenRejected), findsOneWidget);
+
+        await env.fill(url: 'http://nas.local:7879');
+        expect(
+          find.text(kWi98TokenRejected),
+          findsOneWidget,
+          reason: 'a url edit leaves the token error',
+        );
+
+        await env.fill(token: _token);
+        expect(find.text(kWi98TokenRejected), findsNothing);
+        expect(
+          find.text(kWi98ConnectHint),
+          findsOneWidget,
+          reason: 'the hint is back',
+        );
+        expect(
+          wi98BorderColorsOf(tester, kWi98Token),
+          isNot(contains(kWi98InvalidBorder)),
+        );
+      },
+    );
+
+    testWidgets('a new connect clears the previous error while it waits', (
+      tester,
+    ) async {
+      final env = await pumpWi98Host(tester, server: _server());
+      env.server.route(
+        'GET',
+        '/api/v1/info',
+        json: {'server_version': '2.0.0', 'api_version': 2},
+      );
+      await env.open();
+      await env.fill(name: 'nas', url: _url, token: _token);
+      await env.submit();
+      await tester.pumpAndSettle();
+      expect(find.byKey(kWi98Error), findsOneWidget);
+
+      env.server.hold();
+      await env.submit();
+      expect(wi98Connecting(), findsOneWidget);
+      expect(find.byKey(kWi98Error), findsNothing);
+
+      env.server.release();
+      await env.pumpFrames();
+      await tester.pumpAndSettle();
+      expect(find.byKey(kWi98Error), findsOneWidget);
+    });
+  });
+
+  group('focus (verify)', () {
+    testWidgets('the connect dialog autofocuses the server url field', (
+      tester,
+    ) async {
+      final env = await pumpWi98Host(tester, server: _server());
+      await env.open();
+
+      expect(wi98Focused(tester, kWi98Url), isTrue);
+      expect(wi98Focused(tester, kWi98Name), isFalse);
+      expect(wi98Focused(tester, kWi98Token), isFalse);
+    });
+
+    testWidgets(
+      'a focused input draws the accent border and ring and an invalid one only the danger border',
+      (tester) async {
+        final env = await pumpWi98Host(tester, server: _server());
+        await env.open();
+
+        final focused = wi98BoxOf(tester, kWi98Url);
+        expect(
+          (focused.border! as Border).top.color,
+          OmColors.accent.withAlpha(140),
+        );
+        expect(focused.boxShadow, hasLength(1));
+        expect(focused.boxShadow!.single.color, OmColors.accent.withAlpha(31));
+        expect(focused.boxShadow!.single.spreadRadius, 3);
+        expect(focused.boxShadow!.single.blurRadius, 0);
+
+        final idle = wi98BoxOf(tester, kWi98Name);
+        expect((idle.border! as Border).top.color, OmColors.line2);
+        expect(idle.boxShadow, anyOf(isNull, isEmpty));
+
+        // Empty url: the scheme error. The url field keeps focus.
+        await env.submit();
+        await tester.pumpAndSettle();
+        expect(wi98Focused(tester, kWi98Url), isTrue);
+        final invalid = wi98BoxOf(tester, kWi98Url);
+        expect((invalid.border! as Border).top.color, kWi98InvalidBorder);
+        expect(
+          invalid.boxShadow,
+          anyOf(isNull, isEmpty),
+          reason: 'invalid wins over focus: no ring',
+        );
+      },
+    );
+  });
+
+  group('saved server status (verify)', () {
+    testWidgets(
+      'probing an unsaved url leaves every saved server status untouched',
+      (tester) async {
+        final env = await pumpWi98Host(
+          tester,
+          server: _server(),
+          seed: [
+            (name: 'mini', url: 'http://mini.local:7878', token: 'tok-mini-98'),
+          ],
+        );
+        final miniId = env.saved.single.id;
+        await env.open();
+        await env.fill(name: 'nas', url: _url, token: 'tok-wrong-98');
+
+        await env.submit();
+        await tester.pumpAndSettle();
+        expect(find.text(kWi98TokenRejected), findsOneWidget);
+        expect(
+          env.container.read(hostedConnectionStatusProvider(miniId)),
+          isNull,
+          reason: 'another saved server is not marked token rejected',
+        );
+
+        await env.fill(token: _token);
+        await env.submit();
+        await tester.pumpAndSettle();
+
+        expect(env.saved, hasLength(2));
+        final added = env.result!;
+        expect(added.id, isNot('connect-server-dialog'));
+        expect(added.id, isNot(miniId));
+        expect(
+          env.container.read(hostedConnectionStatusProvider(miniId)),
+          isNull,
+        );
+        expect(
+          env.container.read(hostedConnectionStatusProvider(added.id)),
+          isNot(HostedConnectionStatus.tokenRejected),
+          reason: 'the earlier rejected probe is not reported for it',
+        );
+      },
+    );
+
+    testWidgets(
+      'connecting to a saved url reports the probe under that server id',
+      (tester) async {
+        final env = await pumpWi98Host(
+          tester,
+          server: _server(),
+          seed: [(name: 'nas', url: _url, token: 'tok-old-98')],
+        );
+        final id = env.saved.single.id;
+        await env.open();
+        await env.fill(url: _url, token: 'tok-wrong-98');
+
+        await env.submit();
+        await tester.pumpAndSettle();
+
+        expect(find.text(kWi98TokenRejected), findsOneWidget);
+        expect(
+          env.container.read(hostedConnectionStatusProvider(id)),
+          HostedConnectionStatus.tokenRejected,
+        );
+        expect(env.tokens.tokens, {id: 'tok-old-98'}, reason: 'nothing saved');
+      },
+    );
+  });
+
+  group('cancel during the save (verify)', () {
+    testWidgets(
+      'cancel after the probe answers but before the save finishes saves nothing',
+      (tester) async {
+        final tokens = Wi98GatedTokenStore();
+        final env = await pumpWi98Host(
+          tester,
+          server: _server(),
+          tokenStore: tokens,
+        );
+        await env.open();
+        await env.fill(name: 'nas', url: _url, token: _token);
+        tokens.hold();
+
+        await env.submit();
+        expect(env.server.requests, hasLength(1), reason: 'probe answered');
+        expect(
+          wi98Connecting(),
+          findsOneWidget,
+          reason: 'the save is in flight: the dialog still reads connecting',
+        );
+
+        await tester.tap(find.byKey(kWi98Cancel));
+        await tester.pumpAndSettle();
+        expect(find.byKey(kWi98Dialog), findsNothing);
+        expect(env.returned, isTrue);
+        expect(env.result, isNull, reason: 'cancel returns null');
+
+        tokens.release();
+        await env.pumpFrames();
+        await tester.pumpAndSettle();
+
+        _expectNothingSaved(env);
+        expect(await env.prefsWith('nas.local'), isEmpty);
+      },
+    );
+  });
+
   group('seams', () {
     test(
       'the connect dialog http client seam defaults to a real http client',
@@ -734,6 +1073,26 @@ void main() {
           container.read(connectServerHttpClientProvider),
           same(client),
           reason: 'one client per container',
+        );
+      },
+    );
+
+    test(
+      'the default connect dialog http client is closed with its container',
+      () async {
+        final container = ProviderContainer();
+        final client = container.read(connectServerHttpClientProvider);
+        container.dispose();
+
+        await expectLater(
+          client.get(Uri.parse('http://127.0.0.1:9/api/v1/info')),
+          throwsA(
+            isA<http.ClientException>().having(
+              (e) => e.message,
+              'message',
+              contains('closed'),
+            ),
+          ),
         );
       },
     );
