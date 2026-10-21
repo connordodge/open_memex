@@ -8,6 +8,8 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db.dart';
+import 'package:open_memex_app/src/state/tabs_state.dart';
+import 'package:open_memex_app/src/state/today_state.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 
 import '../support/editor_access_doubles.dart';
@@ -307,5 +309,35 @@ void main() {
       expect(note.read(), isNull);
       expect(titles.read(), isEmpty);
     });
+  });
+
+  group('virtual Today selection (review round 2)', () {
+    test(
+      'with the virtual Today tab selected no getNote call is made and the editor still shows the virtual Today state',
+      () async {
+        const date = '2026-10-20';
+        final v = _container(selected: const VirtualTodayTab(date).id);
+        final selected = v.c.listen(selectedNoteProvider, (_, _) {});
+        final editor = v.c.listen(editorNoteProvider, (_, _) {});
+        await pumpEventQueue();
+
+        v.bump();
+        await pumpEventQueue();
+
+        expect(
+          v.a.notes.reads.where((r) => r.startsWith('getNote:')),
+          isEmpty,
+          reason: 'a virtual Today id is never a vault note id',
+        );
+        expect(selected.read(), isNull);
+        final note = editor.read();
+        expect(note, isNotNull);
+        expect(note!.id, const VirtualTodayTab(date).id);
+        expect(note.title, date);
+        expect(note.contentMd, isEmpty);
+        expect(note.role, 'daily');
+        expect(note.version, 0);
+      },
+    );
   });
 }
