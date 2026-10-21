@@ -3037,16 +3037,29 @@ void main() {
         merged.complete();
         await pumpEventQueue();
 
-        // The held edit goes on its own base, not on the merged version.
+        // The held edit goes on its own base, not on the merged version: it
+        // meets the conflict, and only a merge on the merged version (@5)
+        // writes it.
         expect(h.notes.updatesOf(_dailyId), [
           'updateNote:$_dailyId@3',
           'updateNote:$_dailyId@4',
           'updateNote:$_dailyId@3',
+          'updateNote:$_dailyId@5',
         ]);
+        final bodies = h.notes.updateBodies;
+        expect(bodies, hasLength(4));
+        // The merge write carries the merged agent text and the held edit.
+        expect(_count(bodies[3], 'Agent note.'), 1);
+        expect(_count(bodies[3], 'Lunch.'), 1);
+        expect(_count(bodies[3], 'Dinner.'), 1);
         final stored = h.stored(_dailyId);
-        expect(stored.version, 5);
+        expect(stored.version, 6);
+        expect(stored.contentMd, bodies[3]);
         expect(_count(stored.contentMd, 'Agent note.'), 1);
         expect(_count(stored.contentMd, 'Lunch.'), 1);
+        expect(_count(stored.contentMd, 'Dinner.'), 1);
+        expect(h.queue, isEmpty);
+        expect(h.state.contentMd, '');
       },
     );
 
