@@ -1,0 +1,43 @@
+{
+  "folders": [
+    {
+      "id": "01M5DQAYZHE33BZ4NA4H5YSBJD",
+      "name": "Systems",
+      "parent_id": "01M5DQAYZHJGKWXCJHR5FSDFA0",
+      "pinned": false
+    },
+    {
+      "id": "01M5DQAYZHJGKWXCJHR5FSDFA0",
+      "name": "Design",
+      "parent_id": null,
+      "pinned": true
+    },
+    {
+      "id": "01M5DQAYZHJTTW6PPF4P7GNCHN",
+      "name": "Inbox",
+      "parent_id": null,
+      "pinned": false
+    }
+  ],
+  "max_depth": 3,
+  "members": [
+    {
+      "folder_id": "01M5DQAYZHE33BZ4NA4H5YSBJD",
+      "note_id": "01M5DQAYZ47QW55S90ZF0A56AH",
+      "pinned": false,
+      "title": "Economy Design"
+    },
+    {
+      "folder_id": "01M5DQAYZHE33BZ4NA4H5YSBJD",
+      "note_id": "01M5DQAYZ4YAPYMEDWXP8WCNGJ",
+      "pinned": false,
+      "title": "Pacing Notes"
+    },
+    {
+      "folder_id": "01M5DQAYZHJGKWXCJHR5FSDFA0",
+      "note_id": "01M5DQAYZ3WP7H0NXZZV9M2315",
+      "pinned": true,
+      "title": "Player Loop"
+    }
+  ]
+}

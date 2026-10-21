@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "folder_cycle",
+    "message": "folder cycle: \"Design\" cannot move under itself or one of its subfolders"
+  }
+}
