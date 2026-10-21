@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../db/daily_reads.dart';
 import '../../state/daily_state.dart';
 import '../../state/tabs_state.dart';
+import '../../state/vault_state.dart';
 import '../../theme/colors.dart';
 import '../atoms.dart';
 
@@ -15,7 +17,11 @@ class FooterChipBar extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final chips = ref.watch(footerChipsProvider(dailyNoteId));
+    final chips = watchVaultValue(
+      ref,
+      footerChipsAsyncProvider(dailyNoteId),
+      const <FooterChipRow>[],
+    );
     return Container(
       key: const Key('footer-chip-row'),
       margin: const EdgeInsets.only(top: 12),
