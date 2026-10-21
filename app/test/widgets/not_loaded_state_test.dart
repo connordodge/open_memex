@@ -35,7 +35,6 @@ import 'package:open_memex_app/src/db/graph_reads.dart';
 import 'package:open_memex_app/src/graph/graph_scope.dart';
 import 'package:open_memex_app/src/state/hosted_connection_state.dart';
 import 'package:open_memex_app/src/state/hosted_identity.dart';
-import 'package:open_memex_app/src/state/note_state.dart';
 import 'package:open_memex_app/src/state/tab_not_loaded.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/state/vault_access_state.dart';
@@ -104,10 +103,7 @@ class _Wi101TitledNotes extends _Wi101Notes {
   @override
   Future<Map<String, String>> titlesForIds(List<String> ids) async {
     gate.check();
-    return {
-      for (final id in ids)
-        if (titles[id] case final t?) id: t,
-    };
+    return {for (final id in ids) id: ?titles[id]};
   }
 
   @override
