@@ -49,8 +49,8 @@ requires a server process, which kills the offline-first promise." \
 
 echo "# Local-first principles
 
-User data lives on the user's device. Sync is an enhancement, not a
-requirement. The app must work fully offline forever." \
+User data lives on the user's device. Running a vault server is an
+optional extra, not a requirement. The app must work fully offline forever." \
 | memex add --vault ~/Documents/MyMemex --title "Local-first principles" --tags arch,principles
 
 memex ls --vault ~/Documents/MyMemex
@@ -59,6 +59,8 @@ memex ls --vault ~/Documents/MyMemex
 You can also have Claude create notes once we've wired things up.
 
 ## 4. Configure Claude Desktop
+
+This section points Claude Desktop at a local vault. For a hosted vault on a vault server (a NAS, a Linux box or an always-on Mac), use the `--remote` config in [Hosted vault](hosted-vault.md) instead.
 
 Open your Claude Desktop config:
 
@@ -150,6 +152,6 @@ tail -f ~/Documents/MyMemex/.memex/mcp.log.*
 
 - Single-vault per Claude Desktop config entry. To switch vaults, edit the config and restart.
 - A live editing UI (Flutter macOS app) is shipped — see the main README. The Flutter app and Claude Desktop can be pointed at the same vault simultaneously; SQLite WAL handles concurrent access.
-- No sync. The vault is single-device.
+- This guide uses a local vault: a folder on this Mac's own disk. To use one vault from several devices, run a vault server and connect to the hosted vault; see [Hosted vault](hosted-vault.md).
 - There are no MCP tools to edit, rename or delete an existing note, by design. Claude can create notes, link them, append to daily notes and file excerpts; editing and deleting are yours, through the app or the CLI (`memex update`, `memex rm`).
 - Schema is versioned (currently V5); upgrades run forward migrations when a newer `memex` opens a vault, and older binaries refuse a newer vault. Don't manually edit `memex.db`.
