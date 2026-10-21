@@ -174,7 +174,10 @@ final windowTitleTextProvider = Provider<String>((ref) {
 ///
 /// The later open wins (lead ruling): an open that is superseded by a newer
 /// one (see [supersedeHostedOpens]) before it finishes changes nothing more:
-/// no current vault, last vault, recents, session or row outcome. It
+/// no current vault, last vault, recents or session, and it records no
+/// failure. It clears its own [RecentRowOpening] (so the row does not stay
+/// "connecting" forever), but only while the row still holds the marker
+/// this open wrote: a newer open's state of the same vault is kept. It
 /// returns [VaultOpenCancelled].
 Future<VaultOpenOutcome> openHostedVault(
   Ref ref,
@@ -195,7 +198,11 @@ Future<VaultOpenOutcome> openHostedVault(
     row.state = const RecentRowFailed(failure);
     return failure;
   }
-  row.state = const RecentRowOpening();
+  // A fresh instance, not the const one: a superseded open clears the row
+  // only while it still holds this open's own marker (identity check).
+  // ignore: prefer_const_constructors
+  final opening = RecentRowOpening();
+  row.state = opening;
   final outcome = await _probeAndOpen(
     ref,
     vault,
@@ -203,8 +210,11 @@ Future<VaultOpenOutcome> openHostedVault(
     remember: remember,
     superseded: () => ref.read(_hostedOpenSequenceProvider).latest != ticket,
   );
-  if (outcome is VaultOpenCancelled) return outcome;
-  if (ref.read(_hostedOpenSequenceProvider).latest != ticket) {
+  if (outcome is VaultOpenCancelled ||
+      ref.read(_hostedOpenSequenceProvider).latest != ticket) {
+    // Superseded: clear this open's own opening marker, never a newer
+    // open's state of the same vault.
+    if (identical(row.state, opening)) row.state = null;
     return const VaultOpenCancelled();
   }
   if (outcome is VaultOpenFailure) {
