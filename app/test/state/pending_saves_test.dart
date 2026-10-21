@@ -2200,6 +2200,45 @@ void main() {
     );
 
     test(
+      'an older save that lands after a newer save of the same text queued removes the queued save',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        final first = Completer<void>();
+        h.notes.writeGate = first;
+        await h.typeAndSave('new text');
+        h.ctrl.loadNote(h.stored(_otherId));
+        h.ctrl.loadNote(h.stored(_planId));
+        // The same text typed again can't reach the server and queues.
+        final second = Completer<void>();
+        h.notes.writeGate = second;
+        await h.typeAndSave('new text');
+        h.notes.writeGate = null;
+        h.serverDown();
+        second.complete();
+        await pumpEventQueue();
+        expect(h.queued(_planId)!.text, 'new text');
+        // The status keeps reading unreachable: no retry runs.
+        h.notes
+          ..onOutcome = null
+          ..writeError = null;
+
+        first.complete();
+        await pumpEventQueue();
+
+        expect(h.stored(_planId).contentMd, 'new text');
+        expect(h.stored(_planId).version, 4);
+        expect(h.queue, isEmpty);
+        expect(h.c.read(pendingSaveLabelProvider(_planId)), isNull);
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 4);
+        _expectNoErrorState(h);
+        await h.serverAnswers();
+        expect(h.notes.updatesOf(_planId), hasLength(2));
+      },
+    );
+
+    test(
       'a save that lands while a later save of the note is in flight leaves the editor saving',
       () async {
         final h = await _hosted(_plainVault());
