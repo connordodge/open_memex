@@ -39,6 +39,10 @@ Future<void> _pump(WidgetTester tester, Note note) async {
       ),
     ),
   );
+  // TEST-CHANGE (#78): the review chip reads reviewStateAsyncProvider; one
+  // pump lets that read land (so the virtual Today case's findsNothing is
+  // not just a still-loading read).
+  await tester.pump();
 }
 
 void main() {

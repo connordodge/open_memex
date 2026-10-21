@@ -18,13 +18,17 @@ import 'package:open_memex_app/src/state/vault_state.dart'
     show
         LocalVaultRef,
         currentVaultProvider,
+        linkKindsAsyncProvider,
         linkKindsProvider,
         memexCliProvider,
+        noteTitlesAsyncProvider,
         noteTitlesProvider,
+        selectedNoteAsyncProvider,
         selectedNoteProvider,
         vaultDbProvider,
         vaultRevisionProvider;
 import 'package:open_memex_app/src/theme/app_theme.dart';
+import 'package:open_memex_app/src/vault_access/vault_scoped.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/widgets/atoms.dart';
 import 'package:open_memex_app/src/widgets/editor/daily_date_header.dart';
@@ -160,6 +164,11 @@ ProviderContainer _container(MemexCli? cli, {String? vault = _vaultPath}) {
 // Widget harness (AC 4-7)
 // ---------------------------------------------------------------------------
 
+final _titles = [
+  NoteTitle(id: 'n2', title: 'Other note', updatedAt: 0),
+  NoteTitle(id: 'n3', title: 'Third note', updatedAt: 0),
+];
+
 class _Host {
   int rightToggles = 0;
   int backTaps = 0;
@@ -179,15 +188,23 @@ Future<_Host> _pumpEditor(
   await tester.pumpWidget(
     ProviderScope(
       overrides: [
+        // #78 (D14a): the editor's widgets read the async providers; the
+        // facades keep their overrides for the readers #105 converts.
         selectedNoteProvider.overrideWithValue(note),
+        selectedNoteAsyncProvider.overrideWith(
+          (ref) => VaultScoped(const LocalVaultRef(_vaultPath), note),
+        ),
         currentVaultProvider.overrideWith((ref) => LocalVaultRef(_vaultPath)),
         memexCliProvider.overrideWithValue(cli ?? _FakeCli()),
         vaultDbProvider.overrideWithValue(null),
-        noteTitlesProvider.overrideWithValue([
-          NoteTitle(id: 'n2', title: 'Other note', updatedAt: 0),
-          NoteTitle(id: 'n3', title: 'Third note', updatedAt: 0),
-        ]),
+        noteTitlesProvider.overrideWithValue(_titles),
+        noteTitlesAsyncProvider.overrideWith(
+          (ref) => VaultScoped(const LocalVaultRef(_vaultPath), _titles),
+        ),
         linkKindsProvider.overrideWithValue(const []),
+        linkKindsAsyncProvider.overrideWith(
+          (ref) => const VaultScoped(LocalVaultRef(_vaultPath), <String>[]),
+        ),
       ],
       child: MaterialApp(
         theme: buildOmTheme(),
@@ -617,7 +634,7 @@ void main() {
         // Save indicator still present and reports the hydrated state.
         expect(find.byKey(const Key('save-indicator')), findsOneWidget);
         expect(
-          _in(find.byKey(const Key('save-indicator')), find.text('synced')),
+          _in(find.byKey(const Key('save-indicator')), find.text('saved')),
           findsOneWidget,
         );
 
@@ -875,7 +892,7 @@ void main() {
         expect(cli.calls.single.contentMd, 'new body');
         expect(cli.calls.single.expectedVersion, 7);
         expect(
-          _in(find.byKey(const Key('save-indicator')), find.text('synced')),
+          _in(find.byKey(const Key('save-indicator')), find.text('saved')),
           findsOneWidget,
         );
       },
