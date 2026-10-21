@@ -19,6 +19,7 @@
 mod server;
 
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -294,7 +295,47 @@ struct ProxyState {
     upstream: SocketAddr,
     mode: Arc<AtomicU8>,
     seen: Arc<Mutex<Vec<Seen>>>,
+    canned: Arc<Mutex<Option<Canned>>>,
     http: reqwest::Client,
+}
+
+/// A fixed answer the proxy gives, instead of forwarding, to every request
+/// with HTTP method `method` (the request is still recorded).
+#[derive(Clone, Debug)]
+struct Canned {
+    method: &'static str,
+    status: u16,
+    headers: Vec<(&'static str, String)>,
+    body: String,
+}
+
+impl Canned {
+    fn new(method: &'static str, status: u16, content_type: Option<&str>, body: &str) -> Self {
+        Self {
+            method,
+            status,
+            headers: content_type
+                .map(|ct| vec![("content-type", ct.to_string())])
+                .unwrap_or_default(),
+            body: body.to_string(),
+        }
+    }
+
+    /// A C1 error body `{"error":{"code","message"}}`.
+    fn c1(method: &'static str, status: u16, code: &str, message: &str) -> Self {
+        let body = json!({ "error": { "code": code, "message": message } }).to_string();
+        Self::new(method, status, Some("application/json"), &body)
+    }
+
+    /// A redirect to `location`.
+    fn redirect(method: &'static str, status: u16, location: String) -> Self {
+        Self {
+            method,
+            status,
+            headers: vec![("location", location)],
+            body: String::new(),
+        }
+    }
 }
 
 /// A reverse proxy on `127.0.0.1:0` in front of a [`TestServer`]. Every
@@ -304,6 +345,7 @@ struct Proxy {
     addr: SocketAddr,
     mode: Arc<AtomicU8>,
     seen: Arc<Mutex<Vec<Seen>>>,
+    canned: Arc<Mutex<Option<Canned>>>,
     task: JoinHandle<()>,
 }
 
@@ -341,10 +383,12 @@ impl Proxy {
     async fn start(upstream: SocketAddr) -> Self {
         let mode = Arc::new(AtomicU8::new(Mode::Forward as u8));
         let seen = Arc::new(Mutex::new(Vec::new()));
+        let canned = Arc::new(Mutex::new(None));
         let state = Arc::new(ProxyState {
             upstream,
             mode: mode.clone(),
             seen: seen.clone(),
+            canned: canned.clone(),
             http: client(),
         });
         let app = Router::new().fallback(proxy_handle).with_state(state);
@@ -363,12 +407,19 @@ impl Proxy {
             addr,
             mode,
             seen,
+            canned,
             task,
         }
     }
 
     fn set(&self, mode: Mode) {
         self.mode.store(mode as u8, Ordering::SeqCst);
+    }
+
+    /// Answers every request with `canned`'s method with it (`None`: forward
+    /// again).
+    fn answer(&self, canned: Option<Canned>) {
+        *self.canned.lock().unwrap() = canned;
     }
 
     fn url(&self, path: &str) -> String {
@@ -428,6 +479,18 @@ async fn proxy_handle(State(st): State<Arc<ProxyState>>, req: Request) -> Respon
         body: String::from_utf8_lossy(&bytes).into_owned(),
     });
 
+    let canned = st.canned.lock().unwrap().clone();
+    if let Some(canned) = canned.filter(|c| c.method == parts.method.as_str()) {
+        let mut builder = axum::http::Response::builder().status(canned.status);
+        for (k, v) in canned.headers {
+            builder = builder.header(k, v);
+        }
+        return builder
+            .header("connection", "close")
+            .body(Body::from(canned.body))
+            .expect("canned response");
+    }
+
     let mode = Mode::load(&st.mode);
     let method = reqwest::Method::from_bytes(parts.method.as_str().as_bytes()).expect("method");
     let mut out = st
@@ -485,6 +548,11 @@ impl Bridge {
     /// Spawns the bridge with `TZ=<tz>` and, when `token` is `Some`,
     /// `MEMEX_ACCESS_TOKEN=<token>` set on the child only.
     fn spawn(url: &str, token: Option<&str>, tz: &str) -> Self {
+        Self::spawn_os(url, token.map(OsStr::new), tz)
+    }
+
+    /// [`Bridge::spawn`] with a token that need not be UTF-8.
+    fn spawn_os(url: &str, token: Option<&OsStr>, tz: &str) -> Self {
         let scratch = tempfile::tempdir().expect("bridge scratch dir");
         let stderr_path = scratch.path().join("stderr");
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_memex"));
@@ -563,15 +631,30 @@ impl Bridge {
         }
     }
 
+    /// Writes `line` as it is, plus a newline.
+    fn send_raw(&mut self, line: &str) {
+        let stdin = self.stdin.as_mut().expect("stdin is open");
+        writeln!(stdin, "{line}")
+            .and_then(|()| stdin.flush())
+            .expect("write to the bridge");
+    }
+
     /// The response with `id`; panics if the bridge exits first or [`WAIT`]
     /// passes.
     fn recv(&mut self, id: i64) -> Value {
+        self.recv_where(&format!("a response to {id}"), |v| v["id"] == json!(id))
+    }
+
+    /// The next output line that is JSON matching `wanted`; panics if the
+    /// bridge exits first or [`WAIT`] passes.
+    fn recv_where(&mut self, what: &str, wanted: impl Fn(&Value) -> bool) -> Value {
+        let id = what;
         let started = Instant::now();
         loop {
             match self.lines.recv_timeout(Duration::from_millis(100)) {
                 Ok(line) => {
                     if let Ok(v) = serde_json::from_str::<Value>(&line) {
-                        if v["id"] == json!(id) {
+                        if wanted(&v) {
                             return v;
                         }
                     }
@@ -1240,4 +1323,529 @@ async fn serve_remote_never_prints_the_token() {
         );
         assert_token_not_printed(case, token, &b.stdout(), &b.stderr());
     }
+}
+
+// ---------------------------------------------------------------------------
+// Verify-mode pins: contracts the bridge documents beyond the ACs
+// ---------------------------------------------------------------------------
+
+/// `msg` answers `id` with a JSON-RPC error whose `error.code` is `code`
+/// and whose `error.data.code` (the C1 code) is `c1`.
+fn assert_rpc_error(what: &str, msg: &Value, id: &Value, code: i64, c1: Option<&str>) {
+    assert_eq!(msg["jsonrpc"], "2.0", "{what}: {msg}");
+    assert_eq!(
+        &msg["id"], id,
+        "{what}: the error answers the same id: {msg}"
+    );
+    assert!(msg.get("result").is_none(), "{what}: {msg}");
+    assert_eq!(msg["error"]["code"], json!(code), "{what}: {msg}");
+    assert!(msg["error"]["message"].is_string(), "{what}: {msg}");
+    match c1 {
+        Some(c1) => assert_eq!(msg["error"]["data"]["code"], c1, "{what}: {msg}"),
+        None => assert!(
+            msg["error"]["data"]["code"].is_null(),
+            "{what}: no C1 code: {msg}"
+        ),
+    }
+}
+
+/// Waits `ms` and asserts the bridge is still running.
+fn assert_keeps_running(b: &mut Bridge, what: &str, ms: u64) {
+    assert!(
+        b.wait_exit(Duration::from_millis(ms)).is_none(),
+        "{what}: the bridge keeps running\n{}",
+        b.describe()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn serve_remote_preflight_other_http_errors_exit_1_with_the_server_code() {
+    // (case, canned preflight answer, the C1 code the bridge exits with)
+    let cases = [
+        (
+            "500 with a C1 body",
+            Canned::c1("GET", 500, "internal", "the vault server broke"),
+            "internal",
+        ),
+        (
+            "503 with the server's own code",
+            Canned::c1("GET", 503, "server_busy", "try again later"),
+            "server_busy",
+        ),
+        (
+            "400 invalid_vault_name",
+            Canned::c1("GET", 400, "invalid_vault_name", "bad name"),
+            "invalid_vault_name",
+        ),
+        (
+            "502 with a plain-text body",
+            Canned::new("GET", 502, Some("text/plain"), "bad gateway"),
+            "internal",
+        ),
+        (
+            "500 with no body",
+            Canned::new("GET", 500, None, ""),
+            "internal",
+        ),
+    ];
+    for (case, canned, code) in cases {
+        let (_srv, proxy) = served_work().await;
+        proxy.answer(Some(canned));
+        let mut b = Bridge::spawn(&proxy.url(&mcp_path("work")), Some(TEST_TOKEN), "UTC");
+        assert_eq!(b.exit_code(), Some(1), "{case}\n{}", b.describe());
+        assert_eq!(one_c1_code(&b.stderr()), code, "{case}\n{}", b.describe());
+        assert!(b.stdout().is_empty(), "{case}: {}", b.describe());
+        assert_token_not_printed(case, TEST_TOKEN, &b.stdout(), &b.stderr());
+        let seen = proxy.seen();
+        assert_eq!(
+            seen.len(),
+            1,
+            "{case}: only the preflight is sent: {seen:?}"
+        );
+        assert_eq!(seen[0].path, info_path("work"), "{case}: {seen:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn serve_remote_does_not_follow_a_preflight_redirect() {
+    // The redirect points at a second recording proxy in front of the same
+    // server, so a followed redirect would pass the preflight there.
+    let (srv, proxy) = served_work().await;
+    let elsewhere = Proxy::start(srv.addr()).await;
+    for status in [301, 302, 307, 308] {
+        proxy.answer(Some(Canned::redirect(
+            "GET",
+            status,
+            elsewhere.url(&info_path("work")),
+        )));
+        let mut b = Bridge::spawn(&proxy.url(&mcp_path("work")), Some(TEST_TOKEN), "UTC");
+        assert_eq!(b.exit_code(), Some(1), "HTTP {status}\n{}", b.describe());
+        one_c1_code(&b.stderr());
+        assert_token_not_printed("redirect", TEST_TOKEN, &b.stdout(), &b.stderr());
+    }
+    assert!(
+        elsewhere.seen().is_empty(),
+        "the token never follows a redirect: {:?}",
+        elsewhere.seen()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn serve_remote_does_not_follow_a_redirect_mid_session() {
+    let (srv, proxy) = served_work().await;
+    let elsewhere = Proxy::start(srv.addr()).await;
+    let mut b = Bridge::spawn(&proxy.url(&mcp_path("work")), Some(TEST_TOKEN), "UTC");
+    b.handshake();
+    b.wait_until("notifications/initialized is forwarded", || {
+        !proxy.rpc("notifications/initialized").is_empty()
+    });
+
+    let mut id = 2;
+    for status in [302, 307, 308] {
+        proxy.answer(Some(Canned::redirect(
+            "POST",
+            status,
+            elsewhere.url(&mcp_path("work")),
+        )));
+        b.send(&tool_call(id, "get_vault_settings", json!({})));
+        let failed = b.recv(id);
+        assert_rpc_error(&format!("HTTP {status}"), &failed, &json!(id), -32603, None);
+        id += 1;
+    }
+    assert_keeps_running(&mut b, "after redirects", 300);
+    assert!(
+        elsewhere.seen().is_empty(),
+        "the token never follows a redirect: {:?}",
+        elsewhere.seen()
+    );
+
+    proxy.answer(None);
+    b.send(&tool_call(id, "get_vault_settings", json!({})));
+    result_of(&b.recv(id));
+    b.close_stdin();
+    assert_eq!(b.exit_code(), Some(0), "{}", b.describe());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn serve_remote_mid_session_http_errors_answer_the_same_id_and_keep_running() {
+    let (srv, proxy) = served_work().await;
+    let mut b = Bridge::spawn(&proxy.url(&mcp_path("work")), Some(TEST_TOKEN), "UTC");
+    b.handshake();
+    b.wait_until("notifications/initialized is forwarded", || {
+        !proxy.rpc("notifications/initialized").is_empty()
+    });
+
+    // (case, canned /mcp answer, JSON-RPC error code, C1 code in error.data)
+    let cases = [
+        (
+            "404 vault_not_found (the vault was removed)",
+            Canned::c1("POST", 404, "vault_not_found", "no vault named work"),
+            -32603,
+            Some("vault_not_found"),
+        ),
+        (
+            "500 internal",
+            Canned::c1("POST", 500, "internal", "the vault server broke"),
+            -32603,
+            Some("internal"),
+        ),
+        (
+            "413 with the server's own code",
+            Canned::c1("POST", 413, "payload_too_large", "too big"),
+            -32603,
+            Some("payload_too_large"),
+        ),
+        (
+            "502 with a plain-text body",
+            Canned::new("POST", 502, Some("text/plain"), "bad gateway"),
+            -32603,
+            None,
+        ),
+        (
+            "202 with no body for a request",
+            Canned::new("POST", 202, None, ""),
+            -32603,
+            None,
+        ),
+        (
+            "200 with JSON that is not JSON-RPC",
+            Canned::new("POST", 200, Some("application/json"), r#"{"ok":true}"#),
+            -32603,
+            None,
+        ),
+    ];
+    let mut id = 10;
+    for (case, canned, code, c1) in cases {
+        proxy.answer(Some(canned));
+        b.send(&tool_call(id, "get_vault_settings", json!({})));
+        let failed = b.recv(id);
+        assert_rpc_error(case, &failed, &json!(id), code, c1);
+        assert_keeps_running(&mut b, case, 100);
+        id += 1;
+    }
+
+    // A server error that carries a JSON-RPC reply is passed through as is.
+    let reply = json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": { "code": -32602, "message": "unknown tool" },
+    });
+    proxy.answer(Some(Canned::new(
+        "POST",
+        400,
+        Some("application/json"),
+        &reply.to_string(),
+    )));
+    b.send(&tool_call(id, "no_such_tool", json!({})));
+    assert_eq!(b.recv(id), reply, "a JSON-RPC error body is forwarded");
+    id += 1;
+
+    // Then the server answers normally again.
+    proxy.answer(None);
+    b.send(&tool_call(
+        id,
+        "create_note",
+        json!({ "title": "After the errors", "content_md": "Still here." }),
+    ));
+    let created = tool_payload(&result_of(&b.recv(id)));
+    let note_id = created["note_id"].as_str().expect("note_id").to_string();
+    let on_disk = cli_get(&srv.root().join("work"), &note_id);
+    assert_eq!(on_disk["title"], "After the errors", "{on_disk}");
+    b.close_stdin();
+    assert_eq!(b.exit_code(), Some(0), "{}", b.describe());
+    assert_token_not_printed("mid-session errors", TEST_TOKEN, &b.stdout(), &b.stderr());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn serve_remote_mid_session_outage_error_carries_server_unreachable() {
+    let (_srv, proxy) = served_work().await;
+    let mut b = Bridge::spawn(&proxy.url(&mcp_path("work")), Some(TEST_TOKEN), "UTC");
+    b.handshake();
+    proxy.set(Mode::Down);
+    b.send(&tool_call(2, "get_vault_settings", json!({})));
+    let failed = b.recv(2);
+    assert_rpc_error(
+        "outage",
+        &failed,
+        &json!(2),
+        -32000,
+        Some("server_unreachable"),
+    );
+    // A string id is answered with the same string.
+    b.send(&json!({ "jsonrpc": "2.0", "id": "req-7", "method": "ping" }));
+    let failed = b.recv_where("a response to req-7", |v| v["id"] == "req-7");
+    assert_rpc_error(
+        "outage, string id",
+        &failed,
+        &json!("req-7"),
+        -32000,
+        Some("server_unreachable"),
+    );
+    assert_keeps_running(&mut b, "outage", 300);
+    b.close_stdin();
+    assert_eq!(b.exit_code(), Some(0), "{}", b.describe());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn serve_remote_answers_a_non_json_line_with_a_parse_error_and_does_not_forward_it() {
+    let (_srv, proxy) = served_work().await;
+    let mut b = Bridge::spawn(&proxy.url(&mcp_path("work")), Some(TEST_TOKEN), "UTC");
+    b.handshake();
+    b.wait_until("notifications/initialized is forwarded", || {
+        !proxy.rpc("notifications/initialized").is_empty()
+    });
+    let posts_before = proxy.seen().len();
+
+    b.send_raw("this is not json {");
+    let failed = b.recv_where("a parse error", |v| v.get("error").is_some());
+    assert_rpc_error("non-JSON line", &failed, &Value::Null, -32700, None);
+    assert_keeps_running(&mut b, "after a non-JSON line", 300);
+    assert_eq!(
+        proxy.seen().len(),
+        posts_before,
+        "a non-JSON line is not forwarded: {:?}",
+        proxy.seen()
+    );
+
+    // Blank lines are skipped, not answered or forwarded.
+    b.send_raw("");
+    b.send_raw("   ");
+    b.send(&request(2, "ping", json!({})));
+    result_of(&b.recv(2));
+    assert_eq!(
+        proxy.seen().len(),
+        posts_before + 1,
+        "only the ping is forwarded: {:?}",
+        proxy.seen()
+    );
+    b.close_stdin();
+    assert_eq!(b.exit_code(), Some(0), "{}", b.describe());
+    let errors = b
+        .stdout()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v.get("error").is_some())
+        .count();
+    assert_eq!(errors, 1, "one parse error in all: {}", b.describe());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn serve_remote_forwards_a_batch_as_one_post_and_answers_each_id() {
+    let (_srv, proxy) = served_work().await;
+    let mut b = Bridge::spawn(&proxy.url(&mcp_path("work")), Some(TEST_TOKEN), "UTC");
+    b.handshake();
+    b.wait_until("notifications/initialized is forwarded", || {
+        !proxy.rpc("notifications/initialized").is_empty()
+    });
+    let batch = json!([
+        request(7, "ping", json!({})),
+        { "jsonrpc": "2.0", "method": "notifications/cancelled", "params": { "requestId": 1 } },
+        request(8, "tools/list", json!({})),
+    ]);
+
+    // The server's batch reply comes back as it is, on one line.
+    let reply = json!([
+        { "jsonrpc": "2.0", "id": 7, "result": {} },
+        { "jsonrpc": "2.0", "id": 8, "result": { "tools": [] } },
+    ]);
+    proxy.answer(Some(Canned::new(
+        "POST",
+        200,
+        Some("application/json"),
+        &reply.to_string(),
+    )));
+    let posts_before = proxy.seen().len();
+    b.send(&batch);
+    let got = b.recv_where("the batch reply", Value::is_array);
+    assert_eq!(got, reply, "the batch reply is forwarded on one line");
+    let seen = proxy.seen();
+    assert_eq!(seen.len(), posts_before + 1, "one POST: {seen:?}");
+    assert_eq!(
+        seen.last().unwrap().rpc_body(),
+        batch,
+        "the batch is forwarded unchanged"
+    );
+
+    // In an outage every request in the batch gets its own error; the
+    // notification gets none.
+    proxy.answer(None);
+    proxy.set(Mode::Down);
+    b.send(&batch);
+    for id in [7, 8] {
+        let failed = b.recv(id);
+        assert_rpc_error(
+            "batch in an outage",
+            &failed,
+            &json!(id),
+            -32000,
+            Some("server_unreachable"),
+        );
+    }
+    proxy.set(Mode::Forward);
+    b.send(&request(9, "ping", json!({})));
+    result_of(&b.recv(9));
+    b.close_stdin();
+    assert_eq!(b.exit_code(), Some(0), "{}", b.describe());
+    let errors = b
+        .stdout()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v.get("error").is_some())
+        .count();
+    assert_eq!(errors, 2, "one error per request id: {}", b.describe());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn serve_remote_writes_every_message_of_an_sse_reply_as_a_line() {
+    let (_srv, proxy) = served_work().await;
+    let mut b = Bridge::spawn(&proxy.url(&mcp_path("work")), Some(TEST_TOKEN), "UTC");
+    b.handshake();
+    b.wait_until("notifications/initialized is forwarded", || {
+        !proxy.rpc("notifications/initialized").is_empty()
+    });
+    let progress = json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/progress",
+        "params": { "progressToken": "t", "progress": 1 },
+    });
+    let result = json!({ "jsonrpc": "2.0", "id": 5, "result": { "from": "sse" } });
+    let sse = format!(
+        ": a comment\nevent: message\nid: 1\ndata: {progress}\n\nevent: message\ndata:{result}\n\n"
+    );
+    proxy.answer(Some(Canned::new(
+        "POST",
+        200,
+        Some("text/event-stream"),
+        &sse,
+    )));
+    b.send(&request(5, "ping", json!({})));
+    let got = b.recv_where("the progress notification", |v| {
+        v["method"] == "notifications/progress"
+    });
+    assert_eq!(got, progress);
+    assert_eq!(b.recv(5), result, "the SSE reply is written as one line");
+    proxy.answer(None);
+    b.close_stdin();
+    assert_eq!(b.exit_code(), Some(0), "{}", b.describe());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn serve_remote_url_rejects_credentials_query_fragment_and_other_schemes() {
+    let (_srv, proxy) = served_work().await;
+    let host = proxy.addr.to_string();
+    let too_long = "a".repeat(65);
+    let cases = [
+        format!("http://user:secret@{host}/vaults/work/mcp"),
+        format!("http://user@{host}/vaults/work/mcp"),
+        format!("http://{host}/vaults/work/mcp?x=1"),
+        format!("http://{host}/vaults/work/mcp?"),
+        format!("http://{host}/vaults/work/mcp#frag"),
+        format!("ftp://{host}/vaults/work/mcp"),
+        format!("ws://{host}/vaults/work/mcp"),
+        "file:///vaults/work/mcp".to_string(),
+        format!("http://{host}/vaults/a.b/mcp"),
+        format!("http://{host}/vaults/a%20b/mcp"),
+        format!("http://{host}/vaults/a/b/mcp"),
+        format!("http://{host}/vaults/{too_long}/mcp"),
+    ];
+    for url in cases {
+        let mut b = Bridge::spawn(&url, Some(TEST_TOKEN), "UTC");
+        assert_eq!(
+            b.exit_code(),
+            Some(2),
+            "--remote {url:?} is a usage error (exit 2)\n{}",
+            b.describe()
+        );
+        assert!(!b.stderr().trim().is_empty(), "{url:?}: explained");
+        assert!(b.stdout().is_empty(), "{url:?}: {}", b.describe());
+        assert_token_not_printed(&url, TEST_TOKEN, &b.stdout(), &b.stderr());
+    }
+    assert!(
+        proxy.seen().is_empty(),
+        "a usage error sends no request: {:?}",
+        proxy.seen()
+    );
+
+    // Accepted URLs get past the parser: https, a 64-character name and
+    // every allowed name character.
+    let longest = "a".repeat(64);
+    let accepted = [
+        (
+            format!("https://127.0.0.1:{}/vaults/work/mcp", free_port()),
+            "server_unreachable",
+        ),
+        (proxy.url(&mcp_path(&longest)), "vault_not_found"),
+        (proxy.url(&mcp_path("A-z_0-9")), "vault_not_found"),
+    ];
+    for (url, code) in accepted {
+        let mut b = Bridge::spawn(&url, Some(TEST_TOKEN), "UTC");
+        assert_eq!(b.exit_code(), Some(1), "{url:?}\n{}", b.describe());
+        assert_eq!(one_c1_code(&b.stderr()), code, "{url:?}\n{}", b.describe());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn serve_remote_trims_the_token_and_treats_whitespace_as_missing() {
+    let (_srv, proxy) = served_work().await;
+    let url = proxy.url(&mcp_path("work"));
+    for (case, token) in [("spaces", "   "), ("tab and newline", "\t\n")] {
+        let mut b = Bridge::spawn(&url, Some(token), "UTC");
+        assert_eq!(b.exit_code(), Some(1), "{case}\n{}", b.describe());
+        assert_eq!(
+            one_c1_code(&b.stderr()),
+            "access_token_missing",
+            "{case}\n{}",
+            b.describe()
+        );
+    }
+    assert!(proxy.seen().is_empty(), "{:?}", proxy.seen());
+
+    // A token with surrounding whitespace (a pasted line) is sent trimmed.
+    let padded = format!("  {TEST_TOKEN}\n");
+    let mut b = Bridge::spawn(&url, Some(&padded), "UTC");
+    b.handshake();
+    b.close_stdin();
+    assert_eq!(b.exit_code(), Some(0), "{}", b.describe());
+    let seen = proxy.seen();
+    assert!(!seen.is_empty());
+    for s in &seen {
+        assert_eq!(
+            s.header_values("authorization"),
+            vec![format!("Bearer {TEST_TOKEN}").as_str()],
+            "{s:?}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn serve_remote_rejects_a_token_that_is_not_a_header_value() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let (_srv, proxy) = served_work().await;
+    let url = proxy.url(&mcp_path("work"));
+    let control = "wi95-token-with-a\u{1}control-char";
+    let cases: [(&str, &OsStr); 2] = [
+        ("not UTF-8", OsStr::from_bytes(b"wi95-token-\xff\xfe-bytes")),
+        ("a control character", OsStr::new(control)),
+    ];
+    for (case, token) in cases {
+        let mut b = Bridge::spawn_os(&url, Some(token), "UTC");
+        assert_eq!(b.exit_code(), Some(1), "{case}\n{}", b.describe());
+        assert_eq!(
+            one_c1_code(&b.stderr()),
+            "invalid_argument",
+            "{case}\n{}",
+            b.describe()
+        );
+        assert!(b.stdout().is_empty(), "{case}: {}", b.describe());
+        if let Some(token) = token.to_str() {
+            assert_token_not_printed(case, token, &b.stdout(), &b.stderr());
+        }
+    }
+    assert!(
+        proxy.seen().is_empty(),
+        "a bad token sends no request: {:?}",
+        proxy.seen()
+    );
 }
