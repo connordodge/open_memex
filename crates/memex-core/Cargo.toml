@@ -20,6 +20,7 @@ serde_yaml = { workspace = true }
 regex = { workspace = true }
 chrono = { workspace = true }
 strsim = { workspace = true }
+libc = "0.2.186"
 
 [dev-dependencies]
 tempfile = { workspace = true }

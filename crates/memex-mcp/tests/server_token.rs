@@ -827,3 +827,124 @@ fn readable_by_others_is_none_when_the_file_cannot_be_read() {
         eprintln!("skipped the locked-directory case: metadata is readable here (root?)");
     }
 }
+
+// ---------- Mutation round: root check and token write faults ----------
+
+/// The one C1 line of a `memex serve` run that failed at startup.
+fn c1_error(out: &server::Finished) -> (String, String) {
+    assert_eq!(out.code, Some(1), "exit 1\n{}", out.describe());
+    let lines = out.stderr_lines();
+    assert_eq!(lines.len(), 1, "one stderr line\n{}", out.describe());
+    let v: Value = serde_json::from_str(lines[0])
+        .unwrap_or_else(|e| panic!("stderr is C1 JSON ({e})\n{}", out.describe()));
+    (
+        v["error"]["code"].as_str().unwrap_or_default().to_string(),
+        v["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+    )
+}
+
+#[test]
+fn a_missing_root_is_invalid_argument_and_an_unreadable_one_is_internal() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("missing-root");
+    let regular_file = dir.path().join("root-is-a-file");
+    std::fs::write(&regular_file, "not a directory").unwrap();
+    // A path through a regular file: metadata fails with ENOTDIR, an I/O
+    // error that is not "not found".
+    let through_file = regular_file.join("sub");
+    let run = |root: &Path| {
+        ServeCommand::new(&["--root", root.to_str().unwrap(), "--listen", ANY_PORT])
+            .env(TOKEN_ENV, "root-check-env-token-5e4d")
+            .run_within(LIMIT)
+    };
+
+    let (code, message) = c1_error(&run(&missing));
+    assert_eq!(code, "invalid_argument", "a missing --root: {message}");
+    assert!(
+        message.contains("does not exist"),
+        "a missing --root says it does not exist: {message}"
+    );
+
+    let (code, message) = c1_error(&run(&regular_file));
+    assert_eq!(code, "invalid_argument", "a file --root: {message}");
+    assert!(message.contains("is not a directory"), "{message}");
+
+    let (code, message) = c1_error(&run(&through_file));
+    assert_eq!(
+        code, "internal",
+        "an --root that can't be read (not missing) is an internal error: {message}"
+    );
+    assert!(
+        message.contains("read --root") && !message.contains("does not exist"),
+        "an unreadable --root is reported as a read failure, not as missing: {message}"
+    );
+    assert!(!missing.exists(), "a missing --root is not created");
+}
+
+#[test]
+fn a_token_write_that_fails_after_creating_the_temp_file_removes_it() {
+    // RLIMIT_FSIZE 0 (SIGXFSZ ignored) lets the child create the temp file
+    // but makes writing the token into it fail with EFBIG: the write-error
+    // branch after a successful create. Set on a `sh` wrapper so it never
+    // touches this test process.
+    let dir = tempfile::tempdir().unwrap();
+    let mut child = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(r#"trap '' XFSZ; ulimit -f 0 || exit 99; exec "$0" "$@""#)
+        .arg(env!("CARGO_BIN_EXE_memex"))
+        .args([
+            "serve",
+            "--root",
+            dir.path().to_str().unwrap(),
+            "--listen",
+            ANY_PORT,
+        ])
+        .env_remove(TOKEN_ENV)
+        .env_remove("RUST_LOG")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn memex serve under sh");
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if started.elapsed() > LIMIT {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("memex serve kept running with a 0-byte file size limit");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut child.stderr.take().unwrap(), &mut stderr).unwrap();
+    let out = server::Finished {
+        code: status.code(),
+        stdout: String::new(),
+        stderr,
+    };
+    let (code, message) = c1_error(&out);
+    assert_eq!(code, "internal", "{message}");
+    assert!(
+        message.contains("write access token file"),
+        "the token write itself failed: {message}"
+    );
+    assert!(
+        !Regex::new(r"[0-9a-f]{64}").unwrap().is_match(&message),
+        "the error never carries the token: {message}"
+    );
+    assert!(
+        dir.path().join(".memex").is_dir(),
+        "the .memex dir was made"
+    );
+    assert_eq!(
+        memex_entries(dir.path()),
+        Vec::<String>::new(),
+        "the half-written temp file is removed and no access-token is left"
+    );
+}
