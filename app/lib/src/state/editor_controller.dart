@@ -117,6 +117,18 @@ class EditorController extends StateNotifier<EditorStateValue> {
   /// never queues its older text (lead ruling, #102).
   final Map<(HostedVaultRef, String), int> _latestSent = {};
 
+  /// The numbers of the plain saves and saves elsewhere of each hosted
+  /// (vault, note id) still in flight.
+  final Map<(HostedVaultRef, String), Set<int>> _inFlight = {};
+
+  /// The number of the write that queued each hosted (vault, note id)'s
+  /// entry (see [_waitsForOlderWrite]).
+  final Map<(HostedVaultRef, String), int> _queuedBy = {};
+
+  /// The queued saves whose retry waits for an older write of the note
+  /// still in flight; it runs once that write's outcome is applied.
+  final Set<(HostedVaultRef, String)> _deferred = {};
+
   /// Set (to the base version) after a daily note's save and its merged
   /// retry both conflicted, or text was typed during a merged save: the next
   /// save goes straight to the merge. Null when the next save is plain.
@@ -299,11 +311,19 @@ class EditorController extends StateNotifier<EditorStateValue> {
           return;
         }
         _debounce?.cancel();
+        if (_waitsForOlderWrite(hosted, id)) {
+          // An older write of the note is still in flight: the retry goes
+          // once its outcome is applied.
+          _deferred.add((hosted, id));
+          state = state.copyWith(status: SaveStatus.dirty, clearError: true);
+          return;
+        }
         return _retry(hosted, access, _queue.entryFor(hosted, id)!);
       }
     }
     final seq = _loadSeq;
     final sendSeq = hosted == null ? 0 : _sent(hosted, id);
+    if (hosted != null) _sending(hosted, id, sendSeq);
     var merging = _mergeBase != null;
     state = state.copyWith(status: SaveStatus.saving, clearError: true);
     try {
@@ -344,6 +364,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
             hosted,
             id,
             sendSeq,
+            sent: local,
             baseVersion: version,
             savedVersion: saved.result.version,
             merged: merging,
@@ -365,13 +386,36 @@ class EditorController extends StateNotifier<EditorStateValue> {
         // blocks, so the next save merges again from the same base.
         _mergeBase = version;
         state = state.copyWith(status: SaveStatus.dirty);
-      } else {
+      } else if (merging ||
+          (state.contentMd == local && state.title == rawTitle)) {
         state = state.copyWith(
           contentMd: merging ? saved.body : null,
           status: SaveStatus.clean,
           lastSavedVersion: saved.result.version,
           clearError: true,
         );
+      } else if (_loadSeq != seq &&
+          state.status == SaveStatus.clean &&
+          state.lastSavedVersion == version) {
+        // Opened again (from the server copy) while this save was in
+        // flight, and not edited since: the editor shows what it saved.
+        state = state.copyWith(
+          title: rawTitle,
+          contentMd: local,
+          lastSavedVersion: saved.result.version,
+          clearError: true,
+        );
+      } else if (state.status != SaveStatus.saving) {
+        // Edited while this save was in flight (also after opening the
+        // note again): the newer text stays unsaved, on the version this
+        // save stored when it was based on the same one, and saves next.
+        state = state.copyWith(
+          status: SaveStatus.dirty,
+          lastSavedVersion: state.lastSavedVersion == version
+              ? saved.result.version
+              : null,
+        );
+        if (_debounce?.isActive != true) _scheduleSave();
       }
       _ref.read(vaultRevisionProvider.notifier).state++;
     } on MemexException catch (e) {
@@ -424,6 +468,8 @@ class EditorController extends StateNotifier<EditorStateValue> {
         status: SaveStatus.error,
         errorMessage: e.toString(),
       );
+    } finally {
+      if (hosted != null) _settled(hosted, id, sendSeq);
     }
   }
 
@@ -448,23 +494,14 @@ class EditorController extends StateNotifier<EditorStateValue> {
     int sendSeq,
     Object error,
   ) {
-    if (_supersededBy(vault, id, sendSeq)) {
-      // A later write of this note was sent after this one: its text is
-      // newer, and its outcome decides (saved, or queued itself). This
-      // older text is never queued and never fills the editor.
-      if (_queue.entryFor(vault, id) != null && _connected(vault)) {
-        _retryQueued(vault);
-      }
-      return;
-    }
+    // A later write of this note was sent after this one: its text is
+    // newer, and its outcome decides (saved, or queued itself). This older
+    // text is never queued and never fills the editor. (Every entry of the
+    // note queued after this save was sent was queued by such a later
+    // write, so an entry is never already there below.)
+    if (_supersededBy(vault, id, sendSeq)) return;
     final shown = _activeNoteId == id && _virtualDate == null;
     final open = shown && _loadSeq == seq;
-    if (!open && _queue.entryFor(vault, id) != null) {
-      // Queued meanwhile (e.g. by a save after leaving a resolved Today
-      // note): the entry stays.
-      if (_connected(vault)) _retryQueued(vault);
-      return;
-    }
     // Opened again (from the server copy) while this save was in flight,
     // with nothing saved since: the editor shows the queued text instead,
     // as opening a queued note does (AC6).
@@ -481,6 +518,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
       now: _ref.read(clockProvider).now(),
       serverName: _serverNameOf(error, vault),
     );
+    _queuedBy[(vault, id)] = sendSeq;
     if (open) {
       // The retry merges from the base itself.
       _mergeBase = null;
@@ -615,10 +653,50 @@ class EditorController extends StateNotifier<EditorStateValue> {
         if (_drafts.containsKey(date)) unawaited(_createDaily(date));
         continue;
       }
-      // The retry sends the open note's latest text: no second save.
-      if (id == _activeNoteId && _virtualDate == null) _debounce?.cancel();
-      unawaited(_retry(vault, access, q));
+      _retryNow(vault, access, q);
     }
+  }
+
+  /// Retries queued save [q] of [vault] now, or, while an older write of
+  /// its note is still in flight, once that write's outcome is applied
+  /// ([_settled]).
+  void _retryNow(HostedVaultRef vault, VaultAccess access, QueuedSave q) {
+    final id = q.save.noteId;
+    if (_waitsForOlderWrite(vault, id)) {
+      _deferred.add((vault, id));
+      return;
+    }
+    // The retry sends the open note's latest text: no second save.
+    if (id == _activeNoteId && _virtualDate == null) _debounce?.cancel();
+    unawaited(_retry(vault, access, q));
+  }
+
+  /// True while a write of note [id] in [vault] sent before the write that
+  /// queued its entry is still in flight: that write's success may move the
+  /// entry onto the version it saved ([_afterSave]), so the entry's retry
+  /// waits for it instead of conflicting with it.
+  bool _waitsForOlderWrite(HostedVaultRef vault, String id) {
+    final by = _queuedBy[(vault, id)] ?? 0;
+    return _inFlight[(vault, id)]?.any((s) => s < by) ?? false;
+  }
+
+  /// Write [sendSeq] of note [id] in [vault] is done (its outcome applied):
+  /// a retry of the note's entry that waited for it runs now when the
+  /// server's status reads connected (the next recovery retries otherwise).
+  void _settled(HostedVaultRef vault, String id, int sendSeq) {
+    final key = (vault, id);
+    final pending = _inFlight[key];
+    if (pending != null && pending.remove(sendSeq) && pending.isEmpty) {
+      _inFlight.remove(key);
+    }
+    if (!mounted || _waitsForOlderWrite(vault, id)) return;
+    if (!_deferred.remove(key)) return;
+    final q = _queue.entryFor(vault, id);
+    if (q == null || !_connected(vault)) return;
+    if (_ref.read(currentVaultProvider) != vault) return;
+    final access = _ref.read(vaultAccessProvider);
+    if (access == null || !access.canWrite) return;
+    _retryNow(vault, access, q);
   }
 
   /// Follows [vault]'s server connection status: on its return to
@@ -676,33 +754,41 @@ class EditorController extends StateNotifier<EditorStateValue> {
   int _sent(HostedVaultRef vault, String id) =>
       _latestSent[(vault, id)] = ++_sendSeq;
 
+  /// Write [sendSeq] of note [id] in [vault] is in flight until
+  /// [_settled].
+  void _sending(HostedVaultRef vault, String id, int sendSeq) =>
+      _inFlight.putIfAbsent((vault, id), () => {}).add(sendSeq);
+
   /// True when a write of note [id] in [vault] was sent after write
   /// [sendSeq].
   bool _supersededBy(HostedVaultRef vault, String id, int sendSeq) =>
       (_latestSent[(vault, id)] ?? 0) > sendSeq;
 
-  /// Hosted save [sendSeq] of note [id] in [vault], sent on [baseVersion],
-  /// saved at [savedVersion] ([merged]: through the daily merge). A queued
-  /// entry of the note older than it is superseded and removed (its label,
-  /// ring and held state go, and it never retries). An entry a later save
-  /// queued holds newer text: it stays, moved onto [savedVersion] when it
-  /// was based on [baseVersion] and this save did not merge. Returns true
-  /// when an entry stays queued.
+  /// Hosted save [sendSeq] of note [id] in [vault], sent with [sent] on
+  /// [baseVersion], saved at [savedVersion] ([merged]: through the daily
+  /// merge). A queued entry of the note holding [sent] is saved and
+  /// removed. Any other entry stays: one a later write queued holds newer
+  /// text and moves onto [savedVersion] when it was based on [baseVersion]
+  /// and this save did not merge; an older one keeps its base, so its retry
+  /// meets this save's text as a conflict (a daily note merges). Returns
+  /// true when an entry stays queued.
   bool _afterSave(
     HostedVaultRef vault,
     String id,
     int sendSeq, {
+    required String sent,
     required int baseVersion,
     required int savedVersion,
     required bool merged,
   }) {
     final entry = _queue.entryFor(vault, id);
     if (entry == null) return false;
-    if (!_supersededBy(vault, id, sendSeq)) {
+    if (entry.save.text == sent) {
       _queue.remove(vault, id);
       return false;
     }
-    if (!merged && entry.save.baseVersion == baseVersion) {
+    final later = (_queuedBy[(vault, id)] ?? 0) > sendSeq;
+    if (later && !merged && entry.save.baseVersion == baseVersion) {
       _queue.rebase(vault, id, savedVersion);
     }
     return true;
@@ -1005,21 +1091,28 @@ class EditorController extends StateNotifier<EditorStateValue> {
     if (access == null) return;
     final hosted = _hostedVault();
     final sendSeq = hosted == null ? 0 : _sent(hosted, id);
+    if (hosted != null) _sending(hosted, id, sendSeq);
     try {
       final result = await access.notes.updateNote(
         noteId: id,
         expectedVersion: version,
         contentMd: content,
       );
-      if (hosted != null) {
-        _afterSave(
-          hosted,
-          id,
-          sendSeq,
-          baseVersion: version,
-          savedVersion: result.version,
-          merged: false,
-        );
+      if (hosted != null &&
+          _afterSave(
+            hosted,
+            id,
+            sendSeq,
+            sent: content,
+            baseVersion: version,
+            savedVersion: result.version,
+            merged: false,
+          ) &&
+          _activeNoteId == id &&
+          _virtualDate == null) {
+        // Opened since, with a queued save: the editor keeps its base.
+        final base = _queue.entryFor(hosted, id)!.save.baseVersion;
+        state = state.copyWith(lastSavedVersion: base);
       }
     } on Exception catch (e) {
       if (hosted != null &&
@@ -1034,9 +1127,12 @@ class EditorController extends StateNotifier<EditorStateValue> {
           now: _ref.read(clockProvider).now(),
           serverName: _serverNameOf(e, hosted),
         );
+        _queuedBy[(hosted, id)] = sendSeq;
         if (_connected(hosted)) _retryQueued(hosted);
       }
       return;
+    } finally {
+      if (hosted != null) _settled(hosted, id, sendSeq);
     }
     _ref.read(vaultRevisionProvider.notifier).state++;
   }

@@ -1957,5 +1957,122 @@ void main() {
         expect(h.queue, isEmpty);
       },
     );
+
+    // Lead ruling (fix round 3): a successful save of a note never drops a
+    // queued edit whose text it did not send.
+    test(
+      'a save elsewhere that succeeds while an older edit of the note is queued keeps the queued text and it still saves',
+      () async {
+        final db = _plainVault()
+          ..seedNote(
+            id: _agentDailyId,
+            title: _today,
+            content: assembleDailyBody('Agent saw it.\n', const []),
+            role: 'daily',
+            version: 1,
+          );
+        final cli = FakeMemexCli()
+          ..onUpdateWrites(db)
+          ..onAddDailyCreatesOnce(db);
+        final h = await _hosted(db, cli: cli);
+        // Today's note, opened as a note, queues an edit.
+        h.ctrl.loadNote(h.stored(_agentDailyId));
+        final mine = assembleDailyBody('Mine.\n', const []);
+        h.serverDown();
+        await h.typeAndSave(mine);
+        expect(h.queued(_agentDailyId)!.text, mine);
+        // The status changes only when the test sets it.
+        h.notes
+          ..onOutcome = null
+          ..writeError = null;
+
+        // The virtual Today note's create answers daily_note_exists after
+        // the person left it: its text is saved elsewhere, and lands.
+        h.c.read(tabsProvider.notifier).openToday(date: _today);
+        h.ctrl.loadNote(virtualTodayNote(_today));
+        final create = Completer<void>();
+        h.notes.writeGate = create;
+        await h.typeAndSave('Morning pages');
+        h.ctrl.loadNote(h.stored(_planId));
+        h.notes.writeGate = null;
+        create.complete();
+        await pumpEventQueue();
+        expect(h.notes.updatesOf(_agentDailyId), hasLength(2));
+        expect(h.stored(_agentDailyId).version, 2);
+
+        expect(h.queued(_agentDailyId)!.text, mine);
+        expect(h.queued(_agentDailyId)!.baseVersion, 1);
+        expect(h.c.read(notePendingSaveProvider(_agentDailyId)), isTrue);
+
+        // The server answers: the queued edit retries, meets the saved
+        // text as a conflict and merges (a daily note).
+        setHostedStatus(h.c, HostedConnectionStatus.connected);
+        await pumpEventQueue();
+
+        expect(
+          splitDailyBody(h.stored(_agentDailyId).contentMd).person,
+          contains('Mine.'),
+        );
+        expect(h.queue, isEmpty);
+      },
+    );
+
+    test(
+      'a save elsewhere that succeeds after a later save of the same note queued moves the queued save onto its version before the retry',
+      () async {
+        final db = _plainVault();
+        final create = Completer<void>();
+        final cli = FakeMemexCli()
+          ..onUpdateWrites(db)
+          ..onAddDailyCreates(db, gate: create);
+        final h = await _hosted(db, cli: cli);
+        h.c.read(tabsProvider.notifier).openToday(date: _today);
+        h.ctrl.loadNote(virtualTodayNote(_today));
+        await h.typeAndSave('Morning pages');
+        // Typed while the create is in flight, then the person leaves.
+        h.ctrl.onContentChanged('Morning pages\nMore.');
+        h.ctrl.loadNote(h.stored(_planId));
+
+        // The create lands; the save elsewhere of the typed text is held.
+        final elsewhere = Completer<void>();
+        h.notes.writeGate = elsewhere;
+        create.complete();
+        await pumpEventQueue();
+        expect(h.notes.updatesOf(createdDailyId), [
+          'updateNote:$createdDailyId@1',
+        ]);
+
+        // The person opens the new note; their edit can't reach the server
+        // and queues on version 1.
+        h.notes.writeGate = null;
+        h.ctrl.loadNote(h.stored(createdDailyId));
+        final mine = assembleDailyBody('Mine.\n', const []);
+        h.serverDown();
+        await h.typeAndSave(mine);
+        expect(h.queued(createdDailyId)!.text, mine);
+        expect(h.queued(createdDailyId)!.baseVersion, 1);
+
+        // The save elsewhere then lands, and its outcome reads connected.
+        h.notes.writeError = null;
+        elsewhere.complete();
+        await pumpEventQueue();
+
+        // The queued edit retried once, on the version the save elsewhere
+        // stored: no conflict.
+        expect(h.notes.updatesOf(createdDailyId), [
+          'updateNote:$createdDailyId@1',
+          'updateNote:$createdDailyId@1',
+          'updateNote:$createdDailyId@2',
+        ]);
+        expect(h.notes.updateBodies.last, mine);
+        expect(h.stored(createdDailyId).contentMd, mine);
+        expect(h.stored(createdDailyId).version, 3);
+        expect(h.queue, isEmpty);
+        expect(h.state.contentMd, mine);
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 3);
+        _expectNoErrorState(h);
+      },
+    );
   });
 }
