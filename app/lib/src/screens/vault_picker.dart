@@ -41,9 +41,9 @@ class _VaultPickerScreenState extends ConsumerState<VaultPickerScreen> {
     super.initState();
     // Launch reopen (#92): with a last vault and no vault open, reopen it
     // once through `memex vault check`, after the first frame.
-    final last = ref.read(settingsProvider).lastVault;
+    final last = ref.read(settingsProvider).lastVaultRef;
     if (last != null && ref.read(currentVaultProvider) == null) {
-      _launchPath = last;
+      _launchPath = last.localPath;
       WidgetsBinding.instance.addPostFrameCallback((_) => _launch());
     }
   }

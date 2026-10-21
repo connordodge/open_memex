@@ -7,6 +7,7 @@ import '../cli/vault_cli.dart';
 import '../db.dart';
 import '../memex_cli.dart';
 import 'settings.dart';
+import 'vault_open_hosted.dart';
 import 'vault_state.dart';
 
 /// What opening or creating a vault gave (D12). Data only; #92 and #96 add
@@ -72,17 +73,17 @@ class VaultOpenController {
   ///
   /// With a vault open this changes nothing and completes [VaultOpened] with
   /// that vault. With no vault open and no last vault it completes
-  /// [NoVaultToReopen]. Otherwise it opens the last vault as a
-  /// [LocalVaultRef] through `memex vault check`, as a vault pill does (no
-  /// folder shape check), and completes with that open's outcome. Launch
-  /// writes no settings: the last vault and the recents order stay as they
-  /// were.
+  /// [NoVaultToReopen]. Otherwise it opens the last vault: a local one
+  /// through `memex vault check`, as a vault pill does (no folder shape
+  /// check), a hosted one through the hosted open path (#96). Completes with
+  /// that open's outcome. Launch writes no settings: the last vault and the
+  /// recents order stay as they were.
   Future<VaultOpenOutcome> launchReopen() async {
     final current = _ref.read(currentVaultProvider);
     if (current != null) return VaultOpened(current);
-    final last = _ref.read(settingsProvider).lastVault;
+    final last = _ref.read(settingsProvider).lastVaultRef;
     if (last == null) return const NoVaultToReopen();
-    return _openVault(LocalVaultRef(last), checkFolder: false, remember: false);
+    return _openVault(last, checkFolder: false, remember: false);
   }
 
   /// Opens [vault] after checking it: a local folder must hold
@@ -105,8 +106,8 @@ class VaultOpenController {
   }) async {
     switch (vault) {
       case HostedVaultRef():
-        // No hosted ref can be created yet (#96 opens them).
-        return const VaultOpenFailure('Hosted vaults cannot be opened yet.');
+        // The server checks the vault; no folder, no CLI (D19, Req 34).
+        return openHostedVault(_ref, vault, remember: remember);
       case LocalVaultRef(:final path):
         if (checkFolder && !VaultDb.isVault(path)) {
           return VaultOpenFailure(
@@ -192,11 +193,12 @@ class VaultOpenController {
   /// [VaultOpenCancelled] and changes nothing. Otherwise opens [vault] through
   /// the [openVault] path with `memex vault check` but without the folder
   /// shape check (pills have never checked it), and clears the selected note
-  /// on [VaultOpened]. Shows nothing: the caller presents a refusal (see
+  /// on [VaultOpened]. A [HostedVaultRef] opens through the hosted open path
+  /// (#96). Shows nothing: the caller presents a refusal (see
   /// `showVaultOpenRefusal`). Completes with the open's outcome.
   Future<VaultOpenOutcome> switchToVault(
     BuildContext context,
-    LocalVaultRef vault,
+    VaultRef vault,
   ) async {
     if (!await _ref.read(leaveVaultGuardProvider)(context)) {
       return const VaultOpenCancelled();
@@ -208,10 +210,17 @@ class VaultOpenController {
     return outcome;
   }
 
+  /// The open hosted [vault] went away while open (Req 53a): see
+  /// [hostedVaultGone].
+  Future<void> hostedVaultGoneWhileOpen(HostedVaultRef vault) =>
+      hostedVaultGone(_ref, vault);
+
   Future<VaultOpenOutcome> _open(
     LocalVaultRef vault, {
     required bool remember,
   }) async {
+    // A hosted open still running must not replace this vault later.
+    supersedeHostedOpens(_ref);
     if (remember) {
       await _ref.read(settingsProvider.notifier).rememberVault(vault.path);
     }

@@ -9,6 +9,7 @@ import 'package:open_memex_app/src/memex_cli.dart';
 import 'package:open_memex_app/src/state/clock.dart';
 import 'package:open_memex_app/src/state/settings.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
+import 'package:open_memex_app/src/state/token_store.dart';
 import 'package:open_memex_app/src/state/ui_state_store.dart';
 import 'package:open_memex_app/src/state/vault_open_controller.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
@@ -18,6 +19,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../support/fake_clock.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
+import '../support/token_store_fakes.dart';
 import '../support/vault_folders.dart';
 
 /// App state with a fake CLI and database. The last vault (if any) is open.
@@ -278,14 +280,18 @@ void main() {
 
   group('controller contracts (verify)', () {
     test(
-      'openVault of a HostedVaultRef fails as not openable yet and changes nothing',
+      'openVault of a HostedVaultRef on an unsaved server fails and changes nothing',
       () async {
+        // #96 TEST-CHANGE: hosted vaults open now (#96), so this pins a
+        // hosted ref whose server is not saved (no saved servers here)
+        // instead of the "cannot be opened yet" placeholder copy.
         final open = createVaultFolder('om69_open_');
         final cli = _initCli();
         final c = await _app(
           cli: cli,
           lastVault: open.path,
           recents: [open.path],
+          overrides: [tokenStoreProvider.overrideWithValue(FakeTokenStore())],
         );
         final hosted = HostedVaultRef(['srv', '1'].join('-'), 'work');
 
@@ -293,14 +299,7 @@ void main() {
             .read(vaultOpenControllerProvider)
             .openVault(hosted);
 
-        expect(
-          outcome,
-          isA<VaultOpenFailure>().having(
-            (o) => o.message,
-            'message',
-            'Hosted vaults cannot be opened yet.',
-          ),
-        );
+        expect(outcome, isA<VaultOpenFailure>());
         expect(c.read(currentVaultProvider), LocalVaultRef(open.path));
         expect(c.read(settingsProvider).lastVault, open.path);
         expect(c.read(settingsProvider).recentVaults, [open.path]);

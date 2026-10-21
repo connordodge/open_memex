@@ -5,15 +5,45 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 
+import 'app_support_dir.dart';
 import 'vault_state.dart';
 
 /// The UI state store of the open vault (Req 35):
-/// `<vault>/.memex/ui_state.json` for a local vault. Null with no vault
-/// open, and for a hosted vault until it gets its own store (D19).
+/// `<vault>/.memex/ui_state.json` for a local vault; for a hosted vault a
+/// store under `<app support>/hosted/<serverId>/<vaultName>` (D19), so two
+/// vaults of one name on different servers keep separate state and nothing
+/// is written in any vault folder. Null with no vault open, and for a
+/// hosted vault while no app-support dir is set (`appSupportDirProvider`
+/// not overridden, as in tests that never open one through `main()`).
 final uiStateStoreProvider = Provider<UiStateStore?>((ref) {
-  final path = ref.watch(currentVaultProvider).localPath;
-  return path == null ? null : UiStateStore(vaultPath: path);
+  final vault = ref.watch(currentVaultProvider);
+  switch (vault) {
+    case null:
+      return null;
+    case LocalVaultRef(:final path):
+      return UiStateStore(vaultPath: path);
+    case HostedVaultRef(:final serverId, :final vaultName):
+      final String appSupport;
+      try {
+        appSupport = ref.watch(appSupportDirProvider);
+      } on UnimplementedError {
+        return null;
+      }
+      return UiStateStore(
+        vaultPath: hostedUiStateDir(appSupport, serverId, vaultName),
+      );
+  }
 });
+
+/// `<appSupport>/hosted/<serverId>/<vaultName>`, each name one encoded path
+/// segment.
+String hostedUiStateDir(String appSupport, String serverId, String vaultName) =>
+    p.join(
+      appSupport,
+      'hosted',
+      Uri.encodeComponent(serverId),
+      Uri.encodeComponent(vaultName),
+    );
 
 /// Per-vault, machine-local UI state: open tabs, active tab, and per-canvas
 /// viewport (pan + zoom). Lives outside the vault DB so MCP clients never see

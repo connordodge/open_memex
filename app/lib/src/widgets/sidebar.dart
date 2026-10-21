@@ -3,10 +3,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:path/path.dart' as p;
 
+import '../state/hosted_connection_state.dart';
 import '../state/settings.dart';
 import '../state/sidebar_mode_state.dart';
 import '../state/tabs_state.dart';
 import '../state/vault_open_controller.dart';
+import '../state/vault_open_hosted.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
@@ -14,6 +16,7 @@ import 'atoms.dart';
 import 'sidebar/canvases_rail.dart';
 import 'sidebar/days_pane.dart';
 import 'sidebar/topics_pane.dart';
+import 'vault_open_refusal.dart';
 
 /// Left sidebar: brand header → command/search button → vault pills →
 /// canvases rail → the Days/Topics switch over the Days list or the note
@@ -45,7 +48,7 @@ class Sidebar extends ConsumerWidget {
           _CommandRow(onTap: () {}),
           PanelHeader(
             eyebrow: 'vaults',
-            count: settings.recentVaults.length,
+            count: _vaultPillCount(settings),
             action: '+ new',
             onAction: () => _switchVault(context, ref),
           ),
@@ -294,20 +297,48 @@ class _CommandRow extends StatelessWidget {
   }
 }
 
+/// The number of pills [_VaultPillsRow] renders (board A10): every local
+/// recent, and every hosted recent whose server is saved.
+int _vaultPillCount(AppSettings settings) {
+  var count = 0;
+  for (final r in settings.recentRefs) {
+    switch (r) {
+      case LocalVaultRef():
+        count++;
+      case HostedVaultRef(:final serverId):
+        for (final s in settings.savedServers) {
+          if (s.id == serverId) count++;
+        }
+    }
+  }
+  return count;
+}
+
 class _VaultPillsRow extends ConsumerWidget {
   const _VaultPillsRow({required this.currentVault});
   final String? currentVault;
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final recents = ref.watch(settingsProvider).recentVaults;
+    final settings = ref.watch(settingsProvider);
+    final current = ref.watch(currentVaultProvider);
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
       child: Wrap(
         spacing: 6,
         runSpacing: 6,
         children: [
-          for (final v in recents)
-            _VaultPill(path: v, active: v == currentVault),
+          for (final r in settings.recentRefs)
+            if (r case LocalVaultRef(:final path))
+              _VaultPill(path: path, active: path == currentVault)
+            else if (r case HostedVaultRef(:final serverId))
+              for (final s in settings.savedServers)
+                if (s.id == serverId)
+                  _HostedVaultPill(
+                    key: Key('vault-pill-$serverId-${r.vaultName}'),
+                    vault: r,
+                    serverName: s.name,
+                    active: r == current,
+                  ),
         ],
       ),
     );
@@ -321,12 +352,87 @@ class _VaultPill extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final name = p.basename(path);
+    return _PillFrame(
+      active: active,
+      onTap: () => _openFromPill(context, LocalVaultRef(path)),
+      children: [
+        OmDot(color: _vaultColorFor(name), size: 6),
+        const SizedBox(width: 7),
+        _PillLabel(name, active: active),
+      ],
+    );
+  }
+}
+
+/// A hosted recent (board A10): the server icon in the vault colour,
+/// `<vault> · <server>`, and a trailing [StatusDot] for that server's entry
+/// in `hostedConnectionStatusProvider` (checking until one exists).
+class _HostedVaultPill extends ConsumerWidget {
+  const _HostedVaultPill({
+    super.key,
+    required this.vault,
+    required this.serverName,
+    required this.active,
+  });
+  final HostedVaultRef vault;
+  final String serverName;
+  final bool active;
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final label = hostedVaultLabel(vault.vaultName, serverName);
+    final status = ref.watch(hostedConnectionStatusProvider(vault.serverId));
+    final state = switch (status) {
+      null => StatusDotState.checking,
+      HostedConnectionStatus.connected => StatusDotState.connected,
+      HostedConnectionStatus.unreachable => StatusDotState.cantReach,
+      // Lead ruling (as #97): an incompatible server shows the danger dot.
+      HostedConnectionStatus.tokenRejected ||
+      HostedConnectionStatus.incompatible => StatusDotState.tokenRejected,
+    };
+    return _PillFrame(
+      active: active,
+      onTap: () => _openFromPill(context, vault),
+      children: [
+        Icon(LucideIcons.server, size: 11, color: _vaultColorFor(label)),
+        const SizedBox(width: 7),
+        _PillLabel(label, active: active),
+        const SizedBox(width: 8),
+        Semantics(
+          container: true,
+          label: switch (state) {
+            StatusDotState.connected => 'connected',
+            StatusDotState.checking => 'checking',
+            StatusDotState.cantReach => hostedUnreachableMessage(serverName),
+            StatusDotState.tokenRejected => hostedTokenRejectedMessage(
+              serverName,
+            ),
+          },
+          child: StatusDot(
+            key: Key('vault-pill-dot-${vault.serverId}-${vault.vaultName}'),
+            state: state,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// A vault pill's outline: 26 px high, fully rounded, filled when [active].
+class _PillFrame extends StatelessWidget {
+  const _PillFrame({
+    required this.active,
+    required this.onTap,
+    required this.children,
+  });
+  final bool active;
+  final VoidCallback onTap;
+  final List<Widget> children;
+  @override
+  Widget build(BuildContext context) {
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       child: GestureDetector(
-        onTap: () => ref
-            .read(vaultOpenControllerProvider)
-            .switchToVault(context, LocalVaultRef(path)),
+        onTap: onTap,
         child: Container(
           height: 26,
           padding: const EdgeInsets.fromLTRB(8, 0, 10, 0),
@@ -338,36 +444,98 @@ class _VaultPill extends ConsumerWidget {
             ),
             borderRadius: BorderRadius.circular(999),
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              OmDot(color: _colorFor(name), size: 6),
-              const SizedBox(width: 7),
-              Text(
-                name,
-                style: OmType.mono(
-                  size: 11.5,
-                  color: active ? OmColors.fg0 : OmColors.fg2,
-                ),
-              ),
-            ],
-          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: children),
         ),
       ),
     );
   }
+}
 
-  Color _colorFor(String name) {
-    final h = name.hashCode;
-    const palette = [
-      OmColors.accent,
-      OmColors.info,
-      OmColors.warn,
-      OmColors.agent,
-      OmColors.fg2,
-    ];
-    return palette[h.abs() % palette.length];
+class _PillLabel extends StatelessWidget {
+  const _PillLabel(this.text, {required this.active});
+  final String text;
+  final bool active;
+  @override
+  Widget build(BuildContext context) => Text(
+    text,
+    style: OmType.mono(size: 11.5, color: active ? OmColors.fg0 : OmColors.fg2),
+  );
+}
+
+/// A pill's vault colour, hashed from its full label (pack 96).
+Color _vaultColorFor(String label) {
+  final h = label.hashCode;
+  const palette = [
+    OmColors.accent,
+    OmColors.info,
+    OmColors.warn,
+    OmColors.agent,
+    OmColors.fg2,
+  ];
+  return palette[h.abs() % palette.length];
+}
+
+/// Opens [vault] from its pill: asks the leave guard, then opens it. A
+/// refused local folder shows #92's refusal dialog (eyebrow "OPEN LOCAL
+/// VAULT"); a failed hosted open keeps the current vault and shows the
+/// `pill-open-failed-snackbar` with the recent row's copy and action; any
+/// other failure shows its message, as the picker does.
+Future<void> _openFromPill(BuildContext context, VaultRef vault) async {
+  final container = ProviderScope.containerOf(context, listen: false);
+  final messenger = ScaffoldMessenger.maybeOf(context);
+  final outcome = await container
+      .read(vaultOpenControllerProvider)
+      .switchToVault(context, vault);
+  if (outcome is! VaultOpenFailure) return;
+  if (outcome is HostedVaultOpenFailure) {
+    if (!context.mounted) return;
+    messenger?.showSnackBar(
+      SnackBar(
+        key: const Key('pill-open-failed-snackbar'),
+        content: Text(outcome.message),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        action: _hostedFailureAction(context, container, outcome),
+      ),
+    );
+    return;
   }
+  if (!context.mounted) return;
+  final refused = await showVaultOpenRefusal(
+    context,
+    outcome,
+    eyebrow: 'OPEN LOCAL VAULT',
+  );
+  if (refused) return;
+  messenger?.showSnackBar(SnackBar(content: Text(outcome.message)));
+}
+
+/// The recent row's action for a failed hosted open (Req 47): "retry"
+/// re-runs the open, "update token" calls the update-token seam, "remove
+/// from recents" drops the entry; none for the other outcomes.
+SnackBarAction? _hostedFailureAction(
+  BuildContext context,
+  ProviderContainer container,
+  HostedVaultOpenFailure failure,
+) {
+  SnackBarAction action(String label, VoidCallback onPressed) => SnackBarAction(
+    label: label,
+    textColor: OmColors.info,
+    onPressed: onPressed,
+  );
+  return switch (failure) {
+    HostedServerUnreachable() => action('retry', () {
+      if (context.mounted) _openFromPill(context, failure.vault);
+    }),
+    HostedTokenRejected() => action(
+      'update token',
+      () => container.read(updateTokenSeamProvider)(failure.vault.serverId),
+    ),
+    HostedVaultGone() => action(
+      'remove from recents',
+      () => container.read(settingsProvider.notifier).forgetRef(failure.vault),
+    ),
+    _ => null,
+  };
 }
 
 class _AgentFooter extends StatelessWidget {
