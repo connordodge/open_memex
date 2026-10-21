@@ -238,6 +238,45 @@ void main() {
   );
 
   test(
+    'hosted smartFolders and unsortedNotes read a missing parent_id or role key as null',
+    () async {
+      final (server, topics) = _wi83cEnv();
+      server.route(
+        'GET',
+        '$_wi83cBase/smart-folders',
+        status: 200,
+        json: {
+          'max_depth': 2,
+          'folders': [
+            {'id': _wi83cInbox, 'name': 'Inbox', 'pinned': false},
+          ],
+          'members': [],
+        },
+      );
+      final data = await topics.smartFolders();
+      expect(data.folders, hasLength(1));
+      expect(data.folders.single.id, _wi83cInbox);
+      expect(data.folders.single.parentId, isNull);
+
+      final (server2, topics2) = _wi83cEnv();
+      server2.route(
+        'GET',
+        '$_wi83cBase/unsorted',
+        status: 200,
+        json: {
+          'notes': [
+            {'note_id': _wi83cLoose, 'title': 'Loose'},
+          ],
+        },
+      );
+      final notes = await topics2.unsortedNotes();
+      expect(notes, hasLength(1));
+      expect(notes.single.noteId, _wi83cLoose);
+      expect(notes.single.role, isNull);
+    },
+  );
+
+  test(
     'hosted smartFolders and unsortedNotes label their errors smart folders and unsorted notes',
     () async {
       for (final (label, method, path, _, call) in _wi83cReads) {

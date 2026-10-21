@@ -1,7 +1,9 @@
 // WI #83 (V3), verify mode: HostedTopicsAccess parses the folder results
-// (`memex folder new|update|rm|add` objects) with its own copies of the
-// parsers in app/lib/src/cli/folder_cli.dart (private there). These tests
-// keep the copies in step: for every 2xx folder row of
+// (`memex folder new|update|rm|add` objects) with the same public parsers
+// the CLI wrappers use in app/lib/src/cli/folder_cli.dart
+// (parseFolderResult, parseFolderDeleteResult,
+// parseFolderMembershipResult). Kept as a regression guard against the two
+// paths drifting apart again: for every 2xx folder row of
 // api_v1/topics/index.json, and for run-time variants of each shape, the
 // hosted call and the CLI wrapper on the same JSON give equal models, or
 // both reject it with a null-code MemexException.
