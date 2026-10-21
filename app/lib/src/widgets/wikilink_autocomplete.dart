@@ -6,7 +6,9 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../db.dart';
 import '../memex_cli.dart';
 import '../state/topic_actions.dart';
+import '../state/vault_access_state.dart';
 import '../state/vault_state.dart';
+import '../vault_access/errors.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
 
@@ -135,7 +137,11 @@ class WikilinkAutocompleteState extends ConsumerState<WikilinkAutocomplete> {
   }
 
   void _refreshMatches() {
-    final all = ref.read(noteTitlesProvider);
+    final all = readVaultValue(
+      ref,
+      noteTitlesAsyncProvider,
+      const <NoteTitle>[],
+    );
     final q = _query.trim().toLowerCase();
     if (q.isEmpty) {
       _matches = all.take(8).toList();
@@ -364,25 +370,31 @@ class WikilinkAutocompleteState extends ConsumerState<WikilinkAutocomplete> {
     if (_busy) return;
     final title = _query.trim();
     if (title.isEmpty) return;
+    final access = ref.read(vaultAccessProvider);
     final cli = ref.read(memexCliProvider);
     final vaultPath = ref.read(currentVaultProvider).localPath;
-    if (cli == null || vaultPath == null) return;
+    if (access == null || !access.canWrite) return;
     final revision = ref.read(vaultRevisionProvider.notifier);
     final dailyId = widget.dailyNoteId;
     setState(() => _busy = true);
     try {
       if (dailyId == null) {
-        final id = await cli.addNote(
-          vaultPath: vaultPath,
-          title: title,
-          contentMd: topicNoteBody(title),
+        // An unreachable vault server shows the guard's snackbar and changes
+        // nothing (L17); other failures keep today's error snackbar.
+        final id = await guardVaultWrite(
+          context,
+          () => access.notes.addNote(
+            title: title,
+            contentMd: topicNoteBody(title),
+          ),
         );
+        if (id == null) return;
         revision.state++;
         _acceptExisting(NoteTitle(id: id, title: title, updatedAt: 0));
       } else {
+        if (cli == null || vaultPath == null) return;
         final created = await createLinkedTopic(
-          cli,
-          vaultPath: vaultPath,
+          ref.read(vaultAccessProvider)!,
           title: title,
           contentMd: topicNoteBody(title),
           dailyNoteId: dailyId,
@@ -426,6 +438,14 @@ class WikilinkAutocompleteState extends ConsumerState<WikilinkAutocomplete> {
 
   @override
   Widget build(BuildContext context) {
+    // Loads the titles with the editor (D14a: async) and refreshes an open
+    // popover's matches when a read lands.
+    ref.listen(noteTitlesAsyncProvider, (_, _) {
+      final entry = _entry;
+      if (entry == null) return;
+      _refreshMatches();
+      entry.markNeedsBuild();
+    });
     return const SizedBox.shrink();
   }
 }

@@ -119,7 +119,7 @@ void main() {
         );
         expect(r.db.liveNote(liveDailyId).version, v + 1);
         expect(r.editor.status, SaveStatus.clean);
-        expect(r.saveIndicatorShows('synced'), isTrue);
+        expect(r.saveIndicatorShows('saved'), isTrue);
       },
     );
   });
