@@ -1141,10 +1141,20 @@ void main() {
       cli.calls.clear();
 
       for (final path in [nas, old]) {
-        await tester.tap(_pill(path));
+        // #96 TEST-CHANGE: the sidebar pill now presents a refusal (lead
+        // update on #117, test/widgets/hosted_vault_pill_test.dart AC1), so
+        // this calls switchToVault directly: the controller itself still
+        // returns the outcome and shows nothing.
+        final outcome = h
+            .read(vaultOpenControllerProvider)
+            .switchToVault(
+              tester.element(find.byType(Workspace)),
+              LocalVaultRef(path),
+            );
         await _settle(tester);
         // Past any dialog's entrance (the workspace never settles).
         await tester.pump(const Duration(seconds: 1));
+        expect(await outcome, isA<VaultOpenFailure>(), reason: path);
 
         expect(find.byType(Dialog), findsNothing, reason: path);
         _expectNoRefusal();

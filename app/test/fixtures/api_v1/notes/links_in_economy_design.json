@@ -1,0 +1,34 @@
+{
+  "links": [
+    {
+      "from_note_id": "01M5DQAYZ4TAPTHDWE5PNWE4W5",
+      "id": "01M5DQAYZHQ8NNWPF4CYYHRZ61",
+      "kind": "about",
+      "label": null,
+      "link_text": "Economy Design",
+      "position": 104,
+      "source": "inline_body",
+      "to_note_id": "01M5DQAYZ47QW55S90ZF0A56AH"
+    },
+    {
+      "from_note_id": "01M5DQAYZ51PF87XFZWSV5PWXK",
+      "id": "01M5DQAYZGM1C68ZDC9FR3KTCH",
+      "kind": "about",
+      "label": null,
+      "link_text": "Economy Design",
+      "position": 78,
+      "source": "inline_body",
+      "to_note_id": "01M5DQAYZ47QW55S90ZF0A56AH"
+    },
+    {
+      "from_note_id": "01M5DQAYZ3WP7H0NXZZV9M2315",
+      "id": "01M5DQAYZC5FQW4HVPK8ZE5SXW",
+      "kind": "references",
+      "label": null,
+      "link_text": "Economy Design",
+      "position": 66,
+      "source": "inline_body",
+      "to_note_id": "01M5DQAYZ47QW55S90ZF0A56AH"
+    }
+  ]
+}

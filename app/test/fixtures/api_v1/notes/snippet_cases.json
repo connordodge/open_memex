@@ -1,0 +1,155 @@
+{
+  "_comment": "VaultDb._snippet cases (D10b, WI #81). Rust app_reads::notes::snippet and Dart VaultDb.listNotes must both produce `snippet` for `content_md`.",
+  "cases": [
+    {
+      "name": "heading marker stripped",
+      "content_md": "# Player Loop\n\nExplore the loop.\n",
+      "snippet": "Player Loop"
+    },
+    {
+      "name": "empty heading line eaten with the blank lines after it",
+      "content_md": "##\n\nBody after an empty heading\n",
+      "snippet": "Body after an empty heading"
+    },
+    {
+      "name": "deep heading level stripped",
+      "content_md": "### Deep heading\ntext below\n",
+      "snippet": "Deep heading"
+    },
+    {
+      "name": "two heading lines in a row",
+      "content_md": "#   \n\n# Second\nbody\n",
+      "snippet": "Second"
+    },
+    {
+      "name": "leading blank and whitespace lines skipped",
+      "content_md": "\n\n   \n  First real line  \nsecond line\n",
+      "snippet": "First real line"
+    },
+    {
+      "name": "empty content",
+      "content_md": "",
+      "snippet": ""
+    },
+    {
+      "name": "whitespace only content",
+      "content_md": "  \n\t\n \n",
+      "snippet": ""
+    },
+    {
+      "name": "hash tag at line start is stripped like a heading",
+      "content_md": "#idea at the start\n",
+      "snippet": "idea at the start"
+    },
+    {
+      "name": "indented hash is kept",
+      "content_md": "  # not a heading\n",
+      "snippet": "# not a heading"
+    },
+    {
+      "name": "inline hash is kept",
+      "content_md": "Inline # stays put\n",
+      "snippet": "Inline # stays put"
+    },
+    {
+      "name": "crlf line end trimmed",
+      "content_md": "Line one\r\nLine two\r\n",
+      "snippet": "Line one"
+    },
+    {
+      "name": "byte order mark trimmed",
+      "content_md": "﻿Hello there\n",
+      "snippet": "Hello there"
+    },
+    {
+      "name": "byte order mark only line skipped",
+      "content_md": "﻿\nReal first line\n",
+      "snippet": "Real first line"
+    },
+    {
+      "name": "no-break spaces trimmed",
+      "content_md": " Hi there \n",
+      "snippet": "Hi there"
+    },
+    {
+      "name": "exactly 120 units kept whole",
+      "content_md": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nnext\n",
+      "snippet": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "121 units cut to 117",
+      "content_md": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n",
+      "snippet": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb…"
+    },
+    {
+      "name": "trailing spaces count toward the 120 limit",
+      "content_md": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc     \n",
+      "snippet": "ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc…"
+    },
+    {
+      "name": "cut ending on a space is trimmed",
+      "content_md": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd eeeeeeeeee\n",
+      "snippet": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd…"
+    },
+    {
+      "name": "leading spaces of a long line are trimmed after the cut",
+      "content_md": "  ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\n",
+      "snippet": "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff…"
+    },
+    {
+      "name": "long heading line cut after the marker is stripped",
+      "content_md": "# hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh\n",
+      "snippet": "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh…"
+    },
+    {
+      "name": "surrogate pair straddling the cut backs off to 116",
+      "content_md": "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg🎲iiiiiiiiii\n",
+      "snippet": "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg…"
+    },
+    {
+      "name": "surrogate pair ending at unit 116 is kept whole",
+      "content_md": "jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj🎲kkkkkkkkkk\n",
+      "snippet": "jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj🎲…"
+    },
+    {
+      "name": "surrogate pair at the start is kept whole",
+      "content_md": "🎲llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll\n",
+      "snippet": "🎲lllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll…"
+    },
+    {
+      "name": "60 emoji are 120 units and kept whole",
+      "content_md": "🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲\n",
+      "snippet": "🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲"
+    },
+    {
+      "name": "61 emoji are 122 units and back off to 116",
+      "content_md": "🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲\n",
+      "snippet": "🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲🎲…"
+    },
+    {
+      "name": "carriage return starts a line for the marker strip",
+      "content_md": "Intro\r# Marker\n",
+      "snippet": "Intro\rMarker"
+    },
+    {
+      "name": "line separator U+2028 starts a line for the marker strip",
+      "content_md": "Intro # Marker\n",
+      "snippet": "Intro Marker"
+    },
+    {
+      "name": "paragraph separator U+2029 starts a line for the marker strip",
+      "content_md": "Intro # Marker\n",
+      "snippet": "Intro Marker"
+    },
+    {
+      "name": "next line U+0085 does not start a line for the marker strip",
+      "content_md": "Intro# Marker\n",
+      "snippet": "Intro# Marker"
+    },
+    {
+      "name": "next line U+0085 after a marker is kept and counts toward the limit",
+      "content_md": "#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+      "snippet": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa…"
+    }
+  ]
+}

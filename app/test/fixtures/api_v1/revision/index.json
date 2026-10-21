@@ -1,0 +1,4 @@
+[
+  {"method": "GET", "path": "/vaults/seed/api/v1/revision", "response": "revision.json", "status": 200},
+  {"method": "GET", "path": "/vaults/nope/api/v1/revision", "response": "revision_vault_not_found.json", "status": 404}
+]

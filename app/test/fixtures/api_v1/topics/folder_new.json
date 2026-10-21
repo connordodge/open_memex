@@ -1,0 +1,10 @@
+{
+  "created_at": "<timestamp>",
+  "depth": 1,
+  "id": "<id:1>",
+  "name": "Mechanics",
+  "parent_id": null,
+  "pinned": true,
+  "updated_at": "<timestamp>",
+  "vault_id": "01M5DK9Z8CWPQGFA893JX9VRZF"
+}
