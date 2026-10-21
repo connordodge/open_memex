@@ -16,6 +16,10 @@ use crate::Result;
 
 const MAX_KIND_LEN: usize = 64;
 
+/// The start of the `InvalidLinkKind` message [`update_link`] returns for a
+/// kind change on a frontmatter link; callers match on it to map the refusal.
+pub const FRONTMATTER_KIND_CHANGE_REFUSED: &str = "frontmatter link kind cannot be changed";
+
 /// Link kinds: six built-ins plus any normalized user-defined kebab-case string.
 /// Stored verbatim in `links.link_kind`. The extractor recognizes four of the
 /// built-ins through curated section headings and frontmatter keys; `from-day`
@@ -42,6 +46,20 @@ impl LinkKind {
             return Err(MemexError::InvalidLinkKind(s.to_string()));
         }
         Ok(Self(normalized))
+    }
+
+    /// Like [`LinkKind::new`] for a kind a person or agent writes
+    /// (`add-link`, `update-link`, the MCP `add_link` / `update_link` tools).
+    /// Refuses the kinds only the server writes, `from-day` and `about`,
+    /// after normalization, with `InvalidLinkKind`.
+    pub fn new_user_written(s: &str) -> Result<Self> {
+        let kind = Self::new(s)?;
+        if matches!(kind.as_str(), Self::FROM_DAY | Self::ABOUT) {
+            return Err(MemexError::InvalidLinkKind(format!(
+                "{s} (written by the server only)"
+            )));
+        }
+        Ok(kind)
     }
 
     /// Default kind when none is specified.
@@ -369,11 +387,10 @@ pub fn update_link_as(
     }
 
     if kind_changed && matches!(current.source, LinkSource::Frontmatter) {
-        return Err(MemexError::InvalidLinkKind(
-            "frontmatter link kind cannot be changed via update_link in v1; \
+        return Err(MemexError::InvalidLinkKind(format!(
+            "{FRONTMATTER_KIND_CHANGE_REFUSED} via update_link in v1; \
              remove the link and re-add it under the desired kind"
-                .into(),
-        ));
+        )));
     }
 
     let from_id = current.from_note_id.clone();
@@ -524,6 +541,47 @@ mod tests {
         assert!(LinkKind::new("ä-non-ascii").is_err());
         let too_long = "a".repeat(MAX_KIND_LEN + 1);
         assert!(LinkKind::new(&too_long).is_err());
+    }
+
+    #[test]
+    fn linkkind_user_written_refuses_server_written_kinds() {
+        for k in [
+            "from-day",
+            "about",
+            "About",
+            "FROM-DAY",
+            " from day ",
+            "-about-",
+        ] {
+            let err = LinkKind::new_user_written(k).unwrap_err();
+            assert!(matches!(err, MemexError::InvalidLinkKind(_)), "{k}: {err}");
+        }
+    }
+
+    #[test]
+    fn linkkind_user_written_normalizes_like_new() {
+        for k in [
+            "Inspired By",
+            "EXTENDS",
+            "-leading-dash",
+            "references",
+            "example-of",
+        ] {
+            assert_eq!(
+                LinkKind::new_user_written(k).unwrap(),
+                LinkKind::new(k).unwrap(),
+                "{k}"
+            );
+        }
+        assert!(LinkKind::new_user_written("").is_err());
+        assert!(LinkKind::new_user_written("9digits").is_err());
+        assert!(LinkKind::new_user_written("with_underscore").is_err());
+    }
+
+    #[test]
+    fn linkkind_new_still_accepts_server_written_kinds() {
+        assert_eq!(LinkKind::new("from-day").unwrap().as_str(), "from-day");
+        assert_eq!(LinkKind::new("About").unwrap().as_str(), "about");
     }
 
     #[test]

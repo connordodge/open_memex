@@ -593,13 +593,15 @@ async fn cmd_update_link(
     _with_embeddings: bool,
 ) -> Result<()> {
     let absolute = make_absolute(&vault_path)?;
-    let mut vault = Vault::open(&absolute).context("open vault")?;
     let input = ops::links::UpdateLinkInput {
         link_id,
         kind,
         label,
         clear_label,
     };
+    input.validate()?;
+
+    let mut vault = Vault::open(&absolute).context("open vault")?;
     let out = ops::links::update_link(&mut vault, input, &SystemClock, None)?;
     println!("{}", serde_json::to_string(&out)?);
     Ok(())
