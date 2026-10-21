@@ -139,6 +139,7 @@ void main() {
 
       c.read(notes_list.sidebarSortProvider.notifier).state =
           notes_list.NoteSortMode.alphabetical;
+      await c.read(notes_list.notesListAsyncProvider.future);
       expect(
         [for (final n in c.read(notes_list.notesListProvider)) n.title],
         ['alpha', 'Beta'],
