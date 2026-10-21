@@ -2,12 +2,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../db.dart';
 import '../vault_access/vault_scoped.dart';
+import 'tabs_state.dart' show VirtualTodayTab;
 import 'vault_access_state.dart';
 import 'vault_state.dart';
 
 /// The selected note read through `VaultAccess.notes.getNote`, with the vault
-/// it was loaded for (D14a). Null with no vault or no note selected.
-/// [selectedNoteProvider] is its synchronous facade.
+/// it was loaded for (D14a). Null with no vault, no note selected, or a
+/// virtual Today tab selected: its id is never a vault note id, so it is
+/// never read. [selectedNoteProvider] is its synchronous facade.
 final selectedNoteAsyncProvider = FutureProvider<VaultScoped<Note?>>((
   ref,
 ) async {
@@ -15,7 +17,9 @@ final selectedNoteAsyncProvider = FutureProvider<VaultScoped<Note?>>((
   final vault = ref.watch(currentVaultProvider);
   final access = ref.watch(vaultAccessProvider);
   final id = ref.watch(selectedNoteIdProvider);
-  if (access == null || id == null) return VaultScoped(vault, null);
+  if (access == null || id == null || VirtualTodayTab.dateOf(id) != null) {
+    return VaultScoped(vault, null);
+  }
   return VaultScoped(vault, await access.notes.getNote(id));
 });
 
