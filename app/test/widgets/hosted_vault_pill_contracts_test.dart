@@ -204,5 +204,28 @@ void main() {
         );
       },
     );
+
+    testWidgets(
+      'the vaults header count leaves out hosted recents whose server is not saved',
+      (tester) async {
+        final local = createVaultFolder('om96_count_orphan_');
+        const orphan = HostedVaultRef('srv-orphan', 'lost');
+        await _wi96PumpOpen(
+          tester,
+          recents: [LocalVaultRef(local.path), seedHostedRef, orphan],
+          servers: [HostedServerFixture(), _wi96Studio()],
+        );
+
+        final header = find.ancestor(
+          of: find.text('VAULTS'),
+          matching: find.byType(PanelHeader),
+        );
+        expect(tester.widget<PanelHeader>(header).count, 2);
+        expect(
+          find.descendant(of: header, matching: find.text('· 2')),
+          findsOneWidget,
+        );
+      },
+    );
   });
 }
