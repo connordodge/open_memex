@@ -760,3 +760,868 @@ fn claude_desktop_setup_doc_names_only_real_tools_and_no_stale_count() {
         "the doc links the review guide"
     );
 }
+
+// ======================================================================
+// WI #104 (D1): docs/hosted-vault.md and the docs that point to it
+// (Spec #67, req 2, 29, 55, 56; User Story 12).
+//
+// The prose is read by hand and followed on real hardware (MANUAL); these
+// tests pin the facts that can be checked mechanically. Helpers here carry a
+// `hosted_` / `wi104_` prefix so sibling WIs editing this file do not collide.
+// ======================================================================
+
+const HOSTED_DOC: &str = "docs/hosted-vault.md";
+
+fn hosted_vault_doc() -> String {
+    read_repo_file(HOSTED_DOC)
+}
+
+/// A markdown heading (outside fenced blocks) and everything under it, down to
+/// the next heading of the same or a shallower level.
+struct HostedSection {
+    level: usize,
+    title: String,
+    body: String,
+}
+
+fn hosted_sections(md: &str) -> Vec<HostedSection> {
+    let lines: Vec<&str> = md.lines().collect();
+    // (level, title, line index) of each heading.
+    let mut heads: Vec<(usize, String, usize)> = Vec::new();
+    let mut in_fence = false;
+    for (i, line) in lines.iter().enumerate() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        let hashes = line.chars().take_while(|c| *c == '#').count();
+        if (1..=6).contains(&hashes) && line[hashes..].starts_with(' ') {
+            heads.push((hashes, line[hashes..].trim().to_string(), i));
+        }
+    }
+    let mut out = Vec::new();
+    for (n, (level, title, start)) in heads.iter().enumerate() {
+        let end = heads[n + 1..]
+            .iter()
+            .find(|(l, _, _)| l <= level)
+            .map(|(_, _, i)| *i)
+            .unwrap_or(lines.len());
+        out.push(HostedSection {
+            level: *level,
+            title: title.clone(),
+            body: lines[*start..end].join("\n"),
+        });
+    }
+    out
+}
+
+/// The first section whose title matches `title_re` (case-insensitive).
+fn hosted_section(md: &str, what: &str, title_re: &str) -> HostedSection {
+    let re = Regex::new(&format!("(?i){title_re}")).unwrap();
+    let sections = hosted_sections(md);
+    let titles: Vec<String> = sections.iter().map(|s| s.title.clone()).collect();
+    sections
+        .into_iter()
+        .find(|s| re.is_match(&s.title))
+        .unwrap_or_else(|| {
+            panic!("the doc has a section for {what} (a heading matching /{title_re}/): {titles:?}")
+        })
+}
+
+/// `(language, body)` of every fenced code block.
+fn hosted_fenced_blocks(md: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut current: Option<(String, Vec<&str>)> = None;
+    for line in md.lines() {
+        let trimmed = line.trim_start();
+        if let Some(info) = trimmed.strip_prefix("```") {
+            match current.take() {
+                Some((lang, body)) => out.push((lang, body.join("\n"))),
+                None => current = Some((info.trim().to_lowercase(), Vec::new())),
+            }
+        } else if let Some((_, body)) = current.as_mut() {
+            body.push(line);
+        }
+    }
+    out
+}
+
+/// Lower-cased text with every run of whitespace collapsed to one space.
+fn hosted_flat_lower(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn hosted_assert_mentions(what: &str, text: &str, needles: &[&str]) {
+    let flat = hosted_flat_lower(text);
+    for needle in needles {
+        assert!(
+            flat.contains(&needle.to_lowercase()),
+            "{what} mentions `{needle}`"
+        );
+    }
+}
+
+const HOSTED_NAS: (&str, &str) = ("a NAS (Synology or QNAP)", r"\bnas\b|synology|qnap");
+const HOSTED_LINUX: (&str, &str) = ("Linux (systemd)", r"linux|systemd");
+const HOSTED_MAC: (&str, &str) = ("an always-on Mac (launchd)", r"\bmac\b|launchd");
+const HOSTED_MOVE: (&str, &str) = ("moving a local vault onto the server", r"\bmove|moving");
+
+/// Every file under `dir` (not following symlinks), skipping build output,
+/// dependency and VCS directories.
+fn wi104_walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+    const SKIP: [&str; 9] = [
+        ".git",
+        "target",
+        "node_modules",
+        "build",
+        ".dart_tool",
+        "Pods",
+        "ephemeral",
+        ".symlinks",
+        ".claude",
+    ];
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_dir() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !SKIP.contains(&name.as_str()) {
+                wi104_walk(&path, out);
+            }
+        } else if kind.is_file() {
+            out.push(path);
+        }
+    }
+}
+
+// ---------- AC 1: platform sections, req 55 topics, TZ ----------
+
+#[test]
+fn hosted_vault_doc_has_a_section_per_platform_and_every_req_55_topic() {
+    let doc = hosted_vault_doc();
+    assert!(
+        doc.lines().next().is_some_and(|l| l.starts_with("# ")),
+        "{HOSTED_DOC} opens with a title"
+    );
+    // A8 set-up sheet step 1: "see docs/hosted-vault.md for a nas, linux or a mac".
+    for (what, re) in [HOSTED_NAS, HOSTED_LINUX, HOSTED_MAC, HOSTED_MOVE] {
+        hosted_section(&doc, what, re);
+    }
+    // The other req 55 topics each get a heading.
+    hosted_section(&doc, "choosing the listen address", r"listen");
+    hosted_section(&doc, "the access token and rotating it", r"token");
+    hosted_section(&doc, "connecting the app and agents", r"connect");
+    hosted_section(&doc, "troubleshooting", r"troubleshoot");
+    // The A8 set-up sheet steps the doc keeps in step with.
+    hosted_assert_mentions(
+        HOSTED_DOC,
+        &doc,
+        &[
+            "memex init",
+            "memex serve --root",
+            "--listen",
+            ".memex/access-token",
+        ],
+    );
+}
+
+#[test]
+fn hosted_vault_doc_nas_section_covers_docker_ssh_and_a_rust_container_build() {
+    let doc = hosted_vault_doc();
+    let nas = hosted_section(&doc, HOSTED_NAS.0, HOSTED_NAS.1);
+    hosted_assert_mentions(
+        "the NAS section",
+        &nas.body,
+        &["synology", "qnap", "docker", "ssh", "rust", "cargo build"],
+    );
+}
+
+#[test]
+fn hosted_vault_doc_sets_tz_in_the_docker_systemd_and_launchd_examples() {
+    let doc = hosted_vault_doc();
+
+    let nas = hosted_section(&doc, HOSTED_NAS.0, HOSTED_NAS.1);
+    let docker_tz = Regex::new(r"\bTZ\s*[=:]\s*\S+").unwrap();
+    assert!(
+        hosted_fenced_blocks(&nas.body)
+            .iter()
+            .any(|(_, b)| b.to_lowercase().contains("docker") && docker_tz.is_match(b)),
+        "the NAS section has a Docker example that sets TZ"
+    );
+
+    let linux = hosted_section(&doc, HOSTED_LINUX.0, HOSTED_LINUX.1);
+    let systemd_tz = Regex::new(r#"(?m)^\s*Environment="?TZ=\S+"#).unwrap();
+    assert!(
+        hosted_fenced_blocks(&linux.body)
+            .iter()
+            .any(|(_, b)| b.contains("[Service]") && systemd_tz.is_match(b)),
+        "the Linux section has a systemd unit with Environment=TZ=..."
+    );
+
+    let mac = hosted_section(&doc, HOSTED_MAC.0, HOSTED_MAC.1);
+    let plist_tz = Regex::new(r"<key>TZ</key>\s*<string>[^<]+</string>").unwrap();
+    assert!(
+        hosted_fenced_blocks(&mac.body)
+            .iter()
+            .any(|(_, b)| b.contains("<plist") && plist_tz.is_match(b)),
+        "the Mac section has a launchd plist with a TZ key"
+    );
+
+    // Req 59: the server's own zone is only the fallback for callers that
+    // send no UTC offset.
+    hosted_assert_mentions(HOSTED_DOC, &doc, &["fallback", "offset"]);
+}
+
+#[test]
+fn hosted_vault_doc_service_examples_run_memex_serve_with_root_and_listen() {
+    let doc = hosted_vault_doc();
+    for ((what, re), marker) in [
+        (HOSTED_NAS, "docker"),
+        (HOSTED_LINUX, "[Service]"),
+        (HOSTED_MAC, "<plist"),
+    ] {
+        let section = hosted_section(&doc, what, re);
+        let block = hosted_fenced_blocks(&section.body)
+            .into_iter()
+            .map(|(_, b)| b)
+            .find(|b| b.to_lowercase().contains(&marker.to_lowercase()))
+            .unwrap_or_else(|| panic!("the {what} section has a `{marker}` example block"));
+        for needle in ["serve", "--root", "--listen"] {
+            assert!(
+                block.contains(needle),
+                "the {what} example runs `memex serve` with `{needle}`: {block}"
+            );
+        }
+    }
+}
+
+#[test]
+fn hosted_vault_doc_moves_a_local_vault_through_incoming_copy_then_rename() {
+    let doc = hosted_vault_doc();
+    let moving = hosted_section(&doc, HOSTED_MOVE.0, HOSTED_MOVE.1);
+    let flat = hosted_flat_lower(&moving.body);
+    for needle in ["quit", "smb", "half-copied"] {
+        assert!(
+            flat.contains(needle),
+            "the move section mentions `{needle}`"
+        );
+    }
+    // The vault-name rule (req 15): letters, digits, - and _, 1-64 characters,
+    // compared case-insensitively.
+    for needle in ["letters", "digits", "64", "case-insensitive"] {
+        assert!(
+            flat.contains(needle),
+            "the move section states the vault-name rule (`{needle}`)"
+        );
+    }
+
+    // Copy into <root>/.incoming/ first, then `mv` it into <root>/<name>.
+    let blocks: String = hosted_fenced_blocks(&moving.body)
+        .into_iter()
+        .map(|(_, b)| b)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let lines: Vec<&str> = blocks.lines().map(str::trim).collect();
+    let copy_at = lines
+        .iter()
+        .position(|l| (l.starts_with("cp ") || l.starts_with("rsync ")) && l.contains(".incoming"))
+        .expect("a `cp` or `rsync` line copies the vault into .incoming");
+    let rename_at = lines
+        .iter()
+        .position(|l| l.starts_with("mv ") && l.contains(".incoming"))
+        .expect("a `mv` line renames the copy out of .incoming");
+    assert!(copy_at < rename_at, "copy first, rename second: {lines:?}");
+    let words: Vec<&str> = lines[rename_at].split_whitespace().collect();
+    assert!(
+        words.len() >= 3 && words[1].contains(".incoming") && !words[2].contains(".incoming"),
+        "`mv` moves <root>/.incoming/<x> to <root>/<name>, outside .incoming: {}",
+        lines[rename_at]
+    );
+}
+
+#[test]
+fn hosted_vault_doc_explains_the_token_file_and_how_to_rotate_it() {
+    let doc = hosted_vault_doc();
+    let token = hosted_section(&doc, "the access token and rotating it", r"token");
+    let flat = hosted_flat_lower(&token.body);
+    for needle in [
+        "memex_access_token",
+        ".memex/access-token",
+        "0600",
+        "rotate",
+        "delete",
+        "restart",
+    ] {
+        assert!(
+            flat.contains(needle),
+            "the token section mentions `{needle}`"
+        );
+    }
+    // Req 4: the token is never printed or logged.
+    assert!(
+        flat.contains("never printed") || flat.contains("never logged"),
+        "the token section says the token is never printed or logged"
+    );
+}
+
+#[test]
+fn hosted_vault_doc_explains_how_to_choose_the_listen_address() {
+    let doc = hosted_vault_doc();
+    let listen = hosted_section(&doc, "choosing the listen address", r"listen");
+    let flat = hosted_flat_lower(&listen.body);
+    for needle in [
+        "--listen",
+        "no default",
+        "0.0.0.0:7878",
+        "lan",
+        "tailscale",
+        "tailnet-ip",
+    ] {
+        assert!(
+            flat.contains(needle),
+            "the listen section mentions `{needle}`"
+        );
+    }
+}
+
+#[test]
+fn hosted_vault_doc_troubleshooting_has_entries_for_401_cannot_reach_firewall_and_network_drive() {
+    let doc = hosted_vault_doc();
+    let trouble = hosted_section(&doc, "troubleshooting", r"troubleshoot");
+    let entries: Vec<String> = hosted_sections(&trouble.body)
+        .into_iter()
+        .filter(|s| s.level > trouble.level)
+        .map(|s| s.title.to_lowercase())
+        .collect();
+    for (what, needle) in [
+        ("401", "401"),
+        ("cannot reach the server", "reach"),
+        ("the firewall", "firewall"),
+        ("the network-drive refusal", "network drive"),
+    ] {
+        assert!(
+            entries.iter().any(|t| t.contains(needle)),
+            "troubleshooting has an entry for {what} (a sub-heading with `{needle}`): {entries:?}"
+        );
+    }
+    let flat = hosted_flat_lower(&trouble.body);
+    for needle in [
+        "network_filesystem",
+        "memex vault check --vault",
+        "exits 0",
+        "access token",
+    ] {
+        assert!(flat.contains(needle), "troubleshooting mentions `{needle}`");
+    }
+}
+
+// ---------- AC 2: trusted network only (req 2) ----------
+
+#[test]
+fn hosted_vault_doc_says_lan_or_tailnet_only_plain_http_no_tls_and_carries_the_never_expose_line() {
+    let doc = hosted_vault_doc();
+    let flat = hosted_flat_lower(&doc.replace(['*', '_'], ""));
+    for needle in [
+        "trusted lan",
+        "tailnet",
+        "public internet",
+        "plain http",
+        "no tls",
+    ] {
+        assert!(flat.contains(needle), "{HOSTED_DOC} says `{needle}`");
+    }
+    // The A8 set-up sheet's line, verbatim (case aside).
+    assert!(
+        flat.contains(
+            "use your home network or tailscale. never expose the server to the internet."
+        ),
+        "{HOSTED_DOC} carries the set-up sheet's never-expose line"
+    );
+}
+
+// ---------- AC 3: Claude Desktop and Raycast configs (req 29) ----------
+
+/// One client's `command` / `args` / `env` as written in the doc.
+struct Wi104ClientConfig {
+    command: String,
+    args: Vec<String>,
+    env: Vec<(String, String)>,
+}
+
+/// Parses every ```json block of the client's section; returns the first server
+/// entry (inside `mcpServers`, or the block's own object).
+fn wi104_client_config(client_title_re: &str, what: &str) -> Wi104ClientConfig {
+    let doc = hosted_vault_doc();
+    let section = hosted_section(&doc, what, client_title_re);
+    let blocks: Vec<(String, String)> = hosted_fenced_blocks(&section.body)
+        .into_iter()
+        .filter(|(lang, _)| lang == "json")
+        .collect();
+    assert!(
+        !blocks.is_empty(),
+        "the {what} section has a ```json config block"
+    );
+    let mut entry: Option<Value> = None;
+    for (_, body) in &blocks {
+        let parsed: Value = serde_json::from_str(body)
+            .unwrap_or_else(|e| panic!("the {what} config parses as JSON ({e}): {body}"));
+        let candidate = match parsed.get("mcpServers").and_then(Value::as_object) {
+            Some(servers) => servers.values().next().cloned(),
+            None => Some(parsed.clone()),
+        };
+        if entry.is_none() {
+            entry = candidate.filter(|v| v.get("command").is_some());
+        }
+    }
+    let entry = entry.unwrap_or_else(|| panic!("the {what} config has a server with `command`"));
+    let command = entry["command"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the {what} `command` is a string: {entry}"))
+        .to_string();
+    let args = entry["args"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the {what} `args` is an array: {entry}"))
+        .iter()
+        .map(|a| {
+            a.as_str()
+                .unwrap_or_else(|| panic!("the {what} args are strings: {entry}"))
+                .to_string()
+        })
+        .collect();
+    let env = entry["env"]
+        .as_object()
+        .unwrap_or_else(|| panic!("the {what} `env` is an object: {entry}"))
+        .iter()
+        .map(|(k, v)| {
+            (
+                k.clone(),
+                v.as_str()
+                    .unwrap_or_else(|| panic!("the {what} env values are strings: {entry}"))
+                    .to_string(),
+            )
+        })
+        .collect();
+    Wi104ClientConfig { command, args, env }
+}
+
+fn wi104_assert_serve_remote_config(what: &str, cfg: &Wi104ClientConfig) {
+    let basename = cfg.command.rsplit('/').next().unwrap();
+    assert_eq!(basename, "memex", "the {what} command runs memex");
+    assert_eq!(
+        cfg.args.len(),
+        3,
+        "the {what} args are [serve, --remote, <url>]: {:?}",
+        cfg.args
+    );
+    assert_eq!(cfg.args[0], "serve", "{what} args start with serve");
+    assert_eq!(cfg.args[1], "--remote", "{what} args pass --remote");
+    let url = Regex::new(r"^https?://[^/\s]+/vaults/[A-Za-z0-9_-]{1,64}/mcp$").unwrap();
+    assert!(
+        url.is_match(&cfg.args[2]),
+        "the {what} URL is <server-url>/vaults/<name>/mcp with a concrete vault name: {}",
+        cfg.args[2]
+    );
+    let token = cfg
+        .env
+        .iter()
+        .find(|(k, _)| k == "MEMEX_ACCESS_TOKEN")
+        .map(|(_, v)| v.as_str());
+    assert!(
+        token.is_some_and(|t| !t.trim().is_empty()),
+        "the {what} env sets MEMEX_ACCESS_TOKEN: {:?}",
+        cfg.env
+    );
+}
+
+/// Runs the config's `args` through the real binary, with the URL's host and
+/// port swapped for a closed local port; returns `(exit code, stderr)`.
+fn wi104_run_config_at_closed_port(cfg: &Wi104ClientConfig) -> (Option<i32>, String) {
+    let closed = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let rewrite = Regex::new(r"^(https?://)[^/]+(/.*)$").unwrap();
+    let args: Vec<String> = cfg
+        .args
+        .iter()
+        .map(|a| {
+            rewrite
+                .replace(a, format!("${{1}}127.0.0.1:{closed}${{2}}"))
+                .to_string()
+        })
+        .collect();
+    let scratch = tempfile::tempdir().unwrap();
+    let stderr_path = scratch.path().join("stderr");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_memex"));
+    cmd.args(&args)
+        .env_remove("MEMEX_ACCESS_TOKEN")
+        .env_remove("RUST_LOG")
+        .current_dir(scratch.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(std::fs::File::create(&stderr_path).unwrap()));
+    for key in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ] {
+        cmd.env_remove(key);
+    }
+    for (k, v) in &cfg.env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.spawn().expect("spawn memex with the documented args");
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break Some(status);
+        }
+        if started.elapsed() > Duration::from_secs(30) {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let stderr = std::fs::read_to_string(&stderr_path).unwrap_or_default();
+    (status.and_then(|s| s.code()), stderr)
+}
+
+fn wi104_assert_closed_port_exit(what: &str, cfg: &Wi104ClientConfig) {
+    let (code, stderr) = wi104_run_config_at_closed_port(cfg);
+    assert_eq!(
+        code,
+        Some(1),
+        "the {what} args exit 1 (preflight), never 2 (usage): stderr={stderr:?}"
+    );
+    let lines: Vec<&str> = stderr.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(lines.len(), 1, "exactly one C1 line on stderr: {stderr:?}");
+    let c1: Value = serde_json::from_str(lines[0])
+        .unwrap_or_else(|e| panic!("the stderr line is JSON ({e}): {:?}", lines[0]));
+    assert!(
+        c1["error"]["message"].is_string(),
+        "a C1 line has a string message: {c1}"
+    );
+    assert_eq!(
+        c1["error"]["code"], "server_unreachable",
+        "a closed port is reported as server_unreachable: {c1}"
+    );
+}
+
+#[test]
+fn hosted_vault_doc_claude_desktop_config_parses_and_runs_serve_remote() {
+    let cfg = wi104_client_config(r"claude desktop", "Claude Desktop");
+    wi104_assert_serve_remote_config("Claude Desktop", &cfg);
+}
+
+#[test]
+fn hosted_vault_doc_raycast_config_parses_and_runs_serve_remote() {
+    let cfg = wi104_client_config(r"raycast", "Raycast");
+    wi104_assert_serve_remote_config("Raycast", &cfg);
+}
+
+#[test]
+fn hosted_vault_doc_claude_desktop_args_exit_1_with_a_c1_line_at_a_closed_port() {
+    let cfg = wi104_client_config(r"claude desktop", "Claude Desktop");
+    wi104_assert_closed_port_exit("Claude Desktop", &cfg);
+}
+
+#[test]
+fn hosted_vault_doc_raycast_args_exit_1_with_a_c1_line_at_a_closed_port() {
+    let cfg = wi104_client_config(r"raycast", "Raycast");
+    wi104_assert_closed_port_exit("Raycast", &cfg);
+}
+
+// ---------- AC 4: Claude Code over native HTTP (req 29) ----------
+
+#[test]
+fn hosted_vault_doc_claude_code_command_has_both_headers_and_the_dst_note() {
+    let doc = hosted_vault_doc();
+    let section = hosted_section(&doc, "Claude Code", r"claude code");
+    // Join shell line continuations, then collapse whitespace.
+    let joined = section.body.replace("\\\n", " ");
+    let flat = joined.split_whitespace().collect::<Vec<_>>().join(" ");
+    let command = Regex::new(concat!(
+        r#"claude mcp add --transport http (\S+) (https?://[^/\s]+/vaults/[A-Za-z0-9_-]{1,64}/mcp) "#,
+        r#"--header "Authorization: Bearer \$MEMEX_ACCESS_TOKEN" "#,
+        r#"--header "X-Memex-UTC-Offset: ([^"\s]+)""#,
+    ))
+    .unwrap();
+    let caps = command.captures(&flat).unwrap_or_else(|| {
+        panic!(
+            "the Claude Code section shows `claude mcp add --transport http <name> <url> \
+             --header \"Authorization: Bearer $MEMEX_ACCESS_TOKEN\" \
+             --header \"X-Memex-UTC-Offset: <+-HH:MM>\"` with a /vaults/<name>/mcp URL: {flat}"
+        )
+    });
+    let offset = &caps[3];
+    assert!(
+        offset.contains("HH:MM") || Regex::new(r"^[+\-]\d{2}:\d{2}$").unwrap().is_match(offset),
+        "the offset header value is <+-HH:MM> or a concrete +-HH:MM: {offset}"
+    );
+    // The DST note, next to the command.
+    let lower = flat.to_lowercase();
+    assert!(
+        lower.contains("dst") || lower.contains("daylight"),
+        "the Claude Code section notes the static offset needs updating at DST changes"
+    );
+    assert!(
+        lower.contains("bridge") && lower.contains("automatically"),
+        "the Claude Code section says the bridge sends the offset automatically"
+    );
+}
+
+// ---------- AC 5: real commands, serve --help ----------
+
+#[test]
+fn hosted_vault_doc_shows_only_real_commands_and_serve_help_lists_the_flags_it_uses() {
+    let doc = hosted_vault_doc();
+    assert_commands_are_real(HOSTED_DOC, &doc);
+    let shown: Vec<(String, Option<String>)> = memex_invocations(&doc);
+    for (sub, next) in [
+        ("init", None),
+        ("serve", None),
+        ("vault", Some("check".to_string())),
+    ] {
+        assert!(
+            shown
+                .iter()
+                .any(|(s, n)| *s == sub && (next.is_none() || *n == next)),
+            "{HOSTED_DOC} shows `memex {sub}`"
+        );
+    }
+    let help = Command::new(env!("CARGO_BIN_EXE_memex"))
+        .args(["serve", "--help"])
+        .output()
+        .expect("run memex serve --help");
+    assert!(help.status.success(), "memex serve --help succeeds");
+    let help = String::from_utf8_lossy(&help.stdout).to_string();
+    for flag in ["--root", "--listen", "--remote"] {
+        assert!(help.contains(flag), "memex serve --help lists {flag}");
+    }
+    // Every flag the doc's `memex serve` lines pass is one `serve --help` lists,
+    // and the three modes are all shown.
+    let flag = Regex::new(r"\s(--[a-z][a-z-]*)").unwrap();
+    let mut used = BTreeSet::new();
+    for snippet in code_snippets(&doc) {
+        for line in snippet.lines().filter(|l| l.contains("memex serve")) {
+            for c in flag.captures_iter(line) {
+                used.insert(c[1].to_string());
+            }
+        }
+    }
+    for needed in ["--root", "--listen", "--remote"] {
+        assert!(
+            used.contains(needed),
+            "{HOSTED_DOC} shows `memex serve {needed}`: {used:?}"
+        );
+    }
+    for f in &used {
+        assert!(
+            help.contains(f.as_str()),
+            "{HOSTED_DOC} passes `{f}`, which memex serve --help does not list"
+        );
+    }
+}
+
+// ---------- AC 6: glossary terms (D22) ----------
+
+/// The avoided terms of GLOSSARY.md that concern the hosted vault (lines 76-92).
+const WI104_AVOID_TERMS: [&str; 7] = [
+    "sync server",
+    "NAS mode",
+    "remote vault",
+    "shared vault",
+    "network vault",
+    "API key",
+    "synced vault",
+];
+
+fn wi104_assert_no_hosted_avoided_terms(doc_name: &str, md: &str) {
+    let glossary = read_repo_file("GLOSSARY.md");
+    let avoid_lines: String = glossary
+        .lines()
+        .filter(|l| l.starts_with("_Avoid_"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_lowercase();
+    for term in WI104_AVOID_TERMS {
+        assert!(
+            avoid_lines.contains(&term.to_lowercase()),
+            "{term} is an `_Avoid_` term in GLOSSARY.md"
+        );
+    }
+    let prose = hosted_flat_lower(&prose_only(md));
+    for term in WI104_AVOID_TERMS {
+        let re = Regex::new(&format!(r"\b{}\b", regex::escape(&term.to_lowercase()))).unwrap();
+        assert!(
+            !re.is_match(&prose),
+            "{doc_name} uses the GLOSSARY.md `_Avoid_` term `{term}`"
+        );
+    }
+}
+
+#[test]
+fn hosted_vault_doc_uses_glossary_terms_and_none_of_the_avoided_ones() {
+    let doc = hosted_vault_doc();
+    has_all_terms(
+        HOSTED_DOC,
+        &doc,
+        &[
+            "vault server",
+            "vault root",
+            "hosted vault",
+            "local vault",
+            "access token",
+        ],
+    );
+    assert_no_avoided_terms(HOSTED_DOC, &doc);
+    wi104_assert_no_hosted_avoided_terms(HOSTED_DOC, &doc);
+}
+
+// ---------- AC 7: the older docs drop single-device lines and link the new doc ----------
+
+#[test]
+fn readme_claude_desktop_setup_and_canvas_drop_single_device_lines_and_link_the_hosted_vault_doc() {
+    let link = Regex::new(r"\]\(([^)\s#]*hosted-vault\.md)(#[^)\s]*)?\)").unwrap();
+    for rel in [
+        "README.md",
+        "docs/claude-desktop-setup.md",
+        "docs/canvas.md",
+    ] {
+        let text = read_repo_file(rel);
+        let lower = hosted_flat_lower(&text);
+        for stale in ["single device", "single-device", "no sync"] {
+            assert!(!lower.contains(stale), "{rel} still says `{stale}`");
+        }
+        let target = link
+            .captures(&text)
+            .unwrap_or_else(|| panic!("{rel} links docs/hosted-vault.md in a markdown link"))[1]
+            .to_string();
+        let dir = std::path::Path::new(rel).parent().unwrap();
+        let resolved = repo_root().join(dir).join(&target);
+        assert!(
+            resolved.is_file(),
+            "{rel} links `{target}`, which resolves to {}",
+            resolved.display()
+        );
+        assert_eq!(
+            resolved.canonicalize().unwrap(),
+            repo_root().join(HOSTED_DOC).canonicalize().unwrap(),
+            "{rel}'s link `{target}` points at {HOSTED_DOC}"
+        );
+    }
+}
+
+// ---------- AC 8: no word starting with "sync" (req 56) ----------
+
+#[test]
+fn no_word_starting_with_sync_appears_in_readme_or_any_doc() {
+    let root = repo_root();
+    let mut files = vec![root.join("README.md")];
+    wi104_walk(&root.join("docs"), &mut files);
+    let word = Regex::new(r"(?i)\bsync([a-z]*)").unwrap();
+    let mut hits = Vec::new();
+    for path in &files {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue; // not text
+        };
+        for (n, line) in text.lines().enumerate() {
+            for c in word.captures_iter(line) {
+                // `async` never matches (no word boundary); `synchron...` is allowed.
+                if c[1].to_lowercase().starts_with("hron") {
+                    continue;
+                }
+                hits.push(format!(
+                    "{}:{}: {}",
+                    path.strip_prefix(&root).unwrap().display(),
+                    n + 1,
+                    line.trim()
+                ));
+            }
+        }
+    }
+    assert!(
+        files.len() > 1,
+        "the scan reaches README.md and the files under docs/"
+    );
+    assert!(
+        hits.is_empty(),
+        "words starting with `sync` in README.md or docs/:\n{}",
+        hits.join("\n")
+    );
+}
+
+// ---------- AC 9: README "What works today" ----------
+
+#[test]
+fn readme_what_works_today_lists_the_serve_root_serve_remote_and_vault_check_commands() {
+    let readme = readme();
+    let section = hosted_section(&readme, "`What works today`", r"what works today");
+    for (what, pattern) in [
+        (
+            "memex serve --root <dir> --listen <host:port>",
+            r"memex serve --root \S+ --listen \S+",
+        ),
+        ("memex serve --remote <url>", r"memex serve --remote \S+"),
+        (
+            "memex vault check --vault <path>",
+            r"memex vault check --vault \S+",
+        ),
+    ] {
+        assert!(
+            Regex::new(pattern).unwrap().is_match(&section.body),
+            "README `What works today` lists `{what}`"
+        );
+    }
+    assert!(
+        section.body.contains("docs/hosted-vault.md"),
+        "README `What works today` links docs/hosted-vault.md"
+    );
+}
+
+// ---------- AC 10: no container definitions ship (L3) ----------
+
+#[test]
+fn repository_has_no_dockerfile_compose_file_or_image_definition() {
+    // The doc is where Docker is described (inline); nothing in the tree builds one.
+    let doc = hosted_vault_doc();
+    assert!(
+        doc.to_lowercase().contains("docker"),
+        "{HOSTED_DOC} describes the Docker route for a NAS in text"
+    );
+    let root = repo_root();
+    let mut files = Vec::new();
+    wi104_walk(&root, &mut files);
+    assert!(files.len() > 50, "the walk reaches the repository's files");
+    let offenders: Vec<String> = files
+        .iter()
+        .filter(|p| {
+            let name = p.file_name().unwrap().to_string_lossy().to_lowercase();
+            name.starts_with("dockerfile")
+                || name.ends_with(".dockerfile")
+                || name.starts_with("containerfile")
+                || name.starts_with("docker-compose")
+                || name.starts_with("compose.")
+        })
+        .map(|p| p.strip_prefix(&root).unwrap().display().to_string())
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "the repository ships no Dockerfile, compose file or image definition: {offenders:?}"
+    );
+}
