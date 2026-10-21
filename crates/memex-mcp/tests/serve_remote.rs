@@ -1064,8 +1064,13 @@ async fn bridge_rereads_the_utc_offset_for_every_request() {
         );
     }
 
-    // Closing the input ends the bridge cleanly.
-    drop(client_out);
+    // Closing the input ends the bridge cleanly. `lines` still holds the
+    // read half of the same duplex, so dropping `client_out` alone would
+    // not close it: shut the write side down instead.
+    client_out
+        .shutdown()
+        .await
+        .expect("close the bridge's input");
     let res = tokio::time::timeout(WAIT, task)
         .await
         .expect("bridge::run ends when its input closes")
