@@ -4,9 +4,7 @@
 // FakeClock, FakeAppFocus, a recording picker-actions seam and a recording
 // open controller. Row outcomes go through #96's `recentRowOutcomeProvider`.
 // No real network, Keychain or `memex` binary.
-import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -176,42 +174,6 @@ class Wi97Picker {
     for (final r in servers[serverId]!.requests)
       if (r.method == 'GET' && r.url.path == '/api/v1/info') r,
   ];
-}
-
-/// google_fonts fetches OmType's fonts over HTTP. The test binding answers
-/// every request with a 400, and the font load's failure lands in whichever
-/// test is running when [wi97Settle]'s `runAsync` lets that request finish
-/// (under load, a dozen tests in a file). Call once at the top of `main()`:
-/// font requests then never answer, the fallback test font stays, and no
-/// error reaches a test zone. App HTTP goes through `hostedHttpClientProvider`
-/// (a MockClient), never through `HttpClient`.
-void wi97HoldFontFetches() {
-  HttpOverrides? previous;
-  setUpAll(() {
-    previous = HttpOverrides.current;
-    HttpOverrides.global = _Wi97HeldHttpOverrides();
-  });
-  tearDownAll(() => HttpOverrides.global = previous);
-}
-
-class _Wi97HeldHttpOverrides extends HttpOverrides {
-  @override
-  HttpClient createHttpClient(SecurityContext? context) =>
-      _Wi97HeldHttpClient();
-}
-
-/// An [HttpClient] whose requests never open.
-class _Wi97HeldHttpClient implements HttpClient {
-  @override
-  Future<HttpClientRequest> openUrl(String method, Uri url) =>
-      Completer<HttpClientRequest>().future;
-
-  @override
-  void close({bool force = false}) {}
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) =>
-      super.noSuchMethod(invocation);
 }
 
 /// Let async work (prefs, token reads, fake server responses) finish, then
