@@ -9,7 +9,9 @@ import '../../memex_cli.dart';
 import '../../state/editor_controller.dart';
 import '../../state/graph_state.dart';
 import '../../state/tabs_state.dart';
+import '../../state/vault_access_state.dart';
 import '../../state/vault_state.dart';
+import '../../vault_access/errors.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import '../atoms.dart';
@@ -125,9 +127,11 @@ class NoteMenu extends StatelessWidget {
 final noteDeleteErrorProvider =
     StateProvider<({String noteId, String message})?>((_) => null);
 
-/// Asks for confirmation, then runs `memex rm` for [note] with the editor's
-/// last saved version. On success the note's tab closes and the vault reads
-/// refresh. On failure nothing changes except [noteDeleteErrorProvider].
+/// Asks for confirmation, then deletes [note] through `VaultAccess.notes`
+/// (`memex rm` on a local vault) with the editor's last saved version, inside
+/// `guardVaultWrite`. On success the note's tab closes and the vault reads
+/// refresh. On failure nothing changes except [noteDeleteErrorProvider]; an
+/// unreachable vault server shows the guard's snackbar instead.
 ///
 /// Takes the [container] rather than a `WidgetRef`: the note menu is gone by
 /// the time the person answers the dialog.
@@ -140,24 +144,24 @@ Future<void> confirmAndDeleteNote(
     context: context,
     builder: (_) => _DeleteNoteDialog(title: note.title),
   );
-  if (confirmed != true) return;
+  if (confirmed != true || !context.mounted) return;
 
-  final cli = container.read(memexCliProvider);
-  final vaultPath = container.read(currentVaultProvider).localPath;
-  if (cli == null || vaultPath == null) return;
+  final access = container.read(vaultAccessProvider);
+  if (access == null || !access.canWrite) return;
   final errors = container.read(noteDeleteErrorProvider.notifier);
   final version =
       container.read(editorControllerProvider).lastSavedVersion ?? note.version;
+  final NoteDeleteResult? deleted;
   try {
-    await cli.deleteNote(
-      vaultPath: vaultPath,
-      noteId: note.id,
-      expectedVersion: version,
+    deleted = await guardVaultWrite(
+      context,
+      () => access.notes.deleteNote(noteId: note.id, expectedVersion: version),
     );
   } on MemexException catch (e) {
     errors.state = (noteId: note.id, message: e.message);
     return;
   }
+  if (deleted == null) return;
   errors.state = null;
   container.read(tabsProvider.notifier).close(NoteTab(note.id));
   container.read(vaultRevisionProvider.notifier).state++;
