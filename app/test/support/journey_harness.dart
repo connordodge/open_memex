@@ -11,7 +11,7 @@
 // - the `memex` binary: FakeMemexCli (or none), picked by the configured
 //   binary path when [pumpJourneyApp] gets `clis`;
 // - app focus, app exit and the native window title.
-// No hostedVaultsEnabledProvider override exists: hosted vaults are on.
+// No rollout flag exists: hosted vaults are on.
 import 'dart:async';
 import 'dart:io';
 
@@ -212,6 +212,8 @@ Future<JourneyApp> pumpJourneyApp(
       windowTitleProvider.overrideWithValue(title),
       appExitHostProvider.overrideWithValue(exitHost),
       appFocusProvider.overrideWith(() => FakeAppFocus()),
+      // The app root's own seam wiring, as main() spreads it.
+      ...appRootOverrides,
       ...overrides,
     ],
   );
