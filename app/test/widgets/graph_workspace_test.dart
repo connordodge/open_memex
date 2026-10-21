@@ -13,6 +13,7 @@ import 'package:open_memex_app/src/state/tabs_state.dart';
 
 import '../support/app_harness.dart';
 import '../support/fake_vault_db.dart';
+import '../support/graph_access_doubles.dart';
 import '../support/graph_seeds.dart';
 
 const _graphView = Key('graph-view');
@@ -27,10 +28,13 @@ Key _graphTabChip(String scopeId) => Key('tab-graph-$scopeId');
 WidgetRef _ref(WidgetTester tester) =>
     tester.element(find.byType(Workspace)) as WidgetRef;
 
-Future<WorkspaceHarness> _pump(WidgetTester tester) {
+Future<WorkspaceHarness> _pump(
+  WidgetTester tester, {
+  List<Override> overrides = const [],
+}) {
   final db = FakeVaultDb.v5();
   seedGraphFixture(db);
-  return pumpWorkspace(tester, db: db);
+  return pumpWorkspace(tester, db: db, overrides: overrides);
 }
 
 Future<void> _openGraph(WidgetTester tester, GraphScope scope) async {
@@ -270,6 +274,129 @@ void main() {
         await _closeMenu(tester);
         await _openNoteMenuFor(tester, G.day0906);
         expect(find.byKey(_menuOpenGraph), findsOneWidget);
+      },
+    );
+  });
+
+  // WI #88 (W4) AC7: the chip reads names through VaultAccess. The access
+  // doubles rename or hide a folder or note that the database still holds,
+  // so a chip read from vaultDbProvider shows the database name instead.
+  group('Graph tab chip through VaultAccess (WI 88)', () {
+    testWidgets(
+      'the Graph tab chip reads the folder name through VaultAccess',
+      (tester) async {
+        await _pump(
+          tester,
+          overrides: [
+            wi88RewritingAccessOverride(
+              folderNames: {G.projects: 'Projects via access'},
+            ),
+          ],
+        );
+        await _openGraph(tester, const GraphScope.folder(G.projects));
+        expect(
+          _chipText('folder:${G.projects}', 'Graph · Projects via access'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets('the Graph tab chip reads the note title through VaultAccess', (
+      tester,
+    ) async {
+      await _pump(
+        tester,
+        overrides: [
+          wi88RewritingAccessOverride(
+            noteTitles: {G.alpha: 'Alpha via access'},
+          ),
+        ],
+      );
+      await _openGraph(tester, const GraphScope.topic(G.alpha));
+      expect(
+        _chipText('topic:${G.alpha}', 'Graph · Alpha via access'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets(
+      'a Smart Folder Graph tab chip reads Graph · and the scope id when the folder is gone',
+      (tester) async {
+        await _pump(
+          tester,
+          overrides: [
+            wi88RewritingAccessOverride(hiddenFolders: {G.projects}),
+          ],
+        );
+        await _openGraph(tester, const GraphScope.folder(G.projects));
+        expect(
+          _chipText('folder:${G.projects}', 'Graph · ${G.projects}'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'a topic Graph tab chip reads Graph · and the scope id when the note is gone',
+      (tester) async {
+        await _pump(
+          tester,
+          overrides: [
+            wi88RewritingAccessOverride(hiddenNotes: {G.alpha}),
+          ],
+        );
+        await _openGraph(tester, const GraphScope.topic(G.alpha));
+        expect(
+          _chipText('topic:${G.alpha}', 'Graph · ${G.alpha}'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'the Whole vault Graph tab chip reads Graph · Whole vault through VaultAccess',
+      (tester) async {
+        await _pump(
+          tester,
+          overrides: [
+            wi88RewritingAccessOverride(hiddenFolders: {G.projects}),
+          ],
+        );
+        await _openGraph(tester, const GraphScope.vault());
+        expect(_chipText('vault:all', 'Graph · Whole vault'), findsOneWidget);
+        expect(find.byKey(_graphView), findsOneWidget);
+        expect(
+          find.byKey(const Key('graph-hull-${G.projects}')),
+          findsNothing,
+          reason: 'the graph body reads Smart Folders through VaultAccess too',
+        );
+        expect(
+          find.byKey(const Key('graph-hull-${G.archive}')),
+          findsOneWidget,
+        );
+      },
+    );
+  });
+
+  // WI #88 (W4) AC9: opening a note from a node focuses an open tab.
+  group('opening a node focuses an open tab (WI 88)', () {
+    testWidgets(
+      'tapping a graph node focuses the tab of a note that is already open',
+      (tester) async {
+        final h = await _pump(tester);
+        h.read(tabsProvider.notifier).openOrFocus(const NoteTab(G.beta));
+        await pumpFrames(tester);
+        await _openGraph(tester, const GraphScope.topic(G.alpha));
+        await pumpFrames(tester, frames: 20);
+        final before = h.read(tabsProvider).tabs;
+
+        await tester.tap(find.byKey(const Key('graph-node-${G.beta}')));
+        await pumpFrames(tester);
+
+        final tabs = h.read(tabsProvider);
+        expect(tabs.tabs, before, reason: 'no second tab for the same note');
+        expect(tabs.activeTab, const NoteTab(G.beta));
+        expect(find.byKey(_graphView), findsNothing);
       },
     );
   });
