@@ -220,6 +220,81 @@ void main() {
       expect(d.edges.first.label, isNull);
     });
 
+    test('hosted canvas reads throw when a timestamp is absent', () async {
+      // Reads parse strictly, like VaultDb: only the write codec defaults
+      // absent timestamps to 0.
+      // (read, nested list or null, the field the response lacks)
+      const cases = <(String, String?, String)>[
+        ('list', 'canvases', 'created_at'),
+        ('list', 'canvases', 'updated_at'),
+        ('detail', null, 'created_at'),
+        ('detail', null, 'updated_at'),
+        ('detail', 'nodes', 'placed_at'),
+      ];
+      for (final (read, nested, field) in cases) {
+        final label = '$read ${nested ?? ''} $field';
+        final fixture = read == 'list'
+            ? 'list_canvases.json'
+            : 'get_canvas.json';
+        final json =
+            jsonDecode(jsonEncode(_responseJson(fixture)))
+                as Map<String, Object?>;
+        final holder = nested == null
+            ? json
+            : (json[nested]! as List).cast<Map<String, Object?>>().first;
+        expect(holder.remove(field), isA<int>(), reason: label);
+        final env = _env(rows: false);
+        if (read == 'list') {
+          env.server.route('GET', '$_wi84Base/canvases', json: json);
+          await expectLater(
+            env.canvas.listCanvases(),
+            throwsA(anything),
+            reason: label,
+          );
+        } else {
+          env.server.route(
+            'GET',
+            '$_wi84Base/canvases/$_wi84Canvas',
+            json: json,
+          );
+          await expectLater(
+            env.canvas.getCanvasDetail(_wi84Canvas),
+            throwsA(anything),
+            reason: label,
+          );
+        }
+      }
+    });
+
+    test(
+      'hosted canvas read errors carry the canvas ls and canvas get labels',
+      () async {
+        final env = _env(rows: false);
+        final body = {
+          'error': {'code': 'internal', 'message': 'disk on fire'},
+        };
+        env.server.route('GET', '$_wi84Base/canvases', status: 500, json: body);
+        env.server.route(
+          'GET',
+          '$_wi84Base/canvases/$_wi84Canvas',
+          status: 500,
+          json: body,
+        );
+        final ls = await _outcome(env.canvas.listCanvases());
+        _expectSameException(ls, _cliFailure('canvas ls', body));
+        expect(
+          (ls! as MemexException).message,
+          startsWith('canvas ls failed: '),
+        );
+        final get = await _outcome(env.canvas.getCanvasDetail(_wi84Canvas));
+        _expectSameException(get, _cliFailure('canvas get', body));
+        expect(
+          (get! as MemexException).message,
+          startsWith('canvas get failed: '),
+        );
+      },
+    );
+
     test('hosted getCanvasDetail rethrows every error but not_found', () async {
       final env = _env(rows: false);
       env.server.route(
@@ -239,6 +314,28 @@ void main() {
       expect(gone, isA<MemexException>());
       expect((gone! as MemexException).code, 'vault_not_found');
     });
+  });
+
+  test('hosted canvas paths percent-encode the canvas and note ids', () async {
+    const canvasId = 'map/one two?#';
+    const noteId = 'note/1 2?';
+    const canvasPath = '$_wi84Base/canvases/map%2Fone%20two%3F%23';
+    final env = _env(rows: false);
+
+    await _outcome(env.canvas.getCanvasDetail(canvasId));
+    expect(env.last.url.path, canvasPath);
+    expect(env.last.url.query, isEmpty);
+    expect(env.last.url.fragment, isEmpty);
+
+    await _outcome(env.canvas.addToCanvas(canvasId: canvasId, noteId: noteId));
+    expect(env.last.url.path, '$canvasPath/nodes');
+    expect(env.lastBody, {'note_id': noteId, 'x': 0.0, 'y': 0.0});
+
+    await _outcome(
+      env.canvas.moveNode(canvasId: canvasId, noteId: noteId, x: 1, y: 2),
+    );
+    expect(env.last.url.path, '$canvasPath/nodes/note%2F1%202%3F');
+    expect(env.last.url.query, isEmpty);
   });
 
   group('createCanvas', () {
