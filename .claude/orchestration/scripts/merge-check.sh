@@ -1,7 +1,7 @@
 #!/bin/bash
 # merge-check.sh — open_memex merged-tree gate.
 #
-#   merge-check.sh <pr> [--base <ref>] [--complexity auto|routine|tricky] [--skip-suites]
+#   merge-check.sh <pr> [--base <ref>] [--complexity auto|routine|tricky] [--skip-suites] [--ac-map-only]
 #                       [--pr-body-file <f>] [--pr-ref <commit>]
 #
 # Stages PR <pr> onto <base> (default origin/main) in the gate worktree $MAIN/worktrees/_gate
@@ -42,25 +42,27 @@
 #                   complexity:tricky / complexity:routine label, then a "Complexity: tricky"
 #                   body line; with no signal it defaults to tricky
 #   --skip-suites   skip the suites (fast iteration only; merge-pr.sh refuses it)
+#   --ac-map-only   implementer PR-body lint: run AC MAP, then exit (0 = AC MAP OK/SKIP); merge-pr.sh refuses it
 #   --pr-body-file  use this file as the PR body (testing)
 #   --pr-ref        use this commit as the PR head instead of fetching pull/<pr>/head (testing)
 #
 # Env: ORCH_SCRATCH (log dir root, default mktemp -d), ORCH_REPO (owner/name),
 #      FMT_MODE (ratchet | strict | off), CLIPPY_DENY (1), SUITE_TIMEOUT (secs per suite, 1800), RED_TIMEOUT (secs per run, 900),
-#      MUTATION_MAX (16, cap 20), MUTATION_TIMEOUT (900), MUTATION_THRESHOLD (25).
+#      MUTATION_OFF (1 skips the MUTATION stage), MUTATION_MAX (16, cap 20), MUTATION_TIMEOUT (900), MUTATION_THRESHOLD (25).
 # Output: one CAPS line per check, "TIME <section>: <n>s" per section, then
 #         "GATE INFO pr=.. head=.. base=.. wi=.. link=.. complexity=.." and a final
 #         "GATE PASS|FAIL" line.
 # Exit: 0 PASS, 1 FAIL. (Never 2: no CI exists to wait for.)
 set -uo pipefail
 
-PR=""; BASE_REF=origin/main; COMPLEXITY=auto; SKIP_SUITES=0; BODY_FILE=""; PR_REF=""
+PR=""; BASE_REF=origin/main; COMPLEXITY=auto; SKIP_SUITES=0; AC_MAP_ONLY=0; BODY_FILE=""; PR_REF=""
 die_usage() { echo "GATE FAIL: usage: $*"; exit 1; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --base) BASE_REF=${2:-}; [ -n "$BASE_REF" ] || die_usage "--base needs a ref"; shift 2 ;;
     --complexity) COMPLEXITY=${2:-}; shift 2 ;;
     --skip-suites) SKIP_SUITES=1; shift ;;
+    --ac-map-only) AC_MAP_ONLY=1; shift ;;
     --pr-body-file) BODY_FILE=${2:-}; [ -f "$BODY_FILE" ] || die_usage "--pr-body-file $BODY_FILE not found"; shift 2 ;;
     --pr-ref) PR_REF=${2:-}; [ -n "$PR_REF" ] || die_usage "--pr-ref needs a commit"; shift 2 ;;
     -h|--help) sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -127,6 +129,11 @@ crate_name() { # crate_name crates/<dir> -> [package] name
 reset_gate() {
   [ -d "$G" ] || return 0
   ( cd "$G" || exit 0
+    # An interrupted gate can leave index.lock behind; clear it only when no git process runs in $G.
+    lk=$(git rev-parse --git-path index.lock 2>/dev/null)
+    if [ -n "$lk" ] && [ -e "$lk" ] && ! pgrep -f "git .*$G" >/dev/null 2>&1; then
+      echo "GATE NOTE: removed a stale $lk"; rm -f "$lk"
+    fi
     git merge --abort >/dev/null 2>&1
     git reset -q --hard >/dev/null 2>&1
     git clean -qfd >/dev/null 2>&1   # keeps ignored target/ and app/.dart_tool/ warm between gates
@@ -137,18 +144,28 @@ reset_gate() {
 # ---- lock (one gate at a time: shared worktree) ----------------------------------------------
 LOCK=$MAIN/worktrees/.gate-lock
 HAVE_LOCK=0
+PRIVATE_G=0
 mkdir -p "$MAIN/worktrees"
 waited=0
-until mkdir "$LOCK" 2>/dev/null; do
+# --ac-map-only is a seconds-long PR-body lint: it uses its own throwaway worktree and never
+# queues behind (or blocks) a full gate on the shared one.
+if [ "$AC_MAP_ONLY" = 1 ]; then
+  G=$(mktemp -d "${TMPDIR:-/tmp}/acmap.XXXXXX")/gate; PRIVATE_G=1
+fi
+until [ "$PRIVATE_G" = 1 ] || mkdir "$LOCK" 2>/dev/null; do
   p=$(cat "$LOCK/pid" 2>/dev/null)
   if [ -n "$p" ] && ! kill -0 "$p" 2>/dev/null; then rm -rf "$LOCK"; continue; fi
   if [ -z "$p" ] && [ -n "$(find "$LOCK" -maxdepth 0 -mmin +2 2>/dev/null)" ]; then rm -rf "$LOCK"; continue; fi
   [ $((waited % 120)) -eq 0 ] && echo "GATE WAIT: another gate holds $LOCK (pid ${p:-?}); waiting ${waited}s"
   sleep 10; waited=$((waited + 10))
 done
-echo $$ > "$LOCK/pid"; HAVE_LOCK=1
+[ "$PRIVATE_G" = 1 ] || { echo $$ > "$LOCK/pid"; HAVE_LOCK=1; }
 cleanup() {
-  reset_gate
+  if [ "$PRIVATE_G" = 1 ]; then
+    git -C "$MAIN" worktree remove --force "$G" >/dev/null 2>&1; rm -rf "$(dirname "$G")"
+  else
+    reset_gate
+  fi
   [ "$HAVE_LOCK" = 1 ] && rm -rf "$LOCK"
 }
 trap cleanup EXIT
@@ -353,6 +370,10 @@ if ! ac_map; then
   verdict_fail "AC MAP" "schema, fmt, analyze, clippy, suites, mutation and red-on-main"
 fi
 section_end
+if [ "$AC_MAP_ONLY" = 1 ]; then
+  echo "AC MAP ONLY: PR-body lint passed; the other checks did not run. This is NOT a mergeable verdict"
+  exit 0
+fi
 
 # ---- SCHEMA -------------------------------------------------------------------------------------
 section SCHEMA
@@ -495,6 +516,7 @@ changed_tests_in() { # changed (A/M) tests that can kill mutants of <pkg>, repo-
 }
 mkey() { echo "$1" | tr -c 'A-Za-z0-9\n' '_'; }
 mutation() {
+  if [ "${MUTATION_OFF:-0}" = 1 ]; then echo "MUTATION SKIP: paused (MUTATION_OFF=1, Connor 2026-10-20)"; return 0; fi
   if [ "$COMPLEXITY" != tricky ]; then echo "MUTATION SKIP: complexity $COMPLEXITY (tricky only)"; return 0; fi
   local MS=$SCRIPT_DIR/mutation-spot.sh max=${MUTATION_MAX:-16} pkgs="" p cnt sites="" total=0 k=0 s=0 out budget surv="" cands="" tests b=0 left progress
   [ "$max" -gt 20 ] && max=20
