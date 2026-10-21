@@ -6,9 +6,11 @@ import '../state/canvas_state.dart';
 import '../state/graph_state.dart';
 import '../state/revision_poller.dart';
 import '../state/tabs_state.dart';
+import '../state/vault_access_state.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
+import '../vault_access/errors.dart';
 import '../widgets/canvas_view.dart';
 import '../widgets/graph/graph_view.dart';
 import '../widgets/note_editor.dart';
@@ -59,15 +61,17 @@ class Workspace extends ConsumerWidget {
   }
 
   Future<void> _createNote(BuildContext context, WidgetRef ref) async {
-    final cli = ref.read(memexCliProvider);
-    final vaultPath = ref.read(currentVaultProvider).localPath;
-    if (cli == null || vaultPath == null) return;
+    final access = ref.read(vaultAccessProvider);
+    if (access == null || !access.canWrite) return;
     try {
-      final id = await cli.addNote(
-        vaultPath: vaultPath,
-        title: 'Untitled',
-        contentMd: '# Untitled\n\n',
+      final id = await guardVaultWrite(
+        context,
+        () => access.notes.addNote(
+          title: 'Untitled',
+          contentMd: '# Untitled\n\n',
+        ),
       );
+      if (id == null) return;
       ref.read(vaultRevisionProvider.notifier).state++;
       ref.read(tabsProvider.notifier).openOrFocus(NoteTab(id));
     } catch (e) {
