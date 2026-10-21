@@ -7,6 +7,8 @@ import 'daily_state.dart';
 import 'editor_controller.dart';
 import 'tabs_state.dart';
 import 'today_state.dart';
+import 'vault_access_state.dart';
+import '../vault_access/vault_access.dart';
 import 'vault_state.dart';
 
 /// The body of a topic note the app creates: a heading with its title.
@@ -41,24 +43,27 @@ class TopicNotLinkedException implements Exception {
 /// A failed `add` throws its [MemexException]. When only the footer call
 /// fails the topic note exists, and a [TopicNotLinkedException] (with
 /// [linkTarget] in its message) is thrown.
+///
+/// [onTopicCreated] runs right after the topic note exists, before the footer
+/// call, so a caller can tell "nothing created" from "created but the footer
+/// call failed" for failures that are not a [MemexException].
 Future<({String topicId, FooterAddResult footer})> createLinkedTopic(
-  MemexCli cli, {
-  required String vaultPath,
+  VaultAccess access, {
   required String title,
   required String contentMd,
   required String dailyNoteId,
   required String linkTarget,
+  void Function()? onTopicCreated,
 }) async {
-  final topicId = await cli.addNote(
-    vaultPath: vaultPath,
+  final topicId = await access.notes.addNote(
     title: title,
     contentMd: contentMd,
     role: 'topic',
   );
+  onTopicCreated?.call();
   final FooterAddResult footer;
   try {
-    footer = await cli.addFooterChip(
-      vaultPath: vaultPath,
+    footer = await access.daily.addFooterChip(
       dailyNoteId: dailyNoteId,
       topicNoteId: topicId,
     );
@@ -76,12 +81,14 @@ Future<({String topicId, FooterAddResult footer})> createLinkedTopic(
 ///
 /// A failure throws the [MemexException] (or the error) with no tab opened;
 /// the revision is bumped when something was created on the way (a daily
-/// note, or the topic note when only its footer chip failed, which throws a
-/// [TopicNotLinkedException]).
+/// note, or the topic note when its footer chip failed: a
+/// [TopicNotLinkedException], or any other failure such as
+/// `VaultUnreachableException`).
 Future<String> createTopicFromSidebar(WidgetRef ref, String title) async {
   final cli = ref.read(memexCliProvider);
   final vaultPath = ref.read(currentVaultProvider).localPath;
-  if (cli == null || vaultPath == null) {
+  final access = ref.read(vaultAccessProvider);
+  if (cli == null || vaultPath == null || access == null || !access.canWrite) {
     throw MemexException('The memex CLI is not available.');
   }
   var createdDaily = false;
@@ -97,12 +104,14 @@ Future<String> createTopicFromSidebar(WidgetRef ref, String title) async {
       createdDaily = !daily.existed;
     }
     final created = await createLinkedTopic(
-      cli,
-      vaultPath: vaultPath,
+      access,
       title: title,
       contentMd: topicNoteBody(title),
       dailyNoteId: dailyId,
       linkTarget: 'today',
+      // The topic note exists from here on: whatever the footer call does,
+      // the tree must see it.
+      onTopicCreated: () => createdDaily = true,
     );
     createdDaily = false;
     ref.read(vaultRevisionProvider.notifier).state++;
@@ -124,15 +133,20 @@ Future<String> createTopicFromSidebar(WidgetRef ref, String title) async {
 /// base and keeps the unsaved [content] (and title) on top of it, so the next
 /// save is not a version conflict. [fallback] is also the stored note's
 /// stand-in when the vault cannot be read.
-void rebaseEditorOnVersion(
+Future<void> rebaseEditorOnVersion(
   WidgetRef ref, {
   required Note fallback,
   required int version,
   required String content,
-}) {
+}) async {
   final editor = ref.read(editorControllerProvider.notifier);
   final title = ref.read(editorControllerProvider).title;
-  final stored = ref.read(vaultDbProvider)?.getNote(fallback.id) ?? fallback;
+  final stored =
+      await ref.read(vaultAccessProvider)?.notes.getNote(fallback.id) ??
+      fallback;
+  // The user may have opened another note while the read was in flight:
+  // loading the first note back would clobber the editor.
+  if (editor.activeNoteId != fallback.id) return;
   editor.loadNote(
     Note(
       id: stored.id,
