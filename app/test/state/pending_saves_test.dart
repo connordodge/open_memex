@@ -2579,4 +2579,44 @@ void main() {
       },
     );
   });
+
+  // Fix round 5 (verifier finding, lead ruling): a plain save never goes out
+  // while an earlier write of the note is in flight.
+  group('an edit typed during a slow save waits for it', () {
+    test(
+      'an edit typed during a slow save is sent after it lands on the version it stored and never conflicts with it',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        final slow = Completer<void>();
+        h.notes.writeGate = slow;
+        await h.typeAndSave('new text');
+        expect(h.notes.updatesOf(_planId), hasLength(1));
+        expect(h.state.status, SaveStatus.saving);
+
+        // Typed during the slow save; its debounce fires before it lands.
+        await h.typeAndSave('newer text');
+
+        expect(h.notes.updatesOf(_planId), hasLength(1));
+        expect(h.state.contentMd, 'newer text');
+        expect(h.state.status, SaveStatus.dirty);
+        _expectNoErrorState(h);
+
+        h.notes.writeGate = null;
+        slow.complete();
+        await pumpEventQueue();
+
+        expect(h.notes.updatesOf(_planId), hasLength(2));
+        expect(h.notes.writes.last, 'updateNote:$_planId@4');
+        expect(h.notes.updateBodies.last, 'newer text');
+        expect(h.stored(_planId).contentMd, 'newer text');
+        expect(h.stored(_planId).version, 5);
+        expect(h.state.contentMd, 'newer text');
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 5);
+        _expectNoErrorState(h);
+        expect(h.queue, isEmpty);
+      },
+    );
+  });
 }
