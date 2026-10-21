@@ -516,8 +516,11 @@ fn quote_bare_wikilinks(s: &str) -> String {
                 continue;
             }
         }
-        out.push(c as char);
-        i += 1;
+        // Copy the whole UTF-8 char: `i` is always on a char boundary, since
+        // every branch above steps over ASCII bytes or a whole `[[…]]` token.
+        let ch = s[i..].chars().next().expect("i is on a char boundary");
+        out.push(ch);
+        i += ch.len_utf8();
     }
     out
 }
