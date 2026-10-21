@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'src/screens/vault_picker.dart';
 import 'src/screens/workspace.dart';
 import 'src/state/settings.dart';
+import 'src/state/vault_open_controller.dart';
 import 'src/state/vault_state.dart';
 import 'src/theme/app_theme.dart';
 
@@ -18,11 +19,27 @@ Future<void> main() async {
   );
 }
 
-class OpenMemexApp extends ConsumerWidget {
+class OpenMemexApp extends ConsumerStatefulWidget {
   const OpenMemexApp({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<OpenMemexApp> createState() => _OpenMemexAppState();
+}
+
+class _OpenMemexAppState extends ConsumerState<OpenMemexApp> {
+  @override
+  void initState() {
+    super.initState();
+    // Launch reopen: the last vault is already open through
+    // `currentVaultProvider`'s default, so the first frame is unchanged.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ref.read(vaultOpenControllerProvider).launchReopen();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final theme = buildOmTheme();
     return MaterialApp(
       title: 'Open Memex',

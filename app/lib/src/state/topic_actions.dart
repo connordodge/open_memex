@@ -80,7 +80,7 @@ Future<({String topicId, FooterAddResult footer})> createLinkedTopic(
 /// [TopicNotLinkedException]).
 Future<String> createTopicFromSidebar(WidgetRef ref, String title) async {
   final cli = ref.read(memexCliProvider);
-  final vaultPath = ref.read(currentVaultProvider);
+  final vaultPath = ref.read(currentVaultProvider).localPath;
   if (cli == null || vaultPath == null) {
     throw MemexException('The memex CLI is not available.');
   }
