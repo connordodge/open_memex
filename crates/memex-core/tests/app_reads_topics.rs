@@ -363,3 +363,18 @@ fn smart_folder_members_carry_the_current_note_title() {
         "a person-created folder is pinned"
     );
 }
+
+// Parity of failure with the app's `TopicsReads.unsortedNotes`
+// (`r['role'] as String?`): a role that is valid JSON but not a string
+// fails the read instead of being dropped or stringified.
+#[test]
+fn unsorted_fails_on_a_non_string_role_as_the_app_read_does() {
+    for frontmatter in [r#"{"role": 5}"#, r#"{"role": true}"#, r#"{"role": 2.5}"#] {
+        let (_dir, vault) = fresh();
+        note(&vault, N_A, "Odd Role", frontmatter);
+        assert!(
+            unsorted_notes(&vault).is_err(),
+            "frontmatter {frontmatter} must fail the read"
+        );
+    }
+}
