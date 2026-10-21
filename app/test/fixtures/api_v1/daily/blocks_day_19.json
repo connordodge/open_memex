@@ -1,0 +1,24 @@
+{
+  "blocks": [
+    {
+      "block_id": "et8g8y",
+      "created_at": 1760000300000,
+      "created_version": 1,
+      "end_byte": 25,
+      "ord": 0,
+      "source": "person",
+      "start_byte": 0,
+      "text": "Sketched a crafting tree."
+    },
+    {
+      "block_id": "v4vv62",
+      "created_at": 1760000300000,
+      "created_version": 1,
+      "end_byte": 55,
+      "ord": 1,
+      "source": "person",
+      "start_byte": 27,
+      "text": "Prices felt too low in town."
+    }
+  ]
+}
