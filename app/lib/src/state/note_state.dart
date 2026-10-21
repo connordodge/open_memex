@@ -64,8 +64,28 @@ T watchVaultValue<T>(
   return scoped == null ? empty : scoped.value;
 }
 
+/// The fresh data of the async vault read [future] (a provider's `.future`)
+/// for the vault open when it is called, for event handlers: awaits the read,
+/// so a read nothing listens to is reloaded first when its inputs (the date,
+/// the vault revision) changed since it last loaded. [empty] when the read
+/// fails or was loaded for another vault.
+Future<T> awaitVaultValue<T>(
+  WidgetRef ref,
+  ProviderListenable<Future<VaultScoped<T>>> future,
+  T empty,
+) async {
+  final vault = ref.read(currentVaultProvider);
+  try {
+    final scoped = await ref.read(future);
+    return scoped.vault == vault ? scoped.value : empty;
+  } on Exception {
+    return empty;
+  }
+}
+
 /// [watchVaultValue] without subscribing, for event handlers: the current
-/// vault's data of [provider] right now, or [empty].
+/// vault's data of [provider] right now, or [empty]. Can be stale when no
+/// widget listens to [provider]; use [awaitVaultValue] then.
 T readVaultValue<T>(
   WidgetRef ref,
   ProviderListenable<AsyncValue<VaultScoped<T>>> provider,

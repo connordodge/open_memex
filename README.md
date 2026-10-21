@@ -15,6 +15,9 @@ Open-source, local-first, AI-native knowledge base. The user's notes live on the
   - `memex links --vault <path> --note-id <id> [--dir in|out|both] [--kind <k>]` — print the link tree
   - `memex add-link --vault <path> --from <id> --to <id> [--kind <k>] [--label <s>]` — insert a wikilink, idempotent
   - `memex serve --vault <path>` — run as an MCP server over stdio (for Claude Desktop, etc.)
+  - `memex serve --root <dir> --listen <host:port>` — run the vault server: serve every vault in `<dir>` over HTTP to the app and agents on your trusted LAN or tailnet. `--listen` has no default. See [`docs/hosted-vault.md`](docs/hosted-vault.md) for a NAS, Linux or an always-on Mac
+  - `memex serve --remote <url>` — bridge stdio MCP to a hosted vault (`<server-url>/vaults/<name>/mcp`, token from `MEMEX_ACCESS_TOKEN`), for Claude Desktop and Raycast
+  - `memex vault check --vault <path>` — exit 0 when the folder is safe for a vault (not on a network drive)
   - `memex add --role daily|topic` — create a daily note or a topic note (`memex add --vault <path> --title 2026-09-05 --role daily`)
   - `memex append --vault <path> [--date YYYY-MM-DD] [TEXT]` — quick entry: append text to a daily note (today by default; text from the argument or stdin) and print the new block ids, the content version and the day's prior review state as JSON. The one CLI write meant for automation (Raycast, Alfred, Shortcuts, shell aliases).
   - `memex prompt review` / `memex prompt capture` — print the agent prompt texts
@@ -115,7 +118,7 @@ On first launch, click "Open existing vault…" and pick the same folder, or "Cr
 
 ### Claude Desktop integration
 
-See [`docs/claude-desktop-setup.md`](docs/claude-desktop-setup.md) for the config snippet and troubleshooting, and [`docs/daily-review.md`](docs/daily-review.md) for the review and capture prompts, Claude Code and Raycast setup, `memex append` and recurring runs. Both the Flutter app and Claude can be pointed at the same vault simultaneously — SQLite WAL handles concurrent access.
+See [`docs/claude-desktop-setup.md`](docs/claude-desktop-setup.md) for the config snippet and troubleshooting, and [`docs/daily-review.md`](docs/daily-review.md) for the review and capture prompts, Claude Code and Raycast setup, `memex append` and recurring runs. Both the Flutter app and Claude can be pointed at the same vault simultaneously — SQLite WAL handles concurrent access. To reach a vault on another machine, run a vault server there and point Claude Desktop at it with `memex serve --remote <url>`; see [`docs/hosted-vault.md`](docs/hosted-vault.md).
 
 ## Repo layout
 
@@ -141,7 +144,7 @@ cd app && flutter analyze && flutter test
 
 ## What's deferred
 
-- Sync / CRDTs (single device only)
+- CRDTs (concurrent edits to one note are not merged automatically; a hosted vault is served by one vault server, see [`docs/hosted-vault.md`](docs/hosted-vault.md))
 - Mobile platforms
 - Windows / Linux desktop (Flutter app is macOS-only for now)
 - Web / audio / video / image ingestion
