@@ -4,11 +4,13 @@
 // Wi89Canvas serves, holds and records the canvas calls, Wi89Notes records the
 // two link writes. The view is pumped bare (not in the workspace).
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/canvas_state.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/vault_access/errors.dart';
 import 'package:open_memex_app/src/vault_access/vault_async_view.dart';
+import 'package:open_memex_app/src/widgets/canvas_view.dart';
 
 import '../support/canvas_robot.dart';
 import '../support/canvas_seeds.dart';
@@ -490,6 +492,66 @@ void main() {
     });
 
     testWidgets(
+      'closing the canvas view while the link popover is open adds no link and throws nothing',
+      (tester) async {
+        tester.view.physicalSize = const Size(800, 600);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.reset);
+        final shown = ValueNotifier<bool>(true);
+        addTearDown(shown.dispose);
+        final notes = Wi89Notes();
+        final container = ProviderContainer(
+          overrides: [
+            canvasAnimationConfigProvider.overrideWithValue(
+              const CanvasAnimationConfig(
+                zoomDuration: Duration.zero,
+                persistDebounce: wi89Debounce,
+              ),
+            ),
+            ...wi89DoubleOverrides(
+              canvases: {_a: _board()},
+              notes: {_a: notes},
+              first: _a,
+            ),
+          ],
+        );
+        addTearDown(container.dispose);
+        await tester.pumpWidget(
+          UncontrolledProviderScope(
+            container: container,
+            child: MaterialApp(
+              home: Scaffold(
+                body: ValueListenableBuilder<bool>(
+                  valueListenable: shown,
+                  builder: (_, on, _) =>
+                      on ? const CanvasView(canvasId: _id) : const SizedBox(),
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+        final robot = CanvasRobot(tester, _id);
+        await robot.startLink(C89.alpha, C89.beta);
+        expect(find.byKey(const Key('link-popover')), findsOneWidget);
+
+        shown.value = false;
+        await tester.pump();
+        expect(find.byKey(Key('canvas-view-$_id')), findsNothing);
+        expect(find.byKey(const Key('link-popover')), findsOneWidget);
+
+        await tester.tap(find.byKey(const Key('link-popover-confirm')));
+        await robot.settle();
+
+        expect(tester.takeException(), isNull);
+        expect(notes.addedLinks, isEmpty);
+        expect(container.read(vaultRevisionProvider), 0);
+        expect(find.byType(SnackBar), findsNothing);
+      },
+    );
+
+    testWidgets(
       'a failed link add shows Could not add link with the error and bumps nothing',
       (tester) async {
         final h = await _pumpBoard(tester);
@@ -688,6 +750,25 @@ void main() {
     ]) {
       testWidgets(name, (tester) async {
         final h = await _pumpBoard(tester, canWrite: false);
+
+        await write.run(tester, h);
+
+        expect(write.calls(h), 0);
+        expect(find.byType(SnackBar), findsNothing);
+        expect(h.revision, 0);
+      });
+    }
+  });
+
+  group('hosted vault without write access', () {
+    for (final (name, write) in [
+      ('on a hosted vault a node move is a silent no-op', _move),
+      ('on a hosted vault a note drop is a silent no-op', _drop),
+      ('on a hosted vault a link add is a silent no-op', _link),
+      ('on a hosted vault an edge update is a silent no-op', _edit),
+    ]) {
+      testWidgets(name, (tester) async {
+        final h = await _pumpBoard(tester, vault: _hostedA, canWrite: false);
 
         await write.run(tester, h);
 
