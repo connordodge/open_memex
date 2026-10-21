@@ -427,6 +427,40 @@ void main() {
     );
 
     test(
+      'a debounced save during an in-flight retry sends nothing and marks the editor dirty until the retry lands',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        await h.typeAndSave('new text');
+        final gate = Completer<void>();
+        h.notes.writeGate = gate;
+        await h.serverAnswers();
+        expect(h.state.status, SaveStatus.saving);
+
+        // The debounce of an edit typed during the retry fires before it
+        // lands.
+        await h.typeAndSave('newer text');
+
+        expect(h.notes.updatesOf(_planId), hasLength(2));
+        expect(h.state.status, SaveStatus.dirty);
+        _expectNoErrorState(h);
+        expect(h.queued(_planId)!.text, 'newer text');
+
+        h.notes.writeGate = null;
+        gate.complete();
+        await pumpEventQueue();
+        await h.fireDebounce();
+
+        expect(h.notes.updatesOf(_planId), hasLength(3));
+        expect(h.notes.writes.last, 'updateNote:$_planId@4');
+        expect(h.stored(_planId).contentMd, 'newer text');
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.queue, isEmpty);
+      },
+    );
+
+    test(
       'a retry that fails after typing during it queues the newer text',
       () async {
         final h = await _hosted(_plainVault());
