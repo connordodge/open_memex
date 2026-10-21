@@ -364,6 +364,12 @@ void main() {
         w.notes
           ..writeError = nasUnreachable()
           ..readError = nasUnreachable();
+        // The revision poll already saw the server unreachable.
+        w.h.container
+                .read(hostedConnectionStatusProvider(hostedServerId).notifier)
+                .state =
+            HostedConnectionStatus.unreachable;
+        await pumpFrames(tester);
 
         await w.open(_otherId);
 

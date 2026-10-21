@@ -864,6 +864,61 @@ void main() {
     );
   });
 
+  group('a save elsewhere that conflicts is merged (AC10)', () {
+    test(
+      'a virtual Today note resolved after the person left it merges its text when that save conflicts',
+      () async {
+        final db = _plainVault();
+        final gate = Completer<void>();
+        final cli = FakeMemexCli()
+          ..onUpdateWrites(db)
+          ..onAddDailyCreates(db, gate: gate);
+        final h = await _hosted(db, cli: cli);
+        h.c.read(tabsProvider.notifier).openToday(date: _today);
+        h.ctrl.loadNote(virtualTodayNote(_today));
+        await h.typeAndSave('Morning pages');
+        // Typed while the create is in flight, then the person leaves.
+        h.ctrl.onContentChanged('Morning pages\nMore.');
+        h.ctrl.loadNote(h.stored(_planId));
+        // The save elsewhere waits while an agent appends on the server.
+        final slow = Completer<void>();
+        h.notes.writeGate = slow;
+        gate.complete();
+        await pumpEventQueue();
+        expect(h.notes.updatesOf(createdDailyId), [
+          'updateNote:$createdDailyId@1',
+        ]);
+        _foreignWrite(
+          h.db,
+          createdDailyId,
+          assembleDailyBody('Morning pages\nAgent note.\n', const []),
+          2,
+        );
+        h.db.seedBlock(
+          createdDailyId,
+          'a-agent',
+          ord: 1,
+          text: 'Agent note.',
+          source: 'agent',
+          createdVersion: 2,
+        );
+        h.notes.writeGate = null;
+
+        slow.complete();
+        await pumpEventQueue();
+
+        final stored = h.stored(createdDailyId).contentMd;
+        expect(_count(stored, 'Morning pages'), 1);
+        expect(_count(stored, 'More.'), 1);
+        expect(_count(stored, 'Agent note.'), 1);
+        expect(h.queue, isEmpty);
+        // The open note is untouched.
+        expect(h.state.contentMd, 'old');
+        expect(h.state.status, SaveStatus.clean);
+      },
+    );
+  });
+
   group('the queue lists what is unsent (AC11)', () {
     test(
       'the queue lists each queued note with its title since time and server name and is empty once saved',
