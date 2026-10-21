@@ -362,8 +362,9 @@ void unawaited(Future<void> _) {}
 /// drives both the persistence file location and the `selectedNoteIdProvider`
 /// emission.
 final tabsProvider = StateNotifierProvider<TabsNotifier, TabsState>((ref) {
-  final vaultPath = ref.watch(currentVaultProvider);
-  final store = UiStateStore(vaultPath: vaultPath ?? '/dev/null');
+  final vaultPath = ref.watch(currentVaultProvider).localPath;
+  final store =
+      ref.watch(uiStateStoreProvider) ?? UiStateStore(vaultPath: '/dev/null');
   final notifier = TabsNotifier(
     store: store,
     onPersistedSelection: (noteId) {

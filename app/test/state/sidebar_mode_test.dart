@@ -29,7 +29,7 @@ ProviderContainer _container(String vaultPath) {
   final db = FakeVaultDb.v5();
   final c = ProviderContainer(
     overrides: [
-      currentVaultProvider.overrideWith((_) => vaultPath),
+      currentVaultProvider.overrideWith((_) => LocalVaultRef(vaultPath)),
       vaultDbProvider.overrideWithValue(db),
       memexCliProvider.overrideWithValue(null),
       clockProvider.overrideWithValue(FakeClock()),
@@ -209,7 +209,7 @@ void main() {
         await c.read(sidebarModeProvider.notifier).select(SidebarMode.topics);
 
         // Switch the open vault to b in the same app session.
-        c.read(currentVaultProvider.notifier).state = b.path;
+        c.read(currentVaultProvider.notifier).state = LocalVaultRef(b.path);
         expect(c.read(sidebarModeProvider), SidebarMode.days);
         expect(_uiStateFile(b.path).existsSync(), isFalse);
 
@@ -218,7 +218,7 @@ void main() {
         expect(other.read(sidebarModeProvider), SidebarMode.days);
 
         // Back on a, its Topics choice is still there.
-        c.read(currentVaultProvider.notifier).state = a.path;
+        c.read(currentVaultProvider.notifier).state = LocalVaultRef(a.path);
         expect(c.read(sidebarModeProvider), SidebarMode.topics);
       },
     );

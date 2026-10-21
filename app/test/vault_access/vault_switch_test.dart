@@ -16,8 +16,8 @@ import 'package:open_memex_app/src/vault_access/local/local_vault_access.dart';
 import 'package:open_memex_app/src/vault_access/vault_async_view.dart';
 import 'package:open_memex_app/src/vault_access/vault_scoped.dart';
 
-const _vaultA = '/tmp/om-70-vault-a';
-const _vaultB = '/tmp/om-70-vault-b';
+const _vaultA = LocalVaultRef('/tmp/om-70-vault-a');
+const _vaultB = LocalVaultRef('/tmp/om-70-vault-b');
 const _emptyText = 'no notes yet';
 const _facadeKey = Key('wi70-facade');
 
@@ -86,12 +86,12 @@ class _Wi70Switch {
   _Wi70Switch(this.container, this.notes);
 
   final ProviderContainer container;
-  final Map<String, _Wi70SwitchGatedNotes> notes;
+  final Map<VaultRef, _Wi70SwitchGatedNotes> notes;
 
   _Wi70SwitchGatedNotes get a => notes[_vaultA]!;
   _Wi70SwitchGatedNotes get b => notes[_vaultB]!;
 
-  void switchTo(String? vault) =>
+  void switchTo(VaultRef? vault) =>
       container.read(currentVaultProvider.notifier).state = vault;
 
   AsyncValue<VaultScoped<List<NoteListItem>>> get value =>
@@ -106,8 +106,8 @@ Future<_Wi70Switch> _pump(
   bool fixed = false,
 }) async {
   final notes = {
-    _vaultA: _Wi70SwitchGatedNotes(_vaultA),
-    _vaultB: _Wi70SwitchGatedNotes(_vaultB),
+    _vaultA: _Wi70SwitchGatedNotes(_vaultA.path),
+    _vaultB: _Wi70SwitchGatedNotes(_vaultB.path),
   };
   final container = ProviderContainer(
     overrides: [
@@ -116,8 +116,9 @@ Future<_Wi70Switch> _pump(
       memexCliProvider.overrideWithValue(null),
       vaultAccessProvider.overrideWith((ref) {
         final vault = ref.watch(currentVaultProvider);
-        if (vault == null) return null;
-        return LocalVaultAccess(vaultPath: vault, notes: notes[vault]);
+        final path = vault.localPath;
+        if (path == null) return null;
+        return LocalVaultAccess(vaultPath: path, notes: notes[vault]);
       }),
       _wi70HostedState.overrideWith((_) => hosted),
       vaultIsHostedProvider.overrideWith((ref) => ref.watch(_wi70HostedState)),
@@ -307,6 +308,45 @@ void main() {
     });
   }
 
+  for (final (name, hosted) in [
+    (
+      'a same-vault reload with an equal but non-identical VaultRef keeps the previous value',
+      false,
+    ),
+    (
+      'a same-vault reload with an equal but non-identical VaultRef keeps the previous value on a hosted vault',
+      true,
+    ),
+  ]) {
+    testWidgets(name, (tester) async {
+      final s = await _pump(tester, hosted: hosted);
+      s.a.gates.single.complete(_notes(['Alpha from A']));
+      await _drain(tester);
+      expect(s.value.valueOrNull?.vault, same(_vaultA));
+
+      // The same vault again as a new, equal ref (as a settings reload
+      // builds it), then a reload whose read stays pending.
+      final again = LocalVaultRef([_vaultA.path].join());
+      s.switchTo(again);
+      s.container.read(vaultRevisionProvider.notifier).state++;
+      await _drain(tester);
+
+      final current = s.container.read(currentVaultProvider);
+      expect(current, _vaultA);
+      expect(identical(current, _vaultA), isFalse);
+      expect(s.value.isLoading, isTrue);
+      expect(s.value.valueOrNull?.vault, same(_vaultA));
+      expect(find.text('Alpha from A'), findsOneWidget);
+      expect(find.text(_emptyText), findsNothing);
+      _expectNoSpinner();
+      expect(_facadeText(tester), 'facade:Alpha from A');
+      expect(
+        [for (final n in s.container.read(_wi70SwitchFacadeProvider)) n.title],
+        ['Alpha from A'],
+      );
+    });
+  }
+
   testWidgets(
     'vaultFacadeValue gives the empty value on first load and the data once loaded',
     (tester) async {
@@ -383,7 +423,7 @@ void main() {
 
   group('currentVaultData', () {
     // Built from run-time values so the VaultScoped constructor runs.
-    final vaultA = [_vaultA].join();
+    final vaultA = LocalVaultRef([_vaultA.path].join());
     final scopedA = VaultScoped<List<String>>(vaultA, ['row from A']);
 
     test('currentVaultData is null when there is no data', () {

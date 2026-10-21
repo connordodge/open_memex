@@ -111,7 +111,7 @@ List<Override> _overrides(
         UnsortedNoteRow(noteId: n.id, title: n.title, role: null),
     ]),
   ),
-  currentVaultProvider.overrideWith((ref) => h.vaultDir.path),
+  currentVaultProvider.overrideWith((ref) => LocalVaultRef(h.vaultDir.path)),
   vaultDbProvider.overrideWithValue(null),
   memexCliProvider.overrideWithValue(h.cli),
   notesListProvider.overrideWithValue(notes ?? _notes),

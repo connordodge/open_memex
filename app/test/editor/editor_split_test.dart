@@ -16,6 +16,7 @@ import 'package:open_memex_app/src/memex_cli.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';
 import 'package:open_memex_app/src/state/vault_state.dart'
     show
+        LocalVaultRef,
         currentVaultProvider,
         linkKindsProvider,
         memexCliProvider,
@@ -146,7 +147,9 @@ ProviderContainer _container(MemexCli? cli, {String? vault = _vaultPath}) {
   final c = ProviderContainer(
     overrides: [
       memexCliProvider.overrideWithValue(cli),
-      currentVaultProvider.overrideWith((ref) => vault),
+      currentVaultProvider.overrideWith(
+        (ref) => vault == null ? null : LocalVaultRef(vault),
+      ),
     ],
   );
   addTearDown(c.dispose);
@@ -177,7 +180,7 @@ Future<_Host> _pumpEditor(
     ProviderScope(
       overrides: [
         selectedNoteProvider.overrideWithValue(note),
-        currentVaultProvider.overrideWith((ref) => _vaultPath),
+        currentVaultProvider.overrideWith((ref) => LocalVaultRef(_vaultPath)),
         memexCliProvider.overrideWithValue(cli ?? _FakeCli()),
         vaultDbProvider.overrideWithValue(null),
         noteTitlesProvider.overrideWithValue([
