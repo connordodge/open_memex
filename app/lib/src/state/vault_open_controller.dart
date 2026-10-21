@@ -3,7 +3,9 @@ import 'dart:io';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../cli/vault_cli.dart';
 import '../db.dart';
+import '../memex_cli.dart';
 import 'settings.dart';
 import 'vault_state.dart';
 
@@ -46,7 +48,8 @@ final class NoVaultToReopen extends VaultOpenOutcome {
 typedef LeaveVaultGuard = Future<bool> Function(BuildContext context);
 
 /// The guard asked before the current vault is left. The default always
-/// allows; #103 supplies the confirm.
+/// allows. The app root overrides it with the switch confirm (#103,
+/// `appRootOverrides` in main.dart), so state/ never imports a widget.
 final leaveVaultGuardProvider = Provider<LeaveVaultGuard>((_) => _allowLeaving);
 
 Future<bool> _allowLeaving(BuildContext _) async => true;
@@ -63,40 +66,42 @@ class VaultOpenController {
 
   final Ref _ref;
 
-  /// Reopens the last vault (`memex.last_vault`) at launch. The app root
-  /// calls it once, after the first frame.
+  /// Reopens the last vault (`memex.last_vault`) at launch. The vault picker
+  /// calls it once, when it first shows with a last vault set and no vault
+  /// open (`currentVaultProvider` starts null, so launch shows the picker).
   ///
-  /// The reopen itself is still `currentVaultProvider`'s synchronous default,
-  /// so the first frame already shows the last vault's workspace and launch
-  /// behaves as before: with a vault open this changes nothing and completes
-  /// [VaultOpened] with that vault. With no vault open and a last vault set
-  /// it makes that folder the current vault as a [LocalVaultRef], with no
-  /// folder check and no settings write, as the default does. With neither
-  /// it completes [NoVaultToReopen].
+  /// With a vault open this changes nothing and completes [VaultOpened] with
+  /// that vault. With no vault open and no last vault it completes
+  /// [NoVaultToReopen]. Otherwise it opens the last vault as a
+  /// [LocalVaultRef] through `memex vault check`, as a vault pill does (no
+  /// folder shape check), and completes with that open's outcome. Launch
+  /// writes no settings: the last vault and the recents order stay as they
+  /// were.
   Future<VaultOpenOutcome> launchReopen() async {
     final current = _ref.read(currentVaultProvider);
     if (current != null) return VaultOpened(current);
     final last = _ref.read(settingsProvider).lastVault;
     if (last == null) return const NoVaultToReopen();
-    final vault = LocalVaultRef(last);
-    _ref.read(currentVaultProvider.notifier).state = vault;
-    return VaultOpened(vault);
+    return _openVault(LocalVaultRef(last), checkFolder: false, remember: false);
   }
 
   /// Opens [vault] after checking it: a local folder must hold
-  /// `manifest.json` and `memex.db`. On success the vault is remembered
-  /// (recents and last vault) and becomes the current vault; on failure
-  /// nothing changes.
+  /// `manifest.json` and `memex.db`, then `memex vault check` must pass. On
+  /// success the vault is remembered (recents and last vault) and becomes
+  /// the current vault; on any other outcome nothing changes.
   Future<VaultOpenOutcome> openVault(VaultRef vault) =>
-      _openVault(vault, checkFolder: true);
+      _openVault(vault, checkFolder: true, remember: true);
 
-  /// The one open path behind [openVault] and [switchToVault].
-  /// [checkFolder] is false only for a vault pill, which has never checked
-  /// the folder; #92 replaces the check with `memex vault check` for every
-  /// local open, pills included.
+  /// The one open path behind [openVault], [switchToVault] and
+  /// [launchReopen]. Every local open runs `memex vault check` before the
+  /// vault becomes current, so before any SQLite handle opens.
+  /// [checkFolder] is false for a vault pill and for launch, which have
+  /// never checked the folder's shape. [remember] is false only for launch,
+  /// which reopens the last vault without a settings write.
   Future<VaultOpenOutcome> _openVault(
     VaultRef vault, {
     required bool checkFolder,
+    required bool remember,
   }) async {
     switch (vault) {
       case HostedVaultRef():
@@ -108,13 +113,48 @@ class VaultOpenController {
             '$path does not look like a vault (no manifest.json + memex.db).',
           );
         }
-        return _open(vault);
+        // Read on every open: no CLI handle is kept, so a newly located
+        // binary is used by the next attempt.
+        final cli = _ref.read(memexCliProvider);
+        if (cli == null) {
+          return const VaultBinaryNotFound(
+            'Could not open vault: no memex binary is configured.',
+          );
+        }
+        final refused = await _checkLocal(cli, path);
+        if (refused != null) return refused;
+        return _open(vault, remember: remember);
     }
   }
 
+  /// Runs `memex vault check` on [path]: null when the folder is safe,
+  /// otherwise the outcome that refuses it (D19).
+  Future<VaultOpenFailure?> _checkLocal(MemexCli cli, String path) async {
+    final r = await cli.checkVault(path);
+    return switch (r.status) {
+      VaultCheckStatus.safe => null,
+      VaultCheckStatus.networkFilesystem => VaultOnNetworkDrive(
+        path,
+        networkDriveRefusalMessage,
+      ),
+      VaultCheckStatus.memexTooOld => VaultMemexTooOld(
+        path,
+        memexTooOldMessage,
+      ),
+      VaultCheckStatus.binaryNotFound => VaultBinaryNotFound(
+        'memex binary not found: ${cli.binaryPath}',
+      ),
+      VaultCheckStatus.failed => VaultOpenFailure(
+        'Could not open $path: ${r.error!.message}',
+      ),
+    };
+  }
+
   /// Creates a local vault at [fullPath] with `memex init`, then opens it as
-  /// [openVault] does. A non-empty existing folder fails before `init` runs;
-  /// an `init` failure leaves the current vault as it was.
+  /// [openVault] does. A non-empty existing folder fails before anything
+  /// runs. `memex vault check` runs on [fullPath] before `init`, and a
+  /// refused folder never runs `init`. An `init` failure leaves the current
+  /// vault as it was.
   Future<VaultOpenOutcome> createLocalVault(String fullPath) async {
     final dir = Directory(fullPath);
     if (dir.existsSync() && dir.listSync().isNotEmpty) {
@@ -122,13 +162,15 @@ class VaultOpenController {
     }
     final cli = _ref.read(memexCliProvider);
     if (cli == null) {
-      return const VaultOpenFailure(
+      return const VaultBinaryNotFound(
         'Could not create vault: no memex binary is configured.',
       );
     }
+    final refused = await _checkLocal(cli, fullPath);
+    if (refused != null) return refused;
     try {
       await cli.initVault(fullPath);
-      return await _open(LocalVaultRef(fullPath));
+      return await _open(LocalVaultRef(fullPath), remember: true);
     } catch (e) {
       return VaultOpenFailure('Could not create vault: $e');
     }
@@ -148,9 +190,10 @@ class VaultOpenController {
   /// Switches to [vault] from a sidebar vault pill. Asks
   /// [leaveVaultGuardProvider] once first: when it says stay, completes
   /// [VaultOpenCancelled] and changes nothing. Otherwise opens [vault] through
-  /// the [openVault] path without the folder check (pills have never checked
-  /// it; #92 adds `memex vault check` there), clears the selected note on
-  /// [VaultOpened], and completes with the open's outcome.
+  /// the [openVault] path with `memex vault check` but without the folder
+  /// shape check (pills have never checked it), and clears the selected note
+  /// on [VaultOpened]. Shows nothing: the caller presents a refusal (see
+  /// `showVaultOpenRefusal`). Completes with the open's outcome.
   Future<VaultOpenOutcome> switchToVault(
     BuildContext context,
     LocalVaultRef vault,
@@ -158,20 +201,56 @@ class VaultOpenController {
     if (!await _ref.read(leaveVaultGuardProvider)(context)) {
       return const VaultOpenCancelled();
     }
-    final outcome = await _openVault(vault, checkFolder: false);
+    final outcome = await _openVault(vault, checkFolder: false, remember: true);
     if (outcome is VaultOpened) {
       _ref.read(selectedNoteIdProvider.notifier).state = null;
     }
     return outcome;
   }
 
-  Future<VaultOpenOutcome> _open(LocalVaultRef vault) async {
-    await _ref.read(settingsProvider.notifier).rememberVault(vault.path);
-    // Remembering a new last vault already rebuilt `currentVaultProvider` to
-    // an equal ref. Writing another equal but not identical one would notify
-    // every dependent a second time (StateProvider compares by identity).
+  Future<VaultOpenOutcome> _open(
+    LocalVaultRef vault, {
+    required bool remember,
+  }) async {
+    if (remember) {
+      await _ref.read(settingsProvider.notifier).rememberVault(vault.path);
+    }
+    // Reopening the vault that is already current writes nothing: an equal
+    // but not identical ref would notify every dependent again
+    // (StateProvider compares by identity).
     final current = _ref.read(currentVaultProvider.notifier);
     if (current.state != vault) current.state = vault;
     return VaultOpened(vault);
   }
+}
+
+/// The network-drive refusal copy (req 31).
+const networkDriveRefusalMessage =
+    'this folder is on a network drive. vaults on network drives can be '
+    'corrupted — connect to a vault server instead.';
+
+/// The too-old-memex refusal copy (req 31).
+const memexTooOldMessage =
+    'this memex is too old to open vaults safely. update memex, then try again.';
+
+/// #92: `memex vault check` refused the folder at [path]: it is on a network
+/// drive (exit 1, C1 `network_filesystem`). Nothing opened.
+class VaultOnNetworkDrive extends VaultOpenFailure {
+  const VaultOnNetworkDrive(this.path, super.message);
+
+  final String path;
+}
+
+/// #92: the installed `memex` is too old to run `vault check` (exit 2), so
+/// the folder at [path] was not opened.
+class VaultMemexTooOld extends VaultOpenFailure {
+  const VaultMemexTooOld(this.path, super.message);
+
+  final String path;
+}
+
+/// #92: no `memex` binary is configured, or it could not be started. No
+/// local vault opened.
+class VaultBinaryNotFound extends VaultOpenFailure {
+  const VaultBinaryNotFound(super.message);
 }

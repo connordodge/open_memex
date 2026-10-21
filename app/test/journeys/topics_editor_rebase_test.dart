@@ -68,7 +68,6 @@ Future<(WorkspaceHarness, FakeMemexCli, AccessDoubles, FakeVaultDb)> _launch(
     ..seedDailyNote(_earlier, id: _earlierId);
   final cli = _newCli(db);
   final doubles = AccessDoubles(
-    configureNotes: (_, n) => n.getNoteIsNull = getNoteIsNull,
     configureDaily: (_, d) {
       if (footerFailure != null) d.failNext('addFooterChip', footerFailure);
     },
@@ -82,6 +81,10 @@ Future<(WorkspaceHarness, FakeMemexCli, AccessDoubles, FakeVaultDb)> _launch(
   );
   r.h.read(tabsProvider.notifier).openOrFocus(const NoteTab(_earlierId));
   await pumpFrames(tester);
+  // TEST-CHANGE (#78): the editor loads the open note through
+  // VaultAccess.notes too, so only the next read (the rebase's, the first
+  // getNote after the note is open) answers null.
+  doubles.notesAt(r.h.vaultPath).nextGetNoteIsNull = getNoteIsNull;
   return (r.h, cli, doubles, db);
 }
 
@@ -205,7 +208,14 @@ void main() {
         ),
         findsOneWidget,
       );
-      expect(doubles.notesCalls(h.vaultPath, 'getNote').length, readsBefore);
+      // TEST-CHANGE (#78): the topic note was created, so the revision bump
+      // refreshes the selected note through VaultAccess.notes (one read).
+      // The rebase makes no read of its own.
+      expect(
+        doubles.notesCalls(h.vaultPath, 'getNote').length,
+        readsBefore + 1,
+        reason: 'only the selected note refresh, no rebase read',
+      );
       expect(h.read(editorControllerProvider).lastSavedVersion, 1);
       expect(_bodyText(tester), _typed);
       await _drain(tester, h);

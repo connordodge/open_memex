@@ -168,8 +168,25 @@ class _KindChipState extends ConsumerState<KindChip> {
     );
   }
 
+  /// The first read of the vault's link kinds; empty when it fails or the
+  /// vault changed meanwhile.
+  Future<List<String>> _firstKinds() async {
+    final vault = ref.read(currentVaultProvider);
+    try {
+      final loaded = await ref.read(linkKindsAsyncProvider.future);
+      return loaded.vault == vault ? loaded.value : const [];
+    } on Exception {
+      return const [];
+    }
+  }
+
   Future<void> _pickMore() async {
-    final existing = ref.read(linkKindsProvider);
+    // The kinds loaded so far (a same-vault reload keeps the previous ones);
+    // on the first open, the first read.
+    final existing =
+        readVaultValue<List<String>?>(ref, linkKindsAsyncProvider, null) ??
+        await _firstKinds();
+    if (!mounted) return;
     final selected = await showDialog<String>(
       context: context,
       builder: (_) => _KindPickerDialog(existing: existing),
@@ -181,6 +198,8 @@ class _KindChipState extends ConsumerState<KindChip> {
 
   @override
   Widget build(BuildContext context) {
+    // Loads the link kinds with the chip (D14a: async) so "More…" has them.
+    ref.listen(linkKindsAsyncProvider, (_, _) {});
     if (!widget.controller.visible) return const SizedBox.shrink();
     return Positioned(
       left: widget.anchor.dx,

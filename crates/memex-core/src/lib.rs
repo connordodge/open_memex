@@ -1,9 +1,11 @@
 //! Open Memex core library.
 
+pub mod app_reads;
 pub mod canvas;
 pub mod chunker;
 pub mod embedder;
 pub mod error;
+pub mod fs_guard;
 pub mod graph;
 pub mod indexer;
 pub mod link_extractor;

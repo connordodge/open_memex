@@ -1,8 +1,12 @@
 // WI #69 (D12): `currentVaultProvider` holds a `VaultRef?`, sealed
 // `LocalVaultRef(path)` / `HostedVaultRef(serverId, vaultName)`.
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/src/memex_cli.dart';
 import 'package:open_memex_app/src/state/settings.dart';
+import 'package:open_memex_app/src/state/vault_open_controller.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -86,14 +90,34 @@ void main() {
   });
 
   group('currentVaultProvider at launch (AC1)', () {
-    test('with a last vault P it is LocalVaultRef of P', () async {
-      final dir = createVaultFolder();
-      final c = await _launch({
-        'memex.recent_vaults': <String>[dir.path],
-        'memex.last_vault': dir.path,
-      });
-      expect(c.read(currentVaultProvider), LocalVaultRef(dir.path));
-    });
+    // #92 TEST-CHANGE (lead ruling): `currentVaultProvider` starts null even
+    // with a last vault; only launchReopen opens it, after `memex vault
+    // check` passes.
+    test(
+      'with a last vault P it starts null and launchReopen makes it LocalVaultRef of P after vault check',
+      () async {
+        final dir = createVaultFolder();
+        final gate = Completer<MemexResult>();
+        final cli = FakeMemexCli()..on('vault check', (_) => gate.future);
+        final c = await _launch(
+          {
+            'memex.recent_vaults': <String>[dir.path],
+            'memex.last_vault': dir.path,
+          },
+          overrides: [memexCliProvider.overrideWithValue(cli)],
+        );
+        expect(c.read(currentVaultProvider), isNull);
+
+        final reopen = c.read(vaultOpenControllerProvider).launchReopen();
+        await Future<void>.delayed(Duration.zero);
+        expect(cli.calls.single.args, ['vault', 'check', '--vault', dir.path]);
+        expect(c.read(currentVaultProvider), isNull);
+
+        gate.complete(FakeMemexCli.ok());
+        await reopen;
+        expect(c.read(currentVaultProvider), LocalVaultRef(dir.path));
+      },
+    );
 
     test('with no last vault it is null', () async {
       final dir = createVaultFolder();
