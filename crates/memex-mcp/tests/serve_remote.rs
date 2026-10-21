@@ -454,6 +454,10 @@ fn skip_header(name: &str) -> bool {
 }
 
 async fn proxy_handle(State(st): State<Arc<ProxyState>>, req: Request) -> Response {
+    // Decide what to do before recording, so a test that has seen a request
+    // recorded may switch the mode without changing that request's answer.
+    let mode = Mode::load(&st.mode);
+    let canned = st.canned.lock().unwrap().clone();
     let (parts, body) = req.into_parts();
     let bytes = axum::body::to_bytes(body, BODY_LIMIT)
         .await
@@ -479,7 +483,6 @@ async fn proxy_handle(State(st): State<Arc<ProxyState>>, req: Request) -> Respon
         body: String::from_utf8_lossy(&bytes).into_owned(),
     });
 
-    let canned = st.canned.lock().unwrap().clone();
     if let Some(canned) = canned.filter(|c| c.method == parts.method.as_str()) {
         let mut builder = axum::http::Response::builder().status(canned.status);
         for (k, v) in canned.headers {
@@ -491,7 +494,6 @@ async fn proxy_handle(State(st): State<Arc<ProxyState>>, req: Request) -> Respon
             .expect("canned response");
     }
 
-    let mode = Mode::load(&st.mode);
     let method = reqwest::Method::from_bytes(parts.method.as_str().as_bytes()).expect("method");
     let mut out = st
         .http
@@ -1225,6 +1227,11 @@ async fn serve_remote_mid_session_401_exits_1_unauthorized() {
     let (_srv, proxy) = served_work().await;
     let mut b = Bridge::spawn(&proxy.url(&mcp_path("work")), Some(TEST_TOKEN), "UTC");
     b.handshake();
+    // The handshake's notifications/initialized is still in flight; rotating
+    // the token before it lands would 401 it instead of the tools/call.
+    b.wait_until("notifications/initialized is forwarded", || {
+        !proxy.rpc("notifications/initialized").is_empty()
+    });
 
     proxy.set(Mode::RotatedToken);
     b.send(&tool_call(2, "get_vault_settings", json!({})));
@@ -1284,6 +1291,9 @@ async fn serve_remote_never_prints_the_token() {
     // A session with a tool error, an outage and a 401 at the end.
     let mut b = Bridge::spawn(&url, Some(TEST_TOKEN), "Asia/Kathmandu");
     b.handshake();
+    b.wait_until("notifications/initialized is forwarded", || {
+        !proxy.rpc("notifications/initialized").is_empty()
+    });
     b.send(&tool_call(
         2,
         "get_note",
