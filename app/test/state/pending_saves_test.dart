@@ -876,6 +876,61 @@ void main() {
     );
   });
 
+  group('a save elsewhere that conflicts is merged (AC10)', () {
+    test(
+      'a virtual Today note resolved after the person left it merges its text when that save conflicts',
+      () async {
+        final db = _plainVault();
+        final gate = Completer<void>();
+        final cli = FakeMemexCli()
+          ..onUpdateWrites(db)
+          ..onAddDailyCreates(db, gate: gate);
+        final h = await _hosted(db, cli: cli);
+        h.c.read(tabsProvider.notifier).openToday(date: _today);
+        h.ctrl.loadNote(virtualTodayNote(_today));
+        await h.typeAndSave('Morning pages');
+        // Typed while the create is in flight, then the person leaves.
+        h.ctrl.onContentChanged('Morning pages\nMore.');
+        h.ctrl.loadNote(h.stored(_planId));
+        // The save elsewhere waits while an agent appends on the server.
+        final slow = Completer<void>();
+        h.notes.writeGate = slow;
+        gate.complete();
+        await pumpEventQueue();
+        expect(h.notes.updatesOf(createdDailyId), [
+          'updateNote:$createdDailyId@1',
+        ]);
+        _foreignWrite(
+          h.db,
+          createdDailyId,
+          assembleDailyBody('Morning pages\nAgent note.\n', const []),
+          2,
+        );
+        h.db.seedBlock(
+          createdDailyId,
+          'a-agent',
+          ord: 1,
+          text: 'Agent note.',
+          source: 'agent',
+          createdVersion: 2,
+        );
+        h.notes.writeGate = null;
+
+        slow.complete();
+        await pumpEventQueue();
+
+        final stored = h.stored(createdDailyId).contentMd;
+        expect(_count(stored, 'Morning pages'), 1);
+        expect(_count(stored, 'More.'), 1);
+        expect(_count(stored, 'Agent note.'), 1);
+        expect(h.queue, isEmpty);
+        // The open note is untouched.
+        expect(h.state.contentMd, 'old');
+        expect(h.state.status, SaveStatus.clean);
+      },
+    );
+  });
+
   group('the queue lists what is unsent (AC11)', () {
     test(
       'the queue lists each queued note with its title since time and server name and is empty once saved',
@@ -2994,16 +3049,100 @@ void main() {
         merged.complete();
         await pumpEventQueue();
 
-        // The held edit goes on its own base, not on the merged version.
+        // The held edit goes on its own base, not on the merged version: it
+        // meets the conflict, and only a merge on the merged version (@5)
+        // writes it.
         expect(h.notes.updatesOf(_dailyId), [
           'updateNote:$_dailyId@3',
           'updateNote:$_dailyId@4',
           'updateNote:$_dailyId@3',
+          'updateNote:$_dailyId@5',
         ]);
+        final bodies = h.notes.updateBodies;
+        expect(bodies, hasLength(4));
+        // The merge write carries the merged agent text and the held edit.
+        expect(_count(bodies[3], 'Agent note.'), 1);
+        expect(_count(bodies[3], 'Lunch.'), 1);
+        expect(_count(bodies[3], 'Dinner.'), 1);
         final stored = h.stored(_dailyId);
-        expect(stored.version, 5);
+        expect(stored.version, 6);
+        expect(stored.contentMd, bodies[3]);
         expect(_count(stored.contentMd, 'Agent note.'), 1);
         expect(_count(stored.contentMd, 'Lunch.'), 1);
+        expect(_count(stored.contentMd, 'Dinner.'), 1);
+        expect(h.queue, isEmpty);
+        expect(h.state.contentMd, '');
+      },
+    );
+
+    test(
+      'an edit typed during a slow daily save that is left while the save merges is merged and not lost',
+      () async {
+        final h = await _hosted(_dailyVault());
+        final first = await slowDailySave(h);
+        await h.typeAndSave('Morning pages\nLunch.\nDinner.');
+        // The merged write waits at a second gate; the note is left then.
+        final merged = Completer<void>();
+        h.notes.writeGate = merged;
+        first.complete();
+        await pumpEventQueue();
+        h.ctrl.loadNote(null);
+        h.notes.writeGate = null;
+
+        merged.complete();
+        await pumpEventQueue();
+
+        final stored = h.stored(_dailyId);
+        expect(_count(stored.contentMd, 'Agent note.'), 1);
+        expect(_count(stored.contentMd, 'Lunch.'), 1);
+        expect(_count(stored.contentMd, 'Dinner.'), 1);
+        expect(h.queue, isEmpty);
+        expect(h.state.contentMd, '');
+      },
+    );
+  });
+
+  group('a conflict after the note was left is never dropped', () {
+    test(
+      'a plain save that conflicts after the note was left is kept as a held conflict and not lost',
+      () async {
+        final h = await _hosted(_plainVault());
+        h.ctrl.loadNote(h.stored(_planId));
+        final slow = Completer<void>();
+        h.notes.writeGate = slow;
+        await h.typeAndSave('new text');
+        _foreignWrite(h.db, _planId, 'their text', 4);
+        h.ctrl.loadNote(h.stored(_otherId));
+        h.notes.writeGate = null;
+
+        slow.complete();
+        await pumpEventQueue();
+
+        expect(h.stored(_planId).contentMd, 'their text');
+        expect(h.queued(_planId)!.text, 'new text');
+        expect(h.queued(_planId)!.baseVersion, 3);
+        expect(h.c.read(notePendingSaveProvider(_planId)), isTrue);
+        final entry = h.c
+            .read(pendingSaveQueueProvider)
+            .singleWhere((q) => q.save.noteId == _planId);
+        expect(entry.heldStatus, SaveStatus.conflict);
+        expect(entry.heldMessage, isNotNull);
+        // The open note is untouched.
+        expect(h.state.contentMd, 'other body');
+        expect(h.state.status, SaveStatus.clean);
+
+        // Reopened: the held text with its conflict, never the server copy.
+        h.ctrl.loadNote(h.stored(_planId));
+        expect(h.state.contentMd, 'new text');
+        expect(h.state.status, SaveStatus.conflict);
+        expect(h.state.lastSavedVersion, 3);
+
+        // An edit resends on the held base and meets the conflict again.
+        await h.typeAndSave('new text 2');
+        expect(h.notes.updatesOf(_planId).last, 'updateNote:$_planId@3');
+        expect(h.state.status, SaveStatus.conflict);
+        expect(h.stored(_planId).contentMd, 'their text');
+        expect(h.queued(_planId)!.text, 'new text 2');
       },
     );
   });

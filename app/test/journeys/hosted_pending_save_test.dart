@@ -307,6 +307,83 @@ void main() {
     );
   });
 
+  group('switching tabs while the server cannot be reached (AC6)', () {
+    /// Every editable text field the editor shows right now.
+    List<String> shownTexts(WidgetTester tester) => [
+      for (final e in tester.widgetList<EditableText>(
+        find.byType(EditableText),
+      ))
+        e.controller.text,
+    ];
+
+    testWidgets(
+      'switching tabs while the server cannot be reached never shows the previous note and never saves it with the other note text',
+      (tester) async {
+        final w = await _workspace(tester);
+        // Other has a queued save; Plan then opens from the server.
+        await w.open(_otherId);
+        w.notes.writeError = nasUnreachable();
+        await w.typeAndSave('other queued');
+        await w.open(_planId);
+        expect(w.r.segmentText(0), 'old');
+
+        // The server stops answering reads too; switch to Other.
+        w.notes.readError = nasUnreachable();
+        await w.open(_otherId);
+
+        expect(shownTexts(tester), isNot(contains('old')));
+        expect(shownTexts(tester), isNot(contains('Plan')));
+        expect(w.r.segmentText(0), 'other queued');
+
+        await w.typeAndSave('typed under other');
+
+        expect(shownTexts(tester), isNot(contains('old')));
+        for (final (i, write) in w.notes.writes.indexed) {
+          if (write.startsWith('updateNote:$_planId@')) {
+            expect(w.notes.updateBodies[i], isNot(contains('typed')));
+          }
+        }
+        final queue = w.h.read(pendingSavesProvider);
+        for (final p in queue.where((p) => p.noteId == _planId)) {
+          expect(p.text, isNot(contains('typed')));
+        }
+        expect(
+          queue.singleWhere((p) => p.noteId == _otherId).text,
+          'typed under other',
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'switching to a note that cannot be read while the server cannot be reached shows no note rather than the previous one',
+      (tester) async {
+        final w = await _workspace(tester);
+        await w.open(_planId);
+        expect(w.r.segmentText(0), 'old');
+        w.notes
+          ..writeError = nasUnreachable()
+          ..readError = nasUnreachable();
+        // The revision poll already saw the server unreachable.
+        w.h.container
+                .read(hostedConnectionStatusProvider(hostedServerId).notifier)
+                .state =
+            HostedConnectionStatus.unreachable;
+        await pumpFrames(tester);
+
+        await w.open(_otherId);
+
+        expect(shownTexts(tester), isNot(contains('old')));
+        expect(shownTexts(tester), isNot(contains('Plan')));
+        expect(find.byKey(const Key('note-header')), findsNothing);
+        await w.r.waitForSave();
+        expect(w.notes.updatesOf(_planId), isEmpty);
+        expect(w.h.read(pendingSavesProvider), isEmpty);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  });
+
   group('local vaults are unchanged (AC12)', () {
     testWidgets(
       'a failed save on a local vault shows the save failed state and no not saved yet label',

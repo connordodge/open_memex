@@ -387,7 +387,10 @@ class EditorController extends StateNotifier<EditorStateValue> {
   /// Sends [local] (titled [rawTitle], sending [title]) as note [id]'s
   /// save on [version] through [access], typed in editor load [seq];
   /// [merging] goes straight to the daily merge. The outcome reaches the
-  /// editor only while it shows note [id].
+  /// editor only while it shows note [id]. On a hosted vault a daily note's
+  /// `version_conflict` merges after the note was left too, and any other
+  /// `version_conflict` of a save the editor no longer shows in load [seq]
+  /// is queued as a held conflict ([_queueFailedSave]), never dropped.
   Future<void> _send(
     VaultAccess access,
     HostedVaultRef? hosted,
@@ -420,14 +423,19 @@ class EditorController extends StateNotifier<EditorStateValue> {
           );
           saved = (result: result, body: local);
         } on MemexException catch (e) {
-          // Only a daily note merges (Req 60); other conflicts surface.
-          if (e.kind != MemexErrorKind.versionConflict || _activeNoteId != id) {
+          // Only a daily note merges (Req 60); other conflicts surface. On
+          // a hosted vault a daily note merges after it was left too.
+          if (e.kind != MemexErrorKind.versionConflict ||
+              (hosted == null && _activeNoteId != id)) {
             rethrow;
           }
           // The conflict refetch: the stored note's role decides, and it is
           // the merge's server side.
           refetched = await access.notes.getNote(id);
-          if (_activeNoteId != id || refetched?.role != 'daily') rethrow;
+          if ((hosted == null && _activeNoteId != id) ||
+              refetched?.role != 'daily') {
+            rethrow;
+          }
           merging = true;
         }
       }
@@ -517,8 +525,26 @@ class EditorController extends StateNotifier<EditorStateValue> {
           e,
         );
       }
-      if (_activeNoteId != id) return;
       final conflict = e.kind == MemexErrorKind.versionConflict;
+      if (hosted != null &&
+          conflict &&
+          !(_activeNoteId == id && _virtualDate == null && _loadSeq == seq)) {
+        // Left (or opened again) while this save was in flight: its text
+        // is kept as a held conflict, never dropped (#102).
+        return _queueFailedSave(
+          hosted,
+          id,
+          seq,
+          local,
+          rawTitle,
+          title,
+          version,
+          sendSeq,
+          e,
+          held: true,
+        );
+      }
+      if (_activeNoteId != id) return;
       if (merging && conflict) {
         // The merged retry conflicted too: keep the local text and merge
         // again on the next debounce tick.
@@ -567,7 +593,10 @@ class EditorController extends StateNotifier<EditorStateValue> {
   /// as [loadNote] does for a queued note. A save ([sendSeq]) superseded by
   /// a later write of the note queues nothing: the later write's text is
   /// newer (an entry it queued is kept). When the status already reads
-  /// connected again the queued save retries now.
+  /// connected again the queued save retries now. With [held] (a
+  /// `version_conflict` after the note was left) the entry is held with
+  /// [error]'s conflict instead (see [QueuedSave.heldStatus]): it retries on
+  /// the next edit of the note, not on its own.
   void _queueFailedSave(
     HostedVaultRef vault,
     String id,
@@ -577,8 +606,9 @@ class EditorController extends StateNotifier<EditorStateValue> {
     String? sendTitle,
     int baseVersion,
     int sendSeq,
-    Object error,
-  ) {
+    Object error, {
+    bool held = false,
+  }) {
     // A later write of this note was sent after this one: its text is
     // newer, and its outcome decides (saved, or queued itself). This older
     // text is never queued and never fills the editor. (Every entry of the
@@ -603,6 +633,9 @@ class EditorController extends StateNotifier<EditorStateValue> {
       now: _ref.read(clockProvider).now(),
       serverName: _serverNameOf(error, vault),
     );
+    if (held && error is MemexException) {
+      _queue.hold(vault, id, SaveStatus.conflict, error.message);
+    }
     _queuedBy[(vault, id)] = sendSeq;
     if (open) {
       // The retry merges from the base itself.
@@ -1223,7 +1256,9 @@ class EditorController extends StateNotifier<EditorStateValue> {
   }
 
   /// Saves [content] to note [id] through `VaultAccess.notes` after the
-  /// person left it (no editor state to report to). A failure leaves the
+  /// person left it (no editor state to report to). On a hosted vault a
+  /// `version_conflict` merges [content] into the daily note
+  /// ([_mergeAndSave], Req 60) instead of dropping it. A failure leaves the
   /// stored note as it is; on a hosted vault one that can't reach the
   /// server queues [content] for note [id] (titled [title]) on [version]
   /// instead, like the editor's own save (#102). When an older edit of
@@ -1244,11 +1279,29 @@ class EditorController extends StateNotifier<EditorStateValue> {
     final sendSeq = hosted == null ? 0 : _sent(hosted, id);
     if (hosted != null) _sending(hosted, id, sendSeq);
     try {
-      final result = await access.notes.updateNote(
-        noteId: id,
-        expectedVersion: version,
-        contentMd: content,
-      );
+      NoteUpdateResult result;
+      var merged = false;
+      try {
+        result = await access.notes.updateNote(
+          noteId: id,
+          expectedVersion: version,
+          contentMd: content,
+        );
+      } on MemexException catch (e) {
+        // On a hosted vault the daily note merges (Req 60) rather than
+        // dropping the text (#102).
+        if (hosted == null || e.kind != MemexErrorKind.versionConflict) {
+          rethrow;
+        }
+        result = (await _mergeAndSave(
+          access,
+          noteId: id,
+          baseVersion: version,
+          local: content,
+          title: null,
+        )).result;
+        merged = true;
+      }
       if (hosted != null &&
           _afterSave(
             hosted,
@@ -1257,7 +1310,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
             sent: content,
             baseVersion: version,
             savedVersion: result.version,
-            merged: false,
+            merged: merged,
           ) &&
           _activeNoteId == id &&
           _virtualDate == null) {
