@@ -195,10 +195,17 @@ class RecordingNotesAccess extends LocalNotesAccess with Recording {
   /// When true `getNote` answers null whatever the database holds.
   bool getNoteIsNull = false;
 
+  /// When true the next `getNote` call (once) answers null whatever the
+  /// database holds. Decided when the call is made, so it is the next call
+  /// that gets null, not the next one to finish.
+  bool nextGetNoteIsNull = false;
+
   @override
   Future<Note?> getNote(String id) async {
+    final answerNull = nextGetNoteIsNull;
+    nextGetNoteIsNull = false;
     await enter('getNote', {'id': id});
-    return getNoteIsNull ? null : super.getNote(id);
+    return getNoteIsNull || answerNull ? null : super.getNote(id);
   }
 
   @override

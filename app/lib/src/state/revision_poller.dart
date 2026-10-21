@@ -164,7 +164,9 @@ class _RevisionPoller {
       final noteId = _ref.read(selectedNoteIdProvider);
       if (noteId != null && VirtualTodayTab.dateOf(noteId) == null) {
         // D16: the bump below never depends on the answer.
-        _ref.read(editorControllerProvider.notifier).serverChanged(noteId);
+        unawaited(
+          _ref.read(editorControllerProvider.notifier).serverChanged(noteId),
+        );
       }
     } finally {
       _ref.read(vaultRevisionProvider.notifier).state++;
