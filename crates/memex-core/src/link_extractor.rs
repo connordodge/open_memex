@@ -1463,6 +1463,112 @@ mod tests {
         }
     }
 
+    #[test]
+    fn frontmatter_flow_mapping_non_ascii_skipped_value_keeps_link_byte_offsets() {
+        // #141's reserve_value path: a skipped key's (or nested mapping's)
+        // multibyte text before a link still leaves each link at the byte
+        // offset of its own `[[`.
+        let cases: [(&str, &str, Wi141At); 6] = [
+            (
+                "about with accents first",
+                "---\n{about: \"Ünïcødé [[A]]\", extends: [[A]]}\n---\nb",
+                &[("extends", "[[A]]", 1)],
+            ),
+            (
+                "from-day cjk token first",
+                "---\n{from-day: [[日本語]], extends: [[日本語]], contradicts: \"😀 [[日本語]]\"}\n---\nb",
+                &[("extends", "[[日本語]]", 1), ("contradicts", "[[日本語]]", 2)],
+            ),
+            (
+                "invalid kind with emoji",
+                "---\n{9lives: \"😀 [[Café]]\", extends: [[Café]]}\n---\nb",
+                &[("extends", "[[Café]]", 1)],
+            ),
+            (
+                "nested mapping with 4-byte text",
+                "---\n{meta: {k: \"𠜎 [[A]]\"}, extends: [[A]]}\n---\nb",
+                &[("extends", "[[A]]", 1)],
+            ),
+            (
+                "skipped value with a non-ascii label",
+                "---\n{about: [[A|Ünïcode – dash]], extends: \"𝄞 [[A|Ünïcode – dash]]\"}\n---\nb",
+                &[("extends", "[[A|Ünïcode – dash]]", 1)],
+            ),
+            (
+                "block style about with cjk title above",
+                "---\ntitle: 日本語\nabout: \"é [[A]]\"\nextends: [[A]]\n---\nb",
+                &[("extends", "[[A]]", 1)],
+            ),
+        ];
+        for (case, md, expected) in cases {
+            wi141_assert_fm_at(case, md, expected);
+            let r = extract(md);
+            for l in &r.frontmatter {
+                let p = l.position as usize;
+                assert!(
+                    md.is_char_boundary(p) && md[p..].starts_with("[["),
+                    "{case}: {} link at {p} is not a `[[` byte offset",
+                    l.link_kind.as_str()
+                );
+            }
+        }
+        // Titles and labels decode intact on this path too.
+        let r = extract(
+            "---\n{about: [[A|Ünïcode – dash]], extends: \"𝄞 [[A|Ünïcode – dash]]\"}\n---\nb",
+        );
+        assert_eq!(r.frontmatter.len(), 1, "{r:?}");
+        assert_eq!(r.frontmatter[0].link_text, "A");
+        assert_eq!(r.frontmatter[0].label.as_deref(), Some("Ünïcode – dash"));
+    }
+
+    #[test]
+    fn quote_bare_wikilinks_pins_ascii_scanner_quirks() {
+        // Pinned current behaviour: the scanner tracks quote state with no
+        // escape handling and matches the first `]]` on the line.
+        let cases: [(&str, &str, &str); 9] = [
+            (
+                "backslash-escaped quote toggles double-quote state",
+                "x: \"a \\\" [[Foo]]\"\n",
+                "x: \"a \\\" \"[[Foo]]\"\"\n",
+            ),
+            (
+                "apostrophe inside double quotes is ignored",
+                "x: \"it's\" [[Foo]]\n",
+                "x: \"it's\" \"[[Foo]]\"\n",
+            ),
+            (
+                "double quote inside single quotes is ignored",
+                "x: 'say \"hi' [[Foo]]\n",
+                "x: 'say \"hi' \"[[Foo]]\"\n",
+            ),
+            (
+                "doubled apostrophe keeps single-quote state",
+                "x: 'it''s [[Foo]]'\n",
+                "x: 'it''s [[Foo]]'\n",
+            ),
+            (
+                "third closing bracket stays outside",
+                "x: [[Foo]]]\n",
+                "x: \"[[Foo]]\"]\n",
+            ),
+            (
+                "nested opener joins one token",
+                "x: [[a [[b]]\n",
+                "x: \"[[a [[b]]\"\n",
+            ),
+            (
+                "single bracket before a token",
+                "x: [ [[Foo]] ]\n",
+                "x: [ \"[[Foo]]\" ]\n",
+            ),
+            ("token at end of input", "x: [[Foo]]", "x: \"[[Foo]]\""),
+            ("opener at end of input", "x: [[", "x: [["),
+        ];
+        for (case, input, want) in cases {
+            assert_eq!(quote_bare_wikilinks(input), want, "{case}");
+        }
+    }
+
     // ---------- WI #141 verify: every `FmPositions` branch ----------
 
     /// Expected frontmatter links as `(kind, needle, nth occurrence of needle)`.
