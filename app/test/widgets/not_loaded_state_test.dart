@@ -35,6 +35,7 @@ import 'package:open_memex_app/src/db/graph_reads.dart';
 import 'package:open_memex_app/src/graph/graph_scope.dart';
 import 'package:open_memex_app/src/state/hosted_connection_state.dart';
 import 'package:open_memex_app/src/state/hosted_identity.dart';
+import 'package:open_memex_app/src/state/note_state.dart';
 import 'package:open_memex_app/src/state/tab_not_loaded.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/state/vault_access_state.dart';
@@ -91,6 +92,31 @@ class _Wi101Notes extends LocalNotesAccess {
       updatedAt: 1759500000000,
       tags: const [],
     );
+  }
+}
+
+/// [_Wi101Notes] that also answers the title reads from [titles], through
+/// the same gate: offline, `titlesForIds` and `allTitles` fail too.
+class _Wi101TitledNotes extends _Wi101Notes {
+  _Wi101TitledNotes(super.gate, this.titles);
+  final Map<String, String> titles;
+
+  @override
+  Future<Map<String, String>> titlesForIds(List<String> ids) async {
+    gate.check();
+    return {
+      for (final id in ids)
+        if (titles[id] case final t?) id: t,
+    };
+  }
+
+  @override
+  Future<List<NoteTitle>> allTitles({int limit = 1000}) async {
+    gate.check();
+    return [
+      for (final e in titles.entries)
+        NoteTitle(id: e.key, title: e.value, updatedAt: 1759500000000),
+    ];
   }
 }
 
@@ -161,6 +187,7 @@ Future<(WorkspaceHarness, _Wi101ReadGate)> _pumpHosted(
   VaultRef vault = _vault,
   HostedConnectionStatus? status,
   List<Override> extraOverrides = const [],
+  Map<String, String>? titles,
 }) async {
   final gate = _Wi101ReadGate()..fail = failing;
   final h = await pumpWorkspace(
@@ -173,7 +200,9 @@ Future<(WorkspaceHarness, _Wi101ReadGate)> _pumpHosted(
       vaultAccessProvider.overrideWith(
         (ref) => LocalVaultAccess(
           vaultPath: '/tmp/om-101',
-          notes: _Wi101Notes(gate),
+          notes: titles == null
+              ? _Wi101Notes(gate)
+              : _Wi101TitledNotes(gate, titles),
           canvas: _Wi101Canvas(gate),
           graph: _Wi101Graph(gate),
         ),
@@ -628,5 +657,55 @@ void main() {
         expect(find.byType(NoteEditor), findsNothing);
       },
     );
+  });
+  group('the title of a not loaded note while offline', () {
+    /// A hosted vault that answered: x1 opened (loaded) and every note title
+    /// read, then the server stops answering.
+    Future<(WorkspaceHarness, _Wi101ReadGate)> pumpTitlesThenOffline(
+      WidgetTester tester,
+    ) async {
+      final (h, gate) = await _pumpHosted(
+        tester,
+        failing: false,
+        status: HostedConnectionStatus.connected,
+        titles: const {'x1': 'Loaded x1', 'x9': 'Weekly Review'},
+      );
+      await _open(tester, h, const NoteTab('x1'));
+      final loaded = await h.container.read(noteTitlesAsyncProvider.future);
+      expect(
+        loaded.value.map((t) => t.title),
+        contains('Weekly Review'),
+        reason: 'the titles were read while the server answered',
+      );
+      gate.fail = true;
+      await _setStatus(tester, h, HostedConnectionStatus.unreachable);
+      // A revision bump while offline re-reads the titles and fails.
+      h.container.read(vaultRevisionProvider.notifier).state++;
+      await pumpFrames(tester);
+      return (h, gate);
+    }
+
+    testWidgets(
+      'while the server cannot be reached the not loaded state names the note by the title already known',
+      (tester) async {
+        final (h, _) = await pumpTitlesThenOffline(tester);
+
+        await _open(tester, h, const NoteTab('x9'));
+
+        _expectCopy(tester, 'Weekly Review');
+        expect(_chipTitle(tester, const NoteTab('x9')), 'Weekly Review');
+      },
+    );
+
+    testWidgets('with no known title the not loaded state still reads note', (
+      tester,
+    ) async {
+      final (h, _) = await pumpTitlesThenOffline(tester);
+
+      await _open(tester, h, const NoteTab('x7'));
+
+      _expectCopy(tester, 'note');
+      expect(_chipTitle(tester, const NoteTab('x7')), 'note');
+    });
   });
 }
