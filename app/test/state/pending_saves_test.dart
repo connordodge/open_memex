@@ -2243,6 +2243,11 @@ void main() {
       () async {
         final h = await _hosted(_plainVault());
         final first = await firstSaveHeld(h);
+        // Left and opened again while the save is in flight: an edit typed
+        // in this later load is not held behind the earlier load's save
+        // (fix round 5 ruling), so a later save of the note is in flight.
+        h.ctrl.loadNote(h.stored(_otherId));
+        h.ctrl.loadNote(h.stored(_planId));
         final second = Completer<void>();
         h.notes.writeGate = second;
         await h.typeAndSave('newer text');
@@ -2307,7 +2312,11 @@ void main() {
       () async {
         final h = await _hosted(_plainVault());
         final first = await firstSaveHeld(h);
-        // The edit typed during the save is sent and fails at once.
+        // Left and opened again while the save is in flight: the edit typed
+        // in this later load is sent (not held, fix round 5 ruling) and
+        // fails at once.
+        h.ctrl.loadNote(h.stored(_otherId));
+        h.ctrl.loadNote(h.stored(_planId));
         h.notes.writeError = MemexException('update failed: disk full');
         await h.typeAndSave('newer text');
         expect(h.state.status, SaveStatus.error);
@@ -2581,7 +2590,8 @@ void main() {
   });
 
   // Fix round 5 (verifier finding, lead ruling): a plain save never goes out
-  // while an earlier write of the note is in flight.
+  // while an earlier save of the note typed in the same editor load is in
+  // flight (it is held and goes once that save's outcome is applied).
   group('an edit typed during a slow save waits for it', () {
     test(
       'an edit typed during a slow save is sent after it lands on the version it stored and never conflicts with it',
@@ -2616,6 +2626,372 @@ void main() {
         expect(h.state.lastSavedVersion, 5);
         _expectNoErrorState(h);
         expect(h.queue, isEmpty);
+      },
+    );
+
+    // Verify round 5: the contracts of the held save (`_deferredSaves`).
+
+    /// Plan open; its first save (`new text` on version 3) is held at the
+    /// returned gate.
+    Future<Completer<void>> slowSave(_H h) async {
+      h.ctrl.loadNote(h.stored(_planId));
+      final first = Completer<void>();
+      h.notes.writeGate = first;
+      await h.typeAndSave('new text');
+      h.notes.writeGate = null;
+      expect(h.state.status, SaveStatus.saving);
+      return first;
+    }
+
+    /// Daily note [_dailyId] open; its first save (`Morning pages\nLunch.` on
+    /// version 3) is held at the returned gate while an agent appends
+    /// `Agent note.` on the server (version 4), so it conflicts and merges.
+    Future<Completer<void>> slowDailySave(_H h) async {
+      h.ctrl.loadNote(h.stored(_dailyId));
+      final first = Completer<void>();
+      h.notes.writeGate = first;
+      await h.typeAndSave('Morning pages\nLunch.');
+      h.notes.writeGate = null;
+      _foreignWrite(
+        h.db,
+        _dailyId,
+        assembleDailyBody('Morning pages\nAgent note.\n', const []),
+        4,
+      );
+      h.db.seedBlock(
+        _dailyId,
+        'a-agent',
+        ord: 1,
+        text: 'Agent note.',
+        source: 'agent',
+        createdVersion: 4,
+      );
+      return first;
+    }
+
+    test(
+      'an edit typed during a slow save goes out as soon as the save lands and the editor reads saving until it does',
+      () async {
+        final h = await _hosted(_plainVault());
+        final first = await slowSave(h);
+        await h.typeAndSave('newer text');
+        expect(h.notes.updatesOf(_planId), hasLength(1));
+        expect(h.state.status, SaveStatus.dirty);
+        final second = Completer<void>();
+        h.notes.writeGate = second;
+
+        first.complete();
+        await pumpEventQueue();
+
+        expect(h.notes.updatesOf(_planId), [
+          'updateNote:$_planId@3',
+          'updateNote:$_planId@4',
+        ]);
+        expect(h.notes.updateBodies.last, 'newer text');
+        expect(h.stored(_planId).contentMd, 'new text');
+        expect(h.stored(_planId).version, 4);
+        expect(h.state.contentMd, 'newer text');
+        expect(h.state.status, SaveStatus.saving);
+        expect(h.state.lastSavedVersion, 4);
+        _expectNoErrorState(h);
+        // The landing save schedules no save of its own beside it.
+        await h.fireDebounce();
+        expect(h.notes.updatesOf(_planId), hasLength(2));
+
+        h.notes.writeGate = null;
+        second.complete();
+        await pumpEventQueue();
+
+        expect(h.stored(_planId).contentMd, 'newer text');
+        expect(h.stored(_planId).version, 5);
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 5);
+        _expectNoErrorState(h);
+      },
+    );
+
+    test(
+      'an edit typed during a slow save is not sent while it is in flight so a failing write shows no error and the edit saves once the save lands',
+      () async {
+        final h = await _hosted(_plainVault());
+        final first = await slowSave(h);
+        h.notes.writeError = MemexException('update failed: disk full');
+        await h.typeAndSave('newer text');
+        expect(h.notes.updatesOf(_planId), hasLength(1));
+        expect(h.state.contentMd, 'newer text');
+        expect(h.state.status, SaveStatus.dirty);
+        _expectNoErrorState(h);
+        h.notes.writeError = null;
+
+        first.complete();
+        await pumpEventQueue();
+
+        expect(h.notes.updatesOf(_planId), [
+          'updateNote:$_planId@3',
+          'updateNote:$_planId@4',
+        ]);
+        expect(h.stored(_planId).contentMd, 'newer text');
+        expect(h.stored(_planId).version, 5);
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 5);
+        _expectNoErrorState(h);
+        await h.fireDebounce();
+        expect(h.notes.updatesOf(_planId), hasLength(2));
+      },
+    );
+
+    test(
+      'a second debounce during a slow save replaces the held edit and after leaving the note only the latest text is sent on the version the save stored',
+      () async {
+        final h = await _hosted(_plainVault());
+        final first = await slowSave(h);
+        await h.typeAndSave('newer text');
+        await h.typeAndSave('newest text');
+        expect(h.notes.updatesOf(_planId), hasLength(1));
+        h.ctrl.loadNote(h.stored(_otherId));
+
+        first.complete();
+        await pumpEventQueue();
+
+        expect(h.notes.updatesOf(_planId), [
+          'updateNote:$_planId@3',
+          'updateNote:$_planId@4',
+        ]);
+        expect(h.notes.updateBodies, ['new text', 'newest text']);
+        expect(h.stored(_planId).contentMd, 'newest text');
+        expect(h.stored(_planId).version, 5);
+        expect(h.queue, isEmpty);
+        // The editor shows Other: the left note's saves never reach it.
+        expect(h.state.contentMd, 'other body');
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 7);
+        _expectNoErrorState(h);
+      },
+    );
+
+    test(
+      'an edit typed back to the text of a slow save sends nothing more once the save lands',
+      () async {
+        final h = await _hosted(_plainVault());
+        final first = await slowSave(h);
+        await h.typeAndSave('newer text');
+        await h.typeAndSave('new text');
+
+        first.complete();
+        await pumpEventQueue();
+
+        expect(h.notes.updatesOf(_planId), ['updateNote:$_planId@3']);
+        expect(h.stored(_planId).version, 4);
+        expect(h.state.contentMd, 'new text');
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 4);
+        _expectNoErrorState(h);
+        await h.fireDebounce();
+        expect(h.notes.updatesOf(_planId), ['updateNote:$_planId@3']);
+      },
+    );
+
+    test(
+      'a slow save that cannot reach the server queues the edit typed during it and sends nothing else',
+      () async {
+        final h = await _hosted(_plainVault());
+        final first = await slowSave(h);
+        await h.typeAndSave('newer text');
+        h.serverDown();
+
+        first.complete();
+        await pumpEventQueue();
+
+        expect(h.notes.updatesOf(_planId), ['updateNote:$_planId@3']);
+        expect(h.queued(_planId)!.text, 'newer text');
+        expect(h.queued(_planId)!.baseVersion, 3);
+        expect(h.state.contentMd, 'newer text');
+        expect(h.state.status, SaveStatus.dirty);
+        _expectNoErrorState(h);
+
+        await h.serverAnswers();
+
+        expect(h.notes.updatesOf(_planId), [
+          'updateNote:$_planId@3',
+          'updateNote:$_planId@3',
+        ]);
+        expect(h.stored(_planId).contentMd, 'newer text');
+        expect(h.stored(_planId).version, 4);
+        expect(h.queue, isEmpty);
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 4);
+      },
+    );
+
+    test(
+      'a slow save that cannot reach the server after the note was left queues the edit typed during it and sends nothing else',
+      () async {
+        final h = await _hosted(_plainVault());
+        final first = await slowSave(h);
+        await h.typeAndSave('newer text');
+        h.ctrl.loadNote(h.stored(_otherId));
+        h.serverDown();
+
+        first.complete();
+        await pumpEventQueue();
+
+        expect(h.notes.updatesOf(_planId), ['updateNote:$_planId@3']);
+        expect(h.queue, hasLength(1));
+        expect(h.queued(_planId)!.text, 'newer text');
+        expect(h.queued(_planId)!.baseVersion, 3);
+        expect(h.state.contentMd, 'other body');
+
+        await h.serverAnswers();
+
+        expect(h.notes.updatesOf(_planId), [
+          'updateNote:$_planId@3',
+          'updateNote:$_planId@3',
+        ]);
+        expect(h.notes.updateBodies.last, 'newer text');
+        expect(h.stored(_planId).contentMd, 'newer text');
+        expect(h.stored(_planId).version, 4);
+        expect(h.queue, isEmpty);
+      },
+    );
+
+    test(
+      'a slow save that fails sends the edit typed during it on the same base right away',
+      () async {
+        final h = await _hosted(_plainVault());
+        final first = await slowSave(h);
+        await h.typeAndSave('newer text');
+        final second = Completer<void>();
+        h.notes
+          ..writeGate = second
+          ..writeError = MemexException('update failed: disk full');
+
+        first.complete();
+        await pumpEventQueue();
+
+        expect(h.notes.updatesOf(_planId), [
+          'updateNote:$_planId@3',
+          'updateNote:$_planId@3',
+        ]);
+        expect(h.notes.updateBodies.last, 'newer text');
+        expect(h.stored(_planId).version, 3);
+        expect(h.state.status, SaveStatus.saving);
+        expect(h.state.errorMessage, isNull);
+
+        h.notes
+          ..writeError = null
+          ..writeGate = null;
+        second.complete();
+        await pumpEventQueue();
+
+        expect(h.stored(_planId).contentMd, 'newer text');
+        expect(h.stored(_planId).version, 4);
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 4);
+        _expectNoErrorState(h);
+        expect(h.queue, isEmpty);
+      },
+    );
+
+    test(
+      'a slow save that lands after the note was left and opened again sends the edit typed before leaving on the version it stored and the reopened editor never reads saving',
+      () async {
+        final h = await _hosted(_plainVault());
+        final first = await slowSave(h);
+        await h.typeAndSave('newer text');
+        h.ctrl.loadNote(h.stored(_otherId));
+        h.ctrl.loadNote(h.stored(_planId));
+        expect(h.state.contentMd, 'old');
+        expect(h.state.status, SaveStatus.clean);
+        final second = Completer<void>();
+        h.notes.writeGate = second;
+
+        first.complete();
+        await pumpEventQueue();
+
+        expect(h.notes.updatesOf(_planId), [
+          'updateNote:$_planId@3',
+          'updateNote:$_planId@4',
+        ]);
+        expect(h.notes.updateBodies.last, 'newer text');
+        // The held edit is in flight; the reopened editor shows what the
+        // first save stored and is not saving.
+        expect(h.state.contentMd, 'new text');
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 4);
+
+        h.notes.writeGate = null;
+        second.complete();
+        await pumpEventQueue();
+
+        expect(h.stored(_planId).contentMd, 'newer text');
+        expect(h.stored(_planId).version, 5);
+        expect(h.state.contentMd, 'newer text');
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 5);
+        _expectNoErrorState(h);
+        expect(h.queue, isEmpty);
+      },
+    );
+
+    test(
+      'an edit typed during a slow daily save that merged goes as a merge from the same base and keeps the agent text',
+      () async {
+        final h = await _hosted(_dailyVault());
+        final first = await slowDailySave(h);
+        await h.typeAndSave('Morning pages\nLunch.\nDinner.');
+        expect(h.notes.updatesOf(_dailyId), hasLength(1));
+
+        first.complete();
+        await pumpEventQueue();
+
+        expect(h.notes.updatesOf(_dailyId), [
+          'updateNote:$_dailyId@3',
+          'updateNote:$_dailyId@4',
+          'updateNote:$_dailyId@5',
+        ]);
+        final stored = h.stored(_dailyId);
+        expect(stored.version, 6);
+        expect(_count(stored.contentMd, 'Agent note.'), 1);
+        expect(_count(stored.contentMd, 'Lunch.'), 1);
+        expect(_count(stored.contentMd, 'Dinner.'), 1);
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 6);
+        expect(h.state.contentMd, stored.contentMd);
+        _expectNoErrorState(h);
+      },
+    );
+
+    test(
+      'a slow daily save that merged after the note was left never sends the edit typed during it over the merged text',
+      () async {
+        final h = await _hosted(_dailyVault());
+        final first = await slowDailySave(h);
+        await h.typeAndSave('Morning pages\nLunch.\nDinner.');
+        // The merged write waits at a second gate; the note is left then.
+        final merged = Completer<void>();
+        h.notes.writeGate = merged;
+        first.complete();
+        await pumpEventQueue();
+        expect(h.notes.updatesOf(_dailyId), [
+          'updateNote:$_dailyId@3',
+          'updateNote:$_dailyId@4',
+        ]);
+        h.ctrl.loadNote(null);
+        h.notes.writeGate = null;
+
+        merged.complete();
+        await pumpEventQueue();
+
+        // The held edit goes on its own base, not on the merged version.
+        expect(h.notes.updatesOf(_dailyId), [
+          'updateNote:$_dailyId@3',
+          'updateNote:$_dailyId@4',
+          'updateNote:$_dailyId@3',
+        ]);
+        final stored = h.stored(_dailyId);
+        expect(stored.version, 5);
+        expect(_count(stored.contentMd, 'Agent note.'), 1);
+        expect(_count(stored.contentMd, 'Lunch.'), 1);
       },
     );
   });
