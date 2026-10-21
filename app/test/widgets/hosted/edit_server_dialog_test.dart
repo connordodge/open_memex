@@ -394,6 +394,83 @@ void main() {
         }, reason: 'token kept');
       },
     );
+
+    testWidgets(
+      'edit undo of a cancelled save without a pasted token restores name and url and writes no token',
+      (tester) async {
+        final env = await _openEdit(tester);
+        final id = env.edit!.id;
+        final before = _servers(env);
+        final callsBefore = env.tokens.calls.length;
+        await env.fill(name: 'renamed', url: 'http://nas2.local:7878');
+        // No token is pasted, so the update writes no token and nothing
+        // holds it: cancel (a pop) lands the moment the update stores the
+        // edited server, before updateServer returns.
+        final navigator = tester.state<NavigatorState>(find.byType(Navigator));
+        var popped = false;
+        final removeListener = env.settings.addListener((s) {
+          if (!popped && s.savedServers.any((x) => x.name == 'renamed')) {
+            popped = true;
+            navigator.pop();
+          }
+        }, fireImmediately: false);
+        addTearDown(removeListener);
+
+        await env.submit();
+        await tester.pumpAndSettle();
+
+        expect(popped, isTrue, reason: 'the update ran and cancel landed');
+        expect(find.byKey(kWi98Dialog), findsNothing);
+        expect(env.returned, isTrue);
+        expect(env.result, isNull);
+        expect(_servers(env), before, reason: 'name and url restored');
+        expect(env.tokens.tokens, {id: _stored});
+        expect(
+          env.tokens.calls
+              .skip(callsBefore)
+              .where((c) => !c.startsWith('read')),
+          isEmpty,
+          reason: 'no pasted token replaced it, so the undo writes none back',
+        );
+      },
+    );
+
+    testWidgets(
+      'edit undo of a pasted token on a server with no stored token leaves it with none',
+      (tester) async {
+        final tokens = Wi98GatedTokenStore();
+        final env = await pumpWi98Host(
+          tester,
+          server: _server(token: _fresh),
+          seed: [(name: 'nas', url: _url, token: _stored)],
+          editIndex: 0,
+          tokenStore: tokens,
+        );
+        final id = env.edit!.id;
+        tokens.tokens.remove(id);
+        await env.open();
+        final before = _servers(env);
+        await env.fill(name: 'renamed', token: _fresh);
+        tokens.hold();
+
+        await env.submit();
+        expect(wi98Connecting(), findsOneWidget, reason: 'update in flight');
+        await tester.tap(find.byKey(kWi98Cancel));
+        await tester.pumpAndSettle();
+        expect(env.result, isNull);
+
+        tokens.release();
+        await env.pumpFrames();
+        await tester.pumpAndSettle();
+
+        expect(_servers(env), before);
+        expect(
+          env.tokens.tokens,
+          isEmpty,
+          reason: 'the pasted token is removed again: none was stored',
+        );
+      },
+    );
   });
 
   group('edit contracts (verify)', () {

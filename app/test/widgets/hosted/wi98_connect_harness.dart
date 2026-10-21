@@ -207,11 +207,51 @@ class Wi98GatedTokenStore extends FakeTokenStore {
     _gate = null;
   }
 
+  Completer<void>? _readGate;
+
+  /// Holds every later read until [releaseReads]: a Keychain access prompt
+  /// still open when the user taps cancel.
+  void holdReads() => _readGate ??= Completer<void>();
+
+  /// Lets held reads through.
+  void releaseReads() {
+    _readGate?.complete();
+    _readGate = null;
+  }
+
+  /// While on, every later write call fails (decided when it is called, so a
+  /// write already held by [hold] still lands): a Keychain error.
+  bool failWrites = false;
+
+  /// While on, every later delete call fails: a Keychain error.
+  bool failDeletes = false;
+
+  @override
+  Future<String?> read(String serverId) async {
+    final gate = _readGate;
+    if (gate != null) await gate.future;
+    return super.read(serverId);
+  }
+
   @override
   Future<void> write(String serverId, String token) async {
+    final fail = failWrites;
     final gate = _gate;
     if (gate != null) await gate.future;
+    if (fail) {
+      calls.add('write $serverId');
+      throw StateError('wi98 keychain write failed');
+    }
     await super.write(serverId, token);
+  }
+
+  @override
+  Future<void> delete(String serverId) async {
+    if (failDeletes) {
+      calls.add('delete $serverId');
+      throw StateError('wi98 keychain delete failed');
+    }
+    await super.delete(serverId);
   }
 }
 

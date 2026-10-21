@@ -12,6 +12,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -1104,6 +1105,258 @@ void main() {
         expect(await env.prefsWith('nas.local'), isEmpty);
       },
     );
+
+    testWidgets(
+      'cancel during the save of a connect to a saved url restores its name and token',
+      (tester) async {
+        final tokens = Wi98GatedTokenStore();
+        final env = await pumpWi98Host(
+          tester,
+          server: _server(),
+          seed: [(name: 'old nas', url: _url, token: 'tok-old-98')],
+          tokenStore: tokens,
+        );
+        final id = env.saved.single.id;
+        await env.open();
+        await env.fill(
+          name: 'nas home',
+          url: 'http://NAS.local:7878/',
+          token: _token,
+        );
+        tokens.hold();
+
+        await env.submit();
+        expect(env.server.requests, hasLength(1), reason: 'probe answered');
+        expect(wi98Connecting(), findsOneWidget, reason: 'save in flight');
+        await tester.tap(find.byKey(kWi98Cancel));
+        await tester.pumpAndSettle();
+        expect(env.result, isNull);
+
+        tokens.release();
+        await env.pumpFrames();
+        await tester.pumpAndSettle();
+
+        expect(
+          [for (final s in env.saved) (s.id, s.name, s.url)],
+          [(id, 'old nas', _url)],
+          reason: 'name and url restored',
+        );
+        expect(env.tokens.tokens, {id: 'tok-old-98'}, reason: 'token restored');
+        expect(await env.prefsWith('nas home'), isEmpty);
+      },
+    );
+
+    testWidgets(
+      'cancel during the save of a connect to a saved url with no stored token leaves it with none',
+      (tester) async {
+        final tokens = Wi98GatedTokenStore();
+        final env = await pumpWi98Host(
+          tester,
+          server: _server(),
+          seed: [(name: 'old nas', url: _url, token: 'tok-old-98')],
+          tokenStore: tokens,
+        );
+        final id = env.saved.single.id;
+        tokens.tokens.remove(id);
+        await env.open();
+        await env.fill(name: 'nas home', url: _url, token: _token);
+        tokens.hold();
+
+        await env.submit();
+        expect(wi98Connecting(), findsOneWidget, reason: 'save in flight');
+        await tester.tap(find.byKey(kWi98Cancel));
+        await tester.pumpAndSettle();
+
+        tokens.release();
+        await env.pumpFrames();
+        await tester.pumpAndSettle();
+
+        expect(
+          [for (final s in env.saved) (s.id, s.name, s.url)],
+          [(id, 'old nas', _url)],
+        );
+        expect(
+          env.tokens.tokens,
+          isEmpty,
+          reason: 'the server had no stored token, so it ends with none',
+        );
+      },
+    );
+
+    for (final (name, dismiss) in [
+      (
+        'a barrier tap during the save acts as cancel',
+        (WidgetTester t) => t.tapAt(const Offset(5, 5)),
+      ),
+      (
+        'Escape during the save acts as cancel',
+        (WidgetTester t) => t.sendKeyEvent(LogicalKeyboardKey.escape),
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final tokens = Wi98GatedTokenStore();
+        final env = await pumpWi98Host(
+          tester,
+          server: _server(),
+          tokenStore: tokens,
+        );
+        await env.open();
+        await env.fill(name: 'nas', url: _url, token: _token);
+        tokens.hold();
+
+        await env.submit();
+        expect(wi98Connecting(), findsOneWidget, reason: 'save in flight');
+        await dismiss(tester);
+        await tester.pumpAndSettle();
+        expect(find.byKey(kWi98Dialog), findsNothing);
+        expect(env.returned, isTrue);
+        expect(env.result, isNull);
+
+        tokens.release();
+        await env.pumpFrames();
+        await tester.pumpAndSettle();
+
+        _expectNothingSaved(env);
+        expect(await env.prefsWith('nas.local'), isEmpty);
+      });
+    }
+
+    testWidgets(
+      'a late probe answer during the pop transition saves nothing and never pops twice',
+      (tester) async {
+        final env = await pumpWi98Host(tester, server: _server());
+        await env.open();
+        await env.fill(name: 'nas', url: _url, token: _token);
+        env.server.hold();
+        await env.submit();
+
+        await tester.tap(find.byKey(kWi98Cancel));
+        await tester.pump();
+        env.server.release();
+        for (var i = 0; i < 6; i++) {
+          await tester.pump(Duration.zero);
+        }
+        expect(
+          find.byKey(kWi98Dialog),
+          findsOneWidget,
+          reason: 'the answer landed while the dialog was still animating out',
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(kWi98Dialog), findsNothing);
+        expect(env.returned, isTrue);
+        expect(env.result, isNull);
+        expect(
+          find.text('open'),
+          findsOneWidget,
+          reason: 'the host page under the dialog is never popped',
+        );
+        expect(env.tokens.calls, isEmpty, reason: 'nothing written');
+        _expectNothingSaved(env);
+      },
+    );
+
+    testWidgets('a cancel before the write starts skips the write', (
+      tester,
+    ) async {
+      final env = await pumpWi98Host(tester, server: _server());
+      await env.open();
+      await env.fill(name: 'nas', url: _url, token: _token);
+      env.server.hold();
+      await env.submit();
+
+      await tester.tap(find.byKey(kWi98Cancel));
+      await tester.pumpAndSettle();
+      env.server.release();
+      await env.pumpFrames();
+      await tester.pumpAndSettle();
+
+      expect(
+        env.tokens.calls,
+        isEmpty,
+        reason: 'no write to undo: the token store is never touched',
+      );
+      _expectNothingSaved(env);
+    });
+
+    testWidgets(
+      'a cancel during the stored token read sends no probe and writes nothing',
+      (tester) async {
+        final tokens = Wi98GatedTokenStore();
+        final env = await pumpWi98Host(
+          tester,
+          server: _server(),
+          seed: [(name: 'old nas', url: _url, token: 'tok-old-98')],
+          tokenStore: tokens,
+        );
+        final id = env.saved.single.id;
+        await env.open();
+        final callsBefore = tokens.calls.length;
+        await env.fill(name: 'nas home', url: _url, token: _token);
+        tokens.holdReads();
+
+        await env.submit();
+        expect(wi98Connecting(), findsOneWidget, reason: 'reading the token');
+        await tester.tap(find.byKey(kWi98Cancel));
+        await tester.pumpAndSettle();
+        expect(env.result, isNull);
+
+        tokens.releaseReads();
+        await env.pumpFrames();
+        await tester.pumpAndSettle();
+
+        expect(env.server.requests, isEmpty, reason: 'no probe');
+        expect(tokens.calls.skip(callsBefore), ['read $id']);
+        expect(env.saved.single.name, 'old nas');
+        expect(env.tokens.tokens, {id: 'tok-old-98'});
+      },
+    );
+  });
+
+  group('undo failures (lead ruling)', () {
+    for (final (name, seeded) in [
+      ('an undo whose token write fails raises no uncaught error', true),
+      ('an undo whose token delete fails raises no uncaught error', false),
+    ]) {
+      testWidgets(name, (tester) async {
+        final tokens = Wi98GatedTokenStore();
+        final env = await pumpWi98Host(
+          tester,
+          server: _server(),
+          seed: [if (seeded) (name: 'old nas', url: _url, token: 'tok-old-98')],
+          tokenStore: tokens,
+        );
+        await env.open();
+        await env.fill(name: 'nas home', url: _url, token: _token);
+        tokens.hold();
+
+        await env.submit();
+        expect(wi98Connecting(), findsOneWidget, reason: 'save in flight');
+        await tester.tap(find.byKey(kWi98Cancel));
+        await tester.pumpAndSettle();
+
+        // The save lands; the undo after it hits a Keychain error.
+        final callsBefore = tokens.calls.length;
+        tokens
+          ..failWrites = true
+          ..failDeletes = true;
+        tokens.release();
+        await env.pumpFrames();
+        await tester.pumpAndSettle();
+
+        expect(tester.takeException(), isNull);
+        expect(find.byKey(kWi98Dialog), findsNothing);
+        expect(env.returned, isTrue);
+        expect(env.result, isNull);
+        expect(
+          tokens.calls
+              .skip(callsBefore)
+              .where((c) => c.startsWith(seeded ? 'write' : 'delete')),
+          isNotEmpty,
+          reason: 'the undo ran and its token call failed',
+        );
+      });
+    }
   });
 
   group('seams', () {
