@@ -11,7 +11,9 @@ import '../../editor/segments.dart';
 import '../../memex_cli.dart';
 import '../../state/tabs_state.dart' show VirtualTodayTab;
 import '../../state/topic_actions.dart';
+import '../../state/vault_access_state.dart';
 import '../../state/vault_state.dart';
+import '../../vault_access/errors.dart';
 import '../inline_error.dart';
 import 'capture_gutter.dart';
 import 'excerpt_card.dart';
@@ -389,24 +391,26 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
   }
 
   Future<void> _remove(_CardSeg card) async {
-    final cli = ref.read(memexCliProvider);
-    final vaultPath = ref.read(currentVaultProvider).localPath;
-    if (cli == null) return;
-    if (vaultPath == null) return;
+    final access = ref.read(vaultAccessProvider);
+    if (access == null || !access.canWrite) return;
     final noteId = widget.note.id;
     final revision = ref.read(vaultRevisionProvider.notifier);
     setState(() {
       _removing = true;
       _error = null;
     });
-    final ExcerptRemoveResult result;
+    final ExcerptRemoveResult? removed;
     try {
-      result = await cli.removeExcerpt(
-        vaultPath: vaultPath,
-        topicNoteId: noteId,
-        date: card.segment.date,
-        fromBlockId: card.segment.from,
-        toBlockId: card.segment.to,
+      // An unreachable vault server shows the guard's snackbar and changes
+      // nothing (L17); other failures keep today's inline error.
+      removed = await guardVaultWrite(
+        context,
+        () => access.daily.removeExcerpt(
+          topicNoteId: noteId,
+          date: card.segment.date,
+          fromBlockId: card.segment.from,
+          toBlockId: card.segment.to,
+        ),
       );
     } catch (e) {
       if (!mounted) return;
@@ -418,6 +422,11 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
       });
       return;
     }
+    if (removed == null) {
+      if (mounted) setState(() => _removing = false);
+      return;
+    }
+    final result = removed;
     revision.state++;
     if (!mounted) return;
     setState(() => _removing = false);

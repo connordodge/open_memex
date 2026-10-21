@@ -1,12 +1,11 @@
 // Excerpt card text (contracts C4 render rule, architect D13, WI #27).
 //
-// Pure Dart: reads the referenced daily note and its blocks through #21's
-// `DailyReads` and never re-parses the body (the token comes from
-// `segments.dart`).
+// Pure Dart: reads the referenced daily note and its blocks through the
+// vault's daily domain (`DailyAccess`, #78) and never re-parses the body (the
+// token comes from `segments.dart`).
 import 'dart:math' show max, min;
 
-import '../db.dart';
-import '../db/daily_reads.dart';
+import '../vault_access/daily_access.dart';
 
 /// The rendered text of one transclusion token (C4).
 class RenderedExcerpt {
@@ -27,26 +26,28 @@ class RenderedExcerpt {
   final bool removed;
 }
 
-/// Renders the transclusion `![[date#^from(..^to)?]]` against [db] (C4):
+/// Renders the transclusion `![[date#^from(..^to)?]]` through [daily]'s
+/// `dailyNoteForDate` and `blocksForNote` (C4):
 /// when the `role: daily` note titled [date] and both endpoint blocks exist,
 /// the text of every block of that note with
 /// `min(from.ord, to.ord) <= ord <= max(from.ord, to.ord)`, in ord order,
 /// joined with `\n`; otherwise `removed from <date>`. [to] is null for a
-/// single-block token. Never throws (a vault below V5 renders the stub).
-RenderedExcerpt renderExcerpt(
-  VaultDb db, {
+/// single-block token. A local vault below V5 renders the stub; a failed
+/// read completes with its error.
+Future<RenderedExcerpt> renderExcerpt(
+  DailyAccess daily, {
   required String date,
   required String from,
   String? to,
-}) {
+}) async {
   final removed = RenderedExcerpt(
     date: date,
     text: 'removed from $date',
     removed: true,
   );
-  final daily = db.dailyNoteForDate(date);
-  if (daily == null) return removed;
-  final blocks = db.blocksForNote(daily.noteId);
+  final note = await daily.dailyNoteForDate(date);
+  if (note == null) return removed;
+  final blocks = await daily.blocksForNote(note.noteId);
   int? ordOf(String id) {
     for (final b in blocks) {
       if (b.blockId == id) return b.ord;
