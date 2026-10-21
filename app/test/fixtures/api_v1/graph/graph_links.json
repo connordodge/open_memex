@@ -1,0 +1,46 @@
+{
+  "links": [
+    {
+      "from": "01M5DQAYZ3WP7H0NXZZV9M2315",
+      "kind": "references",
+      "label": null,
+      "to": "01M5DQAYZ47QW55S90ZF0A56AH"
+    },
+    {
+      "from": "01M5DQAYZ47QW55S90ZF0A56AH",
+      "kind": "extends",
+      "label": null,
+      "to": "01M5DQAYZ3WP7H0NXZZV9M2315"
+    },
+    {
+      "from": "01M5DQAYZ47QW55S90ZF0A56AH",
+      "kind": "from-day",
+      "label": null,
+      "to": "01M5DQAYZ51PF87XFZWSV5PWXK"
+    },
+    {
+      "from": "01M5DQAYZ4TAPTHDWE5PNWE4W5",
+      "kind": "references",
+      "label": null,
+      "to": "01M5DQAYZ3WP7H0NXZZV9M2315"
+    },
+    {
+      "from": "01M5DQAYZ4TAPTHDWE5PNWE4W5",
+      "kind": "about",
+      "label": null,
+      "to": "01M5DQAYZ47QW55S90ZF0A56AH"
+    },
+    {
+      "from": "01M5DQAYZ4YAPYMEDWXP8WCNGJ",
+      "kind": "references",
+      "label": "the loop",
+      "to": "01M5DQAYZ3WP7H0NXZZV9M2315"
+    },
+    {
+      "from": "01M5DQAYZ51PF87XFZWSV5PWXK",
+      "kind": "about",
+      "label": null,
+      "to": "01M5DQAYZ47QW55S90ZF0A56AH"
+    }
+  ]
+}

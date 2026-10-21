@@ -1,0 +1,74 @@
+{
+  "notes": [
+    {
+      "id": "01M5DQAYZ5T5B865CDF2RWAC37",
+      "snippet": "Tuned the shop prices.",
+      "title": "2026-10-17",
+      "updated_at": 1792535788530,
+      "version": 2
+    },
+    {
+      "id": "01M5DQAYZ4TAPTHDWE5PNWE4W5",
+      "snippet": "Played the prototype for an hour.",
+      "title": "2026-10-18",
+      "updated_at": 1792535788528,
+      "version": 2
+    },
+    {
+      "id": "01M5DQAYZ51PF87XFZWSV5PWXK",
+      "snippet": "Sketched a crafting tree.",
+      "title": "2026-10-19",
+      "updated_at": 1792535788528,
+      "version": 2
+    },
+    {
+      "id": "01M5DQAYZ47QW55S90ZF0A56AH",
+      "snippet": "Sources and sinks keep prices honest.",
+      "title": "Economy Design",
+      "updated_at": 1792535788527,
+      "version": 2
+    },
+    {
+      "id": "01M5DQAYZ5RH88SRZGPY15XXVM",
+      "snippet": "Its frontmatter is not JSON, so every reader treats it as role-less.",
+      "title": "Broken Frontmatter",
+      "updated_at": 1760000540000,
+      "version": 1
+    },
+    {
+      "id": "01M5DQAYZ592W2515HPSDF5Q16",
+      "snippet": "Read about loot tables.",
+      "title": "2026-10-15",
+      "updated_at": 1760000480000,
+      "version": 1
+    },
+    {
+      "id": "01M5DQAYZ50YGKE126FXV02TEY",
+      "snippet": "Morning playtest with the new crafting tree",
+      "title": "2026-10-16",
+      "updated_at": 1760000420000,
+      "version": 1
+    },
+    {
+      "id": "01M5DQAYZ4RYSGA8T0YEEF8QRS",
+      "snippet": "Maybe the map folds like paper?",
+      "title": "Loose Thought",
+      "updated_at": 1760000180000,
+      "version": 1
+    },
+    {
+      "id": "01M5DQAYZ4YAPYMEDWXP8WCNGJ",
+      "snippet": "Pacing is the quiet half of design: each session needs a slow stretch, a sharp climb, and a short pause before a die…",
+      "title": "Pacing Notes",
+      "updated_at": 1760000120000,
+      "version": 1
+    },
+    {
+      "id": "01M5DQAYZ3WP7H0NXZZV9M2315",
+      "snippet": "Player Loop",
+      "title": "Player Loop",
+      "updated_at": 1760000000000,
+      "version": 1
+    }
+  ]
+}
