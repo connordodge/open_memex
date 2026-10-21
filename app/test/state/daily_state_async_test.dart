@@ -1,10 +1,11 @@
 // WI #78 (W2) AC1, AC2, AC5: the daily providers read through the `daily`
-// domain (D13) and keep synchronous facades (D14a). `todayNoteProvider`
-// resolves today's daily note for `todayDateProvider`'s date. The editor's
-// note facade (`editorNoteProvider`) never shows another vault's note.
+// domain (D13), read here the way a reader shows them (`readScoped`, D14a).
+// The today note read resolves today's daily note for `todayDateProvider`'s
+// date. The editor's note read (`editorNoteAsyncProvider`) never shows
+// another vault's note.
 //
 // `vaultDbProvider` is an EMPTY V5 database here (it only makes the vault
-// read as V5-ready); the rows live in the doubles' databases, so a facade that
+// read as V5-ready); the rows live in the doubles' databases, so a read that
 // still read `vaultDbProvider` directly would be empty.
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -14,11 +15,13 @@ import 'package:open_memex_app/src/state/daily_state.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/state/today_state.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
+import 'package:open_memex_app/src/vault_access/vault_scoped.dart';
 
 import '../support/daily_seed.dart';
 import '../support/editor_access_doubles.dart';
 import '../support/fake_clock.dart';
 import '../support/fake_vault_db.dart';
+import '../support/vault_scoped_reads.dart';
 
 const _vaultA = '/tmp/om-78-daily-a';
 const _vaultB = '/tmp/om-78-daily-b';
@@ -114,15 +117,33 @@ void main() {
       () async {
         final d = _container();
 
-        expect(_dates(await settled(d.c, dailyNotesProvider)), [
-          _today,
-          '2026-10-02',
-        ]);
-        final review = await settled(d.c, reviewStateProvider(_dayId));
+        expect(
+          _dates(
+            await settledScoped(
+              d.c,
+              dailyNotesAsyncProvider,
+              const <DailyNoteRow>[],
+            ),
+          ),
+          [_today, '2026-10-02'],
+        );
+        final review = await settledScoped(
+          d.c,
+          reviewStateAsyncProvider(_dayId),
+          null,
+        );
         expect(review!.state, ReviewState.unreviewed);
-        final blocks = await settled(d.c, blocksForNoteProvider(_dayId));
+        final blocks = await settledScoped(
+          d.c,
+          blocksForNoteAsyncProvider(_dayId),
+          const <BlockRow>[],
+        );
         expect([for (final b in blocks) b.text], ['Alpha block']);
-        final chips = await settled(d.c, footerChipsProvider(_dayId));
+        final chips = await settledScoped(
+          d.c,
+          footerChipsAsyncProvider(_dayId),
+          const <FooterChipRow>[],
+        );
         expect([for (final x in chips) x.topicTitle], ['Alpha']);
 
         expect(
@@ -169,11 +190,36 @@ void main() {
       () async {
         final d = _container();
         d.a.holdFromStart = true;
-        final notes = d.c.listen(dailyNotesProvider, (_, _) {});
-        final today = d.c.listen(todayNoteProvider, (_, _) {});
-        final review = d.c.listen(reviewStateProvider(_dayId), (_, _) {});
-        final blocks = d.c.listen(blocksForNoteProvider(_dayId), (_, _) {});
-        final chips = d.c.listen(footerChipsProvider(_dayId), (_, _) {});
+        final notes = listenScoped(
+          d.c,
+          dailyNotesAsyncProvider,
+          const <DailyNoteRow>[],
+          (_, _) {},
+        );
+        final today = listenScoped(
+          d.c,
+          todayNoteAsyncProvider,
+          null,
+          (_, _) {},
+        );
+        final review = listenScoped(
+          d.c,
+          reviewStateAsyncProvider(_dayId),
+          null,
+          (_, _) {},
+        );
+        final blocks = listenScoped(
+          d.c,
+          blocksForNoteAsyncProvider(_dayId),
+          const <BlockRow>[],
+          (_, _) {},
+        );
+        final chips = listenScoped(
+          d.c,
+          footerChipsAsyncProvider(_dayId),
+          const <FooterChipRow>[],
+          (_, _) {},
+        );
         await pumpEventQueue();
 
         expect(d.a.daily.gate.waiting, greaterThan(0));
@@ -198,30 +244,93 @@ void main() {
       final v4 = _v4()..seedDailyNote(_today, id: _dayId);
       final d = _container(vaultDb: v4, dbA: v4);
 
-      expect(await settled(d.c, dailyNotesProvider), isEmpty);
-      expect(await settled(d.c, todayNoteProvider), isNull);
-      expect(await settled(d.c, reviewStateProvider(_dayId)), isNull);
-      expect(await settled(d.c, blocksForNoteProvider(_dayId)), isEmpty);
-      expect(await settled(d.c, footerChipsProvider(_dayId)), isEmpty);
+      expect(
+        await settledScoped(
+          d.c,
+          dailyNotesAsyncProvider,
+          const <DailyNoteRow>[],
+        ),
+        isEmpty,
+      );
+      expect(await settledScoped(d.c, todayNoteAsyncProvider, null), isNull);
+      expect(
+        await settledScoped(d.c, reviewStateAsyncProvider(_dayId), null),
+        isNull,
+      );
+      expect(
+        await settledScoped(
+          d.c,
+          blocksForNoteAsyncProvider(_dayId),
+          const <BlockRow>[],
+        ),
+        isEmpty,
+      );
+      expect(
+        await settledScoped(
+          d.c,
+          footerChipsAsyncProvider(_dayId),
+          const <FooterChipRow>[],
+        ),
+        isEmpty,
+      );
     });
 
     test('the daily facades are empty with no vault open', () async {
       final d = _container(open: null);
 
-      expect(await settled(d.c, dailyNotesProvider), isEmpty);
-      expect(await settled(d.c, todayNoteProvider), isNull);
-      expect(await settled(d.c, reviewStateProvider(_dayId)), isNull);
-      expect(await settled(d.c, blocksForNoteProvider(_dayId)), isEmpty);
-      expect(await settled(d.c, footerChipsProvider(_dayId)), isEmpty);
+      expect(
+        await settledScoped(
+          d.c,
+          dailyNotesAsyncProvider,
+          const <DailyNoteRow>[],
+        ),
+        isEmpty,
+      );
+      expect(await settledScoped(d.c, todayNoteAsyncProvider, null), isNull);
+      expect(
+        await settledScoped(d.c, reviewStateAsyncProvider(_dayId), null),
+        isNull,
+      );
+      expect(
+        await settledScoped(
+          d.c,
+          blocksForNoteAsyncProvider(_dayId),
+          const <BlockRow>[],
+        ),
+        isEmpty,
+      );
+      expect(
+        await settledScoped(
+          d.c,
+          footerChipsAsyncProvider(_dayId),
+          const <FooterChipRow>[],
+        ),
+        isEmpty,
+      );
     });
 
     test(
       'on a revision bump the daily facades keep their previous values until the new read completes',
       () async {
         final d = _container();
-        final notes = d.c.listen(dailyNotesProvider, (_, _) {});
-        final blocks = d.c.listen(blocksForNoteProvider(_dayId), (_, _) {});
-        final chips = d.c.listen(footerChipsProvider(_dayId), (_, _) {});
+        final notes = listenScoped(
+          d.c,
+          dailyNotesAsyncProvider,
+          const <DailyNoteRow>[],
+          (_, _) {},
+        );
+        final blocks = listenScoped(
+          d.c,
+          blocksForNoteAsyncProvider(_dayId),
+          const <BlockRow>[],
+          (_, _) {},
+        );
+        final chips = listenScoped(
+          d.c,
+          footerChipsAsyncProvider(_dayId),
+          const <FooterChipRow>[],
+          (_, _) {},
+        );
         await pumpEventQueue();
         expect(_dates(notes.read()), [_today, '2026-10-02']);
 
@@ -249,28 +358,28 @@ void main() {
     );
   });
 
-  group('todayNoteProvider (AC2)', () {
+  group('the today note read (AC2)', () {
     test(
-      'todayNoteProvider resolves to the daily note for the todayDateProvider date',
+      'the today note read resolves to the daily note for the todayDateProvider date',
       () async {
         final d = _container();
 
-        final note = await settled(d.c, todayNoteProvider);
+        final note = await settledScoped(d.c, todayNoteAsyncProvider, null);
 
         expect(note!.noteId, _dayId);
         expect(note.date, d.c.read(todayDateProvider));
       },
     );
 
-    test('todayNoteProvider is null when today has no daily note', () async {
+    test('the today note read is null when today has no daily note', () async {
       final db = _v5()..seedDailyNote('2026-10-02', id: 'yesterday');
       final d = _container(dbA: db);
 
-      expect(await settled(d.c, todayNoteProvider), isNull);
+      expect(await settledScoped(d.c, todayNoteAsyncProvider, null), isNull);
     });
 
     test(
-      'todayNoteProvider follows todayDateProvider past local midnight',
+      'the today note read follows todayDateProvider past local midnight',
       () async {
         final db = _v5()
           ..seedDailyNote('2026-10-03', id: 'oct3')
@@ -279,33 +388,40 @@ void main() {
           dbA: db,
           clock: FakeClock(DateTime(2026, 10, 3, 23, 59)),
         );
-        expect((await settled(d.c, todayNoteProvider))!.noteId, 'oct3');
+        expect(
+          (await settledScoped(d.c, todayNoteAsyncProvider, null))!.noteId,
+          'oct3',
+        );
 
         d.clock.advance(const Duration(minutes: 2));
 
-        expect((await settled(d.c, todayNoteProvider))!.noteId, 'oct4');
+        expect(
+          (await settledScoped(d.c, todayNoteAsyncProvider, null))!.noteId,
+          'oct4',
+        );
       },
     );
 
     test(
-      'todayNoteProvider ignores a role-less note titled with today',
+      'the today note read ignores a role-less note titled with today',
       () async {
         final db = _v5()..seedNote(id: 'plain', title: _today);
         final d = _container(dbA: db);
 
-        expect(await settled(d.c, todayNoteProvider), isNull);
+        expect(await settledScoped(d.c, todayNoteAsyncProvider, null), isNull);
       },
     );
   });
 
   group('switching vaults (AC5, D14a)', () {
-    /// Loads [listenable] on vault A, switches to a held vault B and returns
-    /// the subscription (B still pending).
+    /// Loads [read] on vault A, switches to a held vault B and returns a
+    /// subscription to what a reader of [read] shows (B still pending).
     Future<ProviderSubscription<T>> switchToHeldB<T>(
       _Daily d,
-      ProviderListenable<T> listenable,
+      ProviderListenable<AsyncValue<VaultScoped<T>>> read,
+      T empty,
     ) async {
-      final sub = d.c.listen<T>(listenable, (_, _) {});
+      final sub = listenScoped<T>(d.c, read, empty, (_, _) {});
       await pumpEventQueue();
       d.b.holdFromStart = true;
       d.open(_vaultB);
@@ -314,12 +430,23 @@ void main() {
     }
 
     test(
-      'switching vaults never shows the previous vault rows in dailyNotesProvider',
+      'switching vaults never shows the previous vault rows in the daily notes read',
       () async {
         final d = _container();
-        expect(await settled(d.c, dailyNotesProvider), hasLength(2));
+        expect(
+          await settledScoped(
+            d.c,
+            dailyNotesAsyncProvider,
+            const <DailyNoteRow>[],
+          ),
+          hasLength(2),
+        );
 
-        final sub = await switchToHeldB(d, dailyNotesProvider);
+        final sub = await switchToHeldB(
+          d,
+          dailyNotesAsyncProvider,
+          const <DailyNoteRow>[],
+        );
 
         expect(sub.read(), isEmpty, reason: 'B is still loading');
         d.b.release();
@@ -329,12 +456,15 @@ void main() {
     );
 
     test(
-      'switching vaults never shows the previous vault rows in todayNoteProvider',
+      'switching vaults never shows the previous vault rows in the today note read',
       () async {
         final d = _container();
-        expect(await settled(d.c, todayNoteProvider), isNotNull);
+        expect(
+          await settledScoped(d.c, todayNoteAsyncProvider, null),
+          isNotNull,
+        );
 
-        final sub = await switchToHeldB(d, todayNoteProvider);
+        final sub = await switchToHeldB(d, todayNoteAsyncProvider, null);
 
         expect(sub.read(), isNull, reason: 'B is still loading');
         d.b.release();
@@ -344,12 +474,19 @@ void main() {
     );
 
     test(
-      'switching vaults never shows the previous vault rows in reviewStateProvider',
+      'switching vaults never shows the previous vault rows in the review state read',
       () async {
         final d = _container();
-        expect(await settled(d.c, reviewStateProvider(_dayId)), isNotNull);
+        expect(
+          await settledScoped(d.c, reviewStateAsyncProvider(_dayId), null),
+          isNotNull,
+        );
 
-        final sub = await switchToHeldB(d, reviewStateProvider(_dayId));
+        final sub = await switchToHeldB(
+          d,
+          reviewStateAsyncProvider(_dayId),
+          null,
+        );
 
         expect(sub.read(), isNull, reason: 'B is still loading');
         d.b.release();
@@ -359,12 +496,23 @@ void main() {
     );
 
     test(
-      'switching vaults never shows the previous vault rows in blocksForNoteProvider',
+      'switching vaults never shows the previous vault rows in the blocks read',
       () async {
         final d = _container();
-        expect(await settled(d.c, blocksForNoteProvider(_dayId)), hasLength(1));
+        expect(
+          await settledScoped(
+            d.c,
+            blocksForNoteAsyncProvider(_dayId),
+            const <BlockRow>[],
+          ),
+          hasLength(1),
+        );
 
-        final sub = await switchToHeldB(d, blocksForNoteProvider(_dayId));
+        final sub = await switchToHeldB(
+          d,
+          blocksForNoteAsyncProvider(_dayId),
+          const <BlockRow>[],
+        );
 
         expect(sub.read(), isEmpty, reason: 'B is still loading');
         d.b.release();
@@ -374,12 +522,23 @@ void main() {
     );
 
     test(
-      'switching vaults never shows the previous vault rows in footerChipsProvider',
+      'switching vaults never shows the previous vault rows in the footer chips read',
       () async {
         final d = _container();
-        expect(await settled(d.c, footerChipsProvider(_dayId)), hasLength(1));
+        expect(
+          await settledScoped(
+            d.c,
+            footerChipsAsyncProvider(_dayId),
+            const <FooterChipRow>[],
+          ),
+          hasLength(1),
+        );
 
-        final sub = await switchToHeldB(d, footerChipsProvider(_dayId));
+        final sub = await switchToHeldB(
+          d,
+          footerChipsAsyncProvider(_dayId),
+          const <FooterChipRow>[],
+        );
 
         expect(sub.read(), isEmpty, reason: 'B is still loading');
         d.b.release();
@@ -389,15 +548,15 @@ void main() {
     );
 
     test(
-      'switching vaults never shows the previous vault rows in editorNoteProvider',
+      'switching vaults never shows the previous vault rows in the editor note read',
       () async {
         final d = _container();
         d.c.read(selectedNoteIdProvider.notifier).state = _dayId;
-        final note = await settled(d.c, editorNoteProvider);
+        final note = await settledScoped(d.c, editorNoteAsyncProvider, null);
         expect(note!.id, _dayId);
         expect(d.a.notes.reads, contains('getNote:$_dayId'));
 
-        final sub = await switchToHeldB(d, editorNoteProvider);
+        final sub = await switchToHeldB(d, editorNoteAsyncProvider, null);
 
         expect(sub.read(), isNull, reason: 'B is still loading');
         d.b.release();
@@ -408,14 +567,14 @@ void main() {
     );
 
     test(
-      'editorNoteProvider is the virtual Today note for a virtual Today tab without a vault read',
+      'the editor note read is the virtual Today note for a virtual Today tab without a vault read',
       () async {
         final d = _container();
         d.c.read(selectedNoteIdProvider.notifier).state = const VirtualTodayTab(
           _today,
         ).id;
 
-        final note = await settled(d.c, editorNoteProvider);
+        final note = await settledScoped(d.c, editorNoteAsyncProvider, null);
 
         expect(note!.id, const VirtualTodayTab(_today).id);
         expect(note.title, _today);

@@ -178,53 +178,6 @@ void main() {
     );
   });
 
-  group('hosted flag', () {
-    testWidgets(
-      'with the flag off the SERVERS section and VAULT SERVER row are absent and no probe is sent',
-      (tester) async {
-        final local = createVaultFolder();
-        final env = await pumpVaultPicker(
-          tester,
-          hosted: false,
-          recents: [LocalVaultRef(local.path)],
-        );
-
-        expect(find.text('SERVERS'), findsNothing);
-        expect(find.byKey(const Key('picker-servers-connect')), findsNothing);
-        expect(find.byKey(const Key('server-row-srv-nas')), findsNothing);
-        expect(find.text('VAULT SERVER'), findsNothing);
-        expect(
-          find.byKey(const Key('vault-picker-open-on-server')),
-          findsNothing,
-        );
-        expect(
-          find.byKey(const Key('vault-picker-create-on-server')),
-          findsNothing,
-        );
-        expect(
-          find.text(
-            'no vault servers yet. connect to one to open its vaults on this mac.',
-          ),
-          findsNothing,
-        );
-
-        expect(find.text('THIS MAC'), findsOneWidget);
-        expect(find.byKey(const Key('vault-picker-create')), findsOneWidget);
-        expect(find.byKey(const Key('vault-picker-open')), findsOneWidget);
-        expect(find.text('RECENT'), findsOneWidget);
-        expect(find.text(p.basename(local.path)), findsOneWidget);
-
-        // No probe on open, and none on a refocus.
-        expect(env.infoRequests(fakeServerId), isEmpty);
-        env.focus.set(false);
-        await wi97Settle(tester);
-        env.focus.set(true);
-        await wi97Settle(tester);
-        expect(env.servers[fakeServerId]!.requests, isEmpty);
-      },
-    );
-  });
-
   group('recent rows', () {
     testWidgets(
       'a local recent row shows the folder icon its name and the path in fg2',

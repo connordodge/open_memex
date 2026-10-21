@@ -14,6 +14,7 @@ import '../support/fake_vault_db.dart';
 import '../support/graph_seeds.dart';
 import '../support/links_seeds.dart';
 import '../support/vault_access_shapes.dart';
+import '../support/vault_scoped_reads.dart';
 
 const _vaultA = LocalVaultRef('/tmp/om-90-vault-a');
 const _vaultB = LocalVaultRef('/tmp/om-90-vault-b');
@@ -124,7 +125,10 @@ void main() {
 
         expect(scoped.value, isEmpty);
         expect(scoped.vault, isNull);
-        expect(c.read(linksOutProvider(L.target)), isEmpty);
+        expect(
+          readScoped(c, linksOutAsyncProvider(L.target), const <LinkRow>[]),
+          isEmpty,
+        );
       },
     );
 
@@ -147,24 +151,29 @@ void main() {
     );
 
     test(
-      'linksOutProvider is empty before the first load completes and equals the rows after',
+      'the outgoing links read is empty before the first load completes and equals the rows after',
       () async {
         final db = _seeded();
         final c = _real(db);
 
-        expect(c.read(linksOutProvider(L.target)), isEmpty);
+        expect(
+          readScoped(c, linksOutAsyncProvider(L.target), const <LinkRow>[]),
+          isEmpty,
+        );
 
         await c.read(linksOutAsyncProvider(L.target).future);
 
         expect(
-          vaultAccessShape(c.read(linksOutProvider(L.target))),
+          vaultAccessShape(
+            readScoped(c, linksOutAsyncProvider(L.target), const <LinkRow>[]),
+          ),
           vaultAccessShape(db.linksOutFor(L.target)),
         );
       },
     );
 
     test(
-      'linksOutProvider keeps its previous rows while a reload is pending',
+      'the outgoing links read keeps its previous rows while a reload is pending',
       () async {
         final gate = Wi90Gate();
         final notes = Wi90GatedNotes(
@@ -174,7 +183,10 @@ void main() {
         );
         final c = _switching({_vaultA: notes});
         await c.read(linksOutAsyncProvider('x').future);
-        expect(_ids(c.read(linksOutProvider('x'))), ['a1']);
+        expect(
+          _ids(readScoped(c, linksOutAsyncProvider('x'), const <LinkRow>[])),
+          ['a1'],
+        );
 
         gate.close();
         notes.out = [wi90Link('a2', from: 'x', to: 'y', text: 'Second')];
@@ -182,16 +194,22 @@ void main() {
         await pumpEventQueue();
 
         expect(c.read(linksOutAsyncProvider('x')).isLoading, isTrue);
-        expect(_ids(c.read(linksOutProvider('x'))), ['a1']);
+        expect(
+          _ids(readScoped(c, linksOutAsyncProvider('x'), const <LinkRow>[])),
+          ['a1'],
+        );
 
         gate.open();
         await c.read(linksOutAsyncProvider('x').future);
-        expect(_ids(c.read(linksOutProvider('x'))), ['a2']);
+        expect(
+          _ids(readScoped(c, linksOutAsyncProvider('x'), const <LinkRow>[])),
+          ['a2'],
+        );
       },
     );
 
     test(
-      'linksOutProvider switching vaults never shows the previous vault rows',
+      'the outgoing links read switching vaults never shows the previous vault rows',
       () async {
         final gateB = Wi90Gate(open: false);
         final c = _switching({
@@ -207,12 +225,18 @@ void main() {
           ),
         });
         await c.read(linksOutAsyncProvider('x').future);
-        expect(_ids(c.read(linksOutProvider('x'))), ['a-out']);
+        expect(
+          _ids(readScoped(c, linksOutAsyncProvider('x'), const <LinkRow>[])),
+          ['a-out'],
+        );
 
         _switchTo(c, _vaultB);
         await pumpEventQueue();
 
-        expect(c.read(linksOutProvider('x')), isEmpty);
+        expect(
+          readScoped(c, linksOutAsyncProvider('x'), const <LinkRow>[]),
+          isEmpty,
+        );
         expect(
           currentVaultData(c.read(linksOutAsyncProvider('x')), _vaultB),
           isNull,
@@ -221,16 +245,22 @@ void main() {
         gateB.open();
         final scoped = await c.read(linksOutAsyncProvider('x').future);
         expect(scoped.vault, _vaultB);
-        expect(_ids(c.read(linksOutProvider('x'))), ['b-out']);
+        expect(
+          _ids(readScoped(c, linksOutAsyncProvider('x'), const <LinkRow>[])),
+          ['b-out'],
+        );
 
         _switchTo(c, null);
         await pumpEventQueue();
-        expect(c.read(linksOutProvider('x')), isEmpty);
+        expect(
+          readScoped(c, linksOutAsyncProvider('x'), const <LinkRow>[]),
+          isEmpty,
+        );
       },
     );
 
     test(
-      'linksOutProvider ignores a late answer from the previous vault',
+      'the outgoing links read ignores a late answer from the previous vault',
       () async {
         final gateA = Wi90Gate(open: false);
         final c = _switching({
@@ -245,7 +275,10 @@ void main() {
             out: [wi90Link('b-out', from: 'x', to: 'y')],
           ),
         });
-        expect(c.read(linksOutProvider('x')), isEmpty);
+        expect(
+          readScoped(c, linksOutAsyncProvider('x'), const <LinkRow>[]),
+          isEmpty,
+        );
         await pumpEventQueue();
         expect(gateA.calls, 1);
 
@@ -254,7 +287,10 @@ void main() {
         gateA.open();
         await pumpEventQueue();
 
-        expect(_ids(c.read(linksOutProvider('x'))), ['b-out']);
+        expect(
+          _ids(readScoped(c, linksOutAsyncProvider('x'), const <LinkRow>[])),
+          ['b-out'],
+        );
         expect(
           (await c.read(linksOutAsyncProvider('x').future)).vault,
           _vaultB,
@@ -334,7 +370,14 @@ void main() {
       final scoped = await c.read(backlinksAsyncProvider(L.other).future);
 
       expect(scoped.value, isEmpty);
-      expect(c.read(backlinksProvider(L.other)), isEmpty);
+      expect(
+        readScoped(
+          c,
+          backlinksAsyncProvider(L.other),
+          const <String, List<BacklinkEntry>>{},
+        ),
+        isEmpty,
+      );
     });
 
     test(
@@ -371,7 +414,14 @@ void main() {
 
         expect(scoped.value, isEmpty);
         expect(scoped.vault, isNull);
-        expect(c.read(backlinksProvider(L.target)), isEmpty);
+        expect(
+          readScoped(
+            c,
+            backlinksAsyncProvider(L.target),
+            const <String, List<BacklinkEntry>>{},
+          ),
+          isEmpty,
+        );
       },
     );
 
@@ -396,17 +446,28 @@ void main() {
     );
 
     test(
-      'backlinksProvider is empty before the first load completes and equals the groups after',
+      'the backlinks read is empty before the first load completes and equals the groups after',
       () async {
         final c = _real(_seeded());
 
-        expect(c.read(backlinksProvider(L.target)), isEmpty);
+        expect(
+          readScoped(
+            c,
+            backlinksAsyncProvider(L.target),
+            const <String, List<BacklinkEntry>>{},
+          ),
+          isEmpty,
+        );
 
         final loaded = (await c.read(
           backlinksAsyncProvider(L.target).future,
         )).value;
 
-        final facade = c.read(backlinksProvider(L.target));
+        final facade = readScoped(
+          c,
+          backlinksAsyncProvider(L.target),
+          const <String, List<BacklinkEntry>>{},
+        );
         expect(facade.keys.toSet(), loaded.keys.toSet());
         expect(_titles(facade['extends']!), _titles(loaded['extends']!));
         expect(facade['extends'], hasLength(4));
@@ -414,7 +475,7 @@ void main() {
     );
 
     test(
-      'backlinksProvider keeps its previous groups while a reload is pending',
+      'the backlinks read keeps its previous groups while a reload is pending',
       () async {
         final gate = Wi90Gate();
         final notes = Wi90GatedNotes(
@@ -425,9 +486,16 @@ void main() {
         );
         final c = _switching({_vaultA: notes});
         await c.read(backlinksAsyncProvider('x').future);
-        expect(_titles(c.read(backlinksProvider('x'))['extends']!), [
-          'First source',
-        ]);
+        expect(
+          _titles(
+            readScoped(
+              c,
+              backlinksAsyncProvider('x'),
+              const <String, List<BacklinkEntry>>{},
+            )['extends']!,
+          ),
+          ['First source'],
+        );
 
         gate.close();
         notes.incoming = [wi90Link('a2', from: 's2', to: 'x', kind: 'extends')];
@@ -436,20 +504,34 @@ void main() {
         await pumpEventQueue();
 
         expect(c.read(backlinksAsyncProvider('x')).isLoading, isTrue);
-        expect(_titles(c.read(backlinksProvider('x'))['extends']!), [
-          'First source',
-        ]);
+        expect(
+          _titles(
+            readScoped(
+              c,
+              backlinksAsyncProvider('x'),
+              const <String, List<BacklinkEntry>>{},
+            )['extends']!,
+          ),
+          ['First source'],
+        );
 
         gate.open();
         await c.read(backlinksAsyncProvider('x').future);
-        expect(_titles(c.read(backlinksProvider('x'))['extends']!), [
-          'Second source',
-        ]);
+        expect(
+          _titles(
+            readScoped(
+              c,
+              backlinksAsyncProvider('x'),
+              const <String, List<BacklinkEntry>>{},
+            )['extends']!,
+          ),
+          ['Second source'],
+        );
       },
     );
 
     test(
-      'backlinksProvider switching vaults never shows the previous vault rows',
+      'the backlinks read switching vaults never shows the previous vault rows',
       () async {
         final gateB = Wi90Gate(open: false);
         final c = _switching({
@@ -467,14 +549,28 @@ void main() {
           ),
         });
         await c.read(backlinksAsyncProvider('x').future);
-        expect(_titles(c.read(backlinksProvider('x'))['references']!), [
-          'From vault A',
-        ]);
+        expect(
+          _titles(
+            readScoped(
+              c,
+              backlinksAsyncProvider('x'),
+              const <String, List<BacklinkEntry>>{},
+            )['references']!,
+          ),
+          ['From vault A'],
+        );
 
         _switchTo(c, _vaultB);
         await pumpEventQueue();
 
-        expect(c.read(backlinksProvider('x')), isEmpty);
+        expect(
+          readScoped(
+            c,
+            backlinksAsyncProvider('x'),
+            const <String, List<BacklinkEntry>>{},
+          ),
+          isEmpty,
+        );
         expect(
           currentVaultData(c.read(backlinksAsyncProvider('x')), _vaultB),
           isNull,
@@ -483,9 +579,16 @@ void main() {
         gateB.open();
         final scoped = await c.read(backlinksAsyncProvider('x').future);
         expect(scoped.vault, _vaultB);
-        expect(_titles(c.read(backlinksProvider('x'))['references']!), [
-          'From vault B',
-        ]);
+        expect(
+          _titles(
+            readScoped(
+              c,
+              backlinksAsyncProvider('x'),
+              const <String, List<BacklinkEntry>>{},
+            )['references']!,
+          ),
+          ['From vault B'],
+        );
       },
     );
   });

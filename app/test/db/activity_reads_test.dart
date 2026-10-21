@@ -1,5 +1,5 @@
 // WI #29 (A11): the `agent_changes` read (D21 extension on VaultDb) and the
-// `agentChangesProvider` over it. Seeds are raw inserts against the real V5
+// `agentChangesAsyncProvider` over it. Seeds are raw inserts against the real V5
 // schema fixture, so nothing here trusts production code to build its input.
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -190,34 +190,37 @@ void main() {
     );
   });
 
-  group('agentChangesProvider (AC7, AC11)', () {
-    test('agentChangesProvider yields the note entries newest first', () async {
-      final db = _v5();
-      db.seedDailyNote('2026-09-05', id: 'n1');
-      db.seedAgentChange(
-        'ac-old',
-        'n1',
-        day: '2026-09-04',
-        createdAt: 1000,
-        bullets: ['old'],
-      );
-      db.seedAgentChange(
-        'ac-new',
-        'n1',
-        day: '2026-09-05',
-        createdAt: 2000,
-        bullets: ['new a', 'new b'],
-      );
-      final c = _container(db);
+  group('the agent changes read (AC7, AC11)', () {
+    test(
+      'the agent changes read yields the note entries newest first',
+      () async {
+        final db = _v5();
+        db.seedDailyNote('2026-09-05', id: 'n1');
+        db.seedAgentChange(
+          'ac-old',
+          'n1',
+          day: '2026-09-04',
+          createdAt: 1000,
+          bullets: ['old'],
+        );
+        db.seedAgentChange(
+          'ac-new',
+          'n1',
+          day: '2026-09-05',
+          createdAt: 2000,
+          bullets: ['new a', 'new b'],
+        );
+        final c = _container(db);
 
-      final rows = await _agentChanges(c, 'n1');
+        final rows = await _agentChanges(c, 'n1');
 
-      expect(rows.map((r) => r.id).toList(), ['ac-new', 'ac-old']);
-      expect(rows.first.bullets, ['new a', 'new b']);
-    });
+        expect(rows.map((r) => r.id).toList(), ['ac-new', 'ac-old']);
+        expect(rows.first.bullets, ['new a', 'new b']);
+      },
+    );
 
     test(
-      'agentChangesProvider is empty on a V4 vault and does not throw',
+      'the agent changes read is empty on a V4 vault and does not throw',
       () async {
         final db = _v4();
         final c = _container(db);
@@ -227,7 +230,7 @@ void main() {
     );
 
     test(
-      'agentChangesProvider is empty when there is no open vault database',
+      'the agent changes read is empty when there is no open vault database',
       () async {
         final c = _container(null);
 
@@ -235,26 +238,29 @@ void main() {
       },
     );
 
-    test('agentChangesProvider re-reads after a vault revision bump', () async {
-      final db = _v5();
-      db.seedDailyNote('2026-09-05', id: 'n1');
-      final c = _container(db);
-      expect(await _agentChanges(c, 'n1'), isEmpty);
+    test(
+      'the agent changes read re-reads after a vault revision bump',
+      () async {
+        final db = _v5();
+        db.seedDailyNote('2026-09-05', id: 'n1');
+        final c = _container(db);
+        expect(await _agentChanges(c, 'n1'), isEmpty);
 
-      db.seedAgentChange(
-        'ac-1',
-        'n1',
-        day: '2026-09-05',
-        createdAt: 1000,
-        bullets: ['appeared'],
-      );
-      _bump(c);
+        db.seedAgentChange(
+          'ac-1',
+          'n1',
+          day: '2026-09-05',
+          createdAt: 1000,
+          bullets: ['appeared'],
+        );
+        _bump(c);
 
-      expect((await _agentChanges(c, 'n1')).single.id, 'ac-1');
-    });
+        expect((await _agentChanges(c, 'n1')).single.id, 'ac-1');
+      },
+    );
 
     test(
-      'agentChangesProvider picks up the entries once a V4 vault migrates to V5',
+      'the agent changes read picks up the entries once a V4 vault migrates to V5',
       () async {
         final db = _v4();
         final c = _container(db);

@@ -16,7 +16,6 @@ import 'package:open_memex_app/src/screens/vault_picker.dart';
 import 'package:open_memex_app/src/state/app_focus.dart';
 import 'package:open_memex_app/src/state/clock.dart';
 import 'package:open_memex_app/src/state/hosted_connection_state.dart';
-import 'package:open_memex_app/src/state/hosted_vaults_flag.dart';
 import 'package:open_memex_app/src/state/picker_actions.dart';
 import 'package:open_memex_app/src/state/settings.dart';
 import 'package:open_memex_app/src/state/token_store.dart';
@@ -197,7 +196,6 @@ String _encodeRef(VaultRef ref) => jsonEncode(switch (ref) {
 /// The picker app (no vault open) with:
 /// - [savedServers] and typed [recents] (most recent first) in mock prefs,
 ///   [last] as the last vault (launch reopens it);
-/// - [hosted]: `hostedVaultsEnabledProvider`;
 /// - [binary]: a FakeMemexCli as `memexCliProvider`, or null (binary not
 ///   found);
 /// - a FakeVaultServer per saved server serving the `server` fixtures, with
@@ -208,7 +206,6 @@ String _encodeRef(VaultRef ref) => jsonEncode(switch (ref) {
 ///   `hold()` a server so its probe stays in flight).
 Future<Wi97Picker> pumpVaultPicker(
   WidgetTester tester, {
-  bool hosted = true,
   List<SavedServer> savedServers = const [wi97Nas],
   List<VaultRef> recents = const [],
   VaultRef? last,
@@ -266,7 +263,6 @@ Future<Wi97Picker> pumpVaultPicker(
       memexCliProvider.overrideWithValue(binary ? FakeMemexCli() : null),
       clockProvider.overrideWithValue(clock),
       utcOffsetProvider.overrideWithValue(() => const Duration(hours: 2)),
-      hostedVaultsEnabledProvider.overrideWithValue(hosted),
       tokenStoreProvider.overrideWithValue(tokens),
       hostedHttpClientProvider.overrideWithValue(router),
       appFocusProvider.overrideWith(() => FakeAppFocus()),

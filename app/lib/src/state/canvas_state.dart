@@ -110,24 +110,3 @@ final canvasDetailAsyncProvider =
       if (access == null) return VaultScoped<CanvasDetailRow?>(vault, null);
       return VaultScoped(vault, await access.canvas.getCanvasDetail(canvasId));
     });
-
-/// All canvases in the current vault, newest first: a synchronous facade over
-/// [canvasesAsyncProvider] (D14a). Empty with no vault, before the first load
-/// and while another vault's data is all there is.
-final canvasesProvider = Provider<List<CanvasRow>>(
-  (ref) => vaultFacadeValue(
-    ref,
-    ref.watch(canvasesAsyncProvider),
-    const <CanvasRow>[],
-  ),
-);
-
-/// Hydrated canvas facade over [canvasDetailAsyncProvider] (D14a): null for an
-/// unknown id, with no vault, and before the first load.
-final canvasDetailProvider = Provider.family<CanvasDetailRow?, String>(
-  (ref, canvasId) => vaultFacadeValue<CanvasDetailRow?>(
-    ref,
-    ref.watch(canvasDetailAsyncProvider(canvasId)),
-    null,
-  ),
-);

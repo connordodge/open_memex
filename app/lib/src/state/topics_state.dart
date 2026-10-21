@@ -28,16 +28,6 @@ final smartFolderTreeAsyncProvider = FutureProvider<VaultScoped<TopicsTree>>((
   return VaultScoped(vault, buildTopicsTree(folders, unsorted));
 });
 
-/// The synchronous facade over [smartFolderTreeAsyncProvider] (D14a): the
-/// open vault's tree, or the empty tree before its first read completes.
-final smartFolderTreeProvider = Provider<TopicsTree>(
-  (ref) => vaultFacadeValue(
-    ref,
-    ref.watch(smartFolderTreeAsyncProvider),
-    emptyTopicsTree(),
-  ),
-);
-
 /// The ids of the Smart Folders the person has expanded in the Topics tree.
 /// In memory only: every folder starts collapsed and nothing is persisted.
 final expandedTopicFoldersProvider =

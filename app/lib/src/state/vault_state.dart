@@ -6,7 +6,6 @@ import '../memex_cli.dart';
 import 'settings.dart';
 import 'vault_ref.dart';
 
-export 'canvas_state.dart' show canvasDetailProvider, canvasesProvider;
 export 'links_state.dart';
 export 'note_state.dart';
 export 'notes_list_state.dart';

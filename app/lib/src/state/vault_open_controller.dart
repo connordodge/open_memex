@@ -210,6 +210,11 @@ class VaultOpenController {
     return outcome;
   }
 
+  /// The saved server [serverId]'s access token was replaced: see
+  /// [hostedServerTokenChanged].
+  Future<void> serverTokenChanged(String serverId) =>
+      hostedServerTokenChanged(_ref, serverId);
+
   /// The open hosted [vault] went away while open (Req 53a): see
   /// [hostedVaultGone].
   Future<void> hostedVaultGoneWhileOpen(HostedVaultRef vault) =>

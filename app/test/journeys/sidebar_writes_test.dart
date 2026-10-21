@@ -24,6 +24,7 @@ import '../support/app_harness.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
 import '../support/note_cli_fakes.dart';
+import '../support/vault_scoped_reads.dart';
 
 const _newNoteId = '01J9Z8Y7X6W5V4T3S2R1Q0P86A';
 const _newCanvasId = 'c-86-new';
@@ -513,9 +514,21 @@ void main() {
           )
           ..onRm(db);
         final h = await _pump(tester, writes: _Wi86Writes(), db: db, cli: cli);
-        h.container.listen(notesListProvider, (_, _) {});
+        listenScoped(
+          h.container,
+          notesListAsyncProvider,
+          const <NoteListItem>[],
+          (_, _) {},
+        );
         await pumpFrames(tester);
-        List<String> ids() => [for (final n in h.read(notesListProvider)) n.id];
+        List<String> ids() => [
+          for (final n in readScoped(
+            h.container,
+            notesListAsyncProvider,
+            const <NoteListItem>[],
+          ))
+            n.id,
+        ];
         expect(ids(), [_alphaId, _betaId]);
 
         // Topics mode lists role-less notes under Unsorted (#24).

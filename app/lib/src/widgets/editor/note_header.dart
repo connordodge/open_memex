@@ -15,16 +15,24 @@ import 'review_chip.dart';
 /// A `role: daily` note's [DailyDateHeader] replaces the title field: its
 /// title is not editable (Req 49). The unsaved virtual Today note has no
 /// meta rail and no review chip.
+///
+/// While the note's hosted save waits for the vault server (#102) the meta
+/// rail shows only [pendingLabel] (Key `pending-save-label`, board A11
+/// state 1), also for the virtual Today note.
 class NoteHeader extends StatelessWidget {
   const NoteHeader({
     super.key,
     required this.note,
     required this.titleCtrl,
     required this.onTitleChanged,
+    this.pendingLabel,
   });
   final Note note;
   final TextEditingController titleCtrl;
   final ValueChanged<String> onTitleChanged;
+
+  /// `not saved yet · will save when <server> is back`, or null.
+  final String? pendingLabel;
 
   @override
   Widget build(BuildContext context) {
@@ -34,7 +42,10 @@ class NoteHeader extends StatelessWidget {
       key: const Key('note-header'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (saved) _MetaRail(note: note),
+        if (pendingLabel case final label?)
+          _PendingRail(label: label)
+        else if (saved)
+          _MetaRail(note: note),
         const SizedBox(height: 18),
         DailyDateHeader(note: note),
         if (note.role != 'daily')
@@ -69,6 +80,29 @@ class NoteHeader extends StatelessWidget {
           ),
         ],
       ],
+    );
+  }
+}
+
+/// The meta rail of a note whose hosted save is queued: the warn mono
+/// label alone, in the rail's container (pack 102).
+class _PendingRail extends StatelessWidget {
+  const _PendingRail({required this.label});
+  final String label;
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: OmColors.line1, width: 1)),
+      ),
+      child: Text(
+        label,
+        key: const Key('pending-save-label'),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: OmType.mono(size: 11, color: OmColors.warn),
+      ),
     );
   }
 }

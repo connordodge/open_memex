@@ -14,7 +14,6 @@
 // and the hosted failures (state/vault_open_hosted.dart).
 import 'dart:convert';
 
-import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -22,7 +21,6 @@ import 'package:http/testing.dart';
 import 'package:open_memex_app/src/state/app_focus.dart';
 import 'package:open_memex_app/src/state/clock.dart';
 import 'package:open_memex_app/src/state/hosted_connection_state.dart';
-import 'package:open_memex_app/src/state/picker_actions.dart';
 import 'package:open_memex_app/src/state/server_probes.dart';
 import 'package:open_memex_app/src/state/settings.dart';
 import 'package:open_memex_app/src/state/token_store.dart';
@@ -120,13 +118,6 @@ const _memexRef = HostedVaultRef(fakeServerId, 'memex');
 
 /// Lets fake server responses and token reads finish.
 Future<void> _drain() => pumpEventQueue();
-
-/// A BuildContext for calling the default picker actions.
-class _Wi97Ctx extends StatelessWidget {
-  const _Wi97Ctx();
-  @override
-  Widget build(BuildContext context) => const SizedBox();
-}
 
 void main() {
   group('probe on open', () {
@@ -432,20 +423,6 @@ void main() {
         c.read(recentRowOutcomeProvider(HostedVaultRef('srv-mini', name))),
         isNull,
       );
-    });
-
-    testWidgets('the default picker actions do nothing', (tester) async {
-      await tester.pumpWidget(const _Wi97Ctx());
-      final context = tester.element(find.byType(_Wi97Ctx));
-      final c = ProviderContainer();
-      addTearDown(c.dispose);
-      final actions = c.read(pickerActionsProvider);
-
-      expect(await actions.connect(context), isNull);
-      await actions.editServer(context, 'srv-nas');
-      await actions.openOnServer(context);
-      await actions.createOnServer(context);
-      await actions.setUp(context);
     });
 
     test('hosted outcomes carry their message and the server version', () {

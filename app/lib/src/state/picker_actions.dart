@@ -5,7 +5,9 @@ import 'settings.dart';
 
 /// The vault picker's hosted actions (WI #97): the dialogs and sheet other
 /// WIs build (#98 connect/edit, #99 open/create on a server, #100 set-up).
-/// The default does nothing; #105 binds it.
+/// This base does nothing; the app root binds the seam to the real dialogs
+/// (`AppPickerActions` through `appRootOverrides` in main.dart, so state/
+/// imports no widget).
 class PickerActions {
   const PickerActions();
 
@@ -14,7 +16,7 @@ class PickerActions {
   Future<SavedServer?> connect(BuildContext context) async => null;
 
   /// Opens the edit dialog for the saved server [serverId] (also a recent
-  /// row's "update token"). The default does nothing; #105 binds it to
+  /// row's "update token"). The default does nothing; the app binds it to
   /// #98's `showConnectServerDialog(context, edit: server)`.
   Future<void> editServer(BuildContext context, String serverId) async {}
 
@@ -28,7 +30,8 @@ class PickerActions {
   Future<void> setUp(BuildContext context) async {}
 }
 
-/// The picker-actions seam. Tests override it with a recording fake.
+/// The picker-actions seam: [PickerActions] (nothing) until the app root
+/// overrides it. Tests override it with a recording fake.
 final pickerActionsProvider = Provider<PickerActions>(
   (_) => const PickerActions(),
 );

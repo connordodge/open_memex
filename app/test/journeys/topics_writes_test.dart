@@ -23,6 +23,7 @@ import '../support/today_cli_fakes.dart';
 import '../support/topics_access_doubles.dart';
 import '../support/topics_launch.dart';
 import '../support/topics_seed.dart';
+import '../support/vault_scoped_reads.dart';
 
 const _noCli = 'The memex CLI is not available.';
 const _depthKey = 'smart_folder_max_depth';
@@ -55,7 +56,13 @@ List<String> _treeIds(SmartFolderRobot r) {
     }
   }
 
-  walk(r.h.read(smartFolderTreeProvider).folders);
+  walk(
+    readScoped(
+      r.h.container,
+      smartFolderTreeAsyncProvider,
+      emptyTopicsTree(),
+    ).folders,
+  );
   return out;
 }
 

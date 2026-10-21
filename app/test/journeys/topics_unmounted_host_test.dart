@@ -11,6 +11,7 @@ import 'package:open_memex_app/src/state/topics_state.dart';
 import '../support/topics_access_doubles.dart';
 import '../support/topics_launch.dart';
 import '../support/topics_seed.dart';
+import '../support/vault_scoped_reads.dart';
 
 void main() {
   testWidgets(
@@ -39,10 +40,11 @@ void main() {
         reason: 'no write after the host context unmounted',
       );
       expect(
-        r.h
-            .read(smartFolderTreeProvider)
-            .folders
-            .any((f) => f.name == 'renamed'),
+        readScoped(
+          r.h.container,
+          smartFolderTreeAsyncProvider,
+          emptyTopicsTree(),
+        ).folders.any((f) => f.name == 'renamed'),
         isFalse,
       );
     },
@@ -73,7 +75,11 @@ void main() {
         reason: 'no write after the host context unmounted',
       );
       expect(
-        r.h.read(smartFolderTreeProvider).folders.any((f) => f.id == TP.health),
+        readScoped(
+          r.h.container,
+          smartFolderTreeAsyncProvider,
+          emptyTopicsTree(),
+        ).folders.any((f) => f.id == TP.health),
         isTrue,
       );
     },

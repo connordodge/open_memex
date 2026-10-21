@@ -9,16 +9,17 @@ import '../../state/token_store.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import '../../vault_access/hosted/hosted_client.dart';
+import '../../vault_access/hosted/hosted_vault_access.dart'
+    show hostedHttpClientProvider;
 import '../atoms.dart';
 
 /// The HTTP client the connect and edit-server dialogs probe a vault server
-/// with (through `HostedClient.probeServer`). Tests override it with
+/// with (through `HostedClient.probeServer`): the app's one hosted HTTP
+/// client, `hostedHttpClientProvider`. Tests override it with
 /// `FakeVaultServer.client`.
-final connectServerHttpClientProvider = Provider<http.Client>((ref) {
-  final client = http.Client();
-  ref.onDispose(client.close);
-  return client;
-});
+final connectServerHttpClientProvider = Provider<http.Client>(
+  (ref) => ref.watch(hostedHttpClientProvider),
+);
 
 /// Shows "connect to a vault server" (boards A4/A5), or the edit-server
 /// dialog for [edit] (A5 state 6). Returns the saved server, or null when

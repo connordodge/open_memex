@@ -22,6 +22,7 @@ import '../support/daily_seed.dart';
 import '../support/editor_access_doubles.dart';
 import '../support/fake_clock.dart';
 import '../support/fake_vault_db.dart';
+import '../support/vault_scoped_reads.dart';
 
 const _today = '2026-10-03';
 const _aTodayId = '01J9ATODAY0000000000000078';
@@ -118,13 +119,35 @@ void main() {
         await pumpEventQueue();
 
         expect(
-          l.c.read(todayNoteProvider)?.noteId,
+          (await settledScoped(l.c, todayNoteAsyncProvider, null))?.noteId,
           _oct4Id,
           reason: 'the read landed, for the new date',
         );
         expect(l.tabs.tabs, [const VirtualTodayTab(_today)]);
         expect(l.tabs.activeTab, const VirtualTodayTab(_today));
         expect(l.tabs.tabs, isNot(contains(const NoteTab(_oct4Id))));
+      },
+    );
+
+    test(
+      'a same-vault relaunch after midnight lands on the new day and never on the daily note of the day before',
+      () async {
+        // WI #105: nothing listens to todayNoteAsyncProvider once its facade
+        // is gone, so after midnight its cached value (the note of the day
+        // before) is only reloaded on the next read.
+        final db = FakeVaultDb.v5()..seedDailyNote(_today, id: _aTodayId);
+        addTearDown(db.close);
+        final doubles = EditorVaultDoubles(notesDb: db, dailyDb: db);
+        final clock = FakeClock(DateTime(2026, 10, 3, 23, 59));
+        final l = await _launch({'a': doubles.build}, clock: clock);
+        expect(l.tabs.activeTab, const NoteTab(_aTodayId));
+
+        clock.advance(const Duration(minutes: 2));
+        await pumpEventQueue();
+        l.c.invalidate(tabsProvider);
+        await pumpEventQueue();
+
+        expect(l.tabs.activeTab, const VirtualTodayTab('2026-10-04'));
       },
     );
 

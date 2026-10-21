@@ -8,6 +8,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/src/db.dart' show NoteListItem;
 import 'package:open_memex_app/src/memex_cli.dart';
 import 'package:open_memex_app/src/screens/workspace.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
@@ -17,6 +18,7 @@ import '../support/app_harness.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
 import '../support/note_cli_fakes.dart';
+import '../support/vault_scoped_reads.dart';
 
 const _alphaId = '01J9Z8Y7X6W5V4T3S2R1Q0P9N8';
 const _betaId = '01J9Z8Y7X6W5V4T3S2R1Q0P9N9';
@@ -274,7 +276,11 @@ void main() {
         expect(find.byKey(_listItem(_alphaId)), findsNothing);
         expect(find.byKey(_listItem(_betaId)), findsOneWidget);
         expect(
-          h.read(notesListProvider).map((n) => n.id),
+          readScoped(
+            h.container,
+            notesListAsyncProvider,
+            const <NoteListItem>[],
+          ).map((n) => n.id),
           isNot(contains(_alphaId)),
         );
         expect(h.read(vaultRevisionProvider), greaterThan(revisionBefore));

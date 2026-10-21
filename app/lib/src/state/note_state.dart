@@ -9,7 +9,7 @@ import 'vault_state.dart';
 /// The selected note read through `VaultAccess.notes.getNote`, with the vault
 /// it was loaded for (D14a). Null with no vault, no note selected, or a
 /// virtual Today tab selected: its id is never a vault note id, so it is
-/// never read. [selectedNoteProvider] is its synchronous facade.
+/// never read.
 final selectedNoteAsyncProvider = FutureProvider<VaultScoped<Note?>>((
   ref,
 ) async {
@@ -24,7 +24,8 @@ final selectedNoteAsyncProvider = FutureProvider<VaultScoped<Note?>>((
 });
 
 /// Every note's (id, title) through `VaultAccess.notes.allTitles`, with the
-/// vault it was loaded for. [noteTitlesProvider] is its facade.
+/// vault it was loaded for. Used by the wikilink autocomplete and the kind
+/// chip's "More…" picker.
 final noteTitlesAsyncProvider = FutureProvider<VaultScoped<List<NoteTitle>>>((
   ref,
 ) async {
@@ -36,7 +37,8 @@ final noteTitlesAsyncProvider = FutureProvider<VaultScoped<List<NoteTitle>>>((
 });
 
 /// Every link kind through `VaultAccess.notes.distinctLinkKinds`, with the
-/// vault it was loaded for. [linkKindsProvider] is its facade.
+/// vault it was loaded for. The chip's "More…" picker surfaces the kinds the
+/// user has already coined.
 final linkKindsAsyncProvider = FutureProvider<VaultScoped<List<String>>>((
   ref,
 ) async {
@@ -46,33 +48,6 @@ final linkKindsAsyncProvider = FutureProvider<VaultScoped<List<String>>>((
   if (access == null) return VaultScoped(vault, const []);
   return VaultScoped(vault, await access.notes.distinctLinkKinds());
 });
-
-/// Hydrated form of the selected note: the synchronous facade of
-/// [selectedNoteAsyncProvider] (D14a).
-final selectedNoteProvider = Provider<Note?>(
-  (ref) => vaultFacadeValue(ref, ref.watch(selectedNoteAsyncProvider), null),
-);
-
-/// All notes' (id, title) pairs — used by the wikilink autocomplete and the
-/// kind chip's "More…" picker. Facade of [noteTitlesAsyncProvider].
-final noteTitlesProvider = Provider<List<NoteTitle>>(
-  (ref) => vaultFacadeValue(
-    ref,
-    ref.watch(noteTitlesAsyncProvider),
-    const <NoteTitle>[],
-  ),
-);
-
-/// Distinct kinds present anywhere in the vault. Used by the chip's "More…"
-/// picker to surface user-defined kinds the user has already coined.
-/// Facade of [linkKindsAsyncProvider].
-final linkKindsProvider = Provider<List<String>>(
-  (ref) => vaultFacadeValue(
-    ref,
-    ref.watch(linkKindsAsyncProvider),
-    const <String>[],
-  ),
-);
 
 /// The current vault's data of the async vault read [provider], watched from
 /// a widget, or [empty] while there is none or it was loaded for another
@@ -89,8 +64,28 @@ T watchVaultValue<T>(
   return scoped == null ? empty : scoped.value;
 }
 
+/// The fresh data of the async vault read [future] (a provider's `.future`)
+/// for the vault open when it is called, for event handlers: awaits the read,
+/// so a read nothing listens to is reloaded first when its inputs (the date,
+/// the vault revision) changed since it last loaded. [empty] when the read
+/// fails or was loaded for another vault.
+Future<T> awaitVaultValue<T>(
+  WidgetRef ref,
+  ProviderListenable<Future<VaultScoped<T>>> future,
+  T empty,
+) async {
+  final vault = ref.read(currentVaultProvider);
+  try {
+    final scoped = await ref.read(future);
+    return scoped.vault == vault ? scoped.value : empty;
+  } on Exception {
+    return empty;
+  }
+}
+
 /// [watchVaultValue] without subscribing, for event handlers: the current
-/// vault's data of [provider] right now, or [empty].
+/// vault's data of [provider] right now, or [empty]. Can be stale when no
+/// widget listens to [provider]; use [awaitVaultValue] then.
 T readVaultValue<T>(
   WidgetRef ref,
   ProviderListenable<AsyncValue<VaultScoped<T>>> provider,

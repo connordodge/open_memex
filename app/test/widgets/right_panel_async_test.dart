@@ -5,6 +5,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/src/db.dart' show LinkRow;
 import 'package:open_memex_app/src/db/activity_reads.dart';
 import 'package:open_memex_app/src/state/activity_state.dart';
 import 'package:open_memex_app/src/state/vault_access_state.dart';
@@ -17,6 +18,7 @@ import 'package:open_memex_app/src/widgets/right_panel.dart';
 import '../support/app_harness.dart';
 import '../support/fake_vault_db.dart';
 import '../support/links_seeds.dart';
+import '../support/vault_scoped_reads.dart';
 
 const _note = 'n90-target';
 
@@ -245,14 +247,22 @@ void main() {
         expect(find.text('a out'), findsNothing);
         expect(b.outRow, findsNothing);
         expect(
-          p.container.read(linksOutProvider(_note)),
+          readScoped(
+            p.container,
+            linksOutAsyncProvider(_note),
+            const <LinkRow>[],
+          ),
           isEmpty,
-          reason: 'linksOutProvider facade',
+          reason: 'the outgoing links read',
         );
         expect(
-          p.container.read(backlinksProvider(_note)),
+          readScoped(
+            p.container,
+            backlinksAsyncProvider(_note),
+            const <String, List<BacklinkEntry>>{},
+          ),
           isEmpty,
-          reason: 'backlinksProvider facade',
+          reason: 'the backlinks read',
         );
         if (hosted) {
           expect(_loading, findsOneWidget);
@@ -295,9 +305,13 @@ void main() {
         expect(a.entry, findsNothing);
         expect(find.text('· a bullet'), findsNothing);
         expect(
-          p.container.read(agentChangesProvider(_note)),
+          readScoped(
+            p.container,
+            agentChangesAsyncProvider(_note),
+            const <AgentChangeRow>[],
+          ),
           isEmpty,
-          reason: 'agentChangesProvider facade',
+          reason: 'the agent changes read',
         );
         if (hosted) {
           expect(_loading, findsOneWidget);
@@ -338,7 +352,14 @@ void main() {
         expect(_loading, findsNothing);
         expect(a.outRow, findsOneWidget);
         expect(a.inRow, findsOneWidget);
-        expect(p.container.read(linksOutProvider(_note)), hasLength(1));
+        expect(
+          readScoped(
+            p.container,
+            linksOutAsyncProvider(_note),
+            const <LinkRow>[],
+          ),
+          hasLength(1),
+        );
       },
     );
 

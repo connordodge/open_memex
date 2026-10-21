@@ -8,6 +8,7 @@ import '../../state/tabs_state.dart';
 import '../../theme/colors.dart';
 import '../../theme/review_state_colors.dart';
 import '../../theme/typography.dart';
+import '../../vault_access/vault_async_view.dart';
 import '../atoms.dart';
 
 /// The sidebar's Days mode (Req 49, Key `days-pane`): the `Today` row
@@ -16,19 +17,25 @@ import '../atoms.dart';
 /// no saved daily notes the `Today` row is followed by the empty copy
 /// (`days-empty`, Req 53).
 ///
-/// Rebuilds on every vault revision (through `dailyNotesProvider`) and at
-/// local midnight (through `todayDateProvider`), when a new `Today` row
-/// appears and yesterday's row shows its date. Fills the bounded height its
-/// parent gives it.
+/// Rebuilds on every vault revision (through `dailyNotesAsyncProvider`,
+/// rendered by `VaultAsyncView`: a reload keeps the previous rows, a hosted
+/// first load shows the loading state in place of the pane) and at local
+/// midnight (through `todayDateProvider`), when a new `Today` row appears and
+/// yesterday's row shows its date. Fills the bounded height its parent gives
+/// it.
 class DaysPane extends ConsumerWidget {
   const DaysPane({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final list = buildDaysList(
-      ref.watch(dailyNotesProvider),
-      today: ref.watch(todayDateProvider),
-    );
+  Widget build(BuildContext context, WidgetRef ref) =>
+      VaultAsyncView<List<DailyNoteRow>>(
+        value: ref.watch(dailyNotesAsyncProvider),
+        empty: const <DailyNoteRow>[],
+        builder: (c, notes) => _build(c, ref, notes),
+      );
+
+  Widget _build(BuildContext context, WidgetRef ref, List<DailyNoteRow> notes) {
+    final list = buildDaysList(notes, today: ref.watch(todayDateProvider));
     final activeTab = ref.watch(activeTabProvider);
     final today = list.today;
     final todayTab = switch (today.note) {

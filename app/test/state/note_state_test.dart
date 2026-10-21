@@ -14,6 +14,7 @@ import 'package:open_memex_app/src/state/vault_state.dart';
 
 import '../support/editor_access_doubles.dart';
 import '../support/fake_vault_db.dart';
+import '../support/vault_scoped_reads.dart';
 
 const _vaultA = '/tmp/om-78-vault-a';
 const _vaultB = '/tmp/om-78-vault-b';
@@ -83,11 +84,11 @@ List<String> _titles(List<NoteTitle> rows) => [for (final r in rows) r.title];
 void main() {
   group('note providers read through the notes domain (AC4)', () {
     test(
-      'selectedNoteProvider reads the selected note through the notes domain',
+      'the selected note read reads the selected note through the notes domain',
       () async {
         final v = _container();
 
-        final note = await settled(v.c, selectedNoteProvider);
+        final note = await settledScoped(v.c, selectedNoteAsyncProvider, null);
 
         expect(note, isNotNull);
         expect(note!.id, _noteId);
@@ -98,12 +99,20 @@ void main() {
     );
 
     test(
-      'noteTitlesProvider and linkKindsProvider read through the notes domain',
+      'the note titles and link kinds reads go through the notes domain',
       () async {
         final v = _container();
 
-        final titles = await settled(v.c, noteTitlesProvider);
-        final kinds = await settled(v.c, linkKindsProvider);
+        final titles = await settledScoped(
+          v.c,
+          noteTitlesAsyncProvider,
+          const <NoteTitle>[],
+        );
+        final kinds = await settledScoped(
+          v.c,
+          linkKindsAsyncProvider,
+          const <String>[],
+        );
 
         expect(
           _titles(titles),
@@ -140,9 +149,24 @@ void main() {
       () async {
         final v = _container();
         v.a.holdFromStart = true;
-        final note = v.c.listen(selectedNoteProvider, (_, _) {});
-        final titles = v.c.listen(noteTitlesProvider, (_, _) {});
-        final kinds = v.c.listen(linkKindsProvider, (_, _) {});
+        final note = listenScoped(
+          v.c,
+          selectedNoteAsyncProvider,
+          null,
+          (_, _) {},
+        );
+        final titles = listenScoped(
+          v.c,
+          noteTitlesAsyncProvider,
+          const <NoteTitle>[],
+          (_, _) {},
+        );
+        final kinds = listenScoped(
+          v.c,
+          linkKindsAsyncProvider,
+          const <String>[],
+          (_, _) {},
+        );
         await pumpEventQueue();
 
         expect(v.a.notes.gate.waiting, greaterThan(0));
@@ -162,15 +186,21 @@ void main() {
     test('the note facades are empty with no vault open', () async {
       final v = _container(open: null);
 
-      expect(await settled(v.c, selectedNoteProvider), isNull);
-      expect(await settled(v.c, noteTitlesProvider), isEmpty);
-      expect(await settled(v.c, linkKindsProvider), isEmpty);
+      expect(await settledScoped(v.c, selectedNoteAsyncProvider, null), isNull);
+      expect(
+        await settledScoped(v.c, noteTitlesAsyncProvider, const <NoteTitle>[]),
+        isEmpty,
+      );
+      expect(
+        await settledScoped(v.c, linkKindsAsyncProvider, const <String>[]),
+        isEmpty,
+      );
     });
 
-    test('selectedNoteProvider is null with no note selected', () async {
+    test('the selected note read is null with no note selected', () async {
       final v = _container(selected: null);
 
-      expect(await settled(v.c, selectedNoteProvider), isNull);
+      expect(await settledScoped(v.c, selectedNoteAsyncProvider, null), isNull);
       expect(v.a.noteReads.where((r) => r.startsWith('getNote')), isEmpty);
     });
   });
@@ -180,9 +210,24 @@ void main() {
       'on a revision bump the note facades keep their previous values until the new read completes',
       () async {
         final v = _container();
-        final note = v.c.listen(selectedNoteProvider, (_, _) {});
-        final titles = v.c.listen(noteTitlesProvider, (_, _) {});
-        final kinds = v.c.listen(linkKindsProvider, (_, _) {});
+        final note = listenScoped(
+          v.c,
+          selectedNoteAsyncProvider,
+          null,
+          (_, _) {},
+        );
+        final titles = listenScoped(
+          v.c,
+          noteTitlesAsyncProvider,
+          const <NoteTitle>[],
+          (_, _) {},
+        );
+        final kinds = listenScoped(
+          v.c,
+          linkKindsAsyncProvider,
+          const <String>[],
+          (_, _) {},
+        );
         await pumpEventQueue();
         expect(note.read()!.title, 'Alpha title');
 
@@ -213,10 +258,15 @@ void main() {
 
   group('switching vaults (AC5, D14a)', () {
     test(
-      'switching vaults never shows the previous vault rows in selectedNoteProvider',
+      'switching vaults never shows the previous vault rows in the selected note read',
       () async {
         final v = _container();
-        final note = v.c.listen(selectedNoteProvider, (_, _) {});
+        final note = listenScoped(
+          v.c,
+          selectedNoteAsyncProvider,
+          null,
+          (_, _) {},
+        );
         await pumpEventQueue();
         expect(note.read()!.title, 'Alpha title');
 
@@ -233,10 +283,15 @@ void main() {
     );
 
     test(
-      'switching vaults never shows the previous vault rows in noteTitlesProvider',
+      'switching vaults never shows the previous vault rows in the note titles read',
       () async {
         final v = _container();
-        final titles = v.c.listen(noteTitlesProvider, (_, _) {});
+        final titles = listenScoped(
+          v.c,
+          noteTitlesAsyncProvider,
+          const <NoteTitle>[],
+          (_, _) {},
+        );
         await pumpEventQueue();
         expect(_titles(titles.read()), contains('Alpha other'));
 
@@ -256,10 +311,15 @@ void main() {
     );
 
     test(
-      'switching vaults never shows the previous vault rows in linkKindsProvider',
+      'switching vaults never shows the previous vault rows in the link kinds read',
       () async {
         final v = _container();
-        final kinds = v.c.listen(linkKindsProvider, (_, _) {});
+        final kinds = listenScoped(
+          v.c,
+          linkKindsAsyncProvider,
+          const <String>[],
+          (_, _) {},
+        );
         await pumpEventQueue();
         expect(kinds.read(), ['supports']);
 
@@ -279,7 +339,12 @@ void main() {
       'switching back to a vault never shows the other vault rows while it reloads',
       () async {
         final v = _container();
-        final note = v.c.listen(selectedNoteProvider, (_, _) {});
+        final note = listenScoped(
+          v.c,
+          selectedNoteAsyncProvider,
+          null,
+          (_, _) {},
+        );
         await pumpEventQueue();
         v.open(_vaultB);
         await pumpEventQueue();
@@ -299,8 +364,18 @@ void main() {
 
     test('closing the vault empties the note facades at once', () async {
       final v = _container();
-      final note = v.c.listen(selectedNoteProvider, (_, _) {});
-      final titles = v.c.listen(noteTitlesProvider, (_, _) {});
+      final note = listenScoped(
+        v.c,
+        selectedNoteAsyncProvider,
+        null,
+        (_, _) {},
+      );
+      final titles = listenScoped(
+        v.c,
+        noteTitlesAsyncProvider,
+        const <NoteTitle>[],
+        (_, _) {},
+      );
       await pumpEventQueue();
       expect(note.read(), isNotNull);
 
@@ -317,8 +392,18 @@ void main() {
       () async {
         const date = '2026-10-20';
         final v = _container(selected: const VirtualTodayTab(date).id);
-        final selected = v.c.listen(selectedNoteProvider, (_, _) {});
-        final editor = v.c.listen(editorNoteProvider, (_, _) {});
+        final selected = listenScoped(
+          v.c,
+          selectedNoteAsyncProvider,
+          null,
+          (_, _) {},
+        );
+        final editor = listenScoped(
+          v.c,
+          editorNoteAsyncProvider,
+          null,
+          (_, _) {},
+        );
         await pumpEventQueue();
 
         v.bump();
