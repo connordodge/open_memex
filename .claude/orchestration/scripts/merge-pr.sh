@@ -175,6 +175,9 @@ REPO=${ORCH_REPO:-$(cd "$MAIN" && gh repo view --json nameWithOwner -q .nameWith
 [ -n "$REPO" ] || { echo "MERGE-PR FAIL: cannot determine owner/name (set ORCH_REPO)"; exit 1; }
 GATE=${MERGE_CHECK_CMD:-$SCRIPT_DIR/merge-check.sh}
 EXTRA=${MERGE_CHECK_ARGS:-}
+case " $EXTRA " in *" --ac-map-only "*)
+  echo "MERGE-PR FAIL: MERGE_CHECK_ARGS contains --ac-map-only; a real merge needs the full gate"; exit 1 ;;
+esac
 case " $EXTRA " in *" --skip-suites "*)
   [ "$DRY" = 1 ] || { echo "MERGE-PR FAIL: MERGE_CHECK_ARGS contains --skip-suites; a real merge needs the full gate"; exit 1; } ;;
 esac
@@ -188,6 +191,10 @@ if [ "$state" != OPEN ]; then
 fi
 
 HEAD_GATED=""; BASE_GATED=""; WI=""; LINK=""; GATE_RC=1
+# GitHub's own mergeability first: a DIRTY/CONFLICTING PR can't merge however clean the gate's
+# tree merge is, so fail in seconds instead of after a long gate (run 20261020-66: #121, #122,
+# #125 and #149 passed 5–120 min gates and then exited 3 here).
+wait_mergeable || exit 3
 round=0
 while :; do
   round=$((round + 1))

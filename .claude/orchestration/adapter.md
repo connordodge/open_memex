@@ -31,9 +31,10 @@ Connor's decision (2026-10-03): ignore CI and coverage Actions; do local builds 
 |---|---|
 | `wi-setup.sh <id> <branch> [base-ref]` | First command in every new worktree. Creates or takes over the branch, copies `.claude/settings.local.json`, runs `flutter pub get` in `app/` and `cargo fetch`. Refuses the main checkout and the gate worktree. |
 | `suite-slot.sh <cmd…>` | Every FULL `cargo test --workspace` and every full `flutter test` runs through this. 3 slots machine-wide. Focused single-file runs skip it. |
-| `merge-check.sh <pr> [--base ref] [--complexity auto\|routine\|tricky] [--skip-suites] [--pr-body-file f]` | The merged-tree check, below. Exit 0 pass, 1 fail. |
+| `merge-check.sh <pr> [--base ref] [--complexity auto\|routine\|tricky] [--skip-suites] [--ac-map-only] [--pr-body-file f]` | The merged-tree check, below. Exit 0 pass, 1 fail. |
 | `mutation-spot.sh …` | Operator mutants on the PR's added `.rs` and `.dart` lines. Called by merge-check on tricky WIs. |
-| `merge-pr.sh <pr> <runDir> "<note>"` | Runs the merge check (log in `<runDir>/gate-<pr>-<stamp>.log`), waits for mergeable, re-gates if main moved, merges exactly the tested head with a merge commit, ticks the WI's ACs, and appends to the ledger. No required GitHub checks. Exit 0 merged, 1 fail, 3 not mergeable. |
+| `merge-pr.sh <pr> <runDir> "<note>"` | Runs the merge check (log in `<runDir>/gate-<pr>-<stamp>.log`), waits for mergeable, re-gates if main moved, checks GitHub mergeable before gating, merges exactly the tested head with a merge commit, ticks the WI's ACs, and appends to the ledger. No required GitHub checks. Exit 0 merged, 1 fail, 3 not mergeable. |
+| `merge-queue.sh <runDir>` | The one merge queue: pops `<runDir>/merge-queue.txt` (append or reorder it), runs merge-pr per PR, drops a PR that fails, and stops (PR kept) on infra failures. `MUTATION_OFF=1` pauses the MUTATION stage. Never run two at once. |
 
 **What merge-check verifies** on `origin/main` + the PR, cheapest first:
 - no conflicts;
@@ -135,6 +136,8 @@ These add to the generic rubric:
 - One schema version bump per release, owned by one WI; check the ledger's order.
 - Run `git merge-tree` against the other in-flight branches the orchestrator lists.
 - `GLOSSARY.md` consistency.
+- Axum routers nested under one prefix use the same path-parameter names (a mismatch panics at startup only on the merged tree).
+- A test file several WIs edit needs one owner in the ledger's overlap table.
 
 ### tests
 - Rust integration tests live in `crates/*/tests/`; CLI tests in
