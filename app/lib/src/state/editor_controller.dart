@@ -1067,7 +1067,13 @@ class EditorController extends StateNotifier<EditorStateValue> {
       if (save) unawaited(_save());
     } else if (save) {
       unawaited(
-        _saveElsewhere(id, stored.version, content, title: stored.title),
+        _saveElsewhere(
+          id,
+          stored.version,
+          content,
+          title: stored.title,
+          appended: latest,
+        ),
       );
     }
     _ref
@@ -1080,12 +1086,17 @@ class EditorController extends StateNotifier<EditorStateValue> {
   /// person left it (no editor state to report to). A failure leaves the
   /// stored note as it is; on a hosted vault one that can't reach the
   /// server queues [content] for note [id] (titled [title]) on [version]
-  /// instead, like the editor's own save (#102).
+  /// instead, like the editor's own save (#102). When an older edit of
+  /// note [id] is already queued, that edit keeps its text, title and base
+  /// version: [appended] (the virtual Today text [content] carries) is
+  /// appended to its person section (C3.1) unless it already holds it
+  /// (lead ruling, #102).
   Future<void> _saveElsewhere(
     String id,
     int version,
     String content, {
     required String title,
+    required String appended,
   }) async {
     final access = _ref.read(vaultAccessProvider);
     if (access == null) return;
@@ -1118,16 +1129,31 @@ class EditorController extends StateNotifier<EditorStateValue> {
       if (hosted != null &&
           _couldNotReach(e) &&
           !_supersededBy(hosted, id, sendSeq)) {
-        _queue.put(
-          vault: hosted,
-          noteId: id,
-          title: title,
-          text: content,
-          baseVersion: version,
-          now: _ref.read(clockProvider).now(),
-          serverName: _serverNameOf(e, hosted),
-        );
-        _queuedBy[(hosted, id)] = sendSeq;
+        final older = _queue.entryFor(hosted, id);
+        if (older != null) {
+          // Not superseded, so the entry was queued by an older write: it
+          // is the person's unsaved edit and keeps its place and base.
+          final text = _withAppended(older.save.text, appended);
+          _queue
+            ..updateText(hosted, id, text)
+            ..release(hosted, id);
+          if (_activeNoteId == id &&
+              _virtualDate == null &&
+              state.contentMd == older.save.text) {
+            state = state.copyWith(contentMd: text);
+          }
+        } else {
+          _queue.put(
+            vault: hosted,
+            noteId: id,
+            title: title,
+            text: content,
+            baseVersion: version,
+            now: _ref.read(clockProvider).now(),
+            serverName: _serverNameOf(e, hosted),
+          );
+          _queuedBy[(hosted, id)] = sendSeq;
+        }
         if (_connected(hosted)) _retryQueued(hosted);
       }
       return;
@@ -1155,6 +1181,14 @@ final editorControllerProvider =
     StateNotifierProvider<EditorController, EditorStateValue>(
       EditorController.new,
     );
+
+/// The daily body [body] with [text] appended to its person section
+/// (C3.1), unchanged when the person section already holds [text].
+String _withAppended(String body, String text) {
+  final split = splitDailyBody(body);
+  if (split.person.contains(text.trimRight())) return body;
+  return assembleDailyBody(appendToPerson(split.person, text), split.chips);
+}
 
 /// [person] without the [text] at its end (ignoring trailing whitespace),
 /// unchanged when it does not end with it.
