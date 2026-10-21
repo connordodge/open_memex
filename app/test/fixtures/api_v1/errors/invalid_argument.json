@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "invalid_argument",
+    "message": "Failed to parse the request body as JSON: expected ident at line 1 column 2"
+  }
+}

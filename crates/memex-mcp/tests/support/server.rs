@@ -429,6 +429,29 @@ impl ServeCommand {
         }
     }
 
+    /// [`Self::new`], but the child runs under `umask <mask>` (set by
+    /// `/bin/sh`, which then execs `memex`, so the pid is still memex's).
+    pub fn under_umask(mask: &str, args: &[&str]) -> Self {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg(format!("umask {mask} && exec \"$0\" serve \"$@\""))
+            .arg(env!("CARGO_BIN_EXE_memex"))
+            .args(args);
+        cmd.env_remove(TOKEN_ENV);
+        cmd.env_remove("RUST_LOG");
+        cmd.stdin(Stdio::null());
+        Self {
+            cmd,
+            scratch: tempfile::tempdir().expect("scratch dir"),
+        }
+    }
+
+    /// Removes `key` from the child's environment.
+    pub fn env_remove(mut self, key: &str) -> Self {
+        self.cmd.env_remove(key);
+        self
+    }
+
     /// Sets `key=value` on the child only.
     pub fn env(mut self, key: &str, value: &str) -> Self {
         self.cmd.env(key, value);
@@ -648,4 +671,301 @@ pub async fn wait_for_logs(root: &Path, done: impl Fn(&str) -> bool) -> String {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Vaults (WI #72)
+// ---------------------------------------------------------------------------
+
+/// POST `url` with the JSON `body` and an optional `Authorization` value.
+pub async fn post_json(url: &str, body: &Value, authorization: Option<&str>) -> Reply {
+    let mut req = client().post(url).json(body);
+    if let Some(value) = authorization {
+        req = req.header("authorization", value);
+    }
+    Reply::read(req.send().await.expect("send POST")).await
+}
+
+/// Creates the vault folder `<root>/<name>` with `Vault::create` (as
+/// `memex init` would), closes it and returns its `vault_id`.
+pub fn make_vault(root: &Path, name: &str) -> String {
+    let dir = std::path::absolute(root.join(name)).expect("absolute vault path");
+    let vault = memex_core::Vault::create(&dir)
+        .unwrap_or_else(|e| panic!("create vault {}: {e}", dir.display()));
+    vault.manifest().vault_id.clone()
+}
+
+/// `s` as one percent-encoded path segment: every byte outside
+/// `A-Za-z0-9-_` is `%XX`, so `/`, `.`, `\` and NUL can't split or
+/// normalize the path.
+pub fn encode_segment(s: &str) -> String {
+    s.bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect()
+}
+
+/// A directory on a case-sensitive file system, where `Work` and `work` can
+/// sit side by side. A plain temp dir when the temp file system is already
+/// case-sensitive (Linux); on a case-insensitive one (default macOS APFS) a
+/// small case-sensitive APFS disk image mounted with `hdiutil`, detached on
+/// drop. Never skipped: a machine that can't mount it fails the test.
+pub struct CaseSensitiveDir {
+    base: TempDir,
+    mount: Option<PathBuf>,
+}
+
+impl CaseSensitiveDir {
+    pub fn new() -> Self {
+        let base = tempfile::tempdir().expect("case-sensitive base dir");
+        if is_case_sensitive(base.path()) {
+            return Self { base, mount: None };
+        }
+        let image = base.path().join("cs");
+        let mount = base.path().join("mnt");
+        let created = Command::new("hdiutil")
+            .args(["create", "-quiet", "-size", "64m"])
+            .args(["-fs", "Case-sensitive APFS", "-volname", "memexcs"])
+            .args(["-type", "SPARSE"])
+            .arg(&image)
+            .status()
+            .expect("run hdiutil create");
+        assert!(created.success(), "hdiutil create failed: {created}");
+        let attached = Command::new("hdiutil")
+            .args(["attach", "-quiet", "-nobrowse", "-noverify", "-mountpoint"])
+            .arg(&mount)
+            .arg(base.path().join("cs.sparseimage"))
+            .status()
+            .expect("run hdiutil attach");
+        assert!(attached.success(), "hdiutil attach failed: {attached}");
+        assert!(
+            is_case_sensitive(&mount),
+            "the mounted image at {} is not case-sensitive",
+            mount.display()
+        );
+        Self {
+            base,
+            mount: Some(mount),
+        }
+    }
+
+    /// The case-sensitive directory.
+    pub fn path(&self) -> &Path {
+        self.mount.as_deref().unwrap_or(self.base.path())
+    }
+
+    /// A fresh temp dir inside [`Self::path`], for `TestServer::start_in`.
+    /// Drop it (and the server) before this value.
+    pub fn tempdir(&self) -> TempDir {
+        tempfile::tempdir_in(self.path()).expect("temp dir on the case-sensitive fs")
+    }
+}
+
+impl Default for CaseSensitiveDir {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for CaseSensitiveDir {
+    fn drop(&mut self) {
+        if let Some(mount) = &self.mount {
+            let _ = Command::new("hdiutil")
+                .args(["detach", "-quiet", "-force"])
+                .arg(mount)
+                .status();
+        }
+    }
+}
+
+/// Whether `dir`'s file system tells `CaseProbe` and `caseprobe` apart.
+fn is_case_sensitive(dir: &Path) -> bool {
+    let probe = dir.join("CaseProbe");
+    std::fs::create_dir(&probe).expect("create case probe");
+    let sensitive = !dir.join("caseprobe").exists();
+    std::fs::remove_dir(&probe).expect("remove case probe");
+    sensitive
+}
+
+/// Every path under `dir` (relative, sorted), with each file's bytes, for
+/// "nothing was created, changed or opened" checks. A SQLite open shows up
+/// as new `-wal`/`-shm` files. Symlinks are listed, never followed.
+pub fn tree_snapshot(dir: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            let rel = path.strip_prefix(dir).expect("under dir").to_path_buf();
+            let meta = std::fs::symlink_metadata(&path).expect("metadata");
+            if meta.is_dir() {
+                out.push((rel, None));
+                stack.push(path);
+            } else if meta.file_type().is_symlink() {
+                out.push((rel, None));
+            } else {
+                out.push((rel, Some(std::fs::read(&path).unwrap_or_default())));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Sends `GET <path>` (or another method) exactly as written, over a bare
+/// socket, so the client can't normalize `..` or `%2E%2E` segments away.
+pub async fn raw_get(srv: &TestServer, method: &str, path: &str) -> Reply {
+    let head = format!(
+        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: {}\r\n\
+         Content-Length: 0\r\nConnection: close\r\n",
+        srv.bearer()
+    );
+    raw_request(srv.addr(), &head, b"").await
+}
+
+/// The complete V4 schema (v1..v4 as shipped), pinned at version 4: the
+/// fixture `crates/memex-core/tests/migration_v5.rs` builds (copied, since
+/// that file is another crate's test).
+const V4_DDL: &str = "CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+
+     CREATE TABLE notes (
+         id           TEXT PRIMARY KEY,
+         title        TEXT NOT NULL,
+         content_md   TEXT NOT NULL,
+         frontmatter  TEXT NOT NULL DEFAULT '{}',
+         version      INTEGER NOT NULL DEFAULT 1,
+         created_at   INTEGER NOT NULL,
+         updated_at   INTEGER NOT NULL,
+         crdt_state   BLOB,
+         has_open_questions      INTEGER NOT NULL DEFAULT 0,
+         frontmatter_parse_error INTEGER NOT NULL DEFAULT 0
+     );
+     CREATE INDEX idx_notes_updated_at ON notes(updated_at DESC);
+     CREATE UNIQUE INDEX idx_notes_title_unique ON notes(title);
+
+     CREATE TABLE chunks (
+         id                  TEXT PRIMARY KEY,
+         note_id             TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+         ord                 INTEGER NOT NULL,
+         content             TEXT NOT NULL,
+         token_count         INTEGER NOT NULL,
+         embed_model_version TEXT
+     );
+     CREATE INDEX idx_chunks_note ON chunks(note_id, ord);
+
+     CREATE VIRTUAL TABLE chunk_fts USING fts5(
+         content,
+         chunk_id UNINDEXED,
+         note_id UNINDEXED,
+         tokenize = 'porter unicode61'
+     );
+
+     CREATE TABLE tags (
+         note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+         tag     TEXT NOT NULL,
+         PRIMARY KEY (note_id, tag)
+     );
+     CREATE INDEX idx_tags_tag ON tags(tag);
+
+     CREATE TABLE pending_index (
+         note_id     TEXT PRIMARY KEY REFERENCES notes(id) ON DELETE CASCADE,
+         enqueued_at INTEGER NOT NULL
+     );
+
+     CREATE TABLE notes_dedup_log (
+         note_id      TEXT PRIMARY KEY,
+         old_title    TEXT NOT NULL,
+         new_title    TEXT NOT NULL,
+         migrated_at  INTEGER NOT NULL
+     );
+
+     CREATE TABLE links (
+         id            TEXT PRIMARY KEY,
+         from_note_id  TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+         to_note_id    TEXT NULL REFERENCES notes(id) ON DELETE SET NULL,
+         link_text     TEXT NOT NULL,
+         link_kind     TEXT NOT NULL
+                       CHECK (link_kind GLOB '[a-z][a-z0-9-]*' AND length(link_kind) <= 64),
+         label         TEXT NULL,
+         position      INTEGER NOT NULL,
+         source        TEXT NOT NULL
+                       CHECK (source IN ('inline_body','inline_section','frontmatter','auto_added')),
+         UNIQUE (from_note_id, position)
+     );
+     CREATE INDEX idx_links_from ON links(from_note_id);
+     CREATE INDEX idx_links_to   ON links(to_note_id);
+     CREATE INDEX idx_links_kind ON links(link_kind, to_note_id);
+
+     CREATE TABLE canvases (
+         id          TEXT PRIMARY KEY,
+         title       TEXT NOT NULL,
+         created_at  INTEGER NOT NULL,
+         updated_at  INTEGER NOT NULL,
+         version     INTEGER NOT NULL DEFAULT 1
+     );
+     CREATE UNIQUE INDEX idx_canvases_title_unique ON canvases(title);
+     CREATE INDEX idx_canvases_updated_at ON canvases(updated_at DESC);
+
+     CREATE TABLE canvas_nodes (
+         canvas_id   TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
+         note_id     TEXT NOT NULL REFERENCES notes(id)    ON DELETE CASCADE,
+         x           REAL NOT NULL,
+         y           REAL NOT NULL,
+         z_order     INTEGER NOT NULL DEFAULT 0,
+         placed_at   INTEGER NOT NULL,
+         PRIMARY KEY (canvas_id, note_id)
+     );
+     CREATE INDEX idx_canvas_nodes_note ON canvas_nodes(note_id);
+
+     INSERT INTO schema_version(version) VALUES (1);
+     INSERT INTO schema_version(version) VALUES (2);
+     INSERT INTO schema_version(version) VALUES (3);
+     INSERT INTO schema_version(version) VALUES (4);";
+
+/// Creates `<root>/<name>` as a vault at schema version 4 (manifest and
+/// database), which `Vault::open` migrates to 5. Returns its `vault_id`.
+pub fn make_v4_vault(root: &Path, name: &str) -> String {
+    let dir = root.join(name);
+    std::fs::create_dir_all(dir.join("objects")).expect("create v4 vault dir");
+    let conn = rusqlite::Connection::open(dir.join("memex.db")).expect("open v4 db");
+    conn.pragma_update(None, "journal_mode", "WAL")
+        .expect("wal");
+    conn.execute_batch(V4_DDL).expect("apply the v4 schema");
+    conn.execute(
+        "INSERT INTO notes (id, title, content_md, created_at, updated_at) \
+         VALUES ('01J9V5PLAIN000000000000000', 'Plain note', 'Body.', 1700000000000, 1700000000000)",
+        [],
+    )
+    .expect("insert a v4 note");
+    drop(conn);
+    let vault_id = ulid::Ulid::new().to_string();
+    let manifest = serde_json::json!({
+        "vault_id": vault_id,
+        "schema_version": 4,
+        "created_at": 1_700_000_000_000_i64,
+    });
+    std::fs::write(
+        dir.join("manifest.json"),
+        serde_json::to_vec_pretty(&manifest).expect("manifest json"),
+    )
+    .expect("write v4 manifest");
+    vault_id
+}
+
+/// Rewrites `<vault>/manifest.json` with `schema_version` = `version`.
+pub fn set_manifest_schema_version(vault: &Path, version: i64) {
+    let path = vault.join("manifest.json");
+    let mut manifest: Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("read manifest")).expect("manifest");
+    manifest["schema_version"] = Value::from(version);
+    std::fs::write(&path, serde_json::to_vec_pretty(&manifest).expect("json"))
+        .expect("write manifest");
 }

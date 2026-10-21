@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "vault_exists",
+    "message": "a vault named SEED already exists"
+  }
+}
