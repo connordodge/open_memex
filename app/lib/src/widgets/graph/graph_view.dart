@@ -12,6 +12,7 @@ import '../../state/graph_state.dart';
 import '../../state/tabs_state.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
+import '../../vault_access/vault_async_view.dart';
 import 'graph_painter.dart';
 
 /// Each node widget's box, centred on the node. The shape sits in the
@@ -45,6 +46,11 @@ const double _wheelPixelsPerDoubling = 400;
 /// zooming are never persisted. Until the person pans, zooms or drags, the
 /// view keeps the whole layout in sight. The host keys the view by its
 /// scope, so a different scope gets a fresh view.
+///
+/// The graph comes from `graphDataAsyncProvider` through `VaultAsyncView`
+/// (D14a): a reload keeps the previous graph and its layout on screen until
+/// new data arrives, and a vault switch never shows the previous vault's
+/// nodes.
 class GraphView extends ConsumerStatefulWidget {
   const GraphView({super.key, required this.scope});
 
@@ -87,11 +93,7 @@ class _GraphViewState extends ConsumerState<GraphView>
   @override
   void initState() {
     super.initState();
-    final data = ref.listenManual(
-      graphDataProvider(widget.scope),
-      (_, next) => setState(() => _reset(next)),
-    );
-    _reset(data.read());
+    _reset(GraphData.empty);
   }
 
   @override
@@ -267,10 +269,20 @@ class _GraphViewState extends ConsumerState<GraphView>
           child: ClipRect(
             child: ColoredBox(
               color: OmColors.surface1,
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  if (_fit) _fitTo(constraints.biggest);
-                  return _buildScene();
+              // A same-vault reload (or a failed one) hands back the same
+              // GraphData, so the layout keeps running undisturbed; only new
+              // data, or another vault's empty state, lays out afresh.
+              child: VaultAsyncView<GraphData>(
+                value: ref.watch(graphDataAsyncProvider(widget.scope)),
+                empty: GraphData.empty,
+                builder: (context, data) {
+                  if (!identical(data, _data)) _reset(data);
+                  return LayoutBuilder(
+                    builder: (context, constraints) {
+                      if (_fit) _fitTo(constraints.biggest);
+                      return _buildScene();
+                    },
+                  );
                 },
               ),
             ),
