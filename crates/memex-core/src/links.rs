@@ -555,6 +555,12 @@ mod tests {
         ] {
             let err = LinkKind::new_user_written(k).unwrap_err();
             assert!(matches!(err, MemexError::InvalidLinkKind(_)), "{k}: {err}");
+            let text = err.to_string();
+            assert!(text.contains(k), "{k}: the message names the input: {text}");
+            assert!(
+                text.contains("written by the server only"),
+                "{k}: the message says why: {text}"
+            );
         }
     }
 

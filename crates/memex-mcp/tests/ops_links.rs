@@ -793,8 +793,8 @@ fn ops_update_link_kind_change_on_a_frontmatter_link_is_invalid_argument_and_cha
         got["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("frontmatter link kind cannot be changed"),
-        "{got}"
+            .starts_with("invalid link kind: frontmatter link kind cannot be changed"),
+        "the core message is kept behind the invalid link kind prefix: {got}"
     );
     assert_eq!(wi142_state(&f.vault, &a), before, "unchanged");
 }
