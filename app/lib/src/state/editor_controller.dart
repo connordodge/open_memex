@@ -63,6 +63,9 @@ class EditorController extends StateNotifier<EditorStateValue> {
   Timer? _debounce;
   String? _activeNoteId;
 
+  /// The id of the note the editor currently holds, or null when none.
+  String? get activeNoteId => _activeNoteId;
+
   /// Set (to the base version) after a daily note's save and its merged
   /// retry both conflicted, or text was typed during a merged save: the next
   /// save goes straight to the merge. Null when the next save is plain.
