@@ -49,7 +49,7 @@ Future<String> graphTabTitle(VaultAccess? access, GraphScope scope) async {
           .firstOrNull
           ?.name,
     GraphScopeKind.topic ||
-    GraphScopeKind.day => (await access?.notes.getNote(scope.id))?.title,
+    GraphScopeKind.day => await _noteTitle(access, scope.id),
   };
   return 'Graph · ${name ?? scope.id}';
 }
@@ -70,5 +70,10 @@ final noteTitleProvider = FutureProvider.autoDispose.family<String?, String>((
 ) async {
   ref.watch(vaultRevisionProvider);
   final access = ref.watch(vaultAccessProvider);
-  return (await access?.notes.getNote(noteId))?.title;
+  return _noteTitle(access, noteId);
 });
+
+/// One note's title through `notes.titlesForIds`, not `getNote`: a chip
+/// label needs only the title, and the editor owns the `getNote` reads.
+Future<String?> _noteTitle(VaultAccess? access, String id) async =>
+    (await access?.notes.titlesForIds([id]))?[id];

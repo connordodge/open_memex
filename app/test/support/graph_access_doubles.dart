@@ -43,8 +43,8 @@ class Wi88GatedGraph extends LocalGraphAccess {
   }
 }
 
-/// A notes domain whose `getNote` renames the notes in [titles] and hides
-/// the notes in [hidden] (returns null for them).
+/// A notes domain whose `getNote` and `titlesForIds` rename the notes in
+/// [titles] and hide the notes in [hidden] (null / left out of the map).
 class Wi88RewritingNotes extends LocalNotesAccess {
   Wi88RewritingNotes({
     required super.vaultPath,
@@ -74,6 +74,12 @@ class Wi88RewritingNotes extends LocalNotesAccess {
       tags: note.tags,
     );
   }
+
+  @override
+  Future<Map<String, String>> titlesForIds(List<String> ids) async => {
+    for (final e in (await super.titlesForIds(ids)).entries)
+      if (!hidden.contains(e.key)) e.key: titles[e.key] ?? e.value,
+  };
 }
 
 /// A topics domain whose `smartFolders` renames the folders in [names] and
