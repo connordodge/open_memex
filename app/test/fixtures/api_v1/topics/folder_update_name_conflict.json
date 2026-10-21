@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "name_conflict",
+    "message": "name conflict: \"Design\" clashes with the Smart Folder \"Design\" at the same level"
+  }
+}

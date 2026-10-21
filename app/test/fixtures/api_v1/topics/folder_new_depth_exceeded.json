@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "depth_exceeded",
+    "max_depth": 2,
+    "message": "Smart Folder depth 3 exceeds the vault maximum of 2",
+    "required_depth": 3
+  }
+}
