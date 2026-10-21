@@ -2,11 +2,14 @@ import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path_provider/path_provider.dart';
 
 import 'src/screens/vault_picker.dart';
 import 'src/screens/workspace.dart';
 import 'src/state/app_exit.dart';
+import 'src/state/app_support_dir.dart';
 import 'src/state/settings.dart';
+import 'src/state/vault_open_hosted.dart';
 import 'src/state/vault_state.dart';
 import 'src/theme/app_theme.dart';
 import 'src/widgets/hosted/leave_confirm_dialog.dart';
@@ -14,9 +17,14 @@ import 'src/widgets/hosted/leave_confirm_dialog.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final settings = await SettingsController.load();
+  // Hosted vaults keep their UI state here (Req 35, D19).
+  final appSupport = await getApplicationSupportDirectory();
   runApp(
     ProviderScope(
-      overrides: [settingsProvider.overrideWith((_) => settings)],
+      overrides: [
+        settingsProvider.overrideWith((_) => settings),
+        appSupportDirProvider.overrideWithValue(appSupport.path),
+      ],
       child: const OpenMemexApp(),
     ),
   );
@@ -47,6 +55,12 @@ class _OpenMemexAppState extends ConsumerState<OpenMemexApp> {
     super.initState();
     _exitHost = ref.read(appExitHostProvider)
       ..attach(onWindowClose: _onWindowClose, onQuit: _onQuit);
+    // The native window title follows the open vault (L21).
+    ref.listenManual<String>(
+      windowTitleTextProvider,
+      (_, title) => ref.read(windowTitleProvider).setTitle(title),
+      fireImmediately: true,
+    );
   }
 
   @override

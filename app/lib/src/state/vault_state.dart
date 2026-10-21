@@ -70,7 +70,13 @@ const requiredVaultSchemaVersion = 5;
 /// bumps never re-run the call. Never throws: a missing or failing binary
 /// yields a state, not an error.
 final vaultOpenProvider = FutureProvider<VaultOpenState>((ref) async {
-  final path = ref.watch(currentVaultProvider).localPath;
+  final vault = ref.watch(currentVaultProvider);
+  // Req 53: the server owns a hosted vault's schema: no `settings get`, no
+  // schema check.
+  if (vault is HostedVaultRef) {
+    return const VaultOpenState(schemaOutdated: false);
+  }
+  final path = vault.localPath;
   final db = ref.watch(vaultDbProvider);
   final cli = ref.watch(memexCliProvider);
   if (path == null || db == null) {
@@ -97,8 +103,10 @@ final vaultOpenProvider = FutureProvider<VaultOpenState>((ref) async {
 /// True when the open vault has every V5 table. V5 reads (daily notes,
 /// review, Smart Folders) return empty while it is false instead of throwing.
 /// Re-probed on every vault revision and when the open call completes, so a
-/// pre-migration `false` is never cached.
+/// pre-migration `false` is never cached. Always true for a hosted vault:
+/// the server owns its migrations (D12a).
 final vaultV5ReadyProvider = Provider<bool>((ref) {
+  if (ref.watch(currentVaultProvider) is HostedVaultRef) return true;
   ref.watch(vaultRevisionProvider);
   ref.watch(vaultOpenProvider);
   final db = ref.watch(vaultDbProvider);
