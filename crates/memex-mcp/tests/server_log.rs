@@ -568,3 +568,45 @@ async fn a_clamped_log_level_starts_silently_and_logs_no_dependency_debug() {
     );
     drop(child);
 }
+
+// ---------- Mutation round: the span part ends at its closing bracket ----------
+
+#[test]
+fn log_filter_clamps_a_span_directive_whose_name_ends_in_a_multibyte_char() {
+    // The level is read from just past the closing `]`. A span name ending
+    // in a two-byte char (`é`) puts a char boundary right at `]`, so the
+    // split must land after the bracket, never inside the char before it.
+    for log_level in [
+        "[wi71spané]=trace",
+        "[wi71spané]=debug",
+        "[wi71spané]",
+        "memex_mcp[wi71spané]=trace",
+    ] {
+        let filter = memex_mcp::server::log::filter(log_level)
+            .unwrap_or_else(|e| panic!("--log-level {log_level:?} is accepted: {e:#}"));
+        let recorder = Wi71Recorder::default();
+        let subscriber = tracing_subscriber::registry()
+            .with(filter)
+            .with(recorder.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!(target: "memex_mcp", "wi71spané", wi71field = 1);
+            span.in_scope(wi71_emit_probes);
+        });
+        let events = recorder.0.lock().unwrap().clone();
+        assert!(
+            wi71_leaks(&events).is_empty(),
+            "{log_level:?}: dependency events above info passed: {:?}",
+            wi71_leaks(&events)
+        );
+        for (target, level) in [("memex_mcp", Level::INFO), ("rmcp", Level::INFO)] {
+            assert!(
+                wi71_has(&events, target, level),
+                "{log_level:?}: {target} {level} passes inside the span: {events:?}"
+            );
+        }
+        assert!(
+            !wi71_has(&events, "memex_mcp", Level::DEBUG),
+            "{log_level:?}: the span directive is clamped to info: {events:?}"
+        );
+    }
+}

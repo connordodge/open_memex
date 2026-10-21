@@ -6,9 +6,12 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../db.dart';
 import '../state/canvas_state.dart';
+import '../state/vault_access_state.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
+import '../vault_access/errors.dart';
+import '../vault_access/vault_async_view.dart';
 import 'canvas_edge_painter.dart';
 
 /// Approximate width / height of a node card. Used for laying out and for
@@ -80,30 +83,38 @@ class _CanvasViewState extends ConsumerState<CanvasView> {
     final config = ref.read(canvasAnimationConfigProvider);
     _moveDebounce?.cancel();
     _moveDebounce = Timer(config.persistDebounce, () async {
-      final cli = ref.read(memexCliProvider);
-      final vaultPath = ref.read(currentVaultProvider);
-      if (cli == null || vaultPath == null) return;
+      final access = ref.read(vaultAccessProvider);
+      if (access == null || !access.canWrite) return;
+      final messenger = ScaffoldMessenger.maybeOf(context);
+      final revision = ref.read(vaultRevisionProvider.notifier);
       try {
-        await cli.moveNode(
-          vaultPath: vaultPath,
-          canvasId: widget.canvasId,
-          noteId: noteId,
-          x: position.dx,
-          y: position.dy,
-        );
-        ref.read(vaultRevisionProvider.notifier).state++;
-      } catch (e) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(
+        final moved = await guardVaultWrite(
           context,
-        ).showSnackBar(SnackBar(content: Text('Move failed: $e')));
+          () => access.canvas.moveNode(
+            canvasId: widget.canvasId,
+            noteId: noteId,
+            x: position.dx,
+            y: position.dy,
+          ),
+        );
+        if (moved == null) return;
+        revision.state++;
+      } catch (e) {
+        messenger?.showSnackBar(SnackBar(content: Text('Move failed: $e')));
       }
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    final detail = ref.watch(canvasDetailProvider(widget.canvasId));
+    return VaultAsyncView<CanvasDetailRow?>(
+      value: ref.watch(canvasDetailAsyncProvider(widget.canvasId)),
+      empty: null,
+      builder: _buildDetail,
+    );
+  }
+
+  Widget _buildDetail(BuildContext context, CanvasDetailRow? detail) {
     final selection = ref.watch(canvasSelectionProvider(widget.canvasId));
     if (detail == null) {
       return Container(
@@ -135,19 +146,22 @@ class _CanvasViewState extends ConsumerState<CanvasView> {
           if (localBox == null) return;
           final local = localBox.globalToLocal(details.offset);
           final canvasCoord = _localToCanvas(local);
-          final cli = ref.read(memexCliProvider);
-          final vaultPath = ref.read(currentVaultProvider);
-          if (cli == null || vaultPath == null) return;
+          final access = ref.read(vaultAccessProvider);
+          if (access == null || !access.canWrite) return;
           final messenger = ScaffoldMessenger.maybeOf(context);
+          final revision = ref.read(vaultRevisionProvider.notifier);
           try {
-            await cli.addToCanvas(
-              vaultPath: vaultPath,
-              canvasId: widget.canvasId,
-              noteId: noteId,
-              x: canvasCoord.dx,
-              y: canvasCoord.dy,
+            final placed = await guardVaultWrite(
+              context,
+              () => access.canvas.addToCanvas(
+                canvasId: widget.canvasId,
+                noteId: noteId,
+                x: canvasCoord.dx,
+                y: canvasCoord.dy,
+              ),
             );
-            ref.read(vaultRevisionProvider.notifier).state++;
+            if (placed == null) return;
+            revision.state++;
           } catch (e) {
             messenger?.showSnackBar(
               SnackBar(content: Text('Could not place note: $e')),
@@ -357,23 +371,27 @@ class _CanvasViewState extends ConsumerState<CanvasView> {
       builder: (ctx) => const _LinkPopover(),
     );
     if (result == null) return;
-    final cli = ref.read(memexCliProvider);
-    final vaultPath = ref.read(currentVaultProvider);
-    if (cli == null || vaultPath == null) return;
+    if (!mounted) return;
+    final access = ref.read(vaultAccessProvider);
+    if (access == null || !access.canWrite) return;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final revision = ref.read(vaultRevisionProvider.notifier);
     try {
-      await cli.addLink(
-        vaultPath: vaultPath,
-        fromNoteId: sourceId,
-        toNoteId: targetId,
-        kind: result.kind,
-        label: result.label,
-      );
-      ref.read(vaultRevisionProvider.notifier).state++;
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
+      final added = await guardVaultWrite(
         context,
-      ).showSnackBar(SnackBar(content: Text('Could not add link: $e')));
+        () => access.notes.addLink(
+          fromNoteId: sourceId,
+          toNoteId: targetId,
+          kind: result.kind,
+          label: result.label,
+        ),
+      );
+      if (added == null) return;
+      revision.state++;
+    } catch (e) {
+      messenger?.showSnackBar(
+        SnackBar(content: Text('Could not add link: $e')),
+      );
     }
   }
 }
@@ -631,27 +649,30 @@ class _EdgeInspectorState extends ConsumerState<_EdgeInspector> {
   }
 
   Future<void> _save() async {
-    final cli = ref.read(memexCliProvider);
-    final vaultPath = ref.read(currentVaultProvider);
-    if (cli == null || vaultPath == null) return;
+    final access = ref.read(vaultAccessProvider);
+    if (access == null || !access.canWrite) return;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final revision = ref.read(vaultRevisionProvider.notifier);
+    final selection = ref.read(
+      canvasSelectionProvider(widget.canvasId).notifier,
+    );
     try {
-      await cli.updateLink(
-        vaultPath: vaultPath,
-        linkId: widget.edge.linkId,
-        kind: _kind != widget.edge.kind ? _kind : null,
-        label: _labelCtrl.text.trim().isEmpty ? null : _labelCtrl.text.trim(),
-        clearLabel:
-            _labelCtrl.text.trim().isEmpty &&
-            (widget.edge.label?.isNotEmpty ?? false),
-      );
-      ref.read(vaultRevisionProvider.notifier).state++;
-      ref.read(canvasSelectionProvider(widget.canvasId).notifier).state =
-          CanvasSelection.empty;
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
+      final updated = await guardVaultWrite(
         context,
-      ).showSnackBar(SnackBar(content: Text('Update failed: $e')));
+        () => access.notes.updateLink(
+          linkId: widget.edge.linkId,
+          kind: _kind != widget.edge.kind ? _kind : null,
+          label: _labelCtrl.text.trim().isEmpty ? null : _labelCtrl.text.trim(),
+          clearLabel:
+              _labelCtrl.text.trim().isEmpty &&
+              (widget.edge.label?.isNotEmpty ?? false),
+        ),
+      );
+      if (updated == null) return;
+      revision.state++;
+      selection.state = CanvasSelection.empty;
+    } catch (e) {
+      messenger?.showSnackBar(SnackBar(content: Text('Update failed: $e')));
     }
   }
 

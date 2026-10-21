@@ -63,6 +63,9 @@ class EditorController extends StateNotifier<EditorStateValue> {
   Timer? _debounce;
   String? _activeNoteId;
 
+  /// The id of the note the editor currently holds, or null when none.
+  String? get activeNoteId => _activeNoteId;
+
   /// Set (to the base version) after a daily note's save and its merged
   /// retry both conflicted, or text was typed during a merged save: the next
   /// save goes straight to the merge. Null when the next save is plain.
@@ -196,7 +199,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
     final id = _activeNoteId;
     if (id == null) return;
     final cli = _ref.read(memexCliProvider);
-    final vaultPath = _ref.read(currentVaultProvider);
+    final vaultPath = _ref.read(currentVaultProvider).localPath;
     final version = state.lastSavedVersion;
     if (cli == null || vaultPath == null || version == null) return;
 
@@ -326,7 +329,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
   Future<void> _createDaily(String date) async {
     final draft = _drafts[date];
     final cli = _ref.read(memexCliProvider);
-    final vaultPath = _ref.read(currentVaultProvider);
+    final vaultPath = _ref.read(currentVaultProvider).localPath;
     if (draft == null || cli == null || vaultPath == null) return;
     final sent = draft.sent = draft.text;
     if (_virtualDate == date) state = state.copyWith(status: SaveStatus.saving);
@@ -407,7 +410,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
   /// to report to). A failure leaves the stored note as it is.
   Future<void> _saveElsewhere(String id, int version, String content) async {
     final cli = _ref.read(memexCliProvider)!;
-    final vaultPath = _ref.read(currentVaultProvider)!;
+    final vaultPath = _ref.read(currentVaultProvider).localPath!;
     try {
       await cli.updateNote(
         vaultPath: vaultPath,
