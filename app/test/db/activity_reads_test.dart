@@ -41,6 +41,13 @@ ProviderContainer _container(VaultDb? db) {
   return c;
 }
 
+/// What `agentChangesAsyncProvider` loaded for [noteId], unwrapped from its
+/// vault stamp (WI #90).
+Future<List<AgentChangeRow>> _agentChanges(
+  ProviderContainer c,
+  String noteId,
+) async => (await c.read(agentChangesAsyncProvider(noteId).future)).value;
+
 void _bump(ProviderContainer c) =>
     c.read(vaultRevisionProvider.notifier).state++;
 
@@ -184,7 +191,7 @@ void main() {
   });
 
   group('agentChangesProvider (AC7, AC11)', () {
-    test('agentChangesProvider yields the note entries newest first', () {
+    test('agentChangesProvider yields the note entries newest first', () async {
       final db = _v5();
       db.seedDailyNote('2026-09-05', id: 'n1');
       db.seedAgentChange(
@@ -203,33 +210,36 @@ void main() {
       );
       final c = _container(db);
 
-      final rows = c.read(agentChangesProvider('n1'));
+      final rows = await _agentChanges(c, 'n1');
 
       expect(rows.map((r) => r.id).toList(), ['ac-new', 'ac-old']);
       expect(rows.first.bullets, ['new a', 'new b']);
     });
 
-    test('agentChangesProvider is empty on a V4 vault and does not throw', () {
-      final db = _v4();
-      final c = _container(db);
-
-      expect(c.read(agentChangesProvider('n1')), isEmpty);
-    });
-
     test(
-      'agentChangesProvider is empty when there is no open vault database',
-      () {
-        final c = _container(null);
+      'agentChangesProvider is empty on a V4 vault and does not throw',
+      () async {
+        final db = _v4();
+        final c = _container(db);
 
-        expect(c.read(agentChangesProvider('n1')), isEmpty);
+        expect(await _agentChanges(c, 'n1'), isEmpty);
       },
     );
 
-    test('agentChangesProvider re-reads after a vault revision bump', () {
+    test(
+      'agentChangesProvider is empty when there is no open vault database',
+      () async {
+        final c = _container(null);
+
+        expect(await _agentChanges(c, 'n1'), isEmpty);
+      },
+    );
+
+    test('agentChangesProvider re-reads after a vault revision bump', () async {
       final db = _v5();
       db.seedDailyNote('2026-09-05', id: 'n1');
       final c = _container(db);
-      expect(c.read(agentChangesProvider('n1')), isEmpty);
+      expect(await _agentChanges(c, 'n1'), isEmpty);
 
       db.seedAgentChange(
         'ac-1',
@@ -240,15 +250,15 @@ void main() {
       );
       _bump(c);
 
-      expect(c.read(agentChangesProvider('n1')).single.id, 'ac-1');
+      expect((await _agentChanges(c, 'n1')).single.id, 'ac-1');
     });
 
     test(
       'agentChangesProvider picks up the entries once a V4 vault migrates to V5',
-      () {
+      () async {
         final db = _v4();
         final c = _container(db);
-        expect(c.read(agentChangesProvider('n1')), isEmpty);
+        expect(await _agentChanges(c, 'n1'), isEmpty);
 
         db.migrateToV5();
         db.seedNote(id: 'n1', title: '2026-09-05', role: 'daily');
@@ -261,7 +271,7 @@ void main() {
         );
         _bump(c);
 
-        expect(c.read(agentChangesProvider('n1')).single.bullets, [
+        expect((await _agentChanges(c, 'n1')).single.bullets, [
           'after migration',
         ]);
       },
