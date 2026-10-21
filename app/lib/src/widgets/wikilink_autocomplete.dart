@@ -6,6 +6,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../db.dart';
 import '../memex_cli.dart';
 import '../state/topic_actions.dart';
+import '../state/vault_access_state.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
@@ -381,8 +382,7 @@ class WikilinkAutocompleteState extends ConsumerState<WikilinkAutocomplete> {
         _acceptExisting(NoteTitle(id: id, title: title, updatedAt: 0));
       } else {
         final created = await createLinkedTopic(
-          cli,
-          vaultPath: vaultPath,
+          ref.read(vaultAccessProvider)!,
           title: title,
           contentMd: topicNoteBody(title),
           dailyNoteId: dailyId,
