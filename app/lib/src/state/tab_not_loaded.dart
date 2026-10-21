@@ -1,7 +1,9 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../db.dart' show CanvasRow;
 import '../vault_access/errors.dart';
 import '../vault_access/vault_access.dart';
+import 'canvas_state.dart';
 import 'graph_state.dart';
 import 'hosted_connection_state.dart';
 import 'hosted_identity.dart';
@@ -20,10 +22,11 @@ String workspaceTabTitle(WidgetRef ref, WorkspaceTab tab) {
     return ref.watch(noteTitleProvider(tab.id)).valueOrNull ?? 'note';
   }
   if (tab is CanvasTab) {
-    final summary = ref
-        .watch(canvasesProvider)
-        .where((c) => c.canvasId == tab.id)
-        .toList();
+    final summary = watchVaultValue(
+      ref,
+      canvasesAsyncProvider,
+      const <CanvasRow>[],
+    ).where((c) => c.canvasId == tab.id).toList();
     if (summary.isNotEmpty) return summary.first.title;
     return 'canvas';
   }

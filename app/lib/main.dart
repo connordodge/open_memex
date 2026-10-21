@@ -8,10 +8,14 @@ import 'src/screens/vault_picker.dart';
 import 'src/screens/workspace.dart';
 import 'src/state/app_exit.dart';
 import 'src/state/app_support_dir.dart';
+import 'src/state/hosted_identity.dart';
+import 'src/state/picker_actions.dart';
 import 'src/state/settings.dart';
+import 'src/state/vault_open_controller.dart';
 import 'src/state/vault_open_hosted.dart';
 import 'src/state/vault_state.dart';
 import 'src/theme/app_theme.dart';
+import 'src/widgets/hosted/hosted_bindings.dart';
 import 'src/widgets/hosted/leave_confirm_dialog.dart';
 
 Future<void> main() async {
@@ -24,11 +28,50 @@ Future<void> main() async {
       overrides: [
         settingsProvider.overrideWith((_) => settings),
         appSupportDirProvider.overrideWithValue(appSupport.path),
+        ...appRootOverrides,
       ],
       child: const OpenMemexApp(),
     ),
   );
 }
+
+/// The app's navigator key: [OpenMemexApp]'s navigator, and the context
+/// the seams that carry no BuildContext show their dialogs over.
+final appNavigatorKeyProvider = Provider<GlobalKey<NavigatorState>>(
+  (_) => GlobalKey<NavigatorState>(),
+);
+
+/// The overrides the app root adds to its [ProviderScope]: the widget-layer
+/// wiring of state seams, kept here so state/ imports no widget.
+///
+/// - `leaveVaultGuardProvider` becomes the switch confirm (#103): with no
+///   unsent hosted text (read when the switch is asked for) it allows at
+///   once; otherwise it shows the leave confirm and allows only on "switch
+///   anyway".
+/// - `pickerActionsProvider` becomes [AppPickerActions] (#105): the connect
+///   and edit-server dialogs, the open and create on a server dialogs and
+///   the set-up sheet.
+/// - `updateTokenSeamProvider` (a failed open's "update token") and
+///   `hostedUpdateTokenProvider` (the banner's) open the edit-server dialog
+///   for that server over the app's navigator.
+final List<Override> appRootOverrides = [
+  leaveVaultGuardProvider.overrideWith(
+    (ref) =>
+        (context) => confirmLeave(context, LeaveAction.switchVault, ref.read),
+  ),
+  pickerActionsProvider.overrideWithValue(const AppPickerActions()),
+  updateTokenSeamProvider.overrideWith(_editServerSeam),
+  hostedUpdateTokenProvider.overrideWith(_editServerSeam),
+];
+
+/// An update-token seam: the picker actions' edit-server dialog for the
+/// server, over the app's navigator.
+void Function(String serverId) _editServerSeam(Ref ref) =>
+    (serverId) => editServerFromAnywhere(
+      ref.read(appNavigatorKeyProvider),
+      ref.read(pickerActionsProvider),
+      serverId,
+    );
 
 class OpenMemexApp extends ConsumerStatefulWidget {
   const OpenMemexApp({super.key});
@@ -40,7 +83,7 @@ class OpenMemexApp extends ConsumerStatefulWidget {
 // Launch reopen lives in the vault picker (#92): no vault is open at launch,
 // so the picker shows and reopens the last vault through `memex vault check`.
 class _OpenMemexAppState extends ConsumerState<OpenMemexApp> {
-  final _navigatorKey = GlobalKey<NavigatorState>();
+  late final _navigatorKey = ref.read(appNavigatorKeyProvider);
 
   /// The app-exit seam, attached once for the app's life (vault switches
   /// keep it) and detached on unmount.

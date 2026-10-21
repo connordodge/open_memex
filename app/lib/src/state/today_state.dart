@@ -65,7 +65,7 @@ Note virtualTodayNote(String date) => Note(
 
 /// The editor's note, async (D14a): [virtualTodayNote] for a virtual Today
 /// tab (no vault read), else [selectedNoteAsyncProvider]'s note, with the
-/// vault it was loaded for. [editorNoteProvider] is its facade.
+/// vault it was loaded for.
 final editorNoteAsyncProvider = FutureProvider<VaultScoped<Note?>>((ref) {
   final date = VirtualTodayTab.dateOf(ref.watch(selectedNoteIdProvider));
   if (date != null) {
@@ -73,10 +73,3 @@ final editorNoteAsyncProvider = FutureProvider<VaultScoped<Note?>>((ref) {
   }
   return ref.watch(selectedNoteAsyncProvider.future);
 });
-
-/// The note the editor shows: [virtualTodayNote] when the selection is a
-/// virtual Today tab, otherwise [selectedNoteProvider]'s note. Facade of
-/// [editorNoteAsyncProvider].
-final editorNoteProvider = Provider<Note?>(
-  (ref) => vaultFacadeValue(ref, ref.watch(editorNoteAsyncProvider), null),
-);

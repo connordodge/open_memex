@@ -6,7 +6,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../cli/vault_cli.dart';
 import '../db.dart';
 import '../memex_cli.dart';
-import '../widgets/hosted/leave_confirm_dialog.dart';
 import 'settings.dart';
 import 'vault_open_hosted.dart';
 import 'vault_state.dart';
@@ -49,13 +48,12 @@ final class NoVaultToReopen extends VaultOpenOutcome {
 /// Completes true to go ahead, false to stay.
 typedef LeaveVaultGuard = Future<bool> Function(BuildContext context);
 
-/// The guard asked before the current vault is left. With no unsent hosted
-/// text (read when the switch is asked for) it allows at once; otherwise it
-/// shows the switch confirm (#103) and allows only on "switch anyway".
-final leaveVaultGuardProvider = Provider<LeaveVaultGuard>(
-  (ref) =>
-      (context) => confirmLeave(context, LeaveAction.switchVault, ref.read),
-);
+/// The guard asked before the current vault is left. The default always
+/// allows. The app root overrides it with the switch confirm (#103,
+/// `appRootOverrides` in main.dart), so state/ never imports a widget.
+final leaveVaultGuardProvider = Provider<LeaveVaultGuard>((_) => _allowLeaving);
+
+Future<bool> _allowLeaving(BuildContext _) async => true;
 
 /// Opens, creates and leaves vaults for the picker and the sidebar (D12).
 final vaultOpenControllerProvider = Provider<VaultOpenController>(
@@ -211,6 +209,11 @@ class VaultOpenController {
     }
     return outcome;
   }
+
+  /// The saved server [serverId]'s access token was replaced: see
+  /// [hostedServerTokenChanged].
+  Future<void> serverTokenChanged(String serverId) =>
+      hostedServerTokenChanged(_ref, serverId);
 
   /// The open hosted [vault] went away while open (Req 53a): see
   /// [hostedVaultGone].

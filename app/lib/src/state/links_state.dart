@@ -20,17 +20,6 @@ final linksOutAsyncProvider =
       return VaultScoped(vault, await access.notes.linksOutFor(noteId));
     });
 
-/// Outgoing links for a note. Synchronous facade over
-/// [linksOutAsyncProvider]: empty before the first load and for another
-/// vault's data.
-final linksOutProvider = Provider.family<List<LinkRow>, String>(
-  (ref, noteId) => vaultFacadeValue(
-    ref,
-    ref.watch(linksOutAsyncProvider(noteId)),
-    const <LinkRow>[],
-  ),
-);
-
 /// A backlink — incoming link enriched with the source note's title so the
 /// UI can render "Source.title" without a second query per row.
 class BacklinkEntry {
@@ -88,18 +77,6 @@ final backlinksAsyncProvider =
       }
       return VaultScoped(vault, out);
     });
-
-/// Incoming links for a note, grouped by kind. Synchronous facade over
-/// [backlinksAsyncProvider]: empty before the first load and for another
-/// vault's data.
-final backlinksProvider =
-    Provider.family<Map<String, List<BacklinkEntry>>, String>(
-      (ref, noteId) => vaultFacadeValue(
-        ref,
-        ref.watch(backlinksAsyncProvider(noteId)),
-        const <String, List<BacklinkEntry>>{},
-      ),
-    );
 
 /// Order kinds: built-ins first in canonical order, user-defined alphabetic.
 List<String> orderedLinkKinds(Iterable<String> kinds) {

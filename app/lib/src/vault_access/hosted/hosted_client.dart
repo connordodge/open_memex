@@ -73,7 +73,7 @@ class HostedClient {
   final String serverName;
 
   final String _serverUrl;
-  final String _accessToken;
+  String _accessToken;
   final http.Client _http;
 
   /// A server route: `<server url>/api/v1<path>` ([path] starts with `/`).
@@ -229,7 +229,12 @@ class HostedClient {
     return outcome.future;
   }
 
-  /// The response hook: the only writer of this server's status.
+  /// Sends every later request with [token]: the saved server's access token
+  /// was replaced (the edit-server dialog) while this client is in use.
+  void useAccessToken(String token) => _accessToken = token;
+
+  /// The response hook: records each request's outcome as this server's
+  /// status.
   void _record(HostedConnectionStatus status) =>
       _ref.read(hostedConnectionStatusProvider(serverId).notifier).state =
           status;

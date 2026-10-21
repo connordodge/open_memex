@@ -27,6 +27,7 @@
 //   bumps it), and a not-loaded tab reads its content once more and renders
 //   it without a reopen.
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:open_memex_app/src/db.dart';
@@ -34,6 +35,7 @@ import 'package:open_memex_app/src/db/graph_reads.dart';
 import 'package:open_memex_app/src/graph/graph_scope.dart';
 import 'package:open_memex_app/src/state/hosted_connection_state.dart';
 import 'package:open_memex_app/src/state/hosted_identity.dart';
+import 'package:open_memex_app/src/state/tab_not_loaded.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/state/vault_access_state.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
@@ -158,11 +160,13 @@ Future<(WorkspaceHarness, _Wi101ReadGate)> _pumpHosted(
   bool failing = true,
   VaultRef vault = _vault,
   HostedConnectionStatus? status,
+  List<Override> extraOverrides = const [],
 }) async {
   final gate = _Wi101ReadGate()..fail = failing;
   final h = await pumpWorkspace(
     tester,
     overrides: [
+      ...extraOverrides,
       hostedServerNameProvider.overrideWith(
         (ref, id) => id == _server ? 'nas' : id,
       ),
@@ -564,6 +568,23 @@ void main() {
           'a not loaded graph tab reads again once and renders when the server answers',
       };
       testWidgets(name, (tester) async {
+        // What the tab body alone reads when it mounts (the canvas and graph
+        // views read through their async providers): the same tab on a
+        // connected server with the not-loaded check switched off.
+        final (bodyHarness, bodyGate) = await _pumpHosted(
+          tester,
+          failing: false,
+          status: HostedConnectionStatus.connected,
+          extraOverrides: [
+            tabNotLoadedProvider.overrideWith((ref, tab) => null),
+          ],
+        );
+        await _open(tester, bodyHarness, kind.tab('x1'));
+        expect(find.byType(kind.body), findsOneWidget);
+        final bodyMountReads = kind.reads(bodyGate);
+        await tester.pumpWidget(const SizedBox());
+        await pumpFrames(tester);
+
         final (h, gate) = await _pumpHosted(
           tester,
           status: HostedConnectionStatus.unreachable,
@@ -573,16 +594,18 @@ void main() {
         final readsWhileDown = kind.reads(gate);
         expect(readsWhileDown, greaterThan(0));
 
-        // The server answers again: reads work from now on.
+        // The server answers again: reads work from now on. The not-loaded
+        // check reads once more, and the body that then mounts does its own
+        // first read.
         gate.fail = false;
         await _setStatus(tester, h, HostedConnectionStatus.connected);
 
         expect(find.byKey(_notLoadedKey), findsNothing);
         expect(find.byType(kind.body), findsOneWidget);
-        expect(kind.reads(gate), readsWhileDown + 1);
+        expect(kind.reads(gate), readsWhileDown + 1 + bodyMountReads);
         // Quiet afterwards: no further read without another trigger.
         await pumpFrames(tester);
-        expect(kind.reads(gate), readsWhileDown + 1);
+        expect(kind.reads(gate), readsWhileDown + 1 + bodyMountReads);
       });
     }
 

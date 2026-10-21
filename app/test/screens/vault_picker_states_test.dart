@@ -20,6 +20,7 @@ import 'package:path/path.dart' as p;
 
 import '../support/fake_vault_server.dart';
 import '../support/vault_folders.dart';
+import '../support/font_fetch_hold.dart';
 import '../support/vault_picker_harness.dart';
 
 const _hostedMemex = HostedVaultRef(fakeServerId, 'memex');
@@ -35,7 +36,7 @@ const _unreachable = HostedServerUnreachable(
 void _holdNas(Map<String, FakeVaultServer> s) => s[fakeServerId]!.hold();
 
 void main() {
-  wi97HoldFontFetches();
+  holdFontFetches();
 
   group('hosted row states', () {
     testWidgets(

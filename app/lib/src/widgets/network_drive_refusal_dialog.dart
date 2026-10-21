@@ -7,8 +7,8 @@ import '../theme/typography.dart';
 import 'atoms.dart';
 
 /// What the person chose in the network-drive refusal (board A9 state 1).
-/// #105 binds [setUpServer] and [connectServer] to the set-up sheet and the
-/// connect dialog; until then they only close the dialog.
+/// `showVaultOpenRefusal` opens the set-up sheet for [setUpServer] and the
+/// connect dialog for [connectServer] once the refusal closed.
 enum NetworkDriveRefusalChoice { cancel, setUpServer, connectServer }
 
 /// Shows the network-drive refusal for the folder at [path] under [eyebrow]

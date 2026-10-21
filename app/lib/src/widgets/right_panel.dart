@@ -177,7 +177,7 @@ class _ConnectionsTab extends ConsumerWidget {
   const _ConnectionsTab();
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final selected = ref.watch(selectedNoteProvider);
+    final selected = watchVaultValue(ref, selectedNoteAsyncProvider, null);
     if (selected == null) {
       return const _PlaceholderTab(
         eyebrow: 'knowledge graph · this note',
@@ -454,7 +454,7 @@ class _ActivityTab extends ConsumerWidget {
   const _ActivityTab();
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final selected = ref.watch(selectedNoteProvider);
+    final selected = watchVaultValue(ref, selectedNoteAsyncProvider, null);
     const emptyTab = _PlaceholderTab(
       eyebrow: _activityEyebrow,
       subtitle: _activitySubtitle,

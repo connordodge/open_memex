@@ -3,7 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'clock.dart';
 
 /// A saved vault server's last connection outcome (D17, lead ruling on #77).
-/// `HostedClient`'s response hook is the only writer.
+/// Written by `HostedClient`'s response hook on every request outcome, and
+/// by two callers that know an outcome no request reported: the picker's
+/// probes (`serverProbesProvider`: no saved token reads as token rejected)
+/// and the connect dialog (a just-saved server that its probe proved
+/// reachable under a temporary key reads as connected).
 enum HostedConnectionStatus {
   /// The server answered with anything but a 401, C1 errors included.
   connected,

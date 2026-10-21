@@ -3,9 +3,8 @@
 //! - AC 1: `memex serve --vault <path>` is unchanged: stdio MCP serving the
 //!   same 26 tools, logging to `<vault>/.memex/mcp.log*`.
 //! - AC 2: flags from different modes, a missing mode and any token flag are
-//!   clap usage errors (exit 2) that bind and create nothing; `--remote
-//!   <url>` alone is accepted and, until #95, exits 1 with the
-//!   `cli::not_implemented` C1 error.
+//!   clap usage errors (exit 2) that bind and create nothing. What `--remote
+//!   <url>` alone does is #95's (`tests/serve_remote.rs`).
 
 #[path = "support/server.rs"]
 mod server;
@@ -342,33 +341,6 @@ fn serve_mode_conflicts_are_usage_errors_that_create_nothing() {
             out.describe()
         );
     }
-}
-
-#[test]
-fn serve_remote_alone_is_accepted_and_exits_1_not_implemented() {
-    let dir = tempfile::tempdir().unwrap();
-    let before = tree(dir.path());
-    let out = ServeCommand::new(&["--remote", "http://127.0.0.1:9/vaults/work/mcp"])
-        .env(TOKEN_ENV, "remote-env-token-1")
-        .current_dir(dir.path())
-        .run_within(LIMIT);
-    assert_eq!(out.code, Some(1), "{}", out.describe());
-    let lines = out.stderr_lines();
-    assert_eq!(lines.len(), 1, "exactly one C1 line\n{}", out.describe());
-    let v: Value = serde_json::from_str(lines[0])
-        .unwrap_or_else(|e| panic!("stderr is a C1 line ({e})\n{}", out.describe()));
-    assert_eq!(v["error"]["code"], "internal", "{v}");
-    assert_eq!(
-        v["error"]["message"], "memex serve --remote: not implemented yet",
-        "the cli::not_implemented message: {v}"
-    );
-    assert!(out.stdout.is_empty(), "{}", out.describe());
-    assert!(
-        !out.stderr.contains("remote-env-token-1"),
-        "the token is never printed\n{}",
-        out.describe()
-    );
-    assert_eq!(tree(dir.path()), before, "creates nothing");
 }
 
 // ---------- Mutation round: the stdio log is plain text ----------

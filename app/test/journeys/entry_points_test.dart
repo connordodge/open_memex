@@ -16,7 +16,7 @@ import '../support/file_picker_fakes.dart';
 import '../support/hosted_harness.dart';
 import '../support/journey_harness.dart';
 import '../support/vault_folders.dart';
-import '../support/vault_picker_harness.dart' show wi97HoldFontFetches;
+import '../support/font_fetch_hold.dart';
 
 const _hostedSubtitle =
     'a vault is a folder of your notes. open one on this mac, or one hosted '
@@ -71,7 +71,7 @@ Future<(PickerRobot, HostedWorkspaceRobot)> _hostedWorkspace(
 }
 
 void main() {
-  wi97HoldFontFetches();
+  holdFontFetches();
 
   group('hosted vaults are on by default (AC1)', () {
     testWidgets(

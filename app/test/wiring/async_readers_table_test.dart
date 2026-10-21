@@ -24,7 +24,7 @@ import '../support/app_harness.dart';
 import '../support/fake_vault_db.dart';
 import '../support/hosted_harness.dart';
 import '../support/journey_harness.dart';
-import '../support/vault_picker_harness.dart' show wi97HoldFontFetches;
+import '../support/font_fetch_hold.dart';
 
 const _economyDesignId = '01M5DQAYZ47QW55S90ZF0A56AH';
 const _pacingOutLinkId = '01M5DQAYZDBGZSDQ7X3PJT783V';
@@ -103,7 +103,7 @@ Future<(JourneyApp, HostedWorkspaceRobot)> _hostedFirstLoad(
 }
 
 void main() {
-  wi97HoldFontFetches();
+  holdFontFetches();
 
   group('a local first load shows the empty state with no spinner', () {
     for (final (name, reader) in <(String, _Reader)>[

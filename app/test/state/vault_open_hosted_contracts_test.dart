@@ -826,6 +826,95 @@ void main() {
         expect(h.read(recentRowOutcomeProvider(seedHostedRef)), isNull);
       },
     );
+
+    test(
+      'a superseded hosted open of another vault clears its own opening row when a later hosted open of a different vault wins',
+      () async {
+        final studio = _wi96Studio();
+        final h = await hostedContainer(
+          servers: [HostedServerFixture(), studio],
+        );
+        studio.server.hold();
+
+        final earlier = h.controller.openVault(studio.ref('work'));
+        await _wi96Drain();
+        expect(
+          h.read(recentRowOutcomeProvider(studio.ref('work'))),
+          isA<RecentRowOpening>(),
+        );
+        expect(await h.controller.openVault(seedHostedRef), isA<VaultOpened>());
+
+        studio.server.release();
+        expect(await earlier, isA<VaultOpenCancelled>());
+        await _wi96Drain();
+
+        expect(h.read(recentRowOutcomeProvider(studio.ref('work'))), isNull);
+        expect(h.read(recentRowOutcomeProvider(seedHostedRef)), isNull);
+        expect(h.read(currentVaultProvider), seedHostedRef);
+      },
+    );
+
+    test(
+      'a superseded hosted open of another vault clears its own opening row when a local open wins',
+      () async {
+        final local = createVaultFolder('om96_local_clears_row_');
+        final localRef = LocalVaultRef(local.path);
+        final cli = FakeMemexCli()..on('vault check', (_) => FakeMemexCli.ok());
+        final h = await hostedContainer(cli: cli);
+        h.first.server.hold();
+
+        final hosted = h.controller.openVault(seedHostedRef);
+        await _wi96Drain();
+        expect(
+          h.read(recentRowOutcomeProvider(seedHostedRef)),
+          isA<RecentRowOpening>(),
+        );
+        expect(await h.controller.openVault(localRef), isA<VaultOpened>());
+
+        h.first.server.release();
+        expect(await hosted, isA<VaultOpenCancelled>());
+        await _wi96Drain();
+
+        expect(h.read(recentRowOutcomeProvider(seedHostedRef)), isNull);
+        expect(h.read(currentVaultProvider), localRef);
+      },
+    );
+
+    test(
+      'a superseded hosted open never clears the opening row of a newer open of the same vault',
+      () async {
+        final h = await hostedContainer();
+        h.first.server.failure = FakeServerFailure.timeout;
+
+        VaultOpenOutcome? first;
+        unawaited(h.controller.openVault(seedHostedRef).then((o) => first = o));
+        await _wi96Drain();
+        // The earlier open times out at 10 s; the newer one starts at 5 s and
+        // is held at its probe, so it is still opening when the earlier ends.
+        h.clock.advance(const Duration(seconds: 5));
+        h.first.server.failure = null;
+        h.first.server.hold();
+        final second = h.controller.openVault(seedHostedRef);
+        await _wi96Drain();
+        final opening = h.read(recentRowOutcomeProvider(seedHostedRef));
+        expect(opening, isA<RecentRowOpening>());
+
+        h.clock.advance(const Duration(seconds: 5));
+        await _wi96Drain();
+
+        expect(first, isA<VaultOpenCancelled>());
+        expect(
+          h.read(recentRowOutcomeProvider(seedHostedRef)),
+          same(opening),
+          reason: 'the newer open is still running',
+        );
+
+        h.first.server.release();
+        expect(await second, isA<VaultOpened>());
+        expect(h.read(recentRowOutcomeProvider(seedHostedRef)), isNull);
+        expect(h.read(currentVaultProvider), seedHostedRef);
+      },
+    );
   });
 
   group('no schema check for hosted vaults (handoff contracts)', () {

@@ -21,6 +21,7 @@ import 'package:path/path.dart' as p;
 
 import '../support/fake_vault_server.dart';
 import '../support/vault_folders.dart';
+import '../support/font_fetch_hold.dart';
 import '../support/vault_picker_harness.dart';
 
 const _hostedMemex = HostedVaultRef(fakeServerId, 'memex');
@@ -36,7 +37,7 @@ double _top(Finder f) => f.evaluate().isEmpty
           .dy;
 
 void main() {
-  wi97HoldFontFetches();
+  holdFontFetches();
 
   group('layout', () {
     for (final (name, size) in [
