@@ -11,24 +11,21 @@ class PickerActions {
 
   /// Opens the connect dialog. Completes with the saved server, or null when
   /// the person cancelled. The default saves nothing and completes null.
-  Future<SavedServer?> connect(BuildContext context) =>
-      throw UnimplementedError();
+  Future<SavedServer?> connect(BuildContext context) async => null;
 
   /// Opens the edit dialog for the saved server [serverId] (also a recent
   /// row's "update token"). The default does nothing; #105 binds it to
   /// #98's `showConnectServerDialog(context, edit: server)`.
-  Future<void> editServer(BuildContext context, String serverId) =>
-      throw UnimplementedError();
+  Future<void> editServer(BuildContext context, String serverId) async {}
 
   /// Opens the "open vault on a server" flow. The default does nothing.
-  Future<void> openOnServer(BuildContext context) => throw UnimplementedError();
+  Future<void> openOnServer(BuildContext context) async {}
 
   /// Opens the "create vault on a server" flow. The default does nothing.
-  Future<void> createOnServer(BuildContext context) =>
-      throw UnimplementedError();
+  Future<void> createOnServer(BuildContext context) async {}
 
   /// Opens the "how do I set one up?" sheet. The default does nothing.
-  Future<void> setUp(BuildContext context) => throw UnimplementedError();
+  Future<void> setUp(BuildContext context) async {}
 }
 
 /// The picker-actions seam. Tests override it with a recording fake.
