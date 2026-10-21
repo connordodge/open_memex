@@ -25,6 +25,7 @@ import 'package:open_memex_app/src/vault_access/hosted/hosted_vault_access.dart'
 import 'package:path/path.dart' as p;
 
 import '../support/api_fixtures.dart';
+import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_server.dart';
 import '../support/hosted_harness.dart';
 import '../support/token_store_fakes.dart';
@@ -727,6 +728,101 @@ void main() {
 
         expect(first, isNotNull, reason: 'the earlier open timed out');
         expect(h.read(currentVaultProvider), seedHostedRef);
+        expect(h.read(recentRowOutcomeProvider(seedHostedRef)), isNull);
+      },
+    );
+
+    test(
+      'a local open that lands while a hosted open is running wins and the hosted open returns cancelled',
+      () async {
+        final local = createVaultFolder('om96_local_wins_');
+        final localRef = LocalVaultRef(local.path);
+        final cli = FakeMemexCli()..on('vault check', (_) => FakeMemexCli.ok());
+        final h = await hostedContainer(cli: cli);
+        h.first.server.hold();
+
+        final hosted = h.controller.openVault(seedHostedRef);
+        await _wi96Drain();
+        expect(await h.controller.openVault(localRef), isA<VaultOpened>());
+        expect(h.read(currentVaultProvider), localRef);
+
+        h.first.server.release();
+        expect(await hosted, isA<VaultOpenCancelled>());
+        await _wi96Drain();
+
+        expect(h.read(currentVaultProvider), localRef);
+        expect(h.read(settingsProvider).lastVaultRef, localRef);
+        expect(h.read(settingsProvider).recentRefs, [localRef]);
+        expect(h.read(hostedSessionProvider), isNull);
+        expect(
+          h.read(recentRowOutcomeProvider(seedHostedRef)),
+          isNot(isA<RecentRowFailed>()),
+        );
+      },
+    );
+
+    test(
+      'a hosted open superseded during its remember step sets no session or current vault',
+      () async {
+        final studio = _wi96Studio();
+        final h = await hostedContainer(
+          servers: [HostedServerFixture(), studio],
+        );
+        // When the earlier open has remembered studio (its last settings
+        // write), a later open of seed starts and is held at its probe.
+        Future<VaultOpenOutcome>? later;
+        h.container.listen(settingsProvider, (_, next) {
+          if (later == null && next.lastVaultRef == studio.ref('work')) {
+            h.first.server.hold();
+            later = h.controller.openVault(seedHostedRef);
+          }
+        });
+
+        final earlier = await h.controller.openVault(studio.ref('work'));
+
+        expect(later, isNotNull, reason: 'the later open started');
+        expect(earlier, isA<VaultOpenCancelled>());
+        expect(h.read(currentVaultProvider), isNull);
+        expect(h.read(hostedSessionProvider), isNull);
+        expect(
+          h.read(recentRowOutcomeProvider(studio.ref('work'))),
+          isNot(isA<RecentRowFailed>()),
+        );
+
+        h.first.server.release();
+        expect(await later, isA<VaultOpened>());
+        expect(h.read(currentVaultProvider), seedHostedRef);
+        expect(h.read(hostedSessionProvider)!.vault, seedHostedRef);
+        expect(h.read(settingsProvider).lastVaultRef, seedHostedRef);
+      },
+    );
+
+    test(
+      'a superseded hosted open that fails afterwards returns cancelled and records no failure on its row',
+      () async {
+        final studio = _wi96Studio();
+        final h = await hostedContainer(
+          servers: [HostedServerFixture(), studio],
+        );
+        studio.server.failure = FakeServerFailure.timeout;
+
+        VaultOpenOutcome? first;
+        unawaited(
+          h.controller.openVault(studio.ref('work')).then((o) => first = o),
+        );
+        await _wi96Drain();
+        expect(await h.controller.openVault(seedHostedRef), isA<VaultOpened>());
+
+        h.clock.advance(const Duration(seconds: 10));
+        await _wi96Drain();
+
+        expect(first, isA<VaultOpenCancelled>());
+        expect(
+          h.read(recentRowOutcomeProvider(studio.ref('work'))),
+          isNot(isA<RecentRowFailed>()),
+        );
+        expect(h.read(currentVaultProvider), seedHostedRef);
+        expect(h.read(hostedSessionProvider)!.vault, seedHostedRef);
         expect(h.read(recentRowOutcomeProvider(seedHostedRef)), isNull);
       },
     );
