@@ -1,0 +1,8 @@
+[
+  {"method": "GET", "path": "/api/v1/info", "response": "info.json", "status": 200},
+  {"method": "GET", "path": "/api/v1/vaults", "response": "vaults_list.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/info", "response": "vault_info.json", "status": 200},
+  {"method": "POST", "path": "/api/v1/vaults", "request": "vault_create.request.json", "response": "vault_create.json", "status": 201, "headers": {"Content-Type": "application/json"}},
+  {"method": "GET", "path": "/api/v1/vaults", "response": "vaults_list_after_create.json", "status": 200},
+  {"method": "GET", "path": "/vaults/FIXTURE-NEW/api/v1/info", "response": "vault_info_created.json", "status": 200}
+]

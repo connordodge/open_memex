@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "invalid_vault_name",
+    "message": "vault names use letters, digits, - and _ (1-64 characters)"
+  }
+}

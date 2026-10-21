@@ -1,0 +1,291 @@
+//! The vault server: `memex serve --root <dir> --listen <host:port>`.
+//!
+//! One axum router serves every route under one bearer-token layer (D7).
+//! From the outside in, a request passes the access log, the auth layer and
+//! the 8 MiB body limit before it reaches a route. On a `/vaults/{name}/…`
+//! path the vault guard then resolves the vault (or answers 404
+//! `vault_not_found`) before any handler runs.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use anyhow::{Context, Result};
+use axum::extract::DefaultBodyLimit;
+use axum::http::header::CONTENT_TYPE;
+use axum::http::StatusCode;
+use axum::middleware::{from_fn, from_fn_with_state, map_response};
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use axum::{Extension, Json, Router};
+use memex_core::embedder::Embedder;
+use memex_core::{MemexError, SystemClock};
+use serde_json::{json, Value};
+use tower_http::limit::RequestBodyLimitLayer;
+
+use crate::cli::InvalidArgument;
+
+pub mod api;
+pub mod auth;
+pub mod bridge;
+pub mod error;
+pub mod log;
+pub mod mcp;
+pub mod registry;
+pub mod request_clock;
+pub mod token;
+pub mod vaults;
+
+use error::ApiError;
+use registry::Registry;
+use request_clock::{BaseClock, SharedClock};
+
+/// The app API version this server speaks (the app's `kApiVersion`, D17).
+pub const API_VERSION: u32 = 1;
+
+/// The largest request body the server reads (req 19): 8 MiB.
+pub const BODY_LIMIT: usize = 8 * 1024 * 1024;
+
+/// What the vault server needs to build its router. The token is already
+/// resolved and trimmed; `router()` never reads the environment.
+#[derive(Clone)]
+pub struct ServerConfig {
+    root: PathBuf,
+    token: String,
+    with_embeddings: bool,
+    embedder: Option<Arc<dyn Embedder>>,
+    clock: SharedClock,
+}
+
+impl ServerConfig {
+    /// A config serving the vault root `root`, accepting only `token`.
+    pub fn new(root: impl Into<PathBuf>, token: impl Into<String>) -> Self {
+        Self {
+            root: root.into(),
+            token: token.into(),
+            with_embeddings: false,
+            embedder: None,
+            clock: Arc::new(SystemClock),
+        }
+    }
+
+    /// Whether every served vault uses real embeddings (default: no).
+    pub fn with_embeddings(mut self, on: bool) -> Self {
+        self.with_embeddings = on;
+        self
+    }
+
+    /// The vault root.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Whether served vaults use real embeddings.
+    pub fn embeddings_enabled(&self) -> bool {
+        self.with_embeddings
+    }
+
+    /// The embedder every served vault shares (`run` passes the one it
+    /// warmed). Without one, `router()` builds one with
+    /// `build_embedder_in(root)` when embeddings are on.
+    pub fn with_embedder(mut self, embedder: Arc<dyn Embedder>) -> Self {
+        self.embedder = Some(embedder);
+        self
+    }
+
+    /// The server's base clock, under every request's `RequestClock`
+    /// (default: `SystemClock`).
+    pub fn with_clock(mut self, clock: SharedClock) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// The server's base clock.
+    pub fn clock(&self) -> SharedClock {
+        self.clock.clone()
+    }
+}
+
+/// The whole vault server: every route, then the auth layer, the body limit
+/// and the access log (D7).
+pub fn router(config: ServerConfig) -> Router {
+    let token = auth::AccessToken::new(&config.token);
+    let embedder = match (&config.embedder, config.with_embeddings) {
+        (Some(embedder), _) => Some(embedder.clone()),
+        (None, true) => Some(crate::state::build_embedder_in(&config.root)),
+        (None, false) => None,
+    };
+    let registry = Arc::new(Registry::new(config.root.clone(), embedder));
+    Router::new()
+        .route("/api/v1/info", get(info))
+        .route("/api/v1/vaults", get(vaults::list).post(vaults::create))
+        .route("/vaults/{name}/api/v1/info", get(vaults::info))
+        .nest("/vaults/{name}/api/v1", api::router())
+        .nest("/vaults/{name}/mcp", mcp::router())
+        .fallback(not_found)
+        // Every route, nest, merge and fallback goes above this line: axum
+        // applies `method_not_allowed_fallback` only to the routes already
+        // registered, so it must stay the last call before the layers. The
+        // layers below wrap everything above them; they are listed inside
+        // out.
+        .method_not_allowed_fallback(method_not_allowed)
+        .layer(from_fn_with_state(registry.clone(), vaults::vault_guard))
+        .layer(Extension(registry))
+        .layer(Extension(BaseClock(config.clock())))
+        .layer(DefaultBodyLimit::disable())
+        .layer(RequestBodyLimitLayer::new(BODY_LIMIT))
+        .layer(map_response(c1_payload_too_large))
+        .layer(from_fn_with_state(token, auth::require_token))
+        .layer(from_fn(log::access_log))
+}
+
+/// `GET /api/v1/info`.
+async fn info() -> Json<Value> {
+    Json(json!({
+        "server_version": env!("CARGO_PKG_VERSION"),
+        "api_version": API_VERSION,
+    }))
+}
+
+/// Any path no route serves: 404 `not_found`.
+async fn not_found() -> ApiError {
+    ApiError::from(MemexError::NotFound("no route for this path".into()))
+}
+
+/// A known path asked with a method no route there serves: 405
+/// `method_not_allowed`.
+async fn method_not_allowed() -> ApiError {
+    ApiError::new(
+        "method_not_allowed",
+        "this path does not serve this HTTP method",
+    )
+}
+
+/// Gives the body limit's own 413 (and any other 413 without a JSON body)
+/// the C1 `payload_too_large` body.
+async fn c1_payload_too_large(resp: Response) -> Response {
+    let is_json = resp
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.starts_with("application/json"));
+    if resp.status() == StatusCode::PAYLOAD_TOO_LARGE && !is_json {
+        error::payload_too_large().into_response()
+    } else {
+        resp
+    }
+}
+
+/// How `memex serve --root <dir> --listen <host:port>` was invoked.
+pub struct RunOptions {
+    pub root: PathBuf,
+    pub listen: String,
+    pub with_embeddings: bool,
+    pub log_level: String,
+}
+
+/// Runs the vault server until SIGINT or SIGTERM. Every startup failure is
+/// returned before anything listens or is served.
+pub async fn run(opts: RunOptions) -> Result<()> {
+    let filter = log::filter(&opts.log_level)?;
+    let root = vault_root(&opts.root)?;
+    let embedder = if opts.with_embeddings {
+        Some(warm_embedder(&root).await?)
+    } else {
+        None
+    };
+    let listener = tokio::net::TcpListener::bind(&opts.listen)
+        .await
+        .with_context(|| format!("listen on {}", opts.listen))?;
+    let addr = listener
+        .local_addr()
+        .context("read the listening address")?;
+    let env_token = std::env::var_os(token::TOKEN_ENV);
+    let from_file = env_token.is_none();
+    let resolved = token::resolve(&root, env_token)?;
+    let _log_guard = log::init(&root, filter)?;
+
+    if from_file && resolved.generated.is_none() {
+        let path = token::token_path(&root);
+        if let Some(mode) = token::readable_by_others(&path) {
+            tracing::warn!(
+                path = %path.display(),
+                mode = %format!("{mode:04o}"),
+                "the access token file is readable by group or others; chmod 600 it"
+            );
+        }
+    }
+
+    if let Some(path) = &resolved.generated {
+        eprintln!(
+            "memex serve: generated a new access token in {}",
+            path.display()
+        );
+    }
+    tracing::info!(
+        root = %root.display(),
+        %addr,
+        version = env!("CARGO_PKG_VERSION"),
+        api_version = API_VERSION,
+        with_embeddings = opts.with_embeddings,
+        utc_offset = %chrono::Local::now().offset(),
+        "vault server started"
+    );
+    eprintln!("memex serve: vault server listening on http://{addr}");
+
+    let mut config = ServerConfig::new(root, resolved.token).with_embeddings(opts.with_embeddings);
+    if let Some(embedder) = embedder {
+        config = config.with_embedder(embedder);
+    }
+    axum::serve(listener, router(config))
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .context("serve")?;
+    tracing::info!("vault server stopped");
+    Ok(())
+}
+
+/// The embedder every served vault shares, loaded (downloading the model
+/// into `<root>/.memex/models` if needed) before the server binds.
+async fn warm_embedder(root: &Path) -> Result<Arc<dyn Embedder>> {
+    let embedder = crate::state::build_embedder_in(root);
+    let warming = embedder.clone();
+    tokio::task::spawn_blocking(move || warming.embed_batch(&["warm up".to_string()]))
+        .await
+        .context("load the embedding model")?
+        .context("load the embedding model")?;
+    Ok(embedder)
+}
+
+/// `--root` as an absolute, canonical path to an existing directory.
+fn vault_root(root: &Path) -> Result<PathBuf> {
+    let shown = root.display();
+    match std::fs::metadata(root) {
+        Ok(meta) if meta.is_dir() => {
+            std::fs::canonicalize(root).with_context(|| format!("resolve --root {shown}"))
+        }
+        Ok(_) => Err(InvalidArgument(format!("--root {shown} is not a directory")).into()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(InvalidArgument(format!("--root {shown} does not exist")).into())
+        }
+        Err(e) => Err(e).with_context(|| format!("read --root {shown}")),
+    }
+}
+
+/// Resolves on SIGINT (Ctrl-C) or SIGTERM.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    let term = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    tokio::select! {
+        () = ctrl_c => {}
+        () = term => {}
+    }
+}

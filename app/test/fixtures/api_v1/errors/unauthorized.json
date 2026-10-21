@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "unauthorized",
+    "message": "missing or wrong access token; send Authorization: Bearer <token>"
+  }
+}
