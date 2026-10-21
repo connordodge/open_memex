@@ -60,13 +60,24 @@ void main() {
       await tester.pump();
       await tester.tap(find.byKey(const Key('wikilink-popover-create')));
       await pumpFrames(tester);
+      // TEST-CHANGE (#78): the selected note is read through
+      // VaultAccess.notes too, and the create's revision bump refreshes it.
+      // Two reads are held: the rebase's (first) and that refresh (second).
+      // The refresh lands now, so only the rebase stays pending.
       expect(
         notes.callsTo('getNote').length,
-        heldBefore + 1,
+        heldBefore + 2,
         reason: 'the rebase is waiting on its read',
       );
-      expect(notes.gates['getNote'], hasLength(1));
+      expect(notes.gates['getNote'], hasLength(2));
       notes.ungate('getNote');
+      notes.gates['getNote']!.removeAt(1).complete();
+      await pumpFrames(tester);
+      expect(
+        h.read(editorControllerProvider).lastSavedVersion,
+        1,
+        reason: 'the held read is the rebase: it has not rebased yet',
+      );
 
       // The user opens the other daily note while the rebase is pending.
       h.read(tabsProvider.notifier).openOrFocus(const NoteTab(_todayId));
