@@ -1625,3 +1625,340 @@ fn repository_has_no_dockerfile_compose_file_or_image_definition() {
         "the repository ships no Dockerfile, compose file or image definition: {offenders:?}"
     );
 }
+
+// ---------- Verify round: contracts the guide states in prose (WI #104) ----------
+//
+// Each of these pins one sentence of the guide to a fact about the real
+// binary, so the page cannot drift from the server it describes.
+
+/// The logical paragraph or list item (soft-wrapped lines joined, whitespace
+/// collapsed) outside fenced blocks that contains `needle`, lower-cased.
+fn wi104_item_with(md: &str, what: &str, needle: &str) -> String {
+    let mut items: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut in_fence = false;
+    for line in md.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+            items.push(std::mem::take(&mut current));
+            continue;
+        }
+        let starts_item = trimmed.starts_with("- ")
+            || trimmed.starts_with("* ")
+            || (trimmed.chars().next().is_some_and(|c| c.is_ascii_digit())
+                && trimmed.contains(". "));
+        if in_fence || trimmed.is_empty() || starts_item {
+            items.push(std::mem::take(&mut current));
+        }
+        if !in_fence && !trimmed.is_empty() {
+            current.push(' ');
+            current.push_str(trimmed);
+        }
+    }
+    items.push(current);
+    let needle = needle.to_lowercase();
+    items
+        .into_iter()
+        .map(|i| hosted_flat_lower(&i))
+        .find(|i| i.contains(&needle))
+        .unwrap_or_else(|| panic!("the guide has a paragraph or list item for {what} (`{needle}`)"))
+}
+
+/// A running `memex serve --root`, killed through its own handle on drop.
+struct Wi104Server {
+    child: Child,
+    addr: String,
+    _scratch: tempfile::TempDir,
+}
+
+impl Drop for Wi104Server {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn wi104_start_server(root: &std::path::Path) -> Wi104Server {
+    let scratch = tempfile::tempdir().unwrap();
+    let stderr_path = scratch.path().join("stderr");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_memex"))
+        .args(["serve", "--root"])
+        .arg(root)
+        .args(["--listen", "127.0.0.1:0"])
+        .env_remove("MEMEX_ACCESS_TOKEN")
+        .env_remove("RUST_LOG")
+        .current_dir(scratch.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(std::fs::File::create(&stderr_path).unwrap()))
+        .spawn()
+        .expect("spawn memex serve --root");
+    let listening = Regex::new(r"vault server listening on http://(\S+)").unwrap();
+    let started = std::time::Instant::now();
+    loop {
+        let stderr = std::fs::read_to_string(&stderr_path).unwrap_or_default();
+        if let Some(c) = listening.captures(&stderr) {
+            return Wi104Server {
+                child,
+                addr: c[1].to_string(),
+                _scratch: scratch,
+            };
+        }
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!("memex serve exited before listening ({status}): {stderr}");
+        }
+        if started.elapsed() > Duration::from_secs(30) {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("memex serve never printed its listening line: {stderr}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// `GET path` with a bearer token over a bare socket: `(status, whole reply)`.
+fn wi104_get(addr: &str, path: &str, token: &str) -> (u16, String) {
+    use std::io::Read;
+    let mut stream = std::net::TcpStream::connect(addr).expect("connect to the vault server");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\n\
+         Connection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut reply = String::new();
+    stream.read_to_string(&mut reply).unwrap();
+    let status = reply
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| panic!("an HTTP status line: {reply:?}"));
+    (status, reply)
+}
+
+fn wi104_server_logs(root: &std::path::Path) -> Vec<(String, String)> {
+    let Ok(entries) = std::fs::read_dir(root.join(".memex")) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with("server.log"))
+        .map(|n| {
+            let text = std::fs::read_to_string(root.join(".memex").join(&n)).unwrap_or_default();
+            (n, text)
+        })
+        .collect()
+}
+
+#[test]
+fn hosted_vault_doc_names_the_rolled_server_log_files_the_server_really_writes() {
+    let doc = hosted_vault_doc();
+    let item = wi104_item_with(&doc, "the vault server log", "server.log.<date>");
+    assert!(
+        item.contains("<root>/.memex/") && item.contains("daily"),
+        "the guide says where the log is and that it rolls daily: {item}"
+    );
+    // The troubleshooting entry points at the same rolled file name.
+    let reach = hosted_section(&doc, "cannot reach the server", r"reach");
+    assert!(
+        hosted_flat_lower(&reach.body).contains("<root>/.memex/server.log.<date>"),
+        "the cannot-reach entry reads <root>/.memex/server.log.<date>"
+    );
+    // The real server writes exactly that name.
+    let root = tempfile::tempdir().unwrap();
+    let _server = wi104_start_server(root.path());
+    let dated = Regex::new(r"^server\.log\.\d{4}-\d{2}-\d{2}$").unwrap();
+    let names: Vec<String> = wi104_server_logs(root.path())
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
+    assert!(
+        names.iter().any(|n| dated.is_match(n)),
+        "the server writes <root>/.memex/server.log.<date>: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n == "server.log"),
+        "there is no plain server.log: {names:?}"
+    );
+}
+
+#[test]
+fn hosted_vault_doc_says_dot_folders_are_never_served_and_a_hand_copied_vault_needs_no_restart() {
+    let doc = hosted_vault_doc();
+    let item = wi104_item_with(&doc, "which folders are served", "start with a dot");
+    assert!(
+        item.contains("never served"),
+        "the guide says folders that start with a dot are never served: {item}"
+    );
+    assert!(
+        item.contains("copy in by hand") && item.contains("without a restart"),
+        "the guide says a hand-copied vault shows up without a restart: {item}"
+    );
+    // The real server behaves that way.
+    let root = tempfile::tempdir().unwrap();
+    drop(Vault::create(root.path().join("home")).unwrap());
+    drop(Vault::create(root.path().join(".hidden")).unwrap());
+    let server = wi104_start_server(root.path());
+    let token = std::fs::read_to_string(root.path().join(".memex/access-token")).unwrap();
+    let token = token.trim();
+    let (status, listed) = wi104_get(&server.addr, "/api/v1/vaults", token);
+    assert_eq!(status, 200, "{listed}");
+    assert!(listed.contains(r#""name":"home""#), "{listed}");
+    assert!(
+        !listed.contains(".hidden"),
+        "a folder that starts with a dot is not served: {listed}"
+    );
+    // Copy a vault in by hand (complete elsewhere, then renamed into place).
+    std::fs::create_dir_all(root.path().join(".incoming")).unwrap();
+    drop(Vault::create(root.path().join(".incoming/later")).unwrap());
+    std::fs::rename(
+        root.path().join(".incoming/later"),
+        root.path().join("later"),
+    )
+    .unwrap();
+    let (status, listed) = wi104_get(&server.addr, "/api/v1/vaults", token);
+    assert_eq!(status, 200, "{listed}");
+    assert!(
+        listed.contains(r#""name":"later""#),
+        "a hand-copied vault is served without restarting the server: {listed}"
+    );
+}
+
+#[test]
+fn hosted_vault_doc_says_with_embeddings_applies_to_every_vault() {
+    let doc = hosted_vault_doc();
+    let item = wi104_item_with(
+        &doc,
+        "--with-embeddings on the vault server",
+        "--with-embeddings",
+    );
+    assert!(
+        item.contains("memex serve --root") && item.contains("every vault it serves"),
+        "the guide says --with-embeddings on `memex serve --root` applies to every vault it \
+         serves: {item}"
+    );
+    assert!(
+        item.contains("keyword search only"),
+        "the guide says leaving it off means keyword search only: {item}"
+    );
+    let help = Command::new(env!("CARGO_BIN_EXE_memex"))
+        .args(["serve", "--help"])
+        .output()
+        .expect("run memex serve --help");
+    assert!(
+        String::from_utf8_lossy(&help.stdout).contains("--with-embeddings"),
+        "memex serve --help lists --with-embeddings"
+    );
+}
+
+#[test]
+fn hosted_vault_doc_says_an_older_memex_refuses_a_newer_vault() {
+    let doc = hosted_vault_doc();
+    let moving = hosted_section(&doc, "moving a local vault", r"\bmove|moving");
+    let item = wi104_item_with(&moving.body, "the version rule", "an older one refuses it");
+    assert!(
+        item.contains("same version") && item.contains("or newer") && item.contains("upgrades"),
+        "the guide says the server's memex must be the same version or newer, and that a \
+         newer memex upgrades the vault when it first opens it: {item}"
+    );
+    // The real binary refuses a vault written by a newer schema.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("future");
+    drop(Vault::create(&path).unwrap());
+    let manifest_path = path.join("manifest.json");
+    let mut manifest: Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    manifest["schema_version"] = json!(memex_core::schema::APP_SCHEMA_VERSION + 1);
+    std::fs::write(&manifest_path, manifest.to_string()).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_memex"))
+        .args(["ls", "--vault"])
+        .arg(&path)
+        .output()
+        .expect("run memex ls");
+    assert_eq!(out.status.code(), Some(1), "a newer vault is refused");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("schema version unsupported"),
+        "the refusal names the unsupported schema version: {stderr}"
+    );
+}
+
+#[test]
+fn hosted_vault_doc_warns_that_a_group_or_other_readable_token_file_logs_a_warning() {
+    use std::os::unix::fs::PermissionsExt;
+    let doc = hosted_vault_doc();
+    let token = hosted_section(&doc, "the access token", r"token");
+    let item = wi104_item_with(
+        &token.body,
+        "the loose token file warning",
+        "readable by group or others",
+    );
+    assert!(
+        item.contains("still starts")
+            && item.contains("logs a warning")
+            && item.contains("chmod 600"),
+        "the guide says a group- or other-readable token file still starts, logs a warning, \
+         and to run chmod 600: {item}"
+    );
+    // The real server logs it.
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join(".memex")).unwrap();
+    let file = root.path().join(".memex/access-token");
+    std::fs::write(&file, "wi104-loose-token-file\n").unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let _server = wi104_start_server(root.path());
+    let started = std::time::Instant::now();
+    loop {
+        let logged = wi104_server_logs(root.path())
+            .iter()
+            .any(|(_, text)| text.contains("WARN") && text.contains("readable by group or others"));
+        if logged {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the server logs a warning for a 0644 token file: {:?}",
+            wi104_server_logs(root.path())
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn hosted_vault_doc_says_which_callers_send_the_utc_offset_and_that_the_server_zone_is_a_fallback()
+{
+    let doc = hosted_vault_doc();
+    let zone = hosted_section(&doc, "the time zone", r"time zone");
+    let flat = hosted_flat_lower(&zone.body);
+    let sentences: Vec<&str> = flat.split(". ").collect();
+    let senders = sentences
+        .iter()
+        .find(|s| s.contains("send their utc offset"))
+        .unwrap_or_else(|| panic!("the time zone section says who sends the UTC offset: {flat}"));
+    for caller in ["the app", "memex serve --remote", "claude code"] {
+        assert!(
+            senders.contains(caller),
+            "the sentence on who sends the UTC offset names {caller}: {senders}"
+        );
+    }
+    assert!(
+        senders.contains("with each request") && senders.contains("which day"),
+        "the sentence says each request carries it and the server uses it to decide which day \
+         today is: {senders}"
+    );
+    let fallback = sentences
+        .iter()
+        .find(|s| s.contains("fallback"))
+        .unwrap_or_else(|| {
+            panic!("the time zone section calls the server zone a fallback: {flat}")
+        });
+    assert!(
+        fallback.contains("only the fallback") && fallback.contains("no offset"),
+        "the server zone is only the fallback for a caller that sends no offset: {fallback}"
+    );
+}
