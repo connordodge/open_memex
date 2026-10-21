@@ -1046,6 +1046,9 @@ void main() {
           ],
         );
         await pumpWhile(tester, () => h.controller.openVault(seedHostedRef));
+        // WI #105 (AC1): the picker probed studio once before the open.
+        expect(studio.server.requests.map((r) => r.url.path), ['/api/v1/info']);
+        final before = studio.server.requests.length;
         h.read(selectedNoteIdProvider.notifier).state = 'n1';
         final context = tester.element(find.byType(Scaffold).first);
 
@@ -1057,10 +1060,10 @@ void main() {
         expect(outcome, isA<VaultOpened>());
         expect(h.read(currentVaultProvider), studio.ref('work'));
         expect(h.read(selectedNoteIdProvider), isNull);
-        expect(studio.server.requests.take(2).map((r) => r.url.path), [
-          '/api/v1/info',
-          '/vaults/work/api/v1/info',
-        ]);
+        expect(
+          studio.server.requests.skip(before).take(2).map((r) => r.url.path),
+          ['/api/v1/info', '/vaults/work/api/v1/info'],
+        );
       },
     );
   });

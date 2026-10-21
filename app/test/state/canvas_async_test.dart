@@ -514,14 +514,18 @@ void main() {
   });
 
   group('sidebar canvases rail', () {
-    for (final (name, vault) in [
+    // WI #105 (A12, D14a): the rail renders through VaultAsyncView, so a
+    // hosted first load shows the loading state; a local one never does.
+    for (final (name, vault, hosted) in [
       (
         'sidebar canvases rail shows no canvases yet and a zero count with no spinner on a local first load, then its rows',
         _a,
+        false,
       ),
       (
-        'sidebar canvases rail shows no canvases yet and a zero count with no spinner on a hosted first load, then its rows',
+        'sidebar canvases rail shows the loading state and a zero count on a hosted first load, then its rows',
         _hostedA,
+        true,
       ),
     ]) {
       testWidgets(name, (tester) async {
@@ -529,11 +533,19 @@ void main() {
         final c = await _pumpSidebar(tester, {vault: canvas});
 
         expect(canvas.heldLists, hasLength(1));
-        expect(find.text('no canvases yet.'), findsOneWidget);
+        expect(
+          find.text('no canvases yet.'),
+          hosted ? findsNothing : findsOneWidget,
+        );
         expect(_canvasCount(tester), 0);
         expect(find.byKey(const Key('canvases-rail')), findsNothing);
-        expect(find.byKey(vaultAsyncLoadingKey), findsNothing);
-        expect(find.byType(CircularProgressIndicator), findsNothing);
+        expect(
+          find.byKey(vaultAsyncLoadingKey),
+          hosted ? findsOneWidget : findsNothing,
+        );
+        if (!hosted) {
+          expect(find.byType(CircularProgressIndicator), findsNothing);
+        }
 
         canvas.heldLists.single.complete([
           wi89CanvasRow('c1', 'Board one', nodeCount: 4),
@@ -543,6 +555,7 @@ void main() {
         await tester.pump();
 
         expect(find.text('no canvases yet.'), findsNothing);
+        expect(find.byKey(vaultAsyncLoadingKey), findsNothing);
         expect(find.byKey(const Key('canvas-row-c1')), findsOneWidget);
         expect(find.byKey(const Key('canvas-row-c2')), findsOneWidget);
         expect(find.text('Board one'), findsOneWidget);
@@ -646,7 +659,16 @@ void main() {
         expect(b.heldLists, hasLength(1));
         expect(find.byKey(const Key('canvas-row-c-a')), findsNothing);
         expect(find.text('Vault A board'), findsNothing);
-        expect(find.text('no canvases yet.'), findsOneWidget);
+        expect(
+          find.text('no canvases yet.'),
+          second is HostedVaultRef ? findsNothing : findsOneWidget,
+        );
+        expect(
+          find.byKey(vaultAsyncLoadingKey),
+          second is HostedVaultRef ? findsOneWidget : findsNothing,
+          reason:
+              'a hosted first load of the new vault shows the loading state',
+        );
         expect(_canvasCount(tester), 0);
 
         b.heldLists.single.complete([wi89CanvasRow('c-b', 'Vault B board')]);
@@ -655,6 +677,7 @@ void main() {
 
         expect(find.byKey(const Key('canvas-row-c-a')), findsNothing);
         expect(find.byKey(const Key('canvas-row-c-b')), findsOneWidget);
+        expect(find.byKey(vaultAsyncLoadingKey), findsNothing);
         expect(_canvasCount(tester), 1);
       });
     }

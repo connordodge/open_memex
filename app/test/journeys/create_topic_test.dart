@@ -18,6 +18,7 @@ import 'package:open_memex_app/src/state/vault_state.dart';
 
 import '../support/app_harness.dart';
 import '../support/daily_seed.dart';
+import '../support/fake_clock.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
 import '../support/footer_cli_fakes.dart';
@@ -199,12 +200,55 @@ void main() {
         final footer = cli.callsFor('footer add').single;
         expect(footer.flag('daily-note-id'), createdDailyId);
         expect(footer.flag('topic-note-id'), createdTopicId);
+        // Read today's note as a subscribed reader does, once its read lands.
+        h.container.listen(todayNoteAsyncProvider, (_, _) {});
+        await pumpFrames(tester);
         expect(
           readScoped(h.container, todayNoteAsyncProvider, null)?.noteId,
           createdDailyId,
           reason: 'today now has a daily note and the app re-read the vault',
         );
         expect(find.byKey(const Key('inline-error')), findsNothing);
+      },
+    );
+
+    testWidgets(
+      '+ New topic after midnight links the topic from the new day and never from the daily note of yesterday',
+      (tester) async {
+        // WI #105: nothing in the app listens to todayNoteAsyncProvider once
+        // the todayNote facade is gone, so its value must still follow the
+        // date when + New topic reads it.
+        final db = FakeVaultDb.v5()..seedDailyNote(_today, id: _todayId);
+        final cli = _newCli(db)
+          ..onAddCreates(db)
+          ..onFooterAdd(db);
+        final clock = FakeClock(DateTime(2026, 10, 3, 23, 59));
+        final h = await pumpWorkspace(
+          tester,
+          db: db,
+          cli: cli,
+          clock: clock,
+          surfaceSize: const Size(1600, 1400),
+        );
+        expect(h.read(todayDateProvider), _today);
+
+        clock.advance(const Duration(minutes: 2));
+        await pumpFrames(tester);
+        expect(h.read(todayDateProvider), '2026-10-04');
+
+        await _newTopic(tester, 'Player Loop');
+
+        expect(_mutations(cli), ['add', 'add', 'footer add']);
+        final adds = cli.callsFor('add');
+        expect(adds[0].flag('role'), 'daily');
+        expect(adds[0].flag('title'), '2026-10-04');
+        final footer = cli.callsFor('footer add').single;
+        expect(
+          footer.flag('daily-note-id'),
+          createdDailyId,
+          reason: 'the topic is linked from the daily note of 2026-10-04',
+        );
+        expect(db.footerChips(_todayId), isEmpty);
       },
     );
 

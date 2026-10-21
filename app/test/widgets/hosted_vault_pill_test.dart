@@ -113,6 +113,13 @@ Future<(HostedHarness, HostedServerFixture, List<int>)> _pumpOpen(
   );
   await pumpWhile(tester, () => h.controller.openVault(seedHostedRef));
   expect(find.byType(Workspace), findsOneWidget);
+  // WI #105 (AC1): with the flag gone the picker probes each saved server
+  // before the open. Forget that probe so the tests see only what a pill
+  // tap sends.
+  expect(studio.server.requests.map((r) => '${r.method} ${r.url.path}'), [
+    'GET /api/v1/info',
+  ], reason: 'the picker probed studio once');
+  studio.server.requests.clear();
   return (h, studio, guardCalls);
 }
 
@@ -364,12 +371,21 @@ void main() {
         final (h, studio, _) = await _pumpOpen(tester);
         final studioDot = _dotKey(studio.id, 'work');
 
-        // The open probed nas: connected. Studio has no entry yet.
+        // The open probed nas: connected. The picker probed studio (#105
+        // AC1): connected too.
         expect(
           _dot(tester, _dotKey(fakeServerId, 'seed')).state,
           StatusDotState.connected,
         );
-        expect(h.read(hostedConnectionStatusProvider(studio.id)), isNull);
+        expect(
+          h.read(hostedConnectionStatusProvider(studio.id)),
+          HostedConnectionStatus.connected,
+        );
+        expect(_dot(tester, studioDot).state, StatusDotState.connected);
+
+        // With no entry for studio the dot shows checking.
+        h.read(hostedConnectionStatusProvider(studio.id).notifier).state = null;
+        await pumpFrames(tester);
         expect(_dot(tester, studioDot).state, StatusDotState.checking);
         expect(find.bySemanticsLabel(RegExp('checking')), findsOneWidget);
 
