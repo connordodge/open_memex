@@ -630,3 +630,265 @@ fn ops_update_link_unknown_link_maps_like_the_cli() {
         ])
     );
 }
+
+// ---------- WI #142 (X3): server-written kinds are not user-writable ----------
+
+/// Kinds written only by the server (block transclusion, a daily note's
+/// footer), in the spellings that normalise to them.
+const WI142_SERVER_KINDS: [&str; 5] = ["from-day", "about", "From Day", "ABOUT", "About"];
+
+/// `(id, link_kind, label, source, to_note_id)` of every link from `from`.
+type Wi142Row = (String, String, Option<String>, String, Option<String>);
+
+fn wi142_rows(vault: &Vault, from: &str) -> Vec<Wi142Row> {
+    let mut stmt = vault
+        .connection_ref()
+        .prepare(
+            "SELECT id, link_kind, label, source, to_note_id FROM links
+             WHERE from_note_id = ? ORDER BY position, id",
+        )
+        .unwrap();
+    stmt.query_map(params![from], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+    })
+    .unwrap()
+    .collect::<Result<_, _>>()
+    .unwrap()
+}
+
+/// `(content_md, version, link rows)` of a note.
+fn wi142_state(vault: &Vault, id: &str) -> (String, i64, Vec<Wi142Row>) {
+    let n = notes::get_note(vault, &NoteId::parse(id).unwrap()).unwrap();
+    (n.content_md, n.version, wi142_rows(vault, id))
+}
+
+fn wi142_mcp_fixture() -> (TempDir, Arc<AppState>, Memex) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vault");
+    let vault = Vault::create(&path).unwrap();
+    let state = Arc::new(AppState::new(vault, path, None));
+    let memex = Memex::new(state.clone());
+    (dir, state, memex)
+}
+
+async fn wi142_mcp(resp: impl std::future::Future<Output = String>) -> Value {
+    let resp = resp.await;
+    serde_json::from_str(&resp).unwrap_or_else(|e| panic!("non-JSON ({e}): {resp}"))
+}
+
+#[test]
+fn ops_parse_kind_rejects_server_written_kinds_as_invalid_argument() {
+    for kind in WI142_SERVER_KINDS {
+        let err = ops::parse_kind(kind).unwrap_err();
+        let got = cli::error_json(&err);
+        assert_eq!(got["error"]["code"], "invalid_argument", "{kind}: {got}");
+        assert!(
+            got["error"]["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("invalid --kind: "),
+            "{kind}: {got}"
+        );
+    }
+}
+
+#[test]
+fn ops_parse_kind_still_normalises_and_accepts_every_other_kind() {
+    for (given, stored) in [
+        ("references", "references"),
+        ("extends", "extends"),
+        ("EXTENDS", "extends"),
+        ("contradicts", "contradicts"),
+        ("example-of", "example-of"),
+        ("Has Space", "has-space"),
+        ("inspired-by", "inspired-by"),
+    ] {
+        assert_eq!(ops::parse_kind(given).unwrap().as_str(), stored, "{given}");
+    }
+}
+
+#[test]
+fn ops_update_link_with_a_server_written_kind_is_invalid_argument_and_changes_nothing() {
+    let mut f = Fx::new();
+    let b = f.note("Beta", "Beta body.\n", None);
+    let a = f.note("Alpha", "See [[Beta]].\n", None);
+    let id = f.links(&a, &b)[0].0.clone();
+    let before = wi142_state(&f.vault, &a);
+    for kind in WI142_SERVER_KINDS {
+        let err = ops::update_link(
+            &mut f.vault,
+            UpdateLinkInput {
+                link_id: id.clone(),
+                kind: Some(kind.into()),
+                ..Default::default()
+            },
+            &SystemClock,
+            None,
+        )
+        .unwrap_err();
+        let got = cli::error_json(&err);
+        assert_eq!(got["error"]["code"], "invalid_argument", "{kind}: {got}");
+        assert_eq!(
+            got,
+            cli_err(&[
+                "update-link",
+                "--vault",
+                f.v(),
+                "--link-id",
+                &id,
+                "--kind",
+                kind
+            ]),
+            "{kind}: the op and the CLI print the same error"
+        );
+        assert_eq!(wi142_state(&f.vault, &a), before, "{kind}: unchanged");
+    }
+}
+
+#[test]
+fn ops_add_link_with_a_server_written_kind_is_invalid_argument_and_changes_nothing() {
+    let mut f = Fx::new();
+    let a = f.note("Alpha", "Alpha body.\n", None);
+    let b = f.note("Beta", "Beta body.\n", None);
+    let before = wi142_state(&f.vault, &a);
+    for kind in WI142_SERVER_KINDS {
+        let err =
+            ops::add_link(&mut f.vault, link(&a, &b, kind, None), &SystemClock, None).unwrap_err();
+        let got = cli::error_json(&err);
+        assert_eq!(got["error"]["code"], "invalid_argument", "{kind}: {got}");
+        assert_eq!(wi142_state(&f.vault, &a), before, "{kind}: unchanged");
+    }
+}
+
+#[test]
+fn ops_update_link_kind_change_on_a_frontmatter_link_is_invalid_argument_and_changes_nothing() {
+    let mut f = Fx::new();
+    let a = f.note("Alpha", "Alpha body.\n", None);
+    let b = f.note("Beta", "Beta body.\n", None);
+    let added = ops::add_link(
+        &mut f.vault,
+        link(&a, &b, "extends", None),
+        &SystemClock,
+        None,
+    )
+    .unwrap();
+    let id = added.link_id.expect("link_id");
+    let before = wi142_state(&f.vault, &a);
+    assert_eq!(before.2.len(), 1, "fixture: one link {:?}", before.2);
+    assert_eq!(before.2[0].3, "frontmatter", "fixture: a frontmatter link");
+    let err = ops::update_link(
+        &mut f.vault,
+        UpdateLinkInput {
+            link_id: id.clone(),
+            kind: Some("contradicts".into()),
+            ..Default::default()
+        },
+        &SystemClock,
+        None,
+    )
+    .unwrap_err();
+    let got = cli::error_json(&err);
+    assert_eq!(got["error"]["code"], "invalid_argument", "{got}");
+    assert!(
+        got["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("frontmatter link kind cannot be changed"),
+        "{got}"
+    );
+    assert_eq!(wi142_state(&f.vault, &a), before, "unchanged");
+}
+
+#[tokio::test]
+async fn mcp_add_link_and_update_link_reject_server_written_kinds_and_change_nothing() {
+    let (_dir, state, memex) = wi142_mcp_fixture();
+    let (a, b, link_id) = {
+        let mut v = state.vault.lock().await;
+        let b = create(&mut v, "Beta", "Beta body.\n", None);
+        let a = create(&mut v, "Alpha", "See [[Beta]].\n", None);
+        let id = wi142_rows(&v, &a)[0].0.clone();
+        (a, b, id)
+    };
+    let before = {
+        let v = state.vault.lock().await;
+        wi142_state(&v, &a)
+    };
+    for kind in WI142_SERVER_KINDS {
+        let resp = wi142_mcp(memex.add_link(Parameters(
+            serde_json::from_value(json!({ "from_id": a, "to_id": b, "kind": kind })).unwrap(),
+        )))
+        .await;
+        assert_eq!(
+            resp["error"]["code"], "add_link.invalid_kind",
+            "add_link {kind}: an error payload, not success: {resp}"
+        );
+        let resp = wi142_mcp(memex.update_link(Parameters(
+            serde_json::from_value(json!({ "link_id": link_id, "kind": kind })).unwrap(),
+        )))
+        .await;
+        assert_eq!(
+            resp["error"]["code"], "update_link.invalid_kind",
+            "update_link {kind}: an error payload, not success: {resp}"
+        );
+        let v = state.vault.lock().await;
+        assert_eq!(wi142_state(&v, &a), before, "{kind}: vault unchanged");
+    }
+}
+
+#[tokio::test]
+async fn mcp_add_link_and_update_link_still_accept_the_cli_kinds() {
+    let (_dir, state, memex) = wi142_mcp_fixture();
+    let (a, b, c, mut link_id) = {
+        let mut v = state.vault.lock().await;
+        let b = create(&mut v, "Beta", "Beta body.\n", None);
+        let c = create(&mut v, "Gamma", "Gamma body.\n", None);
+        let a = create(&mut v, "Alpha", "See [[Beta]].\n", None);
+        let id = wi142_rows(&v, &a)[0].0.clone();
+        (a, b, c, id)
+    };
+    for (given, stored) in [
+        ("contradicts", "contradicts"),
+        ("EXTENDS", "extends"),
+        ("Has Space", "has-space"),
+        ("example-of", "example-of"),
+    ] {
+        let resp = wi142_mcp(memex.update_link(Parameters(
+            serde_json::from_value(json!({ "link_id": link_id, "kind": given })).unwrap(),
+        )))
+        .await;
+        assert!(resp.get("error").is_none(), "update_link {given}: {resp}");
+        let v = state.vault.lock().await;
+        assert_eq!(wi142_rows(&v, &a)[0].1, stored, "update_link {given}");
+        // A rewrite re-extracts the note's links: the row has a new id.
+        link_id = wi142_rows(&v, &a)[0].0.clone();
+    }
+    for (to, given, stored) in [(&b, "EXTENDS", "extends"), (&c, "Has Space", "has-space")] {
+        let resp = wi142_mcp(memex.add_link(Parameters(
+            serde_json::from_value(json!({ "from_id": a, "to_id": to, "kind": given })).unwrap(),
+        )))
+        .await;
+        assert!(resp.get("error").is_none(), "add_link {given}: {resp}");
+        let v = state.vault.lock().await;
+        assert!(
+            wi142_rows(&v, &a).iter().any(|r| r.1 == stored),
+            "add_link {given}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn mcp_neighbors_kind_filter_still_accepts_server_written_kinds() {
+    let (_dir, state, memex) = wi142_mcp_fixture();
+    let a = {
+        let mut v = state.vault.lock().await;
+        create(&mut v, "Alpha", "Alpha body.\n", None)
+    };
+    for kind in ["about", "from-day"] {
+        let resp = wi142_mcp(memex.neighbors(Parameters(
+            serde_json::from_value(json!({ "note_id": a, "kind": kind })).unwrap(),
+        )))
+        .await;
+        assert!(resp.get("error").is_none(), "neighbors {kind}: {resp}");
+        assert_eq!(resp["results"], json!([]), "{kind}");
+    }
+}
