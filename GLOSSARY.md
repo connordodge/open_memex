@@ -30,6 +30,18 @@ _Avoid_: snippet, quote
 The one note per calendar day the person types into. Its title is the ISO date, such as `2026-09-05`.
 _Avoid_: journal, day page, log
 
+**Live preview**:
+The note editor's way of showing a note body with its markdown formatting rendered inline while the person types, and the markup hidden except on the lines the caret or selection touches. The saved body is still the plain markdown.
+_Avoid_: WYSIWYG, rich text, preview pane, rendered mode
+
+**Editor row**:
+One editable field inside a text segment of the live-preview editor: an item row holds one list item, task or quote line with its marker in a left column, and a prose row holds a run of consecutive lines that are not item lines. Not the same thing as a block.
+_Avoid_: block, block field, line field
+
+**Source mode**:
+The note editor's raw view of a note body: one plain field showing the markdown exactly as saved, with no formatting rendered.
+_Avoid_: raw mode, plain mode, edit mode
+
 **Topic note**:
 A note about one subject that accumulates excerpts across days, maintained by the person's agent or created by the person.
 _Avoid_: subject note, concept note, chunk
