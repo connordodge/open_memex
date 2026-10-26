@@ -1443,6 +1443,49 @@ void main() {
       },
     );
 
+    test(
+      'inline code content lays out on the same glyph rows as plain text under the strut',
+      () {
+        // B2 draws the code pill from the line top (17 px at line top + 2),
+        // so the code style must not move its glyphs off the line the plain
+        // text sits on: no size, height or face of its own.
+        const text = 'say `code` now';
+        final c = LivePreviewController(text: text);
+        addTearDown(c.dispose);
+        final strut = c.strutStyle;
+
+        List<TextBox> boxes(InlineSpan span, int start, int end) {
+          final painter = TextPainter(
+            text: span,
+            textDirection: TextDirection.ltr,
+            strutStyle: strut,
+          )..layout();
+          final b = painter.getBoxesForSelection(
+            TextSelection(baseOffset: start, extentOffset: end),
+          );
+          painter.dispose();
+          return b;
+        }
+
+        final code = _range(text, 'code');
+        final styled = _build(text);
+        final plain = TextSpan(text: text, style: _base());
+        expect(_styleAt(styled, code.$1).color, OmColors.fg1);
+        final codeBox = boxes(styled, code.$1, code.$2).single;
+        final sayBox = boxes(styled, 0, 3).single;
+        final plainBox = boxes(plain, code.$1, code.$2).single;
+        expect(codeBox.top, sayBox.top, reason: 'same top as plain text');
+        expect(codeBox.bottom, sayBox.bottom, reason: 'same bottom');
+        expect(codeBox.top, plainBox.top, reason: 'as unstyled text lays out');
+        expect(codeBox.bottom, plainBox.bottom);
+        expect(
+          codeBox.right - codeBox.left,
+          closeTo(_normalWidth('code', 13.5), 1e-9),
+          reason: 'body size',
+        );
+      },
+    );
+
     test('the strut uses the body mono face', () {
       // The strut sets the minimum line from the body face, so heading and
       // body heights do not depend on the platform default font.
