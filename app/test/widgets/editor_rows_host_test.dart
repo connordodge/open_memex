@@ -1934,6 +1934,25 @@ void main() {
         expect(_wi167Ctrl(tester, 0, 1).codeRow, isFalse);
       },
     );
+
+    testWidgets(
+      'an edit in another row does not notify a prose or code row whose codeRow is unchanged',
+      (tester) async {
+        final body = await _wi167Pump(tester, 'Before\n```\ncode\n```\n- item');
+        expect(_wi167Texts(tester, 0), ['Before', '```\ncode\n```', 'item']);
+        await _wi167FocusRow(tester, 0, 2);
+        final notified = [0, 0];
+        for (final r in [0, 1]) {
+          _wi167Ctrl(tester, 0, r).addListener(() => notified[r]++);
+        }
+
+        await tester.macEditingValue('items');
+
+        expect(body.changes, ['Before\n```\ncode\n```\n- items']);
+        expect(_wi167Ctrl(tester, 0, 1).codeRow, isTrue);
+        expect(notified, [0, 0]);
+      },
+    );
   });
 
   // -------------------------------------------------------------------------
@@ -2083,6 +2102,184 @@ void main() {
         final row = _wi167Ctrl(tester, 0, 0).value;
         expect(row.selection, const TextSelection.collapsed(offset: 3));
         expect(row.composing, const TextRange(start: 2, end: 3));
+      },
+    );
+
+    // Deletes the segment selection as C4 would, leaving [leave] (default:
+    // the caret at the deleted range's start) selected.
+    bool Function(int, TextEditingValue) deleting(
+      SegmentViewState view, {
+      SegmentSelection? leave,
+      List<int>? rows,
+    }) => (i, v) {
+      rows?.add(i);
+      final s = view.selection;
+      view.applyEdit(
+        SegmentEdit(
+          start: s.start,
+          end: s.end,
+          replacement: '',
+          selection: leave ?? SegmentSelection.collapsed(s.start),
+        ),
+      );
+      return true;
+    };
+
+    testWidgets(
+      'an interceptor that takes the value but leaves a cross row selection falls back to the plain row edit',
+      (tester) async {
+        final body = await pumpCrossRowSelection(tester);
+        final calls = <int>[];
+        _wi167View(tester, 0).rowComposingInterceptor = (i, v) {
+          calls.add(i);
+          return true;
+        };
+
+        await tester.macCompose('Xf', const TextRange(start: 0, end: 1));
+
+        expect(calls, [1]);
+        expect(body.changes, ['- abc\n- Xf']);
+        expect(_wi167Texts(tester, 0), ['abc', 'Xf']);
+        expect(
+          _wi167Ctrl(tester, 0, 1).value.composing,
+          const TextRange(start: 0, end: 1),
+        );
+      },
+    );
+
+    testWidgets(
+      'the interceptor is not called for composing in a row outside a cross row selection',
+      (tester) async {
+        final body = await _wi167Pump(tester, '$twoItems\n- ghi');
+        await _wi167FocusRow(tester, 0, 2);
+        final calls = <int>[];
+        _wi167View(tester, 0).rowComposingInterceptor = (i, v) {
+          calls.add(i);
+          return true;
+        };
+        segmentEditingAt(tester, 0).select(crossRows);
+        await tester.pump();
+        expect(segmentEditingAt(tester, 0).selection, crossRows);
+        expect(_wi167View(tester, 0).focusedRow, 2);
+
+        await tester.macCompose('ghié', const TextRange(start: 3, end: 4));
+
+        expect(calls, isEmpty);
+        expect(body.changes, ['- abc\n- def\n- ghié']);
+      },
+    );
+
+    testWidgets(
+      'composing in the base row of a backward cross row selection inserts the text the IME typed over that row slice',
+      (tester) async {
+        final body = await _wi167Pump(tester, twoItems);
+        await _wi167FocusRow(tester, 0, 0);
+        segmentEditingAt(
+          tester,
+          0,
+        ).select(const TextSelection(baseOffset: 10, extentOffset: 4));
+        await tester.pump();
+        expect(
+          _wi167Ctrl(tester, 0, 0).selection,
+          const TextSelection(baseOffset: 3, extentOffset: 2),
+        );
+        final view = _wi167View(tester, 0);
+        final rows = <int>[];
+        view.rowComposingInterceptor = deleting(view, rows: rows);
+
+        // The IME marks `bX`: `b` lies before the row slice (`c`), so the
+        // marked range starts inside the inserted text, not before it.
+        await tester.macCompose('abX', const TextRange(start: 1, end: 3));
+
+        expect(rows, [0]);
+        expect(body.changes, ['- abf', '- abXf']);
+        expect(_wi167Texts(tester, 0), ['abXf']);
+        final row = _wi167Ctrl(tester, 0, 0).value;
+        expect(row.selection, const TextSelection.collapsed(offset: 3));
+        expect(row.composing, const TextRange(start: 2, end: 3));
+      },
+    );
+
+    testWidgets(
+      'the host keeps the IME caret inside the inserted composing text',
+      (tester) async {
+        final body = await pumpCrossRowSelection(tester);
+        final view = _wi167View(tester, 0);
+        view.rowComposingInterceptor = deleting(view);
+
+        // The caret after `f`, past the marked `X`.
+        await tester.macEditingValue(
+          'Xf',
+          selection: const TextSelection.collapsed(offset: 2),
+          composing: const TextRange(start: 0, end: 1),
+        );
+
+        expect(body.changes, ['- abf', '- abXf']);
+        final row = _wi167Ctrl(tester, 0, 0).value;
+        expect(row.text, 'abXf');
+        expect(row.selection, const TextSelection.collapsed(offset: 3));
+        expect(row.composing, const TextRange(start: 2, end: 3));
+      },
+    );
+
+    testWidgets(
+      'the host replaces the range the interceptor leaves selected within one row with the composing text',
+      (tester) async {
+        final body = await pumpCrossRowSelection(tester);
+        final view = _wi167View(tester, 0);
+        // After the delete `- abf`; leave `b` (3..4) selected.
+        view.rowComposingInterceptor = deleting(
+          view,
+          leave: const SegmentSelection(baseOffset: 3, extentOffset: 4),
+        );
+
+        await tester.macCompose('Xf', const TextRange(start: 0, end: 1));
+
+        expect(body.changes, ['- abf', '- aXf']);
+        expect(segmentEditingAt(tester, 0).text, '- aXf');
+        final row = _wi167Ctrl(tester, 0, 0).value;
+        expect(row.text, 'aXf');
+        expect(row.composing, const TextRange(start: 1, end: 2));
+      },
+    );
+
+    testWidgets(
+      'a composing value that drops the row text after the slice inserts nothing at the caret the interceptor left',
+      (tester) async {
+        final body = await pumpCrossRowSelection(tester);
+        final view = _wi167View(tester, 0);
+        final rows = <int>[];
+        view.rowComposingInterceptor = deleting(view, rows: rows);
+
+        await tester.macCompose('', TextRange.collapsed(0));
+
+        expect(rows, [1]);
+        expect(body.changes, ['- abf']);
+        expect(segmentEditingAt(tester, 0).text, '- abf');
+        expect(_wi167Texts(tester, 0), ['abf']);
+        expect(
+          segmentEditingAt(tester, 0).selection,
+          const TextSelection.collapsed(offset: 4),
+        );
+      },
+    );
+
+    testWidgets(
+      'clearing the interceptor restores the plain composing behaviour',
+      (tester) async {
+        final body = await pumpCrossRowSelection(tester);
+        final calls = <int>[];
+        _wi167View(tester, 0)
+          ..rowComposingInterceptor = (i, v) {
+            calls.add(i);
+            return true;
+          }
+          ..rowComposingInterceptor = null;
+
+        await tester.macCompose('Xf', const TextRange(start: 0, end: 1));
+
+        expect(calls, isEmpty);
+        expect(body.changes, ['- abc\n- Xf']);
       },
     );
   });
