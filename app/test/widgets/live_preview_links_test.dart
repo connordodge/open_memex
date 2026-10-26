@@ -1302,6 +1302,235 @@ void main() {
   });
 
   // -------------------------------------------------------------------------
+  // LinkRegion._apply: the isResolved setter notifies the field controller,
+  // and the wikilink popover re-opens on any notification while the caret is
+  // in an unclosed [[, so title loads and reloads notify only when a shown
+  // target resolves differently (fix round, create_topic_partial_failure).
+  // -------------------------------------------------------------------------
+  group('resolution notifications', () {
+    testWidgets(
+      'a titles reload that changes no shown link resolution sends the field controller no notification',
+      (tester) async {
+        var current = _manyTitles(3);
+        final t = await _launch(
+          tester,
+          'See [[Missing]], [[Known]], ![[2026-09-07#^ab12]] and [a](https://x.y)\n',
+          overrides: [_titles(() async => current)],
+        );
+        final r = t.r;
+        final controller = _controllerOf(tester, 0);
+        var notified = 0;
+        void count() => notified++;
+        controller.addListener(count);
+        addTearDown(() => controller.removeListener(count));
+
+        // A new list with one more title no link in the text names.
+        current = [
+          ..._manyTitles(3),
+          NoteTitle(id: 'topic-other', title: 'Other', updatedAt: 5),
+        ];
+        t.h.container.invalidate(noteTitlesAsyncProvider);
+        await pumpFrames(tester);
+        expect(notified, 0, reason: 'unrelated title added');
+
+        // A fresh list with the same titles.
+        current = _manyTitles(3);
+        t.h.container.invalidate(noteTitlesAsyncProvider);
+        await pumpFrames(tester);
+        expect(notified, 0, reason: 'same titles reloaded');
+
+        // A title equal to the URL changes nothing either: links are no
+        // note targets.
+        current = [
+          ..._manyTitles(3),
+          NoteTitle(id: 'topic-url', title: 'https://x.y', updatedAt: 5),
+        ];
+        t.h.container.invalidate(noteTitlesAsyncProvider);
+        await pumpFrames(tester);
+        expect(notified, 0, reason: 'a title equal to a URL');
+
+        expect(_isGhost(_styleOf(tester, r, 0, 'Missing')), isTrue);
+        expect(_isResolvedLink(_styleOf(tester, r, 0, 'Known')), isTrue);
+        expect(_isGhost(_styleOf(tester, r, 0, '2026-09-07')), isTrue);
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a titles reload that flips a shown wikilink notifies the field controller once and re-renders it',
+      (tester) async {
+        var current = _manyTitles(3);
+        final t = await _launch(
+          tester,
+          'See [[Missing]] and [[Known]] now\n',
+          overrides: [_titles(() async => current)],
+        );
+        final r = t.r;
+        final controller = _controllerOf(tester, 0);
+        var notified = 0;
+        void count() => notified++;
+        controller.addListener(count);
+        addTearDown(() => controller.removeListener(count));
+        expect(_isGhost(_styleOf(tester, r, 0, 'Missing')), isTrue);
+
+        current = [
+          ..._manyTitles(3),
+          NoteTitle(id: 'topic-missing', title: 'Missing', updatedAt: 5),
+        ];
+        t.h.container.invalidate(noteTitlesAsyncProvider);
+        await pumpFrames(tester);
+        expect(notified, 1, reason: 'Missing now resolves');
+        expect(_isResolvedLink(_styleOf(tester, r, 0, 'Missing')), isTrue);
+
+        // Known goes away: a ghost again, one more notification.
+        current = [
+          for (final n in _manyTitles(3, withKnown: false)) n,
+          NoteTitle(id: 'topic-missing', title: 'Missing', updatedAt: 5),
+        ];
+        t.h.container.invalidate(noteTitlesAsyncProvider);
+        await pumpFrames(tester);
+        expect(notified, 2, reason: 'Known no longer resolves');
+        expect(_isGhost(_styleOf(tester, r, 0, 'Known')), isTrue);
+        expect(_isResolvedLink(_styleOf(tester, r, 0, 'Missing')), isTrue);
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a titles reload that flips a shown transclusion token notifies the field controller once and re-renders it',
+      (tester) async {
+        var current = _manyTitles(3);
+        final t = await _launch(
+          tester,
+          'A ![[2026-09-07#^ab12]] end\n',
+          overrides: [_titles(() async => current)],
+        );
+        final r = t.r;
+        final controller = _controllerOf(tester, 0);
+        var notified = 0;
+        void count() => notified++;
+        controller.addListener(count);
+        addTearDown(() => controller.removeListener(count));
+        expect(_isGhost(_styleOf(tester, r, 0, '2026-09-07')), isTrue);
+
+        current = [
+          ..._manyTitles(3),
+          NoteTitle(id: 'daily-07', title: '2026-09-07', updatedAt: 5),
+        ];
+        t.h.container.invalidate(noteTitlesAsyncProvider);
+        await pumpFrames(tester);
+        expect(notified, 1);
+        expect(_isResolvedLink(_styleOf(tester, r, 0, '2026-09-07')), isTrue);
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a titles reload across the 1000 cap with every shown link resolving sends the field controller no notification',
+      (tester) async {
+        var current = _manyTitles(1000);
+        final t = await _launch(
+          tester,
+          'See [[Known]] and [a](https://x.y) now\n',
+          overrides: [_titles(() async => current)],
+        );
+        final r = t.r;
+        final controller = _controllerOf(tester, 0);
+        var notified = 0;
+        void count() => notified++;
+        controller.addListener(count);
+        addTearDown(() => controller.removeListener(count));
+
+        // Capped (everything resolves) to complete: Known still resolves.
+        current = _manyTitles(999);
+        t.h.container.invalidate(noteTitlesAsyncProvider);
+        await pumpFrames(tester);
+        expect(notified, 0, reason: '1000 to 999 titles');
+
+        // And back to the cap.
+        current = _manyTitles(1000);
+        t.h.container.invalidate(noteTitlesAsyncProvider);
+        await pumpFrames(tester);
+        expect(notified, 0, reason: '999 to 1000 titles');
+        expect(_isResolvedLink(_styleOf(tester, r, 0, 'Known')), isTrue);
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'titles that load with a shown ghost notify the field controller once',
+      (tester) async {
+        final load = Completer<List<NoteTitle>>();
+        final t = await _launch(
+          tester,
+          'See [[Missing]], [[Known]] and [[Gone]] now\n',
+          overrides: [_titles(() => load.future)],
+        );
+        final r = t.r;
+        final controller = _controllerOf(tester, 0);
+        var notified = 0;
+        void count() => notified++;
+        controller.addListener(count);
+        addTearDown(() => controller.removeListener(count));
+
+        load.complete(_manyTitles(3));
+        await pumpFrames(tester);
+        expect(notified, 1, reason: 'two ghosts, one notification');
+        expect(_isGhost(_styleOf(tester, r, 0, 'Missing')), isTrue);
+        expect(_isGhost(_styleOf(tester, r, 0, 'Gone')), isTrue);
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'an edit under a resting Cmd hover sends no extra resolution notification',
+      (tester) async {
+        final t = await _launch(tester, 'Read [[Zeta Game]] today\n');
+        final r = t.r;
+        final controller = _controllerOf(tester, 0);
+        final resolvedBefore = controller.isResolved;
+        expect(resolvedBefore, isNotNull);
+
+        await r.focusSegment(0);
+        await _cmdDown(tester);
+        final mouse = await _mouseAt(tester, _pointOn(r, 0, 'Zeta Game'));
+        try {
+          expect(controller.cmdHover, isNotNull);
+          final events = <String>[];
+          void record() => events.add(controller.text);
+          controller.addListener(record);
+          addTearDown(() => controller.removeListener(record));
+
+          // An edit (as a paste would make) that keeps the token in place.
+          controller.value = TextEditingValue(
+            text: '${controller.text}x',
+            selection: TextSelection.collapsed(
+              offset: controller.text.length + 1,
+            ),
+          );
+          await pumpFrames(tester);
+          expect(
+            events.where((t) => t == controller.text),
+            hasLength(1),
+            reason: 'only the edit itself notified',
+          );
+          expect(controller.isResolved == resolvedBefore, isTrue);
+        } finally {
+          await _removeMouse(tester, mouse);
+          await _cmdUp(tester);
+        }
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+  });
+
+  // -------------------------------------------------------------------------
   // AC12: EditorController.flushPendingSave()
   // -------------------------------------------------------------------------
   group('flushPendingSave', () {
