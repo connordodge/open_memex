@@ -72,7 +72,7 @@ void main() {
           _render(tester).size.height,
           moreOrLessEquals(_line, epsilon: 0.1),
         );
-        expect(_editable(tester).strutStyle?.forceStrutHeight, isTrue);
+        expect(_editable(tester).strutStyle.forceStrutHeight, isTrue);
       },
     );
 
@@ -92,7 +92,7 @@ void main() {
           _render(tester).size.height,
           moreOrLessEquals(_line, epsilon: 0.1),
         );
-        expect(_editable(tester).strutStyle?.forceStrutHeight, isNot(true));
+        expect(_editable(tester).strutStyle.forceStrutHeight, isNot(true));
       },
     );
 
@@ -118,7 +118,7 @@ void main() {
         addTearDown(controller.dispose);
         await _pump(tester, controller);
         expect(_render(tester).size.height, greaterThan(_line + 1));
-        expect(_editable(tester).strutStyle?.forceStrutHeight, isNot(true));
+        expect(_editable(tester).strutStyle.forceStrutHeight, isNot(true));
 
         await tester.showKeyboard(find.byKey(_fieldKey));
         tester.testTextInput.enterText('');
@@ -129,7 +129,7 @@ void main() {
           _render(tester).size.height,
           moreOrLessEquals(_line, epsilon: 0.1),
         );
-        expect(_editable(tester).strutStyle?.forceStrutHeight, isTrue);
+        expect(_editable(tester).strutStyle.forceStrutHeight, isTrue);
       },
     );
 
@@ -140,7 +140,7 @@ void main() {
       addTearDown(controller.dispose);
       await _pump(tester, controller);
 
-      expect(_editable(tester).strutStyle?.forceStrutHeight, isNot(true));
+      expect(_editable(tester).strutStyle.forceStrutHeight, isNot(true));
       expect(
         _render(tester).size.height,
         moreOrLessEquals(_line, epsilon: 0.1),
@@ -155,9 +155,9 @@ void main() {
         await _pump(tester, controller);
 
         final strut = _editable(tester).strutStyle;
-        expect(strut?.forceStrutHeight, isNot(true));
-        expect(strut?.fontSize, controller.strutStyle?.fontSize);
-        expect(strut?.height, controller.strutStyle?.height);
+        expect(strut.forceStrutHeight, isNot(true));
+        expect(strut.fontSize, controller.strutStyle?.fontSize);
+        expect(strut.height, controller.strutStyle?.height);
       },
     );
 
