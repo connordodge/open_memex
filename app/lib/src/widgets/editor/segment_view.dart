@@ -1,5 +1,6 @@
 import 'package:flutter/widgets.dart';
 
+import '../../editor/editor_rows.dart';
 import 'line_boxes.dart';
 import 'segment_editing.dart';
 
@@ -76,6 +77,12 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
     text: text,
     selection: TextSelection.collapsed(offset: text.length),
   );
+
+  /// Applies [edit] to the segment's text as one edit (D2, D12): the rows
+  /// re-derive, the segment's undo recorder records it once, and the note's
+  /// joined body is reported once through `onContentChanged`. C1b's
+  /// checkbox toggle applies `toggleTask` through it.
+  void applyEdit(SegmentEdit edit) => throw UnimplementedError();
 
   @override
   Widget build(BuildContext context) => widget.builder(context, lineBoxes);

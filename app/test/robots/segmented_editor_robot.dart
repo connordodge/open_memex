@@ -191,21 +191,18 @@ class SegmentedEditorRobot {
 
   /// Replace text segment [i]'s text as the person typing would (caret at
   /// the end), without waiting for the save.
-  Future<void> typeInSegment(int i, String text) async {
-    await tester.enterText(textSegment(i), text);
-    await tester.pump();
-  }
+  ///
+  /// TEST-CHANGE (#167): the segment is several editor rows, so the text
+  /// goes in through the segment's handle after focusing the row holding
+  /// its end, not through one field's `enterText`.
+  Future<void> typeInSegment(int i, String text) =>
+      typeSegmentText(tester, textSegment(i), text);
 
   /// Focus text segment [i] and put the caret at [offset] (default: end).
-  Future<void> focusSegment(int i, {int? offset}) async {
-    await tester.showKeyboard(textSegment(i));
-    await tester.pump();
-    final handle = segment(i);
-    handle.select(
-      TextSelection.collapsed(offset: offset ?? handle.text.length),
-    );
-    await tester.pump();
-  }
+  ///
+  /// TEST-CHANGE (#167): focuses the editor row holding [offset].
+  Future<void> focusSegment(int i, {int? offset}) =>
+      focusSegmentAt(tester, textSegment(i), offset: offset);
 
   Future<void> pressKey(LogicalKeyboardKey key) async {
     await tester.sendKeyEvent(key);

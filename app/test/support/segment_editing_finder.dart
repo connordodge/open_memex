@@ -5,6 +5,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/src/editor/editor_rows.dart';
 import 'package:open_memex_app/src/widgets/editor/segment_editing.dart';
 
 /// Key of text segment [i] (`text-segment-<i>`).
@@ -93,3 +94,65 @@ List<String> renderedEditableTexts(WidgetTester tester, {Finder? under}) => [
   for (final e in editableTextFields(under: under).evaluate())
     (e.renderObject! as RenderEditable).text?.toPlainText() ?? '',
 ];
+
+/// The index of the editor row of [handle]'s segment holding segment
+/// [offset]: the row whose range `[start, end)` holds it, or the last row at
+/// the segment end (A1's rows, as the host derives them, #167). 0 while the
+/// segment shows a single field.
+int segmentRowHolding(SegmentEditing handle, int offset) {
+  if (handle.rowCount == 1) return 0;
+  final rows = splitRows(handle.text, atSegmentStart: true);
+  for (var i = 0; i < rows.length; i++) {
+    if (offset < rows[i].end) return i;
+  }
+  return rows.length - 1;
+}
+
+/// The editable fields under [finder] (a text segment's root or its
+/// `editor-body`), in row order: one per editor row.
+Finder segmentRowFields(Finder finder) =>
+    find.descendant(of: finder, matching: find.byType(EditableText));
+
+/// Focuses the field of the text segment at, under or above [finder] that
+/// holds segment [offset] (default: the segment's end), then puts the caret
+/// at [offset] through the segment's handle. Works whether the segment is one
+/// field or several editor rows (#167).
+Future<void> focusSegmentAt(
+  WidgetTester tester,
+  Finder finder, {
+  int? offset,
+}) async {
+  final handle = segmentEditingOf(tester, finder);
+  final at = offset ?? handle.text.length;
+  final fields = segmentRowFields(finder);
+  final count = fields.evaluate().length;
+  if (count != handle.rowCount) {
+    throw TestFailure(
+      '$finder shows $count fields for ${handle.rowCount} editor rows',
+    );
+  }
+  await tester.showKeyboard(fields.at(segmentRowHolding(handle, at)));
+  await tester.pump();
+  segmentEditingOf(tester, finder).select(TextSelection.collapsed(offset: at));
+  await tester.pump();
+}
+
+/// Replaces the whole text of the text segment at, under or above [finder]
+/// with [text] as the person typing would: focuses the field holding the
+/// segment's end, then replaces the text through the segment's handle (caret
+/// at its end). A field with no handle (the Source surface's body) gets
+/// [WidgetTester.enterText].
+Future<void> typeSegmentText(
+  WidgetTester tester,
+  Finder finder,
+  String text,
+) async {
+  if (maybeSegmentEditingOf(tester, finder) == null) {
+    await tester.enterText(finder, text);
+    await tester.pump();
+    return;
+  }
+  await focusSegmentAt(tester, finder);
+  segmentEditingOf(tester, finder).replaceText(text);
+  await tester.pump();
+}
