@@ -485,7 +485,10 @@ void main() {
         await r.waitForSave();
 
         await r.open(fixtureDailyId);
-        expect(find.byType(LivePreviewFrame), findsOneWidget);
+        // TEST-CHANGE (#167): one LivePreviewFrame per editor row; the
+        // person text's `- tried coyote time` line is its own item row.
+        expect(r.segment(0).rowCount, 3);
+        expect(find.byType(LivePreviewFrame), findsNWidgets(3));
         await r.focusSegment(0, offset: 0);
         await r.waitForSave();
 
@@ -501,8 +504,10 @@ void main() {
       (tester) async {
         final controller = TextEditingController(text: 'abc\ndef');
         final focus = FocusNode();
+        final gate = ValueNotifier(false);
         addTearDown(controller.dispose);
         addTearDown(focus.dispose);
+        addTearDown(gate.dispose);
         final duringBuild = <LineBoxSource?>[];
         LineBoxSource? Function()? boxes;
         var withField = true;
@@ -514,19 +519,26 @@ void main() {
                 builder: (context, setState) {
                   setOuter = setState;
                   return SegmentView(
+                    index: 0,
                     controller: controller,
                     focusNode: focus,
-                    builder: (context, b) {
+                    revealGate: gate,
+                    minLines: 1,
+                    hintText: null,
+                    onChanged: () {},
+                    onRowRemoved: (_) {},
+                    fieldBuilder: (context, row) => withField
+                        ? TextField(
+                            key: const Key('view-field'),
+                            controller: row.controller,
+                            focusNode: row.focusNode,
+                            maxLines: null,
+                          )
+                        : const SizedBox(width: 10, height: 10),
+                    builder: (context, rows, b) {
                       boxes = b;
                       duringBuild.add(b());
-                      return withField
-                          ? TextField(
-                              key: const Key('view-field'),
-                              controller: controller,
-                              focusNode: focus,
-                              maxLines: null,
-                            )
-                          : const SizedBox(width: 10, height: 10);
+                      return rows;
                     },
                   );
                 },
@@ -539,11 +551,18 @@ void main() {
         expect(duringBuild.single, isNull, reason: 'first build: no layout');
         final laidOut = boxes!();
         expect(laidOut, isNotNull);
+        // Over C1's rows the source measures the one prose row's field:
+        // two lines, the second holding `def` (segment offsets 4..7).
+        expect(laidOut!.lines, hasLength(2));
+        expect(laidOut.lines.last.range, const TextRange(start: 4, end: 7));
         expect(
-          laidOut!.box,
-          same(wi159EditableIn(tester, find.byKey(const Key('view-field')))),
+          laidOut.caretRect(4).top,
+          moreOrLessEquals(laidOut.lines.last.top, epsilon: 0.5),
         );
-        expect(laidOut.lines, hasLength(2));
+        expect(
+          tester.state<SegmentViewState>(find.byType(SegmentView)).lineBoxes(),
+          isNotNull,
+        );
 
         // A builder that renders no field reports no line boxes.
         setOuter(() => withField = false);
