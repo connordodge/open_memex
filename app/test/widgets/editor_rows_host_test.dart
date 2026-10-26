@@ -2000,6 +2000,9 @@ void main() {
       'without an interceptor composing over a cross row selection replaces the focused row slice only',
       (tester) async {
         final body = await pumpCrossRowSelection(tester);
+        // C4's ops widget registers an interceptor on every segment (D19);
+        // clear it to reach the host's own fallback.
+        _wi167View(tester, 0).rowComposingInterceptor = null;
 
         await tester.macCompose('Xf', const TextRange(start: 0, end: 1));
 
