@@ -215,11 +215,13 @@ class _TextSegmentFieldState extends State<TextSegmentField> {
   late final FocusNode _focus =
       widget.focusNode ?? FocusNode(debugLabel: 'text-segment');
   late String _lastSeen;
+  late bool _empty;
 
   @override
   void initState() {
     super.initState();
     _lastSeen = widget.controller.text;
+    _empty = _lastSeen.isEmpty;
     widget.controller.addListener(_onChanged);
     _focus.onKeyEvent = _onKey;
   }
@@ -240,6 +242,8 @@ class _TextSegmentFieldState extends State<TextSegmentField> {
     final text = widget.controller.text;
     if (text != _lastSeen) {
       _lastSeen = text;
+      // The strut below depends on whether the field is empty.
+      if (text.isEmpty != _empty) setState(() => _empty = text.isEmpty);
       widget.onChanged?.call(text);
     }
     final caret = widget.controller.selection.baseOffset;
@@ -283,6 +287,17 @@ class _TextSegmentFieldState extends State<TextSegmentField> {
     return editable.localToGlobal(caret.bottomLeft);
   }
 
+  /// [live]'s strut. An empty field lays out taller than its strut when the
+  /// strut spreads its leading evenly (the theme's text style does, and the
+  /// field's strut inherits it): 32 px instead of one 22.95 px prose line. So
+  /// while empty, a prose row's strut is forced to its own height; an empty
+  /// line has no glyphs for that to clip. Code rows keep their own strut.
+  StrutStyle? _emptySafe(LivePreviewController live) {
+    final strut = live.strutStyle;
+    if (!_empty || live.codeRow || strut == null) return strut;
+    return strut.merge(const StrutStyle(forceStrutHeight: true));
+  }
+
   @override
   Widget build(BuildContext context) {
     return Stack(
@@ -302,7 +317,7 @@ class _TextSegmentFieldState extends State<TextSegmentField> {
             // A live preview controller may lay its text out with its own
             // strut (B1); null keeps the field's default.
             strutStyle: switch (widget.controller) {
-              final LivePreviewController live => live.strutStyle,
+              final LivePreviewController live => _emptySafe(live),
               _ => null,
             },
             decoration: InputDecoration(

@@ -2531,6 +2531,70 @@ void main() {
       expectOneLine(2, '10. ');
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Follow-up to #167 (D22): an empty prose row is one prose line
+  // -------------------------------------------------------------------------
+  group('empty prose row height (D22)', () {
+    /// Every row of segment 0 whose text is empty, as row indexes.
+    List<int> emptyRows(WidgetTester tester) => [
+      for (var r = 0; r < _wi167RowKeys(0); r++)
+        if (_wi167Text(tester, 0, r).isEmpty) r,
+    ];
+
+    testWidgets('an empty prose row is exactly one prose line tall', (
+      tester,
+    ) async {
+      // `- a\n` is a bullet row and a trailing empty prose row; `x` is a
+      // one line non-empty prose row to compare with.
+      await _wi167Pump(tester, 'x\n- a\n');
+      expect(_wi167Texts(tester, 0), ['x', 'a', '']);
+      final oneLine = _wi167FieldRect(tester, 0, 0).height;
+      final empty = _wi167FieldRect(tester, 0, 2).height;
+      expect(oneLine, moreOrLessEquals(_wi167Line, epsilon: 0.5));
+      expect(empty, moreOrLessEquals(oneLine, epsilon: 0.1));
+      expect(empty, moreOrLessEquals(_wi167Line, epsilon: 0.5));
+    });
+
+    testWidgets(
+      'every empty row of the daily note fixture is one prose line tall',
+      (tester) async {
+        await _wi167Pump(tester, markdownFixtures['daily note']!);
+        final empties = emptyRows(tester);
+        expect(empties, isNotEmpty, reason: 'the fixture has blank lines');
+        for (final r in empties) {
+          expect(
+            _wi167FieldRect(tester, 0, r).height,
+            moreOrLessEquals(_wi167Line, epsilon: 0.5),
+            reason: 'empty row $r',
+          );
+          expect(
+            _wi167Lines(tester, 0, r).single.bottom -
+                _wi167Lines(tester, 0, r).single.top,
+            moreOrLessEquals(_wi167Line, epsilon: 0.1),
+            reason: 'empty row $r line box',
+          );
+        }
+      },
+    );
+
+    testWidgets(
+      'a lone empty prose row in a note with a following card is one prose line tall',
+      (tester) async {
+        await _wi167Pump(tester, '- a\n$_wi167Token\n- b');
+        // Segment 0 is `- a\n`: a bullet row and an empty prose row.
+        expect(_wi167Texts(tester, 0), ['a', '']);
+        expect(
+          _wi167FieldRect(tester, 0, 1).height,
+          moreOrLessEquals(_wi167Line, epsilon: 0.5),
+        );
+        expect(
+          _wi167FieldRect(tester, 0, 1).height,
+          moreOrLessEquals(_wi167FieldRect(tester, 0, 0).height, epsilon: 0.1),
+        );
+      },
+    );
+  });
 }
 
 /// Paints a rect in `OmColors.selection` (an unfocused row's selection).
