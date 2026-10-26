@@ -6,6 +6,7 @@ import 'dart:math';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/editor_rows.dart';
+import 'package:open_memex_app/src/editor/markdown_lines.dart';
 import 'package:open_memex_app/src/editor/segments.dart';
 
 import '../support/markdown_fixtures.dart';
@@ -475,6 +476,59 @@ void main() {
     );
   });
 
+  group('value types', () {
+    test(
+      'selections slices and edits compare by value and hash consistently',
+      () {
+        final caret = '- a'.length;
+        final a = SegmentSelection(baseOffset: caret, extentOffset: caret + 2);
+        const b = SegmentSelection(baseOffset: 3, extentOffset: 5);
+        expect(a, b);
+        expect(a.hashCode, b.hashCode);
+        expect({a, b, const SegmentSelection.collapsed(3)}, hasLength(2));
+        expect(
+          a,
+          isNot(const SegmentSelection(baseOffset: 5, extentOffset: 3)),
+        );
+        expect(a.toString(), contains('3'));
+
+        final s = RowSlice(row: caret - 2, start: 0, end: caret);
+        expect(s, const RowSlice(row: 1, start: 0, end: 3));
+        expect(s.hashCode, const RowSlice(row: 1, start: 0, end: 3).hashCode);
+        expect({s, const RowSlice(row: 1, start: 0, end: 2)}, hasLength(2));
+        expect(s.toString(), contains('0..3'));
+
+        final e = SegmentEdit(
+          start: caret,
+          end: caret,
+          replacement: 'x' * 2,
+          selection: SegmentSelection.collapsed(caret + 2),
+        );
+        const same = SegmentEdit(
+          start: 3,
+          end: 3,
+          replacement: 'xx',
+          selection: SegmentSelection.collapsed(5),
+        );
+        expect(e, same);
+        expect(e.hashCode, same.hashCode);
+        expect({
+          e,
+          same,
+          const SegmentEdit(start: 3, end: 3, replacement: 'xx'),
+        }, hasLength(2));
+        expect(e.toString(), contains('3..3'));
+
+        final row = _rows('- a').single;
+        expect(row.toString(), contains('RowKind.bullet'));
+        expect(
+          classifyLines('# h', atSegmentStart: false).single.toString(),
+          contains('MdLineKind.heading'),
+        );
+      },
+    );
+  });
+
   group('depth and parent (R12)', () {
     test(
       'depth and parent follow the nearest earlier item with a smaller indent',
@@ -507,6 +561,13 @@ void main() {
         [for (final r in rows) (r.depth, r.parent)],
         [(0, null), (0, null), (0, null), (0, null), (0, null)],
       );
+      // A code row ends the search the same way.
+      final fenced = _rows('- a\n```\nx\n```\n  - b');
+      expect([for (final r in fenced) r.kind], [_bullet, _code, _bullet]);
+      expect(
+        [for (final r in fenced) (r.depth, r.parent)],
+        [(0, null), (0, null), (0, null)],
+      );
       // Numbered and task rows are items too.
       final mixed = _rows('1. a\n   - [ ] b\n     * c');
       expect(
@@ -538,6 +599,26 @@ void main() {
         [(0, 2), (0, 2), (null, 0), (3, 1), (3, 1)],
       );
     });
+
+    test(
+      'a same depth bullet or a code row between numbered items starts a new run',
+      () {
+        final bullet = _rows('1. a\n- b\n2. c\n3. d');
+        expect([for (final r in bullet) r.depth], [0, 0, 0, 0]);
+        expect([for (final r in bullet) r.numberedRun], [0, null, 2, 2]);
+        final task = _rows('10. a\n- [ ] b\n2. c');
+        expect(
+          [for (final r in task) (r.numberedRun, r.runDigits)],
+          [(0, 2), (null, 0), (2, 1)],
+        );
+        final code = _rows('10. a\n```\nx\n```\n2. b');
+        expect([for (final r in code) r.kind], [_numbered, _code, _numbered]);
+        expect(
+          [for (final r in code) (r.numberedRun, r.runDigits)],
+          [(0, 2), (null, 0), (2, 1)],
+        );
+      },
+    );
 
     test('deeper items stay in the run and a shallower item ends it', () {
       final rows = _rows(
@@ -739,6 +820,37 @@ void main() {
             focused: 2,
           ),
           [null, 0, 1],
+        );
+      },
+    );
+
+    test(
+      'matchRows gives no continuation to an unfocused row whose kind changed',
+      () {
+        // A server write strips the first row marker while row 1 has focus:
+        // rows match by kind and order, so the bullet row does not continue
+        // as the prose row (R40); only the focused row may change kind.
+        const before = '- a\n- b';
+        const after = 'a\n- b';
+        final edit = SegmentEdit.diff(before, after);
+        final afterRows = _rows(after);
+        expect([for (final r in afterRows) r.kind], [_prose, _bullet]);
+        expect(matchRows(_rows(before), afterRows, edit: edit, focused: 1), [
+          null,
+          1,
+        ]);
+
+        // The same holds for an unfocused row after the focused one.
+        const tail = 'p\n- a\n- b';
+        const stripped = 'p\n- a\nb';
+        expect(
+          matchRows(
+            _rows(tail),
+            _rows(stripped),
+            edit: SegmentEdit.diff(tail, stripped),
+            focused: 1,
+          ),
+          [0, 1, null],
         );
       },
     );
