@@ -776,6 +776,87 @@ void main() {
     );
   });
 
+  group('pinned contracts (verify)', () {
+    test(
+      'a step from inside a marker or a terminator snaps to a row text edge',
+      () {
+        // `- a\n- b\n` with host-built rows and no trailing prose row: the
+        // last row's terminator (offset 8) lies past every row text.
+        const text = '- a\n- b\n';
+        final rows = [
+          _row(RowKind.bullet, 0, 2, 3, 4),
+          _row(RowKind.bullet, 4, 6, 7, 8),
+        ];
+        for (final (kind, next, previous) in _stepPairs) {
+          // Right from a marker lands at that row text start.
+          expect(next(text, rows, 1), 2, reason: '$kind right in marker 1');
+          expect(next(text, rows, 4), 6, reason: '$kind right at marker 2');
+          expect(next(text, rows, 5), 6, reason: '$kind right in marker 2');
+          // Left from a marker lands at the previous row text end.
+          expect(previous(text, rows, 4), 3, reason: '$kind left at marker 2');
+          expect(previous(text, rows, 5), 3, reason: '$kind left in marker 2');
+          // Left from the last row terminator lands at its text end.
+          expect(previous(text, rows, 8), 7, reason: '$kind left in end');
+        }
+      },
+    );
+
+    test('steps over no rows return the offset unchanged', () {
+      for (final (kind, next, previous) in _stepPairs) {
+        for (final o in [0, 2, 5]) {
+          expect(next('- a\n', const [], o), o, reason: '$kind right $o');
+          expect(previous('- a\n', const [], o), o, reason: '$kind left $o');
+        }
+      }
+    });
+
+    test('word steps treat a tab as a word separator inside a row', () {
+      const text = 'foo\tbar';
+      final rows = _rowsOf(text);
+      expect(rows, hasLength(1));
+      expect(nextWordOffset(text, rows, 0), 3, reason: 'after foo');
+      expect(nextWordOffset(text, rows, 3), 7, reason: 'after bar');
+      expect(previousWordOffset(text, rows, 7), 4, reason: 'before bar');
+      expect(previousWordOffset(text, rows, 4), 0, reason: 'before foo');
+    });
+
+    test('word steps never land between the CR and LF of a prose row', () {
+      // A prose row keeps its interior CRLF as text.
+      const text = 'foo\r\nbar';
+      final rows = _rowsOf(text);
+      expect(rows, hasLength(1));
+      expect(nextWordOffset(text, rows, 3), 8, reason: 'over CRLF to bar end');
+      expect(nextWordOffset(text, rows, 0), 3, reason: 'after foo');
+      expect(previousWordOffset(text, rows, 5), 0, reason: 'over CRLF to foo');
+      expect(previousWordOffset(text, rows, 8), 5, reason: 'before bar');
+      const lone = 'foo\rbar';
+      final loneRows = _rowsOf(lone);
+      expect(loneRows, hasLength(1));
+      expect(nextWordOffset(lone, loneRows, 0), 3, reason: 'CR separates');
+      expect(previousWordOffset(lone, loneRows, 7), 4, reason: 'CR separates');
+    });
+
+    test(
+      'clampToSegment moves an end inside a surrogate pair to the pair start',
+      () {
+        const text = 'a😀b';
+        for (final (base, extent, wantBase, wantExtent) in [
+          (2, 2, 1, 1),
+          (2, 4, 1, 4),
+          (0, 2, 0, 1),
+          (2, 99, 1, 4),
+        ]) {
+          final got = clampToSegment(_sel(base, extent), text);
+          expect(
+            (got.baseOffset, got.extentOffset),
+            (wantBase, wantExtent),
+            reason: '($base, $extent)',
+          );
+        }
+      },
+    );
+  });
+
   group('purity (D2)', () {
     test('segment_selection imports nothing from package flutter', () {
       // `flutter test` runs with the package root (`app/`) as cwd.
