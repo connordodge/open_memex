@@ -25,15 +25,19 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:open_memex_app/src/db.dart';
 import 'package:open_memex_app/src/editor/editor_rows.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/theme/app_theme.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/widgets/editor/card_rows.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
+import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_styles.dart';
 import 'package:open_memex_app/src/widgets/editor/marker_column.dart';
 import 'package:open_memex_app/src/widgets/editor/paragraph_line_boxes.dart';
+import 'package:open_memex_app/src/widgets/editor/segmented_body.dart';
 
 import '../robots/segmented_editor_robot.dart';
 import '../support/app_harness.dart';
@@ -1473,4 +1477,281 @@ void main() {
       },
     );
   });
+
+  // -------------------------------------------------------------------------
+  // Fix round r1 (review-r1): interior empty rows and the D18 code strut,
+  // measured against the editor body for the same text.
+  // -------------------------------------------------------------------------
+  group('card rows match the editor body (verify r1)', () {
+    testWidgets(
+      'a card renders the daily note blank line between the nested item and the quote as one prose line like the editor body',
+      (tester) async {
+        final text = markdownFixtures['daily note']!;
+        final specs = _wi172Specs(text);
+        final blank = [
+          for (var r = 1; r < specs.length - 1; r++)
+            if (specs[r].kind == RowKind.prose &&
+                specs[r].textLength == 0 &&
+                specs[r - 1].isItem &&
+                specs[r - 1].depth > 0 &&
+                specs[r + 1].kind == RowKind.quote)
+              r,
+        ];
+        expect(blank, hasLength(1), reason: 'the fixture has that blank row');
+        final b = blank.single;
+
+        await _wi172PumpRows(tester, text);
+        final above = tester.getRect(_wi172Row(_wi172Rows, b - 1));
+        final gap = tester.getRect(_wi172Row(_wi172Rows, b));
+        final below = tester.getRect(_wi172Row(_wi172Rows, b + 1));
+        expect(gap.top, closeTo(above.bottom, 0.01), reason: 'no extra gap');
+        expect(below.top, closeTo(gap.bottom, 0.01), reason: 'no extra gap');
+        expect(
+          gap.height,
+          closeTo(_wi172Line, _wi172Y),
+          reason: 'the blank row is one prose line tall',
+        );
+        expect(
+          below.top - above.bottom,
+          closeTo(_wi172Line, _wi172Y),
+          reason: 'the quote sits one line below the nested item',
+        );
+        final card = [
+          for (var r = 0; r < specs.length; r++)
+            if (_wi172Row(_wi172Rows, r).evaluate().isNotEmpty)
+              (r, tester.getRect(_wi172RowText(_wi172Rows, r)).height),
+        ];
+
+        // The editor body keeps the same rows, the blank one included, and
+        // every row with text lays out at the card row's height. (The body
+        // field of an empty row measures 32 px, not one line: reported to
+        // the lead, so the blank row is pinned to one prose line above.)
+        await _wi172PumpBody(tester, text);
+        expect(_wi172BodyRow(b), findsOneWidget, reason: 'body blank row');
+        expect(
+          [for (final (r, _) in card) r],
+          [for (var r = 0; r < specs.length; r++) r],
+          reason: 'the card shows every row of the fixture',
+        );
+        expect(_wi172BodyRow(specs.length - 1), findsOneWidget);
+        expect(_wi172BodyRow(specs.length), findsNothing);
+        for (final (r, height) in card) {
+          if (specs[r].textLength == 0) continue;
+          expect(
+            _wi172BodyFieldHeight(tester, r),
+            closeTo(height, 0.01),
+            reason: 'row $r (${specs[r].kind}) lays out as the body row',
+          );
+        }
+      },
+    );
+
+    testWidgets(
+      'a card keeps every interior empty row and leaves out only the leading and trailing ones',
+      (tester) async {
+        const text = '\n- a\n\n> q\n\n```\nx\n```\n\n- end\n';
+        final specs = _wi172Specs(text);
+        expect(
+          [for (final s in specs) (s.kind, s.textLength)],
+          [
+            (RowKind.prose, 0),
+            (RowKind.bullet, 1),
+            (RowKind.prose, 0),
+            (RowKind.quote, 1),
+            (RowKind.prose, 0),
+            (RowKind.code, 9),
+            (RowKind.prose, 0),
+            (RowKind.bullet, 3),
+            (RowKind.prose, 0),
+          ],
+        );
+        const empty = [2, 4, 6];
+
+        await _wi172PumpRows(tester, text);
+        expect(_wi172Row(_wi172Rows, 0), findsNothing, reason: 'leading');
+        expect(
+          _wi172Row(_wi172Rows, specs.length - 1),
+          findsNothing,
+          reason: 'trailing',
+        );
+        final rows = tester.getRect(_wi172Rows);
+        var top = rows.top;
+        for (var r = 1; r < specs.length - 1; r++) {
+          final row = tester.getRect(_wi172Row(_wi172Rows, r));
+          expect(row.top, closeTo(top, 0.01), reason: 'row $r stacks');
+          if (empty.contains(r)) {
+            expect(
+              row.height,
+              closeTo(_wi172Line, _wi172Y),
+              reason: 'interior empty row $r is one blank line',
+            );
+          }
+          top = row.bottom;
+        }
+        expect(rows.bottom, closeTo(top, 0.01), reason: 'nothing below');
+      },
+    );
+
+    testWidgets(
+      'a card keeps a leading and a trailing empty item row with its marker',
+      (tester) async {
+        const text = '- \n- a\n- [ ] ';
+        final specs = _wi172Specs(text);
+        expect(
+          [for (final s in specs) (s.kind, s.textLength)],
+          [(RowKind.bullet, 0), (RowKind.bullet, 1), (RowKind.task, 0)],
+        );
+        await _wi172PumpRows(tester, text);
+        for (final r in [0, 1, 2]) {
+          expect(_wi172Row(_wi172Rows, r), findsOneWidget, reason: 'row $r');
+          expect(_wi172Marker(_wi172Rows, r), findsOneWidget, reason: '$r');
+        }
+        expect(
+          tester.getSize(_wi172Rows).height,
+          closeTo(3 * _wi172Line, 3 * _wi172Y),
+        );
+      },
+    );
+
+    testWidgets(
+      'a card code row lays out its hidden fence lines 8 px tall like the editor body',
+      (tester) async {
+        const fence = '```\nlet a = 1;\nlet b = 2;\n```';
+        const text = 'Before\n$fence\n- item\nAfter';
+        final specs = _wi172Specs(text);
+        expect(specs[1].kind, RowKind.code);
+        await _wi172PumpRows(tester, text);
+
+        final code = _wi172RowText(_wi172Rows, 1);
+        final paragraph = tester.renderObject<RenderParagraph>(code);
+        final card = [
+          for (final line in RenderParagraphLineBoxes(paragraph).lines)
+            line.bottom - line.top,
+        ];
+        expect(card, hasLength(4));
+        for (final (i, h) in card.indexed) {
+          expect(
+            h,
+            moreOrLessEquals(i == 0 || i == 3 ? 8 : _wi172Line, epsilon: 0.1),
+            reason: 'card code row line $i',
+          );
+        }
+        expect(
+          tester.getRect(code).height,
+          moreOrLessEquals(16 + 2 * _wi172Line, epsilon: 0.2),
+        );
+        for (final r in [0, 2, 3]) {
+          expect(
+            tester.getRect(_wi172RowText(_wi172Rows, r)).height,
+            moreOrLessEquals(_wi172Line, epsilon: _wi172Y),
+            reason: 'row $r keeps the body strut',
+          );
+        }
+        final rowText = text.substring(specs[1].textStart, specs[1].textEnd);
+        List<(String, TextStyle?)> leaves(InlineSpan span) => [
+          for (final l in _wi172Leaves(span)) (l.text, l.own),
+        ];
+        final rendered = leaves(tester.widget<RichText>(code).text);
+        expect(
+          rendered,
+          leaves(
+            buildLivePreviewSpan(rowText, forceHidden: true, codeRow: true),
+          ),
+          reason: 'the code row renders B1 spans with codeRow',
+        );
+        expect(
+          rendered,
+          isNot(leaves(buildLivePreviewSpan(rowText, forceHidden: true))),
+          reason: 'codeRow changes the span',
+        );
+
+        await _wi172PumpBody(tester, text);
+        final editable = _wi172BodyEditable(tester, 1);
+        final body = [
+          for (final line in RenderEditableLineBoxes(editable).lines)
+            line.bottom - line.top,
+        ];
+        expect(body, hasLength(card.length));
+        for (final (i, h) in body.indexed) {
+          expect(h, moreOrLessEquals(card[i], epsilon: 0.01), reason: '$i');
+        }
+      },
+    );
+
+    test(
+      'the code row strut is an 8 px minimum never forced and the default strut is the body strut',
+      () {
+        final code = livePreviewStrut(codeRow: true);
+        expect(code.fontSize, 8);
+        expect(code.height, 1);
+        expect(code.forceStrutHeight, isNot(true));
+        final body = livePreviewStrut();
+        expect(body, livePreviewStrut(codeRow: false));
+        expect(body.fontSize, 13.5);
+        expect(body.height, 1.7);
+        expect(body.forceStrutHeight, isNot(true));
+        expect(code, isNot(body));
+      },
+    );
+  });
 }
+
+// ------------------------------------------------------------- editor body
+
+/// Pumps the editor body (SegmentedBody) of a topic note holding [text], at
+/// the card harness's view size, so a card row can be measured against the
+/// body row for the same text.
+Future<void> _wi172PumpBody(WidgetTester tester, String text) async {
+  tester.view.physicalSize = const Size(1200, 900);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.reset);
+  await tester.pumpWidget(
+    ProviderScope(
+      child: MaterialApp(
+        theme: buildOmTheme(),
+        home: Scaffold(
+          body: SegmentedBody(
+            note: Note(
+              id: 'topic-172',
+              title: 'Cards',
+              contentMd: text,
+              frontmatter: '{"role":"topic"}',
+              version: 3,
+              createdAt: 0,
+              updatedAt: 0,
+              tags: const [],
+            ),
+            content: text,
+            savedVersion: 3,
+            onContentChanged: (_) {},
+          ),
+        ),
+      ),
+    ),
+  );
+  await tester.pump();
+}
+
+/// Editor body row [r] of the first text segment.
+Finder _wi172BodyRow(int r) => find.byKey(Key('editor-row-0-$r'));
+
+/// The RenderEditable of editor body row [r].
+RenderEditable _wi172BodyEditable(WidgetTester tester, int r) {
+  RenderEditable? found;
+  void visit(RenderObject node) {
+    if (found != null) return;
+    if (node is RenderEditable) {
+      found = node;
+    } else {
+      node.visitChildren(visit);
+    }
+  }
+
+  visit(tester.renderObject(_wi172BodyRow(r)));
+  if (found == null) throw TestFailure('No RenderEditable in body row $r');
+  return found!;
+}
+
+/// The laid-out height of editor body row [r]'s field.
+double _wi172BodyFieldHeight(WidgetTester tester, int r) =>
+    _wi172BodyEditable(tester, r).size.height;
