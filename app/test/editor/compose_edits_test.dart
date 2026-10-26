@@ -222,6 +222,122 @@ void main() {
     });
   });
 
+  group('composeEdits contracts', () {
+    const text = 'abcdefghij';
+
+    test('touching or overlapping edits never read the text', () {
+      // An empty or unrelated `text` would change the bytes, or throw, if
+      // any of it were read.
+      for (final (first, second) in const [
+        (
+          SegmentEdit(start: 2, end: 4, replacement: 'XY'),
+          SegmentEdit(start: 4, end: 5, replacement: 'Z'),
+        ),
+        (
+          SegmentEdit(start: 4, end: 4, replacement: 'XY'),
+          SegmentEdit(start: 2, end: 4, replacement: 'Q'),
+        ),
+        (
+          SegmentEdit(start: 2, end: 3, replacement: 'XYZ'),
+          SegmentEdit(start: 4, end: 7, replacement: '_'),
+        ),
+        (
+          SegmentEdit(start: 5, end: 6, replacement: 'XYZ'),
+          SegmentEdit(start: 3, end: 6, replacement: '_'),
+        ),
+        (
+          SegmentEdit(start: 4, end: 5, replacement: 'XY'),
+          SegmentEdit(start: 1, end: 8, replacement: '!'),
+        ),
+      ]) {
+        final plain = _composeChecked(text, first, second);
+        expect(composeEdits(first, second, text: ''), plain);
+        expect(composeEdits(first, second, text: 'zzzzzzzzzz'), plain);
+      }
+    });
+
+    test('edits one code unit apart are disjoint and need the text', () {
+      // First writes `[1, 3)`; the second starts one past it, or ends one
+      // before the first.
+      const first = SegmentEdit(start: 1, end: 2, replacement: 'XY');
+      const after = SegmentEdit(start: 4, end: 5, replacement: '');
+      const before = SegmentEdit(start: 0, end: 0, replacement: '>');
+      expect(() => composeEdits(first, after), throwsArgumentError);
+      expect(
+        _composeChecked(text, first, after, passText: true),
+        const SegmentEdit(start: 1, end: 4, replacement: 'XYc'),
+      );
+      expect(
+        _composeChecked(
+          text,
+          const SegmentEdit(start: 2, end: 3, replacement: 'XY'),
+          before,
+          passText: true,
+        ),
+        const SegmentEdit(start: 0, end: 3, replacement: '>abXY'),
+      );
+      expect(
+        () => composeEdits(
+          const SegmentEdit(start: 2, end: 3, replacement: 'XY'),
+          before,
+        ),
+        throwsArgumentError,
+      );
+    });
+
+    test(
+      'every small pair of edits composes to the bytes of applying both',
+      () {
+        const base = 'abcdef';
+        const firstWrites = ['', 'X', 'XYZ'];
+        const secondWrites = ['', 'Q', 'QR'];
+        var touchingPairs = 0;
+        var disjointPairs = 0;
+        for (var s1 = 0; s1 <= base.length; s1++) {
+          for (var e1 = s1; e1 <= base.length; e1++) {
+            for (final w1 in firstWrites) {
+              final first = SegmentEdit(start: s1, end: e1, replacement: w1);
+              final mid = first.apply(base);
+              final written = s1 + w1.length;
+              for (var s2 = 0; s2 <= mid.length; s2++) {
+                for (var e2 = s2; e2 <= mid.length; e2++) {
+                  for (final w2 in secondWrites) {
+                    final second = SegmentEdit(
+                      start: s2,
+                      end: e2,
+                      replacement: w2,
+                    );
+                    final want = second.apply(mid);
+                    final why = '$first then $second on $base';
+                    final composed = composeEdits(first, second, text: base);
+                    expect(composed.apply(base), want, reason: why);
+                    if (s2 <= written && e2 >= s1) {
+                      touchingPairs++;
+                      expect(
+                        composeEdits(first, second).apply(base),
+                        want,
+                        reason: why,
+                      );
+                    } else {
+                      disjointPairs++;
+                      expect(
+                        () => composeEdits(first, second),
+                        throwsArgumentError,
+                        reason: why,
+                      );
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        expect(touchingPairs, greaterThan(0));
+        expect(disjointPairs, greaterThan(0));
+      },
+    );
+  });
+
   group('composeEdits selection', () {
     const text = 'abcdefghij';
 
@@ -268,6 +384,42 @@ void main() {
       expect(
         _composeChecked(text, inside, second).selection,
         const SegmentSelection.collapsed(7),
+      );
+    });
+
+    test(
+      'an offset at the start of a replaced second range goes to the end of its replacement',
+      () {
+        const first = SegmentEdit(
+          start: 1,
+          end: 1,
+          replacement: 'X',
+          selection: SegmentSelection(baseOffset: 0, extentOffset: 4),
+        );
+        // On `aXbcdefghij`: 0 is before the range, 4 is its start.
+        const second = SegmentEdit(start: 4, end: 6, replacement: '123');
+        final composed = _composeChecked(text, first, second, passText: true);
+        expect(
+          composed.selection,
+          const SegmentSelection(baseOffset: 0, extentOffset: 7),
+        );
+      },
+    );
+
+    test('an offset at an inserting second shifts past the inserted text', () {
+      const first = SegmentEdit(
+        start: 2,
+        end: 4,
+        replacement: '',
+        selection: SegmentSelection(baseOffset: 1, extentOffset: 2),
+      );
+      // On `abefghij`: 1 is before the insertion point, 2 is on it.
+      const second = SegmentEdit(start: 2, end: 2, replacement: '+-');
+      final composed = _composeChecked(text, first, second);
+      expect(composed.apply(text), 'ab+-efghij');
+      expect(
+        composed.selection,
+        const SegmentSelection(baseOffset: 1, extentOffset: 4),
       );
     });
 

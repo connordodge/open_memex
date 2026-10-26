@@ -834,6 +834,24 @@ void main() {
         '- a\nd\ne',
         4,
       ),
+      (
+        'Enter over a selection inside one item is one report and one undo record',
+        '- abcd',
+        3,
+        5,
+        false,
+        '- a\n- d',
+        6,
+      ),
+      (
+        'Enter over a selection from a prose row into an item is one report and one undo record',
+        'ab\ncd\n- ef',
+        1,
+        9,
+        false,
+        'a\nf',
+        2,
+      ),
     ]) {
       testWidgets(name, (tester) async {
         final recorders = _wi169Recorders();
