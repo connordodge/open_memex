@@ -698,6 +698,42 @@ void main() {
         );
       },
     );
+    test(
+      'rowSlices gives no slice to a row the selection only touches at its edge',
+      () {
+        const text = 'intro\n- ab\n- cd\n- ef\nend';
+        final rows = _rows(text);
+        expect(
+          [for (final r in rows) (r.start, r.end)],
+          [(0, 6), (6, 11), (11, 16), (16, 21), (21, 24)],
+        );
+        // Exactly row 1, terminator included: rows 0 and 2 meet it only at
+        // an edge and get no slice.
+        expect(
+          rowSlices(
+            rows,
+            const SegmentSelection(baseOffset: 6, extentOffset: 11),
+          ),
+          [null, const RowSlice(row: 1, start: 0, end: 2), null, null, null],
+        );
+        // A caret on a row boundary belongs to the row that starts there.
+        expect(rowSlices(rows, const SegmentSelection.collapsed(11)), [
+          null,
+          null,
+          const RowSlice(row: 2, start: 0, end: 0),
+          null,
+          null,
+        ]);
+        // A caret at the segment end belongs to the last row.
+        expect(rowSlices(rows, const SegmentSelection.collapsed(24)), [
+          null,
+          null,
+          null,
+          null,
+          const RowSlice(row: 4, start: 3, end: 3),
+        ]);
+      },
+    );
   });
 
   group('matchRows (R40, R21)', () {
@@ -856,6 +892,27 @@ void main() {
     );
 
     test(
+      'matchRows keeps the focused row when a server write changes its kind without a selection',
+      () {
+        // A polled write (no selection) turns the focused prose line into a
+        // bullet: the focused row still continues (R40), unlike an unfocused
+        // row whose kind changed.
+        const before = '- a\nfoo';
+        const after = '- a\n- foo';
+        final edit = SegmentEdit.diff(before, after);
+        expect(edit.selection, isNull);
+        final afterRows = _rows(after);
+        expect([for (final r in _rows(before)) r.kind], [_bullet, _prose]);
+        expect([for (final r in afterRows) r.kind], [_bullet, _bullet]);
+        expect(matchRows(_rows(before), afterRows, edit: edit, focused: 1), [
+          0,
+          1,
+        ]);
+        expect(matchRows(_rows(before), afterRows, edit: edit), [0, null]);
+      },
+    );
+
+    test(
       'matchRows keeps unchanged rows and is injective and ordered over random edits',
       () {
         final rng = Random(40);
@@ -941,6 +998,14 @@ void main() {
       );
       const keep = SegmentSelection(baseOffset: 2, extentOffset: 9);
       expect(toggleTask(text, rows[1], selection: keep)!.selection, keep);
+    });
+
+    test('toggleTask finds the box after tab and mixed indentation', () {
+      const text = '\t- [ ] a\n \t* [x] b';
+      final rows = _rows(text);
+      expect([for (final r in rows) r.kind], [_task, _task]);
+      expect(toggleTask(text, rows[0])!.apply(text), '\t- [x] a\n \t* [x] b');
+      expect(toggleTask(text, rows[1])!.apply(text), '\t- [ ] a\n \t* [ ] b');
     });
 
     test(
