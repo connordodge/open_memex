@@ -440,8 +440,10 @@ void main() {
         final code = _wi167FieldRect(tester, 0, 1);
         expect(code.left, moreOrLessEquals(column.left + 16.2, epsilon: 0.01));
         expect(code.right, moreOrLessEquals(column.right - 10, epsilon: 0.01));
+        // The code text's first glyph (`l` of `let`): B1 hides the fence
+        // line's backticks while unfocused, so they have no glyph box.
         expect(
-          _wi167GlyphLeft(_wi167Editable(tester, 0, 1), 0),
+          _wi167GlyphLeft(_wi167Editable(tester, 0, 1), fence.indexOf('let')),
           moreOrLessEquals(column.left + 16.2, epsilon: 0.01),
         );
         // Prose rows span the text column.
