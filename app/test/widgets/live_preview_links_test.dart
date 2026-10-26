@@ -13,6 +13,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/gestures.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -26,6 +27,7 @@ import 'package:open_memex_app/src/state/vault_access_state.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/vault_access/vault_scoped.dart';
+import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
 import 'package:open_memex_app/src/widgets/editor/link_region.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
 
@@ -33,6 +35,7 @@ import '../robots/segmented_editor_robot.dart';
 import '../support/app_harness.dart';
 import '../support/daily_seed.dart';
 import '../support/editor_access_doubles.dart';
+import '../support/editor_scope.dart';
 import '../support/fake_clock.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
@@ -1544,6 +1547,257 @@ void main() {
   });
 
   // -------------------------------------------------------------------------
+  // LinkRegion contracts pinned in fix round 2 (merge gate MUTATION on
+  // link_region.dart): line kinds, the shown-text end boundary, transclusion
+  // tokens before the titles load, unconsumed key events and one hit-test
+  // per frame however many updates it coalesces.
+  // -------------------------------------------------------------------------
+  group('link region round 2 contracts', () {
+    testWidgets(
+      'a wikilink in a heading line shows the Cmd hover and a Cmd+click opens its note',
+      (tester) async {
+        final t = await _launch(tester, '# Plan [[Known]] here\n\nAfter\n');
+        final r = t.r;
+        final (start, end) = _find(r, 0, '[[Known]]');
+        final at = _pointOn(r, 0, 'Known');
+
+        await _cmdDown(tester);
+        final mouse = await _mouseAt(tester, at);
+        try {
+          expect(_cursor(), SystemMouseCursors.click);
+          expect(
+            _controllerOf(tester, 0, offset: start).cmdHover,
+            TextRange(start: start, end: end),
+          );
+        } finally {
+          await _removeMouse(tester, mouse);
+          await _cmdUp(tester);
+        }
+
+        await tester.macCmdClick(at);
+        await pumpFrames(tester);
+        r.expectActiveNote(_knownId);
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    for (final (name, line) in [
+      (
+        'a field holding a whole heading line hit-tests its links like prose',
+        '## Head [[Known]] and [docs](https://x.y)',
+      ),
+      (
+        'a field holding a whole bullet line hit-tests its links like prose',
+        '- Item [[Known]] and [docs](https://x.y)',
+      ),
+      (
+        'a field holding a whole numbered line hit-tests its links like prose',
+        '1. Item [[Known]] and [docs](https://x.y)',
+      ),
+      (
+        'a field holding a whole task line hit-tests its links like prose',
+        '- [ ] Item [[Known]] and [docs](https://x.y)',
+      ),
+      (
+        'a field holding a whole quote line hit-tests its links like prose',
+        '> Item [[Known]] and [docs](https://x.y)',
+      ),
+      (
+        'a field holding a prose line hit-tests its links',
+        'Item [[Known]] and [docs](https://x.y)',
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final f = await _wi166PumpLinkField(tester, line);
+        final link = line.indexOf('[[Known]]');
+
+        await _cmdDown(tester);
+        final mouse = await _mouseAt(tester, f.pointOn('Known'));
+        try {
+          expect(_cursor(), SystemMouseCursors.click);
+          expect(
+            f.controller.cmdHover,
+            TextRange(start: link, end: link + '[[Known]]'.length),
+          );
+        } finally {
+          await _removeMouse(tester, mouse);
+          await _cmdUp(tester);
+        }
+
+        await tester.macCmdClick(f.pointOn('docs'));
+        await tester.pump();
+        expect(f.opener.opened, ['https://x.y']);
+      }, variant: macOnly);
+    }
+
+    testWidgets(
+      'with Cmd held a point on the last shown character at the link end offset shows the hover and a Cmd+click there opens it',
+      (tester) async {
+        const text = 'Go [[Known]] or [docs](https://x.y) now';
+        final f = await _wi166PumpLinkField(tester, text);
+        final wiki = text.indexOf('[[Known]]');
+        final shownEnd = text.indexOf(']]');
+        final docsEnd = text.indexOf('](');
+
+        // The right part of the last shown glyph: offsetAt gives the shown
+        // text end itself, the boundary the hit-test keeps.
+        final onEnd = f.pointNearEnd(shownEnd);
+        expect(f.boxes.offsetAt(f.boxes.box.globalToLocal(onEnd)), shownEnd);
+        final onDocsEnd = f.pointNearEnd(docsEnd);
+        expect(f.boxes.offsetAt(f.boxes.box.globalToLocal(onDocsEnd)), docsEnd);
+
+        await _cmdDown(tester);
+        final mouse = await _mouseAt(tester, onEnd);
+        try {
+          expect(_cursor(), SystemMouseCursors.click);
+          expect(
+            f.controller.cmdHover,
+            TextRange(start: wiki, end: wiki + '[[Known]]'.length),
+          );
+
+          // One past it, in the space after the link: no hover.
+          final past = f.boxes.box.localToGlobal(
+            f.boxes.caretRect(shownEnd + 3).center,
+          );
+          await mouse.moveTo(Offset((onEnd.dx + past.dx) / 2 + 2, onEnd.dy));
+          await tester.pump();
+          expect(_cursor(), SystemMouseCursors.text);
+          expect(f.controller.cmdHover, isNull);
+        } finally {
+          await _removeMouse(tester, mouse);
+          await _cmdUp(tester);
+        }
+
+        await tester.macCmdClick(onDocsEnd);
+        await tester.pump();
+        expect(f.opener.opened, ['https://x.y']);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'before the titles load a transclusion token shows no Cmd hover and a Cmd+click on it opens nothing',
+      (tester) async {
+        final load = Completer<List<NoteTitle>>();
+        final t = await _launch(
+          tester,
+          'See ![[2026-09-05#^b7k2m9]] now\n',
+          overrides: [_titles(() => load.future)],
+        );
+        final r = t.r;
+        final before = List.of(t.tabs);
+        final at = _pointOn(r, 0, '2026-09-05');
+
+        await _cmdDown(tester);
+        final mouse = await _mouseAt(tester, at);
+        try {
+          expect(_cursor(), SystemMouseCursors.text);
+          expect(_controllerOf(tester, 0).cmdHover, isNull);
+        } finally {
+          await _removeMouse(tester, mouse);
+          await _cmdUp(tester);
+        }
+
+        await tester.macCmdClick(at);
+        await pumpFrames(tester);
+        r.expectActiveNote(fixtureTopicId);
+        expect(t.tabs, before);
+
+        // Once a note titled with its date loads, the same token opens.
+        load.complete([
+          ..._manyTitles(3),
+          NoteTitle(id: fixtureDailyId, title: '2026-09-05', updatedAt: 4),
+        ]);
+        await pumpFrames(tester);
+        await tester.pump(const Duration(seconds: 1));
+        await tester.macCmdClick(_pointOn(r, 0, '2026-09-05'));
+        await pumpFrames(tester);
+        r.expectActiveNote(fixtureDailyId);
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'key events over a link field are left unhandled for the platform and the focused field',
+      (tester) async {
+        final f = await _wi166PumpLinkField(tester, 'Go [[Known]] now');
+        final mouse = await _mouseAt(tester, f.pointOn('Known'));
+        try {
+          for (final key in [
+            LogicalKeyboardKey.keyA,
+            LogicalKeyboardKey.shiftLeft,
+            LogicalKeyboardKey.metaLeft,
+          ]) {
+            expect(
+              await tester.sendKeyDownEvent(key, platform: 'macos'),
+              isFalse,
+              reason: '$key down',
+            );
+            await tester.pump();
+            expect(
+              await tester.sendKeyUpEvent(key, platform: 'macos'),
+              isFalse,
+              reason: '$key up',
+            );
+            await tester.pump();
+          }
+
+          // The region still saw Cmd: pressing it now shows the hover.
+          await _cmdDown(tester);
+          expect(_cursor(), SystemMouseCursors.click);
+          await _cmdUp(tester);
+          expect(_cursor(), SystemMouseCursors.text);
+        } finally {
+          await _removeMouse(tester, mouse);
+        }
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'several edits under a resting Cmd hover in one frame hit-test the pointer once and keep the last edit',
+      (tester) async {
+        const text = 'A [[Known]] b';
+        final f = await _wi166PumpLinkField(tester, text);
+        final link = text.indexOf('[[Known]]');
+        const width = '[[Known]]'.length;
+
+        await _cmdDown(tester);
+        final mouse = await _mouseAt(tester, f.pointOn('Known'));
+        try {
+          expect(
+            f.controller.cmdHover,
+            TextRange(start: link, end: link + width),
+          );
+          await tester.pump();
+          f.lookups = 0;
+
+          // Three edits before the next frame, each one character longer
+          // than the text the region last tokenized.
+          f.controller.text = 'AB [[Known]] b';
+          f.controller.text = 'BA [[Known]] b';
+          f.controller.text = 'CA [[Known]] b';
+          await tester.pump();
+          await tester.pump();
+
+          expect(f.lookups, 1, reason: 'one apply for the frame');
+          expect(
+            f.controller.cmdHover,
+            TextRange(start: link + 1, end: link + 1 + width),
+          );
+          expect(_cursor(), SystemMouseCursors.click);
+        } finally {
+          await _removeMouse(tester, mouse);
+          await _cmdUp(tester);
+        }
+      },
+      variant: macOnly,
+    );
+  });
+
+  // -------------------------------------------------------------------------
   // AC12: EditorController.flushPendingSave()
   // -------------------------------------------------------------------------
   group('flushPendingSave', () {
@@ -1670,4 +1924,96 @@ Future<_FlushEditor> _flushEditor() async {
   c.listen(tabsProvider, (_, _) {});
   await pumpEventQueue();
   return _FlushEditor(c, db, cli, clock);
+}
+
+/// A bare link field (see [_wi166PumpLinkField]): its controller, opener and
+/// the line boxes its LinkRegion looks up, counted in [lookups].
+class _Wi166LinkField {
+  _Wi166LinkField(this.controller, this.opener, this.fieldKey);
+
+  final LivePreviewController controller;
+  final RecordingUrlOpener opener;
+  final GlobalKey fieldKey;
+
+  /// How many times the LinkRegion asked for the field's line boxes.
+  int lookups = 0;
+
+  /// The field's line boxes (laid out).
+  LineBoxSource get boxes {
+    final editable = findRenderEditable(
+      fieldKey.currentContext!.findRenderObject(),
+    );
+    return RenderEditableLineBoxes(editable!);
+  }
+
+  LineBoxSource? lookup() {
+    lookups++;
+    final editable = findRenderEditable(
+      fieldKey.currentContext?.findRenderObject(),
+    );
+    return editable == null ? null : RenderEditableLineBoxes(editable);
+  }
+
+  /// A global point in the middle of the first [needle] in the field.
+  Offset pointOn(String needle) {
+    final start = controller.text.indexOf(needle);
+    expect(start, isNonNegative, reason: 'field holds "$needle"');
+    final b = boxes;
+    final a = b.caretRect(start);
+    final z = b.caretRect(start + needle.length);
+    expect(z.left, greaterThan(a.left), reason: '"$needle" has a width');
+    return b.box.localToGlobal(Offset((a.left + z.left) / 2, a.center.dy));
+  }
+
+  /// A global point three quarters across the shown character just before
+  /// [end].
+  Offset pointNearEnd(int end) {
+    final b = boxes;
+    final a = b.caretRect(end - 1);
+    final z = b.caretRect(end);
+    expect(z.left, greaterThan(a.left), reason: 'a visible last character');
+    return b.box.localToGlobal(
+      Offset(a.left + (z.left - a.left) * 0.75, a.center.dy),
+    );
+  }
+}
+
+/// Pumps one unfocused [TextField] holding [text] (whole lines: not an item
+/// row's text) under a [LinkRegion] whose line boxes come from the field,
+/// with the titles `Known` (id [_knownId]) loaded and a recording opener.
+Future<_Wi166LinkField> _wi166PumpLinkField(
+  WidgetTester tester,
+  String text,
+) async {
+  final controller = LivePreviewController(text: text);
+  addTearDown(controller.dispose);
+  final opener = RecordingUrlOpener();
+  final field = _Wi166LinkField(controller, opener, GlobalKey());
+  await pumpEditorScoped(
+    tester,
+    MaterialApp(
+      home: Material(
+        child: Align(
+          alignment: Alignment.topLeft,
+          child: SizedBox(
+            width: 700,
+            child: LinkRegion(
+              controller: controller,
+              boxes: field.lookup,
+              child: TextField(
+                key: field.fieldKey,
+                controller: controller,
+                maxLines: null,
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+    opener: opener,
+    titles: [NoteTitle(id: _knownId, title: 'Known', updatedAt: 1)],
+  );
+  await tester.pump();
+  await tester.pump();
+  return field;
 }
