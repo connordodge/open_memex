@@ -430,6 +430,109 @@ const _wi165Decorated =
     '```\n'
     'Outro\n';
 
+// ------------------------------------- listener counting fakes (verify)
+
+/// A reveal gate that counts its listeners.
+class _Wi165CountingGate extends ValueNotifier<bool> {
+  _Wi165CountingGate(super.value);
+
+  final List<VoidCallback> _listeners = [];
+  int get listeners => _listeners.length;
+
+  @override
+  void addListener(VoidCallback listener) {
+    _listeners.add(listener);
+    super.addListener(listener);
+  }
+
+  @override
+  void removeListener(VoidCallback listener) {
+    _listeners.remove(listener);
+    super.removeListener(listener);
+  }
+}
+
+/// A [LivePreviewController] that counts its listeners.
+class _Wi165CountingController extends LivePreviewController {
+  _Wi165CountingController({super.text});
+
+  final List<VoidCallback> _listeners = [];
+  int get listeners => _listeners.length;
+
+  @override
+  void addListener(VoidCallback listener) {
+    _listeners.add(listener);
+    super.addListener(listener);
+  }
+
+  @override
+  void removeListener(VoidCallback listener) {
+    _listeners.remove(listener);
+    super.removeListener(listener);
+  }
+}
+
+/// The fenced block text the reveal tests use: the fence opens on line 2
+/// and closes on line 4.
+const _wi165RevealText = 'intro\n\n```\nlet a = 1;\n```\n\nafter';
+
+/// Expects the box of [_wi165RevealText] in [f] to be 8 px outset above
+/// and below when [outset], flush with its fence lines otherwise.
+Future<void> _wi165ExpectOutset(
+  WidgetTester tester,
+  _Wi165Field f, {
+  required bool outset,
+  required String reason,
+}) async {
+  final open = f.line(2);
+  final close = f.line(4);
+  const x = 20.0;
+  final px = await _wi165Capture(tester);
+  final top = outset ? open.top - 8 : open.top;
+  final bottom = outset ? close.bottom + 8 : close.bottom;
+  expect(
+    px.at(Offset(x, top + 2.5)),
+    const _Wi165Near(OmColors.surface1),
+    reason: '$reason: inside the top',
+  );
+  expect(
+    px.at(Offset(x, top - 1.5)),
+    const _Wi165Near(OmColors.surface2),
+    reason: '$reason: above the top',
+  );
+  expect(
+    px.at(Offset(x, bottom - 2.5)),
+    const _Wi165Near(OmColors.surface1),
+    reason: '$reason: inside the bottom',
+  );
+  expect(
+    px.at(Offset(x, bottom + 1.5)),
+    const _Wi165Near(OmColors.surface2),
+    reason: '$reason: below the bottom',
+  );
+}
+
+/// [decorations] in the same tree [_wi165Pump] builds.
+Widget _wi165Tree(Widget decorations) => MaterialApp(
+  debugShowCheckedModeBanner: false,
+  home: Align(
+    alignment: Alignment.topLeft,
+    child: RepaintBoundary(
+      key: _wi165BoundaryKey,
+      child: ColoredBox(
+        color: OmColors.surface2,
+        child: SizedBox(
+          width: _wi165Width,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            child: decorations,
+          ),
+        ),
+      ),
+    ),
+  ),
+);
+
 void main() {
   holdFontFetches();
 
@@ -1454,6 +1557,304 @@ void main() {
             reason: 'gutter column x $at is the same beside the quote line',
           );
         }
+      },
+    );
+  });
+
+  group('repaint and listener contracts (verify)', () {
+    testWidgets(
+      'the decorations follow a swapped reveal gate and let go of the old one',
+      (tester) async {
+        final first = _Wi165CountingGate(true);
+        addTearDown(first.dispose);
+        final second = _Wi165CountingGate(false);
+        addTearDown(second.dispose);
+        final controller = LivePreviewController(text: _wi165RevealText)
+          ..revealGate = first
+          ..selection = TextSelection.collapsed(
+            offset: _wi165RevealText.indexOf('a ='),
+          );
+        final f = await _wi165Pump(
+          tester,
+          controller: controller,
+          fieldLeft: 14 + 16.2,
+        );
+        expect(first.listeners, 1, reason: 'the first gate is listened to');
+        await _wi165ExpectOutset(
+          tester,
+          f,
+          outset: true,
+          reason: 'first gate open',
+        );
+
+        // The host swaps the gate; the caret moves inside the block.
+        controller
+          ..revealGate = second
+          ..selection = TextSelection.collapsed(
+            offset: _wi165RevealText.indexOf('let'),
+          );
+        await tester.pump();
+        expect(first.listeners, 0, reason: 'the old gate is let go');
+        expect(second.listeners, 1, reason: 'the new gate is listened to');
+        await _wi165ExpectOutset(
+          tester,
+          f,
+          outset: false,
+          reason: 'the new gate is closed',
+        );
+
+        // Only the new gate opens: no controller change at all.
+        second.value = true;
+        await tester.pump();
+        await _wi165ExpectOutset(
+          tester,
+          f,
+          outset: true,
+          reason: 'the new gate opened',
+        );
+
+        second.value = false;
+        await tester.pump();
+        await _wi165ExpectOutset(
+          tester,
+          f,
+          outset: false,
+          reason: 'the new gate closed again',
+        );
+
+        await tester.pumpWidget(const SizedBox());
+        expect(second.listeners, 0, reason: 'detached: no gate listener');
+        expect(first.listeners, 0);
+      },
+    );
+
+    testWidgets(
+      'a reveal gate swapped without a controller change is followed from the next paint',
+      (tester) async {
+        final first = _Wi165CountingGate(false);
+        addTearDown(first.dispose);
+        final second = _Wi165CountingGate(true);
+        addTearDown(second.dispose);
+        final controller = LivePreviewController(text: _wi165RevealText)
+          ..revealGate = first
+          ..selection = TextSelection.collapsed(
+            offset: _wi165RevealText.indexOf('a ='),
+          );
+        final f = await _wi165Pump(
+          tester,
+          controller: controller,
+          fieldLeft: 14 + 16.2,
+        );
+        await _wi165ExpectOutset(tester, f, outset: false, reason: 'closed');
+
+        // A silent swap (the gate field notifies nobody), then an
+        // unrelated repaint.
+        controller.revealGate = second;
+        tester
+            .renderObject(find.byType(LivePreviewDecorations))
+            .markNeedsPaint();
+        await tester.pump();
+        expect(first.listeners, 0, reason: 'the old gate is let go');
+        expect(second.listeners, 1, reason: 'the new gate is listened to');
+        await _wi165ExpectOutset(
+          tester,
+          f,
+          outset: true,
+          reason: 'painted with the new open gate',
+        );
+
+        // From then on the new gate alone drives repaints.
+        second.value = false;
+        await tester.pump();
+        await _wi165ExpectOutset(
+          tester,
+          f,
+          outset: false,
+          reason: 'the new gate closed',
+        );
+      },
+    );
+
+    testWidgets(
+      'rebuilding the decorations with new line boxes text column or band colour repaints them',
+      (tester) async {
+        final controller = LivePreviewController(text: '> quote line\nafter');
+        final focus = FocusNode();
+        addTearDown(focus.dispose);
+        final editable = GlobalKey(debugLabel: 'wi165-rebuild-editable');
+        LineBoxSource? measure() {
+          final e = findRenderEditable(
+            editable.currentContext?.findRenderObject(),
+          );
+          return e == null ? null : RenderEditableLineBoxes(e);
+        }
+
+        // One child instance for every pump, so only the decorations'
+        // own properties change.
+        final field = Padding(
+          padding: const EdgeInsets.only(left: 40),
+          child: EditableText(
+            key: editable,
+            controller: controller,
+            focusNode: focus,
+            style: const TextStyle(
+              fontSize: 13.5,
+              height: 1.7,
+              color: _wi165Clear,
+            ),
+            cursorColor: OmColors.accent,
+            backgroundCursorColor: OmColors.surface2,
+            maxLines: null,
+          ),
+        );
+        Future<void> pumpWith({
+          LineBoxSource? Function()? boxes,
+          double textLeft = 14,
+          Color quoteBandColor = OmColors.surface3,
+        }) async {
+          await tester.pumpWidget(
+            _wi165Tree(
+              LivePreviewDecorations(
+                controller: controller,
+                boxes: boxes,
+                textLeft: textLeft,
+                quoteBandColor: quoteBandColor,
+                child: field,
+              ),
+            ),
+          );
+          await tester.pump();
+        }
+
+        Future<Color> pixel(double x) async {
+          final source = measure()!;
+          final l = source.lines[0];
+          final y = source.box
+              .localToGlobal(Offset(0, (l.top + l.bottom) / 2))
+              .dy;
+          return (await _wi165Capture(tester)).at(Offset(x, y));
+        }
+
+        await pumpWith();
+        expect(
+          await pixel(200),
+          const _Wi165Near(OmColors.surface2),
+          reason: 'no line boxes: nothing painted',
+        );
+
+        await pumpWith(boxes: measure);
+        expect(
+          await pixel(200),
+          const _Wi165Near(OmColors.surface3),
+          reason: 'line boxes given: the band paints',
+        );
+        expect(await pixel(20), const _Wi165Near(OmColors.surface3));
+
+        await pumpWith(boxes: measure, textLeft: 30);
+        expect(
+          await pixel(20),
+          const _Wi165Near(OmColors.surface2),
+          reason: 'the text column moved right of x 20',
+        );
+        expect(await pixel(30.5), const _Wi165Near(OmColors.surface3));
+
+        await pumpWith(
+          boxes: measure,
+          textLeft: 30,
+          quoteBandColor: OmColors.surface4,
+        );
+        expect(
+          await pixel(200),
+          const _Wi165Near(OmColors.surface4),
+          reason: 'the band colour changed',
+        );
+      },
+    );
+
+    testWidgets(
+      'rebuilding the decorations with a new controller paints and follows the new one',
+      (tester) async {
+        // Both texts have lines of the same lengths, so the child line
+        // boxes measure either.
+        final shown = _Wi165CountingController(text: '> quote line\nafter');
+        final next = _Wi165CountingController(text: 'plain words.\nafter');
+        final focus = FocusNode();
+        addTearDown(focus.dispose);
+        final editable = GlobalKey(debugLabel: 'wi165-swap-editable');
+        LineBoxSource? measure() {
+          final e = findRenderEditable(
+            editable.currentContext?.findRenderObject(),
+          );
+          return e == null ? null : RenderEditableLineBoxes(e);
+        }
+
+        final field = Padding(
+          padding: const EdgeInsets.only(left: 14),
+          child: EditableText(
+            key: editable,
+            controller: shown,
+            focusNode: focus,
+            style: const TextStyle(
+              fontSize: 13.5,
+              height: 1.7,
+              color: _wi165Clear,
+            ),
+            cursorColor: OmColors.accent,
+            backgroundCursorColor: OmColors.surface2,
+            maxLines: null,
+          ),
+        );
+        Future<void> pumpWith(LivePreviewController c) async {
+          await tester.pumpWidget(
+            _wi165Tree(
+              LivePreviewDecorations(
+                controller: c,
+                boxes: measure,
+                textLeft: 14,
+                child: field,
+              ),
+            ),
+          );
+          await tester.pump();
+        }
+
+        Future<Color> pixel() async {
+          final source = measure()!;
+          final l = source.lines[0];
+          final y = source.box
+              .localToGlobal(Offset(0, (l.top + l.bottom) / 2))
+              .dy;
+          return (await _wi165Capture(tester)).at(Offset(200, y));
+        }
+
+        await pumpWith(shown);
+        final shownBefore = shown.listeners;
+        expect(next.listeners, 0);
+        expect(await pixel(), const _Wi165Near(OmColors.surface3));
+
+        await pumpWith(next);
+        expect(
+          await pixel(),
+          const _Wi165Near(OmColors.surface2),
+          reason: 'the new controller text has no quote',
+        );
+        expect(next.listeners, 1, reason: 'the new controller is listened to');
+        expect(
+          shown.listeners,
+          shownBefore - 1,
+          reason: 'the old controller is let go',
+        );
+
+        next.text = '> again here\nafter';
+        await tester.pump();
+        expect(
+          await pixel(),
+          const _Wi165Near(OmColors.surface3),
+          reason: 'a change on the new controller repaints',
+        );
+
+        await tester.pumpWidget(const SizedBox());
+        expect(next.listeners, 0, reason: 'detached: no controller listener');
       },
     );
   });
