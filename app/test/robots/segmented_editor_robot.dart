@@ -209,17 +209,25 @@ class SegmentedEditorRobot {
     await tester.pump();
   }
 
-  /// The text field that has focus (an editor row's field while a text
-  /// segment is focused).
-  EditableTextState get _focusedField {
-    final context = FocusManager.instance.primaryFocus?.context;
-    final state = context == null
-        ? null
-        : context is StatefulElement && context.state is EditableTextState
-        ? context.state as EditableTextState
-        : context.findAncestorStateOfType<EditableTextState>();
-    if (state == null) throw TestFailure('no text field has focus');
-    return state;
+  /// The value the platform text system holds for the focused field: what
+  /// the field last sent over its input connection, or what [_input] last
+  /// sent it. Robots read fields only through SegmentEditing or the input
+  /// connection (D5).
+  TextEditingValue get _inputValue {
+    final state = tester.testTextInput.editingState;
+    if (state == null) {
+      throw TestFailure('no text field has an input connection');
+    }
+    return TextEditingValue.fromJSON(state);
+  }
+
+  /// Sends [value] to the focused field as the platform text system does,
+  /// which then holds [value] until the field sends it another (set first:
+  /// the field may answer with its own value while it handles [value]).
+  Future<void> _input(TextEditingValue value) async {
+    tester.testTextInput.editingState = value.toJSON();
+    tester.testTextInput.updateEditingValue(value);
+    await tester.pump();
   }
 
   /// Types [text] into the focused field one character at a time, as the
@@ -227,15 +235,14 @@ class SegmentedEditorRobot {
   /// selection in the value the field holds right then (#169 journey).
   Future<void> typeChars(String text) async {
     for (final ch in text.characters) {
-      final value = _focusedField.textEditingValue;
+      final value = _inputValue;
       final sel = value.selection;
-      tester.testTextInput.updateEditingValue(
+      await _input(
         TextEditingValue(
           text: value.text.replaceRange(sel.start, sel.end, ch),
           selection: TextSelection.collapsed(offset: sel.start + ch.length),
         ),
       );
-      await tester.pump();
     }
   }
 
@@ -256,15 +263,14 @@ class SegmentedEditorRobot {
     );
     await tester.pump();
     if (!handled) {
-      final value = _focusedField.textEditingValue;
+      final value = _inputValue;
       final sel = value.selection;
-      tester.testTextInput.updateEditingValue(
+      await _input(
         TextEditingValue(
           text: value.text.replaceRange(sel.start, sel.end, '\n'),
           selection: TextSelection.collapsed(offset: sel.start + 1),
         ),
       );
-      await tester.pump();
     }
     if (shift) {
       await tester.sendKeyUpEvent(
