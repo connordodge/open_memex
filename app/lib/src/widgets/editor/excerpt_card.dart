@@ -11,6 +11,7 @@ import '../../vault_access/vault_scoped.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import '../atoms.dart';
+import 'card_rows.dart';
 
 /// The rendered text of one transclusion token through the open vault's
 /// daily domain ([renderExcerpt]), re-read on every vault revision, with the
@@ -104,15 +105,15 @@ class ExcerptCard extends ConsumerWidget {
             ],
           ),
           const SizedBox(height: 4),
-          // One text run: the blocks joined with `\n` (C4).
-          Text(
-            rendered?.text ?? '',
-            style: OmType.mono(
-              size: 13.5,
-              color: rendered?.removed ?? false ? OmColors.fg3 : OmColors.fg1,
-              height: 1.7,
-            ),
-          ),
+          // The blocks joined with `\n` (C4), rendered as live preview rows
+          // (B4); a `removed from <date>` stub stays plain text.
+          if (rendered case RenderedExcerpt(removed: true, :final text))
+            Text(
+              text,
+              style: OmType.mono(size: 13.5, color: OmColors.fg3, height: 1.7),
+            )
+          else
+            CardRows(text: rendered?.text ?? ''),
         ],
       ),
     );
