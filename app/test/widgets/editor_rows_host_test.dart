@@ -1721,4 +1721,154 @@ void main() {
       },
     );
   });
+
+  // -------------------------------------------------------------------------
+  // Verify: the rows' LineBoxSource (D6), which C2 and C3 measure through.
+  // -------------------------------------------------------------------------
+  group('line boxes over rows (verify)', () {
+    testWidgets(
+      'the rows line box source reports every row line in segment offsets with an item first line starting at its marker',
+      (tester) async {
+        await _wi167Pump(tester, _wi167List);
+        final boxes = _wi167View(tester, 0).lineBoxes()!;
+        final specs = splitRows(_wi167List, atSegmentStart: true);
+        expect(specs, hasLength(4));
+
+        final expected = <({TextRange range, double top, double bottom})>[];
+        for (final (r, spec) in specs.indexed) {
+          final e = _wi167Editable(tester, 0, r);
+          for (final (i, line) in RenderEditableLineBoxes(e).lines.indexed) {
+            expected.add((
+              range: TextRange(
+                start: i == 0 ? spec.start : spec.toSegment(line.range.start),
+                end: spec.toSegment(line.range.end),
+              ),
+              top: e.localToGlobal(Offset(0, line.top)).dy,
+              bottom: e.localToGlobal(Offset(0, line.bottom)).dy,
+            ));
+          }
+        }
+        // para | - a | - b | (blank) end
+        expect(expected, hasLength(5));
+        final lines = boxes.lines;
+        expect(lines, hasLength(expected.length));
+        for (final (i, line) in lines.indexed) {
+          expect(line.range, expected[i].range, reason: 'line $i range');
+          expect(
+            boxes.box.localToGlobal(Offset(0, line.top)).dy,
+            moreOrLessEquals(expected[i].top, epsilon: 0.01),
+            reason: 'line $i top',
+          );
+          expect(
+            boxes.box.localToGlobal(Offset(0, line.bottom)).dy,
+            moreOrLessEquals(expected[i].bottom, epsilon: 0.01),
+            reason: 'line $i bottom',
+          );
+        }
+        // The bullet rows' first lines start at their markers (`- a` at 5,
+        // `- b` at 9), the item texts at 7 and 11.
+        expect(lines[1].range, const TextRange(start: 5, end: 8));
+        expect(lines[2].range, const TextRange(start: 9, end: 12));
+        expect(lines[3].range.start, 13);
+        expect(lines[4].range, const TextRange(start: 14, end: 17));
+      },
+    );
+
+    testWidgets(
+      'the rows line box source gives one box per touched row line measured by that row field',
+      (tester) async {
+        await _wi167Pump(tester, _wi167List);
+        final boxes = _wi167View(tester, 0).lineBoxes()!;
+        final specs = splitRows(_wi167List, atSegmentStart: true);
+
+        List<Rect> globalOf(List<Rect> rects, RenderBox from) => [
+          for (final rect in rects)
+            Rect.fromPoints(
+              from.localToGlobal(rect.topLeft),
+              from.localToGlobal(rect.bottomRight),
+            ),
+        ];
+        List<Rect> rowBoxes(int r, TextRange range) {
+          final e = _wi167Editable(tester, 0, r);
+          return globalOf(
+            RenderEditableLineBoxes(e).boxesFor(
+              TextRange(
+                start: specs[r].toLocal(range.start),
+                end: specs[r].toLocal(range.end),
+              ),
+            ),
+            e,
+          );
+        }
+
+        // `ra` of row 0, `a` of row 1, `b` of row 2; nothing of row 3.
+        const across = TextRange(start: 2, end: 12);
+        final got = globalOf(boxes.boxesFor(across), boxes.box);
+        final want = [
+          ...rowBoxes(0, across),
+          ...rowBoxes(1, across),
+          ...rowBoxes(2, across),
+        ];
+        expect(want, hasLength(3));
+        expect(got, hasLength(3));
+        for (var i = 0; i < 3; i++) {
+          expect(got[i].left, moreOrLessEquals(want[i].left, epsilon: 0.01));
+          expect(got[i].top, moreOrLessEquals(want[i].top, epsilon: 0.01));
+          expect(got[i].right, moreOrLessEquals(want[i].right, epsilon: 0.01));
+          expect(
+            got[i].bottom,
+            moreOrLessEquals(want[i].bottom, epsilon: 0.01),
+          );
+        }
+        // Each box sits on its own row, top to bottom.
+        expect(got[1].top, greaterThanOrEqualTo(got[0].bottom - 0.01));
+        expect(got[2].top, greaterThanOrEqualTo(got[1].bottom - 0.01));
+
+        // A range inside the last row only.
+        const last = TextRange(start: 14, end: 16);
+        final inLast = globalOf(boxes.boxesFor(last), boxes.box);
+        expect(inLast, hasLength(1));
+        expect(
+          inLast.single.top,
+          moreOrLessEquals(rowBoxes(3, last).single.top, epsilon: 0.01),
+        );
+
+        expect(boxes.boxesFor(const TextRange.collapsed(8)), isEmpty);
+      },
+    );
+
+    testWidgets(
+      'the rows line box source maps a point on any row to its segment offset and a point below the rows to the last row',
+      (tester) async {
+        await _wi167Pump(tester, _wi167List);
+        final boxes = _wi167View(tester, 0).lineBoxes()!;
+
+        Offset onGlyph(int r, int local) {
+          final e = _wi167Editable(tester, 0, r);
+          final glyph = e
+              .getBoxesForSelection(
+                TextSelection(baseOffset: local, extentOffset: local + 1),
+              )
+              .single;
+          return boxes.box.globalToLocal(
+            e.localToGlobal(Offset(glyph.left + 0.5, glyph.top + 2)),
+          );
+        }
+
+        // `r` of `para`, `a` of `- a`, `b` of `- b`, `n` of `end`.
+        expect(boxes.offsetAt(onGlyph(0, 2)), 2);
+        expect(boxes.offsetAt(onGlyph(1, 0)), 7);
+        expect(boxes.offsetAt(onGlyph(2, 0)), 11);
+        expect(boxes.offsetAt(onGlyph(3, 2)), 15);
+
+        // Below every row: the last row's nearest offset, its text end.
+        expect(
+          boxes.offsetAt(
+            Offset(boxes.box.size.width - 1, boxes.box.size.height + 30),
+          ),
+          _wi167List.length,
+        );
+      },
+    );
+  });
 }
