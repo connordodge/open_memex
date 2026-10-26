@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -10,6 +12,7 @@ import '../../state/daily_state.dart';
 import '../../state/vault_state.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
+import 'line_boxes.dart';
 
 // The captured-text gutter (WI #28, Req 33): a thin rule beside a daily
 // note's person field for every `agent` and `quick-entry` block, aligned to
@@ -121,9 +124,9 @@ class _CaptureGutterState extends ConsumerState<CaptureGutter> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _measure());
   }
 
-  /// Positions each captured block's rule from the laid-out field: from the
-  /// top of the caret at the block's start to the bottom of the caret at its
-  /// end, in the gutter's coordinates.
+  /// Positions each captured block's rule from the field's real line boxes
+  /// (R33): from the top of the line holding the block's first character to
+  /// the bottom of the line holding its last, in the gutter's coordinates.
   void _measure() {
     if (!mounted) return;
     final editable = widget.editable();
@@ -132,17 +135,14 @@ class _CaptureGutterState extends ConsumerState<CaptureGutter> {
     if (gutter is! RenderBox) return;
     final text = widget.controller.text;
     final dy = gutter.globalToLocal(editable.localToGlobal(Offset.zero)).dy;
+    final lines = RenderEditableLineBoxes(editable).lines;
     final rules = <_Rule>[];
     for (final block in _blocks) {
       if (!_capturedSources.contains(block.source)) continue;
       final range = capturedRange(text, block);
       if (range == null) continue;
-      final first = editable.getLocalRectForCaret(
-        TextPosition(offset: range.start),
-      );
-      final last = editable.getLocalRectForCaret(
-        TextPosition(offset: range.end, affinity: TextAffinity.upstream),
-      );
+      final first = lineHolding(lines, range.start);
+      final last = lineHolding(lines, math.max(range.start, range.end - 1));
       rules.add((
         blockId: block.blockId,
         source: block.source,

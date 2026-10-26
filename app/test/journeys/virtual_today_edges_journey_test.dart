@@ -162,8 +162,7 @@ void main() {
 
       await r.type('hello');
       await r.waitForSave();
-      tester.widget<EditableText>(r.body).controller.selection =
-          const TextSelection.collapsed(offset: 2);
+      r.bodySegment.select(const TextSelection.collapsed(offset: 2));
       await tester.pump();
 
       gate.complete();

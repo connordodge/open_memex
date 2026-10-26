@@ -15,6 +15,7 @@ import '../support/daily_seed.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
 import '../support/footer_cli_fakes.dart';
+import '../support/segment_editing_finder.dart';
 import '../support/today_cli_fakes.dart';
 import '../support/topics_access_doubles.dart';
 import '../support/topics_launch.dart';
@@ -52,10 +53,7 @@ void main() {
       h.read(vaultAccessProvider); // builds the recording doubles
       final heldBefore = notes.callsTo('getNote').length;
       notes.gate('getNote');
-      final body = find.descendant(
-        of: find.byKey(const Key('editor-body')),
-        matching: find.byType(EditableText),
-      );
+      final body = find.byKey(editorBodyKey);
       await tester.enterText(body, 'Slept badly [[Sleep');
       await tester.pump();
       await tester.tap(find.byKey(const Key('wikilink-popover-create')));

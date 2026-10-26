@@ -19,17 +19,16 @@ import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
 import '../support/footer_cli_fakes.dart';
 import '../support/note_cli_fakes.dart';
+import '../support/segment_editing_finder.dart';
 import '../support/today_cli_fakes.dart';
 
 const _alphaId = '01J9ALPHAWRITE00000000000078';
 
-Finder get _bodyField => find.descendant(
-  of: find.byKey(const Key('editor-body')),
-  matching: find.byType(EditableText),
-);
+/// The editor body field (Key `editor-body`): text segment 0 in the
+/// segmented view, the whole body in Source mode.
+Finder get _bodyField => find.byKey(editorBodyKey);
 
-String _bodyText(WidgetTester tester) =>
-    tester.widget<EditableText>(_bodyField).controller.text;
+String _bodyText(WidgetTester tester) => editorBodyText(tester);
 
 Finder _snack(String text) => find.descendant(
   of: find.byType(SnackBar),

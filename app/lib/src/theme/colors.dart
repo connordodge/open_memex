@@ -51,6 +51,9 @@ class OmColors {
   // Selection.
   static final selectionBg = const Color(0xFF7CFFB2).withAlpha(56);
 
+  /// The editor's selection fill (D13, pack #159).
+  static final selection = const Color(0xFF7CFFB2).withAlpha(56);
+
   // Dialog shadow (packs 100, 103: black at 60%).
   static const dialogShadow = Color(0x99000000);
 }

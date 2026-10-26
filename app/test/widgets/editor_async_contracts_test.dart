@@ -28,6 +28,7 @@ import '../support/fake_clock.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
 import '../support/note_cli_fakes.dart';
+import '../support/segment_editing_finder.dart';
 
 const _vaultA = '/tmp/om-78-contract-a';
 const _vaultB = '/tmp/om-78-contract-b';
@@ -243,10 +244,7 @@ void main() {
         await pumpFrames(tester);
         await tester.tap(find.byKey(const Key('editor-source-toggle')));
         await pumpFrames(tester);
-        final body = find.descendant(
-          of: find.byKey(const Key('editor-body')),
-          matching: find.byType(EditableText),
-        );
+        final body = find.byKey(editorBodyKey);
 
         doubles.hold();
         db.seedNote(id: '01J9GAMMA000000000000000078', title: 'Gamma Note');

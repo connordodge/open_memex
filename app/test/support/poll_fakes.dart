@@ -32,12 +32,14 @@ import 'package:open_memex_app/src/state/revision_poller.dart';
 import 'package:open_memex_app/src/state/settings.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
+import 'package:open_memex_app/src/widgets/editor/segment_editing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_harness.dart';
 import 'fake_clock.dart';
 import 'fake_memex_cli.dart';
 import 'fake_vault_db.dart';
+import 'segment_editing_finder.dart';
 
 /// Today for every live-update test: the [FakeClock]'s date.
 const liveToday = '2026-10-03';
@@ -545,11 +547,9 @@ class LiveRobot {
 
   // ---------------------------------------------------------------- finders
 
-  /// The daily person field's [EditableText] (Key `editor-body`).
-  Finder get body => find.descendant(
-    of: find.byKey(const Key('editor-body')),
-    matching: find.byType(EditableText),
-  );
+  /// The daily person field (Key `editor-body`, the first text segment).
+  /// Read and drive it through [bodySegment].
+  Finder get body => find.byKey(editorBodyKey);
 
   Finder get gutter => find.byKey(const Key('capture-gutter'));
   Finder gutterRule(String blockId) =>
@@ -577,10 +577,11 @@ class LiveRobot {
 
   // ------------------------------------------------------------------ state
 
-  EditableText get _bodyWidget => tester.widget<EditableText>(body);
-  String get bodyText => _bodyWidget.controller.text;
-  TextSelection get bodySelection => _bodyWidget.controller.selection;
-  bool get bodyHasFocus => _bodyWidget.focusNode.hasFocus;
+  /// The person field's [SegmentEditing] handle (re-found on every call).
+  SegmentEditing get bodySegment => editorBodySegment(tester);
+  String get bodyText => bodySegment.text;
+  TextSelection get bodySelection => bodySegment.selection;
+  bool get bodyHasFocus => bodySegment.focusedRow != null;
   double get scrollPixels =>
       tester.state<ScrollableState>(pageScrollable).position.pixels;
 
@@ -597,14 +598,10 @@ class LiveRobot {
 
   /// The vertical centre (global) of the text line holding UTF-16 [offset]
   /// of the person field.
-  double lineCenterY(int offset) {
-    final render = tester.state<EditableTextState>(body).renderEditable;
-    final caret = render.getLocalRectForCaret(TextPosition(offset: offset));
-    return render.localToGlobal(caret.center).dy;
-  }
+  double lineCenterY(int offset) => bodySegment.rectForOffset(offset).center.dy;
 
-  /// The person field's global rect.
-  Rect get bodyRect => tester.getRect(body);
+  /// Where the person field's text column starts (global x).
+  double get bodyTextLeft => bodySegment.rectForOffset(0).left;
 
   // ---------------------------------------------------------------- actions
 
@@ -650,7 +647,7 @@ class LiveRobot {
   Future<void> placeCaret(int offset) async {
     await tester.showKeyboard(body);
     await tester.pump();
-    _bodyWidget.controller.selection = TextSelection.collapsed(offset: offset);
+    bodySegment.select(TextSelection.collapsed(offset: offset));
     await tester.pump();
   }
 

@@ -96,13 +96,13 @@ void main() {
         _expectCovers(r, quick, text.indexOf('Call mum.'));
         _expectMisses(r, quick, text.indexOf('Sleep was bad.'));
 
-        // Beside the field, not over its text.
-        final field = r.bodyRect;
+        // Beside the field, left of its text column.
+        final textLeft = r.bodyTextLeft;
         for (final rule in [agent, quick]) {
           expect(
-            rule.right <= field.left + 0.5 || rule.left >= field.right - 0.5,
+            rule.right <= textLeft + 0.5,
             isTrue,
-            reason: 'rule $rule overlaps the person field $field',
+            reason: 'rule $rule overlaps the person text starting at $textLeft',
           );
         }
       },
@@ -259,7 +259,7 @@ void main() {
 
         // Tapping the agent line puts the caret inside the agent block.
         final start = r.bodyText.indexOf('Agent saw a bug.');
-        await tester.tapAt(Offset(r.bodyRect.left + 30, r.lineCenterY(start)));
+        await tester.tapAt(Offset(r.bodyTextLeft + 30, r.lineCenterY(start)));
         await tester.pump(const Duration(milliseconds: 350));
         expect(r.bodyHasFocus, isTrue);
         expect(

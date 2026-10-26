@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/segments.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
+import 'package:open_memex_app/src/widgets/editor/segment_editing.dart';
 import 'package:open_memex_app/src/widgets/note_editor.dart';
 
 import '../support/app_harness.dart';
@@ -11,6 +12,7 @@ import '../support/excerpt_cli_fakes.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
 import '../support/review_fakes.dart';
+import '../support/segment_editing_finder.dart';
 import '../support/today_cli_fakes.dart';
 
 /// The C4 fixture daily note (`2026-09-05`).
@@ -106,14 +108,10 @@ class SegmentedEditorRobot {
 
   // ---------------------------------------------------------------- finders
 
-  /// The [EditableText] at or under the widget with [key].
-  Finder editableUnder(Key key) => find.descendant(
-    of: find.byKey(key),
-    matching: find.byType(EditableText),
-    matchRoot: true,
-  );
-
-  Finder textSegment(int i) => editableUnder(Key('text-segment-$i'));
+  /// Text segment [i]'s root (Key `text-segment-<i>`). Read and drive the
+  /// segment through its handle, [segment]; type into it with
+  /// [typeInSegment].
+  Finder textSegment(int i) => find.byKey(textSegmentKey(i));
   Finder card(int i) => find.byKey(Key('excerpt-card-$i'));
   Finder cardRemove(int i) => find.byKey(Key('excerpt-card-remove-$i'));
   Finder cardCaption(int i) => find.byKey(Key('excerpt-card-caption-$i'));
@@ -121,21 +119,18 @@ class SegmentedEditorRobot {
       find.byKey(Key('footer-chip-$topicNoteId'));
   Finder get sourceToggle => find.byKey(const Key('editor-source-toggle'));
   Finder get sourceSurface => find.byKey(const Key('editor-source-surface'));
-  Finder get sourceBody => find.descendant(
-    of: sourceSurface,
-    matching: editableUnder(const Key('editor-body')),
-  );
+  Finder get sourceBody =>
+      find.descendant(of: sourceSurface, matching: find.byKey(editorBodyKey));
   Finder get inlineError => find.byKey(const Key('inline-error'));
   Finder get inlineErrorDismiss =>
       find.byKey(const Key('inline-error-dismiss'));
   Finder get popover => find.byKey(const Key('wikilink-popover'));
   Finder get kindChip => find.byKey(const Key('kind-chip'));
 
-  /// Every [EditableText] inside the note editor (title field included).
-  Finder get editorEditables => find.descendant(
-    of: find.byType(NoteEditor),
-    matching: find.byType(EditableText),
-  );
+  /// Every editable text field inside the note editor (title field
+  /// included).
+  Finder get editorEditables =>
+      editableTextFields(under: find.byType(NoteEditor));
 
   /// Every excerpt card root (`excerpt-card-<digits>`, not the × or caption).
   Finder get allCards => find.byWidgetPredicate((w) {
@@ -169,14 +164,18 @@ class SegmentedEditorRobot {
 
   // ------------------------------------------------------------------ state
 
-  EditableText segmentWidget(int i) =>
-      tester.widget<EditableText>(textSegment(i));
-  String segmentText(int i) => segmentWidget(i).controller.text;
-  TextSelection segmentSelection(int i) =>
-      segmentWidget(i).controller.selection;
-  bool segmentHasFocus(int i) => segmentWidget(i).focusNode.hasFocus;
+  /// Text segment [i]'s [SegmentEditing] handle (re-found on every call).
+  SegmentEditing segment(int i) => segmentEditingAt(tester, i);
+
+  /// Every text segment's handle, in segment order.
+  List<SegmentEditing> get allSegments => allSegmentEditings(tester);
+  String segmentText(int i) => segment(i).text;
+  TextSelection segmentSelection(int i) => segment(i).selection;
+  bool segmentHasFocus(int i) => segment(i).focusedRow != null;
+
+  /// The Source mode body field's text.
   String get sourceText =>
-      tester.widget<EditableText>(sourceBody).controller.text;
+      renderedEditableTexts(tester, under: sourceBody).single;
 
   WorkspaceTab? get activeTab => h.read(tabsProvider).activeTab;
   List<FakeCliCall> get updates => h.cli.callsFor('update');
@@ -201,9 +200,9 @@ class SegmentedEditorRobot {
   Future<void> focusSegment(int i, {int? offset}) async {
     await tester.showKeyboard(textSegment(i));
     await tester.pump();
-    final ctrl = segmentWidget(i).controller;
-    ctrl.selection = TextSelection.collapsed(
-      offset: offset ?? ctrl.text.length,
+    final handle = segment(i);
+    handle.select(
+      TextSelection.collapsed(offset: offset ?? handle.text.length),
     );
     await tester.pump();
   }
