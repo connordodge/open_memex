@@ -36,6 +36,7 @@ import '../support/editor_access_doubles.dart';
 import '../support/fake_clock.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
+import '../support/font_fetch_hold.dart';
 import '../support/mac_editing.dart';
 import '../support/segment_editing_finder.dart';
 import '../support/today_cli_fakes.dart';
@@ -75,14 +76,18 @@ class _Links {
   /// Lets queued tab persistence finish before the harness deletes the
   /// temp vault: `UiStateStore.flush()` chains real file IO (which only
   /// runs outside the fake zone) with fake-zone callbacks (which only run on
-  /// a pump), so alternate the two until the flush completes (bounded).
+  /// a pump), so alternate the two until the flush completes (bounded; the
+  /// real IO side yields 1 ms per round, since 200 zero-length rounds ran
+  /// out under suite load, with the load average near 37).
   Future<void> settle() async {
     await pumpFrames(tester);
     final store = h.read(tabsProvider.notifier).store;
     var flushed = false;
     unawaited(store.flush().then((_) => flushed = true));
-    for (var i = 0; i < 200 && !flushed; i++) {
-      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    for (var i = 0; i < 5000 && !flushed; i++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 1)),
+      );
       await tester.pump();
     }
     expect(flushed, isTrue, reason: 'tab persistence finished');
@@ -261,6 +266,10 @@ Future<void> _dropClickMouse(WidgetTester tester) async {
 }
 
 void main() {
+  // settle() lets real IO run; held font fetches keep google_fonts' failed
+  // HTTP loads out of every test zone.
+  holdFontFetches();
+
   // -------------------------------------------------------------------------
   // AC1-AC3: ghost detection
   // -------------------------------------------------------------------------
@@ -956,6 +965,340 @@ void main() {
         await t.settle();
       }, variant: macOnly);
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // LinkRegion contracts its doc comments promise (verify mode)
+  // -------------------------------------------------------------------------
+  group('link region contracts', () {
+    testWidgets(
+      'with Cmd held the space just past a wikilink shows no hover and a Cmd+click there opens nothing',
+      (tester) async {
+        final t = await _launch(tester, 'Read [[Zeta Game]] today\n');
+        final r = t.r;
+        final (_, shownEnd) = _find(r, 0, 'Zeta Game');
+        final (todayStart, _) = _find(r, 0, 'today');
+        final a = r.segment(0).rectForOffset(shownEnd);
+        final b = r.segment(0).rectForOffset(todayStart);
+        expect(b.left, greaterThan(a.left), reason: 'a visible space between');
+        final gap = Offset((a.left + b.left) / 2, a.center.dy);
+        final before = List.of(t.tabs);
+
+        await _cmdDown(tester);
+        final mouse = await _mouseAt(tester, gap);
+        try {
+          expect(_cursor(), SystemMouseCursors.text);
+          expect(_controllerOf(tester, 0).cmdHover, isNull);
+        } finally {
+          await _removeMouse(tester, mouse);
+          await _cmdUp(tester);
+        }
+
+        await tester.macCmdClick(gap);
+        await pumpFrames(tester);
+        r.expectActiveNote(fixtureTopicId);
+        expect(t.tabs, before);
+
+        // The wikilink itself does open (not a double click).
+        await tester.pump(const Duration(seconds: 1));
+        await tester.macCmdClick(_pointOn(r, 0, 'Zeta Game'));
+        await pumpFrames(tester);
+        r.expectActiveNote(fixtureZetaId);
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'with Cmd held hovering emphasised text inside link text shows the link and a Cmd+click opens its URL',
+      (tester) async {
+        final t = await _launch(
+          tester,
+          'Go [see *it* here](https://x.y) end\n',
+        );
+        final r = t.r;
+        final (start, end) = _find(r, 0, '[see *it* here](https://x.y)');
+
+        await _cmdDown(tester);
+        final mouse = await _mouseAt(tester, _pointOn(r, 0, 'it'));
+        try {
+          expect(_cursor(), SystemMouseCursors.click);
+          expect(
+            _controllerOf(tester, 0).cmdHover,
+            TextRange(start: start, end: end),
+          );
+        } finally {
+          await _removeMouse(tester, mouse);
+          await _cmdUp(tester);
+        }
+
+        await tester.macCmdClick(_pointOn(r, 0, 'it'));
+        await pumpFrames(tester);
+        expect(t.opener.opened, ['https://x.y']);
+        r.expectActiveNote(fixtureTopicId);
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a wikilink inside fenced code is no link for Cmd hover or Cmd+click',
+      (tester) async {
+        final t = await _launch(
+          tester,
+          'Intro [[Known]]\n```\n[[Zeta Game]] and [a](https://x.y)\n```\nOutro\n',
+        );
+        final r = t.r;
+        final before = List.of(t.tabs);
+
+        await _cmdDown(tester);
+        final mouse = await _mouseAt(tester, _pointOn(r, 0, 'Zeta Game'));
+        try {
+          expect(_cursor(), SystemMouseCursors.text);
+          expect(_controllerOf(tester, 0).cmdHover, isNull);
+        } finally {
+          await _removeMouse(tester, mouse);
+          await _cmdUp(tester);
+        }
+
+        await tester.macCmdClick(_pointOn(r, 0, 'Zeta Game'));
+        await pumpFrames(tester);
+        await tester.pump(const Duration(seconds: 1));
+        await tester.macCmdClick(_pointOn(r, 0, 'https'));
+        await pumpFrames(tester);
+        r.expectActiveNote(fixtureTopicId);
+        expect(t.tabs, before);
+        expect(t.opener.opened, isEmpty);
+
+        // The wikilink outside the fence does open.
+        await tester.pump(const Duration(seconds: 1));
+        await tester.macCmdClick(_pointOn(r, 0, 'Known'));
+        await pumpFrames(tester);
+        r.expectActiveNote(_knownId);
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'an edit under a resting Cmd hover moves the hover with the wikilink and clears it once the wikilink moves away',
+      (tester) async {
+        final t = await _launch(tester, 'Read [[Zeta Game]] today\n');
+        final r = t.r;
+        final (start, end) = _find(r, 0, '[[Zeta Game]]');
+        await r.focusSegment(0);
+
+        await _cmdDown(tester);
+        final mouse = await _mouseAt(tester, _pointOn(r, 0, 'Zeta Game'));
+        try {
+          expect(
+            _controllerOf(tester, 0).cmdHover,
+            TextRange(start: start, end: end),
+          );
+
+          // One character before it: the token shifts under the pointer.
+          await r.typeInSegment(0, 'Reads [[Zeta Game]] today\n');
+          await pumpFrames(tester);
+          expect(
+            _controllerOf(tester, 0).cmdHover,
+            TextRange(start: start + 1, end: end + 1),
+          );
+          expect(_cursor(), SystemMouseCursors.click);
+
+          // A long prefix pushes it out from under the pointer.
+          await r.typeInSegment(
+            0,
+            'A much longer opening that pushes it: [[Zeta Game]] today\n',
+          );
+          await pumpFrames(tester);
+          expect(_controllerOf(tester, 0).cmdHover, isNull);
+          expect(_cursor(), SystemMouseCursors.text);
+        } finally {
+          await _removeMouse(tester, mouse);
+          await _cmdUp(tester);
+        }
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'with Cmd held moving the mouse out of the field clears the hover',
+      (tester) async {
+        final t = await _launch(tester, 'Read [[Zeta Game]] today\n');
+        final r = t.r;
+
+        await _cmdDown(tester);
+        final mouse = await _mouseAt(tester, _pointOn(r, 0, 'Zeta Game'));
+        try {
+          expect(_controllerOf(tester, 0).cmdHover, isNotNull);
+          final field = tester.getRect(r.textSegment(0));
+          await mouse.moveTo(Offset(field.center.dx, field.bottom + 40));
+          await tester.pump();
+          expect(_controllerOf(tester, 0).cmdHover, isNull);
+          expect(_isUnderlined(_styleOf(tester, r, 0, 'Zeta Game')), isFalse);
+        } finally {
+          await _removeMouse(tester, mouse);
+          await _cmdUp(tester);
+        }
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'Cmd+click on an upper case HTTPS link calls the UrlOpener with its URL as written',
+      (tester) async {
+        final t = await _launch(tester, 'Go [a](HTTPS://X.y/Path) now\n');
+        final r = t.r;
+
+        await tester.macCmdClick(_pointOn(r, 0, 'a'));
+        await pumpFrames(tester);
+
+        expect(t.opener.opened, ['HTTPS://X.y/Path']);
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets('a Cmd secondary click on a resolved wikilink opens nothing', (
+      tester,
+    ) async {
+      final t = await _launch(tester, 'See [[Known]] now\n');
+      final r = t.r;
+      final before = List.of(t.tabs);
+      final at = _pointOn(r, 0, 'Known');
+
+      await tester.macHolding(
+        [LogicalKeyboardKey.metaLeft],
+        () => tester.tapAt(
+          at,
+          kind: PointerDeviceKind.mouse,
+          buttons: kSecondaryButton,
+        ),
+      );
+      await pumpFrames(tester);
+
+      r.expectActiveNote(fixtureTopicId);
+      expect(t.tabs, before);
+
+      // A primary Cmd+click on it does open.
+      await tester.pump(const Duration(seconds: 1));
+      await tester.macCmdClick(at);
+      await pumpFrames(tester);
+      r.expectActiveNote(_knownId);
+      await t.settle();
+    }, variant: macOnly);
+
+    testWidgets(
+      'a Cmd press on one wikilink released on another opens nothing',
+      (tester) async {
+        final t = await _launch(
+          tester,
+          'See [[Known]] and [[Zeta Game]] now\n',
+        );
+        final r = t.r;
+        final before = List.of(t.tabs);
+        final from = _pointOn(r, 0, 'Known');
+        final to = _pointOn(r, 0, 'Zeta Game');
+
+        await tester.macHolding([LogicalKeyboardKey.metaLeft], () async {
+          final g = await tester.startGesture(
+            from,
+            kind: PointerDeviceKind.mouse,
+          );
+          await tester.pump();
+          await g.moveTo(to);
+          await tester.pump();
+          // Selecting reveals markers and moves the text: aim again.
+          await g.moveTo(_pointOn(r, 0, 'Zeta Game'));
+          await tester.pump();
+          await g.up();
+          await tester.pump();
+        });
+        await pumpFrames(tester);
+
+        r.expectActiveNote(fixtureTopicId);
+        expect(t.tabs, before);
+
+        // Pressed and released on the same wikilink, it opens.
+        await tester.pump(const Duration(seconds: 1));
+        await _dropClickMouse(tester);
+        // The drag selected across both, revealing markers: measure again.
+        await tester.macCmdClick(_pointOn(r, 0, 'Zeta Game'));
+        await pumpFrames(tester);
+        r.expectActiveNote(fixtureZetaId);
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'when two notes share a title Cmd+click opens the first one listed',
+      (tester) async {
+        final t = await _launch(
+          tester,
+          'See [[Known]] now\n',
+          overrides: [
+            _titles(
+              () async => [
+                NoteTitle(id: _knownId, title: 'Known', updatedAt: 9),
+                NoteTitle(id: 'topic-other', title: 'Known', updatedAt: 8),
+                NoteTitle(
+                  id: fixtureTopicId,
+                  title: 'Player Loop',
+                  updatedAt: 7,
+                ),
+              ],
+            ),
+          ],
+        );
+        final r = t.r;
+
+        await tester.macCmdClick(_pointOn(r, 0, 'Known'));
+        await pumpFrames(tester);
+
+        r.expectActiveNote(_knownId);
+        expect(t.tabs, isNot(contains(const NoteTab('topic-other'))));
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'typing a character and Cmd+clicking a transclusion token before the debounce saves the edited body before the tab switch',
+      (tester) async {
+        const edited = 'See ![[2026-09-05#^b7k2m9]] now!\n';
+        final t = await _launch(tester, 'See ![[2026-09-05#^b7k2m9]] now\n');
+        final r = t.r;
+        final h = t.h;
+
+        List<String?>? sentAtSwitch;
+        final sub = h.container.listen<TabsState>(tabsProvider, (_, next) {
+          if (next.activeTab == const NoteTab(fixtureDailyId)) {
+            sentAtSwitch ??= [
+              for (final c in h.cli.callsFor('update')) c.stdinBody,
+            ];
+          }
+        });
+        addTearDown(sub.close);
+
+        await r.focusSegment(0);
+        await r.typeInSegment(0, edited);
+        expect(h.cli.callsFor('update'), isEmpty, reason: 'debounce pending');
+
+        await tester.macCmdClick(_pointOn(r, 0, '2026-09-05'));
+        await pumpFrames(tester);
+
+        r.expectActiveNote(fixtureDailyId);
+        expect(sentAtSwitch, [edited]);
+        expect(h.db.getNote(fixtureTopicId)!.contentMd, edited);
+        await r.waitForSave();
+        expect(h.cli.callsFor('update'), hasLength(1));
+        await t.settle();
+      },
+      variant: macOnly,
+    );
   });
 
   // -------------------------------------------------------------------------
