@@ -7,6 +7,8 @@ import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import '../kind_chip.dart';
 import '../wikilink_autocomplete.dart';
+import 'line_boxes.dart';
+import 'live_preview_controller.dart';
 
 // Shared editing pieces of the note editor (WI #27): the scrolling editor
 // page, one editable markdown field with wikilink autocomplete, and the inline
@@ -261,49 +263,48 @@ class _TextSegmentFieldState extends State<TextSegmentField> {
     return KeyEventResult.handled;
   }
 
-  /// The global offset just below the caret, where the autocomplete popover
-  /// anchors: a [TextPainter] with the field's style and width measures the
-  /// text before the caret. Called only while the popover is open, after the
-  /// field was laid out.
+  /// The global point at the caret's x and the bottom of the caret's real
+  /// line box (R32), where the autocomplete popover anchors. Called only
+  /// while the popover is open, after the field was laid out (the caret is
+  /// clamped to the text the field last laid out).
   Offset _caretGlobal() {
-    final box = _fieldKey.currentContext!.findRenderObject()! as RenderBox;
-    final text = widget.controller.text;
-    final caret = widget.controller.selection.baseOffset.clamp(0, text.length);
-    final prefix = text.substring(0, caret);
-    final painter = TextPainter(
-      // A single space gives the painter something to measure when the
-      // prefix is empty.
-      text: TextSpan(text: prefix.isEmpty ? ' ' : prefix, style: _bodyStyle()),
-      textDirection: TextDirection.ltr,
-    );
-    painter.layout(maxWidth: box.size.width);
-    final local = painter.getOffsetForCaret(
-      TextPosition(offset: prefix.length),
-      Rect.zero,
-    );
-    painter.dispose();
-    final origin = box.localToGlobal(Offset.zero);
-    return origin + Offset(local.dx, local.dy + _bodySize * _bodyHeight);
+    final editable = findRenderEditable(
+      _fieldKey.currentContext!.findRenderObject(),
+    )!;
+    final caret = RenderEditableLineBoxes(
+      editable,
+    ).caretRect(widget.controller.selection.baseOffset);
+    return editable.localToGlobal(caret.bottomLeft);
   }
 
   @override
   Widget build(BuildContext context) {
     return Stack(
       children: [
-        TextField(
-          key: _fieldKey,
-          controller: widget.controller,
-          focusNode: _focus,
-          maxLines: null,
-          minLines: widget.minLines,
-          cursorColor: OmColors.accent,
-          style: _bodyStyle(),
-          decoration: InputDecoration(
-            hintText: widget.hintText,
-            hintStyle: OmType.mono(size: _bodySize, color: OmColors.fg3),
+        // The editor's selection fill (D13).
+        DefaultSelectionStyle.merge(
+          selectionColor: OmColors.selection,
+          child: TextField(
+            key: _fieldKey,
+            controller: widget.controller,
+            focusNode: _focus,
+            maxLines: null,
+            minLines: widget.minLines,
+            cursorColor: OmColors.accent,
+            style: _bodyStyle(),
+            // A live preview controller may lay its text out with its own
+            // strut (B1); null keeps the field's default.
+            strutStyle: switch (widget.controller) {
+              final LivePreviewController live => live.strutStyle,
+              _ => null,
+            },
+            decoration: InputDecoration(
+              hintText: widget.hintText,
+              hintStyle: OmType.mono(size: _bodySize, color: OmColors.fg3),
+            ),
+            // No onChanged: the controller listener reports typed AND
+            // spliced changes.
           ),
-          // No onChanged: the controller listener reports typed AND spliced
-          // changes.
         ),
         // Zero-size; the popover lives in the root Overlay.
         WikilinkAutocomplete(

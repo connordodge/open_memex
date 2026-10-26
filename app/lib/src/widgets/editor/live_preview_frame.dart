@@ -1,7 +1,9 @@
 import 'package:flutter/widgets.dart';
 
 import 'line_boxes.dart';
+import 'link_region.dart';
 import 'live_preview_controller.dart';
+import 'live_preview_decorations.dart';
 
 /// Wraps every live preview field (D7): composes `LivePreviewDecorations`
 /// and `LinkRegion` around [child], handing both the field's [controller]
@@ -28,5 +30,10 @@ class LivePreviewFrame extends StatelessWidget {
   final Widget child;
 
   @override
-  Widget build(BuildContext context) => throw UnimplementedError();
+  Widget build(BuildContext context) => LivePreviewDecorations(
+    controller: controller,
+    boxes: boxes,
+    textLeft: textLeft,
+    child: LinkRegion(controller: controller, boxes: boxes, child: child),
+  );
 }

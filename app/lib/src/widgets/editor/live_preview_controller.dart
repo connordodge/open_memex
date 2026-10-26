@@ -14,13 +14,9 @@ import 'package:flutter/widgets.dart';
 /// - [revealGate]: true while the field's text segment has focus (markers
 ///   may reveal only then).
 class LivePreviewController extends TextEditingController {
-  LivePreviewController({super.text}) {
-    throw UnimplementedError();
-  }
+  LivePreviewController({super.text});
 
-  LivePreviewController.fromValue(super.value) : super.fromValue() {
-    throw UnimplementedError();
-  }
+  LivePreviewController.fromValue(super.value) : super.fromValue();
 
   /// The field holds only an item row's text. Default false.
   bool itemText = false;
@@ -35,11 +31,11 @@ class LivePreviewController extends TextEditingController {
   bool atSegmentStart = true;
 
   /// True while the field's text segment has focus. Default: never true.
-  late ValueListenable<bool> revealGate;
+  ValueListenable<bool> revealGate = const AlwaysStoppedAnimation<bool>(false);
 
   /// The strut a `TextSegmentField` editing this controller lays its text
   /// out with; null (the pass-through) keeps the field's default strut.
   /// B1 returns the 22.95 px minimum strut (R13), so taller heading lines
   /// lay out taller.
-  StrutStyle? get strutStyle => throw UnimplementedError();
+  StrutStyle? get strutStyle => null;
 }

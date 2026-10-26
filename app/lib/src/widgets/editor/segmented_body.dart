@@ -18,6 +18,10 @@ import '../inline_error.dart';
 import 'capture_gutter.dart';
 import 'excerpt_card.dart';
 import 'footer_chip_row.dart';
+import 'line_boxes.dart';
+import 'live_preview_controller.dart';
+import 'live_preview_frame.dart';
+import 'segment_view.dart';
 import 'text_segment.dart';
 
 /// One segment on screen: an editable text run, an excerpt card or the
@@ -26,19 +30,42 @@ sealed class _Seg {}
 
 class _TextSeg extends _Seg {
   _TextSeg(String text, this.focus, {required this.ownsFocus})
-    : ctrl = TextEditingController.fromValue(
+    : ctrl = LivePreviewController.fromValue(
         TextEditingValue(
           text: text,
           selection: TextSelection.collapsed(offset: text.length),
         ),
-      );
+      ),
+      gate = _FocusGate(focus) {
+    ctrl.revealGate = gate;
+  }
 
-  final TextEditingController ctrl;
+  final LivePreviewController ctrl;
   final FocusNode focus;
+
+  /// The controller's reveal gate: the segment's focus.
+  final _FocusGate gate;
 
   /// False for the host's primary focus node, which this body never
   /// disposes.
   final bool ownsFocus;
+}
+
+/// True while [focus] has focus; notifies only when that changes.
+class _FocusGate extends ValueNotifier<bool> {
+  _FocusGate(this.focus) : super(focus.hasFocus) {
+    focus.addListener(_sync);
+  }
+
+  final FocusNode focus;
+
+  void _sync() => value = focus.hasFocus;
+
+  @override
+  void dispose() {
+    focus.removeListener(_sync);
+    super.dispose();
+  }
 }
 
 class _CardSeg extends _Seg {
@@ -167,6 +194,7 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
   void _disposeSegs(List<_Seg> segs) {
     for (final s in segs) {
       if (s is _TextSeg) {
+        s.gate.dispose();
         s.ctrl.dispose();
         if (s.ownsFocus) s.focus.dispose();
       }
@@ -251,21 +279,8 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
       );
 
   /// The first text segment field's [RenderEditable], once laid out.
-  RenderEditable? _primaryEditable() {
-    RenderEditable? found;
-    void visit(RenderObject node) {
-      if (found != null) return;
-      if (node is RenderEditable) {
-        found = node;
-      } else {
-        node.visitChildren(visit);
-      }
-    }
-
-    final root = _primaryFieldKey.currentContext?.findRenderObject();
-    if (root != null) visit(root);
-    return found;
-  }
+  RenderEditable? _primaryEditable() =>
+      findRenderEditable(_primaryFieldKey.currentContext?.findRenderObject());
 
   /// The daily person field with the capture gutter beside it (WI #28).
   Widget _withGutter(_TextSeg seg, Widget field) => Stack(
@@ -494,23 +509,33 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
             switch (_segs[i]) {
               final _TextSeg t => KeyedSubtree(
                 key: ValueKey('text-segment-$i'),
-                child: _primaryKeyed(
-                  i == 0,
-                  TextSegmentField(
-                    key: ObjectKey(t.ctrl),
-                    controller: t.ctrl,
-                    focusNode: t.focus,
-                    onChanged: (_) => _onTextChanged(),
-                    kindChips: _kindChips,
-                    minLines: single ? 12 : (identical(t, texts.last) ? 4 : 1),
-                    hintText: single
-                        ? 'type [[ to link a note · write markdown…'
-                        : null,
-                    onMoveUp: () => _neighbour(t, forward: false),
-                    onMoveDown: () => _neighbour(t, forward: true),
-                    dailyNoteId: _isSavedDaily ? widget.note.id : null,
-                    onTopicLinked: _onTopicLinked,
-                    onCreateError: _onCreateError,
+                child: SegmentView(
+                  controller: t.ctrl,
+                  focusNode: t.focus,
+                  builder: (context, boxes) => _primaryKeyed(
+                    i == 0,
+                    LivePreviewFrame(
+                      controller: t.ctrl,
+                      boxes: boxes,
+                      child: TextSegmentField(
+                        key: ObjectKey(t.ctrl),
+                        controller: t.ctrl,
+                        focusNode: t.focus,
+                        onChanged: (_) => _onTextChanged(),
+                        kindChips: _kindChips,
+                        minLines: single
+                            ? 12
+                            : (identical(t, texts.last) ? 4 : 1),
+                        hintText: single
+                            ? 'type [[ to link a note · write markdown…'
+                            : null,
+                        onMoveUp: () => _neighbour(t, forward: false),
+                        onMoveDown: () => _neighbour(t, forward: true),
+                        dailyNoteId: _isSavedDaily ? widget.note.id : null,
+                        onTopicLinked: _onTopicLinked,
+                        onCreateError: _onCreateError,
+                      ),
+                    ),
                   ),
                 ),
               ),
