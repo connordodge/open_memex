@@ -163,6 +163,23 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   /// True while the host writes the segment and row controllers.
   bool _applying = false;
 
+  /// The segment's undo recorder (ruling D19): the host records every
+  /// [SegmentEdit] it applies to the segment text with it, once per edit,
+  /// and resets it on a change from outside.
+  SegmentUndoRecorder get undo => _undo;
+
+  /// Runs first when a row field starts composing over a segment selection
+  /// that crosses rows (ruling D19), with the row's index and its composing
+  /// value. Returning true means it has already deleted the selected range
+  /// into that row (focus stays there); the host then applies the
+  /// composing text at the resulting selection. Null (the default) keeps
+  /// the plain row behaviour.
+  set rowComposingInterceptor(
+    bool Function(int rowIndex, TextEditingValue value)? f,
+  ) => _composingInterceptor = f;
+
+  bool Function(int rowIndex, TextEditingValue value)? _composingInterceptor;
+
   @override
   void initState() {
     super.initState();
@@ -243,6 +260,7 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   void _onRowValue(_Row row) {
     if (_applying) return;
     final value = row.controller.value;
+    if (_intercepted(row, value)) return;
     if (value.text != row.text) {
       final local = SegmentEdit.diff(row.text, value.text);
       final at = row.spec.textStart;
@@ -264,6 +282,52 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
       _selectFrom(row);
     }
   }
+
+  /// Offers [row]'s composing [value] to the composing interceptor while the
+  /// segment selection crosses rows. When it takes it and leaves a
+  /// selection within one row, the composing text [row] typed over its
+  /// slice of the selection goes in at that selection, through the row
+  /// holding it, and this returns true.
+  bool _intercepted(_Row row, TextEditingValue value) {
+    final intercept = _composingInterceptor;
+    if (intercept == null || !value.composing.isValid) return false;
+    final selection = widget.controller.selection;
+    if (!_crossesRows(selection)) return false;
+    final index = _rows.indexOf(row);
+    // The composing text replaced the row's slice of the selection.
+    final slice = rowSlices([
+      for (final r in _rows) r.spec,
+    ], _segmentSelection(selection))[index];
+    if (slice == null) return false;
+    final cut = value.text.length - (row.text.length - slice.end);
+    final inserted = cut > slice.start
+        ? value.text.substring(slice.start, cut)
+        : '';
+    if (!intercept(index, value)) return false;
+    final after = widget.controller.selection;
+    if (_crossesRows(after)) return false;
+    final target = _rows[_rowHolding(after.start)];
+    final start = target.spec.toLocal(after.start);
+    final end = target.spec.toLocal(after.end);
+    int shift(int offset) =>
+        start + (offset - slice.start).clamp(0, inserted.length);
+    target.controller.value = TextEditingValue(
+      text: target.text.replaceRange(start, end, inserted),
+      selection: TextSelection(
+        baseOffset: shift(value.selection.baseOffset),
+        extentOffset: shift(value.selection.extentOffset),
+      ),
+      composing: TextRange(
+        start: shift(value.composing.start),
+        end: shift(value.composing.end),
+      ),
+    );
+    return true;
+  }
+
+  /// Whether [selection]'s ends lie in different rows.
+  bool _crossesRows(TextSelection selection) =>
+      _rowHolding(selection.start) != _rowHolding(selection.end);
 
   void _onRowFocus(_Row row) {
     if (row.focusNode.hasFocus) _selectFrom(row);
@@ -419,6 +483,10 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
         ..quote = spec.kind == RowKind.quote
         ..atSegmentStart = spec.textStart == 0
         ..revealGate = widget.revealGate;
+      // A code row's hidden fence lines lay out 8 px tall (ruling D18).
+      // Setting codeRow notifies, so only a change is written.
+      final code = spec.kind == RowKind.code;
+      if (row.controller.codeRow != code) row.controller.codeRow = code;
       final text = _text.substring(spec.textStart, spec.textEnd);
       final local = switch (slices[j]) {
         null => const TextSelection.collapsed(offset: -1),

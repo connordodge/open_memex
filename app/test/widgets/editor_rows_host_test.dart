@@ -1873,4 +1873,217 @@ void main() {
       },
     );
   });
+
+  // -------------------------------------------------------------------------
+  // Ruling D18: code rows set codeRow, so hidden fence lines lay out at the
+  // design's 8 px (pack #161) while every other line stays 22.95 px.
+  // -------------------------------------------------------------------------
+  group('code row fence lines (D18)', () {
+    testWidgets(
+      'only code rows set codeRow and an unfocused code row lays out its hidden fence lines 8 px tall',
+      (tester) async {
+        const fence = '```\nlet a = 1;\nlet b = 2;\n```';
+        await _wi167Pump(tester, 'Before\n$fence\n- item\nAfter');
+
+        expect(_wi167Texts(tester, 0), ['Before', fence, 'item', 'After']);
+        for (final (r, code) in [
+          (0, false),
+          (1, true),
+          (2, false),
+          (3, false),
+        ]) {
+          expect(_wi167Ctrl(tester, 0, r).codeRow, code, reason: 'row $r');
+        }
+        final heights = [
+          for (final line in _wi167Lines(tester, 0, 1)) line.bottom - line.top,
+        ];
+        expect(heights, hasLength(4));
+        for (final (i, h) in heights.indexed) {
+          expect(
+            h,
+            moreOrLessEquals(i == 0 || i == 3 ? 8 : _wi167Line, epsilon: 0.1),
+            reason: 'code row line $i',
+          );
+        }
+        for (final r in [0, 2, 3]) {
+          for (final line in _wi167Lines(tester, 0, r)) {
+            expect(
+              line.bottom - line.top,
+              moreOrLessEquals(_wi167Line, epsilon: 0.1),
+              reason: 'row $r line ${line.range}',
+            );
+          }
+        }
+      },
+    );
+
+    testWidgets(
+      'a row that becomes a code row sets codeRow and a code row that stops being one clears it',
+      (tester) async {
+        final body = await _wi167Pump(tester, 'Before\n- item');
+        expect(_wi167Ctrl(tester, 0, 0).codeRow, isFalse);
+
+        await body.serverWrite('Before\n```\ncode\n```\n- item');
+        expect(_wi167Texts(tester, 0), ['Before', '```\ncode\n```', 'item']);
+        expect(_wi167Ctrl(tester, 0, 1).codeRow, isTrue);
+        expect(_wi167Ctrl(tester, 0, 2).codeRow, isFalse);
+
+        await body.serverWrite('Before\n- item');
+        expect(_wi167Texts(tester, 0), ['Before', 'item']);
+        expect(_wi167Ctrl(tester, 0, 0).codeRow, isFalse);
+        expect(_wi167Ctrl(tester, 0, 1).codeRow, isFalse);
+      },
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Ruling D19: host hooks for C4, the segment undo recorder and the
+  // composing interceptor.
+  // -------------------------------------------------------------------------
+  group('host hooks for C4 (D19)', () {
+    // Rows `abc` and `def`; the selection runs from after `b` (4) to after
+    // `e` (10), its extent in row 1, whose slice is `de` (local 0..2).
+    const twoItems = '- abc\n- def';
+    const crossRows = TextSelection(baseOffset: 4, extentOffset: 10);
+
+    Future<_Wi167Body> pumpCrossRowSelection(WidgetTester tester) async {
+      final body = await _wi167Pump(tester, twoItems);
+      await _wi167FocusRow(tester, 0, 1);
+      segmentEditingAt(tester, 0).select(crossRows);
+      await tester.pump();
+      expect(
+        _wi167Ctrl(tester, 0, 1).selection,
+        const TextSelection(baseOffset: 0, extentOffset: 2),
+      );
+      return body;
+    }
+
+    testWidgets(
+      'the undo getter returns the recorder the host records each applied edit in',
+      (tester) async {
+        final recorders = _wi167Recorders();
+        await _wi167Pump(tester, _wi167List);
+        expect(recorders, hasLength(1));
+        expect(_wi167View(tester, 0).undo, same(recorders.single));
+
+        await _wi167FocusRow(tester, 0, 2);
+        await tester.macEditingValue('bx');
+
+        expect(_wi167View(tester, 0).undo, same(recorders.single));
+        expect(recorders.single.records, hasLength(1));
+        expect(recorders.single.records.single.before, _wi167List);
+      },
+    );
+
+    testWidgets(
+      'without an interceptor composing over a cross row selection replaces the focused row slice only',
+      (tester) async {
+        final body = await pumpCrossRowSelection(tester);
+
+        await tester.macCompose('Xf', const TextRange(start: 0, end: 1));
+
+        expect(body.changes, ['- abc\n- Xf']);
+        expect(_wi167Texts(tester, 0), ['abc', 'Xf']);
+        expect(
+          _wi167Ctrl(tester, 0, 1).value.composing,
+          const TextRange(start: 0, end: 1),
+        );
+      },
+    );
+
+    testWidgets(
+      'an interceptor that declines leaves composing over a cross row selection as without one',
+      (tester) async {
+        final body = await pumpCrossRowSelection(tester);
+        final calls = <(int, TextEditingValue)>[];
+        _wi167View(tester, 0).rowComposingInterceptor = (i, v) {
+          calls.add((i, v));
+          return false;
+        };
+
+        await tester.macCompose('Xf', const TextRange(start: 0, end: 1));
+
+        expect(calls, hasLength(1));
+        expect(calls.single.$1, 1);
+        expect(calls.single.$2.text, 'Xf');
+        expect(calls.single.$2.composing, const TextRange(start: 0, end: 1));
+        expect(body.changes, ['- abc\n- Xf']);
+        expect(_wi167Texts(tester, 0), ['abc', 'Xf']);
+      },
+    );
+
+    testWidgets('the interceptor is not called for composing within one row', (
+      tester,
+    ) async {
+      final body = await _wi167Pump(tester, twoItems);
+      final calls = <int>[];
+      _wi167View(tester, 0).rowComposingInterceptor = (i, v) {
+        calls.add(i);
+        return true;
+      };
+      await _wi167FocusRow(tester, 0, 1);
+
+      await tester.macCompose('defé', const TextRange(start: 3, end: 4));
+
+      expect(calls, isEmpty);
+      expect(body.changes, ['- abc\n- defé']);
+    });
+
+    testWidgets(
+      'the interceptor is not called for a non composing value over a cross row selection',
+      (tester) async {
+        final body = await pumpCrossRowSelection(tester);
+        final calls = <int>[];
+        _wi167View(tester, 0).rowComposingInterceptor = (i, v) {
+          calls.add(i);
+          return true;
+        };
+
+        await tester.macEditingValue(
+          'Xf',
+          selection: const TextSelection.collapsed(offset: 1),
+        );
+
+        expect(calls, isEmpty);
+        expect(body.changes, ['- abc\n- Xf']);
+      },
+    );
+
+    testWidgets(
+      'an interceptor that deletes the range runs first and the host then applies the composing text at the caret it left',
+      (tester) async {
+        final body = await pumpCrossRowSelection(tester);
+        final view = _wi167View(tester, 0);
+        final seen = <String>[];
+        view.rowComposingInterceptor = (i, v) {
+          // Runs before the host applies anything.
+          seen.add(view.text);
+          final s = view.selection;
+          view.applyEdit(
+            SegmentEdit(
+              start: s.start,
+              end: s.end,
+              replacement: '',
+              selection: SegmentSelection.collapsed(s.start),
+            ),
+          );
+          return true;
+        };
+
+        await tester.macCompose('Xf', const TextRange(start: 0, end: 1));
+
+        expect(seen, [twoItems]);
+        expect(body.changes, ['- abf', '- abXf']);
+        expect(segmentEditingAt(tester, 0).text, '- abXf');
+        expect(
+          segmentEditingAt(tester, 0).selection,
+          const TextSelection.collapsed(offset: 5),
+        );
+        expect(_wi167Texts(tester, 0), ['abXf']);
+        final row = _wi167Ctrl(tester, 0, 0).value;
+        expect(row.selection, const TextSelection.collapsed(offset: 3));
+        expect(row.composing, const TextRange(start: 2, end: 3));
+      },
+    );
+  });
 }
