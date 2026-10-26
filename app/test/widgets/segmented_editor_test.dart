@@ -49,10 +49,9 @@ void main() {
         final r = await launchSegmented(tester, vault: seedSegmentedVault());
         await r.open(fixtureTopicId);
 
-        expect(
-          r.textIn(r.card(1), 'Fixed the jump arc.\n- tried coyote time'),
-          findsWidgets,
-        );
+        // TEST-CHANGE (#172): the card renders rows with painted markers.
+        expect(r.textIn(r.card(1), 'Fixed the jump arc.'), findsWidgets);
+        expect(r.textIn(r.card(1), 'tried coyote time'), findsWidgets);
         expect(r.textIn(r.card(1), 'Sleep was bad.'), findsNothing);
       },
     );
@@ -88,7 +87,8 @@ void main() {
         await r.open(fixtureTopicId);
 
         expect(r.segmentText(0), '');
-        expect(r.textIn(r.card(1), '- tried coyote time'), findsWidgets);
+        // TEST-CHANGE (#172): the bullet marker is painted, not text.
+        expect(r.textIn(r.card(1), 'tried coyote time'), findsWidgets);
         expect(r.segmentText(2), 'After the card\n');
       },
     );
@@ -205,10 +205,9 @@ void main() {
         );
         await r.open(fixtureTopicId);
         expect(r.allCards, findsNWidgets(2));
-        expect(
-          r.textIn(r.card(3), '- tried coyote time\nSleep was bad.'),
-          findsWidgets,
-        );
+        // TEST-CHANGE (#172): the card renders rows with painted markers.
+        expect(r.textIn(r.card(3), 'tried coyote time'), findsWidgets);
+        expect(r.textIn(r.card(3), 'Sleep was bad.'), findsWidgets);
 
         await r.tapRemove(3);
 
@@ -243,10 +242,9 @@ void main() {
 
         expect(r.excerptRms, hasLength(1));
         expect(r.card(1), findsOneWidget);
-        expect(
-          r.textIn(r.card(1), 'Fixed the jump arc.\n- tried coyote time'),
-          findsWidgets,
-        );
+        // TEST-CHANGE (#172): the card renders rows with painted markers.
+        expect(r.textIn(r.card(1), 'Fixed the jump arc.'), findsWidgets);
+        expect(r.textIn(r.card(1), 'tried coyote time'), findsWidgets);
         expect(r.inlineError, findsOneWidget);
         expect(
           find.descendant(
@@ -658,10 +656,9 @@ void main() {
         );
         expect(r.allCards, findsNWidgets(2));
         expect(r.textIn(r.card(1), 'Sleep was bad.'), findsWidgets);
-        expect(
-          r.textIn(r.card(3), 'Fixed the jump arc.\n- tried coyote time'),
-          findsWidgets,
-        );
+        // TEST-CHANGE (#172): the card renders rows with painted markers.
+        expect(r.textIn(r.card(3), 'Fixed the jump arc.'), findsWidgets);
+        expect(r.textIn(r.card(3), 'tried coyote time'), findsWidgets);
         expect(r.segmentText(0), 'Intro line\n');
       },
     );

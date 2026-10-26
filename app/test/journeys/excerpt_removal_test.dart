@@ -16,10 +16,9 @@ void main() {
         final vault = seedSegmentedVault();
         final r = await launchSegmented(tester, vault: vault);
         await r.open(fixtureTopicId);
-        expect(
-          r.textIn(r.card(1), 'Fixed the jump arc.\n- tried coyote time'),
-          findsWidgets,
-        );
+        // TEST-CHANGE (#172): the card renders rows with painted markers.
+        expect(r.textIn(r.card(1), 'Fixed the jump arc.'), findsWidgets);
+        expect(r.textIn(r.card(1), 'tried coyote time'), findsWidgets);
 
         await r.tapRemove(1);
 

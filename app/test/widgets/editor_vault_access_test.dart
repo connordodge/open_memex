@@ -263,13 +263,12 @@ void main() {
         final r = SegmentedEditorRobot(tester, h);
         await r.open(fixtureTopicId);
 
+        // TEST-CHANGE (#172): the card renders rows with painted markers.
         expect(
-          r.textIn(
-            r.card(1),
-            'Served by the daily domain.\n- and a second block',
-          ),
+          r.textIn(r.card(1), 'Served by the daily domain.'),
           findsWidgets,
         );
+        expect(r.textIn(r.card(1), 'and a second block'), findsWidgets);
         expect(r.textIn(r.card(1), 'Fixed the jump arc.'), findsNothing);
         expect(
           doubles.daily.reads,
