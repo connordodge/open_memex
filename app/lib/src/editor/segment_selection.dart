@@ -12,7 +12,7 @@ import 'editor_rows.dart';
 /// and the terminators between rows included (Spec R27):
 /// always `text.substring(selection.start, selection.end)` (D17).
 String copyText(String text, SegmentSelection selection) {
-  throw UnimplementedError();
+  return text.substring(selection.start, selection.end);
 }
 
 /// The edit that deletes [selection]'s range from [text] (Spec R27
@@ -25,7 +25,12 @@ SegmentEdit deleteRange(
   List<RowSpec> rows,
   SegmentSelection selection,
 ) {
-  throw UnimplementedError();
+  return SegmentEdit(
+    start: selection.start,
+    end: selection.end,
+    replacement: '',
+    selection: SegmentSelection.collapsed(selection.start),
+  );
 }
 
 /// The edit that replaces [selection]'s range in [text] with [inserted]
@@ -37,14 +42,22 @@ SegmentEdit replaceRange(
   SegmentSelection selection,
   String inserted,
 ) {
-  throw UnimplementedError();
+  return SegmentEdit(
+    start: selection.start,
+    end: selection.end,
+    replacement: inserted,
+    selection: SegmentSelection.collapsed(selection.start + inserted.length),
+  );
 }
 
 /// [selection] with both ends clamped into `0..text.length` (Spec R28),
 /// keeping its direction (which end is the base and which the extent).
 /// No end falls inside a surrogate pair.
 SegmentSelection clampToSegment(SegmentSelection selection, String text) {
-  throw UnimplementedError();
+  return SegmentSelection(
+    baseOffset: _clampOffset(selection.baseOffset, text),
+    extentOffset: _clampOffset(selection.extentOffset, text),
+  );
 }
 
 /// One character step right from [offset] (Spec R23, R26).
@@ -54,7 +67,14 @@ SegmentSelection clampToSegment(SegmentSelection selection, String text) {
 /// the next row's text start (its marker isn't selectable text). At the last
 /// row's text end, returns [offset].
 int nextCharacterOffset(String text, List<RowSpec> rows, int offset) {
-  throw UnimplementedError();
+  final i = _rowIndex(rows, offset);
+  if (i < 0) return offset;
+  final row = rows[i];
+  if (offset < row.textStart) return row.textStart;
+  if (offset >= row.textEnd) {
+    return i + 1 < rows.length ? rows[i + 1].textStart : offset;
+  }
+  return offset + _unitsAfter(text, offset);
 }
 
 /// One character step left from [offset] (Spec R23, R26).
@@ -64,7 +84,12 @@ int nextCharacterOffset(String text, List<RowSpec> rows, int offset) {
 /// the previous row's text end. At the first row's text start, returns
 /// [offset].
 int previousCharacterOffset(String text, List<RowSpec> rows, int offset) {
-  throw UnimplementedError();
+  final i = _rowIndex(rows, offset);
+  if (i < 0) return offset;
+  final row = rows[i];
+  if (offset > row.textEnd) return row.textEnd;
+  if (offset <= row.textStart) return i > 0 ? rows[i - 1].textEnd : offset;
+  return offset - _unitsBefore(text, offset);
 }
 
 /// One word step right from [offset] (Spec R23 Option+Right, R26).
@@ -74,7 +99,21 @@ int previousCharacterOffset(String text, List<RowSpec> rows, int offset) {
 /// a row's text end, lands at the next row's text start. At the last row's
 /// text end, returns [offset].
 int nextWordOffset(String text, List<RowSpec> rows, int offset) {
-  throw UnimplementedError();
+  final i = _rowIndex(rows, offset);
+  if (i < 0) return offset;
+  final row = rows[i];
+  if (offset < row.textStart) return row.textStart;
+  if (offset >= row.textEnd) {
+    return i + 1 < rows.length ? rows[i + 1].textStart : offset;
+  }
+  var o = offset;
+  while (o < row.textEnd && _isSpace(text.codeUnitAt(o))) {
+    o++;
+  }
+  while (o < row.textEnd && !_isSpace(text.codeUnitAt(o))) {
+    o++;
+  }
+  return o;
 }
 
 /// One word step left from [offset] (Spec R23 Option+Left, R26).
@@ -84,5 +123,66 @@ int nextWordOffset(String text, List<RowSpec> rows, int offset) {
 /// start. From a row's text start, lands at the previous row's text end. At
 /// the first row's text start, returns [offset].
 int previousWordOffset(String text, List<RowSpec> rows, int offset) {
-  throw UnimplementedError();
+  final i = _rowIndex(rows, offset);
+  if (i < 0) return offset;
+  final row = rows[i];
+  if (offset > row.textEnd) return row.textEnd;
+  if (offset <= row.textStart) return i > 0 ? rows[i - 1].textEnd : offset;
+  var o = offset;
+  while (o > row.textStart && _isSpace(text.codeUnitAt(o - 1))) {
+    o--;
+  }
+  while (o > row.textStart && !_isSpace(text.codeUnitAt(o - 1))) {
+    o--;
+  }
+  return o;
 }
+
+/// Index of the row whose text `[textStart, textEnd]` holds [offset], or of
+/// the first row after it when [offset] is in a marker or a terminator: the
+/// first row with `offset <= textEnd`, else the last row. -1 for no rows.
+int _rowIndex(List<RowSpec> rows, int offset) {
+  for (var i = 0; i < rows.length; i++) {
+    if (offset <= rows[i].textEnd) return i;
+  }
+  return rows.length - 1;
+}
+
+/// [offset] clamped into `0..text.length` and moved to the start of a
+/// surrogate pair it would split.
+int _clampOffset(int offset, String text) {
+  final o = offset.clamp(0, text.length);
+  return _isPairAt(text, o - 1) ? o - 1 : o;
+}
+
+/// Code units of the character starting at [offset]: 2 for a surrogate pair
+/// or a CRLF, else 1.
+int _unitsAfter(String text, int offset) =>
+    _isPairAt(text, offset) || _isCrlfAt(text, offset) ? 2 : 1;
+
+/// Code units of the character ending at [offset]: 2 for a surrogate pair or
+/// a CRLF, else 1.
+int _unitsBefore(String text, int offset) =>
+    _isPairAt(text, offset - 2) || _isCrlfAt(text, offset - 2) ? 2 : 1;
+
+/// Whether a surrogate pair starts at [i].
+bool _isPairAt(String text, int i) =>
+    i >= 0 &&
+    i + 1 < text.length &&
+    _isHighSurrogate(text.codeUnitAt(i)) &&
+    _isLowSurrogate(text.codeUnitAt(i + 1));
+
+/// Whether a CRLF starts at [i].
+bool _isCrlfAt(String text, int i) =>
+    i >= 0 &&
+    i + 1 < text.length &&
+    text.codeUnitAt(i) == 0x0D &&
+    text.codeUnitAt(i + 1) == 0x0A;
+
+bool _isHighSurrogate(int unit) => unit >= 0xD800 && unit <= 0xDBFF;
+
+bool _isLowSurrogate(int unit) => unit >= 0xDC00 && unit <= 0xDFFF;
+
+/// Whether [unit] separates words: a space, a tab or a line terminator.
+bool _isSpace(int unit) =>
+    unit == 0x20 || unit == 0x09 || unit == 0x0A || unit == 0x0D;
