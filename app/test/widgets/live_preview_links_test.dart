@@ -218,15 +218,25 @@ bool _isResolvedLink(TextStyle style) =>
 bool _isUnderlined(TextStyle style) =>
     style.decoration?.contains(TextDecoration.underline) ?? false;
 
-/// Segment [seg]'s live preview controller (the one its LinkRegion gets).
-LivePreviewController _controllerOf(WidgetTester tester, int seg) => tester
-    .widget<LinkRegion>(
-      find.descendant(
-        of: find.byKey(textSegmentKey(seg)),
-        matching: find.byType(LinkRegion),
-      ),
-    )
-    .controller;
+/// The live preview controller (the one its LinkRegion gets) of segment
+/// [seg]'s editor row holding segment offset [offset]. C1 (#167) gives each
+/// row its own controller and LinkRegion; with no [offset] the segment must
+/// show exactly one row.
+LivePreviewController _controllerOf(
+  WidgetTester tester,
+  int seg, {
+  int? offset,
+}) {
+  final regions = find.descendant(
+    of: find.byKey(textSegmentKey(seg)),
+    matching: find.byType(LinkRegion),
+  );
+  if (offset == null) return tester.widget<LinkRegion>(regions).controller;
+  final handle = segmentEditingAt(tester, seg);
+  final all = tester.widgetList<LinkRegion>(regions).toList();
+  expect(all, hasLength(handle.rowCount), reason: 'one LinkRegion per row');
+  return all[segmentRowHolding(handle, offset)].controller;
+}
 
 /// The mouse cursor the app shows for the test mouse (device 1).
 MouseCursor? _cursor() =>
@@ -1055,7 +1065,10 @@ void main() {
         final mouse = await _mouseAt(tester, _pointOn(r, 0, 'Zeta Game'));
         try {
           expect(_cursor(), SystemMouseCursors.text);
-          expect(_controllerOf(tester, 0).cmdHover, isNull);
+          final (zeta, _) = _find(r, 0, 'Zeta Game');
+          final code = _controllerOf(tester, 0, offset: zeta);
+          expect(code.text, contains('[[Zeta Game]]'), reason: 'the code row');
+          expect(code.cmdHover, isNull);
         } finally {
           await _removeMouse(tester, mouse);
           await _cmdUp(tester);

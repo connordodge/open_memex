@@ -47,6 +47,7 @@ import '../robots/segmented_editor_robot.dart';
 import '../robots/today_robot.dart';
 import '../support/app_harness.dart';
 import '../support/daily_seed.dart';
+import '../support/editor_scope.dart';
 import '../support/fake_clock.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
@@ -2511,33 +2512,36 @@ PaintPattern get _wi167PaintsSelection => paints
 
 /// One prose [EditorRow] (segment 0, row 0) of [ctrl] and [node] whose field
 /// paints its own (focused) selection in green, not `OmColors.selection`.
+/// Under [editorScope]: the row's LinkRegion (#166) reads providers.
 Widget _wi167LoneRow(
   LivePreviewController ctrl,
   FocusNode node, {
   double width = 400,
-}) => MaterialApp(
-  theme: buildOmTheme(),
-  home: Material(
-    child: Align(
-      alignment: Alignment.topLeft,
-      child: SizedBox(
-        width: width,
-        child: EditorRow(
-          segment: 0,
-          index: 0,
-          kind: RowKind.prose,
-          geometry: null,
-          marker: '',
-          controller: ctrl,
-          focusNode: node,
-          boxes: () => null,
-          field: EditableText(
+}) => editorScope(
+  MaterialApp(
+    theme: buildOmTheme(),
+    home: Material(
+      child: Align(
+        alignment: Alignment.topLeft,
+        child: SizedBox(
+          width: width,
+          child: EditorRow(
+            segment: 0,
+            index: 0,
+            kind: RowKind.prose,
+            geometry: null,
+            marker: '',
             controller: ctrl,
             focusNode: node,
-            style: const TextStyle(fontSize: 13.5),
-            cursorColor: const Color(0xFF000000),
-            backgroundCursorColor: const Color(0xFF000000),
-            selectionColor: const Color(0xFF00FF00),
+            boxes: () => null,
+            field: EditableText(
+              controller: ctrl,
+              focusNode: node,
+              style: const TextStyle(fontSize: 13.5),
+              cursorColor: const Color(0xFF000000),
+              backgroundCursorColor: const Color(0xFF000000),
+              selectionColor: const Color(0xFF00FF00),
+            ),
           ),
         ),
       ),
