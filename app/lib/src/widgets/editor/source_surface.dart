@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
+import '../../editor/editor_rows.dart';
+import '../../editor/row_edits.dart';
 import '../inline_error.dart';
 import 'text_segment.dart';
 
@@ -58,6 +61,47 @@ class _SourceSurfaceState extends State<SourceSurface> {
     super.dispose();
   }
 
+  /// Enter in the body (Spec R31): continues a list line through
+  /// [sourceEnter] as one controller value change, so it's one undo step
+  /// and [SourceSurface.onContentChanged] reports it. Ignored (the platform
+  /// inserts a plain newline) for Shift+Enter, a line that doesn't continue,
+  /// a modified Enter and while the IME composes.
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    if (event.logicalKey != LogicalKeyboardKey.enter &&
+        event.logicalKey != LogicalKeyboardKey.numpadEnter) {
+      return KeyEventResult.ignored;
+    }
+    final keys = HardwareKeyboard.instance;
+    if (keys.isMetaPressed || keys.isControlPressed || keys.isAltPressed) {
+      return KeyEventResult.ignored;
+    }
+    final value = widget.bodyCtrl.value;
+    if (value.composing.isValid || !value.selection.isValid) {
+      return KeyEventResult.ignored;
+    }
+    final edit = sourceEnter(
+      value.text,
+      SegmentSelection(
+        baseOffset: value.selection.baseOffset,
+        extentOffset: value.selection.extentOffset,
+      ),
+      shift: keys.isShiftPressed,
+    );
+    if (edit == null) return KeyEventResult.ignored;
+    final caret = edit.selection!;
+    widget.bodyCtrl.value = TextEditingValue(
+      text: edit.apply(value.text),
+      selection: TextSelection(
+        baseOffset: caret.baseOffset,
+        extentOffset: caret.extentOffset,
+      ),
+    );
+    return KeyEventResult.handled;
+  }
+
   @override
   Widget build(BuildContext context) {
     return EditorPage(
@@ -74,18 +118,25 @@ class _SourceSurfaceState extends State<SourceSurface> {
             ),
           KeyedSubtree(
             key: const Key('editor-body'),
-            child: TextSegmentField(
-              controller: widget.bodyCtrl,
-              focusNode: widget.bodyFocusNode,
-              onChanged: widget.onContentChanged,
-              kindChips: _kindChips,
-              minLines: 12,
-              hintText: 'type [[ to link a note · write markdown…',
-              dailyNoteId: widget.dailyNoteId,
-              onTopicLinked: widget.onTopicLinked,
-              onCreateError: (message) {
-                if (mounted) setState(() => _createError = message);
-              },
+            // List continuation (R31, D15): an ancestor of the field's own
+            // node, so the `[[` popover sees Enter first.
+            child: Focus(
+              canRequestFocus: false,
+              skipTraversal: true,
+              onKeyEvent: _onKey,
+              child: TextSegmentField(
+                controller: widget.bodyCtrl,
+                focusNode: widget.bodyFocusNode,
+                onChanged: widget.onContentChanged,
+                kindChips: _kindChips,
+                minLines: 12,
+                hintText: 'type [[ to link a note · write markdown…',
+                dailyNoteId: widget.dailyNoteId,
+                onTopicLinked: widget.onTopicLinked,
+                onCreateError: (message) {
+                  if (mounted) setState(() => _createError = message);
+                },
+              ),
             ),
           ),
         ],
