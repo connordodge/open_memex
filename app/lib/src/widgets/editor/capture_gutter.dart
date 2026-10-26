@@ -66,20 +66,23 @@ TextRange? capturedRange(String text, BlockRow block) {
 /// The gutter column (Key `capture-gutter`) beside the daily person field of
 /// note [noteId]: one rule (Key `capture-gutter-rule-<blockId>`) per agent
 /// or quick-entry block of the note, spanning that block's lines in the
-/// field. [editable] finds the field's [RenderEditable]; [controller] is its
-/// text. Rules are measured after layout, whenever the text, the blocks or
-/// the gutter's size change.
+/// field. [controller] is the field's text. Its lines come from [boxes] (the
+/// person segment's editor rows, in segment offsets) or, without it, from
+/// the single field [editable] finds. Rules are measured after layout,
+/// whenever the text, the blocks or the gutter's size change.
 class CaptureGutter extends ConsumerStatefulWidget {
   const CaptureGutter({
     super.key,
     required this.noteId,
     required this.controller,
-    required this.editable,
+    this.editable,
+    this.boxes,
   });
 
   final String noteId;
   final TextEditingController controller;
-  final RenderEditable? Function() editable;
+  final RenderEditable? Function()? editable;
+  final LineBoxSource? Function()? boxes;
 
   @override
   ConsumerState<CaptureGutter> createState() => _CaptureGutterState();
@@ -124,18 +127,26 @@ class _CaptureGutterState extends ConsumerState<CaptureGutter> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _measure());
   }
 
+  /// The measured lines' source: [CaptureGutter.boxes], else the single
+  /// field's.
+  LineBoxSource? _source() {
+    if (widget.boxes case final boxes?) return boxes();
+    final editable = widget.editable?.call();
+    return editable == null ? null : RenderEditableLineBoxes(editable);
+  }
+
   /// Positions each captured block's rule from the field's real line boxes
   /// (R33): from the top of the line holding the block's first character to
   /// the bottom of the line holding its last, in the gutter's coordinates.
   void _measure() {
     if (!mounted) return;
-    final editable = widget.editable();
-    if (editable == null) return;
+    final source = _source();
+    if (source == null) return;
     final gutter = context.findRenderObject();
     if (gutter is! RenderBox) return;
     final text = widget.controller.text;
-    final dy = gutter.globalToLocal(editable.localToGlobal(Offset.zero)).dy;
-    final lines = RenderEditableLineBoxes(editable).lines;
+    final dy = gutter.globalToLocal(source.box.localToGlobal(Offset.zero)).dy;
+    final lines = source.lines;
     final rules = <_Rule>[];
     for (final block in _blocks) {
       if (!_capturedSources.contains(block.source)) continue;

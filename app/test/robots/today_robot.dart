@@ -129,10 +129,10 @@ class TodayRobot {
   // ---------------------------------------------------------------- actions
 
   /// Replace the body text as the person typing would.
-  Future<void> type(String text) async {
-    await tester.enterText(body, text);
-    await tester.pump();
-  }
+  ///
+  /// TEST-CHANGE (#167): through the body segment's handle, after focusing
+  /// the editor row holding its end.
+  Future<void> type(String text) => typeSegmentText(tester, body, text);
 
   /// Let the editor's debounce and any CLI round trip finish: moves both the
   /// test binding's time and the [FakeClock] (in case the save timer is

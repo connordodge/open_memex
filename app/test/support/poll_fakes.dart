@@ -638,18 +638,16 @@ class LiveRobot {
   }
 
   /// Replace the person field's text as the person typing would.
-  Future<void> type(String text) async {
-    await tester.enterText(body, text);
-    await tester.pump();
-  }
+  ///
+  /// TEST-CHANGE (#167): through the person segment's handle, after
+  /// focusing the editor row holding its end.
+  Future<void> type(String text) => typeSegmentText(tester, body, text);
 
   /// Focus the person field and put the caret at [offset].
-  Future<void> placeCaret(int offset) async {
-    await tester.showKeyboard(body);
-    await tester.pump();
-    bodySegment.select(TextSelection.collapsed(offset: offset));
-    await tester.pump();
-  }
+  ///
+  /// TEST-CHANGE (#167): focuses the editor row holding [offset].
+  Future<void> placeCaret(int offset) =>
+      focusSegmentAt(tester, body, offset: offset);
 
   /// Scroll the editor page to [pixels].
   Future<void> scrollTo(double pixels) async {
