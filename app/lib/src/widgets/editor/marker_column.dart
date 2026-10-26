@@ -1,3 +1,4 @@
+import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 
 import '../../editor/editor_rows.dart';
@@ -102,8 +103,10 @@ MarkerTaskCheck markerTaskCheck() {
 /// It reads the row, its segment and its selection from the enclosing
 /// `EditorRow` and `SegmentView`. It joins the row fields'
 /// `TextFieldTapRegion` group (D11), so a click on it does not unfocus the
-/// row's field. Outside an editor row, or when [readOnly], it only paints
-/// the marker of [marker] as a level-1 item.
+/// row's field, and a press anywhere on an editor row's column is the
+/// column's ([hitsMarkerColumn]): the segment's pointer layer leaves it
+/// alone. Outside an editor row, or when [readOnly], it only paints the
+/// marker of [marker] as a level-1 item.
 class MarkerColumn extends StatefulWidget {
   const MarkerColumn({
     super.key,
@@ -272,8 +275,29 @@ class _MarkerColumnState extends State<MarkerColumn> {
         child: column,
       );
     }
+    if (place != null) column = _MarkerColumnArea(child: column);
     return TextFieldTapRegion(child: column);
   }
+}
+
+/// Whether [result]'s hit-test path passes through an editor row's
+/// [MarkerColumn] (not a read-only one or one outside a segment's rows):
+/// a press there belongs to the column (Spec Q4, D11).
+bool hitsMarkerColumn(HitTestResult result) =>
+    result.path.any((entry) => entry.target is _RenderMarkerColumnArea);
+
+/// Marks an editor row's marker column in hit-test paths: hit anywhere in
+/// its bounds.
+class _MarkerColumnArea extends SingleChildRenderObjectWidget {
+  const _MarkerColumnArea({required super.child});
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderMarkerColumnArea();
+}
+
+class _RenderMarkerColumnArea extends RenderProxyBoxWithHitTestBehavior {
+  _RenderMarkerColumnArea() : super(behavior: HitTestBehavior.opaque);
 }
 
 /// Places a painted number right-aligned in its column (TD10:

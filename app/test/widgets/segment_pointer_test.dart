@@ -1326,6 +1326,38 @@ void main() {
       },
       variant: macOnly,
     );
+
+    testWidgets(
+      'a press inside a marker column neither moves the caret nor changes focus',
+      (tester) async {
+        await _wi170Pump(tester, _wi170List);
+        await _wi170FocusRow(tester, 0, 0, local: 2);
+        final node = FocusManager.instance.primaryFocus;
+        final marker = tester.getCenter(_wi170Marker(0, 2));
+
+        await tester.macClick(marker);
+        await tester.pump();
+
+        expect(FocusManager.instance.primaryFocus, same(node));
+        expect(segmentEditingAt(tester, 0).focusedRow, 0);
+        expect(
+          segmentEditingAt(tester, 0).selection,
+          const TextSelection.collapsed(offset: 2),
+        );
+
+        // A drag from the marker column selects nothing either.
+        await _wi170PastDoubleClick(tester);
+        await tester.macDrag(marker, _wi170At(tester, 0, 33));
+
+        expect(FocusManager.instance.primaryFocus, same(node));
+        expect(
+          segmentEditingAt(tester, 0).selection,
+          const TextSelection.collapsed(offset: 2),
+        );
+        _wi170ExpectNoRange(tester, 0);
+      },
+      variant: macOnly,
+    );
   });
 
   // -------------------------------------------------------------------------
