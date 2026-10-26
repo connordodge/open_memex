@@ -1156,6 +1156,68 @@ void main() {
       });
       _expectHiddenRange(span, q, _range(q, '**'));
     });
+
+    test('quote text with taskDone stays italic fg1 and is not struck', () {
+      // Pack #164 decision 3: on a quote row a done-task rule does not apply.
+      const q = 'keep **it** short';
+      final span = _build(q, itemText: true, quote: true, taskDone: true);
+      for (final r in [
+        _range(q, 'keep '),
+        _range(q, 'it'),
+        _range(q, ' short'),
+      ]) {
+        _eachStyle(span, q, r, (s, why) {
+          expect(s.fontStyle, FontStyle.italic, reason: why);
+          expect(s.color, OmColors.fg1, reason: why);
+          expect(_has(s, TextDecoration.lineThrough), isFalse, reason: why);
+        });
+      }
+    });
+
+    test(
+      'a backslash escape keeps its backslash and escaped character visible as plain text',
+      () {
+        // Spec R5: the escaped character shows literally and the backslash
+        // stays visible, on and off the caret line.
+        const text =
+            r'a \*not italic\* and \*\*not bold\*\* b'
+            '\nother';
+        final line = (0, text.indexOf('\n'));
+        for (final caret in [0, text.length]) {
+          final span = _build(text, selection: _caret(caret));
+          _expectPlainRange(span, text, line);
+        }
+      },
+    );
+
+    test(
+      'hidden markers stay zero width under a base style with letter spacing',
+      () {
+        // B4 cards and hosts pass their own base style; a hidden marker must
+        // not keep the base letter spacing as width.
+        const text = '# H **b** [[T|a]] [l](u)\nother';
+        final span = buildLivePreviewSpan(
+          text,
+          style: _base().copyWith(letterSpacing: 1.5),
+          selection: _caret(text.length),
+        );
+        for (final r in [
+          _range(text, '# '),
+          _range(text, '**'),
+          _range(text, '**', nth: 1),
+          _range(text, '[[T|'),
+          _range(text, ']]'),
+          _range(text, '[', nth: 2),
+          _range(text, '](u)'),
+        ]) {
+          _expectHiddenRange(span, text, r);
+        }
+        expect(
+          _width(span, text.indexOf('H'), text.indexOf('H') + 1),
+          greaterThan(1),
+        );
+      },
+    );
   });
 
   group('fenced code (AC9)', () {
@@ -1380,5 +1442,61 @@ void main() {
         );
       },
     );
+
+    test(
+      'inline code content lays out on the same glyph rows as plain text under the strut',
+      () {
+        // B2 draws the code pill from the line top (17 px at line top + 2),
+        // so the code style must not move its glyphs off the line the plain
+        // text sits on: no size, height or face of its own.
+        const text = 'say `code` now';
+        final c = LivePreviewController(text: text);
+        addTearDown(c.dispose);
+        final strut = c.strutStyle;
+
+        List<TextBox> boxes(InlineSpan span, int start, int end) {
+          final painter = TextPainter(
+            text: span,
+            textDirection: TextDirection.ltr,
+            strutStyle: strut,
+          )..layout();
+          final b = painter.getBoxesForSelection(
+            TextSelection(baseOffset: start, extentOffset: end),
+          );
+          painter.dispose();
+          return b;
+        }
+
+        final code = _range(text, 'code');
+        final styled = _build(text);
+        final plain = TextSpan(text: text, style: _base());
+        expect(_styleAt(styled, code.$1).color, OmColors.fg1);
+        final codeBox = boxes(styled, code.$1, code.$2).single;
+        final sayBox = boxes(styled, 0, 3).single;
+        final plainBox = boxes(plain, code.$1, code.$2).single;
+        expect(codeBox.top, sayBox.top, reason: 'same top as plain text');
+        expect(codeBox.bottom, sayBox.bottom, reason: 'same bottom');
+        expect(codeBox.top, plainBox.top, reason: 'as unstyled text lays out');
+        expect(codeBox.bottom, plainBox.bottom);
+        expect(
+          codeBox.right - codeBox.left,
+          closeTo(_normalWidth('code', 13.5), 1e-9),
+          reason: 'body size',
+        );
+      },
+    );
+
+    test('the strut uses the body mono face', () {
+      // The strut sets the minimum line from the body face, so heading and
+      // body heights do not depend on the platform default font.
+      final c = LivePreviewController(text: 'x');
+      addTearDown(c.dispose);
+      final strut = c.strutStyle!;
+      final body = OmType.mono(size: 13.5);
+      expect(strut.fontFamily, body.fontFamily);
+      expect(strut.fontFamily, isNotNull);
+      expect(strut.fontFamilyFallback, body.fontFamilyFallback);
+      expect(strut.fontSize, 13.5);
+    });
   });
 }
