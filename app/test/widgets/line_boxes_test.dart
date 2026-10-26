@@ -522,4 +522,247 @@ void main() {
       }, variant: macOnly);
     }
   });
+
+  group('line box contracts (verify)', () {
+    testWidgets(
+      'lineHolding puts an offset at a wrap boundary on the line it starts',
+      (tester) async {
+        const long = 'aaaaaaaaaaaaaaaaaaaaaaaa';
+        final editable = await _pumpField(tester, text: long, width: 200);
+        final boxes = RenderEditableLineBoxes(editable);
+        final lines = boxes.lines;
+        expect(lines, hasLength(2), reason: 'the text wraps once');
+        final boundary = lines.last.range.start;
+        expect(boundary, greaterThan(0));
+
+        expect(lineHolding(lines, boundary), same(lines.last));
+        expect(lineHolding(lines, boundary - 1), same(lines.first));
+        expect(lineHolding(lines, 0), same(lines.first));
+        expect(lineHolding(lines, long.length), same(lines.last));
+        // The caret at the boundary is drawn on the line it starts.
+        final caret = boxes.caretRect(boundary);
+        expect(caret.top, moreOrLessEquals(lines.last.top, epsilon: 0.5));
+        expect(caret.bottom, moreOrLessEquals(lines.last.bottom, epsilon: 0.5));
+
+        // Pure lists: the last line starting at or before the offset.
+        const a = LineBox(
+          range: TextRange(start: 0, end: 4),
+          top: 0,
+          bottom: 10,
+        );
+        const b = LineBox(
+          range: TextRange(start: 4, end: 9),
+          top: 10,
+          bottom: 30,
+        );
+        const c = LineBox(
+          range: TextRange(start: 10, end: 12),
+          top: 30,
+          bottom: 40,
+        );
+        expect(lineHolding(const [a, b, c], 3), same(a));
+        expect(lineHolding(const [a, b, c], 4), same(b));
+        expect(lineHolding(const [a, b, c], 9), same(b));
+        expect(lineHolding(const [a, b, c], 10), same(c));
+        expect(lineHolding(const [a, b, c], 99), same(c));
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'boxesFor over only hidden characters gives a zero width rect at the caret x spanning the line',
+      (tester) async {
+        final editable = await _pumpField(tester);
+        final boxes = RenderEditableLineBoxes(editable);
+        final line = wi159LineBox(editable, _line2);
+
+        // `**` (22..24) renders zero-width.
+        final rects = boxes.boxesFor(const TextRange(start: 22, end: 24));
+        expect(rects, hasLength(1));
+        final rect = rects.single;
+        _expectSpansLine(rect, line, reason: 'hidden range');
+        expect(rect.width, moreOrLessEquals(0, epsilon: 0.5));
+        // At the text caret x: the glyph boundary before the marker (the
+        // drawn macOS cursor sits up to 1 px left of it).
+        expect(rect.left, moreOrLessEquals(2 * _glyph, epsilon: 0.5));
+        expect(
+          rect.left,
+          moreOrLessEquals(boxes.caretRect(22).left, epsilon: 1),
+        );
+
+        // A range from the hidden marker into visible text starts at the
+        // same x and covers the visible glyph.
+        final mixed = boxes.boxesFor(const TextRange(start: 22, end: 25));
+        expect(mixed, hasLength(1));
+        expect(mixed.single.left, moreOrLessEquals(2 * _glyph, epsilon: 1));
+        expect(mixed.single.right, moreOrLessEquals(3 * _glyph, epsilon: 1));
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'caretRect clamps an offset past the laid out text to its end',
+      (tester) async {
+        final editable = await _pumpField(tester);
+        final boxes = RenderEditableLineBoxes(editable);
+        final end = boxes.caretRect(_text.length);
+        for (final offset in [_text.length + 1, _text.length + 7]) {
+          final past = boxes.caretRect(offset);
+          expect(past.left, moreOrLessEquals(end.left, epsilon: 0.01));
+          expect(past.top, moreOrLessEquals(end.top, epsilon: 0.01));
+          expect(past.bottom, moreOrLessEquals(end.bottom, epsilon: 0.01));
+        }
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'findRenderEditable finds the field editable under a root and null without one',
+      (tester) async {
+        final editable = await _pumpField(tester);
+        expect(findRenderEditable(null), isNull);
+        expect(findRenderEditable(editable), same(editable));
+        expect(
+          findRenderEditable(tester.renderObject(find.byType(Scaffold))),
+          same(editable),
+        );
+
+        await tester.pumpWidget(
+          const MaterialApp(home: Text('no field', key: Key('plain'))),
+        );
+        expect(
+          findRenderEditable(tester.renderObject(find.byType(MaterialApp))),
+          isNull,
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'line boxes of a scrolled single line field follow the painted text',
+      (tester) async {
+        const text = 'abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ';
+        final controller = TextEditingController(text: text);
+        addTearDown(controller.dispose);
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: Align(
+                alignment: Alignment.topLeft,
+                child: SizedBox(
+                  width: 150,
+                  child: TextField(
+                    key: const Key('single'),
+                    controller: controller,
+                    maxLines: 1,
+                    style: OmType.mono(size: 13.5, color: OmColors.fg0),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.showKeyboard(find.byKey(const Key('single')));
+        controller.selection = const TextSelection.collapsed(
+          offset: text.length,
+        );
+        await tester.pumpAndSettle();
+        final editable = wi159EditableIn(
+          tester,
+          find.byKey(const Key('single')),
+        );
+        expect(editable.offset.pixels, greaterThan(100), reason: 'scrolled');
+
+        final boxes = RenderEditableLineBoxes(editable);
+        final painted = editable.getLocalRectForCaret(
+          const TextPosition(offset: text.length - 2),
+        );
+        final rect = boxes
+            .boxesFor(const TextRange(start: text.length - 2, end: text.length))
+            .single;
+        expect(rect.left, moreOrLessEquals(painted.left, epsilon: 1));
+        expect(rect.width, moreOrLessEquals(2 * _glyph, epsilon: 1));
+        // Scrolling sideways does not move the line vertically.
+        expect(boxes.lines, hasLength(1));
+        expect(rect.top, lessThanOrEqualTo(painted.center.dy));
+        expect(rect.bottom, greaterThanOrEqualTo(painted.center.dy));
+        expect(
+          boxes.lines.single.top,
+          moreOrLessEquals(rect.top, epsilon: 0.01),
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'line boxes of a scrolled multiline field follow the painted text',
+      (tester) async {
+        const text = 'l0\nl1\nl2\nl3\nl4\nl5';
+        final controller = TextEditingController(text: text);
+        addTearDown(controller.dispose);
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: Align(
+                alignment: Alignment.topLeft,
+                child: SizedBox(
+                  width: 300,
+                  child: TextField(
+                    key: const Key('multi'),
+                    controller: controller,
+                    maxLines: 2,
+                    style: OmType.mono(size: 13.5, color: OmColors.fg0),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.showKeyboard(find.byKey(const Key('multi')));
+        controller.selection = const TextSelection.collapsed(
+          offset: text.length,
+        );
+        await tester.pumpAndSettle();
+        final editable = wi159EditableIn(
+          tester,
+          find.byKey(const Key('multi')),
+        );
+        expect(editable.offset.pixels, greaterThan(20), reason: 'scrolled');
+
+        final boxes = RenderEditableLineBoxes(editable);
+        final lines = boxes.lines;
+        expect(lines, hasLength(6));
+        expect(lines.first.top, lessThan(0), reason: 'scrolled out above');
+        for (final (i, line) in lines.indexed) {
+          final painted = editable.getLocalRectForCaret(
+            TextPosition(offset: line.range.start),
+          );
+          expect(
+            line.top,
+            lessThanOrEqualTo(painted.center.dy),
+            reason: 'line $i',
+          );
+          expect(
+            line.bottom,
+            greaterThanOrEqualTo(painted.center.dy),
+            reason: 'line $i',
+          );
+        }
+        final last = boxes.boxesFor(lines.last.range).single;
+        expect(
+          last.left,
+          moreOrLessEquals(
+            editable
+                .getLocalRectForCaret(
+                  TextPosition(offset: lines.last.range.start),
+                )
+                .left,
+            epsilon: 1,
+          ),
+        );
+        expect(last.top, moreOrLessEquals(lines.last.top, epsilon: 0.01));
+      },
+      variant: macOnly,
+    );
+  });
 }

@@ -33,8 +33,17 @@ Future<SegmentedEditorRobot> _openSource(
   return r;
 }
 
+/// The Source body's own EditableText (Source mode is not a text segment,
+/// so it has no SegmentEditing handle). `sourceBody` is the `editor-body`
+/// root since #159.
+Finder _sourceEditable(SegmentedEditorRobot r) => find.descendant(
+  of: r.sourceBody,
+  matching: find.byType(EditableText),
+  matchRoot: true,
+);
+
 TextEditingController _ctrl(SegmentedEditorRobot r) =>
-    r.tester.widget<EditableText>(r.sourceBody).controller;
+    r.tester.widget<EditableText>(_sourceEditable(r)).controller;
 
 /// Presses Enter (Shift+Enter with [shift]) as macOS delivers it: the key
 /// event reaches Flutter first; when nothing handles it, the text input
@@ -275,9 +284,9 @@ void main() {
       const body =
           '# Head\n- [x] **done** [[Zeta Game]]\n> q\n1. `c` [l](https://x.y)\n';
       final r = await _openSource(tester, body);
-      final editable = tester.widget<EditableText>(r.sourceBody);
+      final editable = tester.widget<EditableText>(_sourceEditable(r));
       final span = editable.controller.buildTextSpan(
-        context: tester.element(r.sourceBody),
+        context: tester.element(_sourceEditable(r)),
         style: editable.style,
         withComposing: false,
       );
