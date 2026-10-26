@@ -1325,6 +1325,64 @@ void main() {
     );
 
     testWidgets(
+      'hitsMarkerColumn is true inside an editor row marker column and false on a read only column or the row field and a press on the read only column stays with the pointer layer',
+      (tester) async {
+        final host = await _wi168ReadOnlyHost(tester, '- a', '- [ ] ');
+        final readOnly = find.byKey(const Key('wi168-read-only'));
+        final own = tester.getRect(_wi168Marker(0, 0));
+        final ro = tester.getRect(readOnly);
+        final field = _wi168FieldRect(tester, 0, 0);
+        expect(ro.left, greaterThanOrEqualTo(own.right));
+
+        for (final (p, want, why) in [
+          (own.center, true, 'the row column centre'),
+          (own.topLeft + const Offset(0.5, 0.5), true, 'the row column corner'),
+          (own.bottomRight - const Offset(0.5, 0.5), true, 'its far corner'),
+          (ro.center, false, 'the read-only column'),
+          (field.center, false, 'the row field'),
+        ]) {
+          expect(
+            hitsMarkerColumn(tester.hitTestOnBinding(p)),
+            want,
+            reason: why,
+          );
+        }
+        expect(hitsMarkerColumn(HitTestResult()), isFalse);
+
+        // Nothing focused: a press on the read-only column is the segment
+        // pointer layer's, which focuses the pressed row; a press on the
+        // row's own column is not.
+        bool rowFocused() => tester
+            .widget<EditableText>(
+              find.descendant(
+                of: _wi168Row(0, 0),
+                matching: find.byType(EditableText),
+              ),
+            )
+            .focusNode
+            .hasFocus;
+        expect(rowFocused(), isFalse);
+        await tester.macClick(own.center);
+        await tester.pump();
+        expect(rowFocused(), isFalse, reason: 'the row column keeps its press');
+        await tester.macClick(ro.center);
+        await tester.pump();
+        expect(
+          rowFocused(),
+          isTrue,
+          reason: 'the pointer layer takes a press on the read-only column',
+        );
+        expect(host.ctrl.text, '- a');
+
+        await tester.pumpWidget(const SizedBox());
+        host.ctrl.dispose();
+        host.focus.dispose();
+        host.gate.dispose();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
       'a read only marker column on its own paints its marker with no marker text and ignores clicks',
       (tester) async {
         await tester.pumpWidget(
