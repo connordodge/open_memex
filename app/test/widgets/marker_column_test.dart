@@ -521,44 +521,46 @@ _wi168ReadOnlyHost(WidgetTester tester, String text, String marker) async {
   final gate = ValueNotifier(false);
   final changes = <String>[];
   await tester.pumpWidget(
-    MaterialApp(
-      theme: buildOmTheme(),
-      home: Scaffold(
-        body: Align(
-          alignment: Alignment.topLeft,
-          child: RepaintBoundary(
-            key: _wi168BoundaryKey,
-            child: Container(
-              color: _wi168Surface,
-              width: 600,
-              child: SegmentView(
-                index: 0,
-                controller: ctrl,
-                focusNode: focus,
-                revealGate: gate,
-                minLines: 1,
-                hintText: null,
-                onChanged: () => changes.add(ctrl.text),
-                onRowRemoved: (_) {},
-                fieldBuilder: (context, row) => Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    MarkerColumn(
-                      key: const Key('wi168-read-only'),
-                      marker: marker,
-                      width: 4 * _wi168Col,
-                      readOnly: true,
-                    ),
-                    Expanded(
-                      child: TextField(
-                        controller: row.controller,
-                        focusNode: row.focusNode,
-                        maxLines: null,
+    ProviderScope(
+      child: MaterialApp(
+        theme: buildOmTheme(),
+        home: Scaffold(
+          body: Align(
+            alignment: Alignment.topLeft,
+            child: RepaintBoundary(
+              key: _wi168BoundaryKey,
+              child: Container(
+                color: _wi168Surface,
+                width: 600,
+                child: SegmentView(
+                  index: 0,
+                  controller: ctrl,
+                  focusNode: focus,
+                  revealGate: gate,
+                  minLines: 1,
+                  hintText: null,
+                  onChanged: () => changes.add(ctrl.text),
+                  onRowRemoved: (_) {},
+                  fieldBuilder: (context, row) => Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      MarkerColumn(
+                        key: const Key('wi168-read-only'),
+                        marker: marker,
+                        width: 4 * _wi168Col,
+                        readOnly: true,
                       ),
-                    ),
-                  ],
+                      Expanded(
+                        child: TextField(
+                          controller: row.controller,
+                          focusNode: row.focusNode,
+                          maxLines: null,
+                        ),
+                      ),
+                    ],
+                  ),
+                  builder: (context, rows, boxes) => rows,
                 ),
-                builder: (context, rows, boxes) => rows,
               ),
             ),
           ),
@@ -1326,33 +1328,35 @@ void main() {
       'a read only marker column on its own paints its marker with no marker text and ignores clicks',
       (tester) async {
         await tester.pumpWidget(
-          MaterialApp(
-            theme: buildOmTheme(),
-            home: Scaffold(
-              body: Align(
-                alignment: Alignment.topLeft,
-                child: RepaintBoundary(
-                  key: _wi168BoundaryKey,
-                  child: Container(
-                    color: _wi168Surface,
-                    padding: const EdgeInsets.all(20),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        MarkerColumn(
-                          key: const Key('wi168-ro-done'),
-                          marker: '- [x] ',
-                          width: 4 * _wi168Col,
-                          readOnly: true,
-                        ),
-                        MarkerColumn(
-                          key: const Key('wi168-ro-bullet'),
-                          marker: '- ',
-                          width: 2 * _wi168Col,
-                          readOnly: true,
-                        ),
-                      ],
+          ProviderScope(
+            child: MaterialApp(
+              theme: buildOmTheme(),
+              home: Scaffold(
+                body: Align(
+                  alignment: Alignment.topLeft,
+                  child: RepaintBoundary(
+                    key: _wi168BoundaryKey,
+                    child: Container(
+                      color: _wi168Surface,
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          MarkerColumn(
+                            key: const Key('wi168-ro-done'),
+                            marker: '- [x] ',
+                            width: 4 * _wi168Col,
+                            readOnly: true,
+                          ),
+                          MarkerColumn(
+                            key: const Key('wi168-ro-bullet'),
+                            marker: '- ',
+                            width: 2 * _wi168Col,
+                            readOnly: true,
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
@@ -1511,36 +1515,38 @@ void main() {
       'an interactive marker column outside any editor row paints its marker as a level 1 item with no checkbox and ignores clicks',
       (tester) async {
         await tester.pumpWidget(
-          MaterialApp(
-            theme: buildOmTheme(),
-            home: Scaffold(
-              body: Align(
-                alignment: Alignment.topLeft,
-                child: RepaintBoundary(
-                  key: _wi168BoundaryKey,
-                  child: Container(
-                    color: _wi168Surface,
-                    padding: const EdgeInsets.all(20),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        MarkerColumn(
-                          key: const Key('wi168-free-task'),
-                          marker: ['- ', '[ ] '].join(),
-                          width: 4 * _wi168Col,
-                        ),
-                        MarkerColumn(
-                          key: const Key('wi168-free-bullet'),
-                          marker: ['  ', '- '].join(),
-                          width: 2 * _wi168Col,
-                        ),
-                        const MarkerColumn(
-                          key: Key('wi168-free-number'),
-                          marker: '7. ',
-                          width: 3 * _wi168Col,
-                        ),
-                      ],
+          ProviderScope(
+            child: MaterialApp(
+              theme: buildOmTheme(),
+              home: Scaffold(
+                body: Align(
+                  alignment: Alignment.topLeft,
+                  child: RepaintBoundary(
+                    key: _wi168BoundaryKey,
+                    child: Container(
+                      color: _wi168Surface,
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          MarkerColumn(
+                            key: const Key('wi168-free-task'),
+                            marker: ['- ', '[ ] '].join(),
+                            width: 4 * _wi168Col,
+                          ),
+                          MarkerColumn(
+                            key: const Key('wi168-free-bullet'),
+                            marker: ['  ', '- '].join(),
+                            width: 2 * _wi168Col,
+                          ),
+                          const MarkerColumn(
+                            key: Key('wi168-free-number'),
+                            marker: '7. ',
+                            width: 3 * _wi168Col,
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
@@ -1608,53 +1614,55 @@ void main() {
           strayFocus.dispose();
         });
         await tester.pumpWidget(
-          MaterialApp(
-            theme: buildOmTheme(),
-            home: Scaffold(
-              body: Align(
-                alignment: Alignment.topLeft,
-                child: RepaintBoundary(
-                  key: _wi168BoundaryKey,
-                  child: Container(
-                    color: _wi168Surface,
-                    width: 600,
-                    child: SegmentView(
-                      index: 0,
-                      controller: ctrl,
-                      focusNode: focus,
-                      revealGate: gate,
-                      minLines: 1,
-                      hintText: null,
-                      onChanged: () {},
-                      onRowRemoved: (_) {},
-                      fieldBuilder: (context, row) => TextField(
-                        controller: row.controller,
-                        focusNode: row.focusNode,
-                        maxLines: null,
-                      ),
-                      builder: (context, rows, boxes) => Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          rows,
-                          EditorRow(
-                            segment: 0,
-                            index: 5,
-                            kind: RowKind.task,
-                            geometry: itemGeometry(
-                              markerX: 0,
-                              kind: MarkerColumnKind.task,
-                            ),
-                            marker: ['- ', '[ ] '].join(),
-                            controller: strayCtrl,
-                            focusNode: strayFocus,
-                            boxes: () => null,
-                            field: TextField(
+          ProviderScope(
+            child: MaterialApp(
+              theme: buildOmTheme(),
+              home: Scaffold(
+                body: Align(
+                  alignment: Alignment.topLeft,
+                  child: RepaintBoundary(
+                    key: _wi168BoundaryKey,
+                    child: Container(
+                      color: _wi168Surface,
+                      width: 600,
+                      child: SegmentView(
+                        index: 0,
+                        controller: ctrl,
+                        focusNode: focus,
+                        revealGate: gate,
+                        minLines: 1,
+                        hintText: null,
+                        onChanged: () {},
+                        onRowRemoved: (_) {},
+                        fieldBuilder: (context, row) => TextField(
+                          controller: row.controller,
+                          focusNode: row.focusNode,
+                          maxLines: null,
+                        ),
+                        builder: (context, rows, boxes) => Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            rows,
+                            EditorRow(
+                              segment: 0,
+                              index: 5,
+                              kind: RowKind.task,
+                              geometry: itemGeometry(
+                                markerX: 0,
+                                kind: MarkerColumnKind.task,
+                              ),
+                              marker: ['- ', '[ ] '].join(),
                               controller: strayCtrl,
                               focusNode: strayFocus,
+                              boxes: () => null,
+                              field: TextField(
+                                controller: strayCtrl,
+                                focusNode: strayFocus,
+                              ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
                   ),
