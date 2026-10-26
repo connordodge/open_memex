@@ -24,6 +24,7 @@ import 'package:open_memex_app/src/widgets/editor/link_region.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_decorations.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_frame.dart';
+import 'package:open_memex_app/src/widgets/editor/segment_view.dart';
 import 'package:open_memex_app/src/widgets/editor/segmented_body.dart';
 
 import '../robots/segmented_editor_robot.dart';
@@ -490,6 +491,116 @@ void main() {
 
         expect(r.updates, isEmpty);
         expect(r.segmentText(0), fixturePerson);
+      },
+    );
+  });
+
+  group('segment view and reveal gate contracts (verify)', () {
+    testWidgets(
+      'the SegmentView builder gets null line boxes before the field is laid out',
+      (tester) async {
+        final controller = TextEditingController(text: 'abc\ndef');
+        final focus = FocusNode();
+        addTearDown(controller.dispose);
+        addTearDown(focus.dispose);
+        final duringBuild = <LineBoxSource?>[];
+        LineBoxSource? Function()? boxes;
+        var withField = true;
+        late StateSetter setOuter;
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: StatefulBuilder(
+                builder: (context, setState) {
+                  setOuter = setState;
+                  return SegmentView(
+                    controller: controller,
+                    focusNode: focus,
+                    builder: (context, b) {
+                      boxes = b;
+                      duringBuild.add(b());
+                      return withField
+                          ? TextField(
+                              key: const Key('view-field'),
+                              controller: controller,
+                              focusNode: focus,
+                              maxLines: null,
+                            )
+                          : const SizedBox(width: 10, height: 10);
+                    },
+                  );
+                },
+              ),
+            ),
+          ),
+        );
+
+        expect(duringBuild, hasLength(1));
+        expect(duringBuild.single, isNull, reason: 'first build: no layout');
+        final laidOut = boxes!();
+        expect(laidOut, isNotNull);
+        expect(
+          laidOut!.box,
+          same(wi159EditableIn(tester, find.byKey(const Key('view-field')))),
+        );
+        expect(laidOut.lines, hasLength(2));
+
+        // A builder that renders no field reports no line boxes.
+        setOuter(() => withField = false);
+        await tester.pump();
+        expect(boxes!(), isNull);
+        expect(
+          tester.state<SegmentViewState>(find.byType(SegmentView)).lineBoxes(),
+          isNull,
+        );
+      },
+    );
+
+    testWidgets(
+      'a re-split disposes the replaced reveal gates and the new gates follow segment focus',
+      (tester) async {
+        await _wi159PumpBody(tester);
+        await tester.showKeyboard(_wi159Segment(0));
+        await tester.pump();
+        final old0 = _wi159Frame(tester, 0).controller.revealGate;
+        final old2 = _wi159Frame(tester, 2).controller.revealGate;
+        expect(old0.value, isTrue);
+
+        // Another shape re-splits the body; segment 0 reuses the primary
+        // focus node, and the caret moves to the segment at its offset.
+        const twoCards = 'A\n$_token\nB\n![[2026-09-05#^f6g7h8]]\nC\n';
+        await _wi159PumpBody(tester, content: twoCards);
+        await tester.pump();
+        final new0 = _wi159Frame(tester, 0).controller.revealGate;
+        expect(new0, isNot(same(old0)));
+        var focused = 0;
+        for (final i in [0, 2, 4]) {
+          final hasFocus = segmentEditingAt(tester, i).focusedRow != null;
+          if (hasFocus) focused++;
+          expect(
+            _wi159Frame(tester, i).controller.revealGate.value,
+            hasFocus,
+            reason: 'segment $i gate follows its focus',
+          );
+        }
+        expect(focused, 1, reason: 'the caret is restored into one segment');
+
+        for (final gate in [old0, old2]) {
+          expect(
+            () => (gate as ChangeNotifier).addListener(() {}),
+            throwsFlutterError,
+            reason: 'the replaced gate is disposed',
+          );
+        }
+
+        // The disposed gate no longer listens to the reused primary node:
+        // moving focus away and back reports no error.
+        await tester.showKeyboard(_wi159Segment(2));
+        await tester.pump();
+        await tester.showKeyboard(_wi159Segment(0));
+        await tester.pump();
+        expect(tester.takeException(), isNull);
+        expect(new0.value, isTrue);
       },
     );
   });
