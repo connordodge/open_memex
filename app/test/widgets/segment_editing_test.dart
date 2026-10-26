@@ -28,6 +28,7 @@ import 'package:open_memex_app/src/widgets/editor/segment_view.dart';
 import 'package:open_memex_app/src/widgets/editor/segmented_body.dart';
 
 import '../robots/segmented_editor_robot.dart';
+import '../support/editor_scope.dart';
 import '../support/font_fetch_hold.dart';
 import '../support/mac_editing.dart';
 import '../support/segment_editing_finder.dart';
@@ -512,7 +513,8 @@ void main() {
         LineBoxSource? Function()? boxes;
         var withField = true;
         late StateSetter setOuter;
-        await tester.pumpWidget(
+        await pumpEditorScoped(
+          tester,
           MaterialApp(
             home: Scaffold(
               body: StatefulBuilder(
