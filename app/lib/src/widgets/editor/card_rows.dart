@@ -26,6 +26,8 @@ import 'paragraph_line_boxes.dart';
 ///   editor's rows do; prose rows start at the left edge; code rows keep
 ///   the editor's code insets and lay out with the code row strut (D18), so
 ///   hidden fence lines are 8 px tall. Rows stack with no gap.
+/// - Row text lays out with the body field's even leading, so its glyphs
+///   sit where the editor body row's do; an empty row is one body line.
 /// - Painted decorations come from B2's `layoutDecorations` measured
 ///   through `RenderParagraphLineBoxes` (D6), across the row's full width;
 ///   quote bands are `surface4` (L14).
@@ -39,6 +41,16 @@ class CardRows extends StatelessWidget {
   /// The card's base text style, as built (pack #172: `fg1`).
   static TextStyle _baseStyle() =>
       OmType.mono(size: monoFontSize, color: OmColors.fg1, height: 1.7);
+
+  /// The style row text [rowText] lays out in: [base] with even leading, as
+  /// the editor body's field lays its text out (its `TextField` merges the
+  /// Material 3 body style, whose leading is even), so a card row's glyphs
+  /// sit where the body row's do. An empty row keeps [base]'s proportional
+  /// leading: it has no glyphs to place, and an empty paragraph with even
+  /// leading lays out 32 px tall, not one 22.95 px line (review-r2).
+  static TextStyle _rowStyle(TextStyle base, String rowText) => rowText.isEmpty
+      ? base
+      : base.copyWith(leadingDistribution: TextLeadingDistribution.even);
 
   @override
   Widget build(BuildContext context) {
@@ -78,14 +90,18 @@ class CardRows extends StatelessWidget {
     final quote = spec.kind == RowKind.quote;
     final codeRow = spec.kind == RowKind.code;
     final atSegmentStart = spec.textStart == 0;
+    final style = _rowStyle(base, rowText);
     final rich = _RowText(
       key: ValueKey('card-row-text-$r'),
       child: RichText(
         textScaler: scaler,
-        strutStyle: livePreviewStrut(codeRow: codeRow),
+        // As the body field's EditableText does with its strut.
+        strutStyle: livePreviewStrut(
+          codeRow: codeRow,
+        ).inheritFromTextStyle(style),
         text: buildLivePreviewSpan(
           rowText,
-          style: base,
+          style: style,
           forceHidden: true,
           itemText: spec.isItem,
           taskDone: spec.done,
