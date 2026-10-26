@@ -1,0 +1,1270 @@
+// WI #172 (B4, Spec #157 R7; D4, D6, D7, D12, D17; L14; TS2, TS6, TS9):
+// read-only excerpt cards render their text with live preview's styling.
+// - CardRows on its own (pixels and geometry at text scale 1): prose and
+//   item rows, painted markers from C1b's read-only MarkerColumn, hanging
+//   indent at A2's item text x, a surface4 quote band over the card's inner
+//   width, B1 spans with every marker forced hidden, B2 pills.
+// - The RenderParagraph line-box adapter (D6) against a real RichText.
+// - D17: the card rows joined back give the excerpt text, every fixture.
+// - Through the workspace: the fixture card, display-only clicks, Cmd+click,
+//   hover, caption, remove and the removed stub.
+// Design pack design/156-live-preview/packs/172.md wins over WI numbers:
+// item text x = inner left + marker column (bullet 2 cols, task 4, numbered
+// digits + 2, quote 2 with 1 col right padding); prose rows at the inner
+// left; rows 22.95 per body line with no gap; base text fg1; quote band
+// surface4 across the inner width.
+//
+// Keys (documented on CardRows): `card-row-<r>` (the whole row),
+// `card-row-text-<r>` (the row text, one RichText), `card-row-marker-<r>`
+// (an item row's MarkerColumn).
+import 'dart:math' as math;
+import 'dart:ui' as ui;
+
+import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/src/editor/editor_rows.dart';
+import 'package:open_memex_app/src/state/tabs_state.dart';
+import 'package:open_memex_app/src/theme/app_theme.dart';
+import 'package:open_memex_app/src/theme/colors.dart';
+import 'package:open_memex_app/src/widgets/editor/card_rows.dart';
+import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
+import 'package:open_memex_app/src/widgets/editor/live_preview_styles.dart';
+import 'package:open_memex_app/src/widgets/editor/marker_column.dart';
+import 'package:open_memex_app/src/widgets/editor/paragraph_line_boxes.dart';
+
+import '../robots/segmented_editor_robot.dart';
+import '../support/app_harness.dart';
+import '../support/daily_seed.dart';
+import '../support/fake_memex_cli.dart';
+import '../support/fake_vault_db.dart';
+import '../support/font_fetch_hold.dart';
+import '../support/mac_editing.dart';
+import '../support/markdown_fixtures.dart';
+
+// ------------------------------------------------------------------ harness
+
+/// One mono column (A2).
+const double _wi172Col = 8.1;
+
+/// A body, item or quote line (R13).
+const double _wi172Line = 22.95;
+
+/// Vertical tolerance: the engine rounds laid-out line metrics (a 22.95 px
+/// line measures 23.0).
+const double _wi172Y = 0.2;
+
+const _wi172BoundaryKey = Key('wi172-boundary');
+const _wi172RowsKey = Key('wi172-rows');
+
+/// Pumps [CardRows] of [text], [width] wide, on the card's `surface3` fill
+/// inside a repaint boundary (for pixel probes), at text scale 1.
+Future<void> _wi172PumpRows(
+  WidgetTester tester,
+  String text, {
+  double width = 736,
+}) async {
+  tester.view.physicalSize = const Size(1200, 900);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.reset);
+  await tester.pumpWidget(
+    MaterialApp(
+      theme: buildOmTheme(),
+      home: Scaffold(
+        body: Align(
+          alignment: Alignment.topLeft,
+          child: RepaintBoundary(
+            key: _wi172BoundaryKey,
+            child: Container(
+              color: OmColors.surface3,
+              padding: const EdgeInsets.all(20),
+              child: SizedBox(
+                width: width,
+                child: CardRows(key: _wi172RowsKey, text: text),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+  await tester.pump();
+}
+
+Finder get _wi172Rows => find.byKey(_wi172RowsKey);
+
+/// Row [r] (Key `card-row-<r>`) under [scope].
+Finder _wi172Row(Finder scope, int r) =>
+    find.descendant(of: scope, matching: find.byKey(Key('card-row-$r')));
+
+/// Row [r]'s marker column (Key `card-row-marker-<r>`) under [scope].
+Finder _wi172Marker(Finder scope, int r) =>
+    find.descendant(of: scope, matching: find.byKey(Key('card-row-marker-$r')));
+
+/// Row [r]'s text: the one RichText under Key `card-row-text-<r>`.
+Finder _wi172RowText(Finder scope, int r) => find.descendant(
+  of: find.descendant(of: scope, matching: find.byKey(Key('card-row-text-$r'))),
+  matching: find.byType(RichText),
+);
+
+/// The rows A1 splits [text] into (as the editor does).
+List<RowSpec> _wi172Specs(String text) => splitRows(text, atSegmentStart: true);
+
+/// One leaf of a span tree: its text, its own style and its effective
+/// (inherited and merged) style.
+typedef _Wi172Leaf = ({String text, TextStyle? own, TextStyle style});
+
+/// Every non-empty text leaf of [root], in order. A non-TextSpan child
+/// (a WidgetSpan) shows as U+FFFC.
+List<_Wi172Leaf> _wi172Leaves(InlineSpan root) {
+  final out = <_Wi172Leaf>[];
+  void visit(InlineSpan span, TextStyle inherited) {
+    final style = span.style == null ? inherited : inherited.merge(span.style);
+    if (span is TextSpan) {
+      final text = span.text;
+      if (text != null && text.isNotEmpty) {
+        out.add((text: text, own: span.style, style: style));
+      }
+      for (final child in span.children ?? const <InlineSpan>[]) {
+        visit(child, style);
+      }
+    } else {
+      out.add((text: '￼', own: span.style, style: style));
+    }
+  }
+
+  visit(root, const TextStyle());
+  return out;
+}
+
+/// Whether [leaf] shows: not a zero-size hidden marker, not transparent.
+bool _wi172Shows(_Wi172Leaf leaf) =>
+    leaf.style.fontSize != 0 &&
+    (leaf.style.color == null || leaf.style.color!.a > 0);
+
+/// The visible leaves of every RichText [finder] matches.
+List<_Wi172Leaf> _wi172VisibleLeaves(WidgetTester tester, Finder finder) => [
+  for (final w in tester.widgetList<RichText>(finder))
+    ..._wi172Leaves(w.text).where(_wi172Shows),
+];
+
+/// The visible text of every RichText [finder] matches, joined.
+String _wi172Visible(WidgetTester tester, Finder finder) =>
+    [for (final leaf in _wi172VisibleLeaves(tester, finder)) leaf.text].join();
+
+/// The single visible leaf of [finder]'s RichText whose text is [text].
+_Wi172Leaf _wi172Leaf(WidgetTester tester, Finder finder, String text) {
+  final found = _wi172VisibleLeaves(
+    tester,
+    finder,
+  ).where((l) => l.text == text).toList();
+  expect(found, hasLength(1), reason: 'one visible run "$text"');
+  return found.single;
+}
+
+/// The global rect of [token]'s characters in row text [rich] (first visual
+/// line it touches), at full line height.
+Rect _wi172TokenRect(WidgetTester tester, Finder rich, String token) {
+  final paragraph = tester.renderObject<RenderParagraph>(rich);
+  final plain = paragraph.text.toPlainText();
+  final at = plain.indexOf(token);
+  expect(at, isNonNegative, reason: '"$token" in "$plain"');
+  final box = paragraph
+      .getBoxesForSelection(
+        TextSelection(baseOffset: at, extentOffset: at + token.length),
+        boxHeightStyle: ui.BoxHeightStyle.max,
+      )
+      .first
+      .toRect();
+  return box.shift(paragraph.localToGlobal(Offset.zero));
+}
+
+/// Expects row text [rich] to start at [textX] right of [scope]'s left edge
+/// and every visual line of it (at least two) to start at that x.
+void _wi172ExpectHangs(
+  WidgetTester tester,
+  Finder scope,
+  Finder rich,
+  double textX, {
+  required String why,
+}) {
+  final paragraph = tester.renderObject<RenderParagraph>(rich);
+  final left = tester.getTopLeft(scope).dx;
+  final origin = paragraph.localToGlobal(Offset.zero);
+  expect(origin.dx - left, closeTo(textX, 0.01), reason: '$why: text x');
+  final plain = paragraph.text.toPlainText();
+  final starts = <double, double>{};
+  for (final box in paragraph.getBoxesForSelection(
+    TextSelection(baseOffset: 0, extentOffset: plain.length),
+  )) {
+    starts[box.top] = math.min(starts[box.top] ?? double.infinity, box.left);
+  }
+  expect(starts.length, greaterThanOrEqualTo(2), reason: '$why: wraps');
+  for (final MapEntry(key: top, value: x) in starts.entries) {
+    expect(
+      origin.dx + x - left,
+      closeTo(textX, 0.01),
+      reason: '$why: visual line at $top starts at the item text x',
+    );
+  }
+}
+
+// ------------------------------------------------------------------- pixels
+
+/// Pixels of a region of the repaint boundary, captured at [ratio] image
+/// pixels per logical pixel.
+class _Wi172Pixels {
+  _Wi172Pixels(this._bytes, this.width, this.height, this.rect, this.ratio);
+
+  final ByteData _bytes;
+  final int width;
+  final int height;
+
+  /// The captured region in global coordinates.
+  final Rect rect;
+  final double ratio;
+
+  /// The pixel at global [point].
+  Color at(Offset point) {
+    final x = ((point.dx - rect.left) * ratio).floor();
+    final y = ((point.dy - rect.top) * ratio).floor();
+    expect(x, inInclusiveRange(0, width - 1), reason: 'x of $point');
+    expect(y, inInclusiveRange(0, height - 1), reason: 'y of $point');
+    final i = (y * width + x) * 4;
+    return Color.fromARGB(
+      _bytes.getUint8(i + 3),
+      _bytes.getUint8(i),
+      _bytes.getUint8(i + 1),
+      _bytes.getUint8(i + 2),
+    );
+  }
+}
+
+/// Captures the boundary's pixels inside global [region].
+Future<_Wi172Pixels> _wi172Capture(
+  WidgetTester tester,
+  Rect region, {
+  double ratio = 8,
+}) async {
+  final boundary = tester.renderObject<RenderRepaintBoundary>(
+    find.byKey(_wi172BoundaryKey),
+  );
+  final origin = boundary.localToGlobal(Offset.zero);
+  final local = region.shift(-origin).intersect(Offset.zero & boundary.size);
+  final layer = boundary.debugLayer! as OffsetLayer;
+  final image = (await tester.runAsync(
+    () => layer.toImage(local, pixelRatio: ratio),
+  ))!;
+  final bytes = (await tester.runAsync(
+    () => image.toByteData(format: ui.ImageByteFormat.rawRgba),
+  ))!;
+  final pixels = _Wi172Pixels(
+    bytes,
+    image.width,
+    image.height,
+    local.shift(origin),
+    ratio,
+  );
+  image.dispose();
+  return pixels;
+}
+
+/// Matches a [Color] whose RGBA channels are each within 4 of [expected]
+/// (surface3 and surface4 differ by 8 to 11 per channel).
+class _Wi172Near extends Matcher {
+  const _Wi172Near(this.expected);
+
+  final Color expected;
+
+  static List<int> _channels(Color c) => [
+    for (final v in [c.r, c.g, c.b, c.a]) (v * 255).round(),
+  ];
+
+  static String _hex(Color c) =>
+      '0x${c.toARGB32().toRadixString(16).padLeft(8, '0').toUpperCase()}';
+
+  @override
+  bool matches(Object? item, Map<dynamic, dynamic> matchState) {
+    if (item is! Color) return false;
+    final a = _channels(item);
+    final b = _channels(expected);
+    for (var i = 0; i < 4; i++) {
+      if ((a[i] - b[i]).abs() > 4) return false;
+    }
+    return true;
+  }
+
+  @override
+  Description describe(Description description) =>
+      description.add('a colour near ${_hex(expected)} (+-4)');
+
+  @override
+  Description describeMismatch(
+    Object? item,
+    Description mismatchDescription,
+    Map<dynamic, dynamic> matchState,
+    bool verbose,
+  ) => item is Color
+      ? mismatchDescription.add('was ${_hex(item)}')
+      : mismatchDescription.add('was not a Color');
+}
+
+Matcher _wi172IsColor(Color c) => _Wi172Near(c);
+
+// --------------------------------------------------------------- workspace
+
+/// The A3 board card, one daily block per line (ords 3 to 7 of the fixture
+/// daily note).
+const _wi172Blocks = [
+  '## Evidence',
+  '- [x] Prototype buildTextSpan on one segment',
+  '- [ ] Measure caret mapping with `TextPainter`',
+  'Offsets stayed **byte-exact**; see [[Conflict merge]].',
+  '> Caret mapping is the risky part.',
+];
+
+/// What each row of the A3 card shows, every marker hidden.
+const _wi172Shown = [
+  'Evidence',
+  'Prototype buildTextSpan on one segment',
+  'Measure caret mapping with TextPainter',
+  'Offsets stayed byte-exact; see Conflict merge.',
+  'Caret mapping is the risky part.',
+];
+
+const _wi172Token = '![[2026-09-05#^wi172a..^wi172e]]';
+
+/// The topic note title the card wikilink names (a real note, so a link
+/// that opened would open a tab).
+const _wi172LinkedId = 'topic-wi172-conflict';
+
+/// [seedSegmentedVault] plus the A3 card's blocks and the linked topic
+/// note; the topic body is `Intro line`, the A3 card (card 1), `Outro line`.
+({FakeVaultDb db, FakeMemexCli cli}) _wi172Vault() {
+  final vault = seedSegmentedVault(
+    topicBody: 'Intro line\n$_wi172Token\nOutro line\n',
+  );
+  for (final (i, text) in _wi172Blocks.indexed) {
+    vault.db.seedBlock(
+      fixtureDailyId,
+      'wi172${'abcde'[i]}',
+      ord: 3 + i,
+      text: text,
+    );
+  }
+  vault.db.seedTopicNote(_wi172LinkedId, 'Conflict merge');
+  return vault;
+}
+
+/// The CLI calls that write (everything but `settings get`).
+List<FakeCliCall> _wi172Writes(SegmentedEditorRobot r) => [
+  for (final c in r.h.cli.calls)
+    if (c.subcommand != 'settings get') c,
+];
+
+/// Whether the primary focus sits inside [scope].
+bool _wi172FocusInside(Finder scope) {
+  final context = FocusManager.instance.primaryFocus?.context;
+  if (context == null) return false;
+  return find
+      .descendant(
+        of: scope,
+        matching: find.byElementPredicate((e) => identical(e, context)),
+      )
+      .evaluate()
+      .isNotEmpty;
+}
+
+/// Expects card [card] of the A3 vault to show [_wi172Shown], every marker
+/// hidden: no marker column shows text, no field, nothing focused in it.
+void _wi172ExpectAllHidden(WidgetTester tester, Finder card, String why) {
+  for (final (r, shown) in _wi172Shown.indexed) {
+    expect(
+      _wi172Visible(tester, _wi172RowText(card, r)),
+      shown,
+      reason: '$why: row $r',
+    );
+  }
+  for (final r in [1, 2, 4]) {
+    expect(
+      _wi172Visible(
+        tester,
+        find.descendant(
+          of: _wi172Marker(card, r),
+          matching: find.byType(RichText),
+        ),
+      ),
+      '',
+      reason: '$why: marker column $r shows no marker text',
+    );
+  }
+  expect(
+    find.descendant(of: card, matching: find.byType(EditableText)),
+    findsNothing,
+    reason: '$why: no field (no caret) in the card',
+  );
+  expect(_wi172FocusInside(card), isFalse, reason: '$why: no focus in card');
+}
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  holdFontFetches();
+
+  // -------------------------------------------------------------------------
+  // AC1: prose and bullet item rows, painted bullet, no marker text
+  // -------------------------------------------------------------------------
+  group('prose and item rows (AC1)', () {
+    testWidgets(
+      'a card shows its prose line and its bullet item text with a painted bullet and no bullet marker text',
+      (tester) async {
+        await _wi172PumpRows(
+          tester,
+          'Fixed the jump arc.\n- tried coyote time',
+        );
+        final left = tester.getTopLeft(_wi172Rows).dx;
+
+        final prose = _wi172RowText(_wi172Rows, 0);
+        expect(
+          tester.widget<RichText>(prose).text.toPlainText(),
+          'Fixed the jump arc.',
+        );
+        expect(_wi172Visible(tester, prose), 'Fixed the jump arc.');
+        expect(
+          tester.getTopLeft(prose).dx - left,
+          closeTo(0, 0.01),
+          reason: 'a prose row starts at the inner left edge',
+        );
+        expect(_wi172Marker(_wi172Rows, 0), findsNothing);
+
+        final item = _wi172RowText(_wi172Rows, 1);
+        expect(
+          tester.widget<RichText>(item).text.toPlainText(),
+          'tried coyote time',
+        );
+        expect(_wi172Visible(tester, item), 'tried coyote time');
+        expect(
+          tester.getTopLeft(item).dx - left,
+          closeTo(2 * _wi172Col, 0.01),
+          reason: 'bullet text x = inner left + 2 columns',
+        );
+
+        // C1b's marker column, read-only, 2 columns wide at the inner left.
+        final marker = _wi172Marker(_wi172Rows, 1);
+        expect(marker, findsOneWidget);
+        final column = tester.widget<MarkerColumn>(
+          find.descendant(of: marker, matching: find.byType(MarkerColumn)),
+        );
+        expect(column.readOnly, isTrue);
+        expect(column.marker, '- ');
+        final rect = tester.getRect(
+          find.descendant(of: marker, matching: find.byType(MarkerColumn)),
+        );
+        expect(rect.left - left, closeTo(0, 0.01));
+        expect(rect.width, closeTo(2 * _wi172Col, 0.01));
+        expect(rect.height, closeTo(_wi172Line, _wi172Y));
+
+        // The painted level-1 bullet: a filled fg2 dot (pack #168).
+        final px = await _wi172Capture(tester, rect.inflate(2));
+        final dot = rect.topLeft + const Offset(4.05, 11.475);
+        expect(px.at(dot), _wi172IsColor(OmColors.fg2), reason: 'dot centre');
+        expect(
+          px.at(Offset(rect.right - 1.5, rect.top + 1.5)),
+          _wi172IsColor(OmColors.surface3),
+          reason: 'the column is unfilled around the dot',
+        );
+
+        // No `- ` anywhere: not in a row, not in the marker column.
+        final all = find.descendant(
+          of: _wi172Rows,
+          matching: find.byType(RichText),
+        );
+        for (final leaf in _wi172VisibleLeaves(tester, all)) {
+          expect(leaf.text, isNot(contains('-')), reason: 'run "$leaf"');
+        }
+      },
+    );
+
+    testWidgets(
+      'the fixture excerpt card shows Fixed the jump arc and tried coyote time as card rows',
+      (tester) async {
+        final r = await launchSegmented(tester, vault: seedSegmentedVault());
+        await r.open(fixtureTopicId);
+
+        final rows = find.descendant(
+          of: r.card(1),
+          matching: find.byType(CardRows),
+        );
+        expect(rows, findsOneWidget);
+        expect(
+          tester.widget<CardRows>(rows).text,
+          'Fixed the jump arc.\n- tried coyote time',
+          reason: 'the card renders the text excerpt_render returns (D4)',
+        );
+        expect(r.textIn(r.card(1), 'Fixed the jump arc.'), findsWidgets);
+        expect(r.textIn(r.card(1), 'tried coyote time'), findsWidgets);
+        expect(_wi172Marker(r.card(1), 1), findsOneWidget);
+        for (final w in tester.widgetList<RichText>(
+          find.descendant(of: r.card(1), matching: find.byType(RichText)),
+        )) {
+          expect(
+            w.text.toPlainText(),
+            isNot(contains('- ')),
+            reason: 'no rendered text holds the bullet marker',
+          );
+        }
+      },
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // AC2: quote line, italic fg1 over a surface4 band, marker hidden
+  // -------------------------------------------------------------------------
+  group('quote rows (AC2)', () {
+    testWidgets(
+      'a card quote line renders italic fg1 text over a surface4 band across the inner width with its marker hidden',
+      (tester) async {
+        await _wi172PumpRows(
+          tester,
+          'Offsets stayed put.\n> Caret mapping is the risky part.',
+        );
+        final rows = tester.getRect(_wi172Rows);
+        final quote = _wi172RowText(_wi172Rows, 1);
+
+        expect(
+          _wi172Visible(tester, quote),
+          'Caret mapping is the risky part.',
+        );
+        for (final leaf in _wi172VisibleLeaves(tester, quote)) {
+          expect(leaf.style.fontStyle, FontStyle.italic, reason: leaf.text);
+          expect(leaf.style.color, OmColors.fg1, reason: leaf.text);
+        }
+        final all = find.descendant(
+          of: _wi172Rows,
+          matching: find.byType(RichText),
+        );
+        expect(
+          _wi172Visible(tester, all),
+          isNot(contains('>')),
+          reason: 'the quote marker is hidden, also in the marker column',
+        );
+        final column = tester.widget<MarkerColumn>(
+          find.descendant(
+            of: _wi172Marker(_wi172Rows, 1),
+            matching: find.byType(MarkerColumn),
+          ),
+        );
+        expect(column.readOnly, isTrue);
+
+        // Quote text x = inner left + 2 columns, 1 column right padding.
+        final text = tester.getRect(quote);
+        expect(text.left - rows.left, closeTo(2 * _wi172Col, 0.01));
+        expect(rows.right - text.right, closeTo(_wi172Col, 0.01));
+
+        // The band: surface4 across the whole inner width, one line tall.
+        final row = tester.getRect(_wi172Row(_wi172Rows, 1));
+        expect(row.height, closeTo(_wi172Line, _wi172Y));
+        final px = await _wi172Capture(tester, rows.inflate(4));
+        for (final p in [
+          Offset(rows.left + 1, row.center.dy),
+          Offset(rows.left + 1, row.top + 1),
+          Offset(rows.right - 1, row.center.dy),
+          Offset(rows.right - 1, row.bottom - 1),
+        ]) {
+          expect(px.at(p), _wi172IsColor(OmColors.surface4), reason: 'band $p');
+        }
+        for (final p in [
+          Offset(rows.right - 1, row.top - 2),
+          Offset(rows.right - 1, row.bottom + 2),
+        ]) {
+          expect(
+            px.at(p),
+            _wi172IsColor(OmColors.surface3),
+            reason: 'card fill outside the band at $p',
+          );
+        }
+      },
+    );
+
+    testWidgets(
+      'a wrapped card quote line keeps its band over every wrapped line and hangs at the quote text x',
+      (tester) async {
+        await _wi172PumpRows(
+          tester,
+          '> Caret mapping is the risky part of every card we render here',
+          width: 300,
+        );
+        final rows = tester.getRect(_wi172Rows);
+        final quote = _wi172RowText(_wi172Rows, 0);
+        _wi172ExpectHangs(
+          tester,
+          _wi172Rows,
+          quote,
+          2 * _wi172Col,
+          why: 'wrapped quote',
+        );
+        final row = tester.getRect(_wi172Row(_wi172Rows, 0));
+        expect(row.height, greaterThan(2 * _wi172Line - 0.01));
+        final px = await _wi172Capture(tester, rows.inflate(4));
+        for (final y in [row.top + 1, row.center.dy, row.bottom - 1]) {
+          for (final x in [rows.left + 1, rows.right - 1]) {
+            expect(
+              px.at(Offset(x, y)),
+              _wi172IsColor(OmColors.surface4),
+              reason: 'band at ($x, $y)',
+            );
+          }
+        }
+      },
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // AC3: heading, bold, inline code, wikilink: live preview styles, markers
+  // hidden
+  // -------------------------------------------------------------------------
+  group('live preview styles (AC3)', () {
+    testWidgets(
+      'a card heading bold inline code and wikilink render with live preview styles and every marker hidden',
+      (tester) async {
+        await _wi172PumpRows(
+          tester,
+          '# Title\n'
+          'Offsets stayed **byte-exact**; see [[Conflict merge]].\n'
+          '- [ ] Measure caret mapping with `TextPainter`',
+        );
+        final prose = _wi172RowText(_wi172Rows, 0);
+        expect(
+          _wi172Visible(tester, prose),
+          'Title\nOffsets stayed byte-exact; see Conflict merge.',
+          reason: 'heading, bold and wikilink markers render hidden',
+        );
+        expect(
+          tester.widget<RichText>(prose).text.toPlainText(),
+          '# Title\nOffsets stayed **byte-exact**; see [[Conflict merge]].',
+          reason: 'hidden markers keep their characters (D17)',
+        );
+
+        final title = _wi172Leaf(tester, prose, 'Title');
+        expect(title.style.fontSize, 20, reason: 'H1 size');
+        expect(title.style.fontWeight, FontWeight.w700, reason: 'H1 bold');
+        final plain = _wi172Leaf(tester, prose, 'Offsets stayed ');
+        expect(plain.style.color, OmColors.fg1, reason: 'card base text fg1');
+        expect(plain.style.fontSize, 13.5);
+        final bold = _wi172Leaf(tester, prose, 'byte-exact');
+        expect(bold.style.fontWeight, FontWeight.w700);
+        expect(bold.style.color, OmColors.fg1);
+        final link = _wi172Leaf(tester, prose, 'Conflict merge');
+        expect(link.style.color, OmColors.accent, reason: 'wikilink accent');
+        expect(
+          link.style.decoration ?? TextDecoration.none,
+          TextDecoration.none,
+          reason: 'a resolved wikilink has no underline',
+        );
+
+        final task = _wi172RowText(_wi172Rows, 1);
+        expect(
+          _wi172Visible(tester, task),
+          'Measure caret mapping with TextPainter',
+        );
+        final code = _wi172Leaf(tester, task, 'TextPainter');
+        expect(code.style.color, OmColors.fg1, reason: 'inline code fg1');
+
+        // B2's pill behind the code span, surface4, from the line top + 2 to
+        // + 19 (pack #165); probed above the glyphs.
+        final content = _wi172TokenRect(tester, task, 'TextPainter');
+        final px = await _wi172Capture(tester, content.inflate(6));
+        expect(
+          px.at(Offset(content.center.dx, content.top + 3)),
+          _wi172IsColor(OmColors.surface4),
+          reason: 'pill above the code glyphs',
+        );
+        expect(
+          px.at(Offset(content.center.dx, content.top + 1)),
+          _wi172IsColor(OmColors.surface3),
+          reason: 'the pill starts 2 px below the line top',
+        );
+      },
+    );
+
+    testWidgets(
+      'every card row renders the B1 span of its row text with markers forced hidden',
+      (tester) async {
+        final text = [
+          ..._wi172Blocks,
+          '1. numbered with *italic* and ~~strike~~',
+          '  - nested [link](https://example.com)',
+          'tail line',
+        ].join('\n');
+        await _wi172PumpRows(tester, text);
+        final specs = _wi172Specs(text);
+        expect(specs.where((s) => s.kind == RowKind.code), isEmpty);
+        for (final (r, spec) in specs.indexed) {
+          final rowText = text.substring(spec.textStart, spec.textEnd);
+          final expected = buildLivePreviewSpan(
+            rowText,
+            forceHidden: true,
+            itemText: spec.isItem,
+            taskDone: spec.done,
+            quote: spec.kind == RowKind.quote,
+            atSegmentStart: spec.textStart == 0,
+          );
+          final rendered = tester.widget<RichText>(
+            _wi172RowText(_wi172Rows, r),
+          );
+          expect(
+            [for (final l in _wi172Leaves(rendered.text)) (l.text, l.own)],
+            [for (final l in _wi172Leaves(expected)) (l.text, l.own)],
+            reason: 'row $r ($rowText) renders B1 spans, markers hidden',
+          );
+        }
+      },
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // AC4: hanging indent and row geometry
+  // -------------------------------------------------------------------------
+  group('hanging indent (AC4)', () {
+    testWidgets(
+      'a long card item wraps with every line starting at the item text x',
+      (tester) async {
+        const text =
+            '- tried coyote time while the jump arc stayed floaty\n'
+            '- [ ] measure caret mapping with a task long enough to wrap\n'
+            '- parent\n'
+            '  - child item that is long enough to wrap onto a new line\n'
+            '1. numbered item long enough to wrap onto the next line';
+        await _wi172PumpRows(tester, text, width: 300);
+        final left = tester.getTopLeft(_wi172Rows).dx;
+
+        // (row, marker x, marker width, text x, wraps)
+        const cases = [
+          (0, 0.0, 2 * _wi172Col, 2 * _wi172Col, true),
+          (1, 0.0, 4 * _wi172Col, 4 * _wi172Col, true),
+          (2, 0.0, 2 * _wi172Col, 2 * _wi172Col, false),
+          (3, 2 * _wi172Col, 2 * _wi172Col, 4 * _wi172Col, true),
+          (4, 0.0, 3 * _wi172Col, 3 * _wi172Col, true),
+        ];
+        for (final (r, markerX, markerW, textX, wraps) in cases) {
+          final column = tester.getRect(
+            find.descendant(
+              of: _wi172Marker(_wi172Rows, r),
+              matching: find.byType(MarkerColumn),
+            ),
+          );
+          expect(column.left - left, closeTo(markerX, 0.01), reason: 'row $r');
+          expect(column.width, closeTo(markerW, 0.01), reason: 'row $r');
+          final rich = _wi172RowText(_wi172Rows, r);
+          if (wraps) {
+            _wi172ExpectHangs(tester, _wi172Rows, rich, textX, why: 'row $r');
+          } else {
+            expect(
+              tester.getTopLeft(rich).dx - left,
+              closeTo(textX, 0.01),
+              reason: 'row $r text x',
+            );
+          }
+          expect(
+            tester.getTopRight(rich).dx,
+            closeTo(tester.getTopRight(_wi172Rows).dx, 0.01),
+            reason: 'row $r text runs to the inner right edge',
+          );
+        }
+      },
+    );
+
+    testWidgets('card rows stack with no gap at the body line height', (
+      tester,
+    ) async {
+      await _wi172PumpRows(
+        tester,
+        'Fixed the jump arc.\n- tried coyote time\n- [ ] open task',
+      );
+      final rows = tester.getRect(_wi172Rows);
+      var top = rows.top;
+      for (var r = 0; r < 3; r++) {
+        final row = tester.getRect(_wi172Row(_wi172Rows, r));
+        expect(
+          row.top,
+          closeTo(top, 0.01),
+          reason: 'row $r follows with no gap',
+        );
+        expect(
+          row.height,
+          closeTo(_wi172Line, _wi172Y),
+          reason: 'row $r height',
+        );
+        expect(row.left, closeTo(rows.left, 0.01));
+        top = row.bottom;
+      }
+      expect(rows.height, closeTo(3 * _wi172Line, _wi172Y));
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // AC5: D17, the rows joined back give the excerpt text
+  // -------------------------------------------------------------------------
+  group('byte exact rows (AC5, D17)', () {
+    testWidgets(
+      'the plain text of the card rows joined back equals the excerpt text for every markdown fixture',
+      (tester) async {
+        final texts = {
+          ...markdownFixtures,
+          'a3 card': _wi172Blocks.join('\n'),
+          'fixture card': 'Fixed the jump arc.\n- tried coyote time',
+        };
+        expect(texts.length, greaterThan(20), reason: 'sweep is real');
+        for (final MapEntry(key: name, value: text) in texts.entries) {
+          await _wi172PumpRows(tester, text);
+          final specs = _wi172Specs(text);
+          final joined = StringBuffer();
+          for (final (r, spec) in specs.indexed) {
+            final slice = text.substring(spec.textStart, spec.textEnd);
+            final rich = _wi172RowText(_wi172Rows, r);
+            final String plain;
+            if (rich.evaluate().isEmpty) {
+              expect(slice, isEmpty, reason: '$name: row $r is not rendered');
+              plain = '';
+            } else {
+              final span = tester.widget<RichText>(rich).text;
+              plain = span.toPlainText();
+              for (final leaf in _wi172Leaves(span)) {
+                expect(
+                  leaf.text,
+                  isNot('￼'),
+                  reason: '$name: row $r holds only TextSpans (TD4)',
+                );
+              }
+            }
+            expect(plain, slice, reason: '$name: row $r plain text');
+            joined
+              ..write(text.substring(spec.start, spec.textStart))
+              ..write(plain)
+              ..write(text.substring(spec.textEnd, spec.end));
+          }
+          expect(joined.toString(), text, reason: '$name joined back');
+          expect(
+            _wi172RowText(_wi172Rows, specs.length),
+            findsNothing,
+            reason: '$name: one card row per A1 row',
+          );
+        }
+      },
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // AC6: display only, no toggle, no link open
+  // -------------------------------------------------------------------------
+  group('display only (AC6)', () {
+    testWidgets(
+      'clicking a task checkbox in a card changes nothing and sends no update',
+      (tester) async {
+        final r = await launchSegmented(tester, vault: _wi172Vault());
+        await r.open(fixtureTopicId);
+        final card = r.card(1);
+        _wi172ExpectAllHidden(tester, card, 'before');
+        expect(
+          find.descendant(
+            of: card,
+            matching: find.byWidgetPredicate(
+              (w) =>
+                  w.key is ValueKey<String> &&
+                  (w.key! as ValueKey<String>).value.startsWith(
+                    'task-checkbox-',
+                  ),
+            ),
+          ),
+          findsNothing,
+          reason: 'a card task column is no checkbox',
+        );
+        final writes = _wi172Writes(r).length;
+
+        for (final row in [2, 1]) {
+          final marker = _wi172Marker(card, row);
+          expect(marker, findsOneWidget);
+          await tester.macClick(tester.getCenter(marker));
+          await tester.pump();
+        }
+        await r.waitForSave();
+
+        expect(r.updates, isEmpty);
+        expect(_wi172Writes(r), hasLength(writes), reason: 'no CLI write');
+        expect(r.segmentText(0), 'Intro line\n');
+        final topic = r.h.db.db.select(
+          'SELECT content_md FROM notes WHERE id = ?',
+          [fixtureTopicId],
+        ).single;
+        expect(topic['content_md'], 'Intro line\n$_wi172Token\nOutro line\n');
+        final blocks = r.h.db.db.select(
+          "SELECT text FROM blocks WHERE block_id IN ('wi172b', 'wi172c') "
+          'ORDER BY ord',
+        );
+        expect(
+          [for (final b in blocks) b['text']],
+          [_wi172Blocks[1], _wi172Blocks[2]],
+        );
+        for (final (row, marker) in [(1, '- [x] '), (2, '- [ ] ')]) {
+          final column = tester.widget<MarkerColumn>(
+            find.descendant(
+              of: _wi172Marker(card, row),
+              matching: find.byType(MarkerColumn),
+            ),
+          );
+          expect(column.marker, marker, reason: 'row $row is not toggled');
+          expect(column.readOnly, isTrue);
+        }
+        _wi172ExpectAllHidden(tester, card, 'after the clicks');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets('cmd clicking a wikilink in a card opens no tab', (
+      tester,
+    ) async {
+      final r = await launchSegmented(tester, vault: _wi172Vault());
+      await r.open(fixtureTopicId);
+      r.expectActiveNote(fixtureTopicId);
+      final tabs = r.h.read(tabsProvider).tabs.length;
+      final link = _wi172TokenRect(
+        tester,
+        _wi172RowText(r.card(1), 3),
+        'Conflict merge',
+      );
+
+      await tester.macCmdClick(link.center);
+      await pumpFrames(tester);
+      await tester.macClick(link.center);
+      await pumpFrames(tester);
+      await r.waitForSave();
+
+      r.expectActiveNote(fixtureTopicId);
+      expect(r.h.read(tabsProvider).tabs, hasLength(tabs));
+      expect(
+        r.h
+            .read(tabsProvider)
+            .tabs
+            .whereType<NoteTab>()
+            .where((t) => t.id == _wi172LinkedId),
+        isEmpty,
+        reason: 'the linked note never opens',
+      );
+      expect(r.updates, isEmpty);
+    }, variant: macOnly);
+  });
+
+  // -------------------------------------------------------------------------
+  // AC7: hover and click never reveal a marker
+  // -------------------------------------------------------------------------
+  group('markers never reveal (AC7)', () {
+    testWidgets('hovering and clicking inside a card never reveals a marker', (
+      tester,
+    ) async {
+      final r = await launchSegmented(tester, vault: _wi172Vault());
+      await r.open(fixtureTopicId);
+      final card = r.card(1);
+      _wi172ExpectAllHidden(tester, card, 'opened');
+
+      // Where each row's text starts (just inside its first glyph), and the
+      // wikilink.
+      final points = [
+        for (var row = 0; row < _wi172Shown.length; row++)
+          tester.getRect(_wi172RowText(card, row)).centerLeft +
+              const Offset(4, 0),
+      ];
+      final link = _wi172TokenRect(
+        tester,
+        _wi172RowText(card, 3),
+        'Conflict merge',
+      ).center;
+
+      // Hovering: a mouse resting over each row, then Cmd held over the
+      // wikilink (no Cmd-hover style).
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.addPointer(location: Offset.zero);
+      for (final (row, at) in points.indexed) {
+        await mouse.moveTo(at);
+        await tester.pump();
+        _wi172ExpectAllHidden(tester, card, 'hovering row $row');
+      }
+      await mouse.moveTo(link);
+      await tester.macHolding([LogicalKeyboardKey.metaLeft], () async {
+        await tester.pump();
+        _wi172ExpectAllHidden(tester, card, 'cmd hover');
+        for (final leaf in _wi172VisibleLeaves(
+          tester,
+          _wi172RowText(card, 3),
+        )) {
+          expect(
+            leaf.style.decoration ?? TextDecoration.none,
+            TextDecoration.none,
+            reason: 'the run ${leaf.text} has no hover underline',
+          );
+        }
+      });
+      await mouse.removePointer();
+      await tester.pump();
+
+      // No pointer cursor on a token or a row, Cmd held or not.
+      for (final (row, at) in points.indexed) {
+        expect(
+          await tester.macCursorAt(at),
+          isNot(SystemMouseCursors.click),
+          reason: 'row $row',
+        );
+      }
+      expect(
+        await tester.macHolding([
+          LogicalKeyboardKey.metaLeft,
+        ], () => tester.macCursorAt(link)),
+        isNot(SystemMouseCursors.click),
+        reason: 'cmd over the wikilink',
+      );
+
+      // Clicking each row's text and each marker column.
+      for (final (row, at) in points.indexed) {
+        await tester.macClick(at);
+        await tester.pump();
+        _wi172ExpectAllHidden(tester, card, 'clicked row $row');
+        final marker = _wi172Marker(card, row);
+        if (marker.evaluate().isNotEmpty) {
+          await tester.macClick(tester.getCenter(marker));
+          await tester.pump();
+          _wi172ExpectAllHidden(tester, card, 'clicked marker $row');
+        }
+      }
+      await tester.macClick(link);
+      await tester.pump();
+      _wi172ExpectAllHidden(tester, card, 'clicked the wikilink');
+    }, variant: macOnly);
+
+    testWidgets(
+      'a caret in the text segment next to a card leaves the card markers hidden',
+      (tester) async {
+        final r = await launchSegmented(tester, vault: _wi172Vault());
+        await r.open(fixtureTopicId);
+        await r.focusSegment(0);
+        expect(r.segmentHasFocus(0), isTrue);
+        _wi172ExpectAllHidden(tester, r.card(1), 'segment 0 focused');
+        await r.focusSegment(2, offset: 0);
+        expect(r.segmentHasFocus(2), isTrue);
+        _wi172ExpectAllHidden(tester, r.card(1), 'segment 2 focused');
+      },
+      variant: macOnly,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // AC8: caption, remove, removed stub
+  // -------------------------------------------------------------------------
+  group('card shell (AC8)', () {
+    testWidgets(
+      'the card caption still opens the daily note and the remove button still removes the excerpt',
+      (tester) async {
+        final r = await launchSegmented(tester, vault: _wi172Vault());
+        await r.open(fixtureTopicId);
+        expect(
+          find.descendant(of: r.card(1), matching: find.byType(CardRows)),
+          findsOneWidget,
+        );
+
+        await r.tapCaption(1);
+        r.expectActiveNote(fixtureDailyId);
+
+        await r.open(fixtureTopicId);
+        await r.tapRemove(1);
+        expect(r.excerptRms, hasLength(1));
+        expect(r.excerptRms.single.flag('block-ids'), 'wi172a,wi172e');
+        expect(r.excerptRms.single.flag('date'), '2026-09-05');
+        expect(r.allCards, findsNothing);
+      },
+    );
+
+    testWidgets(
+      'a removed from 2026-09-05 stub renders as plain fg3 text without card rows',
+      (tester) async {
+        final r = await launchSegmented(
+          tester,
+          vault: seedSegmentedVault(
+            topicBody: 'Intro line\n![[2026-09-05#^zzzzzz]]\nOutro line\n',
+          ),
+        );
+        await r.open(fixtureTopicId);
+
+        final stub = r.textIn(r.card(1), 'removed from 2026-09-05');
+        expect(stub, findsWidgets);
+        expect(
+          find.descendant(of: r.card(1), matching: find.byType(CardRows)),
+          findsNothing,
+          reason: 'the stub is not markdown',
+        );
+        expect(_wi172RowText(r.card(1), 0), findsNothing);
+        final rich = find.descendant(
+          of: r.card(1),
+          matching: find.byWidgetPredicate(
+            (w) =>
+                w is RichText &&
+                w.text.toPlainText() == 'removed from 2026-09-05',
+          ),
+        );
+        for (final leaf in _wi172VisibleLeaves(tester, rich)) {
+          expect(leaf.style.color, OmColors.fg3, reason: 'stub fg3');
+          expect(leaf.style.fontStyle ?? FontStyle.normal, FontStyle.normal);
+          expect(leaf.style.fontWeight ?? FontWeight.w400, FontWeight.w400);
+        }
+      },
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // D6: the RenderParagraph line-box adapter
+  // -------------------------------------------------------------------------
+  group('paragraph line boxes (D6)', () {
+    const base = TextStyle(fontSize: 13.5, height: 1.7);
+
+    /// Pumps a RichText of [span] [width] wide with live preview's strut
+    /// and returns its paragraph's line boxes.
+    Future<RenderParagraphLineBoxes> pumpParagraph(
+      WidgetTester tester,
+      InlineSpan span, {
+      double width = 400,
+    }) async {
+      await tester.pumpWidget(
+        Directionality(
+          textDirection: TextDirection.ltr,
+          child: Align(
+            alignment: Alignment.topLeft,
+            child: SizedBox(
+              width: width,
+              child: RichText(
+                key: const Key('wi172-paragraph'),
+                text: span,
+                strutStyle: livePreviewStrut(),
+              ),
+            ),
+          ),
+        ),
+      );
+      return RenderParagraphLineBoxes(
+        tester.renderObject<RenderParagraph>(
+          find.byKey(const Key('wi172-paragraph')),
+        ),
+      );
+    }
+
+    testWidgets(
+      'paragraph line boxes report one full height line per visual line',
+      (tester) async {
+        final boxes = await pumpParagraph(
+          tester,
+          const TextSpan(text: 'ab\ncd\n', style: base),
+        );
+        expect(boxes.box, same(boxes.paragraph));
+        final lines = boxes.lines;
+        expect(
+          [for (final l in lines) (l.range.start, l.range.end)],
+          [(0, 2), (3, 5), (6, 6)],
+        );
+        for (final (i, line) in lines.indexed) {
+          expect(line.top, closeTo(i * _wi172Line, _wi172Y), reason: 'line $i');
+          expect(
+            line.bottom,
+            closeTo((i + 1) * _wi172Line, _wi172Y),
+            reason: 'line $i (the empty last line measures too)',
+          );
+        }
+
+        // 10 columns of the 13.5 px test font: 'aaaa bbbb cccc' wraps.
+        final wrapped = await pumpParagraph(
+          tester,
+          const TextSpan(text: 'aaaa bbbb cccc', style: base),
+          width: 10 * 13.5,
+        );
+        expect(
+          [for (final l in wrapped.lines) l.range.start],
+          [0, 10],
+          reason: 'a wrapped line gives one line box per visual line',
+        );
+        expect(wrapped.lines.last.top, closeTo(_wi172Line, _wi172Y));
+      },
+    );
+
+    testWidgets(
+      'paragraph line boxes measure a heading line at its own height',
+      (tester) async {
+        final boxes = await pumpParagraph(
+          tester,
+          buildLivePreviewSpan('# Title\nbody', style: base, forceHidden: true),
+        );
+        final lines = boxes.lines;
+        expect(lines, hasLength(2));
+        expect(lines[0].bottom - lines[0].top, closeTo(40, _wi172Y));
+        expect(lines[1].top, closeTo(40, _wi172Y));
+        expect(lines[1].bottom - lines[1].top, closeTo(_wi172Line, _wi172Y));
+      },
+    );
+
+    testWidgets(
+      'paragraph line boxes give one full height rect per line a range touches',
+      (tester) async {
+        final boxes = await pumpParagraph(
+          tester,
+          const TextSpan(text: 'ab\ncd', style: base),
+        );
+        expect(boxes.boxesFor(const TextRange.collapsed(1)), isEmpty);
+        final rects = boxes.boxesFor(const TextRange(start: 1, end: 4));
+        expect(rects, hasLength(2));
+        expect(rects[0].left, closeTo(13.5, 0.01));
+        expect(rects[0].right, closeTo(27, 0.01));
+        expect(rects[0].top, closeTo(0, _wi172Y));
+        expect(rects[0].bottom, closeTo(_wi172Line, _wi172Y));
+        expect(rects[1].left, closeTo(0, 0.01));
+        expect(rects[1].right, closeTo(13.5, 0.01));
+        expect(rects[1].top, closeTo(_wi172Line, _wi172Y));
+        expect(rects[1].bottom, closeTo(2 * _wi172Line, _wi172Y));
+      },
+    );
+
+    testWidgets(
+      'paragraph line boxes never give a zero height caret at a hidden marker',
+      (tester) async {
+        final boxes = await pumpParagraph(
+          tester,
+          buildLivePreviewSpan('**b** x\nnext', style: base, forceHidden: true),
+        );
+        for (final offset in [0, 1, 2, 4, 9]) {
+          final caret = boxes.caretRect(offset);
+          final line = offset < 8 ? 0 : 1;
+          expect(
+            caret.top,
+            closeTo(line * _wi172Line, _wi172Y),
+            reason: 'caret $offset top',
+          );
+          expect(
+            caret.height,
+            closeTo(_wi172Line, _wi172Y),
+            reason: 'caret $offset height',
+          );
+        }
+        // The hidden `**` is zero-width: the caret after it sits at x 0, the
+        // caret after `b` one column in.
+        expect(boxes.caretRect(2).left, closeTo(0, 0.01));
+        expect(boxes.caretRect(3).left, closeTo(13.5, 0.01));
+      },
+    );
+
+    testWidgets('paragraph line boxes find the text offset nearest a point', (
+      tester,
+    ) async {
+      final boxes = await pumpParagraph(
+        tester,
+        const TextSpan(text: 'ab\ncd', style: base),
+      );
+      expect(boxes.offsetAt(const Offset(1, 5)), 0);
+      expect(boxes.offsetAt(const Offset(14, _wi172Line + 5)), 4);
+      expect(boxes.offsetAt(const Offset(200, _wi172Line + 5)), 5);
+    });
+  });
+}
