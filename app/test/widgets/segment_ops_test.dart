@@ -655,12 +655,16 @@ void main() {
   });
 
   // -------------------------------------------------------------------------
-  // Contracts the ops widget documents (verify-mode pins) and ruling D20:
-  // one user action = one SegmentEdit = one onContentChanged report.
+  // Contracts the ops widget documents (verify-mode pins) and rulings D20
+  // and D20a. D20: one user action = one SegmentEdit = one onContentChanged
+  // report (paste, cut). D20a exempts type-over and IME start from the one
+  // report rule: the range delete is applied at key down (or composing
+  // start) and the field inserts the key, so a type-over reports twice, yet
+  // it stays one undo step (segment_undo_test.dart) and one vault write.
   // -------------------------------------------------------------------------
-  group('ops contracts (D20, documented behaviour)', () {
+  group('ops contracts (D20, D20a, documented behaviour)', () {
     testWidgets(
-      'typing z over a cross row selection reports one content change',
+      'D20a typing z over a cross row selection reports the range delete then the typed text',
       (tester) async {
         final body = await wi171Pump(tester, wi171Text);
         await wi171SelectAcross(tester, focus: 2);
@@ -668,7 +672,7 @@ void main() {
         await wi171TypeKey(tester, 'z');
 
         expect(segmentEditingAt(tester, 0).text, 'para\n- azd');
-        expect(body.changes, ['para\n- azd']);
+        expect(body.changes, ['para\n- ad', 'para\n- azd']);
       },
       variant: macOnly,
     );
