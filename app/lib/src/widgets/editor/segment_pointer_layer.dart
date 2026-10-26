@@ -14,6 +14,7 @@ import '../../editor/segment_selection.dart';
 import '../../theme/colors.dart';
 import 'line_boxes.dart';
 import 'live_preview_styles.dart';
+import 'marker_column.dart';
 import 'segment_view.dart';
 
 /// How far inside the editor page's top or bottom edge a drag starts to
@@ -36,6 +37,9 @@ const double _autoScrollSpeed = 1200;
 ///   (an excerpt card, the Topics footer) to its end (A4 `clampToSegment`).
 /// - Shift+click (and Shift+drag) extends the segment selection from its
 ///   base to the pressed offset.
+/// - A press inside an editor row's marker column is the column's (its
+///   checkbox; a revealed marker is display only): the layer ignores it,
+///   with no caret move, focus change, selection or drag.
 /// - A plain click, a double or triple click and a Cmd+click stay the
 ///   row's (and the link region's): the layer only wins the gesture arena
 ///   for a drag or a Shift+press.
@@ -162,12 +166,24 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
     }
   }
 
+  /// Whether global [point] lies inside one of the segment's editor row
+  /// marker columns.
+  bool _inMarkerColumn(Offset point) {
+    final box = context.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return false;
+    final result = BoxHitTestResult();
+    box.hitTest(result, position: box.globalToLocal(point));
+    return hitsMarkerColumn(result);
+  }
+
   void _onDown(PointerDownEvent event) {
     if (_press != null ||
         event.kind != PointerDeviceKind.mouse ||
         event.buttons != kPrimaryButton) {
       return;
     }
+    // A press on a marker column belongs to the column (Spec Q4, D11).
+    if (_inMarkerColumn(event.position)) return;
     final keyboard = HardwareKeyboard.instance;
     // A Cmd+click belongs to the link region (B3).
     if (keyboard.isMetaPressed) return;
