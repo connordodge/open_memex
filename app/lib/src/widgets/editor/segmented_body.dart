@@ -51,9 +51,15 @@ class _TextSeg extends _Seg {
 }
 
 /// True while [focus] has focus; notifies only when that changes.
+///
+/// It also re-checks [focus] on every primary focus change: when a focused
+/// row field under [focus] goes away (a re-split replaces the segment's
+/// rows), the focus manager drops that primary focus without notifying its
+/// ancestors, so [focus] alone would never report losing focus.
 class _FocusGate extends ValueNotifier<bool> {
   _FocusGate(this.focus) : super(focus.hasFocus) {
     focus.addListener(_sync);
+    FocusManager.instance.addListener(_sync);
   }
 
   final FocusNode focus;
@@ -63,6 +69,7 @@ class _FocusGate extends ValueNotifier<bool> {
   @override
   void dispose() {
     focus.removeListener(_sync);
+    FocusManager.instance.removeListener(_sync);
     super.dispose();
   }
 }

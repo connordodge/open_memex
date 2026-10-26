@@ -298,9 +298,13 @@ void main() {
         expect(r.segmentText(0), fixturePerson);
         expect(r.textSegment(1), findsNothing);
         expect(r.allCards, findsNothing);
-        // The date header replaces the title: the person field is the only
+        // The date header replaces the title: the person segment is the only
         // editable text in the editor, so the footer is not a text field.
-        expect(r.editorEditables, findsOneWidget);
+        // TEST-CHANGE (#167): the person segment renders as editor rows (its
+        // `- tried coyote time` line is an item row), one field per row.
+        expect(r.segment(0).rowCount, 3);
+        expect(r.editorEditables, findsNWidgets(3));
+        expect(segmentRowFields(r.textSegment(0)), findsNWidgets(3));
         expect(r.segmentText(0), isNot(contains(topicsMarker)));
         expect(r.segmentText(0), isNot(contains('~about')));
       },
