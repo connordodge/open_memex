@@ -2470,12 +2470,16 @@ void main() {
     testWidgets('a marker wider than its column stays on one line', (
       tester,
     ) async {
-      // Unrevealed task columns are 4 mono columns (A2); the source marker
-      // `- [ ] ` is 6, so it overflows the column and is clipped, never
-      // wrapped onto a second line.
-      await _wi167Pump(tester, 'intro\n- [ ] milk\n10. ten');
-      for (final (r, marker) in [(1, '- [ ] '), (2, '10. ')]) {
-        expect(_wi167MarkerText(tester, 0, r), marker);
+      // TEST-CHANGE (#168): C1's placeholder showed the source marker as
+      // text in every state, so `- [ ] ` (6 columns) overflowed the 4-column
+      // unrevealed task column. Under #168 (Spec R2, R4, TD10) an unrevealed
+      // column paints its marker (a task's circle has no text; a number is
+      // painted at its natural width) and the source text shows only while
+      // revealed, when a task column widens to 6 columns. So the check is
+      // re-scoped to the painted number and the revealed source text: each
+      // is laid out on one line, never wrapped onto a second.
+      void expectOneLine(int r, String text) {
+        expect(_wi167MarkerText(tester, 0, r), text, reason: 'row $r');
         final paragraph = tester.renderObject<RenderParagraph>(
           find.descendant(
             of: _wi167Marker(0, r),
@@ -2483,7 +2487,7 @@ void main() {
           ),
         );
         final boxes = paragraph.getBoxesForSelection(
-          TextSelection(baseOffset: 0, extentOffset: marker.length),
+          TextSelection(baseOffset: 0, extentOffset: text.length),
         );
         expect(boxes, isNotEmpty);
         expect(
@@ -2497,11 +2501,30 @@ void main() {
           reason: 'marker $r stays inside its one item line',
         );
       }
+
+      await _wi167Pump(tester, 'intro\n- [ ] milk\n10. ten');
+      // Unrevealed: the task's 6-column source marker is wider than its
+      // 4-column column, so it is painted (no text), and the number is
+      // painted on one line.
+      expect(_wi167MarkerText(tester, 0, 1), isEmpty);
       expect(
         tester.getSize(_wi167Marker(0, 1)).width,
         closeTo(4 * _wi167Col, 0.01),
-        reason: 'the task marker is wider than its column',
+        reason: 'the unrevealed task column is narrower than its source',
       );
+      expectOneLine(2, '10.');
+
+      // Revealed: the source text shows on one line; the task column widens
+      // to fit `- [ ] ` instead of wrapping it.
+      await _wi167FocusRow(tester, 0, 1);
+      expectOneLine(1, '- [ ] ');
+      expect(
+        tester.getSize(_wi167Marker(0, 1)).width,
+        closeTo(6 * _wi167Col, 0.01),
+        reason: 'a revealed task column is 6 columns wide',
+      );
+      await _wi167FocusRow(tester, 0, 2);
+      expectOneLine(2, '10. ');
     });
   });
 }
