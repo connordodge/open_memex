@@ -6,6 +6,8 @@
 // every widget edit is a [SegmentEdit]. Offsets are UTF-16 code units into
 // one text segment's text; no boundary falls inside a surrogate pair (D4).
 
+import 'markdown_lines.dart';
+
 /// The kind of an editor row (Spec R9).
 enum RowKind {
   /// A maximal run of lines that are not items and not inside a fence
@@ -164,14 +166,12 @@ class RowSpec {
   /// Converts a segment offset to a row-local text offset, clamped into
   /// `0..textLength` (an offset in the marker maps to 0, one in the
   /// terminator or past the row to [textLength]).
-  int toLocal(int segmentOffset) {
-    throw UnimplementedError();
-  }
+  int toLocal(int segmentOffset) =>
+      (segmentOffset - textStart).clamp(0, textLength);
 
   /// Converts a row-local text offset (`0..textLength`) to a segment offset.
-  int toSegment(int localOffset) {
-    throw UnimplementedError();
-  }
+  int toSegment(int localOffset) =>
+      textStart + localOffset.clamp(0, textLength);
 
   @override
   String toString() =>
@@ -193,14 +193,139 @@ class RowSpec {
 /// a closed fence); `''` is one empty prose row. [atSegmentStart] is passed
 /// to [classifyLines] (leading frontmatter is prose).
 List<RowSpec> splitRows(String text, {required bool atSegmentStart}) {
-  throw UnimplementedError();
+  final lines = classifyLines(text, atSegmentStart: atSegmentStart);
+  final rows = <RowSpec>[];
+  // Indices of the open numbered runs by depth (R11).
+  final runs = <int, int>{};
+  var i = 0;
+  while (i < lines.length) {
+    final line = lines[i];
+    final kind = _itemKinds[line.kind];
+    if (kind == null) {
+      // A code row runs from its opening fence line through its closing one
+      // (or the segment end); a prose row is a maximal run of the rest.
+      final code = line.kind == MdLineKind.fenceOpen;
+      var last = i;
+      while (last + 1 < lines.length &&
+          (code
+              ? lines[last].kind != MdLineKind.fenceClose
+              : _proseKinds.contains(lines[last + 1].kind))) {
+        last++;
+      }
+      rows.add(
+        RowSpec(
+          kind: code ? RowKind.code : RowKind.prose,
+          start: line.start,
+          textStart: line.start,
+          textEnd: lines[last].contentEnd,
+          end: lines[last].end,
+        ),
+      );
+      runs.clear();
+      i = last + 1;
+      continue;
+    }
+    final parent = _parent(rows, line.indent);
+    final depth = parent == null ? 0 : rows[parent].depth + 1;
+    runs.removeWhere((runDepth, _) => runDepth > depth);
+    int? run;
+    if (kind == RowKind.numbered) {
+      run = runs.putIfAbsent(depth, () => rows.length);
+    } else {
+      runs.remove(depth);
+    }
+    rows.add(
+      RowSpec(
+        kind: kind,
+        start: line.start,
+        textStart: line.textStart,
+        textEnd: line.contentEnd,
+        end: line.end,
+        indent: line.indent,
+        depth: depth,
+        parent: parent,
+        done: line.done,
+        number: line.number,
+        numberedRun: run,
+      ),
+    );
+    i++;
+  }
+  return _withRunDigits(rows);
+}
+
+/// The row kind of each item line kind.
+const _itemKinds = {
+  MdLineKind.bullet: RowKind.bullet,
+  MdLineKind.numbered: RowKind.numbered,
+  MdLineKind.task: RowKind.task,
+  MdLineKind.quote: RowKind.quote,
+};
+
+/// The line kinds a prose row is made of: neither items nor fence lines.
+const _proseKinds = {
+  MdLineKind.blank,
+  MdLineKind.plain,
+  MdLineKind.heading,
+  MdLineKind.rule,
+  MdLineKind.frontmatter,
+};
+
+/// The parent of a new item row with [indent] (Spec R12): the nearest
+/// earlier item row with a smaller indent, searching back until the first
+/// prose (or code) row.
+int? _parent(List<RowSpec> rows, int indent) {
+  for (var i = rows.length - 1; i >= 0; i--) {
+    final row = rows[i];
+    if (!row.isItem) return null;
+    if (row.indent < indent) return i;
+  }
+  return null;
+}
+
+/// [rows] with each numbered row's [RowSpec.runDigits] set to the widest
+/// number of its run, as written (Spec R11).
+List<RowSpec> _withRunDigits(List<RowSpec> rows) {
+  final widest = <int, int>{};
+  for (final row in rows) {
+    final run = row.numberedRun;
+    if (run == null) continue;
+    final digits = row.number!.length;
+    if (digits > (widest[run] ?? 0)) widest[run] = digits;
+  }
+  return [
+    for (final row in rows)
+      if (row.numberedRun case final run?)
+        RowSpec(
+          kind: row.kind,
+          start: row.start,
+          textStart: row.textStart,
+          textEnd: row.textEnd,
+          end: row.end,
+          indent: row.indent,
+          depth: row.depth,
+          parent: row.parent,
+          number: row.number,
+          numberedRun: run,
+          runDigits: widest[run]!,
+        )
+      else
+        row,
+  ];
 }
 
 /// Joins [rows] of [text] back into the segment text: each row's
 /// indentation, marker and separator, its text and its terminator, in
 /// order. `joinRows(t, splitRows(t, …)) == t` byte for byte (Spec R14).
 String joinRows(String text, List<RowSpec> rows) {
-  throw UnimplementedError();
+  final out = StringBuffer();
+  for (final row in rows) {
+    out
+      ..write(text.substring(row.start, row.textStart))
+      ..write(text.substring(row.textStart, row.textEnd))
+      ..write(text.substring(row.textEnd, row.end));
+  }
+  return out.toString();
 }
 
 /// Each row's local slice of [selection] (Spec R26), one entry per row in
@@ -208,7 +333,28 @@ String joinRows(String text, List<RowSpec> rows) {
 /// the row's text inside `[selection.start, selection.end]` in local
 /// offsets.
 List<RowSlice?> rowSlices(List<RowSpec> rows, SegmentSelection selection) {
-  throw UnimplementedError();
+  final start = selection.start;
+  final end = selection.end;
+  final caretRow = selection.isCollapsed ? _rowAt(rows, start) : null;
+  return [
+    for (final (i, row) in rows.indexed)
+      if (selection.isCollapsed
+          ? i == caretRow
+          : start < row.end && end > row.start)
+        RowSlice(row: i, start: row.toLocal(start), end: row.toLocal(end))
+      else
+        null,
+  ];
+}
+
+/// Index of the row holding segment [offset]: the row with
+/// `start <= offset < end`, or the last row for an offset at or past the
+/// segment end. -1 for no rows.
+int _rowAt(List<RowSpec> rows, int offset) {
+  for (var i = 0; i < rows.length; i++) {
+    if (offset < rows[i].end) return i;
+  }
+  return rows.length - 1;
 }
 
 /// Matches the rows derived before an edit to the rows derived after it
@@ -229,7 +375,44 @@ List<int?> matchRows(
   required SegmentEdit edit,
   int? focused,
 }) {
-  throw UnimplementedError();
+  final result = List<int?>.filled(before.length, null);
+  if (after.isEmpty) return result;
+  final selection = edit.selection;
+  final target =
+      focused != null &&
+          focused >= 0 &&
+          focused < before.length &&
+          selection != null
+      ? _rowAt(after, selection.extentOffset)
+      : null;
+  final inserted = edit.replacement.length;
+  final delta = inserted - (edit.end - edit.start);
+  var last = -1;
+  for (final (k, old) in before.indexed) {
+    if (k == focused && target != null) {
+      result[k] = last = target;
+      continue;
+    }
+    // A non-empty row the edit replaced entirely has no continuation.
+    if (edit.start <= old.start && old.end <= edit.end && old.start < old.end) {
+      continue;
+    }
+    // Where the row's start lands in the new text: unchanged before the
+    // edit, shifted after it, at the end of the replacement inside it.
+    final int anchor;
+    if (old.start < edit.start) {
+      anchor = old.start;
+    } else if (old.start >= edit.end) {
+      anchor = old.start + delta;
+    } else {
+      anchor = edit.start + inserted;
+    }
+    final j = _rowAt(after, anchor);
+    if (j <= last) continue;
+    if (target != null && k < focused! && j >= target) continue;
+    result[k] = last = j;
+  }
+  return result;
 }
 
 /// A splice of one segment's text: the only way a widget edits it (D2).
@@ -249,7 +432,28 @@ class SegmentEdit {
   /// and suffix are left out, never splitting a surrogate pair. Its
   /// [selection] is null.
   factory SegmentEdit.diff(String before, String after) {
-    throw UnimplementedError();
+    final shorter = before.length < after.length ? before.length : after.length;
+    var prefix = 0;
+    while (prefix < shorter &&
+        before.codeUnitAt(prefix) == after.codeUnitAt(prefix)) {
+      prefix++;
+    }
+    if (_splitsPair(before, prefix) || _splitsPair(after, prefix)) prefix--;
+    var suffix = 0;
+    while (suffix < shorter - prefix &&
+        before.codeUnitAt(before.length - 1 - suffix) ==
+            after.codeUnitAt(after.length - 1 - suffix)) {
+      suffix++;
+    }
+    if (_splitsPair(before, before.length - suffix) ||
+        _splitsPair(after, after.length - suffix)) {
+      suffix--;
+    }
+    return SegmentEdit(
+      start: prefix,
+      end: before.length - suffix,
+      replacement: after.substring(prefix, after.length - suffix),
+    );
   }
 
   final int start;
@@ -259,9 +463,7 @@ class SegmentEdit {
 
   /// [text] with `[start, end)` replaced by [replacement]. Throws a
   /// [RangeError] when the range doesn't fit [text].
-  String apply(String text) {
-    throw UnimplementedError();
-  }
+  String apply(String text) => text.replaceRange(start, end, replacement);
 
   @override
   bool operator ==(Object other) =>
@@ -289,5 +491,28 @@ SegmentEdit? toggleTask(
   RowSpec row, {
   SegmentSelection? selection,
 }) {
-  throw UnimplementedError();
+  if (row.kind != RowKind.task) return null;
+  // The box character: after the indentation, the bullet, its space and `[`.
+  var box = row.start;
+  while (text.codeUnitAt(box) == 0x20 || text.codeUnitAt(box) == 0x09) {
+    box++;
+  }
+  box += 3;
+  return SegmentEdit(
+    start: box,
+    end: box + 1,
+    replacement: text.codeUnitAt(box) == 0x20 ? 'x' : ' ',
+    selection: selection,
+  );
 }
+
+/// Whether [offset] falls between the two halves of a surrogate pair.
+bool _splitsPair(String text, int offset) =>
+    offset > 0 &&
+    offset < text.length &&
+    _isHighSurrogate(text.codeUnitAt(offset - 1)) &&
+    _isLowSurrogate(text.codeUnitAt(offset));
+
+bool _isHighSurrogate(int unit) => unit >= 0xD800 && unit <= 0xDBFF;
+
+bool _isLowSurrogate(int unit) => unit >= 0xDC00 && unit <= 0xDFFF;
