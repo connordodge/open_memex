@@ -514,4 +514,241 @@ void main() {
       variant: macOnly,
     );
   });
+
+  // -------------------------------------------------------------------------
+  // D20 follow-up and contracts the recorder documents (verify-mode pins)
+  // -------------------------------------------------------------------------
+  group('recorder contracts (D20, documented behaviour)', () {
+    testWidgets(
+      'Cmd+Z undoes an Enter over a cross row selection as one step and Shift+Cmd+Z redoes it',
+      (tester) async {
+        final body = await wi171Pump(tester, wi171Text);
+        await wi171SelectAcross(tester, focus: 2);
+        await tester.pump(_wi171Idle);
+        // C2's Enter over the range, composed into one SegmentEdit (D20):
+        // delete `b\n- c`, then split the bullet at the caret.
+        const enter = SegmentEdit(
+          start: 8,
+          end: 13,
+          replacement: '\n- ',
+          selection: SegmentSelection.collapsed(11),
+        );
+        const after = 'para\n- a\n- d';
+        expect(enter.apply(wi171Text), after);
+
+        wi171View(tester, 0).applyEdit(enter);
+        await tester.pump();
+        expect(segmentEditingAt(tester, 0).text, after);
+        expect(body.changes, [after]);
+
+        await wi171Undo(tester);
+        expect(segmentEditingAt(tester, 0).text, wi171Text);
+        expect(body.changes, [after, wi171Text]);
+        await wi171Undo(tester);
+        expect(segmentEditingAt(tester, 0).text, wi171Text);
+        expect(body.changes, hasLength(2));
+
+        await wi171Redo(tester);
+        expect(segmentEditingAt(tester, 0).text, after);
+        expect(body.changes, [after, wi171Text, after]);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets('Cmd+Z after a cut restores the cross row selection', (
+      tester,
+    ) async {
+      MacClipboard.install(tester);
+      await wi171Pump(tester, wi171Text);
+      await wi171SelectAcross(tester, focus: 2);
+      await tester.pump(_wi171Idle);
+
+      await tester.macCmdChord(LogicalKeyboardKey.keyX);
+      expect(
+        segmentEditingAt(tester, 0).selection,
+        const TextSelection.collapsed(offset: 8),
+      );
+      await wi171Undo(tester);
+
+      expect(segmentEditingAt(tester, 0).text, wi171Text);
+      expect(segmentEditingAt(tester, 0).selection, wi171Across);
+
+      await wi171Redo(tester);
+      expect(
+        segmentEditingAt(tester, 0).selection,
+        const TextSelection.collapsed(offset: 8),
+      );
+    }, variant: macOnly);
+
+    testWidgets(
+      'Shift+Cmd+Z while typing is pending has nothing to redo and keeps the typing',
+      (tester) async {
+        final body = await wi171Pump(tester, wi171Text);
+        await wi171FocusRow(tester, 0, 1);
+        await tester.pump(_wi171Idle);
+
+        await wi171TypeKey(tester, 'x');
+        await wi171Redo(tester);
+        expect(segmentEditingAt(tester, 0).text, 'para\n- abx\n- cd');
+        expect(body.changes, ['para\n- abx\n- cd']);
+
+        // The redo made the typing a step: Cmd+Z goes back past it at once.
+        await wi171Undo(tester);
+        expect(segmentEditingAt(tester, 0).text, wi171Text);
+        await wi171Redo(tester);
+        expect(segmentEditingAt(tester, 0).text, 'para\n- abx\n- cd');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'an applied edit right after typing undoes on its own and leaves the typing as the step before',
+      (tester) async {
+        await wi171Pump(tester, _wi171Base);
+        await wi171FocusRow(tester, 0, 0);
+        await tester.pump(_wi171Idle);
+
+        await wi171TypeKey(tester, 'x');
+        const typed = 'introx\r\n- [ ] milk\n- eggs\n- \nplain\r\nend';
+        expect(segmentEditingAt(tester, 0).text, typed);
+        final toggle = toggleTask(typed, _wi171Rows(typed)[1])!;
+        wi171View(tester, 0).applyEdit(toggle);
+        await tester.pump();
+        final toggled = toggle.apply(typed);
+
+        await wi171Undo(tester);
+        expect(segmentEditingAt(tester, 0).text, typed);
+        await wi171Undo(tester);
+        expect(segmentEditingAt(tester, 0).text, _wi171Base);
+        await wi171Redo(tester);
+        await wi171Redo(tester);
+        expect(segmentEditingAt(tester, 0).text, toggled);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets('typing after a type over is its own undo step', (
+      tester,
+    ) async {
+      await wi171Pump(tester, wi171Text);
+      await wi171SelectAcross(tester, focus: 2);
+      await tester.pump(_wi171Idle);
+
+      await wi171TypeKey(tester, 'z');
+      await tester.pump(_wi171KeyGap);
+      await wi171TypeKey(tester, 'q');
+      expect(segmentEditingAt(tester, 0).text, 'para\n- azqd');
+      await tester.pump(_wi171Idle);
+
+      await wi171Undo(tester);
+      expect(segmentEditingAt(tester, 0).text, 'para\n- azd');
+      await wi171Undo(tester);
+      expect(segmentEditingAt(tester, 0).text, wi171Text);
+    }, variant: macOnly);
+
+    testWidgets(
+      'a typed edit after a type over key that inserted nothing is its own undo step',
+      (tester) async {
+        await wi171Pump(tester, wi171Text);
+        await wi171SelectAcross(tester, focus: 2);
+        await tester.pump(_wi171Idle);
+
+        // The key deletes the range, but no text arrives for it.
+        await tester.sendKeyDownEvent(
+          LogicalKeyboardKey.keyZ,
+          platform: 'macos',
+          character: 'z',
+        );
+        await tester.pump();
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.keyZ, platform: 'macos');
+        await tester.pump();
+        expect(segmentEditingAt(tester, 0).text, 'para\n- ad');
+
+        await wi171TypeKey(tester, 'q');
+        expect(segmentEditingAt(tester, 0).text, 'para\n- aqd');
+        await tester.pump(_wi171Idle);
+
+        await wi171Undo(tester);
+        expect(segmentEditingAt(tester, 0).text, 'para\n- ad');
+        await wi171Undo(tester);
+        expect(segmentEditingAt(tester, 0).text, wi171Text);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'Cmd+Z undoes an accent composed over a cross row selection as one step',
+      (tester) async {
+        final body = await wi171Pump(tester, wi171Text);
+        await wi171SelectAcross(tester, focus: 2);
+        await tester.pump(_wi171Idle);
+
+        await tester.macCompose('´d', const TextRange(start: 0, end: 1));
+        await tester.pump(_wi171KeyGap);
+        await tester.macEditingValue(
+          'aéd',
+          selection: const TextSelection.collapsed(offset: 2),
+        );
+        expect(segmentEditingAt(tester, 0).text, 'para\n- aéd');
+        await tester.pump(_wi171Idle);
+
+        await wi171Undo(tester);
+        expect(segmentEditingAt(tester, 0).text, wi171Text);
+        expect(body.changes.last, wi171Text);
+        await wi171Undo(tester);
+        expect(segmentEditingAt(tester, 0).text, wi171Text);
+
+        await wi171Redo(tester);
+        expect(segmentEditingAt(tester, 0).text, 'para\n- aéd');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'Cmd+Z undoes a Japanese composition over a cross row selection as one step',
+      (tester) async {
+        await wi171Pump(tester, wi171Text);
+        await wi171SelectAcross(tester, focus: 2);
+        await tester.pump(_wi171Idle);
+
+        await tester.macCompose('にd', const TextRange(start: 0, end: 1));
+        await tester.pump(_wi171Idle);
+        await tester.macCompose('aにほd', const TextRange(start: 1, end: 3));
+        await tester.pump(_wi171Idle);
+        await tester.macEditingValue(
+          'a日本d',
+          selection: const TextSelection.collapsed(offset: 3),
+        );
+        await tester.pump(_wi171Idle);
+
+        await wi171Undo(tester);
+        expect(segmentEditingAt(tester, 0).text, wi171Text);
+        await wi171Redo(tester);
+        expect(segmentEditingAt(tester, 0).text, 'para\n- a日本d');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets('a composition within one row undoes to the text before it', (
+      tester,
+    ) async {
+      await wi171Pump(tester, wi171Text);
+      await wi171FocusRow(tester, 0, 2);
+      await tester.pump(_wi171Idle);
+
+      await tester.macCompose('cd´', const TextRange(start: 2, end: 3));
+      await tester.pump(_wi171Idle);
+      await tester.macEditingValue(
+        'cdé',
+        selection: const TextSelection.collapsed(offset: 3),
+      );
+      expect(segmentEditingAt(tester, 0).text, 'para\n- ab\n- cdé');
+      await tester.pump(_wi171Idle);
+
+      await wi171Undo(tester);
+      expect(segmentEditingAt(tester, 0).text, wi171Text);
+      await wi171Redo(tester);
+      expect(segmentEditingAt(tester, 0).text, 'para\n- ab\n- cdé');
+    }, variant: macOnly);
+  });
 }

@@ -18,6 +18,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/src/editor/editor_rows.dart';
 
 import '../support/font_fetch_hold.dart';
 import '../support/mac_editing.dart';
@@ -650,6 +651,257 @@ void main() {
 
       expect(segmentEditingAt(tester, 0).text, 'para\n- ab\n- cd´');
       expect(body.changes, ['para\n- ab\n- cd´']);
+    }, variant: macOnly);
+  });
+
+  // -------------------------------------------------------------------------
+  // Contracts the ops widget documents (verify-mode pins) and ruling D20:
+  // one user action = one SegmentEdit = one onContentChanged report.
+  // -------------------------------------------------------------------------
+  group('ops contracts (D20, documented behaviour)', () {
+    testWidgets(
+      'typing z over a cross row selection reports one content change',
+      (tester) async {
+        final body = await wi171Pump(tester, wi171Text);
+        await wi171SelectAcross(tester, focus: 2);
+
+        await wi171TypeKey(tester, 'z');
+
+        expect(segmentEditingAt(tester, 0).text, 'para\n- azd');
+        expect(body.changes, ['para\n- azd']);
+      },
+      variant: macOnly,
+    );
+
+    // Which key characters type text (and so type over a cross-row
+    // selection): printable characters only, not control characters, DEL
+    // or the macOS function-key range U+F700 to U+F8FF.
+    final characters = <(String, String, bool)>[
+      (
+        'a key typing a space over a cross row selection deletes the range',
+        ' ',
+        true,
+      ),
+      (
+        'a key typing a tilde over a cross row selection deletes the range',
+        '~',
+        true,
+      ),
+      (
+        'a key typing U+0080 over a cross row selection deletes the range',
+        '\u0080',
+        true,
+      ),
+      (
+        'a key typing U+F6FF over a cross row selection deletes the range',
+        '',
+        true,
+      ),
+      (
+        'a key typing U+F900 over a cross row selection deletes the range',
+        '豈',
+        true,
+      ),
+      (
+        'a key typing an accented letter over a cross row selection deletes the range',
+        'é',
+        true,
+      ),
+      (
+        'a key typing U+001F over a cross row selection leaves the range',
+        '\u001F',
+        false,
+      ),
+      (
+        'a key typing DEL over a cross row selection leaves the range',
+        '\u007F',
+        false,
+      ),
+      (
+        'a key typing U+F700 over a cross row selection leaves the range',
+        '',
+        false,
+      ),
+      (
+        'a key typing an arrow function key over a cross row selection leaves the range',
+        '',
+        false,
+      ),
+      (
+        'a key typing U+F8FF over a cross row selection leaves the range',
+        '',
+        false,
+      ),
+      (
+        'a key typing a letter then DEL over a cross row selection leaves the range',
+        'q\u007F',
+        false,
+      ),
+      (
+        'a key typing DEL then a letter over a cross row selection leaves the range',
+        '\u007Fq',
+        false,
+      ),
+    ];
+    for (final (name, character, types) in characters) {
+      testWidgets(name, (tester) async {
+        final body = await wi171Pump(tester, wi171Text);
+        await wi171SelectAcross(tester, focus: 2);
+
+        final handled = await tester.sendKeyDownEvent(
+          LogicalKeyboardKey.keyQ,
+          platform: 'macos',
+          character: character,
+        );
+        await tester.pump();
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.keyQ, platform: 'macos');
+        await tester.pump();
+
+        expect(handled, isFalse);
+        if (types) {
+          expect(segmentEditingAt(tester, 0).text, 'para\n- ad');
+          expect(body.changes, ['para\n- ad']);
+        } else {
+          expect(segmentEditingAt(tester, 0).text, wi171Text);
+          expect(segmentEditingAt(tester, 0).selection, wi171Across);
+          expect(body.changes, isEmpty);
+        }
+      }, variant: macOnly);
+    }
+
+    final chords = <(String, LogicalKeyboardKey)>[
+      (
+        'Control with a letter over a cross row selection leaves the range',
+        LogicalKeyboardKey.controlLeft,
+      ),
+      (
+        'Cmd with a letter over a cross row selection leaves the range',
+        LogicalKeyboardKey.metaLeft,
+      ),
+    ];
+    for (final (name, modifier) in chords) {
+      testWidgets(name, (tester) async {
+        final body = await wi171Pump(tester, wi171Text);
+        await wi171SelectAcross(tester, focus: 2);
+
+        await tester.macHolding([modifier], () async {
+          await tester.sendKeyDownEvent(
+            LogicalKeyboardKey.keyQ,
+            platform: 'macos',
+            character: 'q',
+          );
+          await tester.pump();
+          await tester.sendKeyUpEvent(
+            LogicalKeyboardKey.keyQ,
+            platform: 'macos',
+          );
+        });
+
+        expect(segmentEditingAt(tester, 0).text, wi171Text);
+        expect(segmentEditingAt(tester, 0).selection, wi171Across);
+        expect(body.changes, isEmpty);
+      }, variant: macOnly);
+    }
+
+    testWidgets('Cmd+X on a selection within one row is left to the field', (
+      tester,
+    ) async {
+      final clip = MacClipboard.install(tester, initial: 'old');
+      final body = await wi171Pump(tester, wi171Text);
+      await wi171SelectAcross(
+        tester,
+        focus: 1,
+        selection: const TextSelection(baseOffset: 7, extentOffset: 9),
+      );
+
+      await tester.macCmdChord(LogicalKeyboardKey.keyX);
+      await tester.pump();
+
+      expect(clip.text, 'ab');
+      expect(segmentEditingAt(tester, 0).text, 'para\n- \n- cd');
+      expect(body.changes, ['para\n- \n- cd']);
+      expect(segmentEditingAt(tester, 0).focusedRow, 1);
+    }, variant: macOnly);
+
+    testWidgets('Cmd+V on a selection within one row is left to the field', (
+      tester,
+    ) async {
+      MacClipboard.install(tester, initial: 'Q');
+      final body = await wi171Pump(tester, wi171Text);
+      await wi171SelectAcross(
+        tester,
+        focus: 1,
+        selection: const TextSelection(baseOffset: 7, extentOffset: 9),
+      );
+
+      await tester.macCmdChord(LogicalKeyboardKey.keyV);
+      await tester.pump();
+
+      expect(segmentEditingAt(tester, 0).text, 'para\n- Q\n- cd');
+      expect(body.changes, ['para\n- Q\n- cd']);
+      expect(
+        segmentEditingAt(tester, 0).selection,
+        const TextSelection.collapsed(offset: 8),
+      );
+    }, variant: macOnly);
+
+    Future<void> openMenu(WidgetTester tester) async {
+      await wi171RightClick(tester, wi171GlyphCenter(tester, 0, 12));
+      expect(wi171MenuButton('Cut'), findsOneWidget);
+    }
+
+    testWidgets('the cross row menu closes when the segment text changes', (
+      tester,
+    ) async {
+      MacClipboard.install(tester, initial: 'X');
+      await wi171Pump(tester, wi171Text);
+      await wi171SelectAcross(tester, focus: 2);
+      await openMenu(tester);
+
+      wi171View(tester, 0).applyEdit(
+        const SegmentEdit(
+          start: 0,
+          end: 0,
+          replacement: 'w',
+          selection: SegmentSelection.collapsed(1),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(segmentEditingAt(tester, 0).text, 'w$wi171Text');
+      expect(wi171MenuButton('Cut'), findsNothing);
+      expect(wi171MenuButton('Select All'), findsNothing);
+    }, variant: macOnly);
+
+    testWidgets('the cross row menu closes when focus leaves the segment', (
+      tester,
+    ) async {
+      MacClipboard.install(tester, initial: 'X');
+      await wi171Pump(tester, wi171Text);
+      await wi171SelectAcross(tester, focus: 2);
+      await openMenu(tester);
+
+      FocusManager.instance.primaryFocus!.unfocus();
+      await tester.pumpAndSettle();
+
+      expect(wi171MenuButton('Cut'), findsNothing);
+      expect(wi171MenuButton('Select All'), findsNothing);
+    }, variant: macOnly);
+
+    testWidgets('the cross row menu closes when the segment goes away', (
+      tester,
+    ) async {
+      MacClipboard.install(tester, initial: 'X');
+      await wi171Pump(tester, wi171Text);
+      await wi171SelectAcross(tester, focus: 2);
+      await openMenu(tester);
+
+      await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+      await tester.pumpAndSettle();
+
+      expect(wi171MenuButton('Cut'), findsNothing);
+      expect(wi171MenuButton('Select All'), findsNothing);
+      expect(tester.takeException(), isNull);
     }, variant: macOnly);
   });
 }
