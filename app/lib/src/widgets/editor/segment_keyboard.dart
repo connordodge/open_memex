@@ -14,7 +14,8 @@ import 'segment_view.dart';
 /// - Enter and Shift+Enter (a key handler below each row field's own, so
 ///   the `[[` popover sees Enter first): in an item row, A3's `splitItem`,
 ///   `enterOnEmpty` or `shiftEnter`; over a selection that spans rows or
-///   sits in an item, A4's `deleteRange` first. A prose or code row with no
+///   sits in an item, A4's `deleteRange` first, composed with the Enter into
+///   one edit (`composeEdits`, D20). A prose or code row with no
 ///   such selection keeps the platform's newline.
 /// - Backspace, Option+Backspace and Cmd+Backspace at a row's text start
 ///   (A3's `backspaceAtStart` or `joinPrevious`), forward Delete at a row's
@@ -29,8 +30,8 @@ import 'segment_view.dart';
 ///
 /// Every other case keeps the row field's own action (native grapheme,
 /// word and line steps inside a row). While the focused field composes,
-/// every key goes to the field (the IME) unchanged. Each edit is one A3 or
-/// A4 `SegmentEdit` applied through [SegmentViewState.applyEdit] (D2).
+/// every key goes to the field (the IME) unchanged. Each key applies one
+/// A3 or A4 `SegmentEdit` through [SegmentViewState.applyEdit] (D2, D20).
 class SegmentKeyboard extends StatefulWidget {
   const SegmentKeyboard({super.key, required this.child});
 
@@ -198,13 +199,12 @@ class _SegmentKeyboardState extends State<SegmentKeyboard> {
       range.start,
       shift: shift,
     );
-    if (enter == null) {
-      k.view.applyEdit(replaceRange(k.text, k.rows, range, '\n'));
-    } else {
-      k.view
-        ..applyEdit(delete)
-        ..applyEdit(enter);
-    }
+    // One key, one edit (D20): the delete and the Enter are composed.
+    k.view.applyEdit(
+      enter == null
+          ? replaceRange(k.text, k.rows, range, '\n')
+          : composeEdits(delete, enter, text: k.text),
+    );
     return KeyEventResult.handled;
   }
 

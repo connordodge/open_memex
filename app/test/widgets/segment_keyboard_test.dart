@@ -802,6 +802,61 @@ void main() {
       },
       variant: macOnly,
     );
+
+    // Ruling D20: one key over a range is one composed SegmentEdit, so one
+    // onContentChanged report and one undo record. C4's undo (#171) is not
+    // on this branch; the single record stands in for a single Cmd+Z.
+    for (final (name, text, base, extent, shift, after, caret) in [
+      (
+        'Enter over a selection across item rows is one report and one undo record',
+        '- ab\n- cd\ne',
+        3,
+        8,
+        false,
+        '- a\n- d\ne',
+        6,
+      ),
+      (
+        'Enter over a selection ending on an empty item is one report and one undo record',
+        '- one\n- two\n- \n',
+        3,
+        14,
+        false,
+        '- o\n- \n',
+        6,
+      ),
+      (
+        'Shift+Enter over a selection across item rows is one report and one undo record',
+        '- ab\n- cd\ne',
+        3,
+        8,
+        true,
+        '- a\nd\ne',
+        4,
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final recorders = _wi169Recorders();
+        final body = await _wi169Pump(tester, text);
+        await _wi169Focus(tester, 3);
+        _wi169Seg(
+          tester,
+        ).select(TextSelection(baseOffset: base, extentOffset: extent));
+        await tester.pump();
+
+        await _wi169Press(tester, LogicalKeyboardKey.enter, shift: shift);
+
+        final seg = _wi169Seg(tester);
+        expect(seg.text, after);
+        expect(seg.text.codeUnits, after.codeUnits);
+        expect(seg.selection, TextSelection.collapsed(offset: caret));
+        expect(body.changes, [after], reason: 'one report for one key');
+        final records = _wi169Records(recorders);
+        expect(records, hasLength(1), reason: 'one undo step for one key');
+        expect(records.single.before, text);
+        expect(records.single.edit.apply(text), after);
+      }, variant: macOnly);
+    }
   });
 
   // -------------------------------------------------------------------------
