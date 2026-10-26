@@ -1,9 +1,13 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
-/// The controller of every live preview field (D7): today a pass-through
-/// whose [buildTextSpan] renders exactly the controller's text. B1 owns its
-/// body (styling, marker hiding); hosts only set its props.
+import '../../editor/markdown_inline.dart';
+import '../../editor/markdown_lines.dart';
+import 'live_preview_styles.dart';
+
+/// The controller of every live preview field (D7): its [buildTextSpan]
+/// renders the controller's text with live preview styling and marker
+/// hiding ([buildLivePreviewSpan], B1); hosts only set its props.
 ///
 /// Host-set props, all optional with safe defaults:
 /// - [itemText]: the field holds only an item row's text (its marker is in
@@ -37,18 +41,50 @@ class LivePreviewController extends TextEditingController {
   /// Called with the token's target: a wikilink's title trimmed of
   /// whitespace, a transclusion's date. Null (the default): every target
   /// resolves. Setting it notifies listeners so the field repaints.
-  bool Function(String target)? isResolved;
+  bool Function(String target)? get isResolved => _isResolved;
+  set isResolved(bool Function(String target)? value) {
+    _isResolved = value;
+    notifyListeners();
+  }
+
+  bool Function(String target)? _isResolved;
 
   /// The Cmd-hovered token's span in [text] (B3 sets it; D7). Null (the
   /// default): nothing renders hovered. Setting it notifies listeners so the
   /// field repaints.
-  TextRange? cmdHover;
+  TextRange? get cmdHover => _cmdHover;
+  set cmdHover(TextRange? value) {
+    _cmdHover = value;
+    notifyListeners();
+  }
+
+  TextRange? _cmdHover;
 
   /// The strut a `TextSegmentField` editing this controller lays its text
-  /// out with; null (the pass-through) keeps the field's default strut.
-  /// B1 returns the 22.95 px minimum strut (R13), so taller heading lines
-  /// lay out taller.
-  StrutStyle? get strutStyle => null;
+  /// out with: the 22.95 px minimum strut (R13), not forced, so taller
+  /// heading lines lay out taller.
+  StrutStyle? get strutStyle => livePreviewStrut();
+
+  /// The live preview span of [text] for the current [selection], markers
+  /// revealed only while [revealGate] is true. The composing range is not
+  /// underlined.
+  @override
+  TextSpan buildTextSpan({
+    required BuildContext context,
+    TextStyle? style,
+    required bool withComposing,
+  }) => buildLivePreviewSpan(
+    text,
+    style: style,
+    selection: selection,
+    forceHidden: !revealGate.value,
+    itemText: itemText,
+    taskDone: taskDone,
+    quote: quote,
+    atSegmentStart: atSegmentStart,
+    isResolved: isResolved,
+    cmdHover: cmdHover,
+  );
 }
 
 /// Builds the live preview span for [text] (B1, Spec R2-R5): a pure
@@ -81,4 +117,252 @@ TextSpan buildLivePreviewSpan(
   bool atSegmentStart = true,
   bool Function(String target)? isResolved,
   TextRange? cmdHover,
-}) => throw UnimplementedError();
+}) {
+  if (text.isEmpty) return TextSpan(style: style, text: text);
+  return _SpanBuilder(
+    text,
+    selection: selection,
+    forceHidden: forceHidden,
+    itemText: itemText,
+    taskDone: taskDone,
+    quote: quote,
+    atSegmentStart: atSegmentStart,
+    isResolved: isResolved,
+    cmdHover: cmdHover,
+  ).build(style);
+}
+
+// Per code unit flags the line grammar and the inline tokens set.
+const int _marker = 1;
+const int _bold = 2;
+const int _italic = 4;
+const int _strike = 8;
+const int _link = 16;
+const int _ghost = 32;
+const int _hover = 64;
+
+// Run keys that are not a shown-text key.
+const int _hiddenKey = -1;
+const int _terminatorKey = -2;
+
+/// Builds one [buildLivePreviewSpan] result: classifies the lines (A1),
+/// tokenizes each line's text (A2), then emits one leaf per run of code
+/// units that share a style, every leaf a direct child of the root.
+final class _SpanBuilder {
+  _SpanBuilder(
+    this.text, {
+    required TextSelection? selection,
+    required this.forceHidden,
+    required this.itemText,
+    required this.taskDone,
+    required this.quote,
+    required this.atSegmentStart,
+    required this.isResolved,
+    required this.cmdHover,
+  }) : _selection = selection != null && selection.isValid ? selection : null,
+       _flags = Uint8List(text.length),
+       _ink = Uint8List(text.length);
+
+  final String text;
+  final bool forceHidden;
+  final bool itemText;
+  final bool taskDone;
+  final bool quote;
+  final bool atSegmentStart;
+  final bool Function(String target)? isResolved;
+  final TextRange? cmdHover;
+  final TextSelection? _selection;
+  final Uint8List _flags;
+  final Uint8List _ink;
+  final Map<int, TextStyle?> _styles = {};
+
+  TextSpan build(TextStyle? style) {
+    final lines = classifyLines(text, atSegmentStart: atSegmentStart);
+    final revealed = _revealed(lines);
+    final levels = List<int>.filled(lines.length, 0);
+    final codeLines = List<bool>.filled(lines.length, false);
+    for (final (i, line) in lines.indexed) {
+      switch (itemText ? MdLineKind.plain : line.kind) {
+        case MdLineKind.heading:
+          levels[i] = line.level;
+          _markRange(line.markerStart, line.separatorEnd, _marker);
+          _tokenize(line.textStart, line.contentEnd);
+        case MdLineKind.bullet ||
+            MdLineKind.numbered ||
+            MdLineKind.task ||
+            MdLineKind.quote:
+          // Before rows (C1) an item line keeps its marker as plain text.
+          _tokenize(line.textStart, line.contentEnd);
+        case MdLineKind.plain:
+          _tokenize(line.start, line.contentEnd);
+        case MdLineKind.rule || MdLineKind.fenceOpen || MdLineKind.fenceClose:
+          _markRange(line.start, line.contentEnd, _marker);
+        case MdLineKind.fenceInside:
+          codeLines[i] = true;
+        case MdLineKind.blank || MdLineKind.frontmatter:
+          break;
+      }
+    }
+
+    final children = <TextSpan>[];
+    var runStart = 0;
+    int? runKey;
+    void flush(int end) {
+      if (runKey != null && end > runStart) {
+        children.add(
+          TextSpan(text: text.substring(runStart, end), style: _style(runKey)),
+        );
+      }
+      runStart = end;
+    }
+
+    for (final (i, line) in lines.indexed) {
+      for (var at = line.start; at < line.end; at++) {
+        final key = at >= line.contentEnd
+            ? _terminatorKey
+            : _key(at, levels[i], codeLines[i], revealed[i]);
+        if (key != runKey) {
+          flush(at);
+          runKey = key;
+        }
+      }
+    }
+    flush(text.length);
+    return TextSpan(style: style, children: children);
+  }
+
+  /// Which lines reveal their markers: every line the selection touches
+  /// (a caret at a line's content end touches that line only), and both
+  /// fence lines of a block when any of its lines is touched. None while
+  /// [forceHidden].
+  List<bool> _revealed(List<MdLine> lines) {
+    final selection = _selection;
+    final revealed = List<bool>.filled(lines.length, false);
+    if (forceHidden || selection == null) return revealed;
+    for (final (i, line) in lines.indexed) {
+      revealed[i] =
+          selection.start <= line.contentEnd && selection.end >= line.start;
+    }
+    if (itemText) return revealed;
+    for (var open = 0; open < lines.length; open++) {
+      if (lines[open].kind != MdLineKind.fenceOpen) continue;
+      var close = open + 1;
+      while (close < lines.length &&
+          lines[close].kind == MdLineKind.fenceInside) {
+        close++;
+      }
+      final last = close < lines.length ? close : lines.length - 1;
+      final touched = revealed.sublist(open, last + 1).contains(true);
+      revealed[open] = touched;
+      revealed[last] = touched;
+      open = last;
+    }
+    return revealed;
+  }
+
+  void _markRange(int start, int end, int flag) {
+    for (var at = start; at < end; at++) {
+      _flags[at] |= flag;
+    }
+  }
+
+  void _inkRange(int start, int end, LivePreviewInk ink) {
+    for (var at = start; at < end; at++) {
+      _ink[at] = ink.index;
+    }
+  }
+
+  /// Marks the inline tokens of `[start, end)` (one line's text). Tokens
+  /// come sorted by start, so an inner token's ink overwrites its outer
+  /// token's while flags accumulate.
+  void _tokenize(int start, int end) {
+    for (final token in tokenizeInline(text.substring(start, end))) {
+      for (final m in token.markers) {
+        _markRange(start + m.start, start + m.end, _marker);
+      }
+      final from = start + token.content.start;
+      final to = start + token.content.end;
+      void flag(int f) => _markRange(from, to, f);
+      switch (token) {
+        case WikilinkToken(:final target) ||
+            TransclusionLinkToken(date: final target):
+          if (isResolved?.call(target) ?? true) {
+            _inkRange(from, to, LivePreviewInk.wikilink);
+            final hover = cmdHover;
+            if (hover != null &&
+                hover.start <= start + token.start &&
+                start + token.end <= hover.end) {
+              flag(_hover);
+            }
+          } else {
+            _inkRange(from, to, LivePreviewInk.ghost);
+            flag(_ghost);
+          }
+        case LinkToken():
+          _inkRange(from, to, LivePreviewInk.link);
+          flag(_link);
+        case InlineToken(kind: InlineTokenKind.codeSpan):
+          _inkRange(from, to, LivePreviewInk.code);
+        case InlineToken(kind: InlineTokenKind.strike):
+          _inkRange(from, to, LivePreviewInk.strike);
+          flag(_strike);
+        case InlineToken(kind: InlineTokenKind.bold):
+          flag(_bold);
+        case InlineToken(kind: InlineTokenKind.italic):
+          flag(_italic);
+        case InlineToken(kind: InlineTokenKind.boldItalic):
+          flag(_bold | _italic);
+        case InlineToken():
+          // An escape: its backslash and character stay plain text.
+          break;
+      }
+    }
+  }
+
+  bool _selected(int at) {
+    final s = _selection;
+    return s != null && s.start <= at && at < s.end;
+  }
+
+  /// The run key of the code unit [at] on a line of heading [level]
+  /// (0: none), inside a fenced block when [codeLine], its markers shown
+  /// when [revealed]. Equal keys mean equal styles.
+  int _key(int at, int level, bool codeLine, bool revealed) {
+    final flags = _flags[at];
+    final selected = _selected(at) ? 1 : 0;
+    if (flags & _marker != 0) {
+      if (!revealed) return _hiddenKey;
+      return 1 << 24 | selected << 16 | level;
+    }
+    return selected << 16 |
+        _ink[at] << 12 |
+        flags << 4 |
+        (codeLine ? 1 : 0) << 3 |
+        level;
+  }
+
+  TextStyle? _style(int key) => _styles.putIfAbsent(key, () {
+    if (key == _terminatorKey) return null;
+    if (key == _hiddenKey) return livePreviewHiddenStyle;
+    final selected = key >> 16 & 1 == 1;
+    final level = key & 7;
+    if (key >> 24 & 1 == 1) {
+      return livePreviewMarkerStyle(headingLevel: level, selected: selected);
+    }
+    final flags = key >> 4 & 0xFF;
+    return livePreviewTextStyle(
+      headingLevel: level,
+      codeLine: key >> 3 & 1 == 1,
+      bold: flags & _bold != 0,
+      italic: flags & _italic != 0,
+      strike: flags & _strike != 0,
+      link: flags & _link != 0,
+      ghost: flags & _ghost != 0,
+      hover: flags & _hover != 0,
+      ink: LivePreviewInk.values[key >> 12 & 0xF],
+      quote: quote,
+      done: taskDone,
+      selected: selected,
+    );
+  });
+}
