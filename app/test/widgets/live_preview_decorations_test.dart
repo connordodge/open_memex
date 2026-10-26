@@ -1284,7 +1284,6 @@ void main() {
         final top = line.top + 2;
         final bottom = top + 17;
         final y = top + 8.5;
-        final x = content.center.dx;
         final px = await _wi165Capture(tester);
         expect(
           px.at(Offset(left + 1.5, y)),
@@ -1302,22 +1301,26 @@ void main() {
           px.at(Offset(right + 1.5, y)),
           const _Wi165Near(OmColors.surface2),
         );
-        expect(
-          px.at(Offset(x, top + 1.5)),
-          const _Wi165Near(OmColors.surface4),
-        );
-        expect(
-          px.at(Offset(x, top - 1.5)),
-          const _Wi165Near(OmColors.surface2),
-        );
-        expect(
-          px.at(Offset(x, bottom - 1.5)),
-          const _Wi165Near(OmColors.surface4),
-        );
-        expect(
-          px.at(Offset(x, bottom + 1.5)),
-          const _Wi165Near(OmColors.surface2),
-        );
+        // The top and bottom edges are probed in the 3 px widened margins:
+        // B1 paints the code glyphs fg1 over the pill's centre column.
+        for (final x in [left + 1.5, right - 1.5]) {
+          expect(
+            px.at(Offset(x, top + 1.5)),
+            const _Wi165Near(OmColors.surface4),
+          );
+          expect(
+            px.at(Offset(x, top - 1.5)),
+            const _Wi165Near(OmColors.surface2),
+          );
+          expect(
+            px.at(Offset(x, bottom - 1.5)),
+            const _Wi165Near(OmColors.surface4),
+          );
+          expect(
+            px.at(Offset(x, bottom + 1.5)),
+            const _Wi165Near(OmColors.surface2),
+          );
+        }
       },
     );
 
