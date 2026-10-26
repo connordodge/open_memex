@@ -14,11 +14,29 @@
 // pump durations (no wall-clock waits).
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/src/db.dart';
 import 'package:open_memex_app/src/editor/editor_rows.dart';
 import 'package:open_memex_app/src/editor/row_edits.dart';
 import 'package:open_memex_app/src/editor/segment_selection.dart';
+import 'package:open_memex_app/src/memex_cli.dart';
+import 'package:open_memex_app/src/state/clock.dart';
+import 'package:open_memex_app/src/state/editor_controller.dart';
+import 'package:open_memex_app/src/state/vault_state.dart'
+    show
+        LocalVaultRef,
+        currentVaultProvider,
+        linkKindsAsyncProvider,
+        memexCliProvider,
+        noteTitlesAsyncProvider,
+        selectedNoteAsyncProvider,
+        vaultDbProvider;
+import 'package:open_memex_app/src/theme/app_theme.dart';
+import 'package:open_memex_app/src/vault_access/vault_scoped.dart';
+import 'package:open_memex_app/src/widgets/note_editor.dart';
 
+import '../support/fake_clock.dart';
 import '../support/font_fetch_hold.dart';
 import '../support/mac_editing.dart';
 import '../support/segment_editing_finder.dart';
@@ -40,6 +58,98 @@ List<RowSpec> _wi171Rows(String text) => splitRows(text, atSegmentStart: true);
 /// An edit of segment text through the host's applyEdit, as C1b, C2 and A3
 /// shape them.
 typedef _Wi171EditOf = SegmentEdit Function(String text, List<RowSpec> rows);
+
+/// Records every vault write (`updateNote`) the editor sends; never shells
+/// out.
+class _Wi171WriteCli extends MemexCli {
+  _Wi171WriteCli() : super(binaryPath: '/nonexistent/memex-test-binary');
+
+  /// The body of every `updateNote` call, in order.
+  final writes = <String>[];
+
+  @override
+  Future<NoteUpdateResult> updateNote({
+    required String vaultPath,
+    required String noteId,
+    required int expectedVersion,
+    String? title,
+    required String contentMd,
+    bool withEmbeddings = false,
+    bool noRenameLinks = false,
+  }) async {
+    writes.add(contentMd);
+    return NoteUpdateResult(
+      noteId: noteId,
+      version: expectedVersion + 1,
+      updatedAt: 1,
+    );
+  }
+}
+
+const _wi171VaultPath = '/vaults/wi171';
+
+/// Pumps the whole note editor (EditorController with its save debounce on
+/// [clock], and the segmented body) on a note whose body is [text].
+Future<void> _wi171PumpEditor(
+  WidgetTester tester,
+  String text, {
+  required _Wi171WriteCli cli,
+  required FakeClock clock,
+}) async {
+  tester.view.physicalSize = const Size(1400, 1000);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.reset);
+  final note = Note(
+    id: 'n171',
+    title: 'Ops',
+    contentMd: text,
+    frontmatter: '',
+    version: 3,
+    createdAt: 0,
+    updatedAt: 0,
+    tags: const [],
+  );
+  const vault = LocalVaultRef(_wi171VaultPath);
+  await tester.pumpWidget(
+    ProviderScope(
+      overrides: [
+        clockProvider.overrideWithValue(clock),
+        selectedNoteAsyncProvider.overrideWith(
+          (ref) => VaultScoped(vault, note),
+        ),
+        currentVaultProvider.overrideWith((ref) => vault),
+        memexCliProvider.overrideWithValue(cli),
+        vaultDbProvider.overrideWithValue(null),
+        noteTitlesAsyncProvider.overrideWith(
+          (ref) => const VaultScoped(vault, <NoteTitle>[]),
+        ),
+        linkKindsAsyncProvider.overrideWith(
+          (ref) => const VaultScoped(vault, <String>[]),
+        ),
+      ],
+      child: MaterialApp(
+        theme: buildOmTheme(),
+        home: Scaffold(
+          body: NoteEditor(rightPanelOpen: false, onToggleRightPanel: () {}),
+        ),
+      ),
+    ),
+  );
+  // The editor hydrates in a post-frame callback; one more frame renders it.
+  await tester.pump();
+  await tester.pump();
+}
+
+/// Moves the save debounce's clock by [by], then lets the save land.
+Future<void> _wi171Advance(
+  WidgetTester tester,
+  FakeClock clock,
+  Duration by,
+) async {
+  clock.advance(by);
+  await tester.pump();
+  await tester.pump();
+}
 
 void main() {
   holdFontFetches();
@@ -750,5 +860,178 @@ void main() {
       await wi171Redo(tester);
       expect(segmentEditingAt(tester, 0).text, 'para\n- ab\n- cdé');
     }, variant: macOnly);
+  });
+
+  // -------------------------------------------------------------------------
+  // Ruling D20a: type-over and IME start over a cross-row selection delete
+  // the range first (at key down, or through the D19 rowComposingInterceptor
+  // when composing starts) and let the field or the IME insert. That is more
+  // than one onContentChanged report, but ONE undo step with exact bytes
+  // both ways, and the deleted-only text is never saved on its own.
+  // -------------------------------------------------------------------------
+  group('type over and IME start (D20a)', () {
+    final typeOver = <(String, Duration)>[
+      (
+        'D20a after a type over one Cmd+Z restores the exact original bytes and Shift+Cmd+Z the typed bytes',
+        Duration.zero,
+      ),
+      (
+        'D20a after a type over and an idle pause one Cmd+Z restores the exact original bytes and Shift+Cmd+Z the typed bytes',
+        _wi171Idle,
+      ),
+    ];
+    for (final (name, pause) in typeOver) {
+      testWidgets(name, (tester) async {
+        final body = await wi171Pump(tester, wi171Text);
+        await wi171SelectAcross(tester, focus: 2);
+        await tester.pump(_wi171Idle);
+
+        await wi171TypeKey(tester, 'z');
+        await tester.pump(pause);
+        const typed = 'para\n- azd';
+        expect(segmentEditingAt(tester, 0).text, typed);
+        // D20a: the range delete, then the field's insert.
+        expect(body.changes, ['para\n- ad', typed]);
+
+        await wi171Undo(tester);
+        expect(segmentEditingAt(tester, 0).text, wi171Text);
+        expect(segmentEditingAt(tester, 0).selection, wi171Across);
+        expect(body.changes, ['para\n- ad', typed, wi171Text]);
+
+        // One step: the deleted-only text is not a step of its own.
+        await wi171Undo(tester);
+        expect(segmentEditingAt(tester, 0).text, wi171Text);
+        expect(body.changes, hasLength(3));
+
+        await wi171Redo(tester);
+        expect(segmentEditingAt(tester, 0).text, typed);
+        expect(
+          segmentEditingAt(tester, 0).selection,
+          const TextSelection.collapsed(offset: 9),
+        );
+        expect(body.changes, ['para\n- ad', typed, wi171Text, typed]);
+        await wi171Redo(tester);
+        expect(segmentEditingAt(tester, 0).text, typed);
+        expect(body.changes, hasLength(4));
+
+        // And back again: still the exact original in one step.
+        await wi171Undo(tester);
+        expect(segmentEditingAt(tester, 0).text, wi171Text);
+        expect(body.changes, hasLength(5));
+      }, variant: macOnly);
+    }
+
+    final composing = <(String, Duration)>[
+      (
+        'D20a after composing over a cross row selection and its commit one Cmd+Z restores the exact original bytes',
+        Duration.zero,
+      ),
+      (
+        'D20a after composing over a cross row selection an idle pause and its commit one Cmd+Z restores the exact original bytes',
+        _wi171Idle,
+      ),
+    ];
+    for (final (name, pause) in composing) {
+      testWidgets(name, (tester) async {
+        final body = await wi171Pump(tester, wi171Text);
+        await wi171SelectAcross(tester, focus: 2);
+        await tester.pump(_wi171Idle);
+
+        // Option+E over the row slice `c`: the D19 interceptor deletes the
+        // whole cross-row range into the focused row first.
+        await tester.macCompose('´d', const TextRange(start: 0, end: 1));
+        expect(segmentEditingAt(tester, 0).text, 'para\n- a´d');
+        expect(segmentEditingAt(tester, 0).focusedRow, 1);
+        await tester.pump(pause);
+        // E: the IME commits.
+        await tester.macEditingValue(
+          'aéd',
+          selection: const TextSelection.collapsed(offset: 2),
+        );
+        const committed = 'para\n- aéd';
+        expect(segmentEditingAt(tester, 0).text, committed);
+        expect(body.changes, ['para\n- ad', 'para\n- a´d', committed]);
+
+        await wi171Undo(tester);
+        expect(segmentEditingAt(tester, 0).text, wi171Text);
+        expect(segmentEditingAt(tester, 0).selection, wi171Across);
+        expect(body.changes, hasLength(4));
+        expect(body.changes.last, wi171Text);
+
+        // One step: neither the deleted-only nor the marked text is a step.
+        await wi171Undo(tester);
+        expect(segmentEditingAt(tester, 0).text, wi171Text);
+        expect(body.changes, hasLength(4));
+
+        await wi171Redo(tester);
+        expect(segmentEditingAt(tester, 0).text, committed);
+        expect(body.changes, hasLength(5));
+        expect(body.changes.last, committed);
+        await wi171Redo(tester);
+        expect(segmentEditingAt(tester, 0).text, committed);
+        expect(body.changes, hasLength(5));
+      }, variant: macOnly);
+    }
+
+    testWidgets(
+      'D20a a type over across rows makes one vault write carrying the final bytes',
+      (tester) async {
+        final cli = _Wi171WriteCli();
+        final clock = FakeClock();
+        await _wi171PumpEditor(tester, wi171Text, cli: cli, clock: clock);
+        await wi171SelectAcross(tester, focus: 2);
+
+        await wi171TypeKey(tester, 'z');
+        expect(segmentEditingAt(tester, 0).text, 'para\n- azd');
+        expect(cli.writes, isEmpty);
+
+        await _wi171Advance(
+          tester,
+          clock,
+          saveDebounce - const Duration(milliseconds: 1),
+        );
+        expect(cli.writes, isEmpty);
+        await _wi171Advance(tester, clock, const Duration(milliseconds: 1));
+        expect(cli.writes, ['para\n- azd']);
+
+        // Nothing else is ever saved, not the deleted-only `para\n- ad`.
+        await _wi171Advance(tester, clock, const Duration(seconds: 5));
+        expect(cli.writes, ['para\n- azd']);
+
+        // After the save the type-over is still one undo step; undoing it
+        // saves the exact original bytes.
+        await wi171Undo(tester);
+        expect(segmentEditingAt(tester, 0).text, wi171Text);
+        await _wi171Advance(tester, clock, saveDebounce);
+        expect(cli.writes, ['para\n- azd', wi171Text]);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'D20a composing over a cross row selection then its commit makes one vault write carrying the committed bytes',
+      (tester) async {
+        final cli = _Wi171WriteCli();
+        final clock = FakeClock();
+        await _wi171PumpEditor(tester, wi171Text, cli: cli, clock: clock);
+        await wi171SelectAcross(tester, focus: 2);
+
+        await tester.macCompose('´d', const TextRange(start: 0, end: 1));
+        expect(segmentEditingAt(tester, 0).text, 'para\n- a´d');
+        await _wi171Advance(tester, clock, const Duration(milliseconds: 100));
+        await tester.macEditingValue(
+          'aéd',
+          selection: const TextSelection.collapsed(offset: 2),
+        );
+        expect(segmentEditingAt(tester, 0).text, 'para\n- aéd');
+        expect(cli.writes, isEmpty);
+
+        await _wi171Advance(tester, clock, saveDebounce);
+        expect(cli.writes, ['para\n- aéd']);
+        await _wi171Advance(tester, clock, const Duration(seconds: 5));
+        expect(cli.writes, ['para\n- aéd']);
+      },
+      variant: macOnly,
+    );
   });
 }
