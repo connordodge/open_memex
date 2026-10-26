@@ -77,6 +77,9 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
   /// The token a Cmd+press went down on, or null.
   _Link? _pressed;
 
+  /// The resolution map the controller last rendered with (see [_apply]).
+  Map<String, String>? _appliedIds;
+
   bool _applyScheduled = false;
 
   // Tokens of the controller's text, cached by text and line props.
@@ -146,8 +149,9 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
     );
   }
 
-  /// Sets the controller's `isResolved` after the current frame (never
-  /// while widgets build: it notifies the controller's listeners).
+  /// Applies the resolution map after the current frame (never while
+  /// widgets build: the controller's `isResolved` setter notifies its
+  /// listeners).
   void _scheduleApply() {
     if (_applyScheduled) return;
     _applyScheduled = true;
@@ -155,10 +159,46 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
       ..addPostFrameCallback((_) {
         _applyScheduled = false;
         if (!mounted) return;
-        widget.controller.isResolved = _ids?.containsKey;
+        _apply();
         _refresh();
       })
       ..ensureVisualUpdate();
+  }
+
+  /// Whether [target] resolves under the current titles: every target does
+  /// until they load and while the list is at its cap.
+  bool _resolves(String target) => _ids?.containsKey(target) ?? true;
+
+  /// Installs [_resolves] as the controller's `isResolved` once, then sets
+  /// it again (to re-render) only when a link target in the text resolves
+  /// differently under the new titles. The setter notifies the controller's
+  /// listeners, and a notification with unchanged text is not free: the
+  /// wikilink popover re-opens on any notification while the caret sits in
+  /// an unclosed `[[`, so a titles reload after a Create must not send one.
+  void _apply() {
+    final controller = widget.controller;
+    final before = _appliedIds;
+    final after = _ids;
+    _appliedIds = after;
+    if (controller.isResolved != _resolves) {
+      controller.isResolved = _resolves;
+      return;
+    }
+    if (identical(before, after)) return;
+    bool resolves(Map<String, String>? ids, String target) =>
+        ids?.containsKey(target) ?? true;
+    for (final link in _linksOf(controller)) {
+      final target = switch (link.token) {
+        WikilinkToken(:final target) => target,
+        TransclusionLinkToken(:final date) => date,
+        _ => null,
+      };
+      if (target != null &&
+          resolves(before, target) != resolves(after, target)) {
+        controller.isResolved = _resolves;
+        return;
+      }
+    }
   }
 
   bool _onKey(KeyEvent event) {
