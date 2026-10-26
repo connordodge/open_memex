@@ -209,6 +209,80 @@ class SegmentedEditorRobot {
     await tester.pump();
   }
 
+  /// The text field that has focus (an editor row's field while a text
+  /// segment is focused).
+  EditableTextState get _focusedField {
+    final context = FocusManager.instance.primaryFocus?.context;
+    final state = context == null
+        ? null
+        : context is StatefulElement && context.state is EditableTextState
+        ? context.state as EditableTextState
+        : context.findAncestorStateOfType<EditableTextState>();
+    if (state == null) throw TestFailure('no text field has focus');
+    return state;
+  }
+
+  /// Types [text] into the focused field one character at a time, as the
+  /// platform's text input does: each character replaces the field's
+  /// selection in the value the field holds right then (#169 journey).
+  Future<void> typeChars(String text) async {
+    for (final ch in text.characters) {
+      final value = _focusedField.textEditingValue;
+      final sel = value.selection;
+      tester.testTextInput.updateEditingValue(
+        TextEditingValue(
+          text: value.text.replaceRange(sel.start, sel.end, ch),
+          selection: TextSelection.collapsed(offset: sel.start + ch.length),
+        ),
+      );
+      await tester.pump();
+    }
+  }
+
+  /// Presses Enter (Shift+Enter with [shift]) as macOS delivers it: the key
+  /// event reaches Flutter first; when nothing handles it, the text system
+  /// inserts a newline over the focused field's selection. Returns whether
+  /// Flutter handled the key (#169 journey).
+  Future<bool> pressEnter({bool shift = false}) async {
+    if (shift) {
+      await tester.sendKeyDownEvent(
+        LogicalKeyboardKey.shiftLeft,
+        platform: 'macos',
+      );
+    }
+    final handled = await tester.sendKeyEvent(
+      LogicalKeyboardKey.enter,
+      platform: 'macos',
+    );
+    await tester.pump();
+    if (!handled) {
+      final value = _focusedField.textEditingValue;
+      final sel = value.selection;
+      tester.testTextInput.updateEditingValue(
+        TextEditingValue(
+          text: value.text.replaceRange(sel.start, sel.end, '\n'),
+          selection: TextSelection.collapsed(offset: sel.start + 1),
+        ),
+      );
+      await tester.pump();
+    }
+    if (shift) {
+      await tester.sendKeyUpEvent(
+        LogicalKeyboardKey.shiftLeft,
+        platform: 'macos',
+      );
+      await tester.pump();
+    }
+    return handled;
+  }
+
+  /// Closes the note tab for [noteId] and opens it again (#169 journey).
+  Future<void> closeAndReopen(String noteId) async {
+    h.read(tabsProvider.notifier).close(NoteTab(noteId));
+    await pumpFrames(tester);
+    await open(noteId);
+  }
+
   /// Let the 500 ms debounce fire and the fake CLI round trip complete: the
   /// debounce runs on the [FakeClock] (D14, WI #28), so both it and the
   /// test binding's time move 600 ms.
