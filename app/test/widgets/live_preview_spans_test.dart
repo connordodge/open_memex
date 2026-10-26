@@ -20,6 +20,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/markdown_lines.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/theme/typography.dart';
+import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
 
 import '../support/font_fetch_hold.dart';
@@ -281,6 +282,67 @@ LivePreviewController _controller(
 
 TextSpan _controllerSpan(BuildContext context, LivePreviewController c) =>
     c.buildTextSpan(context: context, style: _base(), withComposing: false);
+
+/// The design pack hidden fence line height (pack #161: 7 px padding plus
+/// 1 px border).
+const double _hiddenFence = 8;
+
+/// The strut a field editing [c] really lays out with: what `EditableText`
+/// derives from the controller's [LivePreviewController.strutStyle] and the
+/// body style (a null strut becomes a forced strut from the style).
+StrutStyle _effectiveStrut(LivePreviewController c) {
+  final strut = c.strutStyle;
+  return strut == null
+      ? StrutStyle.fromTextStyle(_base(), forceStrutHeight: true)
+      : strut.inheritFromTextStyle(_base());
+}
+
+/// Pumps [c] in a field laid out as `TextSegmentField` lays a live preview
+/// field out (body style, the controller's own strut) and returns the real
+/// line geometry of its render object (C0's line-box seam).
+Future<LineBoxSource> _pumpCodeRowField(
+  WidgetTester tester,
+  LivePreviewController c,
+) async {
+  await tester.pumpWidget(
+    MaterialApp(
+      home: Scaffold(
+        body: SizedBox(
+          width: 600,
+          child: TextField(
+            key: const Key('wi164-code-row-field'),
+            controller: c,
+            maxLines: null,
+            style: _base(),
+            strutStyle: c.strutStyle,
+          ),
+        ),
+      ),
+    ),
+  );
+  return RenderEditableLineBoxes(
+    wi159EditableIn(tester, find.byKey(const Key('wi164-code-row-field'))),
+  );
+}
+
+/// The laid-out height of every line of [lines].
+List<double> _lineHeights(LineBoxSource lines) => [
+  for (final line in lines.lines) line.bottom - line.top,
+];
+
+/// Every line of [lines] is as tall as [expected] (test-font line metrics
+/// round to whole pixels: 0.51 tolerance).
+void _expectLineHeights(
+  LineBoxSource lines,
+  List<double> expected,
+  String why,
+) {
+  final heights = _lineHeights(lines);
+  expect(heights, hasLength(expected.length), reason: '$why: line count');
+  for (final (i, h) in heights.indexed) {
+    expect(h, closeTo(expected[i], 0.51), reason: '$why: line $i of $heights');
+  }
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -1497,6 +1559,248 @@ void main() {
       expect(strut.fontFamily, isNotNull);
       expect(strut.fontFamilyFallback, body.fontFamilyFallback);
       expect(strut.fontSize, 13.5);
+    });
+  });
+
+  // Ruling D18: a code row's field (C1 sets codeRow) lays its hidden fence
+  // lines out at the design's 8 px (pack #161: code box 61.88 = 8 + 2 x
+  // 22.94 + 8); every other field keeps the 22.95 px minimum strut.
+  group('code row strut (D18)', () {
+    testWidgets(
+      'codeRow defaults to false and keeps the 22.95 minimum strut and 22.95 hidden fence lines',
+      (tester) async {
+        const text = '```\nab\ncd\n```';
+        final c = LivePreviewController(text: text);
+        addTearDown(c.dispose);
+        expect(c.codeRow, isFalse);
+        final fromValue = LivePreviewController.fromValue(
+          const TextEditingValue(text: text),
+        );
+        addTearDown(fromValue.dispose);
+        expect(fromValue.codeRow, isFalse, reason: 'fromValue default');
+
+        final strut = c.strutStyle;
+        expect(strut, isNotNull);
+        expect(strut!.fontSize! * strut.height!, closeTo(_bodyLine, 1e-9));
+        expect(strut.forceStrutHeight, isNot(true));
+
+        // Unfocused (the default reveal gate): both fence lines hidden, and
+        // a prose field keeps them at the body line (D18: #164 as merged).
+        final lines = await _pumpCodeRowField(tester, c);
+        _expectLineHeights(lines, [
+          _bodyLine,
+          _bodyLine,
+          _bodyLine,
+          _bodyLine,
+        ], 'default field');
+      },
+    );
+
+    testWidgets(
+      'codeRow true drops the 22.95 minimum strut and lays out each hidden fence line 8 high',
+      (tester) async {
+        final fixtures = <(String, List<double>)>[
+          (
+            '```\nab\ncd\n```',
+            [_hiddenFence, _bodyLine, _bodyLine, _hiddenFence],
+          ),
+          ('```dart\nab\n```', [_hiddenFence, _bodyLine, _hiddenFence]),
+        ];
+        for (final (text, heights) in fixtures) {
+          final c = LivePreviewController(text: text)..codeRow = true;
+          addTearDown(c.dispose);
+          expect(c.codeRow, isTrue);
+
+          final strut = _effectiveStrut(c);
+          expect(strut.forceStrutHeight, isNot(true), reason: text);
+          expect(
+            strut.fontSize! * (strut.height ?? 1),
+            lessThanOrEqualTo(_hiddenFence + 1e-9),
+            reason: '$text: no minimum above the hidden fence line',
+          );
+
+          final lines = await _pumpCodeRowField(tester, c);
+          _expectLineHeights(lines, heights, text);
+
+          // The fence characters stay hidden (zero-width) and the code lines
+          // stay plain fg1 mono at the body size.
+          final open = _range(
+            text,
+            text.startsWith('```dart') ? '```dart' : '```',
+          );
+          final close = _range(text, '```', nth: 1);
+          for (final fence in [open, close]) {
+            final boxes = lines.boxesFor(
+              TextRange(start: fence.$1, end: fence.$2),
+            );
+            expect(boxes, isNotEmpty, reason: '$text fence $fence');
+            for (final b in boxes) {
+              expect(
+                b.width,
+                lessThan(0.01),
+                reason: '$text fence $fence hidden',
+              );
+            }
+          }
+          final rendered =
+              wi159EditableIn(
+                    tester,
+                    find.byKey(const Key('wi164-code-row-field')),
+                  ).text!
+                  as TextSpan;
+          _expectExactPlainText(rendered, text, text);
+          _expectPlainRange(
+            rendered,
+            text,
+            _range(text, 'ab'),
+            color: OmColors.fg1,
+          );
+        }
+      },
+    );
+
+    testWidgets(
+      'codeRow true keeps code lines, blank code lines and revealed fence lines 22.95 high',
+      (tester) async {
+        const text = '```dart\nab\n\ncd\n```';
+        final gate = ValueNotifier<bool>(false);
+        addTearDown(gate.dispose);
+        final c = LivePreviewController(text: text)
+          ..codeRow = true
+          ..revealGate = gate;
+        addTearDown(c.dispose);
+
+        var lines = await _pumpCodeRowField(tester, c);
+        _expectLineHeights(lines, [
+          _hiddenFence,
+          _bodyLine,
+          _bodyLine,
+          _bodyLine,
+          _hiddenFence,
+        ], 'hidden: a blank code line keeps the body line');
+
+        // Caret inside the block while focused: both fence lines show fg2 at
+        // the body line (pack #161: revealed fence line 22.95).
+        gate.value = true;
+        c.selection = _caret(text.indexOf('ab'));
+        await tester.pump();
+        lines = await _pumpCodeRowField(tester, c);
+        _expectLineHeights(lines, [
+          _bodyLine,
+          _bodyLine,
+          _bodyLine,
+          _bodyLine,
+          _bodyLine,
+        ], 'revealed');
+        final rendered =
+            wi159EditableIn(
+                  tester,
+                  find.byKey(const Key('wi164-code-row-field')),
+                ).text!
+                as TextSpan;
+        _expectMarker(rendered, text, _range(text, '```dart'));
+        _expectMarker(rendered, text, _range(text, '```', nth: 1));
+        _expectPlainRange(
+          rendered,
+          text,
+          _range(text, 'cd'),
+          color: OmColors.fg1,
+        );
+      },
+    );
+
+    testWidgets(
+      'setting codeRow notifies the controller listeners and setting it back restores the 22.95 minimum strut',
+      (tester) async {
+        const text = '```\nab\n```';
+        final c = LivePreviewController(text: text);
+        addTearDown(c.dispose);
+        var notified = 0;
+        c.addListener(() => notified++);
+
+        c.codeRow = true;
+        expect(notified, 1, reason: 'codeRow set');
+        expect(c.codeRow, isTrue);
+        var lines = await _pumpCodeRowField(tester, c);
+        _expectLineHeights(lines, [
+          _hiddenFence,
+          _bodyLine,
+          _hiddenFence,
+        ], 'code row');
+
+        final before = notified;
+        c.codeRow = false;
+        expect(notified, before + 1, reason: 'codeRow cleared');
+        expect(c.codeRow, isFalse);
+        final strut = c.strutStyle!;
+        expect(strut.fontSize! * strut.height!, closeTo(_bodyLine, 1e-9));
+        expect(strut.forceStrutHeight, isNot(true));
+        lines = await _pumpCodeRowField(tester, c);
+        _expectLineHeights(lines, [
+          _bodyLine,
+          _bodyLine,
+          _bodyLine,
+        ], 'back to a prose field');
+      },
+    );
+
+    testWidgets(
+      'the controller builds what buildLivePreviewSpan builds with codeRow',
+      (tester) async {
+        final context = await _context(tester);
+        const text = '```dart\n**x** [[y]]\n\n```';
+        for (final (focused, selection) in [
+          (false, _caret(text.indexOf('**x'))),
+          (true, _caret(text.indexOf('**x'))),
+          (true, _caret(-1)),
+        ]) {
+          final c = _controller(text, selection: selection, focused: focused)
+            ..codeRow = true;
+          expect(
+            _controllerSpan(context, c),
+            buildLivePreviewSpan(
+              text,
+              style: _base(),
+              selection: selection,
+              forceHidden: !focused,
+              codeRow: true,
+            ),
+            reason: 'focused $focused, $selection',
+          );
+        }
+      },
+    );
+
+    test('buildLivePreviewSpan codeRow defaults to false', () {
+      const text = '```\nab\n```';
+      final sel = _caret(-1);
+      final byDefault = buildLivePreviewSpan(
+        text,
+        style: _base(),
+        selection: sel,
+      );
+      expect(
+        byDefault,
+        buildLivePreviewSpan(
+          text,
+          style: _base(),
+          selection: sel,
+          codeRow: false,
+        ),
+      );
+      // A code row lays its hidden fence lines out shorter than a prose
+      // field does, so its span differs while the fences are hidden.
+      expect(
+        byDefault,
+        isNot(
+          buildLivePreviewSpan(
+            text,
+            style: _base(),
+            selection: sel,
+            codeRow: true,
+          ),
+        ),
+      );
     });
   });
 }

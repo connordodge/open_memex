@@ -34,6 +34,12 @@ class LivePreviewController extends TextEditingController {
   /// The field's text starts at its text segment's start. Default true.
   bool atSegmentStart = true;
 
+  /// The field is a code row's text (a fenced block, ruling D18): its hidden
+  /// fence lines lay out at the design's 8 px, so [strutStyle] drops the
+  /// 22.95 px minimum. Default false. Setting it notifies listeners.
+  bool get codeRow => throw UnimplementedError();
+  set codeRow(bool value) => throw UnimplementedError();
+
   /// True while the field's text segment has focus. Default: never true.
   ValueListenable<bool> revealGate = const AlwaysStoppedAnimation<bool>(false);
 
@@ -117,6 +123,7 @@ TextSpan buildLivePreviewSpan(
   bool atSegmentStart = true,
   bool Function(String target)? isResolved,
   TextRange? cmdHover,
+  bool codeRow = false,
 }) {
   if (text.isEmpty) return TextSpan(style: style, text: text);
   return _SpanBuilder(
