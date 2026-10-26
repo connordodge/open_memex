@@ -43,7 +43,13 @@ double headingFontSize(int level) => switch (level) {
 
 /// The live preview field's strut (R13): a 22.95 px minimum (13.5 x 1.7) in
 /// the body face, never forced, so heading lines lay out taller.
-StrutStyle livePreviewStrut() {
+///
+/// With [codeRow] (a code row's text, ruling D18): an 8 px minimum (the
+/// design's hidden fence line, pack #161: 7 px padding plus a 1 px border)
+/// instead, not forced, so a hidden fence line lays out 8 px tall while code
+/// lines keep their 22.95 px body line. Default false.
+StrutStyle livePreviewStrut({bool codeRow = false}) {
+  if (codeRow) return const StrutStyle(fontSize: 8, height: 1);
   final body = OmType.mono(size: monoFontSize);
   return StrutStyle(
     fontFamily: body.fontFamily,

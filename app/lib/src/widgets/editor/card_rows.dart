@@ -19,11 +19,13 @@ import 'paragraph_line_boxes.dart';
 /// - Row `r` sits under Key `card-row-<r>`; its text (one `RichText` of
 ///   B1's `buildLivePreviewSpan` with `forceHidden: true`) under Key
 ///   `card-row-text-<r>`; an item row's `MarkerColumn` (C1b, read-only)
-///   under Key `card-row-marker-<r>`. An empty prose row (a trailing line
-///   break, or empty [text]) is left out.
+///   under Key `card-row-marker-<r>`. Leading and trailing empty prose rows
+///   (empty [text], a trailing line break) are left out; an interior empty
+///   prose row renders as one blank body line, as in the editor.
 /// - Item rows hang their text at the item's text x (A2 geometry), as the
 ///   editor's rows do; prose rows start at the left edge; code rows keep
-///   the editor's code insets. Rows stack with no gap.
+///   the editor's code insets and lay out with the code row strut (D18), so
+///   hidden fence lines are 8 px tall. Rows stack with no gap.
 /// - Painted decorations come from B2's `layoutDecorations` measured
 ///   through `RenderParagraphLineBoxes` (D6), across the row's full width;
 ///   quote bands are `surface4` (L14).
@@ -44,13 +46,23 @@ class CardRows extends StatelessWidget {
     final geometries = rowGeometries(specs);
     final scaler = MediaQuery.textScalerOf(context);
     final base = _baseStyle();
+    bool blank(RowSpec spec) =>
+        spec.kind == RowKind.prose && spec.textLength == 0;
+    // The rows between the leading and the trailing empty prose rows.
+    var first = 0;
+    while (first < specs.length && blank(specs[first])) {
+      first++;
+    }
+    var last = specs.length - 1;
+    while (last >= first && blank(specs[last])) {
+      last--;
+    }
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        for (final (r, spec) in specs.indexed)
-          if (spec.kind != RowKind.prose || spec.textLength > 0)
-            _row(r, spec, geometries[r], base, scaler),
+        for (var r = first; r <= last; r++)
+          _row(r, specs[r], geometries[r], base, scaler),
       ],
     );
   }
@@ -64,12 +76,13 @@ class CardRows extends StatelessWidget {
   ) {
     final rowText = text.substring(spec.textStart, spec.textEnd);
     final quote = spec.kind == RowKind.quote;
+    final codeRow = spec.kind == RowKind.code;
     final atSegmentStart = spec.textStart == 0;
     final rich = _RowText(
       key: ValueKey('card-row-text-$r'),
       child: RichText(
         textScaler: scaler,
-        strutStyle: livePreviewStrut(),
+        strutStyle: livePreviewStrut(codeRow: codeRow),
         text: buildLivePreviewSpan(
           rowText,
           style: base,
@@ -78,6 +91,7 @@ class CardRows extends StatelessWidget {
           taskDone: spec.done,
           quote: quote,
           atSegmentStart: atSegmentStart,
+          codeRow: codeRow,
         ),
       ),
     );
