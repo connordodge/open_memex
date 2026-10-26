@@ -10,5 +10,5 @@ class SegmentPointerLayer extends StatelessWidget {
   final Widget child;
 
   @override
-  Widget build(BuildContext context) => throw UnimplementedError();
+  Widget build(BuildContext context) => child;
 }

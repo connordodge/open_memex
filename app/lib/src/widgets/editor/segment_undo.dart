@@ -9,11 +9,10 @@ class SegmentUndoRecorder {
   SegmentUndoRecorder();
 
   /// [edit] was applied to the segment text [before].
-  void record(SegmentEdit edit, {required String before}) =>
-      throw UnimplementedError();
+  void record(SegmentEdit edit, {required String before}) {}
 
   /// Forgets every recorded edit.
-  void reset() => throw UnimplementedError();
+  void reset() {}
 }
 
 /// Makes the recorder of each text segment the rows host builds. Tests

@@ -4,9 +4,9 @@ import 'package:flutter/widgets.dart';
 /// TD12), implemented by the State under Key `text-segment-<i>`.
 ///
 /// Tests, robots and journeys read and drive a text segment only through
-/// this handle, never through the field widgets inside it, so the segment
-/// can be one field (today) or several editor rows (C1) without changing
-/// them. Frozen after #159: later changes are additive and optional only.
+/// this handle, never through the field widgets inside it: the segment
+/// shows editor rows (#167), one field per row. Frozen after #159: later
+/// changes are additive and optional only.
 ///
 /// Offsets are UTF-16 offsets into the segment's whole text ([text]).
 abstract interface class SegmentEditing {
@@ -16,11 +16,11 @@ abstract interface class SegmentEditing {
   /// The segment's selection, in segment offsets.
   TextSelection get selection;
 
-  /// The index of the row holding focus: 0 while the segment's (single)
-  /// field has focus, null while no field of the segment has focus.
+  /// The index of the editor row whose field has focus, null while no row
+  /// of the segment has focus.
   int? get focusedRow;
 
-  /// How many editor rows the segment shows (1 for a single field).
+  /// How many editor rows the segment shows.
   int get rowCount;
 
   /// The caret rect at segment [offset], in global coordinates. Its height

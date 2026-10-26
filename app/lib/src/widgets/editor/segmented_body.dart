@@ -1,8 +1,8 @@
 import 'dart:async';
+import 'dart:ui' as ui show BoxHeightStyle;
 
 import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart' show RenderEditable;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../cli/excerpt_cli.dart';
@@ -20,7 +20,6 @@ import 'excerpt_card.dart';
 import 'footer_chip_row.dart';
 import 'line_boxes.dart';
 import 'live_preview_controller.dart';
-import 'live_preview_frame.dart';
 import 'segment_view.dart';
 import 'text_segment.dart';
 
@@ -83,7 +82,8 @@ class _FooterSeg extends _Seg {
 /// (Key `text-segment-<index>`), read-only [ExcerptCard]s and, for a daily
 /// note, the [FooterChipBar]. `<index>` is the segment's position in
 /// [split]'s list. The first text segment (a daily note's person field)
-/// also carries Key `editor-body` and uses [primaryFocusNode].
+/// also carries Key `editor-body` and uses [primaryFocusNode]. Each text
+/// segment is a [SegmentView]: editor rows over the segment's text (#167).
 ///
 /// Edits report [join] of all segments through [onContentChanged]. The
 /// segment list is not rebuilt while typing: it is recomputed when
@@ -132,10 +132,6 @@ class SegmentedBody extends ConsumerStatefulWidget {
 
 class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
   final _kindChips = KindChipHost();
-
-  /// Wraps the first text segment's field, so the capture gutter can measure
-  /// its lines.
-  final _primaryFieldKey = GlobalKey(debugLabel: 'primary-field');
   FocusNode? _ownPrimary;
   List<_Seg> _segs = const [];
   late bool _isDaily;
@@ -146,9 +142,6 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
 
   /// [join] of the segments as they are now.
   String _joined = '';
-
-  /// True while segment text is set programmatically.
-  bool _applying = false;
   bool _removing = false;
   String? _error;
 
@@ -211,22 +204,19 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
     final next = split(text, isDaily: _isDaily);
     _withFooter = !_isDaily || splitDailyBody(text).person != text;
     if (_sameShape(next)) {
-      _applying = true;
-      try {
-        for (var i = 0; i < next.length; i++) {
-          final seg = _segs[i];
-          final n = next[i];
-          if (seg is _TextSeg && n is TextSegment && seg.ctrl.text != n.text) {
-            seg.ctrl.value = TextEditingValue(
-              text: n.text,
-              selection: keepCaret
-                  ? _clampSelection(seg.ctrl.selection, n.text.length)
-                  : TextSelection.collapsed(offset: n.text.length),
-            );
-          }
+      // A segment's rows re-derive from its new text without reporting it
+      // (SegmentView).
+      for (var i = 0; i < next.length; i++) {
+        final seg = _segs[i];
+        final n = next[i];
+        if (seg is _TextSeg && n is TextSegment && seg.ctrl.text != n.text) {
+          seg.ctrl.value = TextEditingValue(
+            text: n.text,
+            selection: keepCaret
+                ? _clampSelection(seg.ctrl.selection, n.text.length)
+                : TextSelection.collapsed(offset: n.text.length),
+          );
         }
-      } finally {
-        _applying = false;
       }
       _segs = [
         for (var i = 0; i < next.length; i++)
@@ -238,12 +228,9 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
     } else {
       final caret = _focusedOffset();
       final old = _segs;
-      // The kind chip must not point into a field that goes away.
-      if (old.any(
-        (s) => s is _TextSeg && identical(s.ctrl, _kindChips.target),
-      )) {
-        _kindChips.clear();
-      }
+      // Every text segment is rebuilt with new rows: the kind chip must not
+      // point into a row field that goes away.
+      _kindChips.clear();
       // split() always starts with a text segment: the primary field.
       _segs = [
         for (var i = 0; i < next.length; i++)
@@ -278,16 +265,17 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
         extentOffset: selection.extentOffset.clamp(0, length),
       );
 
-  /// The first text segment field's [RenderEditable], once laid out.
-  RenderEditable? _primaryEditable() =>
-      findRenderEditable(_primaryFieldKey.currentContext?.findRenderObject());
-
-  /// The daily person field with the capture gutter beside it (WI #28).
-  Widget _withGutter(_TextSeg seg, Widget field) => Stack(
+  /// The daily person field's [rows] with the capture gutter beside them
+  /// (WI #28), measuring the rows' line [boxes].
+  Widget _withGutter(
+    _TextSeg seg,
+    Widget rows,
+    LineBoxSource? Function() boxes,
+  ) => Stack(
     children: [
       Padding(
         padding: const EdgeInsets.only(left: captureGutterWidth),
-        child: KeyedSubtree(key: _primaryFieldKey, child: field),
+        child: rows,
       ),
       Positioned(
         left: 0,
@@ -297,7 +285,7 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
         child: CaptureGutter(
           noteId: widget.note.id,
           controller: seg.ctrl,
-          editable: _primaryEditable,
+          boxes: boxes,
         ),
       ),
     ],
@@ -380,7 +368,6 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
   }
 
   void _onTextChanged() {
-    if (_applying) return;
     final joined = _joinOf(_segs);
     if (joined == _joined) return;
     _joined = joined;
@@ -485,6 +472,11 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
     if (mounted) setState(() => _error = message);
   }
 
+  /// A row field went away: the kind chip must not point into it.
+  void _onRowRemoved(TextEditingController row) {
+    if (identical(row, _kindChips.target)) _kindChips.clear();
+  }
+
   @override
   Widget build(BuildContext context) {
     final texts = _segs.whereType<_TextSeg>().toList();
@@ -510,33 +502,36 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
               final _TextSeg t => KeyedSubtree(
                 key: ValueKey('text-segment-$i'),
                 child: SegmentView(
+                  key: ObjectKey(t.ctrl),
+                  index: i,
                   controller: t.ctrl,
                   focusNode: t.focus,
-                  builder: (context, boxes) => _primaryKeyed(
-                    i == 0,
-                    LivePreviewFrame(
-                      controller: t.ctrl,
-                      boxes: boxes,
-                      child: TextSegmentField(
-                        key: ObjectKey(t.ctrl),
-                        controller: t.ctrl,
-                        focusNode: t.focus,
-                        onChanged: (_) => _onTextChanged(),
-                        kindChips: _kindChips,
-                        minLines: single
-                            ? 12
-                            : (identical(t, texts.last) ? 4 : 1),
-                        hintText: single
-                            ? 'type [[ to link a note · write markdown…'
-                            : null,
-                        onMoveUp: () => _neighbour(t, forward: false),
-                        onMoveDown: () => _neighbour(t, forward: true),
-                        dailyNoteId: _isSavedDaily ? widget.note.id : null,
-                        onTopicLinked: _onTopicLinked,
-                        onCreateError: _onCreateError,
-                      ),
-                    ),
+                  revealGate: t.gate,
+                  minLines: single ? 12 : (identical(t, texts.last) ? 4 : 1),
+                  hintText: single
+                      ? 'type [[ to link a note · write markdown…'
+                      : null,
+                  onChanged: _onTextChanged,
+                  onRowRemoved: _onRowRemoved,
+                  fieldBuilder: (context, row) => TextSegmentField(
+                    controller: row.controller,
+                    focusNode: row.focusNode,
+                    kindChips: _kindChips,
+                    hintText: row.hintText,
+                    // Tight selection boxes, as design A draws them.
+                    selectionHeightStyle: ui.BoxHeightStyle.tight,
+                    onMoveUp: row.first
+                        ? () => _neighbour(t, forward: false)
+                        : null,
+                    onMoveDown: row.last
+                        ? () => _neighbour(t, forward: true)
+                        : null,
+                    dailyNoteId: _isSavedDaily ? widget.note.id : null,
+                    onTopicLinked: _onTopicLinked,
+                    onCreateError: _onCreateError,
                   ),
+                  builder: (context, rows, boxes) =>
+                      _primaryKeyed(i == 0, t, rows, boxes),
                 ),
               ),
               final _CardSeg c => ExcerptCard(
@@ -555,10 +550,15 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
   /// The first text segment is also the editor's body field (Key
   /// `editor-body`), where launch focus goes; a daily note's (the person
   /// field) has the capture gutter beside it.
-  Widget _primaryKeyed(bool primary, Widget child) => primary
+  Widget _primaryKeyed(
+    bool primary,
+    _TextSeg seg,
+    Widget rows,
+    LineBoxSource? Function() boxes,
+  ) => primary
       ? KeyedSubtree(
           key: const Key('editor-body'),
-          child: _isDaily ? _withGutter(_segs.first as _TextSeg, child) : child,
+          child: _isDaily ? _withGutter(seg, rows, boxes) : rows,
         )
-      : child;
+      : rows;
 }
