@@ -213,6 +213,22 @@ void main() {
       expect(lines.first.isItem, isFalse);
     });
 
+    test(
+      'an indented hash line is plain because a heading starts at column zero',
+      () {
+        expect(_kinds('  # a\n\t## b\n # c\n# d'), [
+          _p,
+          _p,
+          _p,
+          MdLineKind.heading,
+        ]);
+        for (final l in _lines('  # a')) {
+          expect(l.level, 0);
+          expect(_marker(l), (0, 0, 0, 0));
+        }
+      },
+    );
+
     test('seven hashes and hashes without a space are plain', () {
       expect(_kinds('####### x\n#tag\n#\n##\n#\tx'), [_p, _p, _p, _p, _p]);
       for (final l in _lines('#tag\n#')) {

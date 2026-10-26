@@ -368,7 +368,8 @@ int _rowAt(List<RowSpec> rows, int offset) {
 /// when it has one, so the focused row keeps its identity when its text,
 /// range or kind changes (a bullet becoming a task, a prose line becoming a
 /// bullet once `- ` is typed, a polled append) and when rows before it are
-/// inserted or removed.
+/// inserted or removed. Any other row whose kind changed has no
+/// continuation.
 List<int?> matchRows(
   List<RowSpec> before,
   List<RowSpec> after, {
@@ -409,6 +410,8 @@ List<int?> matchRows(
     }
     final j = _rowAt(after, anchor);
     if (j <= last) continue;
+    // Rows match by kind: only the focused row may change kind.
+    if (k != focused && after[j].kind != old.kind) continue;
     if (target != null && k < focused! && j >= target) continue;
     result[k] = last = j;
   }
