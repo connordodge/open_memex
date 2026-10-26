@@ -1598,21 +1598,148 @@ void main() {
       variant: macOnly,
     );
 
+    /// Pumps a one-row segment (`- [x] a`) whose rows builder adds a stray
+    /// task [EditorRow] of index [strayIndex] (at or past the segment's row
+    /// count), and expects that row's column to paint its own open marker
+    /// with no checkbox, with clicks changing nothing.
+    Future<void> expectStrayRowPaintsItsOwnMarker(
+      WidgetTester tester,
+      int strayIndex,
+    ) async {
+      final ctrl = TextEditingController(text: '- [x] a');
+      final focus = FocusNode(debugLabel: 'wi168-stray');
+      final gate = ValueNotifier(true);
+      final strayCtrl = LivePreviewController(text: 'stray');
+      final strayFocus = FocusNode(debugLabel: 'wi168-stray-row');
+      addTearDown(() {
+        ctrl.dispose();
+        focus.dispose();
+        gate.dispose();
+        strayCtrl.dispose();
+        strayFocus.dispose();
+      });
+      await tester.pumpWidget(
+        ProviderScope(
+          child: MaterialApp(
+            theme: buildOmTheme(),
+            home: Scaffold(
+              body: Align(
+                alignment: Alignment.topLeft,
+                child: RepaintBoundary(
+                  key: _wi168BoundaryKey,
+                  child: Container(
+                    color: _wi168Surface,
+                    width: 600,
+                    child: SegmentView(
+                      index: 0,
+                      controller: ctrl,
+                      focusNode: focus,
+                      revealGate: gate,
+                      minLines: 1,
+                      hintText: null,
+                      onChanged: () {},
+                      onRowRemoved: (_) {},
+                      fieldBuilder: (context, row) => TextField(
+                        controller: row.controller,
+                        focusNode: row.focusNode,
+                        maxLines: null,
+                      ),
+                      builder: (context, rows, boxes) => Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          rows,
+                          EditorRow(
+                            segment: 0,
+                            index: strayIndex,
+                            kind: RowKind.task,
+                            geometry: itemGeometry(
+                              markerX: 0,
+                              kind: MarkerColumnKind.task,
+                            ),
+                            marker: ['- ', '[ ] '].join(),
+                            controller: strayCtrl,
+                            focusNode: strayFocus,
+                            boxes: () => null,
+                            field: TextField(
+                              controller: strayCtrl,
+                              focusNode: strayFocus,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+
+      expect(_wi168Checkbox(0, 0), findsOneWidget);
+      expect(_wi168Checkbox(0, strayIndex), findsNothing);
+      final stray = tester.getRect(_wi168Marker(0, strayIndex));
+      _wi168ExpectOpenCircle(
+        await _wi168Capture(tester, stray.inflate(2)),
+        stray,
+        why: 'stray row paints its own open marker',
+      );
+
+      await tester.macClick(tester.getCenter(_wi168Marker(0, strayIndex)));
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+      expect(ctrl.text, '- [x] a');
+    }
+
     testWidgets(
       'a marker column whose editor row index is past its segment rows paints its own marker with no checkbox',
+      (tester) => expectStrayRowPaintsItsOwnMarker(tester, 5),
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a marker column whose editor row index equals its segment row count paints its own marker with no checkbox',
       (tester) async {
-        final ctrl = TextEditingController(text: '- [x] a');
-        final focus = FocusNode(debugLabel: 'wi168-stray');
-        final gate = ValueNotifier(true);
-        final strayCtrl = LivePreviewController(text: 'stray');
-        final strayFocus = FocusNode(debugLabel: 'wi168-stray-row');
-        addTearDown(() {
-          ctrl.dispose();
-          focus.dispose();
-          gate.dispose();
-          strayCtrl.dispose();
-          strayFocus.dispose();
-        });
+        expect(_wi168Specs('- [x] a'), hasLength(1));
+        await expectStrayRowPaintsItsOwnMarker(tester, 1);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a done task check is an open polyline with no stroke from its last point back to its first',
+      (tester) async {
+        await _wi168Pump(tester, 'intro\n- [x] done\nend');
+        final column = tester.getRect(_wi168Marker(0, 1));
+        final px = await _wi168Capture(tester, column.inflate(2));
+        _wi168ExpectDoneCircle(px, column, why: 'control');
+
+        // A closed path would stroke the segment from the check's last
+        // point back to its first; it crosses the fill clear of both strokes.
+        final check = markerTaskCheck();
+        for (final t in [0.25, 0.4, 0.5]) {
+          final p = Offset.lerp(check.points.last, check.points.first, t)!;
+          expect(
+            px.at(column.topLeft + p),
+            _wi168IsColor(OmColors.accentSoft),
+            reason: 'unstroked fill at $t of last to first point $p',
+          );
+        }
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'the marker painter repaints when only its selection fill or only its dot or only its task state changes and not when nothing changes',
+      (tester) async {
+        const text = '- one\n- two\n  - three\n- [ ] four\n- [x] five';
+        final specs = _wi168Specs(text);
+        final ctrl = TextEditingController(text: text);
+        final focus = FocusNode(debugLabel: 'wi168-repaint');
+        final gate = ValueNotifier(false);
         await tester.pumpWidget(
           ProviderScope(
             child: MaterialApp(
@@ -1620,50 +1747,23 @@ void main() {
               home: Scaffold(
                 body: Align(
                   alignment: Alignment.topLeft,
-                  child: RepaintBoundary(
-                    key: _wi168BoundaryKey,
-                    child: Container(
-                      color: _wi168Surface,
-                      width: 600,
-                      child: SegmentView(
-                        index: 0,
-                        controller: ctrl,
-                        focusNode: focus,
-                        revealGate: gate,
-                        minLines: 1,
-                        hintText: null,
-                        onChanged: () {},
-                        onRowRemoved: (_) {},
-                        fieldBuilder: (context, row) => TextField(
-                          controller: row.controller,
-                          focusNode: row.focusNode,
-                          maxLines: null,
-                        ),
-                        builder: (context, rows, boxes) => Column(
-                          mainAxisSize: MainAxisSize.min,
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            rows,
-                            EditorRow(
-                              segment: 0,
-                              index: 5,
-                              kind: RowKind.task,
-                              geometry: itemGeometry(
-                                markerX: 0,
-                                kind: MarkerColumnKind.task,
-                              ),
-                              marker: ['- ', '[ ] '].join(),
-                              controller: strayCtrl,
-                              focusNode: strayFocus,
-                              boxes: () => null,
-                              field: TextField(
-                                controller: strayCtrl,
-                                focusNode: strayFocus,
-                              ),
-                            ),
-                          ],
-                        ),
+                  child: SizedBox(
+                    width: 600,
+                    child: SegmentView(
+                      index: 0,
+                      controller: ctrl,
+                      focusNode: focus,
+                      revealGate: gate,
+                      minLines: 1,
+                      hintText: null,
+                      onChanged: () {},
+                      onRowRemoved: (_) {},
+                      fieldBuilder: (context, row) => TextField(
+                        controller: row.controller,
+                        focusNode: row.focusNode,
+                        maxLines: null,
                       ),
+                      builder: (context, rows, boxes) => rows,
                     ),
                   ),
                 ),
@@ -1672,21 +1772,76 @@ void main() {
           ),
         );
         await tester.pump();
-        expect(tester.takeException(), isNull);
 
-        expect(_wi168Checkbox(0, 0), findsOneWidget);
-        expect(_wi168Checkbox(0, 5), findsNothing);
-        final stray = tester.getRect(_wi168Marker(0, 5));
-        _wi168ExpectOpenCircle(
-          await _wi168Capture(tester, stray.inflate(2)),
-          stray,
-          why: 'stray row paints its own open marker',
+        CustomPainter painter(int r) => tester
+            .widgetList<CustomPaint>(
+              find.descendant(
+                of: _wi168Marker(0, r),
+                matching: find.byType(CustomPaint),
+              ),
+            )
+            .map((w) => w.painter)
+            .whereType<CustomPainter>()
+            .single;
+
+        final before = [for (var r = 0; r < specs.length; r++) painter(r)];
+        expect(
+          before[1].shouldRepaint(before[0]),
+          isFalse,
+          reason: 'two unselected level 1 bullets paint the same',
+        );
+        expect(
+          before[2].shouldRepaint(before[1]),
+          isTrue,
+          reason: 'only the dot differs: level 2 vs level 1',
+        );
+        expect(
+          before[4].shouldRepaint(before[3]),
+          isTrue,
+          reason: 'only the task state differs: done vs open',
         );
 
-        await tester.macClick(tester.getCenter(_wi168Marker(0, 5)));
+        // Select row 0 from its line start to its text end with the reveal
+        // gate shut: only the column's fill changes.
+        ctrl.selection = TextSelection(
+          baseOffset: specs[0].start,
+          extentOffset: specs[0].textEnd,
+        );
         await tester.pump();
-        expect(tester.takeException(), isNull);
-        expect(ctrl.text, '- [x] a');
+        expect(_wi168Shown(tester, 0, 0), '', reason: 'row 0 is not revealed');
+        final selected = painter(0);
+        expect(identical(selected, before[0]), isFalse);
+        expect(
+          selected.shouldRepaint(before[0]),
+          isTrue,
+          reason: 'only the selection fill changed',
+        );
+        expect(
+          painter(1).shouldRepaint(before[1]),
+          isFalse,
+          reason: 'nothing changed on row 1',
+        );
+
+        // Reveal row 1 with a collapsed caret: only its dot goes away.
+        ctrl.selection = const TextSelection.collapsed(offset: 0);
+        await tester.showKeyboard(_wi168Row(0, 1));
+        gate.value = true;
+        await tester.pump();
+        _wi168Ctrl(tester, 0, 1).selection = const TextSelection.collapsed(
+          offset: 1,
+        );
+        await tester.pump();
+        expect(_wi168Shown(tester, 0, 1), '- ', reason: 'row 1 is revealed');
+        expect(
+          painter(1).shouldRepaint(before[1]),
+          isTrue,
+          reason: 'only the dot changed: revealed',
+        );
+
+        await tester.pumpWidget(const SizedBox());
+        ctrl.dispose();
+        focus.dispose();
+        gate.dispose();
       },
       variant: macOnly,
     );
