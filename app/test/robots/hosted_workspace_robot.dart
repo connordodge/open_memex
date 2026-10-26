@@ -94,8 +94,8 @@ class HostedWorkspaceRobot {
   /// Types [text] as the open note's first segment and lets the 500 ms save
   /// debounce fire and the save's request answer (or fail).
   Future<void> typeAndSave(String text) async {
-    await tester.enterText(segment(0), text);
-    await tester.pump();
+    // TEST-CHANGE (#167): through the segment's handle (editor rows).
+    await typeSegmentText(tester, segment(0), text);
     await app.advance(const Duration(milliseconds: 600));
   }
 

@@ -1,4 +1,5 @@
 import 'dart:math' show max;
+import 'dart:ui' as ui show BoxHeightStyle;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -158,7 +159,7 @@ class KindChipLayer extends StatelessWidget {
 /// autocomplete on `[[` and the inline kind chip through [kindChips].
 ///
 /// Every change to [controller]'s text (typed, or spliced in by autocomplete
-/// or the kind chip) is reported through [onChanged]. Down with the caret at
+/// or the kind chip) is reported through [onChanged] when given. Down with the caret at
 /// the end asks [onMoveDown], and Up with the caret at 0 asks [onMoveUp],
 /// for the focus node to move to; when one is returned it takes focus and
 /// the key is handled.
@@ -169,8 +170,8 @@ class TextSegmentField extends StatefulWidget {
   const TextSegmentField({
     super.key,
     required this.controller,
-    required this.onChanged,
     required this.kindChips,
+    this.onChanged,
     this.focusNode,
     this.minLines = 1,
     this.hintText,
@@ -179,10 +180,11 @@ class TextSegmentField extends StatefulWidget {
     this.dailyNoteId,
     this.onTopicLinked,
     this.onCreateError,
+    this.selectionHeightStyle,
   });
 
   final TextEditingController controller;
-  final ValueChanged<String> onChanged;
+  final ValueChanged<String>? onChanged;
   final KindChipHost kindChips;
 
   /// Owned by the caller; one is made here when null.
@@ -198,6 +200,10 @@ class TextSegmentField extends StatefulWidget {
   final String? dailyNoteId;
   final void Function(int version)? onTopicLinked;
   final ValueChanged<String>? onCreateError;
+
+  /// How tall the field paints its selection boxes; null keeps the
+  /// platform default.
+  final ui.BoxHeightStyle? selectionHeightStyle;
 
   @override
   State<TextSegmentField> createState() => _TextSegmentFieldState();
@@ -234,7 +240,7 @@ class _TextSegmentFieldState extends State<TextSegmentField> {
     final text = widget.controller.text;
     if (text != _lastSeen) {
       _lastSeen = text;
-      widget.onChanged(text);
+      widget.onChanged?.call(text);
     }
     final caret = widget.controller.selection.baseOffset;
     if (caret >= 0) widget.kindChips.caretMoved(widget.controller, caret);
@@ -291,6 +297,7 @@ class _TextSegmentFieldState extends State<TextSegmentField> {
             maxLines: null,
             minLines: widget.minLines,
             cursorColor: OmColors.accent,
+            selectionHeightStyle: widget.selectionHeightStyle,
             style: _bodyStyle(),
             // A live preview controller may lay its text out with its own
             // strut (B1); null keeps the field's default.
