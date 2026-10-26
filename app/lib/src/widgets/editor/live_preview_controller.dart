@@ -15,6 +15,7 @@ import 'live_preview_styles.dart';
 /// - [taskDone]: the field is a done task's text;
 /// - [quote]: the field is a quote line's text;
 /// - [atSegmentStart]: the field's text starts at its text segment's start;
+/// - [codeRow]: the field is a code row's text (ruling D18);
 /// - [revealGate]: true while the field's text segment has focus (markers
 ///   may reveal only then).
 class LivePreviewController extends TextEditingController {
@@ -37,8 +38,13 @@ class LivePreviewController extends TextEditingController {
   /// The field is a code row's text (a fenced block, ruling D18): its hidden
   /// fence lines lay out at the design's 8 px, so [strutStyle] drops the
   /// 22.95 px minimum. Default false. Setting it notifies listeners.
-  bool get codeRow => throw UnimplementedError();
-  set codeRow(bool value) => throw UnimplementedError();
+  bool get codeRow => _codeRow;
+  set codeRow(bool value) {
+    _codeRow = value;
+    notifyListeners();
+  }
+
+  bool _codeRow = false;
 
   /// True while the field's text segment has focus. Default: never true.
   ValueListenable<bool> revealGate = const AlwaysStoppedAnimation<bool>(false);
@@ -68,8 +74,10 @@ class LivePreviewController extends TextEditingController {
 
   /// The strut a `TextSegmentField` editing this controller lays its text
   /// out with: the 22.95 px minimum strut (R13), not forced, so taller
-  /// heading lines lay out taller.
-  StrutStyle? get strutStyle => livePreviewStrut();
+  /// heading lines lay out taller. While [codeRow], an 8 px minimum strut
+  /// instead (ruling D18), so a hidden fence line lays out 8 px tall while
+  /// code lines keep their 22.95 px body line.
+  StrutStyle? get strutStyle => codeRow ? _codeRowStrut : livePreviewStrut();
 
   /// The live preview span of [text] for the current [selection], markers
   /// revealed only while [revealGate] is true. The composing range is not
@@ -90,8 +98,19 @@ class LivePreviewController extends TextEditingController {
     atSegmentStart: atSegmentStart,
     isResolved: isResolved,
     cmdHover: cmdHover,
+    codeRow: codeRow,
   );
 }
+
+/// The design's hidden fence line height (pack #161: 7 px padding plus a
+/// 1 px border; ruling D18).
+const double _hiddenFenceLineHeight = 8;
+
+/// A code row's strut: a minimum of [_hiddenFenceLineHeight], not forced.
+const StrutStyle _codeRowStrut = StrutStyle(
+  fontSize: _hiddenFenceLineHeight,
+  height: 1,
+);
 
 /// Builds the live preview span for [text] (B1, Spec R2-R5): a pure
 /// function of the text, the field's props and its [selection], which
@@ -105,8 +124,11 @@ class LivePreviewController extends TextEditingController {
 ///   [selection] touches no line. Every other marker renders zero-width.
 /// - Code units inside [selection] that are markers, done-task text, link
 ///   text or ghost wikilink text render in `fg1`.
-/// - [itemText], [taskDone], [quote], [atSegmentStart], [isResolved] and
-///   [cmdHover] mean what the controller props of the same names mean.
+/// - [itemText], [taskDone], [quote], [atSegmentStart], [isResolved],
+///   [cmdHover] and [codeRow] mean what the controller props of the same
+///   names mean.
+/// - While [codeRow], a hidden fence line's terminator renders hidden too,
+///   so the line takes its height from the field's strut alone.
 ///
 /// The controller calls it as `buildLivePreviewSpan(text, style: style,
 /// selection: selection, forceHidden: !revealGate.value, ...)`, forwarding
@@ -136,6 +158,7 @@ TextSpan buildLivePreviewSpan(
     atSegmentStart: atSegmentStart,
     isResolved: isResolved,
     cmdHover: cmdHover,
+    codeRow: codeRow,
   ).build(style);
 }
 
@@ -166,6 +189,7 @@ final class _SpanBuilder {
     required this.atSegmentStart,
     required this.isResolved,
     required this.cmdHover,
+    required this.codeRow,
   }) : _selection = selection != null && selection.isValid ? selection : null,
        _flags = Uint8List(text.length),
        _ink = Uint8List(text.length);
@@ -178,6 +202,7 @@ final class _SpanBuilder {
   final bool atSegmentStart;
   final bool Function(String target)? isResolved;
   final TextRange? cmdHover;
+  final bool codeRow;
   final TextSelection? _selection;
   final Uint8List _flags;
   final Uint8List _ink;
@@ -188,6 +213,7 @@ final class _SpanBuilder {
     final revealed = _revealed(lines);
     final levels = List<int>.filled(lines.length, 0);
     final codeLines = List<bool>.filled(lines.length, false);
+    final fenceLines = List<bool>.filled(lines.length, false);
     for (final (i, line) in lines.indexed) {
       switch (itemText ? MdLineKind.plain : line.kind) {
         case MdLineKind.heading:
@@ -202,7 +228,10 @@ final class _SpanBuilder {
           _tokenize(line.textStart, line.contentEnd);
         case MdLineKind.plain:
           _tokenize(line.start, line.contentEnd);
-        case MdLineKind.rule || MdLineKind.fenceOpen || MdLineKind.fenceClose:
+        case MdLineKind.rule:
+          _markRange(line.start, line.contentEnd, _marker);
+        case MdLineKind.fenceOpen || MdLineKind.fenceClose:
+          fenceLines[i] = true;
           _markRange(line.start, line.contentEnd, _marker);
         case MdLineKind.fenceInside:
           codeLines[i] = true;
@@ -224,9 +253,13 @@ final class _SpanBuilder {
     }
 
     for (final (i, line) in lines.indexed) {
+      // A code row's hidden fence line hides its terminator too (D18).
+      final terminator = codeRow && fenceLines[i] && !revealed[i]
+          ? _hiddenKey
+          : _terminatorKey;
       for (var at = line.start; at < line.end; at++) {
         final key = at >= line.contentEnd
-            ? _terminatorKey
+            ? terminator
             : _key(at, levels[i], codeLines[i], revealed[i]);
         if (key != runKey) {
           flush(at);
