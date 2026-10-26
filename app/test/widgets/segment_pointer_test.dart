@@ -1305,5 +1305,325 @@ void main() {
       },
       variant: macOnly,
     );
+
+    testWidgets(
+      'the mouse shows the text cursor over an item marker column and the empty area below the rows',
+      (tester) async {
+        await _wi170Pump(tester, _wi170List);
+        final segment = tester.getRect(find.byKey(textSegmentKey(0)));
+        final lastRow = tester.getRect(_wi170Row(0, 4));
+        expect(segment.bottom - lastRow.bottom, greaterThan(40));
+        for (final (what, at) in [
+          ('marker column', tester.getCenter(_wi170Marker(0, 2))),
+          ('empty area', Offset(segment.left + 200, segment.bottom - 20)),
+        ]) {
+          expect(
+            await tester.macCursorAt(at),
+            SystemMouseCursors.text,
+            reason: what,
+          );
+        }
+      },
+      variant: macOnly,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Contracts the layer documents (verify): Cmd press, Shift drag, focus
+  // re-assert, row filter, repaint, heading marks, auto-scroll speed.
+  // -------------------------------------------------------------------------
+  group('documented layer contracts (verify)', () {
+    testWidgets(
+      'a Cmd press and drag from a row is left to the row and never selects across rows',
+      (tester) async {
+        await _wi170Pump(tester, _wi170List);
+        await _wi170FocusRow(tester, 0, 2, local: 1);
+        await _wi170PastDoubleClick(tester);
+        expect(
+          segmentEditingAt(tester, 0).selection,
+          const TextSelection.collapsed(offset: 20),
+        );
+
+        await tester.macHolding([LogicalKeyboardKey.metaLeft], () async {
+          final mouse = await tester.startGesture(
+            _wi170At(tester, 0, 2),
+            kind: PointerDeviceKind.mouse,
+          );
+          await tester.pump();
+          for (var i = 1; i <= 4; i++) {
+            await mouse.moveTo(
+              Offset.lerp(
+                _wi170At(tester, 0, 2),
+                _wi170At(tester, 0, 29),
+                i / 4,
+              )!,
+            );
+            await tester.pump();
+          }
+          await mouse.up();
+          await tester.pump();
+        });
+
+        final selection = segmentEditingAt(tester, 0).selection;
+        expect(
+          selection.end,
+          lessThan(24),
+          reason:
+              'the layer never extends a Cmd drag into the gamma row: '
+              '$selection',
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a Shift drag keeps extending the selection from its base after the Shift press',
+      (tester) async {
+        await _wi170Pump(tester, _wi170List);
+        await _wi170FocusRow(tester, 0, 0, local: 2);
+        await _wi170PastDoubleClick(tester);
+
+        await tester.macHolding([LogicalKeyboardKey.shiftLeft], () async {
+          final mouse = await tester.startGesture(
+            _wi170At(tester, 0, 13),
+            kind: PointerDeviceKind.mouse,
+          );
+          await tester.pump();
+          expect(
+            segmentEditingAt(tester, 0).selection,
+            const TextSelection(baseOffset: 2, extentOffset: 13),
+          );
+          await mouse.moveTo(_wi170At(tester, 0, 29));
+          await tester.pump();
+          expect(
+            segmentEditingAt(tester, 0).selection,
+            const TextSelection(baseOffset: 2, extentOffset: 29),
+          );
+          await mouse.up();
+          await tester.pump();
+        });
+
+        expect(
+          segmentEditingAt(tester, 0).selection,
+          const TextSelection(baseOffset: 2, extentOffset: 29),
+        );
+        _wi170ExpectSlices(tester, 0, [(2, 8), (0, 5), (0, 4), (0, 3), null]);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a Shift click with no row focused focuses a row and keeps the extended range',
+      (tester) async {
+        await _wi170Pump(tester, _wi170List);
+        await _wi170FocusRow(tester, 0, 0, local: 2);
+        await _wi170PastDoubleClick(tester);
+        // Unfocus the rows; the caret stays at 2.
+        await tester.tapAt(
+          tester.getCenter(find.byKey(const Key('wi170-outside'))),
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pump();
+        expect(segmentEditingAt(tester, 0).focusedRow, isNull);
+        expect(segmentEditingAt(tester, 0).selection.baseOffset, 2);
+        await _wi170PastDoubleClick(tester);
+
+        await tester.macClick(_wi170At(tester, 0, 29), shift: true);
+        await tester.pump();
+
+        final handle = segmentEditingAt(tester, 0);
+        expect(handle.focusedRow, isNotNull);
+        expect(
+          handle.selection,
+          const TextSelection(baseOffset: 2, extentOffset: 29),
+        );
+        _wi170ExpectSlices(tester, 0, [(2, 8), (0, 5), (0, 4), (0, 3), null]);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a selection that starts at a row newline paints that row newline mark',
+      (tester) async {
+        await _wi170Pump(tester, _wi170List);
+        await _wi170FocusRow(tester, 0, 0, local: 2);
+        // From the `para one` newline (8) into `beta`.
+        segmentEditingAt(
+          tester,
+          0,
+        ).select(const TextSelection(baseOffset: 8, extentOffset: 21));
+        await tester.pump();
+
+        _wi170ExpectRects(_wi170Marks(tester, 0), [
+          _wi170ExpectedMark(tester, 0, 0, 0),
+          _wi170ExpectedMark(tester, 0, 1, 0),
+        ]);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'the newline marks repaint when the segment selection or the reveal gate changes',
+      (tester) async {
+        await _wi170Pump(tester, _wi170List);
+        await _wi170FocusRow(tester, 0, 0, local: 2);
+        final marks = tester.allRenderObjects
+            .where((o) => o.runtimeType.toString() == '_RenderNewlineMarks')
+            .single;
+        expect(marks.debugNeedsPaint, isFalse);
+
+        segmentEditingAt(
+          tester,
+          0,
+        ).select(const TextSelection(baseOffset: 2, extentOffset: 22));
+        expect(
+          marks.debugNeedsPaint,
+          isTrue,
+          reason: 'a new selection moves the marks',
+        );
+        await tester.pump();
+        expect(marks.debugNeedsPaint, isFalse);
+
+        // Unfocusing the segment closes its reveal gate.
+        FocusManager.instance.primaryFocus!.unfocus();
+        await tester.idle();
+        expect(segmentEditingAt(tester, 0).focusedRow, isNull);
+        expect(
+          marks.debugNeedsPaint,
+          isTrue,
+          reason: 'a closed reveal gate moves line ends',
+        );
+        await tester.pump();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a selected H2 line ends in a mark one H2 column wide and the H2 line tall',
+      (tester) async {
+        // Prose `## Notes\nbody`.
+        await _wi170Pump(tester, '## Notes\nbody');
+        await _wi170FocusRow(tester, 0, 0, local: 0);
+        segmentEditingAt(
+          tester,
+          0,
+        ).select(const TextSelection(baseOffset: 0, extentOffset: 11));
+        await tester.pump();
+
+        final h2 = [
+          for (final r in _wi170SelectionFills(tester, 0))
+            if ((r.width - 10.2).abs() < 0.3) r,
+        ];
+        expect(h2, hasLength(1), reason: '${_wi170SelectionFills(tester, 0)}');
+        expect(h2.single.height, moreOrLessEquals(34, epsilon: 0.5));
+        expect(_wi170Marks(tester, 0), isEmpty, reason: 'no body-size mark');
+      },
+      variant: macOnly,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Auto-scroll zone and speed (verify)
+  // -------------------------------------------------------------------------
+  group('auto-scroll zone and speed (verify)', () {
+    final text = [
+      'intro',
+      for (var i = 0; i < 50; i++) '- item ${i.toString().padLeft(2, '0')}',
+      'outro',
+    ].join('\n');
+
+    /// Presses at the third row, moves past the slop, then to [dy] (global)
+    /// and holds still for [frames] 16 ms frames. Returns the page scroll
+    /// the hold added.
+    Future<double> holdAt(
+      WidgetTester tester,
+      double Function(Rect viewport) dy, {
+      int frames = 10,
+      double startScroll = 0,
+    }) async {
+      await _wi170Pump(tester, text);
+      if (startScroll != 0) {
+        _wi170Scroll(tester).jumpTo(startScroll);
+        await tester.pump();
+      }
+      final viewport = _wi170Viewport(tester);
+      final rows = splitRows(text, atSegmentStart: true);
+      final middle = rows.firstWhere(
+        (row) =>
+            segmentEditingAt(tester, 0).rectForOffset(row.textStart).top >=
+            viewport.center.dy,
+      );
+      final from = _wi170At(tester, 0, middle.textStart + 2);
+      final mouse = await tester.startGesture(
+        from,
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pump();
+      await mouse.moveTo(from + const Offset(0, 6));
+      await tester.pump();
+      await mouse.moveTo(Offset(from.dx, dy(viewport)));
+      await tester.pump();
+      final before = _wi170Scroll(tester).pixels;
+      for (var i = 0; i < frames; i++) {
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      final added = _wi170Scroll(tester).pixels - before;
+      await mouse.up();
+      await tester.pump();
+      return added;
+    }
+
+    testWidgets(
+      'a drag held just outside the edge zone does not scroll the page',
+      (tester) async {
+        expect(await holdAt(tester, (v) => v.bottom - 42), 0);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'the page scrolls at a speed that grows linearly from the zone edge to the page edge',
+      (tester) async {
+        // 1200 px/s x (1 - 20 / 40) for 10 frames of 16 ms: 96 px.
+        expect(
+          await holdAt(tester, (v) => v.bottom - 20),
+          moreOrLessEquals(96, epsilon: 1),
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'the page scrolls at full speed with the drag at or past the page bottom edge',
+      (tester) async {
+        // 1200 px/s for 10 frames of 16 ms: 192 px, capped past the edge.
+        expect(
+          await holdAt(tester, (v) => v.bottom + 20),
+          moreOrLessEquals(192, epsilon: 1),
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets('the page scrolls up at the same speed in the top edge zone', (
+      tester,
+    ) async {
+      expect(
+        await holdAt(tester, (v) => v.top + 20, startScroll: 400),
+        moreOrLessEquals(-96, epsilon: 1),
+      );
+    }, variant: macOnly);
+
+    testWidgets(
+      'auto-scroll stops at the end of the page and the selection reaches the segment end',
+      (tester) async {
+        await holdAt(tester, (v) => v.bottom - 2, frames: 150);
+        final position = _wi170Scroll(tester);
+        expect(position.pixels, position.maxScrollExtent);
+        expect(position.maxScrollExtent, greaterThan(0));
+        expect(segmentEditingAt(tester, 0).selection.extentOffset, text.length);
+      },
+      variant: macOnly,
+    );
   });
 }
