@@ -32,6 +32,7 @@ import 'package:open_memex_app/src/state/editor_controller.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/theme/app_theme.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
+import 'package:open_memex_app/src/widgets/editor/editor_row.dart';
 import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_frame.dart';
@@ -2283,4 +2284,263 @@ void main() {
       },
     );
   });
+
+  // -------------------------------------------------------------------------
+  // Fix round r2 (gate MUTATION survivors on #181): the D9 echo guard, the
+  // unfocused selection painter's watch on a swapped controller or focus
+  // node, and the marker column's single line.
+  // -------------------------------------------------------------------------
+  group('echo guard and row watchers (r2)', () {
+    testWidgets(
+      'a keystroke in a row reports one onContentChanged records one edit and never resets the segment undo',
+      (tester) async {
+        final recorders = _wi167Recorders();
+        final body = await _wi167Pump(tester, _wi167List);
+        await _wi167FocusRow(tester, 0, 1);
+        final resets = _wi167ResetCount(recorders);
+
+        await tester.macEditingValue('az');
+        await tester.pump();
+
+        expect(body.changes, ['para\n- az\n- b\n\nend']);
+        expect(_wi167RecordCount(recorders), 1);
+        expect(
+          _wi167ResetCount(recorders),
+          resets,
+          reason:
+              'the host write of its own edit into the segment controller is '
+              'not an external change (D9), so the undo history is kept',
+        );
+        expect(_wi167Texts(tester, 0), ['para', 'az', 'b', '\nend']);
+      },
+    );
+
+    testWidgets(
+      'an Enter that splits an item row reports one onContentChanged with the exact bytes and leaves every row holding its slice',
+      (tester) async {
+        final recorders = _wi167Recorders();
+        const text = 'intro\n- ab\n- c';
+        final body = await _wi167Pump(tester, text);
+        await _wi167FocusRow(tester, 0, 1, local: 1);
+        final resets = _wi167ResetCount(recorders);
+        final node = FocusManager.instance.primaryFocus;
+
+        // Enter between `a` and `b`: the row field's text becomes `a\nb`.
+        await tester.macEditingValue(
+          'a\nb',
+          selection: const TextSelection.collapsed(offset: 2),
+        );
+        await tester.pump();
+
+        const after = 'intro\n- a\nb\n- c';
+        expect(body.changes, [after]);
+        expect(segmentEditingAt(tester, 0).text, after);
+        final records = [for (final r in recorders) ...r.records];
+        expect(records, hasLength(1));
+        expect(records.single.before, text);
+        expect(records.single.edit.apply(text), after);
+        expect(_wi167ResetCount(recorders), resets);
+        final specs = splitRows(after, atSegmentStart: true);
+        expect(_wi167RowKeys(0), specs.length);
+        for (final (r, spec) in specs.indexed) {
+          expect(
+            _wi167Text(tester, 0, r),
+            after.substring(spec.textStart, spec.textEnd),
+            reason: 'row $r holds its slice of the segment text',
+          );
+        }
+        expect(FocusManager.instance.primaryFocus, same(node));
+        expect(
+          segmentEditingAt(tester, 0).selection,
+          const TextSelection.collapsed(offset: 10),
+        );
+      },
+    );
+
+    testWidgets(
+      'an external write that splits the focused row re-derives the rows with no onContentChanged no recorded edit and one undo reset',
+      (tester) async {
+        final recorders = _wi167Recorders();
+        final body = await _wi167Pump(tester, 'intro\n- ab\n- c');
+        await _wi167FocusRow(tester, 0, 1);
+        final resets = _wi167ResetCount(recorders);
+
+        const server = 'intro\n- a\n- b\n- c';
+        await body.serverWrite(server);
+
+        expect(body.changes, isEmpty);
+        expect(_wi167RecordCount(recorders), 0);
+        expect(_wi167ResetCount(recorders), resets + 1);
+        expect(segmentEditingAt(tester, 0).text, server);
+        expect(_wi167Texts(tester, 0), ['intro', 'a', 'b', 'c']);
+      },
+    );
+
+    testWidgets(
+      'an editor row given a different controller paints that controller selection while unfocused',
+      (tester) async {
+        final a = LivePreviewController(text: 'alpha')
+          ..selection = const TextSelection.collapsed(offset: 0);
+        final b = LivePreviewController(text: 'bravo')
+          ..selection = const TextSelection(baseOffset: 0, extentOffset: 3);
+        final node = FocusNode();
+        addTearDown(a.dispose);
+        addTearDown(b.dispose);
+        addTearDown(node.dispose);
+
+        await tester.pumpWidget(_wi167LoneRow(a, node));
+        expect(
+          tester.renderObject(_wi167Row(0, 0)),
+          isNot(_wi167PaintsSelection),
+          reason: 'a collapsed selection paints nothing',
+        );
+
+        await tester.pumpWidget(_wi167LoneRow(b, node));
+        expect(
+          tester.renderObject(_wi167Row(0, 0)),
+          _wi167PaintsSelection,
+          reason: 'the row watches the new controller, not the old one',
+        );
+
+        b.selection = const TextSelection.collapsed(offset: 1);
+        await tester.pump();
+        expect(
+          tester.renderObject(_wi167Row(0, 0)),
+          isNot(_wi167PaintsSelection),
+        );
+      },
+    );
+
+    testWidgets(
+      'an editor row given a different focus node stops painting the selection once that node has focus',
+      (tester) async {
+        final ctrl = LivePreviewController(text: 'alpha')
+          ..selection = const TextSelection(baseOffset: 1, extentOffset: 4);
+        final first = FocusNode();
+        final second = FocusNode();
+        addTearDown(ctrl.dispose);
+        addTearDown(first.dispose);
+        addTearDown(second.dispose);
+
+        await tester.pumpWidget(_wi167LoneRow(ctrl, first));
+        expect(tester.renderObject(_wi167Row(0, 0)), _wi167PaintsSelection);
+
+        await tester.pumpWidget(_wi167LoneRow(ctrl, second));
+        second.requestFocus();
+        await tester.pump();
+        expect(second.hasFocus, isTrue);
+        expect(first.hasFocus, isFalse);
+        expect(
+          tester.renderObject(_wi167Row(0, 0)),
+          isNot(_wi167PaintsSelection),
+          reason:
+              'the focused field paints its own selection; the row reads the '
+              'new focus node, not the old unfocused one',
+        );
+      },
+    );
+
+    testWidgets(
+      'an editor row rebuilt with the same controller and focus node keeps watching them',
+      (tester) async {
+        final ctrl = LivePreviewController(text: 'alpha')
+          ..selection = const TextSelection.collapsed(offset: 0);
+        final node = FocusNode();
+        addTearDown(ctrl.dispose);
+        addTearDown(node.dispose);
+
+        await tester.pumpWidget(_wi167LoneRow(ctrl, node));
+        await tester.pumpWidget(_wi167LoneRow(ctrl, node, width: 300));
+        expect(
+          tester.renderObject(_wi167Row(0, 0)),
+          isNot(_wi167PaintsSelection),
+        );
+
+        ctrl.selection = const TextSelection(baseOffset: 0, extentOffset: 2);
+        await tester.pump();
+        expect(tester.renderObject(_wi167Row(0, 0)), _wi167PaintsSelection);
+      },
+    );
+
+    testWidgets('a marker wider than its column stays on one line', (
+      tester,
+    ) async {
+      // Unrevealed task columns are 4 mono columns (A2); the source marker
+      // `- [ ] ` is 6, so it overflows the column and is clipped, never
+      // wrapped onto a second line.
+      await _wi167Pump(tester, 'intro\n- [ ] milk\n10. ten');
+      for (final (r, marker) in [(1, '- [ ] '), (2, '10. ')]) {
+        expect(_wi167MarkerText(tester, 0, r), marker);
+        final paragraph = tester.renderObject<RenderParagraph>(
+          find.descendant(
+            of: _wi167Marker(0, r),
+            matching: find.byType(RichText),
+          ),
+        );
+        final boxes = paragraph.getBoxesForSelection(
+          TextSelection(baseOffset: 0, extentOffset: marker.length),
+        );
+        expect(boxes, isNotEmpty);
+        expect(
+          {for (final box in boxes) box.top},
+          hasLength(1),
+          reason: 'every glyph of marker $r sits on the first line',
+        );
+        expect(
+          boxes.every((box) => box.bottom <= _wi167Line),
+          isTrue,
+          reason: 'marker $r stays inside its one item line',
+        );
+      }
+      expect(
+        tester.getSize(_wi167Marker(0, 1)).width,
+        closeTo(4 * _wi167Col, 0.01),
+        reason: 'the task marker is wider than its column',
+      );
+    });
+  });
 }
+
+/// Paints a rect in `OmColors.selection` (an unfocused row's selection).
+PaintPattern get _wi167PaintsSelection => paints
+  ..something(
+    (method, args) =>
+        method == #drawRect &&
+        (args[1] as Paint).color.toARGB32() == OmColors.selection.toARGB32(),
+  );
+
+/// One prose [EditorRow] (segment 0, row 0) of [ctrl] and [node] whose field
+/// paints its own (focused) selection in green, not `OmColors.selection`.
+Widget _wi167LoneRow(
+  LivePreviewController ctrl,
+  FocusNode node, {
+  double width = 400,
+}) => MaterialApp(
+  theme: buildOmTheme(),
+  home: Material(
+    child: Align(
+      alignment: Alignment.topLeft,
+      child: SizedBox(
+        width: width,
+        child: EditorRow(
+          segment: 0,
+          index: 0,
+          kind: RowKind.prose,
+          geometry: null,
+          marker: '',
+          controller: ctrl,
+          focusNode: node,
+          boxes: () => null,
+          field: EditableText(
+            controller: ctrl,
+            focusNode: node,
+            style: const TextStyle(fontSize: 13.5),
+            cursorColor: const Color(0xFF000000),
+            backgroundCursorColor: const Color(0xFF000000),
+            selectionColor: const Color(0xFF00FF00),
+          ),
+        ),
+      ),
+    ),
+  ),
+);
