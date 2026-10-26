@@ -163,8 +163,9 @@ void main() {
       (tester) async {
         final r = await _launchClean(tester);
         await r.placeCaret(0);
-        tester.widget<EditableText>(r.body).controller.selection =
-            const TextSelection(baseOffset: 2, extentOffset: 9);
+        r.bodySegment.select(
+          const TextSelection(baseOffset: 2, extentOffset: 9),
+        );
         await tester.pump();
 
         r.db.serverAppend(

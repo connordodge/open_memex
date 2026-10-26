@@ -13,6 +13,7 @@ import '../support/daily_seed.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
 import '../support/footer_cli_fakes.dart';
+import '../support/segment_editing_finder.dart';
 import '../support/today_cli_fakes.dart';
 
 const _today = '2026-10-03';
@@ -44,13 +45,11 @@ Future<void> _tap(WidgetTester tester, String key) async {
   await pumpFrames(tester);
 }
 
-Finder get _bodyField => find.descendant(
-  of: find.byKey(const Key('editor-body')),
-  matching: find.byType(EditableText),
-);
+/// The editor body field (Key `editor-body`): text segment 0 in the
+/// segmented view, the whole body in Source mode.
+Finder get _bodyField => find.byKey(editorBodyKey);
 
-String _bodyText(WidgetTester tester) =>
-    tester.widget<EditableText>(_bodyField).controller.text;
+String _bodyText(WidgetTester tester) => editorBodyText(tester);
 
 /// Let the editor's 500 ms save debounce (on the harness clock, D14) and any
 /// CLI round trip finish.

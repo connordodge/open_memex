@@ -12,6 +12,7 @@ import '../support/daily_seed.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
 import '../support/footer_cli_fakes.dart';
+import '../support/segment_editing_finder.dart';
 import '../support/today_cli_fakes.dart';
 
 const _today = '2026-10-03';
@@ -106,10 +107,7 @@ void main() {
       final h = await _launch(tester, db, cli);
       h.read(tabsProvider.notifier).openOrFocus(const NoteTab(_earlierId));
       await pumpFrames(tester);
-      final body = find.descendant(
-        of: find.byKey(const Key('editor-body')),
-        matching: find.byType(EditableText),
-      );
+      final body = find.byKey(editorBodyKey);
       await tester.enterText(body, 'Slept badly [[Sleep');
       await tester.pump();
 
@@ -117,10 +115,7 @@ void main() {
 
       expect(cli.callsFor('add'), hasLength(1));
       _expectNotLinkedError(tester, 'this daily note');
-      expect(
-        tester.widget<EditableText>(body).controller.text,
-        'Slept badly [[Sleep',
-      );
+      expect(editorBodyText(tester), 'Slept badly [[Sleep');
       expect(db.footerChips(_earlierId), isEmpty);
 
       await _tap(tester, 'sidebar-mode-topics');

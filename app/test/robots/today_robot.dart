@@ -10,12 +10,14 @@ import 'package:open_memex_app/src/state/settings.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/state/ui_state_store.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
+import 'package:open_memex_app/src/widgets/editor/segment_editing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../support/app_harness.dart';
 import '../support/fake_clock.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
+import '../support/segment_editing_finder.dart';
 
 /// Robot for the launch-on-today journeys (WI #22). Finds widgets by Key:
 /// `daily-date-header`, `daily-today-badge`, `editor-title`, `editor-body`,
@@ -106,21 +108,20 @@ class TodayRobot {
   Finder get todayBadge => find.byKey(const Key('daily-today-badge'));
   Finder get titleField => find.byKey(const Key('editor-title'));
 
-  /// The body's EditableText, under the body field's stable Key.
-  Finder get body => find.descendant(
-    of: find.byKey(const Key('editor-body')),
-    matching: find.byType(EditableText),
-  );
+  /// The body field (Key `editor-body`, the first text segment). Read and
+  /// drive it through [bodySegment].
+  Finder get body => find.byKey(editorBodyKey);
 
-  EditableText get _bodyWidget => tester.widget<EditableText>(body);
+  /// The body field's [SegmentEditing] handle (re-found on every call).
+  SegmentEditing get bodySegment => editorBodySegment(tester);
 
   // ------------------------------------------------------------------ state
 
   TabsState get tabs => h.read(tabsProvider);
   WorkspaceTab? get activeTab => tabs.activeTab;
-  String get bodyText => _bodyWidget.controller.text;
-  TextSelection get bodySelection => _bodyWidget.controller.selection;
-  bool get bodyHasFocus => _bodyWidget.focusNode.hasFocus;
+  String get bodyText => bodySegment.text;
+  TextSelection get bodySelection => bodySegment.selection;
+  bool get bodyHasFocus => bodySegment.focusedRow != null;
 
   List<FakeCliCall> get adds => h.cli.callsFor('add');
   List<FakeCliCall> get updates => h.cli.callsFor('update');

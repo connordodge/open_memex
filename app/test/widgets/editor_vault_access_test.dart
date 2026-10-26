@@ -25,6 +25,7 @@ import '../support/daily_seed.dart';
 import '../support/editor_access_doubles.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
+import '../support/segment_editing_finder.dart';
 import '../support/today_cli_fakes.dart';
 
 const _alphaId = '01J9ALPHA000000000000000078';
@@ -35,10 +36,9 @@ const _today = '2026-10-03';
 Finder _inEditor(Finder f) =>
     find.descendant(of: find.byType(NoteEditor), matching: f);
 
-Finder get _bodyField => find.descendant(
-  of: find.byKey(const Key('editor-body')),
-  matching: find.byType(EditableText),
-);
+/// The editor body field (Key `editor-body`): text segment 0 in the
+/// segmented view, the whole body in Source mode.
+Finder get _bodyField => find.byKey(editorBodyKey);
 
 Future<void> _openNote(
   WidgetTester tester,

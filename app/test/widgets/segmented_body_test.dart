@@ -10,8 +10,15 @@ import 'package:flutter_test/flutter_test.dart';
 import '../robots/segmented_editor_robot.dart';
 import '../support/app_harness.dart';
 import '../support/excerpt_cli_fakes.dart';
+import '../support/segment_editing_finder.dart';
 
 const _hint = 'type [[ to link a note · write markdown…';
+
+/// The text field of text segment [i] (one per segment until rows, C1).
+Finder _textFieldOf(int i) => find.descendant(
+  of: find.byKey(textSegmentKey(i)),
+  matching: find.byType(TextField),
+);
 
 void main() {
   group('saving keeps cards and carets', () {
@@ -21,7 +28,8 @@ void main() {
         final r = await launchSegmented(tester, vault: seedSegmentedVault());
         await r.open(fixtureTopicId);
         await r.focusSegment(0);
-        final field = tester.state<EditableTextState>(r.textSegment(0));
+        final handle = r.segment(0);
+        final field = tester.state(_textFieldOf(0));
 
         tester.testTextInput.updateEditingValue(
           const TextEditingValue(
@@ -39,8 +47,9 @@ void main() {
         );
         expect(r.card(1), findsOneWidget);
         expect(r.segmentText(0), 'Intro lineX\n');
-        // Same field, same focus, caret where it was.
-        expect(tester.state<EditableTextState>(r.textSegment(0)), same(field));
+        // Same segment, same field, same focus, caret where it was.
+        expect(r.segment(0), same(handle));
+        expect(tester.state(_textFieldOf(0)), same(field));
         expect(r.segmentHasFocus(0), isTrue);
         expect(r.segmentSelection(0), const TextSelection.collapsed(offset: 3));
       },
@@ -146,14 +155,23 @@ void main() {
       (tester) async {
         final r = await launchSegmented(tester, vault: seedSegmentedVault());
         await r.open(fixtureTopicId);
-        final body = r.editableUnder(const Key('editor-body'));
+        final body = find.byKey(editorBodyKey);
 
         expect(body, findsOneWidget);
-        expect(tester.element(body), same(tester.element(r.textSegment(0))));
+        expect(editorBodySegment(tester), same(r.segment(0)));
+        expect(
+          find.descendant(of: r.textSegment(0), matching: body),
+          findsOneWidget,
+          reason: 'editor-body is inside text-segment-0',
+        );
 
         await r.open(fixtureDailyId);
         expect(body, findsOneWidget);
-        expect(tester.element(body), same(tester.element(r.textSegment(0))));
+        expect(editorBodySegment(tester), same(r.segment(0)));
+        expect(
+          find.descendant(of: r.textSegment(0), matching: body),
+          findsOneWidget,
+        );
       },
     );
 
@@ -193,9 +211,7 @@ void main() {
         await r.pressKey(LogicalKeyboardKey.enter);
         expect(r.kindChip, findsOneWidget);
 
-        r.segmentWidget(2).controller.selection = const TextSelection.collapsed(
-          offset: 0,
-        );
+        r.segment(2).select(const TextSelection.collapsed(offset: 0));
         await tester.pump();
 
         expect(r.kindChip, findsNothing);

@@ -4,6 +4,7 @@ import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 
 import '../support/journey_harness.dart';
+import '../support/segment_editing_finder.dart';
 
 /// Ids of the fixture vault's notes (test/fixtures/api_v1, vault `seed`).
 const seedLooseThoughtId = '01M5DQAYZ4RYSGA8T0YEEF8QRS';
@@ -63,12 +64,7 @@ class HostedWorkspaceRobot {
   // ------------------------------------------------------------------ state
 
   /// The text of segment [i] of the open note.
-  String segmentText(int i) => tester
-      .widget<EditableText>(
-        find.descendant(of: segment(i), matching: find.byType(EditableText)),
-      )
-      .controller
-      .text;
+  String segmentText(int i) => segmentEditingAt(tester, i).text;
 
   String? get activeTabId => app.read(activeTabProvider)?.tabId;
 
@@ -98,10 +94,7 @@ class HostedWorkspaceRobot {
   /// Types [text] as the open note's first segment and lets the 500 ms save
   /// debounce fire and the save's request answer (or fail).
   Future<void> typeAndSave(String text) async {
-    await tester.enterText(
-      find.descendant(of: segment(0), matching: find.byType(EditableText)),
-      text,
-    );
+    await tester.enterText(segment(0), text);
     await tester.pump();
     await app.advance(const Duration(milliseconds: 600));
   }
@@ -110,14 +103,7 @@ class HostedWorkspaceRobot {
   /// Req 50: not queued, not retried).
   Future<void> newSmartFolder(String name) async {
     await tap(key('topics-new-folder'));
-    await tester.enterText(
-      find.descendant(
-        of: key('folder-name-field'),
-        matching: find.byType(EditableText),
-        matchRoot: true,
-      ),
-      name,
-    );
+    await tester.enterText(key('folder-name-field'), name);
     await tester.pump();
     await tap(key('folder-name-confirm'));
   }

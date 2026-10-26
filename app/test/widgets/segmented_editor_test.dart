@@ -11,6 +11,13 @@ import 'package:open_memex_app/src/widgets/note_editor.dart';
 import '../robots/segmented_editor_robot.dart';
 import '../support/app_harness.dart';
 import '../support/excerpt_cli_fakes.dart';
+import '../support/segment_editing_finder.dart';
+
+/// The text field of text segment [i] (one per segment until rows, C1).
+Finder _textFieldOf(int i) => find.descendant(
+  of: find.byKey(textSegmentKey(i)),
+  matching: find.byType(TextField),
+);
 
 void main() {
   // -------------------------------------------------------------------------
@@ -56,8 +63,14 @@ void main() {
         final r = await launchSegmented(tester, vault: seedSegmentedVault());
         await r.open(fixtureTopicId);
 
-        for (final e in r.editorEditables.evaluate()) {
-          final text = (e.widget as EditableText).controller.text;
+        expect(r.allSegments, hasLength(2));
+        for (final segment in r.allSegments) {
+          expect(segment.text, isNot(contains('![[')), reason: segment.text);
+        }
+        for (final text in renderedEditableTexts(
+          tester,
+          under: find.byType(NoteEditor),
+        )) {
           expect(text, isNot(contains('![[')), reason: text);
         }
       },
@@ -582,7 +595,8 @@ void main() {
         final r = await launchSegmented(tester, vault: seedSegmentedVault());
         await r.open(fixtureTopicId);
         await r.focusSegment(0);
-        final stateBefore = tester.state<EditableTextState>(r.textSegment(0));
+        final handleBefore = r.segment(0);
+        final stateBefore = tester.state(_textFieldOf(0));
 
         tester.testTextInput.updateEditingValue(
           const TextEditingValue(
@@ -592,10 +606,8 @@ void main() {
         );
         await tester.pump(const Duration(milliseconds: 100));
 
-        expect(
-          tester.state<EditableTextState>(r.textSegment(0)),
-          same(stateBefore),
-        );
+        expect(r.segment(0), same(handleBefore));
+        expect(tester.state(_textFieldOf(0)), same(stateBefore));
         expect(r.segmentHasFocus(0), isTrue);
         expect(r.segmentSelection(0), const TextSelection.collapsed(offset: 7));
 
@@ -607,10 +619,8 @@ void main() {
         );
         await tester.pump(const Duration(milliseconds: 100));
 
-        expect(
-          tester.state<EditableTextState>(r.textSegment(0)),
-          same(stateBefore),
-        );
+        expect(r.segment(0), same(handleBefore));
+        expect(tester.state(_textFieldOf(0)), same(stateBefore));
         expect(r.segmentHasFocus(0), isTrue);
         expect(r.segmentSelection(0), const TextSelection.collapsed(offset: 8));
         expect(r.segmentText(0), 'Intro XY line\n');

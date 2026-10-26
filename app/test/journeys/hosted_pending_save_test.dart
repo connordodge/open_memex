@@ -24,6 +24,7 @@ import '../support/daily_seed.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
 import '../support/hosted_notes_fakes.dart';
+import '../support/segment_editing_finder.dart';
 import '../support/today_cli_fakes.dart';
 
 const _planId = '01J9PLANJ000000000000000102';
@@ -311,12 +312,8 @@ void main() {
 
   group('switching tabs while the server cannot be reached (AC6)', () {
     /// Every editable text field the editor shows right now.
-    List<String> shownTexts(WidgetTester tester) => [
-      for (final e in tester.widgetList<EditableText>(
-        find.byType(EditableText),
-      ))
-        e.controller.text,
-    ];
+    List<String> shownTexts(WidgetTester tester) =>
+        renderedEditableTexts(tester);
 
     testWidgets(
       'switching tabs while the server cannot be reached never shows the previous note and never saves it with the other note text',
@@ -388,12 +385,8 @@ void main() {
 
   group('a note loaded before the server became unreachable (#105 AC7)', () {
     /// Every editable text field the editor shows right now.
-    List<String> shownTexts(WidgetTester tester) => [
-      for (final e in tester.widgetList<EditableText>(
-        find.byType(EditableText),
-      ))
-        e.controller.text,
-    ];
+    List<String> shownTexts(WidgetTester tester) =>
+        renderedEditableTexts(tester);
 
     /// The server stops answering reads and writes of the open vault.
     Future<void> serverStops(_Hosted w) async {
