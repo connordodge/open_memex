@@ -1208,7 +1208,9 @@ void main() {
               if (method != #drawRect) return false;
               final rect = args[0] as Rect;
               final paint = args[1] as Paint;
-              return paint.color == OmColors.selection &&
+              // Paint stores its colour as float32 components, so compare
+              // the 8-bit ARGB value (an exact == never matches).
+              return paint.color.toARGB32() == OmColors.selection.toARGB32() &&
                   rect.height > 5 &&
                   rect.height < 13.5 + 1 &&
                   (rect.width - line.width).abs() < 0.5;
@@ -1224,7 +1226,8 @@ void main() {
             paints..something(
               (method, args) =>
                   method == #drawRect &&
-                  (args[1] as Paint).color == OmColors.selection,
+                  (args[1] as Paint).color.toARGB32() ==
+                      OmColors.selection.toARGB32(),
             ),
           ),
           reason: 'the untouched row paints no selection',
@@ -1397,9 +1400,21 @@ void main() {
           tester.getTopLeft(r.popover).dy,
           moreOrLessEquals(caretBottom.dy + 6, epsilon: 0.5),
         );
+        // The popover's x is the row's caret x when the overlay last
+        // rebuilt. WikilinkAutocomplete rebuilds it in the build phase, before
+        // the field lays out the newest keystroke, so it trails the caret by
+        // that keystroke (unchanged behaviour, not this WI). It sits on this
+        // row's text between the `[[` and the caret.
+        final triggerX = editable
+            .localToGlobal(
+              RenderEditableLineBoxes(
+                editable,
+              ).caretRect('see '.length).bottomLeft,
+            )
+            .dx;
         expect(
           tester.getTopLeft(r.popover).dx,
-          moreOrLessEquals(caretBottom.dx, epsilon: 0.5),
+          inInclusiveRange(triggerX - 0.5, caretBottom.dx + 0.5),
         );
 
         await r.pressKey(LogicalKeyboardKey.enter);

@@ -1520,19 +1520,24 @@ void main() {
           ),
         );
         await tester.pump();
+        // TEST-CHANGE (#167): the segment renders as editor rows, the quote
+        // line and the prose line each in its own row's LivePreviewFrame.
         final frameFinder = find.descendant(
           of: find.byKey(textSegmentKey(0)),
           matching: find.byType(LivePreviewFrame),
         );
-        final frame = tester.widget<LivePreviewFrame>(frameFinder);
-        final boxes = frame.boxes!.call()!;
-        double lineMid(int i) {
-          final l = boxes.lines[i];
+        expect(frameFinder, findsNWidgets(2));
+        double lineMid(int row) {
+          final boxes = tester
+              .widget<LivePreviewFrame>(frameFinder.at(row))
+              .boxes!
+              .call()!;
+          final l = boxes.lines.first;
           return boxes.box.localToGlobal(Offset(0, (l.top + l.bottom) / 2)).dy;
         }
 
         final gutter = tester.getRect(find.byKey(const Key('capture-gutter')));
-        final frameRect = tester.getRect(frameFinder);
+        final frameRect = tester.getRect(frameFinder.first);
         final quoteY = lineMid(0);
         final plainY = lineMid(1);
         final px = await _wi165Capture(
@@ -1549,8 +1554,19 @@ void main() {
           isNot(const _Wi165Near(OmColors.surface3)),
           reason: 'the prose line after has no band',
         );
+        // TEST-CHANGE (#167): the prose row's first glyph now starts at the
+        // text column edge while the quote row shows its marker column, so
+        // the last gutter pixel column carries that glyph's anti-aliasing
+        // beside the prose line only. Compare every column but that one, and
+        // check no gutter column beside the quote line is banded.
         for (var x = gutter.left.ceil(); x < gutter.right.floor(); x++) {
           final at = x + 0.5;
+          expect(
+            px.at(Offset(at, quoteY)),
+            isNot(const _Wi165Near(OmColors.surface3)),
+            reason: 'gutter column x $at beside the quote line is not banded',
+          );
+          if (x == gutter.right.floor() - 1) continue;
           expect(
             px.at(Offset(at, quoteY)),
             px.at(Offset(at, plainY)),
@@ -1868,7 +1884,11 @@ void main() {
           vault: seedSegmentedVault(topicBody: _wi165Decorated),
         );
         await r.open(fixtureTopicId);
-        expect(find.byType(LivePreviewDecorations), findsOneWidget);
+        // TEST-CHANGE (#167): one LivePreviewDecorations per editor row.
+        expect(
+          find.byType(LivePreviewDecorations),
+          findsNWidgets(r.segment(0).rowCount),
+        );
         for (final at in ['let a', 'quoted', 'code', '---', 'Outro']) {
           await r.focusSegment(0, offset: _wi165Decorated.indexOf(at));
         }
@@ -1891,10 +1911,19 @@ void main() {
       await r.focusSegment(0, offset: at);
       final edited =
           '${_wi165Decorated.substring(0, at)}2${_wi165Decorated.substring(at)}';
+      // TEST-CHANGE (#167): the focused field is the editor row holding
+      // `1;`, so the text input sends that row's text with the typed `2`.
+      final row = segmentRowFields(r.textSegment(0))
+          .evaluate()
+          .map((e) => e.widget as EditableText)
+          .singleWhere((w) => w.focusNode.hasFocus);
+      final value = row.controller.value;
+      final caret = value.selection.baseOffset;
       tester.testTextInput.updateEditingValue(
         TextEditingValue(
-          text: edited,
-          selection: TextSelection.collapsed(offset: at + 1),
+          text:
+              '${value.text.substring(0, caret)}2${value.text.substring(caret)}',
+          selection: TextSelection.collapsed(offset: caret + 1),
         ),
       );
       await tester.pump();
