@@ -1694,6 +1694,152 @@ void main() {
       },
     );
   });
+
+  // -------------------------------------------------------------------------
+  // Fix round r2 (review-r2): a card row's text lays out with the body
+  // field's even leading, so its glyphs sit where the body row's do; an
+  // empty row keeps one prose line (the r1 ruling).
+  // -------------------------------------------------------------------------
+  group('card row glyphs match the editor body (verify r2)', () {
+    testWidgets(
+      'every card row with text places its glyphs where the editor body row does for every markdown fixture',
+      (tester) async {
+        var compared = 0;
+        for (final MapEntry(key: name, value: text)
+            in markdownFixtures.entries) {
+          final specs = _wi172Specs(text);
+          await _wi172PumpRows(tester, text);
+          final card = <int, _Wi172CardLine>{};
+          for (var r = 0; r < specs.length; r++) {
+            if (specs[r].textLength == 0) continue;
+            final rich = _wi172RowText(_wi172Rows, r);
+            expect(rich, findsOneWidget, reason: '$name card row $r');
+            final p = tester.renderObject<RenderParagraph>(rich);
+            final plain = p.text.toPlainText();
+            card[r] = (
+              plain: plain,
+              glyphs: _wi172GlyphLines(p.getBoxesForSelection, plain.length),
+              height: p.size.height,
+              strut: p.strutStyle,
+            );
+          }
+
+          await _wi172PumpBody(tester, text);
+          for (final MapEntry(
+                key: r,
+                value: (:plain, glyphs: boxes, :height, :strut),
+              )
+              in card.entries) {
+            final why = '$name row $r (${specs[r].kind}) "$plain"';
+            expect(_wi172BodyRow(r), findsOneWidget, reason: '$why: body');
+            final editable = _wi172BodyEditable(tester, r);
+            expect(editable.text!.toPlainText(), plain, reason: '$why: text');
+            expect(
+              strut,
+              editable.strutStyle,
+              reason: '$why: the strut of the body field',
+            );
+            expect(editable.size.height, closeTo(height, 0.01), reason: why);
+            final body = _wi172GlyphLines(
+              editable.getBoxesForSelection,
+              plain.length,
+            );
+            expect(body, hasLength(boxes.length), reason: '$why: extents');
+            for (final (i, box) in body.indexed) {
+              expect(
+                box.top,
+                closeTo(boxes[i].top, 0.01),
+                reason: '$why: glyph extent $i top',
+              );
+              expect(
+                box.bottom,
+                closeTo(boxes[i].bottom, 0.01),
+                reason: '$why: glyph extent $i bottom',
+              );
+            }
+            compared++;
+          }
+        }
+        expect(compared, greaterThanOrEqualTo(100), reason: 'rows compared');
+      },
+    );
+
+    testWidgets(
+      'a card row with text keeps one body line and an empty row stays one prose line under even leading',
+      (tester) async {
+        const text = '- ship A1\n\n> q';
+        final specs = _wi172Specs(text);
+        expect(
+          [for (final s in specs) (s.kind, s.textLength)],
+          [(RowKind.bullet, 7), (RowKind.prose, 0), (RowKind.quote, 1)],
+        );
+        await _wi172PumpRows(tester, text);
+        for (final r in [0, 1, 2]) {
+          final p = tester.renderObject<RenderParagraph>(
+            _wi172RowText(_wi172Rows, r),
+          );
+          expect(
+            p.size.height,
+            closeTo(_wi172Line, _wi172Y),
+            reason: 'row $r is one body line',
+          );
+          final strut = tester
+              .widget<RichText>(_wi172RowText(_wi172Rows, r))
+              .strutStyle!;
+          expect(
+            strut.fontSize,
+            livePreviewStrut().fontSize,
+            reason: 'row $r strut',
+          );
+          expect(strut.height, livePreviewStrut().height, reason: '$r');
+        }
+        final textRow = tester.renderObject<RenderParagraph>(
+          _wi172RowText(_wi172Rows, 0),
+        );
+        final glyph = _wi172GlyphLines(
+          textRow.getBoxesForSelection,
+          'ship A1'.length,
+        ).single;
+        // Even leading splits the line's extra height evenly above and
+        // below the glyphs.
+        expect(
+          glyph.top,
+          closeTo(textRow.size.height - glyph.bottom, 0.5),
+          reason: 'the glyphs sit centred in the line, as in the body',
+        );
+      },
+    );
+  });
+}
+
+/// One card row measured for the body comparison (verify r2).
+typedef _Wi172CardLine = ({
+  String plain,
+  List<({double top, double bottom})> glyphs,
+  double height,
+  StrutStyle? strut,
+});
+
+/// The vertical extents (top, bottom) of a row text's tight glyph boxes
+/// over characters `0..length`, through [boxesFor] (a RenderParagraph's or
+/// a RenderEditable's), one per distinct extent, top to bottom. Run splits
+/// differ between a RichText and a field, so boxes are not compared one by
+/// one.
+List<({double top, double bottom})> _wi172GlyphLines(
+  List<TextBox> Function(TextSelection) boxesFor,
+  int length,
+) {
+  final seen = <String>{};
+  final out = <({double top, double bottom})>[];
+  for (final box in boxesFor(
+    TextSelection(baseOffset: 0, extentOffset: length),
+  )) {
+    final key =
+        '${box.top.toStringAsFixed(2)}/${box.bottom.toStringAsFixed(2)}';
+    if (seen.add(key)) out.add((top: box.top, bottom: box.bottom));
+  }
+  out.sort((a, b) => a.top.compareTo(b.top));
+  return out;
 }
 
 // ------------------------------------------------------------- editor body
