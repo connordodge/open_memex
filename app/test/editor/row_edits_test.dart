@@ -395,6 +395,164 @@ void main() {
     );
   });
 
+  // Contracts the row_edits doc comments promise beyond the AC examples
+  // (verify-mode pins from the implementer handoff).
+  group('documented contracts', () {
+    test('splitItem and shiftEnter on a quote row insert a plain line', () {
+      // R22: no blockquote continuation.
+      _expectCases(const [
+        ('> a|b', '> a\n|b'),
+        ('> q|', '> q\n|'),
+        ('> a|b\r\nc', '> a\r\n|b\r\nc'),
+      ], splitItem);
+      _expectCases(const [('> a|b', '> a\n|b')], shiftEnter);
+    });
+
+    test('enterOnEmpty removes the marker of an empty quote', () {
+      _expectRowCases(const [
+        ('> |', '|'),
+        ('>|', '|'),
+        ('p\n> |\nq', 'p\n|\nq'),
+      ], enterOnEmpty);
+    });
+
+    test('splitItem splits an item whose text is empty', () {
+      _expectCases(const [
+        ('- |', '- \n- |'),
+        ('3. |', '3. \n4. |'),
+        ('- [x] |', '- [x] \n- [ ] |'),
+      ], splitItem);
+    });
+
+    test(
+      'splitItem and shiftEnter split at the text bounds when the caret is outside the item text',
+      () {
+        const text = '  - ab\r\nc';
+        final rows = _rows(text);
+        // In the indentation or marker: the split is at the text start.
+        for (final caret in const [0, 1, 2, 3]) {
+          _expectEdit(
+            text,
+            splitItem(text, rows, 0, caret),
+            '  - \r\n  - |ab\r\nc',
+            why: 'splitItem caret $caret',
+          );
+          _expectEdit(
+            text,
+            shiftEnter(text, rows, 0, caret),
+            '  - \r\n|ab\r\nc',
+            why: 'shiftEnter caret $caret',
+          );
+        }
+        // Inside the terminator: the split is at the text end.
+        _expectEdit(
+          text,
+          splitItem(text, rows, 0, 7),
+          '  - ab\r\n  - |\r\nc',
+          why: 'splitItem in the CRLF',
+        );
+        _expectEdit(
+          text,
+          shiftEnter(text, rows, 0, 7),
+          '  - ab\r\n|\r\nc',
+          why: 'shiftEnter in the CRLF',
+        );
+      },
+    );
+
+    test('splitItem keeps the width of a zero padded number', () {
+      _expectCases(const [
+        ('007. a|', '007. a\n008. |'),
+        ('09. a|b', '09. a\n10. |b'),
+        ('123456789. z|', '123456789. z\n123456790. |'),
+      ], splitItem);
+      _expectSource('  09. x|', '  09. x\n  10. |');
+    });
+
+    test('row edits count offsets in UTF-16 code units', () {
+      // A surrogate pair before the caret: two code units.
+      _expectCases(
+        const [
+          ('- \u{1F600}|x', '- \u{1F600}\n- |x'),
+          ('\u{1F600}\n|b', '\u{1F600}|b'),
+        ],
+        (text, rows, row, caret) {
+          return rows[row].isItem
+              ? splitItem(text, rows, row, caret)
+              : joinPrevious(text, rows, row, caret);
+        },
+      );
+      _expectSource('- [ ] \u{1F600}|', '- [ ] \u{1F600}\n- [ ] |');
+    });
+
+    test('joinPrevious removes a line break that starts the segment', () {
+      _expectCases(const [
+        ('\r\n|b', '|b'),
+        ('\n|b', '|b'),
+        ('\r\n|', '|'),
+      ], joinPrevious);
+    });
+
+    test(
+      'joinPrevious returns null in an item row and away from a line start',
+      () {
+        const text = '- a\n- b\ncd';
+        final rows = _rows(text);
+        final item = rows.indexWhere((r) => r.start == 4);
+        expect(rows[item].isItem, isTrue, reason: 'row $item is `- b`');
+        expect(joinPrevious(text, rows, item, 4), isNull, reason: 'item row');
+        final prose = rows.length - 1;
+        expect(rows[prose].isItem, isFalse);
+        expect(
+          joinPrevious(text, rows, prose, 9),
+          isNull,
+          reason: 'caret between c and d',
+        );
+        expect(
+          joinPrevious(text, rows, prose, 10),
+          isNull,
+          reason: 'caret at the end of cd',
+        );
+      },
+    );
+
+    test('deleteForwardAtEnd joins at the end of a multi line prose row', () {
+      _expectRowCases(const [
+        ('a\nb|\n- c', 'a\nb|c'),
+        ('a\r\nb|\r\n- d', 'a\r\nb|d'),
+      ], deleteForwardAtEnd);
+    });
+
+    test('sourceEnter returns null when the caret is before the line text', () {
+      for (final marked in const [
+        '|- a',
+        '  |- a',
+        '-| a',
+        '1|. x',
+        '- |[ ] t',
+        'x\n  |* a',
+      ]) {
+        expect(_source(marked), isNull, reason: marked);
+      }
+    });
+
+    test(
+      'sourceEnter removes the prefix when the replaced selection leaves only a prefix',
+      () {
+        _expectSource('- |abc|', '|');
+        _expectSource('  - [ ] |x|', '|');
+        _expectSource('- a\n- |b|', '- a\n|');
+        _expectSource('- a\r\n3. |bc|\r\nz', '- a\r\n|\r\nz');
+        _expectSource('- |abc|', '|', backward: true);
+      },
+    );
+
+    test('sourceEnter without the shift argument continues the list', () {
+      final edit = sourceEnter('- a', SegmentSelection.collapsed(3));
+      _expectEdit('- a', edit, '- a\n- |');
+    });
+  });
+
   group('purity (D2)', () {
     test('row_edits imports nothing from package flutter', () {
       // `flutter test` runs with the package root (`app/`) as cwd.

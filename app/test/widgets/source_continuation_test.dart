@@ -217,6 +217,58 @@ void main() {
     await r.waitForSave();
   }, variant: _mac);
 
+  testWidgets('Source mode NumpadEnter continues a list line like Enter', (
+    tester,
+  ) async {
+    final r = await _openSource(tester, '- a');
+    final handled = await tester.sendKeyEvent(LogicalKeyboardKey.numpadEnter);
+    await tester.pump();
+    expect(handled, isTrue);
+    expect(r.sourceText, '- a\n- ');
+    expect(_ctrl(r).selection, const TextSelection.collapsed(offset: 6));
+    await r.waitForSave();
+  }, variant: _mac);
+
+  testWidgets(
+    'Source mode Enter with Cmd Ctrl or Alt held makes no continuation edit',
+    (tester) async {
+      final r = await _openSource(tester, '- a');
+      for (final modifier in const [
+        LogicalKeyboardKey.metaLeft,
+        LogicalKeyboardKey.controlLeft,
+        LogicalKeyboardKey.altLeft,
+      ]) {
+        _ctrl(r).selection = const TextSelection.collapsed(offset: 3);
+        await tester.pump();
+        await tester.sendKeyDownEvent(modifier);
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.sendKeyUpEvent(modifier);
+        await tester.pump();
+        expect(r.sourceText, '- a', reason: '${modifier.keyLabel}+Enter');
+      }
+      await r.waitForSave();
+    },
+    variant: _mac,
+  );
+
+  testWidgets('Source mode keys other than Enter make no continuation edit', (
+    tester,
+  ) async {
+    final r = await _openSource(tester, '- a');
+    for (final key in const [
+      LogicalKeyboardKey.keyB,
+      LogicalKeyboardKey.space,
+      LogicalKeyboardKey.f5,
+    ]) {
+      _ctrl(r).selection = const TextSelection.collapsed(offset: 3);
+      await tester.pump();
+      await tester.sendKeyEvent(key);
+      await tester.pump();
+      expect(r.sourceText, '- a', reason: key.keyLabel);
+    }
+    await r.waitForSave();
+  }, variant: _mac);
+
   testWidgets(
     'Source mode renders the body as one plain mono field with every span in the same style',
     (tester) async {
