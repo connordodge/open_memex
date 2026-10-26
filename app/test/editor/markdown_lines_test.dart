@@ -408,6 +408,20 @@ void main() {
       expect(_kinds('-*-\n--\n**\n__\n-_-'), [_p, _p, _p, _p, _p]);
     });
 
+    test(
+      'a rule line with spaces in it around it or before it is not a rule',
+      () {
+        expect(_kinds('--- \n ***\n___\t\n* * *\n- - -\n_ _ _'), [
+          _p,
+          _p,
+          _p,
+          MdLineKind.bullet,
+          MdLineKind.bullet,
+          _p,
+        ]);
+      },
+    );
+
     test('text then a dash line is a rule not a setext heading', () {
       expect(_kinds('Text\n---'), [_p, MdLineKind.rule]);
     });
