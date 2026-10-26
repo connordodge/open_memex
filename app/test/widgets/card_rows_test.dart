@@ -1523,9 +1523,8 @@ void main() {
         ];
 
         // The editor body keeps the same rows, the blank one included, and
-        // every row with text lays out at the card row's height. (The body
-        // field of an empty row measures 32 px, not one line: reported to
-        // the lead, so the blank row is pinned to one prose line above.)
+        // every row, the blank one included (D22, #189: an empty body row is
+        // one prose line), lays out at the card row's height.
         await _wi172PumpBody(tester, text);
         expect(_wi172BodyRow(b), findsOneWidget, reason: 'body blank row');
         expect(
@@ -1536,7 +1535,6 @@ void main() {
         expect(_wi172BodyRow(specs.length - 1), findsOneWidget);
         expect(_wi172BodyRow(specs.length), findsNothing);
         for (final (r, height) in card) {
-          if (specs[r].textLength == 0) continue;
           expect(
             _wi172BodyFieldHeight(tester, r),
             closeTo(height, 0.01),
@@ -1807,6 +1805,265 @@ void main() {
           closeTo(textRow.size.height - glyph.bottom, 0.5),
           reason: 'the glyphs sit centred in the line, as in the body',
         );
+      },
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Fix round r3 (review-r3, gate MUTATION survivors): the row decoration
+  // cache, the blank-row trim and the line-box adapter's edges.
+  // -------------------------------------------------------------------------
+  group('card row cache and line box edges (verify r3)', () {
+    testWidgets('a card rebuilt with the same text repaints nothing', (
+      tester,
+    ) async {
+      const text = 'x\n> Caret mapping is the risky part.\n- item `code`';
+      await _wi172PumpRows(tester, text);
+      final boundary = tester.renderObject<RenderRepaintBoundary>(
+        find.byKey(_wi172BoundaryKey),
+      );
+      int paints() =>
+          boundary.debugSymmetricPaintCount +
+          boundary.debugAsymmetricPaintCount;
+      boundary.debugResetMetrics();
+      await _wi172PumpRows(tester, text);
+      await tester.pump();
+      expect(paints(), 0, reason: 'same rows, same decorations: no repaint');
+
+      await _wi172PumpRows(tester, 'x\n> Caret mapping is the risky part!');
+      expect(paints(), greaterThan(0), reason: 'a changed row repaints');
+    });
+
+    testWidgets(
+      'a card row that changes only between quote and prose repaints its band',
+      (tester) async {
+        const quoted = '- x\n> Caret mapping is the risky part.';
+        const plain = '- x\nCaret mapping is the risky part.';
+        final q = _wi172Specs(quoted)[1];
+        final p = _wi172Specs(plain)[1];
+        expect((q.kind, p.kind), (RowKind.quote, RowKind.prose));
+        expect(
+          quoted.substring(q.textStart, q.textEnd),
+          plain.substring(p.textStart, p.textEnd),
+          reason: 'the row text is the same',
+        );
+        expect(
+          (q.textStart == 0, p.textStart == 0),
+          (false, false),
+          reason: 'neither row is at the segment start',
+        );
+
+        Future<Color> bandProbe(String text) async {
+          await _wi172PumpRows(tester, text);
+          final rows = tester.getRect(_wi172Rows);
+          final row = tester.getRect(_wi172Row(_wi172Rows, 1));
+          final px = await _wi172Capture(tester, rows.inflate(4));
+          return px.at(Offset(rows.right - 1, row.center.dy));
+        }
+
+        expect(await bandProbe(quoted), _wi172IsColor(OmColors.surface4));
+        expect(
+          await bandProbe(plain),
+          _wi172IsColor(OmColors.surface3),
+          reason: 'quote to prose drops the band',
+        );
+        expect(
+          await bandProbe(quoted),
+          _wi172IsColor(OmColors.surface4),
+          reason: 'prose to quote paints the band again',
+        );
+      },
+    );
+
+    testWidgets(
+      'a card row that changes only its text repaints its decorations',
+      (tester) async {
+        const before = 'plain words';
+        const after = '```\nlet x = 1;\n```';
+        final b = _wi172Specs(before).single;
+        final a = _wi172Specs(after).single;
+        expect((b.kind, a.kind), (RowKind.prose, RowKind.code));
+        expect(
+          (b.textStart == 0, a.textStart == 0),
+          (true, true),
+          reason: 'both rows are at the segment start',
+        );
+
+        Future<Color> codeBoxProbe(String text) async {
+          await _wi172PumpRows(tester, text);
+          final rows = tester.getRect(_wi172Rows);
+          final row = tester.getRect(_wi172Row(_wi172Rows, 0));
+          final px = await _wi172Capture(tester, rows.inflate(4));
+          // The code box's left inset, beside the code line (glyph free).
+          return px.at(Offset(rows.left + 8, row.center.dy));
+        }
+
+        expect(await codeBoxProbe(before), _wi172IsColor(OmColors.surface3));
+        expect(
+          await codeBoxProbe(after),
+          _wi172IsColor(OmColors.surface1),
+          reason: 'the new text paints its code box',
+        );
+      },
+    );
+
+    // The trim keeps every row from the first to the last non-blank row
+    // (the gate's card_rows.dart:69 `>=` to `>` mutant is equivalent: the
+    // trim loop can only reach `last == first` on a non-blank row).
+    for (final (name, text, rows) in [
+      ('a card of an empty text renders no row', '', <int>[]),
+      (
+        'a card of one item and a trailing line break renders only the item',
+        '- a\n',
+        [0],
+      ),
+      (
+        'a card of one item between line breaks renders only the item',
+        '\n- a\n',
+        [1],
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        await _wi172PumpRows(tester, text);
+        final specs = _wi172Specs(text);
+        expect([
+          for (var r = 0; r < specs.length; r++)
+            if (_wi172Row(_wi172Rows, r).evaluate().isNotEmpty) r,
+        ], rows);
+        expect(
+          tester.getSize(_wi172Rows).height,
+          closeTo(rows.length * _wi172Line, _wi172Y),
+        );
+      });
+    }
+
+    testWidgets(
+      'paragraph line boxes measure a paragraph that does not wrap as the paragraph lays it out',
+      (tester) async {
+        const text = 'aaaa bbbb cccc dddd';
+        const width = 10 * 13.5;
+        // softWrap false lays the line out at infinite width unless the
+        // overflow is an ellipsis (as RenderParagraph does). Cards never
+        // ellipsize, so the ellipsis case is not pinned here.
+        for (final overflow in [
+          TextOverflow.clip,
+          TextOverflow.visible,
+          TextOverflow.fade,
+        ]) {
+          await tester.pumpWidget(
+            Directionality(
+              textDirection: TextDirection.ltr,
+              child: Align(
+                alignment: Alignment.topLeft,
+                child: SizedBox(
+                  width: width,
+                  child: RichText(
+                    key: const Key('wi172-nowrap'),
+                    softWrap: false,
+                    overflow: overflow,
+                    text: const TextSpan(
+                      text: text,
+                      style: TextStyle(fontSize: 13.5, height: 1.7),
+                    ),
+                    strutStyle: livePreviewStrut(),
+                  ),
+                ),
+              ),
+            ),
+          );
+          final paragraph = tester.renderObject<RenderParagraph>(
+            find.byKey(const Key('wi172-nowrap')),
+          );
+          final boxes = RenderParagraphLineBoxes(paragraph);
+          final lines = boxes.lines;
+          expect(
+            [for (final l in lines) l.range.start],
+            [0],
+            reason: '$overflow: one line, as the paragraph shows',
+          );
+          expect(lines.single.top, closeTo(0, _wi172Y), reason: '$overflow');
+          expect(
+            lines.single.bottom,
+            closeTo(paragraph.size.height, _wi172Y),
+            reason: '$overflow: the line is the paragraph',
+          );
+          final own = paragraph
+              .getBoxesForSelection(
+                const TextSelection(baseOffset: 0, extentOffset: 4),
+              )
+              .single
+              .toRect();
+          final measured = boxes.boxesFor(const TextRange(start: 0, end: 4));
+          expect(measured, hasLength(1), reason: '$overflow');
+          expect(
+            measured.single.right,
+            closeTo(own.right, 0.01),
+            reason: '$overflow: the first word where the paragraph puts it',
+          );
+          final tail = boxes.boxesFor(
+            TextRange(start: text.length - 4, end: text.length),
+          );
+          expect(
+            tail.single.right,
+            closeTo(text.length * 13.5, 0.01),
+            reason: '$overflow: the line runs past the width unwrapped',
+          );
+        }
+      },
+    );
+
+    // The gate's paragraph_line_boxes.dart:134 `>=` to `>` mutant is
+    // equivalent: at start == text.length the engine's line boundary ends at
+    // text.length, so both paths give text.length.
+    testWidgets(
+      'paragraph line boxes end with an empty line at the text end after a line break',
+      (tester) async {
+        for (final (text, ranges) in [
+          ('', [(0, 0)]),
+          ('a\n', [(0, 1), (2, 2)]),
+          ('a\n\n', [(0, 1), (2, 2), (3, 3)]),
+        ]) {
+          await tester.pumpWidget(
+            Directionality(
+              textDirection: TextDirection.ltr,
+              child: Align(
+                alignment: Alignment.topLeft,
+                child: SizedBox(
+                  width: 400,
+                  child: RichText(
+                    key: const Key('wi172-end'),
+                    text: TextSpan(
+                      text: text,
+                      style: const TextStyle(fontSize: 13.5, height: 1.7),
+                    ),
+                    strutStyle: livePreviewStrut(),
+                  ),
+                ),
+              ),
+            ),
+          );
+          final boxes = RenderParagraphLineBoxes(
+            tester.renderObject<RenderParagraph>(
+              find.byKey(const Key('wi172-end')),
+            ),
+          );
+          final lines = boxes.lines;
+          expect(
+            [for (final l in lines) (l.range.start, l.range.end)],
+            ranges,
+            reason: '"$text"',
+          );
+          expect(
+            lines.last.bottom - lines.last.top,
+            closeTo(_wi172Line, _wi172Y),
+            reason: '"$text": the last line measures a full line',
+          );
+          expect(
+            boxes.caretRect(text.length).top,
+            closeTo(lines.last.top, _wi172Y),
+            reason: '"$text": the caret at the end sits on the last line',
+          );
+        }
       },
     );
   });
