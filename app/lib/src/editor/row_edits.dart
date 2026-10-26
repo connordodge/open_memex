@@ -141,6 +141,88 @@ SegmentEdit? sourceEnter(
   );
 }
 
+/// One edit equal to applying [first] and then [second] (ruling D20: one
+/// user action is one [SegmentEdit], one content report and one undo
+/// record). [second] is expressed on the text after [first] is applied; the
+/// result is one splice on the text before [first], and applying it gives
+/// the same bytes as applying [first] then [second].
+///
+/// The result's selection is [second]'s when it has one; otherwise
+/// [first]'s mapped through [second] (an offset before [second]'s range
+/// keeps its place, one at or after its end shifts by [second]'s length
+/// change, one inside it goes to the end of [second]'s replacement); null
+/// when neither edit has a selection.
+///
+/// When [second]'s range neither overlaps nor touches the text [first]
+/// wrote, the splice must also carry the original text between them, so
+/// [text] (the text before [first]) is required and an [ArgumentError] is
+/// thrown without it. Touching or overlapping edits never read [text].
+SegmentEdit composeEdits(
+  SegmentEdit first,
+  SegmentEdit second, {
+  String? text,
+}) {
+  final written = first.start + first.replacement.length;
+  final firstDelta = first.replacement.length - (first.end - first.start);
+  final touching = second.start <= written && second.end >= first.start;
+  if (!touching && text == null) {
+    throw ArgumentError.value(
+      text,
+      'text',
+      'needed to compose edits that do not touch: $first then $second',
+    );
+  }
+  // `[lo, hi)` in the text after [first]; `lo` is the same offset before it.
+  final lo = first.start < second.start ? first.start : second.start;
+  final hi = written > second.end ? written : second.end;
+
+  // The text after [first] in `[a, b)`.
+  String between(int a, int b) {
+    if (a >= b) return '';
+    final out = StringBuffer();
+    if (a < first.start) {
+      out.write(text!.substring(a, b < first.start ? b : first.start));
+    }
+    final ra = a > first.start ? a : first.start;
+    final rb = b < written ? b : written;
+    if (ra < rb) {
+      out.write(
+        first.replacement.substring(ra - first.start, rb - first.start),
+      );
+    }
+    if (b > written) {
+      final from = a > written ? a : written;
+      out.write(text!.substring(from - firstDelta, b - firstDelta));
+    }
+    return out.toString();
+  }
+
+  final secondDelta = second.replacement.length - (second.end - second.start);
+  int map(int offset) {
+    if (offset < second.start) return offset;
+    if (offset >= second.end) return offset + secondDelta;
+    return second.start + second.replacement.length;
+  }
+
+  final carried = first.selection;
+  return SegmentEdit(
+    start: lo,
+    end: hi - firstDelta,
+    replacement:
+        between(lo, second.start) +
+        second.replacement +
+        between(second.end, hi),
+    selection:
+        second.selection ??
+        (carried == null
+            ? null
+            : SegmentSelection(
+                baseOffset: map(carried.baseOffset),
+                extentOffset: map(carried.extentOffset),
+              )),
+  );
+}
+
 /// Enter at [caret] of the whole Source body [body] with no selection: the
 /// R15 continuation of a bullet, numbered or task line, or the R16 prefix
 /// removal of a line holding only its prefix. Null for every other line and
