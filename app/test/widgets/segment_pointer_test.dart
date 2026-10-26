@@ -15,7 +15,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter/gestures.dart'
-    show PointerDeviceKind, kDoubleTapTimeout;
+    show PointerDeviceKind, kDoubleTapTimeout, kPrecisePointerHitSlop;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -1622,6 +1622,171 @@ void main() {
         expect(position.pixels, position.maxScrollExtent);
         expect(position.maxScrollExtent, greaterThan(0));
         expect(segmentEditingAt(tester, 0).selection.extentOffset, text.length);
+      },
+      variant: macOnly,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Gate r1 MUTATION survivors (verify): leading frontmatter rows, the drag
+  // slop boundary, CRLF line ends and soft wraps.
+  // -------------------------------------------------------------------------
+  group('frontmatter rows, drag slop and line ends (verify)', () {
+    // Leading frontmatter holding a `- a` line. Split at the segment start
+    // (A1), it is two rows: prose `---\n- a\n---\nbody` text [0, 16) and
+    // bullet `b` text [19, 20). Split as if mid segment, `- a` would be an
+    // item row of its own (four rows).
+    const frontmatter = '---\n- a\n---\nbody\n- b';
+
+    testWidgets(
+      'a Shift click with no row focused under leading frontmatter focuses the clicked item row',
+      (tester) async {
+        await _wi170Pump(tester, frontmatter);
+        expect(segmentEditingAt(tester, 0).rowCount, 2);
+        await _wi170FocusRow(tester, 0, 0, local: 13);
+        await _wi170PastDoubleClick(tester);
+        await tester.tapAt(
+          tester.getCenter(find.byKey(const Key('wi170-outside'))),
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pump();
+        expect(segmentEditingAt(tester, 0).focusedRow, isNull);
+        expect(segmentEditingAt(tester, 0).selection.baseOffset, 13);
+        await _wi170PastDoubleClick(tester);
+
+        await tester.macClick(_wi170At(tester, 0, 19), shift: true);
+        await tester.pump();
+
+        final handle = segmentEditingAt(tester, 0);
+        expect(handle.focusedRow, 1);
+        expect(
+          handle.selection,
+          const TextSelection(baseOffset: 13, extentOffset: 19),
+        );
+        _wi170ExpectSlices(tester, 0, [(13, 16), (0, 0)]);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a selection over the newline after leading frontmatter paints that line newline mark',
+      (tester) async {
+        await _wi170Pump(tester, frontmatter);
+        expect(segmentEditingAt(tester, 0).rowCount, 2);
+        await _wi170FocusRow(tester, 0, 1, local: 0);
+        // `b|ody` through the end of `b`: the `body` newline (16) is in.
+        segmentEditingAt(
+          tester,
+          0,
+        ).select(const TextSelection(baseOffset: 13, extentOffset: 20));
+        await tester.pump();
+
+        final lines = RenderEditableLineBoxes(
+          _wi170Editable(tester, 0, 0),
+        ).lines;
+        expect(lines, hasLength(4), reason: 'the frontmatter row lines');
+        _wi170ExpectRects(_wi170Marks(tester, 0), [
+          _wi170ExpectedMark(tester, 0, 0, 3),
+        ]);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a mouse move of exactly the precise pointer slop is still a click and one past it starts a drag',
+      (tester) async {
+        await _wi170Pump(tester, _wi170List);
+        final handle = segmentEditingAt(tester, 0);
+        final e = _wi170Editable(tester, 0, 0);
+        // The first x (in quarter pixels) over the `o` in `para one` where
+        // the nearest offset turns from 5 to 6.
+        final before = handle.rectForOffset(5);
+        final y = before.center.dy;
+        var flip = before.left.floorToDouble();
+        while (e.getPositionForPoint(Offset(flip, y)).offset < 6) {
+          flip += 0.25;
+          expect(flip, lessThan(handle.rectForOffset(6).right));
+        }
+        expect(e.getPositionForPoint(Offset(flip - 1, y)).offset, 5);
+        // Half a pixel before the flip: a move of exactly the slop (exact
+        // in binary) ends half a pixel past it, over offset 6.
+        final x = flip - 0.5;
+
+        final mouse = await tester.startGesture(
+          Offset(x, y),
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pump();
+        expect(
+          segmentEditingAt(tester, 0).selection,
+          const TextSelection.collapsed(offset: 5),
+        );
+
+        await mouse.moveTo(Offset(x + kPrecisePointerHitSlop, y));
+        await tester.pump();
+        expect(
+          segmentEditingAt(tester, 0).selection,
+          const TextSelection.collapsed(offset: 5),
+          reason: 'a move of exactly the slop does not start a drag',
+        );
+
+        await mouse.moveTo(Offset(x + kPrecisePointerHitSlop + 0.5, y));
+        await tester.pump();
+        expect(
+          segmentEditingAt(tester, 0).selection,
+          const TextSelection(baseOffset: 5, extentOffset: 6),
+          reason: 'past the slop the drag selects to the pointer',
+        );
+        await mouse.up();
+        await tester.pump();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a selection over CRLF line ends paints a newline mark at the end of each row whose CRLF it holds',
+      (tester) async {
+        // Rows: prose `para one` [0, 8) + CRLF, bullet `alpha` text
+        // [12, 17) + CRLF, prose `end` [19, 22).
+        const text = 'para one\r\n- alpha\r\nend';
+        await _wi170Pump(tester, text);
+        expect(segmentEditingAt(tester, 0).rowCount, 3);
+        await _wi170FocusRow(tester, 0, 0, local: 2);
+        segmentEditingAt(
+          tester,
+          0,
+        ).select(const TextSelection(baseOffset: 2, extentOffset: 20));
+        await tester.pump();
+
+        _wi170ExpectRects(_wi170Marks(tester, 0), [
+          _wi170ExpectedMark(tester, 0, 0, 0),
+          _wi170ExpectedMark(tester, 0, 1, 0),
+        ]);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a selection over a soft wrapped paragraph paints a newline mark only at its newline and none at a wrap',
+      (tester) async {
+        final paragraph = List.filled(40, 'wrapping').join(' ');
+        final text = '$paragraph\n- alpha';
+        await _wi170Pump(tester, text);
+        expect(segmentEditingAt(tester, 0).rowCount, 2);
+        await _wi170FocusRow(tester, 0, 1, local: 0);
+        segmentEditingAt(
+          tester,
+          0,
+        ).select(TextSelection(baseOffset: 0, extentOffset: text.length));
+        await tester.pump();
+
+        final lines = RenderEditableLineBoxes(
+          _wi170Editable(tester, 0, 0),
+        ).lines;
+        expect(lines.length, greaterThan(1), reason: 'the paragraph wraps');
+        _wi170ExpectRects(_wi170Marks(tester, 0), [
+          _wi170ExpectedMark(tester, 0, 0, lines.length - 1),
+        ]);
       },
       variant: macOnly,
     );
