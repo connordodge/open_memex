@@ -65,10 +65,20 @@ Future<void> _wi172PumpRows(
   WidgetTester tester,
   String text, {
   double width = 736,
+  TextScaler? textScaler,
 }) async {
   tester.view.physicalSize = const Size(1200, 900);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
+  Widget rows = CardRows(key: _wi172RowsKey, text: text);
+  if (textScaler != null) {
+    rows = Builder(
+      builder: (context) => MediaQuery(
+        data: MediaQuery.of(context).copyWith(textScaler: textScaler),
+        child: CardRows(key: _wi172RowsKey, text: text),
+      ),
+    );
+  }
   await tester.pumpWidget(
     MaterialApp(
       theme: buildOmTheme(),
@@ -80,10 +90,7 @@ Future<void> _wi172PumpRows(
             child: Container(
               color: OmColors.surface3,
               padding: const EdgeInsets.all(20),
-              child: SizedBox(
-                width: width,
-                child: CardRows(key: _wi172RowsKey, text: text),
-              ),
+              child: SizedBox(width: width, child: rows),
             ),
           ),
         ),
@@ -1266,5 +1273,204 @@ void main() {
       expect(boxes.offsetAt(const Offset(14, _wi172Line + 5)), 4);
       expect(boxes.offsetAt(const Offset(200, _wi172Line + 5)), 5);
     });
+
+    testWidgets(
+      'paragraph line boxes give a zero width caret and clamp offsets outside the text',
+      (tester) async {
+        final boxes = await pumpParagraph(
+          tester,
+          const TextSpan(text: 'ab\ncd', style: base),
+        );
+        for (final offset in [0, 1, 3, 5]) {
+          expect(boxes.caretRect(offset).width, 0, reason: 'caret $offset');
+        }
+        expect(boxes.caretRect(5).left, closeTo(27, 0.01));
+        expect(boxes.caretRect(5).top, closeTo(_wi172Line, _wi172Y));
+        for (final past in [6, 99]) {
+          expect(
+            boxes.caretRect(past),
+            boxes.caretRect(5),
+            reason: 'offset $past clamps to the text end',
+          );
+        }
+        expect(
+          boxes.caretRect(-3),
+          boxes.caretRect(0),
+          reason: 'a negative offset clamps to the text start',
+        );
+      },
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Verify: contracts documented on CardRows (handoff list)
+  // -------------------------------------------------------------------------
+  group('card row contracts (verify)', () {
+    testWidgets('a card leaves out an empty text and a trailing empty row', (
+      tester,
+    ) async {
+      await _wi172PumpRows(tester, '');
+      expect(_wi172Row(_wi172Rows, 0), findsNothing, reason: 'empty text');
+      expect(tester.getSize(_wi172Rows).height, 0);
+
+      await _wi172PumpRows(tester, '- tried coyote time\n');
+      expect(_wi172Specs('- tried coyote time\n'), hasLength(2));
+      expect(_wi172Row(_wi172Rows, 0), findsOneWidget);
+      expect(
+        _wi172Row(_wi172Rows, 1),
+        findsNothing,
+        reason: 'the empty prose row after the trailing line break',
+      );
+      expect(
+        tester.getSize(_wi172Rows).height,
+        closeTo(_wi172Line, _wi172Y),
+        reason: 'no blank line below the item',
+      );
+    });
+
+    testWidgets(
+      'a card code row keeps the editor code insets over a surface1 code box with a line1 border',
+      (tester) async {
+        const text = 'Intro\n```\nlet x = 1;\n```';
+        await _wi172PumpRows(tester, text);
+        expect(_wi172Specs(text)[1].kind, RowKind.code);
+        final rows = tester.getRect(_wi172Rows);
+        final code = _wi172RowText(_wi172Rows, 1);
+        final text0 = tester.getRect(code);
+        expect(text0.left - rows.left, closeTo(2 * _wi172Col, 0.01));
+        expect(rows.right - text0.right, closeTo(10, 0.01));
+        expect(_wi172Marker(_wi172Rows, 1), findsNothing);
+
+        final row = tester.getRect(_wi172Row(_wi172Rows, 1));
+        final y = _wi172TokenRect(tester, code, 'let').center.dy;
+        final px = await _wi172Capture(tester, rows.inflate(4));
+        // Glyph-free probes: the left and right insets, beside the code line.
+        for (final x in [rows.left + 8, rows.right - 5]) {
+          expect(
+            px.at(Offset(x, y)),
+            _wi172IsColor(OmColors.surface1),
+            reason: 'code box at ($x, $y)',
+          );
+        }
+        expect(
+          px.at(Offset(rows.left + 0.5, y)),
+          _wi172IsColor(Color.alphaBlend(OmColors.line1, OmColors.surface1)),
+          reason: 'the 1 px line1 border inside the box',
+        );
+        expect(
+          px.at(Offset(rows.right - 5, row.bottom + 2)),
+          _wi172IsColor(OmColors.surface3),
+          reason: 'card fill below the code box',
+        );
+      },
+    );
+
+    testWidgets('a card repaints its quote band when its text changes', (
+      tester,
+    ) async {
+      await _wi172PumpRows(tester, '> Caret mapping is the risky part.');
+      var rows = tester.getRect(_wi172Rows);
+      var row = tester.getRect(_wi172Row(_wi172Rows, 0));
+      var px = await _wi172Capture(tester, rows.inflate(4));
+      expect(
+        px.at(Offset(rows.right - 1, row.center.dy)),
+        _wi172IsColor(OmColors.surface4),
+      );
+
+      await _wi172PumpRows(tester, 'Caret mapping is the risky part.');
+      rows = tester.getRect(_wi172Rows);
+      row = tester.getRect(_wi172Row(_wi172Rows, 0));
+      px = await _wi172Capture(tester, rows.inflate(4));
+      expect(
+        px.at(Offset(rows.right - 1, row.center.dy)),
+        _wi172IsColor(OmColors.surface3),
+        reason: 'a prose row has no band',
+      );
+
+      await _wi172PumpRows(
+        tester,
+        '> Caret mapping is the risky part of every card we render here',
+        width: 300,
+      );
+      rows = tester.getRect(_wi172Rows);
+      row = tester.getRect(_wi172Row(_wi172Rows, 0));
+      expect(row.height, greaterThan(2 * _wi172Line - 0.01));
+      px = await _wi172Capture(tester, rows.inflate(4));
+      expect(
+        px.at(Offset(rows.right - 1, row.bottom - 1)),
+        _wi172IsColor(OmColors.surface4),
+        reason: 'the band covers the new wrapped line',
+      );
+    });
+
+    testWidgets('a card quote band follows the text scale of its rows', (
+      tester,
+    ) async {
+      await _wi172PumpRows(
+        tester,
+        'Offsets stayed put.\n> Caret mapping is the risky part.',
+        textScaler: const TextScaler.linear(1.5),
+      );
+      final rows = tester.getRect(_wi172Rows);
+      final quote = _wi172RowText(_wi172Rows, 1);
+      expect(
+        tester.renderObject<RenderParagraph>(quote).textScaler,
+        const TextScaler.linear(1.5),
+        reason: 'card rows take the text scale from MediaQuery',
+      );
+      final row = tester.getRect(_wi172Row(_wi172Rows, 1));
+      expect(row.height, greaterThan(1.4 * _wi172Line));
+      final px = await _wi172Capture(tester, rows.inflate(4));
+      for (final y in [row.top + 1, row.bottom - 1]) {
+        expect(
+          px.at(Offset(rows.right - 1, y)),
+          _wi172IsColor(OmColors.surface4),
+          reason: 'band at y $y of the scaled row',
+        );
+      }
+      expect(
+        px.at(Offset(rows.right - 1, row.top - 2)),
+        _wi172IsColor(OmColors.surface3),
+      );
+    });
+
+    testWidgets(
+      'only the first card row reads leading frontmatter as frontmatter',
+      (tester) async {
+        const text = '---\nk: v\n---\n- item\n---\nk: v\n---';
+        await _wi172PumpRows(tester, text);
+        final specs = _wi172Specs(text);
+        expect(
+          [for (final s in specs) s.kind],
+          [RowKind.prose, RowKind.bullet, RowKind.prose],
+        );
+        List<(String, TextStyle?)> leaves(InlineSpan span) => [
+          for (final l in _wi172Leaves(span)) (l.text, l.own),
+        ];
+        for (final (r, start) in [(0, true), (2, false)]) {
+          final spec = specs[r];
+          final rowText = text.substring(spec.textStart, spec.textEnd);
+          final rendered = leaves(
+            tester.widget<RichText>(_wi172RowText(_wi172Rows, r)).text,
+          );
+          final expected = leaves(
+            buildLivePreviewSpan(
+              rowText,
+              forceHidden: true,
+              atSegmentStart: start,
+            ),
+          );
+          final other = leaves(
+            buildLivePreviewSpan(
+              rowText,
+              forceHidden: true,
+              atSegmentStart: !start,
+            ),
+          );
+          expect(other, isNot(expected), reason: 'row $r: inputs differ');
+          expect(rendered, expected, reason: 'row $r at segment start $start');
+        }
+      },
+    );
   });
 }
