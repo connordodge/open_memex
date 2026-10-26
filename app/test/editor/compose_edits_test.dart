@@ -3,6 +3,8 @@
 // text, so one user action is one SegmentEdit, one content report and one
 // undo record. Every case checks the composed edit byte for byte against
 // applying the two edits one after the other, and checks its selection.
+import 'dart:math';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/editor_rows.dart';
 import 'package:open_memex_app/src/editor/row_edits.dart';
@@ -428,5 +430,262 @@ void main() {
       const second = SegmentEdit(start: 3, end: 3, replacement: 'Y');
       expect(_composeChecked(text, first, second).selection, isNull);
     });
+  });
+  // -------------------------------------------------------------------------
+  // Verify r2: the boundary cases the gate's mutants sit on (second touching
+  // the first written text at either end, at the first start, an empty
+  // insert at a boundary, a second containing the written text) and a
+  // seeded property test over random splice pairs, bytes and selection.
+  // -------------------------------------------------------------------------
+  group('composeEdits boundaries (verify r2)', () {
+    const text = 'abcdefghij';
+
+    for (final (name, first, second, bytes) in [
+      (
+        'a second starting exactly at the first written end composes byte exact',
+        const SegmentEdit(start: 2, end: 4, replacement: 'XYZ'),
+        const SegmentEdit(start: 5, end: 7, replacement: '_'),
+        'abXYZ_ghij',
+      ),
+      (
+        'a second ending exactly at the first written end composes byte exact',
+        const SegmentEdit(start: 2, end: 4, replacement: 'XYZ'),
+        const SegmentEdit(start: 3, end: 5, replacement: '_'),
+        'abX_efghij',
+      ),
+      (
+        'a second starting exactly at the first start composes byte exact',
+        const SegmentEdit(start: 2, end: 4, replacement: 'XYZ'),
+        const SegmentEdit(start: 2, end: 3, replacement: '__'),
+        'ab__YZefghij',
+      ),
+      (
+        'a second ending exactly at the first start composes byte exact',
+        const SegmentEdit(start: 4, end: 6, replacement: 'XY'),
+        const SegmentEdit(start: 1, end: 4, replacement: '_'),
+        'a_XYghij',
+      ),
+      (
+        'an empty insert at the first written end composes byte exact',
+        const SegmentEdit(start: 2, end: 4, replacement: 'XYZ'),
+        const SegmentEdit(start: 5, end: 5, replacement: '+'),
+        'abXYZ+efghij',
+      ),
+      (
+        'an empty insert at the first start composes byte exact',
+        const SegmentEdit(start: 2, end: 4, replacement: 'XYZ'),
+        const SegmentEdit(start: 2, end: 2, replacement: '+'),
+        'ab+XYZefghij',
+      ),
+      (
+        'a second exactly covering the first written text composes byte exact',
+        const SegmentEdit(start: 2, end: 4, replacement: 'XYZ'),
+        const SegmentEdit(start: 2, end: 5, replacement: '!'),
+        'ab!efghij',
+      ),
+      (
+        'a second containing the first written text composes byte exact',
+        const SegmentEdit(start: 3, end: 5, replacement: 'XY'),
+        const SegmentEdit(start: 1, end: 7, replacement: '!'),
+        'a!hij',
+      ),
+      (
+        'a deleting first with an insert at its point composes byte exact',
+        const SegmentEdit(start: 3, end: 6, replacement: ''),
+        const SegmentEdit(start: 3, end: 3, replacement: '+'),
+        'abc+ghij',
+      ),
+      (
+        'an empty first with an empty second gives the identity',
+        const SegmentEdit(start: 4, end: 4, replacement: ''),
+        const SegmentEdit(start: 4, end: 4, replacement: ''),
+        text,
+      ),
+    ]) {
+      test(name, () {
+        final composed = _composeChecked(text, first, second);
+        expect(composed.apply(text), bytes);
+        // Touching edits never need the text, and passing it changes nothing.
+        expect(composeEdits(first, second, text: text), composed);
+      });
+    }
+
+    test(
+      'a first selection at the second range end shifts by the second length change',
+      () {
+        // On `abXYZefghij` the second replaces `Ze` (4..6) with `12345`: the
+        // offset at its end (6) moves to 9, the one before it (3) keeps its
+        // place.
+        const first = SegmentEdit(
+          start: 2,
+          end: 4,
+          replacement: 'XYZ',
+          selection: SegmentSelection(baseOffset: 6, extentOffset: 3),
+        );
+        const second = SegmentEdit(start: 4, end: 6, replacement: '12345');
+        final composed = _composeChecked(text, first, second);
+        expect(composed.apply(text), 'abXY12345fghij');
+        expect(
+          composed.selection,
+          const SegmentSelection(baseOffset: 9, extentOffset: 3),
+        );
+        // At its start (4) the offset goes to the replacement end (9); one
+        // past its end (7) shifts by the length change to 10.
+        const atStart = SegmentEdit(
+          start: 2,
+          end: 4,
+          replacement: 'XYZ',
+          selection: SegmentSelection(baseOffset: 4, extentOffset: 7),
+        );
+        expect(
+          _composeChecked(text, atStart, second).selection,
+          const SegmentSelection(baseOffset: 9, extentOffset: 10),
+        );
+      },
+    );
+
+    test(
+      'a first selection at the end of a deleting second lands where it was cut',
+      () {
+        const first = SegmentEdit(
+          start: 2,
+          end: 2,
+          replacement: 'XY',
+          selection: SegmentSelection.collapsed(6),
+        );
+        // On `abXYcdefghij`: delete `Ycd` (3..6); 6 is the range end.
+        const second = SegmentEdit(start: 3, end: 6, replacement: '');
+        final composed = _composeChecked(text, first, second);
+        expect(composed.apply(text), 'abXefghij');
+        expect(composed.selection, const SegmentSelection.collapsed(3));
+      },
+    );
+  });
+
+  group('composeEdits property (verify r2)', () {
+    test(
+      'seeded random splice pairs compose to the bytes and selection of applying both',
+      () {
+        final random = Random(169);
+        const alphabet = 'ab\n- [x]\r';
+        String word(int max) => String.fromCharCodes([
+          for (var i = random.nextInt(max + 1); i > 0; i--)
+            alphabet.codeUnitAt(random.nextInt(alphabet.length)),
+        ]);
+        // A random offset in 0..length, biased to the edges that matter.
+        int pick(int length, List<int> edges) {
+          if (random.nextInt(3) == 0) return random.nextInt(length + 1);
+          final edge = edges[random.nextInt(edges.length)];
+          return (edge + random.nextInt(3) - 1).clamp(0, length);
+        }
+
+        SegmentSelection? selection(int length, List<int> edges) =>
+            random.nextInt(4) == 0
+            ? null
+            : SegmentSelection(
+                baseOffset: pick(length, edges),
+                extentOffset: pick(length, edges),
+              );
+
+        // [offset] after [edit], as the composeEdits doc states it for a
+        // first selection mapped through a second without one.
+        int mapThrough(int offset, SegmentEdit edit) {
+          if (offset < edit.start) return offset;
+          if (offset >= edit.end) {
+            return offset + edit.replacement.length - (edit.end - edit.start);
+          }
+          return edit.start + edit.replacement.length;
+        }
+
+        final seen = <String, int>{};
+        for (var i = 0; i < 4000; i++) {
+          final base = word(10);
+          final s1 = random.nextInt(base.length + 1);
+          final e1 = s1 + random.nextInt(base.length - s1 + 1);
+          final w1 = random.nextInt(5) == 0 ? '' : word(4);
+          final written = s1 + w1.length;
+          final first = SegmentEdit(
+            start: s1,
+            end: e1,
+            replacement: w1,
+            selection: selection(base.length - (e1 - s1) + w1.length, [
+              s1,
+              written,
+            ]),
+          );
+          final mid = first.apply(base);
+          final edges = [0, s1, written, mid.length];
+          var s2 = pick(mid.length, edges);
+          var e2 = pick(mid.length, edges);
+          if (e2 < s2) (s2, e2) = (e2, s2);
+          final w2 = random.nextInt(4) == 0 ? '' : word(3);
+          final second = SegmentEdit(
+            start: s2,
+            end: e2,
+            replacement: w2,
+            selection: random.nextInt(3) == 0
+                ? selection(mid.length - (e2 - s2) + w2.length, [
+                    s2,
+                    s2 + w2.length,
+                  ])
+                : null,
+          );
+          final kind = s2 == e2 && w2.isEmpty
+              ? 'identity'
+              : s2 > written || e2 < s1
+              ? 'disjoint'
+              : s2 == written || e2 == s1
+              ? 'adjacent'
+              : s2 >= s1 && e2 <= written
+              ? 'nested'
+              : s2 <= s1 && e2 >= written
+              ? 'containing'
+              : 'overlapping';
+          seen[kind] = (seen[kind] ?? 0) + 1;
+
+          final why = '$first then $second on ${base.codeUnits}';
+          final want = second.apply(mid);
+          final composed = composeEdits(first, second, text: base);
+          expect(composed.apply(base), want, reason: why);
+          expect(composed.apply(base).codeUnits, want.codeUnits, reason: why);
+          if (s2 <= written && e2 >= s1) {
+            expect(composeEdits(first, second), composed, reason: why);
+          } else {
+            expect(
+              () => composeEdits(first, second),
+              throwsArgumentError,
+              reason: why,
+            );
+          }
+          final carried = first.selection;
+          final wantSelection =
+              second.selection ??
+              (carried == null
+                  ? null
+                  : SegmentSelection(
+                      baseOffset: mapThrough(carried.baseOffset, second),
+                      extentOffset: mapThrough(carried.extentOffset, second),
+                    ));
+          expect(composed.selection, wantSelection, reason: why);
+          // The composed range lies in the original text.
+          expect(composed.start, inInclusiveRange(0, base.length), reason: why);
+          expect(
+            composed.end,
+            inInclusiveRange(composed.start, base.length),
+            reason: why,
+          );
+        }
+        for (final kind in [
+          'identity',
+          'disjoint',
+          'adjacent',
+          'nested',
+          'containing',
+          'overlapping',
+        ]) {
+          expect(seen[kind], greaterThan(20), reason: '$kind cases: $seen');
+        }
+      },
+    );
   });
 }

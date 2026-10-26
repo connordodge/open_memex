@@ -2042,4 +2042,99 @@ void main() {
       variant: macOnly,
     );
   });
+  // -------------------------------------------------------------------------
+  // Verify r2: the gate's surviving keyboard mutants.
+  // -------------------------------------------------------------------------
+  group('gate r2 contracts (verify)', () {
+    testWidgets(
+      'Shift Option Left back over a base at the next row line start stops at the base instead of passing it',
+      (tester) async {
+        // Rows: bullet `ab` 0..5 (text 2..4), bullet `cd` 5..9 (text 7..9).
+        // A whole-line selection of row 1 starts at its line start (5),
+        // before the marker, so the word step from its text start (7) to
+        // the previous row's end (4) passes the base.
+        final body = await _wi169Pump(tester, '- ab\n- cd');
+        await _wi169Focus(tester, 9);
+        _wi169Seg(
+          tester,
+        ).select(const TextSelection(baseOffset: 5, extentOffset: 9));
+        await tester.pump();
+
+        await _wi169Press(
+          tester,
+          LogicalKeyboardKey.arrowLeft,
+          shift: true,
+          alt: true,
+        );
+        expect(
+          _wi169Seg(tester).selection,
+          const TextSelection(baseOffset: 5, extentOffset: 7),
+        );
+
+        await _wi169Press(
+          tester,
+          LogicalKeyboardKey.arrowLeft,
+          shift: true,
+          alt: true,
+        );
+        expect(
+          _wi169Seg(tester).selection,
+          const TextSelection.collapsed(offset: 5),
+          reason: 'stops at the base, not at the previous row end (4)',
+        );
+        expect(_wi169Seg(tester).text, '- ab\n- cd');
+        expect(body.changes, isEmpty);
+      },
+      variant: macOnly,
+    );
+
+    for (final (name, forward, local) in [
+      (
+        'Down in the frame an edit adds a row below and before it is laid out moves natively in the focused row',
+        true,
+        4,
+      ),
+      (
+        'Up in the frame an edit adds a row below and before it is laid out moves natively in the focused row',
+        false,
+        0,
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        // Rows: bullet `abcd` text 2..6. The edit adds `- ef` below and
+        // keeps the caret at 4; until the next frame the new row has no
+        // layout, so the rows have no line boxes and the key goes to the
+        // focused field's own vertical action.
+        await _wi169Pump(tester, '- abcd');
+        await _wi169Focus(tester, 4);
+        _wi169View(tester).applyEdit(
+          const SegmentEdit(
+            start: 6,
+            end: 6,
+            replacement: '\n- ef',
+            selection: SegmentSelection.collapsed(4),
+          ),
+        );
+        expect(_wi169View(tester).lineBoxes(), isNull);
+
+        await _wi169Invoke(
+          tester,
+          ExtendSelectionVerticallyToAdjacentLineIntent(
+            forward: forward,
+            collapseSelection: true,
+          ),
+        );
+        await tester.pump();
+
+        expect(_wi169Seg(tester).text, '- abcd\n- ef');
+        expect(_wi169Seg(tester).focusedRow, 0);
+        expect(
+          _wi169FieldSelection(),
+          TextSelection.collapsed(offset: local),
+          reason: 'the single-line field moved its caret to its line edge',
+        );
+        expect(_wi169Caret(tester), 2 + local);
+      }, variant: macOnly);
+    }
+  });
 }
