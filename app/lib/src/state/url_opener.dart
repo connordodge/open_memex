@@ -19,11 +19,12 @@ abstract interface class UrlOpener {
 class SystemUrlOpener implements UrlOpener {
   SystemUrlOpener({UrlProcessRunner? run}) : _run = run ?? Process.run;
 
-  // ignore: unused_field
   final UrlProcessRunner _run;
 
   @override
-  Future<void> open(String url) => throw UnimplementedError();
+  Future<void> open(String url) async {
+    await _run('/usr/bin/open', [url]);
+  }
 }
 
 /// The app's [UrlOpener]. Tests override it with a fake.

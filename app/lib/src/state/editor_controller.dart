@@ -311,7 +311,12 @@ class EditorController extends StateNotifier<EditorStateValue> {
   /// does nothing. Synchronous: the save captures the editor's state before
   /// it first awaits, so a caller may switch notes right after (D14, B3
   /// Cmd+click).
-  void flushPendingSave() => throw UnimplementedError();
+  void flushPendingSave() {
+    final pending = _debounce;
+    if (pending == null || !pending.isActive) return;
+    pending.cancel();
+    unawaited(_save());
+  }
 
   void _scheduleSave() {
     _debounce?.cancel();
