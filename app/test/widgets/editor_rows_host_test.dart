@@ -518,7 +518,10 @@ void main() {
           6: '> ',
           7: '- ',
         };
+        // TEST-CHANGE (#168): the column shows the marker source only while
+        // revealed (caret on the line, segment focused), so focus each row.
         for (final MapEntry(key: r, value: marker) in markers.entries) {
+          await _wi167FocusRow(tester, 0, r);
           expect(_wi167MarkerText(tester, 0, r), marker, reason: 'row $r');
           expect(_wi167MarkerColors(tester, 0, r), {
             OmColors.fg2,
@@ -1698,6 +1701,8 @@ void main() {
         expect(_wi167Texts(tester, 0), ['intro', 'milk', 'end']);
         expect(_wi167Ctrl(tester, 0, 1), same(ctrl));
         expect(_wi167Ctrl(tester, 0, 1).taskDone, isTrue);
+        // TEST-CHANGE (#168): the marker source shows only while revealed.
+        await _wi167FocusRow(tester, 0, 1);
         expect(_wi167MarkerText(tester, 0, 1), '- [x] ');
         final records = [for (final r in recorders) ...r.records];
         expect(records, hasLength(1));
