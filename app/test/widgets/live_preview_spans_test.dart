@@ -1156,6 +1156,68 @@ void main() {
       });
       _expectHiddenRange(span, q, _range(q, '**'));
     });
+
+    test('quote text with taskDone stays italic fg1 and is not struck', () {
+      // Pack #164 decision 3: on a quote row a done-task rule does not apply.
+      const q = 'keep **it** short';
+      final span = _build(q, itemText: true, quote: true, taskDone: true);
+      for (final r in [
+        _range(q, 'keep '),
+        _range(q, 'it'),
+        _range(q, ' short'),
+      ]) {
+        _eachStyle(span, q, r, (s, why) {
+          expect(s.fontStyle, FontStyle.italic, reason: why);
+          expect(s.color, OmColors.fg1, reason: why);
+          expect(_has(s, TextDecoration.lineThrough), isFalse, reason: why);
+        });
+      }
+    });
+
+    test(
+      'a backslash escape keeps its backslash and escaped character visible as plain text',
+      () {
+        // Spec R5: the escaped character shows literally and the backslash
+        // stays visible, on and off the caret line.
+        const text =
+            r'a \*not italic\* and \*\*not bold\*\* b'
+            '\nother';
+        final line = (0, text.indexOf('\n'));
+        for (final caret in [0, text.length]) {
+          final span = _build(text, selection: _caret(caret));
+          _expectPlainRange(span, text, line);
+        }
+      },
+    );
+
+    test(
+      'hidden markers stay zero width under a base style with letter spacing',
+      () {
+        // B4 cards and hosts pass their own base style; a hidden marker must
+        // not keep the base letter spacing as width.
+        const text = '# H **b** [[T|a]] [l](u)\nother';
+        final span = buildLivePreviewSpan(
+          text,
+          style: _base().copyWith(letterSpacing: 1.5),
+          selection: _caret(text.length),
+        );
+        for (final r in [
+          _range(text, '# '),
+          _range(text, '**'),
+          _range(text, '**', nth: 1),
+          _range(text, '[[T|'),
+          _range(text, ']]'),
+          _range(text, '[', nth: 2),
+          _range(text, '](u)'),
+        ]) {
+          _expectHiddenRange(span, text, r);
+        }
+        expect(
+          _width(span, text.indexOf('H'), text.indexOf('H') + 1),
+          greaterThan(1),
+        );
+      },
+    );
   });
 
   group('fenced code (AC9)', () {
@@ -1380,5 +1442,18 @@ void main() {
         );
       },
     );
+
+    test('the strut uses the body mono face', () {
+      // The strut sets the minimum line from the body face, so heading and
+      // body heights do not depend on the platform default font.
+      final c = LivePreviewController(text: 'x');
+      addTearDown(c.dispose);
+      final strut = c.strutStyle!;
+      final body = OmType.mono(size: 13.5);
+      expect(strut.fontFamily, body.fontFamily);
+      expect(strut.fontFamily, isNotNull);
+      expect(strut.fontFamilyFallback, body.fontFamilyFallback);
+      expect(strut.fontSize, 13.5);
+    });
   });
 }
