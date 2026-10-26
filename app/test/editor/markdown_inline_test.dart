@@ -1229,6 +1229,605 @@ void main() {
     });
   });
 
+  group('documented contracts (verify)', () {
+    test('a lone carriage return is ordinary text inside a line', () {
+      expect(_describe(tokenizeInline('*a\rb*')), [
+        [
+          InlineTokenKind.italic,
+          [0, 5],
+          [
+            [0, 1],
+            [4, 5],
+          ],
+          [1, 4],
+        ],
+      ]);
+      expect(_describe(tokenizeInline('`a\rb`')), [
+        [
+          InlineTokenKind.codeSpan,
+          [0, 5],
+          [
+            [0, 1],
+            [4, 5],
+          ],
+          [1, 4],
+        ],
+      ]);
+      // A trailing lone CR with no LF after it stays on the line.
+      expect(_describe(tokenizeInline('*a*\r')), [
+        [
+          InlineTokenKind.italic,
+          [0, 3],
+          [
+            [0, 1],
+            [2, 3],
+          ],
+          [1, 2],
+        ],
+      ]);
+      // The CR of a CRLF pair belongs to no line: the code span is not
+      // closed by a backtick after the CR.
+      _expectNoTokens('`a\r\n`');
+      expect(_describe(tokenizeInline('\r\n`b`')), [
+        [
+          InlineTokenKind.codeSpan,
+          [2, 5],
+          [
+            [2, 3],
+            [4, 5],
+          ],
+          [3, 4],
+        ],
+      ]);
+    });
+
+    test('tokens on many lines carry absolute offsets per line', () {
+      final tokens = tokenizeInline('*a*\n\n**b**\n`c`\r\n[[d]]');
+      expect(tokens.map((t) => [t.kind, _pair(t.span)]), [
+        [
+          InlineTokenKind.italic,
+          [0, 3],
+        ],
+        [
+          InlineTokenKind.bold,
+          [5, 10],
+        ],
+        [
+          InlineTokenKind.codeSpan,
+          [11, 14],
+        ],
+        [
+          InlineTokenKind.wikilink,
+          [16, 21],
+        ],
+      ]);
+    });
+
+    test('emphasis and strike open and close at the line edges only', () {
+      // Line start and line end count as whitespace for flanking.
+      expect(tokenizeInline('x\n_a_\ny').map((t) => _pair(t.span)), [
+        [2, 5],
+      ]);
+      expect(tokenizeInline('* a*').map((t) => t.kind), isEmpty);
+      expect(tokenizeInline('*a *').map((t) => t.kind), isEmpty);
+      expect(tokenizeInline('~~ a~~').map((t) => t.kind), isEmpty);
+      expect(tokenizeInline('~~a ~~').map((t) => t.kind), isEmpty);
+      expect(tokenizeInline('a~~b~~c').map((t) => t.kind), [
+        InlineTokenKind.strike,
+      ]);
+    });
+
+    test('strike needs runs of exactly two tildes', () {
+      _expectNoTokens('~s~');
+      _expectNoTokens('~~~s~~~');
+      _expectNoTokens('~~s~~~');
+      expect(_describe(tokenizeInline('~~a~~ ~~b~~')), [
+        [
+          InlineTokenKind.strike,
+          [0, 5],
+          [
+            [0, 2],
+            [3, 5],
+          ],
+          [2, 3],
+        ],
+        [
+          InlineTokenKind.strike,
+          [6, 11],
+          [
+            [6, 8],
+            [9, 11],
+          ],
+          [8, 9],
+        ],
+      ]);
+    });
+
+    test('nested emphasis splits a triple run into bold and italic', () {
+      expect(_describe(tokenizeInline('***a* b**')), [
+        [
+          InlineTokenKind.bold,
+          [0, 9],
+          [
+            [0, 2],
+            [7, 9],
+          ],
+          [2, 7],
+        ],
+        [
+          InlineTokenKind.italic,
+          [2, 5],
+          [
+            [2, 3],
+            [4, 5],
+          ],
+          [3, 4],
+        ],
+      ]);
+      expect(_describe(tokenizeInline('***a** b*')), [
+        [
+          InlineTokenKind.italic,
+          [0, 9],
+          [
+            [0, 1],
+            [8, 9],
+          ],
+          [1, 8],
+        ],
+        [
+          InlineTokenKind.bold,
+          [1, 6],
+          [
+            [1, 3],
+            [4, 6],
+          ],
+          [3, 4],
+        ],
+      ]);
+      expect(_describe(tokenizeInline('**a *b* c**')), [
+        [
+          InlineTokenKind.bold,
+          [0, 11],
+          [
+            [0, 2],
+            [9, 11],
+          ],
+          [2, 9],
+        ],
+        [
+          InlineTokenKind.italic,
+          [4, 7],
+          [
+            [4, 5],
+            [6, 7],
+          ],
+          [5, 6],
+        ],
+      ]);
+    });
+
+    test('a closer pairs with the nearest opener of its own character', () {
+      expect(_describe(tokenizeInline('*a _b* c_')), [
+        [
+          InlineTokenKind.italic,
+          [0, 6],
+          [
+            [0, 1],
+            [5, 6],
+          ],
+          [1, 5],
+        ],
+      ]);
+      expect(_describe(tokenizeInline('*a* *b*')), [
+        [
+          InlineTokenKind.italic,
+          [0, 3],
+          [
+            [0, 1],
+            [2, 3],
+          ],
+          [1, 2],
+        ],
+        [
+          InlineTokenKind.italic,
+          [4, 7],
+          [
+            [4, 5],
+            [6, 7],
+          ],
+          [5, 6],
+        ],
+      ]);
+      // The closer takes the nearest opener; the leftover stars stay literal.
+      expect(_describe(tokenizeInline('*a **b*')), [
+        [
+          InlineTokenKind.italic,
+          [4, 7],
+          [
+            [4, 5],
+            [6, 7],
+          ],
+          [5, 6],
+        ],
+      ]);
+      // A bracket inside link text moves the link to the inner bracket.
+      final inner = tokenizeInline('[a[b](u)').single as LinkToken;
+      expect(_pair(inner.span), [2, 8]);
+    });
+
+    test('the rule of three keeps both way runs from pairing', () {
+      // `**` between letters can open and close; 1 + 2 is a multiple of 3.
+      expect(_describe(tokenizeInline('*foo**bar*')), [
+        [
+          InlineTokenKind.italic,
+          [0, 10],
+          [
+            [0, 1],
+            [9, 10],
+          ],
+          [1, 9],
+        ],
+      ]);
+      // Both lengths multiples of 3 may pair.
+      expect(
+        tokenizeInline('***a***b***').first.kind,
+        InlineTokenKind.boldItalic,
+      );
+      // 2 + 2 is not a multiple of 3, so the both way run pairs.
+      expect(_describe(tokenizeInline('**a**b**')), [
+        [
+          InlineTokenKind.bold,
+          [0, 5],
+          [
+            [0, 2],
+            [3, 5],
+          ],
+          [2, 3],
+        ],
+      ]);
+    });
+
+    test('underscores flank punctuation as CommonMark does', () {
+      expect(tokenizeInline('(_a_)').map((t) => _pair(t.span)), [
+        [1, 4],
+      ]);
+      expect(tokenizeInline('"_a_".').map((t) => _pair(t.span)), [
+        [1, 4],
+      ]);
+      expect(tokenizeInline('«_a_»').map((t) => _pair(t.span)), [
+        [1, 4],
+      ]);
+      expect(tokenizeInline('—_a_—').map((t) => _pair(t.span)), [
+        [1, 4],
+      ]);
+      expect(tokenizeInline('、_a_。').map((t) => _pair(t.span)), [
+        [1, 4],
+      ]);
+      // A star before punctuation and after a letter cannot open.
+      _expectNoTokens('a*"b"*');
+      expect(tokenizeInline(' *"b"* ').map((t) => _pair(t.span)), [
+        [1, 6],
+      ]);
+      // Non-breaking and ideographic spaces are whitespace for flanking.
+      _expectNoTokens('* a*');
+      _expectNoTokens('*a　*');
+      _expectNoTokens('*a *');
+    });
+
+    test('escapes need ascii punctuation and stay out of code spans', () {
+      _expectNoTokens(r'\a');
+      _expectNoTokens(r'trailing \');
+      _expectNoTokens('\\\u{1F600}');
+      // An escaped backtick opens nothing.
+      expect(_describe(tokenizeInline(r'\`a`')), [
+        [
+          InlineTokenKind.escape,
+          [0, 2],
+          <List<int>>[],
+          [1, 2],
+        ],
+      ]);
+      // A backslash inside a code span is literal; the span still closes.
+      expect(_describe(tokenizeInline(r'`a\`')), [
+        [
+          InlineTokenKind.codeSpan,
+          [0, 4],
+          [
+            [0, 1],
+            [3, 4],
+          ],
+          [1, 3],
+        ],
+      ]);
+      for (final c in r'!"#$%&()*+,-./:;<=>?@[\]^_`{|}~'.split('')) {
+        final tokens = tokenizeInline('x\\$c');
+        expect(tokens.map((t) => t.kind), [
+          InlineTokenKind.escape,
+        ], reason: 'escape of $c');
+        expect(_pair(tokens.single.span), [1, 3], reason: 'escape of $c');
+      }
+    });
+
+    test('an escaped delimiter cannot open or close emphasis', () {
+      expect(tokenizeInline(r'*a\*').map((t) => t.kind), [
+        InlineTokenKind.escape,
+      ]);
+      expect(tokenizeInline(r'\**a*').map((t) => t.kind), [
+        InlineTokenKind.escape,
+        InlineTokenKind.italic,
+      ]);
+      expect(_pair(tokenizeInline(r'\**a*')[1].span), [2, 5]);
+      expect(tokenizeInline(r'\~~a~~').map((t) => t.kind), [
+        InlineTokenKind.escape,
+      ]);
+      expect(tokenizeInline(r'\_a_').map((t) => t.kind), [
+        InlineTokenKind.escape,
+      ]);
+    });
+
+    test('a backslash before a wikilink leaves the wikilink whole', () {
+      expect(_describe(tokenizeInline(r'\[[a]]')), [
+        [
+          InlineTokenKind.wikilink,
+          [1, 6],
+          [
+            [1, 3],
+            [4, 6],
+          ],
+          [3, 4],
+        ],
+      ]);
+      // The escaped char is the bang of a transclusion: no escape token.
+      expect(tokenizeInline(r'\![[2026-09-05#^ab]]').map((t) => t.kind), [
+        InlineTokenKind.transclusion,
+      ]);
+    });
+
+    test('links need text and a url and reject brackets and parens', () {
+      for (final input in [
+        '[](u)',
+        '[t]()',
+        '[t](a(b)',
+        '[t](a\tb)',
+        '[t] (u)',
+        '[t](u',
+        '[[a]](u)',
+        '[t](`u`)',
+      ]) {
+        expect(
+          tokenizeInline(input).where((t) => t.kind == InlineTokenKind.link),
+          isEmpty,
+          reason: input,
+        );
+      }
+      // The first bracket that cannot open moves the search on.
+      final later = tokenizeInline('[a [b](u)').single as LinkToken;
+      expect(_pair(later.span), [3, 9]);
+      expect(later.url, 'u');
+    });
+
+    test('link text may hold escapes code spans and emphasis', () {
+      expect(_describe(tokenizeInline(r'[a\]b](u)')), [
+        [
+          InlineTokenKind.link,
+          [0, 9],
+          [
+            [0, 1],
+            [5, 9],
+          ],
+          [1, 5],
+        ],
+        [
+          InlineTokenKind.escape,
+          [2, 4],
+          <List<int>>[],
+          [3, 4],
+        ],
+      ]);
+      expect(_describe(tokenizeInline('[a `b]` c](u)')), [
+        [
+          InlineTokenKind.link,
+          [0, 13],
+          [
+            [0, 1],
+            [9, 13],
+          ],
+          [1, 9],
+        ],
+        [
+          InlineTokenKind.codeSpan,
+          [3, 7],
+          [
+            [3, 4],
+            [6, 7],
+          ],
+          [4, 6],
+        ],
+      ]);
+      expect(_describe(tokenizeInline('[*a*](u)')), [
+        [
+          InlineTokenKind.link,
+          [0, 8],
+          [
+            [0, 1],
+            [4, 8],
+          ],
+          [1, 4],
+        ],
+        [
+          InlineTokenKind.italic,
+          [1, 4],
+          [
+            [1, 2],
+            [3, 4],
+          ],
+          [2, 3],
+        ],
+      ]);
+      // Emphasis around a link nests the link in its content.
+      expect(_describe(tokenizeInline('**[t](u)**')), [
+        [
+          InlineTokenKind.bold,
+          [0, 10],
+          [
+            [0, 2],
+            [8, 10],
+          ],
+          [2, 8],
+        ],
+        [
+          InlineTokenKind.link,
+          [2, 8],
+          [
+            [2, 3],
+            [4, 8],
+          ],
+          [3, 4],
+        ],
+      ]);
+    });
+
+    test('escapes inside a link url give no token', () {
+      final tokens = tokenizeInline(r'[t](a\)b)');
+      expect(tokens.map((t) => t.kind), [InlineTokenKind.link]);
+      final link = tokens.single as LinkToken;
+      expect(link.url, r'a\)b');
+      expect(_pair(link.urlRange), [4, 8]);
+      expect(_pair(link.span), [0, 9]);
+      final escapedParen = tokenizeInline(r'[t](a\(b)').single as LinkToken;
+      expect(escapedParen.url, r'a\(b');
+      final escapedSpace = tokenizeInline(r'[t](a\*b)').single as LinkToken;
+      expect(escapedSpace.url, r'a\*b');
+    });
+
+    test('an escaped bracket or paren cannot open a link', () {
+      expect(
+        tokenizeInline(r'\[t](u)').where((t) => t.kind == InlineTokenKind.link),
+        isEmpty,
+      );
+      expect(
+        tokenizeInline(r'[t]\(u)').where((t) => t.kind == InlineTokenKind.link),
+        isEmpty,
+      );
+    });
+
+    test('images give no token and stay opaque to emphasis', () {
+      expect(_describe(tokenizeInline('*![a*b](c*d)*')), [
+        [
+          InlineTokenKind.italic,
+          [0, 13],
+          [
+            [0, 1],
+            [12, 13],
+          ],
+          [1, 12],
+        ],
+      ]);
+      // A bang after the line start that is escaped is no image.
+      expect(tokenizeInline(r'\![t](u)').map((t) => t.kind), [
+        InlineTokenKind.escape,
+        InlineTokenKind.link,
+      ]);
+      expect(tokenizeInline('a ![t](u) [v](w)').map((t) => t.kind), [
+        InlineTokenKind.link,
+      ]);
+    });
+
+    test('wikilinks and transclusions are opaque to emphasis around them', () {
+      expect(_describe(tokenizeInline('**[[a]]**')), [
+        [
+          InlineTokenKind.bold,
+          [0, 9],
+          [
+            [0, 2],
+            [7, 9],
+          ],
+          [2, 7],
+        ],
+        [
+          InlineTokenKind.wikilink,
+          [2, 7],
+          [
+            [2, 4],
+            [5, 7],
+          ],
+          [4, 5],
+        ],
+      ]);
+      // A star inside the wikilink cannot close the outer star.
+      expect(tokenizeInline('*a [[b*]]').map((t) => t.kind), [
+        InlineTokenKind.wikilink,
+      ]);
+      expect(tokenizeInline('_x ![[2026-09-05#^ab]] y_').map((t) => t.kind), [
+        InlineTokenKind.italic,
+        InlineTokenKind.transclusion,
+      ]);
+    });
+
+    test(
+      'wikilinks and transclusions are found in every gap between code spans',
+      () {
+        expect(
+          tokenizeInline(
+            '[[a]] `x` ![[2026-09-05#^ab]] [[b]] `y` [[c]]',
+          ).map((t) => [t.kind, _pair(t.span)]),
+          [
+            [
+              InlineTokenKind.wikilink,
+              [0, 5],
+            ],
+            [
+              InlineTokenKind.codeSpan,
+              [6, 9],
+            ],
+            [
+              InlineTokenKind.transclusion,
+              [10, 29],
+            ],
+            [
+              InlineTokenKind.wikilink,
+              [30, 35],
+            ],
+            [
+              InlineTokenKind.codeSpan,
+              [36, 39],
+            ],
+            [
+              InlineTokenKind.wikilink,
+              [40, 45],
+            ],
+          ],
+        );
+        final tr =
+            tokenizeInline('[[a]]![[2026-09-05#^ab..^cd]]').last
+                as TransclusionLinkToken;
+        expect(tr.date, '2026-09-05');
+        expect(_pairs(tr.markers), [
+          [5, 8],
+          [18, 29],
+        ]);
+      },
+    );
+
+    test('code span closers skip longer and shorter backtick runs', () {
+      expect(_describe(tokenizeInline('`a``b`')), [
+        [
+          InlineTokenKind.codeSpan,
+          [0, 6],
+          [
+            [0, 1],
+            [5, 6],
+          ],
+          [1, 5],
+        ],
+      ]);
+      // An unclosed run is literal and later spans still match.
+      expect(tokenizeInline('``` `a`').map((t) => _pair(t.span)), [
+        [4, 7],
+      ]);
+    });
+  });
+
   group('InlineRange', () {
     test('InlineRange has value semantics and range helpers', () {
       final start = int.parse('2');
@@ -1257,6 +1856,15 @@ void main() {
       expect(r.overlaps(InlineRange(0, 2)), isFalse);
       expect(r.overlaps(InlineRange(3, 3)), isFalse);
       expect(InlineRange(start, 2).overlaps(InlineRange(0, 9)), isFalse);
+    });
+
+    test('ranges and tokens print their kind and offsets', () {
+      expect(InlineRange(int.parse('2'), 5).toString(), 'InlineRange(2, 5)');
+      expect(
+        tokenizeInline('x *a*').single.toString(),
+        'InlineToken(italic, InlineRange(2, 5), markers: '
+        '[InlineRange(2, 3), InlineRange(4, 5)], content: InlineRange(3, 4))',
+      );
     });
   });
 }
