@@ -248,6 +248,16 @@ int _wi169NearestOn(WidgetTester tester, int from, _Wi169Line line) {
   return boxes.offsetAt(Offset(x, line.middle));
 }
 
+/// Invokes [intent] from the focused row field, as a platform shortcut or
+/// text system selector does (macOS sends only some of the intents' shapes;
+/// the overrides take every shape the field can receive).
+Future<void> _wi169Invoke(WidgetTester tester, Intent intent) async {
+  final context = FocusManager.instance.primaryFocus?.context;
+  if (context == null) throw TestFailure('no text field has focus');
+  Actions.invoke(context, intent);
+  await tester.pump();
+}
+
 void main() {
   holdFontFetches();
 
@@ -1372,6 +1382,589 @@ void main() {
         );
         expect(r.segment(0).focusedRow, 2);
         await r.waitForSave();
+      },
+      variant: macOnly,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Contracts the implementer handoff listed as unpinned (verify mode)
+  // -------------------------------------------------------------------------
+  group('unpinned contracts (verify)', () {
+    for (final (name, key, alt, offset, row) in [
+      (
+        'Left over a selection across rows collapses it to its start in the row it started in',
+        LogicalKeyboardKey.arrowLeft,
+        false,
+        3,
+        0,
+      ),
+      (
+        'Right over a selection across rows collapses it to its end and focuses that row',
+        LogicalKeyboardKey.arrowRight,
+        false,
+        8,
+        1,
+      ),
+      (
+        'Option Left over a selection across rows collapses it to its start',
+        LogicalKeyboardKey.arrowLeft,
+        true,
+        3,
+        0,
+      ),
+      (
+        'Option Right over a selection across rows collapses it to its end',
+        LogicalKeyboardKey.arrowRight,
+        true,
+        8,
+        1,
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final body = await _wi169Pump(tester, '- ab\n- cd\ne');
+        await _wi169Focus(tester, 3);
+        _wi169Seg(
+          tester,
+        ).select(const TextSelection(baseOffset: 3, extentOffset: 8));
+        await tester.pump();
+
+        await _wi169Press(tester, key, alt: alt);
+
+        expect(
+          _wi169Seg(tester).selection,
+          TextSelection.collapsed(offset: offset),
+        );
+        expect(_wi169Seg(tester).focusedRow, row);
+        expect(
+          _wi169FieldSelection(),
+          TextSelection.collapsed(offset: offset - (row == 0 ? 2 : 7)),
+        );
+        expect(_wi169Seg(tester).text, '- ab\n- cd\ne');
+        expect(body.changes, isEmpty);
+      }, variant: macOnly);
+    }
+
+    testWidgets(
+      'Left over a selection inside one row collapses it to its start natively',
+      (tester) async {
+        await _wi169Pump(tester, '- abcd\n- ef');
+        await _wi169Focus(tester, 3);
+        _wi169Seg(
+          tester,
+        ).select(const TextSelection(baseOffset: 3, extentOffset: 5));
+        await tester.pump();
+
+        await _wi169Press(tester, LogicalKeyboardKey.arrowLeft);
+
+        expect(_wi169Caret(tester), 3);
+        expect(_wi169Seg(tester).focusedRow, 0);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'Up and Down over a selection across rows collapse from its start and end and stop at the segment edges',
+      (tester) async {
+        // Rows: bullet `abcd` text 2..6, `efgh` 9..13, `ijkl` 16..20.
+        await _wi169Pump(tester, '- abcd\n- efgh\n- ijkl');
+        final third = _wi169RowLines(tester, 2).single;
+        final down = _wi169NearestOn(tester, 11, third);
+        expect(down, inInclusiveRange(16, 20));
+
+        await _wi169Focus(tester, 4);
+        _wi169Seg(
+          tester,
+        ).select(const TextSelection(baseOffset: 4, extentOffset: 11));
+        await tester.pump();
+        await _wi169Press(tester, LogicalKeyboardKey.arrowDown);
+        expect(_wi169Caret(tester), down);
+        expect(_wi169Seg(tester).focusedRow, 2);
+
+        // Over a selection reaching the first line, Up goes to the segment
+        // start; reaching the last line, Down goes to the segment end.
+        _wi169Seg(
+          tester,
+        ).select(const TextSelection(baseOffset: 11, extentOffset: 4));
+        await tester.pump();
+        await _wi169Press(tester, LogicalKeyboardKey.arrowUp);
+        expect(_wi169Caret(tester), 2);
+        expect(_wi169Seg(tester).focusedRow, 0);
+
+        _wi169Seg(
+          tester,
+        ).select(const TextSelection(baseOffset: 11, extentOffset: 18));
+        await tester.pump();
+        await _wi169Press(tester, LogicalKeyboardKey.arrowDown);
+        expect(_wi169Caret(tester), 20);
+        expect(_wi169Seg(tester).focusedRow, 2);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'Shift Down and Shift Up over a selection across rows extend from its extent and stop at the segment edges keeping focus',
+      (tester) async {
+        await _wi169Pump(tester, '- abcd\n- efgh\n- ijkl');
+        final third = _wi169RowLines(tester, 2).single;
+        final down = _wi169NearestOn(tester, 11, third);
+        await _wi169Focus(tester, 4);
+        _wi169Seg(
+          tester,
+        ).select(const TextSelection(baseOffset: 4, extentOffset: 11));
+        await tester.pump();
+
+        await _wi169Press(tester, LogicalKeyboardKey.arrowDown, shift: true);
+        expect(
+          _wi169Seg(tester).selection,
+          TextSelection(baseOffset: 4, extentOffset: down),
+        );
+        expect(_wi169Seg(tester).focusedRow, 0, reason: 'spans rows');
+
+        await _wi169Press(tester, LogicalKeyboardKey.arrowDown, shift: true);
+        expect(
+          _wi169Seg(tester).selection,
+          const TextSelection(baseOffset: 4, extentOffset: 20),
+        );
+        expect(_wi169Seg(tester).focusedRow, 0);
+
+        _wi169Seg(
+          tester,
+        ).select(const TextSelection(baseOffset: 11, extentOffset: 4));
+        await tester.pump();
+        await _wi169Press(tester, LogicalKeyboardKey.arrowUp, shift: true);
+        expect(
+          _wi169Seg(tester).selection,
+          const TextSelection(baseOffset: 11, extentOffset: 2),
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'Down over a selection across rows ending at a wrapped line start goes to the line below that line',
+      (tester) async {
+        await _wi169Pump(tester, '- top\n- $_wi169Long\n- end');
+        final lines = _wi169RowLines(tester, 1);
+        expect(lines.length, greaterThanOrEqualTo(3));
+        final from = lines[1].range.start;
+        final expected = _wi169NearestOn(tester, from, lines[2]);
+        expect(expected, greaterThanOrEqualTo(lines[2].range.start));
+
+        await _wi169Focus(tester, 3);
+        _wi169Seg(
+          tester,
+        ).select(TextSelection(baseOffset: 3, extentOffset: from));
+        await tester.pump();
+        await _wi169Press(tester, LogicalKeyboardKey.arrowDown);
+
+        expect(_wi169Caret(tester), expected);
+        expect(_wi169Seg(tester).focusedRow, 1);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'Up and Down in a single line row with no row beyond move the caret natively to the row text start and end',
+      (tester) async {
+        await _wi169Pump(tester, '- abcd');
+        await _wi169Focus(tester, 4);
+        await _wi169Press(tester, LogicalKeyboardKey.arrowUp);
+        expect(_wi169Caret(tester), 2);
+        await _wi169Press(tester, LogicalKeyboardKey.arrowDown);
+        expect(_wi169Caret(tester), 6);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'Cmd Left and Cmd Right over a selection across rows collapse to the visual line start of its start and end of its end',
+      (tester) async {
+        // Rows: bullet `ab cd` text 2..7, bullet `ef gh` text 10..15.
+        await _wi169Pump(tester, '- ab cd\n- ef gh');
+        await _wi169Focus(tester, 4);
+        _wi169Seg(
+          tester,
+        ).select(const TextSelection(baseOffset: 4, extentOffset: 12));
+        await tester.pump();
+        await _wi169Press(tester, LogicalKeyboardKey.arrowLeft, meta: true);
+        expect(_wi169Caret(tester), 2);
+        expect(_wi169Seg(tester).focusedRow, 0);
+
+        _wi169Seg(
+          tester,
+        ).select(const TextSelection(baseOffset: 4, extentOffset: 12));
+        await tester.pump();
+        await _wi169Press(tester, LogicalKeyboardKey.arrowRight, meta: true);
+        expect(_wi169Caret(tester), 15);
+        expect(_wi169Seg(tester).focusedRow, 1);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'Cmd Right over a selection across rows ending at a wrapped line start goes to the end of that line',
+      (tester) async {
+        await _wi169Pump(tester, '- top\n- $_wi169Long\n- end');
+        final lines = _wi169RowLines(tester, 1);
+        expect(lines.length, greaterThanOrEqualTo(3));
+        final from = lines[1].range.start;
+
+        await _wi169Focus(tester, 3);
+        _wi169Seg(
+          tester,
+        ).select(TextSelection(baseOffset: 3, extentOffset: from));
+        await tester.pump();
+        await _wi169Press(tester, LogicalKeyboardKey.arrowRight, meta: true);
+
+        final end = _wi169Caret(tester);
+        expect(end, greaterThan(from));
+        expect(end, lessThanOrEqualTo(lines[1].range.end));
+        expect(_wi169Seg(tester).focusedRow, 1);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'Shift Cmd Left and Shift Cmd Right over a selection across rows expand it to the visual line edges',
+      (tester) async {
+        await _wi169Pump(tester, '- ab cd\n- ef gh');
+        await _wi169Focus(tester, 4);
+        _wi169Seg(
+          tester,
+        ).select(const TextSelection(baseOffset: 12, extentOffset: 4));
+        await tester.pump();
+        await _wi169Press(
+          tester,
+          LogicalKeyboardKey.arrowRight,
+          shift: true,
+          meta: true,
+        );
+        expect(
+          _wi169Seg(tester).selection,
+          const TextSelection(baseOffset: 4, extentOffset: 15),
+        );
+        expect(_wi169Seg(tester).focusedRow, 0, reason: 'spans rows');
+
+        _wi169Seg(
+          tester,
+        ).select(const TextSelection(baseOffset: 4, extentOffset: 12));
+        await tester.pump();
+        await _wi169Press(
+          tester,
+          LogicalKeyboardKey.arrowLeft,
+          shift: true,
+          meta: true,
+        );
+        expect(
+          _wi169Seg(tester).selection,
+          const TextSelection(baseOffset: 12, extentOffset: 2),
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'Shift Cmd Left inside one row expands natively to the row text start',
+      (tester) async {
+        await _wi169Pump(tester, '- ab cd\n- ef gh');
+        await _wi169Focus(tester, 5);
+        await _wi169Press(
+          tester,
+          LogicalKeyboardKey.arrowLeft,
+          shift: true,
+          meta: true,
+        );
+        final sel = _wi169Seg(tester).selection;
+        expect((sel.start, sel.end), (2, 5));
+        expect(_wi169Seg(tester).focusedRow, 0);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'Shift Cmd Up over a forward selection across rows expands it from its end to the segment start',
+      (tester) async {
+        await _wi169Pump(tester, '- ab cd\n- ef gh');
+        await _wi169Focus(tester, 4);
+        _wi169Seg(
+          tester,
+        ).select(const TextSelection(baseOffset: 4, extentOffset: 12));
+        await tester.pump();
+        await _wi169Press(
+          tester,
+          LogicalKeyboardKey.arrowUp,
+          shift: true,
+          meta: true,
+        );
+        expect(
+          _wi169Seg(tester).selection,
+          const TextSelection(baseOffset: 12, extentOffset: 2),
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'Shift Option Right and Shift Option Left over a selection across rows step by words inside the extent row',
+      (tester) async {
+        // Rows: bullet `ab` text 2..4, `cdxy ef` text 7..14, `gh` 17..19.
+        await _wi169Pump(tester, '- ab\n- cdxy ef\n- gh');
+        await _wi169Focus(tester, 4);
+        _wi169Seg(
+          tester,
+        ).select(const TextSelection(baseOffset: 4, extentOffset: 8));
+        await tester.pump();
+
+        await _wi169Press(
+          tester,
+          LogicalKeyboardKey.arrowRight,
+          shift: true,
+          alt: true,
+        );
+        expect(
+          _wi169Seg(tester).selection,
+          const TextSelection(baseOffset: 4, extentOffset: 11),
+        );
+
+        await _wi169Press(
+          tester,
+          LogicalKeyboardKey.arrowLeft,
+          shift: true,
+          alt: true,
+        );
+        expect(
+          _wi169Seg(tester).selection,
+          const TextSelection(baseOffset: 4, extentOffset: 7),
+        );
+        expect(_wi169Seg(tester).focusedRow, 0);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'Shift Right over a selection across rows steps one character inside the extent row',
+      (tester) async {
+        await _wi169Pump(tester, '- ab\n- cdxy ef');
+        await _wi169Focus(tester, 4);
+        _wi169Seg(
+          tester,
+        ).select(const TextSelection(baseOffset: 4, extentOffset: 8));
+        await tester.pump();
+        await _wi169Press(tester, LogicalKeyboardKey.arrowRight, shift: true);
+        expect(
+          _wi169Seg(tester).selection,
+          const TextSelection(baseOffset: 4, extentOffset: 9),
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'Shift Left from a row text start extends into the previous row and keeps focus in the row it started in',
+      (tester) async {
+        await _wi169Pump(tester, '- ab\n- cd');
+        await _wi169Focus(tester, 7);
+        await _wi169Press(tester, LogicalKeyboardKey.arrowLeft, shift: true);
+        expect(
+          _wi169Seg(tester).selection,
+          const TextSelection(baseOffset: 7, extentOffset: 4),
+        );
+        expect(_wi169Seg(tester).focusedRow, 1);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'the extend by word intent of other platforms over a selection across rows steps by a word inside the extent row',
+      (tester) async {
+        await _wi169Pump(tester, '- ab\n- cdxy ef');
+        await _wi169Focus(tester, 4);
+        _wi169Seg(
+          tester,
+        ).select(const TextSelection(baseOffset: 4, extentOffset: 8));
+        await tester.pump();
+        await _wi169Invoke(
+          tester,
+          const ExtendSelectionToNextWordBoundaryIntent(
+            forward: true,
+            collapseSelection: false,
+          ),
+        );
+        expect(
+          _wi169Seg(tester).selection,
+          const TextSelection(baseOffset: 4, extentOffset: 11),
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'the extend to document end intent of other platforms keeps the base of a backward selection across rows',
+      (tester) async {
+        await _wi169Pump(tester, '- ab\n- cd\n- ef');
+        await _wi169Focus(tester, 3);
+        _wi169Seg(
+          tester,
+        ).select(const TextSelection(baseOffset: 8, extentOffset: 3));
+        await tester.pump();
+        await _wi169Invoke(
+          tester,
+          const ExtendSelectionToDocumentBoundaryIntent(
+            forward: true,
+            collapseSelection: false,
+          ),
+        );
+        expect(
+          _wi169Seg(tester).selection,
+          const TextSelection(baseOffset: 8, extentOffset: 14),
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'the extend to line end intent of other platforms over a selection across rows extends from its extent to the end of its visual line',
+      (tester) async {
+        await _wi169Pump(tester, '- $_wi169Long\n- end');
+        final rows = _wi169Rows(tester);
+        final lines = _wi169RowLines(tester, 0);
+        expect(lines.length, greaterThanOrEqualTo(2));
+        await _wi169Focus(tester, rows[1].textStart);
+        _wi169Seg(tester).select(
+          TextSelection(baseOffset: rows[1].textStart + 1, extentOffset: 4),
+        );
+        await tester.pump();
+        await _wi169Invoke(
+          tester,
+          const ExtendSelectionToLineBreakIntent(
+            forward: true,
+            collapseSelection: false,
+          ),
+        );
+        final sel = _wi169Seg(tester).selection;
+        expect(sel.baseOffset, rows[1].textStart + 1);
+        expect(sel.extentOffset, greaterThan(4));
+        expect(sel.extentOffset, lessThanOrEqualTo(lines.first.range.end));
+        expect(sel.extentOffset, lessThan(rows[0].textEnd));
+      },
+      variant: macOnly,
+    );
+
+    for (final (name, alt, meta) in [
+      ('Cmd Enter in an item row does not split it', false, true),
+      ('Option Enter in an item row does not split it', true, false),
+    ]) {
+      testWidgets(name, (tester) async {
+        final body = await _wi169Pump(tester, '- ab');
+        await _wi169Focus(tester, 3);
+        await _wi169Press(
+          tester,
+          LogicalKeyboardKey.enter,
+          alt: alt,
+          meta: meta,
+          platform: false,
+        );
+        expect(_wi169Seg(tester).text, '- ab');
+        expect(_wi169Seg(tester).rowCount, 1);
+        expect(body.changes, isEmpty);
+      }, variant: macOnly);
+    }
+
+    testWidgets('numpad Enter inside a bullet item splits it like Enter', (
+      tester,
+    ) async {
+      await _wi169Pump(tester, '- ab');
+      await _wi169Focus(tester, 3);
+      final handled = await _wi169Press(tester, LogicalKeyboardKey.numpadEnter);
+      expect(handled, isTrue);
+      expect(_wi169Seg(tester).text, '- a\n- b');
+      expect(_wi169Caret(tester), 6);
+      expect(_wi169Seg(tester).focusedRow, 1);
+    }, variant: macOnly);
+
+    testWidgets(
+      'Enter with a selection inside one item deletes it then splits the item at its start',
+      (tester) async {
+        final body = await _wi169Pump(tester, '- abcd');
+        await _wi169Focus(tester, 3);
+        _wi169Seg(
+          tester,
+        ).select(const TextSelection(baseOffset: 3, extentOffset: 5));
+        await tester.pump();
+
+        final handled = await _wi169Press(tester, LogicalKeyboardKey.enter);
+
+        expect(handled, isTrue);
+        expect(_wi169Seg(tester).text, '- a\n- d');
+        expect(_wi169Caret(tester), 6);
+        expect(_wi169Seg(tester).focusedRow, 1);
+        expect(body.changes.last, '- a\n- d');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'Enter with a selection inside one prose row leaves the platform newline over it',
+      (tester) async {
+        await _wi169Pump(tester, 'abcd\n- x');
+        await _wi169Focus(tester, 1);
+        _wi169Seg(
+          tester,
+        ).select(const TextSelection(baseOffset: 1, extentOffset: 3));
+        await tester.pump();
+
+        final handled = await _wi169Press(tester, LogicalKeyboardKey.enter);
+
+        expect(handled, isFalse);
+        expect(_wi169Seg(tester).text, 'a\nd\n- x');
+        expect(_wi169Caret(tester), 2);
+      },
+      variant: macOnly,
+    );
+
+    for (final (name, key) in [
+      (
+        'Backspace with a selection inside one item deletes only it natively and keeps the marker',
+        LogicalKeyboardKey.backspace,
+      ),
+      (
+        'Delete with a selection inside one item deletes only it natively and keeps the marker',
+        LogicalKeyboardKey.delete,
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        await _wi169Pump(tester, '- abcd\n- ef');
+        await _wi169Focus(tester, 3);
+        _wi169Seg(
+          tester,
+        ).select(const TextSelection(baseOffset: 3, extentOffset: 5));
+        await tester.pump();
+
+        await _wi169Press(tester, key);
+
+        expect(_wi169Seg(tester).text, '- ad\n- ef');
+        expect(_wi169Caret(tester), 3);
+        expect(_wi169Seg(tester).focusedRow, 0);
+      }, variant: macOnly);
+    }
+
+    testWidgets(
+      'Backspace at an item text start after a leading frontmatter block removes that item marker',
+      (tester) async {
+        // Leading frontmatter is one prose row (A1 atSegmentStart): its
+        // `- a` line is not an item.
+        const text = '---\n- a\n---\n- bc';
+        await _wi169Pump(tester, text);
+        final rows = _wi169Rows(tester);
+        expect(rows.length, 2);
+        expect(rows[1].isItem, isTrue);
+        await _wi169Focus(tester, rows[1].textStart);
+
+        await _wi169Press(tester, LogicalKeyboardKey.backspace);
+
+        expect(_wi169Seg(tester).text, '---\n- a\n---\nbc');
+        expect(_wi169Caret(tester), 12);
       },
       variant: macOnly,
     );
