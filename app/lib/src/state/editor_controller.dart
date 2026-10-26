@@ -307,6 +307,17 @@ class EditorController extends StateNotifier<EditorStateValue> {
     return true;
   }
 
+  /// Saves now when a save debounce is pending (cancelling it); otherwise
+  /// does nothing. Synchronous: the save captures the editor's state before
+  /// it first awaits, so a caller may switch notes right after (D14, B3
+  /// Cmd+click).
+  void flushPendingSave() {
+    final pending = _debounce;
+    if (pending == null || !pending.isActive) return;
+    pending.cancel();
+    unawaited(_save());
+  }
+
   void _scheduleSave() {
     _debounce?.cancel();
     _debounce = _ref.read(clockProvider).after(saveDebounce, () {
