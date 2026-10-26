@@ -30,8 +30,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db.dart';
 import 'package:open_memex_app/src/editor/editor_rows.dart';
+import 'package:open_memex_app/src/editor/row_geometry.dart';
 import 'package:open_memex_app/src/theme/app_theme.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
+import 'package:open_memex_app/src/widgets/editor/editor_row.dart';
+import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
 import 'package:open_memex_app/src/widgets/editor/marker_column.dart';
 import 'package:open_memex_app/src/widgets/editor/segment_undo.dart';
 import 'package:open_memex_app/src/widgets/editor/segment_view.dart';
@@ -1389,6 +1392,293 @@ void main() {
           doneRect,
           why: 'read-only done task after a click',
         );
+      },
+      variant: macOnly,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Verify: contracts of MarkerColumn's API docs the ACs leave open
+  // -------------------------------------------------------------------------
+  group('marker column contracts (verify)', () {
+    /// Points of a bullet column clear of the revealed `-` glyph.
+    List<Offset> clearPoints(Rect column) => [
+      column.topLeft + const Offset(0.6, 0.6),
+      column.topLeft + const Offset(15.6, 0.6),
+      column.topLeft + const Offset(0.6, 22.35),
+      column.topLeft + const Offset(15.6, 22.35),
+    ];
+
+    testWidgets(
+      'a selection from exactly the line start to exactly the text end selects the marker and one ending inside the text does not',
+      (tester) async {
+        const text = 'intro\n- ab\n- cd\nend';
+        await _wi168Pump(tester, text);
+        final specs = _wi168Specs(text);
+        await _wi168FocusRow(tester, 0, 0);
+
+        Future<void> expectSelected(bool selected, String why) async {
+          expect(_wi168Shown(tester, 0, 1), '- ', reason: why);
+          expect(_wi168ShownColors(tester, 0, 1), {
+            selected ? OmColors.fg1 : OmColors.fg2,
+          }, reason: why);
+          final column = tester.getRect(_wi168Marker(0, 1));
+          final untouched = tester.getRect(_wi168Marker(0, 2));
+          final px = await _wi168Capture(
+            tester,
+            column.expandToInclude(untouched),
+          );
+          final bg = px.at(untouched.topLeft + const Offset(13, 1.5));
+          final want = selected ? Color.alphaBlend(OmColors.selection, bg) : bg;
+          for (final p in clearPoints(column)) {
+            expect(
+              px.at(p),
+              _wi168IsColor(want),
+              reason: '$why: column at ${p - column.topLeft}',
+            );
+          }
+        }
+
+        segmentEditingAt(tester, 0).select(
+          TextSelection(
+            baseOffset: specs[1].start,
+            extentOffset: specs[1].textEnd,
+          ),
+        );
+        await tester.pump();
+        expect(
+          segmentEditingAt(tester, 0).selection,
+          TextSelection(
+            baseOffset: specs[1].start,
+            extentOffset: specs[1].textEnd,
+          ),
+        );
+        await expectSelected(true, 'line start to text end');
+
+        segmentEditingAt(tester, 0).select(
+          TextSelection(
+            baseOffset: specs[1].start,
+            extentOffset: specs[1].textEnd - 1,
+          ),
+        );
+        await tester.pump();
+        await expectSelected(false, 'line start to inside the text');
+
+        segmentEditingAt(
+          tester,
+          0,
+        ).select(TextSelection(baseOffset: specs[1].textEnd, extentOffset: 2));
+        await tester.pump();
+        await expectSelected(true, 'a backward selection over the line');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'toggling the task of an unfocused segment repaints its circle done and then open again',
+      (tester) async {
+        await _wi168Pump(tester, 'intro\n$_wi168Token\n- [ ] b');
+        await _wi168FocusRow(tester, 0, 0, local: 2);
+        final column = tester.getRect(_wi168Marker(2, 0));
+        _wi168ExpectOpenCircle(
+          await _wi168Capture(tester, column.inflate(2)),
+          column,
+          why: 'before',
+        );
+
+        await tester.macClick(tester.getCenter(_wi168Checkbox(2, 0)));
+        await tester.pump();
+        expect(segmentEditingAt(tester, 2).text, '- [x] b');
+        _wi168ExpectDoneCircle(
+          await _wi168Capture(tester, column.inflate(2)),
+          column,
+          why: 'after one click',
+        );
+
+        await tester.macClick(tester.getCenter(_wi168Checkbox(2, 0)));
+        await tester.pump();
+        expect(segmentEditingAt(tester, 2).text, '- [ ] b');
+        _wi168ExpectOpenCircle(
+          await _wi168Capture(tester, column.inflate(2)),
+          column,
+          why: 'after two clicks',
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'an interactive marker column outside any editor row paints its marker as a level 1 item with no checkbox and ignores clicks',
+      (tester) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildOmTheme(),
+            home: Scaffold(
+              body: Align(
+                alignment: Alignment.topLeft,
+                child: RepaintBoundary(
+                  key: _wi168BoundaryKey,
+                  child: Container(
+                    color: _wi168Surface,
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        MarkerColumn(
+                          key: const Key('wi168-free-task'),
+                          marker: ['- ', '[ ] '].join(),
+                          width: 4 * _wi168Col,
+                        ),
+                        MarkerColumn(
+                          key: const Key('wi168-free-bullet'),
+                          marker: ['  ', '- '].join(),
+                          width: 2 * _wi168Col,
+                        ),
+                        const MarkerColumn(
+                          key: Key('wi168-free-number'),
+                          marker: '7. ',
+                          width: 3 * _wi168Col,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+
+        final task = find.byKey(const Key('wi168-free-task'));
+        final bullet = find.byKey(const Key('wi168-free-bullet'));
+        final number = find.byKey(const Key('wi168-free-number'));
+        expect(
+          find.byWidgetPredicate(
+            (w) =>
+                w.key is ValueKey<String> &&
+                (w.key! as ValueKey<String>).value.startsWith('task-checkbox'),
+          ),
+          findsNothing,
+        );
+        expect([for (final (t, _) in _wi168Runs(tester, task)) t].join(), '');
+        expect([for (final (t, _) in _wi168Runs(tester, bullet)) t].join(), '');
+        expect(
+          [for (final (t, _) in _wi168Runs(tester, number)) t].join(),
+          '7.',
+        );
+        final taskRect = tester.getRect(task);
+        _wi168ExpectOpenCircle(
+          await _wi168Capture(tester, taskRect.inflate(2)),
+          taskRect,
+          why: 'free task',
+        );
+        final bulletRect = tester.getRect(bullet);
+        _wi168ExpectFilledDot(
+          await _wi168Capture(tester, bulletRect),
+          bulletRect,
+          why: 'free bullet is level 1',
+        );
+
+        await tester.macClick(tester.getCenter(task));
+        await tester.pump();
+        expect(tester.takeException(), isNull);
+        _wi168ExpectOpenCircle(
+          await _wi168Capture(tester, taskRect.inflate(2)),
+          taskRect,
+          why: 'free task after a click',
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a marker column whose editor row index is past its segment rows paints its own marker with no checkbox',
+      (tester) async {
+        final ctrl = TextEditingController(text: '- [x] a');
+        final focus = FocusNode(debugLabel: 'wi168-stray');
+        final gate = ValueNotifier(true);
+        final strayCtrl = LivePreviewController(text: 'stray');
+        final strayFocus = FocusNode(debugLabel: 'wi168-stray-row');
+        addTearDown(() {
+          ctrl.dispose();
+          focus.dispose();
+          gate.dispose();
+          strayCtrl.dispose();
+          strayFocus.dispose();
+        });
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildOmTheme(),
+            home: Scaffold(
+              body: Align(
+                alignment: Alignment.topLeft,
+                child: RepaintBoundary(
+                  key: _wi168BoundaryKey,
+                  child: Container(
+                    color: _wi168Surface,
+                    width: 600,
+                    child: SegmentView(
+                      index: 0,
+                      controller: ctrl,
+                      focusNode: focus,
+                      revealGate: gate,
+                      minLines: 1,
+                      hintText: null,
+                      onChanged: () {},
+                      onRowRemoved: (_) {},
+                      fieldBuilder: (context, row) => TextField(
+                        controller: row.controller,
+                        focusNode: row.focusNode,
+                        maxLines: null,
+                      ),
+                      builder: (context, rows, boxes) => Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          rows,
+                          EditorRow(
+                            segment: 0,
+                            index: 5,
+                            kind: RowKind.task,
+                            geometry: itemGeometry(
+                              markerX: 0,
+                              kind: MarkerColumnKind.task,
+                            ),
+                            marker: ['- ', '[ ] '].join(),
+                            controller: strayCtrl,
+                            focusNode: strayFocus,
+                            boxes: () => null,
+                            field: TextField(
+                              controller: strayCtrl,
+                              focusNode: strayFocus,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+        expect(tester.takeException(), isNull);
+
+        expect(_wi168Checkbox(0, 0), findsOneWidget);
+        expect(_wi168Checkbox(0, 5), findsNothing);
+        final stray = tester.getRect(_wi168Marker(0, 5));
+        _wi168ExpectOpenCircle(
+          await _wi168Capture(tester, stray.inflate(2)),
+          stray,
+          why: 'stray row paints its own open marker',
+        );
+
+        await tester.macClick(tester.getCenter(_wi168Marker(0, 5)));
+        await tester.pump();
+        expect(tester.takeException(), isNull);
+        expect(ctrl.text, '- [x] a');
       },
       variant: macOnly,
     );
