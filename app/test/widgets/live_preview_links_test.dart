@@ -253,6 +253,13 @@ Future<void> _removeMouse(WidgetTester tester, TestGesture mouse) async {
   await tester.pump();
 }
 
+/// Removes the mouse a `macCmdClick` (a mouse `tapAt`) leaves added, so a
+/// later [_mouseAt] can add it again without a MouseTracker assertion.
+Future<void> _dropClickMouse(WidgetTester tester) async {
+  final stale = await tester.createGesture(kind: PointerDeviceKind.mouse);
+  await _removeMouse(tester, stale);
+}
+
 void main() {
   // -------------------------------------------------------------------------
   // AC1-AC3: ghost detection
@@ -492,10 +499,10 @@ void main() {
     testWidgets(
       'with Cmd held hovering a resolved wikilink shows the click cursor',
       (tester) async {
-        final t = await _launch(tester, 'Read [[Byte offsets]] today\n');
+        final t = await _launch(tester, 'Read [[Zeta Game]] today\n');
         final r = t.r;
-        final (start, end) = _find(r, 0, '[[Byte offsets]]');
-        final at = _pointOn(r, 0, 'Byte offsets');
+        final (start, end) = _find(r, 0, '[[Zeta Game]]');
+        final at = _pointOn(r, 0, 'Zeta Game');
 
         await _cmdDown(tester);
         final mouse = await _mouseAt(tester, at);
@@ -505,7 +512,7 @@ void main() {
             _controllerOf(tester, 0).cmdHover,
             TextRange(start: start, end: end),
           );
-          final style = _styleOf(tester, r, 0, 'Byte offsets');
+          final style = _styleOf(tester, r, 0, 'Zeta Game');
           expect(_isUnderlined(style), isTrue, reason: '$style');
           expect(style.color, OmColors.accent);
         } finally {
@@ -544,23 +551,23 @@ void main() {
     testWidgets(
       'without Cmd hovering a resolved wikilink keeps the text cursor and no hover',
       (tester) async {
-        final t = await _launch(tester, 'Read [[Byte offsets]] today\n');
+        final t = await _launch(tester, 'Read [[Zeta Game]] today\n');
         final r = t.r;
-        final mouse = await _mouseAt(tester, _pointOn(r, 0, 'Byte offsets'));
+        final mouse = await _mouseAt(tester, _pointOn(r, 0, 'Zeta Game'));
         try {
           expect(_cursor(), SystemMouseCursors.text);
           expect(_controllerOf(tester, 0).cmdHover, isNull);
-          final style = _styleOf(tester, r, 0, 'Byte offsets');
+          final style = _styleOf(tester, r, 0, 'Zeta Game');
           expect(_isUnderlined(style), isFalse, reason: '$style');
 
           // Moving onto it again with Cmd held is what shows the hover.
           await mouse.moveTo(_pointOn(r, 0, 'today'));
           await tester.pump();
           await _cmdDown(tester);
-          await mouse.moveTo(_pointOn(r, 0, 'Byte offsets'));
+          await mouse.moveTo(_pointOn(r, 0, 'Zeta Game'));
           await tester.pump();
           expect(_cursor(), SystemMouseCursors.click);
-          expect(_isUnderlined(_styleOf(tester, r, 0, 'Byte offsets')), isTrue);
+          expect(_isUnderlined(_styleOf(tester, r, 0, 'Zeta Game')), isTrue);
         } finally {
           await _removeMouse(tester, mouse);
           if (HardwareKeyboard.instance.isMetaPressed) await _cmdUp(tester);
@@ -601,10 +608,10 @@ void main() {
     testWidgets(
       'pressing Cmd while resting over a resolved wikilink shows the click cursor and releasing it restores the text cursor',
       (tester) async {
-        final t = await _launch(tester, 'Read [[Byte offsets]] today\n');
+        final t = await _launch(tester, 'Read [[Zeta Game]] today\n');
         final r = t.r;
-        final (start, end) = _find(r, 0, '[[Byte offsets]]');
-        final mouse = await _mouseAt(tester, _pointOn(r, 0, 'Byte offsets'));
+        final (start, end) = _find(r, 0, '[[Zeta Game]]');
+        final mouse = await _mouseAt(tester, _pointOn(r, 0, 'Zeta Game'));
         try {
           expect(_cursor(), SystemMouseCursors.text);
 
@@ -631,9 +638,9 @@ void main() {
     testWidgets(
       'with Cmd held moving off a resolved wikilink clears the hover and restores the text cursor',
       (tester) async {
-        final t = await _launch(tester, 'Read [[Byte offsets]] today\n');
+        final t = await _launch(tester, 'Read [[Zeta Game]] today\n');
         final r = t.r;
-        final on = _pointOn(r, 0, 'Byte offsets');
+        final on = _pointOn(r, 0, 'Zeta Game');
         final off = _pointOn(r, 0, 'today');
 
         await _cmdDown(tester);
@@ -645,7 +652,7 @@ void main() {
           await tester.pump();
           expect(_cursor(), SystemMouseCursors.text);
           expect(_controllerOf(tester, 0).cmdHover, isNull);
-          final style = _styleOf(tester, r, 0, 'Byte offsets');
+          final style = _styleOf(tester, r, 0, 'Zeta Game');
           expect(_isUnderlined(style), isFalse, reason: '$style');
         } finally {
           await _removeMouse(tester, mouse);
@@ -881,7 +888,9 @@ void main() {
         expect(r.segmentText(0), body);
         expect(t.opener.opened, isEmpty);
 
-        // The text cursor stays over the ghost with Cmd held.
+        // The text cursor stays over the ghost with Cmd held. The click
+        // left its mouse (device 1) added; remove it before hovering anew.
+        await _dropClickMouse(tester);
         await _cmdDown(tester);
         final mouse = await _mouseAt(tester, at);
         try {
