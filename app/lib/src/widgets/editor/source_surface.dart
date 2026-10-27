@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../editor/editor_rows.dart';
+import '../../editor/list_indent.dart';
 import '../../editor/row_edits.dart';
 import '../inline_error.dart';
 import 'text_segment.dart';
@@ -61,7 +62,7 @@ class _SourceSurfaceState extends State<SourceSurface> {
     super.dispose();
   }
 
-  /// Enter in the body (Spec R31): continues a list line through
+  /// Enter and Tab in the body. Enter (Spec R31): continues a list line through
   /// [sourceEnter] as one controller value change, so it's one undo step
   /// and [SourceSurface.onContentChanged] reports it. Ignored (the platform
   /// inserts a plain newline) for Shift+Enter, a line that doesn't continue,
@@ -70,7 +71,9 @@ class _SourceSurfaceState extends State<SourceSurface> {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
     }
-    if (event.logicalKey != LogicalKeyboardKey.enter &&
+    final isTab = event.logicalKey == LogicalKeyboardKey.tab;
+    if (!isTab &&
+        event.logicalKey != LogicalKeyboardKey.enter &&
         event.logicalKey != LogicalKeyboardKey.numpadEnter) {
       return KeyEventResult.ignored;
     }
@@ -82,6 +85,7 @@ class _SourceSurfaceState extends State<SourceSurface> {
     if (value.composing.isValid || !value.selection.isValid) {
       return KeyEventResult.ignored;
     }
+    if (isTab) return _onTab(value, outdent: keys.isShiftPressed);
     final edit = sourceEnter(
       value.text,
       SegmentSelection(
@@ -91,6 +95,36 @@ class _SourceSurfaceState extends State<SourceSurface> {
       shift: keys.isShiftPressed,
     );
     if (edit == null) return KeyEventResult.ignored;
+    final caret = edit.selection!;
+    widget.bodyCtrl.value = TextEditingValue(
+      text: edit.apply(value.text),
+      selection: TextSelection(
+        baseOffset: caret.baseOffset,
+        extentOffset: caret.extentOffset,
+      ),
+    );
+    return KeyEventResult.handled;
+  }
+
+  /// Tab and Shift+Tab on list lines (Spec R-rules): indents or outdents
+  /// the touched items as one controller value change. Handled even when
+  /// the edit is null (first item, already top level) so focus stays in the
+  /// body; ignored off list lines so Flutter's default Tab applies.
+  KeyEventResult _onTab(TextEditingValue value, {required bool outdent}) {
+    final selection = SegmentSelection(
+      baseOffset: value.selection.baseOffset,
+      extentOffset: value.selection.extentOffset,
+    );
+    if (!touchesListItem(value.text, selection, source: true)) {
+      return KeyEventResult.ignored;
+    }
+    final edit = indentListItems(
+      value.text,
+      selection,
+      outdent: outdent,
+      source: true,
+    );
+    if (edit == null) return KeyEventResult.handled;
     final caret = edit.selection!;
     widget.bodyCtrl.value = TextEditingValue(
       text: edit.apply(value.text),
