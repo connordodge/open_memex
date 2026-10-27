@@ -1265,20 +1265,26 @@ void main() {
       await body.placeCaret(2);
       expect(body.text(), text);
       expectTableRendered(0, 1);
-      final paragraph = tester.widget<RichText>(
-        find.descendant(of: tableGrid(0, 1), matching: find.byType(RichText)),
-      );
+      // One RichText per drawn cell (WI #205); together they hold every
+      // cell's text, markers included.
       final markers = <String>[];
       var at = 0;
-      paragraph.text.visitChildren((span) {
-        if (span is TextSpan && span.text != null) {
-          final t = span.text!;
-          if (span.style?.fontSize == 0) markers.add(t);
-          at += t.length;
-        }
-        return true;
-      });
-      expect(at, table.length);
+      final cellTexts = <String>[];
+      for (final paragraph in tester.widgetList<RichText>(
+        find.descendant(of: tableGrid(0, 1), matching: find.byType(RichText)),
+      )) {
+        cellTexts.add(paragraph.text.toPlainText());
+        paragraph.text.visitChildren((span) {
+          if (span is TextSpan && span.text != null) {
+            final t = span.text!;
+            if (span.style?.fontSize == 0) markers.add(t);
+            at += t.length;
+          }
+          return true;
+        });
+      }
+      expect(cellTexts, ['**b**', '[[Link]]', '`c`', 'd']);
+      expect(at, cellTexts.join().length);
       for (final m in ['**', '[[', ']]', '`']) {
         expect(
           markers.any((t) => t.contains(m)),
