@@ -3,6 +3,7 @@ import 'package:flutter/widgets.dart';
 
 import '../../editor/markdown_inline.dart';
 import '../../editor/markdown_lines.dart';
+import '../../editor/markdown_table.dart';
 import 'live_preview_styles.dart';
 
 /// The controller of every live preview field (D7): its [buildTextSpan]
@@ -127,6 +128,18 @@ const StrutStyle _codeRowStrut = StrutStyle(
   height: 1,
 );
 
+/// The index of the last line of the table whose header line is
+/// `lines[header]`: the run of delimiter and body lines after it.
+int tableLastLine(List<MdLine> lines, int header) {
+  var last = header;
+  while (last + 1 < lines.length &&
+      (lines[last + 1].kind == MdLineKind.tableDelimiter ||
+          lines[last + 1].kind == MdLineKind.tableBody)) {
+    last++;
+  }
+  return last;
+}
+
 /// Builds the live preview span for [text] (B1, Spec R2-R5): a pure
 /// function of the text, the field's props and its [selection], which
 /// `LivePreviewController.buildTextSpan` calls with its own props and B4's
@@ -144,6 +157,11 @@ const StrutStyle _codeRowStrut = StrutStyle(
 ///   names mean.
 /// - While [codeRow], a hidden fence line's terminator renders hidden too,
 ///   so the line takes its height from the field's strut alone.
+/// - A table's lines (Spec #197 R13) take their inline tokens cell by cell
+///   (the one cell splitter, D10). While revealed, a touch on any of its
+///   lines reveals every line's markers, its cell-splitting `|`s and its
+///   whole delimiter line render as markers, and its header line's cell
+///   text is bold. Every table line stays one body line (no code-row strut).
 ///
 /// The controller calls it as `buildLivePreviewSpan(text, style: style,
 /// selection: selection, forceHidden: !revealGate.value, ...)`, forwarding
@@ -255,8 +273,7 @@ final class _SpanBuilder {
         case MdLineKind.tableHeader ||
             MdLineKind.tableDelimiter ||
             MdLineKind.tableBody:
-          // As a plain line until tables render (Spec #197, ruling D9).
-          _tokenize(line.start, line.contentEnd);
+          _tableLine(line, revealed[i]);
       }
     }
 
@@ -292,8 +309,9 @@ final class _SpanBuilder {
   }
 
   /// Which lines reveal their markers: every line the selection touches
-  /// (a caret at a line's content end touches that line only), and both
-  /// fence lines of a block when any of its lines is touched. None while
+  /// (a caret at a line's content end touches that line only), both fence
+  /// lines of a block when any of its lines is touched, and every line of a
+  /// table when any of its lines is touched (Spec #197 R13). None while
   /// [forceHidden].
   List<bool> _revealed(List<MdLine> lines) {
     final selection = _selection;
@@ -317,7 +335,35 @@ final class _SpanBuilder {
       revealed[last] = touched;
       open = last;
     }
+    for (var header = 0; header < lines.length; header++) {
+      if (lines[header].kind != MdLineKind.tableHeader) continue;
+      final last = tableLastLine(lines, header);
+      final touched = revealed.sublist(header, last + 1).contains(true);
+      revealed.fillRange(header, last + 1, touched);
+    }
     return revealed;
+  }
+
+  /// Marks the table line [line] (Spec #197 R13): each cell's inline tokens
+  /// (cells from the one cell splitter, D10). While [revealed], also its
+  /// cell-splitting `|`s, or the whole delimiter line, as markers (`fg2`,
+  /// `fg1` while selected), and a header line's cell text bold. A `\|` and
+  /// the `|` inside a wikilink split no cell, so they keep their cell style.
+  void _tableLine(MdLine line, bool revealed) {
+    final split = splitTableLine(text, start: line.start, end: line.contentEnd);
+    final header = revealed && line.kind == MdLineKind.tableHeader;
+    for (final cell in split.cells) {
+      _tokenize(cell.start, cell.end);
+      if (header) _markRange(cell.start, cell.end, _bold);
+    }
+    if (!revealed) return;
+    if (line.kind == MdLineKind.tableDelimiter) {
+      _markRange(line.start, line.contentEnd, _marker);
+      return;
+    }
+    for (final pipe in split.pipes) {
+      _markRange(pipe, pipe + 1, _marker);
+    }
   }
 
   void _markRange(int start, int end, int flag) {

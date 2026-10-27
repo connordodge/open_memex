@@ -6,6 +6,7 @@ import 'package:flutter/widgets.dart';
 
 import '../../editor/markdown_inline.dart';
 import '../../editor/markdown_lines.dart';
+import '../../editor/markdown_table.dart';
 import '../../theme/colors.dart';
 import 'line_boxes.dart';
 import 'live_preview_controller.dart';
@@ -191,7 +192,10 @@ bool _touches(TextSelection? selection, TextRange range) =>
 /// from `tokenizeInline` (never inside a fence). [quote]: the field is one
 /// quote row's text, so all of it is banded. [reveal]: the field's
 /// selection while its segment has focus (null otherwise); a fenced block
-/// it touches is revealed. Quote bands fill with [quoteBandColor].
+/// it touches is revealed. A table's pills (one per code span, cell by
+/// cell) are added only while [reveal] touches one of its lines; a rendered
+/// table's grid paints its own (ruling D15). Quote bands fill with
+/// [quoteBandColor].
 List<PaintedDecoration> layoutDecorations({
   required String text,
   required LineBoxSource boxes,
@@ -278,7 +282,14 @@ List<PaintedDecoration> layoutDecorations({
           );
         }
         for (var q = i; q <= last; q++) {
-          _addPills(text, lines[q], boxes, columnLeft, pills);
+          _addPills(
+            text,
+            lines[q].start,
+            lines[q].contentEnd,
+            boxes,
+            columnLeft,
+            pills,
+          );
         }
         i = last;
       case MdLineKind.rule:
@@ -307,32 +318,49 @@ List<PaintedDecoration> layoutDecorations({
       case MdLineKind.bullet:
       case MdLineKind.numbered:
       case MdLineKind.task:
-        _addPills(text, line, boxes, columnLeft, pills);
+        _addPills(text, line.start, line.contentEnd, boxes, columnLeft, pills);
       case MdLineKind.tableHeader:
+        final last = tableLastLine(lines, i);
+        final table = TextRange(start: line.start, end: lines[last].contentEnd);
+        if (_touches(reveal, table)) {
+          for (var t = i; t <= last; t++) {
+            final row = lines[t];
+            final split = splitTableLine(
+              text,
+              start: row.start,
+              end: row.contentEnd,
+            );
+            for (final cell in split.cells) {
+              _addPills(text, cell.start, cell.end, boxes, columnLeft, pills);
+            }
+          }
+        }
       case MdLineKind.tableDelimiter:
       case MdLineKind.tableBody:
-        // As a plain line until tables render (Spec #197, ruling D9).
-        _addPills(text, line, boxes, columnLeft, pills);
+        // Taken with their header line's table.
+        break;
     }
   }
   return [...backgrounds, ...pills, ...rules];
 }
 
-/// Adds the pills of every code span on [line] (a line outside fences and
-/// frontmatter) to [pills].
+/// Adds the pills of every code span in `[start, end)` of [text] (one
+/// line's text outside fences and frontmatter, or one table cell's) to
+/// [pills].
 void _addPills(
   String text,
-  MdLine line,
+  int start,
+  int end,
   LineBoxSource boxes,
   double columnLeft,
   List<PaintedDecoration> pills,
 ) {
-  final tokens = tokenizeInline(text.substring(line.start, line.contentEnd));
+  final tokens = tokenizeInline(text.substring(start, end));
   for (final token in tokens) {
     if (token.kind != InlineTokenKind.codeSpan) continue;
     final content = TextRange(
-      start: line.start + token.content.start,
-      end: line.start + token.content.end,
+      start: start + token.content.start,
+      end: start + token.content.end,
     );
     for (final rect in codePillRects(boxes, content, columnLeft: columnLeft)) {
       pills.add(
