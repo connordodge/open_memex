@@ -31,6 +31,10 @@ enum RowKind {
 
   /// A `> ` (or bare `>`) line.
   quote,
+
+  /// A markdown table (Spec #197 R8), from its header line through its last
+  /// body line. Keeps its interior terminators.
+  table,
 }
 
 /// A selection inside one text segment, in segment offsets.

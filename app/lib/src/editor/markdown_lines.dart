@@ -50,6 +50,16 @@ enum MdLineKind {
   /// A line of leading frontmatter (`---` … `---`, both delimiter lines
   /// included). Only when classified with `atSegmentStart: true`.
   frontmatter,
+
+  /// A table's header line (Spec #197 R1): a line that would otherwise be
+  /// [plain], directly followed by a valid [tableDelimiter] line.
+  tableHeader,
+
+  /// A table's delimiter line (Spec #197 R1, R5), such as `|---|:-:|`.
+  tableDelimiter,
+
+  /// A table body line (Spec #197 R4).
+  tableBody,
 }
 
 /// One classified source line of a segment.

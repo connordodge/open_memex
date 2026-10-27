@@ -308,6 +308,10 @@ List<PaintedDecoration> layoutDecorations({
       case MdLineKind.numbered:
       case MdLineKind.task:
         _addPills(text, line, boxes, columnLeft, pills);
+      case MdLineKind.tableHeader:
+      case MdLineKind.tableDelimiter:
+      case MdLineKind.tableBody:
+        throw UnimplementedError('WI #202');
     }
   }
   return [...backgrounds, ...pills, ...rules];

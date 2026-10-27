@@ -1047,4 +1047,412 @@ void main() {
       },
     );
   });
+
+  _wi202TableRows();
+}
+
+// ------------------------------------------------------------------ WI #202
+// The table row kind (Spec #197 R8, R9, R10; TD3; rulings D9, D23).
+
+const _table = RowKind.table;
+
+/// Round-trip fixtures holding tables: name -> (text, table rows expected
+/// with atSegmentStart false).
+const Map<String, (String, int)> _wi202Fixtures = {
+  'table crlf': ('| a | b |\r\n|---|:-:|\r\n| 1 | 2 |\r\nafter\r\n', 1),
+  'table tabs': ('|\ta\t|\tb\t|\n|\t---\t|---|\n|\t1|2\t|\n', 1),
+  'table trailing spaces': (
+    '| a | b |   \n|---|---|  \n| 1 | 2 |  \n  \nnext\n',
+    1,
+  ),
+  'table escaped pipes': (
+    '| a \\| b | c |\n|---|---|\n| \\| | [[T~k|al]] |\n',
+    1,
+  ),
+  'table uneven rows': (
+    '| a | b | c |\n|:--|:-:|--:|\n| 1 |\n| 1 | 2 | 3 | 4 | 5 |\n|||\n',
+    1,
+  ),
+  'table missing final newline': ('para\n| a |\n|---|\n| 1 |', 1),
+  'table header only no final newline': ('| a | b |\n|---|---|', 1),
+  'table inside a fence': ('```\n| a | b |\n|---|---|\n| 1 | 2 |\n```\n', 0),
+  'two tables back to back': ('| a |\n|---|\n| b | c |\n|---|---|\n| 1 |', 2),
+  'tables around a list': (
+    '| h |\n|---|\n- a\n  - b\n1. c\n| x |\n|-:|\n| 1 |\n> q\n',
+    2,
+  ),
+};
+
+/// Pieces of the generated sweep with table lines: whole table blocks
+/// (weighted) and the characters tables are made of.
+const _wi202Pieces = [
+  '| a | b |\n|---|---|\n', '| a | b |\n|---|:-:|\n| 1 | 2 |\n', //
+  '| a | b |\n|---|---|\n', '| a | b |\n|---|:-:|\n| 1 | 2 |\n', //
+  'a | b\n--- | --:\n1 | 2\n', '| x |\r\n|:-:|\r\n| \\| |\r\n', //
+  '| [[T|a]] | c |\n|---|---|\n', '| 1 | 2 | 3 |\n', '| 4 |\n', //
+  '|', ' | ', '|---', ':-:', '--:', '\\|', '[[T|a]]', '\n', '\n', //
+  '\r\n', '   ', '    ', '\t', 'x', '- ', '1. ', '> ', '# ', '```\n', //
+  '---\n', '- [ ] ', //
+];
+
+String _wi202Generate(Random rng, int maxPieces) {
+  final out = StringBuffer();
+  final n = rng.nextInt(maxPieces + 1);
+  for (var i = 0; i < n; i++) {
+    out.write(_wi202Pieces[rng.nextInt(_wi202Pieces.length)]);
+  }
+  return out.toString();
+}
+
+/// Every table row of [rows] is exactly one header line, one delimiter line
+/// and zero or more body lines of [classifyLines] over [text].
+void _wi202ExpectTablesMatchLines(
+  String text,
+  List<RowSpec> rows, {
+  required bool atSegmentStart,
+  required String label,
+}) {
+  final lines = classifyLines(text, atSegmentStart: atSegmentStart);
+  for (final (i, row) in rows.indexed) {
+    final inside = [
+      for (final l in lines)
+        if (l.start >= row.start && l.start < row.end && l.start <= row.textEnd)
+          l.kind,
+    ];
+    if (row.kind != _table) {
+      for (final kind in const [
+        MdLineKind.tableHeader,
+        MdLineKind.tableDelimiter,
+        MdLineKind.tableBody,
+      ]) {
+        expect(inside, isNot(contains(kind)), reason: '$label row $i');
+      }
+      continue;
+    }
+    expect(inside.length, greaterThanOrEqualTo(2), reason: '$label row $i');
+    expect(inside.first, MdLineKind.tableHeader, reason: '$label row $i');
+    expect(inside[1], MdLineKind.tableDelimiter, reason: '$label row $i');
+    expect(
+      inside.skip(2).every((k) => k == MdLineKind.tableBody),
+      isTrue,
+      reason: '$label row $i: $inside',
+    );
+    expect(row.textStart, row.start, reason: '$label row $i');
+  }
+}
+
+void _wi202TableRows() {
+  group('table rows (Spec 197 R8, TD3)', () {
+    test(
+      'splitRows makes one table row from the header line through the last body line',
+      () {
+        const table = '| a | b |\n|---|:-:|\n| 1 | 2 |\n| 3 | 4 |';
+        expect(_shape('p\n$table\nafter\n'), [
+          (_prose, '', 'p', '\n'),
+          (_table, '', table, '\n'),
+          (_prose, '', 'after\n', ''),
+        ]);
+        // At the segment start, without a final newline.
+        expect(_shape(table, atSegmentStart: true), [(_table, '', table, '')]);
+      },
+    );
+
+    test('a table row keeps crlf interior terminators verbatim', () {
+      const table = '| a |\r\n|---|\r\n| 1 |';
+      expect(_shape('$table\r\n'), [
+        (_table, '', table, '\r\n'),
+        (_prose, '', '', ''),
+      ]);
+    });
+
+    test(
+      'a table row starts at its line start and has no indent depth parent or number',
+      () {
+        const text = '   | a |\n  |---|\n | 1 |';
+        final row = _rows(text).single;
+        expect(row.kind, _table);
+        expect(
+          (row.start, row.textStart, row.textEnd, row.end),
+          (0, 0, text.length, text.length),
+        );
+        expect(row.indent, 0);
+        expect(row.depth, 0);
+        expect(row.parent, isNull);
+        expect(row.number, isNull);
+        expect(row.numberedRun, isNull);
+        expect(row.runDigits, 0);
+        expect(row.done, isFalse);
+        expect(row.isItem, isFalse);
+      },
+    );
+
+    test('a blank or pipe-less line after a table starts a prose row', () {
+      expect(_shape('| a |\n|---|\n\nx'), [
+        (_table, '', '| a |\n|---|', '\n'),
+        (_prose, '', '\nx', ''),
+      ]);
+      expect(_shape('| a |\n|---|\n| 1 |\nplain line\n| 2 |'), [
+        (_table, '', '| a |\n|---|\n| 1 |', '\n'),
+        (_prose, '', 'plain line\n| 2 |', ''),
+      ]);
+    });
+
+    test('an item or fence line after a table ends the table row', () {
+      expect(
+        [for (final r in _rows('| a |\n|---|\n- b\n> c')) (r.kind, r.start)],
+        [(_table, 0), (_bullet, 12), (_quote, 16)],
+      );
+      expect(
+        [for (final r in _rows('| a |\n|---|\n```\nx\n```')) r.kind],
+        [_table, _code],
+      );
+    });
+
+    test(
+      'a header and delimiter inside a table body make a second table row',
+      () {
+        expect(_shape('| a |\n|---|\n| b | c |\n|:-:|---|\n| 1 |'), [
+          (_table, '', '| a |\n|---|', '\n'),
+          (_table, '', '| b | c |\n|:-:|---|\n| 1 |', ''),
+        ]);
+      },
+    );
+
+    test('a table ends a numbered run', () {
+      final rows = _rows('1. a\n2. b\n| x |\n|---|\n3. c\n4. d');
+      expect(
+        [for (final r in rows) r.kind],
+        [_numbered, _numbered, _table, _numbered, _numbered],
+      );
+      expect(
+        [for (final r in rows) (r.numberedRun, r.runDigits)],
+        [(0, 1), (0, 1), (null, 0), (3, 1), (3, 1)],
+      );
+      // A nested run under the table's previous item ends too.
+      final nested = _rows('1. a\n   1. b\n| x |\n|---|\n   2. c');
+      expect([for (final r in nested) r.numberedRun], [0, 1, null, 3]);
+    });
+
+    test('a table ends list nesting', () {
+      final rows = _rows('- a\n| x |\n|---|\n  - b\n    - c');
+      expect(
+        [for (final r in rows) r.kind],
+        [_bullet, _table, _bullet, _bullet],
+      );
+      expect(
+        [for (final r in rows) (r.depth, r.parent)],
+        [(0, null), (0, null), (0, null), (1, 2)],
+      );
+      // Items above the table keep their nesting.
+      final above = _rows('- a\n  - b\n| x |\n|---|');
+      expect(
+        [for (final r in above) (r.depth, r.parent)],
+        [(0, null), (1, 0), (0, null)],
+      );
+      // An indented numbered item after a table has no parent either.
+      final numbered = _rows('1. a\n| x |\n|---|\n   1. b');
+      expect([for (final r in numbered) r.parent], [null, null, null]);
+    });
+
+    test(
+      'RowSpec isItem is true exactly for bullet numbered task and quote',
+      () {
+        const items = {
+          RowKind.bullet,
+          RowKind.numbered,
+          RowKind.task,
+          RowKind.quote,
+        };
+        for (final kind in RowKind.values) {
+          // Built from run-time values (not const).
+          final start = kind.index;
+          final spec = RowSpec(
+            kind: kind,
+            start: start,
+            textStart: start,
+            textEnd: start + 1,
+            end: start + 2,
+          );
+          expect(spec.isItem, items.contains(kind), reason: kind.name);
+        }
+        expect(RowKind.values, contains(_table));
+      },
+    );
+
+    test('a split table row is not an item row', () {
+      final rows = _rows('- a\n| x |\n|---|\n> q');
+      expect([for (final r in rows) r.kind], [_bullet, _table, _quote]);
+      expect([for (final r in rows) r.isItem], [true, false, true]);
+    });
+  });
+
+  group('table round trip (Spec 197 R9)', () {
+    test('joinRows reproduces every table fixture byte for byte', () {
+      // The fixtures hold every shape R9 names.
+      final texts = [for (final (t, _) in _wi202Fixtures.values) t];
+      expect(texts.any((t) => t.contains('\r\n')), isTrue, reason: 'CRLF');
+      expect(texts.any((t) => t.contains('\t')), isTrue, reason: 'tabs');
+      expect(texts.any((t) => t.contains('|  \n')), isTrue, reason: 'trailing');
+      expect(texts.any((t) => t.contains('\\|')), isTrue, reason: 'escaped');
+      expect(texts.any((t) => !t.endsWith('\n')), isTrue, reason: 'no final');
+
+      for (final MapEntry(key: name, value: (text, tables))
+          in _wi202Fixtures.entries) {
+        for (final atStart in [false, true]) {
+          final rows = _rows(text, atSegmentStart: atStart);
+          expect(joinRows(text, rows), text, reason: '$name $atStart');
+          _expectWellFormed(text, rows, '$name atSegmentStart $atStart');
+          _wi202ExpectTablesMatchLines(
+            text,
+            rows,
+            atSegmentStart: atStart,
+            label: name,
+          );
+          expect(
+            rows.where((r) => r.kind == _table),
+            hasLength(tables),
+            reason: '$name atSegmentStart $atStart',
+          );
+        }
+      }
+      // The fenced table is one code row.
+      expect(
+        [
+          for (final r in _rows(_wi202Fixtures['table inside a fence']!.$1))
+            r.kind,
+        ],
+        [_code, _prose],
+      );
+    });
+
+    test(
+      'joinRows reproduces a seeded sweep of generated strings with table lines',
+      () {
+        final rng = Random(202);
+        var tables = 0;
+        for (var i = 0; i < 1500; i++) {
+          final text = _wi202Generate(rng, 24);
+          final atStart = rng.nextBool();
+          final rows = _rows(text, atSegmentStart: atStart);
+          final label = 'sweep $i ${text.codeUnits}';
+          expect(joinRows(text, rows), text, reason: label);
+          _expectWellFormed(text, rows, label);
+          _wi202ExpectTablesMatchLines(
+            text,
+            rows,
+            atSegmentStart: atStart,
+            label: label,
+          );
+          tables += rows.where((r) => r.kind == _table).length;
+        }
+        expect(tables, greaterThan(150), reason: 'the sweep forms tables');
+      },
+    );
+
+    test(
+      'a table that is not at the segment start round trips with atSegmentStart false',
+      () {
+        const text = 'intro\n| a | b |\n|---|---|\n| 1 | 2 |\nend';
+        final rows = _rows(text);
+        expect(joinRows(text, rows), text);
+        expect(_shape(text), [
+          (_prose, '', 'intro', '\n'),
+          (_table, '', '| a | b |\n|---|---|\n| 1 | 2 |', '\n'),
+          (_prose, '', 'end', ''),
+        ]);
+        expect(_shape(text, atSegmentStart: true), _shape(text));
+      },
+    );
+
+    test(
+      'atSegmentStart decides whether table lines after a leading rule are frontmatter',
+      () {
+        const text = '---\n| a | b |\n|---|---|\n---\nbody\n';
+        final start = _rows(text, atSegmentStart: true);
+        expect(joinRows(text, start), text);
+        expect([for (final r in start) r.kind], [_prose]);
+        final away = _rows(text, atSegmentStart: false);
+        expect(joinRows(text, away), text);
+        expect(_shape(text, atSegmentStart: false), [
+          (_prose, '', '---', '\n'),
+          (_table, '', '| a | b |\n|---|---|', '\n'),
+          (_prose, '', '---\nbody\n', ''),
+        ]);
+      },
+    );
+  });
+
+  group('matchRows across a table kind change (Spec 197 R10)', () {
+    /// `p`, a header line, then a one-cell delimiter line `|------|`.
+    const before = 'p\n| a | b |\n|------|';
+    final pipe = before.indexOf('------') + 3;
+    final completed = before.replaceRange(pipe, pipe, '|');
+
+    test(
+      'typing the pipe that completes a delimiter line maps the focused prose row to the new table row',
+      () {
+        expect(completed, 'p\n| a | b |\n|---|---|');
+        final edit = SegmentEdit(
+          start: pipe,
+          end: pipe,
+          replacement: '|',
+          selection: SegmentSelection.collapsed(pipe + 1),
+        );
+        expect(edit.apply(before), completed);
+        final old = _rows(before);
+        final now = _rows(completed);
+        expect([for (final r in old) r.kind], [_prose]);
+        expect([for (final r in now) r.kind], [_prose, _table]);
+        expect(matchRows(old, now, edit: edit, focused: 0), [1]);
+
+        // Without a paragraph above: the one prose row becomes the table.
+        final bare = before.substring(2);
+        final at = pipe - 2;
+        final bareEdit = SegmentEdit(
+          start: at,
+          end: at,
+          replacement: '|',
+          selection: SegmentSelection.collapsed(at + 1),
+        );
+        final bareRows = _rows(bareEdit.apply(bare));
+        expect([for (final r in bareRows) r.kind], [_table]);
+        expect(matchRows(_rows(bare), bareRows, edit: bareEdit, focused: 0), [
+          0,
+        ]);
+      },
+    );
+
+    test(
+      'breaking the delimiter line maps the focused table row back to a prose row',
+      () {
+        final edit = SegmentEdit(
+          start: pipe,
+          end: pipe + 1,
+          replacement: '',
+          selection: SegmentSelection.collapsed(pipe),
+        );
+        expect(edit.apply(completed), before);
+        final old = _rows(completed);
+        final now = _rows(before);
+        expect([for (final r in old) r.kind], [_prose, _table]);
+        expect([for (final r in now) r.kind], [_prose]);
+        final match = matchRows(old, now, edit: edit, focused: 1);
+        expect(match[1], 0, reason: 'the focused row keeps its identity');
+      },
+    );
+
+    test('a table row that is not focused keeps its continuation by kind', () {
+      const text = '| a |\n|---|\n| 1 |\npara';
+      // Typing in the prose row below leaves the table row matched.
+      final edit = SegmentEdit(
+        start: text.length,
+        end: text.length,
+        replacement: 'x',
+        selection: SegmentSelection.collapsed(text.length + 1),
+      );
+      final now = _rows(edit.apply(text));
+      expect([for (final r in now) r.kind], [_table, _prose]);
+      expect(matchRows(_rows(text), now, edit: edit, focused: 1), [0, 1]);
+    });
+  });
 }

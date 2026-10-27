@@ -237,6 +237,10 @@ final class _SpanBuilder {
           codeLines[i] = true;
         case MdLineKind.blank || MdLineKind.frontmatter:
           break;
+        case MdLineKind.tableHeader ||
+            MdLineKind.tableDelimiter ||
+            MdLineKind.tableBody:
+          throw UnimplementedError('WI #202');
       }
     }
 
