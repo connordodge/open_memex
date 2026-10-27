@@ -489,6 +489,26 @@ void main() {
       expect(touchesListItem('para\n- c', _sel(0, 6), source: true), isTrue);
     });
 
+    test(
+      'R25 a range starting at an item text end still touches that item',
+      () {
+        // Offset 7 is the content end of item a; 8 starts line b. The range
+        // 7..8 reaches no text of b, so only a moves, in both modes.
+        const text = '- x\n- a\n- b';
+        _moveRange(
+          text,
+          _sel(7, 8),
+          '- x\n  - a\n- b',
+          selectionAfter: _sel(9, 10),
+        );
+        expect(touchesListItem(text, _sel(7, 8)), isTrue);
+        expect(touchesListItem(text, _sel(7, 8), source: true), isTrue);
+        // One character later the range starts in line b instead: a is out.
+        expect(touchesListItem(text, _sel(8, 9)), isFalse);
+        expect(touchesListItem(text, _sel(8, 9), source: true), isTrue);
+      },
+    );
+
     test('R25 a selection inside the marker moves the item only in Source', () {
       _noneRange('- a\n- b', _sel(4, 5), modes: const [false]);
       _moveRange('- a\n- b', _sel(4, 5), '- a\n  - b', modes: const [true]);
@@ -508,6 +528,18 @@ void main() {
       _move('- a\n- |b', '- a\n  - |b');
       _move('- a\n- b|', '- a\n  - b|');
       _move('- a\n- |', '- a\n  - |');
+    });
+
+    test('R27 a caret in the indentation or marker keeps its distance', () {
+      // Tab: the text start moves 2 right, so does a caret before it.
+      _move('- a\n|- b', '- a\n  |- b');
+      _move('- a\n-| b', '- a\n  -| b');
+      // Shift+Tab: a caret in the removed indentation clamps to the row
+      // start, one further in keeps its distance from the text start.
+      _move('- a\n|  - b', '- a\n|- b', outdent: true);
+      _move('- a\n | - b', '- a\n|- b', outdent: true);
+      _move('- a\n  |- b', '- a\n|- b', outdent: true);
+      _move('- a\n  -| b', '- a\n-| b', outdent: true);
     });
 
     test('R3 a selection inside one item text moves it and stays on it', () {
