@@ -23,6 +23,7 @@ import 'package:open_memex_app/src/widgets/editor/link_region.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_decorations.dart';
 import 'package:open_memex_app/src/widgets/editor/segmented_body.dart';
+import 'package:open_memex_app/src/widgets/editor/table_grid.dart';
 
 import '../support/editor_scope.dart';
 import '../support/font_fetch_hold.dart';
@@ -284,8 +285,9 @@ void main() {
     );
 
     testWidgets(
-      'an excerpt card holding a table pumps and shows the table text as a prose row would',
+      'an excerpt card holding a table pumps and shows the table text in a card grid',
       (tester) async {
+        // WI #208 replaced the card's prose-like fallback arm with the grid.
         const text = 'Intro\n$_wi202Table';
         await tester.pumpWidget(
           MaterialApp(
@@ -303,33 +305,15 @@ void main() {
         expect(find.byKey(const Key('card-row-1')), findsOneWidget);
         expect(find.byKey(const Key('card-row-2')), findsNothing);
         expect(find.byKey(const Key('card-row-marker-1')), findsNothing);
-        RichText rich(int r) => tester.widget<RichText>(
-          find.descendant(
-            of: find.byKey(Key('card-row-text-$r')),
-            matching: find.byType(RichText),
-          ),
-        );
-        expect(rich(1).text.toPlainText(), _wi202Table);
         expect(
-          tester.getTopLeft(find.byKey(const Key('card-row-text-1'))).dx,
-          moreOrLessEquals(
-            tester.getTopLeft(find.byKey(const Key('card-row-text-0'))).dx,
-            epsilon: 0.01,
-          ),
-          reason: 'at the inner left, as a prose row',
+          find.byKey(const Key('card-row-text-1')),
+          findsNothing,
+          reason: 'the table row is painted by the grid, not as a prose row',
         );
-        // Inline styles as on plain lines, every marker hidden.
-        expect(
-          _wi202Styles(rich(1).text),
-          _wi202Styles(
-            buildLivePreviewSpan(
-              _wi202Plain,
-              style: rich(1).text.style,
-              forceHidden: true,
-              atSegmentStart: false,
-            ),
-          ),
+        final grid = tester.widget<TableGrid>(
+          find.byKey(const Key('card-table-1')),
         );
+        expect(grid.text, _wi202Table);
       },
     );
 
