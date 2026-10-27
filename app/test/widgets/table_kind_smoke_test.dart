@@ -138,8 +138,13 @@ Note _wi202Note(String content) => Note(
 
 Finder _wi202Row(int s, int r) => find.byKey(Key('editor-row-$s-$r'));
 
-Finder _wi202Field(int s, int r) =>
-    find.descendant(of: _wi202Row(s, r), matching: find.byType(EditableText));
+/// The row's field, also while it is offstage (#204: a rendered table row
+/// keeps its field mounted offstage under the grid).
+Finder _wi202Field(int s, int r) => find.descendant(
+  of: find.byKey(Key('editor-row-$s-$r'), skipOffstage: false),
+  matching: find.byType(EditableText, skipOffstage: false),
+  skipOffstage: false,
+);
 
 LivePreviewController _wi202Ctrl(WidgetTester tester, int s, int r) =>
     tester.widget<EditableText>(_wi202Field(s, r)).controller
@@ -254,11 +259,12 @@ void main() {
 
         // A caret in the table reveals and edits it like a prose row.
         final end = content.indexOf(' 2 |') + 4;
-        await focusSegmentAt(
-          tester,
-          find.byKey(textSegmentKey(0)),
-          offset: end,
-        );
+        // The field is offstage under the grid while rendered (#204), so the
+        // all-fields-onstage focusSegmentAt cannot be used.
+        await tester.showKeyboard(_wi202Field(0, 1));
+        await tester.pump();
+        handle.select(TextSelection.collapsed(offset: end));
+        await tester.pump();
         expect(tester.takeException(), isNull);
         expect(handle.focusedRow, 1);
         await tester.enterText(_wi202Field(0, 1), '${_wi202Table}z');
