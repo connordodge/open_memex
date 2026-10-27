@@ -24,9 +24,11 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db.dart';
 import 'package:open_memex_app/src/editor/editor_rows.dart';
+import 'package:open_memex_app/src/editor/markdown_lines.dart';
 import 'package:open_memex_app/src/editor/markdown_table.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
+import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_decorations.dart';
 
 import '../support/font_fetch_hold.dart';
@@ -271,6 +273,7 @@ Rect _seamRect(TableBody body, int start, int end) {
 
 void main() {
   holdFontFetches();
+  _contractTests();
 
   setUpAll(() {
     _expectRows(_text, const [RowKind.prose, RowKind.table, RowKind.prose]);
@@ -885,6 +888,165 @@ void main() {
         await body.placeCaret(2);
         _expectColour(tester, 0, 2, OmColors.fg0, 'a prose pipe');
         expectTableRendered(0, 1);
+      },
+      variant: macOnly,
+    );
+  });
+}
+
+/// The span `buildLivePreviewSpan` gives [text] with the base style.
+TextSpan _span(String text, {TextSelection? selection, bool hidden = false}) =>
+    buildLivePreviewSpan(
+      text,
+      style: const TextStyle(color: OmColors.fg0, fontSize: 15),
+      selection: selection,
+      forceHidden: hidden,
+    );
+
+/// Contracts the doc comments promise, pinned at the span builder, the
+/// shared grouping rule and the pills (verify round).
+void _contractTests() {
+  group('table contracts (verify)', () {
+    const table = '| Head | `c` |\n|:-|-:|\n| a | b |';
+    const intro = 'x\n$table';
+    final headerPipe = intro.indexOf('|');
+
+    for (final (name, selection, hidden) in [
+      (
+        'a table the caret is not on shows no pipe or header styling at the span level',
+        const TextSelection.collapsed(offset: 0),
+        false,
+      ),
+      (
+        'a table built with forceHidden shows no pipe or header styling at the span level',
+        const TextSelection.collapsed(offset: 4),
+        true,
+      ),
+    ]) {
+      test(name, () {
+        final span = _span(intro, selection: selection, hidden: hidden);
+        final delimiter = intro.indexOf('|:');
+        expect(_styleAt(span, headerPipe).color, OmColors.fg0);
+        expect(
+          _styleAt(span, headerPipe).fontSize,
+          15,
+          reason: 'an unrevealed pipe is shown, never hidden as a marker',
+        );
+        expect(
+          _styleAt(span, intro.indexOf('H')).fontWeight,
+          isNot(FontWeight.w700),
+          reason: 'header cell text is bold only while revealed',
+        );
+        for (var at = delimiter; at < delimiter + 6; at++) {
+          expect(
+            _styleAt(span, at).color,
+            OmColors.fg0,
+            reason: 'delimiter char $at is a marker only while revealed',
+          );
+          expect(
+            _styleAt(span, at).fontSize,
+            15,
+            reason: 'delimiter char $at stays shown while not revealed',
+          );
+        }
+        expect(_styleAt(span, intro.indexOf('b')).color, OmColors.fg0);
+      });
+    }
+
+    test(
+      'a revealed table at the span level styles pipes delimiter and header',
+      () {
+        final span = _span(
+          intro,
+          selection: const TextSelection.collapsed(offset: 4),
+        );
+        expect(_styleAt(span, headerPipe).color, OmColors.fg2);
+        expect(_styleAt(span, intro.indexOf('H')).fontWeight, FontWeight.w700);
+        final delimiter = intro.indexOf('|:');
+        for (var at = delimiter; at < delimiter + 6; at++) {
+          expect(_styleAt(span, at).color, OmColors.fg2, reason: 'char $at');
+        }
+        expect(
+          _styleAt(span, intro.indexOf('a |')).fontWeight,
+          isNot(FontWeight.w700),
+        );
+      },
+    );
+
+    test(
+      'a code span across a pipe forms no code token in a revealed or a hidden table',
+      () {
+        const t = '| `a | b` | c |\n|---|---|---|\n| 1 | 2 | 3 |';
+        for (final (selection, hidden) in [
+          (const TextSelection.collapsed(offset: 0), false),
+          (const TextSelection.collapsed(offset: 40), false),
+          (const TextSelection.collapsed(offset: 0), true),
+        ]) {
+          final span = _span(t, selection: selection, hidden: hidden);
+          final tick = t.indexOf('`');
+          final closing = t.lastIndexOf('`');
+          for (final at in [tick, closing]) {
+            expect(
+              _styleAt(span, at).fontSize,
+              15,
+              reason:
+                  'the backtick at $at is plain text, never a hidden marker',
+            );
+            expect(
+              _styleAt(span, at).color,
+              OmColors.fg0,
+              reason: 'the backtick at $at is cell text, not a code marker',
+            );
+          }
+          expect(
+            _styleAt(span, t.indexOf('a ')).color,
+            isNot(OmColors.fg1),
+            reason: 'no code content style across the pipe',
+          );
+        }
+      },
+    );
+
+    test(
+      'the table grouping rule ends a table at its last delimiter or body line',
+      () {
+        MdLineKind kindOf(String t, int i) =>
+            classifyLines(t, atSegmentStart: true)[i].kind;
+        expect(kindOf('p\n| a |\n|---|', 1), MdLineKind.tableHeader);
+
+        List<MdLine> lines(String t) => classifyLines(t, atSegmentStart: true);
+        // Header and delimiter only.
+        expect(tableLastLine(lines('p\n| a |\n|---|'), 1), 2);
+        // Header, delimiter and two body lines, then prose.
+        expect(tableLastLine(lines('p\n| a |\n|---|\n| 1 |\n| 2 |\nq'), 1), 4);
+        // The table at the top of the text.
+        expect(tableLastLine(lines('| a |\n|---|\n| 1 |'), 0), 2);
+      },
+    );
+
+    testWidgets(
+      'revealed header and body cells each paint a pill for their own code span and a code span across a pipe paints none',
+      (tester) async {
+        const t =
+            '| `h` | `p | q` |\n'
+            '|---|---|---|\n'
+            '| `b` | y | z |';
+        const text = '$_intro\n$t';
+        final body = await pumpTable(tester, text);
+        await body.placeCaret(_tableStart + t.indexOf('y'));
+        expectTableRevealed(0, 1);
+
+        final pills = _filled(tester, 1, OmColors.surface4);
+        expect(pills, hasLength(2), reason: 'h and b only; `p | q` is no span');
+        for (final content in ['h', 'b']) {
+          final at = _tableStart + t.indexOf('`$content`') + 1;
+          final rect = _seamRect(body, at, at + 1);
+          expect(
+            pills.where((p) => p.rect.overlaps(rect)),
+            hasLength(1),
+            reason: 'one pill under the code content $content',
+          );
+        }
       },
       variant: macOnly,
     );
