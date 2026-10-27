@@ -942,10 +942,7 @@ void main() {
           );
           // No vertical rule at the column boundary.
           expect(at(w / 2, rowTop + _l / 2), _isPixel(bg), reason: 'row $i');
-          expect(
-            at(w / 2, rowTop + _l / 2),
-            isNot(_isRuleOver(bg)),
-          );
+          expect(at(w / 2, rowTop + _l / 2), isNot(_isRuleOver(bg)));
           for (final x in [_c / 2, w / 2 + _c / 2, w - _c / 2]) {
             final last = at(x, rowBottom - 0.5);
             if (i < 2) {
@@ -1618,4 +1615,450 @@ void main() {
     },
     variant: macOnly,
   );
+
+  // -------------------------------------------------------------------------
+  // Verify round: contracts the first green run left unpinned
+  // -------------------------------------------------------------------------
+  group('grid contracts (verify)', () {
+    /// Pumps [TableGrid] of [text] in a MaterialApp whose structure never
+    /// changes, so a second call updates the same grid in place.
+    Future<void> pumpScaled(
+      WidgetTester tester,
+      String text, {
+      required double scale,
+      Widget Function(Widget grid)? wrap,
+    }) async {
+      tester.view
+        ..physicalSize = const Size(800, 600)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final grid = TableGrid(
+        key: _bareKey,
+        text: text,
+        style: editorBodyStyle(),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildOmTheme(),
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(
+              context,
+            ).copyWith(textScaler: TextScaler.linear(scale)),
+            child: child!,
+          ),
+          home: Material(
+            color: OmColors.surface2,
+            child: Align(
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: 600,
+                child: wrap == null ? grid : wrap(grid),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+    }
+
+    List<NoteTitle> noteTitles() => [
+      NoteTitle(id: 'topic-note', title: 'Note', updatedAt: 0),
+    ];
+
+    /// The cell text offset where visual line [line] of cell [row], [col]
+    /// starts (probing the paragraph at the content left of that line).
+    int lineStartOf(WidgetTester tester, int row, int col, int line) {
+      final p = _cellParagraph(tester, row, col);
+      return p.getPositionForOffset(Offset(0.5, (line + 0.5) * _l)).offset;
+    }
+
+    testWidgets(
+      'the grid lays out again at a new text scale and keeps the new heights',
+      (tester) async {
+        await pumpScaled(tester, _heightTable, scale: 1);
+        expect(
+          tester.getSize(find.byKey(_bareKey)).height,
+          moreOrLessEquals(_band + 3 * _l, epsilon: _eps),
+        );
+
+        await pumpScaled(tester, _heightTable, scale: 2);
+        expect(
+          tester.getSize(find.byKey(_bareKey)).height,
+          moreOrLessEquals(2 * _band + 3 * 2 * _l, epsilon: _eps),
+          reason: 'the same grid, laid out again from the scaled metrics',
+        );
+
+        await pumpScaled(tester, _heightTable, scale: 1);
+        expect(
+          tester.getSize(find.byKey(_bareKey)).height,
+          moreOrLessEquals(_band + 3 * _l, epsilon: _eps),
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a grid at unbounded width takes the sum of its natural column widths plus padding',
+      (tester) async {
+        await pumpScaled(
+          tester,
+          _heightTable,
+          scale: 1,
+          wrap: (grid) => UnconstrainedBox(
+            alignment: Alignment.topLeft,
+            constrainedAxis: Axis.vertical,
+            child: grid,
+          ),
+        );
+        expect(tester.takeException(), isNull);
+        final size = tester.getSize(find.byKey(_bareKey));
+        // Each column is as wide as its widest cell text, plus 2 c.
+        final cells = find
+            .descendant(
+              of: find.byKey(_bareKey),
+              matching: find.byType(RichText),
+            )
+            .evaluate()
+            .map((e) => e.renderObject! as RenderParagraph)
+            .toList();
+        expect(cells, hasLength(8));
+        final natural = [
+          for (var j = 0; j < 2; j++)
+            [
+              for (var i = j; i < cells.length; i += 2) _glyphs(cells[i]).width,
+            ].reduce(math.max),
+        ];
+        expect(
+          size.width,
+          moreOrLessEquals(natural[0] + natural[1] + 4 * _c, epsilon: 0.5),
+        );
+        expect(size.height, moreOrLessEquals(_band + 3 * _l, epsilon: _eps));
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'the grid is hit at a blank point of its band so the pointer layer above never loses it',
+      (tester) async {
+        await pumpScaled(tester, _heightTable, scale: 1);
+        final box = tester.renderObject(find.byKey(_bareKey));
+        final top = tester.getTopLeft(find.byKey(_bareKey));
+        // The band's top 4 px holds no cell.
+        final hit = tester.hitTestOnBinding(top + const Offset(300, 1));
+        expect(
+          [for (final e in hit.path) e.target],
+          contains(same(box)),
+          reason: 'a point in the band padding hits the grid itself',
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'text that is not a table draws nothing and has no line boxes',
+      (tester) async {
+        await pumpScaled(tester, 'not a table', scale: 1);
+        expect(tester.takeException(), isNull);
+        expect(tester.getSize(find.byKey(_bareKey)).height, 0);
+        expect(
+          tester.state<TableGridState>(find.byKey(_bareKey)).lineBoxes(),
+          isNull,
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a right and a centre aligned column keep their cell text on one line while the left column wraps',
+      (tester) async {
+        const table =
+            '| Notes | Mid | End |\n|:--|:-:|--:|\n'
+            '| $_longCell | two words | more words |';
+        await pumpTable(
+          tester,
+          _doc(table),
+          width: tableNarrowWidth,
+          daily: true,
+        );
+        expect(tester.takeException(), isNull);
+        expectTableRendered(0, 1);
+        expect(_lineCount(_cellParagraph(tester, 1, 0)), greaterThan(1));
+        expect(_lineCount(_cellParagraph(tester, 1, 1)), 1, reason: 'centre');
+        expect(_lineCount(_cellParagraph(tester, 1, 2)), 1, reason: 'right');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a cell with a word made only of hidden markers lays out without error',
+      (tester) async {
+        const table = '| A | B |\n|---|---|\n| [[ ]] y | `` `` z |';
+        await pumpTable(tester, _doc(table));
+        expect(tester.takeException(), isNull);
+        expectTableRendered(0, 1);
+        expect(
+          tester.getSize(tableGrid(0, 1)).height,
+          moreOrLessEquals(_band + _l, epsilon: _eps),
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a Cmd-hover that exactly spans one cell styles that cell and no other cell',
+      (tester) async {
+        const table =
+            '| A | B | C |\n|---|---|---|\n| [[Note]] | [[Note]] | [[Note]] |';
+        await pumpTable(tester, _doc(table), titles: noteTitles());
+        await tester.pump();
+        final controller = tableRowController(tester, 0, 1);
+        final t = _parsed(table);
+        final middle = t.body[0].cells[1];
+        controller.cmdHover = TextRange(start: middle.start, end: middle.end);
+        await tester.pump();
+        expectTableRendered(0, 1);
+
+        List<(String, TextStyle?)> expected({required bool hovered}) => _leaves(
+          buildLivePreviewSpan(
+            '[[Note]]',
+            itemText: true,
+            forceHidden: true,
+            isResolved: controller.isResolved,
+            cmdHover: hovered ? const TextRange(start: 0, end: 8) : null,
+          ),
+        );
+        expect(_leaves(_cellSpan(tester, 1, 1)), expected(hovered: true));
+        for (final col in [0, 2]) {
+          expect(
+            _leaves(_cellSpan(tester, 1, col)),
+            expected(hovered: false),
+            reason: 'cell $col is not hovered',
+          );
+        }
+        expect(expected(hovered: true), isNot(expected(hovered: false)));
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a point in a missing cell maps to the end of the last drawn cell of its row',
+      (tester) async {
+        await pumpTable(tester, _doc(_unevenTable));
+        expectTableRendered(0, 1);
+        final t = _parsed(_unevenTable);
+        final boxes = _gridBoxes(tester);
+        final size = tester.getSize(tableGrid(0, 1));
+        final one = t.body[0].cells.single;
+        // Column 3 of three, mid-row 1 (the short row).
+        final inLast = boxes.offsetAt(
+          _boxPoint(tester, boxes, Offset(size.width - 20, _band + _l / 2)),
+        );
+        expect(inLast, one.end, reason: 'a missing cell: the row text end');
+        final inMiddle = boxes.offsetAt(
+          _boxPoint(tester, boxes, Offset(size.width / 2, _band + _l / 2)),
+        );
+        expect(inMiddle, one.end);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a body row with no cells gets a caret inside its row and maps its points to its line start',
+      (tester) async {
+        const table = '| A | B |\n|---|---|\n|\n| x | y |';
+        await pumpTable(tester, _doc(table));
+        expectTableRendered(0, 1);
+        final t = _parsed(table);
+        final empty = t.body[0].line;
+        expect(t.body[0].cells, isEmpty, reason: 'fixture: a bare pipe');
+        final boxes = _gridBoxes(tester);
+        final width = tester.getSize(tableGrid(0, 1)).width;
+        for (var at = empty.start; at <= empty.end; at++) {
+          final caret = _gridRel(tester, boxes, boxes.caretRect(at));
+          expect(caret.height, greaterThan(0), reason: 'caret at $at');
+          expect(caret.top, moreOrLessEquals(_band, epsilon: _eps));
+          expect(caret.bottom, lessThanOrEqualTo(_band + _l + _eps));
+        }
+        expect(
+          boxes.offsetAt(
+            _boxPoint(tester, boxes, Offset(width / 2, _band + _l / 2)),
+          ),
+          empty.start,
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'the line boxes of a wrapped row split at the cell line start and end at the next start and the row end',
+      (tester) async {
+        await pumpTable(tester, _doc(_wrapTable));
+        expectTableRendered(0, 1);
+        final t = _parsed(_wrapTable);
+        final boxes = _gridBoxes(tester);
+        final lines = boxes.lines;
+        final cell = t.body[0].cells[1];
+        final second = cell.start + lineStartOf(tester, 1, 1, 1);
+        expect(second, greaterThan(cell.start), reason: 'fixture: it wraps');
+
+        final rows = [t.header, t.body[0].line, t.body[1].line];
+        final expected = [
+          (rows[0].start, rows[0].end),
+          (rows[1].start, second),
+          (second, rows[1].end),
+          (rows[2].start, rows[2].end),
+        ];
+        expect([for (final l in lines) (l.range.start, l.range.end)], expected);
+
+        // The caret at the start of the second visual line is on that line;
+        // one before (the wrapping space) is still on the first.
+        Rect caretAt(int at) => _gridRel(tester, boxes, boxes.caretRect(at));
+        expect(
+          caretAt(second).top,
+          moreOrLessEquals(_band + _l, epsilon: _eps),
+        );
+        expect(caretAt(second - 1).top, moreOrLessEquals(_band, epsilon: _eps));
+        expect(caretAt(second).left, lessThan(caretAt(second - 1).left));
+
+        // A point on the second line maps into the second line's text.
+        final glyph = boxes
+            .boxesFor(TextRange(start: second, end: second + 1))
+            .single;
+        expect(glyph.top, moreOrLessEquals(lines[2].top, epsilon: _eps));
+        expect(
+          boxes.offsetAt(Offset(glyph.left + glyph.width / 4, glyph.center.dy)),
+          second,
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a header that wraps takes one line box per visual line inside the band',
+      (tester) async {
+        final table = '| Topic | $_longCell |\n|---|---|\n| x | y |';
+        await pumpTable(tester, _doc(table));
+        expectTableRendered(0, 1);
+        expect(_lineCount(_cellParagraph(tester, 0, 1)), 2, reason: 'fixture');
+        final t = _parsed(table);
+        final boxes = _gridBoxes(tester);
+        final lines = boxes.lines;
+        final cell = t.header.cells[1];
+        final second = cell.start + lineStartOf(tester, 0, 1, 1);
+        final band = 2 * _l + _h;
+
+        expect(
+          [for (final l in lines) (l.range.start, l.range.end)],
+          [
+            (t.header.start, second),
+            (second, t.header.end),
+            (t.body[0].line.start, t.body[0].line.end),
+          ],
+        );
+        List<double> span(LineBox l) {
+          final r = _gridRel(
+            tester,
+            boxes,
+            Rect.fromLTRB(0, l.top, 0, l.bottom),
+          );
+          return [r.top, r.bottom];
+        }
+
+        expect(span(lines[0]), [
+          moreOrLessEquals(0, epsilon: _eps),
+          moreOrLessEquals(_h / 2 + _l, epsilon: _eps),
+        ]);
+        expect(span(lines[1]), [
+          moreOrLessEquals(_h / 2 + _l, epsilon: _eps),
+          moreOrLessEquals(band, epsilon: _eps),
+        ]);
+        expect(span(lines[2]), [
+          moreOrLessEquals(band, epsilon: _eps),
+          moreOrLessEquals(band + _l, epsilon: _eps),
+        ]);
+        expect(
+          tester.getSize(tableGrid(0, 1)).height,
+          moreOrLessEquals(band + _l, epsilon: _eps),
+        );
+
+        final caret = _gridRel(tester, boxes, boxes.caretRect(second));
+        expect(caret.top, moreOrLessEquals(_h / 2 + _l, epsilon: _eps));
+        expect(caret.height, moreOrLessEquals(_l, epsilon: _eps));
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'boxesFor splits a wrapped cell per line and stops at a line start',
+      (tester) async {
+        await pumpTable(tester, _doc(_wrapTable));
+        final t = _parsed(_wrapTable);
+        final boxes = _gridBoxes(tester);
+        final cell = t.body[0].cells[1];
+        final second = cell.start + lineStartOf(tester, 1, 1, 1);
+
+        final whole = boxes.boxesFor(
+          TextRange(start: cell.start, end: cell.end),
+        );
+        expect(whole, hasLength(2), reason: 'one rect per visual line');
+        expect(
+          whole[1].top,
+          moreOrLessEquals(whole[0].top + _l, epsilon: _eps),
+        );
+        expect(whole[1].left, lessThan(whole[0].right));
+
+        // A range that ends where line 2 starts selects line 1 only.
+        final first = boxes.boxesFor(TextRange(start: cell.start, end: second));
+        expect(first, hasLength(1));
+        expect(first.single.top, moreOrLessEquals(whole[0].top, epsilon: _eps));
+
+        // The separator between two cells selects no cell text.
+        expect(
+          boxes.boxesFor(
+            TextRange(
+              start: t.body[1].cells[0].end,
+              end: t.body[1].cells[1].start,
+            ),
+          ),
+          isEmpty,
+        );
+        expect(boxes.boxesFor(const TextRange.collapsed(3)), isEmpty);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a range of hidden markers only gets a zero-width rect at the caret x of its cell line',
+      (tester) async {
+        await pumpTable(tester, _doc(_seamTable));
+        expectTableRendered(0, 1);
+        final t = _parsed(_seamTable);
+        final boxes = _gridBoxes(tester);
+        final start = t.body[0].cells[0].start;
+        final rects = boxes.boxesFor(TextRange(start: start, end: start + 2));
+        expect(rects, hasLength(1));
+        expect(rects.single.width, moreOrLessEquals(0, epsilon: _eps));
+        expect(rects.single.height, moreOrLessEquals(_l, epsilon: _eps));
+        final caret = boxes.caretRect(start);
+        expect(rects.single.left, moreOrLessEquals(caret.left, epsilon: 0.5));
+        expect(rects.single.top, moreOrLessEquals(caret.top, epsilon: _eps));
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a caret in the delimiter line is zero-width at the first header content left',
+      (tester) async {
+        await pumpTable(tester, _doc(_seamTable));
+        final t = _parsed(_seamTable);
+        final boxes = _gridBoxes(tester);
+        for (var at = t.delimiter.start; at <= t.delimiter.end; at++) {
+          final caret = _gridRel(tester, boxes, boxes.caretRect(at));
+          expect(caret.width, moreOrLessEquals(0, epsilon: _eps));
+          expect(caret.left, moreOrLessEquals(_c, epsilon: _eps));
+        }
+      },
+      variant: macOnly,
+    );
+  });
 }
