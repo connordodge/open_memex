@@ -38,6 +38,14 @@ _Avoid_: WYSIWYG, rich text, preview pane, rendered mode
 One editable field inside a text segment of the live-preview editor: an item row holds one list item, task or quote line with its marker in a left column, and a prose row holds a run of consecutive lines that are not item lines. Not the same thing as a block.
 _Avoid_: block, block field, line field
 
+**Indent / Outdent**:
+Moving a list item one nesting level deeper (indent, Tab) or shallower (outdent, Shift-Tab) by changing its leading whitespace in the note body. An indented item becomes a child item of the item above it; its parent item and depth follow from the indentation.
+_Avoid_: nest, un-nest, demote, promote
+
+**Numbered run**:
+A maximal sequence of numbered list items at the same depth, ended by a non-item line (a blank line included), a shallower item, or a non-numbered item (bullet, task or quote) at the same depth. A sub-list of numbered child items is its own numbered run.
+_Avoid_: numbered list (when the depth matters), sequence
+
 **Source mode**:
 The note editor's raw view of a note body: one plain field showing the markdown exactly as saved, with no formatting rendered.
 _Avoid_: raw mode, plain mode, edit mode
