@@ -340,7 +340,6 @@ final class _SpanBuilder {
       final last = tableLastLine(lines, header);
       final touched = revealed.sublist(header, last + 1).contains(true);
       revealed.fillRange(header, last + 1, touched);
-      header = last;
     }
     return revealed;
   }

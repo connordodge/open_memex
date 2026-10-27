@@ -335,7 +335,6 @@ List<PaintedDecoration> layoutDecorations({
             }
           }
         }
-        i = last;
       case MdLineKind.tableDelimiter:
       case MdLineKind.tableBody:
         // Taken with their header line's table.
