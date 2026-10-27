@@ -26,6 +26,8 @@ import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/widgets/editor/capture_gutter.dart';
 import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
+import 'package:open_memex_app/src/widgets/editor/segment_pointer_layer.dart'
+    show newlineMarkWidth;
 
 import '../support/font_fetch_hold.dart';
 import '../support/mac_editing.dart';
@@ -541,6 +543,40 @@ void main() {
           isEmpty,
           reason: 'the grid paints no selection (R16)',
         );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a selection across a revealed table paints a newline mark at the end of each selected table line',
+      (tester) async {
+        final body = await pumpTable(tester, _text);
+        await body.placeCaret(2);
+        await body.select(
+          TextSelection(baseOffset: 3, extentOffset: _at('Alpha', 3)),
+        );
+        expectTableRevealed(0, 1);
+
+        final seg = body.segmentBoxes();
+        final painted = _selectionRects(
+          tester.renderObject<RenderBox>(find.byKey(textSegmentKey(0))),
+        );
+        // The header and delimiter line ends are inside the selection.
+        for (final start in [_tableStart, _at('|:--|--:|')]) {
+          final line = seg.lines.singleWhere((l) => l.range.start == start);
+          final top = seg.box.localToGlobal(Offset(0, line.top)).dy;
+          final bottom = seg.box.localToGlobal(Offset(0, line.bottom)).dy;
+          expect(
+            painted.where(
+              (r) =>
+                  (r.width - newlineMarkWidth(null)).abs() < 0.01 &&
+                  (r.top - top).abs() < 0.5 &&
+                  (r.bottom - bottom).abs() < 0.5,
+            ),
+            hasLength(1),
+            reason: 'newline mark of the table line starting at $start',
+          );
+        }
       },
       variant: macOnly,
     );
