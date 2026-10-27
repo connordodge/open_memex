@@ -483,6 +483,28 @@ void main() {
     );
 
     testWidgets(
+      'a card table grid sits inside its card-row-r and the row is the grid size',
+      (tester) async {
+        await _wi208PumpRows(tester, _wi208CardText);
+        final row = find.descendant(
+          of: _wi208Rows,
+          matching: find.byKey(const ValueKey('card-row-1')),
+        );
+        expect(row, findsOneWidget, reason: 'the table row keeps card-row-1');
+        expect(
+          find.descendant(of: row, matching: _wi208Grid(1)),
+          findsOneWidget,
+          reason: 'card-table-1 is a descendant of card-row-1',
+        );
+        expect(
+          tester.getSize(row),
+          tester.getSize(_wi208Grid(1, under: _wi208Rows)),
+          reason: 'no decoration wrapper adds padding around the grid',
+        );
+      },
+    );
+
+    testWidgets(
       'a card table lays its cells out in the card text style in fg1',
       (tester) async {
         await _wi208PumpRows(tester, _wi208CardText);
