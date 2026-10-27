@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import '../../editor/editor_rows.dart';
 import '../../editor/segment_selection.dart';
+import 'segment_pointer_layer.dart';
 import 'segment_undo.dart';
 import 'segment_view.dart';
 
@@ -22,6 +23,9 @@ import 'segment_view.dart';
 ///   composing interceptor, D19).
 /// - The right-click menu offers Copy, Cut, Paste and Select All; Select
 ///   All invokes the field's `SelectAllTextIntent` as Cmd+A does.
+/// - A right click on a rendered table grid shows the same menu at the
+///   caret the pointer layer put in the revealed table (Spec #197 R21,
+///   ruling D14), without Copy and Cut while the selection is a caret.
 ///
 /// Within one row, copy, cut, paste and typing keep the field's own
 /// behaviour. Cmd+Z and Shift+Cmd+Z undo and redo the whole segment through
@@ -49,6 +53,9 @@ class _SegmentSelectionOpsState extends State<SegmentSelectionOps> {
 
   /// The pointer of a secondary-button press, until it goes up.
   int? _secondary;
+
+  /// Whether that press went down on a rendered table grid.
+  bool _secondaryOnGrid = false;
 
   late final Map<Type, Action<Intent>> _actions = {
     CopySelectionTextIntent: _AcrossAction<CopySelectionTextIntent>(
@@ -188,17 +195,25 @@ class _SegmentSelectionOpsState extends State<SegmentSelectionOps> {
   }
 
   void _onPointerDown(PointerDownEvent event) {
-    _secondary = event.buttons & kSecondaryButton != 0 ? event.pointer : null;
+    final secondary = event.buttons & kSecondaryButton != 0;
+    _secondary = secondary ? event.pointer : null;
+    // Read before the pointer layer reveals the table (this runs first).
+    _secondaryOnGrid =
+        secondary &&
+        SegmentPointerLayer.onRenderedGrid(context, event.position);
   }
 
   /// A right click went up: once the field has shown its own menu, this
-  /// replaces it while the selection spans rows.
+  /// replaces it while the selection spans rows. A right click on a
+  /// rendered table grid (no field under it, ruling D14) shows this menu
+  /// once the pointer layer has put the caret in the revealed table.
   void _onPointerUp(PointerUpEvent event) {
     if (event.pointer != _secondary) return;
     _secondary = null;
+    final grid = _secondaryOnGrid;
     final at = event.position;
     scheduleMicrotask(() {
-      if (mounted && _across()) _showMenu(at);
+      if (mounted && (grid || _across())) _showMenu(at);
     });
   }
 
@@ -219,8 +234,11 @@ class _SegmentSelectionOpsState extends State<SegmentSelectionOps> {
         child: AdaptiveTextSelectionToolbar.buttonItems(
           anchors: TextSelectionToolbarAnchors(primaryAnchor: at),
           buttonItems: [
-            item(ContextMenuButtonType.copy, _copy),
-            item(ContextMenuButtonType.cut, _cut),
+            // A caret (a right click on a rendered grid) has nothing to copy.
+            if (!_view.selection.isCollapsed) ...[
+              item(ContextMenuButtonType.copy, _copy),
+              item(ContextMenuButtonType.cut, _cut),
+            ],
             item(ContextMenuButtonType.paste, _paste),
             item(ContextMenuButtonType.selectAll, _selectAll),
           ],
