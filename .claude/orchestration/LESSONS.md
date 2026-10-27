@@ -61,3 +61,17 @@ mid-run) added the lessons below.
   `flush()` before deleting a test dir.
 - **`app/pubspec.lock` is gitignored in this repo,** so plugin adds change only pubspec.yaml.
   `GeneratedPluginRegistrant.swift` is gitignored too.
+
+Run 20261025-156 (#156 inline live preview: 1 ticket, 14 WIs across 3 leads, 16 PRs; review off,
+mutation on, Flutter only) added the lessons below.
+
+- **Flutter editor gates are cheap (2–8 min); MUTATION survivors in widget code are the cost.**
+  Why: #181 #183 #184 #185 #186 #187 each failed their first gate with 5–8 of 16 survivors and
+  needed a 15–45 min tests-only round. Repeat sites: `splitRows(..., atSegmentStart: true)` in four
+  files (no test split rows away from a segment start), `shouldRepaint` `||` chains, key handlers'
+  `return true`, and `_applying` guard initializers.
+  How: before ready, the verify test author names a flipping test for each such site.
+- **Write max/min with `dart:math`, not a ternary.**
+  Why: `a > b ? a : b` mutated to `>=` is always equivalent; #185's `composeEdits` needed five
+  exemption write-ups (row_edits.dart:177–203) that `max(a, b)` would not have produced.
+  How: new code uses `max`/`min`. Never rewrite existing code only to drop a mutant site (PROTOCOL §5).
