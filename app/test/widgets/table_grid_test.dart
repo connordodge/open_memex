@@ -2298,4 +2298,85 @@ void main() {
       variant: macOnly,
     );
   });
+
+  // -------------------------------------------------------------------------
+  // Verify round 2: a cell is never a relayout boundary (#217 mutants on
+  // parentUsesSize)
+  // -------------------------------------------------------------------------
+  group('cells are never relayout boundaries (#217)', () {
+    /// Pumps the same tree every call (only the table style differs), so a
+    /// second call updates the grid in place. Nothing the grid's render
+    /// object holds changes, only its cells' paragraphs.
+    Future<void> pump(WidgetTester tester, double fontSize) async {
+      tester.view
+        ..physicalSize = const Size(800, 600)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildOmTheme(),
+          home: Material(
+            color: OmColors.surface2,
+            child: Align(
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: 600,
+                child: TableGrid(
+                  key: _bareKey,
+                  text: _wrapTable,
+                  style: editorBodyStyle().copyWith(fontSize: fontSize),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+    }
+
+    /// The grid's size, then every cell text box relative to the grid's top
+    /// left (so the cell rows' y and the columns' x and widths).
+    (Size, List<Rect>) shape(WidgetTester tester) {
+      final grid = find.byKey(_bareKey);
+      final origin = tester.getTopLeft(grid);
+      final texts = find.descendant(of: grid, matching: find.byType(RichText));
+      return (
+        tester.getSize(grid),
+        [
+          for (var i = 0; i < texts.evaluate().length; i++)
+            tester.getRect(texts.at(i)).shift(-origin),
+        ],
+      );
+    }
+
+    testWidgets(
+      'a cell text that lays out differently in place relays out the grid, its rows and its rules',
+      (tester) async {
+        await pump(tester, 13.5);
+        final small = shape(tester);
+        // The same tree at a larger font: only the cells' paragraphs change
+        // (the grid's own text, table and text scale are equal), so the
+        // grid lays out again only if its cells report up (parentUsesSize).
+        await pump(tester, 27);
+        final grown = shape(tester);
+
+        // The reference: the grid pumped at the larger font from scratch.
+        await tester.pumpWidget(const SizedBox());
+        await pump(tester, 27);
+        final fresh = shape(tester);
+
+        expect(
+          grown.$1.height,
+          greaterThan(small.$1.height + _l),
+          reason: 'the wrapped cell takes more lines at the larger font',
+        );
+        expect(grown.$1, fresh.$1, reason: 'the grid height and width');
+        expect(grown.$2.length, fresh.$2.length);
+        for (final (i, r) in grown.$2.indexed) {
+          expect(r, fresh.$2[i], reason: 'cell $i text box: row y and x');
+        }
+      },
+      variant: macOnly,
+    );
+  });
 }
