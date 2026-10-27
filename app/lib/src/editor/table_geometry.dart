@@ -8,7 +8,10 @@
 // design number is a constant in this file (D21). No Flutter imports; only
 // `dart:math` and `dart:ui`'s plain value types. Pixels are logical pixels.
 
+import 'dart:math' as math;
 import 'dart:ui' show Offset, Rect, TextAlign, TextRange;
+
+double _sum(Iterable<double> values) => values.fold(0.0, (a, b) => a + b);
 
 /// The scaled metrics a [TableLayout] is built from (D21). Every value is
 /// passed in by the caller at the editor's text scale.
@@ -77,15 +80,76 @@ List<double> tableColumnWidths(
   required double availableWidth,
   required double cellPadding,
 }) {
-  throw UnimplementedError();
+  final w = availableWidth;
+  final pad = 2 * cellPadding;
+  final natural = [for (final col in columns) col.naturalWidth + pad];
+  final mins = [for (final col in columns) col.minWidth + pad];
+  final breakFloor = [for (final n in natural) math.min(3 * cellPadding, n)];
+
+  // 1. Spread: everything fits.
+  final sumNatural = _sum(natural);
+  if (sumNatural <= w) {
+    return [for (final n in natural) n * w / sumNatural];
+  }
+
+  // 2. Floors: no-wrap columns keep their natural width while they can.
+  var floors = [
+    for (var i = 0; i < columns.length; i++)
+      columns[i].noWrap ? natural[i] : mins[i],
+  ];
+  if (_sum(floors) >= w) floors = mins;
+
+  // 3. Hopeless: even the widest words don't fit; words break anywhere.
+  if (_sum(floors) >= w) {
+    final sumBreak = _sum(breakFloor);
+    if (sumBreak >= w) {
+      return [for (final b in breakFloor) b * w / sumBreak];
+    }
+    final g = (w - sumBreak) / (_sum(mins) - sumBreak);
+    return [
+      for (var i = 0; i < columns.length; i++)
+        breakFloor[i] + (mins[i] - breakFloor[i]) * g,
+    ];
+  }
+
+  // 4. Shrink: every free column takes B + (N - B) f; a column that would
+  // fall under its floor freezes there. Each pass freezes at least one
+  // column or ends the loop.
+  final frozen = List<bool>.filled(columns.length, false);
+  var f = 0.0;
+  while (true) {
+    var fixed = 0.0;
+    var span = 0.0;
+    for (var i = 0; i < columns.length; i++) {
+      if (frozen[i]) {
+        fixed += floors[i];
+      } else {
+        fixed += breakFloor[i];
+        span += natural[i] - breakFloor[i];
+      }
+    }
+    f = (w - fixed) / span;
+    var froze = false;
+    for (var i = 0; i < columns.length; i++) {
+      if (!frozen[i] &&
+          breakFloor[i] + (natural[i] - breakFloor[i]) * f < floors[i]) {
+        frozen[i] = true;
+        froze = true;
+      }
+    }
+    if (!froze) break;
+  }
+  return [
+    for (var i = 0; i < columns.length; i++)
+      frozen[i] ? floors[i] : breakFloor[i] + (natural[i] - breakFloor[i]) * f,
+  ];
 }
 
 /// How much a table grows when it reveals (revealed height minus rendered
 /// height) when its header and body cells are one line each: `L - H`
 /// (14.95 at text scale 1), the same for any number of body rows.
-double tableRevealDelta(TableMetrics metrics) {
-  throw UnimplementedError();
-}
+double tableRevealDelta(TableMetrics metrics) =>
+    metrics.lineHeight - metrics.hiddenLineHeight;
 
 /// A cell of a rendered table that a point or a field offset maps to
 /// (R21, D13).
@@ -159,39 +223,62 @@ class TableLayout {
   final TableMetrics metrics;
 
   /// The grid's width: the sum of [columnWidths].
-  double get width => throw UnimplementedError();
+  double get width => _lefts.last;
 
   /// The header band's height: the header's tallest cell's lines times L,
   /// plus H.
-  double get bandHeight => throw UnimplementedError();
+  double get bandHeight => _heights.first;
 
   /// The table's rendered height: the band plus every body row.
-  double get height => throw UnimplementedError();
+  double get height => _tops.last;
 
   /// The top of grid row [row] (0 = header band at 0; body rows follow
   /// cumulatively with no gaps).
-  double rowTop(int row) => throw UnimplementedError();
+  double rowTop(int row) => _tops[row];
 
   /// The height of grid row [row]: the band for 0, else the row's tallest
   /// cell's lines times L.
-  double rowHeight(int row) => throw UnimplementedError();
+  double rowHeight(int row) => _heights[row];
 
   /// The left x of [column].
-  double columnLeft(int column) => throw UnimplementedError();
+  double columnLeft(int column) => _lefts[column];
 
   /// The rules between body rows, top to bottom: one rect
   /// `(0, rowBottom - t, width, t)` in the last pixel inside every body row
   /// except the last. None under the header band or the last row.
-  List<Rect> get rules => throw UnimplementedError();
+  List<Rect> get rules => [
+    for (var row = 1; row < _heights.length - 1; row++)
+      Rect.fromLTWH(
+        0,
+        _rowBottom(row) - metrics.ruleThickness,
+        width,
+        metrics.ruleThickness,
+      ),
+  ];
 
   /// Cell ([row], [column])'s rect: its column's x-range and its row's
   /// y-range.
-  Rect cellRect(int row, int column) => throw UnimplementedError();
+  Rect cellRect(int row, int column) => Rect.fromLTRB(
+    _lefts[column],
+    _tops[row],
+    _lefts[column] + columnWidths[column],
+    _rowBottom(row),
+  );
 
   /// Cell ([row], [column])'s content rect: [cellRect] inset by c left and
   /// right, and in the header band by H / 2 top and bottom. Body cells have
   /// no vertical inset.
-  Rect contentRect(int row, int column) => throw UnimplementedError();
+  Rect contentRect(int row, int column) {
+    final inset = row == 0 ? metrics.hiddenLineHeight / 2 : 0.0;
+    final left = _lefts[column];
+    final c = metrics.cellPadding;
+    return Rect.fromLTRB(
+      left + c,
+      _tops[row] + inset,
+      left + columnWidths[column] - c,
+      _rowBottom(row) - inset,
+    );
+  }
 
   /// The left x of a laid-out line [lineWidth] wide in [column]: left
   /// `x + c`, right `x + w - c - lineWidth`, centre `x + (w - lineWidth) / 2`.
@@ -200,11 +287,22 @@ class TableLayout {
     int column, {
     required double lineWidth,
     required TextAlign align,
-  }) => throw UnimplementedError();
+  }) {
+    final left = _lefts[column];
+    final w = columnWidths[column];
+    return switch (align) {
+      TextAlign.left ||
+      TextAlign.start ||
+      TextAlign.justify => left + metrics.cellPadding,
+      TextAlign.right ||
+      TextAlign.end => left + w - metrics.cellPadding - lineWidth,
+      TextAlign.center => left + (w - lineWidth) / 2,
+    };
+  }
 
   /// Where the caret shows for an offset in the hidden delimiter line: the
   /// first header cell's content rect (never zero-height).
-  Rect get delimiterCaretRect => throw UnimplementedError();
+  Rect get delimiterCaretRect => contentRect(0, 0);
 
   /// The cell [point] falls in (R21). A point left of the grid or right of
   /// it clamps to the first or last column, above the band to the header,
@@ -214,7 +312,62 @@ class TableLayout {
   /// cell's content x-range and inside that cell's own text block (its
   /// lines times L from the content top), off the rule pixel, in a
   /// non-empty cell.
-  TableCellTarget hitTest(Offset point) => throw UnimplementedError();
+  TableCellTarget hitTest(Offset point) {
+    // Points outside the grid fall in the first or last column or row here,
+    // and then outside its content rect, so they get the text end flag.
+    var column = 0;
+    for (var j = 1; j < columnWidths.length; j++) {
+      if (_lefts[j] <= point.dx) column = j;
+    }
+    var row = 0;
+    for (var r = 1; r < _heights.length; r++) {
+      if (_tops[r] <= point.dy) row = r;
+    }
+    final content = contentRect(row, column);
+    var textBottom = content.top + _lineCount(row, column) * metrics.lineHeight;
+    if (row > 0 && row < _heights.length - 1) {
+      // The rule pixel at the bottom of every body row but the last.
+      textBottom = math.min(
+        textBottom,
+        _rowBottom(row) - metrics.ruleThickness,
+      );
+    }
+    final inText =
+        point.dx >= content.left &&
+        point.dx < content.right &&
+        point.dy >= content.top &&
+        point.dy < textBottom;
+    return TableCellTarget(row: row, column: column, atTextEnd: !inText);
+  }
+
+  /// Every grid row's height: the band, then each body row.
+  late final List<double> _heights = [
+    _tallest(headerLines) * metrics.lineHeight + metrics.hiddenLineHeight,
+    for (final row in bodyLines) _tallest(row) * metrics.lineHeight,
+  ];
+
+  /// Every grid row's top, then the table's bottom.
+  late final List<double> _tops = _cumulative(_heights);
+
+  /// Every column's left, then the grid's right.
+  late final List<double> _lefts = _cumulative(columnWidths);
+
+  double _rowBottom(int row) => _tops[row] + _heights[row];
+
+  /// Cell ([row], [column])'s line count as passed (0 = empty cell).
+  int _lineCount(int row, int column) =>
+      row == 0 ? headerLines[column] : bodyLines[row - 1][column];
+
+  /// A row's tallest cell's line count; an empty cell takes one line.
+  static int _tallest(List<int> lines) => lines.fold(1, math.max);
+
+  static List<double> _cumulative(List<double> sizes) {
+    final out = [0.0];
+    for (final size in sizes) {
+      out.add(out.last + size);
+    }
+    return out;
+  }
 }
 
 /// The cell a field offset of a rendered table maps to (D13).
@@ -237,5 +390,21 @@ TableCellTarget tableOffsetTarget(
   required List<List<TextRange>> rowCells,
   required int headerCount,
 }) {
-  throw UnimplementedError();
+  // Lines are in source order: header, delimiter, then body lines.
+  var row = 0;
+  for (var r = 1; r < rowLines.length; r++) {
+    if (rowLines[r].start <= offset) row = r;
+  }
+  if (row == 0 && delimiterLine.start <= offset) {
+    return const TableCellTarget(row: 0, column: 0, headerBand: true);
+  }
+  final cells = rowCells[row];
+  var column = 0;
+  for (var j = 1; j < cells.length; j++) {
+    if (cells[j].start <= offset) column = j;
+  }
+  if (column >= headerCount) {
+    return TableCellTarget(row: row, column: headerCount - 1, atTextEnd: true);
+  }
+  return TableCellTarget(row: row, column: column);
 }
