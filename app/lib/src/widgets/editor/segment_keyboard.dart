@@ -2,6 +2,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
 import '../../editor/editor_rows.dart';
+import '../../editor/list_indent.dart';
 import '../../editor/row_edits.dart';
 import '../../editor/segment_selection.dart';
 import 'editor_row.dart';
@@ -21,7 +22,12 @@ import 'segment_view.dart';
 ///   (A3's `backspaceAtStart` or `joinPrevious`), forward Delete at a row's
 ///   text end (`deleteForwardAtEnd`), and `deleteRange` over a selection
 ///   that spans rows.
-/// - Tab and Shift+Tab do nothing in a row.
+/// - Tab and Shift+Tab (`NextFocusIntent` / `PreviousFocusIntent`, which
+///   macOS sends as `insertTab:` / `insertBacktab:`) indent or outdent the
+///   list items the segment selection touches, by `indentListItems` (Spec
+///   #193 R2-R27, TD4) as one edit. In any row the press is consumed: it
+///   never moves focus, and where nothing moves (an edge item, a quote,
+///   prose or code row, or while composing) it changes nothing.
 /// - The arrows: Left/Right and Option+Left/Right at a row edge take A4's
 ///   steps into the adjacent row; Up/Down from a row's first or last visual
 ///   line land on the adjacent row's line nearest the caret's x (the rows'
@@ -120,10 +126,14 @@ class _SegmentKeyboardState extends State<SegmentKeyboard> {
           (intent) =>
               _document(forward: intent.forward, collapse: false, expand: true),
         ),
-    // Tab and Shift+Tab (`insertTab:` / `insertBacktab:`) do nothing in a
-    // row (R22).
-    NextFocusIntent: DoNothingAction(),
-    PreviousFocusIntent: DoNothingAction(),
+    // Tab and Shift+Tab (`insertTab:` / `insertBacktab:`): always consumed,
+    // never the field's focus traversal (TD4).
+    NextFocusIntent: CallbackAction<NextFocusIntent>(
+      onInvoke: (_) => _indent(outdent: false),
+    ),
+    PreviousFocusIntent: CallbackAction<PreviousFocusIntent>(
+      onInvoke: (_) => _indent(outdent: true),
+    ),
   };
 
   /// The state a key works on, or null when the key keeps the field's own
@@ -223,6 +233,24 @@ class _SegmentKeyboardState extends State<SegmentKeyboard> {
     return spec.textLength == 0
         ? enterOnEmpty(text, rows, row)
         : splitItem(text, rows, row, caret);
+  }
+
+  // ---------------------------------------------------------------------
+  // Tab and Shift+Tab
+  // ---------------------------------------------------------------------
+
+  /// Tab ([outdent] false) or Shift+Tab: one `indentListItems` edit over
+  /// the segment selection (live-preview touch rule), or nothing when no
+  /// item moves or [_keys] is null (Spec #193 R3-R8, R26, R27).
+  void _indent({required bool outdent}) {
+    final k = _keys();
+    if (k == null) return;
+    final edit = indentListItems(
+      k.text,
+      _segment(k.selection),
+      outdent: outdent,
+    );
+    if (edit != null) k.view.applyEdit(edit);
   }
 
   // ---------------------------------------------------------------------
