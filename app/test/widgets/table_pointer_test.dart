@@ -1596,4 +1596,200 @@ void main() {
       variant: macOnly,
     );
   });
+
+  // -------------------------------------------------------------------------
+  // Round 1 gate mutants: who shows the context menu (the field or the
+  // selection ops), where a press counts as on the grid, and the source line
+  // at the segment start.
+  // -------------------------------------------------------------------------
+  group('menu owner and grid bounds (AC5)', () {
+    testWidgets(
+      'a secondary click on a prose row shows no selection ops menu and leaves the menu to the field',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+        // The row already has focus, so nothing but the click moves the
+        // selection and hides a menu.
+        await b.placeCaret(1);
+
+        await _wi207Click(tester, _wi207Glyph(b, 3), buttons: kSecondaryButton);
+        await tester.pumpAndSettle();
+        // Only a rendered grid or a selection across rows shows the
+        // selection ops menu (Paste and Select All); the field's own menu
+        // has neither on a collapsed caret.
+        expect(_wi207MenuButton('Select All'), findsNothing);
+        expect(_wi207MenuButton('Paste'), findsNothing);
+        // The field's own secondary click selects the word under it.
+        expect(
+          b.selection(),
+          const TextSelection(baseOffset: 0, extentOffset: 5),
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'the Select All of the menu of a secondary click on a rendered cell selects the whole segment',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+
+        await _wi207Click(
+          tester,
+          _wi207Glyph(b, _wi207At('parser', plus: 4)),
+          buttons: kSecondaryButton,
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(_wi207MenuButton('Select All'));
+        await tester.pumpAndSettle();
+
+        expect(
+          b.selection(),
+          const TextSelection(baseOffset: 0, extentOffset: _wi207Text.length),
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a secondary click at the start of the prose row right below a rendered table is not a grid press and shows no selection ops menu',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+        final below = _wi207LineStart(_wi207Below);
+        final at = _wi207Glyph(b, below);
+        // The press maps to exactly the table row's end offset.
+        expect(_wi207SeamOffset(b, at), below, reason: 'seam guard');
+        await b.placeCaret(below + 2);
+
+        await _wi207Click(tester, at, buttons: kSecondaryButton);
+        await tester.pumpAndSettle();
+        expectTableRendered(0, 1, reason: 'the table stays rendered');
+        expect(_wi207MenuButton('Select All'), findsNothing);
+        expect(_wi207MenuButton('Paste'), findsNothing);
+        // The field's own secondary click selects the word under it.
+        expect(
+          b.selection(),
+          TextSelection(baseOffset: below, extentOffset: below + 5),
+        );
+        expect(b.view().focusedRow, 2);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets('a primary click on a rendered cell opens no context menu', (
+      tester,
+    ) async {
+      final t = await _wi207Pump(tester);
+      final b = t.b;
+
+      await _wi207Click(tester, _wi207Glyph(b, _wi207At('parser', plus: 4)));
+      await tester.pumpAndSettle();
+
+      expect(_wi207MenuButton('Select All'), findsNothing);
+      expect(_wi207MenuButton('Paste'), findsNothing);
+    }, variant: macOnly);
+
+    testWidgets(
+      'repeated clicks in the empty area below the last row stay plain clicks that put the caret at the segment end',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+        final boxes = b.segmentBoxes();
+        final below = boxes.box.localToGlobal(
+          Offset(40, boxes.box.size.height + 30),
+        );
+
+        await _wi207Click(tester, below);
+        await tester.pump(const Duration(milliseconds: 50));
+        await _wi207Click(tester, below);
+        await tester.pump(const Duration(milliseconds: 50));
+        await _wi207Click(tester, below);
+
+        expect(
+          b.selection(),
+          const TextSelection.collapsed(offset: _wi207Text.length),
+          reason: 'no word or source line selection below the rows',
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a secondary click on a rendered table whose segment starts with frontmatter reveals it and shows the menu',
+      (tester) async {
+        // The bullet inside the frontmatter makes the row split differ
+        // between `atSegmentStart` true and false.
+        const text =
+            '---\n- tag\n---\n| a | b |\n| --- | --- |\n| c | d |\nBelow line';
+        final b = await pumpTable(tester, text);
+        final r = [for (final row in b.rows()) row.kind].indexOf(RowKind.table);
+        expect(r, 1, reason: 'fixture: the frontmatter is row 0');
+        expectTableRendered(0, r);
+        final offset = text.indexOf('c |');
+
+        await _wi207Click(
+          tester,
+          _wi207Glyph(b, offset),
+          buttons: kSecondaryButton,
+        );
+        await tester.pumpAndSettle();
+
+        expectTableRevealed(0, r);
+        expect(b.selection(), TextSelection.collapsed(offset: offset));
+        expect(_wi207MenuButton('Select All'), findsOneWidget);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a double click on a word of a rendered table whose segment starts with frontmatter selects that word',
+      (tester) async {
+        const text =
+            '---\n- tag\n---\n| alpha | b |\n| --- | --- |\n| c | d |\nBelow line';
+        final b = await pumpTable(tester, text);
+        final word = text.indexOf('alpha');
+        final at = _wi207Glyph(b, word + 2);
+
+        await _wi207Click(tester, at);
+        await tester.pump(const Duration(milliseconds: 50));
+        await _wi207Click(tester, at);
+
+        expect(
+          b.selection(),
+          TextSelection(baseOffset: word, extentOffset: word + 5),
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a triple click in the header of a table at the segment start selects the first source line from offset 0',
+      (tester) async {
+        const header = '| Step | Notes |';
+        const text = '$header\n| --- | --- |\n| a | b |\nBelow line';
+        final b = await pumpTable(tester, text);
+        expect(
+          [for (final row in b.rows()) row.kind],
+          const [RowKind.table, RowKind.prose],
+        );
+        final at = _wi207Glyph(b, text.indexOf('Step') + 1);
+
+        await _wi207Click(tester, at);
+        await tester.pump(const Duration(milliseconds: 50));
+        await _wi207Click(tester, at);
+        await tester.pump(const Duration(milliseconds: 50));
+        await _wi207Click(tester, at);
+
+        final selection = b.selection();
+        expect(selection.start, 0, reason: 'from the segment start');
+        expect(
+          selection.end,
+          anyOf(header.length, header.length + 1),
+          reason: 'to the line end',
+        );
+      },
+      variant: macOnly,
+    );
+  });
 }
