@@ -30,8 +30,10 @@ import 'paragraph_line_boxes.dart';
 /// drawn cell laid out by T2's `table_geometry.dart` from scaled metrics
 /// (D21), a header band, a 1 px rule inside every body row but the last, no
 /// vertical rules. When the grid's key is `editor-table-<s>-<r>`, cell
-/// (`row`, `col`)'s `RichText` has the key
-/// `editor-table-cell-<s>-<r>-<row>-<col>` (TD8; row 0 is the header).
+/// (`row`, `col`) has the key `editor-table-cell-<s>-<r>-<row>-<col>` (TD8;
+/// row 0 is the header): a box spanning the drawn cell, its padding
+/// included (its column's x range, its grid row's y range), holding the
+/// cell's `RichText` at the cell's content rect.
 class TableGrid extends StatefulWidget {
   const TableGrid({
     super.key,
@@ -92,6 +94,7 @@ class TableGridState extends State<TableGrid> {
     final headerStyle = _headerStyle(widget.style);
     final keyPrefix = _cellKeyPrefix(widget.key);
     final hover = widget.links?.cmdHover;
+    final metrics = _metrics(scaler);
     final rows = [table.header.cells, for (final row in table.body) row.cells];
     return _GridLayout(
       key: _gridKey,
@@ -102,20 +105,24 @@ class TableGridState extends State<TableGrid> {
       children: [
         for (final (g, cells) in rows.indexed)
           for (var j = 0; j < table.columnCount; j++)
-            RichText(
+            _Cell(
               key: keyPrefix == null ? null : ValueKey('$keyPrefix-$g-$j'),
-              textAlign: _textAlign(table.alignments[j]),
-              textScaler: scaler,
-              strutStyle: strut,
-              text: buildLivePreviewSpan(
-                j < cells.length ? cells[j].text(text) : '',
-                style: g == 0 ? headerStyle : widget.style,
-                itemText: true,
-                forceHidden: true,
-                isResolved: widget.links?.isResolved,
-                cmdHover: j < cells.length
-                    ? _cellHover(hover, cells[j].start, cells[j].end)
-                    : null,
+              padding: metrics.cellPadding,
+              inset: g == 0 ? metrics.hiddenLineHeight / 2 : 0,
+              child: RichText(
+                textAlign: _textAlign(table.alignments[j]),
+                textScaler: scaler,
+                strutStyle: strut,
+                text: buildLivePreviewSpan(
+                  j < cells.length ? cells[j].text(text) : '',
+                  style: g == 0 ? headerStyle : widget.style,
+                  itemText: true,
+                  forceHidden: true,
+                  isResolved: widget.links?.isResolved,
+                  cmdHover: j < cells.length
+                      ? _cellHover(hover, cells[j].start, cells[j].end)
+                      : null,
+                ),
               ),
             ),
       ],
@@ -174,6 +181,78 @@ const double _wrapSlack = 0.01;
 
 /// The code pill's corner radius (pack #205, as live preview's pill).
 const double _pillRadius = 3;
+
+/// A drawn cell (TD8): a box as big as the grid lays it out (the cell's
+/// rect, padding included) holding the cell's [RichText] [padding] (c) in
+/// from its left and [inset] (H / 2 in the header band, else 0) down from
+/// its top, as wide as the box less c on each side (plus the wrap slack).
+class _Cell extends SingleChildRenderObjectWidget {
+  const _Cell({
+    super.key,
+    required this.padding,
+    required this.inset,
+    required RichText super.child,
+  });
+
+  final double padding;
+  final double inset;
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderCell(padding: padding, inset: inset);
+
+  @override
+  void updateRenderObject(BuildContext context, _RenderCell renderObject) {
+    renderObject
+      ..padding = padding
+      ..inset = inset;
+  }
+}
+
+/// [_Cell]'s render box. Its size is its constraints' max width (the
+/// grid's column width, or the cell's natural width while the grid
+/// measures) by their min height (the grid's row height once the grid
+/// places it, else 0).
+class _RenderCell extends RenderShiftedBox {
+  _RenderCell({required double padding, required double inset})
+    : _padding = padding,
+      _inset = inset,
+      super(null);
+
+  double _padding;
+  set padding(double value) {
+    if (value == _padding) return;
+    _padding = value;
+    markNeedsLayout();
+  }
+
+  double _inset;
+  set inset(double value) {
+    if (value == _inset) return;
+    _inset = value;
+    markNeedsLayout();
+  }
+
+  /// The cell's paragraph.
+  RenderParagraph get paragraph => child! as RenderParagraph;
+
+  /// The paragraph's offset in the cell: (c, inset).
+  Offset get textOffset => (paragraph.parentData! as BoxParentData).offset;
+
+  @override
+  void performLayout() {
+    final width = constraints.maxWidth;
+    final text = paragraph;
+    text.layout(
+      BoxConstraints.tightFor(
+        width: math.max(0.0, width - 2 * _padding) + _wrapSlack,
+      ),
+      parentUsesSize: true,
+    );
+    (text.parentData! as BoxParentData).offset = Offset(_padding, _inset);
+    size = Size(width, constraints.minHeight);
+  }
+}
 
 /// Lays out and paints the cells (its children, row-major: the header's
 /// cells, then each body row's, one per column).
@@ -277,9 +356,9 @@ class _RenderTableGrid extends RenderBox
     final columns = table.columnCount;
     final metrics = _metrics(_textScaler);
     final c = metrics.cellPadding;
-    final cells = <RenderParagraph>[];
+    final cells = <_RenderCell>[];
     for (var child = firstChild; child != null; child = childAfter(child)) {
-      cells.add(child as RenderParagraph);
+      cells.add(child as _RenderCell);
     }
 
     // Measure each column's text on one line: n is its widest cell, m its
@@ -288,13 +367,10 @@ class _RenderTableGrid extends RenderBox
     final words = List<double>.filled(columns, 0);
     for (final (i, cell) in cells.indexed) {
       final j = i % columns;
-      final n = cell.getMaxIntrinsicWidth(double.infinity);
-      cell.layout(
-        BoxConstraints(maxWidth: n + _wrapSlack),
-        parentUsesSize: true,
-      );
+      final n = cell.paragraph.getMaxIntrinsicWidth(double.infinity);
+      cell.layout(BoxConstraints(maxWidth: n + 2 * c), parentUsesSize: true);
       natural[j] = math.max(natural[j], n);
-      words[j] = math.max(words[j], _widestWord(cell));
+      words[j] = math.max(words[j], _widestWord(cell.paragraph));
     }
     final available = constraints.hasBoundedWidth
         ? constraints.maxWidth
@@ -317,12 +393,11 @@ class _RenderTableGrid extends RenderBox
     final counts = <List<int>>[];
     for (final (i, cell) in cells.indexed) {
       final j = i % columns;
-      final area = math.max(0.0, widths[j] - 2 * c);
       cell.layout(
-        BoxConstraints.tightFor(width: area + _wrapSlack),
+        BoxConstraints.tightFor(width: widths[j]),
         parentUsesSize: true,
       );
-      final lines = RenderParagraphLineBoxes(cell).lines;
+      final lines = RenderParagraphLineBoxes(cell.paragraph).lines;
       cellLines.add(lines);
       if (j == 0) counts.add([]);
       // An empty cell passes its one empty line, not 0: [TableLayout] sizes
@@ -337,10 +412,21 @@ class _RenderTableGrid extends RenderBox
       bodyLines: counts.sublist(1),
       metrics: metrics,
     );
+    // Each cell spans its drawn cell; its paragraph sits at the content
+    // rect. The height is a min, not tight, and the grid uses the size: a
+    // cell is never a relayout boundary, so a change to its paragraph lays
+    // the grid out again (it measures every cell).
     for (final (i, cell) in cells.indexed) {
-      (cell.parentData! as _CellParentData).offset = layout
-          .contentRect(i ~/ columns, i % columns)
-          .topLeft;
+      final rect = layout.cellRect(i ~/ columns, i % columns);
+      cell.layout(
+        BoxConstraints(
+          minWidth: rect.width,
+          maxWidth: rect.width,
+          minHeight: rect.height,
+        ),
+        parentUsesSize: true,
+      );
+      (cell.parentData! as _CellParentData).offset = rect.topLeft;
     }
     size = constraints.constrain(Size(layout.width, layout.height));
     _geometry = _GridGeometry(
@@ -428,7 +514,7 @@ final class _GridGeometry implements LineBoxSource {
     required String text,
     required this.table,
     required this.layout,
-    required List<RenderParagraph> cells,
+    required List<_RenderCell> cells,
     required List<List<LineBox>> cellLines,
   }) : _cells = cells,
        _cellLines = cellLines,
@@ -440,8 +526,8 @@ final class _GridGeometry implements LineBoxSource {
   final ParsedTable table;
   final TableLayout layout;
 
-  /// The cells' paragraphs, row-major.
-  final List<RenderParagraph> _cells;
+  /// The cells, row-major.
+  final List<_RenderCell> _cells;
 
   /// Each cell's own lines (cell text offsets, paragraph coordinates).
   final List<List<LineBox>> _cellLines;
@@ -500,8 +586,14 @@ final class _GridGeometry implements LineBoxSource {
   double _textTop(int g, int i) =>
       layout.contentRect(g, 0).top + i * layout.metrics.lineHeight;
 
-  Offset _offsetOf(int index) =>
-      (_cells[index].parentData! as _CellParentData).offset;
+  /// Cell [index]'s paragraph.
+  RenderParagraph _paragraph(int index) => _cells[index].paragraph;
+
+  /// Cell [index]'s paragraph's offset in the grid.
+  Offset _offsetOf(int index) {
+    final cell = _cells[index];
+    return (cell.parentData! as _CellParentData).offset + cell.textOffset;
+  }
 
   @override
   late final List<LineBox> lines = [
@@ -553,7 +645,7 @@ final class _GridGeometry implements LineBoxSource {
         final end = math.min(range.end, cell.end) - cell.start;
         if (start >= end) continue;
         final index = g * _columns + j;
-        final paragraph = _cells[index];
+        final paragraph = _paragraph(index);
         final dx = _offsetOf(index).dx;
         for (final (i, line) in _cellLines[index].indexed) {
           final from = math.max(start, line.range.start);
@@ -611,7 +703,7 @@ final class _GridGeometry implements LineBoxSource {
         : (target.atTextEnd ? cell.end : offset).clamp(cell.start, cell.end) -
               cell.start;
     final index = g * _columns + j;
-    final x = _caretX(_cells[index], local).$1 + _offsetOf(index).dx;
+    final x = _caretX(_paragraph(index), local).$1 + _offsetOf(index).dx;
     final i = _cellLines[index].lastIndexWhere(
       (line) => line.range.start <= local,
     );
@@ -630,9 +722,9 @@ final class _GridGeometry implements LineBoxSource {
     final cell = target.atTextEnd ? null : _source(g, j);
     if (cell == null) return _textEnd(g, j);
     final index = g * _columns + j;
-    final local = _cells[index]
-        .getPositionForOffset(point - _offsetOf(index))
-        .offset;
+    final local = _paragraph(
+      index,
+    ).getPositionForOffset(point - _offsetOf(index)).offset;
     return cell.start + math.min(local, cell.end - cell.start);
   }
 

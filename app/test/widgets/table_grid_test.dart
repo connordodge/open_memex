@@ -126,6 +126,15 @@ const _seamTable =
     '| Beta | 2 | fine | dropped |\n'
     '| Gamma | 3 | yes |';
 
+/// Padding fixture (pack #207 worked example B1): left-aligned columns but
+/// `Cost` right-aligned, hidden markup and a wikilink, two one-line body
+/// rows (one rule).
+const _paddingTable =
+    '| Step | Notes | Cost | State |\n'
+    '|---|---|--:|---|\n'
+    '| **Marker parser** in pure Dart | see [[Byte offsets]] | 1.5 | done |\n'
+    '| Table reveal | *ask* | 2 | x |';
+
 /// Reading order fixture: the last body row has an empty cell.
 const _semanticsTable =
     '| Step | Notes |\n|---|---|\n| Alpha | one |\n| Beta | |';
@@ -553,6 +562,7 @@ void main() {
       _seamTable,
       _semanticsTable,
       _arrowTable,
+      _paddingTable,
     ]) {
       _parsed(t);
     }
@@ -1675,11 +1685,26 @@ void main() {
     testWidgets(
       'the grid lays out again at a new text scale and keeps the new heights',
       (tester) async {
+        // Header cell 0's text box, from the grid's top left: c in, H / 2
+        // down, both scaled (a cell takes new padding and inset in place).
+        Offset headerText() =>
+            tester.getTopLeft(
+              find
+                  .descendant(
+                    of: find.byKey(_bareKey),
+                    matching: find.byType(RichText),
+                  )
+                  .first,
+            ) -
+            tester.getTopLeft(find.byKey(_bareKey));
+
         await pumpScaled(tester, _heightTable, scale: 1);
         expect(
           tester.getSize(find.byKey(_bareKey)).height,
           moreOrLessEquals(_band + 3 * _l, epsilon: _eps),
         );
+        expect(headerText().dx, moreOrLessEquals(_c, epsilon: _eps));
+        expect(headerText().dy, moreOrLessEquals(_h / 2, epsilon: _eps));
 
         await pumpScaled(tester, _heightTable, scale: 2);
         expect(
@@ -1687,12 +1712,16 @@ void main() {
           moreOrLessEquals(2 * _band + 3 * 2 * _l, epsilon: _eps),
           reason: 'the same grid, laid out again from the scaled metrics',
         );
+        expect(headerText().dx, moreOrLessEquals(2 * _c, epsilon: _eps));
+        expect(headerText().dy, moreOrLessEquals(_h, epsilon: _eps));
 
         await pumpScaled(tester, _heightTable, scale: 1);
         expect(
           tester.getSize(find.byKey(_bareKey)).height,
           moreOrLessEquals(_band + 3 * _l, epsilon: _eps),
         );
+        expect(headerText().dx, moreOrLessEquals(_c, epsilon: _eps));
+        expect(headerText().dy, moreOrLessEquals(_h / 2, epsilon: _eps));
       },
       variant: macOnly,
     );
@@ -2056,6 +2085,295 @@ void main() {
           final caret = _gridRel(tester, boxes, boxes.caretRect(at));
           expect(caret.width, moreOrLessEquals(0, epsilon: _eps));
           expect(caret.left, moreOrLessEquals(_c, epsilon: _eps));
+        }
+      },
+      variant: macOnly,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Follow-up (review r1 of #216): cell padding and blank strips map to the
+  // cell text end (R21, D13, pack #207 click table). A cell (Key
+  // `editor-table-cell-...`, TD8) is the drawn cell, its padding included:
+  // its column's x range and its grid row's y range. Presses are taken from
+  // that rect, as #207's pointer tests take them.
+  // -------------------------------------------------------------------------
+  group('cell padding maps to the cell text end (R21, D13)', () {
+    /// The seam offset at global [point].
+    int seamAt(WidgetTester tester, Offset point) {
+      final boxes = _gridBoxes(tester);
+      return boxes.offsetAt(boxes.box.globalToLocal(point));
+    }
+
+    /// Cell [col] of grid row [g] of [_paddingTable] (T1's field ranges).
+    TextRange cellOf(int g, int col) {
+      final t = _parsed(_paddingTable);
+      final cell = (g == 0 ? t.header.cells : t.body[g - 1].cells)[col];
+      return TextRange(start: cell.start, end: cell.end);
+    }
+
+    /// The global rect of the cell Key of grid row [g], column [col].
+    Rect cellRect(WidgetTester tester, int g, int col) =>
+        tester.getRect(tableCell(0, 1, g, col));
+
+    testWidgets(
+      'each cell Key spans its drawn cell including its padding with the cell text inset by c',
+      (tester) async {
+        await pumpTable(tester, _doc(_paddingTable));
+        expectTableRendered(0, 1);
+        final grid = tester.getRect(tableGrid(0, 1));
+        final t = _parsed(_paddingTable);
+        final columns = t.columnCount;
+        for (var g = 0; g <= t.body.length; g++) {
+          final top = g == 0 ? 0.0 : _band + (g - 1) * _l;
+          final bottom = g == 0 ? _band : _band + g * _l;
+          for (var col = 0; col < columns; col++) {
+            final r = cellRect(tester, g, col);
+            final where = 'cell ($g, $col)';
+            expect(
+              r.top - grid.top,
+              moreOrLessEquals(top, epsilon: _eps),
+              reason: '$where top is its grid row top',
+            );
+            expect(
+              r.bottom - grid.top,
+              moreOrLessEquals(bottom, epsilon: _eps),
+              reason: '$where bottom is its grid row bottom',
+            );
+            final left = col == 0
+                ? grid.left
+                : cellRect(tester, g, col - 1).right;
+            expect(
+              r.left,
+              moreOrLessEquals(left, epsilon: _eps),
+              reason: '$where starts where the previous column ends',
+            );
+            if (col == columns - 1) {
+              expect(
+                r.right,
+                moreOrLessEquals(grid.right, epsilon: _eps),
+                reason: '$where ends at the grid right',
+              );
+            }
+          }
+        }
+        // The paragraph box sits c in from the cell's left, H / 2 down in
+        // the header band and flush with the top of a body cell.
+        for (var g = 0; g <= t.body.length; g++) {
+          for (var col = 0; col < columns; col++) {
+            final inset =
+                tester.getTopLeft(_cellText(g, col)) -
+                cellRect(tester, g, col).topLeft;
+            expect(
+              inset.dx,
+              moreOrLessEquals(_c, epsilon: _eps),
+              reason: 'cell ($g, $col) text box is c in from the cell left',
+            );
+            expect(
+              inset.dy,
+              moreOrLessEquals(g == 0 ? _h / 2 : 0, epsilon: _eps),
+              reason: 'cell ($g, $col) text box top inset',
+            );
+          }
+        }
+        // Left-aligned text starts c inside its cell.
+        for (final (g, col) in [(0, 0), (0, 1), (1, 0), (1, 1), (2, 3)]) {
+          final glyphs = _glyphs(_cellParagraph(tester, g, col));
+          expect(
+            glyphs.left - cellRect(tester, g, col).left,
+            moreOrLessEquals(_c, epsilon: 0.5),
+            reason: 'cell ($g, $col) text starts c inside the cell',
+          );
+        }
+        // Right-aligned text ends c inside its cell.
+        final cost = _glyphs(_cellParagraph(tester, 1, 2));
+        expect(
+          cellRect(tester, 1, 2).right - cost.right,
+          moreOrLessEquals(_c, epsilon: 0.5),
+          reason: 'right-aligned 1.5 ends c inside its cell',
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a press in the left padding of a non-first body cell maps to that cell text end',
+      (tester) async {
+        await pumpTable(tester, _doc(_paddingTable));
+        expectTableRendered(0, 1);
+        final cell = cellOf(1, 1); // `see [[Byte offsets]]`
+        final r = cellRect(tester, 1, 1);
+        for (final dx in [1.0, _c / 2, _c - 1]) {
+          expect(
+            seamAt(tester, Offset(r.left + dx, r.center.dy)),
+            cell.end,
+            reason: 'left padding, $dx px into the cell: the cell text end',
+          );
+        }
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a press in the left padding of the first column maps to that cell text end',
+      (tester) async {
+        await pumpTable(tester, _doc(_paddingTable));
+        expectTableRendered(0, 1);
+        final cell = cellOf(1, 0); // `**Marker parser** in pure Dart`
+        final r = cellRect(tester, 1, 0);
+        expect(
+          _paddingTable.substring(cell.end - 4, cell.end),
+          'Dart',
+          reason: 'fixture: the cell ends after Dart (pack #207 (3, 42))',
+        );
+        for (final dx in [1.0, _c / 2, _c - 1]) {
+          expect(
+            seamAt(tester, Offset(r.left + dx, r.center.dy)),
+            cell.end,
+            reason: 'left padding, $dx px into column 0: after Dart',
+          );
+        }
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a press in the right padding of a right-aligned body cell maps to that cell text end',
+      (tester) async {
+        await pumpTable(tester, _doc(_paddingTable));
+        expectTableRendered(0, 1);
+        final cell = cellOf(1, 2); // `1.5`, column `--:`
+        final r = cellRect(tester, 1, 2);
+        for (final dx in [1.0, _c / 2, _c - 1]) {
+          expect(
+            seamAt(tester, Offset(r.right - dx, r.center.dy)),
+            cell.end,
+            reason: 'right padding, $dx px inside the right edge: the end',
+          );
+        }
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a press on the rule pixel of a body row maps to that cell text end even over its text',
+      (tester) async {
+        await pumpTable(tester, _doc(_paddingTable));
+        expectTableRendered(0, 1);
+        for (final col in [0, 1]) {
+          final cell = cellOf(1, col);
+          final r = cellRect(tester, 1, col);
+          // x over the cell's first glyph, y in the rule pixel row.
+          expect(
+            seamAt(tester, Offset(r.left + _c + 1, r.bottom - 0.5)),
+            cell.end,
+            reason: 'rule under body row 1, column $col: the cell text end',
+          );
+        }
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a press in the header band top or bottom blank strip maps to that header cell text end even over its text',
+      (tester) async {
+        await pumpTable(tester, _doc(_paddingTable));
+        expectTableRendered(0, 1);
+        for (final col in [0, 1]) {
+          final cell = cellOf(0, col); // `Step`, `Notes`
+          final r = cellRect(tester, 0, col);
+          final x = r.left + _c + 1; // over the first glyph
+          expect(
+            seamAt(tester, Offset(x, r.top + _h / 4)),
+            cell.end,
+            reason: 'band top strip, column $col: the header cell text end',
+          );
+          expect(
+            seamAt(tester, Offset(x, r.bottom - _h / 4)),
+            cell.end,
+            reason: 'band bottom strip, column $col: the header cell text end',
+          );
+        }
+      },
+      variant: macOnly,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Verify round 2: a cell is never a relayout boundary (#217 mutants on
+  // parentUsesSize)
+  // -------------------------------------------------------------------------
+  group('cells are never relayout boundaries (#217)', () {
+    /// Pumps the same tree every call (only the table style differs), so a
+    /// second call updates the grid in place. Nothing the grid's render
+    /// object holds changes, only its cells' paragraphs.
+    Future<void> pump(WidgetTester tester, double fontSize) async {
+      tester.view
+        ..physicalSize = const Size(800, 600)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildOmTheme(),
+          home: Material(
+            color: OmColors.surface2,
+            child: Align(
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: 600,
+                child: TableGrid(
+                  key: _bareKey,
+                  text: _wrapTable,
+                  style: editorBodyStyle().copyWith(fontSize: fontSize),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+    }
+
+    /// The grid's size, then every cell text box relative to the grid's top
+    /// left (so the cell rows' y and the columns' x and widths).
+    (Size, List<Rect>) shape(WidgetTester tester) {
+      final grid = find.byKey(_bareKey);
+      final origin = tester.getTopLeft(grid);
+      final texts = find.descendant(of: grid, matching: find.byType(RichText));
+      return (
+        tester.getSize(grid),
+        [
+          for (var i = 0; i < texts.evaluate().length; i++)
+            tester.getRect(texts.at(i)).shift(-origin),
+        ],
+      );
+    }
+
+    testWidgets(
+      'a cell text that lays out differently in place relays out the grid, its rows and its rules',
+      (tester) async {
+        await pump(tester, 13.5);
+        final small = shape(tester);
+        // The same tree at a larger font: only the cells' paragraphs change
+        // (the grid's own text, table and text scale are equal), so the
+        // grid lays out again only if its cells report up (parentUsesSize).
+        await pump(tester, 27);
+        final grown = shape(tester);
+
+        // The reference: the grid pumped at the larger font from scratch.
+        await tester.pumpWidget(const SizedBox());
+        await pump(tester, 27);
+        final fresh = shape(tester);
+
+        expect(
+          grown.$1.height,
+          greaterThan(small.$1.height + _l),
+          reason: 'the wrapped cell takes more lines at the larger font',
+        );
+        expect(grown.$1, fresh.$1, reason: 'the grid height and width');
+        expect(grown.$2.length, fresh.$2.length);
+        for (final (i, r) in grown.$2.indexed) {
+          expect(r, fresh.$2[i], reason: 'cell $i text box: row y and x');
         }
       },
       variant: macOnly,
