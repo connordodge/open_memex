@@ -532,6 +532,22 @@ void main() {
     );
 
     testWidgets(
+      'a card table grid takes the card row style with even leading and the surface4 band',
+      (tester) async {
+        await _wi208PumpRows(tester, _wi208CardText);
+        final grid = _wi208GridWidget(tester, 1, under: _wi208Rows);
+        expect(
+          grid.style.leadingDistribution,
+          TextLeadingDistribution.even,
+          reason: 'a card row with text lays out with even leading',
+        );
+        expect(grid.style.height, 1.7, reason: 'the card body line height');
+        expect(grid.headerBand, OmColors.surface4, reason: 'card band color');
+        expect(grid.links, isNull, reason: 'no link controller in a card');
+      },
+    );
+
+    testWidgets(
       'the card table header band bottom 4 px padding strips are surface4',
       (tester) async {
         // Assumes T4's (#205) painted grid: T3's stub paints no band.
