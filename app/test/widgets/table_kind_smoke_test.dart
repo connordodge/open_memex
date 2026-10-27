@@ -171,7 +171,8 @@ void main() {
     test('table lines get the same inline styles as plain lines', () {
       _wi202ExpectTable(_wi202Table);
       expect(_wi202Plain.length, _wi202Table.length);
-      for (final forceHidden in [true, false]) {
+      // #206: a revealed table styles its pipes and header (table_reveal_style_test).
+      for (final forceHidden in [true]) {
         final table = _wi202Styles(
           buildLivePreviewSpan(
             _wi202Table,
@@ -207,6 +208,8 @@ void main() {
           boxes: _Wi202MonoBoxes(text),
           columnLeft: 0,
           columnRight: 600,
+          // #206: a table's pills are painted only while it is revealed.
+          reveal: const TextSelection.collapsed(offset: 0),
         ))
           (d.kind, d.rect),
       ];
