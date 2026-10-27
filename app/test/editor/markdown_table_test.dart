@@ -163,6 +163,72 @@ void main() {
     });
   });
 
+  group('splitTableLine edges and delimiterAlignments (Spec 197 R2 R5)', () {
+    test('a table line describes its range cells and pipes', () {
+      final text = splitTableLine('| a |').toString();
+      expect(text, contains('0..5'));
+      expect(text, contains('TableCell(2..3)'));
+      expect(text, contains('[0, 4]'));
+    });
+
+    test('a line without a pipe is one cell even when it is blank', () {
+      for (final text in ['', '   ', '\t']) {
+        final line = splitTableLine(text);
+        expect(line.cells, hasLength(1), reason: '"$text"');
+        expect(line.cells.single.text(text), '', reason: '"$text"');
+        expect(line.pipes, isEmpty, reason: '"$text"');
+      }
+      const word = '  abc  ';
+      expect(_spans(splitTableLine(word).cells), [(2, 5)]);
+    });
+
+    test('an escaped backslash before a pipe leaves the pipe splitting', () {
+      const text = 'a \\\\| b';
+      final line = splitTableLine(text);
+      expect(line.pipes, [4]);
+      expect(_texts(line.cells, text), ['a \\\\', 'b']);
+    });
+
+    test('a lone leading pipe or a lone trailing pipe drops one cell', () {
+      expect(splitTableLine('| a | b').cells, hasLength(2));
+      expect(splitTableLine('a | b |').cells, hasLength(2));
+      expect(splitTableLine('|').cells, isEmpty);
+      expect(splitTableLine('||').cells, hasLength(1));
+    });
+
+    test(
+      'delimiterAlignments reads each delimiter cell and rejects others',
+      () {
+        List<TableAlign>? read(String text) =>
+            delimiterAlignments(text, splitTableLine(text));
+        expect(read('|---|:--|--:|:-:|'), [
+          TableAlign.left,
+          TableAlign.left,
+          TableAlign.right,
+          TableAlign.center,
+        ]);
+        expect(read(':-'), [TableAlign.left]);
+        expect(read('-:'), [TableAlign.right]);
+        expect(read(':-:'), [TableAlign.center]);
+        for (final bad in [
+          '|:|',
+          '|::|',
+          '|---|::-|',
+          '|-x-|',
+          '|--x|',
+          '|x--|',
+          '|- -|',
+          '|---|   |',
+          '|---:-|',
+          '| -a |',
+          'abc',
+        ]) {
+          expect(read(bad), isNull, reason: bad);
+        }
+      },
+    );
+  });
+
   group('parseTable (Spec 197 R1 R5 R6)', () {
     test('parseTable reads the alignment of each delimiter cell', () {
       expect(parseTable('| a | b | c | d |\n|:--|:-:|--:|---|')!.alignments, [
@@ -269,6 +335,14 @@ void main() {
       const text = '  | a |\n   |---|\n | 1 |';
       final table = parseTable(text)!;
       expect(_spans(table.header.cells), [(4, 5)]);
+      expect(_texts(table.body.single.cells, text), ['1']);
+    });
+
+    test('parseTable body stops where a second table starts', () {
+      const text = '| a |\n|---|\n| 1 |\n| h |\n|---|\n| 2 |';
+      final table = parseTable(text)!;
+      expect(_texts(table.header.cells, text), ['a']);
+      expect(table.body, hasLength(1));
       expect(_texts(table.body.single.cells, text), ['1']);
     });
 
