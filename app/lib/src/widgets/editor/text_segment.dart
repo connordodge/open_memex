@@ -19,7 +19,7 @@ import 'live_preview_controller.dart';
 const double _bodySize = 13.5;
 const double _bodyHeight = 1.7;
 
-TextStyle _bodyStyle() =>
+TextStyle editorBodyStyle() =>
     OmType.mono(size: _bodySize, color: OmColors.fg0, height: _bodyHeight);
 
 /// The editor page: a scroll view holding [header], the save [errorMessage]
@@ -313,7 +313,7 @@ class _TextSegmentFieldState extends State<TextSegmentField> {
             minLines: widget.minLines,
             cursorColor: OmColors.accent,
             selectionHeightStyle: widget.selectionHeightStyle,
-            style: _bodyStyle(),
+            style: editorBodyStyle(),
             // A live preview controller may lay its text out with its own
             // strut (B1); null keeps the field's default.
             strutStyle: switch (widget.controller) {

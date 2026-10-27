@@ -1,6 +1,7 @@
 import 'dart:async' show scheduleMicrotask;
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
@@ -440,6 +441,11 @@ class _RenderNewlineMarks extends RenderProxyBox {
 
     visitChildren(visit);
     if (editables.length != rows.length) return const [];
+    // A table row the selection reaches is revealed (`tableRevealed`) only
+    // while the segment has focus; rendered, its grid shows no selection
+    // (Spec #197 R16).
+    final gate = _revealGate;
+    final focused = gate is ValueListenable<bool> && gate.value;
     final out = <NewlineMarkLine>[];
     for (final (i, row) in rows.indexed) {
       // A row whose text ends before the selection or starts at or after
@@ -447,6 +453,7 @@ class _RenderNewlineMarks extends RenderProxyBox {
       if (row.textEnd < selection.start || row.textStart >= selection.end) {
         continue;
       }
+      if (row.kind == RowKind.table && !focused) continue;
       final editable = editables[i];
       final rowText = text.substring(row.textStart, row.textEnd);
       if (!editable.hasSize || editable.plainText != rowText) continue;
