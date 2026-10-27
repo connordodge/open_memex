@@ -1242,4 +1242,358 @@ void main() {
       variant: macOnly,
     );
   });
+
+  // -------------------------------------------------------------------------
+  // Verify: contracts the layer documents beyond the mapped tests
+  // -------------------------------------------------------------------------
+  group('click chain contracts (AC3)', () {
+    testWidgets(
+      'a triple click selects exactly the source line and a fourth click keeps it',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+        final start = _wi207LineStart(_wi207Row1);
+        final end = start + _wi207Row1.length;
+        final at = _wi207Glyph(b, _wi207At('pure', plus: 1));
+
+        await _wi207Click(tester, at);
+        await tester.pump(const Duration(milliseconds: 50));
+        await _wi207Click(tester, at);
+        await tester.pump(const Duration(milliseconds: 50));
+        await _wi207Click(tester, at);
+        expect(
+          b.selection(),
+          TextSelection(baseOffset: start, extentOffset: end),
+          reason: 'third click: the line without its terminator',
+        );
+        await tester.pump(const Duration(milliseconds: 50));
+        await _wi207Click(tester, at);
+
+        expect(
+          b.selection(),
+          TextSelection(baseOffset: start, extentOffset: end),
+          reason: 'fourth click: the line again, not the word',
+        );
+        expectTableRevealed(0, 1);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a triple click on a row of a CRLF note selects the line without the carriage return',
+      (tester) async {
+        const text =
+            'Intro line\r\n| A | B |\r\n| --- | --- |\r\n| one two | three |\r\nBelow line';
+        final t = await _wi207Pump(tester, text: text);
+        final b = t.b;
+        final line = text.indexOf('| one two');
+        final end = line + '| one two | three |'.length;
+        final at = _wi207Glyph(b, text.indexOf('two', line) + 1);
+
+        await _wi207Click(tester, at);
+        await tester.pump(const Duration(milliseconds: 50));
+        await _wi207Click(tester, at);
+        await tester.pump(const Duration(milliseconds: 50));
+        await _wi207Click(tester, at);
+
+        expect(
+          b.selection(),
+          TextSelection(baseOffset: line, extentOffset: end),
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a second click exactly kDoubleTapSlop from the first is still a double click',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+        final word = _wi207At('pure');
+        final g = _wi207Glyph(b, word + 1);
+        final first = Offset(g.dx.roundToDouble(), g.dy.roundToDouble());
+        expect(_wi207SeamOffset(b, first), word + 1, reason: 'seam guard');
+        final second = first + const Offset(kDoubleTapSlop, 0);
+        expect((second - first).distance, kDoubleTapSlop);
+
+        await _wi207Click(tester, first);
+        await tester.pump(const Duration(milliseconds: 50));
+        await _wi207Click(tester, second);
+
+        expect(
+          b.selection(),
+          TextSelection(baseOffset: word, extentOffset: word + 4),
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a Shift click within the double click window extends the selection instead of selecting the word',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+        final word = _wi207At('pure');
+        final first = _wi207Glyph(b, word + 1);
+        await _wi207Click(tester, first);
+        await tester.pump(const Duration(milliseconds: 50));
+        final second = first + const Offset(60, 0);
+        final mapped = _wi207SeamOffset(b, second);
+        expect(mapped, isNot(word + 4), reason: 'guard: not the word end');
+
+        await tester.macClick(second, shift: true);
+
+        expect(
+          b.selection(),
+          TextSelection(baseOffset: word + 1, extentOffset: mapped),
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a Cmd click within the double click window on plain text is a plain click not a double click',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+        final word = _wi207At('pure');
+        final first = _wi207Glyph(b, word + 1);
+        await _wi207Click(tester, first);
+        await tester.pump(const Duration(milliseconds: 50));
+        final mapped = _wi207SeamOffset(b, first);
+
+        await tester.macCmdClick(first);
+
+        expect(b.selection(), TextSelection.collapsed(offset: mapped));
+        expect(t.log, isEmpty);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a click right after a drag from a grid press is a plain click not a double click',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+        final first = _wi207Glyph(b, _wi207At('pure', plus: 1));
+        final mouse = await tester.startGesture(
+          first,
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pump();
+        await mouse.moveTo(first + const Offset(40, 0));
+        await tester.pump();
+        await mouse.up();
+        await tester.pump(const Duration(milliseconds: 50));
+        final mapped = _wi207SeamOffset(b, first);
+
+        await _wi207Click(tester, first);
+
+        expect(b.selection(), TextSelection.collapsed(offset: mapped));
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'moving the pointer while holding the second click of a double click keeps the word selected',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+        final word = _wi207At('pure');
+        final at = _wi207Glyph(b, word + 1);
+        await _wi207Click(tester, at);
+        await tester.pump(const Duration(milliseconds: 50));
+
+        final mouse = await tester.startGesture(
+          at,
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pump();
+        await mouse.moveTo(at + const Offset(50, 0));
+        await tester.pump();
+        await mouse.up();
+        await tester.pump();
+
+        expect(
+          b.selection(),
+          TextSelection(baseOffset: word, extentOffset: word + 4),
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a double click inside a revealed table is the fields and selects the word under the second click',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+        await b.placeCaret(_wi207TableStart + 2);
+        expectTableRevealed(0, 1);
+        final row2 = _wi207LineStart(_wi207Row2);
+        final first = _wi207Glyph(b, _wi207At('Table', from: row2, plus: 1));
+        final word = _wi207At('reveal', from: row2);
+        final second = _wi207Glyph(b, word + 1);
+        expect((second - first).distance, lessThan(kDoubleTapSlop));
+
+        await _wi207Click(tester, first);
+        await tester.pump(const Duration(milliseconds: 50));
+        await _wi207Click(tester, second);
+
+        expect(
+          b.selection(),
+          TextSelection(baseOffset: word, extentOffset: word + 6),
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'Shift and drag from a rendered cell past the slop extends from the existing caret',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+        await b.placeCaret(3);
+        final at = _wi207Glyph(b, _wi207At('see', plus: 1));
+        await tester.macHolding([LogicalKeyboardKey.shiftLeft], () async {
+          final mouse = await tester.startGesture(
+            at,
+            kind: PointerDeviceKind.mouse,
+          );
+          await tester.pump();
+          final end = _wi207Glyph(b, _wi207At('done', plus: 1));
+          await mouse.moveTo(end);
+          await tester.pump();
+          final mapped = _wi207SeamOffset(b, end);
+          await mouse.up();
+          await tester.pump();
+
+          expect(
+            b.selection(),
+            TextSelection(baseOffset: 3, extentOffset: mapped),
+          );
+        });
+      },
+      variant: macOnly,
+    );
+  });
+
+  group('Cmd press contracts (AC8)', () {
+    testWidgets(
+      'Cmd click on a resolved wikilink in a rendered cell keeps the table rendered and the caret where it was',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+        await b.placeCaret(3);
+
+        await tester.macCmdClick(
+          _wi207Glyph(b, _wi207At('Known]] here', plus: 2)),
+        );
+
+        expect(t.tabs.opened, [const NoteTab(_wi207KnownId)]);
+        expectTableRendered(0, 1, reason: 'opening a link reveals nothing');
+        expect(b.selection(), const TextSelection.collapsed(offset: 3));
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'Cmd click on an https link in a rendered cell keeps the table rendered and the caret where it was',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+        await b.placeCaret(3);
+
+        await tester.macCmdClick(_wi207Glyph(b, _wi207At('site', plus: 1)));
+
+        expect(t.opener.opened, ['https://example.com']);
+        expectTableRendered(0, 1);
+        expect(b.selection(), const TextSelection.collapsed(offset: 3));
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'Cmd click on a link in a revealed table opens it and the field still places the caret',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+        await b.placeCaret(_wi207TableStart + 2);
+        expectTableRevealed(0, 1);
+        final offset = _wi207At('Known]] here', plus: 2);
+
+        await tester.macCmdClick(_wi207Glyph(b, offset));
+
+        expect(t.tabs.opened, [const NoteTab(_wi207KnownId)]);
+        expectTableRevealed(0, 1);
+        expect(b.selection(), TextSelection.collapsed(offset: offset));
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'Cmd click on a link in a prose row opens it and the field still places the caret',
+      (tester) async {
+        const text =
+            'See [[Known]] here\n| A | B |\n| --- | --- |\n| x | y |\nBelow';
+        final t = await _wi207Pump(tester, text: text);
+        final b = t.b;
+        await b.placeCaret(text.length);
+        final offset = text.indexOf('Known') + 2;
+
+        await tester.macCmdClick(_wi207Glyph(b, offset));
+
+        expect(t.tabs.opened, [const NoteTab(_wi207KnownId)]);
+        expect(b.selection(), TextSelection.collapsed(offset: offset));
+      },
+      variant: macOnly,
+    );
+  });
+
+  group('context menu contracts (AC5)', () {
+    testWidgets(
+      'the menu of a secondary click on a rendered cell has Paste and Select All but no Copy or Cut',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+
+        await _wi207Click(
+          tester,
+          _wi207Glyph(b, _wi207At('parser', plus: 4)),
+          buttons: kSecondaryButton,
+        );
+        await tester.pumpAndSettle();
+
+        expect(_wi207MenuButton('Select All'), findsOneWidget);
+        expect(_wi207MenuButton('Paste'), findsOneWidget);
+        expect(_wi207MenuButton('Copy'), findsNothing);
+        expect(_wi207MenuButton('Cut'), findsNothing);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'the menu of a secondary click over a selection across rows has Copy and Cut',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+        await b.select(
+          TextSelection(
+            baseOffset: 2,
+            extentOffset: _wi207At(_wi207Below, plus: 4),
+          ),
+        );
+
+        await _wi207Click(
+          tester,
+          _wi207Glyph(b, _wi207At(_wi207Below, plus: 2)),
+          buttons: kSecondaryButton,
+        );
+        await tester.pumpAndSettle();
+
+        expect(_wi207MenuButton('Copy'), findsOneWidget);
+        expect(_wi207MenuButton('Cut'), findsOneWidget);
+      },
+      variant: macOnly,
+    );
+  });
 }
