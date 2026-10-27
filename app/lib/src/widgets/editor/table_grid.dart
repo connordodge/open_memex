@@ -1,8 +1,11 @@
+import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 
 import '../../theme/colors.dart';
 import 'line_boxes.dart';
 import 'live_preview_controller.dart';
+import 'live_preview_styles.dart';
+import 'paragraph_line_boxes.dart';
 
 /// The rendered face of a table row (Spec #197 R12, R17; TD4; ruling D12,
 /// API frozen): drawn in the row field's place while the table is not
@@ -38,13 +41,44 @@ class TableGrid extends StatefulWidget {
 /// The [TableGrid]'s state: its line-box seam in the table row's field text
 /// offsets (TD5, ruling D13).
 class TableGridState extends State<TableGrid> {
-  /// The grid's line boxes once laid out, in the row's field text offsets
-  /// (box = the grid's render box); null before layout.
-  // TODO(#204): skeleton only; the implementer gives it behaviour.
-  LineBoxSource? lineBoxes() => throw UnimplementedError('#204 lineBoxes');
+  final _textKey = GlobalKey(debugLabel: 'table-grid-text');
+
+  /// False while the grid is out of the tree (its row was revealed and the
+  /// frame has not finished): it has no line boxes then.
+  bool _active = true;
 
   @override
-  // TODO(#204): skeleton only; the implementer gives it behaviour.
-  Widget build(BuildContext context) =>
-      throw UnimplementedError('#204 TableGrid');
+  void activate() {
+    super.activate();
+    _active = true;
+  }
+
+  @override
+  void deactivate() {
+    _active = false;
+    super.deactivate();
+  }
+
+  /// The grid's line boxes once laid out, in the row's field text offsets
+  /// (box = the grid's render box); null before layout.
+  LineBoxSource? lineBoxes() =>
+      switch (_active ? _textKey.currentContext?.findRenderObject() : null) {
+        final RenderParagraph p when p.attached && p.hasSize =>
+          RenderParagraphLineBoxes(p),
+        _ => null,
+      };
+
+  @override
+  Widget build(BuildContext context) => RichText(
+    key: _textKey,
+    textScaler: MediaQuery.textScalerOf(context),
+    // As the row field's EditableText does with its strut.
+    strutStyle: livePreviewStrut().inheritFromTextStyle(widget.style),
+    text: buildLivePreviewSpan(
+      widget.text,
+      style: widget.style,
+      forceHidden: true,
+      isResolved: widget.links?.isResolved,
+    ),
+  );
 }

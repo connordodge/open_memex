@@ -48,15 +48,18 @@ class LivePreviewController extends TextEditingController {
 
   /// The field is a table row's text (Spec #197 R8; ruling D12). Default
   /// false. Setting it notifies listeners, as [codeRow] does.
-  // TODO(#204): skeleton only; the implementer gives it behaviour.
-  bool get tableRow => throw UnimplementedError('#204 tableRow');
-  set tableRow(bool value) => throw UnimplementedError('#204 tableRow');
+  bool get tableRow => _tableRow;
+  set tableRow(bool value) {
+    _tableRow = value;
+    notifyListeners();
+  }
+
+  bool _tableRow = false;
 
   /// Whether this table row shows its raw field (Spec #197 R12, ruling D12):
   /// `tableRow && revealGate.value && selection.isValid`. The only reveal
   /// predicate of a table row; false for every other row.
-  // TODO(#204): skeleton only; the implementer gives it behaviour.
-  bool get tableRevealed => throw UnimplementedError('#204 tableRevealed');
+  bool get tableRevealed => tableRow && revealGate.value && selection.isValid;
 
   /// True while the field's text segment has focus. Default: never true.
   ValueListenable<bool> revealGate = const AlwaysStoppedAnimation<bool>(false);

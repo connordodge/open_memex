@@ -11,6 +11,7 @@ import 'segment_keyboard.dart';
 import 'segment_pointer_layer.dart';
 import 'segment_selection_ops.dart';
 import 'segment_undo.dart';
+import 'table_grid.dart';
 
 /// What the rows host hands its field builder for one editor row.
 @immutable
@@ -130,7 +131,8 @@ class _Row {
   _Row(this.spec, this.text)
     : controller = LivePreviewController(text: text),
       focusNode = FocusNode(debugLabel: 'editor-row'),
-      fieldKey = GlobalKey(debugLabel: 'editor-row-field');
+      fieldKey = GlobalKey(debugLabel: 'editor-row-field'),
+      gridKey = GlobalKey(debugLabel: 'editor-row-table-grid');
 
   RowSpec spec;
 
@@ -143,6 +145,9 @@ class _Row {
   /// Keeps the row's field (and its EditableText, focus and text input
   /// connection) when the row moves or changes kind.
   final GlobalKey fieldKey;
+
+  /// Holds a table row's grid while it shows (ruling D12).
+  final GlobalKey gridKey;
 
   late final VoidCallback onValue;
   late final VoidCallback onFocus;
@@ -487,6 +492,10 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
       // Setting codeRow notifies, so only a change is written.
       final code = spec.kind == RowKind.code;
       if (row.controller.codeRow != code) row.controller.codeRow = code;
+      // A table row shows its grid until revealed (Spec #197 R12, D12).
+      // Setting tableRow notifies, so only a change is written.
+      final table = spec.kind == RowKind.table;
+      if (row.controller.tableRow != table) row.controller.tableRow = table;
       final text = _text.substring(spec.textStart, spec.textEnd);
       final local = switch (slices[j]) {
         null => const TextSelection.collapsed(offset: -1),
@@ -520,18 +529,46 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
     if (box is! RenderBox || !box.hasSize) return null;
     final rows = <_RowBoxes>[];
     for (final row in _rows) {
-      final source = _fieldBoxes(row);
+      final source = _rowBoxes(row);
       if (source == null) return null;
       rows.add((
         spec: row.spec,
         source: source,
         shift: MatrixUtils.transformPoint(
-          source.editable.getTransformTo(box),
+          source.box.getTransformTo(box),
           Offset.zero,
         ),
       ));
     }
     return _RowsLineBoxes(box, rows);
+  }
+
+  /// [row]'s line boxes once laid out, in its field's text offsets: a
+  /// rendered table's from its grid (`TableGridState.lineBoxes`, ruling
+  /// D12), every other row's from its field. Until a table's grid is built
+  /// and laid out, its field (mounted offstage, still laid out) answers.
+  LineBoxSource? _rowBoxes(_Row row) {
+    final controller = row.controller;
+    if (!controller.tableRow || controller.tableRevealed) {
+      return _fieldBoxes(row);
+    }
+    return _gridBoxes(row) ?? _fieldBoxes(row);
+  }
+
+  /// [row]'s grid line boxes while its grid is mounted and laid out.
+  LineBoxSource? _gridBoxes(_Row row) {
+    TableGridState? grid;
+    void visit(Element element) {
+      if (grid != null) return;
+      if (element is StatefulElement && element.state is TableGridState) {
+        grid = element.state as TableGridState;
+      } else {
+        element.visitChildren(visit);
+      }
+    }
+
+    row.gridKey.currentContext?.visitChildElements(visit);
+    return grid?.lineBoxes();
   }
 
   /// [row]'s field line boxes once it is laid out.
@@ -618,7 +655,8 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
                   .trimLeft(),
               controller: row.controller,
               focusNode: row.focusNode,
-              boxes: () => _fieldBoxes(row),
+              boxes: () => _rowBoxes(row),
+              gridKey: row.gridKey,
               field: KeyedSubtree(
                 key: row.fieldKey,
                 child: widget.fieldBuilder(
@@ -672,11 +710,7 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
 
 /// One laid-out row of a [_RowsLineBoxes]: its spec, its field's line boxes
 /// and where its field sits in the rows' box.
-typedef _RowBoxes = ({
-  RowSpec spec,
-  RenderEditableLineBoxes source,
-  Offset shift,
-});
+typedef _RowBoxes = ({RowSpec spec, LineBoxSource source, Offset shift});
 
 /// [LineBoxSource] over a segment's editor rows (R33), in the rows' box
 /// coordinates and segment offsets. An item row's first line starts at the

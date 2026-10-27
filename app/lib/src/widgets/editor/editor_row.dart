@@ -8,6 +8,8 @@ import 'line_boxes.dart';
 import 'live_preview_controller.dart';
 import 'live_preview_frame.dart';
 import 'marker_column.dart';
+import 'table_grid.dart';
+import 'text_segment.dart';
 
 /// The marker column kind of an item row of [kind]; null for prose and code
 /// rows.
@@ -54,6 +56,13 @@ List<ItemGeometry?> rowGeometries(List<RowSpec> rows) {
 ///   wrapped line of the item starts at its text x (hanging indent).
 /// - A prose row's field spans the text column.
 /// - A code row's field is inset 16.2 px left and 10 px right (A2).
+/// - A table row (Spec #197 R12, TD4, ruling D12) spans the text column.
+///   While its controller is not `tableRevealed` it shows a [TableGrid]
+///   (Key `editor-table-<segment>-<index>`, under [gridKey]) and keeps its
+///   field mounted under its key inside an `Offstage`, so the field's
+///   controller, focus node and text input connection survive, it is not
+///   painted, hit or read by semantics (R26); revealed, the field shows and
+///   the grid is gone.
 ///
 /// The field sits under Key `editor-row-<segment>-<index>` (D10) and paints
 /// its selection in `OmColors.selection` also while it doesn't have focus.
@@ -69,6 +78,7 @@ class EditorRow extends StatelessWidget {
     required this.focusNode,
     required this.boxes,
     required this.field,
+    this.gridKey,
   });
 
   /// The text segment's index (`<s>` of `text-segment-<s>`).
@@ -97,19 +107,47 @@ class EditorRow extends StatelessWidget {
   /// The row's field.
   final Widget field;
 
+  /// The key of the subtree holding a table row's [TableGrid] while it
+  /// shows, so the host finds the grid's state; null for other rows.
+  final GlobalKey? gridKey;
+
   @override
   Widget build(BuildContext context) {
-    final keyed = KeyedSubtree(
+    Widget keyedField(Widget child) => KeyedSubtree(
       key: ValueKey('editor-row-$segment-$index'),
       child: _UnfocusedSelection(
         controller: controller,
         focusNode: focusNode,
-        child: field,
+        child: child,
       ),
     );
+    final keyed = keyedField(field);
     final item = geometry;
     final Widget row = switch (kind) {
-      RowKind.prose || RowKind.table => keyed,
+      RowKind.prose => keyed,
+      RowKind.table => ListenableBuilder(
+        listenable: Listenable.merge([controller, controller.revealGate]),
+        builder: (context, _) {
+          final revealed = controller.tableRevealed;
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              keyedField(Offstage(offstage: !revealed, child: field)),
+              if (!revealed)
+                KeyedSubtree(
+                  key: gridKey,
+                  child: TableGrid(
+                    key: ValueKey('editor-table-$segment-$index'),
+                    text: controller.text,
+                    style: editorBodyStyle(),
+                    links: controller,
+                  ),
+                ),
+            ],
+          );
+        },
+      ),
       RowKind.code => Padding(
         padding: EdgeInsets.only(
           left: codeTextInsetLeft,
@@ -202,7 +240,13 @@ class _RenderUnfocusedSelection extends RenderProxyBox {
   void paint(PaintingContext context, Offset offset) {
     final selection = _controller.selection;
     final editable = findRenderEditable(child);
-    if (!_focusNode.hasFocus &&
+    // A rendered table's grid shows no selection (Spec #197 R16).
+    final hidden = switch (_controller) {
+      final LivePreviewController c => c.tableRow && !c.tableRevealed,
+      _ => false,
+    };
+    if (!hidden &&
+        !_focusNode.hasFocus &&
         !selection.isCollapsed &&
         selection.isValid &&
         editable != null) {
