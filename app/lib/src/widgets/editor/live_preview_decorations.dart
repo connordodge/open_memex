@@ -311,7 +311,8 @@ List<PaintedDecoration> layoutDecorations({
       case MdLineKind.tableHeader:
       case MdLineKind.tableDelimiter:
       case MdLineKind.tableBody:
-        throw UnimplementedError('WI #202');
+        // As a plain line until tables render (Spec #197, ruling D9).
+        _addPills(text, line, boxes, columnLeft, pills);
     }
   }
   return [...backgrounds, ...pills, ...rules];

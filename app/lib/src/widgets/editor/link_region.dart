@@ -331,7 +331,10 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
             MdLineKind.task ||
             MdLineKind.quote:
           tokenize(line.textStart, line.contentEnd);
-        case MdLineKind.plain:
+        case MdLineKind.plain ||
+            MdLineKind.tableHeader ||
+            MdLineKind.tableDelimiter ||
+            MdLineKind.tableBody:
           tokenize(line.start, line.contentEnd);
         default:
           break;

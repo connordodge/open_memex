@@ -240,7 +240,8 @@ final class _SpanBuilder {
         case MdLineKind.tableHeader ||
             MdLineKind.tableDelimiter ||
             MdLineKind.tableBody:
-          throw UnimplementedError('WI #202');
+          // As a plain line until tables render (Spec #197, ruling D9).
+          _tokenize(line.start, line.contentEnd);
       }
     }
 

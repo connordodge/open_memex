@@ -4,7 +4,10 @@
 // start + starts_with "```"), leading frontmatter mirrors `split_frontmatter`
 // in `link_extractor.rs` (ruling D3). Offsets are UTF-16 code units into the
 // classified segment text; a line boundary never falls inside a surrogate
-// pair (ruling D4).
+// pair (ruling D4). Table cells come from the one cell splitter in
+// `markdown_table.dart` (ruling D10).
+
+import 'markdown_table.dart';
 
 /// The kind of one source line (Spec R36).
 enum MdLineKind {
@@ -160,6 +163,16 @@ class MdLine {
 /// in `link_extractor.rs` decides. A text shorter than 4 code units never
 /// has frontmatter. With [atSegmentStart] false, frontmatter is never
 /// recognised.
+///
+/// Tables (Spec #197 R1-R4, R7) form only from lines that would otherwise be
+/// [MdLineKind.plain], each with at most 3 leading spaces (a tab counts 4
+/// columns) and a cell-splitting `|` ([splitTableLine]). Such a line is a
+/// [MdLineKind.tableHeader] when the next line is a delimiter line with as
+/// many cells as it ([delimiterAlignments]); that next line is the
+/// [MdLineKind.tableDelimiter]. The [MdLineKind.tableBody] lines follow it
+/// until a line that is not such a line; a header and delimiter pair inside
+/// a body starts a new table (ruling D23). Fence and frontmatter lines are
+/// never table lines.
 List<MdLine> classifyLines(String segmentText, {required bool atSegmentStart}) {
   final ranges = _scanLines(segmentText);
   final lines = <MdLine>[];
@@ -175,6 +188,10 @@ List<MdLine> classifyLines(String segmentText, {required bool atSegmentStart}) {
     }
   }
   var inFence = false;
+  // Whether the previous line is a table header, and whether it is a
+  // delimiter or body line (a line a body line may follow).
+  var afterHeader = false;
+  var inTable = false;
   for (; next < ranges.length; next++) {
     final range = ranges[next];
     final content = segmentText.substring(range.start, range.contentEnd);
@@ -192,10 +209,61 @@ List<MdLine> classifyLines(String segmentText, {required bool atSegmentStart}) {
       inFence = true;
       lines.add(_plainLine(segmentText, range, MdLineKind.fenceOpen));
     } else {
-      lines.add(_classify(segmentText, range, content));
+      final line = _classify(segmentText, range, content);
+      final table = line.kind == MdLineKind.plain
+          ? _tableKind(segmentText, ranges, next, afterHeader, inTable)
+          : null;
+      lines.add(table == null ? line : _plainLine(segmentText, range, table));
     }
+    final kind = lines.last.kind;
+    afterHeader = kind == MdLineKind.tableHeader;
+    inTable = kind == MdLineKind.tableDelimiter || kind == MdLineKind.tableBody;
   }
   return lines;
+}
+
+/// At most this many leading columns on a table line (Spec #197 R3).
+const _maxTableIndent = 3;
+
+/// The table kind of line [i], which [_classify] gives [MdLineKind.plain],
+/// or null when it is no table line (Spec #197 R1, R4, ruling D23).
+/// [afterHeader] says whether the previous line is a table header, and
+/// [inTable] whether it is a delimiter or body line.
+MdLineKind? _tableKind(
+  String text,
+  List<_LineRange> ranges,
+  int i,
+  bool afterHeader,
+  bool inTable,
+) {
+  // The header's lookahead already checked this delimiter line.
+  if (afterHeader) return MdLineKind.tableDelimiter;
+  final line = _tableLine(text, ranges[i]);
+  if (line == null) return null;
+  if (_delimiterBelow(text, ranges, i, line.cells.length)) {
+    return MdLineKind.tableHeader;
+  }
+  return inTable ? MdLineKind.tableBody : null;
+}
+
+/// The cells of the line [range] when it can be a table line: at most
+/// [_maxTableIndent] columns of indentation and a cell-splitting `|`.
+TableLine? _tableLine(String text, _LineRange range) {
+  final content = text.substring(range.start, range.contentEnd);
+  if (_indent(content).$1 > _maxTableIndent) return null;
+  final line = splitTableLine(text, start: range.start, end: range.contentEnd);
+  return line.pipes.isEmpty ? null : line;
+}
+
+/// Whether the line after line [i] is a delimiter line with [columns] cells
+/// that would otherwise be plain (so `- | -` stays a bullet).
+bool _delimiterBelow(String text, List<_LineRange> ranges, int i, int columns) {
+  if (i + 1 == ranges.length) return false;
+  final range = ranges[i + 1];
+  final content = text.substring(range.start, range.contentEnd);
+  if (_classify(text, range, content).kind != MdLineKind.plain) return false;
+  final line = _tableLine(text, range);
+  return line != null && delimiterAlignments(text, line)?.length == columns;
 }
 
 /// A fenced code block opens and closes on a line starting with this after
