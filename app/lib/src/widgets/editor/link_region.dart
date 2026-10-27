@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../db.dart';
 import '../../editor/markdown_inline.dart';
 import '../../editor/markdown_lines.dart';
+import '../../editor/markdown_table.dart';
 import '../../state/editor_controller.dart';
 import '../../state/tabs_state.dart';
 import '../../state/url_opener.dart';
@@ -38,8 +39,13 @@ const Set<String> _openableSchemes = {'http', 'https', 'mailto'};
 ///   `EditorController.flushPendingSave`), a transclusion token's daily
 ///   note, or a link's URL through `urlOpenerProvider`. A plain click is the
 ///   field's own.
+/// - On a rendered table grid (Spec #197 R22, ruling D14) a Cmd+press on
+///   such a token wins the gesture arena, so the segment's pointer layer
+///   doesn't reveal the table; any other Cmd+press there is the layer's
+///   plain click.
 ///
-/// Hit-tests the field's text through [boxes] and `tokenizeInline`.
+/// Hit-tests the field's text through [boxes] and `tokenizeInline`; a
+/// table line's links are found per cell through `splitTableLine` (D10).
 class LinkRegion extends ConsumerStatefulWidget {
   const LinkRegion({
     super.key,
@@ -236,6 +242,14 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
             HardwareKeyboard.instance.isMetaPressed
         ? _actionableAt(event.position)
         : null;
+    // On a rendered table grid the segment's pointer layer owns every other
+    // press (D14): winning the arena keeps it from revealing the table.
+    final controller = widget.controller;
+    if (_pressed != null && controller.tableRow && !controller.tableRevealed) {
+      GestureBinding.instance.gestureArena
+          .add(event.pointer, const _LinkPress())
+          .resolve(GestureDisposition.accepted);
+    }
   }
 
   void _onPointerUp(PointerUpEvent event) {
@@ -331,11 +345,18 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
             MdLineKind.task ||
             MdLineKind.quote:
           tokenize(line.textStart, line.contentEnd);
-        case MdLineKind.plain ||
-            MdLineKind.tableHeader ||
-            MdLineKind.tableDelimiter ||
-            MdLineKind.tableBody:
+        case MdLineKind.plain:
           tokenize(line.start, line.contentEnd);
+        // A table line's links are found per cell (Spec #197 R22, D10).
+        case MdLineKind.tableHeader || MdLineKind.tableBody:
+          final split = splitTableLine(
+            text,
+            start: line.start,
+            end: line.contentEnd,
+          );
+          for (final cell in split.cells) {
+            tokenize(cell.start, cell.end);
+          }
         default:
           break;
       }
@@ -355,8 +376,20 @@ bool _openable(String url) {
       _openableSchemes.contains(url.substring(0, colon).toLowerCase());
 }
 
-/// A link [token] of a field's text, tokenized from the line text starting
-/// at [base].
+/// A Cmd+press on a link of a rendered table grid in the gesture arena: it
+/// wins at once, and the link opens on pointer up.
+final class _LinkPress implements GestureArenaMember {
+  const _LinkPress();
+
+  @override
+  void acceptGesture(int pointer) {}
+
+  @override
+  void rejectGesture(int pointer) {}
+}
+
+/// A link [token] of a field's text, tokenized from the line (or table
+/// cell) text starting at [base].
 final class _Link {
   const _Link(this.token, this.base);
 

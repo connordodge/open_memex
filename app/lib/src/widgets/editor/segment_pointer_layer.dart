@@ -1,4 +1,4 @@
-import 'dart:async' show scheduleMicrotask;
+import 'dart:async' show Timer, scheduleMicrotask;
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart' show ValueListenable;
@@ -14,6 +14,7 @@ import '../../editor/row_geometry.dart';
 import '../../editor/segment_selection.dart';
 import '../../theme/colors.dart';
 import 'line_boxes.dart';
+import 'live_preview_controller.dart';
 import 'live_preview_styles.dart';
 import 'marker_column.dart';
 import 'segment_view.dart';
@@ -44,6 +45,18 @@ const double _autoScrollSpeed = 1200;
 /// - A plain click, a double or triple click and a Cmd+click stay the
 ///   row's (and the link region's): the layer only wins the gesture arena
 ///   for a drag or a Shift+press.
+/// - A press on a rendered table grid (a table row that is not
+///   `tableRevealed`, Spec #197 R21, ruling D14) is the layer's: the grid
+///   has no recognizers. A primary or secondary press puts the caret at the
+///   pressed offset and focuses the table row, which reveals it; a
+///   Cmd+press does too unless the link region wins the arena (a Cmd+press
+///   on a link it opens). A click within `kDoubleTapTimeout` and
+///   `kDoubleTapSlop` of a click that started on a grid wins the arena at
+///   once and selects the word (second click) or the source line (third
+///   and later) at the first press's offset, so the reveal's layout change
+///   never retargets it (L7).
+/// - A drag extends only once the pointer has moved more than
+///   `kPrecisePointerHitSlop` from the press.
 /// - Dragging into the editor page's top or bottom edge zone scrolls the
 ///   page while the selection keeps extending under the pointer.
 /// - `SelectAllTextIntent` (Cmd+A) selects the whole text segment.
@@ -58,6 +71,15 @@ class SegmentPointerLayer extends StatefulWidget {
   /// The segment's rows.
   final Widget child;
 
+  /// Whether global [point] lies on a rendered table grid of the segment
+  /// whose pointer layer is above [context] (a table row that is not
+  /// `tableRevealed`, ruling D14); false without one.
+  static bool onRenderedGrid(BuildContext context, Offset point) {
+    final layer = context.findAncestorStateOfType<_SegmentPointerLayerState>();
+    final host = layer?._host;
+    return host != null && layer!._onRenderedGrid(host, point);
+  }
+
   @override
   State<SegmentPointerLayer> createState() => _SegmentPointerLayerState();
 }
@@ -68,7 +90,11 @@ class _Press implements GestureArenaMember {
     required this.pointer,
     required this.down,
     required this.base,
+    required this.onAccept,
     required this.onReject,
+    this.at = 0,
+    this.deferred = false,
+    this.multi = false,
   }) : position = down;
 
   final int pointer;
@@ -82,18 +108,48 @@ class _Press implements GestureArenaMember {
   /// The pointer's last position (global).
   Offset position;
 
-  /// True once the layer won the arena: the press is a drag or Shift+press.
+  /// The pressed offset (segment offset).
+  final int at;
+
+  /// A Cmd+press on a rendered grid: the caret goes to [at] only once the
+  /// layer wins the arena (the link region wins it on a link it opens).
+  final bool deferred;
+
+  /// A double or triple click: it has selected, and never drags.
+  final bool multi;
+
+  /// True once the layer won the arena: the press is a drag, a Shift+press,
+  /// a press on a rendered grid or a multi-click.
   bool accepted = false;
+
+  /// True once the pointer moved more than `kPrecisePointerHitSlop` from
+  /// [down].
+  bool dragging = false;
 
   late final GestureArenaEntry entry;
 
+  final void Function(_Press press) onAccept;
   final void Function(_Press press) onReject;
 
   @override
-  void acceptGesture(int pointer) => accepted = true;
+  void acceptGesture(int pointer) {
+    accepted = true;
+    onAccept(this);
+  }
 
   @override
   void rejectGesture(int pointer) => onReject(this);
+}
+
+/// A click chain that started with a press on a rendered table grid: where
+/// its first press went down (global), that press's offset (segment
+/// offset) and the clicks so far.
+class _Clicks {
+  _Clicks(this.down, this.offset);
+
+  final Offset down;
+  final int offset;
+  int count = 1;
 }
 
 class _SegmentPointerLayerState extends State<SegmentPointerLayer>
@@ -102,12 +158,17 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
   Ticker? _ticker;
   Duration _lastTick = Duration.zero;
 
+  /// The click chain a next click within `kDoubleTapTimeout` continues.
+  _Clicks? _clicks;
+  Timer? _clicksTimer;
+
   SegmentViewState? get _host =>
       context.findAncestorStateOfType<SegmentViewState>();
 
   @override
   void dispose() {
     _ticker?.dispose();
+    _clicksTimer?.cancel();
     super.dispose();
   }
 
@@ -132,20 +193,60 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
     ).extentOffset;
   }
 
-  /// The focus nodes of the segment's row fields, in row order.
-  List<FocusNode> _rowFocusNodes() {
-    final nodes = <FocusNode>[];
+  /// The segment's row fields, in row order.
+  List<EditableTextState> _rowFields() {
+    final fields = <EditableTextState>[];
     void visit(Element element) {
-      final widget = element.widget;
-      if (widget is EditableText) {
-        nodes.add(widget.focusNode);
+      if (element is StatefulElement && element.state is EditableTextState) {
+        fields.add(element.state as EditableTextState);
       } else {
         element.visitChildren(visit);
       }
     }
 
     context.visitChildElements(visit);
-    return nodes;
+    return fields;
+  }
+
+  /// The focus nodes of the segment's row fields, in row order.
+  List<FocusNode> _rowFocusNodes() => [
+    for (final field in _rowFields()) field.widget.focusNode,
+  ];
+
+  /// Whether global [point] lies on a table row that shows its grid (its
+  /// controller is not `tableRevealed`, Spec #197 R12, ruling D12).
+  bool _onRenderedGrid(SegmentViewState host, Offset point) {
+    final boxes = host.lineBoxes();
+    if (boxes == null) return false;
+    final local = boxes.box.globalToLocal(point);
+    if (local.dy < 0 || local.dy >= boxes.box.size.height) return false;
+    final fields = _rowFields();
+    final rows = splitRows(host.text, atSegmentStart: true);
+    if (fields.length != rows.length) return false;
+    final offset = boxes.offsetAt(local);
+    final i = rows.indexWhere((row) => offset < row.end);
+    final controller = fields[i < 0 ? rows.length - 1 : i].widget.controller;
+    return controller is LivePreviewController &&
+        controller.tableRow &&
+        !controller.tableRevealed;
+  }
+
+  /// The word at segment [offset], as its row's field finds words.
+  TextSelection _wordAt(SegmentViewState host, int offset) {
+    final rows = splitRows(host.text, atSegmentStart: true);
+    final fields = _rowFields();
+    final i = rows.indexWhere((row) => offset < row.end);
+    if (fields.length != rows.length || i < 0) {
+      return TextSelection.collapsed(offset: offset);
+    }
+    final row = rows[i];
+    final word = fields[i].renderEditable.getWordBoundary(
+      TextPosition(offset: offset - row.textStart),
+    );
+    return TextSelection(
+      baseOffset: row.textStart + word.start,
+      extentOffset: row.textStart + word.end,
+    );
   }
 
   /// Focuses the row holding segment [offset] unless it has focus. With
@@ -178,26 +279,45 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
   }
 
   void _onDown(PointerDownEvent event) {
-    if (_press != null ||
-        event.kind != PointerDeviceKind.mouse ||
-        event.buttons != kPrimaryButton) {
+    if (_press != null || event.kind != PointerDeviceKind.mouse) return;
+    // Only a click that continues the chain keeps it.
+    _clicksTimer?.cancel();
+    final clicks = _clicks;
+    _clicks = null;
+    if (event.buttons == kSecondaryButton) {
+      _onSecondaryDown(event);
       return;
     }
+    if (event.buttons != kPrimaryButton) return;
     // A press on a marker column belongs to the column (Spec Q4, D11).
     if (_inMarkerColumn(event.position)) return;
-    final keyboard = HardwareKeyboard.instance;
-    // A Cmd+click belongs to the link region (B3).
-    if (keyboard.isMetaPressed) return;
     final host = _host;
     if (host == null) return;
+    final keyboard = HardwareKeyboard.instance;
+    final cmd = keyboard.isMetaPressed;
+    final shift = keyboard.isShiftPressed;
+    if (clicks != null &&
+        !cmd &&
+        !shift &&
+        (event.position - clicks.down).distance <= kDoubleTapSlop) {
+      _clicks = clicks;
+      _onMultiClick(event, host, clicks);
+      return;
+    }
+    final grid = _onRenderedGrid(host, event.position);
+    // A Cmd+click belongs to the link region (B3); on a rendered grid only
+    // when the link region wins the arena (D14).
+    if (cmd && !grid) return;
     final at = _offsetAt(host, event.position);
     if (at == null) return;
-    final shift = keyboard.isShiftPressed;
     final current = host.selection;
     final press = _Press(
       pointer: event.pointer,
       down: event.position,
       base: shift && current.isValid ? current.baseOffset : at,
+      at: at,
+      deferred: cmd,
+      onAccept: _onAccept,
       onReject: _onReject,
     );
     press.entry = GestureBinding.instance.gestureArena.add(
@@ -205,6 +325,7 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
       press,
     );
     _press = press;
+    if (cmd) return;
     if (shift) {
       final selection = TextSelection(baseOffset: press.base, extentOffset: at);
       host.select(selection);
@@ -214,19 +335,67 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
       // As a macOS field does on mouse down: the caret goes to the press.
       host.select(TextSelection.collapsed(offset: at));
       _focusRowAt(host, at);
+      if (grid) _clicks = _Clicks(event.position, at);
     }
+  }
+
+  /// A secondary press on a rendered grid puts the caret at the pressed
+  /// offset and focuses the table row, as a plain click does; the selection
+  /// ops show the menu (D14). Elsewhere it is the row field's.
+  void _onSecondaryDown(PointerDownEvent event) {
+    final host = _host;
+    if (host == null || !_onRenderedGrid(host, event.position)) return;
+    final at = _offsetAt(host, event.position);
+    if (at == null) return;
+    host.select(TextSelection.collapsed(offset: at));
+    _focusRowAt(host, at);
+  }
+
+  /// The second (word) or a later (source line) click of [clicks]: wins
+  /// the arena at once and selects at the chain's first offset (L7).
+  void _onMultiClick(
+    PointerDownEvent event,
+    SegmentViewState host,
+    _Clicks clicks,
+  ) {
+    clicks.count++;
+    final offset = clicks.offset;
+    final selection = clicks.count == 2
+        ? _wordAt(host, offset)
+        : _sourceLineAt(host.text, offset);
+    final press = _Press(
+      pointer: event.pointer,
+      down: event.position,
+      base: selection.baseOffset,
+      at: offset,
+      multi: true,
+      onAccept: _onAccept,
+      onReject: _onReject,
+    );
+    press.entry = GestureBinding.instance.gestureArena.add(
+      event.pointer,
+      press,
+    );
+    _press = press;
+    press.entry.resolve(GestureDisposition.accepted);
+    host.select(selection);
+    _focusRowAt(host, offset, keep: selection);
   }
 
   void _onMove(PointerMoveEvent event) {
     final press = _press;
-    if (press == null || event.pointer != press.pointer) return;
-    press.position = event.position;
-    if (!press.accepted &&
-        (event.position - press.down).distance > kPrecisePointerHitSlop) {
-      // Before the row's own tap-and-drag recognizer sees this move.
-      press.entry.resolve(GestureDisposition.accepted);
+    if (press == null || event.pointer != press.pointer || press.multi) {
+      return;
     }
-    if (!press.accepted) return;
+    press.position = event.position;
+    if (!press.dragging &&
+        (event.position - press.down).distance > kPrecisePointerHitSlop) {
+      press.dragging = true;
+      _clicks = null;
+      // Before the row's own tap-and-drag recognizer sees this move.
+      if (!press.accepted) press.entry.resolve(GestureDisposition.accepted);
+    }
+    if (!press.accepted || !press.dragging) return;
     _extend(press);
     _updateAutoScroll();
   }
@@ -236,8 +405,21 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
     if (press == null || event.pointer != press.pointer) return;
     _press = null;
     _ticker?.stop();
+    if (_clicks != null) {
+      _clicksTimer = Timer(kDoubleTapTimeout, () => _clicks = null);
+    }
     // A click: the row's (or the empty area's) tap recognizer takes it.
     if (!press.accepted) press.entry.resolve(GestureDisposition.rejected);
+  }
+
+  /// A Cmd+press on a rendered grid that the link region left to the layer
+  /// is a plain click (pack correction: a ghost link ignores Cmd).
+  void _onAccept(_Press press) {
+    if (!press.deferred) return;
+    final host = _host;
+    if (host == null) return;
+    host.select(TextSelection.collapsed(offset: press.at));
+    _focusRowAt(host, press.at);
   }
 
   void _onReject(_Press press) {
@@ -576,3 +758,19 @@ double newlineMarkWidth(int? headingLevel) {
   RangeError.checkValueInInterval(headingLevel, 1, 6, 'headingLevel');
   return monoAdvance(headingFontSize(headingLevel));
 }
+
+/// The source line holding segment [offset] of [text], without its line
+/// terminator (a grid row's whole source line, Spec #197 R21).
+TextSelection _sourceLineAt(String text, int offset) {
+  var start = offset;
+  while (start > 0 && !_isLineTerminator(text.codeUnitAt(start - 1))) {
+    start--;
+  }
+  var end = offset;
+  while (end < text.length && !_isLineTerminator(text.codeUnitAt(end))) {
+    end++;
+  }
+  return TextSelection(baseOffset: start, extentOffset: end);
+}
+
+bool _isLineTerminator(int unit) => unit == 0x0A || unit == 0x0D;
