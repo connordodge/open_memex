@@ -112,7 +112,7 @@ class CardRows extends StatelessWidget {
       ),
     );
     final Widget row = switch (spec.kind) {
-      RowKind.prose => rich,
+      RowKind.prose || RowKind.table => rich,
       RowKind.code => Padding(
         padding: EdgeInsets.only(
           left: codeTextInsetLeft,

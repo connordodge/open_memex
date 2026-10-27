@@ -308,6 +308,11 @@ List<PaintedDecoration> layoutDecorations({
       case MdLineKind.numbered:
       case MdLineKind.task:
         _addPills(text, line, boxes, columnLeft, pills);
+      case MdLineKind.tableHeader:
+      case MdLineKind.tableDelimiter:
+      case MdLineKind.tableBody:
+        // As a plain line until tables render (Spec #197, ruling D9).
+        _addPills(text, line, boxes, columnLeft, pills);
     }
   }
   return [...backgrounds, ...pills, ...rules];

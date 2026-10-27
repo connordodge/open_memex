@@ -523,4 +523,415 @@ void main() {
       },
     );
   });
+
+  _wi202TableGrammar();
+}
+
+// ------------------------------------------------------------------ WI #202
+// Table line grammar (Spec #197 R1-R4, R7; rulings D9, D10, D23).
+
+const _th = MdLineKind.tableHeader;
+const _td = MdLineKind.tableDelimiter;
+const _tb = MdLineKind.tableBody;
+
+/// A two-column table: header, delimiter, one body line, final newline.
+const _wi202Table = '| a | b |\n|---|---|\n| 1 | 2 |\n';
+
+void _wi202TableGrammar() {
+  group('tables: header delimiter and body (Spec 197 R1 R2)', () {
+    test(
+      'a table with outer pipes classifies as header delimiter and body',
+      () {
+        expect(_kinds('| a | b |\n|---|:-:|\n| 1 | 2 |'), [_th, _td, _tb]);
+      },
+    );
+
+    test('a table without outer pipes is the same table', () {
+      expect(_kinds('a | b\n--- | ---\n1 | 2'), [_th, _td, _tb]);
+      // Mixed: outer pipes on some lines only.
+      expect(_kinds('| a | b\n---|---|\n1 | 2 |'), [_th, _td, _tb]);
+    });
+
+    test('a header only table is a header and a delimiter line', () {
+      expect(_kinds('| a | b |\n|---|---|'), [_th, _td]);
+      expect(_kinds('| a | b |\n|---|---|\n'), [_th, _td, _b]);
+    });
+
+    test('a single column table with pipes is a table', () {
+      expect(_kinds('| a |\n|---|\n| 1 |'), [_th, _td, _tb]);
+      expect(_kinds('a |\n--- |\n1 |'), [_th, _td, _tb]);
+    });
+
+    test(
+      'table lines have no marker and their text starts at the line start',
+      () {
+        const text = '| a |\n  |:-:|\n | 1 |';
+        final lines = _lines(text);
+        expect([for (final l in lines) l.kind], [_th, _td, _tb]);
+        expect([for (final l in lines) l.indent], [0, 2, 1]);
+        for (final l in lines) {
+          expect(_marker(l), (l.start, l.start, l.start, l.start));
+          expect(l.textStart, l.start);
+          expect(l.isItem, isFalse, reason: '${l.kind}');
+          expect(l.level, 0);
+          expect(l.number, isNull);
+          expect(l.done, isFalse);
+        }
+        expect(_ranges(text), [
+          (0, 5, 6, '\n'),
+          (6, 13, 14, '\n'),
+          (14, 20, 20, ''),
+        ]);
+      },
+    );
+
+    test('table lines keep crlf terminators verbatim', () {
+      const text = '| a |\r\n|---|\r\n| 1 |\r\n';
+      expect(_kinds(text), [_th, _td, _tb, _b]);
+      expect(_ranges(text), [
+        (0, 5, 7, '\r\n'),
+        (7, 12, 14, '\r\n'),
+        (14, 19, 21, '\r\n'),
+        (21, 21, 21, ''),
+      ]);
+    });
+
+    test('a header line without a delimiter line below it stays plain', () {
+      expect(_kinds('| a | b |'), [_p]);
+      expect(_kinds('| a | b |\n'), [_p, _b]);
+      expect(_kinds('| a | b |\n| 1 | 2 |'), [_p, _p]);
+      expect(_kinds('| a | b |\n\n|---|---|'), [_p, _b, _p]);
+    });
+  });
+
+  group('tables: delimiter cells (Spec 197 R1 R5)', () {
+    test('a delimiter with as many cells as the header makes a table', () {
+      expect(_kinds('| a | b | c |\n|---|---|---|'), [_th, _td]);
+      expect(_kinds('| a |\n|---|'), [_th, _td]);
+    });
+
+    test(
+      'a delimiter with one cell fewer than the header leaves plain lines',
+      () {
+        expect(_kinds('| a | b | c |\n|---|---|\n| 1 | 2 | 3 |'), [_p, _p, _p]);
+        expect(_kinds('| a | b |\n|---|'), [_p, _p]);
+      },
+    );
+
+    test(
+      'a delimiter with one cell more than the header leaves plain lines',
+      () {
+        expect(_kinds('| a | b | c |\n|---|---|---|---|\n| 1 | 2 | 3 |'), [
+          _p,
+          _p,
+          _p,
+        ]);
+        expect(_kinds('| a |\n|---|---|'), [_p, _p]);
+      },
+    );
+
+    test('every delimiter cell is dashes with optional outer colons', () {
+      expect(_kinds('| a | b | c | d | e |\n| :-- | -: | :-: | - | ---- |'), [
+        _th,
+        _td,
+      ]);
+      expect(_kinds('| a | b |\n|:--------:|--------:|'), [_th, _td]);
+      // Spaces and tabs around a delimiter cell are allowed.
+      expect(_kinds('| a | b |\n|  :-  |\t-:\t|'), [_th, _td]);
+    });
+
+    for (final (name, delimiter) in [
+      ('a delimiter cell that is only a colon is not a delimiter', '|:|---|'),
+      ('a delimiter cell of two colons is not a delimiter', '|::|---|'),
+      ('a delimiter cell with an inner colon is not a delimiter', '|-:-|---|'),
+      (
+        'a delimiter cell with two leading colons is not a delimiter',
+        '|::-|---|',
+      ),
+      (
+        'a delimiter cell with two trailing colons is not a delimiter',
+        '|-::|---|',
+      ),
+      ('a delimiter cell holding a letter is not a delimiter', '|-x-|---|'),
+      ('a delimiter cell with an inner space is not a delimiter', '|- -|---|'),
+      ('an empty delimiter cell is not a delimiter', '|   |---|'),
+      ('a delimiter cell of equals signs is not a delimiter', '|===|---|'),
+    ]) {
+      test(name, () {
+        expect(_kinds('| a | b |\n$delimiter\n| 1 | 2 |'), [_p, _p, _p]);
+      });
+    }
+
+    test('the header and the delimiter each need a cell splitting pipe', () {
+      // No pipe in the header line.
+      expect(_kinds('a\n|---|'), [_p, _p]);
+      // No pipe in the delimiter line.
+      expect(_kinds('a |\n:--'), [_p, _p]);
+      expect(_kinds('a |\n:-- |'), [_th, _td]);
+      // An escaped pipe or a wikilink pipe is not a cell-splitting pipe.
+      expect(_kinds('a \\| b\n|---|'), [_p, _p]);
+      expect(_kinds('[[T|al]]\n|---|'), [_p, _p]);
+      expect(_kinds('a |\n--- \\|'), [_p, _p]);
+    });
+
+    test('an escaped pipe in the header does not split a cell', () {
+      expect(_kinds('| a \\| b | c |\n|---|---|'), [_th, _td]);
+      expect(_kinds('| a \\| b | c |\n|---|---|---|'), [_p, _p]);
+    });
+
+    test('a pipe inside a wikilink in the header does not split a cell', () {
+      expect(_kinds('| [[Title~kind|alias]] | c |\n|---|---|'), [_th, _td]);
+      expect(_kinds('| [[Title|alias]] | c |\n|---|---|---|'), [_p, _p]);
+      // An unclosed wikilink is no token: its pipe splits.
+      expect(_kinds('| [[Title|alias | c |\n|---|---|---|'), [_th, _td]);
+    });
+  });
+
+  group('tables: indentation (Spec 197 R3)', () {
+    test('a table line with three leading spaces is a table line', () {
+      expect(_kinds('   | a |\n   |---|\n   | 1 |'), [_th, _td, _tb]);
+      expect(_kinds('  | a |\n |---|\n| 1 |'), [_th, _td, _tb]);
+    });
+
+    test('a header with four leading spaces or a leading tab stays plain', () {
+      expect(_kinds('    | a |\n|---|\n| 1 |'), [_p, _p, _p]);
+      expect(_kinds('\t| a |\n|---|\n| 1 |'), [_p, _p, _p]);
+      expect(_kinds(' \t| a |\n|---|'), [_p, _p]);
+    });
+
+    test(
+      'a delimiter with four leading spaces or a leading tab leaves the header plain',
+      () {
+        expect(_kinds('| a |\n    |---|\n| 1 |'), [_p, _p, _p]);
+        expect(_kinds('| a |\n\t|---|\n| 1 |'), [_p, _p, _p]);
+      },
+    );
+
+    test(
+      'a body line with four leading spaces or a leading tab ends the table',
+      () {
+        expect(_kinds('| a |\n|---|\n   | 1 |\n    | 2 |'), [
+          _th,
+          _td,
+          _tb,
+          _p,
+        ]);
+        expect(_kinds('| a |\n|---|\n\t| 2 |'), [_th, _td, _p]);
+      },
+    );
+  });
+
+  group('tables: body extent (Spec 197 R4)', () {
+    test('the body continues on plain lines holding a cell splitting pipe', () {
+      expect(_kinds('$_wi202Table| 3 | 4 |\n5 | 6\n| 7\n8 |'), [
+        _th,
+        _td,
+        _tb,
+        _tb,
+        _tb,
+        _tb,
+        _tb,
+      ]);
+    });
+
+    test('a blank line ends the table body', () {
+      expect(_kinds('$_wi202Table\n| 3 | 4 |'), [_th, _td, _tb, _b, _p]);
+      expect(_kinds('$_wi202Table  \n| 3 | 4 |'), [_th, _td, _tb, _b, _p]);
+    });
+
+    test(
+      'a plain line without a cell splitting pipe ends the body and stays plain',
+      () {
+        expect(_kinds('${_wi202Table}after\n| 3 | 4 |'), [
+          _th,
+          _td,
+          _tb,
+          _p,
+          _p,
+        ]);
+        // Escaped and wikilink pipes don't split cells.
+        expect(_kinds('${_wi202Table}x \\| y'), [_th, _td, _tb, _p]);
+        expect(_kinds('$_wi202Table[[A|b]]'), [_th, _td, _tb, _p]);
+      },
+    );
+
+    test('a heading line ends the table body', () {
+      expect(_kinds('$_wi202Table# h | x\n| 3 | 4 |'), [
+        _th,
+        _td,
+        _tb,
+        MdLineKind.heading,
+        _p,
+      ]);
+    });
+
+    test('a bullet line ends the table body', () {
+      expect(_kinds('$_wi202Table- 3 | 4\n| 5 | 6 |'), [
+        _th,
+        _td,
+        _tb,
+        MdLineKind.bullet,
+        _p,
+      ]);
+    });
+
+    test('a numbered line ends the table body', () {
+      expect(_kinds('${_wi202Table}1. 3 | 4\n| 5 | 6 |'), [
+        _th,
+        _td,
+        _tb,
+        MdLineKind.numbered,
+        _p,
+      ]);
+    });
+
+    test('a task line ends the table body', () {
+      expect(_kinds('$_wi202Table- [ ] 3 | 4\n| 5 | 6 |'), [
+        _th,
+        _td,
+        _tb,
+        MdLineKind.task,
+        _p,
+      ]);
+    });
+
+    test('a quote line ends the table body', () {
+      expect(_kinds('$_wi202Table> 3 | 4\n| 5 | 6 |'), [
+        _th,
+        _td,
+        _tb,
+        MdLineKind.quote,
+        _p,
+      ]);
+    });
+
+    test('a rule line ends the table body', () {
+      expect(_kinds('$_wi202Table---\n| 5 | 6 |'), [
+        _th,
+        _td,
+        _tb,
+        MdLineKind.rule,
+        _p,
+      ]);
+      expect(_kinds('$_wi202Table***'), [_th, _td, _tb, MdLineKind.rule]);
+    });
+
+    test('a fence line ends the table body', () {
+      expect(_kinds('$_wi202Table```\n| 3 | 4 |\n```\n| 5 | 6 |'), [
+        _th,
+        _td,
+        _tb,
+        _open,
+        _in,
+        _close,
+        _p,
+      ]);
+      // Directly under the delimiter line.
+      expect(_kinds('| a |\n|---|\n```'), [_th, _td, _open]);
+    });
+  });
+
+  group('tables: a new table inside a body (D23)', () {
+    test('a header and a delimiter inside a table body start a new table', () {
+      expect(_kinds('| a | b |\n|---|---|\n| 1 | 2 |\n| c |\n|---|\n| 3 |'), [
+        _th,
+        _td,
+        _tb,
+        _th,
+        _td,
+        _tb,
+      ]);
+      // Directly under the first delimiter, same column count.
+      expect(_kinds('| a |\n|---|\n| b |\n|:-:|\n| 1 |'), [
+        _th,
+        _td,
+        _th,
+        _td,
+        _tb,
+      ]);
+    });
+
+    test(
+      'a body line above a delimiter of another cell count stays in the body',
+      () {
+        expect(_kinds('| a | b |\n|---|---|\n| 1 |\n|---|---|\n| 2 | 3 |'), [
+          _th,
+          _td,
+          _tb,
+          _tb,
+          _tb,
+        ]);
+      },
+    );
+  });
+
+  group('tables: lines that are never table lines (Spec 197 R3 R7)', () {
+    test('table looking lines inside a fence stay fence lines', () {
+      expect(_kinds('```\n| a | b |\n|---|---|\n| 1 | 2 |\n```'), [
+        _open,
+        _in,
+        _in,
+        _in,
+        _close,
+      ]);
+      // A delimiter inside a fence doesn't complete a header above it.
+      expect(_kinds('| a |\n```\n|---|\n```'), [_p, _open, _in, _close]);
+      // An unclosed fence.
+      expect(_kinds('x\n```\n| a |\n|---|'), [_p, _open, _in, _in]);
+    });
+
+    test('table looking lines inside leading frontmatter stay frontmatter', () {
+      const text = '---\n| a | b |\n|---|---|\n| 1 | 2 |\n---\nbody';
+      expect(_kinds(text, atSegmentStart: true), [_fm, _fm, _fm, _fm, _fm, _p]);
+      // Away from the segment start the same lines are a table.
+      expect(_kinds(text), [
+        MdLineKind.rule,
+        _th,
+        _td,
+        _tb,
+        MdLineKind.rule,
+        _p,
+      ]);
+    });
+
+    test('a dash pipe dash line is a bullet not a delimiter', () {
+      expect(_kinds('- | -'), [MdLineKind.bullet]);
+      expect(_kinds('| a | b |\n- | -\n| 1 | 2 |'), [
+        _p,
+        MdLineKind.bullet,
+        _p,
+      ]);
+    });
+
+    test(
+      'a header line directly after a paragraph line starts a table and the paragraph line stays plain',
+      () {
+        expect(_kinds('para\n| a |\n|---|\n| 1 |'), [_p, _th, _td, _tb]);
+        // The paragraph line holds a pipe but has no delimiter below it.
+        expect(_kinds('para | x\n| a |\n|---|'), [_p, _th, _td]);
+      },
+    );
+
+    test('a heading item or quote line is never a table header', () {
+      for (final (line, kind) in [
+        ('# a | b', MdLineKind.heading),
+        ('- a | b', MdLineKind.bullet),
+        ('1. a | b', MdLineKind.numbered),
+        ('- [ ] a | b', MdLineKind.task),
+        ('> a | b', MdLineKind.quote),
+      ]) {
+        expect(_kinds('$line\n|---|---|'), [kind, _p], reason: line);
+      }
+    });
+
+    test('a table line directly below a list item starts a table', () {
+      expect(_kinds('- item\n| a |\n|---|\n| 1 |'), [
+        MdLineKind.bullet,
+        _th,
+        _td,
+        _tb,
+      ]);
+      expect(_kinds('# H\n| a |\n|---|'), [MdLineKind.heading, _th, _td]);
+    });
+  });
 }

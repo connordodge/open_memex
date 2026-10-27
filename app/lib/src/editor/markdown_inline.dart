@@ -211,8 +211,9 @@ final class TransclusionLinkToken extends InlineToken {
 /// Rules: code spans match equal-length backtick runs; `_` never opens or
 /// closes inside a word; no token spans a line terminator; unclosed
 /// delimiters stay literal (no token). No tokens for bare URLs,
-/// `<autolinks>`, `==highlight==`, HTML, tables, images, footnotes or math
-/// (Spec R38).
+/// `<autolinks>`, `==highlight==`, HTML, images, footnotes or math (Spec
+/// R38). Tables are line grammar, not inline tokens: `classifyLines` and
+/// `markdown_table.dart` find them (Spec #197).
 ///
 /// Lines end at `\n`; the `\r` of a `\r\n` pair belongs to no line, as in
 /// the server's `str::lines`.

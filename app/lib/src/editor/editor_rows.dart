@@ -10,9 +10,9 @@ import 'markdown_lines.dart';
 
 /// The kind of an editor row (Spec R9).
 enum RowKind {
-  /// A maximal run of lines that are not items and not inside a fence
-  /// (paragraphs, headings, blank lines, rules, frontmatter). Keeps its
-  /// interior terminators.
+  /// A maximal run of lines that are not items, not inside a fence and not
+  /// table lines (paragraphs, headings, blank lines, rules, frontmatter).
+  /// Keeps its interior terminators.
   prose,
 
   /// A fenced code block, from its opening fence line through its closing
@@ -31,6 +31,10 @@ enum RowKind {
 
   /// A `> ` (or bare `>`) line.
   quote,
+
+  /// A markdown table (Spec #197 R8), from its header line through its last
+  /// body line. Keeps its interior terminators.
+  table,
 }
 
 /// A selection inside one text segment, in segment offsets.
@@ -137,8 +141,8 @@ class RowSpec {
   final int depth;
 
   /// Index of the parent row (Spec R12): the nearest earlier item row with a
-  /// smaller [indent], searching back until the first prose row. Null for
-  /// depth 0 and for prose and code rows.
+  /// smaller [indent], searching back until the first prose, code or table
+  /// row. Null for depth 0 and for prose, code and table rows.
   final int? parent;
 
   /// Whether a [RowKind.task] row is done (`[x]` or `[X]`).
@@ -149,7 +153,8 @@ class RowSpec {
 
   /// For a [RowKind.numbered] row, the index of the first row of its numbered
   /// run (Spec R11): a maximal sequence of numbered rows at the same depth,
-  /// ended by a prose row (a blank line included) or a shallower item. Rows
+  /// ended by a prose row (a blank line included), a code or table row, or
+  /// a shallower item. Rows
   /// of one run share this value. Null for every other kind.
   final int? numberedRun;
 
@@ -157,8 +162,13 @@ class RowSpec {
   /// its run as written (a run `8.`, `9.`, `10.` gives 2). 0 otherwise.
   final int runDigits;
 
-  /// Whether this is a bullet, numbered, task or quote row.
-  bool get isItem => kind != RowKind.prose && kind != RowKind.code;
+  /// Whether this is a bullet, numbered, task or quote row (Spec #197 TD3:
+  /// never a prose, code or table row).
+  bool get isItem =>
+      kind == RowKind.bullet ||
+      kind == RowKind.numbered ||
+      kind == RowKind.task ||
+      kind == RowKind.quote;
 
   /// Length of the row's text (`textEnd - textStart`).
   int get textLength => textEnd - textStart;
@@ -185,8 +195,11 @@ class RowSpec {
 /// Each item line (bullet, numbered, task, quote; [classifyLines]) is its own
 /// row whose text excludes indentation, marker, separator and terminator. A
 /// fenced code block, opening fence line through closing fence line, is one
-/// [RowKind.code] row; an unclosed fence runs to the segment end. Every
-/// maximal run of other lines is one [RowKind.prose] row. Rows tile the
+/// [RowKind.code] row; an unclosed fence runs to the segment end. A table,
+/// header line through last body line, is one [RowKind.table] row (Spec
+/// #197 R8) whose text starts at its line start and keeps its interior
+/// terminators, like a code row. Every maximal run of other lines is one
+/// [RowKind.prose] row. Rows tile the
 /// text: the first starts at 0, each starts where the previous ends, and the
 /// last ends at `text.length`. A segment ending in a terminator ends in a
 /// prose row whose last line is empty (an empty prose row after an item or
@@ -203,18 +216,17 @@ List<RowSpec> splitRows(String text, {required bool atSegmentStart}) {
     final kind = _itemKinds[line.kind];
     if (kind == null) {
       // A code row runs from its opening fence line through its closing one
-      // (or the segment end); a prose row is a maximal run of the rest.
-      final code = line.kind == MdLineKind.fenceOpen;
+      // (or the segment end); a table row from its header line through its
+      // last body line; a prose row is a maximal run of the rest.
+      final block = _blockKinds[line.kind] ?? RowKind.prose;
       var last = i;
       while (last + 1 < lines.length &&
-          (code
-              ? lines[last].kind != MdLineKind.fenceClose
-              : _proseKinds.contains(lines[last + 1].kind))) {
+          _continues(block, lines[last].kind, lines[last + 1].kind)) {
         last++;
       }
       rows.add(
         RowSpec(
-          kind: code ? RowKind.code : RowKind.prose,
+          kind: block,
           start: line.start,
           textStart: line.start,
           textEnd: lines[last].contentEnd,
@@ -262,7 +274,28 @@ const _itemKinds = {
   MdLineKind.quote: RowKind.quote,
 };
 
-/// The line kinds a prose row is made of: neither items nor fence lines.
+/// The row kind of each line kind that opens a code or table row.
+const _blockKinds = {
+  MdLineKind.fenceOpen: RowKind.code,
+  MdLineKind.tableHeader: RowKind.table,
+};
+
+/// Whether a row of kind [block] whose last line so far has kind [last]
+/// takes the next line, of kind [next].
+bool _continues(RowKind block, MdLineKind last, MdLineKind next) =>
+    switch (block) {
+      RowKind.code => last != MdLineKind.fenceClose,
+      RowKind.table =>
+        next == MdLineKind.tableDelimiter || next == MdLineKind.tableBody,
+      RowKind.prose ||
+      RowKind.bullet ||
+      RowKind.numbered ||
+      RowKind.task ||
+      RowKind.quote => _proseKinds.contains(next),
+    };
+
+/// The line kinds a prose row is made of: neither items, fence lines nor
+/// table lines.
 const _proseKinds = {
   MdLineKind.blank,
   MdLineKind.plain,
@@ -273,7 +306,7 @@ const _proseKinds = {
 
 /// The parent of a new item row with [indent] (Spec R12): the nearest
 /// earlier item row with a smaller indent, searching back until the first
-/// prose (or code) row.
+/// prose, code or table row.
 int? _parent(List<RowSpec> rows, int indent) {
   for (var i = rows.length - 1; i >= 0; i--) {
     final row = rows[i];

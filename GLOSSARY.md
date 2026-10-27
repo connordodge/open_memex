@@ -110,3 +110,9 @@ A vault the app opens by directory path on the same machine.
 **Access token**:
 The one shared secret every client presents to a vault server.
 _Avoid_: API key, password
+
+## Markdown tables (#192)
+
+**Table**:
+A GitHub-flavoured markdown pipe table in a note body: a header line, a delimiter line (such as `|---|:-:|`) and zero or more body lines. Live preview shows it as one table row of the editor: a grid, or its raw lines while revealed.
+_Avoid_: grid (for the markdown), spreadsheet

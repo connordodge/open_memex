@@ -237,6 +237,11 @@ final class _SpanBuilder {
           codeLines[i] = true;
         case MdLineKind.blank || MdLineKind.frontmatter:
           break;
+        case MdLineKind.tableHeader ||
+            MdLineKind.tableDelimiter ||
+            MdLineKind.tableBody:
+          // As a plain line until tables render (Spec #197, ruling D9).
+          _tokenize(line.start, line.contentEnd);
       }
     }
 
