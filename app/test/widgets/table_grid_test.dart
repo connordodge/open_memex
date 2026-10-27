@@ -1685,11 +1685,26 @@ void main() {
     testWidgets(
       'the grid lays out again at a new text scale and keeps the new heights',
       (tester) async {
+        // Header cell 0's text box, from the grid's top left: c in, H / 2
+        // down, both scaled (a cell takes new padding and inset in place).
+        Offset headerText() =>
+            tester.getTopLeft(
+              find
+                  .descendant(
+                    of: find.byKey(_bareKey),
+                    matching: find.byType(RichText),
+                  )
+                  .first,
+            ) -
+            tester.getTopLeft(find.byKey(_bareKey));
+
         await pumpScaled(tester, _heightTable, scale: 1);
         expect(
           tester.getSize(find.byKey(_bareKey)).height,
           moreOrLessEquals(_band + 3 * _l, epsilon: _eps),
         );
+        expect(headerText().dx, moreOrLessEquals(_c, epsilon: _eps));
+        expect(headerText().dy, moreOrLessEquals(_h / 2, epsilon: _eps));
 
         await pumpScaled(tester, _heightTable, scale: 2);
         expect(
@@ -1697,12 +1712,16 @@ void main() {
           moreOrLessEquals(2 * _band + 3 * 2 * _l, epsilon: _eps),
           reason: 'the same grid, laid out again from the scaled metrics',
         );
+        expect(headerText().dx, moreOrLessEquals(2 * _c, epsilon: _eps));
+        expect(headerText().dy, moreOrLessEquals(_h, epsilon: _eps));
 
         await pumpScaled(tester, _heightTable, scale: 1);
         expect(
           tester.getSize(find.byKey(_bareKey)).height,
           moreOrLessEquals(_band + 3 * _l, epsilon: _eps),
         );
+        expect(headerText().dx, moreOrLessEquals(_c, epsilon: _eps));
+        expect(headerText().dy, moreOrLessEquals(_h / 2, epsilon: _eps));
       },
       variant: macOnly,
     );
@@ -2136,6 +2155,25 @@ void main() {
                 reason: '$where ends at the grid right',
               );
             }
+          }
+        }
+        // The paragraph box sits c in from the cell's left, H / 2 down in
+        // the header band and flush with the top of a body cell.
+        for (var g = 0; g <= t.body.length; g++) {
+          for (var col = 0; col < columns; col++) {
+            final inset =
+                tester.getTopLeft(_cellText(g, col)) -
+                cellRect(tester, g, col).topLeft;
+            expect(
+              inset.dx,
+              moreOrLessEquals(_c, epsilon: _eps),
+              reason: 'cell ($g, $col) text box is c in from the cell left',
+            );
+            expect(
+              inset.dy,
+              moreOrLessEquals(g == 0 ? _h / 2 : 0, epsilon: _eps),
+              reason: 'cell ($g, $col) text box top inset',
+            );
           }
         }
         // Left-aligned text starts c inside its cell.
