@@ -11,6 +11,7 @@ import 'live_preview_decorations.dart';
 import 'live_preview_styles.dart';
 import 'marker_column.dart';
 import 'paragraph_line_boxes.dart';
+import 'table_grid.dart';
 
 /// An excerpt card's body (WI #172, B4; Spec R7, D4, D7, D12, D17): the
 /// card's rendered excerpt [text] split into rows with A1's `splitRows`, each
@@ -31,7 +32,14 @@ import 'paragraph_line_boxes.dart';
 /// - Painted decorations come from B2's `layoutDecorations` measured
 ///   through `RenderParagraphLineBoxes` (D6), across the row's full width;
 ///   quote bands are `surface4` (L14).
-/// - Display only: no caret, focus, toggling or link clicks.
+/// - A table row (WI #208; Spec #197 R25, D12, D16, D23) renders as the
+///   editor's [TableGrid] under Key `card-table-<r>` inside `card-row-<r>`:
+///   the row's text in the card text style, header band `surface4`, no link
+///   controller (markers always hidden, never revealed). Its text is painted
+///   by the grid only. Several tables in one excerpt are separate rows, so
+///   each is its own grid, stacked with no gap.
+/// - Display only: no caret, focus, toggling or link clicks; a table row
+///   adds no gesture detector or mouse region (D14).
 class CardRows extends StatelessWidget {
   const CardRows({super.key, required this.text});
 
@@ -91,6 +99,17 @@ class CardRows extends StatelessWidget {
     final codeRow = spec.kind == RowKind.code;
     final atSegmentStart = spec.textStart == 0;
     final style = _rowStyle(base, rowText);
+    if (spec.kind == RowKind.table) {
+      return KeyedSubtree(
+        key: ValueKey('card-row-$r'),
+        child: TableGrid(
+          key: ValueKey('card-table-$r'),
+          text: rowText,
+          style: style,
+          headerBand: OmColors.surface4,
+        ),
+      );
+    }
     final rich = _RowText(
       key: ValueKey('card-row-text-$r'),
       child: RichText(
@@ -112,7 +131,7 @@ class CardRows extends StatelessWidget {
       ),
     );
     final Widget row = switch (spec.kind) {
-      RowKind.prose || RowKind.table => rich,
+      RowKind.prose => rich,
       RowKind.code => Padding(
         padding: EdgeInsets.only(
           left: codeTextInsetLeft,
