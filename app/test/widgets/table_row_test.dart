@@ -28,6 +28,7 @@ import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
 import 'package:open_memex_app/src/widgets/editor/segment_pointer_layer.dart'
     show newlineMarkWidth;
+import 'package:open_memex_app/src/widgets/editor/table_grid.dart';
 
 import '../support/font_fetch_hold.dart';
 import '../support/mac_editing.dart';
@@ -1128,6 +1129,165 @@ void main() {
     },
     variant: macOnly,
   );
+
+  // -------------------------------------------------------------------------
+  // Seam contracts the gate's mutants pinned (verify round 1)
+  // -------------------------------------------------------------------------
+  group('the seam contracts of the row and the grid (verify round 1)', () {
+    testWidgets(
+      'an unfocused selection inside a prose row still paints its slice next to a table',
+      (tester) async {
+        final body = await pumpTable(tester, _text);
+        await body.placeCaret(2);
+        // Inside the intro line only: no line end, so no newline mark.
+        await body.select(const TextSelection(baseOffset: 2, extentOffset: 6));
+        await body.focusOutside();
+        expectTableRendered(0, 1);
+        expect(
+          body.selection(),
+          const TextSelection(baseOffset: 2, extentOffset: 6),
+        );
+
+        final painted = _selectionRects(
+          tester.renderObject<RenderBox>(find.byKey(textSegmentKey(0))),
+        );
+        final intro = tester.getRect(tableEditorRow(0, 0));
+        expect(
+          painted.where((r) => r.overlaps(intro.deflate(1))),
+          isNotEmpty,
+          reason: 'R16 hides a rendered table selection only, not a prose one',
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a table that was just revealed answers its row boxes from its field before the grid leaves the tree',
+      (tester) async {
+        final body = await pumpTable(tester, _text);
+        await body.placeCaret(_belowStart);
+        expectTableRendered(0, 1);
+        final controller = tableRowController(tester, 0, 1);
+        final rowBoxes = tableEditorRowWidget(tester, 0, 1).boxes;
+
+        // Reveal without a frame: the grid is still mounted and laid out.
+        controller.selection = const TextSelection.collapsed(offset: 3);
+        expect(controller.tableRevealed, isTrue);
+        expect(tableGrid(0, 1), findsOneWidget);
+
+        final editable = findRenderEditable(
+          tester.renderObject(tableRowField(0, 1)),
+        )!;
+        expect(rowBoxes()!.box, same(editable));
+        await tester.pump();
+        expectTableRevealed(0, 1);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a rendered table row answers its row boxes from the grid and a prose row from its field',
+      (tester) async {
+        final body = await pumpTable(tester, _text);
+        await body.placeCaret(_belowStart);
+        expectTableRendered(0, 1);
+        final grid = tableGridState(tester, 0, 1).lineBoxes()!;
+        expect(tableEditorRowWidget(tester, 0, 1).boxes()!.box, same(grid.box));
+        final prose = findRenderEditable(
+          tester.renderObject(tableRowField(0, 0)),
+        )!;
+        expect(tableEditorRowWidget(tester, 0, 0).boxes()!.box, same(prose));
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a grid reports line boxes while mounted and none while deactivated',
+      (tester) async {
+        final body = await pumpTable(tester, _text);
+        await body.placeCaret(_belowStart);
+        final state = tableGridState(tester, 0, 1);
+        expect(state.lineBoxes(), isNotNull);
+
+        // The frame that reveals a table deactivates its grid before the
+        // grid's render object is gone (D12 c).
+        // ignore: invalid_use_of_protected_member
+        state.deactivate();
+        expect(state.lineBoxes(), isNull, reason: 'deactivated');
+        // ignore: invalid_use_of_protected_member
+        state.activate();
+        expect(state.lineBoxes(), isNotNull, reason: 'reactivated');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a grid has no line boxes before its first layout and has them after',
+      (tester) async {
+        final key = GlobalKey<TableGridState>();
+        LineBoxSource? whileBuilding;
+        var probed = false;
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Column(
+              children: [
+                TableGrid(
+                  key: key,
+                  text: '| a |\n|---|',
+                  style: const TextStyle(),
+                ),
+                // Built after the grid mounted and before any layout.
+                Builder(
+                  builder: (_) {
+                    probed = key.currentState != null;
+                    whileBuilding = key.currentState?.lineBoxes();
+                    return const SizedBox.shrink();
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+
+        expect(probed, isTrue, reason: 'the probe saw the mounted grid');
+        expect(whileBuilding, isNull, reason: 'not laid out yet');
+        final after = key.currentState!.lineBoxes();
+        expect(after, isNotNull);
+        expect(after!.lines, isNotEmpty);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets('a grid hides the markers of its text', (tester) async {
+      const table = '| **b** | [[Link]] |\n|---|---|\n| `c` | d |';
+      const text = '$_intro\n$table';
+      final body = await pumpTable(tester, text);
+      await body.placeCaret(2);
+      expect(body.text(), text);
+      expectTableRendered(0, 1);
+      final paragraph = tester.widget<RichText>(
+        find.descendant(of: tableGrid(0, 1), matching: find.byType(RichText)),
+      );
+      final markers = <String>[];
+      var at = 0;
+      paragraph.text.visitChildren((span) {
+        if (span is TextSpan && span.text != null) {
+          final t = span.text!;
+          if (span.style?.fontSize == 0) markers.add(t);
+          at += t.length;
+        }
+        return true;
+      });
+      expect(at, table.length);
+      for (final m in ['**', '[[', ']]', '`']) {
+        expect(
+          markers.any((t) => t.contains(m)),
+          isTrue,
+          reason: '$m is hidden in the grid',
+        );
+      }
+    }, variant: macOnly);
+  });
 
   // -------------------------------------------------------------------------
   // AC12: the shared harness (D17)
