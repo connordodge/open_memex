@@ -9,7 +9,12 @@
 //   Each is one edit applied through the host (one report, one undo record).
 // - With a selection across rows, Backspace and Delete delete the range,
 //   and Enter deletes it then splits at its start (R27).
-// - Tab and Shift+Tab do nothing in a row (R22).
+// - Tab and Shift+Tab do nothing in a quote, prose or code row (R22, as
+//   amended by Spec #193 TD1), and at a list edge.
+// - WI #195 (Spec #193 R3-R8, R21, R26, R27, TD4): Tab indents and
+//   Shift+Tab outdents the list items the selection touches, one level per
+//   press (the press is consumed, so the macOS insertTab: selector never
+//   adds a second step), as one edit (one report, one undo record).
 // - Arrows, Option+arrows, Cmd+arrows cross row edges (R23); Up and Down
 //   keep the nearest x through the rows' LineBoxSource (D6); Shift+arrows
 //   extend the segment selection across rows (R26).
@@ -2137,4 +2142,677 @@ void main() {
       }, variant: macOnly);
     }
   });
+
+  // =========================================================================
+  // WI #195 (Spec #193 R3-R8, R21, R26, R27, TD4): Tab and Shift+Tab indent
+  // and outdent list items in live-preview rows.
+  // =========================================================================
+
+  // -------------------------------------------------------------------------
+  // AC1: one press is one level in bullet, numbered and task rows
+  // -------------------------------------------------------------------------
+  group('Tab and Shift Tab move a list item one level (WI 195 AC1)', () {
+    for (final (name, text, caret, after) in [
+      (
+        'Tab in the second bullet item indents it one level in one press and Shift Tab restores it',
+        '- a\n- b',
+        7,
+        '- a\n  - b',
+      ),
+      (
+        'Tab in the second numbered item indents it one level as a new sub list in one press and Shift Tab restores it',
+        '1. a\n2. b',
+        9,
+        '1. a\n   1. b',
+      ),
+      (
+        'Tab in the second task item indents it one level in one press and Shift Tab restores it',
+        '- [ ] a\n- [x] b',
+        15,
+        '- [ ] a\n  - [x] b',
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final recorders = _wi195Recorders();
+        final body = await _wi169Pump(tester, text);
+        await _wi169Focus(tester, caret);
+        final moved = caret + after.length - text.length;
+
+        await _wi169Press(tester, LogicalKeyboardKey.tab);
+
+        var seg = _wi169Seg(tester);
+        expect(seg.text, after, reason: 'exactly one level');
+        expect(seg.focusedRow, 1, reason: 'focus stays in the moved row');
+        expect(seg.selection, TextSelection.collapsed(offset: moved));
+        expect(body.changes, [after], reason: 'one report for one edit');
+        expect(_wi195Records(recorders), hasLength(1));
+
+        await _wi169Press(tester, LogicalKeyboardKey.tab, shift: true);
+
+        seg = _wi169Seg(tester);
+        expect(seg.text, text);
+        expect(seg.focusedRow, 1);
+        expect(seg.selection, TextSelection.collapsed(offset: caret));
+        expect(body.changes, [after, text]);
+        expect(_wi195Records(recorders), hasLength(2));
+      }, variant: macOnly);
+    }
+
+    // A press that leaked to the macOS selector would apply a second step:
+    // these items can move two levels, so a leak shows as two.
+    for (final (name, text, caret, shift, after) in [
+      (
+        'one Tab press on an item below a sibling with a child moves it exactly one level',
+        '- a\n  - x\n- b',
+        13,
+        false,
+        '- a\n  - x\n  - b',
+      ),
+      (
+        'one Shift Tab press on a grandchild item moves it exactly one level',
+        '- a\n  - b\n    - c',
+        17,
+        true,
+        '- a\n  - b\n  - c',
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final recorders = _wi195Recorders();
+        final body = await _wi169Pump(tester, text);
+        await _wi169Focus(tester, caret);
+
+        await _wi169Press(tester, LogicalKeyboardKey.tab, shift: shift);
+
+        final seg = _wi169Seg(tester);
+        expect(seg.text, after, reason: 'one step, not two');
+        expect(seg.focusedRow, 2);
+        expect(
+          seg.selection,
+          TextSelection.collapsed(offset: caret + after.length - text.length),
+        );
+        expect(body.changes, [after]);
+        expect(_wi195Records(recorders), hasLength(1));
+      }, variant: macOnly);
+    }
+
+    for (final (name, selector, text, caret, after) in [
+      (
+        'the insertTab selector on its own indents the focused item one level',
+        'insertTab:',
+        '- a\n- b',
+        7,
+        '- a\n  - b',
+      ),
+      (
+        'the insertBacktab selector on its own outdents the focused item one level',
+        'insertBacktab:',
+        '- a\n  - b',
+        9,
+        '- a\n- b',
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final body = await _wi169Pump(tester, text);
+        await _wi169Focus(tester, caret);
+
+        await tester.macSelector(selector);
+
+        final seg = _wi169Seg(tester);
+        expect(seg.text, after);
+        expect(seg.focusedRow, 1);
+        expect(body.changes, [after]);
+      }, variant: macOnly);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // AC2: renumbering through the keyboard
+  // -------------------------------------------------------------------------
+  group('Tab renumbers the touched numbered runs (WI 195 AC2)', () {
+    testWidgets(
+      'Tab in the third numbered item restarts it at 1 as a sub list and the items below close the gap',
+      (tester) async {
+        const text = '1. a\n2. b\n3. c\n4. d';
+        const after = '1. a\n2. b\n   1. c\n3. d';
+        final body = await _wi169Pump(tester, text);
+        await _wi169Focus(tester, 14);
+
+        await _wi169Press(tester, LogicalKeyboardKey.tab);
+
+        final seg = _wi169Seg(tester);
+        expect(seg.text, after);
+        expect(seg.focusedRow, 2);
+        expect(seg.selection, const TextSelection.collapsed(offset: 17));
+        expect(body.changes, [after]);
+      },
+      variant: macOnly,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // AC3: focus and caret after a moving Tab (R3, R27)
+  // -------------------------------------------------------------------------
+  group('focus and caret after a moving Tab (WI 195 AC3)', () {
+    for (final (name, text, base, extent, after) in [
+      (
+        'after a moving Tab the same row stays focused and the caret keeps its offset in the item text',
+        '- a\n- bcd',
+        7,
+        7,
+        '- a\n  - bcd',
+      ),
+      (
+        'Tab with the caret at the item text start indents it and keeps the caret at the text start',
+        '- a\n- bcd',
+        6,
+        6,
+        '- a\n  - bcd',
+      ),
+      (
+        'Tab with the caret at the item text end indents it and keeps the caret at the text end',
+        '- a\n- bcd',
+        9,
+        9,
+        '- a\n  - bcd',
+      ),
+      (
+        'Tab in an empty item indents it and keeps the caret in it',
+        '- a\n- ',
+        6,
+        6,
+        '- a\n  - ',
+      ),
+      (
+        'Tab in a numbered item keeps the caret offset in the item text when the item restarts at 1',
+        '1. a\n2. bcd',
+        9,
+        9,
+        '1. a\n   1. bcd',
+      ),
+      (
+        'Tab with a selection inside one item indents it and keeps the same characters selected',
+        '- a\n- bcd',
+        7,
+        9,
+        '- a\n  - bcd',
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        await _wi169Pump(tester, text);
+        await _wi169Focus(tester, base);
+        if (base != extent) {
+          _wi169Seg(
+            tester,
+          ).select(TextSelection(baseOffset: base, extentOffset: extent));
+          await tester.pump();
+        }
+        final textStart = splitRows(text, atSegmentStart: true)[1].textStart;
+        final delta = after.length - text.length;
+
+        await _wi169Press(tester, LogicalKeyboardKey.tab);
+
+        final seg = _wi169Seg(tester);
+        expect(seg.text, after);
+        expect(seg.focusedRow, 1, reason: 'the same row index stays focused');
+        expect(
+          seg.selection,
+          TextSelection(baseOffset: base + delta, extentOffset: extent + delta),
+        );
+        expect(
+          _wi169FieldSelection(),
+          TextSelection(
+            baseOffset: base - textStart,
+            extentOffset: extent - textStart,
+          ),
+          reason: 'the same offsets in the item text',
+        );
+      }, variant: macOnly);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // AC4: one report, one undo record, Cmd+Z restores (R26)
+  // -------------------------------------------------------------------------
+  group('a moving Tab is one edit (WI 195 AC4)', () {
+    testWidgets(
+      'a moving Tab gives one content report and one undo record and Cmd Z restores the prior bytes and selection',
+      (tester) async {
+        const text = '- a\n- bc';
+        const after = '- a\n  - bc';
+        final recorders = _wi195Recorders();
+        final body = await _wi169Pump(tester, text);
+        await _wi169Focus(tester, 7);
+        await tester.pump(SegmentUndoRecorder.coalesce * 2);
+
+        await _wi169Press(tester, LogicalKeyboardKey.tab);
+
+        expect(_wi169Seg(tester).text, after);
+        expect(body.changes, [after]);
+        final records = _wi195Records(recorders);
+        expect(records, hasLength(1), reason: 'one undo record');
+        expect(records.single.before, text);
+        expect(records.single.edit.apply(text), after);
+        expect(
+          records.single.edit.selection,
+          const SegmentSelection.collapsed(9),
+        );
+
+        await tester.macCmdChord(LogicalKeyboardKey.keyZ);
+
+        final seg = _wi169Seg(tester);
+        expect(seg.text, text, reason: 'the prior bytes');
+        expect(seg.selection, const TextSelection.collapsed(offset: 7));
+        expect(body.changes, [after, text]);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a moving Shift Tab gives one content report and one undo record and Cmd Z restores the prior bytes',
+      (tester) async {
+        const text = '- a\n  - bc';
+        const after = '- a\n- bc';
+        final recorders = _wi195Recorders();
+        final body = await _wi169Pump(tester, text);
+        await _wi169Focus(tester, 9);
+        await tester.pump(SegmentUndoRecorder.coalesce * 2);
+
+        await _wi169Press(tester, LogicalKeyboardKey.tab, shift: true);
+
+        expect(_wi169Seg(tester).text, after);
+        expect(body.changes, [after]);
+        final records = _wi195Records(recorders);
+        expect(records, hasLength(1));
+        expect(records.single.before, text);
+
+        await tester.macCmdChord(LogicalKeyboardKey.keyZ);
+
+        expect(_wi169Seg(tester).text, text);
+        expect(
+          _wi169Seg(tester).selection,
+          const TextSelection.collapsed(offset: 9),
+        );
+        expect(body.changes, [after, text]);
+      },
+      variant: macOnly,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // AC5: list edges (R5)
+  // -------------------------------------------------------------------------
+  group('Tab and Shift Tab at a list edge (WI 195 AC5)', () {
+    // Each fixture also moves another item afterwards, so the edge is a
+    // no-op of a live action, not of an inert key.
+    for (final (name, text, caret, shift, row, next, nextShift, nextAfter) in [
+      (
+        'Tab on the first item of a list changes no text keeps focus and caret and gives no report and no undo record',
+        '- a\n- b',
+        3,
+        false,
+        0,
+        7,
+        false,
+        '- a\n  - b',
+      ),
+      (
+        'Tab on the first child of an item changes no text keeps focus and caret and gives no report and no undo record',
+        '- a\n  - b\n- c',
+        9,
+        false,
+        1,
+        13,
+        false,
+        '- a\n  - b\n  - c',
+      ),
+      (
+        'Tab on an item right after a blank line changes no text keeps focus and caret and gives no report and no undo record',
+        '- a\n\n- b\n- c',
+        8,
+        false,
+        2,
+        12,
+        false,
+        '- a\n\n- b\n  - c',
+      ),
+      (
+        'Shift Tab on a top level bullet item changes no text keeps focus and caret and gives no report and no undo record',
+        '- a\n  - b',
+        3,
+        true,
+        0,
+        9,
+        true,
+        '- a\n- b',
+      ),
+      (
+        'Shift Tab on a top level numbered item changes no text keeps focus and caret and gives no report and no undo record',
+        '1. a\n   1. b',
+        4,
+        true,
+        0,
+        12,
+        true,
+        '1. a\n2. b',
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final recorders = _wi195Recorders();
+        final body = await _wi169Pump(tester, text);
+        await _wi169Focus(tester, caret);
+        final node = FocusManager.instance.primaryFocus;
+
+        await _wi169Press(tester, LogicalKeyboardKey.tab, shift: shift);
+
+        final seg = _wi169Seg(tester);
+        expect(seg.text, text);
+        expect(seg.focusedRow, row);
+        expect(
+          FocusManager.instance.primaryFocus,
+          same(node),
+          reason: 'focus never moves to another widget',
+        );
+        expect(seg.selection, TextSelection.collapsed(offset: caret));
+        expect(body.changes, isEmpty, reason: 'no content report');
+        expect(_wi195Records(recorders), isEmpty, reason: 'no undo record');
+
+        await _wi169Focus(tester, next);
+        await _wi169Press(tester, LogicalKeyboardKey.tab, shift: nextShift);
+
+        expect(_wi169Seg(tester).text, nextAfter);
+        expect(body.changes, [nextAfter]);
+        expect(_wi195Records(recorders), hasLength(1));
+      }, variant: macOnly);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // AC6: quote, prose and code rows stay inert (R4)
+  // -------------------------------------------------------------------------
+  group('Tab in quote prose and code rows (WI 195 AC6)', () {
+    // Rows: bullet a, bullet b, quote q, prose plain, code block.
+    const text = '- a\n- b\n> q\nplain\n```\ncode\n```';
+    for (final (name, row, kind, shift) in [
+      (
+        'Tab in a quote row changes no text and leaves focus and caret in that row',
+        2,
+        RowKind.quote,
+        false,
+      ),
+      (
+        'Shift Tab in a quote row changes no text and leaves focus and caret in that row',
+        2,
+        RowKind.quote,
+        true,
+      ),
+      (
+        'Tab in a prose row changes no text and leaves focus and caret in that row',
+        3,
+        RowKind.prose,
+        false,
+      ),
+      (
+        'Shift Tab in a prose row changes no text and leaves focus and caret in that row',
+        3,
+        RowKind.prose,
+        true,
+      ),
+      (
+        'Tab in a code row changes no text and leaves focus and caret in that row',
+        4,
+        RowKind.code,
+        false,
+      ),
+      (
+        'Shift Tab in a code row changes no text and leaves focus and caret in that row',
+        4,
+        RowKind.code,
+        true,
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final recorders = _wi195Recorders();
+        final body = await _wi169Pump(tester, text);
+        final spec = _wi169Rows(tester)[row];
+        expect(spec.kind, kind, reason: 'fixture row $row');
+        final caret = spec.textStart + 1;
+        await _wi169Focus(tester, caret);
+        final node = FocusManager.instance.primaryFocus;
+
+        await _wi169Press(tester, LogicalKeyboardKey.tab, shift: shift);
+
+        final seg = _wi169Seg(tester);
+        expect(seg.text, text);
+        expect(seg.focusedRow, row);
+        expect(FocusManager.instance.primaryFocus, same(node));
+        expect(seg.selection, TextSelection.collapsed(offset: caret));
+        expect(body.changes, isEmpty);
+        expect(_wi195Records(recorders), isEmpty);
+
+        // The list item above still moves.
+        await _wi169Focus(tester, 7);
+        await _wi169Press(tester, LogicalKeyboardKey.tab);
+        expect(_wi169Seg(tester).text, text.replaceFirst('- b', '  - b'));
+      }, variant: macOnly);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // AC7: a selection across rows moves its items as a group (R21)
+  // -------------------------------------------------------------------------
+  group('Tab over a selection across rows (WI 195 AC7)', () {
+    for (final (name, base, extent) in [
+      (
+        'Tab with a selection from b through c moves b with its child and c one level as one undo step and keeps the same characters selected',
+        6,
+        18,
+      ),
+      (
+        'Tab with a backward selection from c to b moves the items as one undo step and keeps the same characters selected',
+        18,
+        6,
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        const text = '- a\n- b\n  - b1\n- c';
+        const after = '- a\n  - b\n    - b1\n  - c';
+        final recorders = _wi195Recorders();
+        final body = await _wi169Pump(tester, text);
+        await _wi169Focus(tester, 6);
+        _wi169Seg(
+          tester,
+        ).select(TextSelection(baseOffset: base, extentOffset: extent));
+        await tester.pump();
+
+        await _wi169Press(tester, LogicalKeyboardKey.tab);
+
+        final seg = _wi169Seg(tester);
+        expect(seg.text, after);
+        // b moves from 6 to 8; the end of c from 18 to 24.
+        int moved(int offset) => offset == 6 ? 8 : 24;
+        expect(
+          seg.selection,
+          TextSelection(baseOffset: moved(base), extentOffset: moved(extent)),
+        );
+        expect(body.changes, [after], reason: 'one report');
+        expect(_wi195Records(recorders), hasLength(1), reason: 'one undo step');
+      }, variant: macOnly);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // AC8: key repeat (R8)
+  // -------------------------------------------------------------------------
+  group('Tab key repeat (WI 195 AC8)', () {
+    for (final (name, shift, text, caret, steps) in [
+      (
+        'a Tab key down then one key repeat indents the item two levels as two undo records',
+        false,
+        '- a\n  - x\n- b',
+        13,
+        ['- a\n  - x\n  - b', '- a\n  - x\n    - b'],
+      ),
+      (
+        'a Shift Tab key down then one key repeat outdents the item two levels as two undo records',
+        true,
+        '- a\n  - x\n    - b',
+        17,
+        ['- a\n  - x\n  - b', '- a\n  - x\n- b'],
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final recorders = _wi195Recorders();
+        final body = await _wi169Pump(tester, text);
+        await _wi169Focus(tester, caret);
+
+        await _wi195TabWithRepeat(tester, shift: shift);
+
+        final seg = _wi169Seg(tester);
+        expect(seg.text, steps.last);
+        expect(seg.focusedRow, 2);
+        expect(body.changes, steps, reason: 'one report per step');
+        expect(_wi195Records(recorders), hasLength(2), reason: 'two steps');
+      }, variant: macOnly);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // AC9: IME (R7)
+  // -------------------------------------------------------------------------
+  group('Tab while composing (WI 195 AC9)', () {
+    testWidgets(
+      'Tab and Shift Tab while composing in a list item change no indentation and Tab after the commit indents it',
+      (tester) async {
+        await _wi169Pump(tester, '- a\n  - x\n  - b');
+        await _wi169Focus(tester, 15);
+        await tester.macCompose('bか', const TextRange(start: 1, end: 2));
+        expect(_wi169Seg(tester).text, '- a\n  - x\n  - bか');
+        final node = FocusManager.instance.primaryFocus;
+
+        for (final shift in [false, true]) {
+          await _wi169Press(tester, LogicalKeyboardKey.tab, shift: shift);
+          expect(
+            _wi169Seg(tester).text,
+            '- a\n  - x\n  - bか',
+            reason: 'shift $shift',
+          );
+          expect(_wi169Seg(tester).focusedRow, 2);
+          expect(FocusManager.instance.primaryFocus, same(node));
+        }
+
+        await tester.macEditingValue('bか');
+        await _wi169Press(tester, LogicalKeyboardKey.tab);
+        expect(_wi169Seg(tester).text, '- a\n  - x\n    - bか');
+      },
+      variant: macOnly,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // AC10: the [[ popover keeps Tab (R6)
+  // -------------------------------------------------------------------------
+  group('the wikilink popover keeps Tab (WI 195 AC10)', () {
+    testWidgets(
+      'Tab with the wikilink popover open in a list item accepts the suggestion without indenting and the next Tab indents',
+      (tester) async {
+        const body = 'Intro line\n- a\n- see \nOutro line\n';
+        final r = await launchSegmented(
+          tester,
+          vault: seedSegmentedVault(topicBody: body),
+        );
+        await r.open(fixtureTopicId);
+        await r.focusSegment(0, offset: 'Intro line\n- a\n- see '.length);
+        for (final typed in ['see [', 'see [[', 'see [[Other']) {
+          await tester.macEditingValue(typed);
+        }
+        await tester.pump();
+        expect(r.popover, findsOneWidget);
+
+        await _wi169Press(tester, LogicalKeyboardKey.tab);
+
+        expect(r.popover, findsNothing);
+        expect(
+          r.segmentText(0),
+          'Intro line\n- a\n- see [[Other note]]\nOutro line\n',
+          reason: 'the suggestion is accepted and the indentation unchanged',
+        );
+        expect(r.segment(0).focusedRow, 2);
+
+        await _wi169Press(tester, LogicalKeyboardKey.tab);
+        expect(
+          r.segmentText(0),
+          'Intro line\n- a\n  - see [[Other note]]\nOutro line\n',
+        );
+        expect(r.segment(0).focusedRow, 2);
+        await r.waitForSave();
+      },
+      variant: macOnly,
+    );
+  });
+}
+
+/// A segment undo recorder that keeps the host's real undo steps (so Cmd+Z
+/// works) and remembers each record call.
+class _Wi195Recorder extends SegmentUndoRecorder {
+  final records = <({String before, SegmentEdit edit})>[];
+
+  @override
+  void record(SegmentEdit edit, {required String before}) {
+    records.add((before: before, edit: edit));
+    super.record(edit, before: before);
+  }
+}
+
+/// Every recorder the host makes from now on lands in the returned list.
+/// Restored at teardown.
+List<_Wi195Recorder> _wi195Recorders() {
+  final made = <_Wi195Recorder>[];
+  final previous = segmentUndoRecorderFactory;
+  segmentUndoRecorderFactory = () {
+    final r = _Wi195Recorder();
+    made.add(r);
+    return r;
+  };
+  addTearDown(() => segmentUndoRecorderFactory = previous);
+  return made;
+}
+
+List<({String before, SegmentEdit edit})> _wi195Records(
+  List<_Wi195Recorder> made,
+) => [for (final r in made) ...r.records];
+
+/// Tab (Shift+Tab when [shift]) held down for one key repeat, as macOS
+/// delivers it: each key event goes to Flutter, and when Flutter leaves it
+/// unhandled the text system sends `insertTab:` (`insertBacktab:`) to the
+/// focused field. flutter_test forwards the selector for the key down only,
+/// so the repeat's selector is sent here.
+Future<void> _wi195TabWithRepeat(
+  WidgetTester tester, {
+  required bool shift,
+}) async {
+  const tab = LogicalKeyboardKey.tab;
+  if (shift) {
+    await tester.sendKeyDownEvent(
+      LogicalKeyboardKey.shiftLeft,
+      platform: 'macos',
+    );
+  }
+  try {
+    await tester.sendKeyDownEvent(tab, platform: 'macos');
+    await tester.pump();
+    final repeat = await tester.sendKeyRepeatEvent(tab, platform: 'macos');
+    await tester.pump();
+    if (!repeat) {
+      await tester.macSelector(shift ? 'insertBacktab:' : 'insertTab:');
+    }
+    await tester.sendKeyUpEvent(tab, platform: 'macos');
+  } finally {
+    if (shift) {
+      await tester.sendKeyUpEvent(
+        LogicalKeyboardKey.shiftLeft,
+        platform: 'macos',
+      );
+    }
+    await tester.pump();
+  }
 }
