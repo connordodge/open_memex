@@ -75,3 +75,14 @@ mutation on, Flutter only) added the lessons below.
   Why: `a > b ? a : b` mutated to `>=` is always equivalent; #185's `composeEdits` needed five
   exemption write-ups (row_edits.dart:177–203) that `max(a, b)` would not have produced.
   How: new code uses `max`/`min`. Never rewrite existing code only to drop a mutant site (PROTOCOL §5).
+
+Run 20261027-191 (#191 list indent + #192 tables: 10 WIs across 4 leads; review off, mutation on,
+Flutter only) added the lessons below.
+
+- **Pure-core WIs pass the first gate; seam stubs and render objects don't.**
+  Why: #194 #202 #203 (pure Dart) passed first time. #212 (#204) had 7/16 survivors, 4 in the stub
+  table_grid.dart that #205 replaced (`_active` flags, `p.attached && p.hasSize`, `forceHidden: true`);
+  #215 and #217 failed on pointer `>`/`>=` bounds and `parentUsesSize: true` sites.
+  How: a seam WI's verify test author pins the stub's frozen contract and both arms of each new
+  predicate. `parentUsesSize: true` mutants are often equivalent (a later layout() or cached
+  intrinsics decide it): prove it with a test that kills the sibling site, then exempt (#217).
