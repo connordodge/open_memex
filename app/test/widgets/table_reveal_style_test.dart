@@ -368,8 +368,8 @@ void main() {
             );
             expect(
               _argb(style.color),
-              OmColors.fg0.toARGB32(),
-              reason: 'header cell text at $at is fg0',
+              OmColors.fg1.toARGB32(),
+              reason: 'header cell text at $at is fg1',
             );
           }
         }
@@ -493,13 +493,13 @@ void main() {
         for (final pipe in _parsed.body[0].line.pipes) {
           _expectColour(tester, _tableRow, pipe, OmColors.fg2, 'line 2 pipe');
         }
-        // `\|`: an escape stays plain cell text (fg0), backslash included.
+        // `\|`: an escape stays plain cell text (fg1), backslash included.
         final escape = _rowAt('\\|');
         for (final at in [escape, escape + 1]) {
           final style = _styleAt(span, at);
           expect(
             _argb(style.color),
-            OmColors.fg0.toARGB32(),
+            OmColors.fg1.toARGB32(),
             reason:
                 '"${_table[at]}" of the escaped pipe keeps the cell text '
                 'style, not the fg2 pipe style',
@@ -839,8 +839,8 @@ void main() {
         );
         expect(
           _argb(_styleAt(span, _para.indexOf('with')).color),
-          OmColors.fg0.toARGB32(),
-          reason: 'plain paragraph text is fg0, not a table pipe colour',
+          OmColors.fg1.toARGB32(),
+          reason: 'plain paragraph text is fg1, not a table pipe colour',
         );
         expect(_styleAt(span, 0).fontWeight, isNot(FontWeight.w700));
         expect(_filled(tester, 0, OmColors.surface4), hasLength(1));
@@ -886,7 +886,7 @@ void main() {
         const text = 'a | b\n$_table';
         final body = await pumpTable(tester, text, titles: _titles);
         await body.placeCaret(2);
-        _expectColour(tester, 0, 2, OmColors.fg0, 'a prose pipe');
+        _expectColour(tester, 0, 2, OmColors.fg1, 'a prose pipe');
         expectTableRendered(0, 1);
       },
       variant: macOnly,
