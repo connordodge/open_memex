@@ -579,7 +579,8 @@ List<Rect> newlineMarks(List<NewlineMarkLine> lines, TextRange selection) => [
 ];
 
 /// The newline mark's width on a line: one mono column at the line's font
-/// size (8.1 on a body line; H1 20, H2 17, H3 15, H4 to H6 13.5 px fonts).
+/// size (8.1 on a body line; 15.6, 11.4, 9.0 and 6.6 on H1 26, H2 19, H3 15
+/// and H4 to H6 11 px fonts).
 /// [headingLevel] is the line's heading level, null for every other line.
 ///
 /// Throws [ArgumentError] when [headingLevel] is outside 1..6.

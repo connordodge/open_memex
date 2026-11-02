@@ -21,6 +21,14 @@ class OmColors {
   static const fg3 = Color(0xFF6B6C68); // placeholder / disabled-on
   static const fg4 = Color(0xFF3F433F); // hairlines on dark
 
+  // Heading text (#221, design A + D: a lightness ramp H1 > H2 fg0 > H3 >
+  // H4-H6 fg2).
+  /// H1 shown text: pure white, one step above fg0 (#221).
+  static const heading1 = Color(0xFFFFFFFF);
+
+  /// H3 shown text: between fg0 and fg2 (#221).
+  static const heading3 = Color(0xFFB8B5AE);
+
   // Borders & strokes (the spec uses opacity over a near-white; we
   // approximate with composited grays so they read on every surface).
   static final line1 = const Color(0xFFFFFCF0).withAlpha(15);

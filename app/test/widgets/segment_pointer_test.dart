@@ -719,12 +719,14 @@ void main() {
         breaks: true,
         top: 0,
         height: 34,
-        endX: 81.6,
+        endX: 91.2,
         columnWidth: width,
       );
+      // WI #223: H2 is 19 px, so one column is 11.4 and `## Notes` ends at
+      // 8 x 11.4 = 91.2.
       _wi170ExpectExact(
         newlineMarks([line], const TextRange(start: 0, end: 9)),
-        [const Rect.fromLTWH(81.6, 0, 10.2, 34)],
+        [const Rect.fromLTWH(91.2, 0, 11.4, 34)],
       );
     });
 
@@ -859,7 +861,7 @@ void main() {
         final lines = [
           next(20, false, _wi170Line, 600), // wrapped first line: no mark
           next(40, true, _wi170Line, 162), // paragraph end
-          next(49, true, 34, 81.6, newlineMarkWidth(2)), // `## Notes`
+          next(49, true, 34, 91.2, newlineMarkWidth(2)), // `## Notes`
           next(50, true, _wi170Line, 0), // blank line
           next(68, true, _wi170Line, 307.8), // item end
           next(80, true, _wi170Line, 97.2), // selection ends mid-line
@@ -869,7 +871,7 @@ void main() {
           newlineMarks(lines, const TextRange(start: 5, end: 75)),
           [
             Rect.fromLTWH(162, top[1], _wi170Col, _wi170Line),
-            Rect.fromLTWH(81.6, top[2], 10.2, 34),
+            Rect.fromLTWH(91.2, top[2], 11.4, 34),
             Rect.fromLTWH(0, top[3], _wi170Col, _wi170Line),
             Rect.fromLTWH(307.8, top[4], _wi170Col, _wi170Line),
           ],
@@ -881,13 +883,14 @@ void main() {
       'newlineMarkWidth is one mono column at the font size of the line',
       () {
         for (final (level, width) in [
+          // WI #223 (design A + D): H1 26, H2 19, H3 15, H4 to H6 11 px.
           (null, 8.1),
-          (1, 12.0),
-          (2, 10.2),
+          (1, 15.6),
+          (2, 11.4),
           (3, 9.0),
-          (4, 8.1),
-          (5, 8.1),
-          (6, 8.1),
+          (4, 6.6),
+          (5, 6.6),
+          (6, 6.6),
         ]) {
           expect(
             newlineMarkWidth(level),
@@ -1672,7 +1675,7 @@ void main() {
         ).select(const TextSelection(baseOffset: 0, extentOffset: 11));
         await tester.pump();
 
-        final h2 = _wi170Marks(tester, 0, column: 10.2, lineHeight: 34);
+        final h2 = _wi170Marks(tester, 0, column: 11.4, lineHeight: 34);
         expect(h2, hasLength(1), reason: '${_wi170SelectionFills(tester, 0)}');
         expect(h2.single.height, moreOrLessEquals(34, epsilon: 0.5));
         expect(_wi170Marks(tester, 0), isEmpty, reason: 'no body-size mark');

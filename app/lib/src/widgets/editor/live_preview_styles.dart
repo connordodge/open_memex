@@ -5,6 +5,8 @@
 // builder in live_preview_controller.dart decides which style each run of
 // code units takes; this file only says what each style is.
 
+import 'dart:math' as math;
+
 import 'package:flutter/painting.dart';
 
 import '../../editor/row_geometry.dart';
@@ -33,12 +35,31 @@ enum LivePreviewInk {
   ghost,
 }
 
-/// The font size of a heading of [level]: H1 20, H2 17, H3 15, H4-H6 13.5.
+/// The font size of a heading of [level] (#221, design A + D): H1 26, H2 19,
+/// H3 15, H4-H6 11.
 double headingFontSize(int level) => switch (level) {
-  1 => 20,
-  2 => 17,
+  1 => 26,
+  2 => 19,
   3 => 15,
-  _ => monoFontSize,
+  _ => 11,
+};
+
+/// The colour of a heading of [level]'s uncoloured shown text (#221): H1
+/// `heading1`, H2 `fg0`, H3 `heading3`, H4-H6 `fg2`; null for 0.
+Color? _headingColour(int level) => switch (level) {
+  0 => null,
+  1 => OmColors.heading1,
+  2 => OmColors.fg0,
+  3 => OmColors.heading3,
+  _ => OmColors.fg2,
+};
+
+/// The weight of a heading of [level]'s text (#221): w700 for H1-H3, w500
+/// for H4-H6; null for 0.
+FontWeight? _headingWeight(int level) => switch (level) {
+  0 => null,
+  1 || 2 || 3 => FontWeight.w700,
+  _ => FontWeight.w500,
 };
 
 /// The live preview field's strut (R13): a 22.95 px minimum (13.5 x 1.7) in
@@ -68,10 +89,20 @@ const TextStyle livePreviewHiddenStyle = TextStyle(
 
 /// The size and line height of a heading line of [level]; empty for 0 (a
 /// non-heading line keeps the field's base style).
+///
+/// A heading larger than the body takes its line height outright. One
+/// smaller than the body (H4-H6, 11 px) takes the body's ratio instead
+/// (22.95 / 13.5), not 22.95 / 11 (Spec #222 R5a): under even leading its
+/// box is then the strut's box scaled about the shared baseline, so it fits
+/// inside it and the strut sets the 22.95 px line. A 22.95 px box at 11 px
+/// sits lower than the strut's and makes the line taller.
 TextStyle _lineMetrics(int level) {
   if (level == 0) return const TextStyle();
   final size = headingFontSize(level);
-  return TextStyle(fontSize: size, height: headingLineHeight(level) / size);
+  return TextStyle(
+    fontSize: size,
+    height: headingLineHeight(level) / math.max(size, monoFontSize),
+  );
 }
 
 /// A revealed marker on a line of [headingLevel] (0: not a heading): `fg2`,
@@ -86,7 +117,10 @@ TextStyle livePreviewMarkerStyle({
 
 /// The style of shown text, or null when it is plain body text.
 ///
-/// - [headingLevel] (0: not a heading) sets the size, line height and bold.
+/// - [headingLevel] (0: not a heading) sets the size, line height, weight
+///   (w700 for H1-H3, w500 for H4-H6; [bold] is always w700) and the colour
+///   of runs nothing else colours. Colour precedence: [ink], then
+///   [codeLine] or [quote], then [done], then the heading colour.
 /// - [codeLine]: a line inside a fenced block, plain `fg1`.
 /// - [bold], [italic], [strike], [link], [ghost] and [hover] come from the
 ///   inline tokens around the run; [ink] from the innermost colouring one.
@@ -119,14 +153,14 @@ TextStyle? livePreviewTextStyle({
     LivePreviewInk.ghost => OmColors.fg2,
     LivePreviewInk.none when codeLine || quote => OmColors.fg1,
     LivePreviewInk.none when done => selected ? OmColors.fg1 : OmColors.fg2,
-    LivePreviewInk.none => null,
+    LivePreviewInk.none => _headingColour(headingLevel),
   };
-  final heavy = bold || headingLevel > 0;
+  final weight = bold ? FontWeight.w700 : _headingWeight(headingLevel);
   final slanted = italic || quote;
-  if (!heavy && !slanted && !struck && !underlined && colour == null) {
+  if (weight == null && !slanted && !struck && !underlined && colour == null) {
     return null;
   }
-  final face = heavy ? OmType.mono(weight: FontWeight.w700) : null;
+  final face = weight == null ? null : OmType.mono(weight: weight);
   return _lineMetrics(headingLevel).copyWith(
     fontFamily: face?.fontFamily,
     fontFamilyFallback: face?.fontFamilyFallback,
