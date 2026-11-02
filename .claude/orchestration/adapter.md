@@ -114,7 +114,8 @@ These add to the generic rubric:
 - `notes.rs` save path, versioning and optimistic concurrency;
 - link extraction (`link_extractor.rs`, `links.rs`) and search fusion (`search.rs`);
 - MCP tool contracts and server-side rule enforcement (pinning, marker, depth);
-- the app's segmented editor, conflict merge and polling;
+- the app's segmented editor, conflict merge and polling (editor logic, row editing and line
+  geometry; a colour or style constant with no geometry change is routine, run 20261102-221 D2);
 - anything that reads or writes the vault from both the app and the server.
 
 ## Review notes
@@ -158,8 +159,12 @@ Connor's decision (2026-10-03): no CI, local builds only.
 1. `n` = 1 + the highest existing `staging-<YYYYMMDD>.*` tag for today.
 2. `git tag -a staging-<YYYYMMDD>.<n> -m "<run summary>" origin/main`, then
    `git push origin staging-<YYYYMMDD>.<n>`. Push the **tag only**.
-3. `git worktree add --detach <repo>/worktrees/_staging staging-<…>` (remove an old one
-   first), then in the background:
+3. Point `<repo>/worktrees/_staging` at the tag. If it already exists, reuse it: the last
+   `flutter build macos` leaves `app/macos/Podfile`, `Runner.xcodeproj` and SwiftPM folders
+   dirty, so `git worktree remove` refuses and auto mode blocks `--force`. Run
+   `git -C worktrees/_staging restore app/macos && git -C worktrees/_staging clean -fdq app/macos`,
+   then `git -C worktrees/_staging checkout --detach staging-<…>`. Otherwise
+   `git worktree add --detach <repo>/worktrees/_staging staging-<…>`. Then in the background:
    `cargo build --release -p memex-mcp` and `cd app && flutter build macos --release`.
 4. Hand Connor:
    - the app at `worktrees/_staging/app/build/macos/Build/Products/Release/`;
