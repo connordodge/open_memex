@@ -525,8 +525,10 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
                     focusNode: row.focusNode,
                     kindChips: _kindChips,
                     hintText: row.hintText,
-                    // Tight selection boxes, as design A draws them.
+                    // Tight glyph boxes (design A); the row paints the
+                    // selection itself, as one block (EditorRow).
                     selectionHeightStyle: ui.BoxHeightStyle.tight,
+                    paintsSelection: false,
                     onMoveUp: row.first
                         ? () => _neighbour(t, forward: false)
                         : null,

@@ -563,14 +563,21 @@ void main() {
           tester.renderObject<RenderBox>(find.byKey(textSegmentKey(0))),
         );
         // The header and delimiter line ends are inside the selection.
+        // TEST-CHANGE (block selection): a line paints as one fill, so its
+        // newline mark is the fill reaching one column past the line's
+        // last glyph.
         for (final start in [_tableStart, _at('|:--|--:|')]) {
           final line = seg.lines.singleWhere((l) => l.range.start == start);
           final top = seg.box.localToGlobal(Offset(0, line.top)).dy;
           final bottom = seg.box.localToGlobal(Offset(0, line.bottom)).dy;
+          final endX = seg.box
+              .localToGlobal(Offset(seg.boxesFor(line.range).last.right, 0))
+              .dx;
           expect(
             painted.where(
               (r) =>
-                  (r.width - newlineMarkWidth(null)).abs() < 0.01 &&
+                  r.left <= endX + 0.5 &&
+                  (r.right - (endX + newlineMarkWidth(null))).abs() < 0.5 &&
                   (r.top - top).abs() < 0.5 &&
                   (r.bottom - bottom).abs() < 0.5,
             ),

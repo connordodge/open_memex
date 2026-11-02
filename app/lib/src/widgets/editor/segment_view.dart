@@ -587,6 +587,10 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   @override
   TextSelection get selection => widget.controller.selection;
 
+  /// Row [index]'s spec, null past the last row.
+  RowSpec? rowSpec(int index) =>
+      index >= 0 && index < _rows.length ? _rows[index].spec : null;
+
   @override
   int? get focusedRow {
     final i = _rows.indexWhere((row) => row.focusNode.hasFocus);

@@ -1,13 +1,19 @@
+import 'dart:math' as math;
+
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 
 import '../../editor/editor_rows.dart';
+import '../../editor/markdown_lines.dart';
 import '../../editor/row_geometry.dart';
 import '../../theme/colors.dart';
 import 'line_boxes.dart';
 import 'live_preview_controller.dart';
 import 'live_preview_frame.dart';
 import 'marker_column.dart';
+import 'segment_pointer_layer.dart'
+    show NewlineMarkLine, newlineMarkWidth, newlineMarks;
+import 'segment_view.dart';
 import 'table_grid.dart';
 import 'text_segment.dart';
 
@@ -64,8 +70,9 @@ List<ItemGeometry?> rowGeometries(List<RowSpec> rows) {
 ///   painted, hit or read by semantics (R26); revealed, the field shows and
 ///   the grid is gone.
 ///
-/// The field sits under Key `editor-row-<segment>-<index>` (D10) and paints
-/// its selection in `OmColors.selection` also while it doesn't have focus.
+/// The field sits under Key `editor-row-<segment>-<index>` (D10). The row
+/// paints its part of the segment selection as one block behind the field,
+/// focused or not ([_RowSelection]).
 class EditorRow extends StatelessWidget {
   const EditorRow({
     super.key,
@@ -115,9 +122,10 @@ class EditorRow extends StatelessWidget {
   Widget build(BuildContext context) {
     Widget keyedField(Widget child) => KeyedSubtree(
       key: ValueKey('editor-row-$segment-$index'),
-      child: _UnfocusedSelection(
+      child: _RowSelection(
         controller: controller,
-        focusNode: focusNode,
+        index: index,
+        host: context.findAncestorStateOfType<SegmentViewState>(),
         child: child,
       ),
     );
@@ -180,47 +188,70 @@ class EditorRow extends StatelessWidget {
   }
 }
 
-/// Paints [controller]'s selection behind its field in `OmColors.selection`
-/// while [focusNode] doesn't have focus (a focused field paints its own), so
-/// every row shows its slice of a segment selection (TD5).
-class _UnfocusedSelection extends SingleChildRenderObjectWidget {
-  const _UnfocusedSelection({
+/// Paints the row's part of the segment selection behind its field in
+/// `OmColors.selection`, as one block: each selected line is one rect from
+/// its first to its last selected character, the line box's full height,
+/// plus one mono column where the line's line break is selected (a selected
+/// blank line is that column). Lines of one selection touch, also across
+/// rows, and no two rects overlap, so the fill never doubles up. The field
+/// itself paints no selection (`TextSegmentField`).
+class _RowSelection extends SingleChildRenderObjectWidget {
+  const _RowSelection({
     required this.controller,
-    required this.focusNode,
+    required this.index,
+    required this.host,
     required super.child,
   });
 
   final TextEditingController controller;
-  final FocusNode focusNode;
+  final int index;
+
+  /// The segment the row belongs to; null outside one (a row pumped alone).
+  final SegmentViewState? host;
 
   @override
   RenderObject createRenderObject(BuildContext context) =>
-      _RenderUnfocusedSelection(controller, focusNode);
+      _RenderRowSelection(controller, index, host);
 
   @override
   void updateRenderObject(
     BuildContext context,
-    _RenderUnfocusedSelection renderObject,
-  ) => renderObject.watch(controller, focusNode);
+    _RenderRowSelection renderObject,
+  ) => renderObject.watch(controller, index, host);
 }
 
-class _RenderUnfocusedSelection extends RenderProxyBox {
-  _RenderUnfocusedSelection(this._controller, this._focusNode);
+class _RenderRowSelection extends RenderProxyBox {
+  _RenderRowSelection(this._controller, this._index, this._host)
+    : _segment = _host?.widget.controller,
+      _gate = _host?.widget.revealGate;
 
   TextEditingController _controller;
-  FocusNode _focusNode;
+  int _index;
+  SegmentViewState? _host;
+  TextEditingController? _segment;
 
-  Listenable get _changes => Listenable.merge([_controller, _focusNode]);
+  /// Revealing or hiding markers moves line ends.
+  Listenable? _gate;
 
-  void watch(TextEditingController controller, FocusNode focusNode) {
-    if (identical(controller, _controller) &&
-        identical(focusNode, _focusNode)) {
-      return;
-    }
+  Listenable get _changes => Listenable.merge([
+    _controller,
+    if (_segment != null) _segment,
+    if (_gate != null) _gate,
+  ]);
+
+  void watch(
+    TextEditingController controller,
+    int index,
+    SegmentViewState? host,
+  ) {
     if (attached) _changes.removeListener(markNeedsPaint);
     _controller = controller;
-    _focusNode = focusNode;
+    _index = index;
+    _host = host;
+    _segment = host?.widget.controller;
+    _gate = host?.widget.revealGate;
     if (attached) _changes.addListener(markNeedsPaint);
+    // The rows were rebuilt: their line ends may have moved.
     markNeedsPaint();
   }
 
@@ -238,29 +269,149 @@ class _RenderUnfocusedSelection extends RenderProxyBox {
 
   @override
   void paint(PaintingContext context, Offset offset) {
-    final selection = _controller.selection;
-    final editable = findRenderEditable(child);
-    // A rendered table's grid shows no selection (Spec #197 R16).
-    final hidden = switch (_controller) {
-      final LivePreviewController c => c.tableRow && !c.tableRevealed,
-      _ => false,
-    };
-    if (!hidden &&
-        !_focusNode.hasFocus &&
-        !selection.isCollapsed &&
-        selection.isValid &&
-        editable != null) {
-      final at =
-          offset +
-          MatrixUtils.transformPoint(
-            editable.getTransformTo(this),
-            Offset.zero,
-          );
-      final paint = Paint()..color = OmColors.selection;
-      for (final box in editable.getBoxesForSelection(selection)) {
-        context.canvas.drawRect(box.toRect().shift(at), paint);
-      }
+    // One rect per line; lines never overlap, so the fill never doubles.
+    final paint = Paint()..color = OmColors.selection;
+    for (final rect in _selectionRects()) {
+      context.canvas.drawRect(rect.shift(offset), paint);
     }
     super.paint(context, offset);
   }
+
+  /// The row's selection fill in this box's coordinates.
+  List<Rect> _selectionRects() {
+    // A rendered table's grid shows no selection (Spec #197 R16).
+    final controller = _controller;
+    if (controller is LivePreviewController &&
+        controller.tableRow &&
+        !controller.tableRevealed) {
+      return const [];
+    }
+    final editable = findRenderEditable(child);
+    if (editable == null || !editable.hasSize) return const [];
+    final rowText = controller.text;
+    if (editable.plainText != rowText) return const [];
+    final length = rowText.length;
+
+    // Where the segment selection meets the row's edges.
+    final host = _host;
+    final spec = host?.rowSpec(_index);
+    var breakAfter = false; // a line break follows the row
+    var rowBreak = false; // ... and the selection holds it
+    var fromAbove = false; // the selection holds the line break above
+    if (host != null && spec != null) {
+      final segment = host.selection;
+      final text = host.text;
+      final end = spec.textEnd;
+      breakAfter = end < text.length && _isTerminator(text.codeUnitAt(end));
+      if (segment.isValid && !segment.isCollapsed) {
+        rowBreak = breakAfter && segment.start <= end && end < segment.end;
+        fromAbove = segment.start < spec.start && spec.start <= segment.end;
+      }
+    }
+
+    // The selected range in row offsets; past the text's end when the row's
+    // line break is selected.
+    final local = controller.selection;
+    var start = -1;
+    var end = -1;
+    if (local.isValid && !local.isCollapsed) {
+      start = local.start.clamp(0, length);
+      end = local.end.clamp(0, length);
+    }
+    if (rowBreak) {
+      if (start < 0) start = length;
+      end = length + 1;
+    }
+    if (start < 0 || start >= end) return const [];
+
+    final boxes = RenderEditableLineBoxes(editable);
+    final lines = boxes.lines;
+    if (lines.isEmpty) return const [];
+    final chars = start < math.min(end, length)
+        ? boxes.boxesFor(TextRange(start: start, end: math.min(end, length)))
+        : const <Rect>[];
+    final mdLines = controller is LivePreviewController && controller.itemText
+        ? const <MdLine>[]
+        : classifyLines(rowText, atSegmentStart: spec?.textStart == 0);
+
+    final out = <Rect>[];
+    var firstLine = false;
+    var lastLine = false;
+    for (final (i, line) in lines.indexed) {
+      Rect? rect;
+      for (final c in chars) {
+        // Two measurements of one line may differ by a fraction of a pixel.
+        final y = c.center.dy;
+        if (y >= line.top && y < line.bottom) {
+          rect = rect?.expandToInclude(c) ?? c;
+        }
+      }
+      final last = i == lines.length - 1;
+      final lineEnd = line.range.end;
+      final breaks = last
+          ? breakAfter
+          : lineEnd < length && _isTerminator(rowText.codeUnitAt(lineEnd));
+      if (breaks && start <= lineEnd && lineEnd < end) {
+        final endX = switch (rect) {
+          final r? => r.right,
+          null when line.range.isCollapsed => 0.0,
+          null => boxes.boxesFor(line.range).last.right,
+        };
+        final mark = newlineMarks([
+          NewlineMarkLine(
+            end: lineEnd,
+            breaks: true,
+            top: line.top,
+            bottom: line.bottom,
+            endX: endX,
+            columnWidth: newlineMarkWidth(
+              _headingLevel(mdLines, line.range.start),
+            ),
+          ),
+        ], TextRange(start: start, end: end));
+        for (final m in mark) {
+          rect = rect?.expandToInclude(m) ?? m;
+        }
+      }
+      if (rect == null) continue;
+      // Each line runs to the next line's top: measured line boxes can
+      // leave a pixel between lines of different heights (a blank line
+      // above a heading), which would show as a seam.
+      final bottom = last ? line.bottom : lines[i + 1].top;
+      out.add(Rect.fromLTRB(rect.left, line.top, rect.right, bottom));
+      if (i == 0) firstLine = true;
+      if (last) lastLine = true;
+    }
+    if (out.isEmpty) return const [];
+
+    // Into this box's coordinates; close the seams to the rows above and
+    // below the selection runs on into.
+    final at = MatrixUtils.transformPoint(
+      editable.getTransformTo(this),
+      Offset.zero,
+    );
+    final shifted = [for (final r in out) r.shift(at)];
+    if (fromAbove && firstLine) {
+      final r = shifted.first;
+      shifted.first = Rect.fromLTRB(r.left, 0, r.right, r.bottom);
+    }
+    if (rowBreak && lastLine) {
+      final r = shifted.last;
+      shifted.last = Rect.fromLTRB(r.left, r.top, r.right, size.height);
+    }
+    return shifted;
+  }
+
+  /// The heading level of the source line holding row-local [offset], null
+  /// when it isn't a heading.
+  static int? _headingLevel(List<MdLine> lines, int offset) {
+    for (final line in lines) {
+      if (offset < line.end || line.terminator.isEmpty) {
+        return line.kind == MdLineKind.heading ? line.level : null;
+      }
+    }
+    return null;
+  }
+
+  static bool _isTerminator(int unit) => unit == 0x0A || unit == 0x0D;
 }

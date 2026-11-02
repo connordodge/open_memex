@@ -1180,7 +1180,7 @@ void main() {
   // -------------------------------------------------------------------------
   group('SegmentEditing over rows (AC12)', () {
     testWidgets(
-      'select over three rows sets each row selection to its slice and each unfocused row paints it in the selection colour with tight boxes',
+      'select over three rows sets each row selection to its slice and each unfocused row paints it in the selection colour as one full-height block line',
       (tester) async {
         await _wi167Pump(tester, _wi167List);
         expect(segmentEditingAt(tester, 0).focusedRow, isNull);
@@ -1203,12 +1203,15 @@ void main() {
             slice,
             reason: 'row $r renders it',
           );
-          // The slice's x extent on its line, as the field lays it out. The
-          // painted slice is as wide as the slice and tight: the 13.5 px
-          // font's content height, not its 22.95 line or the line spacing.
+          // The slice's x extent on its line, as the field lays it out.
+          // TEST-CHANGE (block selection): the painted line is the line
+          // box's full height (22.95), so selected lines touch, and reaches
+          // one 8.1 px column further where the row's newline is selected
+          // (rows 0 and 1; the selection ends before row 2's).
           final line = RenderEditableLineBoxes(
             _wi167Editable(tester, 0, r),
           ).boxesFor(TextRange(start: slice.start, end: slice.end)).single;
+          final width = line.width + (r < 2 ? 8.1 : 0);
           expect(
             tester.renderObject(_wi167Row(0, r)),
             paints..something((method, args) {
@@ -1218,13 +1221,12 @@ void main() {
               // Paint stores its colour as float32 components, so compare
               // the 8-bit ARGB value (an exact == never matches).
               return paint.color.toARGB32() == OmColors.selection.toARGB32() &&
-                  rect.height > 5 &&
-                  rect.height < 13.5 + 1 &&
-                  (rect.width - line.width).abs() < 0.5;
+                  rect.height > 22.95 - 0.6 &&
+                  (rect.width - width).abs() < 0.5;
             }),
             reason:
                 'row $r paints its slice while unfocused in OmColors.selection '
-                'with a tight box inside its line',
+                'as one full-height line',
           );
         }
         expect(
@@ -2421,8 +2423,11 @@ void main() {
     );
 
     testWidgets(
-      'an editor row given a different focus node stops painting the selection once that node has focus',
+      'an editor row paints its selection also while its field has focus',
       (tester) async {
+        // TEST-CHANGE (block selection): was "stops painting once the new
+        // focus node has focus". The field no longer paints a selection;
+        // the row paints it focused or not.
         final ctrl = LivePreviewController(text: 'alpha')
           ..selection = const TextSelection(baseOffset: 1, extentOffset: 4);
         final first = FocusNode();
@@ -2438,13 +2443,10 @@ void main() {
         second.requestFocus();
         await tester.pump();
         expect(second.hasFocus, isTrue);
-        expect(first.hasFocus, isFalse);
         expect(
           tester.renderObject(_wi167Row(0, 0)),
-          isNot(_wi167PaintsSelection),
-          reason:
-              'the focused field paints its own selection; the row reads the '
-              'new focus node, not the old unfocused one',
+          _wi167PaintsSelection,
+          reason: 'the row paints the focused field selection',
         );
       },
     );

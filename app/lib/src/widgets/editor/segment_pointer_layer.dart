@@ -1,7 +1,6 @@
 import 'dart:async' show Timer, scheduleMicrotask;
 import 'dart:math' as math;
 
-import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
@@ -9,11 +8,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
 import '../../editor/editor_rows.dart';
-import '../../editor/markdown_lines.dart';
 import '../../editor/row_geometry.dart';
 import '../../editor/segment_selection.dart';
-import '../../theme/colors.dart';
-import 'line_boxes.dart';
 import 'live_preview_controller.dart';
 import 'live_preview_styles.dart';
 import 'marker_column.dart';
@@ -60,8 +56,6 @@ const double _autoScrollSpeed = 1200;
 /// - Dragging into the editor page's top or bottom edge zone scrolls the
 ///   page while the selection keeps extending under the pointer.
 /// - `SelectAllTextIntent` (Cmd+A) selects the whole text segment.
-/// - The segment selection's newline marks ([newlineMarks]) are painted
-///   behind the rows in `OmColors.selection`.
 ///
 /// The layer is in the rows' `TextFieldTapRegion` group, so a press on it
 /// doesn't unfocus the focused row, and shows the text cursor.
@@ -523,176 +517,12 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
             onPointerMove: _onMove,
             onPointerUp: _onUp,
             onPointerCancel: _onUp,
-            child: _NewlineMarkLayer(
-              controller: host.widget.controller,
-              revealGate: host.widget.revealGate,
-              child: widget.child,
-            ),
+            child: widget.child,
           ),
         ),
       ),
     );
   }
-}
-
-/// Paints the newline marks of [controller]'s selection (the segment's
-/// text and selection) behind the segment's rows.
-class _NewlineMarkLayer extends SingleChildRenderObjectWidget {
-  const _NewlineMarkLayer({
-    required this.controller,
-    required this.revealGate,
-    required super.child,
-  });
-
-  final TextEditingController controller;
-
-  /// Revealing markers moves line ends.
-  final Listenable revealGate;
-
-  @override
-  RenderObject createRenderObject(BuildContext context) =>
-      _RenderNewlineMarks(controller, revealGate);
-
-  @override
-  void updateRenderObject(
-    BuildContext context,
-    _RenderNewlineMarks renderObject,
-  ) => renderObject.watch(controller, revealGate);
-}
-
-class _RenderNewlineMarks extends RenderProxyBox {
-  _RenderNewlineMarks(this._controller, this._revealGate);
-
-  TextEditingController _controller;
-  Listenable _revealGate;
-
-  Listenable get _changes => Listenable.merge([_controller, _revealGate]);
-
-  void watch(TextEditingController controller, Listenable revealGate) {
-    if (!identical(controller, _controller) ||
-        !identical(revealGate, _revealGate)) {
-      if (attached) _changes.removeListener(markNeedsPaint);
-      _controller = controller;
-      _revealGate = revealGate;
-      if (attached) _changes.addListener(markNeedsPaint);
-    }
-    // The rows were rebuilt: their line ends may have moved.
-    markNeedsPaint();
-  }
-
-  @override
-  void attach(PipelineOwner owner) {
-    super.attach(owner);
-    _changes.addListener(markNeedsPaint);
-  }
-
-  @override
-  void detach() {
-    _changes.removeListener(markNeedsPaint);
-    super.detach();
-  }
-
-  @override
-  void paint(PaintingContext context, Offset offset) {
-    final selection = _controller.selection;
-    if (selection.isValid && !selection.isCollapsed) {
-      final paint = Paint()..color = OmColors.selection;
-      for (final mark in newlineMarks(
-        _lines(selection),
-        TextRange(start: selection.start, end: selection.end),
-      )) {
-        context.canvas.drawRect(mark.shift(offset), paint);
-      }
-    }
-    super.paint(context, offset);
-  }
-
-  /// The laid-out lines of the rows [selection] reaches, in this box's
-  /// coordinates and segment offsets.
-  List<NewlineMarkLine> _lines(TextSelection selection) {
-    final text = _controller.text;
-    final rows = splitRows(text, atSegmentStart: true);
-    final editables = <RenderEditable>[];
-    void visit(RenderObject node) {
-      if (node is RenderEditable) {
-        editables.add(node);
-      } else {
-        node.visitChildren(visit);
-      }
-    }
-
-    visitChildren(visit);
-    if (editables.length != rows.length) return const [];
-    // A table row the selection reaches is revealed (`tableRevealed`) only
-    // while the segment has focus; rendered, its grid shows no selection
-    // (Spec #197 R16).
-    final gate = _revealGate;
-    final focused = gate is ValueListenable<bool> && gate.value;
-    final out = <NewlineMarkLine>[];
-    for (final (i, row) in rows.indexed) {
-      // A row whose text ends before the selection or starts at or after
-      // its end holds no selected line end.
-      if (row.textEnd < selection.start || row.textStart >= selection.end) {
-        continue;
-      }
-      if (row.kind == RowKind.table && !focused) continue;
-      final editable = editables[i];
-      final rowText = text.substring(row.textStart, row.textEnd);
-      if (!editable.hasSize || editable.plainText != rowText) continue;
-      final shift = MatrixUtils.transformPoint(
-        editable.getTransformTo(this),
-        Offset.zero,
-      );
-      final boxes = RenderEditableLineBoxes(editable);
-      final mdLines = row.isItem
-          ? const <MdLine>[]
-          : classifyLines(rowText, atSegmentStart: row.textStart == 0);
-      for (final line in boxes.lines) {
-        final end = row.toSegment(line.range.end);
-        out.add(
-          NewlineMarkLine(
-            end: end,
-            breaks: end < text.length && _isTerminator(text.codeUnitAt(end)),
-            top: line.top + shift.dy,
-            bottom: line.bottom + shift.dy,
-            endX: _lineEndX(editable, boxes, line) + shift.dx,
-            columnWidth: newlineMarkWidth(
-              _headingLevel(mdLines, line.range.start),
-            ),
-          ),
-        );
-      }
-    }
-    return out;
-  }
-
-  /// The right end of [line]'s last glyph in [editable]; its text left (0)
-  /// on a blank line.
-  static double _lineEndX(
-    RenderEditable editable,
-    RenderEditableLineBoxes boxes,
-    LineBox line,
-  ) {
-    if (line.range.isCollapsed) return 0;
-    final glyphs = editable.getBoxesForSelection(
-      TextSelection(baseOffset: line.range.start, extentOffset: line.range.end),
-    );
-    if (glyphs.isEmpty) return boxes.boxesFor(line.range).last.right;
-    return glyphs.map((box) => box.right).reduce(math.max);
-  }
-
-  /// The heading level of the source line holding row-local [offset], null
-  /// when it isn't a heading.
-  static int? _headingLevel(List<MdLine> lines, int offset) {
-    for (final line in lines) {
-      if (offset < line.end || line.terminator.isEmpty) {
-        return line.kind == MdLineKind.heading ? line.level : null;
-      }
-    }
-    return null;
-  }
-
-  static bool _isTerminator(int unit) => unit == 0x0A || unit == 0x0D;
 }
 
 /// One laid-out line, as [newlineMarks] reads it (TD10, pack #170).
