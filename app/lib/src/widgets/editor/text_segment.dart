@@ -20,7 +20,7 @@ const double _bodySize = 13.5;
 const double _bodyHeight = 1.7;
 
 TextStyle editorBodyStyle() =>
-    OmType.mono(size: _bodySize, color: OmColors.fg0, height: _bodyHeight);
+    OmType.mono(size: _bodySize, color: OmColors.fg1, height: _bodyHeight);
 
 /// The editor page: a scroll view holding [header], the save [errorMessage]
 /// and [body], centred at reading width, with [overlays] stacked on top.
