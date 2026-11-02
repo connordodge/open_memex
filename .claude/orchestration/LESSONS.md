@@ -86,3 +86,15 @@ Flutter only) added the lessons below.
   How: a seam WI's verify test author pins the stub's frozen contract and both arms of each new
   predicate. `parentUsesSize: true` mutants are often equivalent (a later layout() or cached
   intrinsics decide it): prove it with a test that kills the sibling site, then exempt (#217).
+
+Run 20261102-221 (#221 heading levels: 1 ticket, 2 WIs, 2 PRs; review on, mutation on, Flutter only)
+added the lessons below.
+
+- **Measure editor line metrics in a real TextField with the theme's even leading.**
+  Why: Spec #222 R5a: an 11 px H4–H6 run with height 22.95/11 lays its line out about 1 px taller than
+  the 22.95 strut under even leading. The old line-metrics test built spans with proportional leading
+  and couldn't see it. #223 fixed it with the body ratio (22.95/13.5) and pumped-field tests.
+  How to apply: any run smaller than the 13.5 body font keeps the body height ratio, and its test
+  pumps a field with the controller strut and compares against plain body lines.
+- **Reuse the staging worktree instead of removing it.** The last macOS build leaves `app/macos`
+  dirty, and `git worktree remove` refuses (run 20261102-221). How to apply: adapter Release step 3.
