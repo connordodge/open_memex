@@ -16,12 +16,17 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderEditable;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/markdown_lines.dart';
+import 'package:open_memex_app/src/editor/row_geometry.dart';
+import 'package:open_memex_app/src/theme/app_theme.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/theme/typography.dart';
 import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
+import 'package:open_memex_app/src/widgets/editor/live_preview_styles.dart';
+import 'package:open_memex_app/src/widgets/editor/text_segment.dart';
 
 import '../support/font_fetch_hold.dart';
 import '../support/markdown_fixtures.dart';
@@ -344,6 +349,104 @@ void _expectLineHeights(
   }
 }
 
+// ------------------------------------------------------------ WI #223 helpers
+
+/// The new heading font size per level (WI #223, design A + D).
+const List<(int, double)> _wi223Sizes = [
+  (1, 26),
+  (2, 19),
+  (3, 15),
+  (4, 11),
+  (5, 11),
+  (6, 11),
+];
+
+/// The heading colour per level (WI #223, design A + D).
+const List<(int, Color)> _wi223Colours = [
+  (1, OmColors.heading1),
+  (2, OmColors.fg0),
+  (3, OmColors.heading3),
+  (4, OmColors.fg2),
+  (5, OmColors.fg2),
+  (6, OmColors.fg2),
+];
+
+/// A laid-out field line's tolerance: the field lays these lines out to
+/// within a thousandth of a pixel, and the R5a trap adds about 0.6 px.
+const double _wi223Tolerance = 0.05;
+
+/// The two base styles heading text is checked over: the body base (fg0)
+/// and the same base in fg1 (the card base, and the body after #224).
+List<TextStyle> _wi223Bases() => [
+  _base(),
+  _base().copyWith(color: OmColors.fg1),
+];
+
+/// The name of [base]'s colour in a failure reason.
+String _wi223BaseName(TextStyle base) =>
+    base.color == OmColors.fg1 ? 'fg1' : 'fg0';
+
+/// Every code unit of [r] is shown heading text: JetBrains Mono at [size]
+/// in the [weight] face and [colour], [fontStyle] (upright by default), no
+/// letter spacing, undecorated, and the range lays out at its normal width.
+void _wi223ExpectHeadingText(
+  TextSpan span,
+  String text,
+  (int, int) r, {
+  required double size,
+  required FontWeight weight,
+  required Color colour,
+  required String why,
+  FontStyle fontStyle = FontStyle.normal,
+}) {
+  final face = OmType.mono(weight: weight);
+  _eachStyle(span, text, r, (s, unit) {
+    final at = '$why: $unit';
+    expect(s.fontSize, size, reason: '$at size');
+    expect(_weight(s), weight, reason: '$at weight');
+    expect(s.fontFamily, startsWith('JetBrainsMono'), reason: '$at mono');
+    expect(s.fontFamily, face.fontFamily, reason: '$at the $weight face');
+    expect(s.color, colour, reason: '$at colour');
+    expect(_fontStyle(s), fontStyle, reason: '$at font style');
+    expect(s.letterSpacing ?? 0, 0, reason: '$at letter spacing');
+    expect(_decorated(s), isFalse, reason: '$at undecorated');
+  });
+  final chars = text.substring(r.$1, r.$2);
+  expect(
+    _width(span, r.$1, r.$2),
+    closeTo(_normalWidth(chars, size), 0.01),
+    reason: '$why: "$chars" visible at its normal width',
+  );
+}
+
+/// Pumps [c] in a field configured as `TextSegmentField` configures a live
+/// preview field: the app theme (its Material 3 text style gives the field
+/// even leading), the editor body style and the controller's own strut.
+/// Returns the field's render object.
+Future<RenderEditable> _wi223PumpEditorField(
+  WidgetTester tester,
+  LivePreviewController c,
+) async {
+  await tester.pumpWidget(
+    MaterialApp(
+      theme: buildOmTheme(),
+      home: Scaffold(
+        body: SizedBox(
+          width: 600,
+          child: TextField(
+            key: const Key('wi223-field'),
+            controller: c,
+            maxLines: null,
+            style: editorBodyStyle(),
+            strutStyle: c.strutStyle,
+          ),
+        ),
+      ),
+    ),
+  );
+  return wi159EditableIn(tester, find.byKey(const Key('wi223-field')));
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   holdFontFetches();
@@ -633,9 +736,10 @@ void main() {
           ),
         );
         final span = buildLivePreviewSpan(text, style: _base(), selection: sel);
-        // A heading line (not item text), its markers revealed at its size.
-        _expectMarker(span, text, _range(text, '# '), size: 20);
-        _expectMarker(span, text, _range(text, '**'), size: 20);
+        // A heading line (not item text), its markers revealed at its size
+        // (WI #223: H1 26 px, heading1).
+        _expectMarker(span, text, _range(text, '# '), size: 26);
+        _expectMarker(span, text, _range(text, '**'), size: 26);
         _eachStyle(span, text, _range(text, 'b'), (s, why) {
           expect(s.fontWeight, FontWeight.w700, reason: why);
           expect(_fontStyle(s), FontStyle.normal, reason: '$why not quote');
@@ -644,7 +748,7 @@ void main() {
             isFalse,
             reason: '$why not done',
           );
-          expect(s.color, OmColors.fg0, reason: why);
+          expect(s.color, OmColors.heading1, reason: why);
         });
         // Frontmatter at the segment start: plain, not a hidden rule.
         _expectPlainRange(span, text, _range(text, '---'));
@@ -802,60 +906,437 @@ void main() {
     });
   });
 
-  group('headings (AC4)', () {
+  // WI #223 (Spec #222, ticket #221): heading levels in design A + D. Shown
+  // heading text is JetBrains Mono H1 26 w700 heading1, H2 19 w700 fg0, H3
+  // 15 w700 heading3, H4 to H6 11 w500 fg2; markers stay fg2 (fg1 selected)
+  // regular at the line size; line heights stay 40 / 34 / 28.5 / 22.95.
+  // Every style is checked over two bases (the fg0 body of today and the fg1
+  // body of #224 and the cards), so a heading colour must be the heading's
+  // own, never one inherited from the base.
+  group('heading levels design A and D (WI 223)', () {
+    test('OmColors heading1 is FFFFFFFF and heading3 is B8B5AE', () {
+      expect(OmColors.heading1.toARGB32(), 0xFFFFFFFF, reason: 'heading1');
+      expect(OmColors.heading3.toARGB32(), 0xFFB8B5AE, reason: 'heading3');
+    });
+
     test(
-      'heading text renders mono w700 at 20 17 15 and 13.5 with the hash marker and space hidden off the caret line',
+      'headingFontSize returns 26 19 15 for levels one to three and 11 for levels four to six',
       () {
-        const text =
-            '# One\n## Two\n### Three\n#### Four\n##### Five\n###### Six\n'
-            'body';
-        const sizes = {
-          'One': 20.0,
-          'Two': 17.0,
-          'Three': 15.0,
-          'Four': 13.5,
-          'Five': 13.5,
-          'Six': 13.5,
-        };
-        void expectHeadings(TextSpan span, {String? revealed}) {
-          for (final MapEntry(key: word, value: size) in sizes.entries) {
-            final w = _range(text, word);
-            final lineStart = text.lastIndexOf('\n', w.$1) + 1;
-            _eachStyle(span, text, w, (s, why) {
-              expect(s.fontSize, size, reason: '$why size');
-              expect(s.fontWeight, FontWeight.w700, reason: '$why weight');
-              expect(s.color, OmColors.fg0, reason: '$why colour');
-              expect(
-                s.fontFamily,
-                startsWith('JetBrainsMono'),
-                reason: '$why mono',
+        for (final (level, size) in [
+          (1, 26.0),
+          (2, 19.0),
+          (3, 15.0),
+          (4, 11.0),
+          (5, 11.0),
+          (6, 11.0),
+        ]) {
+          expect(headingFontSize(level), size, reason: 'H$level');
+        }
+      },
+    );
+
+    for (final (name, levels, size, weight, colour) in [
+      (
+        'H1 shown text renders mono 26 w700 heading1 upright with no letter spacing hidden and revealed',
+        [1],
+        26.0,
+        FontWeight.w700,
+        OmColors.heading1,
+      ),
+      (
+        'H2 shown text renders mono 19 w700 fg0 upright with no letter spacing hidden and revealed',
+        [2],
+        19.0,
+        FontWeight.w700,
+        OmColors.fg0,
+      ),
+      (
+        'H3 shown text renders mono 15 w700 heading3 upright with no letter spacing hidden and revealed',
+        [3],
+        15.0,
+        FontWeight.w700,
+        OmColors.heading3,
+      ),
+      (
+        'H4 H5 and H6 shown text renders mono 11 w500 fg2 in its written case upright with no letter spacing hidden and revealed',
+        [4, 5, 6],
+        11.0,
+        FontWeight.w500,
+        OmColors.fg2,
+      ),
+    ]) {
+      test(name, () {
+        for (final level in levels) {
+          final text = '${'#' * level} Mixed Case title\nbody';
+          final title = _range(text, 'Mixed Case title');
+          final marker = (0, title.$1);
+          for (final base in _wi223Bases()) {
+            for (final (state, selection, forceHidden) in [
+              ('hidden', _caret(text.length), false),
+              ('revealed', _caret(title.$1 + 2), false),
+              ('forced hidden', _caret(title.$1 + 2), true),
+            ]) {
+              final why =
+                  'H$level $state over the ${_wi223BaseName(base)} base';
+              final span = buildLivePreviewSpan(
+                text,
+                style: base,
+                selection: selection,
+                forceHidden: forceHidden,
               );
-              expect(_fontStyle(s), FontStyle.normal, reason: '$why upright');
-            });
-            expect(
-              _width(span, w.$1, w.$2),
-              closeTo(_normalWidth(word, size), 0.01),
-              reason: '$word visible',
-            );
-            if (word == revealed) {
-              // `## ` in fg2, regular, at the heading's own size.
-              _expectMarker(span, text, (lineStart, w.$1), size: size);
-            } else {
-              _expectHidden(span, text, lineStart, w.$1);
+              _wi223ExpectHeadingText(
+                span,
+                text,
+                title,
+                size: size,
+                weight: weight,
+                colour: colour,
+                why: why,
+              );
+              if (state == 'revealed') {
+                _expectMarker(span, text, marker, size: size);
+              } else {
+                _expectHiddenRange(span, text, marker);
+              }
+              // The body line below keeps the base style.
+              _expectPlainRange(
+                span,
+                text,
+                _range(text, 'body'),
+                color: base.color!,
+              );
+              // No text transform: the source stays byte-exact.
+              _expectExactPlainText(span, text, why);
             }
           }
         }
+      });
+    }
 
-        expectHeadings(_build(text, selection: _caret(text.length)));
-        expectHeadings(
-          _build(text, selection: _caret(text.indexOf('Two'))),
-          revealed: 'Two',
+    test(
+      'revealed heading markers render fg2 or fg1 while selected in regular upright at the line font size',
+      () {
+        for (final (level, size) in _wi223Sizes) {
+          final text = '${'#' * level} T **b** x\nbody';
+          final marker = (0, level + 1);
+          final why = 'H$level';
+          // The caret on the line reveals every marker in fg2.
+          var span = _build(text, selection: _caret(text.indexOf('T')));
+          _expectMarker(span, text, marker, size: size);
+          _expectMarker(span, text, _range(text, '**'), size: size);
+          _expectMarker(span, text, _range(text, '**', nth: 1), size: size);
+          // A selection over the hashes and space turns them fg1; the bold
+          // markers outside it stay fg2.
+          span = _build(
+            text,
+            selection: TextSelection(baseOffset: 0, extentOffset: level + 1),
+          );
+          _expectMarker(span, text, marker, size: size, color: OmColors.fg1);
+          _expectMarker(span, text, _range(text, '**'), size: size);
+          // Over the fg1 base the markers keep their own colours.
+          span = buildLivePreviewSpan(
+            text,
+            style: _wi223Bases().last,
+            selection: _caret(text.indexOf('T')),
+          );
+          _expectMarker(span, text, marker, size: size);
+          expect(
+            _styleAt(span, text.indexOf('T')).fontSize,
+            size,
+            reason: '$why text and markers share the line size',
+          );
+        }
+      },
+    );
+
+    test(
+      'inline tokens inside a heading keep their own colour and the heading colour fills the other runs',
+      () {
+        for (final (level, colour) in _wi223Colours) {
+          final text =
+              '${'#' * level} Lead `code` ~~old~~ [site](u) [[Real]] '
+              '[[Ghost]] tail\nbody';
+          final lineEnd = text.indexOf('\n');
+          for (final base in _wi223Bases()) {
+            final why = 'H$level over the ${_wi223BaseName(base)} base';
+            final span = buildLivePreviewSpan(
+              text,
+              style: base,
+              selection: _caret(text.length),
+              isResolved: (t) => t == 'Real',
+            );
+            Color? at(String needle) =>
+                _styleAt(span, _range(text, needle).$1).color;
+            expect(at('Lead'), colour, reason: '$why plain run');
+            expect(at('tail'), colour, reason: '$why plain run');
+            expect(at('code'), OmColors.fg1, reason: '$why inline code');
+            expect(at('old'), OmColors.fg2, reason: '$why strike');
+            expect(at('site'), OmColors.info, reason: '$why link');
+            expect(at('Real'), OmColors.accent, reason: '$why wikilink');
+            expect(at('Ghost'), OmColors.fg2, reason: '$why ghost');
+          }
+          // Selected: link and ghost text turn fg1; the heading colour and
+          // the other tokens stay.
+          final span = buildLivePreviewSpan(
+            text,
+            style: _base(),
+            selection: TextSelection(baseOffset: 0, extentOffset: lineEnd),
+            isResolved: (t) => t == 'Real',
+          );
+          Color? at(String needle) =>
+              _styleAt(span, _range(text, needle).$1).color;
+          final why = 'H$level selected';
+          expect(at('Lead'), colour, reason: '$why plain run');
+          expect(at('site'), OmColors.fg1, reason: '$why link');
+          expect(at('Ghost'), OmColors.fg1, reason: '$why ghost');
+          expect(at('Real'), OmColors.accent, reason: '$why wikilink');
+          expect(at('code'), OmColors.fg1, reason: '$why inline code');
+          expect(at('old'), OmColors.fg2, reason: '$why strike');
+        }
+      },
+    );
+
+    test(
+      'livePreviewTextStyle gives a heading run its colour only after token ink code line quote and done',
+      () {
+        TextStyle? style({
+          int level = 1,
+          LivePreviewInk ink = LivePreviewInk.none,
+          bool codeLine = false,
+          bool quote = false,
+          bool done = false,
+          bool selected = false,
+        }) => livePreviewTextStyle(
+          headingLevel: level,
+          codeLine: codeLine,
+          bold: false,
+          italic: false,
+          strike: false,
+          link: false,
+          ghost: false,
+          hover: false,
+          ink: ink,
+          quote: quote,
+          done: done,
+          selected: selected,
         );
-        expectHeadings(
-          _build(text, selection: _caret(text.indexOf('Six'))),
-          revealed: 'Six',
-        );
-        expectHeadings(_build(text, selection: _caret(0), forceHidden: true));
+
+        for (final (level, colour) in _wi223Colours) {
+          final why = 'H$level';
+          expect(style(level: level)?.color, colour, reason: why);
+          expect(
+            style(level: level, selected: true)?.color,
+            colour,
+            reason: '$why selected plain heading text keeps its colour',
+          );
+          for (final (ink, selected, inked) in [
+            (LivePreviewInk.code, false, OmColors.fg1),
+            (LivePreviewInk.strike, false, OmColors.fg2),
+            (LivePreviewInk.link, false, OmColors.info),
+            (LivePreviewInk.link, true, OmColors.fg1),
+            (LivePreviewInk.wikilink, false, OmColors.accent),
+            (LivePreviewInk.ghost, false, OmColors.fg2),
+            (LivePreviewInk.ghost, true, OmColors.fg1),
+          ]) {
+            expect(
+              style(level: level, ink: ink, selected: selected)?.color,
+              inked,
+              reason: '$why $ink selected $selected beats the heading',
+            );
+          }
+          expect(
+            style(level: level, codeLine: true)?.color,
+            OmColors.fg1,
+            reason: '$why code line beats the heading',
+          );
+          expect(
+            style(level: level, quote: true)?.color,
+            OmColors.fg1,
+            reason: '$why quote beats the heading',
+          );
+          expect(
+            style(level: level, done: true)?.color,
+            OmColors.fg2,
+            reason: '$why done beats the heading',
+          );
+          expect(
+            style(level: level, done: true, selected: true)?.color,
+            OmColors.fg1,
+            reason: '$why selected done beats the heading',
+          );
+        }
+        // Not a heading: plain text inherits the base (no style at all).
+        expect(style(level: 0), isNull, reason: 'body text inherits');
+      },
+    );
+
+    test(
+      'bold inside an H4 to H6 heading renders w700 while the rest of the line is w500',
+      () {
+        for (final level in [4, 5, 6]) {
+          final text = '${'#' * level} plain **strong** *slant* end\nbody';
+          for (final base in _wi223Bases()) {
+            final span = buildLivePreviewSpan(
+              text,
+              style: base,
+              selection: _caret(text.length),
+            );
+            final why = 'H$level over the ${_wi223BaseName(base)} base';
+            _wi223ExpectHeadingText(
+              span,
+              text,
+              _range(text, 'strong'),
+              size: 11,
+              weight: FontWeight.w700,
+              colour: OmColors.fg2,
+              why: '$why bold',
+            );
+            for (final rest in ['plain ', ' end']) {
+              _wi223ExpectHeadingText(
+                span,
+                text,
+                _range(text, rest),
+                size: 11,
+                weight: FontWeight.w500,
+                colour: OmColors.fg2,
+                why: '$why "$rest"',
+              );
+            }
+            _wi223ExpectHeadingText(
+              span,
+              text,
+              _range(text, 'slant'),
+              size: 11,
+              weight: FontWeight.w500,
+              colour: OmColors.fg2,
+              fontStyle: FontStyle.italic,
+              why: '$why italic',
+            );
+          }
+        }
+        // H1 to H3 are w700 throughout, bold or not.
+        for (final (level, size) in _wi223Sizes.take(3)) {
+          final text = '${'#' * level} plain **strong**';
+          final span = _build(text, selection: _caret(0), forceHidden: true);
+          for (final run in ['plain ', 'strong']) {
+            _eachStyle(span, text, _range(text, run), (s, why) {
+              expect(_weight(s), FontWeight.w700, reason: 'H$level $why');
+              expect(s.fontSize, size, reason: 'H$level $why');
+            });
+          }
+        }
+      },
+    );
+
+    testWidgets(
+      'each heading line lays out at its line height in a field with even leading and the controller strut hidden and revealed',
+      (tester) async {
+        for (final (level, size) in _wi223Sizes) {
+          final text = '${'#' * level} Title\nbody';
+          final title = _range(text, 'Title');
+          for (final revealed in [false, true]) {
+            final why = 'H$level ${revealed ? 'revealed' : 'hidden'}';
+            final c = _controller(
+              text,
+              selection: _caret(revealed ? title.$1 + 2 : text.length),
+            );
+            final editable = await _wi223PumpEditorField(tester, c);
+            final span = editable.text! as TextSpan;
+            // The premise: the field lays text out with even leading and
+            // the heading at its new size, its markers as asked.
+            expect(
+              span.style?.leadingDistribution,
+              TextLeadingDistribution.even,
+              reason: '$why: the field style has even leading',
+            );
+            expect(
+              _styleAt(span, title.$1).fontSize,
+              size,
+              reason: '$why: heading text size',
+            );
+            expect(
+              _styleAt(span, 0).fontSize,
+              revealed ? size : 0,
+              reason: '$why: hash marker',
+            );
+            final lines = RenderEditableLineBoxes(editable).lines;
+            final heights = [for (final l in lines) l.bottom - l.top];
+            expect(heights, hasLength(2), reason: '$why: two lines');
+            expect(
+              heights.first,
+              closeTo(headingLineHeight(level), _wi223Tolerance),
+              reason: '$why: heading line of $heights',
+            );
+            expect(
+              heights.last,
+              closeTo(_bodyLine, _wi223Tolerance),
+              reason: '$why: body line of $heights',
+            );
+            // Only the line heights: the engine snaps each line bottom to
+            // a whole pixel, so line tops and bottoms are not sums of them.
+            expect(
+              lines.last.top,
+              greaterThanOrEqualTo(lines.first.bottom),
+              reason: '$why: the body line sits below the heading line',
+            );
+          }
+        }
+      },
+    );
+
+    testWidgets(
+      'an H4 to H6 line followed by a body line totals two body lines in a field with even leading',
+      (tester) async {
+        // The reference: two plain body lines in the same field.
+        final plain = _controller('Small heading\nbody line');
+        final body = RenderEditableLineBoxes(
+          await _wi223PumpEditorField(tester, plain),
+        ).lines;
+        expect(body, hasLength(2), reason: 'two body lines');
+        for (final level in [4, 5, 6]) {
+          for (final text in [
+            '${'#' * level} Small heading\nbody line',
+            '${'#' * level} Small **bold** `code` [[Real]]\nbody line',
+          ]) {
+            for (final revealed in [false, true]) {
+              final why = 'H$level ${revealed ? 'revealed' : 'hidden'} "$text"';
+              final c = _controller(
+                text,
+                selection: _caret(revealed ? level + 3 : text.length),
+              );
+              final editable = await _wi223PumpEditorField(tester, c);
+              final span = editable.text! as TextSpan;
+              expect(
+                _styleAt(span, text.indexOf('Small')).fontSize,
+                11,
+                reason: '$why: H4 to H6 text is 11 px',
+              );
+              final lines = RenderEditableLineBoxes(editable).lines;
+              expect(lines, hasLength(2), reason: '$why: two lines');
+              // Laid out exactly as two body lines of the same field.
+              for (final (i, line) in lines.indexed) {
+                expect(
+                  line.top,
+                  closeTo(body[i].top, _wi223Tolerance),
+                  reason: '$why: line $i top as two body lines',
+                );
+                expect(
+                  line.bottom,
+                  closeTo(body[i].bottom, _wi223Tolerance),
+                  reason: '$why: line $i bottom as two body lines',
+                );
+              }
+              final heights = [for (final l in lines) l.bottom - l.top];
+              for (final (i, h) in heights.indexed) {
+                expect(
+                  h,
+                  closeTo(_bodyLine, _wi223Tolerance),
+                  reason: '$why: 22.95 + 22.95, line $i of $heights',
+                );
+              }
+            }
+          }
+        }
       },
     );
   });
@@ -1416,7 +1897,7 @@ void main() {
       _expectPlainRange(span, text, _range(text, '# not heading'));
       _expectPlainRange(span, text, _range(text, '---', nth: 1));
       _eachStyle(span, text, _range(text, 'Body'), (s, why) {
-        expect(s.fontSize, 20, reason: why);
+        expect(s.fontSize, 26, reason: why);
         expect(s.fontWeight, FontWeight.w700, reason: why);
       });
       // Off the caret line too.

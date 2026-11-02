@@ -21,6 +21,14 @@ class OmColors {
   static const fg3 = Color(0xFF6B6C68); // placeholder / disabled-on
   static const fg4 = Color(0xFF3F433F); // hairlines on dark
 
+  // Heading text (#221, design A + D). Skeleton (WI #223 red commit): a
+  // transparent placeholder until the implementer sets the real value.
+  /// H1 shown text.
+  static const heading1 = Color(0x00000000);
+
+  /// H3 shown text.
+  static const heading3 = Color(0x00000000);
+
   // Borders & strokes (the spec uses opacity over a near-white; we
   // approximate with composited grays so they read on every surface).
   static final line1 = const Color(0xFFFFFCF0).withAlpha(15);

@@ -28,9 +28,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:open_memex_app/src/db.dart';
 import 'package:open_memex_app/src/editor/editor_rows.dart';
+import 'package:open_memex_app/src/editor/row_geometry.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/theme/app_theme.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
+import 'package:open_memex_app/src/theme/typography.dart';
 import 'package:open_memex_app/src/widgets/editor/card_rows.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
 import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
@@ -658,8 +660,10 @@ void main() {
         );
 
         final title = _wi172Leaf(tester, prose, 'Title');
-        expect(title.style.fontSize, 20, reason: 'H1 size');
+        // WI #223 (design A + D): H1 is 26 px w700 heading1.
+        expect(title.style.fontSize, 26, reason: 'H1 size');
         expect(title.style.fontWeight, FontWeight.w700, reason: 'H1 bold');
+        expect(title.style.color, OmColors.heading1, reason: 'H1 colour');
         final plain = _wi172Leaf(tester, prose, 'Offsets stayed ');
         expect(plain.style.color, OmColors.fg1, reason: 'card base text fg1');
         expect(plain.style.fontSize, 13.5);
@@ -728,6 +732,86 @@ void main() {
             [for (final l in _wi172Leaves(rendered.text)) (l.text, l.own)],
             [for (final l in _wi172Leaves(expected)) (l.text, l.own)],
             reason: 'row $r ($rowText) renders B1 spans, markers hidden',
+          );
+        }
+      },
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // WI #223 (Spec #222 R10, R5a): a card heading row renders design A + D's
+  // heading styles over the card's fg1 base and lays out at the heading line
+  // height under the card's even leading, as the editor body row does.
+  // -------------------------------------------------------------------------
+  group('heading rows design A and D (WI 223)', () {
+    testWidgets(
+      'a card heading row renders the editor heading size weight and colour and lays out at its heading line height',
+      (tester) async {
+        for (final (level, size, weight, colour) in [
+          (1, 26.0, FontWeight.w700, OmColors.heading1),
+          (2, 19.0, FontWeight.w700, OmColors.fg0),
+          (3, 15.0, FontWeight.w700, OmColors.heading3),
+          (4, 11.0, FontWeight.w500, OmColors.fg2),
+          (5, 11.0, FontWeight.w500, OmColors.fg2),
+          (6, 11.0, FontWeight.w500, OmColors.fg2),
+        ]) {
+          final why = 'H$level';
+          final text = '${'#' * level} Card title';
+          await _wi172PumpRows(tester, text);
+          final row = _wi172RowText(_wi172Rows, 0);
+          expect(_wi172Visible(tester, row), 'Card title', reason: why);
+          expect(
+            tester.widget<RichText>(row).text.toPlainText(),
+            text,
+            reason: '$why: byte-exact, no text transform',
+          );
+          final title = _wi172Leaf(tester, row, 'Card title').style;
+          expect(title.fontSize, size, reason: '$why size');
+          expect(title.fontWeight, weight, reason: '$why weight');
+          expect(
+            title.fontFamily,
+            OmType.mono(weight: weight).fontFamily,
+            reason: '$why mono face',
+          );
+          expect(title.color, colour, reason: '$why colour over the fg1 base');
+          expect(
+            title.fontStyle ?? FontStyle.normal,
+            FontStyle.normal,
+            reason: '$why upright',
+          );
+          expect(title.letterSpacing ?? 0, 0, reason: '$why letter spacing');
+
+          // The editor builds the same style for the same run.
+          final editor = buildLivePreviewSpan(text, forceHidden: true);
+          final editorTitle = _wi172Leaves(
+            editor,
+          ).where((l) => l.text == 'Card title').single.own;
+          expect(title.fontSize, editorTitle?.fontSize, reason: why);
+          expect(title.fontWeight, editorTitle?.fontWeight, reason: why);
+          expect(title.color, editorTitle?.color, reason: why);
+
+          // Laid out under the card's even leading and the body strut.
+          final paragraph = tester.renderObject<RenderParagraph>(row);
+          final lines = RenderParagraphLineBoxes(paragraph).lines;
+          expect(lines, hasLength(1), reason: '$why: one line');
+          expect(
+            lines.single.bottom - lines.single.top,
+            closeTo(headingLineHeight(level), 0.05),
+            reason: '$why: card line height',
+          );
+          // (The line box, not the paragraph size: a laid-out text height
+          // rounds up to a whole pixel.)
+
+          // The editor body row for the same text is as tall.
+          await _wi172PumpBody(tester, text);
+          final body = RenderEditableLineBoxes(
+            _wi172BodyEditable(tester, 0),
+          ).lines;
+          expect(body, hasLength(1), reason: '$why: one body line');
+          expect(
+            body.single.bottom - body.single.top,
+            closeTo(headingLineHeight(level), 0.05),
+            reason: '$why: editor body row line height',
           );
         }
       },
