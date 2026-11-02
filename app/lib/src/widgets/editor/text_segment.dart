@@ -181,6 +181,7 @@ class TextSegmentField extends StatefulWidget {
     this.onTopicLinked,
     this.onCreateError,
     this.selectionHeightStyle,
+    this.paintsSelection = true,
   });
 
   final TextEditingController controller;
@@ -204,6 +205,11 @@ class TextSegmentField extends StatefulWidget {
   /// How tall the field paints its selection boxes; null keeps the
   /// platform default.
   final ui.BoxHeightStyle? selectionHeightStyle;
+
+  /// Whether the field paints its own selection fill. False in an editor
+  /// row, which paints the segment selection as one block behind the field
+  /// (`EditorRow`).
+  final bool paintsSelection;
 
   @override
   State<TextSegmentField> createState() => _TextSegmentFieldState();
@@ -302,9 +308,11 @@ class _TextSegmentFieldState extends State<TextSegmentField> {
   Widget build(BuildContext context) {
     return Stack(
       children: [
-        // The editor's selection fill (D13).
+        // The editor's selection fill (D13); an editor row paints its own.
         DefaultSelectionStyle.merge(
-          selectionColor: OmColors.selection,
+          selectionColor: widget.paintsSelection
+              ? OmColors.selection
+              : const Color(0x00000000),
           child: TextField(
             key: _fieldKey,
             controller: widget.controller,

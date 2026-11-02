@@ -747,9 +747,14 @@ void main() {
         ).select(const TextSelection(baseOffset: 0, extentOffset: 5));
         await tester.pump();
 
+        // TEST-CHANGE (block selection): the editor row paints the fill
+        // behind its field; the field paints none of its own.
         final field = _wi159Field(tester, 0);
-        expect(field.selectionColor, OmColors.selection);
-        expect(field, paints..rect(color: OmColors.selection));
+        expect(field.selectionColor?.a ?? 0, 0);
+        expect(
+          tester.renderObject(find.byKey(const ValueKey('editor-row-0-0'))),
+          paints..rect(color: OmColors.selection),
+        );
       },
       variant: macOnly,
     );

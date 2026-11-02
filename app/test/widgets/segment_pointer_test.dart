@@ -242,14 +242,44 @@ List<Rect> _wi170SelectionFills(WidgetTester tester, int s) {
   return [for (final r in out) root.localToGlobal(r.topLeft) & r.size];
 }
 
-/// The newline marks segment [s] paints: selection fills one body column
-/// wide and one body line tall, top to bottom.
-List<Rect> _wi170Marks(WidgetTester tester, int s) => [
-  for (final r in _wi170SelectionFills(tester, s))
-    if ((r.width - _wi170Col).abs() < 0.3 &&
-        (r.height - _wi170Line).abs() < 0.6)
-      r,
-]..sort((a, b) => a.top.compareTo(b.top));
+/// The newline marks segment [s] paints, top to bottom. A row paints each
+/// selected line as one fill (TEST-CHANGE: block selection), so a mark is
+/// the part of a line's fill past the line's last glyph (its text left on a
+/// blank line) when that part is one [column] wide: the rect from the
+/// glyph end, [column] wide, the line box's full height. Only lines
+/// [lineHeight] tall count (default: body lines).
+List<Rect> _wi170Marks(
+  WidgetTester tester,
+  int s, {
+  double column = _wi170Col,
+  double lineHeight = _wi170Line,
+}) {
+  final fills = _wi170SelectionFills(tester, s);
+  final out = <Rect>[];
+  for (var r = 0; r < _wi170RowCount(s); r++) {
+    final e = _wi170Editable(tester, s, r);
+    final boxes = RenderEditableLineBoxes(e);
+    for (final line in boxes.lines) {
+      if ((line.bottom - line.top - lineHeight).abs() >= 0.6) continue;
+      final x = line.range.isCollapsed
+          ? 0.0
+          : boxes.boxesFor(line.range).last.right;
+      final mark = Rect.fromPoints(
+        e.localToGlobal(Offset(x, line.top)),
+        e.localToGlobal(Offset(x + column, line.bottom)),
+      );
+      final hit = fills.any(
+        (f) =>
+            f.center.dy >= mark.top &&
+            f.center.dy < mark.bottom &&
+            f.left <= mark.left + 0.5 &&
+            (f.right - mark.right).abs() < 0.3,
+      );
+      if (hit) out.add(mark);
+    }
+  }
+  return out..sort((a, b) => a.top.compareTo(b.top));
+}
 
 /// The global rect a newline mark should have on line [line] of row
 /// [s]-[r]: from the right end of the line's last glyph (the field's text
@@ -924,6 +954,94 @@ void main() {
     );
 
     testWidgets(
+      'a selection paints one block: touching lines, no overlapping fills, each line ending at its text',
+      (tester) async {
+        await _wi170Pump(tester, text);
+        await _wi170FocusRow(tester, 0, 1, local: 0);
+        segmentEditingAt(
+          tester,
+          0,
+        ).select(TextSelection(baseOffset: 0, extentOffset: text.length));
+        await tester.pump();
+
+        final raw = _wi170SelectionFills(tester, 0)
+          ..sort((a, b) => a.top.compareTo(b.top));
+        for (final (i, a) in raw.indexed) {
+          for (final b in raw.skip(i + 1)) {
+            final overlap = a.intersect(b);
+            expect(
+              overlap.width > 0.5 && overlap.height > 0.5,
+              isFalse,
+              reason: '$a overlaps $b: the fill would double up',
+            );
+          }
+        }
+        // An item row's marker column fill sits flush against its text
+        // fill; merged, each line is one rect.
+        final fills = <Rect>[];
+        for (final r in raw) {
+          if (fills.isNotEmpty && (fills.last.top - r.top).abs() < 0.5) {
+            expect(r.left, moreOrLessEquals(fills.last.right, epsilon: 0.5));
+            fills.last = fills.last.expandToInclude(r);
+          } else {
+            fills.add(r);
+          }
+        }
+        // `para one`, the blank line, `alpha`, `beta`, `end`.
+        expect(fills, hasLength(5), reason: '$fills');
+        for (var i = 1; i < fills.length; i++) {
+          expect(
+            fills[i].top,
+            moreOrLessEquals(fills[i - 1].bottom, epsilon: 0.5),
+            reason: 'line $i touches the line above',
+          );
+        }
+        // `end` (no newline) stops at its last glyph, well short of the
+        // field's right edge.
+        final e = _wi170Editable(tester, 0, 3);
+        final boxes = RenderEditableLineBoxes(e);
+        final glyphEnd = e
+            .localToGlobal(
+              Offset(boxes.boxesFor(boxes.lines.single.range).last.right, 0),
+            )
+            .dx;
+        expect(fills.last.right, moreOrLessEquals(glyphEnd, epsilon: 0.5));
+        expect(
+          fills.last.right,
+          lessThan(tester.getRect(_wi170FieldOf(0, 3)).right - 50),
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a selection leaves no seam above a heading line in the same row',
+      (tester) async {
+        // One prose row: a line, a blank line, an H3, an H2, an H1, a line.
+        const headed = 'Just sad\n\n### The Goal\n## Next\n# Big\nend';
+        await _wi170Pump(tester, headed);
+        await _wi170FocusRow(tester, 0, 0, local: 0);
+        segmentEditingAt(
+          tester,
+          0,
+        ).select(TextSelection(baseOffset: 0, extentOffset: headed.length));
+        await tester.pump();
+
+        final fills = _wi170SelectionFills(tester, 0)
+          ..sort((a, b) => a.top.compareTo(b.top));
+        expect(fills, hasLength(6), reason: '$fills');
+        for (var i = 1; i < fills.length; i++) {
+          expect(
+            fills[i].top,
+            moreOrLessEquals(fills[i - 1].bottom, epsilon: 0.01),
+            reason: 'line $i touches the line above: $fills',
+          );
+        }
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
       'a selection that stops at a line end or a caret paints no newline mark',
       (tester) async {
         await _wi170Pump(tester, text);
@@ -958,9 +1076,15 @@ void main() {
 
         for (final (r, slice) in [(0, (2, 8)), (1, (0, 5)), (2, (0, 3))]) {
           final e = _wi170Editable(tester, 0, r);
-          final width = RenderEditableLineBoxes(
-            e,
-          ).boxesFor(TextRange(start: slice.$1, end: slice.$2)).single.width;
+          // TEST-CHANGE (block selection): one fill per line, the line
+          // box's full height, reaching one column past the slice where the
+          // row's newline is selected (rows 0 and 1).
+          final width =
+              RenderEditableLineBoxes(e)
+                  .boxesFor(TextRange(start: slice.$1, end: slice.$2))
+                  .single
+                  .width +
+              (r < 2 ? _wi170Col : 0);
           expect(
             tester.renderObject(_wi170Row(0, r)),
             paints..something((method, args) {
@@ -968,7 +1092,7 @@ void main() {
               final rect = args[0] as Rect;
               final paint = args[1] as Paint;
               return _wi170IsSelection(paint.color) &&
-                  rect.height < 13.5 + 1 &&
+                  rect.height > _wi170Line - 0.6 &&
                   (rect.width - width).abs() < 0.5;
             }),
             reason: 'row $r paints its slice, focused or not',
@@ -1499,29 +1623,35 @@ void main() {
       (tester) async {
         await _wi170Pump(tester, _wi170List);
         await _wi170FocusRow(tester, 0, 0, local: 2);
-        final marks = tester.allRenderObjects
-            .where((o) => o.runtimeType.toString() == '_RenderNewlineMarks')
-            .single;
-        expect(marks.debugNeedsPaint, isFalse);
+        // Each row paints its part of the selection, marks included
+        // (TEST-CHANGE: block selection; was one segment mark layer).
+        final rows = [
+          for (var r = 0; r < _wi170RowCount(0); r++)
+            tester.renderObject(_wi170Row(0, r)),
+        ];
+        expect(rows.map((o) => o.runtimeType.toString()).toSet(), {
+          '_RenderRowSelection',
+        });
+        expect(rows.any((o) => o.debugNeedsPaint), isFalse);
 
         segmentEditingAt(
           tester,
           0,
         ).select(const TextSelection(baseOffset: 2, extentOffset: 22));
         expect(
-          marks.debugNeedsPaint,
+          rows.every((o) => o.debugNeedsPaint),
           isTrue,
           reason: 'a new selection moves the marks',
         );
         await tester.pump();
-        expect(marks.debugNeedsPaint, isFalse);
+        expect(rows.any((o) => o.debugNeedsPaint), isFalse);
 
         // Unfocusing the segment closes its reveal gate.
         FocusManager.instance.primaryFocus!.unfocus();
         await tester.idle();
         expect(segmentEditingAt(tester, 0).focusedRow, isNull);
         expect(
-          marks.debugNeedsPaint,
+          rows.any((o) => o.debugNeedsPaint),
           isTrue,
           reason: 'a closed reveal gate moves line ends',
         );
@@ -1542,10 +1672,7 @@ void main() {
         ).select(const TextSelection(baseOffset: 0, extentOffset: 11));
         await tester.pump();
 
-        final h2 = [
-          for (final r in _wi170SelectionFills(tester, 0))
-            if ((r.width - 10.2).abs() < 0.3) r,
-        ];
+        final h2 = _wi170Marks(tester, 0, column: 10.2, lineHeight: 34);
         expect(h2, hasLength(1), reason: '${_wi170SelectionFills(tester, 0)}');
         expect(h2.single.height, moreOrLessEquals(34, epsilon: 0.5));
         expect(_wi170Marks(tester, 0), isEmpty, reason: 'no body-size mark');
