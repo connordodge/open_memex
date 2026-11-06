@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use chrono::NaiveDate;
 use serde_json::{json, Map, Value};
 
+use crate::blocks::Block;
 use crate::caller::Caller;
 use crate::daily;
 use crate::embedder::Embedder;
@@ -101,6 +102,7 @@ pub fn add_excerpt_with_hook(
         topic_note_id,
         caller,
         embedder,
+        AfterCommit::Fail,
         before_write,
         |body| {
             let held = held_ords(body, date, &blocks);
@@ -171,6 +173,7 @@ pub fn remove_excerpt_with_hook(
         topic_note_id,
         caller,
         embedder,
+        AfterCommit::Fail,
         before_write,
         |body| {
             let matched: Vec<TransclusionToken> = parse_transclusions(body)
@@ -210,6 +213,10 @@ pub struct MovedBlock {
 /// (unknown topic, no daily note for `date`, or no token of `date` covers the
 /// block), `BlockNotFound` (not a stored block of that day), and
 /// `VersionConflict` (every retry raced).
+///
+/// An error means the block was not removed. Once the topic's save commits
+/// the call succeeds: a failure of its reindex or of the footer chip removal
+/// is logged as a warning and not returned.
 pub fn remove_excerpt_block(
     vault: &mut Vault,
     topic_note_id: &NoteId,
@@ -247,6 +254,7 @@ pub fn remove_excerpt_block_with_hook(
         topic_note_id,
         caller,
         embedder,
+        AfterCommit::Warn,
         before_write,
         |body| {
             without_block(body, date, located.ord, &located.blocks)
@@ -254,7 +262,8 @@ pub fn remove_excerpt_block_with_hook(
                 .ok_or_else(|| block_not_held(topic_note_id, date, block_id))
         },
     )?;
-    remove_chip_if_day_gone(vault, &topic, date, located.day_date, embedder)?;
+    let chip = remove_chip_if_day_gone(vault, &topic, date, located.day_date, embedder);
+    AfterCommit::Warn.settle(&topic.id, "footer chip removal", chip)?;
     Ok(topic)
 }
 
@@ -263,6 +272,9 @@ pub fn remove_excerpt_block_with_hook(
 /// [`remove_excerpt_block`], with their errors and write rules. A target
 /// already holding the block is not written, and the removal still runs. A
 /// failing removal leaves the block in both topic notes and returns the error.
+/// A reindex or footer failure after the source's save has committed is not a
+/// failing removal: the block has moved and the call succeeds, as
+/// [`remove_excerpt_block`] says.
 ///
 /// Before any write it fails with `Io(InvalidInput)` when the two topics are
 /// the same note, and with [`remove_excerpt_block`]'s errors when the source
@@ -447,17 +459,47 @@ fn remove_chip_if_day_gone(
     Ok(())
 }
 
+/// What a failure after a topic note's save has committed does to the call.
+#[derive(Clone, Copy)]
+enum AfterCommit {
+    /// It is the call's error.
+    Fail,
+    /// It is logged as a warning, for a call whose error must mean "not
+    /// applied" (`move_block`'s partial-failure rule, Spec #233 R12).
+    Warn,
+}
+
+impl AfterCommit {
+    /// Settles `result` of the post-commit `step` on the topic note `topic`.
+    fn settle<T>(self, topic: &NoteId, step: &str, result: Result<T>) -> Result<()> {
+        match (self, result) {
+            (_, Ok(_)) => Ok(()),
+            (AfterCommit::Fail, Err(e)) => Err(e),
+            (AfterCommit::Warn, Err(e)) => {
+                tracing::warn!(
+                    note_id = %topic,
+                    step,
+                    error = %e,
+                    "step failed after the topic note's save committed"
+                );
+                Ok(())
+            }
+        }
+    }
+}
+
 /// Reads the topic note, lets `edit` compute its new body (`None`: nothing
 /// to write) and saves it as `caller`, re-reading and retrying on
 /// `VersionConflict` up to [`WRITE_ATTEMPTS`] times. `before_write` runs
 /// between the read and the save of every attempt that saves. The saved note
-/// is reindexed from its stored body (D8); with nothing to write the note is
-/// returned as read.
+/// is reindexed from its stored body (D8), and `after_commit` settles a failed
+/// reindex; with nothing to write the note is returned as read.
 fn write_topic(
     vault: &mut Vault,
     topic_note_id: &NoteId,
     caller: Caller,
     embedder: Option<&dyn Embedder>,
+    after_commit: AfterCommit,
     before_write: &mut dyn FnMut(&mut Vault),
     mut edit: impl FnMut(&str) -> Result<Option<String>>,
 ) -> Result<Note> {
@@ -481,12 +523,13 @@ fn write_topic(
         );
         match saved {
             Ok(note) => {
-                indexer::reindex_note(
+                let reindexed = indexer::reindex_note(
                     vault.connection_mut(),
                     note.id.as_str(),
                     &note.content_md,
                     embedder,
-                )?;
+                );
+                after_commit.settle(&note.id, "reindex", reindexed)?;
                 return Ok(note);
             }
             Err(MemexError::VersionConflict { .. }) if attempt < WRITE_ATTEMPTS => attempt += 1,
@@ -504,14 +547,20 @@ pub(crate) struct DayBlocks {
 impl DayBlocks {
     pub(crate) fn load(vault: &Vault, day: &NoteId) -> Result<Self> {
         let (blocks, _) = daily::stored_blocks(vault.connection_ref(), day.as_str())?;
-        let rows: Vec<(String, i64)> = blocks
-            .into_iter()
-            .map(|b| (b.block_id, b.ord as i64))
-            .collect();
-        Ok(Self {
-            ids: rows.iter().map(|(id, ord)| (*ord, id.clone())).collect(),
-            ords: rows.into_iter().collect(),
-        })
+        Ok(Self::from_blocks(&blocks))
+    }
+
+    pub(crate) fn from_blocks(blocks: &[Block]) -> Self {
+        Self {
+            ids: blocks
+                .iter()
+                .map(|b| (b.ord as i64, b.block_id.clone()))
+                .collect(),
+            ords: blocks
+                .iter()
+                .map(|b| (b.block_id.clone(), b.ord as i64))
+                .collect(),
+        }
     }
 
     fn ord_of(&self, id: &str) -> Option<i64> {

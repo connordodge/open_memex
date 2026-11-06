@@ -10,7 +10,6 @@ use crate::blocks::{self, Block};
 use crate::daily::{self, ReviewState};
 use crate::error::MemexError;
 use crate::excerpts::{held_ords, DayBlocks};
-use crate::notes::NoteId;
 use crate::vault::Vault;
 use crate::Result;
 
@@ -65,7 +64,7 @@ pub fn day_filing(vault: &Vault, date: &str) -> Result<DayFiling> {
     }
 
     let (stored, _) = daily::stored_blocks(conn, &note_id)?;
-    let day_blocks = DayBlocks::load(vault, &NoteId::parse(&note_id)?)?;
+    let day_blocks = DayBlocks::from_blocks(&stored);
     let mut filed = BTreeSet::new();
     let mut topics = Vec::new();
     for (topic_note_id, title, body) in topics_mentioning(conn, date)? {
