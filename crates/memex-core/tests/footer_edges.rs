@@ -8,11 +8,12 @@
 //! Real SQLite, real schema, temp vaults only.
 
 use memex_core::excerpts::remove_excerpt;
+use memex_core::guide;
 use memex_core::indexer;
 use memex_core::notes::{
     create_note_as, get_note, update_note_as, CreateNote, Note, NoteId, RenameOptions, UpdateNote,
 };
-use memex_core::{Caller, Vault};
+use memex_core::{Caller, Clock, Vault};
 use rusqlite::params;
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -21,6 +22,15 @@ const M: &str = "<!-- memex:topics -->";
 const DAY: &str = "2026-09-05";
 const DAY_BODY: &str = "Fixed the jump arc.\n\n- tried coyote time\n";
 const TOKEN: &str = "![[2026-09-05#^b7k2m9]]";
+
+/// A clock that stays where it is put (no wall-clock reads).
+struct FixedClock(i64);
+
+impl Clock for FixedClock {
+    fn now_ms(&self) -> i64 {
+        self.0
+    }
+}
 
 fn fresh_vault() -> (TempDir, Vault) {
     let dir = tempfile::tempdir().unwrap();
@@ -120,12 +130,21 @@ fn rename_pass_leaves_a_guide_linker_as_rewritten_without_a_footer() {
     let (_dir, mut v) = fresh_vault();
     let renamed = create(&mut v, "Loose", "About.\n", None);
     let topic = create_topic(&mut v, "Player Loop", "About the loop.\n");
-    let guide = create(
+    // The real guide (D10: `create_note_as` rejects `role: guide`), holding a
+    // link that `guide::update` indexes.
+    let clock = FixedClock(1_759_500_000_000);
+    let seeded = guide::get_or_create(&mut v, &clock, None).expect("create the guide");
+    let doc = guide::update(
         &mut v,
-        "Vault Guide",
+        seeded.version,
         "See [[Loose]] for rules.\n",
-        Some(json!({ "role": "guide" })),
-    );
+        &["Linked Loose".to_string()],
+        DAY,
+        &clock,
+        None,
+    )
+    .expect("write the guide body");
+    let guide = get_note(&v, &NoteId::parse(&doc.note_id).unwrap()).unwrap();
     // Rows a footer would render from, were the guide any other note.
     tag_row(&v, &guide.id, "work", "agent");
     chip_row(&v, &guide.id, &topic.id);
