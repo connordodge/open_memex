@@ -192,7 +192,7 @@ fn close(open: &mut Option<OpenBlock>, blocks: &mut Vec<SplitBlock>, source: &st
 }
 
 /// `#`..`######` followed by a space (indentation already trimmed).
-fn is_heading(line: &str) -> bool {
+pub(crate) fn is_heading(line: &str) -> bool {
     let level = line.bytes().take_while(|&b| b == b'#').count();
     (1..=6).contains(&level) && line.as_bytes().get(level) == Some(&b' ')
 }
