@@ -20,6 +20,7 @@ import '../vault_access/vault_async_view.dart';
 import 'atoms.dart';
 import 'sidebar/canvases_rail.dart';
 import 'sidebar/days_pane.dart';
+import 'sidebar/tags_pane.dart';
 import 'sidebar/topics_pane.dart';
 import 'vault_open_refusal.dart';
 
@@ -84,6 +85,7 @@ class Sidebar extends ConsumerWidget {
             child: switch (ref.watch(sidebarModeProvider)) {
               SidebarMode.days => const DaysPane(),
               SidebarMode.topics => const TopicsPane(),
+              SidebarMode.tags => const TagsPane(),
             },
           ),
           const OmHairline(),

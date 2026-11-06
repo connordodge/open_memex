@@ -125,7 +125,7 @@ class UiStateStore {
 /// The sidebar's two modes (Req 50, WI #23), persisted per vault as
 /// `sidebar_mode` (`days` | `topics`). A missing or unknown value reads as
 /// [SidebarMode.days].
-enum SidebarMode { days, topics }
+enum SidebarMode { days, topics, tags }
 
 /// In-memory shape of the per-vault UI state.
 class UiState {
