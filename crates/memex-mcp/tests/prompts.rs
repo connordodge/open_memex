@@ -1439,3 +1439,111 @@ fn prompt_review_fixture_is_the_current_prompt_and_carries_the_feedback_section(
         );
     }
 }
+
+// ---- WI 257 verify: contracts the implementer's handoff listed as unpinned ----
+
+#[test]
+fn review_feedback_section_updates_the_guide_with_the_fetched_version_the_whole_text_and_one_to_three_bullets_and_rereads_it_first(
+) {
+    let section = wi257_feedback_section();
+    // The update call carries the version read with the guide, the whole new text and the bullets.
+    assert_matches(
+        "review Feedback section",
+        &section,
+        r"(?is)`update_vault_guide`[^.]{0,80}`version`[^.]{0,80}`get_vault_guide`",
+    );
+    assert_matches(
+        "review Feedback section",
+        &section,
+        r"(?is)\bwhole\b[^.]{0,20}`content_md`",
+    );
+    assert_matches(
+        "review Feedback section",
+        &section,
+        r"(?is)\b1 to 3\b[^.]{0,20}`bullets`",
+    );
+    // A second update in one pass starts from a fresh read, not the stale version.
+    assert_matches(
+        "review Feedback section",
+        &section,
+        r"(?is)\bRead the guide again\b[^.]{0,40}\bbefore the next update\b",
+    );
+}
+
+#[test]
+fn review_feedback_section_locates_blocks_with_get_day_filing_by_date_and_keeps_every_step_cross_reference_to_step_six(
+) {
+    let section = wi257_feedback_section();
+    assert_matches(
+        "review Feedback section",
+        &section,
+        r"(?is)`get_day_filing`[^.]{0,40}`date`[^.]{0,80}\bblocks\b[^.]{0,30}\bfiled\b",
+    );
+    // The pinned rules the filing fix respects are step 6's.
+    assert_matches(
+        "review Feedback section",
+        &section,
+        r"(?is)\bpinned rules of step 6\b",
+    );
+    assert_matches(
+        "review Feedback section",
+        &section,
+        r"(?is)`add_to_smart_folder`[^.]{0,20}\bas step 6 says\b",
+    );
+    // The heading the cross-reference points at exists, so the reference is not dangling.
+    assert!(
+        wi257_review_headings()
+            .iter()
+            .any(|h| h == "6. Link topic notes and place them in Smart Folders"),
+        "step 6 keeps its heading"
+    );
+}
+
+#[test]
+fn review_feedback_section_lists_one_changes_entry_for_each_note_a_fix_touched_in_both_feedback_tools(
+) {
+    let section = wi257_feedback_section();
+    assert_matches(
+        "review Feedback section",
+        &section,
+        r"(?is)`record_feedback`\s+or\s+`resolve_feedback`[^.]{0,60}\bone entry for each note you touched\b",
+    );
+    // `resolve_feedback` itself also takes the `changes` it made.
+    assert_matches(
+        "review Feedback section",
+        &section,
+        r"(?is)`resolve_feedback`,\s+passing its `id`,[^.]{0,120}`changes`",
+    );
+}
+
+#[test]
+fn review_step_one_report_names_the_feedback_worked_and_that_there_were_no_days_in_one_line() {
+    let step = wi257_step_one();
+    assert_matches(
+        "review step 1",
+        &step,
+        r"(?is)report the Feedback you worked through,\s+and that there were no days to review,\s+in one line,\s+then stop",
+    );
+    // The non-empty branch is untouched: oldest date, oldest first.
+    assert_matches(
+        "review step 1",
+        &step,
+        r"(?is)\bOtherwise take the oldest date\b[^.]{0,60}\boldest first\b",
+    );
+}
+
+#[test]
+fn review_feedback_section_forbids_re_adding_a_topic_note_to_a_smart_folder_the_person_took_it_out_of_and_calls_it_judgment(
+) {
+    let section = wi257_feedback_section();
+    assert_matches(
+        "review Feedback section",
+        &section,
+        r"(?is)Never re-add a topic note to a Smart Folder that the person took it out of",
+    );
+    assert_matches(
+        "review Feedback section",
+        &section,
+        r"(?is)\bno server block\b[^.]{0,40}\bjudgment\b",
+    );
+}

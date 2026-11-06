@@ -2539,3 +2539,169 @@ fn daily_acceptance_script_has_a_section_for_each_manual_feedback_journey_before
         wi257_assert_feedback_tool_names_are_real("docs/daily-acceptance.md", body);
     }
 }
+
+// ---- WI 257 verify: doc claims the implementer's handoff listed as unpinned ----
+
+#[test]
+fn review_guide_activity_section_says_what_handled_shows_what_restore_does_and_that_deleted_open_feedback_is_skipped(
+) {
+    let doc = daily_review();
+    let section = hosted_section(&doc, "the Activity tab", r"activity");
+    let body = section.body.clone();
+    // Open Feedback reads `Open`, then `Handled` with the agent's one-line reply.
+    assert!(
+        Regex::new(r"(?is)reads `Open`.{0,120}`Handled`.{0,60}\bone-line reply\b")
+            .unwrap()
+            .is_match(&body),
+        "Open becomes Handled with the agent's one-line reply:\n{body}"
+    );
+    assert!(
+        Regex::new(r"(?is)reply,? which never quotes your text")
+            .unwrap()
+            .is_match(&body),
+        "the reply never quotes the person's text:\n{body}"
+    );
+    // Deleting open Feedback before the agent reaches it is safe.
+    assert!(
+        Regex::new(r"(?is)\bdelete open Feedback\b.{0,80}\bcarries on without it\b")
+            .unwrap()
+            .is_match(&body),
+        "deleted open Feedback is skipped:\n{body}"
+    );
+    // The guide's own Activity tab, with Restore and the three guide commands.
+    assert!(
+        Regex::new(r"(?is)`Restore`.{0,80}\bearlier text\b")
+            .unwrap()
+            .is_match(&body),
+        "`Restore` returns to the earlier text:\n{body}"
+    );
+    for cmd in [
+        "memex guide get",
+        "memex guide revisions",
+        "memex guide restore",
+    ] {
+        assert!(
+            body.contains(cmd),
+            "the Activity section shows `{cmd}`:\n{body}"
+        );
+    }
+    // Corrections: the three things a person can undo.
+    for what in [
+        "move a block to another topic note",
+        "take a block or a tag off a note",
+        "take a topic note out of a Smart Folder",
+    ] {
+        assert!(
+            body.contains(what),
+            "a Correction is recorded when you {what}:\n{body}"
+        );
+    }
+    assert_commands_are_real("docs/daily-review.md", &doc);
+}
+
+#[test]
+fn review_guide_no_shell_access_list_names_the_new_write_subcommands() {
+    let doc = daily_review();
+    let line = wi243_lines_with(&doc, "do not give an agent shell access");
+    assert_eq!(line.len(), 1, "one no-shell-access paragraph: {line:?}");
+    for sub in [
+        "`excerpt move`",
+        "`excerpt remove-block`",
+        "`feedback add`",
+        "`guide restore`",
+    ] {
+        assert!(
+            line[0].contains(sub),
+            "the no-shell-access list names {sub}: {}",
+            line[0]
+        );
+    }
+}
+
+#[test]
+fn review_guide_prompts_section_says_the_review_never_redoes_a_correction_and_capture_never_writes_the_guide(
+) {
+    let doc = daily_review();
+    let prompts = wi243_section(&doc, "## 2. The two prompts");
+    assert!(
+        Regex::new(r"(?is)never redoes a Correction")
+            .unwrap()
+            .is_match(&prompts),
+        "the Review paragraph says the agent never redoes a Correction:\n{prompts}"
+    );
+    assert!(
+        Regex::new(r"(?is)\bit never writes the guide\b")
+            .unwrap()
+            .is_match(&prompts),
+        "the Capture paragraph says it never writes the guide:\n{prompts}"
+    );
+    assert!(
+        Regex::new(r"(?is)\bcomment from you about filing is Feedback\b.{0,200}`record_feedback`")
+            .unwrap()
+            .is_match(&prompts),
+        "a comment about filing in a live session is Feedback, recorded with `record_feedback`:\n{prompts}"
+    );
+}
+
+#[test]
+fn daily_acceptance_feedback_sections_each_have_an_expected_line_and_state_what_must_not_happen() {
+    let doc = daily_acceptance();
+    let sections = wi257_numbered_sections(&doc);
+    for n in [9u32, 10, 11] {
+        let (_, heading, body) = sections
+            .iter()
+            .find(|(k, _, _)| *k == n)
+            .unwrap_or_else(|| panic!("acceptance section {n} exists"));
+        assert!(
+            body.contains("**Expected**"),
+            "section {n} ({heading}) has an **Expected** line:\n{body}"
+        );
+    }
+    let body = |n: u32| {
+        sections
+            .iter()
+            .find(|(k, _, _)| *k == n)
+            .map(|(_, _, b)| b.clone())
+            .unwrap()
+    };
+    // 9: oldest first, no sweep of older days, reply never quotes, Correction not undone.
+    let nine = body(9);
+    for phrase in [
+        "oldest first",
+        "does not sweep older days",
+        "never quotes your text",
+        "the Correction is not undone",
+        "`update_vault_guide`",
+    ] {
+        assert!(
+            nine.contains(phrase),
+            "section 9 expects `{phrase}`:\n{nine}"
+        );
+    }
+    // 10: the fix, the verbatim record, the `From chat` row already Handled, never open.
+    let ten = body(10);
+    for phrase in [
+        "fixes the filing on the spot",
+        "as you typed them",
+        "`From chat`",
+        "never shows as open",
+    ] {
+        assert!(
+            ten.contains(phrase),
+            "section 10 expects `{phrase}`:\n{ten}"
+        );
+    }
+    // 11: no re-file into the topic note, no re-add to the Smart Folder, then a real change is judged.
+    let eleven = body(11);
+    for phrase in [
+        "does not re-file the block into the topic note",
+        "does not re-add a topic note to a Smart Folder",
+        "the block is not back in that topic note",
+        "the earlier Correction still shows in Activity",
+    ] {
+        assert!(
+            eleven.contains(phrase),
+            "section 11 expects `{phrase}`:\n{eleven}"
+        );
+    }
+}
