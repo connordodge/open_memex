@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
-use memex_core::{SystemClock, Vault};
+use memex_core::{NoteId, SystemClock, Vault};
 
 use crate::ops::tags;
 
@@ -53,6 +53,7 @@ pub struct TagLsArgs {
 pub fn run(args: TagArgs) -> anyhow::Result<()> {
     let line = match args.command {
         TagCommand::Add(a) => {
+            NoteId::parse(&a.note_id)?;
             let input = tags::AddInput {
                 note_id: a.note_id,
                 tag: a.tag,
@@ -61,6 +62,7 @@ pub fn run(args: TagArgs) -> anyhow::Result<()> {
             serde_json::to_string(&tags::add(&mut vault, input, &SystemClock, None)?)?
         }
         TagCommand::Rm(a) => {
+            NoteId::parse(&a.note_id)?;
             let input = tags::RmInput {
                 note_id: a.note_id,
                 tag: a.tag,
@@ -68,19 +70,19 @@ pub fn run(args: TagArgs) -> anyhow::Result<()> {
             let mut vault = Vault::open(&a.vault)?;
             serde_json::to_string(&tags::rm(&mut vault, input, &SystemClock, None)?)?
         }
-        TagCommand::Ls(a) => {
-            let mut vault = Vault::open(&a.vault)?;
-            match a.note_id {
-                Some(note_id) => {
-                    let input = tags::LsNoteInput { note_id };
-                    serde_json::to_string(&tags::ls_note(&mut vault, input, &SystemClock, None)?)?
-                }
-                None => {
-                    let out = tags::ls(&mut vault, tags::LsInput, &SystemClock, None)?;
-                    serde_json::to_string(&out)?
-                }
+        TagCommand::Ls(a) => match a.note_id {
+            Some(note_id) => {
+                NoteId::parse(&note_id)?;
+                let input = tags::LsNoteInput { note_id };
+                let mut vault = Vault::open(&a.vault)?;
+                serde_json::to_string(&tags::ls_note(&mut vault, input, &SystemClock, None)?)?
             }
-        }
+            None => {
+                let mut vault = Vault::open(&a.vault)?;
+                let out = tags::ls(&mut vault, tags::LsInput, &SystemClock, None)?;
+                serde_json::to_string(&out)?
+            }
+        },
     };
     println!("{line}");
     Ok(())
