@@ -376,6 +376,7 @@ class _TabBody extends ConsumerWidget {
     if (active is CanvasTab) {
       return _CanvasTabContent(
         canvasId: active.id,
+        zoomedNoteId: active.zoomedNoteId,
         rightPanelOpen: rightPanelOpen,
         onToggleRightPanel: onToggleRightPanel,
       );
@@ -385,20 +386,26 @@ class _TabBody extends ConsumerWidget {
 }
 
 /// Renders a canvas tab. Switches between the canvas view and the embedded
-/// NoteEditor (double-click zoom-in path) via an `AnimatedSwitcher`.
+/// NoteEditor (double-click zoom-in path) via an `AnimatedSwitcher`. The zoom
+/// is the tab's own current history entry ([zoomedNoteId]), so Back and
+/// Forward move it and two tabs on one canvas zoom independently. The editor
+/// loads the zoomed note because the tabs notifier selects it; this widget
+/// writes no selection.
 class _CanvasTabContent extends ConsumerWidget {
   const _CanvasTabContent({
     required this.canvasId,
+    required this.zoomedNoteId,
     required this.rightPanelOpen,
     required this.onToggleRightPanel,
   });
   final String canvasId;
+  final String? zoomedNoteId;
   final bool rightPanelOpen;
   final VoidCallback onToggleRightPanel;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final zoom = ref.watch(canvasZoomProvider(canvasId));
+    final noteId = zoomedNoteId;
     final config = ref.watch(canvasAnimationConfigProvider);
     return AnimatedSwitcher(
       duration: config.zoomDuration,
@@ -406,66 +413,13 @@ class _CanvasTabContent extends ConsumerWidget {
       switchOutCurve: Curves.easeInOut,
       transitionBuilder: (child, anim) =>
           FadeTransition(opacity: anim, child: child),
-      child: zoom.isZoomed
-          ? _ZoomedNoteView(
-              key: Key('zoomed-${zoom.zoomedNoteId}'),
-              canvasId: canvasId,
-              noteId: zoom.zoomedNoteId!,
+      child: noteId != null
+          ? NoteEditor(
+              key: Key('zoomed-$noteId'),
               rightPanelOpen: rightPanelOpen,
               onToggleRightPanel: onToggleRightPanel,
             )
           : CanvasView(key: Key('canvas-tab-$canvasId'), canvasId: canvasId),
-    );
-  }
-}
-
-/// While a canvas tab is "zoomed into" a note, this widget renders the
-/// existing NoteEditor with a back-arrow chip overlaid in the top-left.
-class _ZoomedNoteView extends ConsumerStatefulWidget {
-  const _ZoomedNoteView({
-    super.key,
-    required this.canvasId,
-    required this.noteId,
-    required this.rightPanelOpen,
-    required this.onToggleRightPanel,
-  });
-
-  final String canvasId;
-  final String noteId;
-  final bool rightPanelOpen;
-  final VoidCallback onToggleRightPanel;
-
-  @override
-  ConsumerState<_ZoomedNoteView> createState() => _ZoomedNoteViewState();
-}
-
-class _ZoomedNoteViewState extends ConsumerState<_ZoomedNoteView> {
-  @override
-  void initState() {
-    super.initState();
-    // Force the editor to load this note even though the active tab is a
-    // CanvasTab (so the legacy selectedNoteIdProvider isn't pointing at it).
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      ref.read(selectedNoteIdProvider.notifier).state = widget.noteId;
-    });
-  }
-
-  void _zoomOut() {
-    ref.read(canvasZoomProvider(widget.canvasId).notifier).state =
-        CanvasZoomState.none;
-    // Clear the legacy selection — the canvas tab is the source of truth now.
-    ref.read(selectedNoteIdProvider.notifier).state = null;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    // The "← back to canvas" affordance now lives inline in the editor toolbar
-    // (passed via onBackToCanvas) instead of being overlaid, so it no longer
-    // collides with the tab bar.
-    return NoteEditor(
-      rightPanelOpen: widget.rightPanelOpen,
-      onToggleRightPanel: widget.onToggleRightPanel,
-      onBackToCanvas: _zoomOut,
     );
   }
 }

@@ -168,3 +168,16 @@ Future<void> addToSmartFolder(
   context,
   (t) => t.addToFolder(folderId: folderId, noteId: noteId, pinned: pinned),
 );
+
+/// Membership menu `Remove from <Smart Folder>`: `memex folder remove`. The
+/// note stays in its other folders and in the vault.
+Future<void> removeFromSmartFolder(
+  ProviderContainer container,
+  BuildContext context, {
+  required String folderId,
+  required String noteId,
+}) => runSmartFolderWrite(
+  container,
+  context,
+  (t) => t.removeFromFolder(folderId: folderId, noteId: noteId),
+);

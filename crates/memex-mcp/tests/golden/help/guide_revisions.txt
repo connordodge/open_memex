@@ -1,0 +1,7 @@
+List the guide's kept earlier texts, newest first
+
+Usage: memex guide revisions --vault <VAULT>
+
+Options:
+      --vault <VAULT>  Vault directory
+  -h, --help           Print help

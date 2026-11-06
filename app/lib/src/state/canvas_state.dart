@@ -52,23 +52,6 @@ final canvasSelectionProvider = StateProvider.family<CanvasSelection, String>((
   return CanvasSelection.empty;
 });
 
-/// Whether a canvas tab is currently "zoomed into" a specific note. Drives
-/// the AnimatedSwitcher from the canvas view to the embedded NoteEditor.
-class CanvasZoomState {
-  const CanvasZoomState({this.zoomedNoteId});
-  final String? zoomedNoteId;
-
-  static const none = CanvasZoomState();
-  bool get isZoomed => zoomedNoteId != null;
-}
-
-final canvasZoomProvider = StateProvider.family<CanvasZoomState, String>((
-  ref,
-  _,
-) {
-  return CanvasZoomState.none;
-});
-
 /// Tunable animation config so widget tests can inject `Duration.zero`.
 class CanvasAnimationConfig {
   const CanvasAnimationConfig({
