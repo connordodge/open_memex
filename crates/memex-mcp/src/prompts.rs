@@ -19,10 +19,27 @@ Review the person's Open Memex vault through the memex MCP tools. A review files
 - Never rewrite, reorder, delete, summarise, clean up or merge the person's text, in a daily note or anywhere else. You file their blocks by reference with `add_excerpt`; you never copy their words into a topic note, never add text to a daily note during a review, and never write transclusion or Note footer syntax by hand. The server maintains the Note footer.
 - Pinned Smart Folders and pinned memberships were set by the person. Respect pinned items exactly as step 6 says.
 - If a tool returns an error, read its `code` and message and change what you send. Never repeat the same failing call unchanged.
+- The Vault Guide is the one exception to the never-rewrite rule above: you may rewrite any of it, with `update_vault_guide`, as the Feedback section below says. Keep it short, about 200 lines.
+
+## Feedback and the Vault Guide
+
+The person tells you how you filed their notes in two ways: a comment they wrote, and a Correction, a change they made to your filing themselves. Both are Feedback. Work through the open Feedback on every run, even when no days are unreviewed, before you take a day in step 1.
+
+1. Call `get_vault_guide`, read the Vault Guide and follow it when filing, in this section and in steps 1 to 8. It holds the vault's framework for filing, with the decisions behind it.
+2. Call `list_open_feedback` and work through its items, oldest first. Each item is a comment or a Correction, with a `note_id`, a `day` and the person's `text`.
+3. For each item, in this order:
+   - Fix the filing a comment names, within the pinned rules of step 6. Call `get_day_filing` with the `date` to see where a day's blocks are filed. To move one block, call `remove_excerpt_block` (`topic_note_id`, `date`, `block_id`) and then `add_excerpt` for the topic note that should hold it.
+   - If a Correction names a person-created topic note that is in no Smart Folder, place it with `add_to_smart_folder`, as step 6 says.
+   - Treat the latest Correction per block as final. Never re-file a block into a topic note that the person took it out of. Never re-add a topic note to a Smart Folder that the person took it out of. Do neither unless the block's text has changed so much that it clearly belongs there now. There is no server block on this: it is your judgment.
+   - If the item shows a lasting decision about how this vault is filed, distill it into the Vault Guide with `update_vault_guide`, passing the `version` from `get_vault_guide`, the whole new `content_md` and 1 to 3 `bullets`. Read the guide again before the next update.
+   - Mark the item Handled with `resolve_feedback`, passing its `id`, a one-line reply saying what you did, or why you could not, and the `changes` you made. The reply never quotes or summarises the person's text. If `resolve_feedback` returns `not_found`, the person deleted that item: carry on with the next one.
+4. Do not sweep older days for work the Feedback does not name, unless the Feedback asks you to. Fix what an item names, and leave the rest of the vault as it is.
+
+During a session, when the person makes a comment about filing, treat it as Feedback. Fix it on the spot, record it word for word with `record_feedback` (`text`, and `note_id` and `date` when it is about one note or day) with a one-line `reply`, and if it is lasting, update the guide with `update_vault_guide`. A fix you make outside `mark_day_reviewed` goes in the `changes` of `record_feedback` or `resolve_feedback`, one entry for each note you touched.
 
 ## 1. Take the oldest unreviewed day
 
-Call `list_unreviewed_days`. Each entry has a `date`, a `state` (`Unreviewed` or `Changed since review`), a `content_version` and a `reviewed_content_version`. If the list is empty, there are no unreviewed days: say so in one line and stop. Otherwise take the oldest date (the list is sorted oldest first).
+Call `list_unreviewed_days`. Each entry has a `date`, a `state` (`Unreviewed` or `Changed since review`), a `content_version` and a `reviewed_content_version`. If the list is empty, there are no unreviewed days: report the Feedback you worked through, and that there were no days to review, in one line, then stop. Otherwise take the oldest date (the list is sorted oldest first).
 
 ## 2. Fetch what changed
 
@@ -106,6 +123,8 @@ pub const CAPTURE: &str = r#"# Capture
 For the rest of this session, each message the person sends you is an observation to capture into their Open Memex vault through the memex MCP tools. Do not answer it, discuss it or ask about it: capture it, file it, and reply in one line. Only a message that clearly speaks to you about this capture session itself (such as `stop capturing`) is not an observation.
 
 Never rewrite, reorder, delete, summarise, clean up or merge the person's text: not to fix spelling, not to combine it with an earlier observation, not to turn it into prose. Each observation lands exactly as typed.
+
+At the start of the session, before the first observation, call `get_vault_guide` and read the Vault Guide: the vault's framework for filing, with the decisions behind it. Follow it when filing. Do not write the guide.
 
 For each message:
 
