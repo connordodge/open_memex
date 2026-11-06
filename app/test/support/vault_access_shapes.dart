@@ -10,6 +10,9 @@ import 'package:open_memex_app/src/db/daily_reads.dart';
 import 'package:open_memex_app/src/db/graph_reads.dart';
 import 'package:open_memex_app/src/db/topics_reads.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
+import 'package:open_memex_app/src/cli/feedback_cli.dart';
+import 'package:open_memex_app/src/cli/guide_cli.dart';
+import 'package:open_memex_app/src/db/feedback_reads.dart';
 
 /// [v] as plain lists, maps and primitives, field by field, so two results
 /// compare with `equals`. Throws for a type it doesn't know, so a new return
@@ -215,6 +218,125 @@ Object? vaultAccessShape(Object? v) => switch (v) {
       v.code,
       vaultAccessShape(v.fields),
     ],
+  },
+  FolderMemberRemoveResult() => {
+    'FolderMemberRemoveResult': [
+      v.vaultId,
+      v.smartFolderId,
+      v.noteId,
+      v.removed,
+    ],
+  },
+  ExcerptEditResult() => {
+    'ExcerptEditResult': [v.vaultId, v.topicNoteId, v.version],
+  },
+  ExcerptMoveResult() => {
+    'ExcerptMoveResult': [
+      v.vaultId,
+      v.fromTopicNoteId,
+      v.fromVersion,
+      v.toTopicNoteId,
+      v.toVersion,
+    ],
+  },
+  FilingBlock() => {
+    'FilingBlock': [v.id, v.text],
+  },
+  FilingTopic() => {
+    'FilingTopic': [v.topicNoteId, v.title, vaultAccessShape(v.blocks)],
+  },
+  Filing() => {
+    'Filing': [
+      v.vaultId,
+      v.date,
+      v.noteId,
+      v.reviewed,
+      vaultAccessShape(v.topics),
+      vaultAccessShape(v.notFiled),
+    ],
+  },
+  FeedbackRemoveResult() => {
+    'FeedbackRemoveResult': [v.vaultId, v.id],
+  },
+  VaultGuide() => {
+    'VaultGuide': [v.vaultId, v.noteId, v.version, v.contentMd],
+  },
+  GuideRestoreResult() => {
+    'GuideRestoreResult': [v.vaultId, v.noteId, v.version],
+  },
+  GuideRevisionRow() => {
+    'GuideRevisionRow': [v.id, v.agentChangeId, v.createdAt],
+  },
+  FeedbackRow() => {
+    'FeedbackRow': [
+      v.id,
+      v.kind.name,
+      v.source.name,
+      v.noteId,
+      v.day,
+      v.agentChangeId,
+      v.text,
+      vaultAccessShape(v.correction),
+      v.status.name,
+      v.reply,
+      v.createdAt,
+      v.updatedAt,
+      v.handledAt,
+    ],
+  },
+  ExcerptMovedCorrection() => {
+    'ExcerptMovedCorrection': [
+      v.date,
+      v.blockId,
+      v.preview,
+      v.fromTopicNoteId,
+      v.fromTitle,
+      v.toTopicNoteId,
+      v.toTitle,
+    ],
+  },
+  ExcerptRemovedCorrection() => {
+    'ExcerptRemovedCorrection': [
+      v.date,
+      v.blockIds,
+      v.preview,
+      v.topicNoteId,
+      v.title,
+    ],
+  },
+  ExcerptAddedCorrection() => {
+    'ExcerptAddedCorrection': [
+      v.date,
+      v.blockId,
+      v.preview,
+      v.topicNoteId,
+      v.title,
+    ],
+  },
+  MembershipRemovedCorrection() => {
+    'MembershipRemovedCorrection': [
+      v.noteId,
+      v.noteTitle,
+      v.smartFolderId,
+      v.folderName,
+    ],
+  },
+  FolderRenamedCorrection() => {
+    'FolderRenamedCorrection': [v.smartFolderId, v.oldName, v.newName],
+  },
+  FolderMovedCorrection() => {
+    'FolderMovedCorrection': [
+      v.smartFolderId,
+      v.name,
+      v.oldParentId,
+      v.newParentId,
+    ],
+  },
+  FolderDeletedCorrection() => {
+    'FolderDeletedCorrection': [v.smartFolderId, v.name],
+  },
+  TagRemovedCorrection() => {
+    'TagRemovedCorrection': [v.tag, v.noteId, v.noteTitle],
   },
   _ => throw ArgumentError('vaultAccessShape: unknown type ${v.runtimeType}'),
 };

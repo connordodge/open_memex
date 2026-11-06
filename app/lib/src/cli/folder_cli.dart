@@ -154,26 +154,14 @@ extension FolderCli on MemexCli {
     required String vaultPath,
     required String folderId,
     required String noteId,
-  }) => _folderCall(
-    'remove',
-    ['--vault', vaultPath, '--id', folderId, '--note-id', noteId],
-    (json) {
-      if (json case {
-        'vault_id': final String vaultId,
-        'smart_folder_id': final String smartFolderId,
-        'note_id': final String noteId,
-        'removed': final bool removed,
-      }) {
-        return FolderMemberRemoveResult(
-          vaultId: vaultId,
-          smartFolderId: smartFolderId,
-          noteId: noteId,
-          removed: removed,
-        );
-      }
-      return null;
-    },
-  );
+  }) => _folderCall('remove', [
+    '--vault',
+    vaultPath,
+    '--id',
+    folderId,
+    '--note-id',
+    noteId,
+  ], parseFolderMemberRemoveResult);
 
   /// Runs `memex folder <sub> <args>` and [parse]s the JSON object on stdout.
   /// A non-zero exit throws [MemexException.fromCliFailure]; stdout that is
@@ -258,6 +246,28 @@ FolderMembershipResult? parseFolderMembershipResult(Map<String, Object?> json) {
       noteId: noteId,
       pinned: pinned,
       roleSet: roleSet,
+    );
+  }
+  return null;
+}
+
+/// The C2.10 `folder remove` object, or null for any other shape. Shared by
+/// the CLI wrapper and the hosted `DELETE /smart-folders/{id}/members/{note}`
+/// call.
+FolderMemberRemoveResult? parseFolderMemberRemoveResult(
+  Map<String, Object?> json,
+) {
+  if (json case {
+    'vault_id': final String vaultId,
+    'smart_folder_id': final String smartFolderId,
+    'note_id': final String noteId,
+    'removed': final bool removed,
+  }) {
+    return FolderMemberRemoveResult(
+      vaultId: vaultId,
+      smartFolderId: smartFolderId,
+      noteId: noteId,
+      removed: removed,
     );
   }
   return null;
