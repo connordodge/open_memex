@@ -70,7 +70,7 @@ impl Memex {
     #[tool(
         name = "append_to_daily_note",
         description = "Append text to the end of the user's daily note for \
-        `date` (YYYY-MM-DD; default today, local time), above its Topics footer, \
+        `date` (YYYY-MM-DD; default today, local time), above its Note footer, \
         creating the daily note when the day has none. The text is kept \
         verbatim; this is the only way to add to a daily note. Returns note_id, \
         date, block_ids (the new blocks), content_version, version and \
