@@ -67,6 +67,48 @@ fn prompt_capture_prints_the_capture_constant_byte_for_byte() {
     assert_prints_exactly("capture", CAPTURE);
 }
 
+// ---------- WI #257: the Vault Guide and Feedback in the printed prompts ----------
+
+#[test]
+fn prompt_review_stdout_names_the_feedback_tools_before_step_one() {
+    let out = memex(&["prompt", "review"]);
+    assert!(out.status.success(), "memex prompt review exits 0");
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    let step1 = stdout
+        .find("## 1. Take the oldest unreviewed day")
+        .expect("step 1 keeps its heading");
+    for tool in [
+        "get_vault_guide",
+        "list_open_feedback",
+        "resolve_feedback",
+        "update_vault_guide",
+        "record_feedback",
+    ] {
+        let at = stdout
+            .find(&format!("`{tool}`"))
+            .unwrap_or_else(|| panic!("memex prompt review names `{tool}`:\n{stdout}"));
+        assert!(at < step1, "`{tool}` comes before step 1:\n{stdout}");
+    }
+}
+
+#[test]
+fn prompt_capture_stdout_reads_the_vault_guide_before_the_first_append() {
+    let out = memex(&["prompt", "capture"]);
+    assert!(out.status.success(), "memex prompt capture exits 0");
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    let guide = stdout
+        .find("`get_vault_guide`")
+        .unwrap_or_else(|| panic!("memex prompt capture names `get_vault_guide`:\n{stdout}"));
+    let append = stdout
+        .find("`append_to_daily_note`")
+        .expect("capture appends to the daily note");
+    assert!(guide < append, "the guide is read first:\n{stdout}");
+    assert!(
+        stdout.contains("Vault Guide"),
+        "capture says Vault Guide:\n{stdout}"
+    );
+}
+
 // ---------- AC 8: unknown names ----------
 
 #[test]
