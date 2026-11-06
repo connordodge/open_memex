@@ -2,12 +2,22 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../dates.dart';
+import '../db.dart';
 import '../db/activity_reads.dart';
+import '../db/feedback_reads.dart';
+import '../memex_cli.dart';
 import '../state/activity_state.dart';
+import '../state/editor_controller.dart' show editorControllerProvider;
+import '../state/feedback_state.dart';
+import '../state/note_state.dart';
+import '../state/topic_actions.dart';
+import '../state/vault_access_state.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
+import '../vault_access/errors.dart';
 import '../vault_access/vault_async_view.dart';
+import 'activity/feedback_rows.dart';
 import 'atoms.dart';
 import 'panel_placeholder_tab.dart';
 
@@ -30,11 +40,23 @@ class ActivityTab extends ConsumerWidget {
       emptyKey: Key('activity-empty'),
     );
     if (selected == null) return emptyTab;
+    final feedback = ActivityFeedback.watch(ref, selected);
     return VaultAsyncView<List<AgentChangeRow>>(
       value: ref.watch(agentChangesAsyncProvider(selected.id)),
       empty: const <AgentChangeRow>[],
       builder: (context, entries) {
-        if (entries.isEmpty) return emptyTab;
+        final homes = feedback.homes(entries);
+        if (entries.isEmpty && homes.isEmpty) return emptyTab;
+        // Only the Vault Guide can be restored: its entries that a guide
+        // revision names (by agent change) get a Restore button.
+        final isGuide = selected.role == 'guide';
+        final revisions = isGuide
+            ? watchVaultValue(
+                ref,
+                guideRevisionsProvider,
+                const <GuideRevisionRow>[],
+              )
+            : const <GuideRevisionRow>[];
         return ListView(
           children: [
             const PanelHeader(eyebrow: _activityEyebrow),
@@ -43,12 +65,29 @@ class ActivityTab extends ConsumerWidget {
               child: Text(_activitySubtitle, style: _activitySubtitleStyle),
             ),
             const OmHairline(),
-            for (final entry in entries) _ActivityEntry(entry: entry),
+            FeedbackAboveEntries(rows: homes.above),
+            for (final entry in entries)
+              _ActivityEntry(
+                entry: entry,
+                guide: selected,
+                revisionId: isGuide ? _revisionOf(revisions, entry.id) : null,
+                feedback: EntryFeedback(
+                  entry: entry,
+                  rows: homes.byEntry[entry.id] ?? const [],
+                ),
+              ),
           ],
         );
       },
     );
   }
+}
+
+String? _revisionOf(List<GuideRevisionRow> revisions, String agentChangeId) {
+  for (final r in revisions) {
+    if (r.agentChangeId == agentChangeId) return r.id;
+  }
+  return null;
 }
 
 final _activitySubtitleStyle = OmType.mono(
@@ -58,8 +97,20 @@ final _activitySubtitleStyle = OmType.mono(
 );
 
 class _ActivityEntry extends StatelessWidget {
-  const _ActivityEntry({required this.entry});
+  const _ActivityEntry({
+    required this.entry,
+    required this.guide,
+    required this.revisionId,
+    required this.feedback,
+  });
   final AgentChangeRow entry;
+
+  /// The note shown: the Vault Guide when [revisionId] is set.
+  final Note guide;
+
+  /// The guide revision this entry's change produced, or null (no Restore).
+  final String? revisionId;
+  final Widget feedback;
   @override
   Widget build(BuildContext context) {
     final at = DateTime.fromMillisecondsSinceEpoch(entry.createdAt);
@@ -87,8 +138,94 @@ class _ActivityEntry extends StatelessWidget {
                 style: OmType.sans(size: 12, color: OmColors.fg1, height: 1.5),
               ),
             ),
+          if (revisionId case final id?)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OmButton(
+                key: Key('guide-restore-${entry.id}'),
+                kind: OmButtonKind.secondary,
+                label: 'Restore',
+                onPressed: () => _restore(context, guide, id),
+              ),
+            ),
+          feedback,
         ],
       ),
+    );
+  }
+}
+
+const _restoreConfirmText =
+    'Restore this version? The current text is kept as a version you can '
+    'return to.';
+
+/// Restore: asks, then `memex guide restore` for [revisionId] and rebases the
+/// open editor on the restored text and version, so the next save is not a
+/// conflict. Reads through a container taken before the awaits: the entry is
+/// gone once the Activity tab shows another note.
+Future<void> _restore(
+  BuildContext context,
+  Note guide,
+  String revisionId,
+) async {
+  final container = ProviderScope.containerOf(context);
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (_) => const _RestoreDialog(),
+  );
+  if (confirmed != true || !context.mounted) return;
+  final messenger = ScaffoldMessenger.maybeOf(context);
+  try {
+    await guardVaultWrite(context, () async {
+      // An edit still waiting on the save debounce is stored first, so the
+      // restore keeps it as a revision (the dialog promises the current text
+      // is kept). A failed save stops the restore: nothing is replaced.
+      final editor = container.read(editorControllerProvider.notifier);
+      if (!await editor.flushPendingSaveAndWait()) {
+        final message = container.read(editorControllerProvider).errorMessage;
+        throw MemexException(message ?? 'Could not save your changes first.');
+      }
+      // FeedbackActions bumps the vault revision once.
+      final result = await container
+          .read(feedbackActionsProvider)
+          .restoreGuide(revisionId);
+      final restored = await container
+          .read(vaultAccessProvider)
+          ?.notes
+          .getNote(guide.id);
+      if (restored == null) return;
+      await rebaseEditorOnVersionIn(
+        container,
+        fallback: guide,
+        version: result.version,
+        content: restored.contentMd,
+      );
+    });
+  } on Exception catch (e) {
+    messenger?.showSnackBar(
+      SnackBar(content: Text(e is MemexException ? e.message : '$e')),
+    );
+  }
+}
+
+class _RestoreDialog extends StatelessWidget {
+  const _RestoreDialog();
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      content: const Text(_restoreConfirmText),
+      actions: [
+        TextButton(
+          key: const Key('guide-restore-cancel'),
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          key: const Key('guide-restore-confirm'),
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('Restore'),
+        ),
+      ],
     );
   }
 }
