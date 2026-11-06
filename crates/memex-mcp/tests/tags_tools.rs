@@ -1164,29 +1164,165 @@ async fn create_note_with_a_tag_outside_the_vocabulary_still_succeeds_and_stays_
     assert_c1(&tag_note(&m, &other, "brand-new").await, "unknown_tag");
 }
 
+/// `(notes, tags, footer_chips, chunks)` row counts: a rejected `create_note`
+/// leaves all four as they were.
+async fn store_counts(state: &AppState) -> (i64, i64, i64, i64) {
+    let vault = state.vault.lock().await;
+    let conn = vault.connection_ref();
+    let count = |table: &str| -> i64 {
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
+    };
+    (
+        count("notes"),
+        count("tags"),
+        count("footer_chips"),
+        count("chunks"),
+    )
+}
+
+async fn create_note_raw(m: &Memex, args: Value) -> Value {
+    parse(&m.create_note(params(args)).await)
+}
+
 #[tokio::test]
-async fn create_note_with_a_bad_tag_name_still_creates_the_note_and_applies_the_other_tags() {
+async fn create_note_with_a_bad_tag_name_among_good_ones_is_invalid_argument_and_writes_nothing() {
+    let (_dir, state, m) = fresh();
+    person_note(&state, "Existing", "Existing text.\n").await;
+    let before = store_counts(&state).await;
+
+    let reply = create_note_raw(
+        &m,
+        json!({ "title": "Bad", "content_md": "Text.\n", "tags": ["good", "not a tag!", "fine"] }),
+    )
+    .await;
+
+    assert_c1(&reply, "invalid_argument");
+    let message = reply["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("\"not a tag!\""),
+        "the message names the offending tag: {message:?}"
+    );
+    assert_eq!(
+        store_counts(&state).await,
+        before,
+        "no note, tag row, chip or chunk"
+    );
+}
+
+#[tokio::test]
+async fn create_note_rejects_a_bad_tag_name_in_any_position_and_of_any_kind() {
+    let (_dir, state, m) = fresh();
+    let before = store_counts(&state).await;
+
+    for (name, tags) in [
+        ("first", json!(["not a tag!", "good"])),
+        ("middle", json!(["good", "not a tag!", "fine"])),
+        ("last", json!(["good", "fine", "not a tag!"])),
+        ("only", json!(["not a tag!"])),
+        ("double hash", json!(["good", "##x"])),
+        ("lone hash", json!(["#"])),
+        ("empty", json!(["good", ""])),
+        ("space inside", json!(["two words"])),
+        ("hash then space", json!(["# x"])),
+    ] {
+        let reply = create_note_raw(
+            &m,
+            json!({ "title": "Bad", "content_md": "Text.\n", "tags": tags }),
+        )
+        .await;
+        assert_c1(&reply, "invalid_argument");
+        assert_eq!(
+            store_counts(&state).await,
+            before,
+            "{name}: nothing written"
+        );
+    }
+}
+
+#[tokio::test]
+async fn create_note_names_the_first_bad_tag_name_as_given() {
+    let (_dir, _state, m) = fresh();
+
+    let reply = create_note_raw(
+        &m,
+        json!({ "title": "Bad", "content_md": "Text.\n", "tags": ["good", "#First Bad", "second bad!"] }),
+    )
+    .await;
+
+    assert_c1(&reply, "invalid_argument");
+    let message = reply["error"]["message"].as_str().unwrap();
+    assert!(message.contains("\"#First Bad\""), "{message:?}");
+    assert!(!message.contains("second bad!"), "{message:?}");
+}
+
+#[tokio::test]
+async fn create_note_accepts_a_leading_hash_on_a_tag_name() {
     let (_dir, state, m) = fresh();
 
     let (id, _) = tool_create_note(
         &m,
-        json!({ "title": "Bad", "content_md": "Text.\n", "tags": ["not a tag!", "good"] }),
+        json!({ "title": "Hashed", "content_md": "Text.\n", "tags": ["#good"] }),
     )
     .await;
 
-    let found = rows(&state, &id).await;
-    for row in pairs(&[
-        ("agent-authored", "agent"),
-        ("good", "agent"),
-        ("inbox", "agent"),
-    ]) {
-        assert!(found.contains(&row), "{row:?} in {found:?}");
-    }
-    let (_, _, body) = stored(&state, &id).await;
-    assert!(
-        footer_lines(&body).contains(&"#good"),
-        "footer text: {body:?}"
+    assert_eq!(
+        rows(&state, &id).await,
+        pairs(&[
+            ("agent-authored", "agent"),
+            ("good", "agent"),
+            ("inbox", "agent"),
+        ])
     );
+    let (_, _, body) = stored(&state, &id).await;
+    assert_eq!(footer_lines(&body), ["#good"], "{body:?}");
+}
+
+#[tokio::test]
+async fn create_note_with_an_empty_tags_list_still_creates_with_the_auto_tags() {
+    let (_dir, state, m) = fresh();
+
+    let (id, _) = tool_create_note(
+        &m,
+        json!({ "title": "Empty", "content_md": "Text.\n", "tags": [] }),
+    )
+    .await;
+
+    assert_eq!(
+        rows(&state, &id).await,
+        pairs(&[("agent-authored", "agent"), ("inbox", "agent")])
+    );
+}
+
+#[tokio::test]
+async fn create_note_checks_the_tag_names_before_the_role_the_marker_and_the_title() {
+    let (_dir, state, m) = fresh();
+    person_note(&state, "Taken", "Text.\n").await;
+    let before = store_counts(&state).await;
+    let bad = json!(["not a tag!"]);
+
+    for (rule, args) in [
+        (
+            "role_rule",
+            json!({ "title": "T", "content_md": "x\n", "tags": bad, "role": "weekly" }),
+        ),
+        (
+            "marker_rule",
+            json!({ "title": DAY, "content_md": "not empty\n", "tags": bad, "role": "daily" }),
+        ),
+        (
+            "title_conflict",
+            json!({ "title": "Taken", "content_md": "x\n", "tags": bad }),
+        ),
+    ] {
+        let reply = create_note_raw(&m, args).await;
+        assert_c1(&reply, "invalid_argument");
+        assert_eq!(
+            store_counts(&state).await,
+            before,
+            "{rule}: nothing written"
+        );
+    }
 }
 
 #[tokio::test]
