@@ -50,8 +50,9 @@ final notesForTagAsyncProvider =
 /// kept (`rebaseEditorOnVersion`); then `vaultRevisionProvider` is bumped
 /// exactly once. A clean editor takes the stored body instead, and stays
 /// clean. A rejected write propagates with nothing bumped. A tag already gone
-/// (`removed: false`) is a success. A failed rebase read after a successful
-/// write still bumps, then propagates.
+/// (`removed: false`) is a success. Once the write has succeeded nothing
+/// reports it as failed: a read that then fails rebases on [note] and the
+/// returned version, keeping the editor's text, and still bumps.
 Future<void> removeTagFromNote(
   WidgetRef ref, {
   required Note note,
@@ -70,6 +71,7 @@ Future<void> removeTagFromNote(
         fallback: note,
         version: result.version,
         content: await _textToKeep(ref, access, note.id),
+        tolerateFailedRead: true,
       );
     }
   } finally {
@@ -81,6 +83,7 @@ Future<void> removeTagFromNote(
 /// none, the stored body, because the editor's copy still has the removed
 /// tag's footer line and keeping it would mark the note dirty and write again
 /// (the server drops the line, R12, but the version and `updated_at` move).
+/// A stored body that cannot be read leaves the editor's text as it is.
 Future<String> _textToKeep(
   WidgetRef ref,
   VaultAccess access,
@@ -88,7 +91,13 @@ Future<String> _textToKeep(
 ) async {
   final before = ref.read(editorControllerProvider);
   if (before.status != SaveStatus.clean) return before.contentMd;
-  final stored = await access.notes.getNote(noteId);
+  Note? stored;
+  try {
+    stored = await access.notes.getNote(noteId);
+  } on Object {
+    // The write went through; the rebase still has to happen.
+    stored = null;
+  }
   // The person may have typed during the read.
   final now = ref.read(editorControllerProvider);
   return stored != null && now.status == SaveStatus.clean
