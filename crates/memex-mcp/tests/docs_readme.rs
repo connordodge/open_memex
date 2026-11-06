@@ -389,7 +389,7 @@ fn readme_names_all_tools_and_both_prompts_the_server_exposes() {
 }
 
 #[test]
-fn readme_no_longer_claims_thirteen_tools_or_future_mcp_update_and_delete_tools() {
+fn readme_no_longer_claims_a_stale_tool_count_or_future_mcp_update_and_delete_tools() {
     let readme = readme();
     assert!(!readme.contains("13 MCP tools"), "the tool count is stale");
     assert!(
