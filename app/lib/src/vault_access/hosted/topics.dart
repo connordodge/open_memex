@@ -201,6 +201,17 @@ class HostedTopicsAccess implements TopicsAccess {
     return _parsed(op, json, parseFolderMembershipResult);
   }
 
+  @override
+  Future<FolderMemberRemoveResult> removeFromFolder({
+    required String folderId,
+    required String noteId,
+  }) async => FolderMemberRemoveResult(
+    vaultId: '',
+    smartFolderId: '',
+    noteId: '',
+    removed: false,
+  );
+
   /// `GET /settings/{key}`: the integer `value`.
   @override
   Future<int> getSetting(String key) async {

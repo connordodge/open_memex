@@ -70,6 +70,17 @@ class LocalTopicsAccess implements TopicsAccess {
   );
 
   @override
+  Future<FolderMemberRemoveResult> removeFromFolder({
+    required String folderId,
+    required String noteId,
+  }) async => FolderMemberRemoveResult(
+    vaultId: '',
+    smartFolderId: '',
+    noteId: '',
+    removed: false,
+  );
+
+  @override
   Future<int> getSetting(String key) async => _cli.getSetting(vaultPath, key);
 
   @override
