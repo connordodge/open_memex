@@ -262,6 +262,7 @@ Future<void> _typeAndLeave(
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   group('onBeforeLeave runs once before the state changes (AC1)', () {
     test(
       'openOrFocus of another open tab runs onBeforeLeave once before the state changes',
@@ -679,9 +680,11 @@ void main() {
         await w.fireDebounce();
         expect(w.adds, isEmpty);
 
+        // #271 (N8) TEST-CHANGE: openToday navigates the active tab (Other) to
+        // today now, so `[today] [today*]` is left through the first chip.
         w.tabs.openToday(date: _today);
         typeInVirtualToday(w, 'Morning pages');
-        w.tabs.setActive(w.tabState.tabs.indexOf(const NoteTab(_otherId)));
+        w.tabs.setActive(0);
         await pumpEventQueue();
         expect(w.adds, hasLength(1), reason: 'control');
       },

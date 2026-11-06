@@ -165,8 +165,12 @@ void main() {
       'an active virtual tab after the last real tab persists the last real tab as active',
       () async {
         final c = await _launch();
+        // #271 (N8) TEST-CHANGE: openToday navigates now, so the real tab
+        // is opened and the virtual one appended through openOrFocus.
         final tabs = c.read(tabsProvider.notifier)
-          ..openToday(date: '2026-10-04', noteId: _noteId);
+          ..openOrFocus(const NoteTab(_noteId))
+          ..closeAt(0)
+          ..openOrFocus(const VirtualTodayTab('2026-10-03'));
         expect(c.read(tabsProvider).tabs, [
           const NoteTab(_noteId),
           const VirtualTodayTab('2026-10-03'),

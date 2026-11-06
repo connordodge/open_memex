@@ -101,6 +101,7 @@ List<Map<String, dynamic>> _tabsOf(Map<String, dynamic> json) =>
     (json['tabs'] as List).cast<Map<String, dynamic>>();
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   group('launch order (AC1, AC10)', () {
     test(
       'launch inserts the real daily note for today as the active tab ahead of the restored tabs',
@@ -186,9 +187,12 @@ void main() {
     );
   });
 
+  // #271 (N8) TEST-CHANGE: openToday is `follow` of today's target. A plain
+  // call navigates the active tab and no longer focuses or inserts a tab (the
+  // launch still does); the Cmd variants are in `today_follow_test.dart`.
   group('openToday (AC10)', () {
     test(
-      'openToday focuses the open virtual Today tab instead of adding a second one',
+      'openToday shows the virtual Today note in the active tab and leaves the launch Today tab alone',
       () async {
         final db = FakeVaultDb.v5()..seedNote(id: _otherId, title: 'Other');
         final l = await _launch(db: db, restored: [_note(_otherId)]);
@@ -197,15 +201,17 @@ void main() {
 
         l.notifier.openToday(date: '2026-10-03');
 
-        expect(l.state.tabs, hasLength(2));
-        expect(l.state.tabs.whereType<VirtualTodayTab>(), hasLength(1));
-        expect(l.state.activeTab, isA<VirtualTodayTab>());
-        expect(l.state.activeIndex, 0);
+        expect(l.state.tabs, [
+          const VirtualTodayTab('2026-10-03'),
+          const VirtualTodayTab('2026-10-03'),
+        ]);
+        expect(l.state.activeIndex, 1);
+        expect(l.state.canGoBack, isTrue);
       },
     );
 
     test(
-      'openToday with the id of an open daily note focuses that tab',
+      'openToday with the id of an open daily note shows it in the active tab',
       () async {
         final db = FakeVaultDb.v5()
           ..seedDailyNote('2026-10-03', id: _todayId)
@@ -217,16 +223,17 @@ void main() {
 
         expect(l.state.tabs, [
           const NoteTab(_todayId),
-          const NoteTab(_otherId),
+          const NoteTab(_todayId),
         ]);
-        expect(l.state.activeIndex, 0);
+        expect(l.state.activeIndex, 1);
+        expect(l.state.canGoBack, isTrue);
       },
     );
   });
 
   group('openToday (AC2)', () {
     test(
-      'openToday after the virtual Today tab was closed opens a new active virtual Today tab for the date',
+      'openToday after the virtual Today tab was closed navigates the active tab to a virtual Today note for the date',
       () async {
         final db = FakeVaultDb.v5()..seedNote(id: _otherId, title: 'Other');
         final l = await _launch(db: db, restored: [_note(_otherId)]);
@@ -235,10 +242,10 @@ void main() {
 
         l.notifier.openToday(date: '2026-10-03');
 
-        expect(l.state.tabs, hasLength(2));
-        final active = l.state.activeTab;
-        expect(active, isA<VirtualTodayTab>());
-        expect((active! as VirtualTodayTab).date, '2026-10-03');
+        expect(l.state.tabs, [const VirtualTodayTab('2026-10-03')]);
+        expect(l.state.canGoBack, isTrue);
+        l.notifier.back();
+        expect(l.state.activeTab, const NoteTab(_otherId));
       },
     );
   });
