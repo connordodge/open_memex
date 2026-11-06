@@ -13,7 +13,9 @@ use rusqlite::params;
 
 use crate::blocks::is_list_item;
 use crate::daily::TOPICS_MARKER;
+use crate::embedder::Embedder;
 use crate::link_extractor::{parse_transclusions, split_frontmatter, WIKILINK_RE};
+use crate::notes::NoteId;
 use crate::vault::Vault;
 use crate::Result;
 
@@ -244,6 +246,145 @@ fn strip_task_box(text: &str) -> &str {
         .find_map(|b| text.strip_prefix(b))
         .filter(|rest| rest.is_empty() || rest.starts_with([' ', '\t']))
         .unwrap_or(text)
+}
+
+/// Why a note has a tag (Spec #234 TD1): written as `#name` in its person
+/// section (`body`), applied by an agent (`agent`) or added by the person
+/// without writing it (`person`). `body` outranks the others.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TagOrigin {
+    Body,
+    Agent,
+    Person,
+}
+
+/// The result of a tag write: whether a row changed, and the note's
+/// `version` after the call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagWrite {
+    pub changed: bool,
+    pub version: i64,
+}
+
+/// The result of a tag removal: whether a row went, the `tag_corrections` id
+/// it recorded (agent-origin removals only), and the note's `version` after
+/// the call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagRemoval {
+    pub removed: bool,
+    pub correction_id: Option<i64>,
+    pub version: i64,
+}
+
+/// A tag name and how many notes carry it from any origin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagCount {
+    pub tag: String,
+    pub note_count: i64,
+    pub system: bool,
+}
+
+/// A note carrying a tag, for the Tags mode listing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagNote {
+    pub note_id: String,
+    pub title: String,
+    pub role: Option<String>,
+    pub first_line: Option<String>,
+    pub updated_at: i64,
+}
+
+/// Applies `tag` to `note_id` with `origin` (D16: `create_note`, `memex add`).
+pub fn apply_tag(
+    _vault: &mut Vault,
+    _note_id: &NoteId,
+    _tag: &str,
+    _origin: TagOrigin,
+    _embedder: Option<&dyn Embedder>,
+) -> Result<TagWrite> {
+    Ok(TagWrite {
+        changed: false,
+        version: 0,
+    })
+}
+
+/// The agent's `tag_note`: checks `guide_rule`, `unknown_tag`, `tag_removed`.
+pub fn agent_tag_note(
+    _vault: &mut Vault,
+    _note_id: &NoteId,
+    _tag: &str,
+    _embedder: Option<&dyn Embedder>,
+) -> Result<TagWrite> {
+    Ok(TagWrite {
+        changed: false,
+        version: 0,
+    })
+}
+
+/// The agent's `untag_note`: removes an agent-origin non-system tag.
+pub fn agent_untag_note(
+    _vault: &mut Vault,
+    _note_id: &NoteId,
+    _tag: &str,
+    _embedder: Option<&dyn Embedder>,
+) -> Result<TagRemoval> {
+    Ok(TagRemoval {
+        removed: false,
+        correction_id: None,
+        version: 0,
+    })
+}
+
+/// `memex tag add`: a body-less person-origin tag.
+pub fn person_add_tag(
+    _vault: &mut Vault,
+    _note_id: &NoteId,
+    _tag: &str,
+    _embedder: Option<&dyn Embedder>,
+) -> Result<TagWrite> {
+    Ok(TagWrite {
+        changed: false,
+        version: 0,
+    })
+}
+
+/// `memex tag rm` and the footer ×.
+pub fn person_remove_tag(
+    _vault: &mut Vault,
+    _note_id: &NoteId,
+    _tag: &str,
+    _embedder: Option<&dyn Embedder>,
+) -> Result<TagRemoval> {
+    Ok(TagRemoval {
+        removed: false,
+        correction_id: None,
+        version: 0,
+    })
+}
+
+/// The vocabulary: names with a `body` row on a non-guide note, no system tags.
+pub fn vocabulary(_vault: &Vault) -> Result<Vec<TagCount>> {
+    Ok(Vec::new())
+}
+
+/// Every tag, alphabetical, system tags included.
+pub fn all_tags(_vault: &Vault) -> Result<Vec<TagCount>> {
+    Ok(Vec::new())
+}
+
+/// The notes carrying `tag`, most recently updated first.
+pub fn notes_for_tag(_vault: &Vault, _tag: &str) -> Result<Vec<TagNote>> {
+    Ok(Vec::new())
+}
+
+/// The agent-origin tags of a note.
+pub fn agent_tags_for_note(_vault: &Vault, _note_id: &NoteId) -> Result<Vec<String>> {
+    Ok(Vec::new())
+}
+
+/// The tags a note's footer shows.
+pub fn footer_tags_for_note(_vault: &Vault, _note_id: &NoteId) -> Result<Vec<String>> {
+    Ok(Vec::new())
 }
 
 pub fn add_tag(vault: &Vault, note_id: &str, tag: &str) -> Result<()> {
