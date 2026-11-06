@@ -86,6 +86,7 @@ class _FiledSectionState extends ConsumerState<FiledSection> {
 
   Future<void> _moveTo(FilingTopic from, FilingBlock block) async {
     if (_inFlight.contains(block.id)) return;
+    final daily = widget.note;
     final picked = await showTopicPickDialog(
       context,
       title: 'Move to…',
@@ -95,12 +96,13 @@ class _FiledSectionState extends ConsumerState<FiledSection> {
     );
     if (picked == null || !mounted) return;
     await _run(
+      daily,
       block.id,
       picked,
       (read, target) => read(feedbackActionsProvider).moveBlock(
         fromTopicNoteId: from.topicNoteId,
         toTopicNoteId: target!,
-        date: widget.note.title,
+        date: daily.title,
         blockId: block.id,
         note: picked.why,
       ),
@@ -109,14 +111,16 @@ class _FiledSectionState extends ConsumerState<FiledSection> {
 
   Future<void> _remove(FilingTopic from, FilingBlock block) async {
     if (_inFlight.contains(block.id)) return;
+    final daily = widget.note;
     final picked = await showRemoveBlockDialog(context);
     if (picked == null || !mounted) return;
     await _run(
+      daily,
       block.id,
       null,
       (read, _) => read(feedbackActionsProvider).removeBlock(
         topicNoteId: from.topicNoteId,
-        date: widget.note.title,
+        date: daily.title,
         blockId: block.id,
         note: picked.why,
       ),
@@ -125,6 +129,7 @@ class _FiledSectionState extends ConsumerState<FiledSection> {
 
   Future<void> _fileIn(FilingBlock block) async {
     if (_inFlight.contains(block.id)) return;
+    final daily = widget.note;
     final picked = await showTopicPickDialog(
       context,
       title: 'File in…',
@@ -133,20 +138,27 @@ class _FiledSectionState extends ConsumerState<FiledSection> {
     );
     if (picked == null || !mounted) return;
     await _run(
+      daily,
       block.id,
       picked,
       (read, target) => read(feedbackActionsProvider).fileBlock(
         topicNoteId: target!,
-        date: widget.note.title,
+        date: daily.title,
         blockId: block.id,
         note: picked.why,
       ),
     );
   }
 
-  /// Runs a fix for the block [id]: its row is in flight meanwhile, a failure
-  /// becomes the row's inline error, and a fix that worked on the open daily
-  /// note rebases the editor on the note's new version (D23).
+  /// Runs a fix for the block [id] of the day [daily]: its row is in flight
+  /// meanwhile, a failure becomes the row's inline error, and a fix that worked
+  /// on the open daily note rebases the editor on the note's new version (D23).
+  /// A rebase that fails is not a failure of the fix, which already went
+  /// through: the row comes back and shows no error.
+  ///
+  /// [daily] is the note whose row was pressed, taken before the dialog opens:
+  /// the section can show another day by the time the write starts, and the
+  /// write and the rebase still belong to the pressed day.
   ///
   /// With a [picked] `Create "<name>"`, the topic note is created first (and
   /// stays when [write] then fails); [write] gets a reader and the target
@@ -158,6 +170,7 @@ class _FiledSectionState extends ConsumerState<FiledSection> {
   /// rebase must still happen (the pending edit would else hit a version
   /// conflict on its next save).
   Future<void> _run(
+    Note daily,
     String id,
     TopicPickResult? picked,
     Future<Object?> Function(
@@ -168,7 +181,6 @@ class _FiledSectionState extends ConsumerState<FiledSection> {
   ) async {
     if (!_inFlight.add(id)) return;
     final container = ProviderScope.containerOf(context);
-    final daily = widget.note;
     setState(() => _errors.remove(id));
     var worked = false;
     try {
@@ -199,7 +211,14 @@ class _FiledSectionState extends ConsumerState<FiledSection> {
     } catch (e) {
       if (mounted) setState(() => _errors[id] = e.toString());
     }
-    if (worked) await _rebaseDaily(container, daily);
+    if (worked) {
+      try {
+        await _rebaseDaily(container, daily);
+      } on Object {
+        // The fix went through and its bump refreshes the section. The editor
+        // stays on its base: a later save reports the conflict if there is one.
+      }
+    }
     _inFlight.remove(id);
     if (mounted) setState(() {});
   }
