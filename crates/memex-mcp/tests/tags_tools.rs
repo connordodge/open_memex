@@ -24,7 +24,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use memex_core::embedder::{Embedder, FakeEmbedder};
+use memex_core::canvas::SystemClock;
 use memex_core::footer::{self, ChipOrigin};
+use memex_core::guide;
 use memex_core::notes::{
     create_note_as, get_note, update_note_as, CreateNote, NoteId, RenameOptions, UpdateNote,
 };
@@ -103,14 +105,23 @@ async fn topic(state: &AppState, title: &str) -> String {
     person_note_in(&mut vault, title, "A topic.\n", json!({ "role": "topic" }))
 }
 
+/// The vault's real guide, built the only way D10 allows: `guide::get_or_create`
+/// (`create_note_as` rejects `role: guide` for every caller), then
+/// `guide::update` to a body of its own.
 async fn guide(state: &AppState) -> String {
     let mut vault = state.vault.lock().await;
-    person_note_in(
+    let seeded = guide::get_or_create(&mut vault, &SystemClock, None).expect("create the guide");
+    guide::update(
         &mut vault,
-        "Vault Guide",
+        seeded.version,
         "How to.\n",
-        json!({ "role": "guide" }),
+        &["Set up the guide".to_string()],
+        DAY,
+        &SystemClock,
+        None,
     )
+    .expect("write the guide body")
+    .note_id
 }
 
 /// A person's note that writes each name as `#name`, so each is vocabulary.
