@@ -67,6 +67,20 @@ Respect pinned items:
 - Unpinned Smart Folders and memberships are yours to change: rename, re-parent, merge, split or delete them with `update_smart_folder`, `remove_from_smart_folder` and `delete_smart_folder`, within the depth limit, when that clearly improves how topic notes are grouped. Deleting a Smart Folder never deletes topic notes. Do not reshuffle the tree on every run.
 - If a call fails with `pinned_rule`, leave that item as it is and carry on.
 
+## Tagging notes
+
+Tag the notes you touch with tags the person already uses. Run this after step 6 and before step 7.
+
+- Call `list_tags` once per run, before your first `tag_note`, and keep the result. It lists the tags the person has written in their notes. If it lists no tags, apply none and skip the rest of this section.
+- Call `tag_note` with a `note_id` and a tag name, only for a tag that `list_tags` lists. Never invent a tag name.
+- Tag only the day's daily note and the topic notes you touched in this run, and only when the tag fits the note as a whole, not one block of it. Tag no other note, even one that looks related.
+- Never add text to a daily note to tag it: `tag_note` writes the tag's line in the Note footer, and the person's text is left alone. Never write a `#tag` into a note body.
+- If `tag_note` fails, read its `code`, do not retry the same call, and carry on with the next note or tag:
+  - `unknown_tag`: the tag is not in the vocabulary. Leave that tag off.
+  - `tag_removed`: the person took that tag off this note, so a removed tag stays off. Leave that tag off.
+  - `guide_rule`: the note is the Vault Guide, which you never tag. Leave that note alone.
+- Record each tag you applied in step 7.
+
 ## 7. Mark the day reviewed
 
 Call `mark_day_reviewed` with the `date`, `version` set to the `content_version` you fetched in step 2 (not a newer one), and `changes`: a list of `{note_id, bullets}` entries, one entry per note you touched in this run.
@@ -74,6 +88,7 @@ Call `mark_day_reviewed` with the `date`, `version` set to the `content_version`
 Change-entry rules (the server rejects the whole call if any one is broken):
 
 - One entry for each touched note: every topic note you created, added an excerpt to, linked from, or added to a Smart Folder, plus an entry for the daily note itself. The daily note's entry is always required, even when nothing needed filing (for example `Nothing new to file`).
+- A note you touched only by tagging needs its entry too: tagging alone counts as touching it. Each tag you applied to a note gets a bullet in that note's entry, such as `Tagged #pricing`.
 - Each entry has 1 to 3 bullets.
 - Each bullet is one line of plain markdown, at most 200 characters, with no newline and no leading `- ` (the app adds the bullet marker).
 - Bullets say what you did, for example `Filed 2 blocks into Player Loop` or `Linked to Level Design (extends)`. They never quote or summarise the person's text.
@@ -103,6 +118,17 @@ For each message:
 4. Otherwise run a full review of the day instead. If `prior_state` was `Unreviewed` or `Changed since review`, the day holds earlier text that no review has filed, so marking it reviewed with your version would hide that text. Likewise, if the version check fails (`mark_day_reviewed` returns `review_stale` because the person edited the day meanwhile), run a full review. A full review of the day: call `get_daily_note_changes` for the returned `date`; file every `added` and `changed` block it lists that you have not already filed in step 2, the same way as step 2 (search before creating, never the same block twice in one topic note); then call `mark_day_reviewed` with the `content_version` that `get_daily_note_changes` returned and one entry for each touched note, including the daily note itself. If that fails with `review_stale` again, repeat the full review.
 
 5. Reply in one line saying where the observation went: the day it was added to and the topic notes it was filed under, for example `Added to 2026-10-03, filed under Player Loop and Level Design.` If it went into no topic note, say it was added to today's daily note only. If a step failed, say which in that same line.
+
+Tagging the notes you touch, before step 3 marks the day reviewed:
+
+- Call `list_tags` once per session, before your first `tag_note`, and keep the result. It lists the tags the person has written in their notes. If it lists no tags, apply none.
+- Call `tag_note` with a `note_id` and a tag name, only for a tag that `list_tags` lists, on a topic note you touched or on today's daily note, and only when the tag fits the note as a whole. Tag no other note. Never invent a tag name.
+- Never write a `#tag` into a note body: `tag_note` writes the tag's line in the Note footer and leaves the person's text alone.
+- If `tag_note` fails, read its `code`, do not retry the same call, and carry on:
+  - `unknown_tag`: the tag is not in the vocabulary. Leave that tag off.
+  - `tag_removed`: the person took that tag off this note, so a removed tag stays off. Leave that tag off.
+  - `guide_rule`: the note is the Vault Guide, which you never tag. Leave that note alone.
+- Each tag you applied gets a bullet in that note's change entry, such as `Tagged #pricing`. A note touched only by tagging needs its entry too.
 "#;
 
 /// The single user message a prompt's text is served as.
