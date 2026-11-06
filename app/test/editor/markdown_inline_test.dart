@@ -2320,6 +2320,25 @@ void main() {
     });
 
     test(
+      'a tag right after an escaped opening character still gets its tag token',
+      () {
+        // The escape token ends exactly where the tag starts: the tag is not
+        // inside the escape, whose escaped character is the opener.
+        for (final opener in ['(', '[', '{', '"', "'"]) {
+          final text = '\\$opener#x';
+          expect(
+            kindsOf(text),
+            [InlineTokenKind.escape, InlineTokenKind.tag],
+            reason: 'after an escaped $opener',
+          );
+          expect(spansOf(text, InlineTokenKind.tag), [
+            [2, 4],
+          ], reason: 'after an escaped $opener');
+        }
+      },
+    );
+
+    test(
       'a tag on each line of a multi-line text keeps its offset with LF and CRLF endings',
       () {
         const text = 'first #a\n#b\r\nlast #c';

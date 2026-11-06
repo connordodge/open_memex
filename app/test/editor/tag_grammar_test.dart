@@ -251,6 +251,23 @@ void main() {
   });
 
   group('tag ranges in a line (AC2)', () {
+    test('TagRange has value semantics and prints its range and name', () {
+      final built = findTagsInLine('x #Work').single;
+      expect(built, TagRange(2, 7, 'work'));
+      expect(built.hashCode, TagRange(2, 7, 'work').hashCode);
+      expect(built.start, 2);
+      expect(built.end, 7);
+      expect(built.name, 'work');
+      expect(built, isNot(TagRange(3, 7, 'work')));
+      expect(built, isNot(TagRange(2, 8, 'work')));
+      expect(built, isNot(TagRange(2, 7, 'play')));
+      // Value equality only holds for another TagRange.
+      // ignore: unrelated_type_equality_checks
+      expect(built == '#work', isFalse);
+      expect({built, TagRange(2, 7, 'work')}, hasLength(1));
+      expect(built.toString(), 'TagRange(2, 7, work)');
+    });
+
     test(
       'findTagsInLine gives the exact UTF-16 range and lowercase name of each tag',
       () {
@@ -650,6 +667,9 @@ void main() {
         // A backtick fence has no backtick in its info string; a tilde fence may.
         '```a`b\n#x': ['x'],
         '~~~a`b\n#x\n~~~\n#y': ['y'],
+        // A closing run longer than the opener closes it too.
+        '```\n#x\n`````\n#y': ['y'],
+        '~~~\n#x\n~~~~~\n#y': ['y'],
         // Two characters make no fence.
         '``\n#x': ['x'],
         '~~\n#x': ['x'],
