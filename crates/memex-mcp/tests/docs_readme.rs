@@ -2585,11 +2585,14 @@ fn review_guide_activity_section_says_what_handled_shows_what_restore_does_and_t
             "the Activity section shows `{cmd}`:\n{body}"
         );
     }
-    // Corrections: the three things a person can undo.
+    // Corrections: the things a person can undo, and where each one shows (R3, R23).
     for what in [
-        "move a block to another topic note",
-        "take a block or a tag off a note",
-        "take a topic note out of a Smart Folder",
+        "moving a block to another topic note",
+        "`File in…`",
+        "a tag Review applied",
+        "a Smart Folder the agent placed it in",
+        "a Smart Folder the agent created",
+        "the day's daily note",
     ] {
         assert!(
             body.contains(what),

@@ -152,7 +152,7 @@ Needs the reviewed days from section 2, so the days are filed into topic notes. 
    memex excerpt move --vault "$VAULT" --date 2026-09-05 --block-id <block id> \
      --from-topic-note-id <id of A> --to-topic-note-id <id of B> --note "This is about B, not A"
    ```
-   **Expected**: the command succeeds. In the app, B's Activity tab shows a Correction for it, open.
+   **Expected**: the command succeeds. In the app, the Activity tab of the daily note for 2026-09-05 shows a Correction for it, open.
 3. Leave a written comment about a filing the Correction does not fix. Choose an entry in a note's Activity tab, press `Comment`, and write `Keep sleep notes out of the Player Loop topic`. Or from the shell:
    ```bash
    memex feedback add --vault "$VAULT" --note-id <note id> --date 2026-09-05 --change-id <Activity entry id> --text "Keep sleep notes out of the Player Loop topic"
@@ -166,7 +166,7 @@ Needs the reviewed days from section 2, so the days are filed into topic notes. 
 
 1. In a new Claude Code session started the same way as section 2, run `/mcp__memex__review_daily_notes`. When the agent has finished, or while it works, type: `Sleep notes belong in the Sleep topic, not the Player Loop topic.`
 2. **Expected**: the agent treats the comment as Feedback. It fixes the filing on the spot, records your words as you typed them with `record_feedback` (with a one-line reply), and, since the comment is lasting, updates the Vault Guide. Any change it makes outside marking a day reviewed is listed in the `changes` of the call.
-3. In the app, open the topic note it changed and its Activity tab. **Expected**: an entry for the fix, and a Feedback row labelled `From chat` that reads `Handled`, with your sentence exactly as typed. It was Handled when it was stored, so it never shows as open.
+3. In the app, open the topic note it changed and its Activity tab. **Expected**: an entry for the fix. The `From chat` row is on the note your comment names, or on the Vault Guide's Activity tab if the agent recorded it with no note. It reads `Handled`, with your sentence exactly as typed. It was Handled when it was stored, so it never shows as open.
 
 ## 11. After a Correction, a later review does not redo it
 
