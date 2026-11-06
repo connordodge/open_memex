@@ -1458,6 +1458,40 @@ void main() {
     );
   });
 
+  group('plain hover on a link that starts a line', () {
+    testWidgets(
+      'plain hover over a link at the start of a line belongs to its own line and not the one before',
+      (tester) async {
+        const text = 'Zero line\n[[Known]] here';
+        final f = await _wi166PumpLinkField(tester, text);
+        f.controller.revealGate = const AlwaysStoppedAnimation<bool>(true);
+        final start = text.indexOf('[[Known]]');
+        final range = TextRange(start: start, end: start + '[[Known]]'.length);
+        // The caret touches the first line only: the link's line stays
+        // rendered, and the line before it ends right where the link starts.
+        f.controller.selection = const TextSelection.collapsed(offset: 2);
+        await tester.pump();
+
+        final mouse = await _mouseAt(tester, f.pointOn('Known'));
+        try {
+          expect(_cursor(), SystemMouseCursors.click);
+          expect(f.controller.cmdHover, range);
+
+          // The caret reaches the link's own line: its markup shows, the line
+          // before is rendered now.
+          f.controller.selection = TextSelection.collapsed(offset: text.length);
+          await tester.pump();
+          await tester.pump();
+          expect(_cursor(), SystemMouseCursors.text);
+          expect(f.controller.cmdHover, isNull);
+        } finally {
+          await _removeMouse(tester, mouse);
+        }
+      },
+      variant: macOnly,
+    );
+  });
+
   // -------------------------------------------------------------------------
   // #269 (rulings D19, D19a): the one predicate of what a plain click follows.
   // -------------------------------------------------------------------------

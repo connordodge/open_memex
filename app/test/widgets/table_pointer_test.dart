@@ -190,6 +190,7 @@ class _Wi207Body {
 Future<_Wi207Body> _wi207Pump(
   WidgetTester tester, {
   String text = _wi207Text,
+  List<RowKind> kinds = const [RowKind.prose, RowKind.table, RowKind.prose],
 }) async {
   final log = <String>[];
   final tabs = _Wi207Tabs(log, TabsRecorder());
@@ -208,11 +209,7 @@ Future<_Wi207Body> _wi207Pump(
   // a frame.
   await tester.pump();
   await tester.pump();
-  expect(
-    [for (final r in b.rows()) r.kind],
-    const [RowKind.prose, RowKind.table, RowKind.prose],
-    reason: 'fixture rows',
-  );
+  expect([for (final r in b.rows()) r.kind], kinds, reason: 'fixture rows');
   expectTableRendered(0, 1, reason: 'the table starts rendered');
   return _Wi207Body(b, log, tabs, opener);
 }
@@ -1511,6 +1508,50 @@ void main() {
         expect(selection.isCollapsed, isFalse, reason: 'the first word');
         expect(selection.start, lessThanOrEqualTo(first));
         expect(selection.end, greaterThan(first));
+        await _wi207PastDoubleClick(tester);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a chain click that lost the arena to a link in another rendered grid still lets the chain expire',
+      (tester) async {
+        const text =
+            'Top\n| A | B |\n| --- | --- |\n| word | c |\n\n'
+            '| See [[Known]] | D |\n| --- | --- |\n| e | f |';
+        final t = await _wi207Pump(
+          tester,
+          text: text,
+          kinds: const [
+            RowKind.prose,
+            RowKind.table,
+            RowKind.prose,
+            RowKind.table,
+          ],
+        );
+        final b = t.b;
+        final first = text.indexOf('word') + 1;
+        final down = _wi207Glyph(b, first);
+
+        // A grid click starts the chain and reveals the first table.
+        await _wi207Click(tester, down);
+        expectTableRevealed(0, 1);
+        expectTableRendered(0, 3, reason: 'the second table stays a grid');
+        await tester.pump(const Duration(milliseconds: 50));
+
+        // The second click continues the chain, on a link of the other grid:
+        // the link region wins the arena at once and the chain click loses.
+        final link = _wi207Glyph(b, text.indexOf('Known') + 2);
+        expect((link - down).distance, lessThan(kDoubleTapSlop));
+        await _wi207Click(tester, link);
+        expect(t.tabs.followed, isEmpty, reason: 'the chain wins');
+        expect(b.selection().isCollapsed, isFalse, reason: 'the first word');
+
+        // The chain's timer still ran at the release: a click at the first
+        // press well after the window is a single click, no word.
+        await _wi207PastDoubleClick(tester);
+        await _wi207Click(tester, down);
+        expect(b.selection().isCollapsed, isTrue, reason: 'a caret, no word');
         await _wi207PastDoubleClick(tester);
       },
       variant: macOnly,

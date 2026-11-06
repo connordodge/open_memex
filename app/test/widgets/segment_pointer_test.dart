@@ -23,6 +23,7 @@ import 'package:flutter/gestures.dart'
         kDoubleTapTimeout,
         kMiddleMouseButton,
         kPrecisePointerHitSlop,
+        kPressTimeout,
         kSecondaryButton;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -2571,6 +2572,67 @@ void main() {
           inInclusiveRange(lineStart, lineEnd),
         );
         await t.pastDoubleClick();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a press on a rendered wikilink held past the press timeout moves no caret and still follows on release',
+      (tester) async {
+        final t = await _wi269Pump(
+          tester,
+          text: 'See [[Known]] here\n- bullet words\n',
+        );
+        final b = t.b;
+        final caret = t.at('words', plus: 2);
+        await b.placeCaret(caret);
+        await t.pastDoubleClick();
+        final at = t.glyph(t.at('Known', plus: 2));
+
+        final mouse = await tester.startGesture(
+          at,
+          kind: PointerDeviceKind.mouse,
+        );
+        // A macOS tap-and-pan recognizer puts the caret down once its press
+        // timeout runs out, if the press is still in the arena.
+        await tester.pump(kPressTimeout + const Duration(milliseconds: 50));
+        expect(b.selection(), TextSelection.collapsed(offset: caret));
+        expect(b.view().focusedRow, 1);
+        expect(t.tabs.followed, isEmpty, reason: 'the release follows');
+
+        await mouse.up();
+        await tester.pump();
+        await t.pastDoubleClick();
+
+        expect(t.tabs.followed, [const NoteTab(_wi269KnownId)]);
+        expect(b.selection(), TextSelection.collapsed(offset: caret));
+        expect(b.view().focusedRow, 1);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a press on a rendered wikilink whose row goes away before the release follows nothing',
+      (tester) async {
+        final t = await _wi269Pump(tester, text: 'Top\n- See [[Known]] here\n');
+        final b = t.b;
+        final at = t.glyph(t.at('Known', plus: 2));
+
+        final mouse = await tester.startGesture(
+          at,
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pump();
+        // The note is rewritten, as a poll would: the bullet row is gone.
+        await b.serverWrite('Top\n');
+        await tester.pump();
+        await mouse.up();
+        await tester.pump();
+        await t.pastDoubleClick();
+
+        expect(tester.takeException(), isNull);
+        expect(t.tabs.followed, isEmpty);
+        expect(t.tabs.navigated, isEmpty);
       },
       variant: macOnly,
     );
