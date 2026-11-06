@@ -136,6 +136,7 @@ class TabsNotifier extends StateNotifier<TabsState> {
   TabsNotifier({
     required this.store,
     required this.onPersistedSelection,
+    this.onBeforeLeave,
     String? todayDate,
     String? todayNoteId,
   }) : super(TabsState.empty) {
@@ -143,6 +144,10 @@ class TabsNotifier extends StateNotifier<TabsState> {
   }
 
   final UiStateStore store;
+
+  /// Runs before a call changes which tab is active or removes the active
+  /// tab, so what is being left can save a pending edit (#264, D9).
+  final void Function()? onBeforeLeave;
 
   /// Called with the active note id (or null) so legacy
   /// `selectedNoteIdProvider`-driven widgets stay in sync.
