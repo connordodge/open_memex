@@ -67,28 +67,32 @@ Finder _chipText(String scopeId, String text) => find.descendant(
 
 void main() {
   group('openGraph (AC6)', () {
-    testWidgets('openGraph opens and activates a Graph tab', (tester) async {
+    testWidgets('openGraph shows the Graph view in the current tab', (
+      tester,
+    ) async {
       final h = await _pump(tester);
       expect(find.byKey(_graphView), findsNothing);
       // The tabs the app launched with (#22's Today tab).
-      final launch = h.read(tabsProvider).tabs;
+      final launch = h.read(tabsProvider);
 
       await _openGraph(tester, const GraphScope.topic(G.alpha));
 
       final tabs = h.read(tabsProvider);
-      expect(tabs.tabs, [...launch, GraphTab(const GraphScope.topic(G.alpha))]);
+      expect(tabs.tabs, hasLength(launch.tabs.length));
+      expect(tabs.activeIndex, launch.activeIndex);
       expect(tabs.activeTab, GraphTab(const GraphScope.topic(G.alpha)));
+      expect(tabs.canGoBack, isTrue);
       expect(find.byKey(_graphTabChip('topic:${G.alpha}')), findsOneWidget);
       expect(find.byKey(_graphView), findsOneWidget);
     });
 
     testWidgets(
-      'calling openGraph again with the same scope focuses the existing tab',
+      'calling openGraph again with the same scope from another tab shows it in that tab too',
       (tester) async {
         final h = await _pump(tester);
-        // The tabs the app launched with (#22's Today tab).
-        final launch = h.read(tabsProvider).tabs;
         await _openGraph(tester, const GraphScope.topic(G.alpha));
+        // The tabs after the first openGraph navigated the launch tab.
+        final launch = h.read(tabsProvider).tabs;
         h.read(tabsProvider.notifier).openOrFocus(const NoteTab(G.beta));
         await pumpFrames(tester);
         expect(h.read(tabsProvider).activeTab, const NoteTab(G.beta));
@@ -100,32 +104,34 @@ void main() {
         expect(tabs.tabs, [
           ...launch,
           GraphTab(const GraphScope.topic(G.alpha)),
-          const NoteTab(G.beta),
         ]);
         expect(tabs.activeIndex, launch.length);
         expect(tabs.activeTab, GraphTab(const GraphScope.topic(G.alpha)));
-        expect(find.byKey(_graphTabChip('topic:${G.alpha}')), findsOneWidget);
+        expect(find.byKey(_graphTabChip('topic:${G.alpha}')), findsNWidgets(2));
         expect(find.byKey(_graphView), findsOneWidget);
       },
     );
 
-    testWidgets('openGraph with a different scope opens a second Graph tab', (
-      tester,
-    ) async {
-      final h = await _pump(tester);
-      // The tabs the app launched with (#22's Today tab).
-      final launch = h.read(tabsProvider).tabs;
-      await _openGraph(tester, const GraphScope.topic(G.alpha));
-      await _openGraph(tester, const GraphScope.day(G.alpha));
+    testWidgets(
+      'openGraph with a different scope replaces the Graph view in the current tab',
+      (tester) async {
+        final h = await _pump(tester);
+        // The tabs the app launched with (#22's Today tab).
+        final launch = h.read(tabsProvider);
+        await _openGraph(tester, const GraphScope.topic(G.alpha));
+        await _openGraph(tester, const GraphScope.day(G.alpha));
 
-      final tabs = h.read(tabsProvider);
-      expect(tabs.tabs, [
-        ...launch,
-        GraphTab(const GraphScope.topic(G.alpha)),
-        GraphTab(const GraphScope.day(G.alpha)),
-      ]);
-      expect(tabs.activeIndex, launch.length + 1);
-    });
+        final tabs = h.read(tabsProvider);
+        expect(tabs.tabs, hasLength(launch.tabs.length));
+        expect(tabs.activeIndex, launch.activeIndex);
+        expect(tabs.activeTab, GraphTab(const GraphScope.day(G.alpha)));
+        h.read(tabsProvider.notifier).back();
+        expect(
+          h.read(tabsProvider).activeTab,
+          GraphTab(const GraphScope.topic(G.alpha)),
+        );
+      },
+    );
 
     testWidgets('a topic Graph tab chip reads Graph · and the note title', (
       tester,
@@ -170,20 +176,27 @@ void main() {
   });
 
   group('opening a node (AC10)', () {
-    testWidgets('tapping a graph node opens that note as the active tab', (
+    testWidgets('tapping a graph node shows that note in the current tab', (
       tester,
     ) async {
       final h = await _pump(tester);
       await _openGraph(tester, const GraphScope.topic(G.alpha));
       await pumpFrames(tester, frames: 20);
+      final before = h.read(tabsProvider);
 
       await tester.tap(find.byKey(const Key('graph-node-${G.beta}')));
       await pumpFrames(tester);
 
       final tabs = h.read(tabsProvider);
       expect(tabs.activeTab, const NoteTab(G.beta));
-      expect(tabs.tabs, contains(GraphTab(const GraphScope.topic(G.alpha))));
+      expect(tabs.tabs, hasLength(before.tabs.length));
+      expect(tabs.activeIndex, before.activeIndex);
       expect(find.byKey(_graphView), findsNothing);
+      h.read(tabsProvider.notifier).back();
+      expect(
+        h.read(tabsProvider).activeTab,
+        GraphTab(const GraphScope.topic(G.alpha)),
+      );
     });
 
     testWidgets('tapping a daily node opens the daily note as the active tab', (
@@ -491,20 +504,24 @@ void main() {
   // WI #88 (W4) AC9: opening a note from a node focuses an open tab.
   group('opening a node focuses an open tab (WI 88)', () {
     testWidgets(
-      'tapping a graph node focuses the tab of a note that is already open',
+      'tapping a graph node of a note open in another tab shows it in the current tab too',
       (tester) async {
         final h = await _pump(tester);
         h.read(tabsProvider.notifier).openOrFocus(const NoteTab(G.beta));
         await pumpFrames(tester);
         await _openGraph(tester, const GraphScope.topic(G.alpha));
         await pumpFrames(tester, frames: 20);
-        final before = h.read(tabsProvider).tabs;
+        final before = h.read(tabsProvider);
 
         await tester.tap(find.byKey(const Key('graph-node-${G.beta}')));
         await pumpFrames(tester);
 
         final tabs = h.read(tabsProvider);
-        expect(tabs.tabs, before, reason: 'no second tab for the same note');
+        expect(tabs.tabs, [
+          for (var i = 0; i < before.tabs.length; i++)
+            i == before.activeIndex ? const NoteTab(G.beta) : before.tabs[i],
+        ], reason: 'no tab opens: the Graph tab navigates');
+        expect(tabs.activeIndex, before.activeIndex);
         expect(tabs.activeTab, const NoteTab(G.beta));
         expect(find.byKey(_graphView), findsNothing);
       },
