@@ -201,6 +201,21 @@ class HostedTopicsAccess implements TopicsAccess {
     return _parsed(op, json, parseFolderMembershipResult);
   }
 
+  /// `DELETE /smart-folders/{folder_id}/members/{note_id}` (no body).
+  @override
+  Future<FolderMemberRemoveResult> removeFromFolder({
+    required String folderId,
+    required String noteId,
+  }) async {
+    const op = 'folder remove';
+    final json = await _call(
+      'DELETE',
+      '${_folder(folderId)}/members/${Uri.encodeComponent(noteId)}',
+      operation: op,
+    );
+    return _parsed(op, json, parseFolderMemberRemoveResult);
+  }
+
   /// `GET /settings/{key}`: the integer `value`.
   @override
   Future<int> getSetting(String key) async {

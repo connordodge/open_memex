@@ -47,6 +47,13 @@ abstract interface class TopicsAccess {
     bool? pinned,
   });
 
+  /// `memex folder remove` (`FolderCli.removeFromFolder`); hosted:
+  /// `DELETE /smart-folders/{folder_id}/members/{note_id}`.
+  Future<FolderMemberRemoveResult> removeFromFolder({
+    required String folderId,
+    required String noteId,
+  });
+
   /// `memex settings get` (`SettingsCli.getSetting`).
   Future<int> getSetting(String key);
 
