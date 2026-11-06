@@ -206,17 +206,21 @@ class FolderMenuButton extends ConsumerWidget {
 /// The membership context menu of a topic row (secondary click): pin or
 /// unpin that note's membership in [folderId] (Key
 /// `membership-menu-pinned-<folderId>-<noteId>`), through `memex folder add
-/// --pinned`.
+/// --pinned`, or remove it from the folder (`membership-menu-remove-…`).
 class MembershipMenu extends StatefulWidget {
   const MembershipMenu({
     super.key,
     required this.folderId,
+    required this.folderName,
     required this.noteId,
     required this.pinned,
     required this.child,
   });
 
   final String folderId;
+
+  /// The folder's name, for the `Remove from <name>` item.
+  final String folderName;
   final String noteId;
 
   /// The membership's current pin.
@@ -253,6 +257,19 @@ class _MembershipMenuState extends State<MembershipMenu> {
             pinned: !widget.pinned,
           ),
           child: Text(widget.pinned ? 'Unpin in folder' : 'Pin in folder'),
+        ),
+        MenuItemButton(
+          key: Key(
+            'membership-menu-remove-${widget.folderId}-${widget.noteId}',
+          ),
+          leadingIcon: const Icon(LucideIcons.folderMinus, size: 14),
+          onPressed: () => removeFromSmartFolder(
+            container,
+            context,
+            folderId: widget.folderId,
+            noteId: widget.noteId,
+          ),
+          child: Text('Remove from ${widget.folderName}'),
         ),
       ],
       child: GestureDetector(
