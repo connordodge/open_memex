@@ -30,7 +30,7 @@ The rules below are enforced by the MCP server for every call, so a weakly promp
 - It cannot rename, delete or merge notes: there is no MCP tool for it. Deleting a note is yours alone (`Delete note` in the app, or `memex rm`).
 - It respects pinned items and the depth limit, and `mark_day_reviewed` fails with `review_stale` if you edited the day after the agent fetched it.
 
-The tools a review uses, in the order a review uses them: `list_unreviewed_days`, `get_daily_note_changes`, `search`, `get_note`, `create_note` (with `role: topic`), `add_excerpt`, `add_link`, `get_vault_settings`, `list_smart_folders`, `create_smart_folder`, `add_to_smart_folder`, `list_tags`, `tag_note`, `mark_day_reviewed`. The full list of 30 tools is in the [README](../README.md).
+The tools a review uses, in the order a review uses them: `list_unreviewed_days`, `get_daily_note_changes`, `search`, `get_note`, `create_note` (with `role: topic`), `add_excerpt`, `add_link`, `get_vault_settings`, `list_smart_folders`, `create_smart_folder`, `add_to_smart_folder`, `list_tags`, `tag_note`, `mark_day_reviewed`. The full list of 37 tools is in the [README](../README.md).
 
 ## 2. The two prompts
 
