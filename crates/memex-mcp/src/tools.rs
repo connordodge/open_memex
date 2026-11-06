@@ -686,6 +686,10 @@ impl Memex {
             agent_id,
             role,
         } = params.0;
+        // D43: rejected before anything is written.
+        if let Some(rejected) = tag_list.as_deref().and_then(tags::invalid_tag_name) {
+            return rejected;
+        }
         let role = match role {
             None => None,
             Some(r) => match Role::parse(&r) {
@@ -746,7 +750,8 @@ impl Memex {
         let embedder = self.state.embedder.clone();
         let embedder_ref = embedder.as_deref();
         // D16: agent-origin, with footer text in the same call unless it's a
-        // system tag. A tag that can't be applied doesn't fail the note.
+        // system tag. Every name is valid by now (D43); any other failure to
+        // apply a tag doesn't fail the note.
         for t in &all_tags {
             let _ = core_tags::apply_tag(
                 &mut vault,

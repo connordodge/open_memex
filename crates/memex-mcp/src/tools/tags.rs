@@ -62,6 +62,16 @@ fn output_name(input: &str) -> String {
     core_tags::normalize_name(bare).unwrap_or_else(|| bare.to_string())
 }
 
+/// The C1 `invalid_argument` object for the first of a `create_note` call's
+/// `tags` outside the grammar (D43), checked as `apply_tag` reads a name.
+pub(super) fn invalid_tag_name(tags: &[String]) -> Option<String> {
+    let bad = tags
+        .iter()
+        .find(|tag| core_tags::normalize_name(tag.strip_prefix('#').unwrap_or(tag)).is_none())?;
+    let message = format!("{bad:?} is not a valid tag name");
+    Some(json!({ "error": { "code": "invalid_argument", "message": message } }).to_string())
+}
+
 // Every rule is core's: the guide check (D10) comes first in `agent_tag_note`,
 // `agent_untag_note` and `set_chip`. Every failure is a C1 object, never the
 // `op.sub` codes of the older tools.
