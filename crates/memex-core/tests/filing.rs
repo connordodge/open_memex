@@ -440,6 +440,26 @@ fn day_filing_scans_only_notes_with_the_exact_topic_role() {
 }
 
 #[test]
+fn day_filing_skips_a_note_with_unparseable_frontmatter_instead_of_failing() {
+    let mut w = world();
+    let broken = create(&mut w.vault, "Broken", T1, Some(json!({ "role": "topic" })));
+    w.vault
+        .connection_ref()
+        .execute(
+            "UPDATE notes SET frontmatter = 'not json {' WHERE id = ?",
+            params![broken.id.as_str()],
+        )
+        .unwrap();
+    let topic = create_topic(&mut w.vault, "Real", &[T2]);
+    mark_reviewed(&mut w.vault, DAY);
+
+    let f = filing(&w);
+
+    assert_eq!(f.topics, [filed(&topic, "Real", &[b2()])]);
+    assert_eq!(f.not_filed, [b1(), b3(), b4(), b5()]);
+}
+
+#[test]
 fn day_filing_does_not_rely_on_footer_chips() {
     let mut w = world();
     let topic = create_topic(&mut w.vault, "No chip", &[T1]);

@@ -1868,6 +1868,21 @@ fn remove_excerpt_block_keeps_every_byte_around_the_split_token() {
     );
 }
 
+/// A split removes no token, so an unrelated empty `## <date>` heading of the
+/// body stays; only a token with nothing left triggers the heading cleanup.
+#[test]
+fn remove_excerpt_block_keeps_an_unrelated_empty_date_heading_when_a_range_is_split() {
+    let head = "## 2026-09-07\n\n## Notes\n\nText.\n\n## 2026-09-07\n\n";
+    let (mut w, _) = world_with_day2(&format!("{head}![[2026-09-07#^blk001..^blk003]]\n"));
+
+    remove_block(&mut w, DAY2, "blk002");
+
+    assert_eq!(
+        body(&w),
+        format!("{head}![[2026-09-07#^blk001]]\n\n![[2026-09-07#^blk003]]\n")
+    );
+}
+
 #[test]
 fn remove_excerpt_block_splits_an_inline_token_in_place() {
     let (mut w, _) = world_with_day2("See ![[2026-09-07#^blk001..^blk003]] here.\n");
