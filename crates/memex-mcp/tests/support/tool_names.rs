@@ -46,7 +46,15 @@ pub const EXISTING_TOOLS: &[&str] = &[
 pub const TAG_TOOLS: &[&str] = &["add_footer_topic", "list_tags", "tag_note", "untag_note"];
 
 /// The feedback tools (#254 fills this block; owner Spec #233).
-pub const FEEDBACK_TOOLS: &[&str] = &[];
+pub const FEEDBACK_TOOLS: &[&str] = &[
+    "get_day_filing",
+    "get_vault_guide",
+    "list_open_feedback",
+    "record_feedback",
+    "remove_excerpt_block",
+    "resolve_feedback",
+    "update_vault_guide",
+];
 
 /// How many tools the server exposes: the sum of every block.
 pub const TOOL_COUNT: usize = EXISTING_TOOLS.len() + TAG_TOOLS.len() + FEEDBACK_TOOLS.len();

@@ -1,0 +1,8 @@
+Delete an Open comment
+
+Usage: memex feedback rm --vault <VAULT> --id <ID>
+
+Options:
+      --vault <VAULT>  Vault directory
+      --id <ID>        The comment's id
+  -h, --help           Print help

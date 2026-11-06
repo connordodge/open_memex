@@ -12,8 +12,11 @@ use serde_json::{json, Value};
 
 pub mod append;
 pub mod excerpt;
+pub mod feedback;
+pub mod filing;
 pub mod folder;
 pub mod footer;
+pub mod guide;
 pub mod prompt;
 pub mod rm;
 pub mod serve;

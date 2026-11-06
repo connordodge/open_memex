@@ -1297,11 +1297,18 @@ async fn topics_router_serves_exactly_the_table_routes() {
         ],
     )
     .await;
-    // No `folder remove` (a member path), `folder ls` or `prompt capture`
-    // route, and no settings list.
+    // `folder remove` is the one member path (#256; its contract is pinned in
+    // api_feedback.rs).
+    assert_wrong_method_is_c1_405(
+        &env.srv,
+        &[(
+            at(&format!("/smart-folders/{INBOX}/members/{LOOSE}")).as_str(),
+            &["DELETE"],
+        )],
+    )
+    .await;
+    // No `folder ls` or `prompt capture` route, and no settings list.
     for path in [
-        format!("/smart-folders/{INBOX}/members/{LOOSE}"),
-        "/smart-folders/ls/members/x".to_string(),
         "/folders".to_string(),
         "/folder-ls".to_string(),
         "/prompts/capture".to_string(),
@@ -1325,7 +1332,7 @@ async fn topics_router_serves_exactly_the_table_routes() {
             );
         }
     }
-    // A member stays a member: no removal route answered.
+    // A member stays a member: none of these probes wrote anything.
     assert_eq!(
         memberships(&env.server_vault()),
         memberships(&env.cli_vault())
