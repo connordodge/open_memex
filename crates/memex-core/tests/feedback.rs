@@ -3937,3 +3937,87 @@ fn a_racing_save_that_files_a_block_first_leaves_it_out_of_the_recorded_blocks()
     assert_eq!(all.len(), 1, "{all:?}");
     assert_eq!(all[0].correction.as_ref().unwrap()["block_id"], F6);
 }
+
+// ---------------------------------------------------------------------------
+// AC 19: no path writes an Open row tied to a tag Correction
+// ---------------------------------------------------------------------------
+
+/// How many `feedback` rows are tied to a tag Correction yet still Open.
+fn open_tag_linked(v: &Vault) -> i64 {
+    v.connection_ref()
+        .query_row(
+            "SELECT count(*) FROM feedback
+             WHERE tag_correction_id IS NOT NULL AND status = 'open'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn no_path_writes_a_tag_linked_feedback_row_that_is_open() {
+    let mut w = world();
+    let clock = FakeClock::at(T0);
+    let topic = w.topic.clone();
+    let a = tag_correction(&w.vault, Some(topic.as_str()), TOPIC, "one", T0, None);
+    let b = tag_correction(&w.vault, Some(topic.as_str()), TOPIC, "two", T0 + 1, None);
+    let lifted = tag_correction(&w.vault, Some(topic.as_str()), TOPIC, "three", T0 + 2, None);
+    clear_tag(&w.vault, lifted, T0 + 3);
+
+    // Reading and refused resolves write nothing.
+    feedback::list_open(&w.vault).unwrap();
+    feedback::list_for_note(&w.vault, Some(topic.as_str())).unwrap();
+    let bad_reply = feedback::resolve(&mut w.vault, &format!("tag-{a}"), "", &[], &clock);
+    assert_eq!(code_of(bad_reply, "bad reply"), "feedback_invalid");
+    let too_many = [entry(&topic, &["a", "b", "c", "d"])];
+    let bad_changes =
+        feedback::resolve(&mut w.vault, &format!("tag-{a}"), "Ok.", &too_many, &clock);
+    assert!(bad_changes.is_err());
+    let lifted_id = format!("tag-{lifted}");
+    let lifted_resolve = feedback::resolve(&mut w.vault, &lifted_id, "Ok.", &[], &clock);
+    assert_eq!(code_of(lifted_resolve, "lifted"), "not_found");
+    assert_eq!(count(&w.vault), 0);
+
+    // Resolving writes a Handled row, never an Open one.
+    let resolved = feedback::resolve(&mut w.vault, &format!("tag-{a}"), "Done.", &[], &clock)
+        .expect("resolve tag");
+    assert_eq!(resolved.status, "handled");
+    let tied: Vec<Row> = rows(&w.vault)
+        .into_iter()
+        .filter(|r| r.tag_correction_id.is_some())
+        .collect();
+    assert_eq!(tied.len(), 1, "{tied:?}");
+    assert_eq!(tied[0].tag_correction_id, Some(a));
+    assert_eq!(tied[0].status, "handled");
+    assert_eq!(tied[0].handled_at, Some(T0));
+
+    // Every other operation, with the tags still around.
+    let again = feedback::resolve(&mut w.vault, &format!("tag-{a}"), "Again.", &[], &clock);
+    assert_eq!(code_of(again, "again"), "feedback_handled");
+    let edited = feedback::edit(&mut w.vault, &resolved.id, "x", &clock);
+    assert_eq!(code_of(edited, "edit"), "feedback_invalid");
+    let deleted = feedback::delete(&mut w.vault, &resolved.id);
+    assert_eq!(code_of(deleted, "delete"), "feedback_invalid");
+    let c = comment_at(&mut w, "A comment.", T0 + 10);
+    feedback::edit(&mut w.vault, &c.id, "Edited.", &clock).unwrap();
+    feedback::resolve(&mut w.vault, &c.id, "Fixed.", &[], &clock).unwrap();
+    feedback::record_chat(&mut w.vault, "Chat.", None, None, "Ok.", &[], &clock).unwrap();
+    file(&mut w.vault, &topic, &[B7], Caller::Person);
+    unfile_block(&mut w.vault, &topic, B7, Caller::Person);
+    file(&mut w.vault, &topic, &[C3], Caller::Agent);
+    unfile_block(&mut w.vault, &topic, C3, Caller::Person);
+
+    assert_eq!(open_tag_linked(&w.vault), 0);
+    let still_tied = rows(&w.vault)
+        .iter()
+        .filter(|r| r.tag_correction_id.is_some())
+        .count();
+    assert_eq!(still_tied, 1, "only the one resolve tied a row to a tag");
+    let open_ids: Vec<String> = feedback::list_open(&w.vault)
+        .unwrap()
+        .into_iter()
+        .map(|f| f.id)
+        .filter(|id| id.starts_with("tag-"))
+        .collect();
+    assert_eq!(open_ids, [format!("tag-{b}")]);
+}
