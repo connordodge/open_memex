@@ -162,6 +162,7 @@ Future<void> rebaseEditorOnVersion(
       createdAt: stored.createdAt,
       updatedAt: stored.updatedAt,
       tags: stored.tags,
+      footerTags: stored.footerTags,
     ),
   );
   editor.onTitleChanged(title);

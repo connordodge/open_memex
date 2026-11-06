@@ -121,8 +121,7 @@ class MemexCli {
     required String vaultPath,
     required String noteId,
     required String tag,
-  }) async =>
-      TagAddResult(noteId: '', tag: '', origin: '', changed: false, version: 0);
+  }) => _tagCall('add', vaultPath, noteId, tag, parseTagAddResult);
 
   /// `memex tag rm`: removes [tag] from [noteId] (#242 T4b). A tag already
   /// gone is a success with [TagRmResult.removed] false.
@@ -130,13 +129,44 @@ class MemexCli {
     required String vaultPath,
     required String noteId,
     required String tag,
-  }) async => TagRmResult(
-    noteId: '',
-    tag: '',
-    removed: false,
-    correctionId: null,
-    version: 0,
-  );
+  }) => _tagCall('rm', vaultPath, noteId, tag, parseTagRmResult);
+
+  /// `memex tag <verb>` with [parse] over its stdout. A CLI failure keeps its
+  /// C1 code and fields; stdout that is not the contract shape throws a
+  /// [MemexException] with a null code.
+  Future<T> _tagCall<T>(
+    String verb,
+    String vaultPath,
+    String noteId,
+    String tag,
+    T? Function(Map<String, Object?> json) parse,
+  ) async {
+    final operation = 'tag $verb';
+    final r = await run([
+      'tag',
+      verb,
+      '--vault',
+      vaultPath,
+      '--note-id',
+      noteId,
+      '--tag',
+      tag,
+    ]);
+    if (r.exitCode != 0) {
+      throw MemexException.fromCliFailure(operation, r);
+    }
+    Object? decoded;
+    try {
+      decoded = jsonDecode(r.stdout.trim());
+    } on FormatException {
+      decoded = null;
+    }
+    final parsed = decoded is Map<String, Object?> ? parse(decoded) : null;
+    if (parsed == null) {
+      throw MemexException('$operation: could not parse output: ${r.stdout}');
+    }
+    return parsed;
+  }
 
   /// Add a wikilink from one note to another. Mirrors the `memex add-link`
   /// CLI subcommand. Idempotent — if the link already exists, the returned
@@ -501,6 +531,26 @@ class TagAddResult {
   final int version;
 }
 
+/// The `memex tag add` object, or null for any other shape.
+TagAddResult? parseTagAddResult(Map<String, Object?> json) {
+  if (json case {
+    'note_id': final String noteId,
+    'tag': final String tag,
+    'origin': final String origin,
+    'changed': final bool changed,
+    'version': final int version,
+  }) {
+    return TagAddResult(
+      noteId: noteId,
+      tag: tag,
+      origin: origin,
+      changed: changed,
+      version: version,
+    );
+  }
+  return null;
+}
+
 /// The parsed `memex tag rm` output, and `DELETE /notes/{note_id}/tags/{tag}`'s
 /// response (#242 T4b).
 class TagRmResult {
@@ -520,6 +570,28 @@ class TagRmResult {
   /// The recorded `tag_corrections` row; null when nothing was recorded.
   final int? correctionId;
   final int version;
+}
+
+/// The `memex tag rm` object, or null for any other shape. Shared by the CLI
+/// wrapper and the hosted `DELETE /notes/{note_id}/tags/{tag}` call.
+TagRmResult? parseTagRmResult(Map<String, Object?> json) {
+  if (json case {
+    'note_id': final String noteId,
+    'tag': final String tag,
+    'removed': final bool removed,
+    'version': final int version,
+  }) {
+    if (json['correction_id'] case final int? correctionId) {
+      return TagRmResult(
+        noteId: noteId,
+        tag: tag,
+        removed: removed,
+        correctionId: correctionId,
+        version: version,
+      );
+    }
+  }
+  return null;
 }
 
 class MemexException implements Exception {
