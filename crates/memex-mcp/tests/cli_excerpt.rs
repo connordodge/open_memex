@@ -14,10 +14,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use memex_core::excerpts;
+use memex_core::feedback::{self, Feedback};
 use memex_core::footer::{self, ChipOrigin};
 use memex_core::indexer;
 use memex_core::notes::{self, CreateNote, NoteId};
-use memex_core::{Caller, Vault};
+use memex_core::review::{self, ChangeEntry};
+use memex_core::{Caller, Clock, Vault};
 use rusqlite::params;
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -439,4 +441,1045 @@ fn excerpt_rm_with_a_blank_block_id_fails_with_invalid_argument() {
     }
 
     assert_eq!(snapshot(&f), before, "nothing written");
+}
+
+// ---------------------------------------------------------------------------
+// WI #256: `memex filing`, `excerpt add`, `excerpt remove-block`, `excerpt move`
+//
+// `memex filing --vault V --date D`
+//   -> {vault_id, date, note_id, reviewed, topics: [{topic_note_id, title,
+//      blocks: [{id, text}]}], not_filed: [{id, text}]}
+// `memex excerpt add --vault V --topic-note-id T --date D --block-id B [--note TEXT]`
+// `memex excerpt remove-block --vault V --topic-note-id T --date D --block-id B [--note TEXT]`
+//   -> {vault_id, topic_note_id, version}
+// `memex excerpt move --vault V --date D --block-id B --from-topic-note-id A
+//      --to-topic-note-id C [--note TEXT]`
+//   -> {vault_id, from_topic_note_id, from_version, to_topic_note_id, to_version}
+// ---------------------------------------------------------------------------
+
+const REVIEWED_AT: i64 = 1_790_000_000_000;
+const NO_SUCH_NOTE: &str = "01J9Z8Y7X6W5V4T3S2R1Q0P9N8";
+
+struct StoppedClock(i64);
+
+impl Clock for StoppedClock {
+    fn now_ms(&self) -> i64 {
+        self.0
+    }
+}
+
+fn second_topic(f: &Fixture) -> String {
+    let mut vault = f.open();
+    create(
+        &mut vault,
+        "Economy Design",
+        "Sources and sinks.\n",
+        Some("topic"),
+    )
+}
+
+/// Files `block_ids` of the fixture day into `topic` as the agent would.
+fn agent_files(f: &Fixture, topic: &str, block_ids: &[&str]) {
+    let mut vault = f.open();
+    let ids: Vec<String> = block_ids.iter().map(|s| s.to_string()).collect();
+    excerpts::add_excerpt(
+        &mut vault,
+        &NoteId::parse(topic).unwrap(),
+        DAY,
+        &ids,
+        Caller::Agent,
+        None,
+    )
+    .unwrap_or_else(|e| panic!("add_excerpt {block_ids:?}: {e}"));
+}
+
+/// Marks the fixture day reviewed with one Activity entry on it.
+fn review_day(f: &Fixture) {
+    let mut vault = f.open();
+    let version: i64 = vault
+        .connection_ref()
+        .query_row(
+            "SELECT content_version FROM day_reviews WHERE note_id = ?",
+            [f.day.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    review::mark_day_reviewed(
+        &mut vault,
+        DAY,
+        version,
+        &[ChangeEntry {
+            note_id: f.day.clone(),
+            bullets: vec!["Filed the jump notes".into()],
+        }],
+        &StoppedClock(REVIEWED_AT),
+    )
+    .unwrap();
+}
+
+fn filing(f: &Fixture, date: &str) -> Output {
+    run(&["filing", "--vault", f.vault(), "--date", date])
+}
+
+fn excerpt_add(f: &Fixture, topic: &str, date: &str, block: &str, note: Option<&str>) -> Output {
+    let mut args = vec![
+        "excerpt",
+        "add",
+        "--vault",
+        f.vault(),
+        "--topic-note-id",
+        topic,
+        "--date",
+        date,
+        "--block-id",
+        block,
+    ];
+    if let Some(note) = note {
+        args.extend(["--note", note]);
+    }
+    run(&args)
+}
+
+fn excerpt_remove_block(
+    f: &Fixture,
+    topic: &str,
+    date: &str,
+    block: &str,
+    note: Option<&str>,
+) -> Output {
+    let mut args = vec![
+        "excerpt",
+        "remove-block",
+        "--vault",
+        f.vault(),
+        "--topic-note-id",
+        topic,
+        "--date",
+        date,
+        "--block-id",
+        block,
+    ];
+    if let Some(note) = note {
+        args.extend(["--note", note]);
+    }
+    run(&args)
+}
+
+fn excerpt_move(
+    f: &Fixture,
+    from: &str,
+    to: &str,
+    date: &str,
+    block: &str,
+    note: Option<&str>,
+) -> Output {
+    let mut args = vec![
+        "excerpt",
+        "move",
+        "--vault",
+        f.vault(),
+        "--date",
+        date,
+        "--block-id",
+        block,
+        "--from-topic-note-id",
+        from,
+        "--to-topic-note-id",
+        to,
+    ];
+    if let Some(note) = note {
+        args.extend(["--note", note]);
+    }
+    run(&args)
+}
+
+/// The Corrections of the fixture day, oldest first.
+fn corrections(f: &Fixture) -> Vec<Feedback> {
+    let vault = f.open();
+    let mut rows = feedback::list_for_note(&vault, Some(&f.day)).unwrap();
+    rows.retain(|r| r.kind == "correction");
+    rows.reverse();
+    rows
+}
+
+/// The single Correction of the fixture day.
+fn one_correction(f: &Fixture) -> Feedback {
+    let mut rows = corrections(f);
+    assert_eq!(rows.len(), 1, "exactly one Correction: {rows:?}");
+    rows.remove(0)
+}
+
+// ---------- AC 1: the output objects ----------
+
+#[test]
+fn filing_prints_the_contract_object() {
+    let f = fresh();
+    let economy = second_topic(&f);
+    agent_files(&f, &f.topic, &["b7k2m9", "c3d4e5"]);
+    agent_files(&f, &economy, &["b7k2m9"]);
+    review_day(&f);
+
+    let got = ok_json(filing(&f, DAY));
+
+    assert_eq!(
+        got,
+        json!({
+            "vault_id": f.open().vault_id(),
+            "date": DAY,
+            "note_id": f.day,
+            "reviewed": true,
+            "topics": [
+                {
+                    "topic_note_id": economy,
+                    "title": "Economy Design",
+                    "blocks": [{"id": "b7k2m9", "text": "Fixed the jump arc."}],
+                },
+                {
+                    "topic_note_id": f.topic,
+                    "title": "Player Loop",
+                    "blocks": [
+                        {"id": "b7k2m9", "text": "Fixed the jump arc."},
+                        {"id": "c3d4e5", "text": "- tried coyote time"},
+                    ],
+                },
+            ],
+            "not_filed": [{"id": "f6g7h8", "text": "Sleep was bad."}],
+        })
+    );
+}
+
+#[test]
+fn filing_of_a_never_reviewed_day_is_reviewed_false_with_empty_lists() {
+    let f = fresh();
+    agent_files(&f, &f.topic, &["b7k2m9"]);
+
+    let got = ok_json(filing(&f, DAY));
+
+    assert_eq!(
+        got,
+        json!({
+            "vault_id": f.open().vault_id(),
+            "date": DAY,
+            "note_id": f.day,
+            "reviewed": false,
+            "topics": [],
+            "not_filed": [],
+        })
+    );
+}
+
+#[test]
+fn excerpt_add_prints_the_contract_object_and_files_the_block() {
+    let f = fresh();
+    let (_, before) = note_row(&f, &f.topic);
+
+    let got = ok_json(excerpt_add(&f, &f.topic, DAY, "c3d4e5", None));
+
+    let (body, version) = note_row(&f, &f.topic);
+    assert_eq!(version, before + 1, "the write bumped the topic once");
+    assert_eq!(
+        got,
+        json!({
+            "vault_id": f.open().vault_id(),
+            "topic_note_id": f.topic,
+            "version": version,
+        })
+    );
+    assert!(body.contains("![[2026-09-05#^c3d4e5]]"), "{body}");
+}
+
+#[test]
+fn excerpt_remove_block_prints_the_contract_object_and_splits_the_range() {
+    let f = fresh();
+    agent_files(&f, &f.topic, &["b7k2m9", "c3d4e5", "f6g7h8"]);
+    let (_, before) = note_row(&f, &f.topic);
+
+    let got = ok_json(excerpt_remove_block(&f, &f.topic, DAY, "c3d4e5", None));
+
+    let (body, version) = note_row(&f, &f.topic);
+    assert_eq!(version, before + 1, "the write bumped the topic once");
+    assert_eq!(
+        got,
+        json!({
+            "vault_id": f.open().vault_id(),
+            "topic_note_id": f.topic,
+            "version": version,
+        })
+    );
+    assert!(body.contains("![[2026-09-05#^b7k2m9]]"), "{body}");
+    assert!(body.contains("![[2026-09-05#^f6g7h8]]"), "{body}");
+    assert!(!body.contains("c3d4e5"), "{body}");
+}
+
+#[test]
+fn excerpt_move_prints_the_contract_object_and_moves_the_block() {
+    let f = fresh();
+    let economy = second_topic(&f);
+    agent_files(&f, &f.topic, &["b7k2m9"]);
+    let (_, from_before) = note_row(&f, &f.topic);
+    let (_, to_before) = note_row(&f, &economy);
+
+    let got = ok_json(excerpt_move(&f, &f.topic, &economy, DAY, "b7k2m9", None));
+
+    let (from_body, from_version) = note_row(&f, &f.topic);
+    let (to_body, to_version) = note_row(&f, &economy);
+    assert_eq!(from_version, from_before + 1, "the source was written once");
+    assert_eq!(to_version, to_before + 1, "the target was written once");
+    assert_eq!(
+        got,
+        json!({
+            "vault_id": f.open().vault_id(),
+            "from_topic_note_id": f.topic,
+            "from_version": from_version,
+            "to_topic_note_id": economy,
+            "to_version": to_version,
+        })
+    );
+    assert!(!from_body.contains("b7k2m9"), "{from_body}");
+    assert!(to_body.contains("![[2026-09-05#^b7k2m9]]"), "{to_body}");
+}
+
+/// R13: a fix applies with no model and leaves the day's Reviewed state alone,
+/// and `memex filing` shows it.
+#[test]
+fn excerpt_fixes_show_in_filing_and_keep_the_day_reviewed() {
+    let f = fresh();
+    let economy = second_topic(&f);
+    agent_files(&f, &f.topic, &["b7k2m9"]);
+    review_day(&f);
+
+    ok_json(excerpt_move(&f, &f.topic, &economy, DAY, "b7k2m9", None));
+    ok_json(excerpt_add(&f, &f.topic, DAY, "f6g7h8", None));
+    ok_json(excerpt_remove_block(&f, &economy, DAY, "b7k2m9", None));
+
+    let got = ok_json(filing(&f, DAY));
+    assert_eq!(got["reviewed"], json!(true), "{got}");
+    assert_eq!(
+        got["topics"],
+        json!([{
+            "topic_note_id": f.topic,
+            "title": "Player Loop",
+            "blocks": [{"id": "f6g7h8", "text": "Sleep was bad."}],
+        }])
+    );
+    assert_eq!(
+        got["not_filed"],
+        json!([
+            {"id": "b7k2m9", "text": "Fixed the jump arc."},
+            {"id": "c3d4e5", "text": "- tried coyote time"},
+        ])
+    );
+}
+
+// ---------- AC 2: failures ----------
+
+#[test]
+fn filing_failures_exit_nonzero_with_their_c1_codes() {
+    let f = fresh();
+    let before = snapshot(&f);
+
+    assert_c1_failure(&filing(&f, "2026-13-01"), "invalid_date");
+    assert_c1_failure(&filing(&f, "not-a-date"), "invalid_date");
+    assert_c1_failure(&filing(&f, "2026-09-06"), "not_found");
+
+    assert_eq!(snapshot(&f), before, "a failed read wrote nothing");
+}
+
+#[test]
+fn excerpt_add_failures_exit_nonzero_with_their_c1_codes() {
+    let f = fresh();
+    let before = snapshot(&f);
+
+    let cases: [(&str, &str, &str, &str); 6] = [
+        (NO_SUCH_NOTE, DAY, "b7k2m9", "not_found"),
+        (&f.topic, "2026-09-06", "b7k2m9", "not_found"),
+        (&f.topic, DAY, "zzzzzz", "block_not_found"),
+        (&f.topic, "2026-13-01", "b7k2m9", "invalid_date"),
+        (&f.day, DAY, "b7k2m9", "role_rule"),
+        ("not-a-ulid", DAY, "b7k2m9", "invalid_id"),
+    ];
+    for (topic, date, block, code) in cases {
+        assert_c1_failure(&excerpt_add(&f, topic, date, block, Some("why")), code);
+    }
+
+    assert_eq!(snapshot(&f), before, "no failure wrote anything");
+    assert!(corrections(&f).is_empty(), "no failure recorded anything");
+}
+
+#[test]
+fn excerpt_remove_block_failures_exit_nonzero_with_their_c1_codes() {
+    let f = fresh();
+    agent_files(&f, &f.topic, &["b7k2m9"]);
+    let before = snapshot(&f);
+
+    let cases: [(&str, &str, &str, &str); 6] = [
+        (NO_SUCH_NOTE, DAY, "b7k2m9", "not_found"),
+        // A real block of the day that this topic does not hold.
+        (&f.topic, DAY, "f6g7h8", "not_found"),
+        (&f.topic, DAY, "zzzzzz", "block_not_found"),
+        (&f.topic, "2026-13-01", "b7k2m9", "invalid_date"),
+        (&f.day, DAY, "b7k2m9", "role_rule"),
+        ("not-a-ulid", DAY, "b7k2m9", "invalid_id"),
+    ];
+    for (topic, date, block, code) in cases {
+        assert_c1_failure(
+            &excerpt_remove_block(&f, topic, date, block, Some("why")),
+            code,
+        );
+    }
+
+    assert_eq!(snapshot(&f), before, "no failure wrote anything");
+    assert!(corrections(&f).is_empty(), "no failure recorded anything");
+}
+
+#[test]
+fn excerpt_move_failures_exit_nonzero_with_their_c1_codes() {
+    let f = fresh();
+    let economy = second_topic(&f);
+    agent_files(&f, &f.topic, &["b7k2m9"]);
+    let before = snapshot(&f);
+
+    let cases: [(&str, &str, &str, &str, &str); 7] = [
+        (NO_SUCH_NOTE, &economy, DAY, "b7k2m9", "not_found"),
+        (&f.topic, NO_SUCH_NOTE, DAY, "b7k2m9", "not_found"),
+        // A real block of the day that the source does not hold.
+        (&f.topic, &economy, DAY, "f6g7h8", "not_found"),
+        (&f.topic, &economy, DAY, "zzzzzz", "block_not_found"),
+        (&f.topic, &economy, "2026-13-01", "b7k2m9", "invalid_date"),
+        ("not-a-ulid", &economy, DAY, "b7k2m9", "invalid_id"),
+        (&f.topic, "not-a-ulid", DAY, "b7k2m9", "invalid_id"),
+    ];
+    for (from, to, date, block, code) in cases {
+        assert_c1_failure(&excerpt_move(&f, from, to, date, block, Some("why")), code);
+    }
+
+    assert_eq!(snapshot(&f), before, "no failure wrote anything");
+    assert!(corrections(&f).is_empty(), "no failure recorded anything");
+}
+
+/// Lead decision 4: equal topics are C1 `invalid_argument`, before the vault
+/// opens, so a path with no vault at it still answers with that code.
+#[test]
+fn excerpt_move_with_equal_topics_is_invalid_argument_before_the_vault_opens() {
+    let f = fresh();
+    agent_files(&f, &f.topic, &["b7k2m9"]);
+    let before = snapshot(&f);
+
+    let same = excerpt_move(&f, &f.topic, &f.topic, DAY, "b7k2m9", None);
+    assert_c1_failure(&same, "invalid_argument");
+    assert_eq!(snapshot(&f), before, "nothing was written");
+
+    let missing = f.path.join("no-vault-here");
+    let out = run(&[
+        "excerpt",
+        "move",
+        "--vault",
+        missing.to_str().unwrap(),
+        "--date",
+        DAY,
+        "--block-id",
+        "b7k2m9",
+        "--from-topic-note-id",
+        &f.topic,
+        "--to-topic-note-id",
+        &f.topic,
+    ]);
+    assert_c1_failure(&out, "invalid_argument");
+}
+
+/// Lead decision 4: both topic ids are parsed before the vault opens.
+#[test]
+fn excerpt_move_with_a_malformed_topic_id_is_invalid_id_before_the_vault_opens() {
+    let f = fresh();
+    let missing = f.path.join("no-vault-here");
+    for (from, to) in [("not-a-ulid", NO_SUCH_NOTE), (NO_SUCH_NOTE, "not-a-ulid")] {
+        let out = run(&[
+            "excerpt",
+            "move",
+            "--vault",
+            missing.to_str().unwrap(),
+            "--date",
+            DAY,
+            "--block-id",
+            "b7k2m9",
+            "--from-topic-note-id",
+            from,
+            "--to-topic-note-id",
+            to,
+        ]);
+        assert_c1_failure(&out, "invalid_id");
+    }
+}
+
+/// Every block command refuses a bad argument before it opens the vault: with
+/// no vault at all, the C1 code is the argument's, never a vault error.
+#[test]
+fn excerpt_commands_refuse_bad_arguments_before_the_vault_opens() {
+    let f = fresh();
+    let missing = f.path.join("no-vault-here");
+    let v = missing.to_str().unwrap();
+    let over = "x".repeat(2001);
+    let topic = f.topic.as_str();
+    let cases: Vec<(Vec<&str>, &str)> = vec![
+        (
+            vec![
+                "excerpt",
+                "rm",
+                "--topic-note-id",
+                topic,
+                "--date",
+                DAY,
+                "--block-ids",
+                ",",
+            ],
+            "invalid_argument",
+        ),
+        (
+            vec![
+                "excerpt",
+                "rm",
+                "--topic-note-id",
+                "nope",
+                "--date",
+                DAY,
+                "--block-ids",
+                "b7k2m9",
+            ],
+            "invalid_id",
+        ),
+        (
+            vec![
+                "excerpt",
+                "add",
+                "--topic-note-id",
+                topic,
+                "--date",
+                DAY,
+                "--block-id",
+                " ",
+            ],
+            "invalid_argument",
+        ),
+        (
+            vec![
+                "excerpt",
+                "add",
+                "--topic-note-id",
+                "nope",
+                "--date",
+                DAY,
+                "--block-id",
+                "b7k2m9",
+            ],
+            "invalid_id",
+        ),
+        (
+            vec![
+                "excerpt",
+                "add",
+                "--topic-note-id",
+                topic,
+                "--date",
+                DAY,
+                "--block-id",
+                "b7k2m9",
+                "--note",
+                &over,
+            ],
+            "feedback_invalid",
+        ),
+        (
+            vec![
+                "excerpt",
+                "remove-block",
+                "--topic-note-id",
+                topic,
+                "--date",
+                DAY,
+                "--block-id",
+                " ",
+            ],
+            "invalid_argument",
+        ),
+        (
+            vec![
+                "excerpt",
+                "remove-block",
+                "--topic-note-id",
+                "nope",
+                "--date",
+                DAY,
+                "--block-id",
+                "b7k2m9",
+            ],
+            "invalid_id",
+        ),
+        (
+            vec![
+                "excerpt",
+                "remove-block",
+                "--topic-note-id",
+                topic,
+                "--date",
+                DAY,
+                "--block-id",
+                "b7k2m9",
+                "--note",
+                &over,
+            ],
+            "feedback_invalid",
+        ),
+        (
+            vec![
+                "excerpt",
+                "move",
+                "--date",
+                DAY,
+                "--block-id",
+                " ",
+                "--from-topic-note-id",
+                topic,
+                "--to-topic-note-id",
+                NO_SUCH_NOTE,
+            ],
+            "invalid_argument",
+        ),
+        (
+            vec![
+                "excerpt",
+                "move",
+                "--date",
+                DAY,
+                "--block-id",
+                "b7k2m9",
+                "--from-topic-note-id",
+                topic,
+                "--to-topic-note-id",
+                topic,
+            ],
+            "invalid_argument",
+        ),
+        (
+            vec![
+                "excerpt",
+                "move",
+                "--date",
+                DAY,
+                "--block-id",
+                "b7k2m9",
+                "--from-topic-note-id",
+                topic,
+                "--to-topic-note-id",
+                NO_SUCH_NOTE,
+                "--note",
+                &over,
+            ],
+            "feedback_invalid",
+        ),
+    ];
+    for (mut args, code) in cases {
+        args.extend(["--vault", v]);
+        let out = run(&args);
+        assert!(!missing.exists(), "no vault was created: {args:?}");
+        assert_c1_failure(&out, code);
+    }
+}
+
+// ---------- AC 3: one Correction, with the note as its text ----------
+
+#[test]
+fn excerpt_add_records_one_correction_with_the_note_as_its_text() {
+    let f = fresh();
+
+    ok_json(excerpt_add(
+        &f,
+        &f.topic,
+        DAY,
+        "c3d4e5",
+        Some("Belongs with the loop."),
+    ));
+
+    let row = one_correction(&f);
+    assert_eq!(row.text.as_deref(), Some("Belongs with the loop."));
+    assert_eq!(row.status, "open");
+    assert_eq!(row.source, "person");
+    assert_eq!(row.note_id.as_deref(), Some(f.day.as_str()));
+    assert_eq!(row.day.as_deref(), Some(DAY));
+    assert_eq!(
+        row.correction,
+        Some(json!({
+            "kind": "excerpt_added",
+            "date": DAY,
+            "block_id": "c3d4e5",
+            "preview": "- tried coyote time",
+            "topic_note_id": f.topic,
+            "title": "Player Loop",
+        }))
+    );
+}
+
+#[test]
+fn excerpt_remove_block_records_one_correction_with_the_note_as_its_text() {
+    let f = fresh();
+    agent_files(&f, &f.topic, &["b7k2m9", "c3d4e5", "f6g7h8"]);
+
+    ok_json(excerpt_remove_block(
+        &f,
+        &f.topic,
+        DAY,
+        "c3d4e5",
+        Some("Not about the loop."),
+    ));
+
+    let row = one_correction(&f);
+    assert_eq!(row.text.as_deref(), Some("Not about the loop."));
+    assert_eq!(row.status, "open");
+    assert_eq!(row.source, "person");
+    assert_eq!(row.note_id.as_deref(), Some(f.day.as_str()));
+    assert_eq!(
+        row.correction,
+        Some(json!({
+            "kind": "excerpt_removed",
+            "date": DAY,
+            "block_ids": ["c3d4e5"],
+            "preview": "- tried coyote time",
+            "topic_note_id": f.topic,
+            "title": "Player Loop",
+        }))
+    );
+}
+
+#[test]
+fn excerpt_move_records_one_correction_with_the_note_as_its_text() {
+    let f = fresh();
+    let economy = second_topic(&f);
+    agent_files(&f, &f.topic, &["b7k2m9"]);
+
+    ok_json(excerpt_move(
+        &f,
+        &f.topic,
+        &economy,
+        DAY,
+        "b7k2m9",
+        Some("This is about prices."),
+    ));
+
+    let row = one_correction(&f);
+    assert_eq!(row.text.as_deref(), Some("This is about prices."));
+    assert_eq!(row.status, "open");
+    assert_eq!(row.source, "person");
+    assert_eq!(row.note_id.as_deref(), Some(f.day.as_str()));
+    assert_eq!(
+        row.correction,
+        Some(json!({
+            "kind": "excerpt_moved",
+            "date": DAY,
+            "block_id": "b7k2m9",
+            "preview": "Fixed the jump arc.",
+            "from_topic_note_id": f.topic,
+            "from_title": "Player Loop",
+            "to_topic_note_id": economy,
+            "to_title": "Economy Design",
+        }))
+    );
+}
+
+#[test]
+fn excerpt_writes_without_a_note_record_a_correction_with_null_text() {
+    let f = fresh();
+    agent_files(&f, &f.topic, &["c3d4e5"]);
+    let economy = second_topic(&f);
+    agent_files(&f, &economy, &["f6g7h8"]);
+
+    ok_json(excerpt_add(&f, &f.topic, DAY, "b7k2m9", None));
+    ok_json(excerpt_remove_block(&f, &f.topic, DAY, "c3d4e5", None));
+    ok_json(excerpt_move(&f, &economy, &f.topic, DAY, "f6g7h8", None));
+
+    let rows = corrections(&f);
+    let kinds: Vec<&str> = rows
+        .iter()
+        .map(|r| r.correction.as_ref().unwrap()["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["excerpt_added", "excerpt_removed", "excerpt_moved"]);
+    for row in &rows {
+        assert_eq!(row.text, None, "{row:?}");
+    }
+}
+
+/// Lead decision 8: `--note` is passed as given, with no trimming on the way.
+#[test]
+fn excerpt_note_text_reaches_the_correction_as_given() {
+    let f = fresh();
+    let note = "  Wrong \u{2603} topic.\nSecond line.  ";
+
+    ok_json(excerpt_add(&f, &f.topic, DAY, "b7k2m9", Some(note)));
+
+    assert_eq!(one_correction(&f).text.as_deref(), Some(note));
+}
+
+/// A note that starts with `-` is text, not a flag, on each block command.
+#[test]
+fn excerpt_note_starting_with_a_hyphen_is_stored_as_given_on_each_command() {
+    let note = "-not a flag";
+    let f = fresh();
+    ok_json(excerpt_add(&f, &f.topic, DAY, "b7k2m9", Some(note)));
+    ok_json(excerpt_remove_block(
+        &f,
+        &f.topic,
+        DAY,
+        "b7k2m9",
+        Some(note),
+    ));
+    let economy = second_topic(&f);
+    agent_files(&f, &f.topic, &["f6g7h8"]);
+    ok_json(excerpt_move(
+        &f,
+        &f.topic,
+        &economy,
+        DAY,
+        "f6g7h8",
+        Some(note),
+    ));
+
+    let texts: Vec<_> = corrections(&f).into_iter().map(|r| r.text).collect();
+    assert_eq!(texts, vec![Some(note.to_string()); 3]);
+}
+
+/// Lead decision 8: an empty or whitespace-only `--note` is no note, so R18's
+/// `Why?` never shows blank.
+#[test]
+fn excerpt_blank_note_records_a_correction_with_null_text() {
+    for blank in ["", "   ", " \n\t "] {
+        let f = fresh();
+        let economy = second_topic(&f);
+        agent_files(&f, &f.topic, &["c3d4e5"]);
+        agent_files(&f, &economy, &["f6g7h8"]);
+
+        ok_json(excerpt_add(&f, &f.topic, DAY, "b7k2m9", Some(blank)));
+        ok_json(excerpt_remove_block(
+            &f,
+            &f.topic,
+            DAY,
+            "c3d4e5",
+            Some(blank),
+        ));
+        ok_json(excerpt_move(
+            &f,
+            &economy,
+            &f.topic,
+            DAY,
+            "f6g7h8",
+            Some(blank),
+        ));
+
+        let rows = corrections(&f);
+        assert_eq!(rows.len(), 3, "{blank:?}: {rows:?}");
+        for row in &rows {
+            assert_eq!(row.text, None, "{blank:?}: {row:?}");
+        }
+    }
+}
+
+/// Lead decision 8: the limit counts the raw text's chars, not its bytes, and
+/// the text stays verbatim.
+#[test]
+fn excerpt_note_of_exactly_two_thousand_chars_is_stored_on_each_command() {
+    let longest = "\u{2603}".repeat(2000);
+    let padded = format!("  {}  ", "x".repeat(1996));
+    let f = fresh();
+    let economy = second_topic(&f);
+    agent_files(&f, &f.topic, &["c3d4e5"]);
+    agent_files(&f, &economy, &["f6g7h8"]);
+
+    ok_json(excerpt_add(&f, &f.topic, DAY, "b7k2m9", Some(&longest)));
+    ok_json(excerpt_remove_block(
+        &f,
+        &f.topic,
+        DAY,
+        "c3d4e5",
+        Some(&padded),
+    ));
+    ok_json(excerpt_move(
+        &f,
+        &economy,
+        &f.topic,
+        DAY,
+        "f6g7h8",
+        Some(&longest),
+    ));
+
+    let texts: Vec<Option<String>> = corrections(&f).into_iter().map(|r| r.text).collect();
+    assert_eq!(
+        texts,
+        [
+            Some(longest.clone()),
+            Some(padded.clone()),
+            Some(longest.clone()),
+        ]
+    );
+}
+
+/// Lead decision 8: one char over is `feedback_invalid` before any write, even
+/// when trimming the text would bring it under the limit.
+#[test]
+fn excerpt_note_over_two_thousand_chars_is_feedback_invalid_before_any_write() {
+    let f = fresh();
+    let economy = second_topic(&f);
+    agent_files(&f, &f.topic, &["c3d4e5"]);
+    agent_files(&f, &economy, &["f6g7h8"]);
+    let before = snapshot(&f);
+
+    for over in ["\u{2603}".repeat(2001), format!("  {}  ", "x".repeat(1997))] {
+        assert_c1_failure(
+            &excerpt_add(&f, &f.topic, DAY, "b7k2m9", Some(&over)),
+            "feedback_invalid",
+        );
+        assert_c1_failure(
+            &excerpt_remove_block(&f, &f.topic, DAY, "c3d4e5", Some(&over)),
+            "feedback_invalid",
+        );
+        assert_c1_failure(
+            &excerpt_move(&f, &economy, &f.topic, DAY, "f6g7h8", Some(&over)),
+            "feedback_invalid",
+        );
+    }
+
+    assert_eq!(snapshot(&f), before, "no failure wrote anything");
+    assert!(corrections(&f).is_empty(), "no failure recorded anything");
+}
+
+/// Lead decision 8a: a blank block id is `invalid_argument`, as `excerpt rm`.
+#[test]
+fn excerpt_block_commands_with_a_blank_block_id_are_invalid_argument() {
+    let f = fresh();
+    let economy = second_topic(&f);
+    agent_files(&f, &f.topic, &["c3d4e5"]);
+    let before = snapshot(&f);
+
+    for blank in ["", "   "] {
+        assert_c1_failure(
+            &excerpt_add(&f, &f.topic, DAY, blank, None),
+            "invalid_argument",
+        );
+        assert_c1_failure(
+            &excerpt_remove_block(&f, &f.topic, DAY, blank, None),
+            "invalid_argument",
+        );
+        assert_c1_failure(
+            &excerpt_move(&f, &f.topic, &economy, DAY, blank, None),
+            "invalid_argument",
+        );
+    }
+
+    assert_eq!(snapshot(&f), before, "no failure wrote anything");
+    assert!(corrections(&f).is_empty(), "no failure recorded anything");
+}
+
+/// `excerpt rm` keeps its contract: it records its Correction in core and takes
+/// no `--note`; only the new block commands do. A regression guard.
+#[test]
+fn excerpt_rm_records_a_correction_with_null_text_and_takes_no_note() {
+    let f = fresh();
+    add_excerpt(&f, &["b7k2m9"]);
+
+    let refused = run(&[
+        "excerpt",
+        "rm",
+        "--vault",
+        f.vault(),
+        "--topic-note-id",
+        &f.topic,
+        "--date",
+        DAY,
+        "--block-ids",
+        "b7k2m9",
+        "--note",
+        "why",
+    ]);
+    assert_eq!(refused.status.code(), Some(2), "{}", describe(&refused));
+
+    ok_json(excerpt_rm(f.vault(), &f.topic, DAY, "b7k2m9"));
+    let row = one_correction(&f);
+    assert_eq!(row.text, None);
+    assert_eq!(row.correction.unwrap()["kind"], json!("excerpt_removed"));
+}
+
+// ---------- A topic with a Note footer (orchestrator add, T2 / #291) ----------
+
+/// Every row of the `feedback` table.
+fn feedback_count(f: &Fixture) -> i64 {
+    f.open()
+        .connection_ref()
+        .query_row("SELECT count(*) FROM feedback", [], |r| r.get(0))
+        .unwrap()
+}
+
+/// The part of the topic note from its Note footer marker on.
+fn footer_of(f: &Fixture) -> String {
+    let (body, _) = note_row(f, &f.topic);
+    let at = memex_core::daily::note_marker_start(&body)
+        .unwrap_or_else(|| panic!("the topic holds a Note footer: {body}"));
+    body[at..].to_string()
+}
+
+/// A person's removal on a topic that carries a Note footer records one
+/// Correction and leaves the footer below the marker byte for byte as it was.
+/// T2 made `write_topic` edit only the person section; nothing else runs this.
+#[test]
+fn person_excerpt_removal_on_a_topic_with_a_note_footer_records_one_correction_and_keeps_the_footer(
+) {
+    type Remove = fn(&Fixture) -> Output;
+    let removals: [(&str, Remove); 2] = [
+        ("excerpt rm", |f| {
+            excerpt_rm(f.vault(), &f.topic, DAY, "b7k2m9,c3d4e5")
+        }),
+        ("excerpt remove-block", |f| {
+            excerpt_remove_block(f, &f.topic, DAY, "c3d4e5", None)
+        }),
+    ];
+    for (name, remove) in removals {
+        let f = fresh();
+        let other = second_topic(&f);
+        // The topic's own Note footer: a chip for another topic.
+        footer::set_chip(
+            &mut f.open(),
+            &NoteId::parse(&f.topic).unwrap(),
+            &NoteId::parse(&other).unwrap(),
+            ChipOrigin::Person,
+            None,
+        )
+        .unwrap();
+        agent_files(&f, &f.topic, &["b7k2m9", "c3d4e5"]);
+        let footer_before = footer_of(&f);
+        assert!(
+            footer_before.contains("[[Economy Design~about]]"),
+            "{name}: precondition, the footer chips the other topic: {footer_before}"
+        );
+        let rows_before = feedback_count(&f);
+        let (_, version_before) = note_row(&f, &f.topic);
+
+        ok_json(remove(&f));
+
+        assert_eq!(
+            feedback_count(&f),
+            rows_before + 1,
+            "{name}: exactly one Correction"
+        );
+        assert_eq!(
+            one_correction(&f).correction.unwrap()["kind"],
+            json!("excerpt_removed"),
+            "{name}"
+        );
+        let (body, version_after) = note_row(&f, &f.topic);
+        assert_eq!(version_after, version_before + 1, "{name}: one topic write");
+        assert!(
+            !body.contains("^c3d4e5"),
+            "{name}: the block left the topic: {body}"
+        );
+        assert_eq!(
+            footer_of(&f),
+            footer_before,
+            "{name}: the Note footer is byte-identical"
+        );
+    }
 }

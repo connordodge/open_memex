@@ -1,0 +1,19 @@
+Move one block of a day from one topic note to another
+
+Usage: memex excerpt move [OPTIONS] --vault <VAULT> --date <DATE> --block-id <BLOCK_ID> --from-topic-note-id <FROM_TOPIC_NOTE_ID> --to-topic-note-id <TO_TOPIC_NOTE_ID>
+
+Options:
+      --vault <VAULT>
+          Vault directory
+      --date <DATE>
+          The daily note's date, YYYY-MM-DD
+      --block-id <BLOCK_ID>
+          The block's id
+      --from-topic-note-id <FROM_TOPIC_NOTE_ID>
+          The topic note the block moves from (ULID)
+      --to-topic-note-id <TO_TOPIC_NOTE_ID>
+          The topic note the block moves to (ULID)
+      --note <NOTE>
+          Why the block belongs there, stored on the Correction
+  -h, --help
+          Print help
