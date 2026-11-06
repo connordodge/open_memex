@@ -211,6 +211,52 @@ void main() {
       },
     );
 
+    test(
+      'hosted tag reads reject a list that has one good row and one bad row',
+      () async {
+        final good = {'tag': 'x', 'note_count': 1, 'system': false};
+        final goodNote = {
+          'note_id': _note,
+          'title': 't',
+          'role': null,
+          'first_line': null,
+          'updated_at': 1,
+        };
+        for (final bad in <Object?>[
+          {'tag': 'y'},
+          5,
+        ]) {
+          final env = _env();
+          env.server
+            ..route(
+              'GET',
+              '$_base/tags',
+              json: {
+                'tags': [good, bad],
+              },
+            )
+            ..route(
+              'GET',
+              '$_base/tags/work/notes',
+              json: {
+                'notes': [goodNote, bad],
+              },
+            );
+
+          await expectLater(
+            env.tags.allTags(),
+            throwsA(isA<MemexException>()),
+            reason: '$bad',
+          );
+          await expectLater(
+            env.tags.notesForTag('work'),
+            throwsA(isA<MemexException>()),
+            reason: '$bad',
+          );
+        }
+      },
+    );
+
     test('hosted tag reads equal the local reads on the same rows', () async {
       final db = FakeVaultDb.v6();
       addTearDown(db.close);
