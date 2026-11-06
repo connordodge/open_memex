@@ -1,6 +1,8 @@
 // WI #161 (A2): offset-preserving inline tokenizer (Spec R4, R5, R37, R38;
 // rulings D2, D3). Wikilink parity inputs are the Rust `link_extractor.rs`
 // test inputs; their expected groups are what `WIKILINK_RE` captures.
+import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -201,6 +203,8 @@ const _fixtureLines = <String>[
   '`` `inner` ``',
   '![[2026-13-45#^zz]] ![[bad]] !![[2026-09-05#^ab]]',
   '[[x]](http://y) [t]([[z]])',
+  // WI #245: tags (and the places a # is not one).
+  'tags #work and (#q3-plan) and *a #x* and _a #my_tag_ and [[a#b]] c#d',
 ];
 
 const _fragments = <String>[
@@ -241,6 +245,11 @@ const _fragments = <String>[
   '==',
   'word_word',
   'x',
+  // WI #245: tags, an opener, a lone hash and a tag ending in a surrogate.
+  '#tag',
+  ' #my_tag_x- ',
+  '#',
+  '(#\u{20000}',
 ];
 
 void main() {
@@ -1826,6 +1835,582 @@ void main() {
         [4, 7],
       ]);
     });
+  });
+
+  group('tag tokens (WI 245)', () {
+    /// The tokens of [input] of kind [kind], as `[start, end]` pairs.
+    List<List<int>> spansOf(String input, InlineTokenKind kind) => [
+      for (final t in tokenizeInline(input))
+        if (t.kind == kind) [t.start, t.end],
+    ];
+
+    List<InlineTokenKind> kindsOf(String input) => [
+      for (final t in tokenizeInline(input)) t.kind,
+    ];
+
+    test('a hash tag gets one tag token over exactly its characters', () {
+      final cases = <String, List<List<int>>>{
+        '#work': [
+          [0, 5],
+        ],
+        '- call with Sam about pricing #work': [
+          [30, 35],
+        ],
+        'note #work.': [
+          [5, 10],
+        ],
+        '(#work)': [
+          [1, 6],
+        ],
+        'x #a #b': [
+          [2, 4],
+          [5, 7],
+        ],
+        '#work#play': [
+          [0, 5],
+        ],
+        'a#b': <List<int>>[],
+        '(a)#b': <List<int>>[],
+        '#': <List<int>>[],
+        'call with Sam #': <List<int>>[],
+        '#1 and #_a and #-a': <List<int>>[],
+        r'\#work': <List<int>>[],
+      };
+      for (final MapEntry(key: input, value: want) in cases.entries) {
+        expect(
+          spansOf(input, InlineTokenKind.tag),
+          want,
+          reason: 'input: ${_show(input)}',
+        );
+      }
+    });
+
+    test('a tag token has no markers and its content is the whole token', () {
+      final tokens = tokenizeInline('call with Sam #work now');
+      expect(tokens, hasLength(1), reason: 'one tag token');
+      final t = tokens.single;
+      expect(t.kind, InlineTokenKind.tag);
+      expect(_pair(t.span), [14, 19]);
+      expect(t.markers, isEmpty, reason: 'no characters are hidden');
+      expect(_pair(t.content), [14, 19]);
+      expect(t.content.of('call with Sam #work now'), '#work');
+      expect(t.start, 14);
+      expect(t.end, 19);
+      expect(_describe(tokenizeInline('#work')), [
+        [
+          InlineTokenKind.tag,
+          [0, 5],
+          <List<int>>[],
+          [0, 5],
+        ],
+      ]);
+    });
+
+    test(
+      'a hash tag opens after line start whitespace and the five opening characters only',
+      () {
+        for (final opener in [' ', '\t', ' ', '(', '[', '{', '"', "'"]) {
+          expect(spansOf('x$opener#t', InlineTokenKind.tag), [
+            [2, 4],
+          ], reason: 'after U+${opener.codeUnitAt(0).toRadixString(16)}');
+        }
+        for (final closer in [
+          'a',
+          '1',
+          ')',
+          ']',
+          '}',
+          '.',
+          ',',
+          '-',
+          '_',
+          '/',
+        ]) {
+          expect(
+            spansOf('x$closer#t', InlineTokenKind.tag),
+            isEmpty,
+            reason: 'after "$closer"',
+          );
+        }
+      },
+    );
+
+    test(
+      'a tag token leaves a trailing dash or underscore out of its range',
+      () {
+        final cases = <String, List<List<int>>>{
+          '#plan-': [
+            [0, 5],
+          ],
+          '#a_': [
+            [0, 2],
+          ],
+          '#plan--': [
+            [0, 5],
+          ],
+          '#a-_': [
+            [0, 2],
+          ],
+          '#q3-plan-': [
+            [0, 8],
+          ],
+          'see #plan-- now': [
+            [4, 9],
+          ],
+          '#my_tag_': [
+            [0, 7],
+          ],
+          '#a-b': [
+            [0, 4],
+          ],
+        };
+        for (final MapEntry(key: input, value: want) in cases.entries) {
+          expect(
+            spansOf(input, InlineTokenKind.tag),
+            want,
+            reason: 'input: ${_show(input)}',
+          );
+        }
+      },
+    );
+
+    test('a tag with underscores is one tag token and opens no emphasis', () {
+      expect(_describe(tokenizeInline('#my_tag_x')), [
+        [
+          InlineTokenKind.tag,
+          [0, 9],
+          <List<int>>[],
+          [0, 9],
+        ],
+      ]);
+      // An underscore after punctuation would open emphasis in plain text:
+      // `_b c_` here. Inside a tag it opens nothing.
+      expect(_describe(tokenizeInline('#a-_b c_')), [
+        [
+          InlineTokenKind.tag,
+          [0, 5],
+          <List<int>>[],
+          [0, 5],
+        ],
+      ]);
+      expect(kindsOf('#a-_b c_'), [InlineTokenKind.tag]);
+      expect(kindsOf('x #a_-b_ y'), [InlineTokenKind.tag]);
+      // The same underscores outside a tag do open emphasis (the premise).
+      expect(kindsOf('a-_b c_'), [InlineTokenKind.italic]);
+    });
+
+    test(
+      'emphasis around a tag keeps its markers and nests the tag inside',
+      () {
+        // The grammar's openers are line start, whitespace and ( [ { " ':
+        // a `*` is none, so `*#x*` is emphasis around no tag.
+        expect(_describe(tokenizeInline('*#x*')), [
+          [
+            InlineTokenKind.italic,
+            [0, 4],
+            [
+              [0, 1],
+              [3, 4],
+            ],
+            [1, 3],
+          ],
+        ]);
+        expect(_describe(tokenizeInline('*a #x*')), [
+          [
+            InlineTokenKind.italic,
+            [0, 6],
+            [
+              [0, 1],
+              [5, 6],
+            ],
+            [1, 5],
+          ],
+          [
+            InlineTokenKind.tag,
+            [3, 5],
+            <List<int>>[],
+            [3, 5],
+          ],
+        ]);
+        expect(_describe(tokenizeInline('*(#x)*')), [
+          [
+            InlineTokenKind.italic,
+            [0, 6],
+            [
+              [0, 1],
+              [5, 6],
+            ],
+            [1, 5],
+          ],
+          [
+            InlineTokenKind.tag,
+            [2, 4],
+            <List<int>>[],
+            [2, 4],
+          ],
+        ]);
+        expect(_describe(tokenizeInline('**a #x**')), [
+          [
+            InlineTokenKind.bold,
+            [0, 8],
+            [
+              [0, 2],
+              [6, 8],
+            ],
+            [2, 6],
+          ],
+          [
+            InlineTokenKind.tag,
+            [4, 6],
+            <List<int>>[],
+            [4, 6],
+          ],
+        ]);
+        expect(_describe(tokenizeInline('~~a #x~~')), [
+          [
+            InlineTokenKind.strike,
+            [0, 8],
+            [
+              [0, 2],
+              [6, 8],
+            ],
+            [2, 6],
+          ],
+          [
+            InlineTokenKind.tag,
+            [4, 6],
+            <List<int>>[],
+            [4, 6],
+          ],
+        ]);
+        // The trailing underscore is not in the tag, so it may close emphasis.
+        expect(_describe(tokenizeInline('_a #my_tag_')), [
+          [
+            InlineTokenKind.italic,
+            [0, 11],
+            [
+              [0, 1],
+              [10, 11],
+            ],
+            [1, 10],
+          ],
+          [
+            InlineTokenKind.tag,
+            [3, 10],
+            <List<int>>[],
+            [3, 10],
+          ],
+        ]);
+      },
+    );
+
+    test('tag tokens sort by start among the other tokens of a line', () {
+      final tokens = tokenizeInline('**b** #t _i_ `c` #u');
+      expect(_describe(tokens), [
+        [
+          InlineTokenKind.bold,
+          [0, 5],
+          [
+            [0, 2],
+            [3, 5],
+          ],
+          [2, 3],
+        ],
+        [
+          InlineTokenKind.tag,
+          [6, 8],
+          <List<int>>[],
+          [6, 8],
+        ],
+        [
+          InlineTokenKind.italic,
+          [9, 12],
+          [
+            [9, 10],
+            [11, 12],
+          ],
+          [10, 11],
+        ],
+        [
+          InlineTokenKind.codeSpan,
+          [13, 16],
+          [
+            [13, 14],
+            [15, 16],
+          ],
+          [14, 15],
+        ],
+        [
+          InlineTokenKind.tag,
+          [17, 19],
+          <List<int>>[],
+          [17, 19],
+        ],
+      ]);
+    });
+
+    test(
+      'a tag in a code span gets no tag token and the tags around it do',
+      () {
+        expect(_describe(tokenizeInline('`#code` and #work')), [
+          [
+            InlineTokenKind.codeSpan,
+            [0, 7],
+            [
+              [0, 1],
+              [6, 7],
+            ],
+            [1, 6],
+          ],
+          [
+            InlineTokenKind.tag,
+            [12, 17],
+            <List<int>>[],
+            [12, 17],
+          ],
+        ]);
+        expect(kindsOf('``a #b`` #c'), [
+          InlineTokenKind.codeSpan,
+          InlineTokenKind.tag,
+        ]);
+        expect(kindsOf('`#a` `#b`'), [
+          InlineTokenKind.codeSpan,
+          InlineTokenKind.codeSpan,
+        ]);
+      },
+    );
+
+    test(
+      'a tag or a hash that is no tag inside a line with code and a URL gets no tag token',
+      () {
+        final input =
+            'fixes issue #1 and colour `#fff` on example.com/docs#setup';
+        expect(kindsOf(input), [InlineTokenKind.codeSpan]);
+        // The premise: the same line with a real tag adds exactly one.
+        expect(kindsOf('$input #work'), [
+          InlineTokenKind.codeSpan,
+          InlineTokenKind.tag,
+        ]);
+      },
+    );
+
+    test(
+      'a tag in a wikilink or transclusion gets no tag token and the tags around it do',
+      () {
+        expect(kindsOf('see [[Pricing#Annual]] and a mid-word c#sharp'), [
+          InlineTokenKind.wikilink,
+        ]);
+        expect(_describe(tokenizeInline('read [[Pricing]] and #pricing')), [
+          [
+            InlineTokenKind.wikilink,
+            [5, 16],
+            [
+              [5, 7],
+              [14, 16],
+            ],
+            [7, 14],
+          ],
+          [
+            InlineTokenKind.tag,
+            [21, 29],
+            <List<int>>[],
+            [21, 29],
+          ],
+        ]);
+        expect(
+          spansOf('ask about [[Annual tier]]  #memex', InlineTokenKind.tag),
+          [
+            [27, 33],
+          ],
+        );
+        expect(kindsOf('[[#x]] [[Note|see #x]] #y'), [
+          InlineTokenKind.wikilink,
+          InlineTokenKind.wikilink,
+          InlineTokenKind.tag,
+        ]);
+        expect(spansOf('[[#x]] [[Note|see #x]] #y', InlineTokenKind.tag), [
+          [23, 25],
+        ]);
+        expect(kindsOf('![[2026-11-06#^abc12]] #y'), [
+          InlineTokenKind.transclusion,
+          InlineTokenKind.tag,
+        ]);
+        expect(spansOf('![[2026-11-06#^abc12]] #y', InlineTokenKind.tag), [
+          [23, 25],
+        ]);
+        expect(kindsOf('![[2026-11-06#^a1..^b2]]'), [
+          InlineTokenKind.transclusion,
+        ]);
+      },
+    );
+
+    test(
+      'a tag in a markdown link or image gets no tag token and the tags around it do',
+      () {
+        expect(kindsOf('[see #x](https://example.com)'), [
+          InlineTokenKind.link,
+        ]);
+        expect(kindsOf('[#x](https://example.com)'), [InlineTokenKind.link]);
+        expect(kindsOf('[see](#x)'), [InlineTokenKind.link]);
+        expect(kindsOf('![#alt](image.png)'), isEmpty);
+        expect(kindsOf('[*a #x*](u)'), [
+          InlineTokenKind.link,
+          InlineTokenKind.italic,
+        ]);
+        expect(kindsOf('[a](b) #c'), [
+          InlineTokenKind.link,
+          InlineTokenKind.tag,
+        ]);
+        expect(spansOf('[a](b) #c', InlineTokenKind.tag), [
+          [7, 9],
+        ]);
+        // The reference's link pattern allows a space in the target, so the
+        // text is a link there and holds no tag, though it is no link token.
+        expect(kindsOf('[see #x](a b) #z'), [InlineTokenKind.tag]);
+        expect(spansOf('[see #x](a b) #z', InlineTokenKind.tag), [
+          [14, 16],
+        ]);
+      },
+    );
+
+    test('a hash in a URL gets no tag token and a tag after the URL does', () {
+      expect(tokenizeInline('https://example.com/#section'), isEmpty);
+      expect(
+        tokenizeInline(
+          'compare with stripe.com/pricing and example.com/docs#setup',
+        ),
+        isEmpty,
+      );
+      expect(
+        spansOf("see http://example.com/'#x' and #y", InlineTokenKind.tag),
+        [
+          [32, 34],
+        ],
+      );
+      expect(
+        spansOf(
+          'https://en.wikipedia.org/wiki/Tag_(#metadata) #real',
+          InlineTokenKind.tag,
+        ),
+        [
+          [46, 51],
+        ],
+      );
+      expect(
+        spansOf(
+          'compare with stripe.com/pricing #reading',
+          InlineTokenKind.tag,
+        ),
+        [
+          [32, 40],
+        ],
+      );
+    });
+
+    test('an escaped hash gets an escape token and no tag token', () {
+      expect(kindsOf(r'\#work'), [InlineTokenKind.escape]);
+      // A tag after the escaped one is still a tag.
+      expect(kindsOf(r'\#work #real'), [
+        InlineTokenKind.escape,
+        InlineTokenKind.tag,
+      ]);
+      expect(spansOf(r'\#work #real', InlineTokenKind.tag), [
+        [7, 12],
+      ]);
+    });
+
+    test(
+      'a tag right after an escaped opening character still gets its tag token',
+      () {
+        // The escape token ends exactly where the tag starts: the tag is not
+        // inside the escape, whose escaped character is the opener.
+        for (final opener in ['(', '[', '{', '"', "'"]) {
+          final text = '\\$opener#x';
+          expect(
+            kindsOf(text),
+            [InlineTokenKind.escape, InlineTokenKind.tag],
+            reason: 'after an escaped $opener',
+          );
+          expect(spansOf(text, InlineTokenKind.tag), [
+            [2, 4],
+          ], reason: 'after an escaped $opener');
+        }
+      },
+    );
+
+    test(
+      'a tag on each line of a multi-line text keeps its offset with LF and CRLF endings',
+      () {
+        const text = 'first #a\n#b\r\nlast #c';
+        expect(spansOf(text, InlineTokenKind.tag), [
+          [6, 8],
+          [9, 11],
+          [18, 20],
+        ]);
+        for (final t in tokenizeInline(text)) {
+          expect(t.content.of(text), startsWith('#'));
+          expect(t.span.of(text), isNot(contains('\r')));
+        }
+      },
+    );
+
+    test('tag ranges count UTF-16 units across surrogate pairs', () {
+      const wide = '\u{20000}';
+      expect(spansOf('\u{1F600} #${wide}x end', InlineTokenKind.tag), [
+        [3, 7],
+      ]);
+      expect(spansOf('\u{1F600}#w', InlineTokenKind.tag), isEmpty);
+      expect(spansOf('#ab\u{1F600}', InlineTokenKind.tag), [
+        [0, 3],
+      ]);
+      for (final line in [
+        '\u{1F600} #${wide}x end',
+        '#$wide',
+        '*#$wide*',
+        '(#a\u{1D7D8})',
+      ]) {
+        _expectWellFormed(line);
+      }
+    });
+
+    test(
+      'tag tokens give the same tags as the grammar fixture for every case outside fenced code',
+      () {
+        final fixture =
+            jsonDecode(
+                  File('test/fixtures/tags/grammar.json').readAsStringSync(),
+                )
+                as Map<String, Object?>;
+        final cases = (fixture['cases']! as List).cast<Map>();
+        final bad = <String>[];
+        var checked = 0;
+        for (final c in cases) {
+          if (c['rule'] == 'excluded-fence') continue;
+          final input = c['input']! as String;
+          final want = (c['tags']! as List).cast<String>();
+          final tokens = tokenizeInline(input);
+          final got = {
+            for (final t in tokens)
+              if (t.kind == InlineTokenKind.tag)
+                input.substring(t.start + 1, t.end).toLowerCase(),
+          }.toList()..sort();
+          checked++;
+          if (got.join('\u0000') != want.join('\u0000')) {
+            bad.add(
+              '${c['rule']} / ${c['name']}: ${_show(input)} '
+              'want $want got $got',
+            );
+          }
+          _expectWellFormed(input);
+          for (final t in tokens.where((t) => t.kind == InlineTokenKind.tag)) {
+            expect(t.markers, isEmpty, reason: _show(input));
+            expect(_pair(t.content), _pair(t.span), reason: _show(input));
+          }
+        }
+        expect(checked, greaterThan(70));
+        expect(bad, isEmpty, reason: bad.join('\n'));
+      },
+    );
   });
 
   group('InlineRange', () {
