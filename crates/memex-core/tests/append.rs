@@ -841,3 +841,53 @@ fn quick_entry_append_adopts_a_role_less_note_with_that_date() {
     assert_eq!(blocks[1].created_version, stored.version);
     assert_eq!(content_version(&vault, &old.id), Some(out.content_version));
 }
+
+// ---------- WI #238 (T2): footer tag lines on the append path ----------
+
+/// Spec #234 R12, R16: append re-renders the footer from rows like any daily
+/// write, so a stale footer tag line in the stored body is dropped (never
+/// moved into the person section) and the tag rows render as tag lines.
+#[test]
+fn append_drops_a_stale_footer_tag_line_and_keeps_tag_lines_from_rows() {
+    let (_dir, mut vault) = fresh_vault();
+    let (note, _topic) = daily_with_chip(&mut vault, "Morning pages\n");
+    for (tag, origin) in [("work", "agent"), ("inbox", "agent"), ("mine", "person")] {
+        vault
+            .connection_ref()
+            .execute(
+                "INSERT INTO tags (note_id, tag, origin) VALUES (?, ?, ?)",
+                params![note.id.as_str(), tag, origin],
+            )
+            .unwrap();
+    }
+    // The stored footer still shows `#gone`, a tag removed since it rendered.
+    vault
+        .connection_ref()
+        .execute(
+            "UPDATE notes SET content_md = ? WHERE id = ?",
+            params![
+                format!("Morning pages\n{MARKER_LINE}[[Player Loop~about]]\n#gone\n#work\n"),
+                note.id.as_str()
+            ],
+        )
+        .unwrap();
+    let cv = content_version(&vault, &note.id).unwrap();
+
+    let out = append_ok(&mut vault, "Bought a keyboard.", None);
+
+    let want = format!(
+        "Morning pages\n\nBought a keyboard.\n{MARKER_LINE}[[Player Loop~about]]\n#mine\n#work\n"
+    );
+    assert_eq!(out.note.content_md, want);
+    assert_eq!(get_note(&vault, &note.id).unwrap().content_md, want);
+    let texts: Vec<String> = blocks_of(&vault, &note.id)
+        .into_iter()
+        .map(|b| b.text)
+        .collect();
+    assert_eq!(
+        texts,
+        ["Morning pages", "Bought a keyboard."],
+        "no footer line became person text"
+    );
+    assert_eq!(content_version(&vault, &note.id), Some(cv + 1));
+}
