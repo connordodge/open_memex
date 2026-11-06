@@ -995,8 +995,12 @@ void main() {
       },
     );
 
+    // TEST-CHANGE (review r2, #290): this test pinned a first read failing and
+    // a second succeeding, which left the editor dirty and autosaving the
+    // pre-removal body. There is one read now; when it fails the editor stays
+    // clean on its own text and nothing is written.
     testWidgets(
-      'removeTagFromNote on a clean editor survives the first read failing and the second succeeding',
+      'removeTagFromNote on a clean editor reads once and stays clean with nothing written when that read fails',
       (tester) async {
         final db = _vault();
         final cli = _cli(db)
@@ -1027,27 +1031,28 @@ void main() {
 
         await removeTagFromNote(env.ref, note: db.getNote(_plan)!, tag: 'drop');
 
-        expect(notes.reads, 2);
+        expect(notes.reads, 1, reason: 'no second attempt');
         expect(env.state.lastSavedVersion, 4);
-        expect(
-          env.state.contentMd,
-          'stored text',
-          reason:
-              'the editor keeps its own text when the stored body was unreadable',
-        );
-        expect(env.editor.loaded.last!.footerTags, ['keep']);
+        expect(env.state.contentMd, 'stored text');
+        expect(env.state.status, SaveStatus.clean);
         expect(env.bumps, [4]);
+        env.clock.advance(saveDebounce);
+        await tester.pump();
+        expect(
+          cli.callsFor('update'),
+          isEmpty,
+          reason: 'no edit by the person, so no save',
+        );
       },
     );
 
     testWidgets(
       'removeTagFromNote tolerates a read failure that is not an Exception after the write',
       (tester) async {
-        for (final onlyRebaseRead in [false, true]) {
+        for (final dirty in [false, true]) {
           final db = _vault();
           final cli = _cli(db);
           final notes = _ScriptedNotes(db, cli, (call, real) {
-            if (onlyRebaseRead && call == 0) return real();
             throw StateError('malformed row');
           });
           final env = await _open(
@@ -1062,8 +1067,7 @@ void main() {
             ),
           );
           env.editor.loadNote(db.getNote(_plan));
-          // Dirty skips the first read, so only the rebase read can fail.
-          if (onlyRebaseRead) env.editor.onContentChanged('pending text');
+          if (dirty) env.editor.onContentChanged('pending text');
 
           await removeTagFromNote(
             env.ref,
@@ -1071,6 +1075,7 @@ void main() {
             tag: 'drop',
           );
 
+          expect(notes.reads, 1);
           expect(env.state.lastSavedVersion, 4);
           expect(env.bumps, [4]);
         }
@@ -1155,7 +1160,7 @@ void main() {
     );
 
     testWidgets(
-      'rebaseEditorOnVersion without tolerateFailedRead propagates a failed read and leaves the editor alone',
+      'rebaseEditorOnVersion propagates a failed read and leaves the editor alone',
       (tester) async {
         final db = _vault();
         final cli = _cli(db);
@@ -1190,8 +1195,11 @@ void main() {
       },
     );
 
+    // TEST-CHANGE (review r2, #290): this test called rebaseEditorOnVersion
+    // with the tolerateFailedRead flag, which is gone. The tolerant rebase is
+    // rebaseEditorAfterWrite now; same assertions.
     testWidgets(
-      'rebaseEditorOnVersion with tolerateFailedRead rebases on the fallback and the returned version',
+      'rebaseEditorAfterWrite rebases on the note and the returned version when the read fails',
       (tester) async {
         final db = _vault();
         final cli = _cli(db);
@@ -1210,12 +1218,11 @@ void main() {
         env.editor.loadNote(open);
         env.editor.onContentChanged('pending text');
 
-        await rebaseEditorOnVersion(
-          env.ref,
-          fallback: open,
+        await rebaseEditorAfterWrite(
+          env.container,
+          env.container.read(vaultAccessProvider)!,
+          note: open,
           version: 9,
-          content: 'pending text',
-          tolerateFailedRead: true,
         );
 
         final rebased = env.editor.loaded.last!;
@@ -1224,9 +1231,9 @@ void main() {
         expect(rebased.footerTags, open.footerTags);
         expect(env.state.lastSavedVersion, 9);
         expect(env.state.contentMd, 'pending text');
+        expect(env.state.status, SaveStatus.dirty);
       },
     );
-
     testWidgets(
       'rebaseEditorOnVersion copies the stored footerTags onto the note it loads',
       (tester) async {
@@ -1264,12 +1271,271 @@ void main() {
       },
     );
   });
+
+  group('rebaseEditorAfterWrite and removeTagFromNote contracts', () {
+    for (final readFails in [true, false]) {
+      testWidgets(
+        'removeTagFromNote completes and keeps the pending edit when its widget is gone during the rebase read (read fails: $readFails)',
+        (tester) async {
+          final db = _vault();
+          final cli = _cli(db);
+          final gate = Completer<void>();
+          final notes = _ScriptedNotes(
+            db,
+            cli,
+            (call, real) => gate.future.then<Note?>(
+              (_) => readFails ? throw unreachableNas : real(),
+            ),
+          );
+          final env = await _open(
+            tester,
+            db: db,
+            cli: cli,
+            access: () => LocalVaultAccess(
+              vaultPath: _vaultA.path,
+              db: db,
+              cli: cli,
+              notes: notes,
+            ),
+          );
+          env.editor.loadNote(db.getNote(_plan));
+          env.editor.onContentChanged('pending text');
+
+          final removal = removeTagFromNote(
+            env.ref,
+            note: db.getNote(_plan)!,
+            tag: 'drop',
+          );
+          await tester.pump();
+          await tester.pump();
+          expect(notes.reads, 1, reason: 'the rebase read is in flight');
+          // The row with the x leaves the tree: the same container, no
+          // Consumer.
+          await tester.pumpWidget(
+            UncontrolledProviderScope(
+              container: env.container,
+              child: const SizedBox.shrink(),
+            ),
+          );
+          expect(
+            () => env.ref.read(vaultRevisionProvider),
+            throwsStateError,
+            reason: 'the ref is dead, so only a captured container can work',
+          );
+          gate.complete();
+          await removal;
+
+          expect(env.state.lastSavedVersion, 4);
+          expect(env.state.contentMd, 'pending text');
+          expect(env.state.status, SaveStatus.dirty);
+          expect(env.bumps, [4]);
+        },
+      );
+    }
+
+    testWidgets(
+      'removeTagFromNote keeps the text and title a clean editor has saved since when the read fails',
+      (tester) async {
+        final db = _vault();
+        final cli = _cli(db);
+        final env = await _open(
+          tester,
+          db: db,
+          cli: cli,
+          access: () => LocalVaultAccess(
+            vaultPath: _vaultA.path,
+            db: db,
+            cli: cli,
+            notes: _FailingNotes(cli),
+          ),
+        );
+        final stale = db.getNote(_plan)!;
+        env.editor.loadNote(
+          Note(
+            id: stale.id,
+            title: 'Saved title',
+            contentMd: 'saved since',
+            frontmatter: stale.frontmatter,
+            version: stale.version,
+            createdAt: stale.createdAt,
+            updatedAt: stale.updatedAt,
+            tags: stale.tags,
+            footerTags: stale.footerTags,
+          ),
+        );
+        expect(env.state.status, SaveStatus.clean);
+
+        await removeTagFromNote(env.ref, note: stale, tag: 'drop');
+
+        expect(env.state.contentMd, 'saved since');
+        expect(env.state.title, 'Saved title');
+        expect(env.state.status, SaveStatus.clean);
+        expect(env.state.lastSavedVersion, 4);
+        env.clock.advance(saveDebounce);
+        await tester.pump();
+        expect(cli.callsFor('update'), isEmpty);
+        expect(env.bumps, [4]);
+      },
+    );
+
+    testWidgets(
+      'removeTagFromNote on a clean editor takes the stored title and stays clean',
+      (tester) async {
+        final db = _vault();
+        final cli = _cli(db)
+          ..on('tag rm', (call) {
+            db.db.execute('UPDATE notes SET title = ? WHERE id = ?', [
+              'Server title',
+              call.flag('note-id'),
+            ]);
+            return _applyRm(db, call);
+          });
+        final env = await _open(tester, db: db, cli: cli);
+        env.editor.loadNote(db.getNote(_plan));
+        expect(env.state.title, 'Plan');
+
+        await removeTagFromNote(env.ref, note: db.getNote(_plan)!, tag: 'drop');
+
+        expect(env.state.title, 'Server title');
+        expect(env.state.status, SaveStatus.clean);
+        expect(env.state.lastSavedVersion, 4);
+        env.clock.advance(saveDebounce);
+        await tester.pump();
+        expect(cli.callsFor('update'), isEmpty);
+      },
+    );
+
+    testWidgets(
+      'removeTagFromNote keeps the text and title typed during a rebase read that succeeds on a pending edit',
+      (tester) async {
+        final db = _vault();
+        final cli = _cli(db);
+        final notes = _GatedNotes(db, cli);
+        final env = await _open(
+          tester,
+          db: db,
+          cli: cli,
+          access: () => LocalVaultAccess(
+            vaultPath: _vaultA.path,
+            db: db,
+            cli: cli,
+            notes: notes,
+          ),
+        );
+        env.editor.loadNote(db.getNote(_plan));
+        env.editor.onContentChanged('pending text');
+        final gate = Completer<void>();
+        notes.gateNext = gate;
+
+        final removal = removeTagFromNote(
+          env.ref,
+          note: db.getNote(_plan)!,
+          tag: 'drop',
+        );
+        await tester.pump();
+        await tester.pump();
+        env.editor.onContentChanged('typed during the read');
+        env.editor.onTitleChanged('Retitled during the read');
+        gate.complete();
+        await removal;
+
+        expect(env.state.contentMd, 'typed during the read');
+        expect(env.state.title, 'Retitled during the read');
+        expect(env.state.status, SaveStatus.dirty);
+        expect(env.state.lastSavedVersion, 4);
+        expect(env.editor.loaded.last!.footerTags, ['keep']);
+        expect(env.bumps, [4]);
+        env.clock.advance(saveDebounce);
+        await tester.pump();
+        final update = cli.callsFor('update').single;
+        expect(update.flag('expected-version'), '4');
+        expect(update.stdinBody, 'typed during the read');
+      },
+    );
+
+    for (final otherOpen in [true, false]) {
+      testWidgets(
+        'rebaseEditorAfterWrite reads nothing and loads nothing when the note is not open (another note open: $otherOpen)',
+        (tester) async {
+          final db = _vault();
+          final cli = _cli(db);
+          final notes = _ScriptedNotes(db, cli, (call, real) => real());
+          final env = await _open(
+            tester,
+            db: db,
+            cli: cli,
+            access: () => LocalVaultAccess(
+              vaultPath: _vaultA.path,
+              db: db,
+              cli: cli,
+              notes: notes,
+            ),
+          );
+          if (otherOpen) env.editor.loadNote(db.getNote(_other));
+          final loadsBefore = env.editor.loaded.length;
+
+          await rebaseEditorAfterWrite(
+            env.container,
+            env.container.read(vaultAccessProvider)!,
+            note: db.getNote(_plan)!,
+            version: 9,
+          );
+
+          expect(notes.reads, 0);
+          expect(env.editor.loaded, hasLength(loadsBefore));
+          expect(env.editor.activeNoteId, otherOpen ? _other : isNull);
+        },
+      );
+    }
+
+    testWidgets(
+      'rebaseEditorAfterWrite loads nothing when another note was opened during the read',
+      (tester) async {
+        final db = _vault();
+        final cli = _cli(db);
+        final notes = _GatedNotes(db);
+        final env = await _open(
+          tester,
+          db: db,
+          cli: cli,
+          access: () => LocalVaultAccess(
+            vaultPath: _vaultA.path,
+            db: db,
+            cli: cli,
+            notes: notes,
+          ),
+        );
+        env.editor.loadNote(db.getNote(_plan));
+        env.editor.onContentChanged('plan pending');
+        final gate = Completer<void>();
+        notes.gateNext = gate;
+
+        final rebase = rebaseEditorAfterWrite(
+          env.container,
+          env.container.read(vaultAccessProvider)!,
+          note: db.getNote(_plan)!,
+          version: 9,
+        );
+        await tester.pump();
+        env.editor.loadNote(db.getNote(_other));
+        final loadsBefore = env.editor.loaded.length;
+        gate.complete();
+        await rebase;
+
+        expect(env.editor.loaded, hasLength(loadsBefore));
+        expect(env.editor.activeNoteId, _other);
+        expect(env.state.contentMd, 'other text');
+        expect(env.state.lastSavedVersion, 8);
+      },
+    );
+  });
 }
 
 /// `getNote` answers from [db]; the first call after [gateNext] is set waits
 /// for it.
 class _GatedNotes extends LocalNotesAccess {
-  _GatedNotes(FakeVaultDb db) : super(vaultPath: _vaultA.path, db: db);
+  _GatedNotes(FakeVaultDb db, [MemexCli? cli])
+    : super(vaultPath: _vaultA.path, db: db, cli: cli);
 
   Completer<void>? gateNext;
 
