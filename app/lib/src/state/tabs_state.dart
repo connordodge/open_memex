@@ -8,7 +8,10 @@ import '../db/daily_reads.dart' show DailyNoteRow;
 import '../graph/graph_scope.dart';
 import '../vault_access/vault_scoped.dart';
 import 'daily_state.dart';
+import 'editor_controller.dart' show editorControllerProvider;
+import 'tab_history.dart';
 import 'ui_state_store.dart';
+import 'vault_access_state.dart';
 import 'vault_state.dart';
 
 /// One tab in the workspace: a note (NoteTab), a canvas (CanvasTab) or a
@@ -113,19 +116,37 @@ class GraphTab extends WorkspaceTab {
 const int kMaxOpenTabs = 20;
 
 class TabsState {
-  const TabsState({required this.tabs, required this.activeIndex});
+  const TabsState({
+    required this.tabs,
+    required this.activeIndex,
+    this.canGoBack = false,
+    this.canGoForward = false,
+  });
 
   final List<WorkspaceTab> tabs;
   final int activeIndex;
+
+  /// Whether the active tab's Tab history has an entry before the current one.
+  final bool canGoBack;
+
+  /// Whether the active tab's Tab history has an entry after the current one.
+  final bool canGoForward;
 
   static const empty = TabsState(tabs: [], activeIndex: 0);
 
   WorkspaceTab? get activeTab =>
       tabs.isEmpty ? null : tabs[activeIndex.clamp(0, tabs.length - 1)];
 
-  TabsState copyWith({List<WorkspaceTab>? tabs, int? activeIndex}) => TabsState(
+  TabsState copyWith({
+    List<WorkspaceTab>? tabs,
+    int? activeIndex,
+    bool? canGoBack,
+    bool? canGoForward,
+  }) => TabsState(
     tabs: tabs ?? this.tabs,
     activeIndex: activeIndex ?? this.activeIndex,
+    canGoBack: canGoBack ?? this.canGoBack,
+    canGoForward: canGoForward ?? this.canGoForward,
   );
 }
 
@@ -142,23 +163,51 @@ abstract interface class TabsNavigationObserver {
   void navigated(WorkspaceTab target);
 }
 
+/// One open tab: what it has shown (its Tab history) and a counter that moves
+/// on every step of that history. The object itself is the tab's instance id,
+/// so two tabs showing one value stay apart (#266).
+class _TabRecord {
+  _TabRecord(WorkspaceTab target) : history = TabHistory.initial(target);
+
+  TabHistory<WorkspaceTab> history;
+
+  /// Bumped on every move of [history] (navigate, back, forward, a gone
+  /// entry's removal), so a late answer or a late `followLater` result can
+  /// tell whether the tab is still where it was.
+  int generation = 0;
+
+  WorkspaceTab get current => history.current;
+
+  void move(TabHistory<WorkspaceTab> next) {
+    history = next;
+    generation++;
+  }
+}
+
 class TabsNotifier extends StateNotifier<TabsState> {
   /// Restores the tabs from [store]. With a [todayDate] (the launch, #22),
-  /// today's tab then becomes active: the restored tab of [todayNoteId] when
-  /// it is open, otherwise today's tab ([todayNoteId]'s, or a
-  /// [VirtualTodayTab] for [todayDate] when it is null) is inserted first.
+  /// today's tab then becomes active: the leftmost restored tab of
+  /// [todayNoteId] when it is open, otherwise today's tab ([todayNoteId]'s, or
+  /// a [VirtualTodayTab] for [todayDate] when it is null) is inserted first.
   TabsNotifier({
     required this.store,
     required this.onPersistedSelection,
+    this.onBeforeLeave,
     String? todayDate,
     String? todayNoteId,
     this.isNewTabModifierPressed,
     this.navigationObserver,
+    this.targetExists,
   }) : super(TabsState.empty) {
     _hydrate(todayDate, todayNoteId);
   }
 
   final UiStateStore store;
+
+  /// Runs before a call changes which tab is active, changes what the active
+  /// tab shows, or removes the active tab, so what is being left can save a
+  /// pending edit (#264, D9).
+  final void Function()? onBeforeLeave;
 
   /// Called with the active note id (or null) so legacy
   /// `selectedNoteIdProvider`-driven widgets stay in sync.
@@ -171,10 +220,42 @@ class TabsNotifier extends StateNotifier<TabsState> {
   /// See [TabsNavigationObserver].
   final TabsNavigationObserver? navigationObserver;
 
+  /// Whether a Tab history entry's target still exists (#266, TD9). Null means
+  /// every target exists; a throw counts as existing.
+  final Future<bool> Function(WorkspaceTab target)? targetExists;
+
   bool _hydrated = false;
 
-  /// Most-recently-used order, most recent first. Used for LRU eviction.
-  final List<WorkspaceTab> _mru = [];
+  /// One record per open tab, in step with `state.tabs`.
+  List<_TabRecord> _records = [];
+
+  /// Most-recently-used order of tab instances, most recent first. Used for
+  /// LRU eviction.
+  final List<_TabRecord> _mru = [];
+
+  _TabRecord? get _activeRecord =>
+      _records.isEmpty ? null : _records[state.activeIndex];
+
+  /// The index of the leftmost tab showing [tab], or -1.
+  int _indexShowing(WorkspaceTab tab) =>
+      _records.indexWhere((r) => r.current == tab);
+
+  /// Makes [records] the open tabs, [activeIndex] the active one, and writes
+  /// the state they give, `canGoBack` and `canGoForward` included.
+  void _write(List<_TabRecord> records, int activeIndex) {
+    _records = records;
+    if (records.isEmpty) {
+      state = TabsState.empty;
+      return;
+    }
+    final active = records[activeIndex];
+    state = TabsState(
+      tabs: [for (final r in records) r.current],
+      activeIndex: activeIndex,
+      canGoBack: active.history.canGoBack,
+      canGoForward: active.history.canGoForward,
+    );
+  }
 
   void _hydrate(String? todayDate, String? todayNoteId) {
     _restore();
@@ -189,132 +270,168 @@ class TabsNotifier extends StateNotifier<TabsState> {
     });
   }
 
-  /// Restores the tabs written to [store]. Neither persists nor emits.
+  /// Restores the tabs written to [store], each with a history of its own.
+  /// Neither persists nor emits.
   void _restore() {
     final persisted = store.read();
-    final restored = persisted.tabs
-        .map(WorkspaceTab.fromPersisted)
-        .whereType<WorkspaceTab>()
-        .toList();
+    final restored = [
+      for (final t in persisted.tabs.map(WorkspaceTab.fromPersisted))
+        if (t != null) _TabRecord(t),
+    ];
+    _hydrated = true;
     if (restored.isEmpty) {
-      state = TabsState.empty;
-      _hydrated = true;
+      _write([], 0);
       return;
     }
     final active = persisted.activeTabIndex.clamp(0, restored.length - 1);
-    state = TabsState(tabs: restored, activeIndex: active);
+    _write(restored, active);
     _mru
       ..clear()
       ..add(restored[active])
-      ..addAll(restored.where((t) => t != restored[active]));
-    _hydrated = true;
+      ..addAll(restored.where((r) => !identical(r, restored[active])));
   }
 
   static WorkspaceTab _todayTab(String date, String? noteId) =>
       noteId == null ? VirtualTodayTab(date) : NoteTab(noteId);
 
-  /// Make [today] the active tab: focus it when open, otherwise insert it
-  /// first. Neither persists nor emits.
+  /// Make [today] the active tab: focus the leftmost tab showing it,
+  /// otherwise insert it first. Neither persists nor emits.
   void _focusToday(WorkspaceTab today) {
-    final existing = state.tabs.indexOf(today);
+    final existing = _indexShowing(today);
     if (existing >= 0) {
-      state = state.copyWith(activeIndex: existing);
-    } else {
-      final tabs = _evictOverCap([today, ...state.tabs], today);
-      state = TabsState(tabs: tabs, activeIndex: tabs.indexOf(today));
+      _touchMru(_records[existing]);
+      _write(_records, existing);
+      return;
     }
-    _touchMru(today);
+    final record = _TabRecord(today);
+    final records = _evictOverCap([record, ..._records], record);
+    _touchMru(record);
+    _write(records, records.indexOf(record));
   }
 
-  /// Open a tab for `tab`, or switch to it if already open. Returns the
-  /// resulting active index.
+  /// Whether moving the active tab to [index] (-1: a new tab) leaves the
+  /// active tab. With no tab open nothing is left.
+  bool _leavesActive(int index) =>
+      _records.isNotEmpty && index != state.activeIndex;
+
+  /// Focus the leftmost tab showing `tab`, or open a new tab for it at the
+  /// end (the Cmd+click path). Returns the resulting active index.
   int openOrFocus(WorkspaceTab tab) {
-    final existing = state.tabs.indexOf(tab);
+    final existing = _indexShowing(tab);
+    if (_leavesActive(existing)) onBeforeLeave?.call();
     if (existing >= 0) {
-      _touchMru(tab);
-      state = state.copyWith(activeIndex: existing);
+      _touchMru(_records[existing]);
+      _write(_records, existing);
       _persist();
       _emitSelection();
       return existing;
     }
-    final newTabs = _evictOverCap([...state.tabs, tab], tab);
-    final newActive = newTabs.indexOf(tab);
-    state = TabsState(tabs: newTabs, activeIndex: newActive);
-    _touchMru(tab);
+    final record = _TabRecord(tab);
+    final records = _evictOverCap([..._records, record], record);
+    final newActive = records.indexOf(record);
+    _touchMru(record);
+    _write(records, newActive);
     _persist();
     _emitSelection();
     return newActive;
   }
 
-  /// Open today's note (#23's `Today` row entry point): focus the tab of
-  /// today's daily note [noteId] when it is open, otherwise open it; when
-  /// [noteId] is null (no daily note for [date] yet), focus the open
+  /// Open today's note (#23's `Today` row entry point): focus the leftmost
+  /// tab of today's daily note [noteId] when it is open, otherwise open it;
+  /// when [noteId] is null (no daily note for [date] yet), focus the open
   /// [VirtualTodayTab] for [date] or insert one as the active tab.
   void openToday({required String date, String? noteId}) {
-    _focusToday(_todayTab(date, noteId));
+    final today = _todayTab(date, noteId);
+    if (_leavesActive(_indexShowing(today))) onBeforeLeave?.call();
+    _focusToday(today);
     _persist();
     _emitSelection();
   }
 
-  /// The virtual Today tab for [date] became the real note [noteId] (its
-  /// first edit created or found the daily note, #22): the note's tab takes
-  /// the virtual tab's place, or, when [noteId] is already open, the virtual
-  /// tab closes. The active tab stays the active tab. A no-op when the
-  /// virtual tab was closed meanwhile.
+  /// The virtual Today note for [date] became the real note [noteId] (its
+  /// first edit created or found the daily note, #22): every history entry of
+  /// it, in every tab, becomes the real note. A tab that showed only the
+  /// virtual note closes when [noteId] is already open in another tab. The
+  /// active tab stays the active tab; when it closed, the leftmost tab showing
+  /// [noteId] becomes active. A no-op when no history holds the virtual note.
   void resolveVirtualToday({required String date, required String noteId}) {
     final virtual = VirtualTodayTab(date);
-    final idx = state.tabs.indexOf(virtual);
-    if (idx < 0) return;
+    if (!_records.any((r) => r.history.entries.contains(virtual))) return;
     final real = NoteTab(noteId);
-    final tabs = List<WorkspaceTab>.from(state.tabs);
-    if (tabs.contains(real)) {
-      tabs.removeAt(idx);
-    } else {
-      tabs[idx] = real;
+    final showing = _records.where((r) => r.current == virtual).toSet();
+    final realOpen = _records.any(
+      (r) => !showing.contains(r) && r.current == real,
+    );
+    final closing = realOpen
+        ? showing
+              .where((r) => r.history.entries.every((e) => e == virtual))
+              .toSet()
+        : const <_TabRecord>{};
+    final active = _activeRecord!;
+    for (final r in _records) {
+      r.history = r.history.rewrite(virtual, real);
     }
-    final active = state.activeTab == virtual ? real : state.activeTab!;
-    state = TabsState(tabs: tabs, activeIndex: tabs.indexOf(active));
-    _mru.remove(virtual);
+    final remaining = _records.where((r) => !closing.contains(r)).toList();
+    _mru.removeWhere(closing.contains);
+    final activeIndex = closing.contains(active)
+        ? remaining.indexWhere((r) => r.current == real)
+        : remaining.indexOf(active);
+    _write(remaining, activeIndex);
     _persist();
     _emitSelection();
   }
 
+  /// Closes every tab showing [tab] (the delete path), in one state write.
   void close(WorkspaceTab tab) {
-    final idx = state.tabs.indexOf(tab);
-    if (idx < 0) return;
-    final remaining = List<WorkspaceTab>.from(state.tabs)..removeAt(idx);
-    _mru.remove(tab);
-    if (remaining.isEmpty) {
-      state = TabsState.empty;
-      _persist();
-      _emitSelection();
-      return;
-    }
+    final closing = _records.where((r) => r.current == tab).toSet();
+    if (closing.isEmpty) return;
+    _closeRecords(closing);
+  }
+
+  /// Closes the tab at [index], and only that tab.
+  void closeAt(int index) {
+    if (index < 0 || index >= _records.length) return;
+    _closeRecords({_records[index]});
+  }
+
+  /// Closes [closing] and discards their histories. When the active tab is
+  /// among them, the nearest remaining tab before it becomes active, else the
+  /// first remaining one; otherwise the active tab stays active.
+  void _closeRecords(Set<_TabRecord> closing) {
+    final active = _activeRecord!;
+    final activeCloses = closing.contains(active);
+    if (activeCloses) onBeforeLeave?.call();
+    final remaining = _records.where((r) => !closing.contains(r)).toList();
+    _mru.removeWhere(closing.contains);
     int newActive;
-    if (state.activeIndex == idx) {
-      // Activate the previous tab if available, otherwise the new index at idx.
-      newActive = (idx == 0) ? 0 : idx - 1;
-    } else if (state.activeIndex > idx) {
-      newActive = state.activeIndex - 1;
+    if (remaining.isEmpty) {
+      newActive = 0;
+    } else if (activeCloses) {
+      final before = _records
+          .take(state.activeIndex)
+          .where((r) => !closing.contains(r));
+      newActive = before.isEmpty ? 0 : remaining.indexOf(before.last);
     } else {
-      newActive = state.activeIndex;
+      newActive = remaining.indexOf(active);
     }
-    state = TabsState(tabs: remaining, activeIndex: newActive);
+    _write(remaining, newActive);
     _persist();
     _emitSelection();
   }
 
+  /// Activates the tab at [index] (a chip switch). Adds no history entry.
   void setActive(int index) {
-    if (index < 0 || index >= state.tabs.length) return;
-    state = state.copyWith(activeIndex: index);
-    _touchMru(state.tabs[index]);
+    if (index < 0 || index >= _records.length) return;
+    if (index != state.activeIndex) onBeforeLeave?.call();
+    _touchMru(_records[index]);
+    _write(_records, index);
     _persist();
     _emitSelection();
   }
 
-  void _touchMru(WorkspaceTab tab) {
-    _mru.remove(tab);
-    _mru.insert(0, tab);
+  void _touchMru(_TabRecord record) {
+    _mru.remove(record);
+    _mru.insert(0, record);
   }
 
   /// The call for any click that goes somewhere (#230): with the new-tab
@@ -324,22 +441,125 @@ class TabsNotifier extends StateNotifier<TabsState> {
     _goTo(target, newTab: _newTabModifierHeld);
   }
 
-  /// Shows [target]. Delegates to [openOrFocus] until #266 makes it navigate
-  /// in the current tab.
+  /// Shows [target] in the active tab and adds it to that tab's history. With
+  /// no tab open, opens the first tab on it. A no-op when the active tab
+  /// already shows [target].
   void navigate(WorkspaceTab target) {
     navigationObserver?.navigated(target);
-    openOrFocus(target);
+    final active = _activeRecord;
+    if (active == null) {
+      final record = _TabRecord(target);
+      _touchMru(record);
+      _write([record], 0);
+      _persist();
+      _emitSelection();
+      return;
+    }
+    _navigateRecord(active, target);
   }
 
-  /// For a click whose target needs an async lookup: reads the modifier now
-  /// and returns the function to call with the target later. That function
-  /// does nothing once this notifier is disposed.
+  /// Pushes [target] onto [record]'s history. Runs [onBeforeLeave] and emits
+  /// the selection only when [record] is the active tab. A no-op when
+  /// [record] already shows [target].
+  void _navigateRecord(_TabRecord record, WorkspaceTab target) {
+    if (record.current == target) return;
+    final isActive = identical(record, _activeRecord);
+    if (isActive) onBeforeLeave?.call();
+    record.move(record.history.push(target));
+    _write(_records, state.activeIndex);
+    _persist();
+    if (isActive) _emitSelection();
+  }
+
+  /// Moves the active tab one entry back in its Tab history, then checks the
+  /// entry it landed on still exists.
+  void back() => _step(forward: false);
+
+  /// Moves the active tab one entry forward in its Tab history, then checks
+  /// the entry it landed on still exists.
+  void forward() => _step(forward: true);
+
+  void _step({required bool forward}) {
+    final record = _activeRecord;
+    if (record == null) return;
+    final history = record.history;
+    if (forward ? !history.canGoForward : !history.canGoBack) return;
+    onBeforeLeave?.call();
+    record.move(forward ? history.forward() : history.back());
+    _write(_records, state.activeIndex);
+    _persist();
+    _emitSelection();
+    _check(record, forward: forward);
+  }
+
+  /// Asks [targetExists] about [record]'s current entry. When it is gone and
+  /// the tab is still on that entry, the entry is removed and the same
+  /// direction continues (TD9).
+  void _check(_TabRecord record, {required bool forward}) {
+    final exists = targetExists;
+    if (exists == null) return;
+    final generation = record.generation;
+    final Future<bool> answer;
+    try {
+      answer = exists(record.current);
+    } catch (_) {
+      return;
+    }
+    answer.then((there) {
+      if (there || !mounted) return;
+      if (!_records.contains(record) || record.generation != generation) {
+        return;
+      }
+      _skipGone(record, forward: forward);
+    }, onError: (Object _) {});
+  }
+
+  /// Removes [record]'s current, gone entry and moves on in the same
+  /// direction; with no entry left that way the tab stays on the entry it
+  /// left, unchecked.
+  void _skipGone(_TabRecord record, {required bool forward}) {
+    final history = record.history;
+    if (history.entries.length < 2) return;
+    final gone = history.index;
+    var next = history.remove(gone);
+    final bool goOn;
+    if (forward) {
+      // A later entry took the gone one's place, or the tab is back on the
+      // entry it left.
+      goOn = next.index == gone;
+    } else {
+      // The entry it left took the gone one's place; step back past it.
+      goOn = next.canGoBack;
+      if (goOn) next = next.back();
+    }
+    final isActive = identical(record, _activeRecord);
+    record.move(next);
+    _write(_records, state.activeIndex);
+    _persist();
+    if (isActive) _emitSelection();
+    if (goOn) _check(record, forward: forward);
+  }
+
+  /// For a click whose target needs an async lookup: reads the modifier and
+  /// the active tab now and returns the function to call with the target
+  /// later (Spec R7). With the modifier, it focuses or opens a tab; without,
+  /// it navigates the tab it was taken on, active or not, and does nothing
+  /// once that tab closed or moved in its history. It does nothing once this
+  /// notifier is disposed.
   void Function(WorkspaceTab target) followLater() {
     final newTab = _newTabModifierHeld;
+    final taken = _activeRecord;
+    final generation = taken?.generation;
     return (WorkspaceTab target) {
       if (!mounted) return;
       navigationObserver?.followed(target);
-      _goTo(target, newTab: newTab);
+      if (newTab || taken == null) {
+        _goTo(target, newTab: newTab);
+        return;
+      }
+      if (!_records.contains(taken) || taken.generation != generation) return;
+      navigationObserver?.navigated(target);
+      _navigateRecord(taken, target);
     };
   }
 
@@ -355,34 +575,28 @@ class TabsNotifier extends StateNotifier<TabsState> {
     }
   }
 
-  /// [tabs] with the least-recently-used tab other than [active] removed
-  /// when they are over [kMaxOpenTabs] (LRU eviction).
-  List<WorkspaceTab> _evictOverCap(
-    List<WorkspaceTab> tabs,
-    WorkspaceTab active,
-  ) {
-    if (tabs.length <= kMaxOpenTabs) return tabs;
-    final victim = _pickEvictionVictim(tabs, active);
-    if (victim == null) return tabs;
+  /// [records] with the least-recently-used tab other than [keep] removed
+  /// when they are over [kMaxOpenTabs] (LRU eviction, by tab instance).
+  List<_TabRecord> _evictOverCap(List<_TabRecord> records, _TabRecord keep) {
+    if (records.length <= kMaxOpenTabs) return records;
+    final victim = _pickEvictionVictim(records, keep);
+    if (victim == null) return records;
     _mru.remove(victim);
-    return tabs.where((t) => t != victim).toList();
+    return records.where((r) => !identical(r, victim)).toList();
   }
 
-  WorkspaceTab? _pickEvictionVictim(
-    List<WorkspaceTab> tabs,
-    WorkspaceTab active,
-  ) {
-    // Walk MRU from tail forward, return the first that's still in `tabs`
-    // and isn't the active tab.
+  _TabRecord? _pickEvictionVictim(List<_TabRecord> records, _TabRecord keep) {
+    // Walk MRU from tail forward, return the first that's still in `records`
+    // and isn't [keep].
     for (var i = _mru.length - 1; i >= 0; i--) {
       final candidate = _mru[i];
-      if (candidate != active && tabs.contains(candidate)) {
+      if (!identical(candidate, keep) && records.contains(candidate)) {
         return candidate;
       }
     }
-    // No prior MRU info — fall back to the oldest non-active tab.
-    for (final t in tabs) {
-      if (t != active) return t;
+    // No prior MRU info — fall back to the oldest tab other than [keep].
+    for (final r in records) {
+      if (!identical(r, keep)) return r;
     }
     return null;
   }
@@ -392,7 +606,7 @@ class TabsNotifier extends StateNotifier<TabsState> {
     final existing = store.read();
     // The virtual Today tab is never written (D26); the active index moves
     // onto the remaining tabs (to the next one when the virtual tab is
-    // active).
+    // active). Tab histories are never written (R19).
     final kept = state.tabs.where((t) => t is! VirtualTodayTab).toList();
     final before = state.tabs
         .take(state.activeIndex)
@@ -440,11 +654,16 @@ final tabsProvider = StateNotifierProvider<TabsNotifier, TabsState>((ref) {
       // right panel) still respond to tab changes.
       ref.read(selectedNoteIdProvider.notifier).state = noteId;
     },
+    // Read when a leave happens, not while this provider builds: the editor
+    // controller reads `tabsProvider` too.
+    onBeforeLeave: () =>
+        ref.read(editorControllerProvider.notifier).flushPendingSave(),
     // Opening a vault lands on today's note (#22). Read once: the launch
     // date sticks to the tab across midnight (D14).
     todayDate: vaultPath == null ? null : ref.read(todayDateProvider),
     todayNoteId: vaultPath == null ? null : _readTodayNote(ref)?.noteId,
     navigationObserver: ref.watch(tabsNavigationObserverProvider),
+    targetExists: (target) => _targetExists(ref, target),
   );
   // Today's note is an async read (#78, D14a): until it lands the launch
   // shows the virtual Today tab, which then resolves onto today's stored
@@ -461,6 +680,34 @@ final tabsProvider = StateNotifierProvider<TabsNotifier, TabsState>((ref) {
   }
   return notifier;
 });
+
+/// Whether [target] still exists in the open vault (#266, TD9): false only
+/// when `getNote` or `getCanvasDetail` answers null. A virtual Today note, a
+/// folder-scoped or whole-vault Graph view, no vault access and any read
+/// failure (`VaultUnreachableException` included) count as existing, with
+/// no read where none is needed.
+Future<bool> _targetExists(Ref<Object?> ref, WorkspaceTab target) async {
+  if (target is VirtualTodayTab) return true;
+  try {
+    // Read when asked, not while `tabsProvider` builds.
+    final access = ref.read(vaultAccessProvider);
+    if (access == null) return true;
+    switch (target) {
+      case NoteTab(:final id):
+        return await access.notes.getNote(id) != null;
+      case CanvasTab(:final id):
+        return await access.canvas.getCanvasDetail(id) != null;
+      case GraphTab(:final scope):
+        return switch (scope.kind) {
+          GraphScopeKind.topic ||
+          GraphScopeKind.day => await access.notes.getNote(scope.id) != null,
+          GraphScopeKind.folder || GraphScopeKind.vault => true,
+        };
+    }
+  } catch (_) {
+    return true;
+  }
+}
 
 /// Today's daily note as loaded for the open vault right now (no
 /// subscription), or null before it loads, while it reloads, or when there is

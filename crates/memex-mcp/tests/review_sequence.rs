@@ -18,6 +18,9 @@
 //! before the server starts (an agent cannot create a daily note with
 //! content). No embedding model is used; JSON is compared as parsed values.
 
+#[path = "support/tool_names.rs"]
+mod tool_names;
+
 use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -38,40 +41,6 @@ const DAY: &str = "2026-09-05";
 /// Three blocks: "Fixed the jump arc.", "- tried coyote time", "Sleep was bad."
 const DAY_BODY: &str = "Fixed the jump arc.\n\n- tried coyote time\n\nSleep was bad.\n";
 const REVIEWED_AT: i64 = 1_759_500_000_000;
-
-/// The 13 tools the server had before this Spec.
-const EXISTING_TOOLS: [&str; 13] = [
-    "search",
-    "get_note",
-    "neighbors",
-    "add_link",
-    "create_note",
-    "list_canvases",
-    "get_canvas",
-    "create_canvas",
-    "add_to_canvas",
-    "remove_from_canvas",
-    "move_node",
-    "delete_canvas",
-    "update_link",
-];
-
-/// The 13 tools this Spec adds (Req 14, 21, 25 to 27, 30, 40).
-const NEW_TOOLS: [&str; 13] = [
-    "list_smart_folders",
-    "create_smart_folder",
-    "update_smart_folder",
-    "delete_smart_folder",
-    "add_to_smart_folder",
-    "remove_from_smart_folder",
-    "get_vault_settings",
-    "list_unreviewed_days",
-    "get_daily_note_changes",
-    "mark_day_reviewed",
-    "append_to_daily_note",
-    "add_excerpt",
-    "remove_excerpt",
-];
 
 // ---------- harness: `memex serve` over stdio ----------
 
@@ -477,12 +446,11 @@ fn day_vault() -> (TempDir, String, String) {
 }
 
 // ======================================================================
-// The exact final tool list: the 13 existing tools plus the 13 this Spec
-// adds, each once.
+// The exact final tool list: every block of `support/tool_names.rs`, each once.
 // ======================================================================
 
 #[test]
-fn server_lists_exactly_the_twenty_six_tools_with_no_duplicates() {
+fn server_lists_exactly_the_tools_in_the_shared_list_with_no_duplicates() {
     let (_dir, path) = vault_with(|_| {});
     let mut server = Server::start(&path);
     let names = server.tool_names();
@@ -490,16 +458,17 @@ fn server_lists_exactly_the_twenty_six_tools_with_no_duplicates() {
     let unique: BTreeSet<String> = names.iter().cloned().collect();
     assert_eq!(names.len(), unique.len(), "no duplicate tools: {names:?}");
 
-    assert_eq!(EXISTING_TOOLS.len(), 13);
-    assert_eq!(NEW_TOOLS.len(), 13);
-    let expected: BTreeSet<String> = EXISTING_TOOLS
+    let expected: BTreeSet<String> = tool_names::all_tool_names()
         .iter()
-        .chain(NEW_TOOLS.iter())
         .map(|s| s.to_string())
         .collect();
-    assert_eq!(expected.len(), 26, "the expected names are distinct");
+    assert_eq!(
+        expected.len(),
+        tool_names::TOOL_COUNT,
+        "the expected names are distinct"
+    );
     assert_eq!(unique, expected, "the exact final tool list");
-    assert_eq!(names.len(), 26, "{names:?}");
+    assert_eq!(names.len(), tool_names::TOOL_COUNT, "{names:?}");
 
     // Prompts are not tools, and the Spec adds no MCP update or delete tool.
     for forbidden in [

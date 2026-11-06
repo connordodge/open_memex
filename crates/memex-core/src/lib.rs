@@ -21,6 +21,7 @@ pub mod blocks;
 pub mod caller;
 pub mod daily;
 pub mod excerpts;
+pub mod filing;
 pub mod footer;
 pub mod review;
 pub mod smart_folders;
