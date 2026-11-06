@@ -6,9 +6,12 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
+import 'package:open_memex_app/src/state/vault_access_state.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
+import 'package:open_memex_app/src/vault_access/local/local_vault_access.dart';
 
 import '../robots/segmented_editor_robot.dart';
 import '../support/app_harness.dart';
@@ -19,6 +22,44 @@ import '../support/tags_seed.dart';
 const _three = ['alpha', 'beta', 'gamma'];
 const _card = '![[2026-09-05#^b7k2m9]]\n';
 const _copy = "Couldn't remove #beta. The vault server didn't answer.";
+const _noCli = 'The memex CLI is not available.';
+
+/// A tags domain that counts the writes it is asked for. Every one throws, so
+/// a write that reaches it is also a failed write.
+class _CountingTags extends LocalTagsAccess {
+  _CountingTags() : super(vaultPath: '/tmp/om-253-vault');
+
+  final removed = <String>[];
+
+  @override
+  Future<TagRmResult> removeTag(String noteId, String tag) async {
+    removed.add('$noteId/$tag');
+    throw StateError('should not be reached');
+  }
+}
+
+/// `vaultAccessProvider` over a local vault with no CLI (`canWrite` false)
+/// whose tags domain is [tags]. Reads still go to the harness's database.
+Override _noCliAccess(FooterVault vault, _CountingTags tags) =>
+    vaultAccessProvider.overrideWith((ref) {
+      final path = ref.watch(currentVaultProvider).localPath;
+      if (path == null) return null;
+      return LocalVaultAccess(vaultPath: path, db: vault.db, tags: tags);
+    });
+
+/// What [body] logs through `debugPrint`. The swap is undone inside the test
+/// body: a tearDown restore fails the test as a changed debug variable.
+Future<List<String>> _logged(Future<void> Function() body) async {
+  final logged = <String>[];
+  final saved = debugPrint;
+  debugPrint = (message, {wrapWidth}) => logged.add(message ?? '');
+  try {
+    await body();
+  } finally {
+    debugPrint = saved;
+  }
+  return logged;
+}
 
 FooterVault _vault(
   List<String> tags, {
@@ -282,7 +323,58 @@ void main() {
       expect(footerTag('beta'), findsOneWidget);
     });
 
-    testWidgets('no CLI at all shows the vault server copy and keeps the tag', (
+    testWidgets('no CLI at all says the memex CLI is not available', (
+      tester,
+    ) async {
+      final logged = await _logged(() async {
+        await launchFooterNote(
+          tester,
+          _vault(_three),
+          overrides: [memexCliProvider.overrideWithValue(null)],
+        );
+        final mouse = await addMouse(tester);
+
+        await clickX(tester, mouse, 'beta');
+        await pumpFrames(tester);
+      });
+
+      expect(find.text(_noCli), findsOneWidget);
+      expect(find.text(_copy), findsNothing);
+      expect(find.textContaining('Bad state'), findsNothing);
+      expect(footerTag('beta'), findsOneWidget);
+      expect(footerSpinner('beta'), findsNothing);
+      expect(find.byType(SnackBar), findsNothing);
+      expect(logged, isEmpty);
+    });
+
+    testWidgets('a vault that cannot write never tries the write', (
+      tester,
+    ) async {
+      final tags = _CountingTags();
+      final vault = _vault(_three);
+      final logged = await _logged(() async {
+        await launchFooterNote(
+          tester,
+          vault,
+          overrides: [
+            memexCliProvider.overrideWithValue(null),
+            _noCliAccess(vault, tags),
+          ],
+        );
+        final mouse = await addMouse(tester);
+
+        await clickX(tester, mouse, 'beta');
+        await pumpFrames(tester);
+      });
+
+      expect(tags.removed, isEmpty);
+      expect(vault.cli.callsFor('tag rm'), isEmpty);
+      expect(find.text(_noCli), findsOneWidget);
+      expect(footerTag('beta'), findsOneWidget);
+      expect(logged, isEmpty);
+    });
+
+    testWidgets('a x that said the CLI is missing can be clicked again', (
       tester,
     ) async {
       await launchFooterNote(
@@ -291,14 +383,98 @@ void main() {
         overrides: [memexCliProvider.overrideWithValue(null)],
       );
       final mouse = await addMouse(tester);
+      await clickX(tester, mouse, 'beta');
+      await pumpFrames(tester);
+      await tester.tap(
+        find.descendant(
+          of: footerRow,
+          matching: find.byKey(const Key('inline-error-dismiss')),
+        ),
+      );
+      await pumpFrames(tester);
+      expect(find.text(_noCli), findsNothing);
 
       await clickX(tester, mouse, 'beta');
       await pumpFrames(tester);
 
-      expect(find.text(_copy), findsOneWidget);
-      expect(find.textContaining('Bad state'), findsNothing);
+      expect(find.text(_noCli), findsOneWidget);
+      expect(footerSpinner('beta'), findsNothing);
       expect(footerTag('beta'), findsOneWidget);
-      expect(find.byType(SnackBar), findsNothing);
+    });
+
+    testWidgets('a failure that is not a MemexException is logged', (
+      tester,
+    ) async {
+      final vault = _vault(_three);
+      vault.cli.on('tag rm', (_) => throw StateError('kaboom'));
+      final logged = await _logged(() async {
+        await launchFooterNote(tester, vault);
+        final mouse = await addMouse(tester);
+
+        await clickX(tester, mouse, 'beta');
+        await pumpFrames(tester);
+      });
+
+      expect(find.text(_copy), findsOneWidget);
+      expect(find.textContaining('kaboom'), findsNothing);
+      expect(logged.where((l) => l.contains('kaboom')), hasLength(1));
+      expect(logged.where((l) => l.contains('#beta')), isNotEmpty);
+    });
+
+    testWidgets('a MemexException is not logged', (tester) async {
+      final vault = _vault(_three);
+      vault.cli.on('tag rm', (_) => throw MemexException('nope'));
+      final logged = await _logged(() async {
+        await launchFooterNote(tester, vault);
+        final mouse = await addMouse(tester);
+
+        await clickX(tester, mouse, 'beta');
+        await pumpFrames(tester);
+      });
+
+      expect(find.text('nope'), findsOneWidget);
+      expect(logged, isEmpty);
+    });
+
+    testWidgets('a vault that closes under the x is not a missing CLI', (
+      tester,
+    ) async {
+      final open = StateProvider<bool>((_) => true);
+      final vault = _vault(_three);
+      late ProviderContainer container;
+      final logged = await _logged(() async {
+        await launchFooterNote(
+          tester,
+          vault,
+          overrides: [
+            vaultAccessProvider.overrideWith((ref) {
+              final path = ref.watch(currentVaultProvider).localPath;
+              if (path == null || !ref.watch(open)) return null;
+              return LocalVaultAccess(
+                vaultPath: path,
+                db: vault.db,
+                cli: vault.cli,
+              );
+            }),
+          ],
+        );
+        container = ProviderScope.containerOf(
+          tester.element(footerTag('beta')),
+        );
+        final mouse = await addMouse(tester);
+        await hover(tester, mouse, footerRemove('beta'));
+        await mouse.down(tester.getCenter(footerRemove('beta')));
+        // Closed between the press and the release, before any frame: the
+        // footer is still on screen when the click reads the access.
+        container.read(open.notifier).state = false;
+        await mouse.up();
+        await pumpFrames(tester);
+      });
+
+      // The footer goes with the vault, so the error has nowhere to show: the
+      // write was tried (and failed with the vault gone) and the log has it.
+      expect(find.text(_noCli), findsNothing);
+      expect(logged.where((l) => l.contains('No vault is open')), hasLength(1));
     });
 
     testWidgets('an Exception that is not a MemexException shows the copy', (
