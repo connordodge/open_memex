@@ -11,11 +11,20 @@
 // - Dragging near the editor page's top or bottom edge scrolls the page.
 // - Excerpt cards and the Topics footer are boundaries (R28).
 // - The gesture layer is in the rows' tap region group (D11).
+// - WI #269 (N6, Spec #232 R8-R12, TD6): a press on a rendered followable link
+//   defers its caret; a release inside `kPrecisePointerHitSlop` follows the link
+//   captured at the press, past it a drag selects as usual.
 // Every pointer test runs under macOS (TS7).
 import 'dart:typed_data';
 
 import 'package:flutter/gestures.dart'
-    show PointerDeviceKind, kDoubleTapTimeout, kPrecisePointerHitSlop;
+    show
+        PointerDeviceKind,
+        kDoubleTapTimeout,
+        kMiddleMouseButton,
+        kPrecisePointerHitSlop,
+        kPressTimeout,
+        kSecondaryButton;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -23,6 +32,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db.dart';
 import 'package:open_memex_app/src/editor/editor_rows.dart';
+import 'package:open_memex_app/src/state/tabs_state.dart';
+import 'package:open_memex_app/src/state/ui_state_store.dart';
 import 'package:open_memex_app/src/theme/app_theme.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
@@ -33,8 +44,11 @@ import 'package:open_memex_app/src/widgets/editor/text_segment.dart';
 
 import '../robots/segmented_editor_robot.dart';
 import '../support/font_fetch_hold.dart';
+import '../support/editor_scope.dart';
 import '../support/mac_editing.dart';
+import '../support/recording_tabs.dart';
 import '../support/segment_editing_finder.dart';
+import '../support/table_harness.dart' show TableBody, pumpTable;
 
 /// A paragraph, three bullets and a last paragraph. Rows (segment offsets):
 /// - 0 prose `para one` [0, 9), text [0, 8)
@@ -367,6 +381,121 @@ NewlineMarkLine _wi170MarkLine({
   endX: endX,
   columnWidth: columnWidth,
 );
+
+/// One prose row of four lines: the first two hold followable links, the last
+/// two plain text.
+const _wi269Text =
+    'See [[Known]] here\n'
+    'Also [[Zeta]] and [docs](https://x.y) too\n'
+    'Plain words below\n'
+    'Last line';
+
+const _wi269KnownId = 'topic-known';
+const _wi269ZetaId = 'topic-zeta';
+
+/// A `TabsNotifier` that records `openOrFocus` and `navigate` and goes
+/// nowhere, so the pumped note stays on screen after a follow and a caret the
+/// press left behind is still there to see.
+class _Wi269Tabs extends TabsNotifier {
+  _Wi269Tabs(TabsRecorder recorder)
+    : followed = recorder.followed,
+      super(
+        store: UiStateStore(vaultPath: '/dev/null'),
+        onPersistedSelection: (_) {},
+        navigationObserver: recorder.observer,
+      );
+
+  final List<WorkspaceTab> followed;
+  final List<WorkspaceTab> navigated = [];
+  final List<WorkspaceTab> opened = [];
+
+  @override
+  int openOrFocus(WorkspaceTab tab) {
+    opened.add(tab);
+    return 0;
+  }
+
+  @override
+  void navigate(WorkspaceTab target) => navigated.add(target);
+}
+
+/// A pumped [_wi269Text] with the notes `Known` and `Zeta` loaded.
+class _Wi269Body {
+  _Wi269Body(this.b, this.tabs, this.opener);
+
+  final TableBody b;
+  final _Wi269Tabs tabs;
+  final RecordingUrlOpener opener;
+
+  WidgetTester get tester => b.tester;
+
+  /// The segment offset of [needle], plus [plus].
+  int at(String needle, {int plus = 0}) => b.text().indexOf(needle) + plus;
+
+  /// A global point on whole pixels inside the glyph at segment [offset], so
+  /// moving it by the slop moves it by exactly that.
+  Offset glyph(int offset) {
+    final boxes = b.segmentBoxes();
+    final rects = boxes.boxesFor(TextRange(start: offset, end: offset + 1));
+    expect(rects, isNotEmpty, reason: 'a glyph at $offset');
+    final g = boxes.box.localToGlobal(rects.first.center);
+    return Offset(g.dx.roundToDouble(), g.dy.roundToDouble());
+  }
+
+  /// The seam's offset for global [point], read now.
+  int offsetAt(Offset point) {
+    final boxes = b.segmentBoxes();
+    return boxes.offsetAt(boxes.box.globalToLocal(point));
+  }
+
+  Future<void> click(Offset point, {int buttons = 1}) async {
+    final mouse = await tester.startGesture(
+      point,
+      kind: PointerDeviceKind.mouse,
+      buttons: buttons,
+    );
+    await tester.pump();
+    await mouse.up();
+    await tester.pump();
+  }
+
+  /// A press at [from], moved by [by], then released.
+  Future<void> pressMoveRelease(Offset from, Offset by) async {
+    final mouse = await tester.startGesture(
+      from,
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pump();
+    await mouse.moveTo(from + by);
+    await tester.pump();
+    await mouse.up();
+    await tester.pump();
+  }
+
+  Future<void> pastDoubleClick() => _wi170PastDoubleClick(tester);
+}
+
+Future<_Wi269Body> _wi269Pump(
+  WidgetTester tester, {
+  String text = _wi269Text,
+}) async {
+  final tabs = _Wi269Tabs(TabsRecorder());
+  final opener = RecordingUrlOpener();
+  final b = await pumpTable(
+    tester,
+    text,
+    titles: [
+      NoteTitle(id: _wi269KnownId, title: 'Known', updatedAt: 2),
+      NoteTitle(id: _wi269ZetaId, title: 'Zeta', updatedAt: 1),
+    ],
+    opener: opener,
+    overrides: [tabsProvider.overrideWith((ref) => tabs)],
+  );
+  // The titles load, then LinkRegion applies them after a frame.
+  await tester.pump();
+  await tester.pump();
+  return _Wi269Body(b, tabs, opener);
+}
 
 void main() {
   holdFontFetches();
@@ -1949,6 +2078,561 @@ void main() {
         _wi170ExpectRects(_wi170Marks(tester, 0), [
           _wi170ExpectedMark(tester, 0, 0, lines.length - 1),
         ]);
+      },
+      variant: macOnly,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // #269 (N6, Spec #232 R8-R12, TD6): a press on a rendered followable link
+  // -------------------------------------------------------------------------
+  group('a press on a rendered link', () {
+    testWidgets(
+      'a plain click on a rendered wikilink moves no caret focuses no other row and reaches no row tap recognizer',
+      (tester) async {
+        final t = await _wi269Pump(
+          tester,
+          text: 'See [[Known]] here\n- bullet words\n',
+        );
+        final b = t.b;
+        final caret = t.at('words', plus: 2);
+        await b.placeCaret(caret);
+        expect(b.view().focusedRow, 1);
+
+        await t.click(t.glyph(t.at('Known', plus: 2)));
+        // A tap recognizer could still be deciding on a double tap.
+        await t.pastDoubleClick();
+
+        expect(t.tabs.followed, [const NoteTab(_wi269KnownId)]);
+        expect(t.tabs.navigated, [const NoteTab(_wi269KnownId)]);
+        expect(t.tabs.opened, isEmpty);
+        expect(b.selection(), TextSelection.collapsed(offset: caret));
+        expect(b.view().focusedRow, 1);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a plain click on a rendered wikilink with nothing focused follows it and focuses nothing',
+      (tester) async {
+        final t = await _wi269Pump(tester);
+        final b = t.b;
+        final before = b.selection();
+        expect(b.view().focusedRow, isNull);
+
+        await t.click(t.glyph(t.at('Known', plus: 2)));
+        await t.pastDoubleClick();
+
+        expect(t.tabs.followed, [const NoteTab(_wi269KnownId)]);
+        expect(b.selection(), before);
+        expect(b.view().focusedRow, isNull);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a plain click beside a rendered wikilink places the caret and a click on it follows',
+      (tester) async {
+        final t = await _wi269Pump(tester);
+        final b = t.b;
+        await t.click(t.glyph(t.at('Known', plus: 2)));
+        expect(t.tabs.followed, hasLength(1));
+        await t.pastDoubleClick();
+        final lineEnd = t.at('\n');
+
+        await t.click(t.glyph(t.at('here', plus: 2)));
+
+        expect(
+          t.tabs.followed,
+          hasLength(1),
+          reason: 'plain text follows nothing',
+        );
+        // The press reveals the line, and the row's tap lands on its new layout.
+        expect(b.selection().isCollapsed, isTrue);
+        expect(b.selection().baseOffset, inInclusiveRange(0, lineEnd));
+        expect(b.view().focusedRow, 0);
+        await t.pastDoubleClick();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a press on a rendered wikilink released inside the slop navigates',
+      (tester) async {
+        final t = await _wi269Pump(tester);
+        final before = t.b.selection();
+
+        await t.pressMoveRelease(
+          t.glyph(t.at('Known', plus: 2)),
+          const Offset(kPrecisePointerHitSlop / 2, 0),
+        );
+
+        expect(t.tabs.navigated, [const NoteTab(_wi269KnownId)]);
+        expect(t.b.selection(), before);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a press on a rendered wikilink released after a drag of exactly the slop navigates',
+      (tester) async {
+        final t = await _wi269Pump(tester);
+        final before = t.b.selection();
+        final from = t.glyph(t.at('Known', plus: 2));
+        const by = Offset(kPrecisePointerHitSlop, 0);
+        expect((from + by - from).distance, kPrecisePointerHitSlop);
+
+        await t.pressMoveRelease(from, by);
+
+        expect(t.tabs.navigated, [const NoteTab(_wi269KnownId)]);
+        expect(t.b.selection(), before, reason: 'no drag started');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a press on a rendered wikilink dragged just past the slop puts the caret at the press and does not navigate',
+      (tester) async {
+        final t = await _wi269Pump(tester);
+        final b = t.b;
+        final before = b.selection();
+        final from = t.glyph(t.at('Known', plus: 2));
+        final pressed = t.offsetAt(from);
+
+        final mouse = await tester.startGesture(
+          from,
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pump();
+        expect(b.selection(), before, reason: 'no caret at the press');
+        await mouse.moveTo(
+          from + const Offset(kPrecisePointerHitSlop + 0.5, 0),
+        );
+        await tester.pump();
+        await mouse.up();
+        await tester.pump();
+
+        expect(t.tabs.followed, isEmpty);
+        expect(b.selection().isValid, isTrue);
+        expect(b.selection().baseOffset, pressed);
+        expect(b.view().focusedRow, 0);
+        await t.pastDoubleClick();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a press on a rendered wikilink moves no caret until a drag past the slop then selects from the press and does not navigate',
+      (tester) async {
+        final t = await _wi269Pump(tester);
+        final b = t.b;
+        final before = b.selection();
+        final from = t.glyph(t.at('Known', plus: 2));
+        final pressed = t.offsetAt(from);
+
+        final mouse = await tester.startGesture(
+          from,
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pump();
+        expect(b.selection(), before, reason: 'no caret at the press');
+        expect(b.view().focusedRow, isNull, reason: 'no focus at the press');
+
+        // Across the row, to the right of the link.
+        await mouse.moveTo(from + const Offset(120, 0));
+        await tester.pump();
+        await mouse.up();
+        await tester.pump();
+
+        expect(t.tabs.followed, isEmpty);
+        expect(b.selection().baseOffset, pressed);
+        expect(b.selection().extentOffset, greaterThan(pressed));
+        expect(b.view().focusedRow, 0);
+        await t.pastDoubleClick();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a press on a rendered URL link dragged past the slop selects from the press and opens nothing',
+      (tester) async {
+        final t = await _wi269Pump(tester);
+        final b = t.b;
+        final from = t.glyph(t.at('docs', plus: 2));
+        final pressed = t.offsetAt(from);
+        final before = b.selection();
+
+        final mouse = await tester.startGesture(
+          from,
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pump();
+        expect(b.selection(), before, reason: 'deferred like any marked press');
+        await mouse.moveTo(from + const Offset(-60, 0));
+        await tester.pump();
+        await mouse.up();
+        await tester.pump();
+
+        expect(t.opener.opened, isEmpty);
+        expect(b.selection().baseOffset, pressed);
+        expect(b.selection().extentOffset, lessThan(pressed));
+        await t.pastDoubleClick();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a drag past the slop that comes back to the press point selects and does not navigate',
+      (tester) async {
+        final t = await _wi269Pump(tester);
+        final from = t.glyph(t.at('Known', plus: 2));
+        final pressed = t.offsetAt(from);
+        final before = t.b.selection();
+
+        final mouse = await tester.startGesture(
+          from,
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pump();
+        expect(t.b.selection(), before, reason: 'no caret at the press');
+        await mouse.moveTo(from + const Offset(40, 0));
+        await tester.pump();
+        await mouse.moveTo(from);
+        await tester.pump();
+        await mouse.up();
+        await tester.pump();
+
+        expect(t.tabs.followed, isEmpty);
+        expect(t.b.selection().baseOffset, pressed);
+        await t.pastDoubleClick();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a release after the note text changed follows the link captured at the press',
+      (tester) async {
+        final t = await _wi269Pump(tester);
+        final mouse = await tester.startGesture(
+          t.glyph(t.at('Known', plus: 2)),
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pump();
+
+        // A poll swaps the link under the pointer.
+        await t.b.serverWrite(_wi269Text.replaceFirst('[[Known]]', '[[Zeta]]'));
+        await mouse.up();
+        await tester.pump();
+
+        expect(t.tabs.navigated, [const NoteTab(_wi269KnownId)]);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a caret reaching the line during the press does not stop the follow',
+      (tester) async {
+        final t = await _wi269Pump(tester);
+        final mouse = await tester.startGesture(
+          t.glyph(t.at('Known', plus: 2)),
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pump();
+
+        // The line reveals, so its text moves out from under the pointer.
+        await t.b.placeCaret(0);
+        await mouse.up();
+        await tester.pump();
+
+        expect(t.tabs.navigated, [const NoteTab(_wi269KnownId)]);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'on a line with its markup showing a plain click places the caret at the press and does not navigate',
+      (tester) async {
+        final t = await _wi269Pump(tester);
+        final b = t.b;
+        await b.placeCaret(0);
+        final at = t.glyph(t.at('Known', plus: 2));
+        final offset = t.offsetAt(at);
+
+        await t.click(at);
+
+        expect(t.tabs.followed, isEmpty);
+        expect(b.selection(), TextSelection.collapsed(offset: offset));
+        await t.pastDoubleClick();
+
+        // A link on a line the caret does not touch still follows.
+        await t.click(t.glyph(t.at('Zeta', plus: 2)));
+        expect(t.tabs.followed, [const NoteTab(_wi269ZetaId)]);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'on every line a selection touches a plain click on a link places the caret and on the others it follows',
+      (tester) async {
+        final t = await _wi269Pump(tester);
+        final b = t.b;
+        // From row 1 into row 2: row 0 is untouched.
+        await b.select(
+          TextSelection(baseOffset: t.at('too'), extentOffset: t.at('words')),
+        );
+        final at = t.glyph(t.at('Zeta', plus: 2));
+        final offset = t.offsetAt(at);
+
+        await t.click(at);
+
+        expect(t.tabs.followed, isEmpty);
+        expect(b.selection(), TextSelection.collapsed(offset: offset));
+        await t.pastDoubleClick();
+
+        // The caret is on row 1 now; row 0 follows.
+        await t.click(t.glyph(t.at('Known', plus: 2)));
+        expect(t.tabs.followed, [const NoteTab(_wi269KnownId)]);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a caret on the line with the segment unfocused hides its markup so a plain click follows',
+      (tester) async {
+        final t = await _wi269Pump(tester);
+        final b = t.b;
+        await b.placeCaret(0);
+        await b.focusOutside();
+        await tester.pump();
+        final before = b.selection();
+
+        await t.click(t.glyph(t.at('Known', plus: 2)));
+
+        expect(t.tabs.followed, [const NoteTab(_wi269KnownId)]);
+        expect(b.selection(), before);
+        expect(b.view().focusedRow, isNull);
+        await t.pastDoubleClick();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a second plain click on a rendered wikilink at once follows again and selects no word',
+      (tester) async {
+        final t = await _wi269Pump(tester);
+        final at = t.glyph(t.at('Known', plus: 2));
+        final before = t.b.selection();
+
+        await t.click(at);
+        await tester.pump(const Duration(milliseconds: 50));
+        await t.click(at);
+        await t.pastDoubleClick();
+
+        expect(t.tabs.navigated, [
+          const NoteTab(_wi269KnownId),
+          const NoteTab(_wi269KnownId),
+        ]);
+        expect(t.b.selection(), before);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a Shift press on a rendered wikilink extends the selection and does not navigate',
+      (tester) async {
+        final t = await _wi269Pump(tester);
+        final b = t.b;
+        await t.click(t.glyph(t.at('Known', plus: 2)));
+        expect(t.tabs.followed, hasLength(1));
+        await t.pastDoubleClick();
+
+        final caret = t.at('words', plus: 2);
+        await b.placeCaret(caret);
+        final at = t.glyph(t.at('Zeta', plus: 2));
+        final offset = t.offsetAt(at);
+
+        await tester.macClick(at, shift: true);
+        await tester.pump();
+
+        expect(t.tabs.followed, hasLength(1), reason: 'Shift never follows');
+        expect(
+          b.selection(),
+          TextSelection(baseOffset: caret, extentOffset: offset),
+        );
+        await t.pastDoubleClick();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a right button press on a rendered wikilink does not navigate and a primary click does',
+      (tester) async {
+        final t = await _wi269Pump(tester);
+        await t.click(t.glyph(t.at('Zeta', plus: 2)));
+        expect(t.tabs.followed, [const NoteTab(_wi269ZetaId)]);
+        await t.pastDoubleClick();
+
+        await t.click(
+          t.glyph(t.at('Known', plus: 2)),
+          buttons: kSecondaryButton,
+        );
+        await tester.pumpAndSettle();
+
+        expect(
+          t.tabs.followed,
+          hasLength(1),
+          reason: 'only the primary button',
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a middle button press on a rendered wikilink does not navigate and a primary click does',
+      (tester) async {
+        final t = await _wi269Pump(tester);
+        await t.click(t.glyph(t.at('Zeta', plus: 2)));
+        expect(t.tabs.followed, [const NoteTab(_wi269ZetaId)]);
+        await t.pastDoubleClick();
+
+        await t.click(
+          t.glyph(t.at('Known', plus: 2)),
+          buttons: kMiddleMouseButton,
+        );
+        await t.pastDoubleClick();
+
+        expect(
+          t.tabs.followed,
+          hasLength(1),
+          reason: 'only the primary button',
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a touch press on a rendered wikilink does not navigate and a mouse click does',
+      (tester) async {
+        final t = await _wi269Pump(tester);
+        await t.click(t.glyph(t.at('Zeta', plus: 2)));
+        expect(t.tabs.followed, [const NoteTab(_wi269ZetaId)]);
+        await t.pastDoubleClick();
+
+        await tester.tapAt(t.glyph(t.at('Known', plus: 2)));
+        await t.pastDoubleClick();
+        expect(
+          t.tabs.followed,
+          hasLength(1),
+          reason: 'the layer ignores touch',
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a cancelled press on a rendered wikilink does not navigate and a click after it follows',
+      (tester) async {
+        final t = await _wi269Pump(tester);
+        final before = t.b.selection();
+        final at = t.glyph(t.at('Known', plus: 2));
+
+        final mouse = await tester.startGesture(
+          at,
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pump();
+        await mouse.cancel();
+        await tester.pump();
+
+        expect(t.tabs.followed, isEmpty);
+        expect(t.b.selection(), before);
+
+        await t.click(at);
+        expect(t.tabs.followed, [const NoteTab(_wi269KnownId)]);
+        expect(t.b.selection(), before);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a click on plain text right after a followed click places the caret with no mark left over',
+      (tester) async {
+        final t = await _wi269Pump(tester);
+        await t.click(t.glyph(t.at('Known', plus: 2)));
+        await t.pastDoubleClick();
+
+        final plain = t.glyph(t.at('words', plus: 2));
+        final lineStart = t.at('Plain');
+        final lineEnd = t.at('below') + 'below'.length;
+        await t.click(plain);
+        expect(t.tabs.followed, [const NoteTab(_wi269KnownId)]);
+        expect(t.b.selection().isCollapsed, isTrue);
+        expect(
+          t.b.selection().baseOffset,
+          inInclusiveRange(lineStart, lineEnd),
+        );
+        await t.pastDoubleClick();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a press on a rendered wikilink held past the press timeout moves no caret and still follows on release',
+      (tester) async {
+        final t = await _wi269Pump(
+          tester,
+          text: 'See [[Known]] here\n- bullet words\n',
+        );
+        final b = t.b;
+        final caret = t.at('words', plus: 2);
+        await b.placeCaret(caret);
+        await t.pastDoubleClick();
+        final at = t.glyph(t.at('Known', plus: 2));
+
+        final mouse = await tester.startGesture(
+          at,
+          kind: PointerDeviceKind.mouse,
+        );
+        // A macOS tap-and-pan recognizer puts the caret down once its press
+        // timeout runs out, if the press is still in the arena.
+        await tester.pump(kPressTimeout + const Duration(milliseconds: 50));
+        expect(b.selection(), TextSelection.collapsed(offset: caret));
+        expect(b.view().focusedRow, 1);
+        expect(t.tabs.followed, isEmpty, reason: 'the release follows');
+
+        await mouse.up();
+        await tester.pump();
+        await t.pastDoubleClick();
+
+        expect(t.tabs.followed, [const NoteTab(_wi269KnownId)]);
+        expect(b.selection(), TextSelection.collapsed(offset: caret));
+        expect(b.view().focusedRow, 1);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a press on a rendered wikilink whose row goes away before the release follows nothing',
+      (tester) async {
+        final t = await _wi269Pump(tester, text: 'Top\n- See [[Known]] here\n');
+        final b = t.b;
+        final at = t.glyph(t.at('Known', plus: 2));
+
+        final mouse = await tester.startGesture(
+          at,
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pump();
+        // The note is rewritten, as a poll would: the bullet row is gone.
+        await b.serverWrite('Top\n');
+        await tester.pump();
+        await mouse.up();
+        await tester.pump();
+        await t.pastDoubleClick();
+
+        expect(tester.takeException(), isNull);
+        expect(t.tabs.followed, isEmpty);
+        expect(t.tabs.navigated, isEmpty);
       },
       variant: macOnly,
     );
