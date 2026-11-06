@@ -32,6 +32,7 @@ use memex_core::notes::{
     self, check_agent_write, create_note_as, create_or_adopt_note, delete_note_checked, get_note,
     update_note, update_note_as, CreateNote, Note, NoteId, RenameOptions, UpdateNote,
 };
+use memex_core::review::{self, ChangeEntry};
 use memex_core::search::{search, SearchFilters, SearchMode, SearchOptions};
 use memex_core::smart_folders as sf;
 use memex_core::{indexer, Caller, Clock, MemexError, Result, Vault};
@@ -616,7 +617,9 @@ fn get_or_create_gives_up_after_bounded_retries_with_the_last_error() {
         matches!(result, Err(MemexError::TitleConflict { .. })),
         "{result:?}"
     );
-    assert!(hook_runs >= 2, "it retried, {hook_runs} attempt(s)");
+    // Five create attempts in all (`CREATE_ATTEMPTS`): the bound is exact, so an
+    // off-by-one in the retry check shows here.
+    assert_eq!(hook_runs, 5, "create attempts before giving up");
     assert_eq!(guide_count(&v), 0);
 }
 
@@ -1979,4 +1982,60 @@ fn the_guide_is_found_by_search() {
     let saved = update_note(&mut v, &id, doc.version, body_patch("Prefer quokkafile.\n")).unwrap();
     indexer::reindex_note(v.connection_mut(), id.as_str(), &saved.content_md, None).unwrap();
     assert!(fts_note_ids(&v, "quokkafile").contains(&doc.note_id));
+}
+
+// ---------------------------------------------------------------------------
+// Contracts the doc comments promise (verify mode)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn update_before_the_guide_exists_fails_with_not_found() {
+    let (_dir, mut v) = fresh();
+
+    let result = guide::update(
+        &mut v,
+        1,
+        "Text.\n",
+        &bullets(&["Changed it"]),
+        DAY,
+        &clock(),
+        None,
+    );
+
+    match result {
+        Err(e @ MemexError::NotFound(_)) => assert_eq!(e.code(), "not_found"),
+        other => panic!("expected NotFound, got {other:?}"),
+    }
+}
+
+/// The review's own rule order survives the shared validation: the missing
+/// daily entry is `change_entries_invalid` ahead of an unknown note's
+/// `not_found`, and nothing is written.
+#[test]
+fn mark_day_reviewed_answers_the_missing_daily_entry_before_an_unknown_note() {
+    let (_dir, mut v) = fresh();
+    let daily = create_note_as(
+        &mut v,
+        CreateNote {
+            title: Some(DAY.into()),
+            content_md: "Fifth.\n".into(),
+            frontmatter: Some(json!({ "role": "daily" })),
+        },
+        Caller::Person,
+    )
+    .unwrap();
+    let changes = [ChangeEntry {
+        note_id: UNKNOWN_ID.into(),
+        bullets: bullets(&["Created topic"]),
+    }];
+
+    let result = review::mark_day_reviewed(&mut v, DAY, daily.version, &changes, &clock());
+
+    match result {
+        Err(e @ MemexError::ChangeEntriesInvalid(_)) => {
+            assert_eq!(e.code(), "change_entries_invalid")
+        }
+        other => panic!("expected ChangeEntriesInvalid, got {other:?}"),
+    }
+    assert_eq!(change_count(&v), 0);
 }
