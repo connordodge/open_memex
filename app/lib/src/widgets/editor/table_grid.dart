@@ -25,6 +25,8 @@ import 'paragraph_line_boxes.dart';
 /// - [links] is the row's controller, whose link state (`isResolved`,
 ///   `cmdHover`) cells read; null in excerpt cards.
 /// - [headerBand] is the header band's colour (`surface4` in cards).
+/// - [fenced] says which lines of [text] are fenced code on the server
+///   (`fencedRowLines`); their cells get no tag ink. Null: none.
 ///
 /// Design B "Ruled rows" (WI #205, packs #203 and #205): one `RichText` per
 /// drawn cell laid out by T2's `table_geometry.dart` from scaled metrics
@@ -41,12 +43,14 @@ class TableGrid extends StatefulWidget {
     required this.style,
     this.links,
     this.headerBand = OmColors.surface3,
+    this.fenced,
   });
 
   final String text;
   final TextStyle style;
   final LivePreviewController? links;
   final Color headerBand;
+  final List<bool>? fenced;
 
   @override
   State<TableGrid> createState() => TableGridState();
@@ -118,7 +122,16 @@ class TableGridState extends State<TableGrid> {
                   style: g == 0 ? headerStyle : widget.style,
                   itemText: true,
                   forceHidden: true,
+                  // Grid row 0 is line 0; the delimiter line has no grid row.
+                  fenced: [
+                    widget.fenced?.elementAtOrNull(g == 0 ? 0 : g + 1) ?? false,
+                  ],
                   isResolved: widget.links?.isResolved,
+                  // As the source field judges the cell: by the character
+                  // before it in the table line, not as a line start.
+                  before: j < cells.length
+                      ? unitBeforeInLine(text, cells[j].start)
+                      : null,
                   cmdHover: j < cells.length
                       ? _cellHover(hover, cells[j].start, cells[j].end)
                       : null,
