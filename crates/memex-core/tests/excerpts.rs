@@ -20,11 +20,15 @@
 //! Real SQLite, real schema V5, temp vaults only. Block ids are pinned to the
 //! CONTRACTS C4 fixture ids.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use memex_core::daily::{self, ReviewState};
+use memex_core::embedder::{Embedder, FakeEmbedder};
 use memex_core::error::MemexError;
 use memex_core::excerpts::{
-    add_excerpt, add_excerpt_with_hook, note_transclusion_fields, remove_excerpt,
-    remove_excerpt_with_hook,
+    add_excerpt, add_excerpt_with_hook, move_block, move_block_with_hook, note_transclusion_fields,
+    remove_excerpt, remove_excerpt_block, remove_excerpt_block_with_hook, remove_excerpt_with_hook,
+    MovedBlock,
 };
 use memex_core::footer::{self, ChipOrigin};
 use memex_core::indexer;
@@ -1663,4 +1667,1533 @@ fn remove_excerpt_removes_a_leading_token_and_the_blank_line_after_it() {
     remove(&mut w, DAY, &["b7k2m9"]);
 
     assert_eq!(body(&w), "Text.\n");
+}
+
+// ===========================================================================
+// WI #248 (F1): `remove_excerpt_block` and `move_block` (Spec #233 R11, R12,
+// R13). Coverage is by ord between a token's endpoints; every token of the
+// date that covers the block is rewritten; failures write nothing.
+// ===========================================================================
+
+const T_B7_F6: &str = "![[2026-09-05#^b7k2m9..^f6g7h8]]";
+const T_C3_F6: &str = "![[2026-09-05#^c3d4e5..^f6g7h8]]";
+
+fn world_with_day2(topic_body: &str) -> (World, NoteId) {
+    let mut w = world_with_topic_body(topic_body);
+    let day2 = create_day(&mut w.vault, DAY2, DAY2_BODY, &DAY2_BLOCKS);
+    (w, day2)
+}
+
+fn remove_block(w: &mut World, date: &str, block_id: &str) -> Note {
+    remove_excerpt_block(&mut w.vault, &w.topic, date, block_id, Caller::Agent, None)
+        .unwrap_or_else(|e| panic!("remove_excerpt_block {date} {block_id}: {e}"))
+}
+
+fn remove_block_err(w: &mut World, topic: &NoteId, date: &str, block_id: &str) -> MemexError {
+    match remove_excerpt_block(&mut w.vault, topic, date, block_id, Caller::Agent, None) {
+        Ok(n) => panic!(
+            "remove_excerpt_block {date} {block_id} should fail, stored:\n{}",
+            n.content_md
+        ),
+        Err(e) => e,
+    }
+}
+
+fn move_ok(w: &mut World, block_id: &str, from: &NoteId, to: &NoteId) -> MovedBlock {
+    move_block(&mut w.vault, DAY, block_id, from, to, Caller::Agent, None)
+        .unwrap_or_else(|e| panic!("move_block {block_id}: {e}"))
+}
+
+fn move_err(w: &mut World, date: &str, block_id: &str, from: &NoteId, to: &NoteId) -> MemexError {
+    match move_block(&mut w.vault, date, block_id, from, to, Caller::Agent, None) {
+        Ok(m) => panic!(
+            "move_block {date} {block_id} should fail, source:\n{}\ntarget:\n{}",
+            m.from.content_md, m.to.content_md
+        ),
+        Err(e) => e,
+    }
+}
+
+/// `## <date>` with the given tokens, one per line and a blank line between.
+fn date_section(date: &str, tokens: &[&str]) -> String {
+    format!("## {date}\n\n{}\n", tokens.join("\n\n"))
+}
+
+/// A person save of `id` with `from` replaced by `to`, reindexed.
+fn person_replace(vault: &mut Vault, id: &NoteId, from: &str, to: &str) -> Note {
+    let current = get_note(vault, id).unwrap();
+    assert!(
+        current.content_md.contains(from),
+        "precondition: {from:?} in:\n{}",
+        current.content_md
+    );
+    let saved = update_note_as(
+        vault,
+        id,
+        current.version,
+        UpdateNote {
+            content_md: Some(current.content_md.replacen(from, to, 1)),
+            ..Default::default()
+        },
+        RenameOptions::default(),
+        Caller::Person,
+    )
+    .unwrap_or_else(|e| panic!("person save of {id}: {e}"));
+    reindex(vault, &saved);
+    saved
+}
+
+/// The stored id of the block of `day` whose text is `text`.
+fn block_id_of(vault: &Vault, day: &NoteId, text: &str) -> String {
+    blocks_of(vault, day)
+        .into_iter()
+        .find(|(_, t)| t == text)
+        .unwrap_or_else(|| panic!("no block {text:?}"))
+        .0
+}
+
+fn assert_invalid_input(e: &MemexError) {
+    match e {
+        MemexError::Io(io) => assert_eq!(io.kind(), std::io::ErrorKind::InvalidInput, "{e:?}"),
+        other => panic!("expected Io(InvalidInput), got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// remove_excerpt_block: splitting and shrinking
+// ---------------------------------------------------------------------------
+
+#[test]
+fn remove_excerpt_block_from_the_middle_of_a_three_block_range_leaves_two_tokens_in_place() {
+    let mut w = world();
+    let added = add(&mut w, DAY, &["b7k2m9", "c3d4e5", "f6g7h8"]);
+    assert_eq!(tokens(&added.content_md), [T_B7_F6], "precondition");
+
+    let returned = remove_block(&mut w, DAY, "c3d4e5");
+
+    let after = stored(&w.vault, &w.topic);
+    assert_eq!(
+        after.content_md,
+        format!("{TOPIC_BODY}\n{}", date_section(DAY, &[T_B7, T_F6])),
+        "the two tokens replace the range in place, in order"
+    );
+    assert_eq!(returned.id, w.topic, "returns the topic note");
+    assert_eq!(returned.version, added.version + 1, "one write");
+    assert_eq!(returned.version, after.version);
+    assert_eq!(returned.content_md, after.content_md);
+    assert_eq!(
+        chip_rows(&w.vault, &w.day),
+        [chip(&w.topic, "excerpt")],
+        "the topic still holds blocks of the day"
+    );
+}
+
+#[test]
+fn remove_excerpt_block_rewrites_a_five_block_range_for_every_position() {
+    let cases: [(&str, &[&str]); 5] = [
+        ("blk001", &["![[2026-09-07#^blk002..^blk005]]"]),
+        (
+            "blk002",
+            &[
+                "![[2026-09-07#^blk001]]",
+                "![[2026-09-07#^blk003..^blk005]]",
+            ],
+        ),
+        (
+            "blk003",
+            &[
+                "![[2026-09-07#^blk001..^blk002]]",
+                "![[2026-09-07#^blk004..^blk005]]",
+            ],
+        ),
+        (
+            "blk004",
+            &[
+                "![[2026-09-07#^blk001..^blk003]]",
+                "![[2026-09-07#^blk005]]",
+            ],
+        ),
+        ("blk005", &["![[2026-09-07#^blk001..^blk004]]"]),
+    ];
+    for (block, expected) in cases {
+        let (mut w, _) = world_with_day2(TOPIC_BODY);
+        add(
+            &mut w,
+            DAY2,
+            &["blk001", "blk002", "blk003", "blk004", "blk005"],
+        );
+
+        remove_block(&mut w, DAY2, block);
+
+        let b = body(&w);
+        assert_eq!(section(&b, DAY2), expected, "removing {block}:\n{b}");
+        assert_eq!(heading_count(&b, DAY2), 1, "removing {block}:\n{b}");
+    }
+}
+
+#[test]
+fn remove_excerpt_block_at_either_end_of_a_range_shrinks_it() {
+    let mut w = world();
+    add(&mut w, DAY, &["b7k2m9", "c3d4e5", "f6g7h8"]);
+    remove_block(&mut w, DAY, "b7k2m9");
+    assert_eq!(section(&body(&w), DAY), [T_C3_F6], "first block removed");
+
+    let mut w = world();
+    add(&mut w, DAY, &["b7k2m9", "c3d4e5", "f6g7h8"]);
+    remove_block(&mut w, DAY, "f6g7h8");
+    assert_eq!(section(&body(&w), DAY), [T_B7_C3], "last block removed");
+}
+
+#[test]
+fn remove_excerpt_block_from_a_two_block_range_leaves_a_single_block_token() {
+    let mut w = world();
+    add(&mut w, DAY, &["b7k2m9", "c3d4e5"]);
+    remove_block(&mut w, DAY, "b7k2m9");
+    assert_eq!(section(&body(&w), DAY), [T_C3], "first of two removed");
+
+    let mut w = world();
+    add(&mut w, DAY, &["b7k2m9", "c3d4e5"]);
+    remove_block(&mut w, DAY, "c3d4e5");
+    assert_eq!(section(&body(&w), DAY), [T_B7], "second of two removed");
+}
+
+#[test]
+fn remove_excerpt_block_keeps_every_byte_around_the_split_token() {
+    let head = "Intro.\n\n## 2026-09-07\n\nBefore.\n\n";
+    let tail = "\n\nAfter.\n\n## Later\n\nKeep.\n";
+    let (mut w, _) = world_with_day2(&format!("{head}![[2026-09-07#^blk001..^blk003]]{tail}"));
+
+    remove_block(&mut w, DAY2, "blk002");
+
+    assert_eq!(
+        body(&w),
+        format!("{head}![[2026-09-07#^blk001]]\n\n![[2026-09-07#^blk003]]{tail}")
+    );
+}
+
+/// A split removes no token, so an unrelated empty `## <date>` heading of the
+/// body stays; only a token with nothing left triggers the heading cleanup.
+#[test]
+fn remove_excerpt_block_keeps_an_unrelated_empty_date_heading_when_a_range_is_split() {
+    let head = "## 2026-09-07\n\n## Notes\n\nText.\n\n## 2026-09-07\n\n";
+    let (mut w, _) = world_with_day2(&format!("{head}![[2026-09-07#^blk001..^blk003]]\n"));
+
+    remove_block(&mut w, DAY2, "blk002");
+
+    assert_eq!(
+        body(&w),
+        format!("{head}![[2026-09-07#^blk001]]\n\n![[2026-09-07#^blk003]]\n")
+    );
+}
+
+#[test]
+fn remove_excerpt_block_splits_an_inline_token_in_place() {
+    let (mut w, _) = world_with_day2("See ![[2026-09-07#^blk001..^blk003]] here.\n");
+
+    remove_block(&mut w, DAY2, "blk002");
+
+    assert_eq!(
+        body(&w),
+        "See ![[2026-09-07#^blk001]]\n\n![[2026-09-07#^blk003]] here.\n"
+    );
+}
+
+#[test]
+fn remove_excerpt_block_keeps_the_other_tokens_of_the_section_in_order() {
+    let (mut w, _) = world_with_day2(&date_section(
+        DAY2,
+        &[
+            "![[2026-09-07#^blk001..^blk003]]",
+            "![[2026-09-07#^blk005]]",
+        ],
+    ));
+
+    remove_block(&mut w, DAY2, "blk002");
+
+    assert_eq!(
+        section(&body(&w), DAY2),
+        [
+            "![[2026-09-07#^blk001]]",
+            "![[2026-09-07#^blk003]]",
+            "![[2026-09-07#^blk005]]",
+        ]
+    );
+}
+
+#[test]
+fn remove_excerpt_block_leaves_tokens_of_other_dates_alone() {
+    let other_date = "![[2026-09-07#^c3d4e5]]";
+    let topic_body = format!(
+        "{}\n{}",
+        date_section(DAY, &[T_B7_F6]),
+        date_section(DAY2, &[other_date])
+    );
+    let mut w = world_with_topic_body(&topic_body);
+
+    remove_block(&mut w, DAY, "c3d4e5");
+
+    let b = body(&w);
+    assert_eq!(section(&b, DAY), [T_B7, T_F6], "{b}");
+    assert_eq!(section(&b, DAY2), [other_date], "{b}");
+}
+
+// ---------------------------------------------------------------------------
+// remove_excerpt_block: coverage (lead decisions 3, 4)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn remove_excerpt_block_rewrites_every_token_of_the_date_that_covers_the_block() {
+    let topic_body = date_section(DAY, &[T_B7_C3, T_C3, T_C3_F6]);
+    let mut w = world_with_topic_body(&topic_body);
+
+    remove_block(&mut w, DAY, "c3d4e5");
+
+    assert_eq!(body(&w), date_section(DAY, &[T_B7, T_F6]));
+}
+
+#[test]
+fn remove_excerpt_block_removes_every_copy_of_a_single_block_token() {
+    let mut w = world_with_topic_body(&format!(
+        "{TOPIC_BODY}\n{}",
+        date_section(DAY, &[T_C3, T_C3])
+    ));
+
+    remove_block(&mut w, DAY, "c3d4e5");
+
+    assert_eq!(body(&w), TOPIC_BODY);
+}
+
+#[test]
+fn remove_excerpt_block_normalizes_reversed_endpoints() {
+    let reversed = "![[2026-09-07#^blk003..^blk001]]";
+    let cases: [(&str, &[&str]); 3] = [
+        ("blk001", &["![[2026-09-07#^blk002..^blk003]]"]),
+        (
+            "blk002",
+            &["![[2026-09-07#^blk001]]", "![[2026-09-07#^blk003]]"],
+        ),
+        ("blk003", &["![[2026-09-07#^blk001..^blk002]]"]),
+    ];
+    for (block, expected) in cases {
+        let (mut w, _) = world_with_day2(&date_section(DAY2, &[reversed]));
+
+        remove_block(&mut w, DAY2, block);
+
+        assert_eq!(section(&body(&w), DAY2), expected, "removing {block}");
+    }
+}
+
+#[test]
+fn remove_excerpt_block_finds_neighbours_across_a_gap_in_block_ords() {
+    let cases: [(&str, &[&str]); 2] = [
+        (
+            "blk003",
+            &[
+                "![[2026-09-07#^blk001..^blk002]]",
+                "![[2026-09-07#^blk004..^blk005]]",
+            ],
+        ),
+        (
+            "blk004",
+            &[
+                "![[2026-09-07#^blk001..^blk003]]",
+                "![[2026-09-07#^blk005]]",
+            ],
+        ),
+    ];
+    for (block, expected) in cases {
+        let (mut w, day2) =
+            world_with_day2(&date_section(DAY2, &["![[2026-09-07#^blk001..^blk005]]"]));
+        w.vault
+            .connection_ref()
+            .execute(
+                "UPDATE blocks SET ord = ord + 10 WHERE note_id = ? AND ord >= 3",
+                [day2.as_str()],
+            )
+            .unwrap();
+
+        remove_block(&mut w, DAY2, block);
+
+        assert_eq!(section(&body(&w), DAY2), expected, "removing {block}");
+    }
+}
+
+#[test]
+fn remove_excerpt_block_covers_a_block_added_inside_a_range_later() {
+    let (mut w, day2) = world_with_day2(&date_section(DAY2, &["![[2026-09-07#^blk001..^blk002]]"]));
+    person_replace(&mut w.vault, &day2, "One.\n\n", "One.\n\nInserted.\n\n");
+    let inserted = block_id_of(&w.vault, &day2, "Inserted.");
+
+    remove_block(&mut w, DAY2, &inserted);
+
+    assert_eq!(
+        section(&body(&w), DAY2),
+        ["![[2026-09-07#^blk001]]", "![[2026-09-07#^blk002]]"]
+    );
+}
+
+#[test]
+fn remove_excerpt_block_names_a_later_block_as_the_new_endpoint() {
+    let (mut w, day2) = world_with_day2(&date_section(DAY2, &["![[2026-09-07#^blk001..^blk003]]"]));
+    person_replace(&mut w.vault, &day2, "Two.\n\n", "Inserted.\n\nTwo.\n\n");
+    let inserted = block_id_of(&w.vault, &day2, "Inserted.");
+
+    remove_block(&mut w, DAY2, "blk002");
+
+    assert_eq!(
+        section(&body(&w), DAY2),
+        [
+            format!("![[2026-09-07#^blk001..^{inserted}]]"),
+            "![[2026-09-07#^blk003]]".to_string()
+        ]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// remove_excerpt_block: heading and chip
+// ---------------------------------------------------------------------------
+
+#[test]
+fn remove_excerpt_block_of_the_last_single_token_removes_the_heading_and_the_excerpt_chip() {
+    let mut w = world();
+    add(&mut w, DAY, &["b7k2m9"]);
+    assert_eq!(chip_rows(&w.vault, &w.day), [chip(&w.topic, "excerpt")]);
+    let person_before = person_text(&w.vault, &w.day);
+    let cv = content_version(&w.vault, &w.day);
+
+    remove_block(&mut w, DAY, "b7k2m9");
+
+    assert_eq!(body(&w), TOPIC_BODY, "token and heading gone");
+    assert_eq!(chip_rows(&w.vault, &w.day), []);
+    assert_eq!(footer_titles(&w.vault, &w.day), Vec::<String>::new());
+    assert_eq!(person_text(&w.vault, &w.day), person_before);
+    assert_eq!(content_version(&w.vault, &w.day), cv);
+}
+
+#[test]
+fn remove_excerpt_block_of_the_last_single_token_keeps_a_person_chip() {
+    let mut w = world();
+    add(&mut w, DAY, &["b7k2m9"]);
+    footer::set_chip(&mut w.vault, &w.day, &w.topic, ChipOrigin::Person, None).unwrap();
+
+    remove_block(&mut w, DAY, "b7k2m9");
+
+    assert_eq!(body(&w), TOPIC_BODY, "token and heading gone");
+    assert_eq!(chip_rows(&w.vault, &w.day), [chip(&w.topic, "person")]);
+    assert_eq!(footer_titles(&w.vault, &w.day), [TOPIC_TITLE]);
+}
+
+#[test]
+fn remove_excerpt_block_keeps_the_heading_while_person_text_remains_under_it() {
+    let mut w = world_with_topic_body(
+        "Intro.\n\n## 2026-09-05\n\nWhy this matters.\n\n![[2026-09-05#^b7k2m9]]\n",
+    );
+    footer::set_chip(&mut w.vault, &w.day, &w.topic, ChipOrigin::Excerpt, None).unwrap();
+
+    remove_block(&mut w, DAY, "b7k2m9");
+
+    assert_eq!(body(&w), "Intro.\n\n## 2026-09-05\n\nWhy this matters.\n");
+    assert_eq!(
+        chip_rows(&w.vault, &w.day),
+        [],
+        "no token of the day remains"
+    );
+}
+
+#[test]
+fn remove_excerpt_block_keeps_the_excerpt_chip_while_a_token_of_the_day_remains() {
+    let mut w = world();
+    add(&mut w, DAY, &["b7k2m9", "f6g7h8"]);
+    remove_block(&mut w, DAY, "b7k2m9");
+    assert_eq!(chip_rows(&w.vault, &w.day), [chip(&w.topic, "excerpt")]);
+
+    // A remaining token counts even when it no longer resolves: the same rule
+    // as remove_excerpt.
+    let mut w = world_with_topic_body(&date_section(DAY, &[T_B7, "![[2026-09-05#^zzzzzz]]"]));
+    footer::set_chip(&mut w.vault, &w.day, &w.topic, ChipOrigin::Excerpt, None).unwrap();
+    remove_block(&mut w, DAY, "b7k2m9");
+    assert_eq!(chip_rows(&w.vault, &w.day), [chip(&w.topic, "excerpt")]);
+    assert_eq!(tokens(&body(&w)), ["![[2026-09-05#^zzzzzz]]"]);
+}
+
+#[test]
+fn remove_excerpt_block_ignores_excerpts_from_other_days_when_removing_the_chip() {
+    let (mut w, day2) = world_with_day2(TOPIC_BODY);
+    add(&mut w, DAY, &["b7k2m9"]);
+    add(&mut w, DAY2, &["blk001"]);
+
+    remove_block(&mut w, DAY, "b7k2m9");
+
+    assert_eq!(chip_rows(&w.vault, &w.day), []);
+    assert_eq!(chip_rows(&w.vault, &day2), [chip(&w.topic, "excerpt")]);
+    assert_eq!(section(&body(&w), DAY2), ["![[2026-09-07#^blk001]]"]);
+}
+
+#[test]
+fn remove_excerpt_block_leaves_other_topics_chips_alone() {
+    let mut w = world();
+    let other = create_topic(&mut w.vault, "Sleep", "Rest.\n");
+    add(&mut w, DAY, &["b7k2m9"]);
+    add_excerpt(
+        &mut w.vault,
+        &other,
+        DAY,
+        &ids(&["b7k2m9"]),
+        Caller::Agent,
+        None,
+    )
+    .unwrap();
+
+    remove_block(&mut w, DAY, "b7k2m9");
+
+    assert_eq!(chip_rows(&w.vault, &w.day), [chip(&other, "excerpt")]);
+    assert_eq!(tokens(&stored(&w.vault, &other).content_md), [T_B7]);
+}
+
+// ---------------------------------------------------------------------------
+// remove_excerpt_block: errors write nothing (lead decision 2)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn remove_excerpt_block_no_token_of_that_date_covers_fails_with_not_found_and_writes_nothing() {
+    let topic_bodies = [
+        // Another block of the day is held, this one is not.
+        date_section(DAY, &[T_B7]),
+        // The topic holds nothing at all.
+        TOPIC_BODY.to_string(),
+        // The same id under another date.
+        date_section(DAY2, &["![[2026-09-07#^c3d4e5]]"]),
+        // A range with an endpoint that no longer resolves covers nothing.
+        date_section(DAY, &["![[2026-09-05#^zzzzzz..^c3d4e5]]"]),
+        date_section(DAY, &["![[2026-09-05#^c3d4e5..^zzzzzz]]"]),
+    ];
+    for topic_body in topic_bodies {
+        let mut w = world_with_topic_body(&topic_body);
+        let topic = w.topic.clone();
+        let before = snapshot(&w.vault);
+
+        let e = remove_block_err(&mut w, &topic, DAY, "c3d4e5");
+
+        assert!(matches!(e, MemexError::NotFound(_)), "{topic_body}: {e:?}");
+        assert_eq!(code(&e), "not_found", "{topic_body}");
+        assert_eq!(snapshot(&w.vault), before, "{topic_body}");
+    }
+}
+
+#[test]
+fn remove_excerpt_block_with_an_id_that_is_not_a_block_of_the_day_fails_with_block_not_found() {
+    // A token still names the deleted block, so the id check comes first.
+    let mut w = world_with_topic_body(&date_section(DAY, &[T_B7, "![[2026-09-05#^zzzzzz]]"]));
+    create_day(&mut w.vault, DAY2, DAY2_BODY, &DAY2_BLOCKS);
+    let topic = w.topic.clone();
+    let before = snapshot(&w.vault);
+
+    for block in ["zzzzzz", "blk001"] {
+        let e = remove_block_err(&mut w, &topic, DAY, block);
+        assert!(matches!(e, MemexError::BlockNotFound(_)), "{block}: {e:?}");
+        assert_eq!(code(&e), "block_not_found", "{block}");
+    }
+
+    assert_eq!(snapshot(&w.vault), before);
+}
+
+#[test]
+fn remove_excerpt_block_rule_errors_carry_their_codes_and_write_nothing() {
+    let mut w = world_with_topic_body(&date_section("2026-09-06", &["![[2026-09-06#^b7k2m9]]"]));
+    let plain = create(
+        &mut w.vault,
+        "Loose note",
+        "![[2026-09-05#^b7k2m9]]\n",
+        None,
+    )
+    .id;
+    let topic = w.topic.clone();
+    let day = w.day.clone();
+    let before = snapshot(&w.vault);
+
+    assert_role_rule(&remove_block_err(&mut w, &plain, DAY, "b7k2m9"));
+    assert_role_rule(&remove_block_err(&mut w, &day, DAY, "b7k2m9"));
+    let e = remove_block_err(&mut w, &topic, "2026-9-5", "b7k2m9");
+    assert!(matches!(e, MemexError::InvalidDate(_)), "{e:?}");
+    assert_eq!(
+        code(&remove_block_err(&mut w, &NoteId::new(), DAY, "b7k2m9")),
+        "not_found",
+        "unknown topic"
+    );
+    let e = remove_block_err(&mut w, &topic, "2026-09-06", "b7k2m9");
+    assert!(matches!(e, MemexError::NotFound(_)), "no daily note: {e:?}");
+
+    assert_eq!(snapshot(&w.vault), before);
+}
+
+#[test]
+fn remove_excerpt_block_checks_the_date_then_the_topic_then_the_day_then_the_block() {
+    let mut w = world();
+    let plain = create(&mut w.vault, "Loose note", "Text.\n", None).id;
+    let topic = w.topic.clone();
+    let before = snapshot(&w.vault);
+
+    let e = remove_block_err(&mut w, &plain, "2026-9-5", "zzzzzz");
+    assert!(matches!(e, MemexError::InvalidDate(_)), "date first: {e:?}");
+    let e = remove_block_err(&mut w, &plain, "2026-09-06", "zzzzzz");
+    assert!(matches!(e, MemexError::RoleRule(_)), "then the role: {e:?}");
+    let e = remove_block_err(&mut w, &topic, "2026-09-06", "zzzzzz");
+    assert!(matches!(e, MemexError::NotFound(_)), "then the day: {e:?}");
+    let e = remove_block_err(&mut w, &NoteId::new(), DAY, "zzzzzz");
+    assert!(
+        matches!(e, MemexError::NotFound(_)),
+        "topic before block: {e:?}"
+    );
+
+    assert_eq!(snapshot(&w.vault), before);
+}
+
+// ---------------------------------------------------------------------------
+// remove_excerpt_block: races, indexing, callers
+// ---------------------------------------------------------------------------
+
+#[test]
+fn remove_excerpt_block_retries_when_a_person_save_lands_between_read_and_write() {
+    let mut w = world();
+    add(&mut w, DAY, &["b7k2m9", "c3d4e5", "f6g7h8"]);
+    let topic = w.topic.clone();
+    let v0 = stored(&w.vault, &topic).version;
+    let mut calls = 0;
+    let mut hook = |v: &mut Vault| {
+        calls += 1;
+        if calls == 1 {
+            person_append(v, &topic, "Later note.\n");
+        }
+    };
+
+    let returned = remove_excerpt_block_with_hook(
+        &mut w.vault,
+        &w.topic,
+        DAY,
+        "c3d4e5",
+        Caller::Agent,
+        None,
+        &mut hook,
+    )
+    .unwrap_or_else(|e| panic!("remove_excerpt_block after a race: {e}"));
+
+    assert_eq!(calls, 2, "one retry after the conflicting save");
+    let after = stored(&w.vault, &w.topic);
+    assert_eq!(returned.version, after.version);
+    assert_eq!(after.version, v0 + 2);
+    assert_eq!(tokens(&after.content_md), [T_B7, T_F6]);
+    assert!(
+        after.content_md.contains("Later note."),
+        "{}",
+        after.content_md
+    );
+}
+
+#[test]
+fn remove_excerpt_block_recomputes_the_split_from_the_body_a_retry_reads() {
+    let mut w = world();
+    add(&mut w, DAY, &["b7k2m9", "c3d4e5", "f6g7h8"]);
+    let topic = w.topic.clone();
+    let mut calls = 0;
+    // The race moves the token's bytes and narrows it.
+    let mut hook = |v: &mut Vault| {
+        calls += 1;
+        if calls == 1 {
+            person_replace(
+                v,
+                &topic,
+                T_B7_F6,
+                &format!("A person thought.\n\n{T_B7_C3}"),
+            );
+        }
+    };
+
+    remove_excerpt_block_with_hook(
+        &mut w.vault,
+        &w.topic,
+        DAY,
+        "c3d4e5",
+        Caller::Agent,
+        None,
+        &mut hook,
+    )
+    .unwrap_or_else(|e| panic!("remove_excerpt_block after a race: {e}"));
+
+    assert_eq!(
+        section(&body(&w), DAY),
+        ["A person thought.", T_B7],
+        "f6g7h8 was out of the token by then, so it stays out"
+    );
+}
+
+#[test]
+fn remove_excerpt_block_fails_with_not_found_when_a_race_drops_the_token() {
+    let mut w = world();
+    add(&mut w, DAY, &["b7k2m9"]);
+    let topic = w.topic.clone();
+    let mut hook = |v: &mut Vault| {
+        person_replace(v, &topic, T_B7, "Written out by hand.");
+    };
+
+    let e = remove_excerpt_block_with_hook(
+        &mut w.vault,
+        &w.topic,
+        DAY,
+        "b7k2m9",
+        Caller::Agent,
+        None,
+        &mut hook,
+    )
+    .expect_err("the token is gone on the retry");
+
+    assert!(matches!(e, MemexError::NotFound(_)), "{e:?}");
+    assert!(body(&w).contains("Written out by hand."), "{}", body(&w));
+    assert_eq!(
+        chip_rows(&w.vault, &w.day),
+        [chip(&w.topic, "excerpt")],
+        "a failed call leaves the chip"
+    );
+}
+
+#[test]
+fn remove_excerpt_block_gives_up_after_exactly_five_attempts_and_keeps_the_excerpt() {
+    let mut w = world();
+    add(&mut w, DAY, &["b7k2m9"]);
+    let topic = w.topic.clone();
+    let mut calls = 0;
+    let mut hook = |v: &mut Vault| {
+        calls += 1;
+        person_append(v, &topic, &format!("Edit {calls}.\n"));
+    };
+
+    let e = remove_excerpt_block_with_hook(
+        &mut w.vault,
+        &w.topic,
+        DAY,
+        "b7k2m9",
+        Caller::Agent,
+        None,
+        &mut hook,
+    )
+    .expect_err("every attempt raced");
+
+    assert_eq!(code(&e), "version_conflict");
+    assert_eq!(calls, 5);
+    assert_eq!(tokens(&body(&w)), [T_B7]);
+    assert_eq!(chip_rows(&w.vault, &w.day), [chip(&w.topic, "excerpt")]);
+}
+
+#[test]
+fn remove_excerpt_block_reindexes_the_topic_links() {
+    let mut w = world();
+    let day_id = Some(w.day.to_string());
+    add(&mut w, DAY, &["b7k2m9", "c3d4e5", "f6g7h8"]);
+    assert_eq!(from_day_links(&w.vault, &w.topic), vec![day_id.clone()]);
+
+    remove_block(&mut w, DAY, "c3d4e5");
+    assert_eq!(
+        from_day_links(&w.vault, &w.topic),
+        [day_id.clone(), day_id.clone()],
+        "two tokens, two from-day links"
+    );
+
+    remove_block(&mut w, DAY, "b7k2m9");
+    assert_eq!(from_day_links(&w.vault, &w.topic), [day_id]);
+}
+
+#[test]
+fn remove_excerpt_block_works_on_the_person_path() {
+    let mut w = world();
+    add(&mut w, DAY, &["b7k2m9", "c3d4e5"]);
+
+    remove_excerpt_block(&mut w.vault, &w.topic, DAY, "b7k2m9", Caller::Person, None)
+        .unwrap_or_else(|e| panic!("person remove_excerpt_block: {e}"));
+
+    assert_eq!(tokens(&body(&w)), [T_C3]);
+}
+
+// ---------------------------------------------------------------------------
+// move_block
+// ---------------------------------------------------------------------------
+
+#[test]
+fn move_block_leaves_the_block_held_by_the_target_and_not_the_source_with_both_versions_bumped_once(
+) {
+    let mut w = world();
+    let source = w.topic.clone();
+    let target = create_topic(&mut w.vault, "Sleep", "Rest.\n");
+    add(&mut w, DAY, &["f6g7h8"]);
+    let source_before = stored(&w.vault, &source);
+    let target_before = stored(&w.vault, &target);
+
+    let moved = move_ok(&mut w, "f6g7h8", &source, &target);
+
+    let source_after = stored(&w.vault, &source);
+    let target_after = stored(&w.vault, &target);
+    assert_eq!(section(&target_after.content_md, DAY), [T_F6]);
+    assert_eq!(tokens(&source_after.content_md), Vec::<String>::new());
+    assert_eq!(heading_count(&source_after.content_md, DAY), 0);
+    assert_eq!(source_after.version, source_before.version + 1);
+    assert_eq!(target_after.version, target_before.version + 1);
+    assert_eq!(moved.from.id, source);
+    assert_eq!(moved.from.version, source_after.version);
+    assert_eq!(moved.from.content_md, source_after.content_md);
+    assert_eq!(moved.to.id, target);
+    assert_eq!(moved.to.version, target_after.version);
+    assert_eq!(moved.to.content_md, target_after.content_md);
+    assert_eq!(
+        chip_rows(&w.vault, &w.day),
+        [chip(&target, "excerpt")],
+        "the chip follows the excerpt"
+    );
+}
+
+#[test]
+fn move_block_out_of_a_range_splits_the_source_and_keeps_its_chip() {
+    let mut w = world();
+    let source = w.topic.clone();
+    let target = create_topic(&mut w.vault, "Sleep", "Rest.\n");
+    add(&mut w, DAY, &["b7k2m9", "c3d4e5", "f6g7h8"]);
+
+    move_ok(&mut w, "c3d4e5", &source, &target);
+
+    assert_eq!(section(&body(&w), DAY), [T_B7, T_F6]);
+    assert_eq!(tokens(&stored(&w.vault, &target).content_md), [T_C3]);
+    assert_eq!(
+        chip_rows(&w.vault, &w.day),
+        [chip(&source, "excerpt"), chip(&target, "excerpt")]
+    );
+}
+
+#[test]
+fn move_block_adds_to_the_target_before_it_removes_from_the_source() {
+    let mut w = world();
+    let source = w.topic.clone();
+    let target = create_topic(&mut w.vault, "Sleep", "Rest.\n");
+    add(&mut w, DAY, &["f6g7h8"]);
+    let mut seen: Vec<(Vec<String>, Vec<String>)> = Vec::new();
+    let mut hook = |v: &mut Vault| {
+        seen.push((
+            tokens(&get_note(v, &source).unwrap().content_md),
+            tokens(&get_note(v, &target).unwrap().content_md),
+        ));
+    };
+
+    move_block_with_hook(
+        &mut w.vault,
+        DAY,
+        "f6g7h8",
+        &source,
+        &target,
+        Caller::Agent,
+        None,
+        &mut hook,
+    )
+    .unwrap_or_else(|e| panic!("move_block: {e}"));
+
+    assert_eq!(
+        seen,
+        [(vec![T_F6.to_string()], vec![T_F6.to_string()])],
+        "the hook runs once, in the write to the source, with the target already filed"
+    );
+}
+
+#[test]
+fn move_block_with_a_failing_remove_leaves_the_block_in_both_and_returns_the_error() {
+    let mut w = world();
+    let source = w.topic.clone();
+    let target = create_topic(&mut w.vault, "Sleep", "Rest.\n");
+    add(&mut w, DAY, &["f6g7h8"]);
+    let mut calls = 0;
+    let mut hook = |v: &mut Vault| {
+        calls += 1;
+        person_append(v, &source, &format!("Edit {calls}.\n"));
+    };
+
+    let e = move_block_with_hook(
+        &mut w.vault,
+        DAY,
+        "f6g7h8",
+        &source,
+        &target,
+        Caller::Agent,
+        None,
+        &mut hook,
+    )
+    .expect_err("every write to the source raced");
+
+    assert_eq!(code(&e), "version_conflict", "{e:?}");
+    assert_eq!(calls, 5);
+    assert_eq!(tokens(&body(&w)), [T_F6], "still in the source");
+    assert_eq!(
+        tokens(&stored(&w.vault, &target).content_md),
+        [T_F6],
+        "and in the target"
+    );
+    assert_eq!(
+        chip_rows(&w.vault, &w.day),
+        [chip(&source, "excerpt"), chip(&target, "excerpt")]
+    );
+}
+
+#[test]
+fn move_block_with_the_source_deleted_during_the_remove_returns_not_found_and_keeps_the_target() {
+    let mut w = world();
+    let source = w.topic.clone();
+    let target = create_topic(&mut w.vault, "Sleep", "Rest.\n");
+    add(&mut w, DAY, &["f6g7h8"]);
+    let mut hook = |v: &mut Vault| {
+        let version = get_note(v, &source).unwrap().version;
+        delete_note_checked(v, &source, version, None).unwrap();
+    };
+
+    let e = move_block_with_hook(
+        &mut w.vault,
+        DAY,
+        "f6g7h8",
+        &source,
+        &target,
+        Caller::Agent,
+        None,
+        &mut hook,
+    )
+    .expect_err("the source is gone");
+
+    assert!(matches!(e, MemexError::NotFound(_)), "{e:?}");
+    assert_eq!(tokens(&stored(&w.vault, &target).content_md), [T_F6]);
+}
+
+#[test]
+fn move_block_can_be_retried_after_a_failed_remove() {
+    let mut w = world();
+    let source = w.topic.clone();
+    let target = create_topic(&mut w.vault, "Sleep", "Rest.\n");
+    add(&mut w, DAY, &["f6g7h8"]);
+    let mut calls = 0;
+    let mut hook = |v: &mut Vault| {
+        calls += 1;
+        person_append(v, &source, &format!("Edit {calls}.\n"));
+    };
+    move_block_with_hook(
+        &mut w.vault,
+        DAY,
+        "f6g7h8",
+        &source,
+        &target,
+        Caller::Agent,
+        None,
+        &mut hook,
+    )
+    .expect_err("every write to the source raced");
+    let target_version = stored(&w.vault, &target).version;
+
+    let moved = move_ok(&mut w, "f6g7h8", &source, &target);
+
+    assert_eq!(tokens(&moved.from.content_md), Vec::<String>::new());
+    assert_eq!(tokens(&moved.to.content_md), [T_F6]);
+    assert_eq!(moved.to.version, target_version, "already there");
+}
+
+#[test]
+fn move_block_retries_when_a_person_save_races_the_remove() {
+    let mut w = world();
+    let source = w.topic.clone();
+    let target = create_topic(&mut w.vault, "Sleep", "Rest.\n");
+    add(&mut w, DAY, &["f6g7h8"]);
+    let target_v0 = stored(&w.vault, &target).version;
+    let mut calls = 0;
+    let mut hook = |v: &mut Vault| {
+        calls += 1;
+        if calls == 1 {
+            person_append(v, &source, "Later note.\n");
+        }
+    };
+
+    let moved = move_block_with_hook(
+        &mut w.vault,
+        DAY,
+        "f6g7h8",
+        &source,
+        &target,
+        Caller::Agent,
+        None,
+        &mut hook,
+    )
+    .unwrap_or_else(|e| panic!("move_block after a race: {e}"));
+
+    assert_eq!(calls, 2);
+    assert_eq!(tokens(&moved.from.content_md), Vec::<String>::new());
+    assert!(moved.from.content_md.contains("Later note."));
+    assert_eq!(
+        moved.to.version,
+        target_v0 + 1,
+        "the target is written once"
+    );
+}
+
+#[test]
+fn move_block_with_equal_source_and_target_fails_with_invalid_input_and_writes_nothing() {
+    let mut w = world();
+    add(&mut w, DAY, &["f6g7h8"]);
+    let topic = w.topic.clone();
+    let before = snapshot(&w.vault);
+
+    assert_invalid_input(&move_err(&mut w, DAY, "f6g7h8", &topic, &topic));
+    // The equal check comes first: nothing else about the call matters.
+    assert_invalid_input(&move_err(&mut w, "2026-9-5", "zzzzzz", &topic, &topic));
+    let unknown = NoteId::new();
+    assert_invalid_input(&move_err(&mut w, DAY, "f6g7h8", &unknown, &unknown));
+
+    assert_eq!(snapshot(&w.vault), before);
+}
+
+#[test]
+fn move_block_to_a_target_already_holding_the_block_writes_nothing_to_it_and_still_removes_from_the_source(
+) {
+    let mut w = world();
+    let source = w.topic.clone();
+    let target = create_topic(&mut w.vault, "Sleep", "Rest.\n");
+    add(&mut w, DAY, &["f6g7h8"]);
+    add_excerpt(
+        &mut w.vault,
+        &target,
+        DAY,
+        &ids(&["f6g7h8"]),
+        Caller::Agent,
+        None,
+    )
+    .unwrap();
+    let source_before = stored(&w.vault, &source);
+    let target_before = stored(&w.vault, &target);
+
+    let moved = move_ok(&mut w, "f6g7h8", &source, &target);
+
+    let target_after = stored(&w.vault, &target);
+    assert_eq!(target_after.version, target_before.version, "not written");
+    assert_eq!(target_after.content_md, target_before.content_md);
+    assert_eq!(moved.to.version, target_before.version);
+    assert_eq!(moved.to.content_md, target_before.content_md);
+    let source_after = stored(&w.vault, &source);
+    assert_eq!(tokens(&source_after.content_md), Vec::<String>::new());
+    assert_eq!(source_after.version, source_before.version + 1);
+    assert_eq!(chip_rows(&w.vault, &w.day), [chip(&target, "excerpt")]);
+}
+
+#[test]
+fn move_block_to_a_target_holding_the_block_inside_a_range_writes_nothing_to_it() {
+    let mut w = world();
+    let source = w.topic.clone();
+    let target = create_topic(&mut w.vault, "Sleep", "Rest.\n");
+    add(&mut w, DAY, &["c3d4e5"]);
+    add_excerpt(
+        &mut w.vault,
+        &target,
+        DAY,
+        &ids(&["b7k2m9", "c3d4e5", "f6g7h8"]),
+        Caller::Agent,
+        None,
+    )
+    .unwrap();
+    let target_version = stored(&w.vault, &target).version;
+
+    let moved = move_ok(&mut w, "c3d4e5", &source, &target);
+
+    assert_eq!(moved.to.version, target_version);
+    assert_eq!(tokens(&moved.to.content_md), [T_B7_F6]);
+    assert_eq!(tokens(&moved.from.content_md), Vec::<String>::new());
+}
+
+#[test]
+fn move_block_from_a_source_not_holding_the_block_fails_with_not_found_and_leaves_the_target_alone()
+{
+    let mut w = world();
+    let source = w.topic.clone();
+    let target = create_topic(&mut w.vault, "Sleep", "Rest.\n");
+    add(&mut w, DAY, &["b7k2m9"]);
+    let before = snapshot(&w.vault);
+
+    let e = move_err(&mut w, DAY, "f6g7h8", &source, &target);
+
+    assert!(matches!(e, MemexError::NotFound(_)), "{e:?}");
+    assert_eq!(code(&e), "not_found");
+    assert_eq!(snapshot(&w.vault), before, "no new excerpt in the target");
+}
+
+#[test]
+fn move_block_with_a_failing_source_or_day_writes_nothing() {
+    let mut w = world();
+    let source = w.topic.clone();
+    let target = create_topic(&mut w.vault, "Sleep", "Rest.\n");
+    let plain = create(&mut w.vault, "Loose note", T_F6, None).id;
+    add(&mut w, DAY, &["f6g7h8"]);
+    let before = snapshot(&w.vault);
+
+    assert_role_rule(&move_err(&mut w, DAY, "f6g7h8", &plain, &target));
+    let e = move_err(&mut w, DAY, "f6g7h8", &NoteId::new(), &target);
+    assert_eq!(code(&e), "not_found", "unknown source: {e:?}");
+    let e = move_err(&mut w, "2026-9-5", "f6g7h8", &source, &target);
+    assert!(matches!(e, MemexError::InvalidDate(_)), "{e:?}");
+    let e = move_err(&mut w, "2026-09-06", "f6g7h8", &source, &target);
+    assert!(matches!(e, MemexError::NotFound(_)), "no daily note: {e:?}");
+    let e = move_err(&mut w, DAY, "zzzzzz", &source, &target);
+    assert!(matches!(e, MemexError::BlockNotFound(_)), "{e:?}");
+
+    assert_eq!(snapshot(&w.vault), before);
+}
+
+#[test]
+fn move_block_with_a_failing_target_writes_nothing() {
+    let mut w = world();
+    let source = w.topic.clone();
+    let plain = create(&mut w.vault, "Loose note", "Text.\n", None).id;
+    add(&mut w, DAY, &["f6g7h8"]);
+    let before = snapshot(&w.vault);
+
+    assert_role_rule(&move_err(&mut w, DAY, "f6g7h8", &source, &plain));
+    let e = move_err(&mut w, DAY, "f6g7h8", &source, &NoteId::new());
+    assert_eq!(code(&e), "not_found", "unknown target: {e:?}");
+
+    assert_eq!(snapshot(&w.vault), before);
+    assert_eq!(tokens(&body(&w)), [T_F6], "the source keeps the block");
+}
+
+#[test]
+fn move_block_checks_the_source_before_the_target() {
+    let mut w = world();
+    let source = w.topic.clone();
+    let plain = create(&mut w.vault, "Loose note", "Text.\n", None).id;
+    add(&mut w, DAY, &["b7k2m9"]);
+    let before = snapshot(&w.vault);
+
+    // The source does not hold f6g7h8, and the target is not a topic note.
+    let e = move_err(&mut w, DAY, "f6g7h8", &source, &plain);
+
+    assert!(matches!(e, MemexError::NotFound(_)), "{e:?}");
+    assert_eq!(snapshot(&w.vault), before);
+}
+
+#[test]
+fn move_block_reindexes_both_topics() {
+    let mut w = world();
+    let source = w.topic.clone();
+    let target = create_topic(&mut w.vault, "Sleep", "Rest.\n");
+    let day_id = Some(w.day.to_string());
+    add(&mut w, DAY, &["b7k2m9", "f6g7h8"]);
+
+    move_ok(&mut w, "f6g7h8", &source, &target);
+
+    assert_eq!(from_day_links(&w.vault, &source), vec![day_id.clone()]);
+    assert_eq!(from_day_links(&w.vault, &target), [day_id]);
+}
+
+#[test]
+fn move_block_works_on_the_person_path() {
+    let mut w = world();
+    let source = w.topic.clone();
+    let target = create_topic(&mut w.vault, "Sleep", "Rest.\n");
+    add(&mut w, DAY, &["f6g7h8"]);
+
+    let moved = move_block(
+        &mut w.vault,
+        DAY,
+        "f6g7h8",
+        &source,
+        &target,
+        Caller::Person,
+        None,
+    )
+    .unwrap_or_else(|e| panic!("person move_block: {e}"));
+
+    assert_eq!(tokens(&moved.to.content_md), [T_F6]);
+    assert_eq!(tokens(&moved.from.content_md), Vec::<String>::new());
+}
+
+#[test]
+fn reviewed_day_stays_reviewed_after_remove_excerpt_block_and_move_block() {
+    let mut w = world();
+    let source = w.topic.clone();
+    let target = create_topic(&mut w.vault, "Sleep", "Rest.\n");
+    add(&mut w, DAY, &["b7k2m9", "c3d4e5", "f6g7h8"]);
+    mark_reviewed(&w.vault, &w.day);
+    let cv = content_version(&w.vault, &w.day);
+    let person_before = person_text(&w.vault, &w.day);
+
+    remove_block(&mut w, DAY, "b7k2m9");
+    move_ok(&mut w, "c3d4e5", &source, &target);
+
+    assert_eq!(review_state(&w.vault, &w.day), ReviewState::Reviewed);
+    assert_eq!(content_version(&w.vault, &w.day), cv);
+    assert_eq!(person_text(&w.vault, &w.day), person_before);
+    assert_eq!(
+        blocks_of(&w.vault, &w.day)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>(),
+        ["b7k2m9", "c3d4e5", "f6g7h8"],
+        "the day keeps its block ids"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// WI #248: the embedder reaches every write, and what a failure after the
+// topic's save does to the call
+// ---------------------------------------------------------------------------
+
+/// A [`FakeEmbedder`] that fails the calls numbered in `failing` (1-based) with
+/// `EmbedderInfer` and counts every call. Each reindex of a note with chunks
+/// is one call.
+struct Wi248FlakyEmbedder {
+    inner: FakeEmbedder,
+    failing: Vec<usize>,
+    calls: AtomicUsize,
+}
+
+impl Wi248FlakyEmbedder {
+    fn failing_calls(failing: &[usize]) -> Self {
+        Self {
+            inner: FakeEmbedder::new(8),
+            failing: failing.to_vec(),
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn working() -> Self {
+        Self::failing_calls(&[])
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+impl Embedder for Wi248FlakyEmbedder {
+    fn model_version(&self) -> &str {
+        self.inner.model_version()
+    }
+
+    fn dimension(&self) -> usize {
+        self.inner.dimension()
+    }
+
+    fn embed_batch(&self, texts: &[String]) -> memex_core::Result<Vec<Vec<f32>>> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.failing.contains(&call) {
+            return Err(MemexError::EmbedderInfer(format!("call {call} fails")));
+        }
+        self.inner.embed_batch(texts)
+    }
+}
+
+/// The `embed_model_version` of every chunk row of the note; empty when it
+/// has no chunks.
+fn chunk_versions(vault: &Vault, id: &NoteId) -> Vec<Option<String>> {
+    vault
+        .connection_ref()
+        .prepare("SELECT embed_model_version FROM chunks WHERE note_id = ? ORDER BY ord")
+        .unwrap()
+        .query_map([id.as_str()], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+/// Asserts the note has chunks and every one carries the fake's version.
+fn assert_embedded(vault: &Vault, id: &NoteId, what: &str) {
+    let versions = chunk_versions(vault, id);
+    assert!(!versions.is_empty(), "{what}: has chunks");
+    assert!(
+        versions.iter().all(|v| v.as_deref() == Some("fake-v1")),
+        "{what}: reindexed with the embedder, got {versions:?}"
+    );
+}
+
+/// Asserts the note has chunks and none was embedded.
+fn assert_not_embedded(vault: &Vault, id: &NoteId, what: &str) {
+    let versions = chunk_versions(vault, id);
+    assert!(!versions.is_empty(), "{what}: has chunks");
+    assert!(
+        versions.iter().all(Option::is_none),
+        "{what}: not reindexed with the embedder, got {versions:?}"
+    );
+}
+
+#[test]
+fn remove_excerpt_block_reindexes_the_topic_and_the_day_note_with_the_embedder() {
+    let mut w = world();
+    add(&mut w, DAY, &["b7k2m9"]);
+    assert_not_embedded(&w.vault, &w.topic, "precondition: topic");
+    assert_not_embedded(&w.vault, &w.day, "precondition: day");
+    let embedder = Wi248FlakyEmbedder::working();
+
+    remove_excerpt_block(
+        &mut w.vault,
+        &w.topic,
+        DAY,
+        "b7k2m9",
+        Caller::Agent,
+        Some(&embedder),
+    )
+    .unwrap();
+
+    assert_eq!(chip_rows(&w.vault, &w.day), [], "the chip went with it");
+    assert_embedded(&w.vault, &w.topic, "topic note");
+    assert_embedded(&w.vault, &w.day, "day note after the chip removal");
+    assert_eq!(embedder.calls(), 2, "one reindex per written note");
+}
+
+#[test]
+fn move_block_reindexes_the_source_the_target_and_the_day_note_with_the_embedder() {
+    let mut w = world();
+    let source = w.topic.clone();
+    let target = create_topic(&mut w.vault, "Sleep", "Rest.\n");
+    add(&mut w, DAY, &["f6g7h8"]);
+    assert_not_embedded(&w.vault, &source, "precondition: source");
+    assert_not_embedded(&w.vault, &target, "precondition: target");
+    let embedder = Wi248FlakyEmbedder::working();
+
+    move_block(
+        &mut w.vault,
+        DAY,
+        "f6g7h8",
+        &source,
+        &target,
+        Caller::Agent,
+        Some(&embedder),
+    )
+    .unwrap();
+
+    assert_eq!(chip_rows(&w.vault, &w.day), [chip(&target, "excerpt")]);
+    assert_embedded(&w.vault, &target, "target note");
+    assert_embedded(&w.vault, &source, "source note");
+    assert_embedded(&w.vault, &w.day, "day note after the chip removal");
+    assert_eq!(
+        embedder.calls(),
+        4,
+        "target, day (chip added), source, day (chip removed)"
+    );
+}
+
+#[test]
+fn remove_excerpt_block_succeeds_when_the_reindex_after_the_save_fails() {
+    let mut w = world();
+    add(&mut w, DAY, &["b7k2m9"]);
+    let before = stored(&w.vault, &w.topic);
+    let embedder = Wi248FlakyEmbedder::failing_calls(&[1]);
+
+    let saved = remove_excerpt_block(
+        &mut w.vault,
+        &w.topic,
+        DAY,
+        "b7k2m9",
+        Caller::Agent,
+        Some(&embedder),
+    )
+    .expect("the save committed, so the call succeeds");
+
+    let now = stored(&w.vault, &w.topic);
+    assert_eq!(now.content_md, TOPIC_BODY);
+    assert_eq!(now.version, before.version + 1);
+    assert_eq!(saved.version, now.version);
+    assert_eq!(saved.content_md, now.content_md);
+    assert_eq!(chip_rows(&w.vault, &w.day), [], "the chip step still ran");
+    assert_eq!(embedder.calls(), 2, "the day note was reindexed after it");
+}
+
+#[test]
+fn remove_excerpt_block_succeeds_when_the_footer_chip_removal_fails() {
+    let mut w = world();
+    add(&mut w, DAY, &["b7k2m9"]);
+    let before = stored(&w.vault, &w.topic);
+    let embedder = Wi248FlakyEmbedder::failing_calls(&[2]);
+
+    let saved = remove_excerpt_block(
+        &mut w.vault,
+        &w.topic,
+        DAY,
+        "b7k2m9",
+        Caller::Agent,
+        Some(&embedder),
+    )
+    .expect("the save committed, so the call succeeds");
+
+    let now = stored(&w.vault, &w.topic);
+    assert_eq!(now.content_md, TOPIC_BODY);
+    assert_eq!(now.version, before.version + 1);
+    assert_eq!(saved.version, now.version);
+    assert_eq!(embedder.calls(), 2, "the chip removal reached the day note");
+    assert_embedded(&w.vault, &w.topic, "topic note");
+}
+
+#[test]
+fn remove_excerpt_block_that_fails_before_the_save_still_returns_its_error() {
+    let mut w = world();
+    add(&mut w, DAY, &["b7k2m9"]);
+    let before = stored(&w.vault, &w.topic);
+    let embedder = Wi248FlakyEmbedder::working();
+
+    let e = remove_excerpt_block(
+        &mut w.vault,
+        &w.topic,
+        DAY,
+        "c3d4e5",
+        Caller::Agent,
+        Some(&embedder),
+    )
+    .expect_err("no token covers the block");
+
+    assert!(matches!(e, MemexError::NotFound(_)), "{e:?}");
+    assert_eq!(stored(&w.vault, &w.topic).version, before.version);
+    assert_eq!(embedder.calls(), 0);
+}
+
+#[test]
+fn add_excerpt_returns_the_reindex_error_after_its_save_commits() {
+    let mut w = world();
+    let before = stored(&w.vault, &w.topic);
+    let embedder = Wi248FlakyEmbedder::failing_calls(&[1]);
+
+    let e = add_excerpt(
+        &mut w.vault,
+        &w.topic,
+        DAY,
+        &ids(&["b7k2m9"]),
+        Caller::Agent,
+        Some(&embedder),
+    )
+    .expect_err("the reindex fails");
+
+    assert!(matches!(e, MemexError::EmbedderInfer(_)), "{e:?}");
+    let now = stored(&w.vault, &w.topic);
+    assert_eq!(now.version, before.version + 1, "the save had committed");
+    assert_eq!(tokens(&now.content_md), [T_B7]);
+}
+
+#[test]
+fn remove_excerpt_returns_the_reindex_error_after_its_save_commits() {
+    let mut w = world();
+    add(&mut w, DAY, &["b7k2m9"]);
+    let before = stored(&w.vault, &w.topic);
+    let embedder = Wi248FlakyEmbedder::failing_calls(&[1]);
+
+    let e = remove_excerpt(
+        &mut w.vault,
+        &w.topic,
+        DAY,
+        &ids(&["b7k2m9"]),
+        Caller::Agent,
+        Some(&embedder),
+    )
+    .expect_err("the reindex fails");
+
+    assert!(matches!(e, MemexError::EmbedderInfer(_)), "{e:?}");
+    let now = stored(&w.vault, &w.topic);
+    assert_eq!(now.version, before.version + 1, "the save had committed");
+    assert_eq!(tokens(&now.content_md), Vec::<String>::new());
+}
+
+#[test]
+fn move_block_succeeds_when_the_source_reindex_fails_after_its_save() {
+    let mut w = world();
+    let source = w.topic.clone();
+    let target = create_topic(&mut w.vault, "Sleep", "Rest.\n");
+    add(&mut w, DAY, &["f6g7h8"]);
+    let source_before = stored(&w.vault, &source);
+    let target_before = stored(&w.vault, &target);
+    // Calls: 1 target, 2 day (chip added), 3 source, 4 day (chip removed).
+    let embedder = Wi248FlakyEmbedder::failing_calls(&[3]);
+
+    let moved = move_block(
+        &mut w.vault,
+        DAY,
+        "f6g7h8",
+        &source,
+        &target,
+        Caller::Agent,
+        Some(&embedder),
+    )
+    .expect("the source's save committed, so the block has moved");
+
+    let source_after = stored(&w.vault, &source);
+    let target_after = stored(&w.vault, &target);
+    assert_eq!(tokens(&source_after.content_md), Vec::<String>::new());
+    assert_eq!(tokens(&target_after.content_md), [T_F6]);
+    assert_eq!(source_after.version, source_before.version + 1);
+    assert_eq!(target_after.version, target_before.version + 1);
+    assert_eq!(moved.from.version, source_after.version);
+    assert_eq!(moved.to.version, target_after.version);
+    assert_eq!(chip_rows(&w.vault, &w.day), [chip(&target, "excerpt")]);
+    assert_eq!(embedder.calls(), 4);
+}
+
+#[test]
+fn move_block_succeeds_when_the_footer_chip_removal_fails_after_the_source_save() {
+    let mut w = world();
+    let source = w.topic.clone();
+    let target = create_topic(&mut w.vault, "Sleep", "Rest.\n");
+    add(&mut w, DAY, &["f6g7h8"]);
+    let embedder = Wi248FlakyEmbedder::failing_calls(&[4]);
+
+    let moved = move_block(
+        &mut w.vault,
+        DAY,
+        "f6g7h8",
+        &source,
+        &target,
+        Caller::Agent,
+        Some(&embedder),
+    )
+    .expect("the source's save committed, so the block has moved");
+
+    assert_eq!(tokens(&moved.from.content_md), Vec::<String>::new());
+    assert_eq!(tokens(&moved.to.content_md), [T_F6]);
+    assert_eq!(
+        tokens(&stored(&w.vault, &source).content_md),
+        Vec::<String>::new()
+    );
+    assert_eq!(embedder.calls(), 4);
+}
+
+#[test]
+fn move_block_with_a_failing_target_reindex_returns_the_error_and_can_be_retried() {
+    let mut w = world();
+    let source = w.topic.clone();
+    let target = create_topic(&mut w.vault, "Sleep", "Rest.\n");
+    add(&mut w, DAY, &["f6g7h8"]);
+    let broken = Wi248FlakyEmbedder::failing_calls(&[1]);
+
+    let e = move_block(
+        &mut w.vault,
+        DAY,
+        "f6g7h8",
+        &source,
+        &target,
+        Caller::Agent,
+        Some(&broken),
+    )
+    .expect_err("the add leg's reindex fails");
+
+    assert!(matches!(e, MemexError::EmbedderInfer(_)), "{e:?}");
+    assert_eq!(tokens(&body(&w)), [T_F6], "still in the source");
+    assert_eq!(
+        tokens(&stored(&w.vault, &target).content_md),
+        [T_F6],
+        "and in the target, whose save had committed"
+    );
+    let target_version = stored(&w.vault, &target).version;
+    let working = Wi248FlakyEmbedder::working();
+
+    let moved = move_block(
+        &mut w.vault,
+        DAY,
+        "f6g7h8",
+        &source,
+        &target,
+        Caller::Agent,
+        Some(&working),
+    )
+    .expect("the retry moves it");
+
+    assert_eq!(tokens(&moved.from.content_md), Vec::<String>::new());
+    assert_eq!(moved.to.version, target_version, "already there");
+    assert_embedded(&w.vault, &source, "source note after the retry");
 }

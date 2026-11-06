@@ -365,7 +365,7 @@ void main() {
   });
 
   group('opening rows (AC8)', () {
-    testWidgets('tapping a dated row opens the tab of that daily note', (
+    testWidgets('tapping a dated row shows that daily note in the active tab', (
       tester,
     ) async {
       final r = DaysRobot(tester);
@@ -480,7 +480,7 @@ void main() {
     );
 
     testWidgets(
-      'after midnight the Today row opens the virtual Today tab for 2026-10-04 and the 2026-10-03 row opens its note',
+      'after midnight the Today row opens the virtual Today tab for 2026-10-04 and the 2026-10-03 row shows its note in the Today tab',
       (tester) async {
         final r = DaysRobot(tester);
         await r.launch(
@@ -494,10 +494,11 @@ void main() {
 
         await r.openRow('2026-10-03');
         expect(r.activeTab, const NoteTab(_oct03));
-        expect(
-          r.tabs.tabs.where((t) => t == const NoteTab(_oct03)),
-          hasLength(1),
-        );
+        // #266: a plain click navigates the Today tab in place, so it and the
+        // launch tab both show the note, and Back returns to the new Today.
+        expect(r.tabs.tabs, [const NoteTab(_oct03), const NoteTab(_oct03)]);
+        expect(r.tabs.activeIndex, 0);
+        expect(r.tabs.canGoBack, isTrue);
       },
     );
 
