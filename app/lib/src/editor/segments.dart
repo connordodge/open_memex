@@ -30,30 +30,70 @@ class DailyBody {
 /// A footer chip line, matched after trimming trailing spaces and `\r` (C3).
 final RegExp _chipLine = RegExp(r'^\[\[(.+)~about\]\]$');
 
-/// Splits a daily note body into the person section and footer chips (C3).
+/// Splits a daily note body into the person section and the footer (C3).
 ///
-/// Splits at the first marker line. Below it, chip lines become [DailyBody.chips]
-/// in order, blank lines and further marker lines are dropped, and any other
-/// line is stray text moved to the end of the person section (Q1).
+/// Splits at the first marker line. Below it, chip lines become
+/// [DailyBody.chips] and footer tag lines [DailyBody.tags], each in order;
+/// blank lines and further marker lines are dropped, and any other line is
+/// stray text moved to the end of the person section (Q1).
 DailyBody splitDailyBody(String body) {
-  String? person;
-  final chips = <String>[];
-  final stray = <String>[];
   for (final line in _lines(body)) {
-    final content = _trimLineEnd(line.content);
-    if (person == null) {
-      if (content == topicsMarker) person = body.substring(0, line.start);
-      continue;
-    }
-    if (content.isEmpty || content == topicsMarker) continue;
-    final chip = _chipLine.firstMatch(content);
-    if (chip != null) {
-      chips.add(chip.group(1)!);
-    } else {
-      stray.add(line.content);
+    if (_trimLineEnd(line.content) == topicsMarker) {
+      return _splitAtMarker(body, line.start);
     }
   }
-  if (person == null) return DailyBody(person: body, chips: const []);
+  return DailyBody(person: body, chips: const []);
+}
+
+/// Splits a non-daily note body into the person section and the Note footer
+/// (Spec #234 R11-R13, D13): like [splitDailyBody], except that a marker line
+/// inside fenced code is body text, so only the first marker line outside
+/// fenced code starts the footer. Without one the whole body is person.
+DailyBody splitNoteBody(String body) {
+  _Fence? fence;
+  for (final line in _lines(body)) {
+    final open = fence;
+    if (open != null) {
+      if (open.closedBy(line.content)) fence = null;
+    } else if (_trimLineEnd(line.content) == topicsMarker) {
+      return _splitAtMarker(body, line.start);
+    } else {
+      fence = _Fence.openedBy(line.content);
+    }
+  }
+  return DailyBody(person: body, chips: const []);
+}
+
+/// The name of a footer tag line (Spec #234 R12): `#` followed by a character
+/// other than a space or `#`, the name being everything after the `#`.
+/// [content] is already trimmed of trailing spaces and `\r`.
+String? _footerTagName(String content) {
+  if (content.length < 2 || !content.startsWith('#')) return null;
+  final next = content[1];
+  return next == ' ' || next == '#' ? null : content.substring(1);
+}
+
+/// Splits [body] at the marker line starting at [markerStart] (C3, R12).
+DailyBody _splitAtMarker(String body, int markerStart) {
+  final newline = body.indexOf('\n', markerStart);
+  final markerEnd = newline < 0 ? body.length : newline + 1;
+  var person = body.substring(0, markerStart);
+  final chips = <String>[];
+  final tags = <String>[];
+  final stray = <String>[];
+  for (final line in body.substring(markerEnd).split('\n')) {
+    final content = _trimLineEnd(line);
+    if (content.isEmpty || content == topicsMarker) continue;
+    final chip = _chipLine.firstMatch(content);
+    final tag = _footerTagName(content);
+    if (chip != null) {
+      chips.add(chip.group(1)!);
+    } else if (tag != null) {
+      tags.add(tag);
+    } else {
+      stray.add(line);
+    }
+  }
   if (stray.isNotEmpty) {
     final out = StringBuffer(person);
     if (person.isNotEmpty && !person.endsWith('\n')) out.write('\n');
@@ -64,14 +104,56 @@ DailyBody splitDailyBody(String body) {
     }
     person = out.toString();
   }
-  return DailyBody(person: person, chips: chips);
+  return DailyBody(person: person, chips: chips, tags: tags);
 }
 
-/// Splits a non-daily note body into the person section and the Note footer
-/// (Spec #234 R11-R13, D13): like [splitDailyBody], except that a marker line
-/// inside fenced code is body text, so only the first marker line outside
-/// fenced code starts the footer. Without one the whole body is person.
-DailyBody splitNoteBody(String body) => const DailyBody(person: '', chips: []);
+/// An open fenced code block: its fence character and run length. Mirrors
+/// the Rust `tags::Fence` behind `daily::split_note_body`.
+class _Fence {
+  const _Fence(this.char, this.length);
+
+  final String char;
+  final int length;
+
+  /// The fence [line] opens: three or more backticks or tildes after any
+  /// indentation. A backtick fence's info string holds no backtick.
+  static _Fence? openedBy(String line) {
+    final trimmed = _trimIndent(line);
+    if (trimmed.isEmpty) return null;
+    final c = trimmed[0];
+    if (c != '`' && c != '~') return null;
+    final length = _runLength(trimmed, c);
+    if (length < 3) return null;
+    if (c == '`' && trimmed.substring(length).contains('`')) return null;
+    return _Fence(c, length);
+  }
+
+  /// Whether [line] closes this fence: the same character, at least as many
+  /// times, after any indentation, and nothing but whitespace after it.
+  bool closedBy(String line) {
+    final trimmed = _trimIndent(line);
+    final run = _runLength(trimmed, char);
+    return run >= length && trimmed.substring(run).trim().isEmpty;
+  }
+
+  /// [line] without its leading spaces and tabs.
+  static String _trimIndent(String line) {
+    var i = 0;
+    while (i < line.length && (line[i] == ' ' || line[i] == '\t')) {
+      i++;
+    }
+    return line.substring(i);
+  }
+
+  /// How many times [c] repeats at the start of [s].
+  static int _runLength(String s, String c) {
+    var i = 0;
+    while (i < s.length && s[i] == c) {
+      i++;
+    }
+    return i;
+  }
+}
 
 /// Assembles a daily note body from the person section and chips (C3).
 String assembleDailyBody(String person, List<String> chips) {
