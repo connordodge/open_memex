@@ -150,6 +150,7 @@ class EditorRow extends StatelessWidget {
                     text: controller.text,
                     style: editorBodyStyle(),
                     links: controller,
+                    fenced: controller.fenced,
                   ),
                 ),
             ],
