@@ -1019,3 +1019,151 @@ fn add_tags_rejects_a_name_outside_the_grammar_and_writes_nothing() {
     }
     assert_eq!(f.tag_ls(), json!({"tags": []}), "no tag was written");
 }
+
+// ---------------------------------------------------------------------------
+// Contracts pinned in verify mode (the handoff's unpinned list)
+// ---------------------------------------------------------------------------
+
+/// A vault path that doesn't exist: a command that opens the vault first
+/// fails with another code than `invalid_id`.
+fn missing_vault(f: &Fx) -> String {
+    format!("{}-missing", f.v())
+}
+
+#[test]
+fn add_tags_index_the_note_with_its_footer_lines() {
+    // The reindex runs after the tags, so a search finds the footer text.
+    let f = Fx::new();
+    let note = f.add("Alpha", "Alpha body.\n", &["--tags", "x,y"]);
+    let chunks: String = f
+        .db()
+        .query_row(
+            "SELECT group_concat(content, ' ') FROM chunks WHERE note_id = ?",
+            [&note],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(chunks.contains("#x"), "{chunks}");
+    assert!(chunks.contains("#y"), "{chunks}");
+    assert!(chunks.contains("Alpha body."), "{chunks}");
+}
+
+#[test]
+fn add_tags_accepts_a_leading_hash_and_stores_the_bare_name() {
+    let f = Fx::new();
+    let note = f.add("Alpha", "Alpha body.\n", &["--tags", "#x"]);
+    assert_eq!(f.tag_names(&note), ["x"]);
+    assert_eq!(f.body(&note), format!("Alpha body.\n{MARKER}\n#x\n"));
+}
+
+#[test]
+fn add_tags_output_names_the_stored_name() {
+    let f = Fx::new();
+    let stdout = ok_stdout(run(
+        &[
+            "add",
+            "--vault",
+            f.v(),
+            "--title",
+            "Alpha",
+            "--tags",
+            "Work",
+        ],
+        Some("Alpha body.\n"),
+    ));
+    assert!(stdout.contains("  tags:    work\n"), "{stdout}");
+}
+
+#[test]
+fn tag_commands_parse_the_note_id_before_they_open_the_vault() {
+    let f = Fx::new();
+    let gone = missing_vault(&f);
+    let cases: [Vec<&str>; 4] = [
+        vec![
+            "tag",
+            "add",
+            "--vault",
+            &gone,
+            "--note-id",
+            "nope",
+            "--tag",
+            "x",
+        ],
+        vec![
+            "tag",
+            "rm",
+            "--vault",
+            &gone,
+            "--note-id",
+            "nope",
+            "--tag",
+            "x",
+        ],
+        vec!["tag", "ls", "--vault", &gone, "--note-id", "nope"],
+        vec![
+            "footer",
+            "add",
+            "--vault",
+            &gone,
+            "--note-id",
+            "nope",
+            "--topic-note-id",
+            UNKNOWN,
+        ],
+    ];
+    for args in cases {
+        let out = run(&args, None);
+        let (code, message) = c1_error(&out);
+        assert_eq!(code, "invalid_id", "{args:?}: {message}");
+    }
+}
+
+#[test]
+fn tag_ls_with_note_id_still_lists_a_note_whose_frontmatter_does_not_parse() {
+    let f = Fx::new();
+    let note = f.add("Plain", "About #work.\n", &[]);
+    ok_json(f.tag_add(&note, "extra"));
+    f.db()
+        .execute(
+            "UPDATE notes SET frontmatter = 'not json {' WHERE id = ?",
+            [&note],
+        )
+        .unwrap();
+    let out = ok_json(f.tag_ls_note(&note));
+    assert_eq!(
+        out,
+        json!({"note_id": note, "tags": [
+            {"tag": "extra", "origin": "person"},
+            {"tag": "work", "origin": "body"},
+        ]})
+    );
+}
+
+#[test]
+fn ls_tag_with_a_negative_limit_lists_every_match() {
+    let f = Fx::new();
+    let a = f.add("A", "About #work.\n", &[]);
+    let b = f.add("B", "About #work.\n", &[]);
+    let c = f.add("C", "About #work.\n", &[]);
+    f.set_updated_at(&a, 1_000);
+    f.set_updated_at(&b, 2_000);
+    f.set_updated_at(&c, 3_000);
+    assert_eq!(
+        f.ls(&["--tag", "work", "--limit=-1"]),
+        format!("{c}  C\n{b}  B\n{a}  A\n"),
+        "no limit, as in `memex ls`"
+    );
+    assert_eq!(
+        f.ls(&["--tag", "work", "--limit", "2"]),
+        format!("{c}  C\n{b}  B\n")
+    );
+}
+
+#[test]
+fn tag_rm_of_a_tag_the_note_lacks_names_the_lowercased_bare_input() {
+    let f = Fx::new();
+    let note = f.add("Plain", "Plain text.\n", &[]);
+    let out = ok_json(f.tag_rm(&note, "#Gone"));
+    assert_eq!(out["tag"], "gone");
+    assert_eq!(out["removed"], false);
+}
