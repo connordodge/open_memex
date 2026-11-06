@@ -218,9 +218,9 @@ class CommentSaveResult {
 }
 
 /// A multi-line comment input with Cancel and Save (keys `comment-field`,
-/// `comment-cancel`, `comment-save`). Save trims the text and refuses it,
-/// with no call to [onSave], when it is empty or over [maxCommentLength]
-/// characters.
+/// `comment-cancel`, `comment-save`). Save sends the trimmed text and refuses
+/// it, with no call to [onSave], when it is empty after trimming or when the
+/// raw text is over [maxCommentLength] Unicode code points.
 class CommentComposer extends StatefulWidget {
   const CommentComposer({
     super.key,
@@ -251,12 +251,14 @@ class _CommentComposerState extends State<CommentComposer> {
 
   Future<void> _save() async {
     if (_busy) return;
-    final text = _ctrl.text.trim();
+    final raw = _ctrl.text;
+    final text = raw.trim();
     if (text.isEmpty) {
       setState(() => _error = 'write a comment first.');
       return;
     }
-    if (text.length > maxCommentLength) {
+    // The limit counts the raw text in Unicode code points (core's chars()).
+    if (raw.runes.length > maxCommentLength) {
       setState(
         () => _error = 'comments are at most $maxCommentLength characters.',
       );
