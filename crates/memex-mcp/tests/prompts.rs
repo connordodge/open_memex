@@ -287,8 +287,9 @@ const EXISTING_SPEC_FIELDS: &[&str] = &[
     "invalid_argument",
 ];
 
-/// The tag fields a prompt may name (#243 fills this block).
-const TAG_SPEC_FIELDS: &[&str] = &[];
+/// The tag fields a prompt may name (#243 fills this block): the error codes
+/// `tag_note` returns that the prompts tell the agent how to handle.
+const TAG_SPEC_FIELDS: &[&str] = &["unknown_tag", "tag_removed", "guide_rule"];
 
 /// The feedback fields a prompt may name (#257 fills this block).
 const FEEDBACK_SPEC_FIELDS: &[&str] = &[];
@@ -664,4 +665,212 @@ fn tools_still_list_and_work_alongside_prompts() {
 
     // Prompts are served by the same server after tools were used.
     assert_eq!(server.prompts().len(), 2);
+}
+
+// ======================================================================
+// WI #243 (Spec #234 R41-R44): the tagging rules in both prompts.
+//
+// Review gets one new unnumbered section between the numbered steps plus the
+// `Tagged #name` bullet in step 7; steps 1-8 keep their numbers (D22). Capture
+// gets the rules in its own text. Helpers carry a `wi243_` prefix.
+// ======================================================================
+
+/// `(heading, body)` of each `## ` section of a prompt, in order. The body
+/// runs to the next `## ` line or the end.
+fn wi243_sections(text: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for line in text.lines() {
+        if let Some(heading) = line.strip_prefix("## ") {
+            out.push((heading.trim().to_string(), String::new()));
+        } else if let Some((_, body)) = out.last_mut() {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    out
+}
+
+/// The Review prompt's one unnumbered section whose heading names tagging.
+fn wi243_review_tagging_section() -> String {
+    let numbered = Regex::new(r"^\d+\.").unwrap();
+    let tagging: Vec<(String, String)> = wi243_sections(REVIEW_DAILY_NOTES)
+        .into_iter()
+        .filter(|(h, _)| !numbered.is_match(h) && h.to_lowercase().contains("tag"))
+        .collect();
+    assert_eq!(
+        tagging.len(),
+        1,
+        "the review prompt must have exactly one unnumbered `## ` section whose heading \
+         names tagging; found {:?}:\n{REVIEW_DAILY_NOTES}",
+        tagging.iter().map(|(h, _)| h).collect::<Vec<_>>()
+    );
+    let (heading, body) = &tagging[0];
+    format!("## {heading}\n{body}")
+}
+
+/// The Review prompt's step 7 section.
+fn wi243_review_step_seven() -> String {
+    let (heading, body) = wi243_sections(REVIEW_DAILY_NOTES)
+        .into_iter()
+        .find(|(h, _)| h.starts_with("7."))
+        .expect("the review prompt has a `## 7.` section");
+    format!("## {heading}\n{body}")
+}
+
+/// Both prompts' common tagging rules: `list_tags` once, `tag_note` only the
+/// listed tags, no listed tags means none, never `#tag` in a body.
+fn wi243_assert_common_tagging_rules(prompt: &str, text: &str) {
+    assert_names_in_order(prompt, text, &["list_tags", "tag_note"]);
+    assert_matches(prompt, text, r"(?is)`list_tags`[^.]{0,80}\bonce\b");
+    assert_matches(
+        prompt,
+        text,
+        r"(?is)\bonly\b[^.]{0,80}\blist(ed|s)\b|\blisted\b[^.]{0,80}\bonly\b",
+    );
+    assert_matches(
+        prompt,
+        text,
+        r"(?is)(no (listed )?tags|lists? no tags|empty)[^.]{0,120}\b(none|no tag|skip|do not|don't|never)\b",
+    );
+    assert_matches(
+        prompt,
+        text,
+        r"(?is)\bnever\b[^.]{0,120}`#tag`|`#tag`[^.]{0,120}\bnever\b",
+    );
+    assert_contains_ci(prompt, text, "body");
+    assert_matches(prompt, text, r"(?i)\btouch(ed|es)?\b");
+    assert_matches(
+        prompt,
+        text,
+        r"(?i)\b(no|any) other notes?\b|\bother notes\b",
+    );
+}
+
+/// The three error codes, each in code formatting, with the rule: leave that
+/// tag, carry on, do not retry; a removed tag is the person's doing.
+fn wi243_assert_tag_error_rules(prompt: &str, text: &str) {
+    for code in ["unknown_tag", "tag_removed", "guide_rule"] {
+        assert_contains(prompt, text, &format!("`{code}`"));
+    }
+    assert_matches(prompt, text, r"(?i)\b(do not|don't|never) retry\b");
+    assert_matches(
+        prompt,
+        text,
+        r"(?i)carry on|leave (that|the|it) tag|leave it",
+    );
+    assert_matches(
+        prompt,
+        text,
+        r"(?is)(removed tag|`tag_removed`)[^.]{0,160}\bperson\b",
+    );
+}
+
+#[test]
+fn review_prompt_keeps_steps_one_to_eight_and_adds_one_unnumbered_tagging_section_between_them() {
+    let text = REVIEW_DAILY_NOTES;
+    let numbered = Regex::new(r"(?m)^## (\d+)\. (.+)$").unwrap();
+    let steps: Vec<(u32, String)> = numbered
+        .captures_iter(text)
+        .map(|c| (c[1].parse().unwrap(), c[2].to_string()))
+        .collect();
+    assert_eq!(
+        steps.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+        (1..=8).collect::<Vec<u32>>(),
+        "steps 1-8 keep their numbers (D22), none added or renumbered:\n{text}"
+    );
+    assert_eq!(steps[6].1, "Mark the day reviewed");
+    assert_eq!(steps[7].1, "Repeat");
+
+    let section = wi243_review_tagging_section();
+    let at = text.find(&section).expect("the section is in the prompt");
+    let step1 = text.find("## 1. ").unwrap();
+    let step8 = text.find("## 8. ").unwrap();
+    assert!(
+        step1 < at && at < step8,
+        "the tagging section sits between the numbered steps, not before step 1 \
+         (another WI's section) and not after step 8:\n{text}"
+    );
+}
+
+#[test]
+fn review_tagging_section_names_list_tags_once_and_limits_tag_note_to_the_day_and_touched_topic_notes(
+) {
+    let section = wi243_review_tagging_section();
+    wi243_assert_common_tagging_rules("review", &section);
+    assert_contains("review", &section, "daily note");
+    assert_contains("review", &section, "topic note");
+    assert_contains_ci("review", &section, "note as a whole");
+}
+
+#[test]
+fn review_tagging_section_says_never_add_text_to_a_daily_note_and_never_write_a_hash_tag_into_a_body(
+) {
+    let section = wi243_review_tagging_section();
+    assert_matches("review", &section, r"(?i)never add text to a daily note");
+    assert_matches(
+        "review",
+        &section,
+        r"(?is)\bnever\b[^.]{0,120}`#tag`[^.]{0,80}\bbody\b",
+    );
+}
+
+#[test]
+fn review_prompt_tells_the_agent_what_to_do_on_unknown_tag_tag_removed_and_guide_rule() {
+    wi243_assert_tag_error_rules("review", &wi243_review_tagging_section());
+}
+
+#[test]
+fn capture_prompt_tells_the_agent_what_to_do_on_unknown_tag_tag_removed_and_guide_rule() {
+    wi243_assert_tag_error_rules("capture", CAPTURE);
+}
+
+#[test]
+fn review_step_seven_shows_the_tagged_bullet_and_asks_an_entry_for_a_note_touched_only_by_tagging()
+{
+    let step = wi243_review_step_seven();
+    assert_matches("review step 7", &step, r"`Tagged #[a-z][a-z0-9-]*`");
+    assert_matches(
+        "review step 7",
+        &step,
+        r"(?i)only (by|through|with) tagging|tag-only|tagging alone|only tagged|only a tag was",
+    );
+    assert_contains_ci("review step 7", &step, "entry");
+    // The rules already there stay.
+    assert_contains("review step 7", &step, "1 to 3 bullets");
+    assert_contains("review step 7", &step, "`change_entries_invalid`");
+    assert_contains("review step 7", &step, "`review_stale`");
+}
+
+#[test]
+fn capture_prompt_applies_the_same_tagging_rules_to_the_notes_it_touches() {
+    let text = CAPTURE;
+    wi243_assert_common_tagging_rules("capture", text);
+    // The same change-entry bullet, since capture marks the day reviewed too.
+    assert_matches("capture", text, r"`Tagged #[a-z][a-z0-9-]*`");
+    // The rule lives in capture's own text: the opening paragraphs (another
+    // WI's lines) do not name the tagging tools.
+    let opening = text
+        .split("For each message:")
+        .next()
+        .expect("capture has a `For each message:` line");
+    assert!(
+        !opening.contains("list_tags") && !opening.contains("tag_note"),
+        "capture's tagging rule belongs after `For each message:`, not in its opening \
+         paragraphs:\n{text}"
+    );
+}
+
+#[test]
+fn both_prompts_with_tagging_name_only_spec_identifiers_and_no_system_tag_names() {
+    let avoid = Regex::new(r"(?i)\binbox\b|agent-authored|organi[sz]\w*").unwrap();
+    for (prompt, text) in [("review", REVIEW_DAILY_NOTES), ("capture", CAPTURE)] {
+        assert_contains(prompt, text, &code("list_tags"));
+        assert_contains(prompt, text, &code("tag_note"));
+        assert_only_spec_identifiers(prompt, text);
+        let bad: Vec<&str> = avoid.find_iter(text).map(|m| m.as_str()).collect();
+        assert!(
+            bad.is_empty(),
+            "the {prompt} prompt names system tags or uses an avoided term: {bad:?}"
+        );
+    }
 }
