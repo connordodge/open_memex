@@ -233,23 +233,39 @@ final class _Fence {
   bool closedBy(String line) {
     final trimmed = _indentTrimmed(line);
     final run = _runLength(trimmed, ch);
-    return run >= length && trimmed.substring(run).trim().isEmpty;
+    // Not `String.trim`: it also strips U+FEFF, which the server keeps.
+    return run >= length &&
+        trimmed.substring(run).codeUnits.every(_isWhitespace);
   }
+}
+
+/// For each of [lines] in order (one line of text each, no `\n`), whether it
+/// is fenced code as the server reads it: a fence's opening line, a line
+/// inside it, or its closing line. An unclosed fence runs to the last line.
+List<bool> fencedLines(List<String> lines) {
+  final out = <bool>[];
+  _Fence? fence;
+  for (final line in lines) {
+    final open = fence;
+    if (open != null) {
+      if (open.closedBy(line)) fence = null;
+      out.add(true);
+    } else {
+      fence = _Fence.openedBy(line);
+      out.add(fence != null);
+    }
+  }
+  return out;
 }
 
 /// The lowercase names of the tags in [personText] (any number of lines,
 /// split on `\n`), sorted by name, one per name, nothing inside fenced code.
 List<String> extractTagNames(String personText) {
   final found = <String>{};
-  _Fence? fence;
-  for (final line in personText.split('\n')) {
-    final open = fence;
-    if (open != null) {
-      if (open.closedBy(line)) fence = null;
-      continue;
-    }
-    fence = _Fence.openedBy(line);
-    if (fence != null) continue;
+  final lines = personText.split('\n');
+  final fenced = fencedLines(lines);
+  for (final (i, line) in lines.indexed) {
+    if (fenced[i]) continue;
     for (final tag in findTagsInLine(line)) {
       found.add(tag.name);
     }

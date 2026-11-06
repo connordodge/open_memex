@@ -770,4 +770,108 @@ void main() {
       },
     );
   });
+
+  group('whitespace matches the reference (char::is_whitespace)', () {
+    // Unicode White_Space, the set tags.rs reads. Every member is in the BMP,
+    // so one code unit is one char. U+180E, U+200B and U+FEFF are not in it.
+    const whitespace = <int>{
+      0x09,
+      0x0A,
+      0x0B,
+      0x0C,
+      0x0D,
+      0x20,
+      0x85,
+      0xA0,
+      0x1680,
+      0x2000,
+      0x2001,
+      0x2002,
+      0x2003,
+      0x2004,
+      0x2005,
+      0x2006,
+      0x2007,
+      0x2008,
+      0x2009,
+      0x200A,
+      0x2028,
+      0x2029,
+      0x202F,
+      0x205F,
+      0x3000,
+    };
+    const opening = <int>{0x28, 0x5B, 0x7B, 0x22, 0x27};
+
+    test(
+      'opensTag is true at exactly the white space set and the five opening marks for every code unit',
+      () {
+        final wrong = <String>[
+          for (var c = 0; c <= 0xFFFF; c++)
+            if (opensTag(c) != (whitespace.contains(c) || opening.contains(c)))
+              c.toRadixString(16),
+        ];
+        expect(wrong, isEmpty);
+      },
+    );
+
+    test(
+      'a closing fence run may be followed only by what the reference trims',
+      () {
+        for (final c in whitespace) {
+          if (c == 0x0A) continue; // A line break ends the closing line.
+          final close = String.fromCharCode(c);
+          expect(extractTagNames('~~~\n#x\n~~~$close\n#y'), [
+            'y',
+          ], reason: 'U+${c.toRadixString(16)} closes');
+        }
+        for (final c in [0x180E, 0x200B, 0xFEFF, 0x61]) {
+          final close = String.fromCharCode(c);
+          expect(
+            extractTagNames('~~~\n#x\n~~~$close\n#y'),
+            isEmpty,
+            reason: 'U+${c.toRadixString(16)} does not close',
+          );
+        }
+      },
+    );
+  });
+
+  group('fencedLines', () {
+    test('marks the opening, inside and closing lines and nothing else', () {
+      expect(fencedLines(const []), isEmpty);
+      expect(fencedLines(const ['a', '#b']), [false, false]);
+      expect(fencedLines(const ['a', '~~~', '#x', '~~~', '#y']), [
+        false,
+        true,
+        true,
+        true,
+        false,
+      ]);
+      expect(fencedLines(const ['```', '#x', '```', '~~~', '#y']), [
+        true,
+        true,
+        true,
+        true,
+        true,
+      ]);
+    });
+
+    test('closes only on the same character at the same length or longer', () {
+      expect(fencedLines(const ['~~~~', '~~~', '#x', '~~~~', '#y']), [
+        true,
+        true,
+        true,
+        true,
+        false,
+      ]);
+      expect(fencedLines(const ['~~~', '```', '#x', '~~~~', '#y']), [
+        true,
+        true,
+        true,
+        true,
+        false,
+      ]);
+    });
+  });
 }

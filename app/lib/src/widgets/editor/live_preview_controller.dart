@@ -4,6 +4,7 @@ import 'package:flutter/widgets.dart';
 import '../../editor/markdown_inline.dart';
 import '../../editor/markdown_lines.dart';
 import '../../editor/markdown_table.dart';
+import '../../editor/tag_grammar.dart' show fencedLines;
 import 'live_preview_styles.dart';
 
 /// The controller of every live preview field (D7): its [buildTextSpan]
@@ -158,6 +159,10 @@ int tableLastLine(List<MdLine> lines, int header) {
 /// - [before] is the code unit just before [text] in the line it was cut
 ///   from (null: [text] starts a line); a hash at the very start of [text]
 ///   is a tag only if [before] opens one (the table grid passes it).
+/// - A line the server reads as fenced code, such as a `~~~` fence that the
+///   line grammar calls plain, gets no tag ink and keeps its other styling
+///   (Rust wins, D34). [text] is judged alone: a fence that crosses rows is
+///   not seen, and [itemText] (one cut line) opens none.
 /// - While [codeRow], a hidden fence line's terminator renders hidden too,
 ///   so the line takes its height from the field's strut alone.
 /// - A table's lines (Spec #197 R13) take their inline tokens cell by cell
@@ -251,13 +256,19 @@ final class _SpanBuilder {
   final Uint8List _ink;
   final Map<int, TextStyle?> _styles = {};
 
+  /// Whether the line being tokenized is fenced code on the server, so a tag
+  /// token there gets no ink.
+  bool _fencedLine = false;
+
   TextSpan build(TextStyle? style) {
     final lines = classifyLines(text, atSegmentStart: atSegmentStart);
     final revealed = _revealed(lines);
     final levels = List<int>.filled(lines.length, 0);
     final codeLines = List<bool>.filled(lines.length, false);
     final fenceLines = List<bool>.filled(lines.length, false);
+    final fenced = _serverFenced(lines);
     for (final (i, line) in lines.indexed) {
+      _fencedLine = fenced[i];
       switch (itemText ? MdLineKind.plain : line.kind) {
         case MdLineKind.heading:
           levels[i] = line.level;
@@ -317,6 +328,18 @@ final class _SpanBuilder {
     flush(text.length);
     return TextSpan(style: style, children: children);
   }
+
+  /// Which of [lines] the server skips as fenced code. Item text and a table
+  /// cell are cut from a line that starts with a marker or a pipe, which opens
+  /// no fence; frontmatter is not in the text the server scans.
+  List<bool> _serverFenced(List<MdLine> lines) => itemText
+      ? List<bool>.filled(lines.length, false)
+      : fencedLines([
+          for (final line in lines)
+            line.kind == MdLineKind.frontmatter
+                ? ''
+                : text.substring(line.start, line.contentEnd),
+        ]);
 
   /// Which lines reveal their markers: every line the selection touches
   /// (a caret at a line's content end touches that line only), both fence
@@ -420,6 +443,8 @@ final class _SpanBuilder {
         case LinkToken():
           _inkRange(from, to, LivePreviewInk.link);
           flag(_link);
+        case InlineToken(kind: InlineTokenKind.tag) when _fencedLine:
+          break;
         case InlineToken(kind: InlineTokenKind.tag):
           // Only the colour changes (and the underline on hover): the tag
           // keeps the line's size, weight, slant and strike. A Cmd hover is

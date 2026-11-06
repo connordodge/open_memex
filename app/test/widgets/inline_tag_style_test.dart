@@ -17,9 +17,14 @@
 // engine does: the effective style of one code unit is its ancestors' styles
 // merged down the tree. Line heights come from a real TextField with the app
 // theme (even leading) and the controller strut (repo lesson #223).
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show RenderEditable;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/src/editor/editor_rows.dart';
+import 'package:open_memex_app/src/editor/tag_grammar.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_styles.dart';
 import 'package:open_memex_app/src/theme/app_theme.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
@@ -27,9 +32,11 @@ import 'package:open_memex_app/src/theme/typography.dart';
 import 'package:open_memex_app/src/widgets/editor/card_rows.dart';
 import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
+import 'package:open_memex_app/src/widgets/editor/segment_view.dart';
 import 'package:open_memex_app/src/widgets/editor/table_grid.dart';
 import 'package:open_memex_app/src/widgets/editor/text_segment.dart';
 
+import '../support/editor_scope.dart';
 import '../support/font_fetch_hold.dart';
 import '../support/markdown_fixtures.dart';
 import '../support/wi159_line_geometry.dart' show wi159EditableIn;
@@ -1083,6 +1090,296 @@ void main() {
         _range(quoteText, '#idea'),
         OmColors.fg2,
         fontStyle: FontStyle.italic,
+      );
+    });
+  });
+
+  group('a tilde fence holds no tag, as on the server (AC4)', () {
+    // tags.rs fences are CommonMark: backticks or tildes, closed by the same
+    // character at the same length or longer. `markdown_lines.dart` knows
+    // backtick fences only, so a tilde fence's lines are plain lines: they
+    // keep their styling and lose only the tag ink.
+    bool inked(TextSpan span, (int, int) r) =>
+        _styleAt(span, r.$1).color == OmColors.fg2;
+
+    test(
+      'a tag inside a tilde fence gets no tag ink while the tags around the fence do',
+      () {
+        const text = '#a\n~~~\n#x\n~~~\n#b';
+        final span = _build(text);
+        _expectTag(span, text, _range(text, '#a'), OmColors.fg2);
+        _expectTag(span, text, _range(text, '#b'), OmColors.fg2);
+        _expectColour(span, _range(text, '#x'), OmColors.fg0, why: 'fenced');
+      },
+    );
+
+    test(
+      'a caret or a hover on a tag inside a tilde fence neither lights nor underlines it',
+      () {
+        const text = '~~~\n#x\n~~~';
+        final x = _range(text, '#x');
+        final caret = _build(text, selection: _caret(x.$2));
+        _expectColour(caret, x, OmColors.fg0, why: 'caret');
+        final hover = _build(
+          text,
+          cmdHover: TextRange(start: x.$1, end: x.$2),
+        );
+        _expectColour(hover, x, OmColors.fg0, why: 'hover');
+        expect(_decorated(_styleAt(hover, x.$1)), isFalse);
+      },
+    );
+
+    test('tag ink agrees with every fence row of the grammar fixture', () {
+      final fixture =
+          jsonDecode(File('test/fixtures/tags/grammar.json').readAsStringSync())
+              as Map<String, Object?>;
+      final bad = <String>[];
+      var checked = 0;
+      for (final c in (fixture['cases']! as List).cast<Map>()) {
+        if (c['rule'] != 'excluded-fence') continue;
+        final input = c['input']! as String;
+        final span = _build(input);
+        final got = <String>{};
+        var offset = 0;
+        for (final line in input.split('\n')) {
+          for (final tag in findTagsInLine(line)) {
+            final r = (offset + tag.start, offset + tag.end);
+            if (inked(span, r)) got.add(tag.name);
+          }
+          offset += line.length + 1;
+        }
+        checked++;
+        final want = (c['tags']! as List).cast<String>();
+        final sorted = got.toList()..sort();
+        if (sorted.join(' ') != want.join(' ')) {
+          bad.add('${c['name']}: want $want got $sorted');
+        }
+      }
+      expect(checked, greaterThan(15));
+      expect(bad, isEmpty, reason: bad.join('\n'));
+    });
+
+    test('a tilde fence keeps its other inline styling and offsets', () {
+      const text = '~~~\n**bold** #x\n~~~';
+      final span = _build(text);
+      expect(span.toPlainText(), text);
+      final bold = _range(text, 'bold');
+      expect(_weight(_styleAt(span, bold.$1)), FontWeight.w700);
+      expect(_width(span, 4, 6), 0, reason: 'the bold marker stays hidden');
+      _expectColour(span, _range(text, '~~~'), OmColors.fg0, why: 'open line');
+      _expectColour(span, _range(text, '#x'), OmColors.fg0, why: 'fenced');
+    });
+
+    test('a tag in the info string of a tilde opening line gets no ink', () {
+      const text = '~~~ #a\n#x\n~~~\n#y';
+      final span = _build(text);
+      expect(inked(span, _range(text, '#a')), isFalse);
+      expect(inked(span, _range(text, '#x')), isFalse);
+      expect(inked(span, _range(text, '#y')), isTrue);
+    });
+
+    test(
+      'item text and a table line open no fence as their real line starts with a marker or a pipe',
+      () {
+        // `- ~~~ #x` and `> ~~~ #x`: the field holds `~~~ #x`, and the real
+        // line is no fence on the server. A grid cell is built the same way.
+        const text = '~~~ #x';
+        final item = _build(text, itemText: true);
+        _expectTag(item, text, _range(text, '#x'), OmColors.fg2);
+        const table = '| a |\n|---|\n| ~~~ #x |\n| #y |';
+        final source = _build(table);
+        _expectTag(source, table, _range(table, '#x'), OmColors.fg2);
+        _expectTag(source, table, _range(table, '#y'), OmColors.fg2);
+      },
+    );
+
+    test('a tilde line in leading frontmatter opens no fence', () {
+      const text = '---\n~~~\n---\n#y';
+      final span = _build(text);
+      _expectTag(span, text, _range(text, '#y'), OmColors.fg2);
+    });
+
+    testWidgets(
+      'a pumped editor segment shows no tag ink inside a tilde fence',
+      (tester) async {
+        const text = '#a\n~~~\n# H #h\n#x\n~~~\n#b';
+        final controller = TextEditingController(text: text);
+        final focus = FocusNode();
+        final gate = ValueNotifier(false);
+        addTearDown(controller.dispose);
+        addTearDown(focus.dispose);
+        addTearDown(gate.dispose);
+        await pumpEditorScoped(
+          tester,
+          MaterialApp(
+            home: Scaffold(
+              body: SegmentView(
+                index: 0,
+                controller: controller,
+                focusNode: focus,
+                revealGate: gate,
+                minLines: 1,
+                hintText: null,
+                onChanged: () {},
+                onRowRemoved: (_) {},
+                fieldBuilder: (context, row) => TextField(
+                  controller: row.controller,
+                  focusNode: row.focusNode,
+                  maxLines: null,
+                ),
+                builder: (context, rows, boxes) => rows,
+              ),
+            ),
+          ),
+        );
+        final field = tester.widget<EditableText>(find.byType(EditableText));
+        expect(field.controller.text, text, reason: 'one prose row');
+        final span = field.controller.buildTextSpan(
+          context: tester.element(find.byType(EditableText)),
+          style: _base(),
+          withComposing: false,
+        );
+        expect(inked(span, _range(text, '#a')), isTrue);
+        expect(inked(span, _range(text, '#h')), isFalse);
+        expect(inked(span, _range(text, '#x')), isFalse);
+        expect(inked(span, _range(text, '#b')), isTrue);
+      },
+    );
+
+    testWidgets('a pumped excerpt card shows no tag ink inside a tilde fence', (
+      tester,
+    ) async {
+      const text = '#a\n~~~\n#x\n~~~\n#b';
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildOmTheme(),
+          home: Scaffold(
+            body: Align(
+              alignment: Alignment.topLeft,
+              child: SizedBox(width: 600, child: CardRows(text: text)),
+            ),
+          ),
+        ),
+      );
+      final span =
+          tester
+                  .widget<RichText>(
+                    find.descendant(
+                      of: find.byKey(const Key('card-row-text-0')),
+                      matching: find.byType(RichText),
+                    ),
+                  )
+                  .text
+              as TextSpan;
+      expect(inked(span, _range(text, '#a')), isTrue);
+      expect(inked(span, _range(text, '#x')), isFalse);
+      expect(inked(span, _range(text, '#b')), isTrue);
+    });
+  });
+
+  group('a hash straight after a quote marker (AC3)', () {
+    // `markdown_lines.dart` makes a quote row only from `> ` or a bare `>`,
+    // and every other marker also ends in a space. So `>#x` stays a prose
+    // line with its `>` in the text, and a row's text never starts right
+    // after a non-opening character: no `before` is needed for a row.
+    test('a line of a hash right after a quote marker is a prose row', () {
+      final rows = splitRows('>#x', atSegmentStart: true);
+      expect(rows, hasLength(1));
+      expect(rows.single.kind, RowKind.prose);
+      expect(rows.single.textStart, 0);
+    });
+
+    testWidgets('an editor segment gives a hash after a quote marker no ink', (
+      tester,
+    ) async {
+      final controller = TextEditingController(text: '>#x\n\n> >#y');
+      final focus = FocusNode();
+      final gate = ValueNotifier(false);
+      addTearDown(controller.dispose);
+      addTearDown(focus.dispose);
+      addTearDown(gate.dispose);
+      await pumpEditorScoped(
+        tester,
+        MaterialApp(
+          home: Scaffold(
+            body: SegmentView(
+              index: 0,
+              controller: controller,
+              focusNode: focus,
+              revealGate: gate,
+              minLines: 1,
+              hintText: null,
+              onChanged: () {},
+              onRowRemoved: (_) {},
+              fieldBuilder: (context, row) => TextField(
+                controller: row.controller,
+                focusNode: row.focusNode,
+                maxLines: null,
+              ),
+              builder: (context, rows, boxes) => rows,
+            ),
+          ),
+        ),
+      );
+      final fields = tester
+          .widgetList<EditableText>(find.byType(EditableText))
+          .toList();
+      expect(fields.map((f) => f.controller.text), ['>#x\n', '>#y']);
+      for (final (field, needle) in [(fields[0], '#x'), (fields[1], '#y')]) {
+        final text = field.controller.text;
+        final span = field.controller.buildTextSpan(
+          context: tester.element(find.byType(EditableText).first),
+          style: _base(),
+          withComposing: false,
+        );
+        expect(
+          _styleAt(span, _range(text, needle).$1).color,
+          isNot(OmColors.fg2),
+          reason: '"$text" holds no tag',
+        );
+      }
+    });
+
+    testWidgets('an excerpt card gives a hash after a quote marker no ink', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildOmTheme(),
+          home: const Scaffold(
+            body: Align(
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: 600,
+                child: CardRows(text: '>#x\n\n> >#y'),
+              ),
+            ),
+          ),
+        ),
+      );
+      TextSpan row(int r) =>
+          tester
+                  .widget<RichText>(
+                    find.descendant(
+                      of: find.byKey(Key('card-row-text-$r')),
+                      matching: find.byType(RichText),
+                    ),
+                  )
+                  .text
+              as TextSpan;
+      const prose = '>#x\n';
+      expect(row(0).toPlainText(), prose);
+      expect(
+        _styleAt(row(0), _range(prose, '#x').$1).color,
+        OmColors.fg1,
+        reason: 'body text, no tag ink',
+      );
+      const quote = '>#y';
+      expect(row(1).toPlainText(), quote);
+      expect(
+        _styleAt(row(1), _range(quote, '#y').$1).color,
+        isNot(OmColors.fg2),
+        reason: 'a nested quote marker stays in the row text',
       );
     });
   });
