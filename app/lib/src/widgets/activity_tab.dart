@@ -8,6 +8,7 @@ import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
 import '../vault_access/vault_async_view.dart';
+import 'activity/feedback_rows.dart';
 import 'atoms.dart';
 import 'panel_placeholder_tab.dart';
 
@@ -30,11 +31,13 @@ class ActivityTab extends ConsumerWidget {
       emptyKey: Key('activity-empty'),
     );
     if (selected == null) return emptyTab;
+    final feedback = ActivityFeedback.watch(ref, selected);
     return VaultAsyncView<List<AgentChangeRow>>(
       value: ref.watch(agentChangesAsyncProvider(selected.id)),
       empty: const <AgentChangeRow>[],
       builder: (context, entries) {
-        if (entries.isEmpty) return emptyTab;
+        final homes = feedback.homes(entries);
+        if (entries.isEmpty && homes.isEmpty) return emptyTab;
         return ListView(
           children: [
             const PanelHeader(eyebrow: _activityEyebrow),
@@ -43,7 +46,15 @@ class ActivityTab extends ConsumerWidget {
               child: Text(_activitySubtitle, style: _activitySubtitleStyle),
             ),
             const OmHairline(),
-            for (final entry in entries) _ActivityEntry(entry: entry),
+            FeedbackAboveEntries(rows: homes.above),
+            for (final entry in entries)
+              _ActivityEntry(
+                entry: entry,
+                feedback: EntryFeedback(
+                  entry: entry,
+                  rows: homes.byEntry[entry.id] ?? const [],
+                ),
+              ),
           ],
         );
       },
@@ -58,8 +69,9 @@ final _activitySubtitleStyle = OmType.mono(
 );
 
 class _ActivityEntry extends StatelessWidget {
-  const _ActivityEntry({required this.entry});
+  const _ActivityEntry({required this.entry, required this.feedback});
   final AgentChangeRow entry;
+  final Widget feedback;
   @override
   Widget build(BuildContext context) {
     final at = DateTime.fromMillisecondsSinceEpoch(entry.createdAt);
@@ -87,6 +99,7 @@ class _ActivityEntry extends StatelessWidget {
                 style: OmType.sans(size: 12, color: OmColors.fg1, height: 1.5),
               ),
             ),
+          feedback,
         ],
       ),
     );
