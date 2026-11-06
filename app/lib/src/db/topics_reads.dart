@@ -86,7 +86,7 @@ extension TopicsReads on VaultDb {
     return SmartFolderData(folders: folders, members: members);
   }
 
-  /// Every non-daily note (topic or role-less) in no Smart Folder, unordered.
+  /// Every non-daily, non-guide note (topic or role-less) in no Smart Folder, unordered.
   /// A note with invalid-JSON frontmatter counts as role-less.
   List<UnsortedNoteRow> unsortedNotes() {
     if (!hasTables(VaultDb.v5TableNames)) return const [];
@@ -97,7 +97,7 @@ extension TopicsReads on VaultDb {
       "THEN json_extract(n.frontmatter, '\$.role') END) AS role "
       'FROM notes n WHERE NOT EXISTS ('
       'SELECT 1 FROM smart_folder_members m WHERE m.note_id = n.id)) '
-      "WHERE role IS NULL OR role != 'daily'",
+      "WHERE role IS NULL OR role NOT IN ('daily', 'guide')",
     );
     return rows
         .map(
