@@ -100,7 +100,7 @@ The first time Claude calls `search` or `create_note` with this flag, the BGE-sm
 
 ## 5. Restart Claude Desktop
 
-Fully quit and re-open it. Claude Desktop keeps `memex serve` running from whichever binary it started, so do this after every `cargo install` too (see "Upgrading to schema V5" in the [README](../README.md) before you point a new binary at an existing vault). After restart, you should see the memex tools in Claude's tools panel. The server exposes 26 tools; the README lists them all. The core ones:
+Fully quit and re-open it. Claude Desktop keeps `memex serve` running from whichever binary it started, so do this after every `cargo install` too (see "Upgrading to schema V5" in the [README](../README.md) before you point a new binary at an existing vault). After restart, you should see the memex tools in Claude's tools panel. The server exposes 33 tools; the README lists them all. The core ones:
 
 - `search` — hybrid keyword + semantic search across your notes.
 - `get_note` — fetch the full content of a note. Pass `include_backlinks: true` to also receive `links` (outgoing) and `backlinks` (incoming) maps grouped by kind.
