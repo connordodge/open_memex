@@ -56,14 +56,15 @@ class VaultOpenState {
 }
 
 /// The minimum vault schema this app reads in full.
-const requiredVaultSchemaVersion = 5;
+const requiredVaultSchemaVersion = 6;
 
 /// Opens the current vault: runs `memex settings get --key
 /// smart_folder_max_depth` once per opened vault, which migrates an older
-/// vault to V5 through the CLI (the app's own handle is read-only). On
-/// success it bumps [vaultRevisionProvider] so every read re-runs against the
-/// migrated schema. Afterwards it re-reads the schema version: below V5 means
-/// the vault is outdated for this app.
+/// vault to the current schema through the CLI (the app's own handle is
+/// read-only). On success it bumps [vaultRevisionProvider] so every read
+/// re-runs against the migrated schema. Afterwards it re-reads the schema
+/// version: below [requiredVaultSchemaVersion] means the vault is outdated
+/// for this app.
 ///
 /// Watches only the vault path, the database and the CLI, so later revision
 /// bumps never re-run the call. Never throws: a missing or failing binary
@@ -117,7 +118,15 @@ final vaultV5ReadyProvider = Provider<bool>((ref) {
 /// (`origin`, `first_line`). V6 reads return safe defaults while it is
 /// false. Re-probed like [vaultV5ReadyProvider]; always true for a hosted
 /// vault (the server owns its migrations, D12a).
-final vaultV6ReadyProvider = Provider<bool>((ref) => false);
+final vaultV6ReadyProvider = Provider<bool>((ref) {
+  if (ref.watch(currentVaultProvider) is HostedVaultRef) return true;
+  ref.watch(vaultRevisionProvider);
+  ref.watch(vaultOpenProvider);
+  final db = ref.watch(vaultDbProvider);
+  if (db == null) return false;
+  return db.hasTables(VaultDb.v6TableNames) &&
+      db.hasColumns('tags', VaultDb.v6TagColumns);
+});
 
 /// The currently selected note id (or null).
 final selectedNoteIdProvider = StateProvider<String?>((_) => null);

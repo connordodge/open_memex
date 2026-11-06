@@ -29,7 +29,14 @@ class VaultDb {
 
   /// Tables added by schema V6 (tag corrections, Feedback, Vault Guide
   /// revisions). V6 reads return empty while any of them is missing.
-  static const v6TableNames = <String>[];
+  static const v6TableNames = <String>[
+    'tag_corrections',
+    'feedback',
+    'vault_guide_revisions',
+  ];
+
+  /// Columns schema V6 adds to `tags`.
+  static const v6TagColumns = <String>['origin', 'first_line'];
 
   final Database db;
 
@@ -173,7 +180,15 @@ class VaultDb {
 
   /// True when [table] exists and has every column in [columns]. Like
   /// [hasTables], never caches a negative answer.
-  bool hasColumns(String table, List<String> columns) => false;
+  bool hasColumns(String table, List<String> columns) {
+    final placeholders = List.filled(columns.length, '?').join(',');
+    final row = db.select(
+      'SELECT COUNT(DISTINCT name) AS n FROM pragma_table_info(?) '
+      'WHERE name IN ($placeholders)',
+      [table, ...columns],
+    );
+    return (row.first['n'] as int) == columns.toSet().length;
+  }
 
   /// The vault's schema version, `MAX(schema_version.version)`; 0 when the
   /// table is missing or empty. Read fresh on every call (the CLI may migrate

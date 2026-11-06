@@ -133,6 +133,11 @@ impl MemexError {
             MemexError::BlockNotFound(_) => "block_not_found",
             MemexError::SettingInvalid(_) => "setting_invalid",
             MemexError::NetworkFilesystem(_) => "network_filesystem",
+            MemexError::UnknownTag(_) => "unknown_tag",
+            MemexError::TagRemoved(_) => "tag_removed",
+            MemexError::GuideRule(_) => "guide_rule",
+            MemexError::FeedbackHandled(_) => "feedback_handled",
+            MemexError::FeedbackInvalid(_) => "feedback_invalid",
             MemexError::Io(_)
             | MemexError::Sqlite(_)
             | MemexError::Json(_)
@@ -144,12 +149,7 @@ impl MemexError {
             | MemexError::TitleInvalid(_)
             | MemexError::TooManyDedupCollisions { .. }
             | MemexError::InvalidLinkKind(_)
-            | MemexError::Yaml(_)
-            | MemexError::UnknownTag(_)
-            | MemexError::TagRemoved(_)
-            | MemexError::GuideRule(_)
-            | MemexError::FeedbackHandled(_)
-            | MemexError::FeedbackInvalid(_) => "internal",
+            | MemexError::Yaml(_) => "internal",
         }
     }
 

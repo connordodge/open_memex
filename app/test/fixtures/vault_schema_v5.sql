@@ -66,6 +66,23 @@ CREATE TABLE day_reviews (
     reviewed_at               INTEGER NULL
 );
 
+CREATE TABLE feedback (
+    id                 TEXT PRIMARY KEY,
+    kind               TEXT NOT NULL CHECK (kind IN ('comment','correction')),
+    source             TEXT NOT NULL CHECK (source IN ('person','chat')),
+    note_id            TEXT NULL REFERENCES notes(id) ON DELETE SET NULL,
+    day                TEXT NULL,
+    agent_change_id    TEXT NULL REFERENCES agent_changes(id) ON DELETE SET NULL,
+    text               TEXT NULL,
+    correction_json    TEXT NULL,
+    status             TEXT NOT NULL CHECK (status IN ('open','handled')),
+    reply              TEXT NULL,
+    tag_correction_id  INTEGER NULL UNIQUE REFERENCES tag_corrections(id) ON DELETE SET NULL,
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL,
+    handled_at         INTEGER NULL
+);
+
 CREATE TABLE footer_chips (
     daily_note_id  TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
     topic_note_id  TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
@@ -131,10 +148,30 @@ CREATE TABLE smart_folders (
     updated_at  INTEGER NOT NULL
 );
 
+CREATE TABLE tag_corrections (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    note_id     TEXT REFERENCES notes(id) ON DELETE SET NULL,
+    note_title  TEXT NOT NULL,
+    tag         TEXT NOT NULL,
+    kind        TEXT NOT NULL CHECK (kind IN ('removed')),
+    created_at  INTEGER NOT NULL,
+    cleared_at  INTEGER
+);
+
 CREATE TABLE tags (
     note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
-    tag     TEXT NOT NULL,
+    tag     TEXT NOT NULL, origin TEXT NOT NULL DEFAULT 'person' CHECK (origin IN ('body','agent','person')), first_line TEXT,
     PRIMARY KEY (note_id, tag)
+);
+
+CREATE TABLE vault_guide_revisions (
+    id                TEXT PRIMARY KEY,
+    note_id           TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    previous_md       TEXT NOT NULL,
+    previous_version  INTEGER NOT NULL,
+    new_version       INTEGER NOT NULL,
+    agent_change_id   TEXT NULL REFERENCES agent_changes(id) ON DELETE SET NULL,
+    created_at        INTEGER NOT NULL
 );
 
 CREATE TABLE vault_settings (
@@ -154,6 +191,10 @@ CREATE INDEX idx_canvases_updated_at ON canvases(updated_at DESC);
 
 CREATE INDEX idx_chunks_note ON chunks(note_id, ord);
 
+CREATE INDEX idx_feedback_note ON feedback(note_id, created_at);
+
+CREATE INDEX idx_feedback_status ON feedback(status, created_at);
+
 CREATE INDEX idx_footer_chips_topic ON footer_chips(topic_note_id);
 
 CREATE INDEX idx_links_from ON links(from_note_id);
@@ -165,6 +206,10 @@ CREATE INDEX idx_links_to   ON links(to_note_id);
 CREATE UNIQUE INDEX idx_notes_daily_title ON notes(title)
     WHERE CASE WHEN json_valid(frontmatter) THEN json_extract(frontmatter, '$.role') END = 'daily';
 
+CREATE UNIQUE INDEX idx_notes_guide
+    ON notes((CASE WHEN json_valid(frontmatter) THEN json_extract(frontmatter, '$.role') END))
+    WHERE CASE WHEN json_valid(frontmatter) THEN json_extract(frontmatter, '$.role') END = 'guide';
+
 CREATE UNIQUE INDEX idx_notes_title_unique ON notes(title);
 
 CREATE INDEX idx_notes_updated_at ON notes(updated_at DESC);
@@ -174,11 +219,17 @@ CREATE INDEX idx_smart_folder_members_note ON smart_folder_members(note_id);
 CREATE UNIQUE INDEX idx_smart_folders_sibling_name
     ON smart_folders(COALESCE(parent_id, ''), name COLLATE NOCASE);
 
+CREATE INDEX idx_tag_corrections_note ON tag_corrections(note_id, tag);
+
 CREATE INDEX idx_tags_tag ON tags(tag);
+
+CREATE INDEX idx_vault_guide_revisions_note
+    ON vault_guide_revisions(note_id, created_at DESC);
 
 INSERT INTO schema_version(version) VALUES (1);
 INSERT INTO schema_version(version) VALUES (2);
 INSERT INTO schema_version(version) VALUES (3);
 INSERT INTO schema_version(version) VALUES (4);
 INSERT INTO schema_version(version) VALUES (5);
+INSERT INTO schema_version(version) VALUES (6);
 INSERT INTO vault_settings(key, value) VALUES ('smart_folder_max_depth', '2');
