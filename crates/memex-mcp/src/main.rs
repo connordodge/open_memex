@@ -170,6 +170,12 @@ enum Commands {
     Folder(cli::folder::FolderArgs),
     /// Read or change vault settings.
     Settings(cli::settings::SettingsArgs),
+    /// Print where the blocks of one day are filed.
+    Filing(cli::filing::FilingArgs),
+    /// Written comments and Corrections.
+    Feedback(cli::feedback::FeedbackArgs),
+    /// Read the Vault Guide or return to an earlier text.
+    Guide(cli::guide::GuideArgs),
     /// Run as an MCP server over stdio, as the vault server over HTTP, or as
     /// a stdio bridge to a hosted vault.
     Serve(cli::serve::ServeArgs),
@@ -334,6 +340,9 @@ async fn dispatch(command: Commands) -> Result<()> {
         Commands::Footer(args) => cli::footer::run(args),
         Commands::Folder(args) => cli::folder::run(args),
         Commands::Settings(args) => cli::settings::run(args),
+        Commands::Filing(args) => cli::filing::run(args),
+        Commands::Feedback(args) => cli::feedback::run(args),
+        Commands::Guide(args) => cli::guide::run(args),
         Commands::Serve(args) => cli::serve::run(args).await,
     }
 }

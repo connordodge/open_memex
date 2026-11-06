@@ -3,8 +3,11 @@ Excerpt operations on topic notes
 Usage: memex excerpt <COMMAND>
 
 Commands:
-  rm    Remove one transclusion from a topic note
-  help  Print this message or the help of the given subcommand(s)
+  rm            Remove one transclusion from a topic note
+  add           File one block of a day in a topic note
+  remove-block  Remove one block of a day from a topic note
+  move          Move one block of a day from one topic note to another
+  help          Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help  Print help
