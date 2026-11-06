@@ -972,7 +972,7 @@ fn golden_failures_print_one_c1_line_and_exit_1() {
 /// The person subcommands whose rows `memex --help` must keep. Other rows
 /// (`serve`, `help`, and subcommands other Work Items add) are not this
 /// WI's surface.
-const PERSON_COMMANDS: [&str; 16] = [
+const PERSON_COMMANDS: [&str; 19] = [
     "init",
     "add",
     "ls",
@@ -989,6 +989,9 @@ const PERSON_COMMANDS: [&str; 16] = [
     "footer",
     "folder",
     "settings",
+    "filing",
+    "feedback",
+    "guide",
 ];
 
 fn golden_dir() -> PathBuf {
@@ -1037,7 +1040,7 @@ fn top_level_help_keeps_every_person_subcommand_row() {
 }
 
 /// Every person subcommand and sub-subcommand, as (args, golden file).
-const HELP_CASES: [(&str, &str); 36] = [
+const HELP_CASES: [(&str, &str); 49] = [
     ("init", "init"),
     ("add", "add"),
     ("ls", "ls"),
@@ -1062,6 +1065,19 @@ const HELP_CASES: [(&str, &str); 36] = [
     ("rm", "rm"),
     ("excerpt", "excerpt"),
     ("excerpt rm", "excerpt_rm"),
+    ("excerpt add", "excerpt_add"),
+    ("excerpt remove-block", "excerpt_remove_block"),
+    ("excerpt move", "excerpt_move"),
+    ("filing", "filing"),
+    ("feedback", "feedback"),
+    ("feedback add", "feedback_add"),
+    ("feedback edit", "feedback_edit"),
+    ("feedback rm", "feedback_rm"),
+    ("feedback ls", "feedback_ls"),
+    ("guide", "guide"),
+    ("guide get", "guide_get"),
+    ("guide revisions", "guide_revisions"),
+    ("guide restore", "guide_restore"),
     ("footer", "footer"),
     ("footer add", "footer_add"),
     ("folder", "folder"),
