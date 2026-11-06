@@ -7,9 +7,13 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart' show TestFailure;
+import 'package:open_memex_app/src/cli/excerpt_cli.dart';
+import 'package:open_memex_app/src/cli/feedback_cli.dart';
 import 'package:open_memex_app/src/cli/folder_cli.dart';
 import 'package:open_memex_app/src/cli/footer_cli.dart';
+import 'package:open_memex_app/src/cli/guide_cli.dart';
 import 'package:open_memex_app/src/db.dart';
+import 'package:open_memex_app/src/db/feedback_reads.dart';
 import 'package:open_memex_app/src/db/topics_reads.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
 import 'package:open_memex_app/src/state/vault_access_state.dart';
@@ -167,6 +171,15 @@ class RecordingTopicsAccess extends LocalTopicsAccess with Recording {
   }
 
   @override
+  Future<FolderMemberRemoveResult> removeFromFolder({
+    required String folderId,
+    required String noteId,
+  }) async {
+    await enter('removeFromFolder', {'folderId': folderId, 'noteId': noteId});
+    return super.removeFromFolder(folderId: folderId, noteId: noteId);
+  }
+
+  @override
   Future<int> getSetting(String key) async {
     await enter('getSetting', {'key': key});
     return super.getSetting(key);
@@ -250,6 +263,150 @@ class RecordingDailyAccess extends LocalDailyAccess with Recording {
   }
 }
 
+/// A [LocalFeedbackAccess] that records every call (#259) and forwards to the
+/// real local behaviour.
+class RecordingFeedbackAccess extends LocalFeedbackAccess with Recording {
+  RecordingFeedbackAccess({required super.vaultPath, super.db, super.cli});
+
+  @override
+  Future<Filing> filing(String date) async {
+    await enter('filing', {'date': date});
+    return super.filing(date);
+  }
+
+  @override
+  Future<ExcerptEditResult> fileBlock({
+    required String topicNoteId,
+    required String date,
+    required String blockId,
+    String? note,
+  }) async {
+    await enter('fileBlock', {
+      'topicNoteId': topicNoteId,
+      'date': date,
+      'blockId': blockId,
+      'note': note,
+    });
+    return super.fileBlock(
+      topicNoteId: topicNoteId,
+      date: date,
+      blockId: blockId,
+      note: note,
+    );
+  }
+
+  @override
+  Future<ExcerptMoveResult> moveBlock({
+    required String fromTopicNoteId,
+    required String toTopicNoteId,
+    required String date,
+    required String blockId,
+    String? note,
+  }) async {
+    await enter('moveBlock', {
+      'fromTopicNoteId': fromTopicNoteId,
+      'toTopicNoteId': toTopicNoteId,
+      'date': date,
+      'blockId': blockId,
+      'note': note,
+    });
+    return super.moveBlock(
+      fromTopicNoteId: fromTopicNoteId,
+      toTopicNoteId: toTopicNoteId,
+      date: date,
+      blockId: blockId,
+      note: note,
+    );
+  }
+
+  @override
+  Future<ExcerptEditResult> removeBlock({
+    required String topicNoteId,
+    required String date,
+    required String blockId,
+    String? note,
+  }) async {
+    await enter('removeBlock', {
+      'topicNoteId': topicNoteId,
+      'date': date,
+      'blockId': blockId,
+      'note': note,
+    });
+    return super.removeBlock(
+      topicNoteId: topicNoteId,
+      date: date,
+      blockId: blockId,
+      note: note,
+    );
+  }
+
+  @override
+  Future<FeedbackRow> addComment({
+    required String noteId,
+    required String date,
+    required String changeId,
+    required String text,
+  }) async {
+    await enter('addComment', {
+      'noteId': noteId,
+      'date': date,
+      'changeId': changeId,
+      'text': text,
+    });
+    return super.addComment(
+      noteId: noteId,
+      date: date,
+      changeId: changeId,
+      text: text,
+    );
+  }
+
+  @override
+  Future<FeedbackRow> editComment({
+    required String id,
+    required String text,
+  }) async {
+    await enter('editComment', {'id': id, 'text': text});
+    return super.editComment(id: id, text: text);
+  }
+
+  @override
+  Future<FeedbackRemoveResult> deleteComment({required String id}) async {
+    await enter('deleteComment', {'id': id});
+    return super.deleteComment(id: id);
+  }
+
+  @override
+  Future<List<FeedbackRow>> feedbackForNote(String noteId) async {
+    await enter('feedbackForNote', {'noteId': noteId});
+    return super.feedbackForNote(noteId);
+  }
+
+  @override
+  Future<List<FeedbackRow>> feedbackWithoutNote() async {
+    await enter('feedbackWithoutNote');
+    return super.feedbackWithoutNote();
+  }
+
+  @override
+  Future<VaultGuide> guide() async {
+    await enter('guide');
+    return super.guide();
+  }
+
+  @override
+  Future<List<GuideRevisionRow>> guideRevisions() async {
+    await enter('guideRevisions');
+    return super.guideRevisions();
+  }
+
+  @override
+  Future<GuideRestoreResult> restoreGuide(String revisionId) async {
+    await enter('restoreGuide', {'revisionId': revisionId});
+    return super.restoreGuide(revisionId);
+  }
+}
+
 typedef _Make<T> = T Function(String vaultPath, VaultDb? db, MemexCli? cli);
 
 /// Builds one recording double per vault path and serves them through
@@ -263,6 +420,7 @@ class AccessDoubles {
     this.configureTopics,
     this.configureNotes,
     this.configureDaily,
+    this.configureFeedback,
   }) : _dbFor = dbFor ?? ((_, db) => db);
 
   final VaultDb? Function(String vaultPath, VaultDb? db) _dbFor;
@@ -277,10 +435,13 @@ class AccessDoubles {
   configureNotes;
   final void Function(String vaultPath, RecordingDailyAccess daily)?
   configureDaily;
+  final void Function(String vaultPath, RecordingFeedbackAccess feedback)?
+  configureFeedback;
 
   final topics = <String, RecordingTopicsAccess>{};
   final notes = <String, RecordingNotesAccess>{};
   final daily = <String, RecordingDailyAccess>{};
+  final feedback = <String, RecordingFeedbackAccess>{};
 
   /// The double for [vaultPath] (created on first use).
   RecordingTopicsAccess topicsAt(String vaultPath) =>
@@ -289,6 +450,8 @@ class AccessDoubles {
       _at(notes, vaultPath, 'notes');
   RecordingDailyAccess dailyAt(String vaultPath) =>
       _at(daily, vaultPath, 'daily');
+  RecordingFeedbackAccess feedbackAt(String vaultPath) =>
+      _at(feedback, vaultPath, 'feedback');
 
   /// The recorded calls of [method] on the notes / daily double of
   /// [vaultPath]; empty while that double does not exist yet.
@@ -319,6 +482,11 @@ class AccessDoubles {
       vaultPath: path,
       db: db,
       cli: cli,
+      feedback: make<RecordingFeedbackAccess>(feedback, (p, d, c) {
+        final f = RecordingFeedbackAccess(vaultPath: p, db: d, cli: c);
+        configureFeedback?.call(p, f);
+        return f;
+      }),
       topics: make<RecordingTopicsAccess>(topics, (p, d, c) {
         final t = RecordingTopicsAccess(vaultPath: p, db: d, cli: c);
         configureTopics?.call(p, t);
