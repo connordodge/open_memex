@@ -28,6 +28,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 use memex_core::canvas::Clock;
+use memex_core::feedback;
 use memex_core::notes::{
     create_note_as, get_note, update_note_as, CreateNote, NoteId, RenameOptions, UpdateNote,
 };
@@ -480,6 +481,128 @@ fn server_lists_exactly_the_tools_in_the_shared_list_with_no_duplicates() {
     ] {
         assert!(!unique.contains(forbidden), "{forbidden} is not a tool");
     }
+}
+
+// ======================================================================
+// WI #254: a feedback pass, then a normal day review, on one vault.
+// ======================================================================
+
+const WI254_EARLIER_DAY: &str = "2026-09-04";
+
+/// A vault with an earlier reviewed day holding one Open comment, and [`DAY`]
+/// still to review. Returns `(dir, path, earlier day's id, DAY's id, comment id)`.
+fn wi254_feedback_vault() -> (TempDir, String, String, String, String) {
+    let (mut earlier, mut day, mut comment) = (String::new(), String::new(), String::new());
+    let (dir, path) = vault_with(|v| {
+        earlier = person_daily(v, WI254_EARLIER_DAY, "Walked the dog.\n");
+        person_reviewed(v, WI254_EARLIER_DAY, &earlier, 1);
+        let change: String = v
+            .connection_ref()
+            .query_row(
+                "SELECT id FROM agent_changes WHERE note_id = ?",
+                [&earlier],
+                |r| r.get(0),
+            )
+            .unwrap();
+        comment = feedback::add(
+            v,
+            &earlier,
+            WI254_EARLIER_DAY,
+            &change,
+            "The dog doesn't belong there.",
+            &FixedClock(REVIEWED_AT + 1000),
+        )
+        .unwrap()
+        .id;
+        day = person_daily(v, DAY, DAY_BODY);
+    });
+    (dir, path, earlier, day, comment)
+}
+
+#[test]
+fn a_feedback_pass_then_a_normal_day_review_run_on_one_vault() {
+    let (_dir, path, earlier, daily_id, comment) = wi254_feedback_vault();
+    let mut server = Server::start(&path);
+
+    // The feedback pass: read the guide, list, act and reply, update the guide.
+    let guide = server.call("get_vault_guide", json!({}));
+    assert_eq!(guide["version"], json!(1), "{guide}");
+    let listed = server.call("list_open_feedback", json!({}));
+    let rows = listed["feedback"]
+        .as_array()
+        .unwrap_or_else(|| panic!("feedback array: {listed}"));
+    assert_eq!(rows.len(), 1, "{listed}");
+    assert_eq!(str_of(&rows[0], "id"), comment, "{listed}");
+
+    let handled = server.call(
+        "resolve_feedback",
+        json!({
+            "id": comment,
+            "reply": "Took the block back out",
+            "changes": [{ "note_id": earlier, "bullets": ["Took a block back out"] }],
+        }),
+    );
+    assert_eq!(handled["status"], json!("handled"), "{handled}");
+
+    let rule = "## Framework\n\nPets get their own topic note.\n\n## Decisions\n";
+    let written = server.call(
+        "update_vault_guide",
+        json!({
+            "version": guide["version"],
+            "content_md": rule,
+            "bullets": ["Added a rule for pets"],
+        }),
+    );
+    assert_eq!(written["version"], json!(2), "{written}");
+
+    let done = server.call("list_open_feedback", json!({}));
+    assert_eq!(done["feedback"], json!([]), "{done}");
+    let earlier_note = server.call("get_note", json!({ "note_id": earlier }));
+    assert_eq!(
+        earlier_note["latest_change"]["bullets"],
+        json!(["Took a block back out"]),
+        "{earlier_note}"
+    );
+    assert_eq!(
+        earlier_note["latest_change"]["day"],
+        json!(WI254_EARLIER_DAY),
+        "the entry is dated the comment's day: {earlier_note}"
+    );
+    assert_eq!(
+        earlier_note["review"]["state"],
+        json!("Reviewed"),
+        "Feedback doesn't touch a day's review state: {earlier_note}"
+    );
+
+    // Then the normal review of the new day, on the same vault and connection.
+    let mut vault_id = String::new();
+    let reviewed = run_review_sequence(&mut server, &daily_id, &mut vault_id);
+    assert_eq!(list_dates(&mut server), Vec::<String>::new());
+
+    let filing = server.call("get_day_filing", json!({ "date": DAY }));
+    assert_eq!(str_of(&filing, "vault_id"), vault_id, "{filing}");
+    assert_eq!(filing["reviewed"], json!(true), "{filing}");
+    let filed: Vec<&str> = filing["topics"]
+        .as_array()
+        .unwrap_or_else(|| panic!("topics array: {filing}"))
+        .iter()
+        .map(|t| str_of(t, "topic_note_id"))
+        .collect();
+    assert_eq!(
+        filed,
+        vec![
+            reviewed.level_design.as_str(),
+            reviewed.player_loop.as_str()
+        ],
+        "{filing}"
+    );
+
+    // The day review neither reopened Feedback nor touched the guide.
+    let still = server.call("list_open_feedback", json!({}));
+    assert_eq!(still["feedback"], json!([]), "{still}");
+    let guide_after = server.call("get_vault_guide", json!({}));
+    assert_eq!(guide_after["version"], json!(2), "{guide_after}");
+    assert_eq!(guide_after["content_md"], json!(rule), "{guide_after}");
 }
 
 // ======================================================================

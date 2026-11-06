@@ -59,6 +59,14 @@ class TabHistory<T> {
     return TabHistory._(next, _index);
   }
 
+  /// Replaces the current entry with [target], which has no scroll offset.
+  /// Other entries, the index and the Forward entries stay.
+  TabHistory<T> replaceCurrent(T target) {
+    final next = List.of(_entries);
+    next[_index] = (target, null);
+    return TabHistory._(next, _index);
+  }
+
   /// Replaces every entry whose target equals [from] with [to], keeping each
   /// offset and the index.
   TabHistory<T> rewrite(T from, T to) => TabHistory._([

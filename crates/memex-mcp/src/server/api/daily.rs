@@ -1,12 +1,12 @@
 //! `/vaults/{name}/api/v1/…`: the daily-note routes (#82).
 //!
-//! Reads are the app's `DailyReads` (`memex_core::app_reads::daily`). The
-//! two writes call the person-path ops the `memex` CLI runs (D2) with the
-//! request's clock and the registry's shared embedder, and answer with the
-//! struct the CLI prints. Every error is the CLI's C1 body. No route here
+//! Reads are the app's `DailyReads` (`memex_core::app_reads::daily`), plus a
+//! day's filing. The writes call the person-path ops the `memex` CLI runs (D2)
+//! with the request's clock and the registry's shared embedder, and answer with
+//! the struct the CLI prints. Every error is the CLI's C1 body. No route here
 //! creates a daily note, appends to one or records a review.
 
-use axum::routing::{delete, get};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use memex_core::app_reads::daily as reads;
 use memex_core::Clock;
@@ -23,13 +23,22 @@ pub fn router() -> Router {
     Router::new()
         .route("/daily-notes", get(daily_notes))
         .route("/daily-notes/{date}", get(daily_note_for_date))
+        .route("/daily-notes/{date}/filing", get(filing))
         .route("/notes/{note_id}/review", get(review))
         .route("/notes/{note_id}/blocks", get(blocks))
         .route(
             "/notes/{note_id}/footer-chips",
             get(footer_chips).post(footer_add),
         )
-        .route("/notes/{note_id}/excerpts", delete(excerpt_rm))
+        .route(
+            "/notes/{note_id}/excerpts",
+            delete(excerpt_rm).post(excerpt_add),
+        )
+        .route(
+            "/notes/{note_id}/excerpts/blocks/{block_id}",
+            delete(excerpt_remove_block),
+        )
+        .route("/notes/{note_id}/excerpts/move", post(excerpt_move))
 }
 
 /// The `{note_id}` of a note path (the nested router also holds `{name}`).
@@ -42,6 +51,13 @@ struct NotePath {
 #[derive(Deserialize)]
 struct DatePath {
     date: String,
+}
+
+/// The `{note_id}` and `{block_id}` of a block path.
+#[derive(Deserialize)]
+struct BlockPath {
+    note_id: String,
+    block_id: String,
 }
 
 /// `GET /daily-notes`: `{"daily_notes": [{date, note_id, preview,
@@ -63,6 +79,21 @@ async fn daily_note_for_date(
     })
     .await?;
     Ok(Json(json!({ "daily_note": row })))
+}
+
+/// `GET /daily-notes/{date}/filing`: the `memex filing` object (`{vault_id,
+/// date, note_id, reviewed, topics, not_filed}`).
+async fn filing(
+    ServedVault(entry): ServedVault,
+    clock: RequestClock,
+    ApiPath(path): ApiPath<DatePath>,
+) -> Result<Json<Value>, ApiError> {
+    let input = excerpt::FilingInput { date: path.date };
+    let out = with_vault(&entry, move |vault| {
+        Ok(excerpt::filing(vault, input, &clock as &dyn Clock, None)?)
+    })
+    .await?;
+    Ok(Json(serde_json::to_value(out)?))
 }
 
 /// `GET /notes/{note_id}/review`: `{"state", "reviewed_at"}`; a note with no
@@ -161,6 +192,115 @@ async fn excerpt_rm(
     let embedder = entry.state.embedder.clone();
     let out = with_vault(&entry, move |vault| {
         Ok(excerpt::rm(
+            vault,
+            input,
+            &clock as &dyn Clock,
+            embedder.as_deref(),
+        )?)
+    })
+    .await?;
+    Ok(Json(serde_json::to_value(out)?))
+}
+
+/// The body of `POST /notes/{note_id}/excerpts`.
+#[derive(Deserialize)]
+struct ExcerptAdd {
+    date: String,
+    block_id: String,
+    note: Option<String>,
+}
+
+/// `POST /notes/{topic_note_id}/excerpts {"date", "block_id", "note"?}`: the
+/// `memex excerpt add` output (`{vault_id, topic_note_id, version}`).
+async fn excerpt_add(
+    ServedVault(entry): ServedVault,
+    clock: RequestClock,
+    ApiPath(path): ApiPath<NotePath>,
+    ApiJson(body): ApiJson<ExcerptAdd>,
+) -> Result<Json<Value>, ApiError> {
+    let input = excerpt::AddInput {
+        topic_note_id: path.note_id,
+        date: body.date,
+        block_id: body.block_id,
+        note: body.note,
+    };
+    let embedder = entry.state.embedder.clone();
+    let out = with_vault(&entry, move |vault| {
+        Ok(excerpt::add(
+            vault,
+            input,
+            &clock as &dyn Clock,
+            embedder.as_deref(),
+        )?)
+    })
+    .await?;
+    Ok(Json(serde_json::to_value(out)?))
+}
+
+/// `?date=YYYY-MM-DD&note=` of `DELETE
+/// /notes/{note_id}/excerpts/blocks/{block_id}`. The date is required: it
+/// never defaults to today.
+#[derive(Deserialize)]
+struct ExcerptRemoveBlockQuery {
+    date: String,
+    note: Option<String>,
+}
+
+/// `DELETE /notes/{topic_note_id}/excerpts/blocks/{block_id}?date=&note=`: the
+/// `memex excerpt remove-block` output (`{vault_id, topic_note_id, version}`).
+async fn excerpt_remove_block(
+    ServedVault(entry): ServedVault,
+    clock: RequestClock,
+    ApiPath(path): ApiPath<BlockPath>,
+    ApiQuery(q): ApiQuery<ExcerptRemoveBlockQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let input = excerpt::RemoveBlockInput {
+        topic_note_id: path.note_id,
+        date: q.date,
+        block_id: path.block_id,
+        note: q.note,
+    };
+    let embedder = entry.state.embedder.clone();
+    let out = with_vault(&entry, move |vault| {
+        Ok(excerpt::remove_block(
+            vault,
+            input,
+            &clock as &dyn Clock,
+            embedder.as_deref(),
+        )?)
+    })
+    .await?;
+    Ok(Json(serde_json::to_value(out)?))
+}
+
+/// The body of `POST /notes/{note_id}/excerpts/move`.
+#[derive(Deserialize)]
+struct ExcerptMove {
+    date: String,
+    block_id: String,
+    to_topic_note_id: String,
+    note: Option<String>,
+}
+
+/// `POST /notes/{from_topic_note_id}/excerpts/move {"date", "block_id",
+/// "to_topic_note_id", "note"?}`: the `memex excerpt move` output (`{vault_id,
+/// from_topic_note_id, from_version, to_topic_note_id, to_version}`).
+async fn excerpt_move(
+    ServedVault(entry): ServedVault,
+    clock: RequestClock,
+    ApiPath(path): ApiPath<NotePath>,
+    ApiJson(body): ApiJson<ExcerptMove>,
+) -> Result<Json<Value>, ApiError> {
+    let input = excerpt::MoveInput {
+        date: body.date,
+        block_id: body.block_id,
+        from_topic_note_id: path.note_id,
+        to_topic_note_id: body.to_topic_note_id,
+        note: body.note,
+    };
+    let embedder = entry.state.embedder.clone();
+    let out = with_vault(&entry, move |vault| {
+        Ok(excerpt::move_block(
             vault,
             input,
             &clock as &dyn Clock,

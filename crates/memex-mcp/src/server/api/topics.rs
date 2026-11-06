@@ -8,7 +8,7 @@
 //! CLI's C1 body.
 
 use axum::http::StatusCode;
-use axum::routing::{get, patch, post};
+use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use memex_core::app_reads::topics as reads;
 use memex_core::{vault_settings, Clock};
@@ -30,6 +30,10 @@ pub fn router() -> Router {
             patch(update_folder).delete(delete_folder),
         )
         .route("/smart-folders/{folder_id}/members", post(add_member))
+        .route(
+            "/smart-folders/{folder_id}/members/{note_id}",
+            delete(remove_member),
+        )
         .route("/unsorted", get(unsorted))
         .route("/settings/{key}", get(get_setting).put(set_setting))
         .route("/prompts/review", get(review_prompt))
@@ -40,6 +44,13 @@ pub fn router() -> Router {
 #[derive(Deserialize)]
 struct FolderPath {
     folder_id: String,
+}
+
+/// The `{folder_id}` and `{note_id}` of a membership path.
+#[derive(Deserialize)]
+struct MemberPath {
+    folder_id: String,
+    note_id: String,
 }
 
 /// The `{key}` of a settings path.
@@ -186,6 +197,31 @@ async fn add_member(
             input,
             &clock as &dyn Clock,
             embedder.as_deref(),
+        )?)
+    })
+    .await?;
+    Ok(Json(serde_json::to_value(out)?))
+}
+
+/// `DELETE /smart-folders/{folder_id}/members/{note_id}`: the `memex folder
+/// remove` object (`{vault_id, smart_folder_id, note_id, removed}`). Removing
+/// an agent-placed membership records `membership_removed` in core; a pinned
+/// one records nothing.
+async fn remove_member(
+    ServedVault(entry): ServedVault,
+    clock: RequestClock,
+    ApiPath(path): ApiPath<MemberPath>,
+) -> Result<Json<Value>, ApiError> {
+    let input = folder_ops::RemoveInput {
+        id: path.folder_id,
+        note_id: path.note_id,
+    };
+    let out = with_vault(&entry, move |vault| {
+        Ok(folder_ops::remove(
+            vault,
+            input,
+            &clock as &dyn Clock,
+            None,
         )?)
     })
     .await?;
