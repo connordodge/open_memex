@@ -1,0 +1,8 @@
+List every tag, or one note's tags
+
+Usage: memex tag ls [OPTIONS] --vault <VAULT>
+
+Options:
+      --vault <VAULT>      Vault directory
+      --note-id <NOTE_ID>  List this note's tags and their origins (ULID)
+  -h, --help               Print help

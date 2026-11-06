@@ -574,7 +574,12 @@ async fn get_note_answers_like_memex_get_for_every_seed_note() {
         let reply = env.call("GET", &format!("/notes/{id}"), None).await;
         assert_eq!(reply.status, 200, "GET /notes/{id}: {}", reply.body);
         let cli = env.cli(&["get", "--note-id", id], "");
-        assert_eq!(reply.json(), cli.json(), "GET /notes/{id} == memex get");
+        // `footer_tags` is the app read's own field (#242); `memex get` has
+        // no such key.
+        let mut hosted = reply.json();
+        assert!(hosted["footer_tags"].is_array(), "{}", reply.body);
+        hosted.as_object_mut().unwrap().remove("footer_tags");
+        assert_eq!(hosted, cli.json(), "GET /notes/{id} == memex get");
         assert!(reply.json().get("links").is_none(), "no links in the get");
     }
 }
@@ -1291,19 +1296,20 @@ async fn an_unknown_role_is_invalid_argument_naming_the_role() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn post_notes_stores_each_tag_as_given() {
-    // The JSON list is the stored tag list: a tag is never split on commas.
-    // Only clap's `--tags a,b` splits, so the hosted client must send the
-    // tags the local wrapper's argv would store.
+async fn post_notes_never_splits_a_tag_on_commas() {
+    // The JSON list is the tag list: a tag is never split on commas. Only
+    // clap's `--tags a,b` splits. `x,y` is one name outside the grammar, so
+    // the request fails (D43) and writes nothing; a split would have stored
+    // `x` and `y`.
     let env = Env::start().await;
+    let before = note_count(&env.server_vault());
     let body = json!({
         "title": "Tag Probe",
         "tags": ["solo", "x,y"],
         "content_md": "Tags as given.\n",
     });
     let reply = env.call("POST", "/notes", Some(&body)).await;
-    assert_eq!(reply.status, 201, "{}", reply.body);
-    assert_eq!(reply.json()["tags"], json!(["solo", "x,y"]));
-    let id = id_of(&env.server_vault(), "Tag Probe");
-    assert_eq!(tags_of(&env.server_vault(), &id), vec!["solo", "x,y"]);
+    assert_eq!(reply.status, 400, "{}", reply.body);
+    assert_eq!(reply.c1_code(), "invalid_argument");
+    assert_eq!(note_count(&env.server_vault()), before, "nothing written");
 }
