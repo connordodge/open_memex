@@ -4,7 +4,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/comment_activity_harness.dart';
-import '../support/fake_vault_db.dart';
 import '../support/feedback_seeds.dart';
 
 String _emoji(int n) => List.filled(n, '\u{1F600}').join();
