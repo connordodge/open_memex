@@ -1,0 +1,8 @@
+Return the guide to an earlier text, keeping the replaced one
+
+Usage: memex guide restore --vault <VAULT> --revision-id <REVISION_ID>
+
+Options:
+      --vault <VAULT>              Vault directory
+      --revision-id <REVISION_ID>  The revision to return to
+  -h, --help                       Print help

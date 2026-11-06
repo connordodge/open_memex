@@ -14,8 +14,10 @@
 
 pub mod canvas;
 pub mod excerpt;
+pub mod feedback;
 pub mod folder;
 pub mod footer;
+pub mod guide;
 pub mod links;
 pub mod notes;
 pub mod prompt;

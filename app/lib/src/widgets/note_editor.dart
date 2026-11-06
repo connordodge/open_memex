@@ -37,14 +37,9 @@ class NoteEditor extends ConsumerStatefulWidget {
     super.key,
     required this.rightPanelOpen,
     required this.onToggleRightPanel,
-    this.onBackToCanvas,
   });
   final bool rightPanelOpen;
   final VoidCallback onToggleRightPanel;
-
-  /// When non-null, the editor is shown zoomed-in from a canvas. The toolbar
-  /// renders a "← back to canvas" affordance that invokes this.
-  final VoidCallback? onBackToCanvas;
 
   @override
   ConsumerState<NoteEditor> createState() => _NoteEditorState();
@@ -172,7 +167,6 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
             status: editor.status,
             rightOpen: widget.rightPanelOpen,
             onToggleRight: widget.onToggleRightPanel,
-            onBackToCanvas: widget.onBackToCanvas,
             sourceMode: _sourceMode,
             onToggleSource: note == null ? null : _toggleSource,
           ),
