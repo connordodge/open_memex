@@ -234,18 +234,25 @@ const V5_TABLES: [&str; 8] = [
     "vault_settings",
 ];
 
-/// Turns a freshly initialised (V5) vault back into a V4 one: drops every
-/// table V5 adds, rewinds `schema_version`, and rewrites the manifest.
+/// Turns a freshly initialised vault back into a V4 one: drops every table
+/// V5 and V6 add (V6's `tags` columns stay; the migration skips existing
+/// columns), rewinds `schema_version`, and rewrites the manifest.
 fn downgrade_to_v4(path: &str) {
     let conn = Connection::open(format!("{path}/memex.db")).unwrap();
     conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
-    conn.execute_batch("DROP INDEX IF EXISTS idx_notes_daily_title;")
-        .unwrap();
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_notes_daily_title;
+         DROP INDEX IF EXISTS idx_notes_guide;
+         DROP TABLE IF EXISTS vault_guide_revisions;
+         DROP TABLE IF EXISTS feedback;
+         DROP TABLE IF EXISTS tag_corrections;",
+    )
+    .unwrap();
     for table in V5_TABLES {
         conn.execute_batch(&format!("DROP TABLE IF EXISTS {table};"))
             .unwrap();
     }
-    conn.execute("DELETE FROM schema_version WHERE version = 5", [])
+    conn.execute("DELETE FROM schema_version WHERE version >= 5", [])
         .unwrap();
     drop(conn);
 
@@ -288,13 +295,19 @@ fn settings_get_against_a_v4_vault_migrates_it_to_v5_and_prints_2() {
     assert_setting_shape(&v, &id, 2);
 
     let conn = Connection::open(format!("{path}/memex.db")).unwrap();
-    assert_eq!(schema::current_version(&conn).unwrap(), 5);
+    assert_eq!(
+        schema::current_version(&conn).unwrap(),
+        schema::APP_SCHEMA_VERSION
+    );
     for table in V5_TABLES {
         assert!(table_exists(&conn, table), "{table} exists after migration");
     }
     let manifest: Value =
         serde_json::from_slice(&std::fs::read(format!("{path}/manifest.json")).unwrap()).unwrap();
-    assert_eq!(manifest["schema_version"], json!(5));
+    assert_eq!(
+        manifest["schema_version"],
+        json!(schema::APP_SCHEMA_VERSION)
+    );
     assert_eq!(manifest["vault_id"], id.as_str());
 }
 
@@ -305,7 +318,10 @@ fn settings_set_against_a_v4_vault_migrates_it_and_stores_the_value() {
     let v = ok_json(set_value(&path, KEY, "4"));
     assert_setting_shape(&v, &vault_id(&path), 4);
     let conn = Connection::open(format!("{path}/memex.db")).unwrap();
-    assert_eq!(schema::current_version(&conn).unwrap(), 5);
+    assert_eq!(
+        schema::current_version(&conn).unwrap(),
+        schema::APP_SCHEMA_VERSION
+    );
     assert_setting_shape(&ok_json(get(&path, KEY)), &vault_id(&path), 4);
 }
 

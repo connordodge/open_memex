@@ -84,7 +84,7 @@ pub fn parse_transclusions(text: &str) -> Vec<TransclusionToken> {
 // `[[<title>(~<kind>)?(|<alias>)?]]` — title cannot contain `~`, `|`, `]`, or
 // newline; kind cannot contain `|`, `]`, or newline; alias cannot contain `]`
 // or newline.
-static WIKILINK_RE: LazyLock<Regex> = LazyLock::new(|| {
+pub(crate) static WIKILINK_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"\[\[(?P<title>[^\[\]\n~|]+?)(?:~(?P<kind>[^\[\]\n|]+?))?(?:\|(?P<alias>[^\[\]\n]+?))?\]\]",
     )
@@ -123,7 +123,7 @@ pub fn extract(content_md: &str) -> ExtractedLinks {
 /// if a frontmatter block is present at the start of the input. `body_byte_offset`
 /// is the index in `content_md` where the body begins (i.e., one past the
 /// closing `---` line).
-fn split_frontmatter(content_md: &str) -> (Option<(&str, usize)>, usize) {
+pub(crate) fn split_frontmatter(content_md: &str) -> (Option<(&str, usize)>, usize) {
     // Frontmatter must start at byte 0 with a line that is exactly `---`.
     let bytes = content_md.as_bytes();
     if bytes.len() < 4 || &bytes[..3] != b"---" {

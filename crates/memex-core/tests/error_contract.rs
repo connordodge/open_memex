@@ -43,10 +43,15 @@ fn variant_name(e: &MemexError) -> &'static str {
         MemexError::BlockNotFound(_) => "BlockNotFound",
         MemexError::SettingInvalid(_) => "SettingInvalid",
         MemexError::NetworkFilesystem(_) => "NetworkFilesystem",
+        MemexError::UnknownTag(_) => "UnknownTag",
+        MemexError::TagRemoved(_) => "TagRemoved",
+        MemexError::GuideRule(_) => "GuideRule",
+        MemexError::FeedbackHandled(_) => "FeedbackHandled",
+        MemexError::FeedbackInvalid(_) => "FeedbackInvalid",
     }
 }
 
-const VARIANT_COUNT: usize = 29;
+const VARIANT_COUNT: usize = 34;
 
 /// The variants listed in the C1 table, with their code and extra fields.
 fn c1_samples() -> Vec<(MemexError, &'static str, Value)> {
@@ -152,6 +157,41 @@ fn c1_samples() -> Vec<(MemexError, &'static str, Value)> {
         (
             MemexError::NetworkFilesystem("/Volumes/share/vault (smbfs)".into()),
             "network_filesystem",
+            json!({}),
+        ),
+    ]
+    .into_iter()
+    .chain(v6_samples())
+    .collect()
+}
+
+/// The five variants schema V6 adds for #234 and #233 (ruling D6): message
+/// only, no rule fields.
+fn v6_samples() -> Vec<(MemexError, &'static str, Value)> {
+    vec![
+        (
+            MemexError::UnknownTag("pricing is not in the vocabulary".into()),
+            "unknown_tag",
+            json!({}),
+        ),
+        (
+            MemexError::TagRemoved("the person removed #pricing from this note".into()),
+            "tag_removed",
+            json!({}),
+        ),
+        (
+            MemexError::GuideRule("the Vault Guide cannot be tagged".into()),
+            "guide_rule",
+            json!({}),
+        ),
+        (
+            MemexError::FeedbackHandled("feedback 01J9FB0000000000000000000 is handled".into()),
+            "feedback_handled",
+            json!({}),
+        ),
+        (
+            MemexError::FeedbackInvalid("reply must be one line".into()),
+            "feedback_invalid",
             json!({}),
         ),
     ]
@@ -404,4 +444,31 @@ fn network_filesystem_json_is_c1_with_code_and_message_only() {
         !msg.contains('\n'),
         "the message fits on the one C1 stderr line: {msg:?}"
     );
+}
+
+#[test]
+fn v6_error_variants_serialize_with_their_exact_codes() {
+    let samples = v6_samples();
+    assert_eq!(samples.len(), 5);
+    for (e, code, _) in samples {
+        let detail = match &e {
+            MemexError::UnknownTag(s)
+            | MemexError::TagRemoved(s)
+            | MemexError::GuideRule(s)
+            | MemexError::FeedbackHandled(s)
+            | MemexError::FeedbackInvalid(s) => s.clone(),
+            other => panic!("not a V6 variant: {}", variant_name(other)),
+        };
+        assert_eq!(e.code(), code, "{}", variant_name(&e));
+        let got = e.to_error_json();
+        assert_eq!(
+            got,
+            json!({"error": {"code": code, "message": e.to_string()}}),
+            "{}",
+            variant_name(&e)
+        );
+        let msg = error_object(&got)["message"].as_str().unwrap();
+        assert!(msg.contains(&detail), "{}: {msg}", variant_name(&e));
+        assert!(!msg.contains('\n'), "{}: {msg:?}", variant_name(&e));
+    }
 }
