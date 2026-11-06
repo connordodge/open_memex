@@ -229,98 +229,52 @@ class WikilinkAutocompleteState extends ConsumerState<WikilinkAutocomplete> {
   }
 
   Widget _buildPopover(BuildContext context) {
-    final caret = widget.caretLocator();
     final showCreate =
         _query.trim().isNotEmpty &&
         !_matches.any((m) => m.title == _query.trim());
     final itemCount = _matches.length + (showCreate ? 1 : 0);
 
-    final mediaSize = MediaQuery.of(context).size;
-    const popoverWidth = 320.0;
-    const popoverMaxHeight = 280.0;
-    // Place below the caret line by default. If the popover would clip the
-    // bottom, flip above.
-    var top = caret.dy + 6;
-    if (top + popoverMaxHeight > mediaSize.height - 24) {
-      top = caret.dy - popoverMaxHeight - 24;
-      if (top < 8) top = 8;
-    }
-    var left = caret.dx;
-    if (left + popoverWidth > mediaSize.width - 12) {
-      left = mediaSize.width - popoverWidth - 12;
-    }
-    if (left < 8) left = 8;
-
-    return Stack(
+    return AutocompletePopover(
+      boxKey: const Key('wikilink-popover'),
+      caret: widget.caretLocator(),
+      onDismiss: _close,
       children: [
-        Positioned.fill(
-          child: GestureDetector(
-            behavior: HitTestBehavior.translucent,
-            onTap: _close,
-          ),
-        ),
-        Positioned(
-          left: left,
-          top: top,
-          child: Material(
-            elevation: 12,
-            color: OmColors.surface3,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(6),
-              side: BorderSide(color: OmColors.line3),
+        if (itemCount == 0)
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: Text(
+              _query.isEmpty ? 'type to search…' : 'no matches',
+              style: OmType.mono(size: 11, color: OmColors.fg3),
             ),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(
-                minWidth: popoverWidth,
-                maxWidth: popoverWidth,
-                maxHeight: popoverMaxHeight,
-              ),
-              child: Column(
-                key: const Key('wikilink-popover'),
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  if (itemCount == 0)
-                    Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Text(
-                        _query.isEmpty ? 'type to search…' : 'no matches',
-                        style: OmType.mono(size: 11, color: OmColors.fg3),
-                      ),
-                    )
-                  else
-                    Flexible(
-                      child: ListView.builder(
-                        padding: const EdgeInsets.symmetric(vertical: 4),
-                        shrinkWrap: true,
-                        itemCount: itemCount,
-                        itemBuilder: (_, i) {
-                          if (i < _matches.length) {
-                            final n = _matches[i];
-                            return _Item(
-                              key: Key('wikilink-popover-item-${n.title}'),
-                              icon: LucideIcons.fileText,
-                              label: n.title,
-                              selected: i == _selectedIndex,
-                              onTap: () => _acceptExisting(n),
-                            );
-                          }
-                          return _Item(
-                            key: const Key('wikilink-popover-create'),
-                            icon: LucideIcons.plus,
-                            label: 'Create new note titled "${_query.trim()}"',
-                            accent: true,
-                            selected: i == _selectedIndex,
-                            onTap: _busy ? null : _acceptCreate,
-                          );
-                        },
-                      ),
-                    ),
-                ],
-              ),
+          )
+        else
+          Flexible(
+            child: ListView.builder(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              shrinkWrap: true,
+              itemCount: itemCount,
+              itemBuilder: (_, i) {
+                if (i < _matches.length) {
+                  final n = _matches[i];
+                  return AutocompleteRow(
+                    key: Key('wikilink-popover-item-${n.title}'),
+                    icon: LucideIcons.fileText,
+                    label: n.title,
+                    selected: i == _selectedIndex,
+                    onTap: () => _acceptExisting(n),
+                  );
+                }
+                return AutocompleteRow(
+                  key: const Key('wikilink-popover-create'),
+                  icon: LucideIcons.plus,
+                  label: 'Create new note titled "${_query.trim()}"',
+                  accent: true,
+                  selected: i == _selectedIndex,
+                  onTap: _busy ? null : _acceptCreate,
+                );
+              },
             ),
           ),
-        ),
       ],
     );
   }
@@ -437,14 +391,91 @@ class _Scored {
   final int score;
 }
 
-class _Item extends StatelessWidget {
-  const _Item({
+/// The box of a caret-anchored autocomplete popover (`[[` and `#`): a click
+/// outside it calls [onDismiss], and [children] fill a 320 wide column keyed
+/// [boxKey]. It sits 6 px below [caret] and flips above near the window bottom.
+class AutocompletePopover extends StatelessWidget {
+  const AutocompletePopover({
+    super.key,
+    required this.boxKey,
+    required this.caret,
+    required this.onDismiss,
+    required this.children,
+  });
+
+  final Key boxKey;
+  final Offset caret;
+  final VoidCallback onDismiss;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    final mediaSize = MediaQuery.of(context).size;
+    const popoverWidth = 320.0;
+    const popoverMaxHeight = 280.0;
+    // Place below the caret line by default. If the popover would clip the
+    // bottom, flip above.
+    var top = caret.dy + 6;
+    if (top + popoverMaxHeight > mediaSize.height - 24) {
+      top = caret.dy - popoverMaxHeight - 24;
+      if (top < 8) top = 8;
+    }
+    var left = caret.dx;
+    if (left + popoverWidth > mediaSize.width - 12) {
+      left = mediaSize.width - popoverWidth - 12;
+    }
+    if (left < 8) left = 8;
+
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onTap: onDismiss,
+          ),
+        ),
+        Positioned(
+          left: left,
+          top: top,
+          child: Material(
+            elevation: 12,
+            color: OmColors.surface3,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(6),
+              side: BorderSide(color: OmColors.line3),
+            ),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(
+                minWidth: popoverWidth,
+                maxWidth: popoverWidth,
+                maxHeight: popoverMaxHeight,
+              ),
+              child: Column(
+                key: boxKey,
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: children,
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// One row of an autocomplete popover: an icon, a one-line label and an
+/// optional [trailing] widget at the row's right edge.
+class AutocompleteRow extends StatelessWidget {
+  const AutocompleteRow({
     super.key,
     required this.icon,
     required this.label,
     required this.selected,
     required this.onTap,
     this.accent = false,
+    this.labelHeight = 1.5,
+    this.trailing,
   });
   final IconData icon;
   final String label;
@@ -452,8 +483,13 @@ class _Item extends StatelessWidget {
   final bool accent;
   final VoidCallback? onTap;
 
+  /// The label's line height, as a multiple of its 13 px size.
+  final double labelHeight;
+  final Widget? trailing;
+
   @override
   Widget build(BuildContext context) {
+    final trailing = this.trailing;
     return MouseRegion(
       cursor: onTap == null
           ? SystemMouseCursors.basic
@@ -479,9 +515,11 @@ class _Item extends StatelessWidget {
                   style: OmType.sans(
                     size: 13,
                     color: accent ? OmColors.accent : OmColors.fg0,
+                    height: labelHeight,
                   ),
                 ),
               ),
+              if (trailing != null) ...[const SizedBox(width: 8), trailing],
             ],
           ),
         ),

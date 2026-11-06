@@ -232,6 +232,67 @@ final class _Fence {
   }
 }
 
+/// A tag being typed: the `#` at [start] of the text and the [query] written
+/// from it up to the caret. The query may be empty (a bare `#`) and may end in
+/// `-` or `_`.
+final class TagQuery {
+  const TagQuery(this.start, this.lineStart, this.query);
+
+  /// Offset of the `#`.
+  final int start;
+
+  /// Offset of the first code unit of the `#`'s line.
+  final int lineStart;
+
+  /// The text between the `#` and the caret, as written.
+  final String query;
+
+  /// [query] without its trailing `-`/`_`: the name as a note would write it.
+  String get name => query.substring(0, _nameLength(query, 0) ?? 0);
+}
+
+/// The tag being typed at [caret] in [text] (any number of lines, split on
+/// `\n`), or null where none can be. The last `#` of the caret's line before
+/// the caret must pass [opensTag], the text from it to the caret must be a tag
+/// name prefix, and it must lie outside fenced code and everything
+/// [findTagsInLine] skips. For type-ahead (#246), which adds its own rules.
+TagQuery? tagQueryAt(String text, int caret) {
+  final before = text.substring(0, caret);
+  final lineStart = before.lastIndexOf('\n') + 1;
+  final hash = before.lastIndexOf('#');
+  if (hash < lineStart) return null;
+  if (!opensTag(hash == lineStart ? null : text.codeUnitAt(hash - 1))) {
+    return null;
+  }
+  final query = before.substring(hash + 1);
+  if (query.isNotEmpty && _nameRe.matchAsPrefix(query)?.end != query.length) {
+    return null;
+  }
+  final lineEnd = text.indexOf('\n', caret);
+  final line = text.substring(lineStart, lineEnd < 0 ? text.length : lineEnd);
+  final offset = hash - lineStart;
+  if (_hiddenRanges(line).any((r) => r.$1 <= offset && offset < r.$2)) {
+    return null;
+  }
+  if (_isFenced(before.substring(0, lineStart), line)) return null;
+  return TagQuery(hash, lineStart, query);
+}
+
+/// Whether [line] is fenced code: [above], the text before it, leaves a fence
+/// open, or [line] opens one.
+bool _isFenced(String above, String line) {
+  _Fence? fence;
+  for (final previous in above.split('\n')) {
+    final open = fence;
+    if (open == null) {
+      fence = _Fence.openedBy(previous);
+    } else if (open.closedBy(previous)) {
+      fence = null;
+    }
+  }
+  return fence != null || _Fence.openedBy(line) != null;
+}
+
 /// The lowercase names of the tags in [personText] (any number of lines,
 /// split on `\n`), sorted by name, one per name, nothing inside fenced code.
 List<String> extractTagNames(String personText) {
