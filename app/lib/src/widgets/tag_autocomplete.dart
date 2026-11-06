@@ -21,8 +21,9 @@ import 'wikilink_autocomplete.dart';
 /// listed tag; on accept, replaces `#query` with `#name `.
 ///
 /// It opens only while typing, in a focused field (D41): a caret move or a
-/// click never opens it. Enter on a tag already typed in full closes it and
-/// leaves the key to the field, which makes the new line.
+/// click never opens it. Enter on a tag already typed in full, in any case, or
+/// on the create row closes it and leaves the key to the field, which makes the
+/// new line and keeps the text as typed (D41, D50).
 ///
 /// Mounted like [WikilinkAutocomplete]: a sibling of the body `TextField`,
 /// whose `FocusNode.onKeyEvent` calls [handleKeyEvent] first. The widget never
@@ -192,9 +193,9 @@ class TagAutocompleteState extends ConsumerState<TagAutocomplete> {
   /// Called by the host's `FocusNode.onKeyEvent`. While the popover is open,
   /// ↑/↓ move the selection, Enter/Tab accept and Esc dismisses; the host
   /// returns the result, so a handled key never reaches the `TextField`. Enter
-  /// on a selected tag that is the query as typed closes the popover and is
-  /// ignored, so it does what Enter does with no popover (D41). Tab still
-  /// accepts it.
+  /// on the create row, or on a selected tag that is the query in any case,
+  /// closes the popover and is ignored, so it does what Enter does with no
+  /// popover (D41, D50). Tab still accepts both.
   KeyEventResult handleKeyEvent(KeyEvent event) {
     if (!isOpen) return KeyEventResult.ignored;
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
@@ -221,7 +222,8 @@ class TagAutocompleteState extends ConsumerState<TagAutocomplete> {
       final tag = _selectedIndex < _rows.length
           ? _rows[_selectedIndex].tag
           : null;
-      if (enter && tag == _query) {
+      // No tag means the create row is the one selected.
+      if (enter && (tag == null || tag == normalizeTagName(_query))) {
         _dismiss();
         return KeyEventResult.ignored;
       }

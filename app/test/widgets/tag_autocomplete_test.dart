@@ -3,7 +3,8 @@
 // (TextSegmentField), so in live preview rows and the Source field.
 //
 // D41 (Connor): Enter on a tag typed in full makes a new line, and only typing
-// opens the popover.
+// opens the popover. D50 (Connor) extends it: an exact match is
+// case-insensitive, and Enter on the create row makes a new line too.
 //
 // Keys the tests read: `tag-autocomplete` (the box), `tag-autocomplete-item-<tag>`
 // (a tag row), `tag-autocomplete-create` (the create row).
@@ -869,7 +870,7 @@ void main() {
         await _type(tester, field, 'x #RoadMap');
         expect(find.text('Create new tag #RoadMap'), findsOneWidget);
 
-        await _press(tester, LogicalKeyboardKey.enter);
+        await _press(tester, LogicalKeyboardKey.tab);
         expect(field.text, 'x #RoadMap ');
         expect(field.selection, const TextSelection.collapsed(offset: 11));
         expect(_popover, findsNothing);
@@ -894,7 +895,7 @@ void main() {
         await _type(tester, field, 'x #q3-');
         expect(_popover, findsOneWidget);
         expect(find.text('Create new tag #q3-'), findsOneWidget);
-        await _press(tester, LogicalKeyboardKey.enter);
+        await _press(tester, LogicalKeyboardKey.tab);
         expect(field.text, 'x #q3 ');
 
         await _type(tester, field, 'y #a-b_-_');
@@ -1037,7 +1038,7 @@ void main() {
       await _press(tester, LogicalKeyboardKey.arrowUp);
       expect(_selectedRows(), ['create']);
 
-      await _press(tester, LogicalKeyboardKey.enter);
+      await _press(tester, LogicalKeyboardKey.tab);
       expect(field.text, 'x #p ');
     });
 
@@ -1098,7 +1099,7 @@ void main() {
       final field = await _pumpField(tester);
 
       await _type(tester, field, 'x #\u{1D49C}b');
-      await _press(tester, LogicalKeyboardKey.enter);
+      await _press(tester, LogicalKeyboardKey.tab);
       expect(field.text, 'x #\u{1D49C}b ');
       expect(field.selection, const TextSelection.collapsed(offset: 7));
     });
@@ -1315,7 +1316,8 @@ void main() {
           expect(state.isOpen, isFalse);
         }
 
-        // Enter on the create row is consumed like any accept.
+        // Enter on the create row goes on to the field and closes the popover;
+        // Tab is consumed like any accept (D50).
         bare.field.value = const TextEditingValue(
           text: 'x #new',
           selection: TextSelection.collapsed(offset: 6),
@@ -1323,9 +1325,21 @@ void main() {
         await tester.pump();
         expect(
           state.handleKeyEvent(_down(LogicalKeyboardKey.enter)),
+          KeyEventResult.ignored,
+        );
+        expect(bare.field.text, 'x #new');
+        expect(state.isOpen, isFalse);
+
+        bare.field.value = const TextEditingValue(
+          text: 'x #newe',
+          selection: TextSelection.collapsed(offset: 7),
+        );
+        await tester.pump();
+        expect(
+          state.handleKeyEvent(_down(LogicalKeyboardKey.tab)),
           KeyEventResult.handled,
         );
-        expect(bare.field.text, 'x #new ');
+        expect(bare.field.text, 'x #newe ');
 
         // Escape is handled while open.
         bare.field.value = const TextEditingValue(
@@ -2152,6 +2166,79 @@ void main() {
     });
 
     testWidgets(
+      'Enter on the create row makes a new line in a live preview prose row',
+      (tester) async {
+        final r = await launchTagged(tester);
+        await r.open(fixtureTopicId);
+
+        await r.typeInSegment(2, 'Outro #roadmap');
+        await pumpFrames(tester);
+        expect(_createRow, findsOneWidget);
+
+        expect(await r.pressEnter(), isFalse, reason: 'left to the platform');
+        await pumpFrames(tester);
+        expect(r.segmentText(2), 'Outro #roadmap\n');
+        expect(
+          r.segmentSelection(2),
+          const TextSelection.collapsed(offset: 15),
+        );
+        expect(_popover, findsNothing);
+      },
+    );
+
+    testWidgets(
+      'Enter on the create row continues the list in a live preview item row',
+      (tester) async {
+        final r = await launchTagged(tester);
+        await r.open(fixtureTopicId);
+
+        await r.typeInSegment(2, '- #roadmap');
+        await pumpFrames(tester);
+        expect(_createRow, findsOneWidget);
+
+        await r.pressEnter();
+        await pumpFrames(tester);
+        expect(r.segmentText(2), '- #roadmap\n- ');
+        expect(_popover, findsNothing);
+      },
+    );
+
+    testWidgets('Enter on the create row continues the list in Source mode', (
+      tester,
+    ) async {
+      final r = await launchTagged(tester);
+      await r.open(fixtureTopicId);
+      await r.toggleSource();
+
+      await tester.showKeyboard(sourceField(r));
+      await tester.enterText(sourceField(r), '- call #roadmap');
+      await pumpFrames(tester);
+      expect(_createRow, findsOneWidget);
+
+      await r.pressEnter();
+      await pumpFrames(tester);
+      expect(r.sourceText, '- call #roadmap\n- ');
+      expect(_popover, findsNothing);
+    });
+
+    testWidgets(
+      'Enter on a tag typed in another case makes a new line and keeps the case',
+      (tester) async {
+        final r = await launchTagged(tester);
+        await r.open(fixtureTopicId);
+
+        await r.typeInSegment(2, 'Outro #Work');
+        await pumpFrames(tester);
+        expect(_popover, findsOneWidget);
+
+        expect(await r.pressEnter(), isFalse, reason: 'left to the platform');
+        await pumpFrames(tester);
+        expect(r.segmentText(2), 'Outro #Work\n');
+        expect(_popover, findsNothing);
+      },
+    );
+
+    testWidgets(
       'a caret move to a tag in a live preview row does not open it',
       (tester) async {
         final r = await launchTagged(tester);
@@ -2307,19 +2394,6 @@ void main() {
       },
     );
 
-    testWidgets('Enter on a tag typed in another case completes to its name', (
-      tester,
-    ) async {
-      final field = await _pumpField(tester);
-
-      await _type(tester, field, 'x #Work');
-      expect(_createRow, findsNothing);
-      final handled = await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-      await tester.pump();
-      expect(handled, isTrue);
-      expect(field.text, 'x #work ');
-    });
-
     testWidgets(
       'a tags re-read after an exact Enter leaves the popover closed',
       (tester) async {
@@ -2341,6 +2415,238 @@ void main() {
         container.read(vaultRevisionProvider.notifier).state++;
         await _flush(tester);
         expect(_popover, findsNothing);
+      },
+    );
+  });
+
+  group('an exact match in any case (D50)', () {
+    testWidgets(
+      'Enter on a tag typed in another case keeps the case as typed',
+      (tester) async {
+        final field = await _pumpField(tester);
+
+        for (final text in ['x #Work', 'x #WORK', 'x #wOrK']) {
+          await _type(tester, field, text);
+          expect(_selectedRows(), ['work'], reason: text);
+          expect(_createRow, findsNothing, reason: text);
+
+          final handled = await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+          await tester.pump();
+          expect(handled, isFalse, reason: text);
+          expect(_popover, findsNothing, reason: text);
+          expect(field.text, text, reason: 'the platform adds the newline');
+          expect(field.selection, const TextSelection.collapsed(offset: 7));
+        }
+      },
+    );
+
+    testWidgets('numpad Enter on a tag typed in another case leaves the key', (
+      tester,
+    ) async {
+      final field = await _pumpField(tester);
+
+      await _type(tester, field, 'x #Work');
+      final handled = await tester.sendKeyEvent(LogicalKeyboardKey.numpadEnter);
+      await tester.pump();
+      expect(handled, isFalse);
+      expect(_popover, findsNothing);
+      expect(field.text, 'x #Work');
+    });
+
+    testWidgets('Enter on a partial match in another case still completes', (
+      tester,
+    ) async {
+      final field = await _pumpField(tester);
+
+      await _type(tester, field, 'x #Wor');
+      final handled = await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(handled, isTrue);
+      expect(field.text, 'x #work ');
+      expect(_popover, findsNothing);
+    });
+
+    testWidgets('Tab on a tag typed in another case writes its stored name', (
+      tester,
+    ) async {
+      final field = await _pumpField(tester);
+
+      await _type(tester, field, 'x #Work');
+      final handled = await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.pump();
+      expect(handled, isTrue);
+      expect(field.text, 'x #work ');
+      expect(field.selection, const TextSelection.collapsed(offset: 8));
+    });
+
+    testWidgets(
+      'a click on a tag typed in another case writes its stored name',
+      (tester) async {
+        final field = await _pumpField(tester);
+
+        await _type(tester, field, 'x #Work');
+        await tester.tap(_row('work'));
+        await tester.pump();
+        expect(field.text, 'x #work ');
+        expect(_popover, findsNothing);
+      },
+    );
+
+    testWidgets(
+      'Enter on a row arrowed to from another case accepts that row',
+      (tester) async {
+        final field = await _pumpField(
+          tester,
+          tags: [_tag('work', 2), _tag('workshop', 1)],
+        );
+
+        await _type(tester, field, 'x #Work');
+        await _press(tester, LogicalKeyboardKey.arrowDown);
+        expect(_selectedRows(), ['workshop']);
+
+        final handled = await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        expect(handled, isTrue);
+        expect(field.text, 'x #workshop ');
+      },
+    );
+
+    testWidgets(
+      'Enter on the row arrowed back to in another case leaves the key',
+      (tester) async {
+        final field = await _pumpField(
+          tester,
+          tags: [_tag('work', 2), _tag('workshop', 1)],
+        );
+
+        await _type(tester, field, 'x #Work');
+        await _press(tester, LogicalKeyboardKey.arrowDown);
+        await _press(tester, LogicalKeyboardKey.arrowUp);
+        expect(_selectedRows(), ['work']);
+
+        final handled = await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        expect(handled, isFalse);
+        expect(field.text, 'x #Work');
+        expect(_popover, findsNothing);
+      },
+    );
+  });
+
+  group('Enter on the create row (D50)', () {
+    testWidgets('Enter on the create row closes it and leaves the key', (
+      tester,
+    ) async {
+      final field = await _pumpField(tester);
+
+      await _type(tester, field, 'x #roadmap');
+      expect(_selectedRows(), ['create']);
+
+      final handled = await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(handled, isFalse);
+      expect(_popover, findsNothing);
+      expect(field.text, 'x #roadmap', reason: 'the platform adds the newline');
+      expect(field.selection, const TextSelection.collapsed(offset: 10));
+    });
+
+    testWidgets('numpad Enter on the create row leaves the key to the field', (
+      tester,
+    ) async {
+      final field = await _pumpField(tester);
+
+      await _type(tester, field, 'x #roadmap');
+      final handled = await tester.sendKeyEvent(LogicalKeyboardKey.numpadEnter);
+      await tester.pump();
+      expect(handled, isFalse);
+      expect(_popover, findsNothing);
+      expect(field.text, 'x #roadmap');
+    });
+
+    testWidgets('Enter on the create row leaves the text exactly as typed', (
+      tester,
+    ) async {
+      final field = await _pumpField(tester);
+
+      for (final text in ['x #RoadMap', 'x #q3-', 'x #a-b_-_']) {
+        await _type(tester, field, text);
+        expect(_selectedRows(), ['create'], reason: text);
+
+        final handled = await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        expect(handled, isFalse, reason: text);
+        expect(field.text, text);
+      }
+    });
+
+    testWidgets(
+      'Enter on the create row arrowed to leaves the key to the field',
+      (tester) async {
+        final field = await _pumpField(
+          tester,
+          tags: [_tag('pa', 2), _tag('pb', 1)],
+        );
+
+        await _type(tester, field, 'x #p');
+        await _press(tester, LogicalKeyboardKey.arrowUp);
+        expect(_selectedRows(), ['create']);
+
+        final handled = await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        expect(handled, isFalse);
+        expect(_popover, findsNothing);
+        expect(field.text, 'x #p');
+      },
+    );
+
+    testWidgets('Tab on the create row accepts and adds the space', (
+      tester,
+    ) async {
+      final field = await _pumpField(tester);
+
+      await _type(tester, field, 'x #roadmap');
+      final handled = await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.pump();
+      expect(handled, isTrue);
+      expect(field.text, 'x #roadmap ');
+      expect(field.selection, const TextSelection.collapsed(offset: 11));
+      expect(_popover, findsNothing);
+    });
+
+    testWidgets('a click on the create row accepts and adds the space', (
+      tester,
+    ) async {
+      final field = await _pumpField(tester);
+
+      await _type(tester, field, 'x #roadmap');
+      await tester.tap(_createRow);
+      await tester.pump();
+      expect(field.text, 'x #roadmap ');
+      expect(_popover, findsNothing);
+    });
+
+    testWidgets(
+      'a tags re-read after Enter on the create row leaves the popover closed',
+      (tester) async {
+        final field = await _pumpField(
+          tester,
+          overrides: [
+            tagsAsyncProvider.overrideWith((ref) async {
+              ref.watch(vaultRevisionProvider);
+              return VaultScoped(ref.watch(currentVaultProvider), _sample);
+            }),
+          ],
+        );
+        final container = _container(tester);
+
+        await _type(tester, field, 'x #roadmap');
+        await _press(tester, LogicalKeyboardKey.enter);
+        expect(_popover, findsNothing);
+
+        container.read(vaultRevisionProvider.notifier).state++;
+        await _flush(tester);
+        expect(_popover, findsNothing);
+        expect(field.text, 'x #roadmap');
       },
     );
   });
