@@ -116,6 +116,28 @@ class MemexCli {
     );
   }
 
+  /// `memex tag add`: a body-less `person` tag on [noteId] (#242 T4b).
+  Future<TagAddResult> tagAdd({
+    required String vaultPath,
+    required String noteId,
+    required String tag,
+  }) async =>
+      TagAddResult(noteId: '', tag: '', origin: '', changed: false, version: 0);
+
+  /// `memex tag rm`: removes [tag] from [noteId] (#242 T4b). A tag already
+  /// gone is a success with [TagRmResult.removed] false.
+  Future<TagRmResult> tagRm({
+    required String vaultPath,
+    required String noteId,
+    required String tag,
+  }) async => TagRmResult(
+    noteId: '',
+    tag: '',
+    removed: false,
+    correctionId: null,
+    version: 0,
+  );
+
   /// Add a wikilink from one note to another. Mirrors the `memex add-link`
   /// CLI subcommand. Idempotent — if the link already exists, the returned
   /// [AddLinkResult.wasExisting] is true and no markdown mutation occurs.
@@ -461,6 +483,44 @@ class NoteFetchResult {
 }
 
 enum MemexErrorKind { other, versionConflict }
+
+/// The parsed `memex tag add` output, and `POST /notes/{note_id}/tags`'s
+/// response (#242 T4b).
+class TagAddResult {
+  TagAddResult({
+    required this.noteId,
+    required this.tag,
+    required this.origin,
+    required this.changed,
+    required this.version,
+  });
+  final String noteId;
+  final String tag;
+  final String origin;
+  final bool changed;
+  final int version;
+}
+
+/// The parsed `memex tag rm` output, and `DELETE /notes/{note_id}/tags/{tag}`'s
+/// response (#242 T4b).
+class TagRmResult {
+  TagRmResult({
+    required this.noteId,
+    required this.tag,
+    required this.removed,
+    required this.correctionId,
+    required this.version,
+  });
+  final String noteId;
+  final String tag;
+
+  /// False when the tag was already gone: still a success, with a [version].
+  final bool removed;
+
+  /// The recorded `tag_corrections` row; null when nothing was recorded.
+  final int? correctionId;
+  final int version;
+}
 
 class MemexException implements Exception {
   MemexException(

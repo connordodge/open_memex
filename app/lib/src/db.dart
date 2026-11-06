@@ -390,6 +390,7 @@ class Note {
     required this.createdAt,
     required this.updatedAt,
     required this.tags,
+    this.footerTags = const [],
   });
   final String id;
   final String title;
@@ -399,6 +400,13 @@ class Note {
   final int createdAt;
   final int updatedAt;
   final List<String> tags;
+
+  /// The tags the Note footer shows: origin other than `body`, not a system
+  /// tag, ordered by tag. Empty below schema V6 (#249, TD6).
+  final List<String> footerTags;
+
+  /// [tags] without the system tags (`isSystemTag`, D17).
+  List<String> get visibleTags => const [];
 
   /// The note's role from the frontmatter JSON (`$.role`): `daily`, `topic`,
   /// or null when absent or when the frontmatter is not valid JSON.

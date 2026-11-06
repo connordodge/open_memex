@@ -8,6 +8,7 @@ import 'package:open_memex_app/src/db.dart';
 import 'package:open_memex_app/src/db/activity_reads.dart';
 import 'package:open_memex_app/src/db/daily_reads.dart';
 import 'package:open_memex_app/src/db/graph_reads.dart';
+import 'package:open_memex_app/src/db/tags_reads.dart';
 import 'package:open_memex_app/src/db/topics_reads.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
 
@@ -32,6 +33,7 @@ Object? vaultAccessShape(Object? v) => switch (v) {
       v.createdAt,
       v.updatedAt,
       v.tags,
+      v.footerTags,
     ],
   },
   NoteTitle() => {
@@ -215,6 +217,18 @@ Object? vaultAccessShape(Object? v) => switch (v) {
       v.code,
       vaultAccessShape(v.fields),
     ],
+  },
+  TagRow() => {
+    'TagRow': [v.tag, v.noteCount, v.system],
+  },
+  TagNoteRow() => {
+    'TagNoteRow': [v.noteId, v.title, v.role, v.firstLine, v.updatedAt],
+  },
+  TagAddResult() => {
+    'TagAddResult': [v.noteId, v.tag, v.origin, v.changed, v.version],
+  },
+  TagRmResult() => {
+    'TagRmResult': [v.noteId, v.tag, v.removed, v.correctionId, v.version],
   },
   _ => throw ArgumentError('vaultAccessShape: unknown type ${v.runtimeType}'),
 };
