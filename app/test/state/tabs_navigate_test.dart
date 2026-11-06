@@ -297,6 +297,7 @@ void main() {
 
         _expectTabs(p, [_a], 0);
         expect(p.selections, ['a']);
+        expect(p.store.read().tabs.single.id, 'a', reason: 'persisted');
         expect(p.leaves, 0, reason: 'with nothing active nothing is left');
 
         p.notifier.navigate(_b);
@@ -1391,6 +1392,11 @@ void main() {
 
         _expectTabs(p, [_a], 0, forward: true);
         expect(p.selections, ['b', 'a'], reason: 'one write per step');
+        expect(
+          p.store.read().tabs.single.id,
+          'a',
+          reason: 'the skip is persisted',
+        );
         p.notifier.forward();
         await pumpEventQueue();
         _expectTabs(p, [_c], 0, back: true);
@@ -1419,6 +1425,11 @@ void main() {
 
         _expectTabs(p, [_c], 0, back: true);
         expect(p.selections, ['b', 'c'], reason: 'one write per step');
+        expect(
+          p.store.read().tabs.single.id,
+          'c',
+          reason: 'the skip is persisted',
+        );
         p.notifier.back();
         await pumpEventQueue();
         _expectTabs(p, [_a], 0, forward: true);
@@ -1615,7 +1626,12 @@ void main() {
 
         _expectTabs(p, [_a, _x], 1);
         expect(p.leaves, 0, reason: 'the active tab was not left');
-        expect(p.selections.toSet(), isNot(contains('a')));
+        expect(p.selections, isEmpty, reason: 'the active tab did not change');
+        expect(
+          p.store.read().tabs.first.id,
+          'a',
+          reason: 'the skip is persisted',
+        );
         p.notifier.setActive(0);
         _expectTabs(p, [_a, _x], 0, forward: true);
       },
@@ -1966,7 +1982,7 @@ void main() {
 
         _expectTabs(p, [_target, _x], 1);
         expect(p.leaves, 0, reason: 'the active tab was not left');
-        expect(p.selections.where((s) => s != 'x'), isEmpty);
+        expect(p.selections, isEmpty, reason: 'the active tab did not change');
         expect(p.recorder.followed, [_target]);
         expect(p.recorder.navigated, [_target]);
         expect(p.store.read().tabs.first.id, 'target');
@@ -2087,6 +2103,23 @@ void main() {
   });
 
   group('onBeforeLeave', () {
+    test(
+      'openOrFocus and openToday with no tab open run onBeforeLeave zero times',
+      () async {
+        final p = await _probe();
+
+        p.notifier.openOrFocus(_a);
+        expect(p.leaves, 0, reason: 'with nothing active nothing is left');
+        _expectTabs(p, [_a], 0);
+
+        p.notifier.closeAt(0);
+        p.reset();
+        p.notifier.openToday(date: '2026-11-06');
+        expect(p.leaves, 0, reason: 'with nothing active nothing is left');
+        expect(p.state.activeTab, const VirtualTodayTab('2026-11-06'));
+      },
+    );
+
     test(
       'navigate to another target runs onBeforeLeave once before the tab changes',
       () async {
