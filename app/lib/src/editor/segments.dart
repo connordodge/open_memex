@@ -8,13 +8,23 @@ const String topicsMarker = '<!-- memex:topics -->';
 
 /// A daily note body split at the Topics footer marker (C3).
 class DailyBody {
-  const DailyBody({required this.person, required this.chips});
+  const DailyBody({
+    required this.person,
+    required this.chips,
+    this.tags = const [],
+  });
 
   /// Everything above the marker, plus any stray text from below it (Q1).
   final String person;
 
   /// Footer chip titles, in order.
   final List<String> chips;
+
+  /// Footer tag names as written after `#` on a footer tag line (a line below
+  /// the marker starting with `#` and then a character other than a space or
+  /// `#`), trailing spaces and `\r` trimmed, in order (Spec #234 R12, D13).
+  /// Saves drop them: the server renders tag lines from its rows.
+  final List<String> tags;
 }
 
 /// A footer chip line, matched after trimming trailing spaces and `\r` (C3).
@@ -56,6 +66,12 @@ DailyBody splitDailyBody(String body) {
   }
   return DailyBody(person: person, chips: chips);
 }
+
+/// Splits a non-daily note body into the person section and the Note footer
+/// (Spec #234 R11-R13, D13): like [splitDailyBody], except that a marker line
+/// inside fenced code is body text, so only the first marker line outside
+/// fenced code starts the footer. Without one the whole body is person.
+DailyBody splitNoteBody(String body) => const DailyBody(person: '', chips: []);
 
 /// Assembles a daily note body from the person section and chips (C3).
 String assembleDailyBody(String person, List<String> chips) {

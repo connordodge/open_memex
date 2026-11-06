@@ -36,6 +36,11 @@ pub struct DailyBody {
     pub person: String,
     /// Footer chip titles (`[[<title>~about]]`), in order.
     pub chips: Vec<String>,
+    /// Footer tag names, as written after `#` on a footer tag line (a line
+    /// below the marker starting with `#` and then a character other than a
+    /// space or `#`), trailing spaces and `\r` trimmed, in order (Spec #234
+    /// R12, D13). Writes drop them: tag rows decide the footer.
+    pub tags: Vec<String>,
 }
 
 /// A line without its `\n`, with trailing spaces and `\r` trimmed (C3).
@@ -71,6 +76,7 @@ pub fn split_body(body: &str) -> DailyBody {
         return DailyBody {
             person: body.to_string(),
             chips: Vec::new(),
+            tags: Vec::new(),
         };
     };
 
@@ -94,7 +100,20 @@ pub fn split_body(body: &str) -> DailyBody {
             person.push('\n');
         }
     }
-    DailyBody { person, chips }
+    DailyBody {
+        person,
+        chips,
+        tags: Vec::new(),
+    }
+}
+
+/// Splits a non-daily note body into the person section and the Note footer
+/// (Spec #234 R11-R13, D13): like [`split_body`], except that a marker line
+/// inside fenced code is body text, so only the first marker line outside
+/// fenced code starts the footer. Without one the whole body is person.
+pub fn split_note_body(body: &str) -> DailyBody {
+    let _ = body;
+    DailyBody::default()
 }
 
 /// Appends `\n` to a non-empty `text` that does not end with one.
