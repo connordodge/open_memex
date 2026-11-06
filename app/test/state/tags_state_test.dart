@@ -821,7 +821,8 @@ void main() {
           ),
         );
         env.editor.loadNote(db.getNote(_plan));
-        notes.gateNext = Completer<void>();
+        final gate = Completer<void>();
+        notes.gateNext = gate;
 
         final removal = removeTagFromNote(
           env.ref,
@@ -831,7 +832,7 @@ void main() {
         await tester.pump();
         await tester.pump();
         env.editor.onContentChanged('typed during the read');
-        notes.gateNext?.complete();
+        gate.complete();
         await removal;
 
         expect(env.state.contentMd, 'typed during the read');

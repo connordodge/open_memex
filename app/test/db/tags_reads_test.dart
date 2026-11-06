@@ -179,7 +179,7 @@ void main() {
       final db = _v6();
       db.seedNote(id: _a, title: 'Num', frontmatter: '{"role":7}');
       db.seedNote(id: _b, title: 'Null', frontmatter: '{"role":null}');
-      db.seedNote(id: _c, title: 'List', frontmatter: '{"role":["topic"]}');
+      db.seedNote(id: _c, title: 'Flag', frontmatter: '{"role":true}');
       for (final id in [_a, _b, _c]) {
         db.seedTag(id, 'work');
       }
