@@ -7,6 +7,7 @@ import '../db/daily_reads.dart' show DailyNoteRow;
 import '../graph/graph_scope.dart';
 import '../vault_access/vault_scoped.dart';
 import 'daily_state.dart';
+import 'editor_controller.dart' show editorControllerProvider;
 import 'ui_state_store.dart';
 import 'vault_state.dart';
 
@@ -211,6 +212,7 @@ class TabsNotifier extends StateNotifier<TabsState> {
   /// Open a tab for `tab`, or switch to it if already open. Returns the
   /// resulting active index.
   int openOrFocus(WorkspaceTab tab) {
+    if (state.activeTab != tab) onBeforeLeave?.call();
     final existing = state.tabs.indexOf(tab);
     if (existing >= 0) {
       _touchMru(tab);
@@ -233,7 +235,9 @@ class TabsNotifier extends StateNotifier<TabsState> {
   /// [noteId] is null (no daily note for [date] yet), focus the open
   /// [VirtualTodayTab] for [date] or insert one as the active tab.
   void openToday({required String date, String? noteId}) {
-    _focusToday(_todayTab(date, noteId));
+    final today = _todayTab(date, noteId);
+    if (state.activeTab != today) onBeforeLeave?.call();
+    _focusToday(today);
     _persist();
     _emitSelection();
   }
@@ -264,6 +268,7 @@ class TabsNotifier extends StateNotifier<TabsState> {
   void close(WorkspaceTab tab) {
     final idx = state.tabs.indexOf(tab);
     if (idx < 0) return;
+    if (state.activeIndex == idx) onBeforeLeave?.call();
     final remaining = List<WorkspaceTab>.from(state.tabs)..removeAt(idx);
     _mru.remove(tab);
     if (remaining.isEmpty) {
@@ -288,6 +293,7 @@ class TabsNotifier extends StateNotifier<TabsState> {
 
   void setActive(int index) {
     if (index < 0 || index >= state.tabs.length) return;
+    if (index != state.activeIndex) onBeforeLeave?.call();
     state = state.copyWith(activeIndex: index);
     _touchMru(state.tabs[index]);
     _persist();
@@ -379,6 +385,10 @@ final tabsProvider = StateNotifierProvider<TabsNotifier, TabsState>((ref) {
       // right panel) still respond to tab changes.
       ref.read(selectedNoteIdProvider.notifier).state = noteId;
     },
+    // Read when a leave happens, not while this provider builds: the editor
+    // controller reads `tabsProvider` too.
+    onBeforeLeave: () =>
+        ref.read(editorControllerProvider.notifier).flushPendingSave(),
     // Opening a vault lands on today's note (#22). Read once: the launch
     // date sticks to the tab across midnight (D14).
     todayDate: vaultPath == null ? null : ref.read(todayDateProvider),
