@@ -2,9 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../db.dart';
 import '../db/tags_reads.dart';
-import '../vault_access/vault_access.dart';
 import '../vault_access/vault_scoped.dart';
-import 'editor_controller.dart';
 import 'topic_actions.dart';
 import 'vault_access_state.dart';
 import 'vault_state.dart';
@@ -47,12 +45,15 @@ final notesForTagAsyncProvider =
 
 /// Removes [tag] from [note] (the x on a footer tag, R33). When [note] is the
 /// open note the editor rebases on the returned version with its pending edit
-/// kept (`rebaseEditorOnVersion`); then `vaultRevisionProvider` is bumped
+/// kept (`rebaseEditorAfterWrite`); then `vaultRevisionProvider` is bumped
 /// exactly once. A clean editor takes the stored body instead, and stays
-/// clean. A rejected write propagates with nothing bumped. A tag already gone
-/// (`removed: false`) is a success. Once the write has succeeded nothing
-/// reports it as failed: a read that then fails rebases on [note] and the
-/// returned version, keeping the editor's text, and still bumps.
+/// clean: its copy still has the removed tag's footer line, and keeping it
+/// would write again (the server drops the line, R12, but the version and
+/// `updated_at` move). A rejected write propagates with nothing bumped. A tag
+/// already gone (`removed: false`) is a success. Once the write has succeeded
+/// nothing reports it as failed, even when [ref]'s widget is gone by then: a
+/// read that fails rebases on the returned version, keeping the editor's text,
+/// and still bumps.
 Future<void> removeTagFromNote(
   WidgetRef ref, {
   required Note note,
@@ -60,47 +61,18 @@ Future<void> removeTagFromNote(
 }) async {
   final access = ref.read(vaultAccessProvider);
   if (access == null) throw StateError('No vault is open.');
-  // Taken before the write: the x may be gone by the time it returns.
-  final editor = ref.read(editorControllerProvider.notifier);
-  final revision = ref.read(vaultRevisionProvider.notifier);
+  // Taken before the write: the x may be gone by the time it returns, and
+  // reading through [ref] would then throw.
+  final container = ProviderScope.containerOf(ref.context, listen: false);
   final result = await access.tags.removeTag(note.id, tag);
   try {
-    if (editor.activeNoteId == note.id) {
-      await rebaseEditorOnVersion(
-        ref,
-        fallback: note,
-        version: result.version,
-        content: await _textToKeep(ref, access, note.id),
-        tolerateFailedRead: true,
-      );
-    }
+    await rebaseEditorAfterWrite(
+      container,
+      access,
+      note: note,
+      version: result.version,
+    );
   } finally {
-    revision.state++;
+    container.read(vaultRevisionProvider.notifier).state++;
   }
-}
-
-/// What the editor keeps through a rebase: a pending edit as it stands. With
-/// none, the stored body, because the editor's copy still has the removed
-/// tag's footer line and keeping it would mark the note dirty and write again
-/// (the server drops the line, R12, but the version and `updated_at` move).
-/// A stored body that cannot be read leaves the editor's text as it is.
-Future<String> _textToKeep(
-  WidgetRef ref,
-  VaultAccess access,
-  String noteId,
-) async {
-  final before = ref.read(editorControllerProvider);
-  if (before.status != SaveStatus.clean) return before.contentMd;
-  Note? stored;
-  try {
-    stored = await access.notes.getNote(noteId);
-  } on Object {
-    // The write went through; the rebase still has to happen.
-    stored = null;
-  }
-  // The person may have typed during the read.
-  final now = ref.read(editorControllerProvider);
-  return stored != null && now.status == SaveStatus.clean
-      ? stored.contentMd
-      : now.contentMd;
 }
