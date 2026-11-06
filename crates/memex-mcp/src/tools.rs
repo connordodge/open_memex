@@ -54,7 +54,8 @@ impl Memex {
                 + Self::excerpts_router()
                 + Self::folders_router()
                 + Self::review_router()
-                + Self::settings_router(),
+                + Self::settings_router()
+                + Self::tags_router(),
             prompt_router: Self::prompt_router(),
         }
     }
@@ -117,6 +118,8 @@ pub struct GetNoteEnvelope {
     pub created_at: i64,
     pub updated_at: i64,
     pub tags: Vec<String>,
+    /// What the agent can remove with `untag_note`: its non-system tags.
+    pub agent_tags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub links: Option<serde_json::Map<String, serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -425,6 +428,7 @@ impl Memex {
         match notes::get_note(&vault, &id) {
             Ok(n) => {
                 let tags = core_tags::tags_for_note(&vault, n.id.as_str()).unwrap_or_default();
+                let agent_tags = core_tags::agent_tags_for_note(&vault, &n.id).unwrap_or_default();
                 let (links_map, backlinks_map) = if include_backlinks.unwrap_or(false) {
                     let outgoing = core_links::links_out_for_note(&vault, n.id.as_str())
                         .unwrap_or_default();
@@ -455,6 +459,7 @@ impl Memex {
                     created_at: n.created_at,
                     updated_at: n.updated_at,
                     tags,
+                    agent_tags,
                     links: links_map,
                     backlinks: backlinks_map,
                     fields,
@@ -738,12 +743,25 @@ impl Memex {
                 all_tags.push(t.to_string());
             }
         }
-        for t in &all_tags {
-            let _ = core_tags::add_tag(&vault, note.id.as_str(), t);
-        }
-
         let embedder = self.state.embedder.clone();
         let embedder_ref = embedder.as_deref();
+        // D16: agent-origin, with footer text in the same call unless it's a
+        // system tag. A tag that can't be applied doesn't fail the note.
+        for t in &all_tags {
+            let _ = core_tags::apply_tag(
+                &mut vault,
+                &note.id,
+                t,
+                core_tags::TagOrigin::Agent,
+                embedder_ref,
+            );
+        }
+        // A footer write moved the note's version and body.
+        let note = match notes::get_note(&vault, &note.id) {
+            Ok(n) => n,
+            Err(e) => return err_from("create_note", &e),
+        };
+
         if let Err(e) = indexer::reindex_note(
             vault.connection_mut(),
             note.id.as_str(),
