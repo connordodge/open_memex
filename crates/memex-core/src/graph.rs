@@ -6,12 +6,16 @@
 //! regardless of direction) because that's what users mean when they ask
 //! "what's connected." Each returned hit carries the actual edge metadata so
 //! the caller can still tell direction + kind.
+//!
+//! The Vault Guide is not part of the graph (#233 R26): no traversal reaches
+//! it or passes through it.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
+use crate::guide::GUIDE_NOTE;
 use crate::Result;
 
 pub const MAX_DEPTH: i64 = 3;
@@ -94,7 +98,8 @@ pub fn neighbors(
 }
 
 /// All edges (in or out) touching `note_id`, with optional kind filter.
-/// Self-edges are filtered out at the SQL level.
+/// Self-edges and edges whose other end is the Vault Guide are filtered out at
+/// the SQL level.
 fn adjacent_edges(
     conn: &Connection,
     note_id: &str,
@@ -110,7 +115,8 @@ fn adjacent_edges(
         let sql = format!(
             "SELECT from_note_id, to_note_id, link_kind, label
              FROM links
-             WHERE from_note_id = ? AND to_note_id IS NOT NULL AND to_note_id != ?{where_kind}"
+             WHERE from_note_id = ? AND to_note_id IS NOT NULL AND to_note_id != ?{where_kind}
+               AND to_note_id NOT IN (SELECT id FROM notes WHERE {GUIDE_NOTE})"
         );
         let mut stmt = conn.prepare(&sql)?;
         let mut rows = match kind_filter {
@@ -131,7 +137,8 @@ fn adjacent_edges(
         let sql = format!(
             "SELECT from_note_id, to_note_id, link_kind, label
              FROM links
-             WHERE to_note_id = ? AND from_note_id != ?{where_kind}"
+             WHERE to_note_id = ? AND from_note_id != ?{where_kind}
+               AND from_note_id NOT IN (SELECT id FROM notes WHERE {GUIDE_NOTE})"
         );
         let mut stmt = conn.prepare(&sql)?;
         let mut rows = match kind_filter {

@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
+import '../../cli/guide_cli.dart';
 import '../../db/topics_reads.dart';
 import '../../vault_access/vault_async_view.dart';
 import '../../memex_cli.dart';
@@ -12,6 +13,7 @@ import '../../state/topic_actions.dart';
 import '../../state/topics_state.dart';
 import '../../state/topics_tree.dart';
 import '../../state/vault_access_state.dart';
+import '../../state/vault_state.dart';
 import '../../vault_access/errors.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
@@ -66,7 +68,9 @@ class TopicsPane extends ConsumerWidget {
     void open(String noteId) =>
         ref.read(tabsProvider.notifier).follow(NoteTab(noteId));
 
-    final rows = <Widget>[];
+    final rows = <Widget>[
+      if (ref.watch(vaultV6ReadyProvider)) _VaultGuideRow(hostContext: context),
+    ];
     void addFolder(FolderNode folder) {
       final isOpen = expanded.contains(folder.id);
       rows.add(
@@ -89,6 +93,7 @@ class TopicsPane extends ConsumerWidget {
           MembershipMenu(
             key: Key('topics-topic-${folder.id}-${topic.noteId}'),
             folderId: folder.id,
+            folderName: folder.name,
             noteId: topic.noteId,
             pinned: topic.pinned,
             child: _NoteRow(
@@ -586,5 +591,65 @@ class _EmptyTopicsState extends ConsumerState<_EmptyTopics> {
         ],
       ),
     );
+  }
+}
+
+/// The fixed `Vault Guide` row at the top of the Topics tree (Key
+/// `vault-guide-row`, shown on a V6 vault only). A click asks the CLI for the
+/// guide note, which it creates on first use, then follows it in the tab that
+/// was active at the click.
+class _VaultGuideRow extends ConsumerWidget {
+  const _VaultGuideRow({required this.hostContext});
+  final BuildContext hostContext;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        key: const Key('vault-guide-row'),
+        behavior: HitTestBehavior.opaque,
+        onTap: () => _openGuide(ref),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.fromLTRB(10, 5, 10, 5),
+          child: Row(
+            children: [
+              const Icon(LucideIcons.bookOpen, size: 13, color: OmColors.fg1),
+              const SizedBox(width: 7),
+              Expanded(
+                child: Text(
+                  'Vault Guide',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: OmType.sans(size: 13, color: OmColors.fg1),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openGuide(WidgetRef ref) async {
+    final errors = ref.read(smartFolderErrorProvider.notifier);
+    final access = ref.read(vaultAccessProvider);
+    if (access == null || !access.canWrite) {
+      errors.state = 'The memex CLI is not available.';
+      return;
+    }
+    // The tab to navigate is fixed at the click, not when guide() answers.
+    final go = ref.read(tabsProvider.notifier).followLater();
+    final VaultGuide? guide;
+    try {
+      guide = await guardVaultWrite(hostContext, access.feedback.guide);
+    } on Exception catch (e) {
+      errors.state = e is MemexException ? e.message : '$e';
+      return;
+    }
+    if (guide == null) return;
+    errors.state = null;
+    go(NoteTab(guide.noteId));
   }
 }

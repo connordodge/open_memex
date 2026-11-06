@@ -506,9 +506,18 @@ fn write_topic(
     let mut attempt = 1;
     loop {
         let current = topic_note(vault, topic_note_id)?;
-        let Some(body) = edit(&current.content_md)? else {
+        // `edit` sees only the person section; the Note footer is put back
+        // after it (D14), and the save re-renders it from rows.
+        let content = current.content_md.as_str();
+        let (person, footer) =
+            content.split_at(daily::note_marker_start(content).unwrap_or(content.len()));
+        let Some(mut body) = edit(person)? else {
             return Ok(current);
         };
+        if !footer.is_empty() && !body.is_empty() && !body.ends_with('\n') {
+            body.push('\n');
+        }
+        body.push_str(footer);
         before_write(vault);
         let saved = notes::update_note_as(
             vault,
