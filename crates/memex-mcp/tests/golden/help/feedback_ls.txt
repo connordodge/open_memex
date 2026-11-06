@@ -1,0 +1,9 @@
+List one note's rows, or the rows with no note, newest first
+
+Usage: memex feedback ls --vault <VAULT> <--note-id <NOTE_ID>|--no-note>
+
+Options:
+      --vault <VAULT>      Vault directory
+      --note-id <NOTE_ID>  List this note's rows
+      --no-note            List the rows with no note
+  -h, --help               Print help

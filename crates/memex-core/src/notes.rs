@@ -7,6 +7,7 @@ use crate::caller::Caller;
 use crate::canvas::{Clock, SystemClock};
 use crate::daily;
 use crate::error::MemexError;
+use crate::tags;
 use crate::vault::{now_unix_ms, Vault};
 use crate::Result;
 
@@ -91,6 +92,11 @@ pub struct CreateOutcome {
 /// gains `role: daily`, keeps its id and content, and gets `content_md`
 /// appended with the C3.1 separator. Its body is stored in the canonical daily
 /// layout with its blocks and `day_reviews` row, in one transaction (D9).
+/// A person's body gets its body tags in that transaction; an agent's isn't
+/// scanned (Spec #234 R3).
+///
+/// Frontmatter that `is_guide` fails with `guide_rule` for every caller: only
+/// `guide::get_or_create` creates the Vault Guide (#233).
 pub fn create_or_adopt_note(
     vault: &mut Vault,
     input: CreateNote,
@@ -98,6 +104,12 @@ pub fn create_or_adopt_note(
     clock: &dyn Clock,
 ) -> Result<CreateOutcome> {
     let frontmatter = input.frontmatter.unwrap_or_else(|| serde_json::json!({}));
+    if is_guide(&frontmatter) {
+        return Err(MemexError::GuideRule(
+            "the Vault Guide is created on first read; a note cannot be created with role: guide"
+                .into(),
+        ));
+    }
     let is_daily = daily::is_daily(&frontmatter);
     let title = match input.title {
         Some(title) => title,
@@ -142,6 +154,9 @@ pub fn create_or_adopt_note(
             now,
         ],
     )?;
+    if caller == Caller::Person {
+        tags::reconcile_body_tags(&tx, id.as_str(), &input.content_md, is_daily, now)?;
+    }
     let content_md = if is_daily {
         let source = daily::block_source(caller);
         let body =
@@ -223,7 +238,7 @@ fn note_titled(
 }
 
 /// Parses stored frontmatter, reading malformed JSON as `null`.
-fn lenient_frontmatter(stored: &str) -> serde_json::Value {
+pub(crate) fn lenient_frontmatter(stored: &str) -> serde_json::Value {
     serde_json::from_str(stored).unwrap_or(serde_json::Value::Null)
 }
 
@@ -315,6 +330,9 @@ pub fn update_note_with_options(
 /// `MarkerRule`; person writes always pass. `update_note_as` runs it on every
 /// save, and an agent path that answers without saving (MCP `add_link` on an
 /// existing link) runs it on the source note first.
+///
+/// The same goes for `role: guide` (#233, D10), with `GuideRule`: an agent
+/// writes the Vault Guide only through `guide::update`, which skips this check.
 pub fn check_agent_write(
     caller: Caller,
     current_frontmatter: &serde_json::Value,
@@ -322,6 +340,16 @@ pub fn check_agent_write(
 ) -> Result<()> {
     if caller != Caller::Agent {
         return Ok(());
+    }
+    if is_guide(current_frontmatter) {
+        return Err(MemexError::GuideRule(
+            "agents may edit the Vault Guide only with update_vault_guide".into(),
+        ));
+    }
+    if new_frontmatter.is_some_and(is_guide) {
+        return Err(MemexError::GuideRule(
+            "agents may not make a note the Vault Guide (role: guide)".into(),
+        ));
     }
     if daily::is_daily(current_frontmatter) {
         return Err(MemexError::MarkerRule(
@@ -331,6 +359,36 @@ pub fn check_agent_write(
     if new_frontmatter.is_some_and(daily::is_daily) {
         return Err(MemexError::MarkerRule(
             "agents may not make a note a daily note (role: daily)".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// The Vault Guide's fixed fields (#233 R28), for every caller: its title and
+/// its role cannot change, and no other note can take `role: guide`. Passing
+/// the current title or a frontmatter that keeps the role is not a change.
+fn check_guide_fields(
+    current_title: &str,
+    current_frontmatter: &serde_json::Value,
+    patch: &UpdateNote,
+) -> Result<()> {
+    let new_is_guide = patch.frontmatter.as_ref().map(is_guide);
+    if !is_guide(current_frontmatter) {
+        if new_is_guide == Some(true) {
+            return Err(MemexError::GuideRule(
+                "a vault has one Vault Guide; another note cannot take role: guide".into(),
+            ));
+        }
+        return Ok(());
+    }
+    if patch.title.as_ref().is_some_and(|t| t != current_title) {
+        return Err(MemexError::GuideRule(
+            "the Vault Guide's title cannot change".into(),
+        ));
+    }
+    if new_is_guide == Some(false) {
+        return Err(MemexError::GuideRule(
+            "the Vault Guide's role cannot change".into(),
         ));
     }
     Ok(())
@@ -347,8 +405,10 @@ pub fn check_agent_write(
 /// source) and its content version is bumped when the person text changed.
 /// Any other note but a `role: guide` one stores its person section with the
 /// Note footer rendered from its rows (Spec #234 R14); a guide's body is
-/// stored as given. Daily notes rewritten by the rename pass are re-synced
-/// the same way and also get a new `version`; other linkers get their footer
+/// stored as given. A person's patch with a body re-derives the note's body
+/// tags in the save transaction, unless the note is a guide (R3); no other
+/// save scans. Daily notes rewritten by the rename pass are re-synced the same
+/// way and also get a new `version`; other linkers get their footer
 /// re-rendered. Callers reindex from the returned note (D8).
 pub fn update_note_as(
     vault: &mut Vault,
@@ -379,6 +439,7 @@ pub fn update_note_as(
         &lenient_frontmatter(&current_fm),
         patch.frontmatter.as_ref(),
     )?;
+    check_guide_fields(&current_title, &lenient_frontmatter(&current_fm), &patch)?;
     if current_version != expected_version {
         return Err(MemexError::VersionConflict {
             expected: expected_version,
@@ -395,6 +456,8 @@ pub fn update_note_as(
     let title_changed = new_title != current_title;
     let is_daily = daily::is_daily(&new_fm);
     let becomes_daily = is_daily && !daily::is_daily(&lenient_frontmatter(&current_fm));
+    let guide = is_guide(&new_fm);
+    let derives_tags = caller == Caller::Person && patch.content_md.is_some() && !guide;
 
     if title_changed {
         validate_title(&new_title)?;
@@ -428,6 +491,11 @@ pub fn update_note_as(
     {
         let tx = vault.conn_mut().transaction()?;
 
+        // Tag rows first: the footer below renders from them.
+        if derives_tags {
+            tags::reconcile_body_tags(&tx, id.as_str(), &new_content, is_daily, now)?;
+        }
+
         // The note itself first, so a linker's footer below renders the new
         // title. Every note but a guide keeps the footer rendered from its
         // rows (Spec #234 R14, D3).
@@ -441,7 +509,7 @@ pub fn update_note_as(
                 new_version,
                 now,
             )?
-        } else if is_guide(&new_fm) {
+        } else if guide {
             new_content
         } else {
             daily::sync_note_footer(&tx, id.as_str(), &new_content)?
@@ -551,13 +619,38 @@ pub fn update_note_as(
 /// `block_source` (`person`, `agent` or `quick-entry`), and fails with
 /// `VersionConflict` on a stale `expected_version` so callers can retry.
 /// A note that is not `role: daily` fails with `RoleRule`. The caller
-/// reindexes from the returned note (D8).
+/// reindexes from the returned note (D8). It leaves body tags alone; see
+/// [`append_daily_internal`].
 pub(crate) fn write_daily_internal(
     vault: &mut Vault,
     id: &NoteId,
     expected_version: i64,
     new_body: &str,
     block_source: &str,
+) -> Result<Note> {
+    write_daily(vault, id, expected_version, new_body, block_source, false)
+}
+
+/// [`write_daily_internal`] for an append, which also re-derives the note's
+/// body tags in the write transaction: an append is the person's verbatim
+/// words, whichever surface carries them (Spec #234 R3).
+pub(crate) fn append_daily_internal(
+    vault: &mut Vault,
+    id: &NoteId,
+    expected_version: i64,
+    new_body: &str,
+    block_source: &str,
+) -> Result<Note> {
+    write_daily(vault, id, expected_version, new_body, block_source, true)
+}
+
+fn write_daily(
+    vault: &mut Vault,
+    id: &NoteId,
+    expected_version: i64,
+    new_body: &str,
+    block_source: &str,
+    derives_tags: bool,
 ) -> Result<Note> {
     let current = get_note(vault, id)?;
     if current.version != expected_version {
@@ -574,6 +667,9 @@ pub(crate) fn write_daily_internal(
     let now = now_unix_ms();
     let new_version = current.version + 1;
     let tx = vault.conn_mut().transaction()?;
+    if derives_tags {
+        tags::reconcile_body_tags(&tx, id.as_str(), new_body, true, now)?;
+    }
     let body = daily::sync_daily_note(
         &tx,
         id.as_str(),
@@ -589,6 +685,70 @@ pub(crate) fn write_daily_internal(
     )?;
     tx.commit()?;
     get_note(vault, id)
+}
+
+/// The only create of the Vault Guide (#233), for `guide::get_or_create`, past
+/// the `guide_rule` guard of [`create_or_adopt_note`]. A failed insert while
+/// another note holds `title` is `TitleConflict` naming that note; any other
+/// failure, such as losing to another guide on `idx_notes_guide`, comes back
+/// as is. The caller reindexes from the returned note (D8).
+pub(crate) fn create_guide_internal(
+    vault: &Vault,
+    title: &str,
+    content_md: &str,
+    clock: &dyn Clock,
+) -> Result<Note> {
+    let now = clock.now_ms();
+    let id = NoteId::new();
+    let frontmatter = serde_json::json!({ "role": "guide" });
+    let conn = vault.connection_ref();
+    let inserted = conn.execute(
+        "INSERT INTO notes (id, title, content_md, frontmatter, version, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 1, ?, ?)",
+        params![
+            id.as_str(),
+            title,
+            content_md,
+            serde_json::to_string(&frontmatter)?,
+            now,
+            now,
+        ],
+    );
+    if let Err(e) = inserted {
+        return Err(match note_titled(conn, title, None)? {
+            Some((existing_id, _)) => MemexError::TitleConflict {
+                existing_id,
+                attempted_title: title.to_string(),
+            },
+            None => e.into(),
+        });
+    }
+    Ok(Note {
+        id,
+        title: title.to_string(),
+        content_md: content_md.to_string(),
+        frontmatter,
+        version: 1,
+        created_at: now,
+        updated_at: now,
+    })
+}
+
+/// The only write of the Vault Guide's text past [`check_agent_write`] (#233,
+/// D10), inside the transaction of `guide::update` and `guide::restore`, which
+/// check the version and keep the revision. The caller reindexes after commit.
+pub(crate) fn write_guide_internal(
+    tx: &rusqlite::Transaction<'_>,
+    id: &str,
+    content_md: &str,
+    new_version: i64,
+    now: i64,
+) -> Result<()> {
+    tx.execute(
+        "UPDATE notes SET content_md = ?, version = ?, updated_at = ? WHERE id = ?",
+        params![content_md, new_version, now, id],
+    )?;
+    Ok(())
 }
 
 /// The non-daily counterpart of [`write_daily_internal`] for footer writes
@@ -671,7 +831,8 @@ pub fn delete_note(vault: &mut Vault, id: &NoteId) -> Result<()> {
 /// change entries and memberships cascade) and re-renders, then reindexes
 /// with `embedder`, the footer of every note that held a chip for it, daily
 /// or not (Spec #234 TD5); a guide is left as it is (D3). An unknown id is
-/// `NotFound`.
+/// `NotFound`. Deleting the Vault Guide is always `GuideRule`, whatever the
+/// version.
 pub fn delete_note_checked(
     vault: &mut Vault,
     id: &NoteId,
@@ -679,6 +840,11 @@ pub fn delete_note_checked(
     embedder: Option<&dyn crate::embedder::Embedder>,
 ) -> Result<()> {
     let current = get_note(vault, id)?;
+    if is_guide(&current.frontmatter) {
+        return Err(MemexError::GuideRule(
+            "the Vault Guide cannot be deleted".into(),
+        ));
+    }
     if current.version != expected_version {
         return Err(MemexError::VersionConflict {
             expected: expected_version,

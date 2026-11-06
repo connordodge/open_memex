@@ -94,19 +94,21 @@ class NoteMenu extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        MenuItemButton(
-          key: const Key('note-menu-delete'),
-          leadingIcon: const Icon(LucideIcons.trash2, size: 14),
-          // The unsaved virtual Today note (#22) has nothing to delete.
-          onPressed: VirtualTodayTab.dateOf(note.id) != null
-              ? null
-              : () => confirmAndDeleteNote(
-                  hostContext,
-                  ProviderScope.containerOf(hostContext),
-                  note,
-                ),
-          child: const Text('Delete note'),
-        ),
+        // The Vault Guide cannot be deleted.
+        if (note.role != 'guide')
+          MenuItemButton(
+            key: const Key('note-menu-delete'),
+            leadingIcon: const Icon(LucideIcons.trash2, size: 14),
+            // The unsaved virtual Today note (#22) has nothing to delete.
+            onPressed: VirtualTodayTab.dateOf(note.id) != null
+                ? null
+                : () => confirmAndDeleteNote(
+                    hostContext,
+                    ProviderScope.containerOf(hostContext),
+                    note,
+                  ),
+            child: const Text('Delete note'),
+          ),
         if (graphScopeFor(note) case final scope?)
           MenuItemButton(
             key: const Key('note-menu-open-graph'),

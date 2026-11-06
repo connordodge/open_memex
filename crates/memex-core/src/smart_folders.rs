@@ -18,6 +18,7 @@ use crate::caller::Caller;
 use crate::canvas::Clock;
 use crate::embedder::Embedder;
 use crate::error::MemexError;
+use crate::feedback;
 use crate::indexer;
 use crate::notes::{self, NoteId, RenameOptions, UpdateNote};
 use crate::vault::Vault;
@@ -154,7 +155,8 @@ pub fn list_folders(vault: &Vault) -> Result<SmartFolderList> {
         "SELECT id, title FROM notes
          WHERE NOT EXISTS (SELECT 1 FROM smart_folder_members m WHERE m.note_id = notes.id)
            AND COALESCE(CASE WHEN json_valid(frontmatter)
-                             THEN json_extract(frontmatter, '$.role') END, '') != 'daily'
+                             THEN json_extract(frontmatter, '$.role') END, '')
+               NOT IN ('daily', 'guide')
          ORDER BY title COLLATE NOCASE, id",
     )?;
     let unsorted = stmt
@@ -225,6 +227,10 @@ pub fn create_folder(
 /// `folder_cycle`, `depth_exceeded` (re-parents only; a rename is never
 /// depth-checked), `name_conflict`. An agent's `pinned` is ignored, and an
 /// update that changes nothing writes nothing.
+///
+/// A person changing the name or parent of a folder that was unpinned before the
+/// call records one `folder_renamed` or `folder_moved` Correction per change, in
+/// the same transaction as the update (WI #250).
 pub fn update_folder(
     vault: &mut Vault,
     id: &str,
@@ -265,20 +271,40 @@ pub fn update_folder(
         Caller::Agent => current.pinned,
         Caller::Person => update.pinned.unwrap_or(current.pinned || renames || moves),
     };
+    let now = clock.now_ms();
+    let tx = vault.conn_mut().transaction()?;
     if renames || moves || pinned != current.pinned {
-        conn.execute(
+        tx.execute(
             "UPDATE smart_folders SET name = ?, parent_id = ?, pinned = ?, updated_at = ?
              WHERE id = ?",
-            params![name, parent_id, pinned, clock.now_ms(), id],
+            params![name, parent_id, pinned, now, id],
         )?;
     }
-    read_folder(conn, id)
+    if caller == Caller::Person && !current.pinned {
+        if name != current.name {
+            feedback::record_folder_renamed(&tx, id, &current.name, &name, now)?;
+        }
+        if parent_id != current.parent_id {
+            feedback::record_folder_moved(
+                &tx,
+                id,
+                &name,
+                current.parent_id.as_deref(),
+                parent_id.as_deref(),
+                now,
+            )?;
+        }
+    }
+    tx.commit()?;
+    read_folder(vault.conn(), id)
 }
 
 /// Deletes a folder: re-parents its children to its parent, drops its
 /// memberships, never deletes a note. An agent may not delete a pinned
 /// folder or one holding a pinned membership (`pinned_rule`); a child whose
-/// name clashes at its new level fails the whole delete (`name_conflict`).
+/// name clashes at its new level fails the whole delete (`name_conflict`). A
+/// person deleting an unpinned folder records one `folder_deleted` Correction in
+/// the same transaction (WI #250).
 pub fn delete_folder(vault: &mut Vault, id: &str, caller: Caller) -> Result<()> {
     let conn = vault.conn();
     let folder = load(conn, id)?;
@@ -324,6 +350,9 @@ pub fn delete_folder(vault: &mut Vault, id: &str, caller: Caller) -> Result<()> 
         "UPDATE smart_folders SET parent_id = ? WHERE parent_id = ?",
         params![folder.parent_id, id],
     )?;
+    if caller == Caller::Person && !folder.pinned {
+        feedback::record_folder_deleted(&tx, id, &folder.name)?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -333,8 +362,9 @@ pub fn delete_folder(vault: &mut Vault, id: &str, caller: Caller) -> Result<()> 
 /// person's membership pin toggle. A person adding a role-less non-daily note
 /// sets its `role: topic` and reindexes it with `embedder`.
 ///
-/// A daily note is `role_rule` for every caller; for the agent so is any
-/// note whose role is not `topic`. An agent never changes an existing pin.
+/// The Vault Guide is `guide_rule` for every caller. A daily note is
+/// `role_rule` for every caller; for the agent so is any note whose role is not
+/// `topic`. An agent never changes an existing pin.
 pub fn add_member(
     vault: &mut Vault,
     folder_id: &str,
@@ -345,6 +375,11 @@ pub fn add_member(
 ) -> Result<Membership> {
     load(vault.conn(), folder_id)?;
     let note = notes::get_note(vault, &NoteId::parse(note_id)?)?;
+    if notes::is_guide(&note.frontmatter) {
+        return Err(MemexError::GuideRule(
+            "the Vault Guide stays out of Smart Folders".into(),
+        ));
+    }
     let role_set = match note.frontmatter.get("role").and_then(Value::as_str) {
         Some(TOPIC) => false,
         None if caller == Caller::Person => true,
@@ -418,7 +453,9 @@ pub fn add_member(
 
 /// Removes a topic note from a folder. A note that is not a member is
 /// `not_found`. An agent may not remove any membership of a pinned folder,
-/// nor a pinned membership (`pinned_rule`).
+/// nor a pinned membership (`pinned_rule`). A person removing an unpinned
+/// membership records one `membership_removed` Correction in the same transaction
+/// (WI #250).
 pub fn remove_member(
     vault: &mut Vault,
     folder_id: &str,
@@ -450,10 +487,15 @@ pub fn remove_member(
             return Err(pinned_membership(folder_id, note_id, &title));
         }
     }
-    conn.execute(
+    let tx = vault.conn_mut().transaction()?;
+    tx.execute(
         "DELETE FROM smart_folder_members WHERE smart_folder_id = ? AND note_id = ?",
         params![folder_id, note_id],
     )?;
+    if caller == Caller::Person && !pinned {
+        feedback::record_membership_removed(&tx, note_id, &title, folder_id, &folder.name)?;
+    }
+    tx.commit()?;
     Ok(())
 }
 

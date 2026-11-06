@@ -400,9 +400,10 @@ pub fn append_to_daily_note(
 /// ([`append_to_person`]). A missing daily note is created empty first, and
 /// a role-less note titled with the date is adopted on the quick-entry path
 /// or a `TitleConflict` on the agent path (Q2). The write goes through
-/// `notes::write_daily_internal` (D9), which stamps the new blocks with the
-/// source; the note is reindexed from the stored body (D8). `prior_state`
-/// is the review state read by the attempt that wrote.
+/// `notes::append_daily_internal` (D9), which stamps the new blocks with the
+/// source and re-derives the note's body tags (Spec #234 R3); the note is
+/// reindexed from the stored body (D8). `prior_state` is the review state read
+/// by the attempt that wrote.
 pub fn append_to_daily_note_with_hook(
     vault: &mut Vault,
     text: &str,
@@ -428,7 +429,7 @@ pub fn append_to_daily_note_with_hook(
         before_write(vault, attempt);
 
         let person = append_to_person(&split_body(&note.content_md).person, text);
-        let written = notes::write_daily_internal(
+        let written = notes::append_daily_internal(
             vault,
             &note.id,
             note.version,

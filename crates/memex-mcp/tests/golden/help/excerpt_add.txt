@@ -1,0 +1,11 @@
+File one block of a day in a topic note
+
+Usage: memex excerpt add [OPTIONS] --vault <VAULT> --topic-note-id <TOPIC_NOTE_ID> --date <DATE> --block-id <BLOCK_ID>
+
+Options:
+      --vault <VAULT>                  Vault directory
+      --topic-note-id <TOPIC_NOTE_ID>  Topic note id (ULID)
+      --date <DATE>                    The daily note's date, YYYY-MM-DD
+      --block-id <BLOCK_ID>            The block's id
+      --note <NOTE>                    Why the block belongs here, stored on the Correction
+  -h, --help                           Print help

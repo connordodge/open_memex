@@ -1,0 +1,9 @@
+Replace the text of an Open comment
+
+Usage: memex feedback edit --vault <VAULT> --id <ID> --text <TEXT>
+
+Options:
+      --vault <VAULT>  Vault directory
+      --id <ID>        The comment's id
+      --text <TEXT>    The new text, stored as given
+  -h, --help           Print help

@@ -74,7 +74,15 @@ class VirtualTodayTab extends NoteTab {
 }
 
 class CanvasTab extends WorkspaceTab {
-  const CanvasTab(super.id);
+  const CanvasTab(super.id, {this.zoomedNoteId});
+
+  /// The note this canvas tab is zoomed into, or null when it shows the canvas.
+  ///
+  /// Part of `==` and `hashCode` (a zoomed entry is a different history entry
+  /// from the canvas itself) but not of [tabId] or [toPersisted]: the tab is
+  /// the same tab and a relaunch shows it unzoomed (R5).
+  final String? zoomedNoteId;
+
   @override
   String get tabId => 'canvas-$id';
   @override
@@ -82,10 +90,13 @@ class CanvasTab extends WorkspaceTab {
       PersistedTab(kind: PersistedTab.kindCanvas, id: id);
 
   @override
-  bool operator ==(Object other) => other is CanvasTab && other.id == id;
+  bool operator ==(Object other) =>
+      other is CanvasTab &&
+      other.id == id &&
+      other.zoomedNoteId == zoomedNoteId;
 
   @override
-  int get hashCode => Object.hash('canvas', id);
+  int get hashCode => Object.hash('canvas', id, zoomedNoteId);
 }
 
 /// A read-only Graph view tab (D26). [id] is the scope's persisted id
@@ -121,6 +132,7 @@ class TabsState {
     required this.activeIndex,
     this.canGoBack = false,
     this.canGoForward = false,
+    this.arrivals = 0,
   });
 
   final List<WorkspaceTab> tabs;
@@ -132,21 +144,33 @@ class TabsState {
   /// Whether the active tab's Tab history has an entry after the current one.
   final bool canGoForward;
 
+  /// How many times the active tab has been arrived at: Back, Forward, a chip
+  /// switch, a navigate, a focus, landing on a neighbour. Moves only then, so
+  /// the editor can act on an arrival that keeps the same note on screen (two
+  /// tabs on one note), and not on a write that only moves the index (#270).
+  final int arrivals;
+
   static const empty = TabsState(tabs: [], activeIndex: 0);
 
   WorkspaceTab? get activeTab =>
       tabs.isEmpty ? null : tabs[activeIndex.clamp(0, tabs.length - 1)];
+
+  /// The note the active entry shows: a note tab's note or the note a canvas
+  /// tab is zoomed into, else null.
+  String? get activeNoteId => TabsNotifier._shownNoteId(activeTab);
 
   TabsState copyWith({
     List<WorkspaceTab>? tabs,
     int? activeIndex,
     bool? canGoBack,
     bool? canGoForward,
+    int? arrivals,
   }) => TabsState(
     tabs: tabs ?? this.tabs,
     activeIndex: activeIndex ?? this.activeIndex,
     canGoBack: canGoBack ?? this.canGoBack,
     canGoForward: canGoForward ?? this.canGoForward,
+    arrivals: arrivals ?? this.arrivals,
   );
 }
 
@@ -173,7 +197,8 @@ class _TabRecord {
 
   /// Bumped on every move of [history] (navigate, back, forward, a gone
   /// entry's removal), so a late answer or a late `followLater` result can
-  /// tell whether the tab is still where it was.
+  /// tell whether the tab is still where it was. A scroll is not a move: it
+  /// sets [history] directly (`recordScrollOffset`).
   int generation = 0;
 
   WorkspaceTab get current => history.current;
@@ -233,12 +258,38 @@ class TabsNotifier extends StateNotifier<TabsState> {
   /// LRU eviction.
   final List<_TabRecord> _mru = [];
 
+  /// See [TabsState.arrivals].
+  int _arrivals = 0;
+
+  /// Whether the last arrival on the active tab returned to an entry (Back,
+  /// Forward, a chip switch, focusing an open tab, landing on a neighbour) and
+  /// [takeScrollRestore] hasn't handed it out. A flag and not an offset: a gone
+  /// entry can still be skipped, so the offset is read when taken.
+  bool _restorePending = false;
+
   _TabRecord? get _activeRecord =>
       _records.isEmpty ? null : _records[state.activeIndex];
 
+  /// Whether [current] is what a click on [target] focuses. A plain canvas
+  /// target matches a tab on that canvas, zoomed or not (R2); every other
+  /// target, a zoomed canvas included, matches an equal tab. A note is never
+  /// matched by a canvas zoomed into it.
+  static bool _shows(WorkspaceTab current, WorkspaceTab target) =>
+      target is CanvasTab && target.zoomedNoteId == null
+      ? current is CanvasTab && current.id == target.id
+      : current == target;
+
+  /// The note [tab] shows: a note tab's note or the note a canvas tab is
+  /// zoomed into, else null.
+  static String? _shownNoteId(WorkspaceTab? tab) => switch (tab) {
+    NoteTab(:final id) => id,
+    CanvasTab(:final zoomedNoteId) => zoomedNoteId,
+    _ => null,
+  };
+
   /// The index of the leftmost tab showing [tab], or -1.
   int _indexShowing(WorkspaceTab tab) =>
-      _records.indexWhere((r) => r.current == tab);
+      _records.indexWhere((r) => _shows(r.current, tab));
 
   /// Makes [records] the open tabs, [activeIndex] the active one, and writes
   /// the state they give, `canGoBack` and `canGoForward` included.
@@ -254,7 +305,16 @@ class TabsNotifier extends StateNotifier<TabsState> {
       activeIndex: activeIndex,
       canGoBack: active.history.canGoBack,
       canGoForward: active.history.canGoForward,
+      arrivals: _arrivals,
     );
+  }
+
+  /// Marks an arrival on the active tab, before the [_write] that shows it.
+  /// A [restore] returns the note to its entry's offset (#270, D39); any other
+  /// arrival lands at the top and drops a restore not yet taken.
+  void _arrive({bool restore = false}) {
+    _restorePending = restore;
+    _arrivals++;
   }
 
   void _hydrate(String? todayDate, String? todayNoteId) {
@@ -314,11 +374,15 @@ class TabsNotifier extends StateNotifier<TabsState> {
   bool _leavesActive(int index) =>
       _records.isNotEmpty && index != state.activeIndex;
 
-  /// Focus the leftmost tab showing `tab`, or open a new tab for it at the
-  /// end (the Cmd+click path). Returns the resulting active index.
+  /// Focus the leftmost tab showing `tab`, restoring its saved scroll offset,
+  /// or open a new tab for it at the end, at the top (the Cmd+click path).
+  /// Returns the resulting active index.
   int openOrFocus(WorkspaceTab tab) {
     final existing = _indexShowing(tab);
-    if (_leavesActive(existing)) onBeforeLeave?.call();
+    if (_leavesActive(existing)) {
+      onBeforeLeave?.call();
+      _arrive(restore: existing >= 0);
+    }
     if (existing >= 0) {
       _touchMru(_records[existing]);
       _write(_records, existing);
@@ -342,7 +406,10 @@ class TabsNotifier extends StateNotifier<TabsState> {
   /// [VirtualTodayTab] for [date] or insert one as the active tab.
   void openToday({required String date, String? noteId}) {
     final today = _todayTab(date, noteId);
-    if (_leavesActive(_indexShowing(today))) onBeforeLeave?.call();
+    if (_leavesActive(_indexShowing(today))) {
+      onBeforeLeave?.call();
+      _arrive();
+    }
     _focusToday(today);
     _persist();
     _emitSelection();
@@ -381,11 +448,25 @@ class TabsNotifier extends StateNotifier<TabsState> {
     _emitSelection();
   }
 
-  /// Closes every tab showing [tab] (the delete path), in one state write.
+  /// Closes every tab showing [tab] (the delete path), in one state write. A
+  /// canvas closes every tab on it, zoomed or not. A note closes the tabs
+  /// showing it, and a canvas tab zoomed into it stays open and zooms out: its
+  /// current entry becomes the plain canvas, with no new entry (R29-R35).
+  /// Older entries zoomed into the note stay and fall to [targetExists].
   void close(WorkspaceTab tab) {
-    final closing = _records.where((r) => r.current == tab).toSet();
-    if (closing.isEmpty) return;
-    _closeRecords(closing);
+    final closing = _records.where((r) => _shows(r.current, tab)).toSet();
+    final zoomedNote = tab is NoteTab ? tab.id : null;
+    final zoomOut = zoomedNote == null
+        ? const <_TabRecord>{}
+        : _records
+              .where(
+                (r) =>
+                    r.current is CanvasTab &&
+                    (r.current as CanvasTab).zoomedNoteId == zoomedNote,
+              )
+              .toSet();
+    if (closing.isEmpty && zoomOut.isEmpty) return;
+    _closeRecords(closing, zoomOut: zoomOut);
   }
 
   /// Closes the tab at [index], and only that tab.
@@ -394,13 +475,26 @@ class TabsNotifier extends StateNotifier<TabsState> {
     _closeRecords({_records[index]});
   }
 
-  /// Closes [closing] and discards their histories. When the active tab is
-  /// among them, the nearest remaining tab before it becomes active, else the
-  /// first remaining one; otherwise the active tab stays active.
-  void _closeRecords(Set<_TabRecord> closing) {
+  /// Closes [closing] and discards their histories; each of [zoomOut] stays
+  /// open with its current, zoomed entry replaced by the plain canvas. When the
+  /// active tab is among those closed, the nearest remaining tab before it
+  /// becomes active, else the first remaining one, at its saved scroll offset;
+  /// otherwise the active tab stays active. [onBeforeLeave] runs once when the
+  /// active tab is closed or zoomed out, and not otherwise.
+  void _closeRecords(
+    Set<_TabRecord> closing, {
+    Set<_TabRecord> zoomOut = const {},
+  }) {
     final active = _activeRecord!;
     final activeCloses = closing.contains(active);
-    if (activeCloses) onBeforeLeave?.call();
+    if (activeCloses || zoomOut.contains(active)) {
+      onBeforeLeave?.call();
+      _arrive(restore: activeCloses && closing.length < _records.length);
+    }
+    for (final r in zoomOut) {
+      final canvas = r.current as CanvasTab;
+      r.move(r.history.replaceCurrent(CanvasTab(canvas.id)));
+    }
     final remaining = _records.where((r) => !closing.contains(r)).toList();
     _mru.removeWhere(closing.contains);
     int newActive;
@@ -422,7 +516,10 @@ class TabsNotifier extends StateNotifier<TabsState> {
   /// Activates the tab at [index] (a chip switch). Adds no history entry.
   void setActive(int index) {
     if (index < 0 || index >= _records.length) return;
-    if (index != state.activeIndex) onBeforeLeave?.call();
+    if (index != state.activeIndex) {
+      onBeforeLeave?.call();
+      _arrive(restore: true);
+    }
     _touchMru(_records[index]);
     _write(_records, index);
     _persist();
@@ -464,7 +561,10 @@ class TabsNotifier extends StateNotifier<TabsState> {
   void _navigateRecord(_TabRecord record, WorkspaceTab target) {
     if (record.current == target) return;
     final isActive = identical(record, _activeRecord);
-    if (isActive) onBeforeLeave?.call();
+    if (isActive) {
+      onBeforeLeave?.call();
+      _arrive();
+    }
     record.move(record.history.push(target));
     _write(_records, state.activeIndex);
     _persist();
@@ -485,6 +585,7 @@ class TabsNotifier extends StateNotifier<TabsState> {
     final history = record.history;
     if (forward ? !history.canGoForward : !history.canGoBack) return;
     onBeforeLeave?.call();
+    _arrive(restore: true);
     record.move(forward ? history.forward() : history.back());
     _write(_records, state.activeIndex);
     _persist();
@@ -533,11 +634,42 @@ class TabsNotifier extends StateNotifier<TabsState> {
       if (goOn) next = next.back();
     }
     final isActive = identical(record, _activeRecord);
+    // The restore of the entry that turned out gone may already be taken.
+    if (isActive) _arrive(restore: true);
     record.move(next);
     _write(_records, state.activeIndex);
     _persist();
     if (isActive) _emitSelection();
     if (goOn) _check(record, forward: forward);
+  }
+
+  /// Sets the active entry's scroll offset when that entry shows [noteId];
+  /// otherwise writes nothing, so a stale controller can't write to the wrong
+  /// entry (#270, TD7).
+  ///
+  /// Not a move of the tab: no generation bump (a scroll must not drop a
+  /// pending `followLater` or stop a gone entry being skipped), no state write
+  /// (the tab bar would rebuild on every tick) and nothing persisted.
+  void recordScrollOffset(String noteId, double offset) {
+    final active = _activeRecord;
+    if (active == null || _shownNoteId(active.current) != noteId) return;
+    active.history = active.history.withScrollOffset(offset);
+  }
+
+  /// The offset to restore [noteId] to, once, when Back, Forward, a chip
+  /// switch, focusing an open tab or landing on a neighbour just arrived on it
+  /// (`0.0` for an entry never scrolled). Null for any other arrival and for
+  /// any note the active entry doesn't show (#270, TD7, D39). A call for another
+  /// note leaves the restore for the right one.
+  double? takeScrollRestore(String noteId) {
+    final active = _activeRecord;
+    if (!_restorePending ||
+        active == null ||
+        _shownNoteId(active.current) != noteId) {
+      return null;
+    }
+    _restorePending = false;
+    return active.history.scrollOffset ?? 0.0;
   }
 
   /// For a click whose target needs an async lookup: reads the modifier and
@@ -622,14 +754,7 @@ class TabsNotifier extends StateNotifier<TabsState> {
     unawaited(store.write(next));
   }
 
-  void _emitSelection() {
-    final active = state.activeTab;
-    if (active is NoteTab) {
-      onPersistedSelection(active.id);
-    } else {
-      onPersistedSelection(null);
-    }
-  }
+  void _emitSelection() => onPersistedSelection(_shownNoteId(state.activeTab));
 }
 
 /// `unawaited` polyfill — avoids pulling in `dart:async` just for the helper.
@@ -682,7 +807,8 @@ final tabsProvider = StateNotifierProvider<TabsNotifier, TabsState>((ref) {
 });
 
 /// Whether [target] still exists in the open vault (#266, TD9): false only
-/// when `getNote` or `getCanvasDetail` answers null. A virtual Today note, a
+/// when `getNote` or `getCanvasDetail` answers null (a zoomed canvas entry
+/// needs both its canvas and its note). A virtual Today note, a
 /// folder-scoped or whole-vault Graph view, no vault access and any read
 /// failure (`VaultUnreachableException` included) count as existing, with
 /// no read where none is needed.
@@ -695,8 +821,11 @@ Future<bool> _targetExists(Ref<Object?> ref, WorkspaceTab target) async {
     switch (target) {
       case NoteTab(:final id):
         return await access.notes.getNote(id) != null;
-      case CanvasTab(:final id):
-        return await access.canvas.getCanvasDetail(id) != null;
+      case CanvasTab(:final id, :final zoomedNoteId):
+        // The canvas first: with it gone, no note is read.
+        if (await access.canvas.getCanvasDetail(id) == null) return false;
+        return zoomedNoteId == null ||
+            await access.notes.getNote(zoomedNoteId) != null;
       case GraphTab(:final scope):
         return switch (scope.kind) {
           GraphScopeKind.topic ||
