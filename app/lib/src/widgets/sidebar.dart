@@ -150,8 +150,8 @@ class Sidebar extends ConsumerWidget {
       ref.read(vaultOpenControllerProvider).leaveVault(context);
 }
 
-/// The sidebar's `Days` / `Topics` switch (Req 50; Keys `sidebar-mode-days`,
-/// `sidebar-mode-topics`). The choice is saved per vault.
+/// The sidebar's `Days` / `Topics` / `Tags` switch (Req 50; Keys
+/// `sidebar-mode-days`, `sidebar-mode-topics`, `sidebar-mode-tags`). The choice is saved per vault.
 class _SidebarModeSwitch extends ConsumerWidget {
   const _SidebarModeSwitch();
 
@@ -186,6 +186,14 @@ class _SidebarModeSwitch extends ConsumerWidget {
                 label: 'Topics',
                 selected: mode == SidebarMode.topics,
                 onTap: () => select(SidebarMode.topics),
+              ),
+            ),
+            Expanded(
+              child: _ModeSegment(
+                key: const Key('sidebar-mode-tags'),
+                label: 'Tags',
+                selected: mode == SidebarMode.tags,
+                onTap: () => select(SidebarMode.tags),
               ),
             ),
           ],

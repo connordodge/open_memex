@@ -4,7 +4,7 @@ import 'ui_state_store.dart';
 
 export 'ui_state_store.dart' show SidebarMode;
 
-/// The sidebar mode of the current vault (Req 50, TD8): `Days` or `Topics`,
+/// The sidebar mode of the current vault (Req 50, TD8): `Days`, `Topics` or `Tags`,
 /// persisted per vault as `sidebar_mode` in `<vault>/.memex/ui_state.json`.
 /// A vault with no stored (or an unknown) mode is in [SidebarMode.days].
 final sidebarModeProvider = NotifierProvider<SidebarModeNotifier, SidebarMode>(
