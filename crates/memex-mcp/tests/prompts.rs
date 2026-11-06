@@ -211,8 +211,8 @@ fn assert_names_in_order(prompt: &str, text: &str, names: &[&str]) {
 }
 
 /// Every snake_case MCP tool name the Spec defines (existing tools, Req 14,
-/// 21, 25-27, 30, 40).
-const SPEC_TOOLS: &[&str] = &[
+/// 21, 25-27, 30, 40). One block per feature: a later WI appends to its own.
+const EXISTING_SPEC_TOOLS: &[&str] = &[
     "search",
     "get_note",
     "neighbors",
@@ -241,9 +241,16 @@ const SPEC_TOOLS: &[&str] = &[
     "remove_from_smart_folder",
 ];
 
+/// The tag tools a prompt may name (#241 fills this block).
+const TAG_SPEC_TOOLS: &[&str] = &[];
+
+/// The feedback tools a prompt may name (#254 fills this block).
+const FEEDBACK_SPEC_TOOLS: &[&str] = &[];
+
 /// Snake_case parameter, field, prompt and error-code names the Spec and
-/// CONTRACTS C1/C2 define, which a prompt may also mention.
-const SPEC_FIELDS: &[&str] = &[
+/// CONTRACTS C1/C2 define, which a prompt may also mention. One block per
+/// feature: a later WI appends to its own.
+const EXISTING_SPEC_FIELDS: &[&str] = &[
     "review_daily_notes",
     "note_id",
     "topic_note_id",
@@ -280,10 +287,27 @@ const SPEC_FIELDS: &[&str] = &[
     "invalid_argument",
 ];
 
+/// The tag fields a prompt may name (#243 fills this block).
+const TAG_SPEC_FIELDS: &[&str] = &[];
+
+/// The feedback fields a prompt may name (#257 fills this block).
+const FEEDBACK_SPEC_FIELDS: &[&str] = &[];
+
 /// Any snake_case identifier in the text must be a Spec tool or field name, so
 /// an agent is never told to call a tool that the Spec does not define.
 fn assert_only_spec_identifiers(prompt: &str, text: &str) {
-    let known: BTreeSet<&str> = SPEC_TOOLS.iter().chain(SPEC_FIELDS).copied().collect();
+    let known: BTreeSet<&str> = [
+        EXISTING_SPEC_TOOLS,
+        TAG_SPEC_TOOLS,
+        FEEDBACK_SPEC_TOOLS,
+        EXISTING_SPEC_FIELDS,
+        TAG_SPEC_FIELDS,
+        FEEDBACK_SPEC_FIELDS,
+    ]
+    .into_iter()
+    .flatten()
+    .copied()
+    .collect();
     let re = Regex::new(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b").unwrap();
     let unknown: BTreeSet<&str> = re
         .find_iter(text)
@@ -563,9 +587,9 @@ fn prompts_use_glossary_terms() {
         assert_contains("capture", CAPTURE, term);
     }
 
-    // Glossary spellings: always `Smart Folder` and `Topics footer`.
+    // Glossary spellings: always `Smart Folder` and `Note footer`.
     let smart_folder = Regex::new(r"(?i)\bsmart folders?\b").unwrap();
-    let topics_footer = Regex::new(r"(?i)\btopics footer\b").unwrap();
+    let note_footer = Regex::new(r"(?i)\bnote footer\b").unwrap();
     // Glossary `_Avoid_` terms for the concepts these prompts talk about.
     let avoid = Regex::new(
         r"(?i)\b(journal|day page|snippet|subject note|concept note|inbox|dictation|quick add|organi[sz]\w*|links section|user-owned)\b",
@@ -579,12 +603,8 @@ fn prompts_use_glossary_terms() {
                 m.as_str()
             );
         }
-        for m in topics_footer.find_iter(text) {
-            assert_eq!(
-                m.as_str(),
-                "Topics footer",
-                "the {prompt} prompt's spelling"
-            );
+        for m in note_footer.find_iter(text) {
+            assert_eq!(m.as_str(), "Note footer", "the {prompt} prompt's spelling");
         }
         let bad: Vec<&str> = avoid.find_iter(text).map(|m| m.as_str()).collect();
         assert!(
