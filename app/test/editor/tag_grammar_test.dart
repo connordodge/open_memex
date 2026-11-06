@@ -774,6 +774,30 @@ void main() {
       });
     }
 
+    test('tagQueryAt takes the fence state of each line from the host', () {
+      // Alone, `~~~` opens a fence; the host says it closes one.
+      expect(tagQueryAt('~~~\n#y', 6), isNull);
+      final after = tagQueryAt('~~~\n#y', 6, fenced: const [true, false]);
+      expect((after!.start, after.lineStart, after.query), (4, 4, 'y'));
+
+      // Alone, `#x` is prose; the host says it sits in a fence.
+      expect(tagQueryAt('#x', 2)?.query, 'x');
+      expect(tagQueryAt('#x', 2, fenced: const [true]), isNull);
+
+      // The state read is the caret line's, not the first or the last line's.
+      const three = 'a\n#x\nb';
+      expect(tagQueryAt(three, 4, fenced: const [false, true, false]), isNull);
+      expect(
+        tagQueryAt(three, 4, fenced: const [true, false, true])?.query,
+        'x',
+      );
+    });
+
+    test('tagQueryAt reads a line past the end of the host state as open', () {
+      expect(tagQueryAt('a\n#x', 4, fenced: const [true])?.query, 'x');
+      expect(tagQueryAt('#x', 2, fenced: const [])?.query, 'x');
+    });
+
     test('TagQuery name drops trailing dashes and underscores', () {
       final names = <String, String>{
         '': '',

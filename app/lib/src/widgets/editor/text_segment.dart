@@ -360,6 +360,7 @@ class _TextSegmentFieldState extends State<TextSegmentField> {
           key: _tagAutocompleteKey,
           controller: widget.controller,
           caretLocator: _caretGlobal,
+          focusNode: _focus,
         ),
       ],
     );

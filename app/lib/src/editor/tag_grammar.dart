@@ -265,7 +265,11 @@ final class TagQuery {
 /// the caret must pass [opensTag], the text from it to the caret must be a tag
 /// name prefix, and it must lie outside fenced code and everything
 /// [findTagsInLine] skips. For type-ahead (#246), which adds its own rules.
-TagQuery? tagQueryAt(String text, int caret) {
+///
+/// [fenced] says which lines of [text] are fenced code when the host read them
+/// over more than [text] (`fencedRowLines`); a line past its end is not fenced.
+/// Null: [text] is judged alone, with [fencedLines].
+TagQuery? tagQueryAt(String text, int caret, {List<bool>? fenced}) {
   final before = text.substring(0, caret);
   final lineStart = before.lastIndexOf('\n') + 1;
   final hash = before.lastIndexOf('#');
@@ -283,23 +287,10 @@ TagQuery? tagQueryAt(String text, int caret) {
   if (_hiddenRanges(line).any((r) => r.$1 <= offset && offset < r.$2)) {
     return null;
   }
-  if (_isFenced(before.substring(0, lineStart), line)) return null;
+  final lineIndex = '\n'.allMatches(before).length;
+  final lines = fenced ?? fencedLines(text.split('\n'));
+  if (lines.elementAtOrNull(lineIndex) ?? false) return null;
   return TagQuery(hash, lineStart, query);
-}
-
-/// Whether [line] is fenced code: [above], the text before it, leaves a fence
-/// open, or [line] opens one.
-bool _isFenced(String above, String line) {
-  _Fence? fence;
-  for (final previous in above.split('\n')) {
-    final open = fence;
-    if (open == null) {
-      fence = _Fence.openedBy(previous);
-    } else if (open.closedBy(previous)) {
-      fence = null;
-    }
-  }
-  return fence != null || _Fence.openedBy(line) != null;
 }
 
 /// For each of [lines] in order (one line of text each, no `\n`), whether it

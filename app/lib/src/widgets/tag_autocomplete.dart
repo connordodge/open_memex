@@ -20,6 +20,10 @@ import 'wikilink_autocomplete.dart';
 /// `#` and fuzzy-matched for a query, plus a create row while a query names no
 /// listed tag; on accept, replaces `#query` with `#name `.
 ///
+/// It opens only while typing, in a focused field (D41): a caret move or a
+/// click never opens it. Enter on a tag already typed in full closes it and
+/// leaves the key to the field, which makes the new line.
+///
 /// Mounted like [WikilinkAutocomplete]: a sibling of the body `TextField`,
 /// whose `FocusNode.onKeyEvent` calls [handleKeyEvent] first. The widget never
 /// requests focus. A create row writes text only: the tag exists once saved.
@@ -28,12 +32,17 @@ class TagAutocomplete extends ConsumerStatefulWidget {
     super.key,
     required this.controller,
     required this.caretLocator,
+    this.focusNode,
   });
 
   final TextEditingController controller;
 
   /// Returns the **global** screen offset where the popover anchors.
   final Offset Function() caretLocator;
+
+  /// The field's focus node: the popover doesn't open while the field lacks
+  /// focus. Null: the host has no focus to wait for.
+  final FocusNode? focusNode;
 
   @override
   ConsumerState<TagAutocomplete> createState() => TagAutocompleteState();
@@ -52,8 +61,10 @@ class TagAutocompleteState extends ConsumerState<TagAutocomplete> {
   /// popover nor reset its selection.
   late TextEditingValue _seen;
 
-  /// Escape or a click outside closed the popover for the current value.
-  bool _dismissed = false;
+  /// The value's last change was typing, and neither Escape nor a click
+  /// outside closed the popover since: the only state it may open in, for a
+  /// tags read too.
+  bool _typing = false;
 
   bool get isOpen => _entry != null;
 
@@ -83,8 +94,8 @@ class TagAutocompleteState extends ConsumerState<TagAutocomplete> {
   void _onChange() {
     final value = widget.controller.value;
     if (value == _seen) return;
+    _typing = value.text != _seen.text;
     _seen = value;
-    _dismissed = false;
     _selectedIndex = 0;
     _sync();
   }
@@ -92,7 +103,6 @@ class TagAutocompleteState extends ConsumerState<TagAutocomplete> {
   /// A tags read landed. A save bumps the vault revision and so re-reads the
   /// tags: the selected tag stays selected.
   void _onTagsChanged() {
-    if (_dismissed) return;
     final index = _selectedIndex;
     final selected = index < _rows.length ? _rows[index].tag : null;
     _sync();
@@ -105,10 +115,10 @@ class TagAutocompleteState extends ConsumerState<TagAutocomplete> {
     _rows = found == null ? const [] : _matches(found.query);
     if (_itemCount == 0) {
       _close();
-    } else if (_entry == null) {
-      _open();
-    } else {
+    } else if (_entry != null) {
       _entry!.markNeedsBuild();
+    } else if (_typing && (widget.focusNode?.hasFocus ?? true)) {
+      _open();
     }
   }
 
@@ -121,7 +131,11 @@ class TagAutocompleteState extends ConsumerState<TagAutocomplete> {
     final selection = controller.selection;
     if (!selection.isValid || !selection.isCollapsed) return null;
     final text = controller.text;
-    final found = tagQueryAt(text, selection.baseOffset);
+    final found = tagQueryAt(
+      text,
+      selection.baseOffset,
+      fenced: controller is LivePreviewController ? controller.fenced : null,
+    );
     if (found == null) return null;
     if (_inUnclosedWikilink(text.substring(found.lineStart, found.start))) {
       return null;
@@ -171,13 +185,16 @@ class TagAutocompleteState extends ConsumerState<TagAutocomplete> {
   }
 
   void _dismiss() {
-    _dismissed = true;
+    _typing = false;
     _close();
   }
 
   /// Called by the host's `FocusNode.onKeyEvent`. While the popover is open,
   /// ↑/↓ move the selection, Enter/Tab accept and Esc dismisses; the host
-  /// returns the result, so a handled key never reaches the `TextField`.
+  /// returns the result, so a handled key never reaches the `TextField`. Enter
+  /// on a selected tag that is the query as typed closes the popover and is
+  /// ignored, so it does what Enter does with no popover (D41). Tab still
+  /// accepts it.
   KeyEventResult handleKeyEvent(KeyEvent event) {
     if (!isOpen) return KeyEventResult.ignored;
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
@@ -197,14 +214,18 @@ class TagAutocompleteState extends ConsumerState<TagAutocomplete> {
       _select(_selectedIndex - 1 + _itemCount);
       return KeyEventResult.handled;
     }
-    if (key == LogicalKeyboardKey.enter ||
-        key == LogicalKeyboardKey.numpadEnter ||
-        key == LogicalKeyboardKey.tab) {
-      if (_selectedIndex < _rows.length) {
-        _accept(_rows[_selectedIndex].tag);
-      } else {
-        _accept(_found!.name);
+    final enter =
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter;
+    if (enter || key == LogicalKeyboardKey.tab) {
+      final tag = _selectedIndex < _rows.length
+          ? _rows[_selectedIndex].tag
+          : null;
+      if (enter && tag == _query) {
+        _dismiss();
+        return KeyEventResult.ignored;
       }
+      _accept(tag ?? _found!.name);
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;
@@ -284,7 +305,7 @@ class TagAutocompleteState extends ConsumerState<TagAutocomplete> {
   @override
   Widget build(BuildContext context) {
     // Loads the tags with the editor (D14a: async); a read that lands refreshes
-    // an open popover and may open one a bare `#` had no rows for.
+    // an open popover and may open one a just-typed bare `#` had no rows for.
     ref.listen(tagsAsyncProvider, (_, _) => _onTagsChanged());
     return const SizedBox.shrink();
   }

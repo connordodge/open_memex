@@ -2,6 +2,9 @@
 // the `#` type-ahead over existing tags, in the same host as `[[`
 // (TextSegmentField), so in live preview rows and the Source field.
 //
+// D41 (Connor): Enter on a tag typed in full makes a new line, and only typing
+// opens the popover.
+//
 // Keys the tests read: `tag-autocomplete` (the box), `tag-autocomplete-item-<tag>`
 // (a tag row), `tag-autocomplete-create` (the create row).
 //
@@ -545,6 +548,8 @@ void main() {
         await _type(tester, field, 'x #', caret: 1);
         expect(_popover, findsNothing);
 
+        // Retyped: a caret move back would not reopen it (D41).
+        await _type(tester, field, 'x ');
         await _expectOpens(tester, field);
         await _type(tester, field, 'x #', caret: 0);
         expect(_popover, findsNothing);
@@ -2016,6 +2021,548 @@ void main() {
         expect(_popover, findsNothing);
       },
     );
+
+    testWidgets(
+      'a hash opens in the row after a tilde fence that an item row splits',
+      (tester) async {
+        final r = await launchTagged(tester);
+        await r.open(fixtureTopicId);
+
+        // The last row holds `~~~\n#y`: alone its first line reads as an
+        // opener, but on the server it closes the fence.
+        await r.typeInSegment(2, '~~~\n- #\n~~~\n');
+        await pumpFrames(tester);
+        await r.focusSegment(2);
+        await r.typeChars('#y');
+        await pumpFrames(tester);
+        expect(r.segmentText(2), '~~~\n- #\n~~~\n#y');
+        expect(_popover, findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'a hash in an item row inside a tilde fence does not open and one outside does',
+      (tester) async {
+        final r = await launchTagged(tester);
+        await r.open(fixtureTopicId);
+
+        await r.typeInSegment(2, 'a\n- ');
+        await pumpFrames(tester);
+        await r.focusSegment(2);
+        await r.typeChars('#');
+        await pumpFrames(tester);
+        expect(r.segmentText(2), 'a\n- #');
+        expect(_popover, findsOneWidget, reason: 'control: no fence');
+
+        // The item row holds only `#`: the fence is in the rows around it.
+        await r.typeInSegment(2, '~~~\n- \n~~~');
+        await pumpFrames(tester);
+        expect(_popover, findsNothing);
+        await r.focusSegment(2, offset: 6);
+        await r.typeChars('#');
+        await pumpFrames(tester);
+        expect(r.segmentText(2), '~~~\n- #\n~~~');
+        expect(_popover, findsNothing, reason: 'a bare hash in the fence');
+
+        await r.typeChars('x');
+        await pumpFrames(tester);
+        expect(r.segmentText(2), '~~~\n- #x\n~~~');
+        expect(_popover, findsNothing, reason: 'a query in the fence');
+      },
+    );
+
+    testWidgets('a plain hash inside a tilde fence in one row does not open', (
+      tester,
+    ) async {
+      final r = await launchTagged(tester);
+      await r.open(fixtureTopicId);
+
+      await r.typeInSegment(2, '~~~\nb\n~~~\nc');
+      await pumpFrames(tester);
+      await r.focusSegment(2);
+      await r.typeChars(' #');
+      await pumpFrames(tester);
+      expect(r.segmentText(2), '~~~\nb\n~~~\nc #');
+      expect(_popover, findsOneWidget, reason: 'control: past the close');
+
+      await r.typeInSegment(2, '~~~\nb\n~~~');
+      await pumpFrames(tester);
+      expect(_popover, findsNothing);
+      await r.focusSegment(2, offset: 5);
+      await r.typeChars(' #');
+      await pumpFrames(tester);
+      expect(r.segmentText(2), '~~~\nb #\n~~~');
+      expect(_popover, findsNothing);
+    });
+
+    testWidgets(
+      'Enter on an exact match makes a new line in a live preview prose row',
+      (tester) async {
+        final r = await launchTagged(tester);
+        await r.open(fixtureTopicId);
+
+        await r.typeInSegment(2, 'Outro #work');
+        await pumpFrames(tester);
+        expect(_popover, findsOneWidget);
+
+        expect(await r.pressEnter(), isFalse, reason: 'left to the platform');
+        await pumpFrames(tester);
+        expect(r.segmentText(2), 'Outro #work\n');
+        expect(
+          r.segmentSelection(2),
+          const TextSelection.collapsed(offset: 12),
+        );
+        expect(_popover, findsNothing);
+      },
+    );
+
+    testWidgets(
+      'Enter on an exact match continues the list in a live preview item row',
+      (tester) async {
+        final r = await launchTagged(tester);
+        await r.open(fixtureTopicId);
+
+        await r.typeInSegment(2, '- #work');
+        await pumpFrames(tester);
+        expect(_popover, findsOneWidget);
+
+        await r.pressEnter();
+        await pumpFrames(tester);
+        expect(r.segmentText(2), '- #work\n- ');
+        expect(_popover, findsNothing);
+      },
+    );
+
+    testWidgets('Enter on an exact match continues the list in Source mode', (
+      tester,
+    ) async {
+      final r = await launchTagged(tester);
+      await r.open(fixtureTopicId);
+      await r.toggleSource();
+
+      await tester.showKeyboard(sourceField(r));
+      await tester.enterText(sourceField(r), '- call #work');
+      await pumpFrames(tester);
+      expect(_popover, findsOneWidget);
+
+      await r.pressEnter();
+      await pumpFrames(tester);
+      expect(r.sourceText, '- call #work\n- ');
+      expect(_popover, findsNothing);
+    });
+
+    testWidgets(
+      'a caret move to a tag in a live preview row does not open it',
+      (tester) async {
+        final r = await launchTagged(tester);
+        await r.open(fixtureTopicId);
+
+        await r.typeInSegment(2, 'Outro #pricing and more');
+        await pumpFrames(tester);
+        expect(_popover, findsNothing);
+
+        await r.focusSegment(2, offset: 14);
+        await pumpFrames(tester);
+        expect(
+          r.segmentSelection(2),
+          const TextSelection.collapsed(offset: 14),
+        );
+        expect(_popover, findsNothing);
+
+        await r.typeChars('s');
+        await pumpFrames(tester);
+        expect(_popover, findsOneWidget, reason: 'control: typing opens it');
+      },
+    );
+
+    testWidgets(
+      'the Source mode field judges a tilde fence from its own text',
+      (tester) async {
+        final r = await launchTagged(tester);
+        await r.open(fixtureTopicId);
+        await r.toggleSource();
+
+        await tester.showKeyboard(sourceField(r));
+        await tester.enterText(sourceField(r), '~~~\n- #');
+        await pumpFrames(tester);
+        expect(_popover, findsNothing);
+
+        await tester.enterText(sourceField(r), '~~~\n- #\n~~~\n#y');
+        await pumpFrames(tester);
+        expect(_popover, findsOneWidget);
+      },
+    );
+  });
+
+  group('Enter on a tag typed in full (D41)', () {
+    testWidgets(
+      'Enter on an exact match closes the popover and leaves the key to the field',
+      (tester) async {
+        final field = await _pumpField(tester);
+
+        await _type(tester, field, 'x #work');
+        expect(_selectedRows(), ['work']);
+
+        final handled = await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        expect(handled, isFalse);
+        expect(_popover, findsNothing);
+        expect(field.text, 'x #work', reason: 'the platform adds the newline');
+        expect(field.selection, const TextSelection.collapsed(offset: 7));
+      },
+    );
+
+    testWidgets('numpad Enter on an exact match leaves the key to the field', (
+      tester,
+    ) async {
+      final field = await _pumpField(tester);
+
+      await _type(tester, field, 'x #work');
+      final handled = await tester.sendKeyEvent(LogicalKeyboardKey.numpadEnter);
+      await tester.pump();
+      expect(handled, isFalse);
+      expect(_popover, findsNothing);
+      expect(field.text, 'x #work');
+    });
+
+    testWidgets('Enter on an exact match mid-line leaves the text after it', (
+      tester,
+    ) async {
+      final field = await _pumpField(tester);
+
+      await _type(tester, field, 'x #work tail', caret: 7);
+      expect(_popover, findsOneWidget);
+      final handled = await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(handled, isFalse);
+      expect(_popover, findsNothing);
+      expect(field.text, 'x #work tail');
+    });
+
+    testWidgets('Enter on a partial match still completes the tag', (
+      tester,
+    ) async {
+      final field = await _pumpField(tester);
+
+      await _type(tester, field, 'x #wor');
+      final handled = await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(handled, isTrue);
+      expect(field.text, 'x #work ');
+      expect(_popover, findsNothing);
+    });
+
+    testWidgets('Tab on an exact match accepts and adds the space', (
+      tester,
+    ) async {
+      final field = await _pumpField(tester);
+
+      await _type(tester, field, 'x #work');
+      final handled = await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.pump();
+      expect(handled, isTrue);
+      expect(field.text, 'x #work ');
+      expect(field.selection, const TextSelection.collapsed(offset: 8));
+      expect(_popover, findsNothing);
+    });
+
+    testWidgets(
+      'Enter on a row arrowed to from an exact match accepts that row',
+      (tester) async {
+        final field = await _pumpField(
+          tester,
+          tags: [_tag('work', 2), _tag('workshop', 1)],
+        );
+
+        await _type(tester, field, 'x #work');
+        expect(_rowNames(), ['work', 'workshop']);
+        await _press(tester, LogicalKeyboardKey.arrowDown);
+        expect(_selectedRows(), ['workshop']);
+
+        final handled = await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        expect(handled, isTrue);
+        expect(field.text, 'x #workshop ');
+      },
+    );
+
+    testWidgets(
+      'Enter on the exact row arrowed back to leaves the key to the field',
+      (tester) async {
+        final field = await _pumpField(
+          tester,
+          tags: [_tag('work', 2), _tag('workshop', 1)],
+        );
+
+        await _type(tester, field, 'x #work');
+        await _press(tester, LogicalKeyboardKey.arrowDown);
+        await _press(tester, LogicalKeyboardKey.arrowUp);
+        expect(_selectedRows(), ['work']);
+
+        final handled = await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        expect(handled, isFalse);
+        expect(field.text, 'x #work');
+        expect(_popover, findsNothing);
+      },
+    );
+
+    testWidgets('Enter on a tag typed in another case completes to its name', (
+      tester,
+    ) async {
+      final field = await _pumpField(tester);
+
+      await _type(tester, field, 'x #Work');
+      expect(_createRow, findsNothing);
+      final handled = await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(handled, isTrue);
+      expect(field.text, 'x #work ');
+    });
+
+    testWidgets(
+      'a tags re-read after an exact Enter leaves the popover closed',
+      (tester) async {
+        final field = await _pumpField(
+          tester,
+          overrides: [
+            tagsAsyncProvider.overrideWith((ref) async {
+              ref.watch(vaultRevisionProvider);
+              return VaultScoped(ref.watch(currentVaultProvider), _sample);
+            }),
+          ],
+        );
+        final container = _container(tester);
+
+        await _type(tester, field, 'x #work');
+        await _press(tester, LogicalKeyboardKey.enter);
+        expect(_popover, findsNothing);
+
+        container.read(vaultRevisionProvider.notifier).state++;
+        await _flush(tester);
+        expect(_popover, findsNothing);
+      },
+    );
+  });
+
+  group('the popover opens only while typing (D41)', () {
+    testWidgets('a caret move onto a hash or a tag never opens the popover', (
+      tester,
+    ) async {
+      final field = await _pumpField(tester);
+
+      await _type(tester, field, 'x #pricing y #');
+      expect(_popover, findsOneWidget, reason: 'control: typing opens it');
+      await _type(tester, field, 'x #pricing y z');
+      expect(_popover, findsNothing);
+
+      for (final caret in [10, 3, 5, 10]) {
+        await _type(tester, field, 'x #pricing y z', caret: caret);
+        expect(_popover, findsNothing, reason: 'caret at $caret');
+      }
+    });
+
+    testWidgets('a click at the end of a tag does not open the popover', (
+      tester,
+    ) async {
+      final field = await _pumpField(tester);
+
+      await _type(tester, field, 'x #pricing y');
+      expect(_popover, findsNothing);
+
+      final editable = findRenderEditable(
+        tester.renderObject(find.byType(TextField)),
+      )!;
+      final caret = RenderEditableLineBoxes(editable).caretRect(10);
+      await tester.tapAt(editable.localToGlobal(caret.centerLeft));
+      await tester.pump();
+      expect(field.selection, const TextSelection.collapsed(offset: 10));
+      expect(_popover, findsNothing);
+      await tester.pump(const Duration(seconds: 1));
+    });
+
+    testWidgets('typing after a caret move opens the popover', (tester) async {
+      final field = await _pumpField(tester);
+
+      await _type(tester, field, 'x #pricing y');
+      await _type(tester, field, 'x #pricing y', caret: 10);
+      expect(_popover, findsNothing);
+
+      await _type(tester, field, 'x #pricings y', caret: 11);
+      expect(_popover, findsOneWidget);
+    });
+
+    testWidgets('an open popover follows a caret move inside its query', (
+      tester,
+    ) async {
+      final field = await _pumpField(
+        tester,
+        tags: [_tag('pa', 2), _tag('pb', 1), _tag('qq', 5)],
+      );
+
+      await _type(tester, field, 'x #pa');
+      expect(_rowNames(), ['pa']);
+
+      await _type(tester, field, 'x #pa', caret: 4);
+      expect(_popover, findsOneWidget);
+      expect(_rowNames(), ['pa', 'pb']);
+
+      await _type(tester, field, 'x #pa', caret: 3);
+      expect(_popover, findsOneWidget);
+      expect(_rowNames(), ['qq', 'pa', 'pb'], reason: 'bare, most-used first');
+
+      await _type(tester, field, 'x #pa', caret: 1);
+      expect(_popover, findsNothing);
+
+      await _type(tester, field, 'x #pa', caret: 4);
+      expect(_popover, findsNothing, reason: 'a caret move does not reopen it');
+    });
+
+    testWidgets('a tags load after a caret move does not open the popover', (
+      tester,
+    ) async {
+      final load = Completer<VaultScoped<List<TagRow>>>();
+      final field = await _pumpField(
+        tester,
+        overrides: [tagsAsyncProvider.overrideWith((ref) => load.future)],
+      );
+
+      await _type(tester, field, 'x #');
+      expect(_popover, findsNothing, reason: 'no rows yet');
+      await _type(tester, field, 'x #', caret: 1);
+      await _type(tester, field, 'x #', caret: 3);
+
+      load.complete(VaultScoped(null, _sample));
+      await _flush(tester);
+      expect(_popover, findsNothing);
+
+      await _type(tester, field, 'x #m');
+      expect(_popover, findsOneWidget, reason: 'control: typing opens it');
+    });
+
+    testWidgets('after Escape a caret move leaves it closed through a load', (
+      tester,
+    ) async {
+      final load = Completer<VaultScoped<List<TagRow>>>();
+      final field = await _pumpField(
+        tester,
+        overrides: [tagsAsyncProvider.overrideWith((ref) => load.future)],
+      );
+
+      await _type(tester, field, 'x #pr');
+      await _press(tester, LogicalKeyboardKey.escape);
+      expect(_popover, findsNothing);
+
+      await _type(tester, field, 'x #pr', caret: 4);
+      expect(_popover, findsNothing);
+
+      load.complete(VaultScoped(null, _sample));
+      await _flush(tester);
+      expect(_popover, findsNothing);
+    });
+  });
+
+  group('the popover opens only in a focused field', () {
+    const fieldA = Key('field-a');
+    const fieldB = Key('field-b');
+
+    /// Two fields of one page, neither focused, whose tags load [overrides].
+    Future<(TextEditingController, TextEditingController)> pumpTwo(
+      WidgetTester tester, {
+      required List<Override> overrides,
+    }) async {
+      final a = TextEditingController();
+      final b = TextEditingController();
+      final host = KindChipHost();
+      addTearDown(a.dispose);
+      addTearDown(b.dispose);
+      addTearDown(host.dispose);
+      await pumpEditorScoped(
+        tester,
+        MaterialApp(
+          home: Scaffold(
+            body: Column(
+              children: [
+                TextSegmentField(key: fieldA, controller: a, kindChips: host),
+                TextSegmentField(key: fieldB, controller: b, kindChips: host),
+              ],
+            ),
+          ),
+        ),
+        overrides: overrides,
+      );
+      await _flush(tester);
+      return (a, b);
+    }
+
+    Future<void> focus(WidgetTester tester, Key key) async {
+      await tester.showKeyboard(find.byKey(key));
+      await tester.pump();
+    }
+
+    testWidgets('a tags load does not open the popover in an unfocused field', (
+      tester,
+    ) async {
+      final load = Completer<VaultScoped<List<TagRow>>>();
+      final (a, b) = await pumpTwo(
+        tester,
+        overrides: [tagsAsyncProvider.overrideWith((ref) => load.future)],
+      );
+
+      await focus(tester, fieldA);
+      await _type(tester, a, 'x #');
+      expect(_popover, findsNothing, reason: 'no rows yet');
+
+      await focus(tester, fieldB);
+      await _type(tester, b, '#first');
+      await _press(tester, LogicalKeyboardKey.escape);
+      expect(_popover, findsNothing);
+
+      load.complete(VaultScoped(null, _sample));
+      await _flush(tester);
+      expect(_popover, findsNothing);
+      expect(a.text, 'x #');
+    });
+
+    testWidgets('a tags load opens the popover in the focused field only', (
+      tester,
+    ) async {
+      final load = Completer<VaultScoped<List<TagRow>>>();
+      final (a, b) = await pumpTwo(
+        tester,
+        overrides: [tagsAsyncProvider.overrideWith((ref) => load.future)],
+      );
+
+      await focus(tester, fieldA);
+      await _type(tester, a, 'x #');
+      await focus(tester, fieldB);
+      await _type(tester, b, 'y #');
+      expect(_popover, findsNothing, reason: 'no rows yet');
+
+      load.complete(VaultScoped(null, _sample));
+      await _flush(tester);
+      expect(_popover, findsOneWidget);
+
+      await _press(tester, LogicalKeyboardKey.tab);
+      expect(b.text, 'y #memex ', reason: 'the focused field holds it');
+      expect(a.text, 'x #');
+      expect(_popover, findsNothing);
+    });
+
+    testWidgets(
+      'text written to an unfocused field does not open the popover',
+      (tester) async {
+        final (a, _) = await pumpTwo(tester, overrides: [_tagsLoad(_sample)]);
+
+        await focus(tester, fieldB);
+        await _type(tester, a, 'x #pr');
+        expect(_popover, findsNothing);
+
+        await focus(tester, fieldA);
+        await _type(tester, a, 'x #pri');
+        expect(_popover, findsOneWidget, reason: 'control: focused, it opens');
+      },
+    );
   });
 
   group('contracts pinned in verify', () {
@@ -2035,7 +2582,10 @@ void main() {
         selection: TextSelection.collapsed(offset: 5),
       );
       await tester.pump();
-      expect(_popover, findsOneWidget, reason: 'control: collapsed opens it');
+      expect(_popover, findsNothing, reason: 'collapsing it is no typing');
+
+      await _type(tester, field, 'x #pri');
+      expect(_popover, findsOneWidget, reason: 'control: typing opens it');
     });
 
     testWidgets('a tags re-read keeps the selected tag selected', (
