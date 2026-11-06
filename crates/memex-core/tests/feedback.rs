@@ -3724,3 +3724,216 @@ fn no_feedback_operation_changes_review_state_or_content_version() {
         "comment, chat, tag, added, removed, removed, moved"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Verify round: contracts the implementer's handoff listed as unpinned
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_failing_record_rolls_back_update_folder_and_remove_member_so_a_retry_records() {
+    let mut w = world();
+    let f = folder(&mut w.vault, "Games", None, Caller::Agent);
+    member(&mut w.vault, &f, &w.topic, Caller::Agent);
+    fail_inserts_into(&w.vault, "feedback");
+
+    let renamed = sf::update_folder(
+        &mut w.vault,
+        &f,
+        rename_update("Play"),
+        Caller::Person,
+        &FakeClock::at(T0),
+    );
+    assert!(renamed.is_err(), "update_folder");
+    let unmembered = sf::remove_member(&mut w.vault, &f, w.topic.as_str(), Caller::Person);
+    assert!(unmembered.is_err(), "remove_member");
+
+    let list = sf::list_folders(&w.vault).unwrap();
+    assert_eq!(
+        list.folders[0].folder.name, "Games",
+        "the rename rolled back"
+    );
+    assert!(
+        !list.folders[0].folder.pinned,
+        "the pin the rename would set rolled back too"
+    );
+    assert_eq!(list.folders[0].members.len(), 1, "the member stays");
+    assert_eq!(count(&w.vault), 0);
+
+    // The retry finds the folder unpinned and the member there, so it records.
+    w.vault
+        .connection_ref()
+        .execute_batch("DROP TRIGGER fail_feedback")
+        .unwrap();
+    update(&mut w.vault, &f, rename_update("Play"), Caller::Person);
+    sf::remove_member(&mut w.vault, &f, w.topic.as_str(), Caller::Person).unwrap();
+    assert_eq!(kinds(&w.vault), ["folder_renamed", "membership_removed"]);
+}
+
+#[test]
+fn a_multi_block_file_whose_second_record_fails_records_none() {
+    let mut w = world();
+    w.vault
+        .connection_ref()
+        .execute_batch(&format!(
+            "CREATE TRIGGER fail_second BEFORE INSERT ON feedback
+             WHEN NEW.correction_json LIKE '%{C3}%'
+             BEGIN SELECT RAISE(ABORT, 'injected failure'); END;"
+        ))
+        .unwrap();
+
+    let filed = add_excerpt(
+        &mut w.vault,
+        &w.topic,
+        DAY,
+        &ids(&[B7, C3]),
+        Caller::Person,
+        None,
+    );
+
+    assert!(filed.is_err());
+    assert_eq!(count(&w.vault), 0, "all or none: the first row is undone");
+}
+
+#[test]
+fn add_with_an_activity_entry_of_another_note_is_not_found() {
+    let mut w = world();
+    let other_notes_entry = change(&w.vault, UNKNOWN, w.topic.as_str(), DAY, T0);
+
+    let result = feedback::add(
+        &mut w.vault,
+        w.day.as_str(),
+        DAY,
+        &other_notes_entry,
+        "Why?",
+        &FakeClock::at(T0),
+    );
+
+    assert_eq!(code_of(result, "add"), "not_found");
+    assert_eq!(count(&w.vault), 0);
+}
+
+#[test]
+fn provenance_ignores_the_same_block_id_on_another_day() {
+    const DAY2: &str = "2026-09-06";
+    let mut w = world();
+    create_day(&mut w.vault, DAY2, DAY_BODY, &[B7, C3, F6]);
+    let topic = w.topic.clone();
+
+    // Day one: the person filed B7, and its Correction is Handled.
+    file(&mut w.vault, &topic, &[B7], Caller::Person);
+    handle_all(&w.vault);
+    // Day two: the same block id is a different block, filed by the agent.
+    add_excerpt(&mut w.vault, &topic, DAY2, &ids(&[B7]), Caller::Agent, None).unwrap();
+
+    remove_excerpt_block(&mut w.vault, &topic, DAY2, B7, Caller::Person, None).unwrap();
+
+    assert_eq!(count(&w.vault), 2, "day two's block was the agent's");
+    let last = rows(&w.vault).pop().unwrap();
+    assert_eq!(last.day.as_deref(), Some(DAY2));
+    assert_eq!(last.correction.unwrap()["kind"], "excerpt_removed");
+
+    // The same holds for remove_excerpt.
+    file(&mut w.vault, &topic, &[C3], Caller::Person);
+    handle_all(&w.vault);
+    add_excerpt(&mut w.vault, &topic, DAY2, &ids(&[C3]), Caller::Agent, None).unwrap();
+    let before = count(&w.vault);
+    remove_excerpt(
+        &mut w.vault,
+        &topic,
+        DAY2,
+        &ids(&[C3]),
+        Caller::Person,
+        None,
+    )
+    .unwrap();
+    assert_eq!(count(&w.vault), before + 1, "remove_excerpt");
+}
+
+#[test]
+fn a_noncanonical_tag_id_is_not_found_and_leaves_the_tag_open() {
+    let mut w = world();
+    let n = tag_correction(
+        &w.vault,
+        Some(w.topic.as_str()),
+        TOPIC,
+        "game-feel",
+        T0,
+        None,
+    );
+    let clock = FakeClock::at(T0);
+
+    for id in [
+        format!("tag-0{n}"),
+        format!("tag-+{n}"),
+        format!("tag- {n}"),
+    ] {
+        let resolved = feedback::resolve(&mut w.vault, &id, "Reply.", &[], &clock);
+        assert_eq!(code_of(resolved, &id), "not_found", "resolve {id}");
+        let edited = feedback::edit(&mut w.vault, &id, "Text.", &clock);
+        assert_eq!(code_of(edited, &id), "not_found", "edit {id}");
+        let deleted = feedback::delete(&mut w.vault, &id);
+        assert_eq!(code_of(deleted, &id), "not_found", "delete {id}");
+    }
+    let missing = format!("tag-{}", n + 998);
+    let edited = feedback::edit(&mut w.vault, &missing, "Text.", &clock);
+    assert_eq!(code_of(edited, "edit missing tag"), "not_found");
+    let deleted = feedback::delete(&mut w.vault, &missing);
+    assert_eq!(code_of(deleted, "delete missing tag"), "not_found");
+
+    assert_eq!(count(&w.vault), 0);
+    let open = feedback::list_open(&w.vault).unwrap();
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].id, format!("tag-{n}"));
+}
+
+#[test]
+fn a_rename_and_move_name_the_folder_by_its_new_name_in_the_moved_row() {
+    let mut w = world();
+    let parent = folder(&mut w.vault, "Hobbies", None, Caller::Person);
+    let f = folder(&mut w.vault, "Games", None, Caller::Agent);
+
+    update(
+        &mut w.vault,
+        &f,
+        FolderUpdate {
+            name: Some("Play".into()),
+            parent: Some(NewParent::Folder(parent)),
+            pinned: None,
+        },
+        Caller::Person,
+    );
+
+    assert_eq!(kinds(&w.vault), ["folder_renamed", "folder_moved"]);
+    let moved = rows(&w.vault)[1].correction.clone().unwrap();
+    assert_eq!(moved["name"], "Play");
+}
+
+#[test]
+fn a_racing_save_that_files_a_block_first_leaves_it_out_of_the_recorded_blocks() {
+    let mut w = world();
+    let topic = w.topic.clone();
+    let mut attempts = 0;
+    let mut hook = |v: &mut Vault| {
+        attempts += 1;
+        if attempts == 1 {
+            // The agent files B7 between the person's read and write.
+            add_excerpt(v, &topic, DAY, &ids(&[B7]), Caller::Agent, None).unwrap();
+        }
+    };
+
+    add_excerpt_with_hook(
+        &mut w.vault,
+        &w.topic,
+        DAY,
+        &ids(&[B7, F6]),
+        Caller::Person,
+        None,
+        &mut hook,
+    )
+    .unwrap();
+
+    assert_eq!(attempts, 2, "the first attempt lost the race");
+    let all = rows(&w.vault);
+    assert_eq!(all.len(), 1, "{all:?}");
+    assert_eq!(all[0].correction.as_ref().unwrap()["block_id"], F6);
+}
