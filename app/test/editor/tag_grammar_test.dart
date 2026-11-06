@@ -733,4 +733,59 @@ void main() {
       }
     });
   });
+
+  group('tagQueryAt (#246)', () {
+    // Each row: text, caret, then the expected (start, lineStart, query), or
+    // null where no tag is being typed.
+    final cases = <(String, int?, (int, int, String)?)>[
+      ('#', null, (0, 0, '')),
+      ('#pr', null, (0, 0, 'pr')),
+      ('x #pr', null, (2, 0, 'pr')),
+      ('x #', null, (2, 0, '')),
+      ('a#', null, null),
+      ('x #1', null, null),
+      ('x #a b', null, null),
+      ('x #pr', 4, (2, 0, 'p')),
+      ('x #pr', 1, null),
+      ('one\ntwo #q3-', null, (8, 4, 'q3-')),
+      ('one #a\ntwo', 6, (4, 0, 'a')),
+      ('one #a\nx', 8, null),
+      ('`x #p`', 5, null),
+      ('`x` #p', 6, (4, 0, 'p')),
+      // An unclosed [[ is the widget's rule (the wikilink popover wins).
+      ('[[a #p', 6, (4, 0, 'p')),
+      ('[[a]] #p', 8, (6, 0, 'p')),
+      ('https://x.y/ #p', 15, (13, 0, 'p')),
+      ('https://x.y/#p', 14, null),
+      ('```\nx #p', 8, null),
+      ('```\nx\n```\nx #p', 14, (12, 10, 'p')),
+      ('\u{1D49C} #\u{1D49C}b', null, (3, 0, '\u{1D49C}b')),
+    ];
+    for (final (text, caret, want) in cases) {
+      test('tagQueryAt ${_show(text)} at ${caret ?? 'the end'}', () {
+        final got = tagQueryAt(text, caret ?? text.length);
+        if (want == null) {
+          expect(got, isNull);
+        } else {
+          expect(got, isNotNull);
+          expect((got!.start, got.lineStart, got.query), want);
+        }
+      });
+    }
+
+    test('TagQuery name drops trailing dashes and underscores', () {
+      final names = <String, String>{
+        '': '',
+        'a': 'a',
+        'q3-': 'q3',
+        'q3_': 'q3',
+        'a-_': 'a',
+        'a-b_': 'a-b',
+        'Road-': 'Road',
+      };
+      for (final MapEntry(key: query, value: name) in names.entries) {
+        expect(TagQuery(0, 0, query).name, name, reason: 'query: $query');
+      }
+    });
+  });
 }

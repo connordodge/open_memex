@@ -9,6 +9,8 @@
 // text (`_expectOpens`), so it cannot pass against a popover that never opens.
 import 'dart:async';
 
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -2014,5 +2016,170 @@ void main() {
         expect(_popover, findsNothing);
       },
     );
+  });
+
+  group('contracts pinned in verify', () {
+    testWidgets('a range selection closes the popover', (tester) async {
+      final field = await _pumpField(tester);
+
+      await _expectOpens(tester, field);
+      field.value = const TextEditingValue(
+        text: 'x #pr',
+        selection: TextSelection(baseOffset: 5, extentOffset: 4),
+      );
+      await tester.pump();
+      expect(_popover, findsNothing, reason: 'a range selection is no query');
+
+      field.value = const TextEditingValue(
+        text: 'x #pr',
+        selection: TextSelection.collapsed(offset: 5),
+      );
+      await tester.pump();
+      expect(_popover, findsOneWidget, reason: 'control: collapsed opens it');
+    });
+
+    testWidgets('a tags re-read keeps the selected tag selected', (
+      tester,
+    ) async {
+      var tags = <TagRow>[_tag('aa', 3), _tag('bb', 2), _tag('cc', 1)];
+      final field = await _pumpField(
+        tester,
+        overrides: [
+          tagsAsyncProvider.overrideWith((ref) async {
+            ref.watch(vaultRevisionProvider);
+            return VaultScoped(ref.watch(currentVaultProvider), tags);
+          }),
+        ],
+      );
+      final container = _container(tester);
+
+      await _type(tester, field, 'x #');
+      await _press(tester, LogicalKeyboardKey.arrowDown);
+      expect(_selectedRows(), ['bb']);
+
+      // bb is now the most used: it moves to the first position.
+      tags = [_tag('aa', 3), _tag('bb', 9), _tag('cc', 1)];
+      container.read(vaultRevisionProvider.notifier).state++;
+      await _flush(tester);
+      expect(_rowNames(), ['bb', 'aa', 'cc']);
+      expect(_selectedRows(), ['bb'], reason: 'the tag, not the position');
+
+      // The selected tag is gone: the first row is selected.
+      tags = [_tag('aa', 3), _tag('cc', 1)];
+      container.read(vaultRevisionProvider.notifier).state++;
+      await _flush(tester);
+      expect(_rowNames(), ['aa', 'cc']);
+      expect(_selectedRows(), ['aa']);
+
+      await _press(tester, LogicalKeyboardKey.enter);
+      expect(field.text, 'x #aa ');
+    });
+
+    testWidgets('a tags re-read moves a selected create row to the first row', (
+      tester,
+    ) async {
+      var tags = <TagRow>[_tag('pa', 2), _tag('pb', 1)];
+      final field = await _pumpField(
+        tester,
+        overrides: [
+          tagsAsyncProvider.overrideWith((ref) async {
+            ref.watch(vaultRevisionProvider);
+            return VaultScoped(ref.watch(currentVaultProvider), tags);
+          }),
+        ],
+      );
+      final container = _container(tester);
+
+      await _type(tester, field, 'x #p');
+      await _press(tester, LogicalKeyboardKey.arrowDown);
+      await _press(tester, LogicalKeyboardKey.arrowDown);
+      expect(_selectedRows(), ['create']);
+
+      tags = [_tag('pa', 2), _tag('pb', 1), _tag('pc', 1)];
+      container.read(vaultRevisionProvider.notifier).state++;
+      await _flush(tester);
+      expect(_rowNames(), ['pa', 'pb', 'pc']);
+      expect(_selectedRows(), ['pa']);
+    });
+
+    testWidgets('a notification with the same value keeps the selection', (
+      tester,
+    ) async {
+      final live = LivePreviewController();
+      final field = await _pumpField(
+        tester,
+        controller: live,
+        tags: [_tag('aa', 3), _tag('bb', 2)],
+      );
+
+      await _type(tester, field, 'x #');
+      await _press(tester, LogicalKeyboardKey.arrowDown);
+      expect(_selectedRows(), ['bb']);
+
+      live.cmdHover = const TextRange(start: 0, end: 1);
+      await tester.pump();
+      expect(_popover, findsOneWidget);
+      expect(_selectedRows(), ['bb'], reason: 'hover is not a text change');
+    });
+
+    testWidgets('clicking outside also keeps it closed when tags then load', (
+      tester,
+    ) async {
+      final load = Completer<VaultScoped<List<TagRow>>>();
+      final field = await _pumpField(
+        tester,
+        overrides: [tagsAsyncProvider.overrideWith((ref) => load.future)],
+      );
+
+      await _type(tester, field, 'x #pr');
+      expect(_popover, findsOneWidget);
+      await tester.tapAt(const Offset(790, 590));
+      await tester.pump();
+      expect(_popover, findsNothing);
+
+      load.complete(VaultScoped(null, _sample));
+      await _flush(tester);
+      expect(_popover, findsNothing);
+      expect(field.text, 'x #pr');
+
+      await _type(tester, field, 'x #pri');
+      expect(_popover, findsOneWidget, reason: 'typing opens it again');
+    });
+
+    testWidgets('on desktop a click on a row keeps the field focused', (
+      tester,
+    ) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+      try {
+        final field = await _pumpField(tester);
+        final focus = tester
+            .widget<EditableText>(find.byType(EditableText))
+            .focusNode;
+        focus.requestFocus();
+        await tester.pump();
+        expect(focus.hasPrimaryFocus, isTrue, reason: 'control: focused');
+
+        await _type(tester, field, 'x #');
+        await tester.tap(_row('work'));
+        await tester.pump();
+        expect(field.text, 'x #work ');
+        expect(focus.hasPrimaryFocus, isTrue, reason: 'the field keeps focus');
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+
+    testWidgets('the create row accepts on a click and keeps the case', (
+      tester,
+    ) async {
+      final field = await _pumpField(tester);
+
+      await _type(tester, field, 'x #Road-');
+      await tester.tap(_createRow);
+      await tester.pump();
+      expect(field.text, 'x #Road ');
+      expect(field.selection, const TextSelection.collapsed(offset: 8));
+      expect(_popover, findsNothing);
+    });
   });
 }
