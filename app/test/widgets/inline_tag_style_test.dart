@@ -1126,34 +1126,44 @@ void main() {
       };
     }
 
-    for (final card in [false, true]) {
-      final where = card ? 'an excerpt card' : 'the editor grid';
-
-      testWidgets(
-        'a hash straight after a pipe in a table cell renders as body text in $where',
-        (tester) async {
-          const table = '| item | note |\n|---|---|\n|a|#x|';
-          final cells = await pumpGrid(tester, table, card: card);
-          final span = cells['#x']!;
-          for (var i = 0; i < 2; i++) {
-            expect(
-              _styleAt(span, i).color,
-              isNot(OmColors.fg2),
-              reason: 'unit $i is not tag ink',
-            );
-          }
-        },
-      );
-
-      testWidgets(
-        'a hash after a space in a table cell renders as a tag in $where',
-        (tester) async {
-          const table = '| item | note |\n|---|---|\n| a | #x |';
-          final cells = await pumpGrid(tester, table, card: card);
-          _expectTag(cells['#x']!, '#x', (0, 2), OmColors.fg2);
-        },
-      );
+    Future<void> expectPipeHashIsBody(WidgetTester tester, bool card) async {
+      const table = '| item | note |\n|---|---|\n|a|#x|';
+      final cells = await pumpGrid(tester, table, card: card);
+      final span = cells['#x']!;
+      for (var i = 0; i < 2; i++) {
+        expect(
+          _styleAt(span, i).color,
+          isNot(OmColors.fg2),
+          reason: 'unit $i is not tag ink',
+        );
+      }
     }
+
+    Future<void> expectSpacedHashIsTag(WidgetTester tester, bool card) async {
+      const table = '| item | note |\n|---|---|\n| a | #x |';
+      final cells = await pumpGrid(tester, table, card: card);
+      _expectTag(cells['#x']!, '#x', (0, 2), OmColors.fg2);
+    }
+
+    testWidgets(
+      'a hash straight after a pipe in a table cell renders as body text in the editor grid',
+      (tester) => expectPipeHashIsBody(tester, false),
+    );
+
+    testWidgets(
+      'a hash straight after a pipe in a table cell renders as body text in an excerpt card',
+      (tester) => expectPipeHashIsBody(tester, true),
+    );
+
+    testWidgets(
+      'a hash after a space in a table cell renders as a tag in the editor grid',
+      (tester) => expectSpacedHashIsTag(tester, false),
+    );
+
+    testWidgets(
+      'a hash after a space in a table cell renders as a tag in an excerpt card',
+      (tester) => expectSpacedHashIsTag(tester, true),
+    );
   });
 
   group('line height and offsets (AC7, AC8)', () {
