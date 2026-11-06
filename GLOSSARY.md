@@ -86,6 +86,18 @@ _Avoid_: subjects, by subject
 The AI the person brings and connects over MCP, such as Claude, that organizes the vault. The app never calls a model itself.
 _Avoid_: the AI, the model, background AI
 
+**Feedback**:
+What the person tells the agent about how a review filed their notes: a written comment or a Correction.
+_Avoid_: rating, review comment
+
+**Correction**:
+A change the person makes to the agent's filing, recorded as Feedback so the agent can learn from it.
+_Avoid_: override, undo
+
+**Vault Guide**:
+The one document per vault, written by both the person and the agent, that records the vault's organizational framework and the decisions behind it. The agent reads it before every Review and Capture.
+_Avoid_: guidelines, rules, preferences, memory, CLAUDE.md
+
 **Graph view**:
 A read-only, automatically laid out view of notes and the wikilinks between them, scoped to a Smart Folder, topic note, daily note, or the whole vault. Nothing about its layout is stored.
 _Avoid_: spiderweb, canvas, map

@@ -187,20 +187,7 @@ pub fn remove_excerpt_with_hook(
         },
     )?;
 
-    let day_still_excerpted = parse_transclusions(&topic.content_md)
-        .iter()
-        .any(|t| t.date == date);
-    if !day_still_excerpted {
-        if let Some(day) = daily_note_for_date(vault, day_date)? {
-            footer::remove_chip(
-                vault,
-                &day,
-                topic_note_id,
-                RemoveMode::ExcerptOnly,
-                embedder,
-            )?;
-        }
-    }
+    remove_chip_if_day_gone(vault, &topic, date, day_date, embedder)?;
     Ok(topic)
 }
 
@@ -211,7 +198,18 @@ pub struct MovedBlock {
     pub to: Note,
 }
 
-/// Removes one block of the day `date` from the topic note `topic_note_id`.
+/// Removes one block of the day `date` from the topic note `topic_note_id`
+/// (Spec #233 R11). Every token of `date` that covers the block, by `ord`
+/// between its endpoints, is rewritten in place: a range is split around the
+/// block or shrunk (one block on a side becomes a single-block token), and a
+/// token with nothing left goes. The `## <date>` heading and the footer chip
+/// then follow the same rules as [`remove_excerpt`].
+///
+/// Retries like [`add_excerpt`]; returns the topic note as stored after the
+/// call. Errors, each writing nothing: `InvalidDate`, `RoleRule`, `NotFound`
+/// (unknown topic, no daily note for `date`, or no token of `date` covers the
+/// block), `BlockNotFound` (not a stored block of that day), and
+/// `VersionConflict` (every retry raced).
 pub fn remove_excerpt_block(
     vault: &mut Vault,
     topic_note_id: &NoteId,
@@ -235,19 +233,40 @@ pub fn remove_excerpt_block(
 /// [`add_excerpt_with_hook`].
 #[doc(hidden)]
 pub fn remove_excerpt_block_with_hook(
-    _vault: &mut Vault,
-    _topic_note_id: &NoteId,
-    _date: &str,
-    _block_id: &str,
-    _caller: Caller,
-    _embedder: Option<&dyn Embedder>,
-    _before_write: &mut dyn FnMut(&mut Vault),
+    vault: &mut Vault,
+    topic_note_id: &NoteId,
+    date: &str,
+    block_id: &str,
+    caller: Caller,
+    embedder: Option<&dyn Embedder>,
+    before_write: &mut dyn FnMut(&mut Vault),
 ) -> Result<Note> {
-    unimplemented!("remove_excerpt_block")
+    let located = locate_block(vault, topic_note_id, date, block_id)?;
+    let topic = write_topic(
+        vault,
+        topic_note_id,
+        caller,
+        embedder,
+        before_write,
+        |body| {
+            without_block(body, date, located.ord, &located.blocks)
+                .map(Some)
+                .ok_or_else(|| block_not_held(topic_note_id, date, block_id))
+        },
+    )?;
+    remove_chip_if_day_gone(vault, &topic, date, located.day_date, embedder)?;
+    Ok(topic)
 }
 
 /// Files one block of the day `date` into `to_topic`, then removes it from
-/// `from_topic`.
+/// `from_topic` (Spec #233 R12): [`add_excerpt`] followed by
+/// [`remove_excerpt_block`], with their errors and write rules. A target
+/// already holding the block is not written, and the removal still runs. A
+/// failing removal leaves the block in both topic notes and returns the error.
+///
+/// Before any write it fails with `Io(InvalidInput)` when the two topics are
+/// the same note, and with [`remove_excerpt_block`]'s errors when the source
+/// does not hold the block. Returns both topic notes as stored after the call.
 pub fn move_block(
     vault: &mut Vault,
     date: &str,
@@ -274,16 +293,44 @@ pub fn move_block(
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 pub fn move_block_with_hook(
-    _vault: &mut Vault,
-    _date: &str,
-    _block_id: &str,
-    _from_topic: &NoteId,
-    _to_topic: &NoteId,
-    _caller: Caller,
-    _embedder: Option<&dyn Embedder>,
-    _before_remove_write: &mut dyn FnMut(&mut Vault),
+    vault: &mut Vault,
+    date: &str,
+    block_id: &str,
+    from_topic: &NoteId,
+    to_topic: &NoteId,
+    caller: Caller,
+    embedder: Option<&dyn Embedder>,
+    before_remove_write: &mut dyn FnMut(&mut Vault),
 ) -> Result<MovedBlock> {
-    unimplemented!("move_block")
+    if from_topic == to_topic {
+        return Err(MemexError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("cannot move a block from note {from_topic} to itself"),
+        )));
+    }
+    let source = locate_block(vault, from_topic, date, block_id)?;
+    if !held_ords(&source.topic.content_md, date, &source.blocks).contains(&source.ord) {
+        return Err(block_not_held(from_topic, date, block_id));
+    }
+    let to = add_excerpt_with_hook(
+        vault,
+        to_topic,
+        date,
+        &[block_id.to_string()],
+        caller,
+        embedder,
+        &mut |_| {},
+    )?;
+    let from = remove_excerpt_block_with_hook(
+        vault,
+        from_topic,
+        date,
+        block_id,
+        caller,
+        embedder,
+        before_remove_write,
+    )?;
+    Ok(MovedBlock { from, to })
 }
 
 /// Transclusion fields merged into the top level of MCP `get_note` and CLI
@@ -339,6 +386,67 @@ fn daily_note_for_date(vault: &Vault, date: NaiveDate) -> Result<Option<NoteId>>
         .transpose()
 }
 
+/// One block of a day, resolved against the topic note it should be in.
+struct LocatedBlock {
+    topic: Note,
+    day_date: NaiveDate,
+    blocks: DayBlocks,
+    ord: i64,
+}
+
+/// Resolves `block_id` for a removal from `topic_note_id`. Read-only. Errors,
+/// in this order: `InvalidDate`, `RoleRule` / `NotFound` for the topic,
+/// `NotFound` for no daily note on `date`, `BlockNotFound`.
+fn locate_block(
+    vault: &Vault,
+    topic_note_id: &NoteId,
+    date: &str,
+    block_id: &str,
+) -> Result<LocatedBlock> {
+    let day_date = daily::parse_iso_date(date)?;
+    let topic = topic_note(vault, topic_note_id)?;
+    let day = daily_note_for_date(vault, day_date)?
+        .ok_or_else(|| MemexError::NotFound(format!("no daily note for {date}")))?;
+    let blocks = DayBlocks::load(vault, &day)?;
+    let ord = blocks
+        .ord_of(block_id)
+        .ok_or_else(|| MemexError::BlockNotFound(format!("{block_id} in the daily note {date}")))?;
+    Ok(LocatedBlock {
+        topic,
+        day_date,
+        blocks,
+        ord,
+    })
+}
+
+/// The error for a block of the day that no token of `date` in the topic
+/// covers.
+fn block_not_held(topic_note_id: &NoteId, date: &str, block_id: &str) -> MemexError {
+    MemexError::NotFound(format!(
+        "no transclusion of {date} covers block {block_id} in note {topic_note_id}"
+    ))
+}
+
+/// Removes the topic's footer chip on the day `date` when `topic` holds no
+/// other token of that date and the chip's origin is `excerpt`.
+fn remove_chip_if_day_gone(
+    vault: &mut Vault,
+    topic: &Note,
+    date: &str,
+    day_date: NaiveDate,
+    embedder: Option<&dyn Embedder>,
+) -> Result<()> {
+    let day_still_excerpted = parse_transclusions(&topic.content_md)
+        .iter()
+        .any(|t| t.date == date);
+    if !day_still_excerpted {
+        if let Some(day) = daily_note_for_date(vault, day_date)? {
+            footer::remove_chip(vault, &day, &topic.id, RemoveMode::ExcerptOnly, embedder)?;
+        }
+    }
+    Ok(())
+}
+
 /// Reads the topic note, lets `edit` compute its new body (`None`: nothing
 /// to write) and saves it as `caller`, re-reading and retrying on
 /// `VersionConflict` up to [`WRITE_ATTEMPTS`] times. `before_write` runs
@@ -388,13 +496,13 @@ fn write_topic(
 }
 
 /// The stored blocks of one daily note, by id and by ord.
-struct DayBlocks {
+pub(crate) struct DayBlocks {
     ords: HashMap<String, i64>,
     ids: BTreeMap<i64, String>,
 }
 
 impl DayBlocks {
-    fn load(vault: &Vault, day: &NoteId) -> Result<Self> {
+    pub(crate) fn load(vault: &Vault, day: &NoteId) -> Result<Self> {
         let (blocks, _) = daily::stored_blocks(vault.connection_ref(), day.as_str())?;
         let rows: Vec<(String, i64)> = blocks
             .into_iter()
@@ -419,28 +527,84 @@ impl DayBlocks {
             format!("![[{date}#^{from}..^{}]]", self.ids[&last])
         }
     }
+
+    /// The ords between `token`'s endpoints as `(lowest, highest)`, or `None`
+    /// when an endpoint no longer resolves.
+    fn span_of(&self, token: &TransclusionToken) -> Option<(i64, i64)> {
+        let from = self.ord_of(&token.from)?;
+        let to = match &token.to {
+            None => from,
+            Some(to) => self.ord_of(to)?,
+        };
+        Some((from.min(to), from.max(to)))
+    }
+
+    /// The tokens left of the span `lo..=hi` of the day `date` without the
+    /// block at `ord`: the stored blocks on each side of it, in day order.
+    /// Ords can have gaps, so the neighbours come from the stored ords.
+    fn tokens_around(&self, date: &str, lo: i64, hi: i64, ord: i64) -> Vec<String> {
+        let below = self.ids.range(..ord).next_back().map(|(&o, _)| o);
+        let above = self.ids.range(ord + 1..).next().map(|(&o, _)| o);
+        let left = below
+            .filter(|&last| last >= lo)
+            .map(|last| self.token(date, lo, last));
+        let right = above
+            .filter(|&first| first <= hi)
+            .map(|first| self.token(date, first, hi));
+        left.into_iter().chain(right).collect()
+    }
 }
 
 /// The ords of the day `date` that a token of `body` already covers. A token
 /// whose endpoints no longer resolve covers nothing.
-fn held_ords(body: &str, date: &str, blocks: &DayBlocks) -> BTreeSet<i64> {
+pub(crate) fn held_ords(body: &str, date: &str, blocks: &DayBlocks) -> BTreeSet<i64> {
     let mut held = BTreeSet::new();
     for token in parse_transclusions(body) {
         if token.date != date {
             continue;
         }
-        let Some(from) = blocks.ord_of(&token.from) else {
-            continue;
-        };
-        let to = match &token.to {
-            None => Some(from),
-            Some(to) => blocks.ord_of(to),
-        };
-        if let Some(to) = to {
-            held.extend(from.min(to)..=from.max(to));
+        if let Some((lo, hi)) = blocks.span_of(&token) {
+            held.extend(lo..=hi);
         }
     }
     held
+}
+
+/// `body` with no token of `date` covering the block at `ord`, or `None` when
+/// none does. A covering token is replaced in place by what is left of it
+/// (joined by a blank line), so every byte outside its span is kept; a token
+/// with nothing left goes through [`remove_tokens`].
+fn without_block(body: &str, date: &str, ord: i64, blocks: &DayBlocks) -> Option<String> {
+    let covered_span = |t: &TransclusionToken| {
+        (t.date == date)
+            .then(|| blocks.span_of(t))
+            .flatten()
+            .filter(|&(lo, hi)| lo <= ord && ord <= hi)
+    };
+    let covering: Vec<(TransclusionToken, (i64, i64))> = parse_transclusions(body)
+        .into_iter()
+        .filter_map(|t| covered_span(&t).map(|span| (t, span)))
+        .collect();
+    if covering.is_empty() {
+        return None;
+    }
+    let mut edited = body.to_string();
+    // Back to front, so the offsets of the tokens still to do stay valid.
+    for (token, (lo, hi)) in covering.iter().rev() {
+        let left = blocks.tokens_around(date, *lo, *hi, ord);
+        if !left.is_empty() {
+            edited.replace_range(token.start..token.end, &left.join("\n\n"));
+        }
+    }
+    // What still covers the block is every token that had nothing left.
+    let emptied: Vec<TransclusionToken> = parse_transclusions(&edited)
+        .into_iter()
+        .filter(|t| covered_span(t).is_some())
+        .collect();
+    if emptied.is_empty() {
+        return Some(edited);
+    }
+    Some(remove_tokens(&edited, date, &emptied))
 }
 
 /// Maximal runs of consecutive values of the ascending `ords`, as
