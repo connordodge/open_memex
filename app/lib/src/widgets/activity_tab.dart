@@ -8,6 +8,7 @@ import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
 import '../vault_access/vault_async_view.dart';
+import 'activity/filed_section.dart';
 import 'atoms.dart';
 import 'panel_placeholder_tab.dart';
 
@@ -34,16 +35,20 @@ class ActivityTab extends ConsumerWidget {
       value: ref.watch(agentChangesAsyncProvider(selected.id)),
       empty: const <AgentChangeRow>[],
       builder: (context, entries) {
-        if (entries.isEmpty) return emptyTab;
+        final filed = watchFilingToShow(ref, selected);
+        if (entries.isEmpty && filed == null) return emptyTab;
         return ListView(
           children: [
-            const PanelHeader(eyebrow: _activityEyebrow),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-              child: Text(_activitySubtitle, style: _activitySubtitleStyle),
-            ),
-            const OmHairline(),
-            for (final entry in entries) _ActivityEntry(entry: entry),
+            if (filed != null) FiledSection(note: selected),
+            if (entries.isNotEmpty) ...[
+              const PanelHeader(eyebrow: _activityEyebrow),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                child: Text(_activitySubtitle, style: _activitySubtitleStyle),
+              ),
+              const OmHairline(),
+              for (final entry in entries) _ActivityEntry(entry: entry),
+            ],
           ],
         );
       },
