@@ -7,11 +7,11 @@ import 'tabs_state.dart';
 import 'vault_access_state.dart';
 import 'vault_state.dart';
 
-/// Opens the Graph view for [scope] as the active workspace tab, or focuses
-/// the existing Graph tab for the same scope. Used by the note menu (#30) and
-/// by the Topics sidebar's folder menu and `Graph` header action (#25).
+/// Follows a click to the Graph view for [scope] (see [TabsNotifier.follow]).
+/// Used by the note menu (#30) and by the Topics sidebar's folder menu and
+/// `Graph` header action (#25).
 void openGraph(WidgetRef ref, GraphScope scope) =>
-    ref.read(tabsProvider.notifier).openOrFocus(GraphTab(scope));
+    ref.read(tabsProvider.notifier).follow(GraphTab(scope));
 
 /// The nodes, edges and hulls of a Graph scope, read through `VaultAccess`
 /// (D13) and re-read whenever the vault changes. Stamped with the vault it

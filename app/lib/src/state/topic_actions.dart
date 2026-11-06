@@ -120,7 +120,7 @@ Future<String> createTopicFromSidebar(WidgetRef ref, String title) async {
     );
     createdDaily = false;
     ref.read(vaultRevisionProvider.notifier).state++;
-    ref.read(tabsProvider.notifier).openOrFocus(NoteTab(created.topicId));
+    ref.read(tabsProvider.notifier).navigate(NoteTab(created.topicId));
     return created.topicId;
   } on TopicNotLinkedException {
     // The topic note exists (shown under Unsorted after the refresh).

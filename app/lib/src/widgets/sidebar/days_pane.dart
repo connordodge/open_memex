@@ -65,9 +65,8 @@ class DaysPane extends ConsumerWidget {
               label: row.date,
               note: row,
               active: activeTab == NoteTab(row.noteId),
-              onTap: () => ref
-                  .read(tabsProvider.notifier)
-                  .openOrFocus(NoteTab(row.noteId)),
+              onTap: () =>
+                  ref.read(tabsProvider.notifier).follow(NoteTab(row.noteId)),
             ),
         ],
       ],

@@ -41,9 +41,8 @@ class CanvasesRail extends ConsumerWidget {
           return _CanvasRow(
             canvas: c,
             active: active,
-            onTap: () => ref
-                .read(tabsProvider.notifier)
-                .openOrFocus(CanvasTab(c.canvasId)),
+            onTap: () =>
+                ref.read(tabsProvider.notifier).follow(CanvasTab(c.canvasId)),
           );
         },
       ),
