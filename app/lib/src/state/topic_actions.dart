@@ -143,12 +143,38 @@ Future<void> rebaseEditorOnVersion(
   required Note fallback,
   required int version,
   required String content,
+}) => _rebaseEditorOnVersion(
+  ref.read,
+  fallback: fallback,
+  version: version,
+  content: content,
+);
+
+/// [rebaseEditorOnVersion] for a caller whose widget may be gone by the time
+/// it runs (a write that outlives the widget that started it): reads through
+/// [container] instead of a `WidgetRef`.
+Future<void> rebaseEditorOnVersionIn(
+  ProviderContainer container, {
+  required Note fallback,
+  required int version,
+  required String content,
+}) => _rebaseEditorOnVersion(
+  container.read,
+  fallback: fallback,
+  version: version,
+  content: content,
+);
+
+Future<void> _rebaseEditorOnVersion(
+  T Function<T>(ProviderListenable<T> provider) read, {
+  required Note fallback,
+  required int version,
+  required String content,
 }) async {
-  final editor = ref.read(editorControllerProvider.notifier);
-  final title = ref.read(editorControllerProvider).title;
+  final editor = read(editorControllerProvider.notifier);
+  final title = read(editorControllerProvider).title;
   final stored =
-      await ref.read(vaultAccessProvider)?.notes.getNote(fallback.id) ??
-      fallback;
+      await read(vaultAccessProvider)?.notes.getNote(fallback.id) ?? fallback;
   // The user may have opened another note while the read was in flight:
   // loading the first note back would clobber the editor.
   if (editor.activeNoteId != fallback.id) return;
