@@ -138,6 +138,9 @@ Future<String> createTopicFromSidebar(WidgetRef ref, String title) async {
 /// base and keeps the unsaved [content] (and title) on top of it, so the next
 /// save is not a version conflict. [fallback] is also the stored note's
 /// stand-in when the vault cannot be read.
+///
+/// Rebasing reads the note. Text or a title typed during that read wins: it is
+/// newer than [content], so the editor keeps it in place of [content].
 Future<void> rebaseEditorOnVersion(
   WidgetRef ref, {
   required Note fallback,
@@ -172,15 +175,16 @@ Future<void> _rebaseEditorOnVersion(
   required String content,
 }) async {
   final editor = read(editorControllerProvider.notifier);
-  final title = read(editorControllerProvider).title;
+  final before = read(editorControllerProvider).contentMd;
   final stored =
       await read(vaultAccessProvider)?.notes.getNote(fallback.id) ?? fallback;
   // The user may have opened another note while the read was in flight:
   // loading the first note back would clobber the editor.
   if (editor.activeNoteId != fallback.id) return;
+  final now = read(editorControllerProvider);
   editor.loadNote(_atVersion(stored, version));
-  editor.onTitleChanged(title);
-  editor.onContentChanged(content);
+  editor.onTitleChanged(now.title);
+  editor.onContentChanged(now.contentMd == before ? content : now.contentMd);
 }
 
 /// After a write to [note] through [access] has already succeeded (its new

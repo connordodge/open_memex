@@ -18,6 +18,7 @@ import '../theme/typography.dart';
 import '../vault_access/errors.dart';
 import '../vault_access/vault_async_view.dart';
 import 'activity/feedback_rows.dart';
+import 'activity/filed_section.dart';
 import 'atoms.dart';
 import 'panel_placeholder_tab.dart';
 
@@ -46,7 +47,10 @@ class ActivityTab extends ConsumerWidget {
       empty: const <AgentChangeRow>[],
       builder: (context, entries) {
         final homes = feedback.homes(entries);
-        if (entries.isEmpty && homes.isEmpty) return emptyTab;
+        final filed = watchFilingToShow(ref, selected);
+        if (entries.isEmpty && homes.isEmpty && filed == null) {
+          return emptyTab;
+        }
         // Only the Vault Guide can be restored: its entries that a guide
         // revision names (by agent change) get a Restore button.
         final isGuide = selected.role == 'guide';
@@ -59,23 +63,26 @@ class ActivityTab extends ConsumerWidget {
             : const <GuideRevisionRow>[];
         return ListView(
           children: [
-            const PanelHeader(eyebrow: _activityEyebrow),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-              child: Text(_activitySubtitle, style: _activitySubtitleStyle),
-            ),
-            const OmHairline(),
-            FeedbackAboveEntries(rows: homes.above),
-            for (final entry in entries)
-              _ActivityEntry(
-                entry: entry,
-                guide: selected,
-                revisionId: isGuide ? _revisionOf(revisions, entry.id) : null,
-                feedback: EntryFeedback(
-                  entry: entry,
-                  rows: homes.byEntry[entry.id] ?? const [],
-                ),
+            if (filed != null) FiledSection(note: selected),
+            if (entries.isNotEmpty || !homes.isEmpty) ...[
+              const PanelHeader(eyebrow: _activityEyebrow),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                child: Text(_activitySubtitle, style: _activitySubtitleStyle),
               ),
+              const OmHairline(),
+              FeedbackAboveEntries(rows: homes.above),
+              for (final entry in entries)
+                _ActivityEntry(
+                  entry: entry,
+                  guide: selected,
+                  revisionId: isGuide ? _revisionOf(revisions, entry.id) : null,
+                  feedback: EntryFeedback(
+                    entry: entry,
+                    rows: homes.byEntry[entry.id] ?? const [],
+                  ),
+                ),
+            ],
           ],
         );
       },
@@ -162,7 +169,9 @@ const _restoreConfirmText =
 /// Restore: asks, then `memex guide restore` for [revisionId] and rebases the
 /// open editor on the restored text and version, so the next save is not a
 /// conflict. Reads through a container taken before the awaits: the entry is
-/// gone once the Activity tab shows another note.
+/// gone once the Activity tab shows another note. Text typed once the restore
+/// is running is newer than the restored text, so the editor keeps it on the
+/// restored version, and it saves over that version (which stays a revision).
 Future<void> _restore(
   BuildContext context,
   Note guide,
@@ -185,6 +194,7 @@ Future<void> _restore(
         final message = container.read(editorControllerProvider).errorMessage;
         throw MemexException(message ?? 'Could not save your changes first.');
       }
+      final flushed = container.read(editorControllerProvider).contentMd;
       // FeedbackActions bumps the vault revision once.
       final result = await container
           .read(feedbackActionsProvider)
@@ -194,11 +204,12 @@ Future<void> _restore(
           ?.notes
           .getNote(guide.id);
       if (restored == null) return;
+      final now = container.read(editorControllerProvider).contentMd;
       await rebaseEditorOnVersionIn(
         container,
         fallback: guide,
         version: result.version,
-        content: restored.contentMd,
+        content: now == flushed ? restored.contentMd : now,
       );
     });
   } on Exception catch (e) {
