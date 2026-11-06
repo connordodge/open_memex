@@ -2200,3 +2200,271 @@ fn agent_tags_and_footer_tags_read_a_note_by_origin() {
         vec!["a", "b", "mine"]
     );
 }
+
+// ---------- contract pins added in verify ----------
+
+#[test]
+fn tag_reads_sort_ignoring_case_then_by_exact_name() {
+    let (_d, mut v) = fresh_vault();
+    let a = person_note(&mut v, "A", "text\n");
+    let b = person_note(&mut v, "B", "text\n");
+    // Legacy rows can hold capitals: ASCII order alone would list "Bravo" first.
+    for tag in ["Bravo", "alpha", "charlie", "x", "X"] {
+        seed_row(&v, &a.id, tag, "body");
+    }
+    seed_row(&v, &b.id, "Bravo", "agent");
+
+    let names = |counts: Vec<TagCount>| -> Vec<(String, i64)> {
+        counts.into_iter().map(|t| (t.tag, t.note_count)).collect()
+    };
+    let want: Vec<(String, i64)> = [
+        ("alpha", 1),
+        ("Bravo", 2),
+        ("charlie", 1),
+        ("X", 1),
+        ("x", 1),
+    ]
+    .into_iter()
+    .map(|(tag, n)| (tag.to_string(), n))
+    .collect();
+    assert_eq!(names(tags::all_tags(&v).unwrap()), want);
+    assert_eq!(names(tags::vocabulary(&v).unwrap()), want);
+}
+
+#[test]
+fn notes_for_tag_breaks_ties_by_id_and_matches_the_exact_name_only() {
+    let (_d, mut v) = fresh_vault();
+    let notes: Vec<Note> = (0..3)
+        .map(|i| person_note(&mut v, &format!("Tied {i}"), "#work here\n"))
+        .collect();
+    for note in &notes {
+        v.connection_ref()
+            .execute(
+                "UPDATE notes SET updated_at = 500 WHERE id = ?",
+                [note.id.as_str()],
+            )
+            .unwrap();
+    }
+    seed_row(&v, &notes[0].id, "Work", "person");
+
+    let listed: Vec<String> = tags::notes_for_tag(&v, "work")
+        .unwrap()
+        .into_iter()
+        .map(|n| n.note_id)
+        .collect();
+
+    let mut want: Vec<String> = notes.iter().map(|n| n.id.to_string()).collect();
+    want.sort();
+    assert_eq!(listed, want, "equal updated_at: by id");
+    let capital = tags::notes_for_tag(&v, "Work").unwrap();
+    assert_eq!(capital.len(), 1, "no lowercasing of the asked name");
+    assert_eq!(capital[0].note_id, notes[0].id.to_string());
+}
+
+#[test]
+fn agent_tags_for_note_on_an_unknown_note_is_empty() {
+    let (_d, mut v) = fresh_vault();
+    let note = person_note(&mut v, "Note", "text\n");
+    seed_row(&v, &note.id, "a", "agent");
+
+    assert!(tags::agent_tags_for_note(&v, &NoteId::new())
+        .unwrap()
+        .is_empty());
+    assert_eq!(tags::agent_tags_for_note(&v, &note.id).unwrap(), vec!["a"]);
+}
+
+#[test]
+fn a_leading_hash_on_a_tag_input_is_stripped_once() {
+    let (_d, mut v) = fresh_vault();
+    seed_vocabulary(&mut v, "pricing");
+    let note = person_note(&mut v, "Note", "text\n");
+
+    let tagged = tags::agent_tag_note(&mut v, &note.id, "#Pricing", None).unwrap();
+    assert!(tagged.changed);
+    assert_eq!(rows(&v, &note.id), vec![row("pricing", "agent", None)]);
+    let untagged = tags::agent_untag_note(&mut v, &note.id, "#PRICING", None).unwrap();
+    assert!(untagged.removed);
+    assert!(rows(&v, &note.id).is_empty());
+
+    let added = tags::person_add_tag(&mut v, &note.id, "#Mine", None).unwrap();
+    assert!(added.changed);
+    assert_eq!(rows(&v, &note.id), vec![row("mine", "person", None)]);
+    let removed = tags::person_remove_tag(&mut v, &note.id, "#mine", None).unwrap();
+    assert!(removed.removed);
+    assert!(rows(&v, &note.id).is_empty());
+
+    // Only one # goes: "##pricing" is neither a vocabulary name nor a valid one.
+    assert_code(
+        tags::agent_tag_note(&mut v, &note.id, "##pricing", None),
+        "unknown_tag",
+        "two hashes",
+    );
+    assert_invalid_argument(
+        tags::person_add_tag(&mut v, &note.id, "##mine", None),
+        "two hashes",
+    );
+    assert!(rows(&v, &note.id).is_empty());
+}
+
+#[test]
+fn agent_tag_note_with_a_name_outside_the_grammar_is_unknown_tag() {
+    let (_d, mut v) = fresh_vault();
+    seed_vocabulary(&mut v, "x");
+    let note = person_note(&mut v, "Note", "text\n");
+    count_tag_writes(&v);
+
+    for bad in ["", "not a tag", "123", "a/b"] {
+        assert_code(
+            tags::agent_tag_note(&mut v, &note.id, bad, None),
+            "unknown_tag",
+            bad,
+        );
+    }
+    assert_eq!(tag_writes(&v), 0);
+}
+
+#[test]
+fn apply_tag_refuses_origin_body_and_a_guide_and_writes_nothing() {
+    let (_d, mut v) = fresh_vault();
+    let note = person_note(&mut v, "Note", "text\n");
+    let guide = guide_note(&mut v, "Guide", "How to.\n");
+    count_tag_writes(&v);
+
+    assert_invalid_argument(
+        tags::apply_tag(&mut v, &note.id, "x", TagOrigin::Body, None),
+        "origin body",
+    );
+    for origin in [TagOrigin::Agent, TagOrigin::Person] {
+        assert_code(
+            tags::apply_tag(&mut v, &guide.id, "x", origin, None),
+            "guide_rule",
+            &format!("{origin:?} on a guide"),
+        );
+    }
+    assert_invalid_argument(
+        tags::apply_tag(&mut v, &note.id, "not a tag", TagOrigin::Agent, None),
+        "outside the grammar",
+    );
+    assert_eq!(tag_writes(&v), 0);
+    assert!(rows(&v, &note.id).is_empty());
+    assert!(rows(&v, &guide.id).is_empty());
+    assert_eq!(stored(&v, &note.id).version, note.version);
+}
+
+#[test]
+fn apply_tag_with_agent_origin_does_not_lift_an_open_block() {
+    let (_d, mut v) = fresh_vault();
+    let note = person_note(&mut v, "Note", "text\n");
+    let block = seed_block(&v, &note, "x");
+
+    let write = tags::apply_tag(&mut v, &note.id, "x", TagOrigin::Agent, None).unwrap();
+
+    assert!(write.changed);
+    assert_eq!(rows(&v, &note.id), vec![row("x", "agent", None)]);
+    assert_eq!(
+        correction(&v, block).cleared_at,
+        None,
+        "only a person lifts"
+    );
+}
+
+#[test]
+fn agent_untag_note_on_a_tag_the_note_does_not_have_writes_nothing() {
+    let (_d, mut v) = fresh_vault();
+    let note = person_note(&mut v, "Note", "text\n");
+    count_tag_writes(&v);
+
+    let removal = tags::agent_untag_note(&mut v, &note.id, "missing", None).unwrap();
+
+    assert!(!removal.removed);
+    assert_eq!(removal.correction_id, None);
+    assert_eq!(removal.version, note.version);
+    assert_eq!(tag_writes(&v), 0);
+    assert_eq!(stored(&v, &note.id).version, note.version);
+}
+
+#[test]
+fn system_tag_rows_write_no_note() {
+    let (_d, mut v) = fresh_vault();
+    let note = person_note(&mut v, "Note", "text\n");
+
+    let added = tags::apply_tag(&mut v, &note.id, "inbox", TagOrigin::Agent, None).unwrap();
+    let after_add = stored(&v, &note.id);
+    assert!(added.changed);
+    assert_eq!(added.version, note.version);
+    assert_eq!(after_add.version, note.version);
+    assert_eq!(after_add.updated_at, note.updated_at);
+    assert_eq!(after_add.content_md, note.content_md);
+
+    let removed = tags::person_remove_tag(&mut v, &note.id, "inbox", None).unwrap();
+    let after_remove = stored(&v, &note.id);
+    assert!(removed.removed);
+    assert_eq!(removed.version, note.version);
+    assert_eq!(after_remove.version, note.version);
+    assert_eq!(after_remove.updated_at, note.updated_at);
+
+    // A tag with a footer line does write the note.
+    let line = tags::person_add_tag(&mut v, &note.id, "mine", None).unwrap();
+    assert_eq!(line.version, note.version + 1);
+}
+
+#[test]
+fn note_becoming_a_guide_loses_its_own_footer_chips_but_not_chips_pointing_at_it() {
+    let (_d, mut v) = fresh_vault();
+    let topic = topic_note(&mut v, "Topic", "About.\n");
+    let host = person_note(&mut v, "Host", "text\n");
+    let note = topic_note(&mut v, "Note", "text\n");
+    footer::set_chip(&mut v, &note.id, &topic.id, ChipOrigin::Person, None).unwrap();
+    footer::set_chip(&mut v, &host.id, &note.id, ChipOrigin::Person, None).unwrap();
+    let chips = |v: &Vault, column: &str, id: &NoteId| -> i64 {
+        v.connection_ref()
+            .query_row(
+                &format!("SELECT COUNT(*) FROM footer_chips WHERE {column} = ?"),
+                [id.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(chips(&v, "daily_note_id", &note.id), 1, "setup");
+    assert_eq!(chips(&v, "topic_note_id", &note.id), 1, "setup");
+
+    let version = stored(&v, &note.id).version;
+    update_note_as(
+        &mut v,
+        &note.id,
+        version,
+        UpdateNote {
+            frontmatter: Some(json!({"role": "guide"})),
+            ..Default::default()
+        },
+        RenameOptions::default(),
+        Caller::Person,
+    )
+    .unwrap();
+
+    assert_eq!(chips(&v, "daily_note_id", &note.id), 0, "its own chips go");
+    assert_eq!(
+        chips(&v, "topic_note_id", &note.id),
+        1,
+        "chips on other notes stay"
+    );
+}
+
+#[test]
+fn person_remove_tag_on_a_guide_deletes_a_stray_row_and_misses_quietly() {
+    let (_d, mut v) = fresh_vault();
+    let guide = guide_note(&mut v, "Guide", "How to.\n");
+    seed_row(&v, &guide.id, "stray", "person");
+
+    let missing = tags::person_remove_tag(&mut v, &guide.id, "nothing", None).unwrap();
+    assert!(!missing.removed);
+
+    let removal = tags::person_remove_tag(&mut v, &guide.id, "stray", None).unwrap();
+
+    assert!(removal.removed);
+    assert_eq!(removal.correction_id, None);
+    assert!(rows(&v, &guide.id).is_empty());
+    let after = stored(&v, &guide.id);
+    assert_eq!(after.content_md, guide.content_md);
+    assert_eq!(after.version, guide.version);
+}
