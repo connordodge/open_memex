@@ -17,6 +17,9 @@
 
 #[path = "support/server.rs"]
 mod server;
+#[path = "support/tool_names.rs"]
+mod tool_names;
+use tool_names::TOOL_COUNT;
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -46,9 +49,6 @@ use tokio::task::JoinHandle;
 use server::{
     client, free_port, make_vault, Reply, TestServer, BODY_LIMIT, TEST_TOKEN, TOKEN_ENV, WAIT,
 };
-
-/// The number of tools `Memex::new` composes, over stdio or HTTP.
-const TOOL_COUNT: usize = 26;
 
 /// What an MCP streamable-HTTP client must accept on a POST.
 const ACCEPT: &str = "application/json, text/event-stream";
