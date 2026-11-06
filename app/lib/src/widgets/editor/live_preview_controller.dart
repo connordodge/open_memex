@@ -6,6 +6,17 @@ import '../../editor/markdown_lines.dart';
 import '../../editor/markdown_table.dart';
 import 'live_preview_styles.dart';
 
+/// A plain press `LinkRegion` marked on a followable link whose line is not
+/// revealed (Spec #232 TD6): the press with this [pointer] follows through
+/// [follow], which already holds the link it captured at the press. The
+/// segment's pointer layer decides whether it runs.
+final class MarkedPress {
+  const MarkedPress(this.pointer, this.follow);
+
+  final int pointer;
+  final VoidCallback follow;
+}
+
 /// The controller of every live preview field (D7): its [buildTextSpan]
 /// renders the controller's text with live preview styling and marker
 /// hiding ([buildLivePreviewSpan], B1); hosts only set its props.
@@ -77,9 +88,14 @@ class LivePreviewController extends TextEditingController {
 
   bool Function(String target)? _isResolved;
 
-  /// The Cmd-hovered token's span in [text] (B3 sets it; D7). Null (the
-  /// default): nothing renders hovered. Setting it notifies listeners so the
-  /// field repaints.
+  /// The latest press `LinkRegion` marked on this field, or null when its
+  /// latest press was not marked. Read by the press's pointer, so a mark
+  /// left from an earlier press never applies. Setting it notifies nothing.
+  MarkedPress? markedPress;
+
+  /// The hovered token's span in [text]: the link a click would follow (B3
+  /// sets it; D7). Null (the default): nothing renders hovered. Setting it
+  /// notifies listeners so the field repaints.
   TextRange? get cmdHover => _cmdHover;
   set cmdHover(TextRange? value) {
     _cmdHover = value;
@@ -138,6 +154,49 @@ int tableLastLine(List<MdLine> lines, int header) {
     last++;
   }
   return last;
+}
+
+/// Which of [lines] reveal their markers for [selection] (Spec #232 TD6): the
+/// one predicate `buildLivePreviewSpan` and `LinkRegion` share.
+///
+/// Every line the selection touches reveals (a caret at a line's content end
+/// touches that line only), both fence lines of a block when any of its lines
+/// is touched, and every line of a table when any of its lines is touched
+/// (Spec #197 R13). With [itemText] no block reveals as a unit. None while
+/// [forceHidden] or with a null or invalid [selection].
+List<bool> revealedLines(
+  List<MdLine> lines,
+  TextSelection? selection, {
+  bool forceHidden = false,
+  bool itemText = false,
+}) {
+  final revealed = List<bool>.filled(lines.length, false);
+  if (forceHidden || selection == null || !selection.isValid) return revealed;
+  for (final (i, line) in lines.indexed) {
+    revealed[i] =
+        selection.start <= line.contentEnd && selection.end >= line.start;
+  }
+  if (itemText) return revealed;
+  for (var open = 0; open < lines.length; open++) {
+    if (lines[open].kind != MdLineKind.fenceOpen) continue;
+    var close = open + 1;
+    while (close < lines.length &&
+        lines[close].kind == MdLineKind.fenceInside) {
+      close++;
+    }
+    final last = close < lines.length ? close : lines.length - 1;
+    final touched = revealed.sublist(open, last + 1).contains(true);
+    revealed[open] = touched;
+    revealed[last] = touched;
+    open = last;
+  }
+  for (var header = 0; header < lines.length; header++) {
+    if (lines[header].kind != MdLineKind.tableHeader) continue;
+    final last = tableLastLine(lines, header);
+    final touched = revealed.sublist(header, last + 1).contains(true);
+    revealed.fillRange(header, last + 1, touched);
+  }
+  return revealed;
 }
 
 /// Builds the live preview span for [text] (B1, Spec R2-R5): a pure
@@ -243,7 +302,12 @@ final class _SpanBuilder {
 
   TextSpan build(TextStyle? style) {
     final lines = classifyLines(text, atSegmentStart: atSegmentStart);
-    final revealed = _revealed(lines);
+    final revealed = revealedLines(
+      lines,
+      _selection,
+      forceHidden: forceHidden,
+      itemText: itemText,
+    );
     final levels = List<int>.filled(lines.length, 0);
     final codeLines = List<bool>.filled(lines.length, false);
     final fenceLines = List<bool>.filled(lines.length, false);
@@ -306,42 +370,6 @@ final class _SpanBuilder {
     }
     flush(text.length);
     return TextSpan(style: style, children: children);
-  }
-
-  /// Which lines reveal their markers: every line the selection touches
-  /// (a caret at a line's content end touches that line only), both fence
-  /// lines of a block when any of its lines is touched, and every line of a
-  /// table when any of its lines is touched (Spec #197 R13). None while
-  /// [forceHidden].
-  List<bool> _revealed(List<MdLine> lines) {
-    final selection = _selection;
-    final revealed = List<bool>.filled(lines.length, false);
-    if (forceHidden || selection == null) return revealed;
-    for (final (i, line) in lines.indexed) {
-      revealed[i] =
-          selection.start <= line.contentEnd && selection.end >= line.start;
-    }
-    if (itemText) return revealed;
-    for (var open = 0; open < lines.length; open++) {
-      if (lines[open].kind != MdLineKind.fenceOpen) continue;
-      var close = open + 1;
-      while (close < lines.length &&
-          lines[close].kind == MdLineKind.fenceInside) {
-        close++;
-      }
-      final last = close < lines.length ? close : lines.length - 1;
-      final touched = revealed.sublist(open, last + 1).contains(true);
-      revealed[open] = touched;
-      revealed[last] = touched;
-      open = last;
-    }
-    for (var header = 0; header < lines.length; header++) {
-      if (lines[header].kind != MdLineKind.tableHeader) continue;
-      final last = tableLastLine(lines, header);
-      final touched = revealed.sublist(header, last + 1).contains(true);
-      revealed.fillRange(header, last + 1, touched);
-    }
-    return revealed;
   }
 
   /// Marks the table line [line] (Spec #197 R13): each cell's inline tokens
