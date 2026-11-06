@@ -592,6 +592,17 @@ class TabsNotifier extends StateNotifier<TabsState> {
     if (goOn) _check(record, forward: forward);
   }
 
+  /// Sets the active entry's scroll offset when that entry shows [noteId];
+  /// otherwise writes nothing, so a stale controller can't write to the wrong
+  /// entry (#270, TD7).
+  void recordScrollOffset(String noteId, double offset) {}
+
+  /// The offset to restore [noteId] to, once, when Back, Forward or a chip
+  /// switch just arrived on it (`0.0` for an entry never scrolled). Null for
+  /// any other arrival and for any note the active entry doesn't show (#270,
+  /// TD7).
+  double? takeScrollRestore(String noteId) => null;
+
   /// For a click whose target needs an async lookup: reads the modifier and
   /// the active tab now and returns the function to call with the target
   /// later (Spec R7). With the modifier, it focuses or opens a tab; without,
