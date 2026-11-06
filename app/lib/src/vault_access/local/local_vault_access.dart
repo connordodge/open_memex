@@ -4,6 +4,7 @@ import '../../state/vault_state.dart' show requiredVaultSchemaVersion;
 import '../vault_access.dart';
 import 'canvas.dart';
 import 'daily.dart';
+import 'feedback.dart';
 import 'graph.dart';
 import 'notes.dart';
 import 'tags.dart';
@@ -11,6 +12,7 @@ import 'topics.dart';
 
 export 'canvas.dart';
 export 'daily.dart';
+export 'feedback.dart';
 export 'graph.dart';
 export 'notes.dart';
 export 'tags.dart';
@@ -29,6 +31,7 @@ class LocalVaultAccess implements VaultAccess {
     this.cli,
     LocalNotesAccess? notes,
     LocalDailyAccess? daily,
+    LocalFeedbackAccess? feedback,
     LocalTopicsAccess? topics,
     LocalCanvasAccess? canvas,
     LocalGraphAccess? graph,
@@ -37,6 +40,9 @@ class LocalVaultAccess implements VaultAccess {
            notes ?? LocalNotesAccess(vaultPath: vaultPath, db: db, cli: cli),
        daily =
            daily ?? LocalDailyAccess(vaultPath: vaultPath, db: db, cli: cli),
+       feedback =
+           feedback ??
+           LocalFeedbackAccess(vaultPath: vaultPath, db: db, cli: cli),
        topics =
            topics ?? LocalTopicsAccess(vaultPath: vaultPath, db: db, cli: cli),
        canvas =
@@ -52,6 +58,8 @@ class LocalVaultAccess implements VaultAccess {
   final LocalNotesAccess notes;
   @override
   final LocalDailyAccess daily;
+  @override
+  final LocalFeedbackAccess feedback;
   @override
   final LocalTopicsAccess topics;
   @override

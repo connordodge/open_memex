@@ -1,13 +1,15 @@
 //! WI #71 (R0a): `memex serve` modes (req 6, 7; D3).
 //!
 //! - AC 1: `memex serve --vault <path>` is unchanged: stdio MCP serving the
-//!   same 26 tools, logging to `<vault>/.memex/mcp.log*`.
+//!   same tools, logging to `<vault>/.memex/mcp.log*`.
 //! - AC 2: flags from different modes, a missing mode and any token flag are
 //!   clap usage errors (exit 2) that bind and create nothing. What `--remote
 //!   <url>` alone does is #95's (`tests/serve_remote.rs`).
 
 #[path = "support/server.rs"]
 mod server;
+#[path = "support/tool_names.rs"]
+mod tool_names;
 
 use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Write};
@@ -20,36 +22,6 @@ use memex_core::Vault;
 use serde_json::{json, Value};
 
 use server::{free_port, ServeCommand, TOKEN_ENV};
-
-/// The tools stdio `memex serve` listed before this WI (base 66cc84b).
-const STDIO_TOOLS: [&str; 26] = [
-    "add_excerpt",
-    "add_link",
-    "add_to_canvas",
-    "add_to_smart_folder",
-    "append_to_daily_note",
-    "create_canvas",
-    "create_note",
-    "create_smart_folder",
-    "delete_canvas",
-    "delete_smart_folder",
-    "get_canvas",
-    "get_daily_note_changes",
-    "get_note",
-    "get_vault_settings",
-    "list_canvases",
-    "list_smart_folders",
-    "list_unreviewed_days",
-    "mark_day_reviewed",
-    "move_node",
-    "neighbors",
-    "remove_excerpt",
-    "remove_from_canvas",
-    "remove_from_smart_folder",
-    "search",
-    "update_link",
-    "update_smart_folder",
-];
 
 const LIMIT: Duration = Duration::from_secs(30);
 
@@ -75,7 +47,7 @@ fn tree(dir: &Path) -> BTreeSet<PathBuf> {
 // ---------- AC 1: stdio mode unchanged ----------
 
 #[test]
-fn serve_vault_over_stdio_lists_the_same_26_tools() {
+fn serve_vault_over_stdio_lists_the_same_tools() {
     let dir = tempfile::tempdir().unwrap();
     let vault = dir.path().join("vault");
     Vault::create(&vault).unwrap();
@@ -139,11 +111,11 @@ fn serve_vault_over_stdio_lists_the_same_26_tools() {
     sorted.sort();
     assert_eq!(
         sorted,
-        STDIO_TOOLS
+        tool_names::all_tool_names()
             .iter()
             .map(|s| s.to_string())
             .collect::<Vec<_>>(),
-        "stdio serve lists exactly the base tool set"
+        "stdio serve lists exactly the shared tool list"
     );
 
     // Closing stdin ends the session; the process exits cleanly.

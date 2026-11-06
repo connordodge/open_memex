@@ -1,0 +1,290 @@
+{
+  "_comment": "Note footer split contract (Spec #234 R11-R13; ruling D13; WI #238). Each split row: `on` names the splitters it runs through: `daily` = Rust memex_core::daily::split_body and Dart splitDailyBody; `note` = Rust memex_core::daily::split_note_body and Dart splitNoteBody. Each must return exactly `person`, `chips` and `tags` for `input`. A footer tag line is a line below the marker starting with `#` and then a character other than a space or `#`; writes drop it (rows decide the footer), and its name, as written after `#` with trailing spaces and CR trimmed, is reported in `tags`. Other non-chip lines below the marker are stray text, moved to the end of the person section. `decision` groups rows: every decision WI #238's AC names keeps at least one row. Each assemble row: Rust daily::assemble(person, chips) and Dart assembleDailyBody(person, chips) return exactly `body`.",
+  "marker": "<!-- memex:topics -->",
+  "split": [
+    {
+      "decision": "chip line",
+      "name": "a chip line becomes a chip",
+      "on": [
+        "daily",
+        "note"
+      ],
+      "input": "Day.\n<!-- memex:topics -->\n[[Player Loop~about]]\n",
+      "person": "Day.\n",
+      "chips": [
+        "Player Loop"
+      ],
+      "tags": []
+    },
+    {
+      "decision": "tag line",
+      "name": "tag lines after the chips are dropped and reported",
+      "on": [
+        "daily",
+        "note"
+      ],
+      "input": "Day.\n<!-- memex:topics -->\n[[Player Loop~about]]\n#work\n#q3-plan\n",
+      "person": "Day.\n",
+      "chips": [
+        "Player Loop"
+      ],
+      "tags": [
+        "work",
+        "q3-plan"
+      ]
+    },
+    {
+      "decision": "tag line",
+      "name": "a tag line before a chip line is still a tag line",
+      "on": [
+        "daily",
+        "note"
+      ],
+      "input": "Day.\n<!-- memex:topics -->\n#work\n[[Player Loop~about]]\n",
+      "person": "Day.\n",
+      "chips": [
+        "Player Loop"
+      ],
+      "tags": [
+        "work"
+      ]
+    },
+    {
+      "decision": "legacy tag line",
+      "name": "a legacy name with a space is one tag line",
+      "on": [
+        "daily",
+        "note"
+      ],
+      "input": "Day.\n<!-- memex:topics -->\n#My Tag\n",
+      "person": "Day.\n",
+      "chips": [],
+      "tags": [
+        "My Tag"
+      ]
+    },
+    {
+      "decision": "legacy tag line",
+      "name": "a legacy name outside the grammar is a tag line",
+      "on": [
+        "daily",
+        "note"
+      ],
+      "input": "Day.\n<!-- memex:topics -->\n#123\n",
+      "person": "Day.\n",
+      "chips": [],
+      "tags": [
+        "123"
+      ]
+    },
+    {
+      "decision": "heading",
+      "name": "a heading below the marker is stray text",
+      "on": [
+        "daily",
+        "note"
+      ],
+      "input": "Day.\n<!-- memex:topics -->\n[[X~about]]\n# Heading\n",
+      "person": "Day.\n# Heading\n",
+      "chips": [
+        "X"
+      ],
+      "tags": []
+    },
+    {
+      "decision": "double hash",
+      "name": "##x below the marker is stray text",
+      "on": [
+        "daily",
+        "note"
+      ],
+      "input": "Day.\n<!-- memex:topics -->\n##x\n",
+      "person": "Day.\n##x\n",
+      "chips": [],
+      "tags": []
+    },
+    {
+      "decision": "bare hash",
+      "name": "a bare # below the marker is stray text",
+      "on": [
+        "daily",
+        "note"
+      ],
+      "input": "Day.\n<!-- memex:topics -->\n#\n",
+      "person": "Day.\n#\n",
+      "chips": [],
+      "tags": []
+    },
+    {
+      "decision": "indented hash",
+      "name": "an indented #x below the marker is stray text",
+      "on": [
+        "daily",
+        "note"
+      ],
+      "input": "Day.\n<!-- memex:topics -->\n  #x\n",
+      "person": "Day.\n  #x\n",
+      "chips": [],
+      "tags": []
+    },
+    {
+      "decision": "stray text",
+      "name": "stray lines keep their order around tag lines",
+      "on": [
+        "daily",
+        "note"
+      ],
+      "input": "Day.\n<!-- memex:topics -->\n[[X~about]]\n#x\nlate thought\n#y\nmore\n",
+      "person": "Day.\nlate thought\nmore\n",
+      "chips": [
+        "X"
+      ],
+      "tags": [
+        "x",
+        "y"
+      ]
+    },
+    {
+      "decision": "blank",
+      "name": "blank lines below the marker are dropped",
+      "on": [
+        "daily",
+        "note"
+      ],
+      "input": "Day.\n<!-- memex:topics -->\n\n   \n[[X~about]]\n\n#x\n\n",
+      "person": "Day.\n",
+      "chips": [
+        "X"
+      ],
+      "tags": [
+        "x"
+      ]
+    },
+    {
+      "decision": "trailing spaces",
+      "name": "trailing spaces and CR are trimmed from tag lines",
+      "on": [
+        "daily",
+        "note"
+      ],
+      "input": "Day.\r\n<!-- memex:topics -->\r\n#work  \r\n",
+      "person": "Day.\r\n",
+      "chips": [],
+      "tags": [
+        "work"
+      ]
+    },
+    {
+      "decision": "repeated marker",
+      "name": "repeated marker lines are dropped",
+      "on": [
+        "daily",
+        "note"
+      ],
+      "input": "Day.\n<!-- memex:topics -->\n#a\n<!-- memex:topics -->  \n[[X~about]]\n#b\n",
+      "person": "Day.\n",
+      "chips": [
+        "X"
+      ],
+      "tags": [
+        "a",
+        "b"
+      ]
+    },
+    {
+      "decision": "no marker",
+      "name": "without a marker the whole body is person",
+      "on": [
+        "daily",
+        "note"
+      ],
+      "input": "Day with #x\n#y\n[[X~about]]\n",
+      "person": "Day with #x\n#y\n[[X~about]]\n",
+      "chips": [],
+      "tags": []
+    },
+    {
+      "decision": "fenced marker",
+      "name": "a marker inside fenced code is body text on a non-daily note",
+      "on": [
+        "note"
+      ],
+      "input": "Code:\n```\n<!-- memex:topics -->\n[[X~about]]\n#x\n```\nAfter.\n",
+      "person": "Code:\n```\n<!-- memex:topics -->\n[[X~about]]\n#x\n```\nAfter.\n",
+      "chips": [],
+      "tags": []
+    },
+    {
+      "decision": "fenced marker",
+      "name": "the first marker after a closed fence starts the footer on a non-daily note",
+      "on": [
+        "note"
+      ],
+      "input": "Code:\n~~~\n<!-- memex:topics -->\n~~~\nAfter.\n<!-- memex:topics -->\n[[X~about]]\n#x\n",
+      "person": "Code:\n~~~\n<!-- memex:topics -->\n~~~\nAfter.\n",
+      "chips": [
+        "X"
+      ],
+      "tags": [
+        "x"
+      ]
+    },
+    {
+      "decision": "fenced marker",
+      "name": "an unclosed fence hides every later marker on a non-daily note",
+      "on": [
+        "note"
+      ],
+      "input": "a\n```\n<!-- memex:topics -->\n[[X~about]]\n",
+      "person": "a\n```\n<!-- memex:topics -->\n[[X~about]]\n",
+      "chips": [],
+      "tags": []
+    },
+    {
+      "decision": "fenced marker",
+      "name": "a daily note splits at its first marker line, fenced or not",
+      "on": [
+        "daily"
+      ],
+      "input": "Code:\n```\n<!-- memex:topics -->\n[[X~about]]\n#x\n```\nAfter.\n",
+      "person": "Code:\n```\n```\nAfter.\n",
+      "chips": [
+        "X"
+      ],
+      "tags": [
+        "x"
+      ]
+    }
+  ],
+  "assemble": [
+    {
+      "name": "chips in order",
+      "person": "Morning pages\n",
+      "chips": [
+        "Player Loop",
+        "Sleep"
+      ],
+      "body": "Morning pages\n<!-- memex:topics -->\n[[Player Loop~about]]\n[[Sleep~about]]\n"
+    },
+    {
+      "name": "person without a final newline",
+      "person": "Morning pages",
+      "chips": [],
+      "body": "Morning pages\n<!-- memex:topics -->\n"
+    },
+    {
+      "name": "empty person",
+      "person": "",
+      "chips": [],
+      "body": "<!-- memex:topics -->\n"
+    },
+    {
+      "name": "person ending in a blank line",
+      "person": "a\n\n",
+      "chips": [
+        "X"
+      ],
+      "body": "a\n\n<!-- memex:topics -->\n[[X~about]]\n"
+    }
+  ]
+}
