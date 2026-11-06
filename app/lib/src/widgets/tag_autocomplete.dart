@@ -22,8 +22,9 @@ import 'wikilink_autocomplete.dart';
 ///
 /// It opens only while typing, in a focused field (D41): a caret move or a
 /// click never opens it. Enter on a tag already typed in full, in any case, or
-/// on the create row closes it and leaves the key to the field, which makes the
-/// new line and keeps the text as typed (D41, D50).
+/// on a create row with nothing else matched closes it and leaves the key to
+/// the field, which makes the new line and keeps the text as typed (D41, D50,
+/// D53).
 ///
 /// Mounted like [WikilinkAutocomplete]: a sibling of the body `TextField`,
 /// whose `FocusNode.onKeyEvent` calls [handleKeyEvent] first. The widget never
@@ -102,12 +103,19 @@ class TagAutocompleteState extends ConsumerState<TagAutocomplete> {
   }
 
   /// A tags read landed. A save bumps the vault revision and so re-reads the
-  /// tags: the selected tag stays selected.
+  /// tags: the selected tag stays selected, and so does a create row arrowed to
+  /// while it still shows, so that Enter writes what the row said. A create row
+  /// arrowed to that the read hides falls to the first row, which is then the
+  /// exact tag it would have written. A lone create row was never chosen over
+  /// anything: tags landing under it select the first row.
   void _onTagsChanged() {
     final index = _selectedIndex;
     final selected = index < _rows.length ? _rows[index].tag : null;
+    final arrowedToCreate = selected == null && index > 0;
     _sync();
-    _selectedIndex = max(0, _rows.indexWhere((r) => r.tag == selected));
+    _selectedIndex = arrowedToCreate && _showCreate
+        ? _rows.length
+        : max(0, _rows.indexWhere((r) => r.tag == selected));
   }
 
   void _sync() {
@@ -193,9 +201,10 @@ class TagAutocompleteState extends ConsumerState<TagAutocomplete> {
   /// Called by the host's `FocusNode.onKeyEvent`. While the popover is open,
   /// ↑/↓ move the selection, Enter/Tab accept and Esc dismisses; the host
   /// returns the result, so a handled key never reaches the `TextField`. Enter
-  /// on the create row, or on a selected tag that is the query in any case,
-  /// closes the popover and is ignored, so it does what Enter does with no
-  /// popover (D41, D50). Tab still accepts both.
+  /// on a create row with nothing else matched, or on a selected tag that is
+  /// the query in any case, closes the popover and is ignored, so it does what
+  /// Enter does with no popover (D41, D50). Enter on a create row arrowed to
+  /// past other matches accepts it (D53). Tab accepts every row.
   KeyEventResult handleKeyEvent(KeyEvent event) {
     if (!isOpen) return KeyEventResult.ignored;
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
@@ -222,8 +231,10 @@ class TagAutocompleteState extends ConsumerState<TagAutocomplete> {
       final tag = _selectedIndex < _rows.length
           ? _rows[_selectedIndex].tag
           : null;
-      // No tag means the create row is the one selected.
-      if (enter && (tag == null || tag == normalizeTagName(_query))) {
+      // No tag means the create row is the one selected. It is the first row
+      // only when nothing else matched; arrowing to it elsewhere is a choice.
+      final onlyCreate = tag == null && _selectedIndex == 0;
+      if (enter && (onlyCreate || tag == normalizeTagName(_query))) {
         _dismiss();
         return KeyEventResult.ignored;
       }
