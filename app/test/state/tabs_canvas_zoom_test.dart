@@ -202,6 +202,11 @@ void main() {
 
         expect(one, same);
         expect(one.hashCode, same.hashCode);
+        expect(
+          one.hashCode,
+          isNot(const CanvasTab('board').hashCode),
+          reason: 'zoom is part of the hash',
+        );
         expect(one, isNot(otherNote));
         expect(one, isNot(otherCanvas));
         expect(const NoteTab('n1'), isNot(one));
@@ -385,6 +390,35 @@ void main() {
 
         p.notifier.back();
         _expectTabs(p, [_board], 0, forward: true);
+      },
+    );
+
+    test(
+      'openOrFocus of a zoomed canvas focuses only an equal zoomed tab and otherwise opens a new tab',
+      () async {
+        final p = await _probe();
+        p.open([_board, _x], active: 0);
+        p.notifier.openOrFocus(_zoomedB); // [board] [x] [zoomedB*]
+        p.notifier.setActive(0);
+        p.reset();
+
+        expect(p.notifier.openOrFocus(_zoomedB), 2, reason: 'the equal tab');
+        expect(p.state.tabs, hasLength(3));
+
+        p.notifier.setActive(0);
+        expect(
+          p.notifier.openOrFocus(_zoomedA),
+          3,
+          reason: 'neither the plain canvas nor another zoom is a match',
+        );
+        _expectTabs(p, [_board, _x, _zoomedB, _zoomedA], 3);
+
+        expect(
+          p.notifier.openOrFocus(_other),
+          4,
+          reason: 'another canvas is never a match',
+        );
+        expect(p.state.tabs, hasLength(5));
       },
     );
 
