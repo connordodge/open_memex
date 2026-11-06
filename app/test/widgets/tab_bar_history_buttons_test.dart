@@ -223,6 +223,14 @@ void main() {
         expect(_line1Fills, findsOneWidget, reason: 'one separator');
         final separatorBefore = tester.getRect(_line1Fills);
         expect(separatorBefore.width, 1);
+        expect(
+          separatorBefore.height,
+          16,
+          reason: 'the separator is a visible 16 px rule, not a 0 px box',
+        );
+        final barRect = tester.getRect(_bar);
+        expect(separatorBefore.top, greaterThanOrEqualTo(barRect.top));
+        expect(separatorBefore.bottom, lessThanOrEqualTo(barRect.bottom));
         expect(separatorBefore.left, greaterThanOrEqualTo(forwardBefore.right));
         final chipsList = find.descendant(
           of: _bar,
@@ -462,6 +470,11 @@ void main() {
         expect(handled, isTrue, reason: 'no bracket reaches the note');
         expect(h.active, _a);
         expect(h.editor.contentMd, 'Alpha body');
+        // The note that had focus keeps its text: no bracket was typed there.
+        h.tabs.forward();
+        await pumpFrames(tester);
+        expect(h.active, _b);
+        expect(h.editor.contentMd, 'Beta body');
         expect(h.editor.contentMd, isNot(contains('[')));
       },
     );
@@ -478,6 +491,11 @@ void main() {
         expect(handled, isTrue, reason: 'no bracket reaches the note');
         expect(h.active, _c);
         expect(h.editor.contentMd, 'Gamma body');
+        // The note that had focus keeps its text: no bracket was typed there.
+        h.tabs.back();
+        await pumpFrames(tester);
+        expect(h.active, _b);
+        expect(h.editor.contentMd, 'Beta body');
         expect(h.editor.contentMd, isNot(contains(']')));
       },
     );
@@ -536,8 +554,15 @@ void main() {
         await tester.sendKeyDownEvent(_left, platform: 'macos');
         await pumpFrames(tester);
         expect(h.active, _b, reason: 'the key down stepped once');
-        await tester.sendKeyRepeatEvent(_left, platform: 'macos');
-        await tester.sendKeyRepeatEvent(_left, platform: 'macos');
+        expect(
+          await tester.sendKeyRepeatEvent(_left, platform: 'macos'),
+          isTrue,
+          reason: 'a repeat is claimed so macOS does not beep',
+        );
+        expect(
+          await tester.sendKeyRepeatEvent(_left, platform: 'macos'),
+          isTrue,
+        );
         await pumpFrames(tester);
         await tester.sendKeyUpEvent(_left, platform: 'macos');
         await tester.sendKeyUpEvent(_meta, platform: 'macos');
@@ -558,13 +583,95 @@ void main() {
         await tester.sendKeyDownEvent(_right, platform: 'macos');
         await pumpFrames(tester);
         expect(h.active, _b, reason: 'the key down stepped once');
-        await tester.sendKeyRepeatEvent(_right, platform: 'macos');
+        expect(
+          await tester.sendKeyRepeatEvent(_right, platform: 'macos'),
+          isTrue,
+          reason: 'a repeat is claimed so macOS does not beep',
+        );
         await pumpFrames(tester);
         await tester.sendKeyUpEvent(_right, platform: 'macos');
         await tester.sendKeyUpEvent(_meta, platform: 'macos');
         await pumpFrames(tester);
 
         expect(h.active, _b, reason: 'the repeat did not step');
+      },
+    );
+
+    testWidgets(
+      'a held chord at the end of the history still claims its repeats and steps nothing',
+      (tester) async {
+        final h = await _onHistory(tester, at: 0);
+        _unfocus();
+        await tester.pump();
+
+        await tester.sendKeyDownEvent(_meta, platform: 'macos');
+        expect(await tester.sendKeyDownEvent(_left, platform: 'macos'), isTrue);
+        expect(
+          await tester.sendKeyRepeatEvent(_left, platform: 'macos'),
+          isTrue,
+        );
+        await tester.sendKeyUpEvent(_left, platform: 'macos');
+        await tester.sendKeyUpEvent(_meta, platform: 'macos');
+        await pumpFrames(tester);
+
+        expect(h.active, _a);
+        expect(h.state.canGoForward, isTrue);
+      },
+    );
+
+    for (final (name, mods) in <(String, List<LogicalKeyboardKey>)>[
+      ('Cmd+Shift+[ repeats are not handled', [_meta, _shift]),
+      ('Cmd+Option+[ repeats are not handled', [_meta, _alt]),
+      ('Cmd+Ctrl+[ repeats are not handled', [_meta, _ctrl]),
+      ('Ctrl+[ repeats are not handled', [_ctrl]),
+      ('plain [ repeats are not handled', []),
+    ]) {
+      testWidgets(name, (tester) async {
+        final h = await _onHistory(tester, at: 1);
+        _unfocus();
+        await tester.pump();
+
+        for (final m in mods) {
+          await tester.sendKeyDownEvent(m, platform: 'macos');
+        }
+        await tester.sendKeyDownEvent(_left, platform: 'macos');
+        expect(
+          await tester.sendKeyRepeatEvent(_left, platform: 'macos'),
+          isFalse,
+        );
+        await tester.sendKeyUpEvent(_left, platform: 'macos');
+        for (final m in mods.reversed) {
+          await tester.sendKeyUpEvent(m, platform: 'macos');
+        }
+        await pumpFrames(tester);
+
+        expect(h.active, _b);
+      });
+    }
+
+    testWidgets(
+      'with a modal dialog open a key repeat of the chord is not handled',
+      (tester) async {
+        final h = await _onHistory(tester, at: 1);
+        _unfocus();
+        final context = tester.element(find.byType(Workspace));
+        showDialog<void>(
+          context: context,
+          builder: (_) => const AlertDialog(content: Text('a modal')),
+        );
+        await pumpFrames(tester);
+
+        await tester.sendKeyDownEvent(_meta, platform: 'macos');
+        await tester.sendKeyDownEvent(_left, platform: 'macos');
+        expect(
+          await tester.sendKeyRepeatEvent(_left, platform: 'macos'),
+          isFalse,
+        );
+        await tester.sendKeyUpEvent(_left, platform: 'macos');
+        await tester.sendKeyUpEvent(_meta, platform: 'macos');
+        await pumpFrames(tester);
+
+        expect(h.active, _b);
       },
     );
 
@@ -727,7 +834,28 @@ void main() {
 
         expect(handled, isFalse, reason: 'the platform delivers the bracket');
         expect(h.active, _b);
-        expect(h.editor.contentMd, 'Beta body');
+
+        // The platform text input then delivers the bracket to the focused
+        // row, and the note gains it.
+        final row = find
+            .byType(EditableText)
+            .evaluate()
+            .map((e) => e.widget as EditableText)
+            .singleWhere((w) => w.focusNode.hasFocus);
+        final value = row.controller.value;
+        final caret = value.selection.baseOffset;
+        tester.testTextInput.updateEditingValue(
+          TextEditingValue(
+            text:
+                '${value.text.substring(0, caret)}['
+                '${value.text.substring(caret)}',
+            selection: TextSelection.collapsed(offset: caret + 1),
+          ),
+        );
+        await pumpFrames(tester);
+
+        expect(h.active, _b);
+        expect(h.editor.contentMd, contains('['));
       },
     );
 
