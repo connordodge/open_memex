@@ -626,3 +626,71 @@ fn is_system_tag_is_true_only_for_the_fixture_system_tags() {
         assert!(!is_system_tag(name), "{name:?} is not a system tag");
     }
 }
+
+// ---------- verify round: contracts the handoff lists as unpinned ----------
+
+#[test]
+fn fence_markers_need_three_matching_characters_and_a_bare_closing_line() {
+    assert_names(&[
+        // Two backticks or tildes are not a fence.
+        ("``\n#x", &["x"]),
+        ("~~\n#x", &["x"]),
+        // A tab-indented fence still opens.
+        ("\t```\n#x\n\t```\n#y", &["y"]),
+        // A closing fence is at least as long as the opener.
+        ("````\n#x\n```\n#y", &[]),
+        ("```\n#x\n````\n#y", &["y"]),
+        ("~~~~\n#x\n~~~\n#y", &[]),
+        ("~~~\n#x\n~~~~\n#y", &["y"]),
+        // A closing fence holds nothing but whitespace after the run.
+        ("```\n#x\n```rust\n#y", &[]),
+        ("```\n#x\n``` \n#y", &["y"]),
+        ("~~~\n#x\n~~~ text\n#y", &[]),
+        // A backtick fence info string holds no backtick: that line is a code span.
+        ("```code``` #x", &["x"]),
+        ("```code``` #x\n#y", &["x", "y"]),
+        // A tilde fence info string may hold one.
+        ("~~~ a`b\n#x\n~~~\n#y", &["y"]),
+        // The opening fence line is code, its info string included.
+        ("``` #x\n#y\n```", &[]),
+        ("~~~ #x\n~~~\n#y", &["y"]),
+    ]);
+}
+
+#[test]
+fn unpaired_backtick_runs_are_plain_text() {
+    assert_names(&[
+        ("`a #x", &["x"]),
+        ("``a` #x", &["x"]),
+        // Equal-length runs pair across an unequal one.
+        ("`a`` #x ``b", &[]),
+        ("`` ` #x", &["x"]),
+        // A later run can still pair after an unpaired one (the single runs pair).
+        ("``a` #x `b` #y", &["y"]),
+    ]);
+}
+
+#[test]
+fn first_line_strips_a_quote_then_a_list_marker_and_only_a_real_task_box() {
+    let text = "> - item #a\n\
+                > - [ ] quoted task #b\n\
+                - [X] big box #c\n\
+                - [x](https://example.com) linked #d\n\
+                - [] empty #e\n\
+                -  [ ]  spaced #f\n\
+                >tight quote #g\n\
+                1.5 not a list #h\n";
+    assert_eq!(
+        extract(text),
+        vec![
+            tag("a", "item #a"),
+            tag("b", "quoted task #b"),
+            tag("c", "big box #c"),
+            tag("d", "[x](https://example.com) linked #d"),
+            tag("e", "[] empty #e"),
+            tag("f", "spaced #f"),
+            tag("g", "tight quote #g"),
+            tag("h", "1.5 not a list #h"),
+        ]
+    );
+}
