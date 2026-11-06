@@ -42,10 +42,10 @@ class _VirtualDraft {
   final List<String> maybeCreated = [];
 }
 
-/// A plain save of a hosted note held back while an earlier save of the
-/// note typed in the same editor load is in flight (see
-/// `EditorController._deferredSaves`): its text and title, the editor load
-/// it was typed in, and its base version.
+/// A plain save held back while an earlier save of the note typed in the
+/// same editor load is in flight (see `EditorController._deferredSaves`):
+/// its text and title, the editor load it was typed in, and its base
+/// version.
 class _DeferredSave {
   _DeferredSave({
     required this.access,
@@ -99,7 +99,13 @@ const couldNotSaveMessage = "Couldn't save";
 /// of the open vault retries once. A retry whose `version_conflict` shows
 /// the queued text on the server counts as saved (L17 self-heal); a daily
 /// note merges as above. Opening a queued note fills the editor from the
-/// queue. Local vaults are unchanged.
+/// queue.
+///
+/// On a local vault a save that fails after the person left its note (or
+/// opened it again) keeps its text: opening the note shows that text with
+/// the failure's status and message, on the version it was based on, until
+/// a later save of the note succeeds. A daily note's `version_conflict`
+/// merges after it was left, as on a hosted vault.
 class EditorController extends StateNotifier<EditorStateValue> {
   EditorController(this._ref)
     : super(
@@ -133,18 +139,18 @@ class EditorController extends StateNotifier<EditorStateValue> {
   /// The queued saves (vault, note id) whose retry is in flight.
   final Set<(HostedVaultRef, String)> _retrying = {};
 
-  /// Numbers every hosted write of a note (a save, a retry, a save after
-  /// leaving a resolved Today note) in send order.
+  /// Numbers every write of a note (a save, a retry, a save after leaving a
+  /// resolved Today note) in send order.
   int _sendSeq = 0;
 
-  /// The number of the latest write sent for each hosted (vault, note id).
-  /// A failed write older than it is superseded by that later write: it
-  /// never queues its older text (lead ruling, #102).
-  final Map<(HostedVaultRef, String), int> _latestSent = {};
+  /// The number of the latest write sent for each (vault, note id). A
+  /// failed hosted write older than it is superseded by that later write:
+  /// it never queues its older text (lead ruling, #102).
+  final Map<(VaultRef?, String), int> _latestSent = {};
 
-  /// The numbers of the plain saves and saves elsewhere of each hosted
-  /// (vault, note id) still in flight.
-  final Map<(HostedVaultRef, String), Set<int>> _inFlight = {};
+  /// The numbers of the plain saves and saves elsewhere of each (vault,
+  /// note id) still in flight.
+  final Map<(VaultRef?, String), Set<int>> _inFlight = {};
 
   /// The number of the write that queued each hosted (vault, note id)'s
   /// entry (see [_waitsForOlderWrite]).
@@ -154,16 +160,26 @@ class EditorController extends StateNotifier<EditorStateValue> {
   /// still in flight; it runs once that write's outcome is applied.
   final Set<(HostedVaultRef, String)> _deferred = {};
 
-  /// The editor load each hosted plain save in flight was typed in, by its
-  /// send number.
+  /// The editor load each plain save in flight was typed in, by its send
+  /// number.
   final Map<int, int> _sentInLoad = {};
 
-  /// The plain save of each hosted (vault, note id) held back while an
-  /// earlier save of the note typed in the same editor load is in flight:
-  /// its text was typed on top of that save's, and a save on the same base
-  /// would conflict with it. One per note (the latest text); it goes once
-  /// that save's outcome is applied ([_sendDeferred]).
-  final Map<(HostedVaultRef, String), _DeferredSave> _deferredSaves = {};
+  /// The plain save of each (vault, note id) held back while an earlier
+  /// save of the note typed in the same editor load is in flight: its text
+  /// was typed on top of that save's, and a save on the same base would
+  /// conflict with it. One per note (the latest text); it goes once that
+  /// save's outcome is applied ([_sendDeferred]). Every hosted save waits
+  /// so; a local one waits only when [flushPendingSave] sends it, since
+  /// once the person left the note no editor would show its conflict.
+  final Map<(VaultRef?, String), _DeferredSave> _deferredSaves = {};
+
+  /// The local saves that failed after the person left their note (or
+  /// opened it again), by (vault, note id): the editor state that opening
+  /// the note shows (the failed text and title on its base version, with
+  /// the failure's status and message), and the failed save's send number.
+  /// An entry goes once a later save of the note succeeds.
+  final Map<(VaultRef?, String), ({EditorStateValue shown, int sendSeq})>
+  _heldLocal = {};
 
   /// Set (to the base version) after a daily note's save and its merged
   /// retry both conflicted, or text was typed during a merged save: the next
@@ -188,6 +204,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
   }
 
   void loadNote(Note? note) {
+    final previous = _activeNoteId;
     final pending = _debounce?.isActive == true;
     _debounce?.cancel();
     _loadSeq++;
@@ -232,6 +249,20 @@ class EditorController extends StateNotifier<EditorStateValue> {
     if (queued != null) {
       _showQueued(queued);
       return;
+    }
+    // A local save of this note that failed after it was left: opening the
+    // note shows its text and failure, never the stored copy. Loading the
+    // shown note again (a rebase onto a new version, which puts the
+    // editor's text back on top) takes the stored copy and drops the hold.
+    final heldKey = (_ref.read(currentVaultProvider), note.id);
+    if (previous == note.id) {
+      _heldLocal.remove(heldKey);
+    } else {
+      final held = _heldLocal[heldKey];
+      if (held != null) {
+        state = held.shown;
+        return;
+      }
     }
     state = EditorStateValue(
       title: note.title,
@@ -310,12 +341,14 @@ class EditorController extends StateNotifier<EditorStateValue> {
   /// Saves now when a save debounce is pending (cancelling it); otherwise
   /// does nothing. Synchronous: the save captures the editor's state before
   /// it first awaits, so a caller may switch notes right after (D14, B3
-  /// Cmd+click).
+  /// Cmd+click). On any vault, while an earlier save of the note typed in
+  /// the same editor load is in flight, the flushed save waits for it and
+  /// goes on the version it stored, never beside it.
   void flushPendingSave() {
     final pending = _debounce;
     if (pending == null || !pending.isActive) return;
     pending.cancel();
-    unawaited(_save());
+    unawaited(_save(leaving: true));
   }
 
   void _scheduleSave() {
@@ -325,7 +358,9 @@ class EditorController extends StateNotifier<EditorStateValue> {
     });
   }
 
-  Future<void> _save() async {
+  /// Saves the open note's text. [leaving]: [flushPendingSave] sent it, as
+  /// the person leaves the note.
+  Future<void> _save({bool leaving = false}) async {
     final date = _virtualDate;
     if (date != null) return _createDaily(date);
     final id = _activeNoteId;
@@ -337,7 +372,8 @@ class EditorController extends StateNotifier<EditorStateValue> {
     final local = state.contentMd;
     final rawTitle = state.title;
     final title = rawTitle.trim().isEmpty ? null : rawTitle.trim();
-    final hosted = _hostedVault();
+    final vault = _ref.read(currentVaultProvider);
+    final hosted = vault is HostedVaultRef ? vault : null;
     if (hosted != null) {
       final queued = _queue.entryFor(hosted, id);
       if (queued != null) {
@@ -367,24 +403,24 @@ class EditorController extends StateNotifier<EditorStateValue> {
         }
         return _retry(hosted, access, _queue.entryFor(hosted, id)!);
       }
-      if (_waitsForOwnSave(hosted, id, _loadSeq)) {
-        // An earlier save of this text is still in flight: this save goes
-        // once it lands, on the version it stored, never beside it.
-        _debounce?.cancel();
-        _deferredSaves[(hosted, id)] = _DeferredSave(
-          access: access,
-          loadSeq: _loadSeq,
-          text: local,
-          rawTitle: rawTitle,
-          title: title,
-          baseVersion: version,
-        );
-        return;
-      }
+    }
+    if ((hosted != null || leaving) && _waitsForOwnSave(vault, id, _loadSeq)) {
+      // An earlier save of this text is still in flight: this save goes
+      // once it lands, on the version it stored, never beside it.
+      _debounce?.cancel();
+      _deferredSaves[(vault, id)] = _DeferredSave(
+        access: access,
+        loadSeq: _loadSeq,
+        text: local,
+        rawTitle: rawTitle,
+        title: title,
+        baseVersion: version,
+      );
+      return;
     }
     return _send(
       access,
-      hosted,
+      vault,
       id,
       seq: _loadSeq,
       local: local,
@@ -396,15 +432,17 @@ class EditorController extends StateNotifier<EditorStateValue> {
   }
 
   /// Sends [local] (titled [rawTitle], sending [title]) as note [id]'s
-  /// save on [version] through [access], typed in editor load [seq];
-  /// [merging] goes straight to the daily merge. The outcome reaches the
-  /// editor only while it shows note [id]. On a hosted vault a daily note's
-  /// `version_conflict` merges after the note was left too, and any other
-  /// `version_conflict` of a save the editor no longer shows in load [seq]
-  /// is queued as a held conflict ([_queueFailedSave]), never dropped.
+  /// save in [vault] on [version] through [access], typed in editor load
+  /// [seq]; [merging] goes straight to the daily merge. The outcome reaches
+  /// the editor only while it shows note [id]. A daily note's
+  /// `version_conflict` merges after the note was left too. On a hosted
+  /// vault any other `version_conflict` of a save the editor no longer
+  /// shows in load [seq] is queued as a held conflict ([_queueFailedSave]);
+  /// on a local vault any failure of such a save is held for the note
+  /// ([_holdLocal]). Neither is dropped.
   Future<void> _send(
     VaultAccess access,
-    HostedVaultRef? hosted,
+    VaultRef? vault,
     String id, {
     required int seq,
     required String local,
@@ -413,11 +451,10 @@ class EditorController extends StateNotifier<EditorStateValue> {
     required int version,
     required bool merging,
   }) async {
-    final sendSeq = hosted == null ? 0 : _sent(hosted, id);
-    if (hosted != null) {
-      _sending(hosted, id, sendSeq);
-      _sentInLoad[sendSeq] = seq;
-    }
+    final hosted = vault is HostedVaultRef ? vault : null;
+    final sendSeq = _sent(vault, id);
+    _sending(vault, id, sendSeq);
+    _sentInLoad[sendSeq] = seq;
     if (_activeNoteId == id && _virtualDate == null && _loadSeq == seq) {
       state = state.copyWith(status: SaveStatus.saving, clearError: true);
     }
@@ -434,19 +471,13 @@ class EditorController extends StateNotifier<EditorStateValue> {
           );
           saved = (result: result, body: local);
         } on MemexException catch (e) {
-          // Only a daily note merges (Req 60); other conflicts surface. On
-          // a hosted vault a daily note merges after it was left too.
-          if (e.kind != MemexErrorKind.versionConflict ||
-              (hosted == null && _activeNoteId != id)) {
-            rethrow;
-          }
+          // Only a daily note merges (Req 60), also after it was left;
+          // other conflicts surface.
+          if (e.kind != MemexErrorKind.versionConflict) rethrow;
           // The conflict refetch: the stored note's role decides, and it is
           // the merge's server side.
           refetched = await access.notes.getNote(id);
-          if ((hosted == null && _activeNoteId != id) ||
-              refetched?.role != 'daily') {
-            rethrow;
-          }
+          if (refetched?.role != 'daily') rethrow;
           merging = true;
         }
       }
@@ -458,9 +489,15 @@ class EditorController extends StateNotifier<EditorStateValue> {
         title: title,
         server: refetched,
       );
-      final deferred = hosted == null ? null : _deferredSaves[(hosted, id)];
+      final deferred = _deferredSaves[(vault, id)];
       if (deferred != null && !merging && deferred.baseVersion == version) {
         deferred.baseVersion = saved.result.version;
+      }
+      // An older failed save of the note held its text: this later one
+      // saved newer text.
+      final heldLocal = _heldLocal[(vault, id)];
+      if (heldLocal != null && heldLocal.sendSeq < sendSeq) {
+        _heldLocal.remove((vault, id));
       }
       final stillQueued =
           hosted != null &&
@@ -555,6 +592,18 @@ class EditorController extends StateNotifier<EditorStateValue> {
           held: true,
         );
       }
+      if (hosted == null && !_showsLoad(id, seq)) {
+        return _holdLocal(
+          vault,
+          id,
+          sendSeq,
+          text: local,
+          rawTitle: rawTitle,
+          baseVersion: version,
+          status: conflict ? SaveStatus.conflict : SaveStatus.error,
+          message: merging && conflict ? couldNotSaveMessage : e.message,
+        );
+      }
       if (_activeNoteId != id) return;
       if (merging && conflict) {
         // The merged retry conflicted too: keep the local text and merge
@@ -585,13 +634,67 @@ class EditorController extends StateNotifier<EditorStateValue> {
           e,
         );
       }
+      if (hosted == null && !_showsLoad(id, seq)) {
+        return _holdLocal(
+          vault,
+          id,
+          sendSeq,
+          text: local,
+          rawTitle: rawTitle,
+          baseVersion: version,
+          status: SaveStatus.error,
+          message: e.toString(),
+        );
+      }
       if (_activeNoteId != id) return;
       state = state.copyWith(
         status: SaveStatus.error,
         errorMessage: e.toString(),
       );
     } finally {
-      if (hosted != null) _settled(hosted, id, sendSeq);
+      _settled(vault, id, sendSeq);
+    }
+  }
+
+  /// True while the editor shows real note [id] in editor load [seq].
+  bool _showsLoad(String id, int seq) =>
+      _activeNoteId == id && _virtualDate == null && _loadSeq == seq;
+
+  /// A local save of note [id] in [vault] (send [sendSeq]) failed after the
+  /// person left the note or opened it again: hold [text] (titled [rawTitle], on [baseVersion]) with the failure's
+  /// [status] and [message], so opening the note shows them ([loadNote]).
+  /// A save superseded by a later write of the note (sent, or waiting in
+  /// [_deferredSaves]) holds nothing: that write's text is newer and its
+  /// outcome decides. When the note was opened again and not edited since,
+  /// the editor shows the held text now.
+  void _holdLocal(
+    VaultRef? vault,
+    String id,
+    int sendSeq, {
+    required String text,
+    required String rawTitle,
+    required int baseVersion,
+    required SaveStatus status,
+    required String message,
+  }) {
+    final key = (vault, id);
+    if ((_latestSent[key] ?? 0) > sendSeq) return;
+    if (_deferredSaves.containsKey(key)) return;
+    final shown = EditorStateValue(
+      title: rawTitle,
+      contentMd: text,
+      status: status,
+      errorMessage: message,
+      lastSavedVersion: baseVersion,
+    );
+    _heldLocal[key] = (shown: shown, sendSeq: sendSeq);
+    if (_activeNoteId == id &&
+        _virtualDate == null &&
+        _ref.read(currentVaultProvider) == vault &&
+        state.status == SaveStatus.clean &&
+        state.lastSavedVersion == baseVersion) {
+      _mergeBase = null;
+      state = shown;
     }
   }
 
@@ -810,9 +913,11 @@ class EditorController extends StateNotifier<EditorStateValue> {
   }
 
   /// Write [sendSeq] of note [id] in [vault] is done (its outcome applied):
-  /// a retry of the note's entry that waited for it runs now when the
-  /// server's status reads connected (the next recovery retries otherwise).
-  void _settled(HostedVaultRef vault, String id, int sendSeq) {
+  /// a save of the note held back for it goes now ([_sendDeferred]), and,
+  /// on a hosted vault, a retry of the note's entry that waited for it runs
+  /// now when the server's status reads connected (the next recovery
+  /// retries otherwise).
+  void _settled(VaultRef? vault, String id, int sendSeq) {
     final key = (vault, id);
     final pending = _inFlight[key];
     if (pending != null && pending.remove(sendSeq) && pending.isEmpty) {
@@ -824,6 +929,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
     if (held != null && !_waitsForOwnSave(vault, id, held.loadSeq)) {
       _sendDeferred(vault, id);
     }
+    if (vault is! HostedVaultRef) return;
     if (_waitsForOlderWrite(vault, id)) return;
     if (!_deferred.remove(key)) return;
     final q = _queue.entryFor(vault, id);
@@ -836,16 +942,16 @@ class EditorController extends StateNotifier<EditorStateValue> {
 
   /// True while a plain save of note [id] in [vault] typed in editor load
   /// [load] is in flight.
-  bool _waitsForOwnSave(HostedVaultRef vault, String id, int load) =>
+  bool _waitsForOwnSave(VaultRef? vault, String id, int load) =>
       _inFlight[(vault, id)]?.any((s) => _sentInLoad[s] == load) ?? false;
 
   /// The earlier save note [id]'s held-back plain save in [vault] waited for
   /// is done: it goes now. While the editor still shows the note in the
   /// same load, the editor's latest text goes on the editor's base (the
   /// version the earlier save stored), unless the editor is clean; a queued
-  /// entry of the note takes the text instead (its retry sends it);
+  /// entry of the hosted note takes the text instead (its retry sends it);
   /// otherwise the held-back text goes on its base.
-  void _sendDeferred(HostedVaultRef vault, String id) {
+  void _sendDeferred(VaultRef? vault, String id) {
     final d = _deferredSaves.remove((vault, id))!;
     final open =
         _activeNoteId == id &&
@@ -858,7 +964,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
       unawaited(_save());
       return;
     }
-    if (_queue.entryFor(vault, id) != null) {
+    if (vault is HostedVaultRef && _queue.entryFor(vault, id) != null) {
       _queue.updateText(
         vault,
         id,
@@ -935,12 +1041,12 @@ class EditorController extends StateNotifier<EditorStateValue> {
 
   /// Numbers a write of note [id] in [vault] about to be sent (see
   /// [_latestSent]) and returns its number.
-  int _sent(HostedVaultRef vault, String id) =>
+  int _sent(VaultRef? vault, String id) =>
       _latestSent[(vault, id)] = ++_sendSeq;
 
   /// Write [sendSeq] of note [id] in [vault] is in flight until
   /// [_settled].
-  void _sending(HostedVaultRef vault, String id, int sendSeq) =>
+  void _sending(VaultRef? vault, String id, int sendSeq) =>
       _inFlight.putIfAbsent((vault, id), () => {}).add(sendSeq);
 
   /// True when a write of note [id] in [vault] was sent after write

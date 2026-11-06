@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
@@ -41,7 +42,7 @@ class Workspace extends ConsumerWidget {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 const VaultSchemaBanner(),
-                const _WorkspaceTabBar(),
+                const _HistoryKeys(child: _WorkspaceTabBar()),
                 Expanded(
                   child: _TabBody(
                     rightPanelOpen: rightOpen,
@@ -76,7 +77,7 @@ class Workspace extends ConsumerWidget {
       );
       if (id == null) return;
       ref.read(vaultRevisionProvider.notifier).state++;
-      ref.read(tabsProvider.notifier).openOrFocus(NoteTab(id));
+      ref.read(tabsProvider.notifier).navigate(NoteTab(id));
     } catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(
@@ -85,6 +86,61 @@ class Workspace extends ConsumerWidget {
       }
     }
   }
+}
+
+/// Registers the Cmd+[ and Cmd+] history chords on [HardwareKeyboard] for as
+/// long as the workspace is mounted. A hardware handler rather than
+/// `Shortcuts`, so the chord fires whatever has focus, or nothing (TD8).
+class _HistoryKeys extends ConsumerStatefulWidget {
+  const _HistoryKeys({required this.child});
+  final Widget child;
+
+  @override
+  ConsumerState<_HistoryKeys> createState() => _HistoryKeysState();
+}
+
+class _HistoryKeysState extends ConsumerState<_HistoryKeys> {
+  @override
+  void initState() {
+    super.initState();
+    HardwareKeyboard.instance.addHandler(_onKey);
+  }
+
+  @override
+  void dispose() {
+    HardwareKeyboard.instance.removeHandler(_onKey);
+    super.dispose();
+  }
+
+  bool _onKey(KeyEvent event) {
+    if (event is KeyUpEvent) return false;
+    final key = event.logicalKey;
+    final back = key == LogicalKeyboardKey.bracketLeft;
+    if (!back && key != LogicalKeyboardKey.bracketRight) return false;
+    final keys = HardwareKeyboard.instance;
+    if (!keys.isMetaPressed ||
+        keys.isShiftPressed ||
+        keys.isControlPressed ||
+        keys.isAltPressed) {
+      return false;
+    }
+    // A modal over the workspace owns the keyboard.
+    if (ModalRoute.of(context)?.isCurrent == false) return false;
+    // A held chord is claimed (so macOS does not beep) but steps only once.
+    if (event is! KeyDownEvent) return true;
+    final tabs = ref.read(tabsProvider.notifier);
+    if (back) {
+      tabs.back();
+    } else {
+      tabs.forward();
+    }
+    // Handled even at the ends of history, so macOS does not beep and the
+    // editor gets no bracket.
+    return true;
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }
 
 class _WorkspaceTabBar extends ConsumerWidget {
@@ -96,6 +152,7 @@ class _WorkspaceTabBar extends ConsumerWidget {
     if (state.tabs.isEmpty) {
       return const SizedBox(height: 32);
     }
+    final notifier = ref.read(tabsProvider.notifier);
     return Container(
       key: const Key('workspace-tab-bar'),
       height: 32,
@@ -103,20 +160,54 @@ class _WorkspaceTabBar extends ConsumerWidget {
         color: OmColors.surface1,
         border: Border(bottom: BorderSide(color: OmColors.line1, width: 1)),
       ),
-      child: ListView.builder(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-        itemCount: state.tabs.length,
-        itemBuilder: (_, i) {
-          final t = state.tabs[i];
-          final active = i == state.activeIndex;
-          return _TabChip(
-            tab: t,
-            active: active,
-            onTap: () => ref.read(tabsProvider.notifier).setActive(i),
-            onClose: () => ref.read(tabsProvider.notifier).close(t),
-          );
-        },
+      child: Row(
+        children: [
+          const SizedBox(width: 6),
+          Center(
+            child: OmButton(
+              key: const Key('nav-back-button'),
+              kind: OmButtonKind.ghost,
+              size: 24,
+              icon: LucideIcons.arrowLeft,
+              tooltip: 'Back ⌘[',
+              onPressed: state.canGoBack ? notifier.back : null,
+            ),
+          ),
+          const SizedBox(width: 2),
+          Center(
+            child: OmButton(
+              key: const Key('nav-forward-button'),
+              kind: OmButtonKind.ghost,
+              size: 24,
+              icon: LucideIcons.arrowRight,
+              tooltip: 'Forward ⌘]',
+              onPressed: state.canGoForward ? notifier.forward : null,
+            ),
+          ),
+          const SizedBox(width: 6),
+          SizedBox(
+            width: 1,
+            height: 16,
+            child: ColoredBox(color: OmColors.line1),
+          ),
+          Expanded(
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+              itemCount: state.tabs.length,
+              itemBuilder: (_, i) {
+                final t = state.tabs[i];
+                final active = i == state.activeIndex;
+                return _TabChip(
+                  tab: t,
+                  active: active,
+                  onTap: () => ref.read(tabsProvider.notifier).setActive(i),
+                  onClose: () => ref.read(tabsProvider.notifier).closeAt(i),
+                );
+              },
+            ),
+          ),
+        ],
       ),
     );
   }
