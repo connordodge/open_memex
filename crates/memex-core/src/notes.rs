@@ -397,8 +397,11 @@ fn check_guide_fields(
 /// the daily write hook (D9) in the save transaction: its body is stored
 /// normalized, its blocks are re-synced (new ones stamped with the caller's
 /// source) and its content version is bumped when the person text changed.
-/// Daily notes rewritten by the rename pass are re-synced the same way and
-/// also get a new `version`. Callers reindex from the returned note (D8).
+/// Any other note but a `role: guide` one stores its person section with the
+/// Note footer rendered from its rows (Spec #234 R14); a guide's body is
+/// stored as given. Daily notes rewritten by the rename pass are re-synced
+/// the same way and also get a new `version`; other linkers get their footer
+/// re-rendered. Callers reindex from the returned note (D8).
 pub fn update_note_as(
     vault: &mut Vault,
     id: &NoteId,
@@ -478,8 +481,9 @@ pub fn update_note_as(
     {
         let tx = vault.conn_mut().transaction()?;
 
-        // The note itself first, so a daily linker's footer below renders
-        // the new title.
+        // The note itself first, so a linker's footer below renders the new
+        // title. Every note but a guide keeps the footer rendered from its
+        // rows (Spec #234 R14, D3).
         let saved_content = if is_daily {
             daily::sync_daily_note(
                 &tx,
@@ -490,8 +494,10 @@ pub fn update_note_as(
                 new_version,
                 now,
             )?
-        } else {
+        } else if is_guide(&new_fm) {
             new_content
+        } else {
+            daily::sync_note_footer(&tx, id.as_str(), &new_content)?
         };
         tx.execute(
             "UPDATE notes SET title = ?, content_md = ?, frontmatter = ?, version = ?, updated_at = ?
@@ -543,7 +549,8 @@ pub fn update_note_as(
                 if rewritten == linker_content {
                     continue;
                 }
-                if daily::is_daily(&lenient_frontmatter(&linker_fm)) {
+                let linker_fm = lenient_frontmatter(&linker_fm);
+                if daily::is_daily(&linker_fm) {
                     // A daily linker is re-synced and gets a new version, so
                     // an open editor sees a conflict and merges (D9).
                     let version = linker_version + 1;
@@ -562,11 +569,18 @@ pub fn update_note_as(
                     )?;
                     linker_rewrites.push((linker_id.clone(), body));
                 } else {
+                    // A non-guide linker keeps its body text above the marker
+                    // and the footer re-rendered from rows below it (R15).
+                    let body = if is_guide(&linker_fm) {
+                        rewritten
+                    } else {
+                        daily::sync_note_footer(&tx, &linker_id, &rewritten)?
+                    };
                     tx.execute(
                         "UPDATE notes SET content_md = ?, updated_at = ? WHERE id = ?",
-                        params![rewritten, now, linker_id],
+                        params![body, now, linker_id],
                     )?;
-                    linker_rewrites.push((linker_id.clone(), rewritten));
+                    linker_rewrites.push((linker_id.clone(), body));
                 }
             }
         }
@@ -694,6 +708,45 @@ pub(crate) fn write_guide_internal(
     Ok(())
 }
 
+/// The non-daily counterpart of [`write_daily_internal`] for footer writes
+/// (Spec #234 TD5): re-renders the Note footer of `id` from its rows below
+/// its current person section, adding the marker with the first footer item
+/// and removing it with the last (R11). The note gets a new `version` and
+/// `updated_at` even when the body is unchanged. Fails with `VersionConflict`
+/// on a stale `expected_version`, `RoleRule` on a daily note and `GuideRule`
+/// on a guide (D3). The caller reindexes from the returned note (D8).
+pub(crate) fn write_note_footer_internal(
+    vault: &mut Vault,
+    id: &NoteId,
+    expected_version: i64,
+) -> Result<Note> {
+    let current = get_note(vault, id)?;
+    if current.version != expected_version {
+        return Err(MemexError::VersionConflict {
+            expected: expected_version,
+            current: current.version,
+        });
+    }
+    if daily::is_daily(&current.frontmatter) {
+        return Err(MemexError::RoleRule(format!(
+            "note {id} is a daily note: its footer is written by write_daily_internal"
+        )));
+    }
+    if is_guide(&current.frontmatter) {
+        return Err(MemexError::GuideRule(format!(
+            "note {id} is the Vault Guide (role: guide), which has no Note footer"
+        )));
+    }
+    let tx = vault.conn_mut().transaction()?;
+    let body = daily::sync_note_footer(&tx, id.as_str(), &current.content_md)?;
+    tx.execute(
+        "UPDATE notes SET content_md = ?, version = ?, updated_at = ? WHERE id = ?",
+        params![body, current.version + 1, now_unix_ms(), id.as_str()],
+    )?;
+    tx.commit()?;
+    get_note(vault, id)
+}
+
 fn validate_title(t: &str) -> Result<()> {
     let trimmed = t.trim();
     if trimmed.is_empty() {
@@ -733,9 +786,9 @@ pub fn delete_note(vault: &mut Vault, id: &NoteId) -> Result<()> {
 /// checks `expected_version` (`VersionConflict`), purges the note's search
 /// indexes before the delete, deletes it (its blocks, review rows, chips,
 /// change entries and memberships cascade) and re-renders, then reindexes
-/// with `embedder`, the footer of every daily note that held a chip for it.
-/// An unknown id is `NotFound`. The Vault Guide is always `GuideRule`, whatever
-/// the version.
+/// with `embedder`, the footer of every note that held a chip for it, daily
+/// or not (Spec #234 TD5); a guide is left as it is (D3). An unknown id is
+/// `NotFound`. The Vault Guide is always `GuideRule`, whatever the version.
 pub fn delete_note_checked(
     vault: &mut Vault,
     id: &NoteId,
@@ -755,7 +808,7 @@ pub fn delete_note_checked(
         });
     }
     // Collected before the delete: the chips cascade away with the note.
-    let dailies: Vec<String> = {
+    let hosts: Vec<String> = {
         let mut stmt = vault.connection_ref().prepare(
             "SELECT daily_note_id FROM footer_chips WHERE topic_note_id = ? ORDER BY rowid",
         )?;
@@ -765,8 +818,8 @@ pub fn delete_note_checked(
     // The purge reads the note's `chunks`, which the delete cascades away.
     crate::indexer::purge_note_indexes(vault.conn_mut(), id.as_str())?;
     delete_note(vault, id)?;
-    for daily_id in dailies {
-        crate::footer::rerender_footer(vault, &NoteId(daily_id), embedder)?;
+    for host_id in hosts {
+        crate::footer::rerender_footer(vault, &NoteId(host_id), embedder)?;
     }
     Ok(())
 }

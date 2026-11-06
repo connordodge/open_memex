@@ -12,18 +12,25 @@
 const AUTO_ADDED_HEADING: &str = "## Auto-added links";
 
 /// Insert a wikilink into the source note's content per the destination rule.
+///
+/// Only the person section is edited: a Note footer (from the first marker
+/// line outside fenced code) is kept byte for byte below it (Spec #234 R15).
 pub fn insert_link_into_markdown(
     content: &str,
     target_title: &str,
     kind: &str,
     label: Option<&str>,
 ) -> String {
+    let (person, footer) =
+        content.split_at(memex_core::daily::note_marker_start(content).unwrap_or(content.len()));
     let token = render_wikilink(target_title, label);
-    if kind == "references" {
-        insert_into_auto_added(content, &token)
+    let mut out = if kind == "references" {
+        insert_into_auto_added(person, &token)
     } else {
-        insert_into_frontmatter(content, &token, kind)
-    }
+        insert_into_frontmatter(person, &token, kind)
+    };
+    out.push_str(footer);
+    out
 }
 
 /// Render the wikilink token to insert: `[[Title]]`, or `[[Title|alias]]` when

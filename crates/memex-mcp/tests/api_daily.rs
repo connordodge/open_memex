@@ -1106,10 +1106,10 @@ async fn footer_add_upgrades_an_excerpt_chip_to_person_in_place() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn footer_add_errors_are_the_cli_c1_bodies() {
     let env = Env::start().await;
-    // (daily, topic, status, code)
+    // (daily, topic, status, code). Since WI #238 any note but a guide may
+    // hold chips, so a non-daily host is no longer an error; a non-topic
+    // target still is.
     let cases: &[(&str, &str, u16, &str)] = &[
-        (LOOSE, PLAYER_LOOP, 422, "role_rule"),
-        (ECONOMY, PLAYER_LOOP, 422, "role_rule"),
         (DAY_18, DAY_19, 422, "role_rule"),
         (DAY_18, LOOSE, 422, "role_rule"),
         (UNKNOWN, PLAYER_LOOP, 404, "not_found"),

@@ -5,7 +5,8 @@
 //! C2.3 `memex footer add --vault V --daily-note-id D --topic-note-id T`
 //! `{"vault_id":"01HV…","daily_note_id":"01J9…","topic_note_id":"01J9…","origin":"person","version":7}`
 //! (`version` = the daily note's new notes.version.) errors: `role_rule`
-//! (D not daily or T not topic), `not_found`. Idempotent; upgrades an
+//! (T not topic; since WI #238 D may be any note but a guide), `not_found`.
+//! Idempotent; upgrades an
 //! `excerpt` chip to `person`.
 //!
 //! JSON is compared as parsed values.
@@ -289,8 +290,10 @@ fn footer_add_on_an_excerpt_chip_reports_and_stores_person() {
 
 // ---------- AC 13: role_rule and not_found ----------
 
+/// WI #238: the footer is on every note, so a topic note may hold chips; the
+/// target must still be a topic note.
 #[test]
-fn footer_add_with_a_topic_note_as_the_daily_note_exits_1_with_role_rule() {
+fn footer_add_on_a_topic_note_succeeds_and_a_non_topic_target_exits_1_with_role_rule() {
     let (_dir, v) = init_vault();
     let topic = add_topic(&v, "Player Loop");
     let other = add_topic(&v, "Sleep");
@@ -298,25 +301,30 @@ fn footer_add_with_a_topic_note_as_the_daily_note_exits_1_with_role_rule() {
     let (_, other_version) = note_row(&v, &other);
     let (_, daily_version) = note_row(&v, &daily);
 
-    // D is a topic note.
-    let e = error_json(&footer_add(&v, &other, &topic));
-    assert_eq!(e["error"]["code"], json!("role_rule"), "{e}");
-    assert!(
-        e["error"]["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("role"),
-        "{e}"
-    );
-    // T is a daily note.
-    let e = error_json(&footer_add(&v, &daily, &daily));
-    assert_eq!(e["error"]["code"], json!("role_rule"), "{e}");
-
+    // T is a daily note: role_rule, on a daily or a topic host.
+    for host in [&daily, &other] {
+        let e = error_json(&footer_add(&v, host, &daily));
+        assert_eq!(e["error"]["code"], json!("role_rule"), "{e}");
+        assert!(
+            e["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("role"),
+            "{e}"
+        );
+    }
     assert_eq!(chip_count(&v), 0, "nothing recorded");
     assert_eq!(note_row(&v, &other).1, other_version);
     assert_eq!(note_row(&v, &daily).1, daily_version);
-    // The same pair the right way round works.
-    ok_json(footer_add(&v, &daily, &topic));
+
+    // The host is a topic note: the chip goes in its Note footer.
+    let out = ok_json(footer_add(&v, &other, &topic));
+    assert_eq!(out, c23(&v, &other, &topic, other_version + 1));
+    assert_eq!(
+        note_row(&v, &other).0,
+        "All about Sleep.\n<!-- memex:topics -->\n[[Player Loop~about]]\n"
+    );
+    assert_eq!(chip_count(&v), 1);
 }
 
 #[test]

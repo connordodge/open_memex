@@ -36,6 +36,11 @@ pub struct DailyBody {
     pub person: String,
     /// Footer chip titles (`[[<title>~about]]`), in order.
     pub chips: Vec<String>,
+    /// Footer tag names, as written after `#` on a footer tag line (a line
+    /// below the marker starting with `#` and then a character other than a
+    /// space or `#`), trailing spaces and `\r` trimmed, in order (Spec #234
+    /// R12, D13). Writes drop them: tag rows decide the footer.
+    pub tags: Vec<String>,
 }
 
 /// A line without its `\n`, with trailing spaces and `\r` trimmed (C3).
@@ -50,41 +55,83 @@ fn chip_title(line: &str) -> Option<&str> {
         .filter(|title| !title.is_empty())
 }
 
-/// Splits a daily note body into the person section and footer chips (C3).
+/// The name of a footer tag line (Spec #234 R12): `#` followed by a character
+/// other than a space or `#`, the name being everything after the `#`.
+/// `line` is already trimmed of trailing spaces and `\r`.
+fn footer_tag_name(line: &str) -> Option<&str> {
+    let name = line.strip_prefix('#')?;
+    name.starts_with(|c| c != ' ' && c != '#').then_some(name)
+}
+
+/// Splits a daily note body into the person section and the footer (C3).
 ///
 /// Splits at the first marker line; without one the whole body is person.
-/// Below the marker, chip lines become `chips` in order, blank lines and
-/// further marker lines are dropped, and any other line is stray text moved
-/// to the end of the person section (Q1).
+/// Below the marker, chip lines become `chips` and footer tag lines `tags`,
+/// each in order; blank lines and further marker lines are dropped, and any
+/// other line is stray text moved to the end of the person section (Q1).
 pub fn split_body(body: &str) -> DailyBody {
     let mut start = 0;
-    let mut marker = None;
     for line in body.split_inclusive('\n') {
-        let end = start + line.len();
         if trim_line_end(line.strip_suffix('\n').unwrap_or(line)) == TOPICS_MARKER {
-            marker = Some((start, end));
-            break;
+            return split_at_marker(body, start);
         }
-        start = end;
+        start += line.len();
     }
-    let Some((marker_start, marker_end)) = marker else {
-        return DailyBody {
-            person: body.to_string(),
-            chips: Vec::new(),
-        };
-    };
+    whole_body_is_person(body)
+}
+
+/// Splits a non-daily note body into the person section and the Note footer
+/// (Spec #234 R11-R13, D13): like [`split_body`], except that a marker line
+/// inside fenced code is body text, so only the first marker line outside
+/// fenced code starts the footer. Without one the whole body is person.
+///
+/// The marker is the one that ends [`crate::tags::person_section`], so the
+/// footer starts where tag extraction stops.
+pub fn split_note_body(body: &str) -> DailyBody {
+    match note_marker_start(body) {
+        Some(start) => split_at_marker(body, start),
+        None => whole_body_is_person(body),
+    }
+}
+
+/// The byte offset of the line holding the Note footer marker of a non-daily
+/// note body: the first marker line outside fenced code, if any.
+pub fn note_marker_start(body: &str) -> Option<usize> {
+    let person = crate::tags::person_section(body);
+    // `person_section` returns the subslice of `body` that ends where the
+    // marker line starts, or at the end of `body` when there is none.
+    let end = person.as_ptr() as usize - body.as_ptr() as usize + person.len();
+    (end < body.len()).then_some(end)
+}
+
+/// A body without a footer: all of it is the person section.
+fn whole_body_is_person(body: &str) -> DailyBody {
+    DailyBody {
+        person: body.to_string(),
+        ..DailyBody::default()
+    }
+}
+
+/// Splits `body` at the marker line starting at byte `marker_start` (C3, R12).
+fn split_at_marker(body: &str, marker_start: usize) -> DailyBody {
+    let below = &body[marker_start..];
+    let marker_end = marker_start + below.find('\n').map_or(below.len(), |i| i + 1);
 
     let mut person = body[..marker_start].to_string();
     let mut chips = Vec::new();
+    let mut tags = Vec::new();
     let mut stray = Vec::new();
     for line in body[marker_end..].split('\n') {
         let content = trim_line_end(line);
         if content.is_empty() || content == TOPICS_MARKER {
             continue;
         }
-        match chip_title(content) {
-            Some(title) => chips.push(title.to_string()),
-            None => stray.push(line),
+        if let Some(title) = chip_title(content) {
+            chips.push(title.to_string());
+        } else if let Some(name) = footer_tag_name(content) {
+            tags.push(name.to_string());
+        } else {
+            stray.push(line);
         }
     }
     if !stray.is_empty() {
@@ -94,7 +141,11 @@ pub fn split_body(body: &str) -> DailyBody {
             person.push('\n');
         }
     }
-    DailyBody { person, chips }
+    DailyBody {
+        person,
+        chips,
+        tags,
+    }
 }
 
 /// Appends `\n` to a non-empty `text` that does not end with one.
@@ -133,8 +184,20 @@ pub fn append_to_person(person: &str, text: &str) -> String {
     out
 }
 
-/// The footer chip titles of a daily note, from `footer_chips` joined to
-/// `notes`, in rowid order (D11).
+/// [`assemble`] followed by one `#name` footer tag line per tag, in order
+/// (Spec #234 R11): the full footer layout.
+fn assemble_footer<S: AsRef<str>>(person: &str, chips: &[S], tags: &[String]) -> String {
+    let mut body = assemble(person, chips);
+    for name in tags {
+        body.push('#');
+        body.push_str(name);
+        body.push('\n');
+    }
+    body
+}
+
+/// The footer chip titles of a note, from `footer_chips` joined to `notes`,
+/// in rowid order (D11). `footer_chips.daily_note_id` holds any note id.
 pub fn render_footer(conn: &Connection, daily_note_id: &str) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT n.title FROM footer_chips f JOIN notes n ON n.id = f.topic_note_id
@@ -144,6 +207,37 @@ pub fn render_footer(conn: &Connection, daily_note_id: &str) -> Result<Vec<Strin
         .query_map([daily_note_id], |r| r.get(0))?
         .collect::<rusqlite::Result<Vec<String>>>()?;
     Ok(titles)
+}
+
+/// The footer tag names of a note (Spec #234 R11, R19, R20): its `tags` rows
+/// with origin `agent` or `person` whose name is not a system tag, sorted by
+/// name. `body` rows are written in the person section, so never here.
+pub fn render_footer_tags(conn: &Connection, note_id: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT tag FROM tags WHERE note_id = ? AND origin IN ('agent', 'person') ORDER BY tag",
+    )?;
+    let names = stmt
+        .query_map([note_id], |r| r.get(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    Ok(names
+        .into_iter()
+        .filter(|name| !crate::tags::is_system_tag(name))
+        .collect())
+}
+
+/// The body to store for a write of the non-daily, non-guide note `note_id`
+/// (Spec #234 R11, R14): the person section of `new_body`
+/// ([`split_note_body`]), then the footer rendered from the note's rows.
+/// With no chip and no footer tag there is no footer and no marker, so a body
+/// without one is stored byte for byte.
+pub(crate) fn sync_note_footer(conn: &Connection, note_id: &str, new_body: &str) -> Result<String> {
+    let person = split_note_body(new_body).person;
+    let chips = render_footer(conn, note_id)?;
+    let tags = render_footer_tags(conn, note_id)?;
+    if chips.is_empty() && tags.is_empty() {
+        return Ok(person);
+    }
+    Ok(assemble_footer(&person, &chips, &tags))
 }
 
 /// Today's date at `clock`'s instant, in the UTC offset `clock` reports for
@@ -422,7 +516,8 @@ pub(crate) fn block_source(caller: Caller) -> &'static str {
 /// store:
 ///
 /// - normalizes `new_body` (D10): its person section, the marker, then the
-///   footer rendered from `footer_chips` (D11);
+///   footer rendered from `footer_chips` (D11) and the note's footer tags
+///   ([`render_footer_tags`], Spec #234 R11);
 /// - re-splits the person section and matches it against the stored blocks
 ///   (D12): matched blocks keep their id, `source`, `created_version` and
 ///   `created_at`; new ones get `block_source` and `new_notes_version`;
@@ -439,7 +534,11 @@ pub(crate) fn sync_daily_note(
     now: i64,
 ) -> Result<String> {
     let person = split_body(new_body).person;
-    let body = assemble(&person, &render_footer(conn, note_id)?);
+    let body = assemble_footer(
+        &person,
+        &render_footer(conn, note_id)?,
+        &render_footer_tags(conn, note_id)?,
+    );
 
     let (old, created_at) = stored_blocks(conn, note_id)?;
     let outcome = blocks::match_blocks(
