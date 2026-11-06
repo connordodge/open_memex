@@ -80,6 +80,11 @@ enum InlineTokenKind {
   /// A backslash escape such as `\*`. The backslash stays visible: it is in
   /// no marker range, and the escaped character is the [InlineToken.content].
   escape,
+
+  /// `#work`: an inline tag (WI #245), found by `tag_grammar.dart`. A plain
+  /// [InlineToken] with no markers, whose content is the whole span (the
+  /// `#` included, nothing hidden), and which never nests another token.
+  tag,
 }
 
 /// One inline token: the whole [span], the [markers] live preview hides off
