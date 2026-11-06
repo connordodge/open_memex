@@ -7,6 +7,7 @@ use rusqlite::types::Value as SqlValue;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 
+use crate::guide::GUIDE_NOTE;
 use crate::{Result, Vault};
 
 /// A row of `GET /graph/notes`: the app's `GraphNoteRow`.
@@ -39,13 +40,14 @@ pub struct AgentChangeRow {
     pub bullets: Vec<String>,
 }
 
-/// `GraphReads.graphNotes`: every note with its role, ordered by id.
+/// `GraphReads.graphNotes`: every note but the Vault Guide (#233 R26) with its
+/// role, ordered by id.
 pub fn graph_notes(vault: &Vault) -> Result<Vec<GraphNoteRow>> {
-    let mut stmt = vault.connection_ref().prepare(
+    let mut stmt = vault.connection_ref().prepare(&format!(
         "SELECT id, title, (CASE WHEN json_valid(frontmatter) \
          THEN json_extract(frontmatter, '$.role') END) AS role \
-         FROM notes ORDER BY id",
-    )?;
+         FROM notes WHERE id NOT IN (SELECT id FROM notes WHERE {GUIDE_NOTE}) ORDER BY id"
+    ))?;
     let rows = stmt.query_map([], |r| {
         let role = match r.get::<_, SqlValue>(2)? {
             SqlValue::Text(role) => Some(role),
@@ -61,13 +63,16 @@ pub fn graph_notes(vault: &Vault) -> Result<Vec<GraphNoteRow>> {
 }
 
 /// `GraphReads.graphLinks`: every link whose target note exists, ordered by
-/// source note, then position.
+/// source note, then position. A link from or to the Vault Guide is left out
+/// (#233 R26).
 pub fn graph_links(vault: &Vault) -> Result<Vec<GraphLinkRow>> {
-    let mut stmt = vault.connection_ref().prepare(
+    let mut stmt = vault.connection_ref().prepare(&format!(
         "SELECT l.from_note_id, l.to_note_id, l.link_kind, l.label FROM links l \
          JOIN notes t ON t.id = l.to_note_id \
-         ORDER BY l.from_note_id, l.position",
-    )?;
+         WHERE l.from_note_id NOT IN (SELECT id FROM notes WHERE {GUIDE_NOTE}) \
+         AND l.to_note_id NOT IN (SELECT id FROM notes WHERE {GUIDE_NOTE}) \
+         ORDER BY l.from_note_id, l.position"
+    ))?;
     let rows = stmt.query_map([], |r| {
         Ok(GraphLinkRow {
             from: r.get(0)?,

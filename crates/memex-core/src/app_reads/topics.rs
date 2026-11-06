@@ -75,7 +75,8 @@ pub fn smart_folders(vault: &Vault) -> Result<SmartFolderData> {
 }
 
 /// `TopicsReads.unsortedNotes`, by `note_id`: every note in no Smart Folder
-/// whose role is not `daily`; invalid-JSON frontmatter counts as role-less.
+/// whose role is not `daily` or `guide`; invalid-JSON frontmatter counts as
+/// role-less.
 pub fn unsorted_notes(vault: &Vault) -> Result<Vec<UnsortedNoteRow>> {
     let mut stmt = vault.conn().prepare(
         "SELECT id, title, role FROM (
@@ -84,7 +85,7 @@ pub fn unsorted_notes(vault: &Vault) -> Result<Vec<UnsortedNoteRow>> {
                      THEN json_extract(n.frontmatter, '$.role') END) AS role
              FROM notes n WHERE NOT EXISTS (
                  SELECT 1 FROM smart_folder_members m WHERE m.note_id = n.id))
-         WHERE role IS NULL OR role != 'daily'
+         WHERE role IS NULL OR role NOT IN ('daily', 'guide')
          ORDER BY id",
     )?;
     let rows = stmt
