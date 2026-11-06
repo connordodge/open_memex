@@ -750,7 +750,7 @@ void main() {
         for (final (level, size, weight, colour) in [
           (1, 26.0, FontWeight.w700, OmColors.heading1),
           (2, 19.0, FontWeight.w700, OmColors.fg0),
-          (3, 15.0, FontWeight.w700, OmColors.heading3),
+          (3, 15.0, FontWeight.w700, OmColors.fg0),
           (4, 11.0, FontWeight.w500, OmColors.fg2),
           (5, 11.0, FontWeight.w500, OmColors.fg2),
           (6, 11.0, FontWeight.w500, OmColors.fg2),

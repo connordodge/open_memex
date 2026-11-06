@@ -45,12 +45,11 @@ double headingFontSize(int level) => switch (level) {
 };
 
 /// The colour of a heading of [level]'s uncoloured shown text (#221): H1
-/// `heading1`, H2 `fg0`, H3 `heading3`, H4-H6 `fg2`; null for 0.
+/// `heading1`, H2 and H3 `fg0`, H4-H6 `fg2`; null for 0.
 Color? _headingColour(int level) => switch (level) {
   0 => null,
   1 => OmColors.heading1,
-  2 => OmColors.fg0,
-  3 => OmColors.heading3,
+  2 || 3 => OmColors.fg0,
   _ => OmColors.fg2,
 };
 
