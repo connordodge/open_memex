@@ -17,6 +17,7 @@ import '../theme/colors.dart';
 import '../theme/typography.dart';
 import '../vault_access/errors.dart';
 import '../vault_access/vault_async_view.dart';
+import 'activity/feedback_rows.dart';
 import 'atoms.dart';
 import 'panel_placeholder_tab.dart';
 
@@ -39,11 +40,13 @@ class ActivityTab extends ConsumerWidget {
       emptyKey: Key('activity-empty'),
     );
     if (selected == null) return emptyTab;
+    final feedback = ActivityFeedback.watch(ref, selected);
     return VaultAsyncView<List<AgentChangeRow>>(
       value: ref.watch(agentChangesAsyncProvider(selected.id)),
       empty: const <AgentChangeRow>[],
       builder: (context, entries) {
-        if (entries.isEmpty) return emptyTab;
+        final homes = feedback.homes(entries);
+        if (entries.isEmpty && homes.isEmpty) return emptyTab;
         // Only the Vault Guide can be restored: its entries that a guide
         // revision names (by agent change) get a Restore button.
         final isGuide = selected.role == 'guide';
@@ -62,11 +65,16 @@ class ActivityTab extends ConsumerWidget {
               child: Text(_activitySubtitle, style: _activitySubtitleStyle),
             ),
             const OmHairline(),
+            FeedbackAboveEntries(rows: homes.above),
             for (final entry in entries)
               _ActivityEntry(
                 entry: entry,
                 guide: selected,
                 revisionId: isGuide ? _revisionOf(revisions, entry.id) : null,
+                feedback: EntryFeedback(
+                  entry: entry,
+                  rows: homes.byEntry[entry.id] ?? const [],
+                ),
               ),
           ],
         );
@@ -93,6 +101,7 @@ class _ActivityEntry extends StatelessWidget {
     required this.entry,
     required this.guide,
     required this.revisionId,
+    required this.feedback,
   });
   final AgentChangeRow entry;
 
@@ -101,6 +110,7 @@ class _ActivityEntry extends StatelessWidget {
 
   /// The guide revision this entry's change produced, or null (no Restore).
   final String? revisionId;
+  final Widget feedback;
   @override
   Widget build(BuildContext context) {
     final at = DateTime.fromMillisecondsSinceEpoch(entry.createdAt);
@@ -138,6 +148,7 @@ class _ActivityEntry extends StatelessWidget {
                 onPressed: () => _restore(context, guide, id),
               ),
             ),
+          feedback,
         ],
       ),
     );

@@ -20,12 +20,13 @@ pub struct AddOutput {
     pub topic_note_id: String,
     /// The chip's origin after the call (`person`).
     pub origin: String,
-    /// The daily note's version after the call.
+    /// The host note's version after the call.
     pub version: i64,
 }
 
-/// Records a `person` chip for the topic on the daily note (Req 17).
-/// Idempotent; an `excerpt` chip is upgraded in place.
+/// Records a `person` chip for the topic on the note `daily_note_id`, which
+/// may be any note but a guide (Req 17, Spec #234 R17, R46). Idempotent; an
+/// `excerpt` chip is upgraded in place.
 pub fn add(
     vault: &mut Vault,
     input: AddInput,
