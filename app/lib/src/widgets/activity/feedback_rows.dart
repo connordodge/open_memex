@@ -65,6 +65,7 @@ class ActivityFeedback {
     final byEntry = <String, List<FeedbackRow>>{};
     final unplaced = <FeedbackRow>[];
     for (final row in _own) {
+      if (_isUndecodable(row)) continue;
       final change = row.agentChangeId;
       if (change != null && ids.contains(change)) {
         (byEntry[change] ??= []).add(row);
@@ -74,10 +75,18 @@ class ActivityFeedback {
     }
     return FeedbackHomes(
       byEntry: byEntry,
-      above: _mergeNewestFirst(unplaced, _loose),
+      above: _mergeNewestFirst(unplaced, [
+        for (final row in _loose)
+          if (!_isUndecodable(row)) row,
+      ]),
     );
   }
 }
+
+/// A Correction whose stored change cannot be decoded renders nothing at all:
+/// no row, no text, no status.
+bool _isUndecodable(FeedbackRow row) =>
+    row.kind == FeedbackKind.correction && row.correction == null;
 
 /// Two newest-first lists merged newest first; on a tie [a] goes first.
 List<FeedbackRow> _mergeNewestFirst(List<FeedbackRow> a, List<FeedbackRow> b) {
@@ -377,6 +386,7 @@ class _FeedbackRowTileState extends ConsumerState<FeedbackRowTile> {
   @override
   Widget build(BuildContext context) {
     final row = _row;
+    if (_isUndecodable(row)) return const SizedBox.shrink();
     final error = _error;
     final editable = _editable;
     final handled = row.status == FeedbackStatus.handled;
@@ -473,7 +483,7 @@ String _words(FeedbackRow row) {
     final text = row.text ?? '';
     return row.source == FeedbackSource.chat ? text : 'You: $text';
   }
-  if (correction == null) return 'You made a change';
+  if (correction == null) return '';
   return switch (correction) {
     ExcerptMovedCorrection(:final preview, :final toTitle) =>
       'You moved "$preview" to $toTitle',
