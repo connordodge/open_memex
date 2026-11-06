@@ -242,7 +242,7 @@ const EXISTING_SPEC_TOOLS: &[&str] = &[
 ];
 
 /// The tag tools a prompt may name (#241 fills this block).
-const TAG_SPEC_TOOLS: &[&str] = &[];
+const TAG_SPEC_TOOLS: &[&str] = &["list_tags", "tag_note", "untag_note", "add_footer_topic"];
 
 /// The feedback tools a prompt may name (#254 fills this block).
 const FEEDBACK_SPEC_TOOLS: &[&str] = &[
