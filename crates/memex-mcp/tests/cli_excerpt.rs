@@ -911,6 +911,180 @@ fn excerpt_move_with_a_malformed_topic_id_is_invalid_id_before_the_vault_opens()
     }
 }
 
+/// Every block command refuses a bad argument before it opens the vault: with
+/// no vault at all, the C1 code is the argument's, never a vault error.
+#[test]
+fn excerpt_commands_refuse_bad_arguments_before_the_vault_opens() {
+    let f = fresh();
+    let missing = f.path.join("no-vault-here");
+    let v = missing.to_str().unwrap();
+    let over = "x".repeat(2001);
+    let topic = f.topic.as_str();
+    let cases: Vec<(Vec<&str>, &str)> = vec![
+        (
+            vec![
+                "excerpt",
+                "rm",
+                "--topic-note-id",
+                topic,
+                "--date",
+                DAY,
+                "--block-ids",
+                ",",
+            ],
+            "invalid_argument",
+        ),
+        (
+            vec![
+                "excerpt",
+                "rm",
+                "--topic-note-id",
+                "nope",
+                "--date",
+                DAY,
+                "--block-ids",
+                "b7k2m9",
+            ],
+            "invalid_id",
+        ),
+        (
+            vec![
+                "excerpt",
+                "add",
+                "--topic-note-id",
+                topic,
+                "--date",
+                DAY,
+                "--block-id",
+                " ",
+            ],
+            "invalid_argument",
+        ),
+        (
+            vec![
+                "excerpt",
+                "add",
+                "--topic-note-id",
+                "nope",
+                "--date",
+                DAY,
+                "--block-id",
+                "b7k2m9",
+            ],
+            "invalid_id",
+        ),
+        (
+            vec![
+                "excerpt",
+                "add",
+                "--topic-note-id",
+                topic,
+                "--date",
+                DAY,
+                "--block-id",
+                "b7k2m9",
+                "--note",
+                &over,
+            ],
+            "feedback_invalid",
+        ),
+        (
+            vec![
+                "excerpt",
+                "remove-block",
+                "--topic-note-id",
+                topic,
+                "--date",
+                DAY,
+                "--block-id",
+                " ",
+            ],
+            "invalid_argument",
+        ),
+        (
+            vec![
+                "excerpt",
+                "remove-block",
+                "--topic-note-id",
+                "nope",
+                "--date",
+                DAY,
+                "--block-id",
+                "b7k2m9",
+            ],
+            "invalid_id",
+        ),
+        (
+            vec![
+                "excerpt",
+                "remove-block",
+                "--topic-note-id",
+                topic,
+                "--date",
+                DAY,
+                "--block-id",
+                "b7k2m9",
+                "--note",
+                &over,
+            ],
+            "feedback_invalid",
+        ),
+        (
+            vec![
+                "excerpt",
+                "move",
+                "--date",
+                DAY,
+                "--block-id",
+                " ",
+                "--from-topic-note-id",
+                topic,
+                "--to-topic-note-id",
+                NO_SUCH_NOTE,
+            ],
+            "invalid_argument",
+        ),
+        (
+            vec![
+                "excerpt",
+                "move",
+                "--date",
+                DAY,
+                "--block-id",
+                "b7k2m9",
+                "--from-topic-note-id",
+                topic,
+                "--to-topic-note-id",
+                topic,
+            ],
+            "invalid_argument",
+        ),
+        (
+            vec![
+                "excerpt",
+                "move",
+                "--date",
+                DAY,
+                "--block-id",
+                "b7k2m9",
+                "--from-topic-note-id",
+                topic,
+                "--to-topic-note-id",
+                NO_SUCH_NOTE,
+                "--note",
+                &over,
+            ],
+            "feedback_invalid",
+        ),
+    ];
+    for (mut args, code) in cases {
+        args.extend(["--vault", v]);
+        let out = run(&args);
+        assert!(!missing.exists(), "no vault was created: {args:?}");
+        assert_c1_failure(&out, code);
+    }
+}
+
 // ---------- AC 3: one Correction, with the note as its text ----------
 
 #[test]

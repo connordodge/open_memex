@@ -746,6 +746,23 @@ fn feedback_ls_with_an_empty_note_id_is_invalid_argument() {
     assert_c1_failure(&ls_note(&w, ""), "invalid_argument");
 }
 
+/// An empty `--note-id` is refused before the vault opens: with no vault at all
+/// the code is still `invalid_argument`.
+#[test]
+fn feedback_ls_refuses_an_empty_note_id_before_the_vault_opens() {
+    let w = world();
+    let missing = w.path.join("no-vault-here");
+    let out = run(&[
+        "feedback",
+        "ls",
+        "--vault",
+        missing.to_str().unwrap(),
+        "--note-id",
+        "",
+    ]);
+    assert_c1_failure(&out, "invalid_argument");
+}
+
 /// Lead decision 2: exactly one of `--note-id` and `--no-note`.
 #[test]
 fn feedback_ls_needs_exactly_one_of_note_id_and_no_note() {
