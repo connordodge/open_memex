@@ -103,12 +103,19 @@ class TagAutocompleteState extends ConsumerState<TagAutocomplete> {
   }
 
   /// A tags read landed. A save bumps the vault revision and so re-reads the
-  /// tags: the selected tag stays selected.
+  /// tags: the selected tag stays selected, and so does a create row arrowed to
+  /// while it still shows, so that Enter writes what the row said. A create row
+  /// arrowed to that the read hides falls to the first row, which is then the
+  /// exact tag it would have written. A lone create row was never chosen over
+  /// anything: tags landing under it select the first row.
   void _onTagsChanged() {
     final index = _selectedIndex;
     final selected = index < _rows.length ? _rows[index].tag : null;
+    final arrowedToCreate = selected == null && index > 0;
     _sync();
-    _selectedIndex = max(0, _rows.indexWhere((r) => r.tag == selected));
+    _selectedIndex = arrowedToCreate && _showCreate
+        ? _rows.length
+        : max(0, _rows.indexWhere((r) => r.tag == selected));
   }
 
   void _sync() {

@@ -5,7 +5,8 @@
 // D41 (Connor): Enter on a tag typed in full makes a new line, and only typing
 // opens the popover. D50 (Connor) extends it: an exact match is
 // case-insensitive, and Enter on the create row makes a new line too. D53 narrows
-// that to a create row with nothing else matched: arrowed to, it completes.
+// that to a create row with nothing else matched: arrowed to, it completes, also
+// after a tags re-read (review r4 on #296).
 //
 // Keys the tests read: `tag-autocomplete` (the box), `tag-autocomplete-item-<tag>`
 // (a tag row), `tag-autocomplete-create` (the create row).
@@ -2994,31 +2995,145 @@ void main() {
       expect(field.text, 'x #aa ');
     });
 
-    testWidgets('a tags re-read moves a selected create row to the first row', (
-      tester,
+    /// A field over tags that a vault revision bump re-reads, typed `x #p`.
+    Future<TextEditingController> pumpRereads(
+      WidgetTester tester,
+      List<TagRow> Function() tags,
     ) async {
-      var tags = <TagRow>[_tag('pa', 2), _tag('pb', 1)];
       final field = await _pumpField(
         tester,
         overrides: [
           tagsAsyncProvider.overrideWith((ref) async {
             ref.watch(vaultRevisionProvider);
-            return VaultScoped(ref.watch(currentVaultProvider), tags);
+            return VaultScoped(ref.watch(currentVaultProvider), tags());
           }),
         ],
       );
-      final container = _container(tester);
-
       await _type(tester, field, 'x #p');
+      return field;
+    }
+
+    Future<void> reread(WidgetTester tester) async {
+      _container(tester).read(vaultRevisionProvider.notifier).state++;
+      await _flush(tester);
+    }
+
+    testWidgets('a tags re-read keeps a selected create row selected', (
+      tester,
+    ) async {
+      var tags = <TagRow>[_tag('pa', 2), _tag('pb', 1)];
+      final field = await pumpRereads(tester, () => tags);
       await _press(tester, LogicalKeyboardKey.arrowDown);
       await _press(tester, LogicalKeyboardKey.arrowDown);
       expect(_selectedRows(), ['create']);
 
       tags = [_tag('pa', 2), _tag('pb', 1), _tag('pc', 1)];
-      container.read(vaultRevisionProvider.notifier).state++;
-      await _flush(tester);
+      await reread(tester);
       expect(_rowNames(), ['pa', 'pb', 'pc']);
-      expect(_selectedRows(), ['pa']);
+      expect(_selectedRows(), ['create']);
+
+      final handled = await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(handled, isTrue, reason: 'D53: no new line');
+      expect(field.text, 'x #p ', reason: 'the tag the row named, not #pa');
+    });
+
+    testWidgets('a tags re-read keeps a create row selected past one tag', (
+      tester,
+    ) async {
+      var tags = <TagRow>[_tag('pa', 2)];
+      final field = await pumpRereads(tester, () => tags);
+      await _press(tester, LogicalKeyboardKey.arrowDown);
+      expect(_selectedRows(), ['create']);
+
+      tags = [_tag('pa', 2), _tag('pb', 1)];
+      await reread(tester);
+      expect(_selectedRows(), ['create']);
+
+      await _press(tester, LogicalKeyboardKey.enter);
+      expect(field.text, 'x #p ');
+    });
+
+    testWidgets('a tags re-read with fewer rows keeps a create row selected', (
+      tester,
+    ) async {
+      var tags = <TagRow>[_tag('pa', 3), _tag('pb', 2), _tag('pc', 1)];
+      final field = await pumpRereads(tester, () => tags);
+      await _press(tester, LogicalKeyboardKey.arrowUp);
+      expect(_selectedRows(), ['create']);
+
+      tags = [_tag('pa', 3)];
+      await reread(tester);
+      expect(_rowNames(), ['pa']);
+      expect(_selectedRows(), ['create']);
+
+      await _press(tester, LogicalKeyboardKey.enter);
+      expect(field.text, 'x #p ');
+    });
+
+    testWidgets('a tags re-read that adds the exact tag selects it', (
+      tester,
+    ) async {
+      var tags = <TagRow>[_tag('pa', 2), _tag('pb', 1)];
+      final field = await pumpRereads(tester, () => tags);
+      await _press(tester, LogicalKeyboardKey.arrowUp);
+      expect(_selectedRows(), ['create']);
+
+      tags = [_tag('p', 1), _tag('pa', 2), _tag('pb', 1)];
+      await reread(tester);
+      expect(_createRow, findsNothing, reason: 'an exact tag hides the row');
+      expect(_rowNames(), ['p', 'pa', 'pb']);
+      expect(_selectedRows(), ['p']);
+
+      final handled = await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(handled, isFalse, reason: 'D41: a tag typed in full, a new line');
+      expect(_popover, findsNothing);
+      expect(field.text, 'x #p');
+    });
+
+    testWidgets('Tab on the exact tag a re-read selected writes it', (
+      tester,
+    ) async {
+      var tags = <TagRow>[_tag('pa', 2), _tag('pb', 1)];
+      final field = await pumpRereads(tester, () => tags);
+      await _press(tester, LogicalKeyboardKey.arrowUp);
+      expect(_selectedRows(), ['create']);
+
+      // Last in the provider's order: the exact tag still ranks first.
+      tags = [_tag('pa', 2), _tag('pb', 1), _tag('p', 1)];
+      await reread(tester);
+      expect(_rowNames(), ['p', 'pa', 'pb']);
+
+      await _press(tester, LogicalKeyboardKey.tab);
+      expect(field.text, 'x #p ');
+    });
+
+    testWidgets('a tags re-read keeps a selected tag beside a create row', (
+      tester,
+    ) async {
+      var tags = <TagRow>[_tag('pa', 2), _tag('pb', 1)];
+      final field = await pumpRereads(tester, () => tags);
+      await _press(tester, LogicalKeyboardKey.arrowDown);
+      expect(_selectedRows(), ['pb']);
+
+      tags = [_tag('pb', 1), _tag('pa', 2)];
+      await reread(tester);
+      expect(_rowNames(), ['pb', 'pa']);
+      expect(
+        _createRow,
+        findsOneWidget,
+        reason: 'control: the row still shows',
+      );
+      expect(_selectedRows(), ['pb']);
+
+      tags = [_tag('pa', 2), _tag('pb', 1)];
+      await reread(tester);
+      expect(_rowNames(), ['pa', 'pb']);
+      expect(_selectedRows(), ['pb'], reason: 'the tag, at index 1 again');
+
+      await _press(tester, LogicalKeyboardKey.enter);
+      expect(field.text, 'x #pb ');
     });
 
     testWidgets(
