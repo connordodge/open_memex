@@ -682,6 +682,41 @@ void main() {
       });
     }
 
+    testWidgets('releasing the chord keys is not handled and does not step', (
+      tester,
+    ) async {
+      final h = await _onHistory(tester, at: 1);
+      _unfocus();
+      await tester.pump();
+
+      await tester.sendKeyDownEvent(_meta, platform: 'macos');
+      expect(await tester.sendKeyDownEvent(_left, platform: 'macos'), isTrue);
+      expect(h.active, _a, reason: 'the key down stepped once');
+      expect(
+        await tester.sendKeyUpEvent(_left, platform: 'macos'),
+        isFalse,
+        reason: 'only the key down is claimed',
+      );
+      expect(await tester.sendKeyUpEvent(_meta, platform: 'macos'), isFalse);
+      await pumpFrames(tester);
+
+      expect(h.active, _a, reason: 'the releases did not step');
+      // A repeat of a key that is not a bracket is not claimed either.
+      await tester.sendKeyDownEvent(_meta, platform: 'macos');
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyK, platform: 'macos');
+      expect(
+        await tester.sendKeyRepeatEvent(
+          LogicalKeyboardKey.keyK,
+          platform: 'macos',
+        ),
+        isFalse,
+      );
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyK, platform: 'macos');
+      await tester.sendKeyUpEvent(_meta, platform: 'macos');
+      await pumpFrames(tester);
+      expect(h.active, _a);
+    });
+
     testWidgets(
       'a plain left bracket with an editor row focused is left to the note',
       (tester) async {
