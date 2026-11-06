@@ -1486,10 +1486,8 @@ fn v6_two_existing_guide_notes_abort_and_leave_the_vault_at_v5_unchanged() {
 
     let mut conn = open(&db_path);
     let res = schema::apply(&mut conn);
-    assert!(
-        res.is_err(),
-        "two role: guide notes must abort V6, got {res:?}"
-    );
+    let err = res.expect_err("two role: guide notes must abort V6");
+    assert_eq!(err.code(), "guide_rule", "{err}");
     drop(conn);
 
     let conn = open(&db_path);
