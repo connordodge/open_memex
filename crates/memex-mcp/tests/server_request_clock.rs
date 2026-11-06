@@ -22,6 +22,9 @@
 mod api_fixtures;
 #[path = "support/server.rs"]
 mod server;
+#[path = "support/tool_names.rs"]
+mod tool_names;
+use tool_names::TOOL_COUNT;
 
 use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Write};
@@ -62,9 +65,6 @@ const HEADER: &str = "X-Memex-UTC-Offset";
 
 /// What an MCP streamable-HTTP client must accept on a POST.
 const ACCEPT: &str = "application/json, text/event-stream";
-
-/// The number of tools `Memex::new` composes.
-const TOOL_COUNT: usize = 26;
 
 /// 2026-03-01T10:30:00Z (AC 1).
 const BASE_MS: i64 = 1_772_361_000_000;
@@ -1161,7 +1161,7 @@ fn rewired_tools() -> Vec<(&'static str, &'static str, Value)> {
     vec![
         (
             "append_to_daily_note",
-            "Append text to the end of the user's daily note for `date` (YYYY-MM-DD; default today, local time), above its Topics footer, creating the daily note when the day has none. The text is kept verbatim; this is the only way to add to a daily note. Returns note_id, date, block_ids (the new blocks), content_version, version and prior_state: the day's review state just before the append (`Unreviewed`, `Reviewed` or `Changed since review`). Fails with invalid_argument for empty text, invalid_date, and title_conflict (with existing_id) when a non-daily note already has that date as its title.",
+            "Append text to the end of the user's daily note for `date` (YYYY-MM-DD; default today, local time), above its Note footer, creating the daily note when the day has none. The text is kept verbatim; this is the only way to add to a daily note. Returns note_id, date, block_ids (the new blocks), content_version, version and prior_state: the day's review state just before the append (`Unreviewed`, `Reviewed` or `Changed since review`). Fails with invalid_argument for empty text, invalid_date, and title_conflict (with existing_id) when a non-daily note already has that date as its title.",
             schema(
                 r#"{"$schema": "https://json-schema.org/draft/2020-12/schema", "properties": {"date": {"default": null, "description": "The day, YYYY-MM-DD; omit for today (local time).", "type": ["string", "null"]}, "text": {"description": "The text to append, verbatim.", "type": "string"}}, "required": ["text"], "title": "AppendToDailyNoteParams", "type": "object"}"#,
             ),
@@ -1197,13 +1197,13 @@ fn rewired_tools() -> Vec<(&'static str, &'static str, Value)> {
     ]
 }
 
-/// Asserts `listed` (a `tools/list` result's `tools`) has 26 tools and the
+/// Asserts `listed` (a `tools/list` result's `tools`) lists every tool and the
 /// five rewired ones exactly as before, property by property.
 fn assert_rewired_schemas_unchanged(listed: &Value, transport: &str) {
     let tools = listed
         .as_array()
         .unwrap_or_else(|| panic!("{transport}: a tools array: {listed}"));
-    assert_eq!(tools.len(), TOOL_COUNT, "{transport}: 26 tools");
+    assert_eq!(tools.len(), TOOL_COUNT, "{transport}: every listed tool");
     for (name, description, schema) in rewired_tools() {
         let tool = tools
             .iter()
@@ -1237,7 +1237,7 @@ fn assert_rewired_schemas_unchanged(listed: &Value, transport: &str) {
 }
 
 #[tokio::test]
-async fn tools_list_over_stdio_and_mcp_keeps_26_tools_and_the_rewired_schemas() {
+async fn tools_list_over_stdio_and_mcp_keeps_the_tool_list_and_the_rewired_schemas() {
     let srv = ClockServer::fixed(BASE_MS).await;
     let dir = srv.vault("work");
 

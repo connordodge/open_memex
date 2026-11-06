@@ -79,7 +79,7 @@ impl Memex {
     #[tool(description = "File blocks of the user's daily note for `date` \
         (YYYY-MM-DD) into a topic note (`role: topic`): one transclusion per \
         run of consecutive blocks, under a `## <date>` heading in the topic \
-        (created when absent), plus a chip for the topic in that day's Topics \
+        (created when absent), plus a chip for the topic in that day's Note \
         footer. Blocks the topic already holds are skipped. Never hand-write \
         transclusion or footer syntax; use this tool. Returns vault_id, \
         topic_note_id and version (the topic note's new version). Fails with \
@@ -100,7 +100,7 @@ impl Memex {
         transclusion of `date` (YYYY-MM-DD) whose endpoints are `block_ids` \
         (one id for a single block, [from, to] for a range), the `## <date>` \
         heading when nothing else is under it, and the topic's chip in that \
-        day's Topics footer once no excerpt of the day remains (a chip the \
+        day's Note footer once no excerpt of the day remains (a chip the \
         user added stays). Returns vault_id, topic_note_id and version (the \
         topic note's new version). Fails with role_rule, not_found (unknown \
         topic or no such transclusion), invalid_date, invalid_id, \
