@@ -4,7 +4,8 @@
 //
 // D41 (Connor): Enter on a tag typed in full makes a new line, and only typing
 // opens the popover. D50 (Connor) extends it: an exact match is
-// case-insensitive, and Enter on the create row makes a new line too.
+// case-insensitive, and Enter on the create row makes a new line too. D53 narrows
+// that to a create row with nothing else matched: arrowed to, it completes.
 //
 // Keys the tests read: `tag-autocomplete` (the box), `tag-autocomplete-item-<tag>`
 // (a tag row), `tag-autocomplete-create` (the create row).
@@ -2579,25 +2580,60 @@ void main() {
       }
     });
 
-    testWidgets(
-      'Enter on the create row arrowed to leaves the key to the field',
-      (tester) async {
-        final field = await _pumpField(
-          tester,
-          tags: [_tag('pa', 2), _tag('pb', 1)],
-        );
+    testWidgets('Enter on the create row arrowed to completes with a space', (
+      tester,
+    ) async {
+      final field = await _pumpField(
+        tester,
+        tags: [_tag('pa', 2), _tag('pb', 1)],
+      );
 
-        await _type(tester, field, 'x #p');
-        await _press(tester, LogicalKeyboardKey.arrowUp);
-        expect(_selectedRows(), ['create']);
+      await _type(tester, field, 'x #p');
+      await _press(tester, LogicalKeyboardKey.arrowUp);
+      expect(_selectedRows(), ['create']);
 
-        final handled = await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-        await tester.pump();
-        expect(handled, isFalse);
-        expect(_popover, findsNothing);
-        expect(field.text, 'x #p');
-      },
-    );
+      final handled = await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(handled, isTrue, reason: 'D53: no new line');
+      expect(_popover, findsNothing);
+      expect(field.text, 'x #p ');
+      expect(field.selection, const TextSelection.collapsed(offset: 5));
+    });
+
+    testWidgets('Enter after the arrows wrap past the create row completes', (
+      tester,
+    ) async {
+      final field = await _pumpField(
+        tester,
+        tags: [_tag('pa', 2), _tag('pb', 1)],
+      );
+
+      await _type(tester, field, 'x #p');
+      await _press(tester, LogicalKeyboardKey.arrowUp);
+      await _press(tester, LogicalKeyboardKey.arrowDown);
+      expect(_selectedRows(), ['pa']);
+
+      final handled = await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(handled, isTrue);
+      expect(field.text, 'x #pa ');
+    });
+
+    testWidgets('Enter on a lone create row after the arrows leaves the key', (
+      tester,
+    ) async {
+      final field = await _pumpField(tester);
+
+      await _type(tester, field, 'x #roadmap');
+      await _press(tester, LogicalKeyboardKey.arrowDown);
+      expect(_selectedRows(), ['create']);
+
+      final handled = await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(handled, isFalse, reason: 'nothing else matched');
+      expect(_popover, findsNothing);
+      expect(field.text, 'x #roadmap');
+    });
 
     testWidgets('Tab on the create row accepts and adds the space', (
       tester,
