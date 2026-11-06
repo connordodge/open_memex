@@ -382,7 +382,10 @@ final class _SpanBuilder {
   /// come sorted by start, so an inner token's ink overwrites its outer
   /// token's while flags accumulate.
   void _tokenize(int start, int end) {
-    for (final token in tokenizeInline(text.substring(start, end))) {
+    for (final token in tokenizeInline(
+      text.substring(start, end),
+      before: unitBeforeInLine(text, start),
+    )) {
       for (final m in token.markers) {
         _markRange(start + m.start, start + m.end, _marker);
       }

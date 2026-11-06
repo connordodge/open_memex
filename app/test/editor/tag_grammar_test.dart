@@ -733,4 +733,41 @@ void main() {
       }
     });
   });
+
+  group('a stretch of a line (table cell, quote text)', () {
+    test(
+      'the server finds no tag where a hash follows a pipe or a quote marker and one where a space precedes it',
+      () {
+        // The reference (tags.rs line_tags): the `#` is judged by the char
+        // before it in the whole line, and `|` is no opener.
+        expect(extractTagNames('|#x|'), isEmpty);
+        expect(extractTagNames('| a |#x |'), isEmpty);
+        expect(extractTagNames('>#x'), isEmpty);
+        expect(extractTagNames('| #x |'), ['x']);
+        expect(extractTagNames('#x | y'), ['x']);
+        expect(extractTagNames('> #x'), ['x']);
+      },
+    );
+
+    test(
+      'findTagsInLine judges the first hash by before and a null before is a line start',
+      () {
+        expect(findTagsInLine('#x'), [TagRange(0, 2, 'x')]);
+        expect(findTagsInLine('#x', before: null), [TagRange(0, 2, 'x')]);
+        expect(findTagsInLine('#x', before: 0x7C), isEmpty);
+        expect(findTagsInLine('#x', before: 0x3E), isEmpty);
+        expect(findTagsInLine('#x', before: 0x20), [TagRange(0, 2, 'x')]);
+        expect(findTagsInLine('#x', before: 0x28), [TagRange(0, 2, 'x')]);
+      },
+    );
+
+    test(
+      'before changes only a hash at offset 0 and later hashes keep their own previous character',
+      () {
+        expect(findTagsInLine('#a #b', before: 0x7C), [TagRange(3, 5, 'b')]);
+        expect(findTagsInLine('a #b', before: 0x7C), [TagRange(2, 4, 'b')]);
+        expect(findTagsInLine('a|#b', before: 0x20), isEmpty);
+      },
+    );
+  });
 }

@@ -168,13 +168,18 @@ List<(int, int)> _codeSpans(String line) {
 /// The tags in [line], one line of prose (no `\n`), in order of position,
 /// outside code spans, transclusions, wikilinks, markdown links and URLs.
 /// Never call it on a fenced line: fences are the caller's.
-List<TagRange> findTagsInLine(String line) {
+///
+/// [before] is the code unit that precedes [line] in its real line, when
+/// [line] is only a stretch of it (a table cell, or the text after a quote
+/// marker): the server tests the character before a `#` in the whole line,
+/// so `|#x|` holds no tag. Null means [line] starts its line.
+List<TagRange> findTagsInLine(String line, {int? before}) {
   if (!line.contains('#')) return const [];
   final hidden = _hiddenRanges(line);
   final out = <TagRange>[];
   for (var i = 0; i < line.length; i++) {
     if (line.codeUnitAt(i) != _hash) continue;
-    if (!opensTag(i == 0 ? null : line.codeUnitAt(i - 1))) continue;
+    if (!opensTag(i == 0 ? before : line.codeUnitAt(i - 1))) continue;
     if (hidden.any((r) => r.$1 <= i && i < r.$2)) continue;
     final length = _nameLength(line, i + 1);
     if (length == null) continue;

@@ -984,6 +984,43 @@ void main() {
       const table = '| item | note |\n|---|---|\n| a | #t |';
       _expectTag(_build(table), table, _range(table, '#t'), OmColors.fg2);
     });
+
+    test(
+      'a hash straight after a table pipe or a quote marker renders as body text as the server finds no tag there',
+      () {
+        // Rust wins (D17): `|` and `>` open nothing, and a cell is judged by
+        // the character before it in the source line, not as a line start.
+        for (final text in [
+          '| item |\n|---|\n|#x|',
+          '| item |\n|---|\n| a |#x |',
+          '>#x',
+        ]) {
+          final tag = _range(text, '#x');
+          final span = _build(text);
+          for (var i = tag.$1; i < tag.$2; i++) {
+            expect(
+              _styleAt(span, i).color,
+              isNot(OmColors.fg2),
+              reason: '"$text" code unit $i is not tag ink',
+            );
+          }
+        }
+      },
+    );
+
+    test(
+      'a hash after a space in a table cell, in a first cell and after a quote space renders as a tag',
+      () {
+        for (final (text, needle) in [
+          ('| item |\n|---|\n| #x |', '#x'),
+          ('| item | b |\n|---|---|\n| a | #x |', '#x'),
+          ('| item |\n|---|\n|\t#x |', '#x'),
+          ('> #x', '#x'),
+        ]) {
+          _expectTag(_build(text), text, _range(text, needle), OmColors.fg2);
+        }
+      },
+    );
   });
 
   group('excerpt card (AC6)', () {
