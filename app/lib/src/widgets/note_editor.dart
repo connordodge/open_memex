@@ -6,7 +6,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../db.dart';
 import '../state/editor_controller.dart';
 import '../state/pending_saves.dart';
-import '../state/tabs_state.dart' show VirtualTodayTab;
+import '../state/tabs_state.dart'
+    show CanvasTab, TabsNotifier, TabsState, VirtualTodayTab, tabsProvider;
 import '../state/today_state.dart';
 import '../state/topic_actions.dart';
 import '../state/vault_state.dart';
@@ -19,6 +20,7 @@ import 'editor/note_header.dart';
 import 'editor/note_menu.dart';
 import 'editor/segmented_body.dart';
 import 'editor/source_surface.dart';
+import 'editor/text_segment.dart' show EditorScrollScope;
 
 /// The note editor host: wires the selected note and [EditorController] into
 /// the [EditorToolbar], the body (with its [NoteHeader]) and the save status
@@ -32,6 +34,11 @@ import 'editor/source_surface.dart';
 /// while a vault's first read is pending or from another vault), so a virtual Today tab
 /// (#22) shows as an empty, unsaved daily note. Opening a daily note puts
 /// the cursor at the end of its focused body, ready to type.
+///
+/// Scroll offsets live on Tab history entries (#270, TD7). This editor reports
+/// the segmented body's offset to [TabsNotifier.recordScrollOffset]; an arrival
+/// on the active tab jumps once, after the note's layout, to the offset
+/// [TabsNotifier.takeScrollRestore] hands out or else to the top.
 class NoteEditor extends ConsumerStatefulWidget {
   const NoteEditor({
     super.key,
@@ -60,15 +67,51 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
 
   bool get _sourceMode => _view == _BodyView.source;
 
+  /// The segmented body's scroll. Source mode has no controller, so it reports
+  /// nothing.
+  final _scroll = ScrollController();
+
+  /// True from an arrival until its jump has run, and until this State's first
+  /// jump: a layout clamping the old offset, or the last offset of another tab
+  /// on this note, must not be written into the entry just arrived at.
+  bool _reportsHeld = true;
+
+  /// Identifies the jump that is due, so an arrival cancels an earlier one.
+  int _jumpSeq = 0;
+
+  /// The note this State was built to zoom into, null on a note tab. An
+  /// `AnimatedSwitcher` keeps the old zoomed editor alive through a zoom
+  /// change, and it sees the new selection too. A note tab's editor stays until
+  /// the next build too, when the active tab becomes a zoomed canvas.
+  String? _zoomedNote;
+
+  /// The active tab now needs another editor than this State: it takes no
+  /// restore, reports no offset and never jumps. Sticky on a zoomed editor,
+  /// since the incoming editor can be on the note this one was built for. A note
+  /// tab's editor clears it: the next build goes on using this State when the
+  /// active tab is a note tab again by then.
+  bool _outgoing = false;
+
+  /// The open tabs, or null when nothing created them: an editor pumped without
+  /// a workspace must not, as creating them selects today's note.
+  TabsNotifier? get _tabs =>
+      ref.exists(tabsProvider) ? ref.read(tabsProvider.notifier) : null;
+
   @override
   void initState() {
     super.initState();
     _titleCtrl = TextEditingController();
     _bodyCtrl = TextEditingController();
+    _scroll.addListener(_reportScroll);
+    if (ref.exists(tabsProvider)) {
+      final tab = ref.read(tabsProvider).activeTab;
+      if (tab is CanvasTab) _zoomedNote = tab.zoomedNoteId;
+    }
   }
 
   @override
   void dispose() {
+    _scroll.dispose();
     _titleCtrl.dispose();
     _bodyCtrl.dispose();
     _bodyFocus.dispose();
@@ -99,12 +142,56 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
         selection: TextSelection.collapsed(offset: editor.contentMd.length),
       );
     }
-    if (!resolved && note?.role == 'daily') {
+    if (resolved || note == null || _outgoing) return;
+    final restore = _tabs?.takeScrollRestore(note.id);
+    _jumpAfterLayout(restore ?? 0.0);
+    if (restore == null && note.role == 'daily') {
       _bodyCtrl.selection = TextSelection.collapsed(
         offset: _bodyCtrl.text.length,
       );
       _bodyFocus.requestFocus();
     }
+  }
+
+  void _reportScroll() {
+    final noteId = _hydratedFor;
+    if (_reportsHeld || _outgoing || noteId == null) return;
+    _tabs?.recordScrollOffset(noteId, _scroll.offset);
+  }
+
+  /// An arrival on the active tab. A different note jumps from [_hydrate] when
+  /// it has loaded. The note already hydrated won't hydrate again (two tabs on
+  /// one note), so it jumps from here.
+  void _onTabs(TabsState? previous, TabsState next) {
+    if (previous?.arrivals == next.arrivals) return;
+    final tab = next.activeTab;
+    if ((tab is CanvasTab ? tab.zoomedNoteId : null) != _zoomedNote) {
+      _outgoing = true;
+      return;
+    }
+    if (_zoomedNote == null) _outgoing = false;
+    final noteId = next.activeNoteId;
+    _reportsHeld = true;
+    _jumpSeq++;
+    if (noteId == null || noteId != _hydratedFor) return;
+    setState(() => _view = _BodyView.segmented);
+    _jumpAfterLayout(_tabs?.takeScrollRestore(noteId) ?? 0.0);
+  }
+
+  /// Jumps to [offset], clamped, after the next frame: that frame lays out what
+  /// the caller just asked to be built. Runs once, unless an arrival cancels it.
+  void _jumpAfterLayout(double offset) {
+    final jump = ++_jumpSeq;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || jump != _jumpSeq) return;
+      if (_scroll.hasClients) {
+        final position = _scroll.position;
+        _scroll.jumpTo(
+          offset.clamp(position.minScrollExtent, position.maxScrollExtent),
+        );
+      }
+      _reportsHeld = false;
+    });
   }
 
   /// Switches the body between the segmented view and Source. Source starts
@@ -129,6 +216,7 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
     final controller = ref.read(editorControllerProvider.notifier);
     final vaultPath = ref.watch(currentVaultProvider).localPath;
 
+    if (ref.exists(tabsProvider)) ref.listen<TabsState>(tabsProvider, _onTabs);
     ref.listen<AsyncValue<VaultScoped<Note?>>>(
       editorNoteAsyncProvider,
       (_, curr) => _hydrate(
@@ -194,18 +282,21 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
                       content: _bodyCtrl.text,
                     ),
                   )
-                : SegmentedBody(
-                    // Until the post-frame hydrate loads a newly selected
-                    // note, the editor still holds the previous note's text:
-                    // keep the body on the note that text belongs to.
-                    note: _hydratedNote ?? note,
-                    content: editor.contentMd,
-                    savedVersion: editor.lastSavedVersion,
-                    onContentChanged: controller.onContentChanged,
-                    primaryFocusNode: _bodyFocus,
-                    errorMessage: editor.errorMessage,
-                    onDismissError: controller.dismissError,
-                    header: header,
+                : EditorScrollScope(
+                    controller: _scroll,
+                    child: SegmentedBody(
+                      // Until the post-frame hydrate loads a newly selected
+                      // note, the editor still holds the previous note's text:
+                      // keep the body on the note that text belongs to.
+                      note: _hydratedNote ?? note,
+                      content: editor.contentMd,
+                      savedVersion: editor.lastSavedVersion,
+                      onContentChanged: controller.onContentChanged,
+                      primaryFocusNode: _bodyFocus,
+                      errorMessage: editor.errorMessage,
+                      onDismissError: controller.dismissError,
+                      header: header,
+                    ),
                   ),
           ),
           const OmHairline(),
