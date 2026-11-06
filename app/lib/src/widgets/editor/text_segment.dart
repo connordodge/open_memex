@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import '../kind_chip.dart';
+import '../tag_autocomplete.dart';
 import '../wikilink_autocomplete.dart';
 import 'line_boxes.dart';
 import 'live_preview_controller.dart';
@@ -156,7 +157,8 @@ class KindChipLayer extends StatelessWidget {
 }
 
 /// One editable markdown field: a multi-line [TextField] with wikilink
-/// autocomplete on `[[` and the inline kind chip through [kindChips].
+/// autocomplete on `[[`, tag autocomplete on `#` and the inline kind chip
+/// through [kindChips].
 ///
 /// Every change to [controller]'s text (typed, or spliced in by autocomplete
 /// or the kind chip) is reported through [onChanged] when given. Down with the caret at
@@ -218,6 +220,7 @@ class TextSegmentField extends StatefulWidget {
 class _TextSegmentFieldState extends State<TextSegmentField> {
   final _fieldKey = GlobalKey();
   final _autocompleteKey = GlobalKey<WikilinkAutocompleteState>();
+  final _tagAutocompleteKey = GlobalKey<TagAutocompleteState>();
   late final FocusNode _focus =
       widget.focusNode ?? FocusNode(debugLabel: 'text-segment');
   late String _lastSeen;
@@ -262,6 +265,8 @@ class _TextSegmentFieldState extends State<TextSegmentField> {
     if (autocomplete != null && autocomplete.isOpen) {
       return autocomplete.handleKeyEvent(event);
     }
+    final tags = _tagAutocompleteKey.currentState;
+    if (tags != null && tags.isOpen) return tags.handleKeyEvent(event);
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
     }
@@ -350,6 +355,12 @@ class _TextSegmentFieldState extends State<TextSegmentField> {
             start: start,
             end: end,
           ),
+        ),
+        TagAutocomplete(
+          key: _tagAutocompleteKey,
+          controller: widget.controller,
+          caretLocator: _caretGlobal,
+          focusNode: _focus,
         ),
       ],
     );

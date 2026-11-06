@@ -241,6 +241,58 @@ final class _Fence {
   }
 }
 
+/// A tag being typed: the `#` at [start] of the text and the [query] written
+/// from it up to the caret. The query may be empty (a bare `#`) and may end in
+/// `-` or `_`.
+final class TagQuery {
+  const TagQuery(this.start, this.lineStart, this.query);
+
+  /// Offset of the `#`.
+  final int start;
+
+  /// Offset of the first code unit of the `#`'s line.
+  final int lineStart;
+
+  /// The text between the `#` and the caret, as written.
+  final String query;
+
+  /// [query] without its trailing `-`/`_`: the name as a note would write it.
+  String get name => query.substring(0, _nameLength(query, 0) ?? 0);
+}
+
+/// The tag being typed at [caret] in [text] (any number of lines, split on
+/// `\n`), or null where none can be. The last `#` of the caret's line before
+/// the caret must pass [opensTag], the text from it to the caret must be a tag
+/// name prefix, and it must lie outside fenced code and everything
+/// [findTagsInLine] skips. For type-ahead (#246), which adds its own rules.
+///
+/// [fenced] says which lines of [text] are fenced code when the host read them
+/// over more than [text] (`fencedRowLines`); a line past its end is not fenced.
+/// Null: [text] is judged alone, with [fencedLines].
+TagQuery? tagQueryAt(String text, int caret, {List<bool>? fenced}) {
+  final before = text.substring(0, caret);
+  final lineStart = before.lastIndexOf('\n') + 1;
+  final hash = before.lastIndexOf('#');
+  if (hash < lineStart) return null;
+  if (!opensTag(hash == lineStart ? null : text.codeUnitAt(hash - 1))) {
+    return null;
+  }
+  final query = before.substring(hash + 1);
+  if (query.isNotEmpty && _nameRe.matchAsPrefix(query)?.end != query.length) {
+    return null;
+  }
+  final lineEnd = text.indexOf('\n', caret);
+  final line = text.substring(lineStart, lineEnd < 0 ? text.length : lineEnd);
+  final offset = hash - lineStart;
+  if (_hiddenRanges(line).any((r) => r.$1 <= offset && offset < r.$2)) {
+    return null;
+  }
+  final lineIndex = '\n'.allMatches(before).length;
+  final lines = fenced ?? fencedLines(text.split('\n'));
+  if (lines.elementAtOrNull(lineIndex) ?? false) return null;
+  return TagQuery(hash, lineStart, query);
+}
+
 /// For each of [lines] in order (one line of text each, no `\n`), whether it
 /// is fenced code as the server reads it: a fence's opening line, a line
 /// inside it, or its closing line. An unclosed fence runs to the last line.
