@@ -198,7 +198,7 @@ fn is_heading(line: &str) -> bool {
 }
 
 /// `- `, `* `, `+ ` or `<digits>. ` (indentation already trimmed).
-fn is_list_item(line: &str) -> bool {
+pub(crate) fn is_list_item(line: &str) -> bool {
     if ["- ", "* ", "+ "].iter().any(|m| line.starts_with(m)) {
         return true;
     }
