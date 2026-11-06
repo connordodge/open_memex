@@ -1,0 +1,11 @@
+Add a comment on an Activity entry
+
+Usage: memex feedback add --vault <VAULT> --note-id <NOTE_ID> --date <DATE> --change-id <CHANGE_ID> --text <TEXT>
+
+Options:
+      --vault <VAULT>          Vault directory
+      --note-id <NOTE_ID>      The note the comment is on (ULID)
+      --date <DATE>            The day the comment is about, YYYY-MM-DD
+      --change-id <CHANGE_ID>  The Activity entry the comment is on
+      --text <TEXT>            The comment, stored as given
+  -h, --help                   Print help

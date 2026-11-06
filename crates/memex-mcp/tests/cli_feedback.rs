@@ -355,6 +355,20 @@ fn feedback_add_prints_the_contract_object() {
     assert_eq!(stored(&w).len(), 1, "one row stored");
 }
 
+/// Text that starts with `-` is text, not a flag, on `add` and on `edit`.
+#[test]
+fn feedback_text_starting_with_a_hyphen_is_stored_as_given_on_add_and_edit() {
+    let w = world();
+
+    let added = ok_json(add(&w, &w.day, DAY, &w.change, "-first words"));
+    assert_eq!(added["text"], json!("-first words"));
+
+    let id = added["id"].as_str().unwrap().to_string();
+    let edited = ok_json(edit(&w, &id, "--second words"));
+    assert_eq!(edited["text"], json!("--second words"));
+    assert_eq!(stored(&w)[0].1.as_deref(), Some("--second words"));
+}
+
 #[test]
 fn feedback_edit_prints_the_contract_object_with_the_new_text() {
     let w = world();

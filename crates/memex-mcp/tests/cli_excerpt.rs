@@ -1043,6 +1043,34 @@ fn excerpt_note_text_reaches_the_correction_as_given() {
     assert_eq!(one_correction(&f).text.as_deref(), Some(note));
 }
 
+/// A note that starts with `-` is text, not a flag, on each block command.
+#[test]
+fn excerpt_note_starting_with_a_hyphen_is_stored_as_given_on_each_command() {
+    let note = "-not a flag";
+    let f = fresh();
+    ok_json(excerpt_add(&f, &f.topic, DAY, "b7k2m9", Some(note)));
+    ok_json(excerpt_remove_block(
+        &f,
+        &f.topic,
+        DAY,
+        "b7k2m9",
+        Some(note),
+    ));
+    let economy = second_topic(&f);
+    agent_files(&f, &f.topic, &["f6g7h8"]);
+    ok_json(excerpt_move(
+        &f,
+        &f.topic,
+        &economy,
+        DAY,
+        "f6g7h8",
+        Some(note),
+    ));
+
+    let texts: Vec<_> = corrections(&f).into_iter().map(|r| r.text).collect();
+    assert_eq!(texts, vec![Some(note.to_string()); 3]);
+}
+
 /// Lead decision 8: an empty or whitespace-only `--note` is no note, so R18's
 /// `Why?` never shows blank.
 #[test]
@@ -1200,4 +1228,84 @@ fn excerpt_rm_records_a_correction_with_null_text_and_takes_no_note() {
     let row = one_correction(&f);
     assert_eq!(row.text, None);
     assert_eq!(row.correction.unwrap()["kind"], json!("excerpt_removed"));
+}
+
+// ---------- A topic with a Note footer (orchestrator add, T2 / #291) ----------
+
+/// Every row of the `feedback` table.
+fn feedback_count(f: &Fixture) -> i64 {
+    f.open()
+        .connection_ref()
+        .query_row("SELECT count(*) FROM feedback", [], |r| r.get(0))
+        .unwrap()
+}
+
+/// The part of the topic note from its Note footer marker on.
+fn footer_of(f: &Fixture) -> String {
+    let (body, _) = note_row(f, &f.topic);
+    let at = memex_core::daily::note_marker_start(&body)
+        .unwrap_or_else(|| panic!("the topic holds a Note footer: {body}"));
+    body[at..].to_string()
+}
+
+/// A person's removal on a topic that carries a Note footer records one
+/// Correction and leaves the footer below the marker byte for byte as it was.
+/// T2 made `write_topic` edit only the person section; nothing else runs this.
+#[test]
+fn person_excerpt_removal_on_a_topic_with_a_note_footer_records_one_correction_and_keeps_the_footer(
+) {
+    type Remove = fn(&Fixture) -> Output;
+    let removals: [(&str, Remove); 2] = [
+        ("excerpt rm", |f| {
+            excerpt_rm(f.vault(), &f.topic, DAY, "b7k2m9,c3d4e5")
+        }),
+        ("excerpt remove-block", |f| {
+            excerpt_remove_block(f, &f.topic, DAY, "c3d4e5", None)
+        }),
+    ];
+    for (name, remove) in removals {
+        let f = fresh();
+        let other = second_topic(&f);
+        // The topic's own Note footer: a chip for another topic.
+        footer::set_chip(
+            &mut f.open(),
+            &NoteId::parse(&f.topic).unwrap(),
+            &NoteId::parse(&other).unwrap(),
+            ChipOrigin::Person,
+            None,
+        )
+        .unwrap();
+        agent_files(&f, &f.topic, &["b7k2m9", "c3d4e5"]);
+        let footer_before = footer_of(&f);
+        assert!(
+            footer_before.contains("[[Economy Design~about]]"),
+            "{name}: precondition, the footer chips the other topic: {footer_before}"
+        );
+        let rows_before = feedback_count(&f);
+        let (_, version_before) = note_row(&f, &f.topic);
+
+        ok_json(remove(&f));
+
+        assert_eq!(
+            feedback_count(&f),
+            rows_before + 1,
+            "{name}: exactly one Correction"
+        );
+        assert_eq!(
+            one_correction(&f).correction.unwrap()["kind"],
+            json!("excerpt_removed"),
+            "{name}"
+        );
+        let (body, version_after) = note_row(&f, &f.topic);
+        assert_eq!(version_after, version_before + 1, "{name}: one topic write");
+        assert!(
+            !body.contains("^c3d4e5"),
+            "{name}: the block left the topic: {body}"
+        );
+        assert_eq!(
+            footer_of(&f),
+            footer_before,
+            "{name}: the Note footer is byte-identical"
+        );
+    }
 }
