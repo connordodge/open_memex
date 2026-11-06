@@ -56,6 +56,17 @@ Daily notes, topic notes, review state and Smart Folders need schema V5. The fir
 3. Restart your MCP clients afterwards: Claude Desktop keeps `memex serve` running from the old binary until you quit and reopen it. Do the same for Raycast and any other long-running MCP client.
 4. Try the upgrade on a scratch vault first (`memex init` a new one, or run `docs/daily-acceptance.md`), not on your only copy.
 
+## Upgrading to schema V6
+
+Tags (where each tag came from, and the tags you removed) and feedback on reviews (Feedback and the Vault Guide) need schema V6. The first time the new `memex` binary opens a vault, it migrates that vault to V6 in place: it adds the new tables and columns and records the `#tags` already written in each note's body. It changes no note body. Older `memex` binaries refuse to open a V6 vault, so there is no going back except from a backup. Before you upgrade:
+
+1. Quit the app, every MCP client (Claude Desktop, Raycast and any other) and any `memex serve` you started yourself, before the first V6 open. A `memex serve` left running from the old binary keeps writing to the vault without the V6 rules.
+2. Back up the vault's `memex.db`, `memex.db-wal` and `memex.db-shm` (all three; the last two exist while a vault is open or was not closed cleanly).
+3. Install the new `memex` binary and the new app together (`cargo install --path crates/memex-mcp --locked --force`, then rebuild the app), then reopen your MCP clients so they start the new `memex serve`.
+4. Try the upgrade on a scratch vault first (a copy of your vault, or `memex init` a new one), not on your only copy, and compare a few note bodies afterwards.
+
+A vault may hold one note with `role: guide` (the Vault Guide). If it already has two or more, the V6 migration stops and leaves the vault at V5 unchanged. Keep one: copy what you need out of the others, delete them with the previous `memex`, then open the vault again.
+
 ## Architecture
 
 ```

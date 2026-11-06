@@ -234,6 +234,12 @@ fn is_role_less(frontmatter: &serde_json::Value) -> bool {
         .is_some_and(|fm| fm.get("role").is_none_or(serde_json::Value::is_null))
 }
 
+/// Whether `frontmatter` marks the Vault Guide: `role` is exactly `guide`
+/// (#233, ruling D6).
+pub fn is_guide(frontmatter: &serde_json::Value) -> bool {
+    frontmatter.get("role").and_then(|r| r.as_str()) == Some("guide")
+}
+
 pub fn get_note(vault: &Vault, id: &NoteId) -> Result<Note> {
     let mut stmt = vault
         .conn()

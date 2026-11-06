@@ -6,6 +6,8 @@
 //!
 //! The V4 fixture is built inline (same pattern as `migration_v4.rs`) and pinned
 //! at `schema_version` 4 so V5 has work to do on the next `schema::apply()`.
+//! `schema::apply()` runs every later step too (V6, WI #237), so version pins
+//! after an apply are `schema::APP_SCHEMA_VERSION`; `migration_v6.rs` covers V6.
 
 use memex_core::schema;
 use memex_core::Vault;
@@ -277,15 +279,16 @@ fn open(db_path: &std::path::Path) -> Connection {
     conn
 }
 
-/// The V4 fixture after one `schema::apply`, asserted to have reached V5.
+/// The V4 fixture after one `schema::apply`, asserted to have reached the
+/// current version (V5 and every later step).
 fn migrated_v4_fixture() -> (tempfile::TempDir, Connection) {
     let (dir, db_path) = make_v4_db();
     let mut conn = open(&db_path);
     schema::apply(&mut conn).expect("V4 -> V5 migration succeeds");
     assert_eq!(
         schema::current_version(&conn).unwrap(),
-        5,
-        "schema::apply did not advance the V4 fixture to V5"
+        schema::APP_SCHEMA_VERSION,
+        "schema::apply did not advance the V4 fixture to the current version"
     );
     (dir, conn)
 }
@@ -505,8 +508,8 @@ fn assert_columns(conn: &Connection, table: &str, expected: &[ColSpec]) {
 // ---- AC 1: version ----------------------------------------------------------------------------
 
 #[test]
-fn app_schema_version_is_5() {
-    assert_eq!(schema::APP_SCHEMA_VERSION, 5);
+fn app_schema_version_is_6() {
+    assert_eq!(schema::APP_SCHEMA_VERSION, 6);
 }
 
 #[test]
@@ -516,12 +519,12 @@ fn v5_apply_advances_v4_database_to_version_5() {
     schema::apply(&mut conn).expect("V4 -> V5 migration succeeds");
 
     let max: i64 = count(&conn, "SELECT MAX(version) FROM schema_version");
-    assert_eq!(max, 5);
+    assert_eq!(max, 6);
     let versions = strings(
         &conn,
         "SELECT CAST(version AS TEXT) FROM schema_version ORDER BY version",
     );
-    assert_eq!(versions, ["1", "2", "3", "4", "5"]);
+    assert_eq!(versions, ["1", "2", "3", "4", "5", "6"]);
 }
 
 #[test]
@@ -538,12 +541,12 @@ fn v5_vault_open_rewrites_v4_manifest_to_5() {
     std::fs::create_dir_all(dir.path().join("objects")).unwrap();
 
     let vault = Vault::open(dir.path()).expect("open V4 vault advances to V5");
-    assert_eq!(vault.schema_version(), 5);
-    assert_eq!(schema::current_version(vault.connection_ref()).unwrap(), 5);
+    assert_eq!(vault.schema_version(), 6);
+    assert_eq!(schema::current_version(vault.connection_ref()).unwrap(), 6);
 
     let on_disk: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
-    assert_eq!(on_disk["schema_version"].as_i64(), Some(5), "{on_disk}");
+    assert_eq!(on_disk["schema_version"].as_i64(), Some(6), "{on_disk}");
     assert_eq!(on_disk["vault_id"].as_str(), Some(vault_id), "{on_disk}");
     assert_eq!(on_disk["created_at"].as_i64(), Some(1_000), "{on_disk}");
 }
@@ -566,7 +569,10 @@ fn v5_migration_preserves_existing_notes_chunks_and_links() {
 
     let mut conn = open(&db_path);
     schema::apply(&mut conn).expect("V4 -> V5 migration succeeds despite `not json` frontmatter");
-    assert_eq!(schema::current_version(&conn).unwrap(), 5);
+    assert_eq!(
+        schema::current_version(&conn).unwrap(),
+        schema::APP_SCHEMA_VERSION
+    );
 
     assert_eq!(notes_snapshot(&conn), notes_before, "notes rows changed");
     assert_eq!(chunks_snapshot(&conn), chunks_before, "chunks rows changed");
@@ -946,9 +952,12 @@ fn v5_seeds_smart_folder_max_depth_on_migration() {
 fn v5_seeds_smart_folder_max_depth_on_fresh_vault() {
     let dir = tempfile::tempdir().unwrap();
     let vault = Vault::create(dir.path().join("vault")).expect("create fresh vault");
-    assert_eq!(vault.schema_version(), 5);
+    assert_eq!(vault.schema_version(), schema::APP_SCHEMA_VERSION);
     let conn = vault.connection_ref();
-    assert_eq!(schema::current_version(conn).unwrap(), 5);
+    assert_eq!(
+        schema::current_version(conn).unwrap(),
+        schema::APP_SCHEMA_VERSION
+    );
     assert_eq!(max_depth(conn), ["2"]);
     assert_eq!(count(conn, "SELECT COUNT(*) FROM vault_settings"), 1);
 }
@@ -977,7 +986,7 @@ fn v5_vault_reopen_keeps_changed_smart_folder_max_depth() {
     let root = dir.path().join("vault");
     {
         let vault = Vault::create(&root).expect("create fresh vault");
-        assert_eq!(vault.schema_version(), 5);
+        assert_eq!(vault.schema_version(), schema::APP_SCHEMA_VERSION);
         vault
             .connection_ref()
             .execute(
@@ -1022,8 +1031,14 @@ fn v5_second_apply_is_a_noop() {
         1,
         "second apply inserted another schema_version row 5"
     );
-    assert_eq!(count(&conn, "SELECT COUNT(*) FROM schema_version"), 5);
-    assert_eq!(schema::current_version(&conn).unwrap(), 5);
+    assert_eq!(
+        count(&conn, "SELECT COUNT(*) FROM schema_version"),
+        schema::APP_SCHEMA_VERSION
+    );
+    assert_eq!(
+        schema::current_version(&conn).unwrap(),
+        schema::APP_SCHEMA_VERSION
+    );
     assert_eq!(table_counts(&conn), counts_before, "row counts changed");
     assert_eq!(schema_snapshot(&conn), schema_before, "schema changed");
     assert_eq!(notes_snapshot(&conn), notes_before, "notes changed");
@@ -1124,7 +1139,10 @@ fn v5_migration_succeeds_with_malformed_frontmatter_row() {
         "fixture must hold exactly one malformed-frontmatter note"
     );
     schema::apply(&mut conn).expect("migration tolerates `not json` frontmatter");
-    assert_eq!(schema::current_version(&conn).unwrap(), 5);
+    assert_eq!(
+        schema::current_version(&conn).unwrap(),
+        schema::APP_SCHEMA_VERSION
+    );
     assert_eq!(
         count(
             &conn,
@@ -1404,7 +1422,10 @@ fn v5_migration_skips_chunk_byte_range_columns_that_already_exist() {
     }
     let mut conn = open(&db_path);
     schema::apply(&mut conn).expect("V5 tolerates a pre-existing chunks.start_byte");
-    assert_eq!(schema::current_version(&conn).unwrap(), 5);
+    assert_eq!(
+        schema::current_version(&conn).unwrap(),
+        schema::APP_SCHEMA_VERSION
+    );
 
     let cols = strings(
         &conn,
