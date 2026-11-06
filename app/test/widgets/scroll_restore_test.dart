@@ -716,6 +716,56 @@ void main() {
     );
 
     testWidgets(
+      'a same note chip switch followed at once by a navigate lands the new note at the top and keeps both offsets',
+      (tester) async {
+        final h = await _launch(tester);
+        await _twoTabsOnOneNote(tester, h);
+        await _scrollTo(tester, _other); // [l1] [l1*]
+        await _chip(tester, h, 0);
+        await _scrollTo(tester, _left); // [l1*] [l1]
+        await _chip(tester, h, 1);
+        expect(_pixels(tester), _other);
+
+        // Two arrivals before any frame: the jump of the first is not run.
+        h.tabs.setActive(0);
+        h.tabs.navigate(const NoteTab(_l2));
+        await pumpFrames(tester);
+
+        expect(h.editor.title, 'Long two');
+        await _expectSettledAt(tester, 0.0);
+
+        await _back(tester, h);
+        await _expectSettledAt(tester, _left);
+        await _chip(tester, h, 1);
+        await _expectSettledAt(tester, _other);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'three same note chip switches before a frame jump once to the tab reached last',
+      (tester) async {
+        final h = await _launch(tester);
+        await _twoTabsOnOneNote(tester, h);
+        await _scrollTo(tester, _other); // [l1] [l1*]
+        await _chip(tester, h, 0);
+        await _scrollTo(tester, _left); // [l1*] [l1]
+
+        await _chip(tester, h, 1);
+        expect(_pixels(tester), _other);
+
+        final jumps = _Jumps(tester);
+        h.tabs.setActive(0);
+        h.tabs.setActive(1);
+        h.tabs.setActive(0);
+        await pumpFrames(tester);
+
+        expect(jumps.values, [_left], reason: 'one jump, to the last tab');
+        expect(_pixels(tester), _left);
+      },
+    );
+
+    testWidgets(
       'the first tab last offset does not land on a second tab that never scrolled',
       (tester) async {
         final h = await _launch(tester);
@@ -888,6 +938,66 @@ void main() {
           _pixels(tester, under: _zoomed(C89.alpha)),
           _left,
           reason: 'nothing was written into the entry on Alpha',
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'a zoom change reversed inside the switcher duration leaves the restore to the incoming editor',
+      (tester) async {
+        const duration = Duration(milliseconds: 300);
+        final h = await onCanvas(tester, zoom: duration);
+        Future<void> finishSwitch() async {
+          await tester.pump(duration);
+          await tester.pump(duration);
+          await pumpFrames(tester);
+        }
+
+        await _navigate(tester, h, zoomedAlpha);
+        await finishSwitch();
+        await _scrollTo(tester, _left, under: _zoomed(C89.alpha));
+        await _navigate(tester, h, zoomedBeta);
+        await finishSwitch();
+        final betaLength = _position(
+          tester,
+          under: _zoomed(C89.beta),
+        ).maxScrollExtent;
+        await _scrollTo(tester, betaLength, under: _zoomed(C89.beta));
+
+        // Beta to Alpha to Beta, the second step before the first one is done:
+        // the first Beta editor is still on screen when Beta is wanted again.
+        h.tabs.back();
+        await tester.pump(const Duration(milliseconds: 50));
+        await tester.pump(const Duration(milliseconds: 50));
+        expect(_zoomed(C89.beta), findsOneWidget, reason: 'still switching');
+        h.tabs.forward();
+        await tester.pump(const Duration(milliseconds: 50));
+        await tester.pump(const Duration(milliseconds: 50));
+        await finishSwitch();
+
+        expect(h.tabState.activeTab, zoomedBeta);
+        expect(_zoomed(C89.alpha), findsNothing);
+        expect(
+          _pixels(tester, under: _zoomed(C89.beta)),
+          betaLength,
+          reason: 'the new Beta editor took the restore',
+        );
+
+        h.tabs.back();
+        await finishSwitch();
+        expect(
+          _pixels(tester, under: _zoomed(C89.alpha)),
+          _left,
+          reason: 'nothing was written into the entry on Alpha',
+        );
+
+        h.tabs.forward();
+        await finishSwitch();
+        expect(
+          _pixels(tester, under: _zoomed(C89.beta)),
+          betaLength,
+          reason: 'the first Beta editor wrote nothing into the entry on Beta',
         );
         expect(tester.takeException(), isNull);
       },
@@ -1203,6 +1313,37 @@ void main() {
 
         await _scrollTo(tester, _left);
 
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'an EditorScrollScope hands a replaced controller to the page below it',
+      (tester) async {
+        final first = ScrollController();
+        final second = ScrollController();
+        addTearDown(first.dispose);
+        addTearDown(second.dispose);
+        const page = EditorPage(body: SizedBox(height: 5000));
+        Widget app(ScrollController controller) => MaterialApp(
+          home: Scaffold(
+            body: EditorScrollScope(controller: controller, child: page),
+          ),
+        );
+
+        await tester.pumpWidget(app(first));
+        expect(first.hasClients, isTrue, reason: 'the page uses the scope');
+        expect(second.hasClients, isFalse);
+
+        await tester.pumpWidget(app(second));
+        expect(second.hasClients, isTrue, reason: 'the page took the new one');
+        expect(first.hasClients, isFalse);
+
+        await tester.pumpWidget(app(second));
+        expect(second.hasClients, isTrue, reason: 'the same one stays');
+        second.jumpTo(_left);
+        await tester.pump();
+        expect(second.offset, _left);
         expect(tester.takeException(), isNull);
       },
     );

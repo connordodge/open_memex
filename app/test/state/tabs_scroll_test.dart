@@ -689,4 +689,41 @@ void main() {
       expect(p.take(_realId), 120, reason: 'the rewrite kept the offset');
     });
   });
+
+  group('TabsState arrivals', () {
+    test(
+      'TabsState arrivals defaults to zero and copyWith carries or replaces it',
+      () {
+        const plain = TabsState(tabs: [_a], activeIndex: 0);
+        expect(plain.arrivals, 0);
+        expect(TabsState.empty.arrivals, 0);
+
+        final counted = plain.copyWith(arrivals: 3);
+        expect(counted.arrivals, 3);
+        expect(counted.copyWith(activeIndex: 0).arrivals, 3, reason: 'kept');
+        expect(counted.copyWith(arrivals: 4).arrivals, 4, reason: 'replaced');
+        expect(counted.copyWith(canGoBack: true).arrivals, 3);
+        expect(plain.copyWith(arrivals: 1).tabs, [_a]);
+      },
+    );
+
+    test(
+      'TabsState arrivals counts each arrival and not a scroll or a chip tap on the active tab',
+      () {
+        final p = _Probe()..walk(_a);
+        final start = p.notifier.state.arrivals;
+
+        p.notifier.navigate(_b);
+        expect(p.notifier.state.arrivals, start + 1);
+        p.scroll('b', 40);
+        p.notifier.setActive(0);
+        expect(p.notifier.state.arrivals, start + 1, reason: 'no arrival');
+        p.notifier.back();
+        expect(p.notifier.state.arrivals, start + 2);
+        p.notifier.forward();
+        expect(p.notifier.state.arrivals, start + 3);
+        expect(p.notifier.state.activeNoteId, 'b');
+      },
+    );
+  });
 }
