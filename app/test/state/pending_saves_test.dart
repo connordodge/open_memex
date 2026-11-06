@@ -182,6 +182,7 @@ void _expectNoErrorState(_H h) {
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   group('a hosted save that cannot reach the server is queued (AC1)', () {
     for (final (name, mayHaveCommitted) in [
       (

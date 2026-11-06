@@ -10,6 +10,7 @@ import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/theme/review_state_colors.dart';
 
 import '../robots/days_robot.dart';
+import '../support/app_harness.dart' show pumpFrames;
 import '../support/daily_seed.dart';
 import '../support/fake_clock.dart';
 import '../support/fake_vault_db.dart';
@@ -494,11 +495,14 @@ void main() {
 
         await r.openRow('2026-10-03');
         expect(r.activeTab, const NoteTab(_oct03));
-        // #266: a plain click navigates the Today tab in place, so it and the
-        // launch tab both show the note, and Back returns to the new Today.
-        expect(r.tabs.tabs, [const NoteTab(_oct03), const NoteTab(_oct03)]);
+        // #266, #271: both clicks navigate the one tab in place (the Today row
+        // is a navigation too), and Back returns to the new Today.
+        expect(r.tabs.tabs, [const NoteTab(_oct03)]);
         expect(r.tabs.activeIndex, 0);
         expect(r.tabs.canGoBack, isTrue);
+        r.h.read(tabsProvider.notifier).back();
+        await pumpFrames(tester);
+        expect(r.activeTab, const VirtualTodayTab('2026-10-04'));
       },
     );
 

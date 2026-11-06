@@ -4,9 +4,11 @@
 // just the note), so each test fails unless the tab reads them through
 // vaultAccessProvider.
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db.dart';
 import 'package:open_memex_app/src/db/activity_reads.dart';
+import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/state/vault_access_state.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/vault_access/local/local_vault_access.dart';
@@ -15,6 +17,7 @@ import 'package:open_memex_app/src/widgets/right_panel.dart';
 import '../support/app_harness.dart';
 import '../support/fake_vault_db.dart';
 import '../support/links_seeds.dart';
+import '../support/recording_tabs.dart';
 import '../support/review_fakes.dart';
 
 const _target = 'n90-target';
@@ -82,6 +85,7 @@ Future<WorkspaceHarness> _open(
   List<AgentChangeRow> changes = const [],
   RightPanelTab tab = RightPanelTab.connections,
   bool select = true,
+  List<Override> overrides = const [],
 }) async {
   final db = _dbWithTargetOnly();
   final notes = Wi90GatedNotes(
@@ -102,6 +106,7 @@ Future<WorkspaceHarness> _open(
     tester,
     db: db,
     overrides: [
+      ...overrides,
       vaultAccessProvider.overrideWith(
         (ref) => LocalVaultAccess(
           vaultPath: ref.watch(currentVaultProvider).localPath!,
@@ -218,10 +223,14 @@ void main() {
       },
     );
 
+    // #271 (N8) TEST-CHANGE: a tap follows the link through the navigation seam
+    // (it used to write selectedNoteIdProvider), and the selection follows the
+    // tab.
     testWidgets(
-      'tapping a backlink in the Connections tab selects its source note',
+      'tapping a backlink in the Connections tab follows its source note',
       (tester) async {
-        final h = await _open(tester);
+        final tabs = TabsRecorder();
+        final h = await _open(tester, overrides: [tabs.override]);
         final item = _back('n90-s2', 'in-ext-alpha');
         await tester.ensureVisible(item);
         await tester.pump();
@@ -229,14 +238,20 @@ void main() {
         await tester.tap(item);
         await tester.pump();
 
+        expect(tabs.followed, [const NoteTab('n90-s2')]);
+        expect(
+          h.container.read(tabsProvider).activeTab,
+          const NoteTab('n90-s2'),
+        );
         expect(h.container.read(selectedNoteIdProvider), 'n90-s2');
       },
     );
 
     testWidgets(
-      'tapping an outgoing link in the Connections tab selects its target note',
+      'tapping an outgoing link in the Connections tab follows its target note',
       (tester) async {
-        final h = await _open(tester);
+        final tabs = TabsRecorder();
+        final h = await _open(tester, overrides: [tabs.override]);
         final item = _out('out-ext');
         await tester.ensureVisible(item);
         await tester.pump();
@@ -244,6 +259,11 @@ void main() {
         await tester.tap(item);
         await tester.pump();
 
+        expect(tabs.followed, [const NoteTab('n90-s3')]);
+        expect(
+          h.container.read(tabsProvider).activeTab,
+          const NoteTab('n90-s3'),
+        );
         expect(h.container.read(selectedNoteIdProvider), 'n90-s3');
       },
     );
