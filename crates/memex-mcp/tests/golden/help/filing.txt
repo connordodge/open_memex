@@ -1,0 +1,8 @@
+Print where the blocks of one day are filed
+
+Usage: memex filing --vault <VAULT> --date <DATE>
+
+Options:
+      --vault <VAULT>  Vault directory
+      --date <DATE>    The daily note's date, YYYY-MM-DD
+  -h, --help           Print help
