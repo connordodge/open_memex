@@ -1974,7 +1974,7 @@ fn hosted_vault_doc_says_which_callers_send_the_utc_offset_and_that_the_server_z
 // mechanically. Helpers carry a `wi243_` prefix.
 // ======================================================================
 
-const WI243_TAG_TOOLS: [&str; 4] = ["list_tags", "tag_note", "untag_note", "add_footer_topic"];
+const WI243_TAG_NAMES: [&str; 4] = ["list_tags", "tag_note", "untag_note", "add_footer_topic"];
 
 fn wi243_desktop_setup() -> String {
     read_repo_file("docs/claude-desktop-setup.md")
@@ -2038,7 +2038,7 @@ fn docs_name_the_four_tag_tools_in_the_readme_the_review_guide_and_the_setup_gui
         ("docs/daily-review.md", daily_review()),
         ("docs/claude-desktop-setup.md", wi243_desktop_setup()),
     ] {
-        for tool in WI243_TAG_TOOLS {
+        for tool in WI243_TAG_NAMES {
             assert!(
                 doc.contains(&format!("`{tool}`")),
                 "{name} must name `{tool}` in backticks"
@@ -2051,7 +2051,7 @@ fn docs_name_the_four_tag_tools_in_the_readme_the_review_guide_and_the_setup_gui
 fn desktop_setup_tool_list_gains_the_four_tag_tools_and_create_note_keeps_its_auto_tags() {
     let doc = wi243_desktop_setup();
     let section = wi243_section(&doc, "## 5. Restart Claude Desktop");
-    for tool in WI243_TAG_TOOLS {
+    for tool in WI243_TAG_NAMES {
         assert!(
             section.contains(&format!("`{tool}`")),
             "the setup guide's tool list (section 5) names `{tool}`:\n{section}"
@@ -2095,7 +2095,7 @@ fn review_guide_lists_list_tags_and_tag_note_in_the_order_a_review_uses_the_tool
 }
 
 #[test]
-fn review_guide_states_the_served_tool_count_not_the_stale_twenty_six() {
+fn review_guide_states_the_served_tool_count_not_a_stale_one() {
     let doc = daily_review();
     assert!(
         !doc.contains("26 tools"),
