@@ -1,12 +1,20 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../editor/editor_rows.dart';
+import '../../editor/markdown_inline.dart';
+import '../../editor/markdown_lines.dart';
+import '../../editor/markdown_table.dart' show splitTableLine;
 import '../../editor/row_geometry.dart';
-import '../../editor/tag_grammar.dart' show fencedRowLines;
+import '../../editor/tag_grammar.dart' show fencedRowLines, normalizeTagName;
+import '../../state/tags_browse_state.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import 'editor_row.dart';
+import 'line_boxes.dart';
 import 'live_preview_controller.dart';
 import 'live_preview_decorations.dart';
 import 'live_preview_styles.dart';
@@ -36,11 +44,13 @@ import 'table_grid.dart';
 /// - A table row (WI #208; Spec #197 R25, D12, D16, D23) renders as the
 ///   editor's [TableGrid] under Key `card-table-<r>` inside `card-row-<r>`:
 ///   the row's text in the card text style, header band `surface4`, no link
-///   controller (markers always hidden, never revealed). Its text is painted
-///   by the grid only. Several tables in one excerpt are separate rows, so
-///   each is its own grid, stacked with no gap.
-/// - Display only: no caret, focus, toggling or link clicks; a table row
-///   adds no gesture detector or mouse region (D14).
+///   controller unless the row holds a tag (markers always hidden, never
+///   revealed). Its text is painted by the grid only. Several tables in one
+///   excerpt are separate rows, so each is its own grid, stacked with no gap.
+/// - A row holding a live `#tag` (WI #247, ruling D51) adds [_CardTagRegion]:
+///   a click on the tag opens Tags mode. Every other row, a table row
+///   included, adds no listener, gesture detector or mouse region (D14).
+/// - Otherwise display only: no caret, focus, toggling or link clicks.
 class CardRows extends StatelessWidget {
   const CardRows({super.key, required this.text});
 
@@ -102,36 +112,50 @@ class CardRows extends StatelessWidget {
     final codeRow = spec.kind == RowKind.code;
     final atSegmentStart = spec.textStart == 0;
     final style = _rowStyle(base, rowText);
+    final tags = _liveTags(
+      rowText,
+      itemText: spec.isItem,
+      atSegmentStart: atSegmentStart,
+      fenced: fenced,
+    );
+    Widget tagged(_TagRowBuilder build) =>
+        tags.isEmpty ? build(null) : _CardTagRegion(tags: tags, builder: build);
     if (spec.kind == RowKind.table) {
       return KeyedSubtree(
         key: ValueKey('card-row-$r'),
-        child: TableGrid(
-          key: ValueKey('card-table-$r'),
-          text: rowText,
-          style: style,
-          headerBand: OmColors.surface4,
-          fenced: fenced,
+        child: tagged(
+          (links) => TableGrid(
+            key: ValueKey('card-table-$r'),
+            text: rowText,
+            style: style,
+            links: links,
+            headerBand: OmColors.surface4,
+            fenced: fenced,
+          ),
         ),
       );
     }
-    final rich = _RowText(
-      key: ValueKey('card-row-text-$r'),
-      child: RichText(
-        textScaler: scaler,
-        // As the body field's EditableText does with its strut.
-        strutStyle: livePreviewStrut(
-          codeRow: codeRow,
-        ).inheritFromTextStyle(style),
-        text: buildLivePreviewSpan(
-          rowText,
-          style: style,
-          forceHidden: true,
-          itemText: spec.isItem,
-          taskDone: spec.done,
-          quote: quote,
-          atSegmentStart: atSegmentStart,
-          codeRow: codeRow,
-          fenced: fenced,
+    final rich = tagged(
+      (links) => _RowText(
+        key: ValueKey('card-row-text-$r'),
+        child: RichText(
+          textScaler: scaler,
+          // As the body field's EditableText does with its strut.
+          strutStyle: livePreviewStrut(
+            codeRow: codeRow,
+          ).inheritFromTextStyle(style),
+          text: buildLivePreviewSpan(
+            rowText,
+            style: style,
+            forceHidden: true,
+            itemText: spec.isItem,
+            taskDone: spec.done,
+            quote: quote,
+            atSegmentStart: atSegmentStart,
+            cmdHover: links?.cmdHover,
+            codeRow: codeRow,
+            fenced: fenced,
+          ),
         ),
       ),
     );
@@ -178,6 +202,205 @@ class CardRows extends StatelessWidget {
       child: row,
     );
   }
+}
+
+/// A tag a click on a card row opens: its [span] in the row's text and its
+/// normalized [name].
+final class _CardTag {
+  const _CardTag(this.span, this.name);
+
+  final TextRange span;
+  final String name;
+}
+
+/// The tags of the card row text [text] that get tag ink, as
+/// `buildLivePreviewSpan` finds them with the same props: tokenized line by
+/// line (a table line cell by cell), each stretch knowing the code unit before
+/// it, and none on a line [fenced] says is fenced code.
+List<_CardTag> _liveTags(
+  String text, {
+  required bool itemText,
+  required bool atSegmentStart,
+  required List<bool> fenced,
+}) {
+  final tags = <_CardTag>[];
+  void tokenize(int start, int end) {
+    final stretch = text.substring(start, end);
+    for (final t in tokenizeInline(
+      stretch,
+      before: unitBeforeInLine(text, start),
+    )) {
+      if (t.kind != InlineTokenKind.tag) continue;
+      tags.add(
+        _CardTag(
+          TextRange(start: start + t.start, end: start + t.end),
+          normalizeTagName(stretch.substring(t.start + 1, t.end))!,
+        ),
+      );
+    }
+  }
+
+  final lines = classifyLines(text, atSegmentStart: atSegmentStart);
+  for (final (i, line) in lines.indexed) {
+    if (fenced.elementAtOrNull(i) ?? false) continue;
+    switch (itemText ? MdLineKind.plain : line.kind) {
+      case MdLineKind.heading ||
+          MdLineKind.bullet ||
+          MdLineKind.numbered ||
+          MdLineKind.task ||
+          MdLineKind.quote:
+        tokenize(line.textStart, line.contentEnd);
+      case MdLineKind.plain:
+        tokenize(line.start, line.contentEnd);
+      case MdLineKind.tableHeader || MdLineKind.tableBody:
+        final split = splitTableLine(
+          text,
+          start: line.start,
+          end: line.contentEnd,
+        );
+        for (final cell in split.cells) {
+          tokenize(cell.start, cell.end);
+        }
+      default:
+        break;
+    }
+  }
+  return tags;
+}
+
+/// Builds a card row's content; [links] holds its Cmd hover, null on a row with
+/// no [_CardTagRegion].
+typedef _TagRowBuilder = Widget Function(LivePreviewController? links);
+
+/// The pointer path of one card row holding [tags] (WI #247, ruling D51): a
+/// card has no `LinkRegion`, and wikilinks in a card stay inert.
+///
+/// - A primary press and release on the same tag calls `revealTag`, with or
+///   without Cmd. A card's markup is always hidden, so every plain click
+///   follows.
+/// - Over a tag the cursor is [SystemMouseCursors.click]; with Cmd held the tag
+///   also renders hovered, through the private controller [builder] gets.
+///
+/// Hit-tests through the row's own line boxes: the row text's paragraph, or a
+/// table row's `TableGridState.lineBoxes` (row-local offsets either way).
+class _CardTagRegion extends ConsumerStatefulWidget {
+  const _CardTagRegion({required this.tags, required this.builder});
+
+  final List<_CardTag> tags;
+  final _TagRowBuilder builder;
+
+  @override
+  ConsumerState<_CardTagRegion> createState() => _CardTagRegionState();
+}
+
+class _CardTagRegionState extends ConsumerState<_CardTagRegion> {
+  /// Holds the row's Cmd hover in `cmdHover`, which a table's grid reads.
+  final _links = LivePreviewController();
+
+  /// The mouse's global position while it is over the row, else null.
+  Offset? _pointer;
+
+  /// The span of the tag under the mouse, or null.
+  TextRange? _hover;
+
+  /// The span of the tag a primary press went down on, or null.
+  TextRange? _pressed;
+
+  @override
+  void initState() {
+    super.initState();
+    HardwareKeyboard.instance.addHandler(_onKey);
+  }
+
+  @override
+  void dispose() {
+    HardwareKeyboard.instance.removeHandler(_onKey);
+    _links.dispose();
+    super.dispose();
+  }
+
+  bool _onKey(KeyEvent event) {
+    if (_pointer != null) _refresh();
+    return false;
+  }
+
+  void _pointerAt(Offset? global) {
+    _pointer = global;
+    _refresh();
+  }
+
+  /// Recomputes the hovered tag under the pointer.
+  void _refresh() {
+    final at = _pointer;
+    final hover = at == null ? null : _tagAt(at)?.span;
+    final lit = HardwareKeyboard.instance.isMetaPressed ? hover : null;
+    if (hover == _hover && lit == _links.cmdHover) return;
+    setState(() {
+      _hover = hover;
+      _links.cmdHover = lit;
+    });
+  }
+
+  void _onPointerDown(PointerDownEvent event) {
+    _pressed = event.buttons == kPrimaryButton
+        ? _tagAt(event.position)?.span
+        : null;
+  }
+
+  void _onPointerUp(PointerUpEvent event) {
+    final pressed = _pressed;
+    _pressed = null;
+    if (pressed == null) return;
+    final up = _tagAt(event.position);
+    if (up == null || up.span != pressed) return;
+    revealTag(ref, up.name);
+  }
+
+  /// The tag whose glyphs are under global [at], or null.
+  _CardTag? _tagAt(Offset at) {
+    final source = _lineBoxes();
+    if (source == null) return null;
+    final local = source.box.globalToLocal(at);
+    final offset = source.offsetAt(local);
+    for (final tag in widget.tags) {
+      if (offset < tag.span.start || offset > tag.span.end) continue;
+      if (source.boxesFor(tag.span).any((r) => r.contains(local))) return tag;
+    }
+    return null;
+  }
+
+  /// The line boxes of the row under this region, once laid out.
+  LineBoxSource? _lineBoxes() {
+    LineBoxSource? found;
+    void visit(Element element) {
+      switch (element) {
+        case StatefulElement(state: final TableGridState grid):
+          found = grid.lineBoxes();
+        case RenderObjectElement(renderObject: final _RenderRowText row):
+          if (row.paragraph case final paragraph?) {
+            found = RenderParagraphLineBoxes(paragraph);
+          }
+        default:
+          element.visitChildren(visit);
+      }
+    }
+
+    context.visitChildElements(visit);
+    return found;
+  }
+
+  @override
+  Widget build(BuildContext context) => Listener(
+    onPointerDown: _onPointerDown,
+    onPointerUp: _onPointerUp,
+    onPointerCancel: (_) => _pressed = null,
+    child: MouseRegion(
+      cursor: _hover == null ? MouseCursor.defer : SystemMouseCursors.click,
+      onHover: (event) => _pointerAt(event.position),
+      onExit: (_) => _pointerAt(null),
+      child: widget.builder(_links),
+    ),
+  );
 }
 
 /// Marks the render box holding a row's text paragraph, so the row's

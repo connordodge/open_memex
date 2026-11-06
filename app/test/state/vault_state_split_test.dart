@@ -60,10 +60,9 @@ void main() {
     test(
       'canvas list state imports from canvas_state and from vault_state',
       () {
-        // canvas_state.dart keeps its viewport, selection and zoom state.
+        // canvas_state.dart keeps its viewport and selection state.
         expect(canvas.canvasViewportProvider, isNotNull);
         expect(canvas.canvasSelectionProvider, isNotNull);
-        expect(canvas.canvasZoomProvider, isNotNull);
       },
     );
 

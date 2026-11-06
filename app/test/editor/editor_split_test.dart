@@ -168,7 +168,6 @@ final _titles = [
 
 class _Host {
   int rightToggles = 0;
-  int backTaps = 0;
 }
 
 Future<_Host> _pumpEditor(
@@ -176,7 +175,6 @@ Future<_Host> _pumpEditor(
   required Note? note,
   _FakeCli? cli,
   bool rightPanelOpen = true,
-  bool zoomedFromCanvas = false,
 }) async {
   tester.view.physicalSize = const Size(1400, 1000);
   tester.view.devicePixelRatio = 1;
@@ -205,7 +203,6 @@ Future<_Host> _pumpEditor(
           body: NoteEditor(
             rightPanelOpen: rightPanelOpen,
             onToggleRightPanel: () => host.rightToggles++,
-            onBackToCanvas: zoomedFromCanvas ? () => host.backTaps++ : null,
           ),
         ),
       ),
@@ -653,25 +650,6 @@ void main() {
           _in(find.byKey(const Key('save-indicator')), find.text('idle')),
           findsOneWidget,
         );
-      },
-    );
-
-    testWidgets(
-      'the toolbar keeps zoom-out-back-button when zoomed from a canvas',
-      (tester) async {
-        final host = await _pumpEditor(
-          tester,
-          note: _note(),
-          zoomedFromCanvas: true,
-        );
-        final back = _in(
-          _toolbar(),
-          find.byKey(const Key('zoom-out-back-button')),
-        );
-        expect(back, findsOneWidget);
-        await tester.tap(back);
-        await tester.pump();
-        expect(host.backTaps, 1);
       },
     );
 

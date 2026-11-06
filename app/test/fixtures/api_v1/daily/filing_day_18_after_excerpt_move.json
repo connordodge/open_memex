@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-18",
+  "not_filed": [
+    {
+      "id": "65a642",
+      "text": "The [[Player Loop]] drags after the third run."
+    }
+  ],
+  "note_id": "01M5DQAYZ4TAPTHDWE5PNWE4W5",
+  "reviewed": true,
+  "topics": [
+    {
+      "blocks": [
+        {
+          "id": "6v4mr7",
+          "text": "Played the prototype for an hour."
+        }
+      ],
+      "title": "Economy Design",
+      "topic_note_id": "01M5DQAYZ47QW55S90ZF0A56AH"
+    }
+  ],
+  "vault_id": "01M5DK9Z8CWPQGFA893JX9VRZF"
+}

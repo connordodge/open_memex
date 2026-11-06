@@ -569,6 +569,25 @@ void main() {
       expect(h.entries, ['a', 'b', 'c']);
     });
 
+    test('replaceCurrent swaps the current entry only and keeps Forward', () {
+      final h = _at(
+        _build(['a', 'b', 'c']).withScrollOffset(4),
+        1,
+      ).withScrollOffset(9);
+      final r = h.replaceCurrent('x');
+      expect(r.entries, ['a', 'x', 'c']);
+      expect(r.index, 1);
+      expect(r.current, 'x');
+      expect(
+        r.scrollOffset,
+        isNull,
+        reason: 'the new entry was never scrolled',
+      );
+      expect(r.canGoForward, isTrue);
+      expect(r.forward().scrollOffset, 4, reason: 'other offsets stay');
+      expect(h.entries, ['a', 'b', 'c'], reason: 'the receiver is untouched');
+    });
+
     test('entries of the initial history cannot be modified', () {
       final h = TabHistory<String>.initial('a');
       expect(() => h.entries.add('b'), throwsUnsupportedError);

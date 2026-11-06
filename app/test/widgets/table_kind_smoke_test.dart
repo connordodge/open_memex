@@ -11,6 +11,7 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db.dart';
 import 'package:open_memex_app/src/editor/editor_rows.dart';
@@ -290,12 +291,15 @@ void main() {
         // WI #208 replaced the card's prose-like fallback arm with the grid.
         const text = 'Intro\n$_wi202Table';
         await tester.pumpWidget(
-          MaterialApp(
-            theme: buildOmTheme(),
-            home: const Scaffold(
-              body: Align(
-                alignment: Alignment.topLeft,
-                child: SizedBox(width: 700, child: CardRows(text: text)),
+          // A card tag's click reads providers (#247).
+          ProviderScope(
+            child: MaterialApp(
+              theme: buildOmTheme(),
+              home: const Scaffold(
+                body: Align(
+                  alignment: Alignment.topLeft,
+                  child: SizedBox(width: 700, child: CardRows(text: text)),
+                ),
               ),
             ),
           ),

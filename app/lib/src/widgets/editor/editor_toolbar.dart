@@ -20,7 +20,6 @@ class EditorToolbar extends StatelessWidget {
     required this.status,
     required this.rightOpen,
     required this.onToggleRight,
-    this.onBackToCanvas,
     this.sourceMode = false,
     this.onToggleSource,
   });
@@ -29,10 +28,6 @@ class EditorToolbar extends StatelessWidget {
   final SaveStatus status;
   final bool rightOpen;
   final VoidCallback onToggleRight;
-
-  /// When non-null, the toolbar shows a "← back to canvas" pill that
-  /// invokes this.
-  final VoidCallback? onBackToCanvas;
 
   /// True while the body shows the single Source field.
   final bool sourceMode;
@@ -50,10 +45,6 @@ class EditorToolbar extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 24),
       child: Row(
         children: [
-          if (onBackToCanvas != null) ...[
-            _BackToCanvasButton(onTap: onBackToCanvas!),
-            const SizedBox(width: 12),
-          ],
           Expanded(
             child: _Breadcrumb(note: note, vaultPath: vaultPath),
           ),
@@ -147,33 +138,6 @@ class _SourceToggle extends StatelessWidget {
                 ),
               ],
             ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// "← back to canvas" pill shown in the toolbar when a note is opened by
-/// zooming in from a canvas.
-class _BackToCanvasButton extends StatelessWidget {
-  const _BackToCanvasButton({required this.onTap});
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: OmColors.surface2,
-      borderRadius: BorderRadius.circular(4),
-      child: InkWell(
-        key: const Key('zoom-out-back-button'),
-        borderRadius: BorderRadius.circular(4),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-          child: Text(
-            '← back to canvas',
-            style: OmType.mono(size: 11, color: OmColors.fg1),
           ),
         ),
       ),

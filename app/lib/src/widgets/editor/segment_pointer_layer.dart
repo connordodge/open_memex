@@ -40,13 +40,19 @@ const double _autoScrollSpeed = 1200;
 ///   with no caret move, focus change, selection or drag.
 /// - A plain click, a double or triple click and a Cmd+click stay the
 ///   row's (and the link region's): the layer only wins the gesture arena
-///   for a drag or a Shift+press.
+///   for a drag, a Shift+press or a marked press.
+/// - A press the link region marked on a rendered link (Spec #232 TD6) wins
+///   the arena when it goes down, so no row recognizer sees it, and moves no
+///   caret. A release inside `kPrecisePointerHitSlop` follows the link it
+///   captured and starts no click chain; past the slop it selects from the
+///   press as a drag does. It never follows once it has gone past the slop.
 /// - A press on a rendered table grid (a table row that is not
 ///   `tableRevealed`, Spec #197 R21, ruling D14) is the layer's: the grid
 ///   has no recognizers. A primary or secondary press puts the caret at the
 ///   pressed offset and focuses the table row, which reveals it; a
-///   Cmd+press does too unless the link region wins the arena (a Cmd+press
-///   on a link it opens). A click within `kDoubleTapTimeout` and
+///   Cmd+press does too unless the link region wins the arena (a Cmd or
+///   marked press on a link it follows, which never reveals the table, even
+///   past the slop). A click within `kDoubleTapTimeout` and
 ///   `kDoubleTapSlop` of a click that started on a grid wins the arena at
 ///   once and selects the word (second click) or the source line (third
 ///   and later) at the first press's offset, so the reveal's layout change
@@ -89,6 +95,7 @@ class _Press implements GestureArenaMember {
     this.at = 0,
     this.deferred = false,
     this.multi = false,
+    this.follow,
   }) : position = down;
 
   final int pointer;
@@ -106,14 +113,19 @@ class _Press implements GestureArenaMember {
   final int at;
 
   /// A Cmd+press on a rendered grid: the caret goes to [at] only once the
-  /// layer wins the arena (the link region wins it on a link it opens).
+  /// layer wins the arena (the link region wins it on a link it opens). A
+  /// marked press: only once it drags past the slop.
   final bool deferred;
 
   /// A double or triple click: it has selected, and never drags.
   final bool multi;
 
+  /// What a release inside the slop does: set on a press the link region
+  /// marked.
+  final VoidCallback? follow;
+
   /// True once the layer won the arena: the press is a drag, a Shift+press,
-  /// a press on a rendered grid or a multi-click.
+  /// a marked press, a press on a rendered grid or a multi-click.
   bool accepted = false;
 
   /// True once the pointer moved more than `kPrecisePointerHitSlop` from
@@ -272,6 +284,19 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
     return hitsMarkerColumn(result);
   }
 
+  /// What a release of the press [pointer] does when a row's link region
+  /// marked it, else null.
+  VoidCallback? _markedFollow(int pointer) {
+    for (final field in _rowFields()) {
+      if (field.widget.controller case LivePreviewController(
+        :final markedPress?,
+      ) when markedPress.pointer == pointer) {
+        return markedPress.follow;
+      }
+    }
+    return null;
+  }
+
   void _onDown(PointerDownEvent event) {
     if (_press != null || event.kind != PointerDeviceKind.mouse) return;
     // Only a click that continues the chain keeps it.
@@ -305,12 +330,14 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
     final at = _offsetAt(host, event.position);
     if (at == null) return;
     final current = host.selection;
+    final follow = _markedFollow(event.pointer);
     final press = _Press(
       pointer: event.pointer,
       down: event.position,
       base: shift && current.isValid ? current.baseOffset : at,
       at: at,
-      deferred: cmd,
+      deferred: cmd || follow != null,
+      follow: follow,
       onAccept: _onAccept,
       onReject: _onReject,
     );
@@ -319,7 +346,10 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
       press,
     );
     _press = press;
-    if (cmd) return;
+    // Before the row's tap recognizer, which puts the caret at the press once
+    // its press timeout runs out. On a grid the link region has already won.
+    if (follow != null) press.entry.resolve(GestureDisposition.accepted);
+    if (press.deferred) return;
     if (shift) {
       final selection = TextSelection(baseOffset: press.base, extentOffset: at);
       host.select(selection);
@@ -387,7 +417,11 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
       press.dragging = true;
       _clicks = null;
       // Before the row's own tap-and-drag recognizer sees this move.
-      if (!press.accepted) press.entry.resolve(GestureDisposition.accepted);
+      if (!press.accepted) {
+        press.entry.resolve(GestureDisposition.accepted);
+      } else if (press.follow != null) {
+        _placeCaret(press);
+      }
     }
     if (!press.accepted || !press.dragging) return;
     _extend(press);
@@ -404,12 +438,19 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
     }
     // A click: the row's (or the empty area's) tap recognizer takes it.
     if (!press.accepted) press.entry.resolve(GestureDisposition.rejected);
+    // Last: this leaves the note, and the press is over by now.
+    if (event is PointerUpEvent && !press.dragging) press.follow?.call();
   }
 
   /// A Cmd+press on a rendered grid that the link region left to the layer
-  /// is a plain click (pack correction: a ghost link ignores Cmd).
+  /// is a plain click (pack correction: a ghost link ignores Cmd). A marked
+  /// press wins at its down and places no caret until it drags.
   void _onAccept(_Press press) {
-    if (!press.deferred) return;
+    if (press.deferred && press.follow == null) _placeCaret(press);
+  }
+
+  /// Puts the caret at [press]'s offset and focuses the row holding it.
+  void _placeCaret(_Press press) {
     final host = _host;
     if (host == null) return;
     host.select(TextSelection.collapsed(offset: press.at));
@@ -418,6 +459,9 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
 
   void _onReject(_Press press) {
     if (!identical(press, _press)) return;
+    // Lost to the link region on a grid. A marked press stays tracked for its
+    // slop, and a multi-click so its release starts the chain's timer.
+    if (press.follow != null || press.multi) return;
     _press = null;
     _ticker?.stop();
   }

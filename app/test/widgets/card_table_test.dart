@@ -20,6 +20,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db.dart';
 import 'package:open_memex_app/src/editor/editor_rows.dart';
@@ -119,19 +120,24 @@ Future<void> _wi208PumpRows(
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
   await tester.pumpWidget(
-    MaterialApp(
-      theme: buildOmTheme(),
-      home: Scaffold(
-        body: Align(
-          alignment: Alignment.topLeft,
-          child: RepaintBoundary(
-            key: _wi208BoundaryKey,
-            child: Container(
-              color: OmColors.surface3,
-              padding: const EdgeInsets.all(20),
-              child: SizedBox(
-                width: width,
-                child: CardRows(key: _wi208RowsKey, text: text),
+    // A card tag's click reads providers (#247). Its own scope: a test may
+    // first pump the editor's grid under a scope with other overrides.
+    ProviderScope(
+      key: UniqueKey(),
+      child: MaterialApp(
+        theme: buildOmTheme(),
+        home: Scaffold(
+          body: Align(
+            alignment: Alignment.topLeft,
+            child: RepaintBoundary(
+              key: _wi208BoundaryKey,
+              child: Container(
+                color: OmColors.surface3,
+                padding: const EdgeInsets.all(20),
+                child: SizedBox(
+                  width: width,
+                  child: CardRows(key: _wi208RowsKey, text: text),
+                ),
               ),
             ),
           ),
