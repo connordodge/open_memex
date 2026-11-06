@@ -245,7 +245,15 @@ const EXISTING_SPEC_TOOLS: &[&str] = &[
 const TAG_SPEC_TOOLS: &[&str] = &[];
 
 /// The feedback tools a prompt may name (#254 fills this block).
-const FEEDBACK_SPEC_TOOLS: &[&str] = &[];
+const FEEDBACK_SPEC_TOOLS: &[&str] = &[
+    "get_vault_guide",
+    "update_vault_guide",
+    "list_open_feedback",
+    "resolve_feedback",
+    "record_feedback",
+    "get_day_filing",
+    "remove_excerpt_block",
+];
 
 /// Snake_case parameter, field, prompt and error-code names the Spec and
 /// CONTRACTS C1/C2 define, which a prompt may also mention. One block per
@@ -290,8 +298,25 @@ const EXISTING_SPEC_FIELDS: &[&str] = &[
 /// The tag fields a prompt may name (#243 fills this block).
 const TAG_SPEC_FIELDS: &[&str] = &[];
 
-/// The feedback fields a prompt may name (#257 fills this block).
-const FEEDBACK_SPEC_FIELDS: &[&str] = &[];
+/// The feedback fields a prompt may name: the error codes and Contract fields of
+/// #254's tools. #257 appends what its prompts add.
+const FEEDBACK_SPEC_FIELDS: &[&str] = &[
+    "guide_rule",
+    "feedback_handled",
+    "feedback_invalid",
+    "block_id",
+    "not_filed",
+    "agent_change_id",
+    "handled_at",
+    "excerpt_moved",
+    "excerpt_removed",
+    "excerpt_added",
+    "membership_removed",
+    "folder_renamed",
+    "folder_moved",
+    "folder_deleted",
+    "tag_removed",
+];
 
 /// Any snake_case identifier in the text must be a Spec tool or field name, so
 /// an agent is never told to call a tool that the Spec does not define.
