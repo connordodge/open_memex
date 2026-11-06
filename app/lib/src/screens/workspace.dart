@@ -76,7 +76,7 @@ class Workspace extends ConsumerWidget {
       );
       if (id == null) return;
       ref.read(vaultRevisionProvider.notifier).state++;
-      ref.read(tabsProvider.notifier).openOrFocus(NoteTab(id));
+      ref.read(tabsProvider.notifier).navigate(NoteTab(id));
     } catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(
@@ -114,7 +114,7 @@ class _WorkspaceTabBar extends ConsumerWidget {
             tab: t,
             active: active,
             onTap: () => ref.read(tabsProvider.notifier).setActive(i),
-            onClose: () => ref.read(tabsProvider.notifier).close(t),
+            onClose: () => ref.read(tabsProvider.notifier).closeAt(i),
           );
         },
       ),
