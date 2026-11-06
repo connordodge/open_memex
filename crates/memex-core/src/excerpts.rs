@@ -204,6 +204,88 @@ pub fn remove_excerpt_with_hook(
     Ok(topic)
 }
 
+/// The two topic notes as stored after [`move_block`].
+#[derive(Debug, Clone)]
+pub struct MovedBlock {
+    pub from: Note,
+    pub to: Note,
+}
+
+/// Removes one block of the day `date` from the topic note `topic_note_id`.
+pub fn remove_excerpt_block(
+    vault: &mut Vault,
+    topic_note_id: &NoteId,
+    date: &str,
+    block_id: &str,
+    caller: Caller,
+    embedder: Option<&dyn Embedder>,
+) -> Result<Note> {
+    remove_excerpt_block_with_hook(
+        vault,
+        topic_note_id,
+        date,
+        block_id,
+        caller,
+        embedder,
+        &mut |_| {},
+    )
+}
+
+/// [`remove_excerpt_block`] with the same test seam as
+/// [`add_excerpt_with_hook`].
+#[doc(hidden)]
+pub fn remove_excerpt_block_with_hook(
+    _vault: &mut Vault,
+    _topic_note_id: &NoteId,
+    _date: &str,
+    _block_id: &str,
+    _caller: Caller,
+    _embedder: Option<&dyn Embedder>,
+    _before_write: &mut dyn FnMut(&mut Vault),
+) -> Result<Note> {
+    unimplemented!("remove_excerpt_block")
+}
+
+/// Files one block of the day `date` into `to_topic`, then removes it from
+/// `from_topic`.
+pub fn move_block(
+    vault: &mut Vault,
+    date: &str,
+    block_id: &str,
+    from_topic: &NoteId,
+    to_topic: &NoteId,
+    caller: Caller,
+    embedder: Option<&dyn Embedder>,
+) -> Result<MovedBlock> {
+    move_block_with_hook(
+        vault,
+        date,
+        block_id,
+        from_topic,
+        to_topic,
+        caller,
+        embedder,
+        &mut |_| {},
+    )
+}
+
+/// [`move_block`] with a test seam: `before_remove_write` is the
+/// `before_write` of the write to `from_topic`.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn move_block_with_hook(
+    _vault: &mut Vault,
+    _date: &str,
+    _block_id: &str,
+    _from_topic: &NoteId,
+    _to_topic: &NoteId,
+    _caller: Caller,
+    _embedder: Option<&dyn Embedder>,
+    _before_remove_write: &mut dyn FnMut(&mut Vault),
+) -> Result<MovedBlock> {
+    unimplemented!("move_block")
+}
+
 /// Transclusion fields merged into the top level of MCP `get_note` and CLI
 /// `memex get` (architect ruling D7): `transclusions`, one
 /// `{date, from, to, text}` per token of the note's body in body order, the
