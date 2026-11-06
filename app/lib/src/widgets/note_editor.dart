@@ -81,12 +81,15 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
 
   /// The note this State was built to zoom into, null on a note tab. An
   /// `AnimatedSwitcher` keeps the old zoomed editor alive through a zoom
-  /// change, and it sees the new selection too.
+  /// change, and it sees the new selection too. A note tab's editor stays until
+  /// the next build too, when the active tab becomes a zoomed canvas.
   String? _zoomedNote;
 
-  /// This State is the outgoing editor of a zoom change: it takes no restore,
-  /// reports no offset and never jumps. Sticky, since the incoming editor can
-  /// be on the note this one was built for.
+  /// The active tab now needs another editor than this State: it takes no
+  /// restore, reports no offset and never jumps. Sticky on a zoomed editor,
+  /// since the incoming editor can be on the note this one was built for. A note
+  /// tab's editor clears it: the next build goes on using this State when the
+  /// active tab is a note tab again by then.
   bool _outgoing = false;
 
   /// The open tabs, or null when nothing created them: an editor pumped without
@@ -161,11 +164,13 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
   /// one note), so it jumps from here.
   void _onTabs(TabsState? previous, TabsState next) {
     if (previous?.arrivals == next.arrivals) return;
-    final noteId = next.activeNoteId;
-    if (_zoomedNote != null && noteId != _zoomedNote) {
+    final tab = next.activeTab;
+    if ((tab is CanvasTab ? tab.zoomedNoteId : null) != _zoomedNote) {
       _outgoing = true;
       return;
     }
+    if (_zoomedNote == null) _outgoing = false;
+    final noteId = next.activeNoteId;
     _reportsHeld = true;
     _jumpSeq++;
     if (noteId == null || noteId != _hydratedFor) return;

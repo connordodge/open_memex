@@ -261,10 +261,10 @@ class TabsNotifier extends StateNotifier<TabsState> {
   /// See [TabsState.arrivals].
   int _arrivals = 0;
 
-  /// Whether the last arrival on the active tab was Back, Forward or a chip
-  /// switch and [takeScrollRestore] hasn't handed it out. A flag and not an
-  /// offset: a gone entry can still be skipped, so the offset is read when
-  /// taken.
+  /// Whether the last arrival on the active tab returned to an entry (Back,
+  /// Forward, a chip switch, focusing an open tab, landing on a neighbour) and
+  /// [takeScrollRestore] hasn't handed it out. A flag and not an offset: a gone
+  /// entry can still be skipped, so the offset is read when taken.
   bool _restorePending = false;
 
   _TabRecord? get _activeRecord =>
@@ -310,8 +310,8 @@ class TabsNotifier extends StateNotifier<TabsState> {
   }
 
   /// Marks an arrival on the active tab, before the [_write] that shows it.
-  /// A [restore] returns the note to its entry's offset; any other arrival
-  /// lands at the top and drops a restore not yet taken.
+  /// A [restore] returns the note to its entry's offset (#270, D39); any other
+  /// arrival lands at the top and drops a restore not yet taken.
   void _arrive({bool restore = false}) {
     _restorePending = restore;
     _arrivals++;
@@ -374,13 +374,14 @@ class TabsNotifier extends StateNotifier<TabsState> {
   bool _leavesActive(int index) =>
       _records.isNotEmpty && index != state.activeIndex;
 
-  /// Focus the leftmost tab showing `tab`, or open a new tab for it at the
-  /// end (the Cmd+click path). Returns the resulting active index.
+  /// Focus the leftmost tab showing `tab`, restoring its saved scroll offset,
+  /// or open a new tab for it at the end, at the top (the Cmd+click path).
+  /// Returns the resulting active index.
   int openOrFocus(WorkspaceTab tab) {
     final existing = _indexShowing(tab);
     if (_leavesActive(existing)) {
       onBeforeLeave?.call();
-      _arrive();
+      _arrive(restore: existing >= 0);
     }
     if (existing >= 0) {
       _touchMru(_records[existing]);
@@ -477,9 +478,9 @@ class TabsNotifier extends StateNotifier<TabsState> {
   /// Closes [closing] and discards their histories; each of [zoomOut] stays
   /// open with its current, zoomed entry replaced by the plain canvas. When the
   /// active tab is among those closed, the nearest remaining tab before it
-  /// becomes active, else the first remaining one; otherwise the active tab
-  /// stays active. [onBeforeLeave] runs once when the active tab is closed or
-  /// zoomed out, and not otherwise.
+  /// becomes active, else the first remaining one, at its saved scroll offset;
+  /// otherwise the active tab stays active. [onBeforeLeave] runs once when the
+  /// active tab is closed or zoomed out, and not otherwise.
   void _closeRecords(
     Set<_TabRecord> closing, {
     Set<_TabRecord> zoomOut = const {},
@@ -488,7 +489,7 @@ class TabsNotifier extends StateNotifier<TabsState> {
     final activeCloses = closing.contains(active);
     if (activeCloses || zoomOut.contains(active)) {
       onBeforeLeave?.call();
-      _arrive();
+      _arrive(restore: activeCloses && closing.length < _records.length);
     }
     for (final r in zoomOut) {
       final canvas = r.current as CanvasTab;
@@ -655,10 +656,11 @@ class TabsNotifier extends StateNotifier<TabsState> {
     active.history = active.history.withScrollOffset(offset);
   }
 
-  /// The offset to restore [noteId] to, once, when Back, Forward or a chip
-  /// switch just arrived on it (`0.0` for an entry never scrolled). Null for
-  /// any other arrival and for any note the active entry doesn't show (#270,
-  /// TD7). A call for another note leaves the restore for the right one.
+  /// The offset to restore [noteId] to, once, when Back, Forward, a chip
+  /// switch, focusing an open tab or landing on a neighbour just arrived on it
+  /// (`0.0` for an entry never scrolled). Null for any other arrival and for
+  /// any note the active entry doesn't show (#270, TD7, D39). A call for another
+  /// note leaves the restore for the right one.
   double? takeScrollRestore(String noteId) {
     final active = _activeRecord;
     if (!_restorePending ||
