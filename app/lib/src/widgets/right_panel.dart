@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../db.dart';
+import '../state/tabs_state.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
@@ -313,8 +314,9 @@ class _OutgoingKindGroup extends ConsumerWidget {
             label: l.label,
             onTap: l.toNoteId == null
                 ? null
-                : () => ref.read(selectedNoteIdProvider.notifier).state =
-                      l.toNoteId,
+                : () => ref
+                      .read(tabsProvider.notifier)
+                      .follow(NoteTab(l.toNoteId!)),
           ),
       ],
     );
@@ -352,8 +354,9 @@ class _BacklinkKindGroup extends ConsumerWidget {
             title: e.fromTitle,
             resolvedTitle: e.fromTitle,
             label: e.label,
-            onTap: () =>
-                ref.read(selectedNoteIdProvider.notifier).state = e.fromNoteId,
+            onTap: () => ref
+                .read(tabsProvider.notifier)
+                .follow(NoteTab(e.fromNoteId)),
           ),
       ],
     );
