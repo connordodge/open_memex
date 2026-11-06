@@ -5,6 +5,8 @@ use memex_core::footer::{self, ChipOrigin};
 use memex_core::{Clock, NoteId, Vault};
 use serde::Serialize;
 
+use super::invalid_input_as_argument;
+
 /// The input of [`add`].
 #[derive(Debug, Clone, Default)]
 pub struct AddInput {
@@ -36,7 +38,8 @@ pub fn add(
     let _ = clock;
     let daily = NoteId::parse(&input.daily_note_id)?;
     let topic = NoteId::parse(&input.topic_note_id)?;
-    let written = footer::set_chip(vault, &daily, &topic, ChipOrigin::Person, embedder)?;
+    let written = footer::set_chip(vault, &daily, &topic, ChipOrigin::Person, embedder)
+        .map_err(invalid_input_as_argument)?;
     let origin = written.origin.unwrap_or(ChipOrigin::Person);
     Ok(AddOutput {
         vault_id: vault.vault_id().to_string(),

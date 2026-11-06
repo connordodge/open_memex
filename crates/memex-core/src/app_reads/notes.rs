@@ -141,14 +141,17 @@ pub struct NoteDetail {
     pub created_at: i64,
     pub updated_at: i64,
     pub tags: Vec<String>,
+    /// The tags the note's footer shows, sorted by name (R47).
+    pub footer_tags: Vec<String>,
     #[serde(flatten)]
     pub fields: Map<String, Value>,
 }
 
 /// `VaultDb.getNote`: the note `id` with its tags, in the shape of
-/// `memex get` (without links). Unlike the core read it never refuses a note
-/// whose frontmatter is not valid JSON: that note gets its frontmatter text
-/// as a string, and no role is read from it. An unknown id is `NotFound`.
+/// `memex get` (without links), plus `footer_tags`. Unlike the core read it
+/// never refuses a note whose frontmatter is not valid JSON: that note gets
+/// its frontmatter text as a string, and no role is read from it. An unknown
+/// id is `NotFound`.
 pub fn get_note(vault: &Vault, id: &NoteId) -> Result<NoteDetail> {
     let row = vault
         .connection_ref()
@@ -184,6 +187,7 @@ pub fn get_note(vault: &Vault, id: &NoteId) -> Result<NoteDetail> {
     };
     // Missing tags read as empty, as `memex get` always has.
     let tag_list = tags::tags_for_note(vault, note.id.as_str()).unwrap_or_default();
+    let footer_tags = tags::footer_tags_for_note(vault, &note.id).unwrap_or_default();
     let mut fields = review::note_review_fields(vault, &note)?;
     fields.extend(excerpts::note_transclusion_fields(vault, &note)?);
     Ok(NoteDetail {
@@ -195,6 +199,7 @@ pub fn get_note(vault: &Vault, id: &NoteId) -> Result<NoteDetail> {
         created_at: note.created_at,
         updated_at: note.updated_at,
         tags: tag_list,
+        footer_tags,
         fields,
     })
 }
