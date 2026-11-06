@@ -7,6 +7,7 @@ pub mod embedder;
 pub mod error;
 pub mod fs_guard;
 pub mod graph;
+pub mod guide;
 pub mod indexer;
 pub mod link_extractor;
 pub mod links;
