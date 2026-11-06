@@ -9,6 +9,8 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart' show Override;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/canvas_state.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';
@@ -20,6 +22,7 @@ import '../support/canvas_seeds.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
 import '../support/note_cli_fakes.dart';
+import '../support/recording_tabs.dart';
 
 const _canvas = CanvasTab(C89.newer);
 const _zoomedAlpha = CanvasTab(C89.newer, zoomedNoteId: C89.alpha);
@@ -38,7 +41,10 @@ extension on WorkspaceHarness {
 
 /// The app on a vault with the canvas Newer holding the notes Alpha and Beta,
 /// and zoom animations of no length. The only tab shows the canvas.
-Future<WorkspaceHarness> _onCanvas(WidgetTester tester) async {
+Future<WorkspaceHarness> _onCanvas(
+  WidgetTester tester, {
+  List<Override> overrides = const [],
+}) async {
   final db = seedCanvasFixture(FakeVaultDb.v5());
   final cli = FakeMemexCli()
     ..on('settings get', (_) => FakeMemexCli.ok(settingsGetMaxDepthStdout))
@@ -48,6 +54,7 @@ Future<WorkspaceHarness> _onCanvas(WidgetTester tester) async {
     db: db,
     cli: cli,
     overrides: [
+      ...overrides,
       canvasAnimationConfigProvider.overrideWithValue(
         const CanvasAnimationConfig(zoomDuration: Duration.zero),
       ),
@@ -99,6 +106,41 @@ void main() {
         expect(_zoomedView(C89.alpha), findsOneWidget);
         expect(_canvasView, findsNothing);
         expect(h.editor.title, 'Alpha', reason: 'Forward loads the note too');
+      },
+    );
+
+    testWidgets(
+      'double clicking a note on a canvas with Cmd held zooms the current tab and opens no new tab',
+      (tester) async {
+        final tabs = TabsRecorder();
+        final h = await _onCanvas(tester, overrides: [tabs.override]);
+        tabs.navigated.clear();
+
+        await tester.sendKeyDownEvent(
+          LogicalKeyboardKey.metaLeft,
+          platform: 'macos',
+        );
+        try {
+          await _zoomInto(tester, C89.alpha);
+        } finally {
+          await tester.sendKeyUpEvent(
+            LogicalKeyboardKey.metaLeft,
+            platform: 'macos',
+          );
+        }
+
+        expect(h.tabState.tabs, [_zoomedAlpha], reason: 'no tab was opened');
+        expect(h.tabState.activeTab, _zoomedAlpha);
+        expect(_zoomedView(C89.alpha), findsOneWidget);
+        expect(h.editor.title, 'Alpha');
+        expect(tabs.followed, isEmpty, reason: 'a double click never follows');
+        expect(tabs.navigated, [_zoomedAlpha]);
+
+        h.tabs.back();
+        await pumpFrames(tester);
+        expect(h.tabState.tabs, [_canvas], reason: 'Back zooms out in place');
+        expect(h.tabState.activeTab, _canvas);
+        expect(_canvasView, findsOneWidget);
       },
     );
 
