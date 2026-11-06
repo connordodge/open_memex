@@ -1,6 +1,8 @@
 // WI #70 (W0a) AC1: every local read returns exactly what the matching
 // VaultDb method returns on the same database (D13).
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/src/state/vault_state.dart'
+    show requiredVaultSchemaVersion;
 import 'package:open_memex_app/src/vault_access/local/local_vault_access.dart';
 
 import '../support/fake_memex_cli.dart';
@@ -72,7 +74,8 @@ void main() {
   test('local schemaVersion matches VaultDb on a V4 and a V5 vault', () async {
     final v4 = FakeVaultDb.v4();
     addTearDown(v4.close);
-    final v5 = FakeVaultDb.v5()..addSchemaVersion(6);
+    final v5 = FakeVaultDb.v5()
+      ..addSchemaVersion(requiredVaultSchemaVersion + 1);
     addTearDown(v5.close);
 
     expect(
@@ -82,7 +85,7 @@ void main() {
     expect(v4.schemaVersion(), 4);
     expect(
       await LocalVaultAccess(vaultPath: _vault, db: v5).schemaVersion(),
-      6,
+      requiredVaultSchemaVersion + 1,
     );
   });
 

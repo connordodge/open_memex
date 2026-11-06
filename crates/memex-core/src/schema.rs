@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::error::MemexError;
 use crate::Result;
 
-pub const APP_SCHEMA_VERSION: i64 = 5;
+pub const APP_SCHEMA_VERSION: i64 = 6;
 
 pub const MAX_DEDUP_COLLISIONS: i64 = 1000;
 
@@ -234,6 +234,82 @@ const V5_COLUMNS: [(&str, &str, &str); 2] = [
     ("chunks", "end_byte", "INTEGER"),
 ];
 
+// V6 adds tag origins and tag Corrections (Spec #234), Feedback and Vault
+// Guide revisions (#233). The `tags` columns are added by `apply_v6` (ALTER
+// TABLE ADD COLUMN is not idempotent). `tag_corrections` is created before
+// `feedback`, which references it.
+//
+// A Correction outlives its note (ruling D7a): `tag_corrections.note_id` and
+// the `feedback` links are ON DELETE SET NULL. Both `agent_change_id` columns
+// are SET NULL too, never the default NO ACTION, because `agent_changes`
+// cascades on note delete and a NO ACTION link would block the delete.
+// `tag_corrections` uses AUTOINCREMENT so a deleted highest id is never
+// reused (D4).
+//
+// `idx_notes_guide` allows one `role: guide` note per vault, with the same
+// CASE guard as `idx_notes_daily_title`. Every statement is `IF NOT EXISTS`,
+// so the V6 step can re-run over V6 tables.
+const V6: &str = r#"
+CREATE TABLE IF NOT EXISTS tag_corrections (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    note_id     TEXT REFERENCES notes(id) ON DELETE SET NULL,
+    note_title  TEXT NOT NULL,
+    tag         TEXT NOT NULL,
+    kind        TEXT NOT NULL CHECK (kind IN ('removed')),
+    created_at  INTEGER NOT NULL,
+    cleared_at  INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_tag_corrections_note ON tag_corrections(note_id, tag);
+
+CREATE TABLE IF NOT EXISTS feedback (
+    id                 TEXT PRIMARY KEY,
+    kind               TEXT NOT NULL CHECK (kind IN ('comment','correction')),
+    source             TEXT NOT NULL CHECK (source IN ('person','chat')),
+    note_id            TEXT NULL REFERENCES notes(id) ON DELETE SET NULL,
+    day                TEXT NULL,
+    agent_change_id    TEXT NULL REFERENCES agent_changes(id) ON DELETE SET NULL,
+    text               TEXT NULL,
+    correction_json    TEXT NULL,
+    status             TEXT NOT NULL CHECK (status IN ('open','handled')),
+    reply              TEXT NULL,
+    tag_correction_id  INTEGER NULL UNIQUE REFERENCES tag_corrections(id) ON DELETE SET NULL,
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL,
+    handled_at         INTEGER NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_feedback_status ON feedback(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_feedback_note ON feedback(note_id, created_at);
+
+CREATE TABLE IF NOT EXISTS vault_guide_revisions (
+    id                TEXT PRIMARY KEY,
+    note_id           TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    previous_md       TEXT NOT NULL,
+    previous_version  INTEGER NOT NULL,
+    new_version       INTEGER NOT NULL,
+    agent_change_id   TEXT NULL REFERENCES agent_changes(id) ON DELETE SET NULL,
+    created_at        INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_vault_guide_revisions_note
+    ON vault_guide_revisions(note_id, created_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_guide
+    ON notes((CASE WHEN json_valid(frontmatter) THEN json_extract(frontmatter, '$.role') END))
+    WHERE CASE WHEN json_valid(frontmatter) THEN json_extract(frontmatter, '$.role') END = 'guide';
+"#;
+
+/// Columns V6 adds to existing tables: (table, column, declaration).
+const V6_COLUMNS: [(&str, &str, &str); 2] = [
+    (
+        "tags",
+        "origin",
+        "TEXT NOT NULL DEFAULT 'person' CHECK (origin IN ('body','agent','person'))",
+    ),
+    ("tags", "first_line", "TEXT"),
+];
+
 pub fn apply(conn: &mut Connection) -> Result<()> {
     // v1, v2: each in its own transaction so partial migrations are durable.
     {
@@ -283,6 +359,18 @@ pub fn apply(conn: &mut Connection) -> Result<()> {
         }
         tx.commit()?;
     }
+
+    // v6: tag origins, tag Corrections, Feedback, Vault Guide. One
+    // transaction with the body-tag backfill, so any failure (two
+    // `role: guide` notes, say) leaves the vault at V5 unchanged.
+    {
+        let tx = conn.transaction()?;
+        if current_version(&tx)? < 6 {
+            apply_v6(&tx)?;
+            tx.execute("INSERT INTO schema_version(version) VALUES (6)", [])?;
+        }
+        tx.commit()?;
+    }
     Ok(())
 }
 
@@ -293,6 +381,67 @@ fn apply_v5(conn: &Connection) -> Result<()> {
         }
     }
     conn.execute_batch(V5)?;
+    Ok(())
+}
+
+fn apply_v6(conn: &Connection) -> Result<()> {
+    // `idx_notes_guide` would fail on these anyway; name the problem first.
+    let guides: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM notes
+         WHERE CASE WHEN json_valid(frontmatter) THEN json_extract(frontmatter, '$.role') END = 'guide'",
+        [],
+        |r| r.get(0),
+    )?;
+    if guides > 1 {
+        return Err(MemexError::GuideRule(format!(
+            "schema V6 allows one role: guide note and this vault has {guides}; \
+             keep one and delete the others with the previous memex, then open the vault again"
+        )));
+    }
+    for (table, column, decl) in V6_COLUMNS {
+        if !has_column(conn, table, column)? {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl};"))?;
+        }
+    }
+    // System tags become agent-origin before the backfill, so a system tag
+    // the body also writes ends up body-origin (R9, R51).
+    conn.execute(
+        "UPDATE tags SET origin = 'agent' WHERE tag IN ('inbox', 'agent-authored')",
+        [],
+    )?;
+    conn.execute_batch(V6)?;
+    backfill_body_tags(conn)
+}
+
+/// Upserts a `body`-origin `tags` row, with its first line, for each `#name`
+/// in the person section of every note except the Vault Guide (R50, R51).
+/// Reads `notes` only: it never writes `notes`, `day_reviews` or `chunks`, and
+/// needs no embedder. Re-running it over its own output changes nothing.
+fn backfill_body_tags(conn: &Connection) -> Result<()> {
+    let mut notes = conn.prepare("SELECT id, content_md, frontmatter FROM notes ORDER BY id")?;
+    let mut upsert = conn.prepare(
+        "INSERT INTO tags (note_id, tag, origin, first_line) VALUES (?1, ?2, 'body', ?3)
+         ON CONFLICT(note_id, tag) DO UPDATE SET origin = 'body', first_line = excluded.first_line",
+    )?;
+    let mut rows = notes.query([])?;
+    while let Some(row) = rows.next()? {
+        let id: String = row.get(0)?;
+        let body: String = row.get(1)?;
+        let frontmatter: String = row.get(2)?;
+        let frontmatter: serde_json::Value =
+            serde_json::from_str(&frontmatter).unwrap_or(serde_json::Value::Null);
+        if crate::notes::is_guide(&frontmatter) {
+            continue;
+        }
+        let found = if crate::daily::is_daily(&frontmatter) {
+            crate::tags::extract(&crate::daily::split_body(&body).person)
+        } else {
+            crate::tags::extract(crate::tags::person_section(&body))
+        };
+        for tag in found {
+            upsert.execute(rusqlite::params![id, tag.name, tag.first_line])?;
+        }
+    }
     Ok(())
 }
 

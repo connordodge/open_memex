@@ -66,7 +66,7 @@ void main() {
         final h = await pumpWorkspace(tester);
 
         expect(find.byType(Workspace), findsOneWidget);
-        expect(h.db.schemaVersionForTest, 5);
+        expect(h.db.schemaVersionForTest, requiredVaultSchemaVersion);
         expect(h.cli.callsFor('settings get'), hasLength(1));
         expect(h.clock.now(), DateTime(2026, 10, 3, 9));
         expect(tester.takeException(), isNull);

@@ -161,8 +161,9 @@ void main() {
       final c = _withVault(LocalVaultRef(dir.path));
       final db = c.read(vaultDbProvider);
       expect(db, isNotNull);
-      expect(db!.schemaVersion(), 5);
+      expect(db!.schemaVersion(), 6);
       expect(c.read(vaultV5ReadyProvider), isTrue);
+      expect(c.read(vaultV6ReadyProvider), isTrue);
     });
 
     test('a LocalVaultRef of a folder that is not a vault gives null', () {

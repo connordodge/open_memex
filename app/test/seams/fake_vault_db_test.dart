@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db.dart';
+import 'package:open_memex_app/src/state/vault_state.dart'
+    show requiredVaultSchemaVersion;
 import 'package:sqlite3/sqlite3.dart';
 
 import '../support/fake_vault_db.dart';
@@ -14,7 +16,7 @@ void main() {
         final db = FakeVaultDb();
         addTearDown(db.close);
 
-        expect(db.schemaVersionForTest, 5);
+        expect(db.schemaVersionForTest, requiredVaultSchemaVersion);
         db.seedNote(
           id: '01J9Z8Y7X6W5V4T3S2R1Q0P9N8',
           title: 'Player Loop',
@@ -158,7 +160,7 @@ void main() {
 
         db.migrateToV5(); // what `memex settings get` does to a V4 vault
 
-        expect(db.schemaVersionForTest, 5);
+        expect(db.schemaVersionForTest, requiredVaultSchemaVersion);
         expect(db.hasTables(v5Tables), isTrue);
         expect(db.hasTables(['smart_folders']), isTrue);
       },

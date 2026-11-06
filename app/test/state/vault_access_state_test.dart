@@ -138,7 +138,7 @@ void main() {
 
         final version = await access.schemaVersion();
         expect(version, requiredVaultSchemaVersion);
-        expect(version, 5);
+        expect(version, 6);
         expect(version < requiredVaultSchemaVersion, isFalse);
       },
     );
