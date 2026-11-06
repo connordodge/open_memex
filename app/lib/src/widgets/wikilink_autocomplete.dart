@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../db.dart';
+import '../editor/fuzzy_score.dart';
 import '../memex_cli.dart';
 import '../state/topic_actions.dart';
 import '../state/vault_access_state.dart';
@@ -148,33 +149,13 @@ class WikilinkAutocompleteState extends ConsumerState<WikilinkAutocomplete> {
     } else {
       final scored = <_Scored>[];
       for (final n in all) {
-        final score = _fuzzyScore(n.title.toLowerCase(), q);
+        final score = fuzzyScore(n.title.toLowerCase(), q);
         if (score > 0) scored.add(_Scored(n, score));
       }
       scored.sort((a, b) => b.score.compareTo(a.score));
       _matches = scored.take(8).map((s) => s.note).toList();
     }
     _selectedIndex = 0;
-  }
-
-  static int _fuzzyScore(String hay, String needle) {
-    if (needle.isEmpty) return 1;
-    if (hay.startsWith(needle)) return 1000 - hay.length;
-    if (hay.contains(needle)) return 500 - hay.length;
-    var i = 0;
-    var consecutive = 0;
-    var bonus = 0;
-    for (final c in hay.split('')) {
-      if (i < needle.length && c == needle[i]) {
-        i++;
-        consecutive++;
-        bonus += consecutive * 2;
-      } else {
-        consecutive = 0;
-      }
-    }
-    if (i < needle.length) return 0;
-    return 100 + bonus - hay.length;
   }
 
   void _open() {
