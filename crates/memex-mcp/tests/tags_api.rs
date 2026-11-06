@@ -27,9 +27,9 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use memex_core::notes::{create_note_as, update_note, CreateNote, NoteId, UpdateNote};
+use memex_core::notes::{update_note, NoteId, UpdateNote};
 use memex_core::tags::{self, TagOrigin};
-use memex_core::{Caller, Vault};
+use memex_core::{guide, SystemClock, Vault};
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -277,20 +277,12 @@ fn person_save(vault: &mut Vault, note: &str, body: &str) {
     .unwrap();
 }
 
-/// A `role: guide` note; returns its id.
+/// The vault's guide, created on first read (a note cannot be created with
+/// `role: guide`); returns its id.
 fn make_guide(vault: &mut Vault) -> String {
-    create_note_as(
-        vault,
-        CreateNote {
-            title: Some("Vault Guide".into()),
-            content_md: "How to file things.\n".into(),
-            frontmatter: Some(json!({"role": "guide"})),
-        },
-        Caller::Person,
-    )
-    .unwrap()
-    .id
-    .to_string()
+    guide::get_or_create(vault, &SystemClock, None)
+        .unwrap()
+        .note_id
 }
 
 fn guide_id(vault: &Path) -> String {
