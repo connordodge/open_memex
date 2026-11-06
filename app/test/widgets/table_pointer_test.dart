@@ -13,10 +13,14 @@
 //   focused row first (the layer's `TextFieldTapRegion`).
 // - `link_region.dart`: Cmd over a resolved wikilink or an http(s) link in
 //   a rendered cell shows the pointer and sets `cmdHover` (field offsets);
-//   Cmd+click opens it (flush a pending save, then `openOrFocus`; a URL
+//   Cmd+click opens it (`follow` with Cmd held, so `openOrFocus`; a URL
 //   through the `UrlOpener`). A ghost ignores Cmd: Cmd+click on it is a
 //   plain click (pack correction). Links are found per cell through the one
 //   splitter (D10).
+// - WI #269 (N6, Spec #232 R13, R14): a rendered grid's followable link takes a
+//   plain hover and a plain click too, winning the arena as Cmd does; a press
+//   anywhere else reveals the table as before. `LinkRegion` no longer flushes:
+//   `onBeforeLeave` in the notifier does (the real one, not this file's fake).
 //
 // Face-agnostic (D18): every press point and expected offset comes from the
 // segment's `LineBoxSource` (`segmentBoxes()`), the grid's own rect and the
@@ -48,6 +52,7 @@ import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
 
 import '../support/font_fetch_hold.dart';
 import '../support/mac_editing.dart';
+import '../support/recording_tabs.dart';
 import '../support/table_harness.dart';
 
 /// The prose line above the table (row 0).
@@ -103,25 +108,41 @@ int _wi207LineStart(String line) => _wi207At(line);
 
 /// Every event the link observers saw, in order: `flush` for
 /// `EditorController.flushPendingSave`, `open <tab>` for
-/// `TabsNotifier.openOrFocus`, `url <url>` for `UrlOpener.open`.
+/// `TabsNotifier.openOrFocus`, `navigate <tab>` for `TabsNotifier.navigate`,
+/// `url <url>` for `UrlOpener.open`.
 typedef _Wi207Log = List<String>;
 
-/// A `TabsNotifier` that records `openOrFocus` and opens nothing.
+/// A `TabsNotifier` that records `openOrFocus` and `navigate` and goes
+/// nowhere, so the pumped note stays on screen after a follow.
 class _Wi207Tabs extends TabsNotifier {
-  _Wi207Tabs(this.log)
-    : super(
+  _Wi207Tabs(this.log, TabsRecorder recorder)
+    : followed = recorder.followed,
+      super(
         store: UiStateStore(vaultPath: '/dev/null'),
         onPersistedSelection: (_) {},
+        navigationObserver: recorder.observer,
       );
 
   final _Wi207Log log;
   final List<WorkspaceTab> opened = [];
+
+  /// Every target that went through `follow` (#269).
+  final List<WorkspaceTab> followed;
+
+  /// Every target that reached `navigate` (#269).
+  final List<WorkspaceTab> navigated = [];
 
   @override
   int openOrFocus(WorkspaceTab tab) {
     log.add('open $tab');
     opened.add(tab);
     return 0;
+  }
+
+  @override
+  void navigate(WorkspaceTab target) {
+    log.add('navigate $target');
+    navigated.add(target);
   }
 }
 
@@ -171,7 +192,7 @@ Future<_Wi207Body> _wi207Pump(
   String text = _wi207Text,
 }) async {
   final log = <String>[];
-  final tabs = _Wi207Tabs(log);
+  final tabs = _Wi207Tabs(log, TabsRecorder());
   final opener = _Wi207Opener(log);
   final b = await pumpTable(
     tester,
@@ -397,40 +418,8 @@ void main() {
       variant: macOnly,
     );
 
-    testWidgets(
-      'a plain click on a link in a rendered cell is a plain click and opens nothing',
-      (tester) async {
-        final t = await _wi207Pump(tester);
-        final b = t.b;
-        // `Kn|own` of the resolved wikilink in body line 1.
-        final offset = _wi207At('Known]] here', plus: 2);
-
-        await _wi207Click(tester, _wi207Glyph(b, offset));
-
-        _wi207ExpectCaretInTable(b, offset);
-        expect(t.log, isEmpty, reason: 'no flush, no tab, no URL');
-        expect(t.tabs.opened, isEmpty);
-        expect(t.opener.opened, isEmpty);
-      },
-      variant: macOnly,
-    );
-
-    testWidgets(
-      'a plain click on an https link in a rendered cell opens nothing',
-      (tester) async {
-        final t = await _wi207Pump(tester);
-        final b = t.b;
-        // `si|te` of the link text in body line 3.
-        final offset = _wi207At('site', plus: 2);
-
-        await _wi207Click(tester, _wi207Glyph(b, offset));
-
-        _wi207ExpectCaretInTable(b, offset);
-        expect(t.opener.opened, isEmpty);
-        expect(t.log, isEmpty);
-      },
-      variant: macOnly,
-    );
+    // TEST-CHANGE (#269): a plain click on a followable link in a rendered cell
+    // now follows it: the group `plain click on a rendered grid` pins that.
   });
 
   // -------------------------------------------------------------------------
@@ -978,17 +967,47 @@ void main() {
       variant: macOnly,
     );
 
+    // TEST-CHANGE (#269): a rendered link takes a plain hover (Spec #232 R13).
     testWidgets(
-      'the mouse shows the text cursor over a link in a rendered cell without Cmd',
+      'the mouse shows the click cursor over a link in a rendered cell without Cmd',
       (tester) async {
         final t = await _wi207Pump(tester);
         final b = t.b;
+        final link = _wi207At('[[Known]] here');
+        final mouse = await _wi207MouseAt(tester, _wi207Glyph(b, link + 3));
+        expect(_wi207Cursor(), SystemMouseCursors.click);
+        expect(
+          tableRowController(tester, 0, 1).cmdHover,
+          TextRange(
+            start: link - _wi207TableStart,
+            end: link - _wi207TableStart + '[[Known]]'.length,
+          ),
+        );
+        expectTableRendered(0, 1, reason: 'hovering reveals nothing');
+        await _wi207RemoveMouse(tester, mouse);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'the mouse shows the text cursor over a link in a revealed table until Cmd is held',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+        await b.placeCaret(_wi207TableStart + 2);
+        expectTableRevealed(0, 1);
         final mouse = await _wi207MouseAt(
           tester,
-          _wi207Glyph(b, _wi207At('Known]] here', plus: 1)),
+          _wi207Glyph(b, _wi207At('Known]] here', plus: 2)),
         );
         expect(_wi207Cursor(), SystemMouseCursors.text);
         expect(tableRowController(tester, 0, 1).cmdHover, isNull);
+
+        await _wi207CmdDown(tester);
+        expect(_wi207Cursor(), SystemMouseCursors.click);
+        expect(tableRowController(tester, 0, 1).cmdHover, isNotNull);
+        await _wi207CmdUp(tester);
+        expect(_wi207Cursor(), SystemMouseCursors.text);
         await _wi207RemoveMouse(tester, mouse);
       },
       variant: macOnly,
@@ -1019,9 +1038,10 @@ void main() {
         );
         expectTableRendered(0, 1, reason: 'hovering reveals nothing');
 
+        // TEST-CHANGE (#269): a rendered link keeps its hover without Cmd.
         await _wi207CmdUp(tester);
-        expect(_wi207Cursor(), SystemMouseCursors.text);
-        expect(tableRowController(tester, 0, 1).cmdHover, isNull);
+        expect(_wi207Cursor(), SystemMouseCursors.click);
+        expect(tableRowController(tester, 0, 1).cmdHover, isNotNull);
         await _wi207RemoveMouse(tester, mouse);
       },
       variant: macOnly,
@@ -1118,8 +1138,10 @@ void main() {
   // AC8: Cmd+click (R22)
   // -------------------------------------------------------------------------
   group('Cmd click (AC8)', () {
+    // TEST-CHANGE (#269): LinkRegion no longer flushes (Spec #232 R6):
+    // `onBeforeLeave` in the real notifier does, and this file's fake has none.
     testWidgets(
-      'Cmd click on a resolved wikilink in a rendered cell saves a pending edit then opens its note once',
+      'Cmd click on a resolved wikilink in a rendered cell opens its note once and flushes nothing itself',
       (tester) async {
         final t = await _wi207Pump(tester);
         final b = t.b;
@@ -1129,7 +1151,8 @@ void main() {
         );
 
         expect(t.tabs.opened, [const NoteTab(_wi207KnownId)]);
-        expect(t.log, ['flush', 'open ${const NoteTab(_wi207KnownId)}']);
+        expect(t.tabs.followed, [const NoteTab(_wi207KnownId)]);
+        expect(t.log, ['open ${const NoteTab(_wi207KnownId)}']);
         expect(t.opener.opened, isEmpty);
       },
       variant: macOnly,
@@ -1147,7 +1170,7 @@ void main() {
         );
 
         expect(t.tabs.opened, [const NoteTab(_wi207KnownId)]);
-        expect(t.log, ['flush', 'open ${const NoteTab(_wi207KnownId)}']);
+        expect(t.log, ['open ${const NoteTab(_wi207KnownId)}']);
       },
       variant: macOnly,
     );
@@ -1238,6 +1261,304 @@ void main() {
 
         expect(t.log, isEmpty);
         expect(t.tabs.opened, isEmpty);
+      },
+      variant: macOnly,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // #269 (N6, Spec #232 R14, TD6): a plain click on a rendered grid's link
+  // -------------------------------------------------------------------------
+  group('plain click on a rendered grid', () {
+    final known = _wi207At('Known]] here', plus: 2);
+    final plainCell = _wi207At('reveal', plus: 2);
+
+    /// A mouse press at [at], moved by [by], released, then pumps.
+    Future<void> pressMoveRelease(
+      WidgetTester tester,
+      Offset at,
+      Offset by,
+    ) async {
+      final mouse = await tester.startGesture(
+        at,
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pump();
+      await mouse.moveTo(at + by);
+      await tester.pump();
+      await mouse.up();
+      await tester.pump();
+    }
+
+    /// [at] on whole pixels, so moving it by the slop moves it by exactly that.
+    Offset whole(Offset at) => Offset(at.dx.roundToDouble(), at.dy);
+
+    testWidgets(
+      'a plain click on a followable wikilink in a rendered grid navigates and keeps the table rendered and the caret where it was',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+        await b.placeCaret(3);
+
+        await _wi207Click(tester, _wi207Glyph(b, known));
+
+        expect(t.tabs.followed, [const NoteTab(_wi207KnownId)]);
+        expect(t.tabs.navigated, [const NoteTab(_wi207KnownId)]);
+        expect(t.tabs.opened, isEmpty);
+        expect(t.log, ['navigate ${const NoteTab(_wi207KnownId)}']);
+        expectTableRendered(0, 1, reason: 'following reveals nothing');
+        expect(b.selection(), const TextSelection.collapsed(offset: 3));
+        expect(b.view().focusedRow, 0);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a plain click on an https link in a rendered grid opens through the url opener and keeps the table rendered',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+        await b.placeCaret(3);
+
+        await _wi207Click(tester, _wi207Glyph(b, _wi207At('site', plus: 1)));
+
+        expect(t.opener.opened, ['https://example.com']);
+        expect(t.tabs.followed, isEmpty);
+        expectTableRendered(0, 1);
+        expect(b.selection(), const TextSelection.collapsed(offset: 3));
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a press elsewhere on a rendered grid reveals the table as today and a wikilink followed first left it rendered',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+        await _wi207Click(tester, _wi207Glyph(b, known));
+        expect(t.tabs.followed, [const NoteTab(_wi207KnownId)]);
+        expectTableRendered(0, 1);
+        await _wi207PastDoubleClick(tester);
+
+        await _wi207Click(tester, _wi207Glyph(b, plainCell));
+
+        expect(
+          t.tabs.followed,
+          hasLength(1),
+          reason: 'plain text follows nothing',
+        );
+        _wi207ExpectCaretInTable(b, plainCell);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a plain click on a ghost wikilink in a rendered grid reveals the table and a followable one does not',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+        await _wi207Click(tester, _wi207Glyph(b, known));
+        expect(t.tabs.followed, hasLength(1));
+        await _wi207PastDoubleClick(tester);
+        final ghost = _wi207At('Ghost', plus: 2);
+
+        await _wi207Click(tester, _wi207Glyph(b, ghost));
+
+        expect(
+          t.tabs.followed,
+          hasLength(1),
+          reason: 'a ghost follows nothing',
+        );
+        _wi207ExpectCaretInTable(b, ghost);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a plain click on a link in a revealed table places the caret and a Cmd click follows',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+        await b.placeCaret(_wi207TableStart + 2);
+        expectTableRevealed(0, 1);
+
+        await _wi207Click(tester, _wi207Glyph(b, known));
+
+        expect(t.tabs.followed, isEmpty);
+        expect(b.selection(), TextSelection.collapsed(offset: known));
+
+        await _wi207PastDoubleClick(tester);
+        await tester.macCmdClick(_wi207Glyph(b, known));
+        expect(t.tabs.followed, [const NoteTab(_wi207KnownId)]);
+        expect(t.tabs.opened, [const NoteTab(_wi207KnownId)]);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a caret in the table with the segment unfocused leaves it rendered and a plain click on its link navigates',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+        await b.placeCaret(_wi207TableStart + 2);
+        expectTableRevealed(0, 1);
+        await b.focusOutside();
+        await tester.pump();
+        expectTableRendered(0, 1, reason: 'no focus, no reveal');
+
+        await _wi207Click(tester, _wi207Glyph(b, known));
+
+        expect(t.tabs.navigated, [const NoteTab(_wi207KnownId)]);
+        expectTableRendered(0, 1);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a press on a grid wikilink released after a drag of exactly the slop navigates',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final at = whole(_wi207Glyph(t.b, known));
+
+        await pressMoveRelease(
+          tester,
+          at,
+          const Offset(kPrecisePointerHitSlop, 0),
+        );
+
+        expect(t.tabs.navigated, [const NoteTab(_wi207KnownId)]);
+        expectTableRendered(0, 1);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a press on a grid wikilink dragged past the slop does not navigate and a click on it does',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final at = whole(_wi207Glyph(t.b, known));
+        final before = t.b.selection();
+
+        await pressMoveRelease(
+          tester,
+          at,
+          const Offset(kPrecisePointerHitSlop + 0.5, 0),
+        );
+
+        expect(t.tabs.followed, isEmpty);
+        expect(t.opener.opened, isEmpty);
+        // The link press won the arena at the press, so there is no text drag
+        // on a rendered grid, as a Cmd press today.
+        expectTableRendered(0, 1);
+        expect(t.b.selection(), before);
+
+        await _wi207PastDoubleClick(tester);
+        await _wi207Click(tester, at);
+        expect(t.tabs.navigated, [const NoteTab(_wi207KnownId)]);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a plain click that followed a grid link starts no click chain so a second click there follows again and a click beside it is single',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+        final at = _wi207Glyph(b, known);
+
+        await _wi207Click(tester, at);
+        await tester.pump(const Duration(milliseconds: 50));
+        await _wi207Click(tester, at);
+        expect(t.tabs.navigated, [
+          const NoteTab(_wi207KnownId),
+          const NoteTab(_wi207KnownId),
+        ]);
+        expectTableRendered(0, 1, reason: 'no word, no reveal');
+
+        // Still inside the double click window of those clicks, in the same
+        // cell as the link.
+        await tester.pump(const Duration(milliseconds: 50));
+        final beside = _wi207At('here', from: known, plus: 1);
+        final plain = _wi207Glyph(b, beside);
+        expect((plain - at).distance, lessThan(kDoubleTapSlop));
+        await _wi207Click(tester, plain);
+        _wi207ExpectCaretInTable(b, beside, reason: 'a caret, no word');
+        await _wi207PastDoubleClick(tester);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a press on a rendered link that continues a grid click chain selects the word and does not navigate',
+      (tester) async {
+        const text =
+            'Top\n| A | B |\n| --- | --- |\n| word | c |\nSee [[Known]] here';
+        final t = await _wi207Pump(tester, text: text);
+        final b = t.b;
+        final first = text.indexOf('word') + 1;
+        final down = _wi207Glyph(b, first);
+
+        await _wi207Click(tester, down);
+        expectTableRevealed(0, 1);
+        await tester.pump(const Duration(milliseconds: 50));
+
+        final link = _wi207Glyph(b, text.indexOf('Known') + 2);
+        expect((link - down).distance, lessThan(kDoubleTapSlop));
+        await _wi207Click(tester, link);
+
+        expect(t.tabs.followed, isEmpty, reason: 'the chain wins');
+        final selection = b.selection();
+        expect(selection.isCollapsed, isFalse, reason: 'the first word');
+        expect(selection.start, lessThanOrEqualTo(first));
+        expect(selection.end, greaterThan(first));
+        await _wi207PastDoubleClick(tester);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a Shift press on a link in a rendered grid extends the selection and does not navigate',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+        await _wi207Click(tester, _wi207Glyph(b, known));
+        expect(t.tabs.followed, hasLength(1));
+        await _wi207PastDoubleClick(tester);
+        await b.placeCaret(3);
+
+        await tester.macClick(_wi207Glyph(b, known), shift: true);
+
+        expect(t.tabs.followed, hasLength(1), reason: 'Shift never follows');
+        expect(
+          b.selection(),
+          TextSelection(baseOffset: 3, extentOffset: known),
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a right button press on a link in a rendered grid reveals the table and does not navigate',
+      (tester) async {
+        final t = await _wi207Pump(tester);
+        final b = t.b;
+        await _wi207Click(tester, _wi207Glyph(b, known));
+        expect(t.tabs.followed, hasLength(1));
+        await _wi207PastDoubleClick(tester);
+
+        await _wi207Click(
+          tester,
+          _wi207Glyph(b, known),
+          buttons: kSecondaryButton,
+        );
+        await tester.pumpAndSettle();
+
+        expect(
+          t.tabs.followed,
+          hasLength(1),
+          reason: 'the right button follows nothing',
+        );
+        expectTableRevealed(0, 1);
       },
       variant: macOnly,
     );

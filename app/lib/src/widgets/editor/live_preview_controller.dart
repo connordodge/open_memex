@@ -140,6 +140,16 @@ int tableLastLine(List<MdLine> lines, int header) {
   return last;
 }
 
+/// Which of [lines] reveal their markers for [selection] (Spec #232 TD6): the
+/// one predicate `buildLivePreviewSpan` and `LinkRegion` share. Skeleton (#269):
+/// none.
+List<bool> revealedLines(
+  List<MdLine> lines,
+  TextSelection? selection, {
+  bool forceHidden = false,
+  bool itemText = false,
+}) => List<bool>.filled(lines.length, false);
+
 /// Builds the live preview span for [text] (B1, Spec R2-R5): a pure
 /// function of the text, the field's props and its [selection], which
 /// `LivePreviewController.buildTextSpan` calls with its own props and B4's

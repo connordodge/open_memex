@@ -26,6 +26,10 @@ const int _titlesCap = 1000;
 /// The URL schemes a Cmd+click opens (D14).
 const Set<String> _openableSchemes = {'http', 'https', 'mailto'};
 
+/// Whether a plain click follows [token] (Spec #232 R8, rulings D19, D19a).
+/// Skeleton (#269): always false.
+bool isPlainClickFollowable(InlineToken token) => false;
+
 /// Link hit-testing over one field (D7, D14, B3).
 ///
 /// - Ghosts: sets [controller]'s `isResolved` from `noteTitlesAsyncProvider`
