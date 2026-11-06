@@ -9,6 +9,7 @@
 import 'dart:typed_data';
 
 import 'segments.dart' show parseTransclusions;
+import 'tag_grammar.dart' show findTagsInLine;
 
 /// A half-open UTF-16 range `[start, end)` in the tokenized text.
 final class InlineRange {
@@ -208,10 +209,13 @@ final class TransclusionLinkToken extends InlineToken {
 ///
 /// Returns tokens sorted by [InlineToken.start] (strictly increasing).
 /// Precedence: code span, then wikilink/transclusion (a transclusion wins
-/// over the wikilink inside it), then `[text](url)`, then emphasis and
-/// strike. A token may only nest inside the [InlineToken.content] of a link,
-/// emphasis or strike token; nothing nests inside a code span, wikilink,
-/// transclusion or escape, and no token touches another's markers.
+/// over the wikilink inside it), then `[text](url)`, then `#tag`, then
+/// emphasis and strike. A tag is an atom for emphasis, so a `_` inside
+/// `#my_tag_x` never opens emphasis, and `*a #x*` keeps its emphasis with the
+/// tag nested inside it. A token may only nest inside the
+/// [InlineToken.content] of a link, emphasis or strike token; nothing nests
+/// inside a code span, wikilink, transclusion, escape or tag, and no token
+/// touches another's markers.
 ///
 /// Rules: code spans match equal-length backtick runs; `_` never opens or
 /// closes inside a word; no token spans a line terminator; unclosed
@@ -379,9 +383,34 @@ final class _LineTokenizer {
         ),
       );
     }
+    _findTags();
     _emphasis(start, end);
     for (final linkText in _linkTexts) {
       _emphasis(linkText.start, linkText.end);
+    }
+  }
+
+  /// `#tag` tokens: the ranges `tag_grammar.dart` finds in the line, minus
+  /// the ones that start inside a code span, wikilink, transclusion, link,
+  /// image or escape the tokenizer found. A tag is an atom for emphasis; it
+  /// has no markers and shows all of its characters.
+  void _findTags() {
+    for (final tag in findTagsInLine(text.substring(start, end))) {
+      final from = start + tag.start;
+      final to = start + tag.end;
+      if (_atomEnd.entries.any((a) => a.key <= from && from < a.value)) {
+        continue;
+      }
+      final span = InlineRange(from, to);
+      _atomEnd[from] = to;
+      out.add(
+        InlineToken(
+          kind: InlineTokenKind.tag,
+          span: span,
+          markers: const [],
+          content: span,
+        ),
+      );
     }
   }
 

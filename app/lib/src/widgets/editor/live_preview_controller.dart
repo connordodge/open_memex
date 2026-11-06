@@ -407,6 +407,29 @@ final class _SpanBuilder {
         case LinkToken():
           _inkRange(from, to, LivePreviewInk.link);
           flag(_link);
+        case InlineToken(kind: InlineTokenKind.tag):
+          // Only the colour changes (and the underline on hover): the tag
+          // keeps the line's size, weight, slant and strike. A Cmd hover is
+          // not gated by [forceHidden] (cards hover too); a caret is.
+          final hover = cmdHover;
+          final hovered =
+              hover != null &&
+              hover.start <= start + token.start &&
+              start + token.end <= hover.end;
+          if (hovered) flag(_hover);
+          final caret = _selection;
+          final lit =
+              hovered ||
+              (!forceHidden &&
+                  caret != null &&
+                  caret.isCollapsed &&
+                  start + token.start <= caret.baseOffset &&
+                  caret.baseOffset <= start + token.end);
+          _inkRange(
+            from,
+            to,
+            lit ? LivePreviewInk.tagActive : LivePreviewInk.tag,
+          );
         case InlineToken(kind: InlineTokenKind.codeSpan):
           _inkRange(from, to, LivePreviewInk.code);
         case InlineToken(kind: InlineTokenKind.strike):
