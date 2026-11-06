@@ -16,6 +16,9 @@
 //! The prose itself is reviewed by hand (AC 7 to 10); these tests pin the
 //! facts that can be checked mechanically.
 
+#[path = "support/tool_names.rs"]
+mod tool_names;
+
 use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -357,9 +360,13 @@ fn assert_no_avoided_terms(doc_name: &str, md: &str) {
 // ======================================================================
 
 #[test]
-fn readme_names_all_twenty_six_tools_and_both_prompts_the_server_exposes() {
+fn readme_names_all_tools_and_both_prompts_the_server_exposes() {
     let (tools, prompts) = served_names();
-    assert_eq!(tools.len(), 26, "the server exposes 26 tools: {tools:?}");
+    assert_eq!(
+        tools.iter().map(String::as_str).collect::<Vec<_>>(),
+        tool_names::all_tool_names(),
+        "the server exposes exactly the shared tool list"
+    );
     assert_eq!(
         prompts,
         ["capture", "review_daily_notes"]
@@ -382,12 +389,9 @@ fn readme_names_all_twenty_six_tools_and_both_prompts_the_server_exposes() {
 }
 
 #[test]
-fn readme_no_longer_claims_thirteen_tools_or_future_mcp_update_and_delete_tools() {
+fn readme_no_longer_claims_a_stale_tool_count_or_future_mcp_update_and_delete_tools() {
     let readme = readme();
-    assert!(
-        !readme.contains("13 MCP tools"),
-        "the tool count is stale: the server exposes 26"
-    );
+    assert!(!readme.contains("13 MCP tools"), "the tool count is stale");
     assert!(
         !readme.contains("exposed as MCP tools"),
         "Req 45/76: there are no MCP update or delete tools, not even as future work"
@@ -585,7 +589,7 @@ fn daily_review_doc_uses_glossary_terms_and_none_of_the_avoided_ones() {
             "block",
             "transclusion",
             "excerpt",
-            "Topics footer",
+            "Note footer",
             "agent",
         ],
     );
@@ -717,7 +721,7 @@ fn daily_acceptance_script_uses_glossary_terms_and_none_of_the_avoided_ones() {
             "reviewed",
             "capture",
             "excerpt",
-            "Topics footer",
+            "Note footer",
             "agent",
         ],
     );
