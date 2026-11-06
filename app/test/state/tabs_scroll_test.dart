@@ -74,7 +74,7 @@ class _Probe {
       store: store,
       onPersistedSelection: selections.add,
       onBeforeLeave: () => leaves++,
-      isNewTabModifierPressed: () => false,
+      isNewTabModifierPressed: () => cmd,
       targetExists: exists?.call,
     );
     notifier.addListener((_) => stateWrites++, fireImmediately: false);
@@ -86,6 +86,9 @@ class _Probe {
   late final TabsNotifier notifier;
   int stateWrites = 0;
   int leaves = 0;
+
+  /// Whether the new-tab modifier (Cmd) is held for `followLater`.
+  bool cmd = false;
 
   /// A tab on [first], history `[first, ...rest]`, on the last entry.
   void walk(WorkspaceTab first, [List<WorkspaceTab> rest = const []]) {
@@ -275,26 +278,30 @@ void main() {
     );
   });
 
-  group('any other arrival lands at the top (TD7, read from R26)', () {
+  group('focusing an open tab and landing on a neighbour restore (D39)', () {
     test(
-      'openOrFocus focusing a tab is no restore and drops a pending one',
+      'openOrFocus focusing an open tab restores its offset once and keeps it',
       () {
         final p = _Probe()..walk(_a);
         p.scroll('a', 250);
         p.notifier.openOrFocus(_b); // [a] [b*]
+        p.scroll('b', 80);
 
-        p.notifier.openOrFocus(_a); // [a*] [b]
-        expect(p.take('a'), isNull);
+        final index = p.notifier.openOrFocus(_a); // [a*] [b]
+        expect(index, 0);
+        expect(p.notifier.state.activeIndex, 0);
+        expect(p.take('a'), 250);
+        expect(p.take('a'), isNull, reason: 'handed out once');
 
-        p.notifier.setActive(1); // a pending restore on b
-        p.notifier.openOrFocus(_a);
-        expect(p.take('b'), isNull);
-        expect(p.take('a'), isNull);
+        p.notifier.setActive(1);
+        expect(p.take('b'), 80);
+        p.notifier.setActive(0);
+        expect(p.take('a'), 250, reason: 'taking an offset keeps it');
       },
     );
 
     test(
-      'openOrFocus onto a tab on the same note is no restore and openOrFocus opening a tab is none',
+      'openOrFocus onto a tab on the same note restores that tab own offset and openOrFocus opening a tab is no restore',
       () {
         final p = _Probe()..walk(_a);
         p.scroll('a', 250);
@@ -305,32 +312,238 @@ void main() {
 
         p.notifier.openOrFocus(_a); // the leftmost: [a*] [a]
         expect(p.notifier.state.activeIndex, 0);
-        expect(p.take('a'), isNull);
+        expect(p.take('a'), 250);
 
         p.notifier.setActive(1);
-        p.notifier.openOrFocus(_c); // a pending restore, then a new tab
+        expect(p.take('a'), 90, reason: 'the second tab kept its own');
+        p.notifier.setActive(0); // a pending restore on a
+        p.notifier.openOrFocus(_c); // drops it: a new tab
         expect(p.take('a'), isNull);
-        expect(p.take('c'), isNull);
+        expect(p.take('c'), isNull, reason: 'a new tab lands at the top');
       },
     );
 
     test(
-      'landing on a neighbour after closing the active tab is no restore',
+      'openOrFocus opening a new tab is no restore even for a note visited before',
+      () {
+        final p = _Probe()..walk(_a);
+        p.scroll('a', 250);
+        p.notifier.navigate(_b); // [a, b*]
+
+        p.notifier.openOrFocus(_a); // no tab shows a now: a new tab
+        expect(p.notifier.state.tabs, [_b, _a]);
+        expect(p.take('a'), isNull);
+      },
+    );
+
+    test('openOrFocus on the active tab is no arrival', () {
+      final p = _Probe()..walk(_a);
+      p.scroll('a', 250);
+      p.notifier.openOrFocus(_b);
+      p.notifier.setActive(0); // a pending restore on a
+      final before = p.notifier.state.arrivals;
+      final leaves = p.leaves;
+
+      p.notifier.openOrFocus(_a);
+
+      expect(p.notifier.state.arrivals, before);
+      expect(p.leaves, leaves);
+      expect(p.take('a'), 250, reason: 'the pending restore is still there');
+    });
+
+    test(
+      'landing on a neighbour after closing the active tab restores the neighbour offset and keeps it',
       () {
         final p = _Probe()..walk(_a);
         p.scroll('a', 250);
         p.notifier.openOrFocus(_b); // [a] [b*]
         p.notifier.close(_b); // [a*]
-        expect(p.take('a'), isNull);
+        expect(p.take('a'), 250);
+        expect(p.take('a'), isNull, reason: 'handed out once');
 
         p.notifier.openOrFocus(_c); // [a] [c*]
+        p.scroll('c', 40);
         p.notifier.setActive(0); // a pending restore on a
-        p.notifier.closeAt(0); // [c*]
+        p.notifier.closeAt(0); // [c*], the active tab closes
         expect(p.take('a'), isNull);
+        expect(p.take('c'), 40);
+        expect(p.notifier.state.activeTab, _c);
+      },
+    );
+
+    test(
+      'closing the active tab lands on the nearest tab before it, else the first, each at its offset',
+      () {
+        final p = _Probe()..walk(_a);
+        p.scroll('a', 11);
+        p.notifier.openOrFocus(_b);
+        p.scroll('b', 22);
+        p.notifier.openOrFocus(_c);
+        p.scroll('c', 33);
+        p.notifier.openOrFocus(_d);
+        p.scroll('d', 44); // [a] [b] [c] [d*]
+        p.notifier.setActive(2); // [a] [b] [c*] [d]
+        expect(p.take('c'), 33);
+
+        p.notifier.closeAt(2); // [a] [b*] [d]
+        expect(p.notifier.state.activeTab, _b);
+        expect(p.take('b'), 22);
+
+        p.notifier.setActive(0);
+        p.notifier.closeAt(0); // [b*] [d]: the first remaining
+        expect(p.notifier.state.activeTab, _b);
+        expect(p.take('b'), 22);
+      },
+    );
+
+    test(
+      'closing an inactive tab is no arrival and keeps a pending restore',
+      () {
+        final p = _Probe()..walk(_a);
+        p.scroll('a', 250);
+        p.notifier.openOrFocus(_b);
+        p.notifier.openOrFocus(_c);
+        p.notifier.setActive(0); // [a*] [b] [c], a pending restore on a
+        final before = p.notifier.state.arrivals;
+        final leaves = p.leaves;
+
+        p.notifier.closeAt(2);
+        p.notifier.close(_b);
+
+        expect(p.notifier.state.arrivals, before);
+        expect(p.leaves, leaves);
+        expect(p.take('a'), 250);
+      },
+    );
+
+    test('closing a tab left of the active one is no arrival', () {
+      final p = _Probe()..walk(_a);
+      p.notifier.openOrFocus(_b);
+      p.scroll('b', 70);
+      final before = p.notifier.state.arrivals;
+
+      p.notifier.closeAt(0); // [b*]: the index moves, the tab does not
+
+      expect(p.notifier.state.activeIndex, 0);
+      expect(p.notifier.state.arrivals, before);
+      expect(p.take('b'), isNull);
+    });
+
+    test(
+      'closing the last tab leaves no pending restore for a tab opened next',
+      () {
+        final p = _Probe()..walk(_a);
+        p.scroll('a', 250);
+
+        p.notifier.closeAt(0);
+        expect(p.notifier.state.tabs, isEmpty);
+        p.notifier.openOrFocus(_c);
+
+        expect(p.notifier.state.activeTab, _c);
         expect(p.take('c'), isNull);
       },
     );
 
+    test(
+      'closing the active note restores the neighbour (the delete path)',
+      () {
+        final p = _Probe()..walk(_a);
+        p.scroll('a', 250);
+        p.notifier.openOrFocus(_b);
+        p.scroll('b', 60); // [a] [b*]
+        p.notifier.openOrFocus(_c); // [a] [b] [c*]
+        p.notifier.close(_c);
+
+        expect(p.notifier.state.activeTab, _b);
+        expect(p.take('b'), 60);
+        expect(p.take('a'), isNull, reason: 'not the shown note');
+      },
+    );
+
+    test(
+      'a zoomed canvas entry is restored by a focus and by landing on it after a close',
+      () {
+        final p = _Probe()..walk(_zoomedA);
+        p.scroll('a', 120);
+        p.notifier.openOrFocus(_b); // [zoomedA] [b*]
+        p.scroll('b', 30);
+
+        p.notifier.openOrFocus(_zoomedA); // focus the zoomed tab
+        expect(p.notifier.state.activeIndex, 0);
+        expect(p.take('a'), 120);
+
+        p.notifier.setActive(1);
+        p.notifier.close(_b); // lands on the zoomed tab
+        expect(p.notifier.state.activeTab, _zoomedA);
+        expect(p.take('a'), 120);
+      },
+    );
+
+    test(
+      'landing on a plain canvas or Graph tab leaves no restore for a note navigated to next',
+      () {
+        final graph = GraphTab(const GraphScope.vault());
+        for (final neighbour in <WorkspaceTab>[_board, graph]) {
+          final p = _Probe()..walk(neighbour);
+          p.notifier.openOrFocus(_b);
+          p.scroll('b', 80); // [neighbour] [b*]
+
+          p.notifier.close(_b); // lands on the neighbour
+          expect(p.notifier.state.activeTab, neighbour);
+          expect(p.take('b'), isNull);
+
+          p.notifier.navigate(_c);
+          expect(p.take('c'), isNull, reason: 'a navigate lands at the top');
+        }
+      },
+    );
+
+    test('zooming a canvas out by closing the note is a plain arrival', () {
+      final p = _Probe()..walk(_zoomedA);
+      p.scroll('a', 120);
+      final before = p.notifier.state.arrivals;
+
+      p.notifier.close(_a); // the zoomed tab stays open, zoomed out
+
+      expect(p.notifier.state.activeTab, _board);
+      expect(p.notifier.state.arrivals, before + 1);
+      expect(p.take('a'), isNull);
+    });
+
+    test(
+      'a followLater result with the new tab modifier focuses an open tab at its offset and opens a new tab at the top',
+      () {
+        final p = _Probe()..walk(_a);
+        p.scroll('a', 250);
+        p.notifier.openOrFocus(_b); // [a] [b*]
+        p.cmd = true;
+        final later = p.notifier.followLater();
+
+        later(_a); // a stale Cmd+click on a note that is open
+        expect(p.notifier.state.activeTab, _a);
+        expect(p.take('a'), 250);
+
+        p.notifier.setActive(1);
+        final laterNew = p.notifier.followLater();
+        laterNew(_c);
+        expect(p.notifier.state.tabs, [_a, _b, _c]);
+        expect(p.take('c'), isNull);
+      },
+    );
+
+    test('focusing and closing count one arrival each', () {
+      final p = _Probe()..walk(_a);
+      p.notifier.openOrFocus(_b);
+      final start = p.notifier.state.arrivals;
+
+      p.notifier.openOrFocus(_a);
+      expect(p.notifier.state.arrivals, start + 1);
+      p.notifier.close(_a);
+      expect(p.notifier.state.arrivals, start + 2);
+    });
+  });
+
+  group('any other arrival lands at the top (TD7, read from R26)', () {
     test('closing another tab leaves a pending restore', () {
       final p = _Probe()..walk(_a);
       p.scroll('a', 250);
@@ -688,5 +901,42 @@ void main() {
       p.notifier.back();
       expect(p.take(_realId), 120, reason: 'the rewrite kept the offset');
     });
+  });
+
+  group('TabsState arrivals', () {
+    test(
+      'TabsState arrivals defaults to zero and copyWith carries or replaces it',
+      () {
+        const plain = TabsState(tabs: [_a], activeIndex: 0);
+        expect(plain.arrivals, 0);
+        expect(TabsState.empty.arrivals, 0);
+
+        final counted = plain.copyWith(arrivals: 3);
+        expect(counted.arrivals, 3);
+        expect(counted.copyWith(activeIndex: 0).arrivals, 3, reason: 'kept');
+        expect(counted.copyWith(arrivals: 4).arrivals, 4, reason: 'replaced');
+        expect(counted.copyWith(canGoBack: true).arrivals, 3);
+        expect(plain.copyWith(arrivals: 1).tabs, [_a]);
+      },
+    );
+
+    test(
+      'TabsState arrivals counts each arrival and not a scroll or a chip tap on the active tab',
+      () {
+        final p = _Probe()..walk(_a);
+        final start = p.notifier.state.arrivals;
+
+        p.notifier.navigate(_b);
+        expect(p.notifier.state.arrivals, start + 1);
+        p.scroll('b', 40);
+        p.notifier.setActive(0);
+        expect(p.notifier.state.arrivals, start + 1, reason: 'no arrival');
+        p.notifier.back();
+        expect(p.notifier.state.arrivals, start + 2);
+        p.notifier.forward();
+        expect(p.notifier.state.arrivals, start + 3);
+        expect(p.notifier.state.activeNoteId, 'b');
+      },
+    );
   });
 }

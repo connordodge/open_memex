@@ -396,6 +396,35 @@ void main() {
     );
 
     testWidgets(
+      'a taller viewport in the frame of a same note chip switch records no clamped offset into the entry arrived at',
+      (tester) async {
+        final h = await _launch(tester);
+        await _twoTabsOnOneNote(tester, h);
+        final fullLength = _position(tester).maxScrollExtent;
+        await _scrollTo(tester, _other); // [l1] [l1*]
+        await _chip(tester, h, 0);
+        await _scrollTo(tester, fullLength); // [l1*] [l1]
+        await _chip(tester, h, 1);
+        expect(_pixels(tester), _other);
+
+        // The first tab offset no longer fits once the page is taller.
+        final size = tester.view.physicalSize;
+        tester.view.physicalSize = Size(size.width, size.height + 400);
+        h.tabs.setActive(0);
+        await pumpFrames(tester);
+        expect(_pixels(tester), lessThan(fullLength), reason: 'clamped');
+        expect(_pixels(tester), greaterThan(_other));
+
+        tester.view.physicalSize = size;
+        await pumpFrames(tester);
+        await _chip(tester, h, 1);
+        expect(_pixels(tester), _other);
+        await _chip(tester, h, 0);
+        expect(_pixels(tester), fullLength, reason: 'its entry was untouched');
+      },
+    );
+
+    testWidgets(
       'a chip switch to a shorter note writes nothing into either tab entry',
       (tester) async {
         final h = await _launch(tester);
@@ -504,45 +533,6 @@ void main() {
     );
 
     testWidgets(
-      'openOrFocus focusing a tab lands at the top and closing the active tab lands the neighbour at the top',
-      (tester) async {
-        final h = await _launch(tester);
-        await _twoTabs(tester, h, _l1, _l2);
-        await _scrollTo(tester, _other);
-        await _chip(tester, h, 0);
-        await _scrollTo(tester, _left);
-
-        h.tabs.openOrFocus(const NoteTab(_l2)); // [l1] [l2*]
-        await pumpFrames(tester);
-        expect(h.editor.title, 'Long two');
-        expect(_pixels(tester), 0.0, reason: 'a focus is no restore');
-        await _scrollTo(tester, _other);
-
-        h.tabs.close(const NoteTab(_l2)); // [l1*]
-        await pumpFrames(tester);
-        expect(h.tabState.activeTab, const NoteTab(_l1));
-        expect(_pixels(tester), 0.0, reason: 'landing on a neighbour');
-      },
-    );
-
-    testWidgets(
-      'openOrFocus onto a tab on the same note lands at the top with no re-hydrate',
-      (tester) async {
-        final h = await _launch(tester);
-        await _twoTabsOnOneNote(tester, h);
-        await _scrollTo(tester, _other);
-
-        final jumps = _Jumps(tester);
-        h.tabs.openOrFocus(const NoteTab(_l1)); // the leftmost: [l1*] [l1]
-        await pumpFrames(tester);
-
-        expect(h.tabState.activeIndex, 0);
-        expect(_pixels(tester), 0.0);
-        expect(jumps.values, [0.0]);
-      },
-    );
-
-    testWidgets(
       'closing a tab on the same note left of the active one causes zero jumps',
       (tester) async {
         final h = await _launch(tester);
@@ -584,6 +574,216 @@ void main() {
         await _chip(tester, h, 0);
         await _chip(tester, h, 1);
         expect(_pixels(tester), _other);
+      },
+    );
+  });
+
+  group('focusing an open tab and landing on a neighbour restore (D39)', () {
+    testWidgets(
+      'openOrFocus focusing an open tab and closing the active tab restore the offset of the tab reached and keep it',
+      (tester) async {
+        final h = await _launch(tester);
+        await _twoTabs(tester, h, _l1, _l2);
+        await _scrollTo(tester, _other);
+        await _chip(tester, h, 0);
+        await _scrollTo(tester, _left);
+
+        h.tabs.openOrFocus(const NoteTab(_l2)); // [l1] [l2*]
+        await pumpFrames(tester);
+        expect(h.tabState.activeIndex, 1);
+        expect(h.editor.title, 'Long two');
+        await _expectSettledAt(tester, _other);
+        // The restore did not write 0 into the entry: leave and come back.
+        await _chip(tester, h, 0);
+        expect(_pixels(tester), _left);
+        await _chip(tester, h, 1);
+        expect(_pixels(tester), _other, reason: 'the saved offset survives');
+
+        h.tabs.openOrFocus(const NoteTab(_l1)); // [l1*] [l2]
+        await pumpFrames(tester);
+        await _expectSettledAt(tester, _left);
+
+        h.tabs.close(const NoteTab(_l1)); // [l2*]
+        await pumpFrames(tester);
+        expect(h.tabState.tabs, [const NoteTab(_l2)]);
+        expect(h.editor.title, 'Long two');
+        await _expectSettledAt(tester, _other);
+        h.tabs.openOrFocus(const NoteTab(_l3)); // [l2] [l3*]
+        await pumpFrames(tester);
+        await _chip(tester, h, 0);
+        expect(_pixels(tester), _other, reason: 'closing wrote no 0 either');
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'closing the active tab lands the neighbour at its offset and keeps the offset it had',
+      (tester) async {
+        final h = await _launch(tester);
+        await _twoTabs(tester, h, _l1, _l2);
+        await _scrollTo(tester, _other);
+        await _chip(tester, h, 0);
+        await _scrollTo(tester, _left);
+        await _chip(tester, h, 1);
+
+        h.tabs.closeAt(1); // [l1*]
+        await pumpFrames(tester);
+
+        expect(h.tabState.activeTab, const NoteTab(_l1));
+        await _expectSettledAt(tester, _left);
+        h.tabs.openOrFocus(const NoteTab(_l2)); // [l1] [l2*]
+        await pumpFrames(tester);
+        expect(_pixels(tester), 0.0, reason: 'a new tab lands at the top');
+        await _chip(tester, h, 0);
+        expect(_pixels(tester), _left, reason: 'the saved offset survives');
+      },
+    );
+
+    testWidgets('openOrFocus opening a new tab lands at the top', (
+      tester,
+    ) async {
+      final h = await _launch(tester);
+      await _navigate(tester, h, const NoteTab(_l1));
+      await _scrollTo(tester, _left);
+
+      h.tabs.openOrFocus(const NoteTab(_l2));
+      await pumpFrames(tester);
+
+      expect(h.tabState.activeIndex, 1);
+      expect(h.editor.title, 'Long two');
+      await _expectSettledAt(tester, 0.0);
+      h.tabs.openOrFocus(const NoteTab(_l1)); // focus the first tab
+      await pumpFrames(tester);
+      await _expectSettledAt(tester, _left);
+    });
+
+    testWidgets(
+      'openOrFocus onto a tab on the same note restores that tab own offset with no re-hydrate and in one jump',
+      (tester) async {
+        final h = await _launch(tester);
+        await _twoTabsOnOneNote(tester, h);
+        await _scrollTo(tester, _other); // [l1] [l1*]
+        await _chip(tester, h, 0);
+        await _scrollTo(tester, _left); // [l1*] [l1]
+        await _chip(tester, h, 1);
+        expect(_pixels(tester), _other);
+        h.db.db.execute('UPDATE notes SET content_md = ? WHERE id = ?', [
+          _body(_longLines, 'stored'),
+          _l1,
+        ]);
+
+        final jumps = _Jumps(tester);
+        h.tabs.openOrFocus(const NoteTab(_l1)); // the leftmost: [l1*] [l1]
+        await pumpFrames(tester);
+
+        expect(h.tabState.activeIndex, 0);
+        expect(_pixels(tester), _left);
+        expect(jumps.values, [_left], reason: 'one jump');
+        expect(h.editor.contentMd, _body(_longLines), reason: 'no re-hydrate');
+
+        await _chip(tester, h, 1);
+        expect(_pixels(tester), _other);
+        await _chip(tester, h, 0);
+        expect(_pixels(tester), _left, reason: 'the saved offset survives');
+      },
+    );
+
+    testWidgets(
+      'closing the active tab lands the neighbour on the same note at its own offset in one jump',
+      (tester) async {
+        final h = await _launch(tester);
+        await _twoTabsOnOneNote(tester, h);
+        await _scrollTo(tester, _other); // [l1] [l1*]
+        await _chip(tester, h, 0);
+        await _scrollTo(tester, _left); // [l1*] [l1]
+        await _chip(tester, h, 1);
+        expect(_pixels(tester), _other);
+
+        final jumps = _Jumps(tester);
+        h.tabs.closeAt(1); // [l1*]
+        await pumpFrames(tester);
+
+        expect(h.tabState.tabs, [const NoteTab(_l1)]);
+        expect(_pixels(tester), _left);
+        expect(jumps.values, [_left], reason: 'one jump, no re-hydrate');
+
+        h.tabs.openOrFocus(const NoteTab(_l2));
+        await pumpFrames(tester);
+        await _chip(tester, h, 0);
+        expect(_pixels(tester), _left, reason: 'the saved offset survives');
+      },
+    );
+
+    testWidgets(
+      'closing an inactive tab causes zero jumps and keeps a pending restore',
+      (tester) async {
+        final h = await _launch(tester);
+        await _twoTabs(tester, h, _l1, _l2);
+        await _scrollTo(tester, _other);
+        h.tabs.openOrFocus(const NoteTab(_l3)); // [l1] [l2] [l3*]
+        await pumpFrames(tester);
+        await _chip(tester, h, 1);
+        expect(_pixels(tester), _other);
+
+        final jumps = _Jumps(tester);
+        h.tabs.closeAt(2);
+        h.tabs.closeAt(0); // [l2*]
+        await pumpFrames(tester);
+
+        expect(h.tabState.activeTab, const NoteTab(_l2));
+        expect(jumps.values, isEmpty);
+        expect(_pixels(tester), _other);
+      },
+    );
+
+    testWidgets(
+      'a daily note reached by openOrFocus on an open tab or by a close restores with no caret jump and no focus and a new daily tab takes focus',
+      (tester) async {
+        final h = await _launch(tester);
+        await _navigate(tester, h, const NoteTab(_daily));
+        await _scrollTo(tester, _left);
+        h.tabs.openOrFocus(const NoteTab(_l1)); // [daily] [l1*]
+        await pumpFrames(tester);
+        _unfocus();
+        await tester.pump();
+
+        h.tabs.openOrFocus(const NoteTab(_daily)); // focus the open tab
+        await pumpFrames(tester);
+        expect(h.tabState.activeTab, const NoteTab(_daily));
+        await _expectSettledAt(tester, _left);
+        _expectNoFocusTaken(tester);
+
+        await _chip(tester, h, 1);
+        _unfocus();
+        await tester.pump();
+        h.tabs.close(const NoteTab(_l1)); // lands on the daily tab
+        await pumpFrames(tester);
+        expect(h.tabState.activeTab, const NoteTab(_daily));
+        await _expectSettledAt(tester, _left);
+        _expectNoFocusTaken(tester);
+
+        // A new tab on a daily note keeps caret to end and focus.
+        h.tabs.openOrFocus(const NoteTab(_dailyShort));
+        await pumpFrames(tester);
+        _expectCaretAtEnd(tester);
+      },
+    );
+
+    testWidgets(
+      'a new daily tab opened after the last tab was closed takes focus',
+      (tester) async {
+        final h = await _launch(tester);
+        await _navigate(tester, h, const NoteTab(_l1));
+        await _scrollTo(tester, _left);
+
+        h.tabs.closeAt(0);
+        await pumpFrames(tester);
+        expect(h.tabState.tabs, isEmpty);
+        h.tabs.openOrFocus(const NoteTab(_dailyShort));
+        await pumpFrames(tester);
+
+        expect(h.tabState.activeTab, const NoteTab(_dailyShort));
+        _expectCaretAtEnd(tester);
       },
     );
   });
@@ -712,6 +912,56 @@ void main() {
         expect(jumps.values, [_left], reason: 'one jump, on a tab listener');
 
         expect(h.editor.contentMd, _body(_longLines), reason: 'no re-hydrate');
+      },
+    );
+
+    testWidgets(
+      'a same note chip switch followed at once by a navigate lands the new note at the top and keeps both offsets',
+      (tester) async {
+        final h = await _launch(tester);
+        await _twoTabsOnOneNote(tester, h);
+        await _scrollTo(tester, _other); // [l1] [l1*]
+        await _chip(tester, h, 0);
+        await _scrollTo(tester, _left); // [l1*] [l1]
+        await _chip(tester, h, 1);
+        expect(_pixels(tester), _other);
+
+        // Two arrivals before any frame: the jump of the first is not run.
+        h.tabs.setActive(0);
+        h.tabs.navigate(const NoteTab(_l2));
+        await pumpFrames(tester);
+
+        expect(h.editor.title, 'Long two');
+        await _expectSettledAt(tester, 0.0);
+
+        await _back(tester, h);
+        await _expectSettledAt(tester, _left);
+        await _chip(tester, h, 1);
+        await _expectSettledAt(tester, _other);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'three same note chip switches before a frame jump once to the tab reached last',
+      (tester) async {
+        final h = await _launch(tester);
+        await _twoTabsOnOneNote(tester, h);
+        await _scrollTo(tester, _other); // [l1] [l1*]
+        await _chip(tester, h, 0);
+        await _scrollTo(tester, _left); // [l1*] [l1]
+
+        await _chip(tester, h, 1);
+        expect(_pixels(tester), _other);
+
+        final jumps = _Jumps(tester);
+        h.tabs.setActive(0);
+        h.tabs.setActive(1);
+        h.tabs.setActive(0);
+        await pumpFrames(tester);
+
+        expect(jumps.values, [_left], reason: 'one jump, to the last tab');
+        expect(_pixels(tester), _left);
       },
     );
 
@@ -889,6 +1139,147 @@ void main() {
           _left,
           reason: 'nothing was written into the entry on Alpha',
         );
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'a zoom change reversed inside the switcher duration leaves the restore to the incoming editor',
+      (tester) async {
+        const duration = Duration(milliseconds: 300);
+        final h = await onCanvas(tester, zoom: duration);
+        Future<void> finishSwitch() async {
+          await tester.pump(duration);
+          await tester.pump(duration);
+          await pumpFrames(tester);
+        }
+
+        await _navigate(tester, h, zoomedAlpha);
+        await finishSwitch();
+        await _scrollTo(tester, _left, under: _zoomed(C89.alpha));
+        await _navigate(tester, h, zoomedBeta);
+        await finishSwitch();
+        final betaLength = _position(
+          tester,
+          under: _zoomed(C89.beta),
+        ).maxScrollExtent;
+        await _scrollTo(tester, betaLength, under: _zoomed(C89.beta));
+
+        // Beta to Alpha to Beta, the second step before the first one is done:
+        // the first Beta editor is still on screen when Beta is wanted again.
+        h.tabs.back();
+        await tester.pump(const Duration(milliseconds: 50));
+        await tester.pump(const Duration(milliseconds: 50));
+        expect(_zoomed(C89.beta), findsOneWidget, reason: 'still switching');
+        h.tabs.forward();
+        await tester.pump(const Duration(milliseconds: 50));
+        await tester.pump(const Duration(milliseconds: 50));
+        await finishSwitch();
+
+        expect(h.tabState.activeTab, zoomedBeta);
+        expect(_zoomed(C89.alpha), findsNothing);
+        expect(
+          _pixels(tester, under: _zoomed(C89.beta)),
+          betaLength,
+          reason: 'the new Beta editor took the restore',
+        );
+
+        h.tabs.back();
+        await finishSwitch();
+        expect(
+          _pixels(tester, under: _zoomed(C89.alpha)),
+          _left,
+          reason: 'nothing was written into the entry on Alpha',
+        );
+
+        h.tabs.forward();
+        await finishSwitch();
+        expect(
+          _pixels(tester, under: _zoomed(C89.beta)),
+          betaLength,
+          reason: 'the first Beta editor wrote nothing into the entry on Beta',
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'a zoomed neighbour reached by openOrFocus or by a close builds a new editor that takes the restore',
+      (tester) async {
+        final h = await onCanvas(tester);
+        await _navigate(tester, h, zoomedAlpha);
+        await _scrollTo(tester, _left);
+        h.tabs.openOrFocus(const NoteTab(C89.gamma)); // [zoomedAlpha] [gamma*]
+        await pumpFrames(tester);
+        expect(find.byType(NoteEditor), findsOneWidget);
+        expect(h.editor.title, 'Gamma');
+        await _expectSettledAt(tester, 0.0);
+        await _scrollTo(tester, _other);
+
+        h.tabs.openOrFocus(zoomedAlpha); // focus the zoomed tab
+        await pumpFrames(tester);
+        expect(h.tabState.activeIndex, 0);
+        expect(h.editor.title, 'Alpha');
+        await _expectSettledAt(tester, _left);
+
+        await _chip(tester, h, 1);
+        expect(_pixels(tester), _other);
+        h.tabs.close(const NoteTab(C89.gamma)); // lands on the zoomed tab
+        await pumpFrames(tester);
+        expect(h.tabState.activeTab, zoomedAlpha);
+        expect(h.editor.title, 'Alpha');
+        await _expectSettledAt(tester, _left);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'a chip switch between a zoomed tab and a note tab on one note restores each own offset and a close landing does too',
+      (tester) async {
+        final h = await onCanvas(tester);
+        await _navigate(tester, h, zoomedAlpha);
+        await _scrollTo(tester, _left);
+        h.tabs.openOrFocus(const NoteTab(C89.alpha)); // [zoomedAlpha] [alpha*]
+        await pumpFrames(tester);
+        await _expectSettledAt(tester, 0.0);
+        await _scrollTo(tester, _other);
+
+        await _chip(tester, h, 0);
+        await _expectSettledAt(tester, _left);
+        await _chip(tester, h, 1);
+        await _expectSettledAt(tester, _other);
+        await _chip(tester, h, 0);
+        await _expectSettledAt(tester, _left);
+
+        await _chip(tester, h, 1);
+        h.tabs.closeAt(1); // lands on the zoomed tab
+        await pumpFrames(tester);
+        expect(h.tabState.activeTab, zoomedAlpha);
+        await _expectSettledAt(tester, _left);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'a chip switch to the zoomed tab and back before a frame leaves the note editor jumping and reporting',
+      (tester) async {
+        final h = await onCanvas(tester);
+        await _navigate(tester, h, zoomedAlpha);
+        await _scrollTo(tester, _left);
+        h.tabs.openOrFocus(const NoteTab(C89.alpha)); // [zoomedAlpha] [alpha*]
+        await pumpFrames(tester);
+        await _scrollTo(tester, _other);
+
+        h.tabs.setActive(0);
+        h.tabs.setActive(1);
+        await pumpFrames(tester);
+
+        expect(h.tabState.activeTab, const NoteTab(C89.alpha));
+        await _expectSettledAt(tester, _other);
+        await _scrollTo(tester, 500);
+        await _chip(tester, h, 0);
+        await _chip(tester, h, 1);
+        expect(_pixels(tester), 500, reason: 'the note editor reported 500');
         expect(tester.takeException(), isNull);
       },
     );
@@ -1203,6 +1594,37 @@ void main() {
 
         await _scrollTo(tester, _left);
 
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'an EditorScrollScope hands a replaced controller to the page below it',
+      (tester) async {
+        final first = ScrollController();
+        final second = ScrollController();
+        addTearDown(first.dispose);
+        addTearDown(second.dispose);
+        const page = EditorPage(body: SizedBox(height: 5000));
+        Widget app(ScrollController controller) => MaterialApp(
+          home: Scaffold(
+            body: EditorScrollScope(controller: controller, child: page),
+          ),
+        );
+
+        await tester.pumpWidget(app(first));
+        expect(first.hasClients, isTrue, reason: 'the page uses the scope');
+        expect(second.hasClients, isFalse);
+
+        await tester.pumpWidget(app(second));
+        expect(second.hasClients, isTrue, reason: 'the page took the new one');
+        expect(first.hasClients, isFalse);
+
+        await tester.pumpWidget(app(second));
+        expect(second.hasClients, isTrue, reason: 'the same one stays');
+        second.jumpTo(_left);
+        await tester.pump();
+        expect(second.offset, _left);
         expect(tester.takeException(), isNull);
       },
     );
