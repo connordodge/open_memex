@@ -1,7 +1,7 @@
 // WI #263 (N0): the navigation seam on TabsNotifier: follow, navigate and
-// followLater. Behaviour is unchanged by this WI (navigate delegates to
-// openOrFocus), so nothing here assumes a new tab or an in-place change except
-// the navigate-matches-openOrFocus tests, which #266 (N3) flips.
+// followLater. #266 (N3) made navigate real: it replaces what the active tab
+// shows (flipped from the N0 stub, where it matched openOrFocus). The rest of
+// navigate's contract is in tabs_navigate_test.dart.
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -222,35 +222,35 @@ void main() {
       return tabs;
     }
 
-    test('navigate matches openOrFocus for a target that is already open', () {
-      final selections = <String?>[];
-      final navigated = twoOpen(onSelection: selections.add);
-      final opened = twoOpen();
+    test(
+      'navigate replaces what the active tab shows for a target another tab shows',
+      () {
+        final selections = <String?>[];
+        final navigated = twoOpen(onSelection: selections.add);
 
-      navigated.navigate(_a);
-      opened.openOrFocus(_a);
+        navigated.navigate(_a);
 
-      expect(navigated.state.tabs, opened.state.tabs);
-      expect(navigated.state.activeIndex, opened.state.activeIndex);
-      expect(navigated.state.tabs, [_a, _b]);
-      expect(navigated.state.activeIndex, 0);
-      expect(selections.last, 'a');
-    });
+        expect(navigated.opened, [_a, _b], reason: 'only the setup opened');
+        expect(navigated.state.tabs, [_a, _a]);
+        expect(navigated.state.activeIndex, 1);
+        expect(selections.last, 'a');
+      },
+    );
 
-    test('navigate matches openOrFocus for a target that is not open', () {
-      final selections = <String?>[];
-      final navigated = twoOpen(onSelection: selections.add);
-      final opened = twoOpen();
+    test(
+      'navigate replaces what the active tab shows for a target no tab shows',
+      () {
+        final selections = <String?>[];
+        final navigated = twoOpen(onSelection: selections.add);
 
-      navigated.navigate(_target);
-      opened.openOrFocus(_target);
+        navigated.navigate(_target);
 
-      expect(navigated.state.tabs, opened.state.tabs);
-      expect(navigated.state.activeIndex, opened.state.activeIndex);
-      expect(navigated.state.tabs, [_a, _b, _target]);
-      expect(navigated.state.activeIndex, 2);
-      expect(selections.last, 'target');
-    });
+        expect(navigated.opened, [_a, _b], reason: 'only the setup opened');
+        expect(navigated.state.tabs, [_a, _target]);
+        expect(navigated.state.activeIndex, 1);
+        expect(selections.last, 'target');
+      },
+    );
 
     test('navigate tells the observer and not followed', () {
       final recorder = TabsRecorder();

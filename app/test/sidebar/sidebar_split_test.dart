@@ -409,11 +409,12 @@ void main() {
         expect(h.container.read(selectedNoteIdProvider), 'n2');
         expect(h.selections.last, 'n2');
 
-        // Tapping a second note opens a second tab and focuses it.
+        // #266: tapping a second note navigates the same tab.
         await tester.tap(find.byKey(const Key('topics-unsorted-n3')));
         await tester.pump();
         final tabs = h.container.read(tabsProvider);
-        expect(tabs.tabs, [const NoteTab('n2'), const NoteTab('n3')]);
+        expect(tabs.tabs, [const NoteTab('n3')]);
+        expect(tabs.canGoBack, isTrue);
         expect(h.container.read(activeTabProvider), const NoteTab('n3'));
       },
     );

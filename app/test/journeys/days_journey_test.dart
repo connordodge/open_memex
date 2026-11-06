@@ -494,10 +494,11 @@ void main() {
 
         await r.openRow('2026-10-03');
         expect(r.activeTab, const NoteTab(_oct03));
-        expect(
-          r.tabs.tabs.where((t) => t == const NoteTab(_oct03)),
-          hasLength(1),
-        );
+        // #266: a plain click navigates the Today tab in place, so it and the
+        // launch tab both show the note, and Back returns to the new Today.
+        expect(r.tabs.tabs, [const NoteTab(_oct03), const NoteTab(_oct03)]);
+        expect(r.tabs.activeIndex, 0);
+        expect(r.tabs.canGoBack, isTrue);
       },
     );
 

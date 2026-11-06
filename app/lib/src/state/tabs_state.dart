@@ -114,17 +114,33 @@ class GraphTab extends WorkspaceTab {
 const int kMaxOpenTabs = 20;
 
 class TabsState {
-  const TabsState({required this.tabs, required this.activeIndex});
+  const TabsState({
+    required this.tabs,
+    required this.activeIndex,
+    this.canGoBack = false,
+    this.canGoForward = false,
+  });
 
   final List<WorkspaceTab> tabs;
   final int activeIndex;
+
+  /// Whether the active tab's Tab history has an entry before the current one.
+  final bool canGoBack;
+
+  /// Whether the active tab's Tab history has an entry after the current one.
+  final bool canGoForward;
 
   static const empty = TabsState(tabs: [], activeIndex: 0);
 
   WorkspaceTab? get activeTab =>
       tabs.isEmpty ? null : tabs[activeIndex.clamp(0, tabs.length - 1)];
 
-  TabsState copyWith({List<WorkspaceTab>? tabs, int? activeIndex}) => TabsState(
+  TabsState copyWith({
+    List<WorkspaceTab>? tabs,
+    int? activeIndex,
+    bool? canGoBack,
+    bool? canGoForward,
+  }) => TabsState(
     tabs: tabs ?? this.tabs,
     activeIndex: activeIndex ?? this.activeIndex,
   );
@@ -156,6 +172,7 @@ class TabsNotifier extends StateNotifier<TabsState> {
     String? todayNoteId,
     this.isNewTabModifierPressed,
     this.navigationObserver,
+    this.targetExists,
   }) : super(TabsState.empty) {
     _hydrate(todayDate, todayNoteId);
   }
@@ -176,6 +193,10 @@ class TabsNotifier extends StateNotifier<TabsState> {
 
   /// See [TabsNavigationObserver].
   final TabsNavigationObserver? navigationObserver;
+
+  /// Whether a Tab history entry's target still exists (#266, TD9). Null means
+  /// every target exists.
+  final Future<bool> Function(WorkspaceTab target)? targetExists;
 
   bool _hydrated = false;
 
@@ -341,6 +362,15 @@ class TabsNotifier extends StateNotifier<TabsState> {
     navigationObserver?.navigated(target);
     openOrFocus(target);
   }
+
+  /// Moves the active tab one entry back in its Tab history.
+  void back() {}
+
+  /// Moves the active tab one entry forward in its Tab history.
+  void forward() {}
+
+  /// Closes the tab at [index], and only that tab.
+  void closeAt(int index) {}
 
   /// For a click whose target needs an async lookup: reads the modifier now
   /// and returns the function to call with the target later. That function
