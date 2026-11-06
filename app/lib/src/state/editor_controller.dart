@@ -351,6 +351,18 @@ class EditorController extends StateNotifier<EditorStateValue> {
     unawaited(_save(leaving: true));
   }
 
+  /// [flushPendingSave] for a caller that must not go on until the edit is
+  /// stored: true when no save was pending, or the flushed save landed (the
+  /// editor is clean); false when it failed or waits (the editor keeps the
+  /// text and shows the failure).
+  Future<bool> flushPendingSaveAndWait() async {
+    final pending = _debounce;
+    if (pending == null || !pending.isActive) return true;
+    pending.cancel();
+    await _save(leaving: true);
+    return state.status == SaveStatus.clean;
+  }
+
   void _scheduleSave() {
     _debounce?.cancel();
     _debounce = _ref.read(clockProvider).after(saveDebounce, () {

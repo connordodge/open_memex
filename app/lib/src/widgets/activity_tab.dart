@@ -7,6 +7,7 @@ import '../db/activity_reads.dart';
 import '../db/feedback_reads.dart';
 import '../memex_cli.dart';
 import '../state/activity_state.dart';
+import '../state/editor_controller.dart' show editorControllerProvider;
 import '../state/feedback_state.dart';
 import '../state/note_state.dart';
 import '../state/topic_actions.dart';
@@ -165,6 +166,14 @@ Future<void> _restore(
   final messenger = ScaffoldMessenger.maybeOf(context);
   try {
     await guardVaultWrite(context, () async {
+      // An edit still waiting on the save debounce is stored first, so the
+      // restore keeps it as a revision (the dialog promises the current text
+      // is kept). A failed save stops the restore: nothing is replaced.
+      final editor = container.read(editorControllerProvider.notifier);
+      if (!await editor.flushPendingSaveAndWait()) {
+        final message = container.read(editorControllerProvider).errorMessage;
+        throw MemexException(message ?? 'Could not save your changes first.');
+      }
       // FeedbackActions bumps the vault revision once.
       final result = await container
           .read(feedbackActionsProvider)
