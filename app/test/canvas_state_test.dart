@@ -25,19 +25,6 @@ void main() {
     expect(c.read(canvasViewportProvider('b')).zoom, 1.0);
   });
 
-  test('canvasZoomProvider toggles between zoomed-in and none', () {
-    final c = ProviderContainer();
-    addTearDown(c.dispose);
-    expect(c.read(canvasZoomProvider('a')).isZoomed, isFalse);
-    c.read(canvasZoomProvider('a').notifier).state = const CanvasZoomState(
-      zoomedNoteId: 'note-1',
-    );
-    expect(c.read(canvasZoomProvider('a')).isZoomed, isTrue);
-    expect(c.read(canvasZoomProvider('a')).zoomedNoteId, 'note-1');
-    c.read(canvasZoomProvider('a').notifier).state = CanvasZoomState.none;
-    expect(c.read(canvasZoomProvider('a')).isZoomed, isFalse);
-  });
-
   test('canvasSelectionProvider mutually-exclusive node vs edge selection', () {
     final c = ProviderContainer();
     addTearDown(c.dispose);

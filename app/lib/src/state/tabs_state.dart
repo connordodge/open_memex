@@ -74,7 +74,11 @@ class VirtualTodayTab extends NoteTab {
 }
 
 class CanvasTab extends WorkspaceTab {
-  const CanvasTab(super.id);
+  const CanvasTab(super.id, {this.zoomedNoteId});
+
+  /// The note this canvas tab is zoomed into, or null when it shows the canvas.
+  final String? zoomedNoteId;
+
   @override
   String get tabId => 'canvas-$id';
   @override
