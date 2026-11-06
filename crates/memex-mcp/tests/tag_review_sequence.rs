@@ -19,9 +19,10 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
+use memex_core::guide;
 use memex_core::notes::{create_note_as, CreateNote, NoteId};
 use memex_core::tags;
-use memex_core::{indexer, Caller, Vault};
+use memex_core::{indexer, Caller, Clock, Vault};
 use memex_mcp::prompts::REVIEW_DAILY_NOTES;
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -151,6 +152,23 @@ fn wi243_person_note(vault: &mut Vault, title: &str, body: &str, frontmatter: Va
     .to_string()
 }
 
+/// A clock that stays where it is put (no wall-clock reads).
+struct Wi243Clock(i64);
+
+impl Clock for Wi243Clock {
+    fn now_ms(&self) -> i64 {
+        self.0
+    }
+}
+
+/// The vault's real guide, built the only way the guide guard (#233) allows:
+/// `guide::get_or_create` (`create_note_as` rejects `role: guide`).
+fn wi243_guide(vault: &mut Vault) -> String {
+    let clock = Wi243Clock(1_759_500_000_000);
+    let seeded = guide::get_or_create(vault, &clock, None).expect("create the guide");
+    seeded.note_id.to_string()
+}
+
 /// A person-written daily note, indexed as the app would.
 fn wi243_person_daily(vault: &mut Vault, date: &str, body: &str) -> String {
     let note = create_note_as(
@@ -197,12 +215,7 @@ fn wi243_vault() -> (TempDir, String, Wi243Ids) {
             "A topic.\n",
             json!({ "role": "topic" }),
         );
-        let guide = wi243_person_note(
-            &mut vault,
-            "Vault Guide",
-            "How to.\n",
-            json!({ "role": "guide" }),
-        );
+        let guide = wi243_guide(&mut vault);
         let id = NoteId::parse(&roadmap_topic).unwrap();
         tags::agent_tag_note(&mut vault, &id, "roadmap", None).unwrap();
         tags::person_remove_tag(&mut vault, &id, "roadmap", None).unwrap();
