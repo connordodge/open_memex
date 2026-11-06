@@ -1,9 +1,9 @@
-Add a topic to a daily note's footer
+Add a topic to a note's footer
 
-Usage: memex footer add --vault <VAULT> --daily-note-id <DAILY_NOTE_ID> --topic-note-id <TOPIC_NOTE_ID>
+Usage: memex footer add --vault <VAULT> --note-id <NOTE_ID> --topic-note-id <TOPIC_NOTE_ID>
 
 Options:
       --vault <VAULT>                  Vault directory
-      --daily-note-id <DAILY_NOTE_ID>  Daily note id (ULID)
+      --note-id <NOTE_ID>              Note id (ULID) [aliases: --daily-note-id]
       --topic-note-id <TOPIC_NOTE_ID>  Topic note id (ULID)
   -h, --help                           Print help

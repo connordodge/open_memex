@@ -1,11 +1,13 @@
 import 'canvas_access.dart';
 import 'daily_access.dart';
+import 'feedback_access.dart';
 import 'graph_access.dart';
 import 'notes_access.dart';
 import 'topics_access.dart';
 
 export 'canvas_access.dart';
 export 'daily_access.dart';
+export 'feedback_access.dart';
 export 'graph_access.dart';
 export 'notes_access.dart';
 export 'topics_access.dart';
@@ -19,6 +21,7 @@ export 'topics_access.dart';
 abstract interface class VaultAccess {
   NotesAccess get notes;
   DailyAccess get daily;
+  FeedbackAccess get feedback;
   TopicsAccess get topics;
   CanvasAccess get canvas;
   GraphAccess get graph;

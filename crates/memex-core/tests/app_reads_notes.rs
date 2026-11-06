@@ -16,6 +16,7 @@ use std::path::PathBuf;
 
 use memex_core::app_reads::notes::{list_notes, snippet, NoteListItem};
 use memex_core::notes::{create_or_adopt_note, get_note, CreateNote, NoteId};
+use memex_core::tags::{self, TagOrigin};
 use memex_core::{Caller, Clock, Vault};
 use serde_json::Value;
 
@@ -192,4 +193,45 @@ fn list_notes_on_an_empty_vault_is_empty() {
     let tmp = tempfile::tempdir().unwrap();
     let vault = Vault::create(tmp.path().join("v")).expect("create vault");
     assert_eq!(list_notes(&vault, 200).expect("list notes"), Vec::new());
+}
+
+// ---------------------------------------------------------------------------
+// WI #242: `footer_tags` on `GET /notes/{note_id}`
+// ---------------------------------------------------------------------------
+
+#[test]
+fn app_read_get_note_returns_footer_tags_beside_tags() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut vault = Vault::create(dir.path().join("vault")).unwrap();
+    let note = memex_core::notes::create_note_as(
+        &mut vault,
+        CreateNote {
+            title: Some("Tagged".into()),
+            content_md: "About #written today.\n".into(),
+            frontmatter: None,
+        },
+        Caller::Person,
+    )
+    .unwrap();
+    for (name, origin) in [
+        ("zeta", TagOrigin::Person),
+        ("agent-set", TagOrigin::Agent),
+        ("inbox", TagOrigin::Agent),
+    ] {
+        tags::apply_tag(&mut vault, &note.id, name, origin, None).unwrap();
+    }
+
+    let detail = memex_core::app_reads::notes::get_note(&vault, &note.id).unwrap();
+
+    let json = serde_json::to_value(&detail).unwrap();
+    assert_eq!(
+        json["footer_tags"],
+        serde_json::json!(["agent-set", "zeta"]),
+        "agent and person rows, no body row, no system tag, sorted"
+    );
+    assert_eq!(
+        json["tags"],
+        serde_json::json!(["agent-set", "inbox", "written", "zeta"]),
+        "`tags` keeps every row"
+    );
 }

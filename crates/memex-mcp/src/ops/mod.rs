@@ -20,6 +20,23 @@ pub mod links;
 pub mod notes;
 pub mod prompt;
 pub mod settings;
+pub mod tags;
 
 pub use memex_core::embedder::Embedder;
 pub use memex_core::Clock;
+
+use memex_core::MemexError;
+
+use crate::cli::InvalidArgument;
+
+/// A core failure with the C1 code it has on the person path: the core's
+/// `Io(InvalidInput)` (a bad tag name, a body tag to remove, a self-chip) is
+/// `invalid_argument`, and any other failure keeps its own code.
+pub(crate) fn invalid_input_as_argument(err: MemexError) -> anyhow::Error {
+    match err {
+        MemexError::Io(e) if e.kind() == std::io::ErrorKind::InvalidInput => {
+            InvalidArgument(e.to_string()).into()
+        }
+        other => other.into(),
+    }
+}
