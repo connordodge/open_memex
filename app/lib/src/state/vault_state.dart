@@ -113,6 +113,12 @@ final vaultV5ReadyProvider = Provider<bool>((ref) {
   return db.hasTables(VaultDb.v5TableNames);
 });
 
+/// True when the open vault has every V6 table and the V6 `tags` columns
+/// (`origin`, `first_line`). V6 reads return safe defaults while it is
+/// false. Re-probed like [vaultV5ReadyProvider]; always true for a hosted
+/// vault (the server owns its migrations, D12a).
+final vaultV6ReadyProvider = Provider<bool>((ref) => false);
+
 /// The currently selected note id (or null).
 final selectedNoteIdProvider = StateProvider<String?>((_) => null);
 

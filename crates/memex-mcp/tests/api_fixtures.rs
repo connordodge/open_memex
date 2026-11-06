@@ -622,13 +622,20 @@ fn seed_loader_materializes_the_committed_seed_as_a_vault_folder() {
 
     let vault = Vault::open(&dir).expect("Vault::open accepts the materialized seed");
     assert_eq!(vault.vault_id(), frozen_id);
-    assert_eq!(vault.schema_version(), 5);
+    assert_eq!(
+        vault.schema_version(),
+        memex_core::schema::APP_SCHEMA_VERSION
+    );
 
     let conn = vault.connection_ref();
     let max: i64 = conn
         .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(max, 5, "memex.db is at schema version 5");
+    assert_eq!(
+        max,
+        memex_core::schema::APP_SCHEMA_VERSION,
+        "memex.db is at the current schema version"
+    );
 
     // Every seed row is in memex.db.
     let reference = load_on_schema(&committed_seed_sql());

@@ -382,7 +382,7 @@ async fn an_invalid_name_vault_folder_is_logged_once_not_per_request() {
 
 #[tokio::test]
 async fn create_returns_201_and_makes_a_vault_that_opens_at_schema_5() {
-    assert_eq!(APP_SCHEMA_VERSION, 5);
+    assert_eq!(APP_SCHEMA_VERSION, 6);
     let srv = TestServer::start().await;
     let r = create(&srv, "work").await;
     assert_eq!(r.status, 201, "{}", r.body);
@@ -393,7 +393,7 @@ async fn create_returns_201_and_makes_a_vault_that_opens_at_schema_5() {
     assert!(is_ulid(&id), "vault_id {id:?} is a ULID");
 
     let vault = Vault::open(srv.root().join("work")).expect("Vault::open accepts it");
-    assert_eq!(vault.manifest().schema_version, 5);
+    assert_eq!(vault.manifest().schema_version, APP_SCHEMA_VERSION);
     assert_eq!(vault.manifest().vault_id, id);
     drop(vault);
 
@@ -605,7 +605,7 @@ async fn vault_info_returns_name_vault_id_and_schema_version() {
     assert_eq!(r.status, 200, "{}", r.body);
     assert_eq!(
         r.json(),
-        json!({ "name": "work", "vault_id": id, "schema_version": 5 })
+        json!({ "name": "work", "vault_id": id, "schema_version": APP_SCHEMA_VERSION })
     );
     // A served vault passes the guard: an unknown API path under it is a
     // plain `not_found`, never `vault_not_found`.
@@ -630,7 +630,7 @@ async fn vault_info_lookup_is_case_insensitive_and_answers_with_the_folder_name(
         assert_eq!(r.status, 200, "info {asked}: {}", r.body);
         assert_eq!(
             r.json(),
-            json!({ "name": folder, "vault_id": id, "schema_version": 5 }),
+            json!({ "name": folder, "vault_id": id, "schema_version": APP_SCHEMA_VERSION }),
             "info {asked}"
         );
     }
@@ -802,19 +802,19 @@ async fn an_older_schema_vault_is_migrated_on_first_use() {
     assert_eq!(r.status, 200, "{}", r.body);
     assert_eq!(
         r.json(),
-        json!({ "name": "old", "vault_id": id, "schema_version": 5 })
+        json!({ "name": "old", "vault_id": id, "schema_version": APP_SCHEMA_VERSION })
     );
     let manifest: Value =
         serde_json::from_slice(&std::fs::read(srv.root().join("old/manifest.json")).unwrap())
             .unwrap();
-    assert_eq!(manifest["schema_version"], json!(5));
+    assert_eq!(manifest["schema_version"], json!(APP_SCHEMA_VERSION));
 }
 
 #[tokio::test]
 async fn a_newer_schema_vault_is_refused_with_500_internal() {
     let root = tempfile::tempdir().unwrap();
     make_vault(root.path(), "future");
-    set_manifest_schema_version(&root.path().join("future"), 6);
+    set_manifest_schema_version(&root.path().join("future"), APP_SCHEMA_VERSION + 1);
     let srv = TestServer::start_in(root).await;
     for attempt in 0..2 {
         let r = info(&srv, "future").await;
@@ -822,7 +822,10 @@ async fn a_newer_schema_vault_is_refused_with_500_internal() {
         assert_eq!(r.c1_code(), "internal");
         assert_eq!(
             r.json()["error"]["message"],
-            json!("schema version unsupported: db=6, app=5")
+            json!(format!(
+                "schema version unsupported: db={}, app={APP_SCHEMA_VERSION}",
+                APP_SCHEMA_VERSION + 1
+            ))
         );
     }
 }
@@ -858,7 +861,7 @@ async fn sixteen_concurrent_first_requests_open_the_vault_once() {
         assert_eq!(r.status, 200, "{}", r.body);
         assert_eq!(
             r.json(),
-            json!({ "name": "busy", "vault_id": id, "schema_version": 5 })
+            json!({ "name": "busy", "vault_id": id, "schema_version": APP_SCHEMA_VERSION })
         );
     }
 }
@@ -952,7 +955,7 @@ async fn a_percent_encoded_vault_name_is_decoded_before_lookup() {
         assert_eq!(r.status, 200, "{segment}: {}", r.body);
         assert_eq!(
             r.json(),
-            json!({ "name": "work", "vault_id": id, "schema_version": 5 }),
+            json!({ "name": "work", "vault_id": id, "schema_version": APP_SCHEMA_VERSION }),
             "{segment}"
         );
         // Past the guard: an unrouted path under it is a plain not_found.

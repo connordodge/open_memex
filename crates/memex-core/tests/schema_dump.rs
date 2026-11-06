@@ -7,6 +7,9 @@
 //! FTS5 virtual tables and their shadow tables (`chunk_fts*`), `chunk_vec` and
 //! `sqlite_*` internals are excluded so the dump loads without extensions.
 //!
+//! The file keeps its `vault_schema_v5.sql` name, but since schema V6 (WI #237)
+//! it holds the V6 schema of a fresh vault.
+//!
 //! The committed file must equal the dump byte for byte. Regenerate it with:
 //!
 //! ```sh
@@ -93,14 +96,14 @@ fn dump_schema(conn: &Connection) -> String {
     out
 }
 
-/// Dump of a brand-new vault, which must be at schema V5.
+/// Dump of a brand-new vault, which must be at schema V6.
 fn fresh_v5_vault_dump() -> String {
     let dir = tempfile::tempdir().unwrap();
     let vault = Vault::create(dir.path().join("vault")).expect("create fresh vault");
     assert_eq!(
         vault.schema_version(),
-        5,
-        "a fresh vault must be at schema V5 for the v5 fixture"
+        6,
+        "a fresh vault must be at schema V6 for the app fixture"
     );
     dump_schema(vault.connection_ref())
 }
@@ -231,7 +234,7 @@ fn committed_app_fixture_excludes_fts_and_vec_and_ends_with_seed_rows() {
         .lines()
         .filter(|l| !l.trim().is_empty())
         .rev()
-        .take(6)
+        .take(7)
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
@@ -244,6 +247,7 @@ fn committed_app_fixture_excludes_fts_and_vec_and_ends_with_seed_rows() {
             "INSERT INTO schema_version(version) VALUES (3);",
             "INSERT INTO schema_version(version) VALUES (4);",
             "INSERT INTO schema_version(version) VALUES (5);",
+            "INSERT INTO schema_version(version) VALUES (6);",
             "INSERT INTO vault_settings(key, value) VALUES ('smart_folder_max_depth', '2');",
         ]
     );
@@ -279,6 +283,9 @@ fn committed_app_fixture_loads_into_a_plain_sqlite_database() {
         "smart_folders",
         "smart_folder_members",
         "vault_settings",
+        "tag_corrections",
+        "feedback",
+        "vault_guide_revisions",
     ] {
         assert!(
             tables.iter().any(|x| x == t),
@@ -288,7 +295,7 @@ fn committed_app_fixture_loads_into_a_plain_sqlite_database() {
     let max: i64 = conn
         .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(max, 5);
+    assert_eq!(max, 6);
     let depth: String = conn
         .query_row(
             "SELECT value FROM vault_settings WHERE key = 'smart_folder_max_depth'",
@@ -305,6 +312,22 @@ fn committed_app_fixture_loads_into_a_plain_sqlite_database() {
         )
         .unwrap();
     assert_eq!(daily_index, 1);
+    let guide_index: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_notes_guide'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(guide_index, 1);
+    let tag_cols: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT name FROM pragma_table_info('tags') ORDER BY cid")
+            .unwrap();
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
+        rows.map(|r| r.unwrap()).collect()
+    };
+    assert_eq!(tag_cols, ["note_id", "tag", "origin", "first_line"]);
     let chunk_cols: Vec<String> = {
         let mut stmt = conn
             .prepare("SELECT name FROM pragma_table_info('chunks') ORDER BY cid")

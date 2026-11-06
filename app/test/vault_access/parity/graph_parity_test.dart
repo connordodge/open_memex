@@ -24,6 +24,8 @@ import 'package:open_memex_app/src/db/activity_reads.dart';
 import 'package:open_memex_app/src/db/graph_reads.dart';
 import 'package:open_memex_app/src/state/clock.dart';
 import 'package:open_memex_app/src/state/hosted_connection_state.dart';
+import 'package:open_memex_app/src/state/vault_state.dart'
+    show requiredVaultSchemaVersion;
 import 'package:open_memex_app/src/vault_access/graph_access.dart';
 import 'package:open_memex_app/src/vault_access/hosted/graph.dart';
 import 'package:open_memex_app/src/vault_access/local/local_vault_access.dart';
@@ -248,7 +250,7 @@ void main() {
     () async {
       final p = _pair();
       final local = p.db.schemaVersion();
-      expect(local, 5);
+      expect(local, requiredVaultSchemaVersion);
       expect(await p.hosted.schemaVersion(), local);
       expect(
         await LocalVaultAccess(

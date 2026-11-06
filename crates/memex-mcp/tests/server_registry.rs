@@ -175,7 +175,11 @@ async fn concurrent_first_gets_of_one_vault_return_one_entry() {
         assert_eq!(e.open_id, first.open_id);
     }
     let manifest_version = first.state.vault.lock().await.manifest().schema_version;
-    assert_eq!(manifest_version, 5, "migrated on open");
+    assert_eq!(
+        manifest_version,
+        memex_core::schema::APP_SCHEMA_VERSION,
+        "migrated on open"
+    );
 }
 
 #[tokio::test]

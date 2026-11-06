@@ -157,7 +157,8 @@ void main() {
     testWidgets('a vault newer than V5 shows no outdated banner', (
       tester,
     ) async {
-      final db = FakeVaultDb.v5()..addSchemaVersion(6);
+      final db = FakeVaultDb.v5()
+        ..addSchemaVersion(requiredVaultSchemaVersion + 1);
       final cli = FakeMemexCli()..on('settings get', _olderMemex());
       await pumpWorkspace(tester, db: db, cli: cli);
       _expectNoBanner();
@@ -188,7 +189,7 @@ void main() {
         final h = await pumpWorkspace(tester, db: db, cli: cli);
 
         expect(cli.callsFor('settings get'), hasLength(1));
-        expect(db.schemaVersionForTest, 5);
+        expect(db.schemaVersionForTest, requiredVaultSchemaVersion);
         expect(h.read(vaultRevisionProvider), 1);
         expect(db.hasTables(v5Tables), isTrue);
         _expectNoBanner();

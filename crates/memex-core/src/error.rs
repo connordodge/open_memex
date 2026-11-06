@@ -94,6 +94,21 @@ pub enum MemexError {
     /// The detail names the path and the filesystem type (req 30).
     #[error("vault folder is on a network filesystem: {0}")]
     NetworkFilesystem(String),
+
+    #[error("unknown tag: {0}")]
+    UnknownTag(String),
+
+    #[error("tag removed: {0}")]
+    TagRemoved(String),
+
+    #[error("guide rule: {0}")]
+    GuideRule(String),
+
+    #[error("feedback handled: {0}")]
+    FeedbackHandled(String),
+
+    #[error("feedback invalid: {0}")]
+    FeedbackInvalid(String),
 }
 
 impl MemexError {
@@ -129,7 +144,12 @@ impl MemexError {
             | MemexError::TitleInvalid(_)
             | MemexError::TooManyDedupCollisions { .. }
             | MemexError::InvalidLinkKind(_)
-            | MemexError::Yaml(_) => "internal",
+            | MemexError::Yaml(_)
+            | MemexError::UnknownTag(_)
+            | MemexError::TagRemoved(_)
+            | MemexError::GuideRule(_)
+            | MemexError::FeedbackHandled(_)
+            | MemexError::FeedbackInvalid(_) => "internal",
         }
     }
 
@@ -198,7 +218,12 @@ impl MemexError {
             | MemexError::TitleInvalid(_)
             | MemexError::TooManyDedupCollisions { .. }
             | MemexError::InvalidLinkKind(_)
-            | MemexError::Yaml(_) => Vec::new(),
+            | MemexError::Yaml(_)
+            | MemexError::UnknownTag(_)
+            | MemexError::TagRemoved(_)
+            | MemexError::GuideRule(_)
+            | MemexError::FeedbackHandled(_)
+            | MemexError::FeedbackInvalid(_) => Vec::new(),
         }
     }
 }

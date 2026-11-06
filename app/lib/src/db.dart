@@ -27,6 +27,10 @@ class VaultDb {
     'vault_settings',
   ];
 
+  /// Tables added by schema V6 (tag corrections, Feedback, Vault Guide
+  /// revisions). V6 reads return empty while any of them is missing.
+  static const v6TableNames = <String>[];
+
   final Database db;
 
   static VaultDb open(String vaultPath) {
@@ -166,6 +170,10 @@ class VaultDb {
     );
     return (row.first['n'] as int) == names.toSet().length;
   }
+
+  /// True when [table] exists and has every column in [columns]. Like
+  /// [hasTables], never caches a negative answer.
+  bool hasColumns(String table, List<String> columns) => false;
 
   /// The vault's schema version, `MAX(schema_version.version)`; 0 when the
   /// table is missing or empty. Read fresh on every call (the CLI may migrate

@@ -68,9 +68,9 @@ void main() {
       addTearDown(db.close);
       expect(db.schemaVersion(), 4);
       db.migrateToV5();
-      expect(db.schemaVersion(), 5);
-      db.addSchemaVersion(6);
-      expect(db.schemaVersion(), 6);
+      expect(db.schemaVersion(), requiredVaultSchemaVersion);
+      db.addSchemaVersion(requiredVaultSchemaVersion + 1);
+      expect(db.schemaVersion(), requiredVaultSchemaVersion + 1);
     });
 
     test('schemaVersion is 0 without a schema_version table', () {
@@ -215,6 +215,205 @@ void main() {
       expect(find.byKey(const Key('vault-schema-outdated')), findsOneWidget);
       expect(find.text(vaultSchemaOutdatedMessage), findsOneWidget);
     });
+  });
+
+  group('Schema V6 probes (#237)', () {
+    test('requiredVaultSchemaVersion is 6', () {
+      expect(requiredVaultSchemaVersion, 6);
+    });
+
+    test('VaultDb.v6TableNames lists exactly the tables schema V6 adds', () {
+      expect(VaultDb.v6TableNames.toSet(), {
+        'tag_corrections',
+        'feedback',
+        'vault_guide_revisions',
+      });
+      expect(VaultDb.v6TableNames, hasLength(3));
+      expect(VaultDb.v6TableNames.toSet(), v6Tables.toSet());
+      for (final t in VaultDb.v5TableNames) {
+        expect(VaultDb.v6TableNames, isNot(contains(t)), reason: t);
+      }
+
+      final v6 = FakeVaultDb.v6();
+      addTearDown(v6.close);
+      expect(v6.hasTables(VaultDb.v6TableNames), isTrue);
+      final v5 = FakeVaultDb.v5Only();
+      addTearDown(v5.close);
+      expect(v5.hasTables(VaultDb.v6TableNames), isFalse);
+      expect(v5.hasTables(VaultDb.v5TableNames), isTrue);
+    });
+
+    test('hasColumns is true only when the table has every listed column', () {
+      final v6 = FakeVaultDb.v6();
+      addTearDown(v6.close);
+      expect(v6.hasColumns('tags', ['origin', 'first_line']), isTrue);
+      expect(v6.hasColumns('tags', ['note_id', 'tag', 'origin']), isTrue);
+      expect(v6.hasColumns('tags', ['origin', 'origin']), isTrue);
+      expect(v6.hasColumns('tags', const []), isTrue);
+      expect(v6.hasColumns('tags', ['origin', 'no_such_column']), isFalse);
+      expect(v6.hasColumns('notes', ['origin']), isFalse);
+      expect(v6.hasColumns('no_such_table', ['origin']), isFalse);
+      expect(
+        v6.hasColumns('tag_corrections', ['note_title', 'cleared_at']),
+        isTrue,
+      );
+
+      final v5 = FakeVaultDb.v5Only();
+      addTearDown(v5.close);
+      expect(v5.hasColumns('tags', ['note_id', 'tag']), isTrue);
+      expect(v5.hasColumns('tags', ['origin']), isFalse);
+      expect(v5.hasColumns('tags', ['first_line']), isFalse);
+      expect(v5.hasColumns('tags', ['origin', 'first_line']), isFalse);
+    });
+
+    test(
+      'hasColumns re-probes after the CLI adds the columns (no cached false)',
+      () {
+        final db = FakeVaultDb.v5Only();
+        addTearDown(db.close);
+        expect(db.hasColumns('tags', v6TagColumns), isFalse);
+        db.seedNote(
+          id: '01J9V6000000000000000000P1',
+          title: 'Kept',
+          tags: ['work'],
+        );
+
+        db.migrateToV6(); // what `memex` does to a V5 vault on its first V6 open
+
+        expect(db.hasColumns('tags', v6TagColumns), isTrue);
+        expect(
+          db.db
+              .select('SELECT note_id, tag, origin FROM tags')
+              .map((r) => [r['note_id'], r['tag'], r['origin']]),
+          [
+            ['01J9V6000000000000000000P1', 'work', 'person'],
+          ],
+        );
+      },
+    );
+
+    test(
+      'vaultV6ReadyProvider is false on a V5 vault and true on a V6 vault',
+      () {
+        final v5 = FakeVaultDb.v5Only();
+        addTearDown(v5.close);
+        final v6 = FakeVaultDb.v6();
+        addTearDown(v6.close);
+
+        expect(_container(db: v5).read(vaultV6ReadyProvider), isFalse);
+        expect(_container(db: v6).read(vaultV6ReadyProvider), isTrue);
+        expect(_container(db: null).read(vaultV6ReadyProvider), isFalse);
+        // The V5 probe stays true on both: V6 is additive.
+        expect(_container(db: v5).read(vaultV5ReadyProvider), isTrue);
+        expect(_container(db: v6).read(vaultV5ReadyProvider), isTrue);
+      },
+    );
+
+    test('vaultV6ReadyProvider is true for a hosted vault', () {
+      final c = ProviderContainer(
+        overrides: [
+          currentVaultProvider.overrideWith(
+            (_) => HostedVaultRef('srv-1', 'work'),
+          ),
+          vaultDbProvider.overrideWithValue(null),
+          memexCliProvider.overrideWithValue(null),
+        ],
+      );
+      addTearDown(c.dispose);
+      expect(c.read(vaultV6ReadyProvider), isTrue);
+    });
+
+    test(
+      'vaultV6ReadyProvider needs the V6 tags columns as well as the V6 tables',
+      () {
+        final db = FakeVaultDb.v5Only();
+        addTearDown(db.close);
+        final c = _container(db: db);
+        final sub = c.listen(vaultV6ReadyProvider, (_, _) {});
+        addTearDown(sub.close);
+        expect(sub.read(), isFalse);
+
+        // The V6 tables without the tags columns: still not ready.
+        db.migrateToV6(tagColumns: false);
+        c.read(vaultRevisionProvider.notifier).state++;
+        expect(db.hasTables(v6Tables), isTrue, reason: 'fixture is V6');
+        expect(sub.read(), isFalse);
+
+        // The columns too: ready, on the next revision (never a cached false).
+        db.migrateToV6();
+        c.read(vaultRevisionProvider.notifier).state++;
+        expect(sub.read(), isTrue);
+      },
+    );
+
+    test(
+      'vaultV6ReadyProvider flips to true once the open call migrates a V5 vault',
+      () async {
+        final db = FakeVaultDb.v5Only();
+        addTearDown(db.close);
+        final release = Completer<void>();
+        final cli = FakeMemexCli()
+          ..on('settings get', (_) async {
+            await release.future;
+            db.migrateToV6();
+            return FakeMemexCli.ok(settingsGetMaxDepthStdout);
+          });
+        final c = _container(db: db, cli: cli);
+        final sub = c.listen(vaultV6ReadyProvider, (_, _) {});
+        addTearDown(sub.close);
+
+        expect(sub.read(), isFalse, reason: 'probed before the call returns');
+        release.complete();
+        final state = await c.read(vaultOpenProvider.future);
+        expect(sub.read(), isTrue);
+        expect(state.schemaOutdated, isFalse);
+      },
+    );
+
+    test(
+      'a V5 vault the open call cannot migrate is flagged outdated',
+      () async {
+        final db = FakeVaultDb.v5Only();
+        addTearDown(db.close);
+        final c = _container(db: db, cli: _failingCli());
+
+        final state = await c.read(vaultOpenProvider.future);
+
+        expect(db.schemaVersion(), 5);
+        expect(state.schemaOutdated, isTrue);
+        expect(c.read(vaultV6ReadyProvider), isFalse);
+
+        // A V6 vault with the same failing call is not.
+        final v6 = FakeVaultDb.v6();
+        addTearDown(v6.close);
+        final c6 = _container(db: v6, cli: _failingCli());
+        expect(
+          (await c6.read(vaultOpenProvider.future)).schemaOutdated,
+          isFalse,
+        );
+      },
+    );
+
+    testWidgets(
+      'a V5 vault opened with an older memex shows the outdated-vault banner',
+      (tester) async {
+        final cli = FakeMemexCli()
+          ..on(
+            'settings get',
+            (_) => FakeMemexCli.failure(
+              "error: unrecognized subcommand 'settings'\n",
+            ),
+          );
+        final db = FakeVaultDb.v5Only();
+
+        await pumpWorkspace(tester, db: db, cli: cli);
+        await pumpFrames(tester);
+
+        expect(db.schemaVersionForTest, 5);
+        expect(find.byKey(const Key('vault-schema-outdated')), findsOneWidget);
+        expect(find.text(vaultSchemaOutdatedMessage), findsOneWidget);
+      },
+    );
   });
 
   group('C1 error details', () {
