@@ -5,6 +5,7 @@ import '../../memex_cli.dart';
 import '../vault_access.dart';
 import 'canvas.dart';
 import 'daily.dart';
+import 'feedback.dart';
 import 'graph.dart';
 import 'hosted_client.dart';
 import 'notes.dart';
@@ -41,6 +42,7 @@ class HostedVaultAccess implements VaultAccess {
     : _client = client,
       notes = HostedNotesAccess(client: client, vaultName: vaultName),
       daily = HostedDailyAccess(client: client, vaultName: vaultName),
+      feedback = HostedFeedbackAccess(client: client, vaultName: vaultName),
       topics = HostedTopicsAccess(client: client, vaultName: vaultName),
       canvas = HostedCanvasAccess(client: client, vaultName: vaultName),
       graph = HostedGraphAccess(client: client, vaultName: vaultName),
@@ -56,6 +58,9 @@ class HostedVaultAccess implements VaultAccess {
 
   @override
   final HostedDailyAccess daily;
+
+  @override
+  final HostedFeedbackAccess feedback;
 
   @override
   final HostedTopicsAccess topics;
