@@ -6,6 +6,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db.dart' show NoteListItem;
@@ -294,7 +295,16 @@ void main() {
     ) async {
       final h = await _pump(tester, _seededDb());
       await _openNote(tester, _alphaId);
+      // #266: a plain click navigates in place; Cmd opens a second tab.
+      await tester.sendKeyDownEvent(
+        LogicalKeyboardKey.metaLeft,
+        platform: 'macos',
+      );
       await _openNote(tester, _betaId);
+      await tester.sendKeyUpEvent(
+        LogicalKeyboardKey.metaLeft,
+        platform: 'macos',
+      );
       expect(h.read(tabsProvider).tabs, hasLength(2));
 
       await _chooseDelete(tester);

@@ -48,7 +48,9 @@ Future<HostedWorkspaceRobot> _workspace(
   expect(w.currentVault, seedHostedRef, reason: 'launch opened the vault');
   await w.showTopics();
   await w.openUnsorted(seedLooseThoughtId);
-  await w.openUnsorted(seedBrokenFrontmatterId);
+  // TEST-CHANGE (#266): a plain click navigates the current tab, so the second
+  // note gets its own tab the way a Cmd+click opens one.
+  await w.openNoteTab(seedBrokenFrontmatterId);
   await w.tap(w.noteTab(seedLooseThoughtId));
   expect(w.segmentText(0), _looseBody);
   return w;

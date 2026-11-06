@@ -54,9 +54,13 @@ _Avoid_: raw mode, plain mode, edit mode
 A note about one subject that accumulates excerpts across days, maintained by the person's agent or created by the person.
 _Avoid_: subject note, concept note, chunk
 
-**Topics footer**:
-The managed block at the bottom of a daily note, below a marker line, holding `[[Topic~about]]` links to every topic that holds an excerpt from that day. Everything above the marker belongs to the person.
-_Avoid_: links section, related
+**Note footer**:
+The managed block at the bottom of a note, below a marker line, holding its topic links and its tags not written in the body. On a daily note, everything above the marker belongs to the person.
+_Avoid_: Topics footer, links section, related
+
+**Tag**:
+A short label on a whole note, written as `#name` in the note's body or added without touching the body, by the agent or the CLI. It is separate from Topic notes and Smart Folders.
+_Avoid_: label, keyword, category
 
 **Review**:
 An agent run that files a daily note's changed blocks into topic notes and Smart Folders, then marks the day reviewed.
@@ -72,7 +76,7 @@ _Avoid_: organized, processed, synced
 
 **Smart Folder**:
 An agent-maintained grouping of topic notes by similarity. A topic note can belong to many Smart Folders, and Smart Folders can nest.
-_Avoid_: folder, grouping, category, tag
+_Avoid_: folder, grouping, category
 
 **Pinned**:
 A flag on a Smart Folder or on a topic's membership in a Smart Folder that the agent must not remove, rename, re-parent, or delete. Set automatically when the person creates or edits the thing, and toggleable by the person.
@@ -85,6 +89,18 @@ _Avoid_: subjects, by subject
 **Agent**:
 The AI the person brings and connects over MCP, such as Claude, that organizes the vault. The app never calls a model itself.
 _Avoid_: the AI, the model, background AI
+
+**Feedback**:
+What the person tells the agent about how a review filed their notes: a written comment or a Correction.
+_Avoid_: rating, review comment
+
+**Correction**:
+A change the person makes to the agent's filing, recorded as Feedback so the agent can learn from it.
+_Avoid_: override, undo
+
+**Vault Guide**:
+The one document per vault, written by both the person and the agent, that records the vault's organizational framework and the decisions behind it. The agent reads it before every Review and Capture.
+_Avoid_: guidelines, rules, preferences, memory, CLAUDE.md
 
 **Graph view**:
 A read-only, automatically laid out view of notes and the wikilinks between them, scoped to a Smart Folder, topic note, daily note, or the whole vault. Nothing about its layout is stored.
