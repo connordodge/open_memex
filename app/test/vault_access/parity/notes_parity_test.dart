@@ -178,6 +178,8 @@ void main() {
         'created_at': local.createdAt,
         'updated_at': local.updatedAt,
         'tags': local.tags,
+        // WI #242: the hosted read's field; this note has no footer tag.
+        'footer_tags': const <String>[],
       });
     },
   );

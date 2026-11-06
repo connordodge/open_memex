@@ -100,15 +100,15 @@ The first time Claude calls `search` or `create_note` with this flag, the BGE-sm
 
 ## 5. Restart Claude Desktop
 
-Fully quit and re-open it. Claude Desktop keeps `memex serve` running from whichever binary it started, so do this after every `cargo install` too (see "Upgrading to schema V5" in the [README](../README.md) before you point a new binary at an existing vault). After restart, you should see the memex tools in Claude's tools panel. The server exposes 33 tools; the README lists them all. The core ones:
+Fully quit and re-open it. Claude Desktop keeps `memex serve` running from whichever binary it started, so do this after every `cargo install` too (see "Upgrading to schema V5" in the [README](../README.md) before you point a new binary at an existing vault). After restart, you should see the memex tools in Claude's tools panel. The server exposes 37 tools; the README lists them all. The core ones:
 
 - `search` — hybrid keyword + semantic search across your notes.
 - `get_note` — fetch the full content of a note. Pass `include_backlinks: true` to also receive `links` (outgoing) and `backlinks` (incoming) maps grouped by kind.
-- `create_note` — create a new note (auto-tagged `inbox` + `agent-authored`).
+- `create_note` — create a new note (auto-tagged `inbox` + `agent-authored`). A tag name outside the tag grammar is rejected with `invalid_argument`.
 - `neighbors` — BFS over the link graph from a starting note. Treats edges as undirected for traversal but preserves direction in `EdgeMeta`. Self-edges excluded. Server-side depth clamp to `[1, 3]`. Optional `kind` filter.
 - `add_link` — add a wikilink from one note to another. `kind=references` (default) appends to a `## Auto-added links` section; any other kind (built-in or user-defined kebab-case) writes into YAML frontmatter under that key. Idempotent.
 
-The rest cover canvases (`list_canvases`, `get_canvas`, `create_canvas`, `add_to_canvas`, `remove_from_canvas`, `move_node`, `delete_canvas`), daily-note review (`list_unreviewed_days`, `get_daily_note_changes`, `mark_day_reviewed`), capture and excerpts (`append_to_daily_note`, `add_excerpt`, `remove_excerpt`) and Smart Folders (`list_smart_folders`, `create_smart_folder`, `update_smart_folder`, `delete_smart_folder`, `add_to_smart_folder`, `remove_from_smart_folder`, `get_vault_settings`), plus `update_link`.
+The rest cover canvases (`list_canvases`, `get_canvas`, `create_canvas`, `add_to_canvas`, `remove_from_canvas`, `move_node`, `delete_canvas`), daily-note review (`list_unreviewed_days`, `get_daily_note_changes`, `mark_day_reviewed`), capture and excerpts (`append_to_daily_note`, `add_excerpt`, `remove_excerpt`) and Smart Folders (`list_smart_folders`, `create_smart_folder`, `update_smart_folder`, `delete_smart_folder`, `add_to_smart_folder`, `remove_from_smart_folder`, `get_vault_settings`), tags and footer topics (`list_tags`, `tag_note`, `untag_note`, `add_footer_topic`), plus `update_link`.
 
 The server also offers two prompts, `review_daily_notes` and `capture`. Attach one from the `+` menu in a chat. See [`docs/daily-review.md`](daily-review.md) for what they do.
 
@@ -154,4 +154,5 @@ tail -f ~/Documents/MyMemex/.memex/mcp.log.*
 - A live editing UI (Flutter macOS app) is shipped — see the main README. The Flutter app and Claude Desktop can be pointed at the same vault simultaneously; SQLite WAL handles concurrent access.
 - This guide uses a local vault: a folder on this Mac's own disk. To use one vault from several devices, run a vault server and connect to the hosted vault; see [Hosted vault](hosted-vault.md).
 - There are no MCP tools to edit, rename or delete an existing note, by design. Claude can create notes, link them, append to daily notes and file excerpts; editing and deleting are yours, through the app or the CLI (`memex update`, `memex rm`).
+- `tag_note`, `untag_note` and `add_footer_topic` write footer text only, including on daily notes, and never your own text; `tag_note` accepts only tags you have already written in your notes (`list_tags`).
 - Schema is versioned (currently V5); upgrades run forward migrations when a newer `memex` opens a vault, and older binaries refuse a newer vault. Don't manually edit `memex.db`.

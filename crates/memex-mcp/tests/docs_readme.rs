@@ -1966,3 +1966,209 @@ fn hosted_vault_doc_says_which_callers_send_the_utc_offset_and_that_the_server_z
         "the server zone is only the fallback for a caller that sends no offset: {fallback}"
     );
 }
+
+// ======================================================================
+// WI #243 (Spec #234 R41-R44, D44): the tag tools and `memex tag` in the docs.
+//
+// The prose is read by hand; these tests pin the facts that can be checked
+// mechanically. Helpers carry a `wi243_` prefix.
+// ======================================================================
+
+const WI243_TAG_NAMES: [&str; 4] = ["list_tags", "tag_note", "untag_note", "add_footer_topic"];
+
+fn wi243_desktop_setup() -> String {
+    read_repo_file("docs/claude-desktop-setup.md")
+}
+
+/// The text from the heading line that starts with `heading` to the next
+/// `## ` or `### ` line.
+fn wi243_section(md: &str, heading: &str) -> String {
+    let mut out = String::new();
+    let mut inside = false;
+    for line in md.lines() {
+        if line.starts_with(heading) {
+            inside = true;
+        } else if inside && (line.starts_with("## ") || line.starts_with("### ")) {
+            break;
+        }
+        if inside {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    assert!(inside, "no heading starting with {heading:?}");
+    out
+}
+
+/// The lines of `md` that contain `needle`.
+fn wi243_lines_with<'a>(md: &'a str, needle: &str) -> Vec<&'a str> {
+    md.lines().filter(|l| l.contains(needle)).collect()
+}
+
+/// Asserts the `line` says the three footer-writing tools write footer text
+/// and never the person's own text.
+fn wi243_assert_footer_write_line(what: &str, line: &str) {
+    for tool in ["tag_note", "untag_note", "add_footer_topic"] {
+        assert!(
+            line.contains(&format!("`{tool}`")),
+            "{what} must name `{tool}` in the same statement: {line}"
+        );
+    }
+    let lower = line.to_lowercase();
+    assert!(
+        lower.contains("footer"),
+        "{what} must say these tools write footer text: {line}"
+    );
+    assert!(
+        lower.contains("daily note"),
+        "{what} must say this includes daily notes: {line}"
+    );
+    assert!(
+        Regex::new(r"(?i)\b(never|not|no)\b")
+            .unwrap()
+            .is_match(line),
+        "{what} must say they never write the person's text: {line}"
+    );
+}
+
+#[test]
+fn docs_name_the_four_tag_tools_in_the_readme_the_review_guide_and_the_setup_guide() {
+    for (name, doc) in [
+        ("README.md", readme()),
+        ("docs/daily-review.md", daily_review()),
+        ("docs/claude-desktop-setup.md", wi243_desktop_setup()),
+    ] {
+        for tool in WI243_TAG_NAMES {
+            assert!(
+                doc.contains(&format!("`{tool}`")),
+                "{name} must name `{tool}` in backticks"
+            );
+        }
+    }
+}
+
+#[test]
+fn desktop_setup_tool_list_gains_the_four_tag_tools_and_create_note_keeps_its_auto_tags() {
+    let doc = wi243_desktop_setup();
+    let section = wi243_section(&doc, "## 5. Restart Claude Desktop");
+    for tool in WI243_TAG_NAMES {
+        assert!(
+            section.contains(&format!("`{tool}`")),
+            "the setup guide's tool list (section 5) names `{tool}`:\n{section}"
+        );
+    }
+    let create = wi243_lines_with(&section, "- `create_note`");
+    assert_eq!(create.len(), 1, "one `create_note` bullet:\n{section}");
+    assert!(
+        create[0].contains("`inbox`") && create[0].contains("`agent-authored`"),
+        "the bullet keeps the auto-tags: {}",
+        create[0]
+    );
+    assert!(
+        create[0].contains("`invalid_argument`")
+            && Regex::new(r"(?i)grammar").unwrap().is_match(create[0]),
+        "the bullet says a tag name outside the tag grammar is `invalid_argument` (D43): {}",
+        create[0]
+    );
+}
+
+#[test]
+fn review_guide_lists_list_tags_and_tag_note_in_the_order_a_review_uses_the_tools() {
+    let doc = daily_review();
+    let line = wi243_lines_with(&doc, "in the order a review uses them");
+    assert_eq!(line.len(), 1, "one ordered tool list: {line:?}");
+    let line = line[0];
+    let mut from = 0;
+    for tool in [
+        "list_unreviewed_days",
+        "get_daily_note_changes",
+        "list_tags",
+        "tag_note",
+        "mark_day_reviewed",
+    ] {
+        let needle = format!("`{tool}`");
+        let at = line[from..]
+            .find(&needle)
+            .unwrap_or_else(|| panic!("{needle} missing or out of order in: {line}"));
+        from += at + needle.len();
+    }
+}
+
+#[test]
+fn review_guide_states_the_served_tool_count_not_a_stale_one() {
+    let doc = daily_review();
+    assert!(
+        !doc.contains("26 tools"),
+        "docs/daily-review.md still says 26 tools"
+    );
+    assert!(
+        doc.contains(&format!("{} tools", tool_names::TOOL_COUNT)),
+        "docs/daily-review.md states the served tool count ({} tools)",
+        tool_names::TOOL_COUNT
+    );
+}
+
+#[test]
+fn review_guide_says_the_tag_tools_write_footer_text_including_on_daily_notes_and_never_the_persons_text(
+) {
+    let doc = daily_review();
+    let section = wi243_section(&doc, "### What the agent can and cannot do");
+    let lines = wi243_lines_with(&section, "`tag_note`");
+    let line = lines
+        .iter()
+        .find(|l| l.contains("`untag_note`") && l.contains("`add_footer_topic`"))
+        .unwrap_or_else(|| {
+            panic!(
+                "'What the agent can and cannot do' has one statement naming `tag_note`, \
+                 `untag_note` and `add_footer_topic`:\n{section}"
+            )
+        });
+    wi243_assert_footer_write_line("docs/daily-review.md", line);
+}
+
+#[test]
+fn setup_guide_limits_say_the_tag_tools_write_footer_text_including_on_daily_notes_and_never_the_persons_text(
+) {
+    let doc = wi243_desktop_setup();
+    let section = wi243_section(&doc, "## Notes / known limits");
+    let line = wi243_lines_with(&section, "`tag_note`");
+    assert_eq!(
+        line.len(),
+        1,
+        "one statement in 'Notes / known limits' names `tag_note`:\n{section}"
+    );
+    wi243_assert_footer_write_line("docs/claude-desktop-setup.md", line[0]);
+}
+
+#[test]
+fn readme_not_yet_list_says_the_tag_tools_write_footer_text_including_on_daily_notes_and_never_the_persons_text(
+) {
+    let readme = readme();
+    let line = wi243_lines_with(&readme, "by design agents only");
+    assert_eq!(line.len(), 1, "one 'by design agents only' line: {line:?}");
+    wi243_assert_footer_write_line("README.md", line[0]);
+}
+
+#[test]
+fn readme_and_review_guide_document_memex_tag_ls_tag_filter_and_footer_add_by_note_id() {
+    let ls_tag = Regex::new(r"memex ls[^\n]*--tag").unwrap();
+    let footer_add = Regex::new(r"memex footer add[^\n]*--note-id").unwrap();
+    for (name, doc) in [
+        ("README.md", readme()),
+        ("docs/daily-review.md", daily_review()),
+    ] {
+        for sub in ["add", "rm", "ls"] {
+            let re = Regex::new(&format!(r"memex tag (?:[a-z]+\|)*{sub}(?:\|[a-z]+)*\b")).unwrap();
+            assert!(
+                re.is_match(&doc),
+                "{name} documents `memex tag {sub}` (alone or as `memex tag add|rm|ls`)"
+            );
+        }
+        assert!(ls_tag.is_match(&doc), "{name} documents `memex ls --tag`");
+        assert!(
+            footer_add.is_match(&doc),
+            "{name} documents `memex footer add --note-id`"
+        );
+        assert_commands_are_real(name, &doc);
+    }
+}

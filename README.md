@@ -22,7 +22,8 @@ Open-source, local-first, AI-native knowledge base. The user's notes live on the
   - `memex append --vault <path> [--date YYYY-MM-DD] [TEXT]` — quick entry: append text to a daily note (today by default; text from the argument or stdin) and print the new block ids, the content version and the day's prior review state as JSON. The one CLI write meant for automation (Raycast, Alfred, Shortcuts, shell aliases).
   - `memex prompt review` / `memex prompt capture` — print the agent prompt texts
   - `memex rm --vault <path> --note-id <id> --expected-version <v>` — delete a note (people only; there is no MCP delete tool)
-  - `memex excerpt rm` — remove one excerpt from a topic note; `memex footer add` — add a topic to a daily note's Note footer
+  - `memex excerpt rm` — remove one excerpt from a topic note; `memex footer add --vault <path> --note-id <id> --topic-note-id <id>` — add a topic to a note's Note footer
+  - `memex tag add|rm --vault <path> --note-id <id> --tag <name>` — add or remove a tag in a note's footer; `memex tag ls --vault <path> [--note-id <id>]` — list every tag, or one note's tags and their origins; `memex ls --vault <path> --tag <name>` — list only the notes with that tag
   - `memex folder ls|new|update|rm|add|remove` — manage Smart Folders and their members; `memex settings get|set --key smart_folder_max_depth` — read or change a vault setting
   - `memex canvas …` — canvas operations (see [`docs/canvas.md`](docs/canvas.md))
 - **Daily notes and agent review** (see [`docs/daily-review.md`](docs/daily-review.md), and [`docs/daily-acceptance.md`](docs/daily-acceptance.md) for the manual acceptance script):
@@ -38,13 +39,14 @@ Open-source, local-first, AI-native knowledge base. The user's notes live on the
 - Hybrid search: FTS5 (BM25) + optional vector (cosine) fused via Reciprocal Rank Fusion
 - Local embeddings via `fastembed-rs` (`BGE-small-en-v1.5`, 384-dim) — opt-in with `--with-embeddings`
 - **Wikilinks**: `[[Title]]`, `[[Title~kind]]`, `[[Title|alias]]`, `[[Title~kind|alias]]`. Two-tier kind vocabulary — four built-ins (`references`, `extends`, `contradicts`, `example-of`) get curated section headings + frontmatter shortcuts; user-defined kebab-case kinds are first-class for storage and `neighbors()` queries. See [`docs/wikilinks.md`](docs/wikilinks.md).
-- 33 MCP tools:
+- 37 MCP tools:
   - search and links: `search`, `get_note` (with `include_backlinks`), `create_note` (with `role`), `neighbors`, `add_link`, `update_link`
   - canvases (see [`docs/canvas.md`](docs/canvas.md)): `list_canvases`, `get_canvas`, `create_canvas`, `add_to_canvas`, `remove_from_canvas`, `move_node`, `delete_canvas`
   - review: `list_unreviewed_days`, `get_daily_note_changes`, `mark_day_reviewed`
   - Feedback and the Vault Guide: `get_vault_guide`, `update_vault_guide`, `list_open_feedback`, `resolve_feedback`, `record_feedback`, `get_day_filing`, `remove_excerpt_block`
   - capture and excerpts: `append_to_daily_note`, `add_excerpt`, `remove_excerpt`
   - Smart Folders and settings: `list_smart_folders`, `create_smart_folder`, `update_smart_folder`, `delete_smart_folder`, `add_to_smart_folder`, `remove_from_smart_folder`, `get_vault_settings`
+  - tags and footer topics: `list_tags`, `tag_note`, `untag_note`, `add_footer_topic`
 - None of the tools renames, edits or deletes an existing note, and the only write into a daily note body is `append_to_daily_note`.
 - 2 MCP prompts: `review_daily_notes` and `capture` (the same texts print with `memex prompt review` and `memex prompt capture`)
 
@@ -166,7 +168,7 @@ cd app && flutter analyze && flutter test
 - In-editor wikilink rendering + click-to-navigate (today the right-panel Connections tab handles navigation; styled `TextSpan` + tap routing on `EditableText` is the v2 work)
 - Plugin system
 - Encryption at rest
-- MCP tools that rename, edit or delete existing notes (people do those through the app or `memex update` and `memex rm`; by design agents only create notes, append to daily notes and file excerpts)
+- MCP tools that rename, edit or delete existing notes (people do those through the app or `memex update` and `memex rm`; by design agents only create notes, append to daily notes, file excerpts, and write footer text with `tag_note`, `untag_note` and `add_footer_topic`, including on daily notes, never the person's own text)
 - Transclusion of whole notes (`![[Title]]`); only blocks of daily notes can be transcluded, as excerpts
 
 ## License

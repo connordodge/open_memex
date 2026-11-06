@@ -5,4 +5,5 @@ Usage: memex ls [OPTIONS] --vault <VAULT>
 Options:
       --vault <VAULT>  Vault directory
       --limit <LIMIT>  Max notes to show [default: 20]
+      --tag <TAG>      Only notes with this tag
   -h, --help           Print help

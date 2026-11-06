@@ -7,6 +7,7 @@ use crate::caller::Caller;
 use crate::canvas::{Clock, SystemClock};
 use crate::daily;
 use crate::error::MemexError;
+use crate::tags;
 use crate::vault::{now_unix_ms, Vault};
 use crate::Result;
 
@@ -91,6 +92,8 @@ pub struct CreateOutcome {
 /// gains `role: daily`, keeps its id and content, and gets `content_md`
 /// appended with the C3.1 separator. Its body is stored in the canonical daily
 /// layout with its blocks and `day_reviews` row, in one transaction (D9).
+/// A person's body, unless the note is `role: guide`, gets its body tags in that
+/// transaction; an agent's isn't scanned (Spec #234 R3).
 ///
 /// Frontmatter that `is_guide` fails with `guide_rule` for every caller: only
 /// `guide::get_or_create` creates the Vault Guide (#233).
@@ -151,6 +154,9 @@ pub fn create_or_adopt_note(
             now,
         ],
     )?;
+    if caller == Caller::Person && !is_guide(&frontmatter) {
+        tags::reconcile_body_tags(&tx, id.as_str(), &input.content_md, is_daily, now)?;
+    }
     let content_md = if is_daily {
         let source = daily::block_source(caller);
         let body =
@@ -232,7 +238,7 @@ fn note_titled(
 }
 
 /// Parses stored frontmatter, reading malformed JSON as `null`.
-fn lenient_frontmatter(stored: &str) -> serde_json::Value {
+pub(crate) fn lenient_frontmatter(stored: &str) -> serde_json::Value {
     serde_json::from_str(stored).unwrap_or(serde_json::Value::Null)
 }
 
@@ -399,7 +405,10 @@ fn check_guide_fields(
 /// source) and its content version is bumped when the person text changed.
 /// Any other note but a `role: guide` one stores its person section with the
 /// Note footer rendered from its rows (Spec #234 R14); a guide's body is
-/// stored as given. Daily notes rewritten by the rename pass are re-synced
+/// stored as given. A person's patch with a body re-derives the note's body
+/// tags in the save transaction, unless the note is a guide (R3); no other
+/// save scans. A note becoming a guide loses its tag rows, chips and footer in
+/// that save, whoever writes it (R53). Daily notes rewritten by the rename pass are re-synced
 /// the same way and also get a new `version`; other linkers get their footer
 /// re-rendered. Callers reindex from the returned note (D8).
 pub fn update_note_as(
@@ -448,6 +457,9 @@ pub fn update_note_as(
     let title_changed = new_title != current_title;
     let is_daily = daily::is_daily(&new_fm);
     let becomes_daily = is_daily && !daily::is_daily(&lenient_frontmatter(&current_fm));
+    let guide = is_guide(&new_fm);
+    let becomes_guide = guide && !is_guide(&lenient_frontmatter(&current_fm));
+    let derives_tags = caller == Caller::Person && patch.content_md.is_some() && !guide;
 
     if title_changed {
         validate_title(&new_title)?;
@@ -481,6 +493,14 @@ pub fn update_note_as(
     {
         let tx = vault.conn_mut().transaction()?;
 
+        // Tag rows first: the footer below renders from them.
+        if derives_tags {
+            tags::reconcile_body_tags(&tx, id.as_str(), &new_content, is_daily, now)?;
+        }
+        if becomes_guide {
+            tags::clear_guide_rows(&tx, id.as_str())?;
+        }
+
         // The note itself first, so a linker's footer below renders the new
         // title. Every note but a guide keeps the footer rendered from its
         // rows (Spec #234 R14, D3).
@@ -494,7 +514,9 @@ pub fn update_note_as(
                 new_version,
                 now,
             )?
-        } else if is_guide(&new_fm) {
+        } else if becomes_guide {
+            daily::split_note_body(&new_content).person
+        } else if guide {
             new_content
         } else {
             daily::sync_note_footer(&tx, id.as_str(), &new_content)?
@@ -604,13 +626,38 @@ pub fn update_note_as(
 /// `block_source` (`person`, `agent` or `quick-entry`), and fails with
 /// `VersionConflict` on a stale `expected_version` so callers can retry.
 /// A note that is not `role: daily` fails with `RoleRule`. The caller
-/// reindexes from the returned note (D8).
+/// reindexes from the returned note (D8). It leaves body tags alone; see
+/// [`append_daily_internal`].
 pub(crate) fn write_daily_internal(
     vault: &mut Vault,
     id: &NoteId,
     expected_version: i64,
     new_body: &str,
     block_source: &str,
+) -> Result<Note> {
+    write_daily(vault, id, expected_version, new_body, block_source, false)
+}
+
+/// [`write_daily_internal`] for an append, which also re-derives the note's
+/// body tags in the write transaction: an append is the person's verbatim
+/// words, whichever surface carries them (Spec #234 R3).
+pub(crate) fn append_daily_internal(
+    vault: &mut Vault,
+    id: &NoteId,
+    expected_version: i64,
+    new_body: &str,
+    block_source: &str,
+) -> Result<Note> {
+    write_daily(vault, id, expected_version, new_body, block_source, true)
+}
+
+fn write_daily(
+    vault: &mut Vault,
+    id: &NoteId,
+    expected_version: i64,
+    new_body: &str,
+    block_source: &str,
+    derives_tags: bool,
 ) -> Result<Note> {
     let current = get_note(vault, id)?;
     if current.version != expected_version {
@@ -627,6 +674,9 @@ pub(crate) fn write_daily_internal(
     let now = now_unix_ms();
     let new_version = current.version + 1;
     let tx = vault.conn_mut().transaction()?;
+    if derives_tags {
+        tags::reconcile_body_tags(&tx, id.as_str(), new_body, true, now)?;
+    }
     let body = daily::sync_daily_note(
         &tx,
         id.as_str(),

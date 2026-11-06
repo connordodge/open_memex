@@ -1,0 +1,12 @@
+Add, remove or list tags
+
+Usage: memex tag <COMMAND>
+
+Commands:
+  add   Add a tag to a note, in its footer
+  rm    Remove a tag from a note
+  ls    List every tag, or one note's tags
+  help  Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help

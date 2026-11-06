@@ -1,0 +1,9 @@
+Add a tag to a note, in its footer
+
+Usage: memex tag add --vault <VAULT> --note-id <NOTE_ID> --tag <TAG>
+
+Options:
+      --vault <VAULT>      Vault directory
+      --note-id <NOTE_ID>  Note id (ULID)
+      --tag <TAG>          Tag name
+  -h, --help               Print help

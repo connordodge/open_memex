@@ -26,16 +26,17 @@ The sidebar browses the vault two ways: **Days** (a list by date) and **Topics**
 The rules below are enforced by the MCP server for every call, so a weakly prompted agent still cannot damage the vault.
 
 - It never rewrites, reorders or deletes your text in a daily note. Its only write into a daily note body is `append_to_daily_note`, which adds blocks above the Note footer. Filing goes through `add_excerpt` and `remove_excerpt`, which also maintain the Note footer; the agent never writes transclusion or footer syntax itself.
+- `tag_note`, `untag_note` and `add_footer_topic` write footer text only, including on daily notes, and never your own text: a tag an agent applies is a line in the Note footer, not a `#tag` in the body. `tag_note` applies only tags from `list_tags`, the tags you have already written in your notes, and never one you removed from that note.
 - It cannot rename, delete or merge notes: there is no MCP tool for it. Deleting a note is yours alone (`Delete note` in the app, or `memex rm`).
 - It respects pinned items and the depth limit, and `mark_day_reviewed` fails with `review_stale` if you edited the day after the agent fetched it.
 
-The tools a review uses, in the order a review uses them: `list_unreviewed_days`, `get_daily_note_changes`, `search`, `get_note`, `create_note` (with `role: topic`), `add_excerpt`, `add_link`, `get_vault_settings`, `list_smart_folders`, `create_smart_folder`, `add_to_smart_folder`, `mark_day_reviewed`. The full list of 26 tools is in the [README](../README.md).
+The tools a review uses, in the order a review uses them: `list_unreviewed_days`, `get_daily_note_changes`, `search`, `get_note`, `create_note` (with `role: topic`), `add_excerpt`, `add_link`, `get_vault_settings`, `list_smart_folders`, `create_smart_folder`, `add_to_smart_folder`, `list_tags`, `tag_note`, `mark_day_reviewed`. The full list of 30 tools is in the [README](../README.md).
 
 ## 2. The two prompts
 
 The server exposes two MCP prompts. The same text is printed by the CLI, so you can use them from a client that does not support MCP prompts.
 
-**`review_daily_notes`** (`memex prompt review`). The agent lists the unreviewed days, takes the oldest first, fetches only the blocks that changed, searches for a matching topic note before creating one, adds excerpts, links topic notes that refer to each other (for example with kind `extends`), places new topic notes in Smart Folders within the depth limit, respects pinned items, marks the day reviewed with the version it fetched and a change entry for every note it touched (including the daily note), and repeats until no day is left.
+**`review_daily_notes`** (`memex prompt review`). The agent lists the unreviewed days, takes the oldest first, fetches only the blocks that changed, searches for a matching topic note before creating one, adds excerpts, links topic notes that refer to each other (for example with kind `extends`), places new topic notes in Smart Folders within the depth limit, respects pinned items, tags the day and the topic notes it touched with tags you already use (`list_tags`, then `tag_note`; a `Tagged #name` bullet records each one), marks the day reviewed with the version it fetched and a change entry for every note it touched (including the daily note), and repeats until no day is left.
 
 **`capture`** (`memex prompt capture`). For the rest of the session every message you send is an observation, not a question. The agent appends it verbatim to today's daily note with `append_to_daily_note`, files the returned blocks into topic notes, and replies with one short sentence saying where it went. It marks the day reviewed only when the day was already `Reviewed` before the append (`prior_state`). If the day held earlier text nobody had filed, or the version check fails, it runs a full review of the day first so that nothing is hidden by the mark.
 
@@ -85,6 +86,10 @@ Add `memex` as an MCP server in Raycast's MCP server settings (the menu names ch
 Raycast chat may not offer MCP prompts. Give the chat this one-sentence capture instruction in the chat's custom instructions, or paste the output of `memex prompt capture` there for the full version:
 
 > Treat every message I send as an observation: append it verbatim to today's daily note with `append_to_daily_note`, file the returned blocks into topic notes with `add_excerpt`, and reply in one short sentence saying where it went.
+
+### Tags from the shell
+
+People tag notes from the CLI too: `memex tag add --vault <path> --note-id <id> --tag <name>` and `memex tag rm --vault <path> --note-id <id> --tag <name>` change a note's footer tags, and `memex tag ls --vault <path>` lists every tag (add `--note-id <id>` for one note's tags and their origins). `memex ls --vault <path> --tag <name>` lists only the notes with that tag. `memex footer add --vault <path> --note-id <id> --topic-note-id <id>` adds a topic to a note's Note footer.
 
 ## 4. Quick entry with `memex append`
 
@@ -141,6 +146,6 @@ This runs at 21:00 every day. Use absolute paths because cron has a minimal `PAT
 
 Caller identity is the transport. A call that arrives over MCP is the agent; a call made through the `memex` command line, including every write the app makes, is you. The pinned, marker and append-only rules guard MCP calls only, because the command line is your own channel and is not guarded against whoever runs it. (The Smart Folder depth limit is different: the server enforces it for every caller.)
 
-So do not give an agent shell access to the `memex` write subcommands (`add`, `update`, `rm`, `add-link`, `excerpt rm`, `footer add`, `folder`, `settings` and the rest). An agent with a shell could rewrite a daily note, delete a note or unpin a Smart Folder, and none of the protections above would apply. Connect agents through `memex serve` only. `memex append` is the one CLI write intended for automation: it can only add new text at the end of a daily note and never edits or removes anything you wrote.
+So do not give an agent shell access to the `memex` write subcommands (`add`, `update`, `rm`, `add-link`, `excerpt rm`, `footer add`, `tag add`, `tag rm`, `folder`, `settings` and the rest). An agent with a shell could rewrite a daily note, delete a note or unpin a Smart Folder, and none of the protections above would apply. Connect agents through `memex serve` only. `memex append` is the one CLI write intended for automation: it can only add new text at the end of a daily note and never edits or removes anything you wrote.
 
 If you automate `memex append` from a script, remember that anything it adds will be filed by the next review as if you had typed it.

@@ -497,7 +497,7 @@ fn new_subcommands_help_lists_every_c2_flag() {
         ),
         (
             &["footer", "add"],
-            &["--vault", "--daily-note-id", "--topic-note-id"],
+            &["--vault", "--note-id", "--daily-note-id", "--topic-note-id"],
         ),
         (&["folder", "ls"], &["--vault"]),
         (&["folder", "new"], &["--vault", "--name", "--parent-id"]),

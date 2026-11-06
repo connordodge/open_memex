@@ -33,7 +33,12 @@ pub fn status_for_code(code: &str) -> StatusCode {
         | "folder_cycle"
         | "change_entries_invalid"
         | "review_stale"
-        | "block_not_found" => StatusCode::UNPROCESSABLE_ENTITY,
+        | "block_not_found"
+        | "unknown_tag"
+        | "tag_removed"
+        | "guide_rule"
+        | "feedback_handled"
+        | "feedback_invalid" => StatusCode::UNPROCESSABLE_ENTITY,
         "unauthorized" => StatusCode::UNAUTHORIZED,
         "payload_too_large" => StatusCode::PAYLOAD_TOO_LARGE,
         "method_not_allowed" => StatusCode::METHOD_NOT_ALLOWED,
