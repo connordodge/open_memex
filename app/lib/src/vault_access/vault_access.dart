@@ -3,6 +3,7 @@ import 'daily_access.dart';
 import 'feedback_access.dart';
 import 'graph_access.dart';
 import 'notes_access.dart';
+import 'tags_access.dart';
 import 'topics_access.dart';
 
 export 'canvas_access.dart';
@@ -10,6 +11,7 @@ export 'daily_access.dart';
 export 'feedback_access.dart';
 export 'graph_access.dart';
 export 'notes_access.dart';
+export 'tags_access.dart';
 export 'topics_access.dart';
 
 /// The app's single async door to a vault (D13, Req 32): one composite of
@@ -25,6 +27,7 @@ abstract interface class VaultAccess {
   TopicsAccess get topics;
   CanvasAccess get canvas;
   GraphAccess get graph;
+  TagsAccess get tags;
 
   /// The vault's opaque revision (Req 22, D9). It changes after every
   /// committed write by any writer; it may also change with no visible

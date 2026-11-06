@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'package:sqlite3/sqlite3.dart';
 
+import 'editor/tag_grammar.dart';
+
 /// Read-only access to the vault's SQLite file from Dart. All writes go
 /// through the `memex` CLI to keep indexing/embedding logic in one place.
 class VaultDb {
@@ -89,6 +91,18 @@ class VaultDb {
         .select('SELECT tag FROM tags WHERE note_id = ? ORDER BY tag', [id])
         .map((row) => row['tag'] as String)
         .toList();
+    // Probed on every read: the CLI may migrate while this handle is open.
+    final footerTags = hasColumns('tags', v6TagColumns)
+        ? db
+              .select(
+                "SELECT tag FROM tags WHERE note_id = ? AND origin != 'body' "
+                'ORDER BY tag',
+                [id],
+              )
+              .map((row) => row['tag'] as String)
+              .where((tag) => !isSystemTag(tag))
+              .toList()
+        : const <String>[];
     return Note(
       id: r['id'] as String,
       title: r['title'] as String,
@@ -98,6 +112,7 @@ class VaultDb {
       createdAt: (r['created_at'] as num).toInt(),
       updatedAt: (r['updated_at'] as num).toInt(),
       tags: tags,
+      footerTags: footerTags,
     );
   }
 
@@ -390,6 +405,7 @@ class Note {
     required this.createdAt,
     required this.updatedAt,
     required this.tags,
+    this.footerTags = const [],
   });
   final String id;
   final String title;
@@ -399,6 +415,14 @@ class Note {
   final int createdAt;
   final int updatedAt;
   final List<String> tags;
+
+  /// The tags the Note footer shows: origin other than `body`, not a system
+  /// tag, ordered by tag. Empty below schema V6 (#249, TD6).
+  final List<String> footerTags;
+
+  /// [tags] without the system tags (`isSystemTag`, D17).
+  List<String> get visibleTags =>
+      tags.where((tag) => !isSystemTag(tag)).toList();
 
   /// The note's role from the frontmatter JSON (`$.role`): `daily`, `topic`,
   /// or null when absent or when the frontmatter is not valid JSON.

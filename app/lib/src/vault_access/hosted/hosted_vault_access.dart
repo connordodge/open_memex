@@ -10,6 +10,7 @@ import 'graph.dart';
 import 'hosted_client.dart';
 import 'notes.dart';
 import 'revision.dart';
+import 'tags.dart';
 import 'topics.dart';
 
 /// The HTTP client every hosted vault request goes through (D17): a real
@@ -46,6 +47,7 @@ class HostedVaultAccess implements VaultAccess {
       topics = HostedTopicsAccess(client: client, vaultName: vaultName),
       canvas = HostedCanvasAccess(client: client, vaultName: vaultName),
       graph = HostedGraphAccess(client: client, vaultName: vaultName),
+      tags = HostedTagsAccess(client: client, vaultName: vaultName),
       _revision = HostedRevision(client, vaultName);
 
   final _ComposedClient _client;
@@ -70,6 +72,9 @@ class HostedVaultAccess implements VaultAccess {
 
   @override
   final HostedGraphAccess graph;
+
+  @override
+  final HostedTagsAccess tags;
 
   final HostedRevision _revision;
 

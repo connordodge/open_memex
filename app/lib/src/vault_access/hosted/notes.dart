@@ -90,6 +90,8 @@ class HostedNotesAccess implements NotesAccess {
       createdAt: _int(json['created_at']),
       updatedAt: _int(json['updated_at']),
       tags: (json['tags'] as List).cast<String>(),
+      // Absent on a server older than #242: read as no footer tags.
+      footerTags: ((json['footer_tags'] as List?) ?? const []).cast<String>(),
     );
   }
 

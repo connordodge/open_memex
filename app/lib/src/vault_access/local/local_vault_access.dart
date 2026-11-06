@@ -7,6 +7,7 @@ import 'daily.dart';
 import 'feedback.dart';
 import 'graph.dart';
 import 'notes.dart';
+import 'tags.dart';
 import 'topics.dart';
 
 export 'canvas.dart';
@@ -14,6 +15,7 @@ export 'daily.dart';
 export 'feedback.dart';
 export 'graph.dart';
 export 'notes.dart';
+export 'tags.dart';
 export 'topics.dart';
 
 /// [VaultAccess] for a local vault at [vaultPath]: reads from the app's
@@ -33,6 +35,7 @@ class LocalVaultAccess implements VaultAccess {
     LocalTopicsAccess? topics,
     LocalCanvasAccess? canvas,
     LocalGraphAccess? graph,
+    LocalTagsAccess? tags,
   }) : notes =
            notes ?? LocalNotesAccess(vaultPath: vaultPath, db: db, cli: cli),
        daily =
@@ -44,7 +47,8 @@ class LocalVaultAccess implements VaultAccess {
            topics ?? LocalTopicsAccess(vaultPath: vaultPath, db: db, cli: cli),
        canvas =
            canvas ?? LocalCanvasAccess(vaultPath: vaultPath, db: db, cli: cli),
-       graph = graph ?? LocalGraphAccess(vaultPath: vaultPath, db: db);
+       graph = graph ?? LocalGraphAccess(vaultPath: vaultPath, db: db),
+       tags = tags ?? LocalTagsAccess(vaultPath: vaultPath, db: db, cli: cli);
 
   final String vaultPath;
   final VaultDb? db;
@@ -62,6 +66,8 @@ class LocalVaultAccess implements VaultAccess {
   final LocalCanvasAccess canvas;
   @override
   final LocalGraphAccess graph;
+  @override
+  final LocalTagsAccess tags;
 
   /// The revision of a local vault with no database handle. Constant: with no
   /// handle every read is empty, so there is nothing to reload.
