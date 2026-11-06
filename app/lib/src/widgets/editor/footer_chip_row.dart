@@ -46,7 +46,7 @@ class FooterChipBar extends ConsumerWidget {
                     behavior: HitTestBehavior.opaque,
                     onTap: () => ref
                         .read(tabsProvider.notifier)
-                        .openOrFocus(NoteTab(chip.topicNoteId)),
+                        .follow(NoteTab(chip.topicNoteId)),
                     child: OmChip(label: chip.topicTitle),
                   ),
                 ),

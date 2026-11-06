@@ -116,3 +116,13 @@ _Avoid_: API key, password
 **Table**:
 A GitHub-flavoured markdown pipe table in a note body: a header line, a delimiter line (such as `|---|:-:|`) and zero or more body lines. Live preview shows it as one table row of the editor: a grid, or its raw lines while revealed.
 _Avoid_: grid (for the markdown), spreadsheet
+
+## Navigation (#230)
+
+**Navigate**:
+To show a different note, canvas, or Graph view in the current tab. Opening something in a new tab is not navigating.
+_Avoid_: open (for staying in the tab), jump, go to
+
+**Tab history**:
+The ordered record of what one tab has shown, which Back walks through. Each tab has its own.
+_Avoid_: navigation stack, breadcrumbs, recents

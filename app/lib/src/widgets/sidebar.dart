@@ -105,7 +105,7 @@ class Sidebar extends ConsumerWidget {
       );
       if (c == null) return;
       ref.read(vaultRevisionProvider.notifier).state++;
-      ref.read(tabsProvider.notifier).openOrFocus(CanvasTab(c.canvasId));
+      ref.read(tabsProvider.notifier).navigate(CanvasTab(c.canvasId));
     } catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(

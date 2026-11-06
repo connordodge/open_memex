@@ -1,6 +1,7 @@
 import 'dart:async' show scheduleMicrotask;
 import 'dart:math' show max, min;
 
+import 'package:flutter/services.dart' show HardwareKeyboard;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../db/daily_reads.dart' show DailyNoteRow;
@@ -318,16 +319,41 @@ class TabsNotifier extends StateNotifier<TabsState> {
 
   /// The call for any click that goes somewhere (#230): with the new-tab
   /// modifier held, [openOrFocus] the [target]; otherwise [navigate] to it.
-  void follow(WorkspaceTab target) {}
+  void follow(WorkspaceTab target) {
+    navigationObserver?.followed(target);
+    _goTo(target, newTab: _newTabModifierHeld);
+  }
 
   /// Shows [target]. Delegates to [openOrFocus] until #266 makes it navigate
   /// in the current tab.
-  void navigate(WorkspaceTab target) {}
+  void navigate(WorkspaceTab target) {
+    navigationObserver?.navigated(target);
+    openOrFocus(target);
+  }
 
   /// For a click whose target needs an async lookup: reads the modifier now
   /// and returns the function to call with the target later. That function
   /// does nothing once this notifier is disposed.
-  void Function(WorkspaceTab target) followLater() => (WorkspaceTab target) {};
+  void Function(WorkspaceTab target) followLater() {
+    final newTab = _newTabModifierHeld;
+    return (WorkspaceTab target) {
+      if (!mounted) return;
+      navigationObserver?.followed(target);
+      _goTo(target, newTab: newTab);
+    };
+  }
+
+  bool get _newTabModifierHeld =>
+      isNewTabModifierPressed?.call() ??
+      HardwareKeyboard.instance.isMetaPressed;
+
+  void _goTo(WorkspaceTab target, {required bool newTab}) {
+    if (newTab) {
+      openOrFocus(target);
+    } else {
+      navigate(target);
+    }
+  }
 
   /// [tabs] with the least-recently-used tab other than [active] removed
   /// when they are over [kMaxOpenTabs] (LRU eviction).

@@ -38,8 +38,7 @@ class NotesPane extends ConsumerWidget {
         return _TreeItem(
           note: n,
           active: n.id == activeNoteId,
-          onTap: () =>
-              ref.read(tabsProvider.notifier).openOrFocus(NoteTab(n.id)),
+          onTap: () => ref.read(tabsProvider.notifier).follow(NoteTab(n.id)),
         );
       },
     );
