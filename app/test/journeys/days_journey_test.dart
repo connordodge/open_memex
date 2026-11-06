@@ -365,7 +365,7 @@ void main() {
   });
 
   group('opening rows (AC8)', () {
-    testWidgets('tapping a dated row opens the tab of that daily note', (
+    testWidgets('tapping a dated row shows that daily note in the active tab', (
       tester,
     ) async {
       final r = DaysRobot(tester);
@@ -480,7 +480,7 @@ void main() {
     );
 
     testWidgets(
-      'after midnight the Today row opens the virtual Today tab for 2026-10-04 and the 2026-10-03 row opens its note',
+      'after midnight the Today row opens the virtual Today tab for 2026-10-04 and the 2026-10-03 row shows its note in the Today tab',
       (tester) async {
         final r = DaysRobot(tester);
         await r.launch(

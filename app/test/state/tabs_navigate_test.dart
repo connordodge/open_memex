@@ -1107,9 +1107,20 @@ void main() {
 
       tabs.back();
 
-      expect(await onDisk(store), await asOnMain([_a, _x], 0));
+      final afterBack = await onDisk(store);
+      expect(afterBack['active_tab_index'], 0);
+      expect(afterBack['tabs'], [
+        {'kind': 'note', 'id': 'a'},
+        {'kind': 'note', 'id': 'x'},
+      ]);
+      expect(afterBack, await asOnMain([_a, _x], 0));
       tabs.forward();
-      expect(await onDisk(store), await asOnMain([_b, _x], 0));
+      final afterForward = await onDisk(store);
+      expect(afterForward['tabs'], [
+        {'kind': 'note', 'id': 'b'},
+        {'kind': 'note', 'id': 'x'},
+      ]);
+      expect(afterForward, await asOnMain([_b, _x], 0));
     });
 
     test(
@@ -1135,8 +1146,16 @@ void main() {
 
         tabs.navigate(_b);
 
+        final json = await onDisk(store);
+        expect(json['canvas_viewports'], {
+          'board': {'dx': 1.0, 'dy': 2.0, 'zoom': 3.0},
+        });
+        expect(json['sidebar_mode'], 'topics');
+        expect(json['tabs'], [
+          {'kind': 'note', 'id': 'b'},
+        ]);
         expect(
-          await onDisk(store),
+          json,
           await asOnMain(
             [_b],
             0,
@@ -1357,6 +1376,31 @@ void main() {
         _expectTabs(p, [_real, _y], 1, back: true);
         p.notifier.setActive(0);
         _expectTabs(p, [_real, _y], 0);
+      },
+    );
+
+    test(
+      'resolveVirtualToday makes the leftmost tab showing the real note active when the active tab closes',
+      () async {
+        // [virtual*] [real, x behind] [real, y behind]: the virtual tab holds
+        // nothing else and the real note is open twice.
+        final p = await _probe(restored: [_x, _y], todayDate: _today);
+        p.notifier.setActive(1);
+        p.notifier.navigate(_real);
+        p.notifier.setActive(2);
+        p.notifier.navigate(_real);
+        p.notifier.setActive(0);
+        p.reset();
+
+        p.notifier.resolveVirtualToday(date: _today, noteId: _realId);
+
+        _expectTabs(p, [_real, _real], 0, back: true);
+        expect(p.selections, [_realId]);
+        p.notifier.back();
+        expect(p.state.activeTab, _x, reason: 'the leftmost one is active');
+        p.notifier.setActive(1);
+        p.notifier.back();
+        expect(p.state.activeTab, _y);
       },
     );
 
@@ -2098,6 +2142,39 @@ void main() {
         expect(p.store.writes, 0, reason: 'nothing persisted');
         expect(p.recorder.followed, isEmpty);
         expect(p.selections, isEmpty);
+      },
+    );
+
+    test(
+      'a followLater plain result taken with no tab open navigates the tab that is active when it lands',
+      () async {
+        final p = await _probe();
+        final later = p.notifier.followLater();
+        p.notifier.openOrFocus(_a);
+        p.reset();
+
+        later(_target);
+
+        _expectTabs(p, [_target], 0, back: true);
+        expect(p.selections, [_target.id]);
+        expect(p.recorder.followed, [_target]);
+        expect(p.recorder.navigated, [_target]);
+      },
+    );
+
+    test(
+      'a followLater plain result taken with no tab open opens the first tab when none is open when it lands',
+      () async {
+        final p = await _probe();
+        final later = p.notifier.followLater();
+
+        later(_target);
+
+        _expectTabs(p, [_target], 0);
+        expect(p.selections, [_target.id]);
+        expect(p.leaves, 0, reason: 'nothing was active to leave');
+        expect(p.recorder.followed, [_target]);
+        expect(p.recorder.navigated, [_target]);
       },
     );
   });
