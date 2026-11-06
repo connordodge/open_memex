@@ -13,6 +13,10 @@
 //! | `GET /notes/{note_id}/footer-chips` | `{"chips":[{topic_note_id,topic_title,origin}]}` |
 //! | `DELETE /notes/{topic_note_id}/excerpts?date=&block_ids=from[,to]` | the `memex excerpt rm` object |
 //! | `POST /notes/{daily_note_id}/footer-chips {topic_note_id}` | the `memex footer add` object (200) |
+//! | `GET /daily-notes/{date}/filing` | the `memex filing` object (#256) |
+//! | `POST /notes/{topic_note_id}/excerpts {date,block_id,note?}` | the `memex excerpt add` object (#256) |
+//! | `DELETE /notes/{topic_note_id}/excerpts/blocks/{block_id}?date=&note=` | the `memex excerpt remove-block` object (#256) |
+//! | `POST /notes/{from_topic_note_id}/excerpts/move {date,block_id,to_topic_note_id,note?}` | the `memex excerpt move` object (#256) |
 //!
 //! Errors are the C1 body the CLI prints for the same failure. The fixture
 //! rows in `app/test/fixtures/api_v1/daily/index.json` were made from the
@@ -374,18 +378,23 @@ async fn exec(srv: &TestServer, req: &FixtureRequest) -> FixtureResponse {
 }
 
 /// `(METHOD, path template)` of a row: ULIDs become `{id}`, the segment
-/// after `/daily-notes/` becomes `{date}`, and the query is reduced to its
+/// after `/daily-notes/` becomes `{date}`, the segment after
+/// `/excerpts/blocks/` becomes `{block_id}`, and the query is reduced to its
 /// parameter names.
 fn template(row: &FixtureRow) -> (String, String) {
     let ulid = Regex::new(r"[0-7][0-9A-HJKMNP-TV-Z]{25}").unwrap();
     let date = Regex::new(r"^/daily-notes/[^/?]+").unwrap();
+    let block = Regex::new(r"/excerpts/blocks/[^/?]+").unwrap();
     let path = row
         .path
         .strip_prefix(BASE)
         .unwrap_or_else(|| panic!("row path {} is not under {BASE}", row.path));
     let (p, q) = path.split_once('?').unwrap_or((path, ""));
     let t = ulid.replace_all(p, "{id}").into_owned();
-    let mut t = date.replace(&t, "/daily-notes/{date}").into_owned();
+    let t = date.replace(&t, "/daily-notes/{date}").into_owned();
+    let mut t = block
+        .replace(&t, "/excerpts/blocks/{block_id}")
+        .into_owned();
     let names: Vec<&str> = q
         .split('&')
         .filter(|kv| !kv.is_empty())
@@ -398,7 +407,8 @@ fn template(row: &FixtureRow) -> (String, String) {
     (row.method.clone(), t)
 }
 
-/// The routes of the WI #82 table, as `(METHOD, path)` under `BASE`.
+/// The routes of the WI #82 table and the rows #256 appended, as `(METHOD,
+/// path)` under `BASE`.
 const ROUTES: &[(&str, &str)] = &[
     ("GET", "/daily-notes"),
     ("GET", "/daily-notes/{date}"),
@@ -407,6 +417,10 @@ const ROUTES: &[(&str, &str)] = &[
     ("GET", "/notes/{id}/footer-chips"),
     ("POST", "/notes/{id}/footer-chips"),
     ("DELETE", "/notes/{id}/excerpts"),
+    ("GET", "/daily-notes/{date}/filing"),
+    ("POST", "/notes/{id}/excerpts"),
+    ("DELETE", "/notes/{id}/excerpts/blocks/{block_id}"),
+    ("POST", "/notes/{id}/excerpts/move"),
 ];
 
 #[test]
@@ -421,6 +435,10 @@ fn daily_fixture_rows_cover_every_route_and_match_the_server_on_the_seed() {
         ("GET", "/notes/{id}/footer-chips"),
         ("POST", "/notes/{id}/footer-chips"),
         ("DELETE", "/notes/{id}/excerpts?date&block_ids"),
+        ("GET", "/daily-notes/{date}/filing"),
+        ("POST", "/notes/{id}/excerpts"),
+        ("DELETE", "/notes/{id}/excerpts/blocks/{block_id}?date&note"),
+        ("POST", "/notes/{id}/excerpts/move"),
     ] {
         let want = (want.0.to_string(), want.1.to_string());
         assert!(seen.contains(&want), "daily/ has a row for {want:?}");
@@ -571,9 +589,9 @@ fn daily_index_routes_are_exactly_the_wi_table() {
         .iter()
         .map(|(m, p)| (m.to_string(), p.to_string()))
         .collect();
-    assert_eq!(served, table, "daily/index.json routes == the WI #82 table");
+    assert_eq!(served, table, "daily/index.json routes == the route table");
 
-    let allowed_query: BTreeSet<&str> = ["date", "block_ids"].into();
+    let allowed_query: BTreeSet<&str> = ["date", "block_ids", "note"].into();
     for row in &rows {
         let (_, t) = template(row);
         if let Some((_, q)) = t.split_once('?') {
@@ -584,12 +602,21 @@ fn daily_index_routes_are_exactly_the_wi_table() {
         if let Some(file) = &row.request {
             let body: Value =
                 serde_json::from_slice(&std::fs::read(daily_dir().join(file)).unwrap()).unwrap();
-            let keys: Vec<&String> = body
+            let allowed_body: BTreeSet<&str> = [
+                "topic_note_id",
+                "date",
+                "block_id",
+                "to_topic_note_id",
+                "note",
+            ]
+            .into();
+            for key in body
                 .as_object()
                 .expect("every request body is an object")
                 .keys()
-                .collect();
-            assert_eq!(keys, vec!["topic_note_id"], "{file}");
+            {
+                assert!(allowed_body.contains(key.as_str()), "{file}: field {key}");
+            }
         }
     }
 }
@@ -616,6 +643,7 @@ async fn daily_router_serves_exactly_the_table_routes_and_no_prompt_append_or_re
     let concrete = |p: &str| {
         p.replace("{id}", DAY_19)
             .replace("{date}", "2026-10-19")
+            .replace("{block_id}", "et8g8y")
             .to_string()
     };
     let paths: BTreeSet<&str> = ROUTES.iter().map(|(_, p)| *p).collect();
@@ -687,7 +715,10 @@ async fn daily_routes_keep_their_wire_urls_on_the_merged_api_router() {
     });
     let http = client();
     for (method, path) in ROUTES {
-        let concrete = path.replace("{id}", DAY_19).replace("{date}", "2026-10-19");
+        let concrete = path
+            .replace("{id}", DAY_19)
+            .replace("{date}", "2026-10-19")
+            .replace("{block_id}", "et8g8y");
         let url = format!("http://{addr}{BASE}{concrete}");
         let status = http
             .request(
@@ -736,6 +767,9 @@ async fn daily_routes_answer_wrong_methods_with_the_c1_405() {
     let blocks = format!("{BASE}/notes/{DAY_19}/blocks");
     let chips = format!("{BASE}/notes/{DAY_19}/footer-chips");
     let excerpts = format!("{BASE}/notes/{ECONOMY}/excerpts");
+    let filing = format!("{BASE}/daily-notes/2026-10-19/filing");
+    let block = format!("{BASE}/notes/{ECONOMY}/excerpts/blocks/et8g8y");
+    let moves = format!("{BASE}/notes/{ECONOMY}/excerpts/move");
     assert_wrong_method_is_c1_405(
         &env.srv,
         &[
@@ -744,7 +778,10 @@ async fn daily_routes_answer_wrong_methods_with_the_c1_405() {
             (review.as_str(), &["GET"][..]),
             (blocks.as_str(), &["GET"][..]),
             (chips.as_str(), &["GET", "POST"][..]),
-            (excerpts.as_str(), &["DELETE"][..]),
+            (excerpts.as_str(), &["DELETE", "POST"][..]),
+            (filing.as_str(), &["GET"][..]),
+            (block.as_str(), &["DELETE"][..]),
+            (moves.as_str(), &["POST"][..]),
         ],
     )
     .await;
