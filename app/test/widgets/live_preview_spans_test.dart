@@ -365,7 +365,7 @@ const List<(int, double)> _wi223Sizes = [
 const List<(int, Color)> _wi223Colours = [
   (1, OmColors.heading1),
   (2, OmColors.fg0),
-  (3, OmColors.heading3),
+  (3, OmColors.fg0),
   (4, OmColors.fg2),
   (5, OmColors.fg2),
   (6, OmColors.fg2),
@@ -908,15 +908,14 @@ void main() {
 
   // WI #223 (Spec #222, ticket #221): heading levels in design A + D. Shown
   // heading text is JetBrains Mono H1 26 w700 heading1, H2 19 w700 fg0, H3
-  // 15 w700 heading3, H4 to H6 11 w500 fg2; markers stay fg2 (fg1 selected)
+  // 15 w700 fg0, H4 to H6 11 w500 fg2; markers stay fg2 (fg1 selected)
   // regular at the line size; line heights stay 40 / 34 / 28.5 / 22.95.
   // Every style is checked over two bases (the fg0 body of today and the fg1
   // body of #224 and the cards), so a heading colour must be the heading's
   // own, never one inherited from the base.
   group('heading levels design A and D (WI 223)', () {
-    test('OmColors heading1 is FFFFFFFF and heading3 is B8B5AE', () {
+    test('OmColors heading1 is FFFFFFFF', () {
       expect(OmColors.heading1.toARGB32(), 0xFFFFFFFF, reason: 'heading1');
-      expect(OmColors.heading3.toARGB32(), 0xFFB8B5AE, reason: 'heading3');
     });
 
     test(
@@ -951,11 +950,11 @@ void main() {
         OmColors.fg0,
       ),
       (
-        'H3 shown text renders mono 15 w700 heading3 upright with no letter spacing hidden and revealed',
+        'H3 shown text renders mono 15 w700 fg0 upright with no letter spacing hidden and revealed',
         [3],
         15.0,
         FontWeight.w700,
-        OmColors.heading3,
+        OmColors.fg0,
       ),
       (
         'H4 H5 and H6 shown text renders mono 11 w500 fg2 in its written case upright with no letter spacing hidden and revealed',
