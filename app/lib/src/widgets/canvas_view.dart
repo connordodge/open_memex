@@ -225,7 +225,7 @@ class _CanvasViewState extends ConsumerState<CanvasView> {
                           onDoubleTap: () {
                             ref
                                 .read(tabsProvider.notifier)
-                                .follow(
+                                .navigate(
                                   CanvasTab(
                                     widget.canvasId,
                                     zoomedNoteId: n.noteId,
