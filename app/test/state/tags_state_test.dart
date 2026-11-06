@@ -1273,64 +1273,70 @@ void main() {
   });
 
   group('rebaseEditorAfterWrite and removeTagFromNote contracts', () {
-    for (final readFails in [true, false]) {
-      testWidgets(
-        'removeTagFromNote completes and keeps the pending edit when its widget is gone during the rebase read (read fails: $readFails)',
-        (tester) async {
-          final db = _vault();
-          final cli = _cli(db);
-          final gate = Completer<void>();
-          final notes = _ScriptedNotes(
-            db,
-            cli,
-            (call, real) => gate.future.then<Note?>(
-              (_) => readFails ? throw unreachableNas : real(),
-            ),
-          );
-          final env = await _open(
-            tester,
+    for (final (readFails, name) in [
+      (
+        true,
+        'removeTagFromNote completes and keeps the pending edit when its widget is gone during a rebase read that fails',
+      ),
+      (
+        false,
+        'removeTagFromNote completes and keeps the pending edit when its widget is gone during a rebase read that succeeds',
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final db = _vault();
+        final cli = _cli(db);
+        final gate = Completer<void>();
+        final notes = _ScriptedNotes(
+          db,
+          cli,
+          (call, real) => gate.future.then<Note?>(
+            (_) => readFails ? throw unreachableNas : real(),
+          ),
+        );
+        final env = await _open(
+          tester,
+          db: db,
+          cli: cli,
+          access: () => LocalVaultAccess(
+            vaultPath: _vaultA.path,
             db: db,
             cli: cli,
-            access: () => LocalVaultAccess(
-              vaultPath: _vaultA.path,
-              db: db,
-              cli: cli,
-              notes: notes,
-            ),
-          );
-          env.editor.loadNote(db.getNote(_plan));
-          env.editor.onContentChanged('pending text');
+            notes: notes,
+          ),
+        );
+        env.editor.loadNote(db.getNote(_plan));
+        env.editor.onContentChanged('pending text');
 
-          final removal = removeTagFromNote(
-            env.ref,
-            note: db.getNote(_plan)!,
-            tag: 'drop',
-          );
-          await tester.pump();
-          await tester.pump();
-          expect(notes.reads, 1, reason: 'the rebase read is in flight');
-          // The row with the x leaves the tree: the same container, no
-          // Consumer.
-          await tester.pumpWidget(
-            UncontrolledProviderScope(
-              container: env.container,
-              child: const SizedBox.shrink(),
-            ),
-          );
-          expect(
-            () => env.ref.read(vaultRevisionProvider),
-            throwsStateError,
-            reason: 'the ref is dead, so only a captured container can work',
-          );
-          gate.complete();
-          await removal;
+        final removal = removeTagFromNote(
+          env.ref,
+          note: db.getNote(_plan)!,
+          tag: 'drop',
+        );
+        await tester.pump();
+        await tester.pump();
+        expect(notes.reads, 1, reason: 'the rebase read is in flight');
+        // The row with the x leaves the tree: the same container, no
+        // Consumer.
+        await tester.pumpWidget(
+          UncontrolledProviderScope(
+            container: env.container,
+            child: const SizedBox.shrink(),
+          ),
+        );
+        expect(
+          () => env.ref.read(vaultRevisionProvider),
+          throwsStateError,
+          reason: 'the ref is dead, so only a captured container can work',
+        );
+        gate.complete();
+        await removal;
 
-          expect(env.state.lastSavedVersion, 4);
-          expect(env.state.contentMd, 'pending text');
-          expect(env.state.status, SaveStatus.dirty);
-          expect(env.bumps, [4]);
-        },
-      );
+        expect(env.state.lastSavedVersion, 4);
+        expect(env.state.contentMd, 'pending text');
+        expect(env.state.status, SaveStatus.dirty);
+        expect(env.bumps, [4]);
+      });
     }
 
     testWidgets(
@@ -1453,39 +1459,45 @@ void main() {
       },
     );
 
-    for (final otherOpen in [true, false]) {
-      testWidgets(
-        'rebaseEditorAfterWrite reads nothing and loads nothing when the note is not open (another note open: $otherOpen)',
-        (tester) async {
-          final db = _vault();
-          final cli = _cli(db);
-          final notes = _ScriptedNotes(db, cli, (call, real) => real());
-          final env = await _open(
-            tester,
+    for (final (otherOpen, name) in [
+      (
+        true,
+        'rebaseEditorAfterWrite reads nothing and loads nothing when another note is open',
+      ),
+      (
+        false,
+        'rebaseEditorAfterWrite reads nothing and loads nothing when no note is open',
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final db = _vault();
+        final cli = _cli(db);
+        final notes = _ScriptedNotes(db, cli, (call, real) => real());
+        final env = await _open(
+          tester,
+          db: db,
+          cli: cli,
+          access: () => LocalVaultAccess(
+            vaultPath: _vaultA.path,
             db: db,
             cli: cli,
-            access: () => LocalVaultAccess(
-              vaultPath: _vaultA.path,
-              db: db,
-              cli: cli,
-              notes: notes,
-            ),
-          );
-          if (otherOpen) env.editor.loadNote(db.getNote(_other));
-          final loadsBefore = env.editor.loaded.length;
+            notes: notes,
+          ),
+        );
+        if (otherOpen) env.editor.loadNote(db.getNote(_other));
+        final loadsBefore = env.editor.loaded.length;
 
-          await rebaseEditorAfterWrite(
-            env.container,
-            env.container.read(vaultAccessProvider)!,
-            note: db.getNote(_plan)!,
-            version: 9,
-          );
+        await rebaseEditorAfterWrite(
+          env.container,
+          env.container.read(vaultAccessProvider)!,
+          note: db.getNote(_plan)!,
+          version: 9,
+        );
 
-          expect(notes.reads, 0);
-          expect(env.editor.loaded, hasLength(loadsBefore));
-          expect(env.editor.activeNoteId, otherOpen ? _other : isNull);
-        },
-      );
+        expect(notes.reads, 0);
+        expect(env.editor.loaded, hasLength(loadsBefore));
+        expect(env.editor.activeNoteId, otherOpen ? _other : isNull);
+      });
     }
 
     testWidgets(
