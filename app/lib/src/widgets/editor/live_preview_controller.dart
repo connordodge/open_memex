@@ -155,6 +155,9 @@ int tableLastLine(List<MdLine> lines, int header) {
 /// - [itemText], [taskDone], [quote], [atSegmentStart], [isResolved],
 ///   [cmdHover] and [codeRow] mean what the controller props of the same
 ///   names mean.
+/// - [before] is the code unit just before [text] in the line it was cut
+///   from (null: [text] starts a line); a hash at the very start of [text]
+///   is a tag only if [before] opens one (the table grid passes it).
 /// - While [codeRow], a hidden fence line's terminator renders hidden too,
 ///   so the line takes its height from the field's strut alone.
 /// - A table's lines (Spec #197 R13) take their inline tokens cell by cell
@@ -179,6 +182,7 @@ TextSpan buildLivePreviewSpan(
   bool Function(String target)? isResolved,
   TextRange? cmdHover,
   bool codeRow = false,
+  int? before,
 }) {
   if (text.isEmpty) return TextSpan(style: style, text: text);
   return _SpanBuilder(
@@ -192,6 +196,7 @@ TextSpan buildLivePreviewSpan(
     isResolved: isResolved,
     cmdHover: cmdHover,
     codeRow: codeRow,
+    before: before,
   ).build(style);
 }
 
@@ -223,6 +228,7 @@ final class _SpanBuilder {
     required this.isResolved,
     required this.cmdHover,
     required this.codeRow,
+    required this.before,
   }) : _selection = selection != null && selection.isValid ? selection : null,
        _flags = Uint8List(text.length),
        _ink = Uint8List(text.length);
@@ -236,6 +242,10 @@ final class _SpanBuilder {
   final bool Function(String target)? isResolved;
   final TextRange? cmdHover;
   final bool codeRow;
+
+  /// The code unit just before [text] in its real line, for a [text] that
+  /// is a stretch of a longer line (a table cell); null = a line start.
+  final int? before;
   final TextSelection? _selection;
   final Uint8List _flags;
   final Uint8List _ink;
@@ -384,7 +394,7 @@ final class _SpanBuilder {
   void _tokenize(int start, int end) {
     for (final token in tokenizeInline(
       text.substring(start, end),
-      before: unitBeforeInLine(text, start),
+      before: start == 0 ? before : unitBeforeInLine(text, start),
     )) {
       for (final m in token.markers) {
         _markRange(start + m.start, start + m.end, _marker);

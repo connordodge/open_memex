@@ -27,6 +27,7 @@ import 'package:open_memex_app/src/theme/typography.dart';
 import 'package:open_memex_app/src/widgets/editor/card_rows.dart';
 import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
+import 'package:open_memex_app/src/widgets/editor/table_grid.dart';
 import 'package:open_memex_app/src/widgets/editor/text_segment.dart';
 
 import '../support/font_fetch_hold.dart';
@@ -1084,6 +1085,75 @@ void main() {
         fontStyle: FontStyle.italic,
       );
     });
+  });
+
+  group('table grid cells follow the server tag rule (AC3)', () {
+    // The grid builds each cell from its own text, so the cell start must
+    // not read as a line start: the server judges the hash by the character
+    // before it in the whole table line and `|` opens nothing (D17).
+    Future<Map<String, TextSpan>> pumpGrid(
+      WidgetTester tester,
+      String table, {
+      required bool card,
+    }) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildOmTheme(),
+          home: Scaffold(
+            body: Align(
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: 600,
+                child: card
+                    ? CardRows(text: table)
+                    : TableGrid(
+                        key: const ValueKey('editor-table-0-0'),
+                        text: table,
+                        style: const TextStyle(fontSize: 13.5),
+                      ),
+              ),
+            ),
+          ),
+        ),
+      );
+      final grid = find.byType(TableGrid);
+      expect(grid, findsOneWidget);
+      return {
+        for (final rich in tester.widgetList<RichText>(
+          find.descendant(of: grid, matching: find.byType(RichText)),
+        ))
+          (rich.text as TextSpan).toPlainText(): rich.text as TextSpan,
+      };
+    }
+
+    for (final card in [false, true]) {
+      final where = card ? 'an excerpt card' : 'the editor grid';
+
+      testWidgets(
+        'a hash straight after a pipe in a table cell renders as body text in $where',
+        (tester) async {
+          const table = '| item | note |\n|---|---|\n|a|#x|';
+          final cells = await pumpGrid(tester, table, card: card);
+          final span = cells['#x']!;
+          for (var i = 0; i < 2; i++) {
+            expect(
+              _styleAt(span, i).color,
+              isNot(OmColors.fg2),
+              reason: 'unit $i is not tag ink',
+            );
+          }
+        },
+      );
+
+      testWidgets(
+        'a hash after a space in a table cell renders as a tag in $where',
+        (tester) async {
+          const table = '| item | note |\n|---|---|\n| a | #x |';
+          final cells = await pumpGrid(tester, table, card: card);
+          _expectTag(cells['#x']!, '#x', (0, 2), OmColors.fg2);
+        },
+      );
+    }
   });
 
   group('line height and offsets (AC7, AC8)', () {

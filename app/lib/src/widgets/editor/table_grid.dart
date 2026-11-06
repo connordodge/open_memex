@@ -119,6 +119,11 @@ class TableGridState extends State<TableGrid> {
                   itemText: true,
                   forceHidden: true,
                   isResolved: widget.links?.isResolved,
+                  // As the source field judges the cell: by the character
+                  // before it in the table line, not as a line start.
+                  before: j < cells.length
+                      ? unitBeforeInLine(text, cells[j].start)
+                      : null,
                   cmdHover: j < cells.length
                       ? _cellHover(hover, cells[j].start, cells[j].end)
                       : null,
