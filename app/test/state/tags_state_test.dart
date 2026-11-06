@@ -772,6 +772,150 @@ void main() {
     );
   });
 
+  group('removeTagFromNote edges', () {
+    testWidgets(
+      'removeTagFromNote on a clean editor takes the stored body and stays clean without a second write',
+      (tester) async {
+        final db = _vault();
+        final cli = _cli(db)
+          ..on('tag rm', (call) {
+            final id = call.flag('note-id')!;
+            // The server drops the footer line of the removed tag (R12).
+            db.db.execute('UPDATE notes SET content_md = ? WHERE id = ?', [
+              'rewritten body',
+              id,
+            ]);
+            return _applyRm(db, call);
+          });
+        final env = await _open(tester, db: db, cli: cli);
+        env.editor.loadNote(db.getNote(_plan));
+        expect(env.state.status, SaveStatus.clean);
+
+        await removeTagFromNote(env.ref, note: db.getNote(_plan)!, tag: 'drop');
+
+        expect(env.state.contentMd, 'rewritten body');
+        expect(env.state.status, SaveStatus.clean);
+        expect(env.state.lastSavedVersion, 4);
+        env.clock.advance(saveDebounce);
+        await tester.pump();
+        expect(cli.callsFor('update'), isEmpty);
+        expect(env.bumps, [4]);
+      },
+    );
+
+    testWidgets(
+      'removeTagFromNote keeps what was typed while it read the stored body',
+      (tester) async {
+        final db = _vault();
+        final cli = _cli(db);
+        final notes = _GatedNotes(db);
+        final env = await _open(
+          tester,
+          db: db,
+          cli: cli,
+          access: () => LocalVaultAccess(
+            vaultPath: _vaultA.path,
+            db: db,
+            cli: cli,
+            notes: notes,
+          ),
+        );
+        env.editor.loadNote(db.getNote(_plan));
+        notes.gateNext = Completer<void>();
+
+        final removal = removeTagFromNote(
+          env.ref,
+          note: db.getNote(_plan)!,
+          tag: 'drop',
+        );
+        await tester.pump();
+        await tester.pump();
+        env.editor.onContentChanged('typed during the read');
+        notes.gateNext?.complete();
+        await removal;
+
+        expect(env.state.contentMd, 'typed during the read');
+        expect(env.state.status, SaveStatus.dirty);
+        expect(env.state.lastSavedVersion, 4);
+        expect(env.bumps, [4]);
+      },
+    );
+
+    testWidgets(
+      'removeTagFromNote keeps the editor text when the note was deleted during the rebase',
+      (tester) async {
+        final db = _vault();
+        final cli = _cli(db);
+        final env = await _open(
+          tester,
+          db: db,
+          cli: cli,
+          access: () => LocalVaultAccess(
+            vaultPath: _vaultA.path,
+            db: db,
+            cli: cli,
+            notes: _MissingNotes(),
+          ),
+        );
+        final open = db.getNote(_plan)!;
+        env.editor.loadNote(open);
+
+        await removeTagFromNote(env.ref, note: open, tag: 'drop');
+
+        expect(env.state.contentMd, 'stored text');
+        expect(env.state.lastSavedVersion, 4);
+        expect(env.editor.activeNoteId, _plan);
+        expect(env.bumps, [4]);
+      },
+    );
+
+    testWidgets(
+      'removeTagFromNote bumps once and propagates when the rebase read fails after the write',
+      (tester) async {
+        final db = _vault();
+        final cli = _cli(db);
+        final env = await _open(
+          tester,
+          db: db,
+          cli: cli,
+          access: () => LocalVaultAccess(
+            vaultPath: _vaultA.path,
+            db: db,
+            cli: cli,
+            notes: _FailingNotes(),
+          ),
+        );
+        env.editor.loadNote(db.getNote(_plan));
+        env.editor.onContentChanged('pending text');
+
+        await expectLater(
+          removeTagFromNote(env.ref, note: db.getNote(_plan)!, tag: 'drop'),
+          throwsA(isA<VaultUnreachableException>()),
+        );
+
+        expect(cli.callsFor('tag rm'), hasLength(1));
+        expect(env.bumps, hasLength(1));
+        expect(env.state.contentMd, 'pending text');
+      },
+    );
+
+    testWidgets('removeTagFromNote with no vault access throws StateError', (
+      tester,
+    ) async {
+      final db = _vault();
+      final cli = _cli(db);
+      final env = await _open(tester, db: db, cli: cli, access: () => null);
+
+      await expectLater(
+        removeTagFromNote(env.ref, note: db.getNote(_plan)!, tag: 'drop'),
+        throwsStateError,
+      );
+
+      expect(cli.callsFor('tag rm'), isEmpty);
+      expect(env.bumps, isEmpty);
+    });
+  });
+
   group('rebaseEditorOnVersion keeps footerTags (D23)', () {
     testWidgets(
       'after a rebase footerTags reflects the removal rather than emptying',
@@ -829,6 +973,40 @@ void main() {
       },
     );
   });
+}
+
+/// `getNote` answers from [db]; the first call after [gateNext] is set waits
+/// for it.
+class _GatedNotes extends LocalNotesAccess {
+  _GatedNotes(FakeVaultDb db) : super(vaultPath: _vaultA.path, db: db);
+
+  Completer<void>? gateNext;
+
+  @override
+  Future<Note?> getNote(String id) async {
+    final gate = gateNext;
+    if (gate != null) {
+      gateNext = null;
+      await gate.future;
+    }
+    return super.getNote(id);
+  }
+}
+
+/// The note is gone: `getNote` answers null.
+class _MissingNotes extends LocalNotesAccess {
+  _MissingNotes() : super(vaultPath: _vaultA.path);
+
+  @override
+  Future<Note?> getNote(String id) async => null;
+}
+
+/// Reading the note fails as an unreachable hosted server does (L17).
+class _FailingNotes extends LocalNotesAccess {
+  _FailingNotes() : super(vaultPath: _vaultA.path);
+
+  @override
+  Future<Note?> getNote(String id) async => throw unreachableNas;
 }
 
 /// Every removal fails as an unreachable hosted server does (L17).

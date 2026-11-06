@@ -160,7 +160,34 @@ void main() {
     );
   });
 
+  group('TagsReads.allTags ordering', () {
+    test('allTags orders ignoring case and breaks a tie by exact tag', () {
+      final db = _v6();
+      db.seedNote(id: _a, title: 'A');
+      db.seedNote(id: _b, title: 'B');
+      for (final t in ['b', 'A', 'C', 'work']) {
+        db.seedTag(_a, t);
+      }
+      db.seedTag(_b, 'Work');
+
+      expect(db.allTags().map((r) => r.tag), ['A', 'b', 'C', 'Work', 'work']);
+    });
+  });
+
   group('TagsReads.notesForTag', () {
+    test('notesForTag reads a role that is not a string as no role', () {
+      final db = _v6();
+      db.seedNote(id: _a, title: 'Num', frontmatter: '{"role":7}');
+      db.seedNote(id: _b, title: 'Null', frontmatter: '{"role":null}');
+      db.seedNote(id: _c, title: 'List', frontmatter: '{"role":["topic"]}');
+      for (final id in [_a, _b, _c]) {
+        db.seedTag(id, 'work');
+      }
+
+      expect(db.notesForTag('work'), hasLength(3));
+      expect(db.notesForTag('work').map((r) => r.role), everyElement(isNull));
+    });
+
     test(
       'notesForTag returns most recently updated first with first_line and a null first_line for a footer-only tag',
       () {
