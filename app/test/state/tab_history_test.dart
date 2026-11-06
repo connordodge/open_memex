@@ -43,8 +43,11 @@ List<double?> _offsets(TabHistory<String> h) {
 
 /// Index, targets and offsets, for comparing a history before and after an
 /// operation without relying on ==.
-(int, List<String>, List<double?>) _snap(TabHistory<String> h) =>
-    (h.index, List<String>.of(h.entries), _offsets(h));
+List<Object?> _snap(TabHistory<String> h) => [
+  h.index,
+  List<String>.of(h.entries),
+  _offsets(h),
+];
 
 void _expectSnap(
   TabHistory<String> h, {

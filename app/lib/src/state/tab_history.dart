@@ -62,8 +62,8 @@ class TabHistory<T> {
   /// Replaces every entry whose target equals [from] with [to], keeping each
   /// offset and the index.
   TabHistory<T> rewrite(T from, T to) => TabHistory._([
-        for (final e in _entries) e.$1 == from ? (to, e.$2) : e,
-      ], _index);
+    for (final e in _entries) e.$1 == from ? (to, e.$2) : e,
+  ], _index);
 
   /// Drops the entry at [index]. The current entry stays current; removing the
   /// current entry makes the entry that took its place current, or the new
