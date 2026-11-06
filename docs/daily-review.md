@@ -12,7 +12,7 @@ To run the whole thing end to end on a throwaway vault, follow [`docs/daily-acce
 - **Block**: one paragraph, list item or heading of a daily note. Each block has a short stable id that survives edits to its text. Ids live in the vault database, never in the note body.
 - **Topic note**: a note about one subject (`role: topic`) that accumulates excerpts across days. The agent creates topic notes, and you can create them too.
 - **Excerpt**: the block range of a daily note that a topic note shows. It is a **transclusion**, a `![[2026-09-05#^b7k2m9]]` link written into the topic note under a `## 2026-09-05` heading. The topic note displays the live text of those blocks, so nothing is duplicated and an edit to the daily note shows up everywhere. If the block is later deleted, the excerpt reads `removed from 2026-09-05`.
-- **Topics footer**: the managed block at the bottom of every daily note, below the `<!-- memex:topics -->` marker, holding a `[[Topic~about]]` link for each topic that holds an excerpt from that day. In the editor it appears as a row of chips. Everything above the marker is yours; the server maintains everything below it.
+- **Note footer**: the managed block at the bottom of every daily note, below the `<!-- memex:topics -->` marker, holding a `[[Topic~about]]` link for each topic that holds an excerpt from that day. In the editor it appears as a row of chips. Everything above the marker is yours; the server maintains everything below it.
 - **Smart Folder**: an agent-maintained group of topic notes. A topic note can sit in several Smart Folders and Smart Folders can nest, up to the vault's depth limit (setting `smart_folder_max_depth`, default 2, range 1 to 5; a top-level Smart Folder is depth 1).
 - **Pinned**: a flag on a Smart Folder, or on one topic note's membership in a Smart Folder, that the agent must not remove, rename, re-parent or delete. Anything you create in the app is pinned, an edit you make to an agent-created Smart Folder pins it, and you can switch the flag off to hand the item back. An agent may still add topic notes to a pinned Smart Folder.
 - **Reviewed**: every daily note is `Unreviewed` (never reviewed), `Reviewed` (the agent has filed its current content) or `Changed since review` (you edited it afterwards). Any edit to your text makes the day unreviewed again with no agent action. The state shows as a dot on the Days row and a chip in the note header. Footer updates never change it.
@@ -25,7 +25,7 @@ The sidebar browses the vault two ways: **Days** (a list by date) and **Topics**
 
 The rules below are enforced by the MCP server for every call, so a weakly prompted agent still cannot damage the vault.
 
-- It never rewrites, reorders or deletes your text in a daily note. Its only write into a daily note body is `append_to_daily_note`, which adds blocks above the Topics footer. Filing goes through `add_excerpt` and `remove_excerpt`, which also maintain the Topics footer; the agent never writes transclusion or footer syntax itself.
+- It never rewrites, reorders or deletes your text in a daily note. Its only write into a daily note body is `append_to_daily_note`, which adds blocks above the Note footer. Filing goes through `add_excerpt` and `remove_excerpt`, which also maintain the Note footer; the agent never writes transclusion or footer syntax itself.
 - It cannot rename, delete or merge notes: there is no MCP tool for it. Deleting a note is yours alone (`Delete note` in the app, or `memex rm`).
 - It respects pinned items and the depth limit, and `mark_day_reviewed` fails with `review_stale` if you edited the day after the agent fetched it.
 
@@ -113,7 +113,7 @@ The text comes from the argument, or from stdin when you omit it, which suits mu
 printf 'Idea: coyote time for ledge grabs\n\nAlso check the jump arc.\n' | memex append --vault /Users/YOU/Documents/MyMemex --date 2026-10-03
 ```
 
-The text lands verbatim at the end of your section, above the Topics footer, separated from earlier text by a blank line. If the app has that daily note open, the new blocks appear within a couple of seconds without moving your cursor.
+The text lands verbatim at the end of your section, above the Note footer, separated from earlier text by a blank line. If the app has that daily note open, the new blocks appear within a couple of seconds without moving your cursor.
 
 ## 5. Recurring reviews
 

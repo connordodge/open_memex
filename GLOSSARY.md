@@ -54,9 +54,13 @@ _Avoid_: raw mode, plain mode, edit mode
 A note about one subject that accumulates excerpts across days, maintained by the person's agent or created by the person.
 _Avoid_: subject note, concept note, chunk
 
-**Topics footer**:
-The managed block at the bottom of a daily note, below a marker line, holding `[[Topic~about]]` links to every topic that holds an excerpt from that day. Everything above the marker belongs to the person.
-_Avoid_: links section, related
+**Note footer**:
+The managed block at the bottom of a note, below a marker line, holding its topic links and its tags not written in the body. On a daily note, everything above the marker belongs to the person.
+_Avoid_: Topics footer, links section, related
+
+**Tag**:
+A short label on a whole note, written as `#name` in the note's body or added without touching the body, by the agent or the CLI. It is separate from Topic notes and Smart Folders.
+_Avoid_: label, keyword, category
 
 **Review**:
 An agent run that files a daily note's changed blocks into topic notes and Smart Folders, then marks the day reviewed.
@@ -72,7 +76,7 @@ _Avoid_: organized, processed, synced
 
 **Smart Folder**:
 An agent-maintained grouping of topic notes by similarity. A topic note can belong to many Smart Folders, and Smart Folders can nest.
-_Avoid_: folder, grouping, category, tag
+_Avoid_: folder, grouping, category
 
 **Pinned**:
 A flag on a Smart Folder or on a topic's membership in a Smart Folder that the agent must not remove, rename, re-parent, or delete. Set automatically when the person creates or edits the thing, and toggleable by the person.
