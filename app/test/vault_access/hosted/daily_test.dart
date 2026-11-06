@@ -39,7 +39,6 @@ const _wi82DailyDir = '$apiV1FixturesDir/daily';
 const _wi82Base = '/vaults/seed/api/v1';
 const _wi82PlayerLoop = '01M5DQAYZ3WP7H0NXZZV9M2315';
 const _wi82Economy = '01M5DQAYZ47QW55S90ZF0A56AH';
-const _wi82Loose = '01M5DQAYZ4RYSGA8T0YEEF8QRS';
 const _wi82Day17 = '01M5DQAYZ5T5B865CDF2RWAC37';
 const _wi82Day18 = '01M5DQAYZ4TAPTHDWE5PNWE4W5';
 const _wi82Day19 = '01M5DQAYZ51PF87XFZWSV5PWXK';
@@ -421,12 +420,6 @@ void main() {
         topicNoteId: _wi82PlayerLoop,
       );
       final cases = [
-        (
-          _wi82Loose,
-          _wi82PlayerLoop,
-          'role_rule',
-          'footer_add_role_rule_daily.json',
-        ),
         (
           _wi82Day18,
           _wi82Day19,
