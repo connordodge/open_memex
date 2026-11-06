@@ -16,13 +16,14 @@ use memex_core::daily::{self, AppendSource, ReviewState};
 use memex_core::error::MemexError;
 use memex_core::excerpts::{add_excerpt, remove_excerpt};
 use memex_core::footer::{self, ChipOrigin, RemoveMode};
+use memex_core::guide;
 use memex_core::indexer;
 use memex_core::notes::{
     create_note_as, create_or_adopt_note, delete_note, get_note, update_note_as, CreateNote, Note,
     NoteId, RenameOptions, UpdateNote,
 };
 use memex_core::tags::{self, TagCount, TagNote, TagOrigin};
-use memex_core::{review, Caller, SystemClock, Vault};
+use memex_core::{review, Caller, Clock, SystemClock, Vault};
 use rusqlite::params;
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -91,14 +92,32 @@ fn day_note(vault: &mut Vault, body: &str) -> Note {
     )
 }
 
-fn guide_note(vault: &mut Vault, title: &str, body: &str) -> Note {
-    create_as(
+/// A clock that stays where it is put (no wall-clock reads).
+struct GuideFixtureClock(i64);
+
+impl Clock for GuideFixtureClock {
+    fn now_ms(&self) -> i64 {
+        self.0
+    }
+}
+
+/// The vault's real guide, built the only way D10 allows: `guide::get_or_create`
+/// (`create_note_as` rejects `role: guide`), then `guide::update` to `body`.
+/// A vault has one guide, so a test calls this once.
+fn guide_note(vault: &mut Vault, body: &str) -> Note {
+    let clock = GuideFixtureClock(1_759_500_000_000);
+    let seeded = guide::get_or_create(vault, &clock, None).expect("create the guide");
+    let doc = guide::update(
         vault,
-        title,
+        seeded.version,
         body,
-        Some(json!({"role": "guide"})),
-        Caller::Person,
+        &["Set up the guide".to_string()],
+        DAY,
+        &clock,
+        None,
     )
+    .expect("write the guide body");
+    get_note(vault, &NoteId::parse(&doc.note_id).unwrap()).unwrap()
 }
 
 /// The note kinds a tag rule holds on: role-less, topic and daily.
@@ -603,6 +622,34 @@ fn person_save_with_unchanged_body_tags_and_first_lines_writes_no_tag_rows() {
 }
 
 // ---------- AC 3: first_line ----------
+
+#[test]
+fn a_person_save_stores_a_heading_first_line_without_its_marker() {
+    // D48: the stored first_line is what Tags mode shows.
+    for kind in KINDS {
+        let (_d, mut v) = fresh_vault();
+        let note = note_of(&mut v, kind, "# Pricing #work\n\n- # Item #y\n");
+        assert_eq!(
+            rows(&v, &note.id),
+            vec![
+                row("work", "body", Some("Pricing #work")),
+                row("y", "body", Some("Item #y")),
+            ],
+            "{kind:?}"
+        );
+
+        // The heading marker is not part of the text: dropping it is no change.
+        person_save(&mut v, &note.id, "Pricing #work\n\n- # Item #y\n");
+        assert_eq!(
+            rows(&v, &note.id),
+            vec![
+                row("work", "body", Some("Pricing #work")),
+                row("y", "body", Some("Item #y")),
+            ],
+            "{kind:?}: same text, same row"
+        );
+    }
+}
 
 #[test]
 fn changed_first_line_updates_first_line_for_that_tag_only() {
@@ -1134,7 +1181,7 @@ fn person_save_keeps_agent_person_and_legacy_tags_not_in_the_text() {
 fn agent_tag_note_returns_guide_rule_unknown_tag_tag_removed_and_not_found() {
     let (_d, mut v) = fresh_vault();
     seed_vocabulary(&mut v, "known");
-    let guide = guide_note(&mut v, "Guide", "How to.\n");
+    let guide = guide_note(&mut v, "How to.\n");
     let note = person_note(&mut v, "Note", "text\n");
     seed_block(&v, &note, "known");
     let other = person_note(&mut v, "Other", "text\n");
@@ -1170,7 +1217,7 @@ fn agent_tag_note_returns_guide_rule_unknown_tag_tag_removed_and_not_found() {
 fn agent_tag_note_checks_guide_rule_then_unknown_tag_then_tag_removed() {
     let (_d, mut v) = fresh_vault();
     seed_vocabulary(&mut v, "known");
-    let guide = guide_note(&mut v, "Guide", "How to.\n");
+    let guide = guide_note(&mut v, "How to.\n");
     seed_block(&v, &guide, "known");
     seed_block(&v, &guide, "stranger");
     assert_code(
@@ -1307,7 +1354,7 @@ fn inbox_and_agent_authored_are_not_vocabulary_even_when_person_written() {
 fn vocabulary_name_written_only_on_a_guide_note_does_not_count() {
     let (_d, mut v) = fresh_vault();
     seed_vocabulary(&mut v, "work");
-    let guide = guide_note(&mut v, "Guide", "#scanned-not\n");
+    let guide = guide_note(&mut v, "#scanned-not\n");
     assert!(rows(&v, &guide.id).is_empty(), "a guide is never scanned");
     person_save(&mut v, &guide.id, "#still-not\n");
     assert!(rows(&v, &guide.id).is_empty(), "a guide is never scanned");
@@ -1571,7 +1618,7 @@ fn agent_untag_note_fails_on_every_other_origin_and_on_a_guide() {
     assert_eq!(rows(&v, &note.id), before_rows);
     assert_eq!(stored(&v, &note.id).version, note.version);
 
-    let guide = guide_note(&mut v, "Guide", "How to.\n");
+    let guide = guide_note(&mut v, "How to.\n");
     assert_code(
         tags::agent_untag_note(&mut v, &guide.id, "written", None),
         "guide_rule",
@@ -1823,7 +1870,7 @@ fn person_add_tag_keeps_a_body_tag_and_refuses_a_guide() {
     assert_eq!(tag_writes(&v), 0);
     assert_eq!(rows(&v, &note.id), vec![row("x", "body", Some("#x here"))]);
 
-    let guide = guide_note(&mut v, "Guide", "How to.\n");
+    let guide = guide_note(&mut v, "How to.\n");
     assert_code(
         tags::person_add_tag(&mut v, &guide.id, "x", None),
         "guide_rule",
@@ -1925,11 +1972,11 @@ fn apply_tag_on_a_tag_the_note_already_has_writes_nothing_and_never_downgrades_b
     assert_eq!(stored(&v, &note.id).version, note.version);
 }
 
-// ---------- AC 19: becoming a guide ----------
+// ---------- AC 19: becoming a guide (D45: refused, nothing changes) ----------
 
 #[test]
-fn note_becoming_a_guide_loses_its_tag_rows_and_footer_in_that_save() {
-    // The save carries no body, then one with the stale footer in it.
+fn note_becoming_a_guide_is_refused_with_guide_rule_and_keeps_its_tag_rows_and_footer() {
+    // The save carries no body, then one with the footer in it.
     for with_body in [false, true] {
         let (_d, mut v) = fresh_vault();
         let chip = topic_note(&mut v, "Chip", "About.\n");
@@ -1945,36 +1992,42 @@ fn note_becoming_a_guide_loses_its_tag_rows_and_footer_in_that_save() {
             before.content_md
         );
 
-        let saved = update_note_as(
-            &mut v,
-            &note.id,
-            before.version,
-            UpdateNote {
-                content_md: with_body.then(|| before.content_md.clone()),
-                frontmatter: Some(json!({"role": "guide"})),
-                ..Default::default()
-            },
-            RenameOptions::default(),
-            Caller::Person,
-        )
-        .unwrap();
+        let rows_before = rows(&v, &note.id);
+        let corrections_before = corrections(&v);
+        count_tag_writes(&v);
 
-        assert!(rows(&v, &note.id).is_empty(), "with_body {with_body}");
-        assert_eq!(saved.version, before.version + 1, "with_body {with_body}");
-        assert!(!saved.content_md.contains(M), "{}", saved.content_md);
-        assert!(!saved.content_md.contains("[[Chip"), "{}", saved.content_md);
+        // After #288 (D45) the vault has one guide: no note can become it.
+        for caller in [Caller::Person, Caller::Agent] {
+            assert_code(
+                update_note_as(
+                    &mut v,
+                    &note.id,
+                    before.version,
+                    UpdateNote {
+                        content_md: with_body.then(|| before.content_md.clone()),
+                        frontmatter: Some(json!({"role": "guide"})),
+                        ..Default::default()
+                    },
+                    RenameOptions::default(),
+                    caller,
+                ),
+                "guide_rule",
+                &format!("with_body {with_body}, {caller:?}"),
+            );
+        }
+
+        let after = stored(&v, &note.id);
+        assert_eq!(after.content_md, before.content_md, "with_body {with_body}");
+        assert!(after.content_md.contains(M), "the footer stays");
+        assert_eq!(after.version, before.version, "with_body {with_body}");
         assert_eq!(
-            saved.content_md.trim_end(),
-            "#x my text",
+            after.frontmatter, before.frontmatter,
             "with_body {with_body}"
         );
-        assert_eq!(correction(&v, block).cleared_at, None, "corrections stay");
-
-        // It is never scanned after that, and adds nothing to the vocabulary.
-        let later = person_save(&mut v, &note.id, "#z later\n");
-        assert_eq!(later.content_md, "#z later\n");
-        assert!(rows(&v, &note.id).is_empty(), "with_body {with_body}");
-        assert!(vocabulary_names(&v).is_empty(), "with_body {with_body}");
+        assert_eq!(rows(&v, &note.id), rows_before, "with_body {with_body}");
+        assert_eq!(tag_writes(&v), 0, "a refused save writes no tag row");
+        assert_eq!(corrections(&v), corrections_before, "corrections stay");
+        assert_eq!(correction(&v, block).cleared_at, None);
     }
 }
 
@@ -2327,7 +2380,7 @@ fn agent_tag_note_with_a_name_outside_the_grammar_is_unknown_tag() {
 fn apply_tag_refuses_origin_body_and_a_guide_and_writes_nothing() {
     let (_d, mut v) = fresh_vault();
     let note = person_note(&mut v, "Note", "text\n");
-    let guide = guide_note(&mut v, "Guide", "How to.\n");
+    let guide = guide_note(&mut v, "How to.\n");
     count_tag_writes(&v);
 
     assert_invalid_argument(
@@ -2409,7 +2462,7 @@ fn system_tag_rows_write_no_note() {
 }
 
 #[test]
-fn note_becoming_a_guide_loses_its_own_footer_chips_but_not_chips_pointing_at_it() {
+fn note_becoming_a_guide_is_refused_and_keeps_every_footer_chip() {
     let (_d, mut v) = fresh_vault();
     let topic = topic_note(&mut v, "Topic", "About.\n");
     let host = person_note(&mut v, "Host", "text\n");
@@ -2428,32 +2481,46 @@ fn note_becoming_a_guide_loses_its_own_footer_chips_but_not_chips_pointing_at_it
     assert_eq!(chips(&v, "daily_note_id", &note.id), 1, "setup");
     assert_eq!(chips(&v, "topic_note_id", &note.id), 1, "setup");
 
-    let version = stored(&v, &note.id).version;
-    update_note_as(
-        &mut v,
-        &note.id,
-        version,
-        UpdateNote {
-            frontmatter: Some(json!({"role": "guide"})),
-            ..Default::default()
-        },
-        RenameOptions::default(),
-        Caller::Person,
-    )
-    .unwrap();
+    let before = stored(&v, &note.id);
+    for with_body in [false, true] {
+        assert_code(
+            update_note_as(
+                &mut v,
+                &note.id,
+                before.version,
+                UpdateNote {
+                    content_md: with_body.then(|| before.content_md.clone()),
+                    frontmatter: Some(json!({"role": "guide"})),
+                    ..Default::default()
+                },
+                RenameOptions::default(),
+                Caller::Person,
+            ),
+            "guide_rule",
+            &format!("with_body {with_body}"),
+        );
+    }
 
-    assert_eq!(chips(&v, "daily_note_id", &note.id), 0, "its own chips go");
+    assert_eq!(
+        chips(&v, "daily_note_id", &note.id),
+        1,
+        "its own chip stays"
+    );
     assert_eq!(
         chips(&v, "topic_note_id", &note.id),
         1,
         "chips on other notes stay"
     );
+    let after = stored(&v, &note.id);
+    assert_eq!(after.content_md, before.content_md, "its footer stays");
+    assert_eq!(after.version, before.version);
+    assert_eq!(after.frontmatter, json!({"role": "topic"}));
 }
 
 #[test]
 fn person_remove_tag_on_a_guide_deletes_a_stray_row_and_misses_quietly() {
     let (_d, mut v) = fresh_vault();
-    let guide = guide_note(&mut v, "Guide", "How to.\n");
+    let guide = guide_note(&mut v, "How to.\n");
     seed_row(&v, &guide.id, "stray", "person");
 
     let missing = tags::person_remove_tag(&mut v, &guide.id, "nothing", None).unwrap();
