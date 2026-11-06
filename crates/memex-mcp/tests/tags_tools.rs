@@ -23,8 +23,8 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::time::Duration;
 
-use memex_core::embedder::{Embedder, FakeEmbedder};
 use memex_core::canvas::SystemClock;
+use memex_core::embedder::{Embedder, FakeEmbedder};
 use memex_core::footer::{self, ChipOrigin};
 use memex_core::guide;
 use memex_core::notes::{
