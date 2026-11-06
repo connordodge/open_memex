@@ -48,7 +48,17 @@ class NoteHeader extends StatelessWidget {
           _MetaRail(note: note),
         const SizedBox(height: 18),
         DailyDateHeader(note: note),
-        if (note.role != 'daily')
+        if (note.role == 'guide')
+          // The Vault Guide keeps its name: the title is shown, not edited.
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Text(
+              key: const Key('guide-title'),
+              note.title,
+              style: OmType.h1Serif(),
+            ),
+          )
+        else if (note.role != 'daily')
           TextField(
             key: const Key('editor-title'),
             controller: titleCtrl,
