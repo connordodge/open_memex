@@ -6,9 +6,9 @@ import '../../db.dart';
 import '../../memex_cli.dart';
 import '../../state/editor_controller.dart';
 import '../../state/feedback_state.dart';
-import '../../state/note_state.dart';
 import '../../state/topic_actions.dart';
 import '../../state/vault_access_state.dart';
+import '../../state/vault_state.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import '../../vault_access/errors.dart';
@@ -56,8 +56,14 @@ class _FiledSectionState extends ConsumerState<FiledSection> {
   /// The inline error of each block whose last fix failed.
   final Map<String, String> _errors = {};
 
-  Future<List<TopicChoice>> _loadTopics() async {
-    final access = ref.read(vaultAccessProvider);
+  /// What a fix keeps from the moment its row was pressed.
+  _Press get _press {
+    final container = ProviderScope.containerOf(context);
+    return _Press(widget.note, container, container.read(currentVaultProvider));
+  }
+
+  Future<List<TopicChoice>> _loadTopics(ProviderContainer container) async {
+    final access = container.read(vaultAccessProvider);
     if (access == null) return const [];
     final folders = await access.topics.smartFolders();
     final unsorted = await access.topics.unsortedNotes();
@@ -86,23 +92,23 @@ class _FiledSectionState extends ConsumerState<FiledSection> {
 
   Future<void> _moveTo(FilingTopic from, FilingBlock block) async {
     if (_inFlight.contains(block.id)) return;
-    final daily = widget.note;
+    final press = _press;
     final picked = await showTopicPickDialog(
       context,
       title: 'Move to…',
       confirmLabel: 'Move',
-      loadTopics: _loadTopics,
+      loadTopics: () => _loadTopics(press.container),
       excludeId: from.topicNoteId,
     );
-    if (picked == null || !mounted) return;
+    if (picked == null) return;
     await _run(
-      daily,
+      press,
       block.id,
       picked,
       (read, target) => read(feedbackActionsProvider).moveBlock(
         fromTopicNoteId: from.topicNoteId,
         toTopicNoteId: target!,
-        date: daily.title,
+        date: press.daily.title,
         blockId: block.id,
         note: picked.why,
       ),
@@ -111,16 +117,16 @@ class _FiledSectionState extends ConsumerState<FiledSection> {
 
   Future<void> _remove(FilingTopic from, FilingBlock block) async {
     if (_inFlight.contains(block.id)) return;
-    final daily = widget.note;
+    final press = _press;
     final picked = await showRemoveBlockDialog(context);
-    if (picked == null || !mounted) return;
+    if (picked == null) return;
     await _run(
-      daily,
+      press,
       block.id,
       null,
       (read, _) => read(feedbackActionsProvider).removeBlock(
         topicNoteId: from.topicNoteId,
-        date: daily.title,
+        date: press.daily.title,
         blockId: block.id,
         note: picked.why,
       ),
@@ -129,21 +135,21 @@ class _FiledSectionState extends ConsumerState<FiledSection> {
 
   Future<void> _fileIn(FilingBlock block) async {
     if (_inFlight.contains(block.id)) return;
-    final daily = widget.note;
+    final press = _press;
     final picked = await showTopicPickDialog(
       context,
       title: 'File in…',
       confirmLabel: 'File',
-      loadTopics: _loadTopics,
+      loadTopics: () => _loadTopics(press.container),
     );
-    if (picked == null || !mounted) return;
+    if (picked == null) return;
     await _run(
-      daily,
+      press,
       block.id,
       picked,
       (read, target) => read(feedbackActionsProvider).fileBlock(
         topicNoteId: target!,
-        date: daily.title,
+        date: press.daily.title,
         blockId: block.id,
         note: picked.why,
       ),
@@ -156,21 +162,22 @@ class _FiledSectionState extends ConsumerState<FiledSection> {
   /// A rebase that fails is not a failure of the fix, which already went
   /// through: the row comes back and shows no error.
   ///
-  /// [daily] is the note whose row was pressed, taken before the dialog opens:
-  /// the section can show another day by the time the write starts, and the
-  /// write and the rebase still belong to the pressed day.
+  /// [press] is taken before the dialog opens: the section can show another
+  /// day, or be gone, by the time the person confirms. The person confirmed
+  /// the fix, so it still runs, on the pressed day; only the UI updates are
+  /// skipped. The exception is a vault that is no longer the pressed one: the
+  /// block is not in the vault now open, so nothing is written.
   ///
   /// With a [picked] `Create "<name>"`, the topic note is created first (and
   /// stays when [write] then fails); [write] gets a reader and the target
   /// topic note id (null without [picked]). The write bumps
   /// `vaultRevisionProvider` itself (`FeedbackActions`): nothing here bumps.
   ///
-  /// Everything after the first await reads through a container taken up
-  /// front: the right-panel tab can change while the fix runs, and the
-  /// rebase must still happen (the pending edit would else hit a version
-  /// conflict on its next save).
+  /// Everything reads through the press's container: the right-panel tab can
+  /// change while the fix runs, and the rebase must still happen (the pending
+  /// edit would else hit a version conflict on its next save).
   Future<void> _run(
-    Note daily,
+    _Press press,
     String id,
     TopicPickResult? picked,
     Future<Object?> Function(
@@ -179,9 +186,10 @@ class _FiledSectionState extends ConsumerState<FiledSection> {
     )
     write,
   ) async {
+    final container = press.container;
+    if (container.read(currentVaultProvider) != press.vault) return;
     if (!_inFlight.add(id)) return;
-    final container = ProviderScope.containerOf(context);
-    setState(() => _errors.remove(id));
+    if (mounted) setState(() => _errors.remove(id));
     var worked = false;
     try {
       var target = picked?.topicNoteId;
@@ -213,7 +221,7 @@ class _FiledSectionState extends ConsumerState<FiledSection> {
     }
     if (worked) {
       try {
-        await _rebaseDaily(container, daily);
+        await _rebaseDaily(container, press.daily);
       } on Object {
         // The fix went through and its bump refreshes the section. The editor
         // stays on its base: a later save reports the conflict if there is one.
@@ -295,6 +303,20 @@ class _FiledSectionState extends ConsumerState<FiledSection> {
       ],
     );
   }
+}
+
+/// See [_FiledSectionState._press].
+class _Press {
+  const _Press(this.daily, this.container, this.vault);
+
+  /// The note whose row was pressed.
+  final Note daily;
+
+  /// Stays usable when the section is gone.
+  final ProviderContainer container;
+
+  /// The vault open at the press.
+  final VaultRef? vault;
 }
 
 /// The section's eyebrow. Wraps instead of overflowing (the shared
