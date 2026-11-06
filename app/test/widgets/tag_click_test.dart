@@ -2095,4 +2095,124 @@ void main() {
       );
     });
   });
+
+  // ------------------------------------------- verify: contracts pinned late
+  group('verify pins for a click on a tag', () {
+    testWidgets(
+      'a touch tap on a tag on a hidden markup line opens nothing and a mouse click then opens it',
+      (tester) async {
+        final t = await _launch(tester, 'Intro #work here\nNext line\n');
+
+        await tester.tapAt(_on(t, '#work'));
+        await pumpFrames(tester);
+        await _pastDoubleClick(tester);
+        t.expectModeAlone(why: 'a touch tap');
+
+        await t.r.focusSegment(0, offset: t.r.segmentText(0).length - 1);
+        await tester.pump();
+        await _click(tester, _on(t, '#work'));
+        t.expectOpened('work');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a touch tap on a tag in a rendered table opens nothing and a Cmd click on it then opens it',
+      (tester) async {
+        final t = await _launch(
+          tester,
+          'Above\n| #work | a |\n|---|---|\n| b | #pricing |\nBelow\n',
+        );
+
+        await tester.tapAt(_on(t, '#work'));
+        await pumpFrames(tester);
+        await _pastDoubleClick(tester);
+        t.expectModeAlone(why: 'a touch tap');
+
+        await _cmdClick(tester, _on(t, '#work'));
+        t.expectOpened('work');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a cancelled press on a card tag opens nothing and a click then opens it',
+      (tester) async {
+        final t = await _launchCard(tester, ['Card text #work here']);
+        final at = _onCard(t, '#work');
+
+        final mouse = await tester.startGesture(
+          at,
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pump();
+        await mouse.cancel();
+        await pumpFrames(tester);
+        t.expectModeAlone(why: 'cancelled');
+        await _dropClickMouse(tester);
+
+        await _click(tester, at);
+        t.expectOpened('work');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a card row with no live tag adds no listener and a row holding one adds exactly one',
+      (tester) async {
+        final t = await _launchCard(tester, [
+          'Plain row',
+          '- #work item',
+          '~~~',
+          '#inside',
+          '~~~',
+          '- bullet row',
+        ]);
+        // Listeners between each row text and the card's top.
+        final counts = <String, int>{};
+        for (final element in _cardRowTexts(t)) {
+          final plain = (element.renderObject! as RenderParagraph).text
+              .toPlainText();
+          var n = 0;
+          element.visitAncestorElements((a) {
+            if (a.widget is Listener) n++;
+            return true;
+          });
+          counts[plain] = n;
+        }
+        expect(counts.keys, containsAll(['Plain row', 'bullet row']));
+        final base = counts['Plain row']!;
+        expect(counts['bullet row'], base, reason: 'an item row, no tag');
+        expect(
+          counts.entries.firstWhere((e) => e.key.contains('#work')).value,
+          base + 1,
+          reason: 'the row holding a live tag',
+        );
+        expect(
+          counts.entries.firstWhere((e) => e.key.contains('#inside')).value,
+          base,
+          reason: 'a tag inside a fence is no live tag',
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a bare field of item text opens no fence so a tag after a tilde run opens and as a plain line it does not',
+      (tester) async {
+        final f = await _pumpField(tester, '~~~ #work\n');
+        expect(f.controller.fenced, isNull);
+
+        await _cmdClick(tester, f.on('#work'));
+        expect(f.expanded, isNull, reason: 'a fence opener line');
+        await _dropClickMouse(tester);
+
+        f.controller.itemText = true;
+        await tester.pump();
+        await _cmdClick(tester, f.on('#work'));
+        expect(f.expanded, 'work', reason: 'item text opens no fence');
+      },
+      variant: macOnly,
+    );
+  });
 }
