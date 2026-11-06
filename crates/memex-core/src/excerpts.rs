@@ -17,6 +17,7 @@ use crate::caller::Caller;
 use crate::daily;
 use crate::embedder::Embedder;
 use crate::error::MemexError;
+use crate::feedback::{self, ExcerptBlock};
 use crate::footer::{self, ChipOrigin, RemoveMode};
 use crate::indexer;
 use crate::notes::{self, Note, NoteId, RenameOptions, UpdateNote};
@@ -41,7 +42,8 @@ pub(crate) const WRITE_ATTEMPTS: u32 = 5;
 /// The topic note is written through `notes::update_note_as` as `caller`,
 /// re-reading and retrying when a person save races it (Req 31); the daily
 /// note's content version and review state never change. Every written note
-/// is reindexed from the stored body with `embedder` (D8).
+/// is reindexed from the stored body with `embedder` (D8). A person's call records
+/// one `excerpt_added` Correction per block it newly files (WI #250).
 ///
 /// Returns the topic note as stored after the call (`version` is its new
 /// version). Errors: `RoleRule` (topic not `role: topic`), `NotFound`
@@ -76,9 +78,18 @@ pub fn add_excerpt_noted(
     block_ids: &[String],
     caller: Caller,
     embedder: Option<&dyn Embedder>,
-    _note: Option<&str>,
+    note: Option<&str>,
 ) -> Result<Note> {
-    add_excerpt(vault, topic_note_id, date, block_ids, caller, embedder)
+    add_excerpt_inner(
+        vault,
+        topic_note_id,
+        date,
+        block_ids,
+        caller,
+        embedder,
+        note,
+        &mut |_| {},
+    )
 }
 
 /// [`add_excerpt`] with a test seam: `before_write` runs once per attempt,
@@ -97,9 +108,75 @@ pub fn add_excerpt_with_hook(
     embedder: Option<&dyn Embedder>,
     before_write: &mut dyn FnMut(&mut Vault),
 ) -> Result<Note> {
+    add_excerpt_inner(
+        vault,
+        topic_note_id,
+        date,
+        block_ids,
+        caller,
+        embedder,
+        None,
+        before_write,
+    )
+}
+
+/// [`add_excerpt`]: the writes, then the Correction.
+#[allow(clippy::too_many_arguments)]
+fn add_excerpt_inner(
+    vault: &mut Vault,
+    topic_note_id: &NoteId,
+    date: &str,
+    block_ids: &[String],
+    caller: Caller,
+    embedder: Option<&dyn Embedder>,
+    note: Option<&str>,
+    before_write: &mut dyn FnMut(&mut Vault),
+) -> Result<Note> {
+    let filed = file_blocks(
+        vault,
+        topic_note_id,
+        date,
+        block_ids,
+        caller,
+        embedder,
+        before_write,
+    )?;
+    if caller == Caller::Person {
+        feedback::record_excerpts_added(
+            vault,
+            date,
+            &filed.blocks,
+            topic_note_id.as_str(),
+            &filed.title,
+            note,
+        )?;
+    }
+    Ok(filed.topic)
+}
+
+/// What [`file_blocks`] did.
+struct FiledBlocks {
+    /// The topic note as stored after the call.
+    topic: Note,
+    /// The topic's title, read before the write.
+    title: String,
+    /// The blocks this call added to the topic, in ord order.
+    blocks: Vec<ExcerptBlock>,
+}
+
+/// The writes of [`add_excerpt`]; it records nothing.
+fn file_blocks(
+    vault: &mut Vault,
+    topic_note_id: &NoteId,
+    date: &str,
+    block_ids: &[String],
+    caller: Caller,
+    embedder: Option<&dyn Embedder>,
+    before_write: &mut dyn FnMut(&mut Vault),
+) -> Result<FiledBlocks> {
     let ids = requested_ids(block_ids)?;
     let day_date = daily::parse_iso_date(date)?;
-    topic_note(vault, topic_note_id)?;
+    let title = topic_note(vault, topic_note_id)?.title;
     let day = daily_note_for_date(vault, day_date)?
         .ok_or_else(|| MemexError::NotFound(format!("no daily note for {date}")))?;
     let blocks = DayBlocks::load(vault, &day)?;
@@ -112,6 +189,8 @@ pub fn add_excerpt_with_hook(
         })
         .collect::<Result<BTreeSet<i64>>>()?;
 
+    // Each attempt recomputes it, so it ends as what the saved body gained.
+    let mut newly_filed: Vec<i64> = Vec::new();
     let topic = write_topic(
         vault,
         topic_note_id,
@@ -121,7 +200,8 @@ pub fn add_excerpt_with_hook(
         before_write,
         |body| {
             let held = held_ords(body, date, &blocks);
-            let tokens: Vec<String> = runs(wanted.difference(&held).copied())
+            newly_filed = wanted.difference(&held).copied().collect();
+            let tokens: Vec<String> = runs(newly_filed.iter().copied())
                 .into_iter()
                 .map(|(first, last)| blocks.token(date, first, last))
                 .collect();
@@ -131,7 +211,14 @@ pub fn add_excerpt_with_hook(
     // The chip goes on only once the topic holds the excerpt: a call that
     // gives up leaves neither behind.
     footer::set_chip(vault, &day, topic_note_id, ChipOrigin::Excerpt, embedder)?;
-    Ok(topic)
+    Ok(FiledBlocks {
+        topic,
+        title,
+        blocks: newly_filed
+            .iter()
+            .map(|ord| blocks.excerpt_block(&blocks.ids[ord]))
+            .collect(),
+    })
 }
 
 /// Reverses [`add_excerpt`]: removes every transclusion token for `date`
@@ -139,7 +226,9 @@ pub fn add_excerpt_with_hook(
 /// its `to`, or its only id), the `## <date>` heading when nothing else
 /// remains under it, and the topic's footer chip on that day when the topic
 /// holds no other excerpt from it and the chip's origin is `excerpt`
-/// (`RemoveMode::ExcerptOnly`; a `person` chip stays).
+/// (`RemoveMode::ExcerptOnly`; a `person` chip stays). A person's call records
+/// one `excerpt_removed` Correction for the blocks the token covers, leaving out
+/// the person's own already Handled ones (WI #250).
 ///
 /// Retries like [`add_excerpt`]; returns the topic note as stored after the
 /// call. Errors: `RoleRule`, `NotFound` (unknown topic, or no matching
@@ -182,6 +271,9 @@ pub fn remove_excerpt_with_hook(
     let day_date = daily::parse_iso_date(date)?;
     let from = ids[0];
     let to = (ids.len() > 1).then(|| ids[ids.len() - 1]);
+    let removed = (caller == Caller::Person)
+        .then(|| removed_excerpt(vault, topic_note_id, day_date, from, to))
+        .transpose()?;
 
     let topic = write_topic(
         vault,
@@ -206,7 +298,49 @@ pub fn remove_excerpt_with_hook(
     )?;
 
     remove_chip_if_day_gone(vault, &topic, date, day_date, embedder)?;
+    if let Some(removed) = removed {
+        feedback::record_excerpt_removed(
+            vault.connection_ref(),
+            date,
+            &removed.blocks,
+            topic_note_id.as_str(),
+            &removed.title,
+            None,
+        )?;
+    }
     Ok(topic)
+}
+
+/// What a person's [`remove_excerpt`] is about to remove, read before the write.
+struct RemovedExcerpt {
+    title: String,
+    blocks: Vec<ExcerptBlock>,
+}
+
+/// The blocks between the endpoints `from` and `to` by ord, or just the endpoints
+/// when the day is gone or one of them no longer resolves.
+fn removed_excerpt(
+    vault: &Vault,
+    topic_note_id: &NoteId,
+    day_date: NaiveDate,
+    from: &str,
+    to: Option<&str>,
+) -> Result<RemovedExcerpt> {
+    let title = topic_note(vault, topic_note_id)?.title;
+    let blocks = match daily_note_for_date(vault, day_date)? {
+        Some(day) => DayBlocks::load(vault, &day)?,
+        None => DayBlocks::from_blocks(&[]),
+    };
+    let covered = blocks.ids_between(from, to).unwrap_or_else(|| {
+        std::iter::once(from)
+            .chain(to)
+            .map(str::to_string)
+            .collect()
+    });
+    Ok(RemovedExcerpt {
+        title,
+        blocks: covered.iter().map(|id| blocks.excerpt_block(id)).collect(),
+    })
 }
 
 /// The two topic notes as stored after [`move_block`].
@@ -221,7 +355,9 @@ pub struct MovedBlock {
 /// between its endpoints, is rewritten in place: a range is split around the
 /// block or shrunk (one block on a side becomes a single-block token), and a
 /// token with nothing left goes. The `## <date>` heading and the footer chip
-/// then follow the same rules as [`remove_excerpt`].
+/// then follow the same rules as [`remove_excerpt`]. A person's call records one
+/// `excerpt_removed` Correction, unless the block is the person's own and already
+/// Handled (WI #250).
 ///
 /// Retries like [`add_excerpt`]; returns the topic note as stored after the
 /// call. Errors, each writing nothing: `InvalidDate`, `RoleRule`, `NotFound`
@@ -229,9 +365,9 @@ pub struct MovedBlock {
 /// block), `BlockNotFound` (not a stored block of that day), and
 /// `VersionConflict` (every retry raced).
 ///
-/// An error means the block was not removed. Once the topic's save commits
-/// the call succeeds: a failure of its reindex or of the footer chip removal
-/// is logged as a warning and not returned.
+/// An error from these checks means the block was not removed. Once the topic's
+/// save commits, a failure of its reindex or of the footer chip removal is logged
+/// as a warning and not returned; a failure to record the Correction is returned.
 pub fn remove_excerpt_block(
     vault: &mut Vault,
     topic_note_id: &NoteId,
@@ -261,9 +397,18 @@ pub fn remove_excerpt_block_noted(
     block_id: &str,
     caller: Caller,
     embedder: Option<&dyn Embedder>,
-    _note: Option<&str>,
+    note: Option<&str>,
 ) -> Result<Note> {
-    remove_excerpt_block(vault, topic_note_id, date, block_id, caller, embedder)
+    remove_excerpt_block_inner(
+        vault,
+        topic_note_id,
+        date,
+        block_id,
+        caller,
+        embedder,
+        note,
+        &mut |_| {},
+    )
 }
 
 /// [`remove_excerpt_block`] with the same test seam as
@@ -278,6 +423,63 @@ pub fn remove_excerpt_block_with_hook(
     embedder: Option<&dyn Embedder>,
     before_write: &mut dyn FnMut(&mut Vault),
 ) -> Result<Note> {
+    remove_excerpt_block_inner(
+        vault,
+        topic_note_id,
+        date,
+        block_id,
+        caller,
+        embedder,
+        None,
+        before_write,
+    )
+}
+
+/// [`remove_excerpt_block`]: the writes, then the Correction.
+#[allow(clippy::too_many_arguments)]
+fn remove_excerpt_block_inner(
+    vault: &mut Vault,
+    topic_note_id: &NoteId,
+    date: &str,
+    block_id: &str,
+    caller: Caller,
+    embedder: Option<&dyn Embedder>,
+    note: Option<&str>,
+    before_write: &mut dyn FnMut(&mut Vault),
+) -> Result<Note> {
+    let (topic, located) = remove_block(
+        vault,
+        topic_note_id,
+        date,
+        block_id,
+        caller,
+        embedder,
+        before_write,
+    )?;
+    if caller == Caller::Person {
+        feedback::record_excerpt_removed(
+            vault.connection_ref(),
+            date,
+            &[located.blocks.excerpt_block(block_id)],
+            topic_note_id.as_str(),
+            &located.topic.title,
+            note,
+        )?;
+    }
+    Ok(topic)
+}
+
+/// The writes of [`remove_excerpt_block`]; it records nothing. Also returns the
+/// block as located before the write.
+fn remove_block(
+    vault: &mut Vault,
+    topic_note_id: &NoteId,
+    date: &str,
+    block_id: &str,
+    caller: Caller,
+    embedder: Option<&dyn Embedder>,
+    before_write: &mut dyn FnMut(&mut Vault),
+) -> Result<(Note, LocatedBlock)> {
     let located = locate_block(vault, topic_note_id, date, block_id)?;
     let topic = write_topic(
         vault,
@@ -294,7 +496,7 @@ pub fn remove_excerpt_block_with_hook(
     )?;
     let chip = remove_chip_if_day_gone(vault, &topic, date, located.day_date, embedder);
     AfterCommit::Warn.settle(&topic.id, "footer chip removal", chip)?;
-    Ok(topic)
+    Ok((topic, located))
 }
 
 /// Files one block of the day `date` into `to_topic`, then removes it from
@@ -304,7 +506,9 @@ pub fn remove_excerpt_block_with_hook(
 /// failing removal leaves the block in both topic notes and returns the error.
 /// A reindex or footer failure after the source's save has committed is not a
 /// failing removal: the block has moved and the call succeeds, as
-/// [`remove_excerpt_block`] says.
+/// [`remove_excerpt_block`] says. A person's move records one `excerpt_moved`
+/// Correction only after both writes, unless the block is the person's own and
+/// already Handled in `from_topic` (WI #250); a failure to record it is returned.
 ///
 /// Before any write it fails with `Io(InvalidInput)` when the two topics are
 /// the same note, and with [`remove_excerpt_block`]'s errors when the source
@@ -342,10 +546,18 @@ pub fn move_block_noted(
     to_topic: &NoteId,
     caller: Caller,
     embedder: Option<&dyn Embedder>,
-    _note: Option<&str>,
+    note: Option<&str>,
 ) -> Result<MovedBlock> {
-    move_block(
-        vault, date, block_id, from_topic, to_topic, caller, embedder,
+    move_block_inner(
+        vault,
+        date,
+        block_id,
+        from_topic,
+        to_topic,
+        caller,
+        embedder,
+        note,
+        &mut |_| {},
     )
 }
 
@@ -363,6 +575,32 @@ pub fn move_block_with_hook(
     embedder: Option<&dyn Embedder>,
     before_remove_write: &mut dyn FnMut(&mut Vault),
 ) -> Result<MovedBlock> {
+    move_block_inner(
+        vault,
+        date,
+        block_id,
+        from_topic,
+        to_topic,
+        caller,
+        embedder,
+        None,
+        before_remove_write,
+    )
+}
+
+/// [`move_block`]: both writes, then the one Correction.
+#[allow(clippy::too_many_arguments)]
+fn move_block_inner(
+    vault: &mut Vault,
+    date: &str,
+    block_id: &str,
+    from_topic: &NoteId,
+    to_topic: &NoteId,
+    caller: Caller,
+    embedder: Option<&dyn Embedder>,
+    note: Option<&str>,
+    before_remove_write: &mut dyn FnMut(&mut Vault),
+) -> Result<MovedBlock> {
     if from_topic == to_topic {
         return Err(MemexError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -373,7 +611,7 @@ pub fn move_block_with_hook(
     if !held_ords(&source.topic.content_md, date, &source.blocks).contains(&source.ord) {
         return Err(block_not_held(from_topic, date, block_id));
     }
-    let to = add_excerpt_with_hook(
+    let filed = file_blocks(
         vault,
         to_topic,
         date,
@@ -382,7 +620,7 @@ pub fn move_block_with_hook(
         embedder,
         &mut |_| {},
     )?;
-    let from = remove_excerpt_block_with_hook(
+    let (from, _) = remove_block(
         vault,
         from_topic,
         date,
@@ -391,7 +629,20 @@ pub fn move_block_with_hook(
         embedder,
         before_remove_write,
     )?;
-    Ok(MovedBlock { from, to })
+    if caller == Caller::Person {
+        feedback::record_excerpt_moved(
+            vault.connection_ref(),
+            date,
+            &source.blocks.excerpt_block(block_id),
+            (from_topic.as_str(), &source.topic.title),
+            (to_topic.as_str(), &filed.title),
+            note,
+        )?;
+    }
+    Ok(MovedBlock {
+        from,
+        to: filed.topic,
+    })
 }
 
 /// Transclusion fields merged into the top level of MCP `get_note` and CLI
@@ -591,6 +842,7 @@ fn write_topic(
 pub(crate) struct DayBlocks {
     ords: HashMap<String, i64>,
     ids: BTreeMap<i64, String>,
+    texts: HashMap<String, String>,
 }
 
 impl DayBlocks {
@@ -609,11 +861,44 @@ impl DayBlocks {
                 .iter()
                 .map(|b| (b.block_id.clone(), b.ord as i64))
                 .collect(),
+            texts: blocks
+                .iter()
+                .map(|b| (b.block_id.clone(), b.text.clone()))
+                .collect(),
         }
     }
 
     fn ord_of(&self, id: &str) -> Option<i64> {
         self.ords.get(id).copied()
+    }
+
+    /// The block `id` as a Correction names it. A block that is gone has an empty
+    /// preview.
+    fn excerpt_block(&self, id: &str) -> ExcerptBlock {
+        ExcerptBlock {
+            id: id.to_string(),
+            preview: self
+                .texts
+                .get(id)
+                .map(|text| feedback::preview(text))
+                .unwrap_or_default(),
+        }
+    }
+
+    /// The stored ids at the ords between the endpoints, in day order, or `None`
+    /// when an endpoint no longer resolves.
+    fn ids_between(&self, from: &str, to: Option<&str>) -> Option<Vec<String>> {
+        let first = self.ord_of(from)?;
+        let last = match to {
+            None => first,
+            Some(to) => self.ord_of(to)?,
+        };
+        Some(
+            self.ids
+                .range(first.min(last)..=first.max(last))
+                .map(|(_, id)| id.clone())
+                .collect(),
+        )
     }
 
     /// The token for the blocks at `first..=last` of the day `date`.
