@@ -66,6 +66,21 @@ pub fn add_excerpt(
     )
 }
 
+/// [`add_excerpt`] for the person's "File in…", carrying the optional `Why?`
+/// note: `note` is stored as the `text` of each Correction the call records
+/// (WI #250; [`add_excerpt`] behaves like `note: None`).
+pub fn add_excerpt_noted(
+    vault: &mut Vault,
+    topic_note_id: &NoteId,
+    date: &str,
+    block_ids: &[String],
+    caller: Caller,
+    embedder: Option<&dyn Embedder>,
+    _note: Option<&str>,
+) -> Result<Note> {
+    add_excerpt(vault, topic_note_id, date, block_ids, caller, embedder)
+}
+
 /// [`add_excerpt`] with a test seam: `before_write` runs once per attempt,
 /// after the attempt has read the topic note and before it writes it.
 ///
@@ -236,6 +251,21 @@ pub fn remove_excerpt_block(
     )
 }
 
+/// [`remove_excerpt_block`] for the person's `Remove`, carrying the optional
+/// `Why?` note: `note` is stored as the `text` of the Correction the call
+/// records (WI #250; [`remove_excerpt_block`] behaves like `note: None`).
+pub fn remove_excerpt_block_noted(
+    vault: &mut Vault,
+    topic_note_id: &NoteId,
+    date: &str,
+    block_id: &str,
+    caller: Caller,
+    embedder: Option<&dyn Embedder>,
+    _note: Option<&str>,
+) -> Result<Note> {
+    remove_excerpt_block(vault, topic_note_id, date, block_id, caller, embedder)
+}
+
 /// [`remove_excerpt_block`] with the same test seam as
 /// [`add_excerpt_with_hook`].
 #[doc(hidden)]
@@ -297,6 +327,25 @@ pub fn move_block(
         caller,
         embedder,
         &mut |_| {},
+    )
+}
+
+/// [`move_block`] for the person's `Move to…`, carrying the optional `Why?`
+/// note: `note` is stored as the `text` of the Correction the call records
+/// (WI #250; [`move_block`] behaves like `note: None`).
+#[allow(clippy::too_many_arguments)]
+pub fn move_block_noted(
+    vault: &mut Vault,
+    date: &str,
+    block_id: &str,
+    from_topic: &NoteId,
+    to_topic: &NoteId,
+    caller: Caller,
+    embedder: Option<&dyn Embedder>,
+    _note: Option<&str>,
+) -> Result<MovedBlock> {
+    move_block(
+        vault, date, block_id, from_topic, to_topic, caller, embedder,
     )
 }
 
