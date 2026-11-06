@@ -736,7 +736,7 @@ void main() {
 
   group('a stretch of a line (table cell, quote text)', () {
     test(
-      'the server finds no tag where a hash follows a pipe or a quote marker and one where a space precedes it',
+      'the Dart port finds no tag where a hash follows a pipe or a quote marker and one where a space precedes it',
       () {
         // The reference (tags.rs line_tags): the `#` is judged by the char
         // before it in the whole line, and `|` is no opener.

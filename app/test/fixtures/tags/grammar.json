@@ -18,6 +18,11 @@
     { "rule": "opener", "name": "after a closing paren is not a tag", "input": "(a)#b", "tags": [] },
     { "rule": "opener", "name": "after a backslash is not a tag", "input": "\\#work", "tags": [] },
     { "rule": "opener", "name": "a hash right after a tag is not a tag", "input": "#work#play", "tags": ["work"] },
+    { "rule": "opener", "name": "after a table pipe is not a tag", "input": "|#x|", "tags": [] },
+    { "rule": "opener", "name": "after a table pipe in a later cell is not a tag", "input": "| a |#x |", "tags": [] },
+    { "rule": "opener", "name": "after a space in a table cell is a tag", "input": "| #x |", "tags": ["x"] },
+    { "rule": "opener", "name": "after a quote marker is not a tag", "input": ">#x", "tags": [] },
+    { "rule": "opener", "name": "after a quote marker and a space is a tag", "input": "> #x", "tags": ["x"] },
 
     { "rule": "first-char", "name": "digits only", "input": "#123", "tags": [] },
     { "rule": "first-char", "name": "digit first", "input": "#1a", "tags": [] },
