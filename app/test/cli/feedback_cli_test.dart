@@ -403,6 +403,12 @@ void main() {
           feedbackJson(overrides: {'status': 'pending'}),
           feedbackJson(overrides: {'created_at': '1000'}),
           feedbackJson(overrides: {'text': 5}),
+          // Every optional field is a string (handled_at an int) or null.
+          feedbackJson(overrides: {'note_id': 7}),
+          feedbackJson(overrides: {'day': 7}),
+          feedbackJson(overrides: {'agent_change_id': 7}),
+          feedbackJson(overrides: {'reply': 7}),
+          feedbackJson(overrides: {'handled_at': '1500'}),
         ];
         for (final bad in badRows) {
           final add = FakeMemexCli()

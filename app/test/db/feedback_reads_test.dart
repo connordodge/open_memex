@@ -325,6 +325,23 @@ void main() {
         ]);
       },
     );
+
+    test(
+      'feedbackForNote puts a feedback row before a tag correction with the same created_at',
+      () {
+        final db = _v6();
+        final tagFirst = db.seedTagCorrection(noteId: 'n1', createdAt: 2000);
+        db.seedFeedback('fb-tie', noteId: 'n1', createdAt: 2000);
+        final tagSecond = db.seedTagCorrection(noteId: 'n1', createdAt: 2000);
+
+        // Feedback first on a tie, then the tags latest id first.
+        expect(_ids(db.feedbackForNote('n1')), [
+          'fb-tie',
+          'tag-$tagSecond',
+          'tag-$tagFirst',
+        ]);
+      },
+    );
   });
 
   group('feedbackWithoutNote', () {
@@ -440,6 +457,17 @@ void main() {
           'tag-$tag',
           'fb-old',
         ]);
+      },
+    );
+
+    test(
+      'feedbackWithoutNote puts a feedback row before a tag correction with the same created_at',
+      () {
+        final db = _v6();
+        final tag = db.seedTagCorrection(createdAt: 2000);
+        db.seedFeedback('fb-tie', createdAt: 2000);
+
+        expect(_ids(db.feedbackWithoutNote()), ['fb-tie', 'tag-$tag']);
       },
     );
   });

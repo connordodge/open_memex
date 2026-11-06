@@ -185,6 +185,14 @@ void main() {
             {'id': 'R', 'agent_change_id': null, 'created_at': '1'},
           ],
         }),
+        // agent_change_id is a string or null: any other type is not the
+        // Contract shape.
+        _out({
+          'vault_id': 'V',
+          'revisions': [
+            {'id': 'R', 'agent_change_id': 42, 'created_at': 1},
+          ],
+        }),
       ];
       for (final out in revisionCases) {
         final cli = FakeMemexCli()
