@@ -376,7 +376,7 @@ void main() {
     }
 
     testWidgets(
-      'the sidebar host composes NotesPane and CanvasesRail and tapping a note row opens that note tab',
+      'the sidebar host composes NotesPane and CanvasesRail and tapping a note row shows that note in the current tab',
       (tester) async {
         final h = await _pump(tester, build: sidebar);
         await chooseTopics(tester);
