@@ -311,7 +311,8 @@ fn correction_id(vault: &Path) -> String {
 fn guide_id(vault: &Path) -> String {
     db(vault)
         .query_row(
-            "SELECT id FROM notes WHERE json_extract(frontmatter, '$.role') = 'guide'",
+            "SELECT id FROM notes WHERE CASE WHEN json_valid(frontmatter) \
+                 THEN json_extract(frontmatter, '$.role') END = 'guide'",
             [],
             |r| r.get(0),
         )

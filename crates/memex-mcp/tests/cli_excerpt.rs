@@ -691,7 +691,7 @@ fn excerpt_add_prints_the_contract_object_and_files_the_block() {
 #[test]
 fn excerpt_remove_block_prints_the_contract_object_and_splits_the_range() {
     let f = fresh();
-    agent_files(&f, &f.topic, &["b7k2m9", "f6g7h8"]);
+    agent_files(&f, &f.topic, &["b7k2m9", "c3d4e5", "f6g7h8"]);
     let (_, before) = note_row(&f, &f.topic);
 
     let got = ok_json(excerpt_remove_block(&f, &f.topic, DAY, "c3d4e5", None));
@@ -947,7 +947,7 @@ fn excerpt_add_records_one_correction_with_the_note_as_its_text() {
 #[test]
 fn excerpt_remove_block_records_one_correction_with_the_note_as_its_text() {
     let f = fresh();
-    agent_files(&f, &f.topic, &["b7k2m9", "f6g7h8"]);
+    agent_files(&f, &f.topic, &["b7k2m9", "c3d4e5", "f6g7h8"]);
 
     ok_json(excerpt_remove_block(
         &f,
