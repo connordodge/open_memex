@@ -22,12 +22,12 @@ Open-source, local-first, AI-native knowledge base. The user's notes live on the
   - `memex append --vault <path> [--date YYYY-MM-DD] [TEXT]` — quick entry: append text to a daily note (today by default; text from the argument or stdin) and print the new block ids, the content version and the day's prior review state as JSON. The one CLI write meant for automation (Raycast, Alfred, Shortcuts, shell aliases).
   - `memex prompt review` / `memex prompt capture` — print the agent prompt texts
   - `memex rm --vault <path> --note-id <id> --expected-version <v>` — delete a note (people only; there is no MCP delete tool)
-  - `memex excerpt rm` — remove one excerpt from a topic note; `memex footer add` — add a topic to a daily note's Topics footer
+  - `memex excerpt rm` — remove one excerpt from a topic note; `memex footer add` — add a topic to a daily note's Note footer
   - `memex folder ls|new|update|rm|add|remove` — manage Smart Folders and their members; `memex settings get|set --key smart_folder_max_depth` — read or change a vault setting
   - `memex canvas …` — canvas operations (see [`docs/canvas.md`](docs/canvas.md))
 - **Daily notes and agent review** (see [`docs/daily-review.md`](docs/daily-review.md), and [`docs/daily-acceptance.md`](docs/daily-acceptance.md) for the manual acceptance script):
   - The app opens on today's **daily note** with the cursor ready; nothing is written until you type. The sidebar switches between **Days** (a list by date, each row with a review dot: grey `Unreviewed`, green `Reviewed`, amber `Changed since review`) and **Topics** (the Smart Folder tree, with an Unsorted row).
-  - Your agent (Claude Desktop, Claude Code, Raycast AI chat or any MCP client; the app never calls a model) **reviews** each day over MCP: it files blocks into **topic notes** as live **excerpts** (transclusions that show the day's current text), links related topics, groups them into **Smart Folders** and marks the day reviewed with a short change record, shown in each note's Activity tab. Daily notes show their **Topics footer** as chips.
+  - Your agent (Claude Desktop, Claude Code, Raycast AI chat or any MCP client; the app never calls a model) **reviews** each day over MCP: it files blocks into **topic notes** as live **excerpts** (transclusions that show the day's current text), links related topics, groups them into **Smart Folders** and marks the day reviewed with a short change record, shown in each note's Activity tab. Daily notes show their **Note footer** as chips.
   - **Pinned** Smart Folders and memberships (everything you create or edit yourself) are respected by the agent, and `smart_folder_max_depth` (default 2) caps Smart Folder nesting for everyone; the app offers to raise it when you nest deeper.
   - A read-only **Graph view** of notes and wikilinks, opened from a Smart Folder, topic note or day.
   - **Capture**: type observations to a Claude Code session and each is appended verbatim to today's daily note and filed. Quick entry: `memex append` from any launcher; the next review files it.
@@ -38,12 +38,13 @@ Open-source, local-first, AI-native knowledge base. The user's notes live on the
 - Hybrid search: FTS5 (BM25) + optional vector (cosine) fused via Reciprocal Rank Fusion
 - Local embeddings via `fastembed-rs` (`BGE-small-en-v1.5`, 384-dim) — opt-in with `--with-embeddings`
 - **Wikilinks**: `[[Title]]`, `[[Title~kind]]`, `[[Title|alias]]`, `[[Title~kind|alias]]`. Two-tier kind vocabulary — four built-ins (`references`, `extends`, `contradicts`, `example-of`) get curated section headings + frontmatter shortcuts; user-defined kebab-case kinds are first-class for storage and `neighbors()` queries. See [`docs/wikilinks.md`](docs/wikilinks.md).
-- 26 MCP tools (none renames, edits or deletes an existing note, and the only write into a daily note body is `append_to_daily_note`):
+- 26 MCP tools:
   - search and links: `search`, `get_note` (with `include_backlinks`), `create_note` (with `role`), `neighbors`, `add_link`, `update_link`
   - canvases (see [`docs/canvas.md`](docs/canvas.md)): `list_canvases`, `get_canvas`, `create_canvas`, `add_to_canvas`, `remove_from_canvas`, `move_node`, `delete_canvas`
   - review: `list_unreviewed_days`, `get_daily_note_changes`, `mark_day_reviewed`
   - capture and excerpts: `append_to_daily_note`, `add_excerpt`, `remove_excerpt`
   - Smart Folders and settings: `list_smart_folders`, `create_smart_folder`, `update_smart_folder`, `delete_smart_folder`, `add_to_smart_folder`, `remove_from_smart_folder`, `get_vault_settings`
+- None of the tools renames, edits or deletes an existing note, and the only write into a daily note body is `append_to_daily_note`.
 - 2 MCP prompts: `review_daily_notes` and `capture` (the same texts print with `memex prompt review` and `memex prompt capture`)
 
 ## Upgrading to schema V5

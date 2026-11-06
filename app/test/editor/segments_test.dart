@@ -1,6 +1,9 @@
 // WI #20 (A3): canonical daily body (C3), transclusion parse (C4) and the
 // segment split/join. Fixture literals are copied verbatim from
 // contracts-1.md C3/C4; Rust (#7, #9) passes the same fixtures.
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/segments.dart';
 
@@ -506,5 +509,132 @@ void main() {
         expect(cards[1].to, 'c3d4e5');
       },
     );
+  });
+
+  // WI #238 (T2): footer tag lines and the non-daily split. The fixture is
+  // the contract Rust `daily::split_body` / `split_note_body` / `assemble`
+  // pass too (D13); the named tests pin each arm of the rules on their own.
+  group('Note footer split (D13)', () {
+    test('footer_split.json rows all pass in Dart', () {
+      final fixture =
+          jsonDecode(
+                File('test/fixtures/tags/footer_split.json').readAsStringSync(),
+              )
+              as Map<String, Object?>;
+      expect(fixture['marker'], topicsMarker);
+      final rows = (fixture['split']! as List).cast<Map<String, Object?>>();
+      final decisions = {for (final r in rows) r['decision']};
+      for (final required in [
+        'chip line',
+        'tag line',
+        'legacy tag line',
+        'heading',
+        'double hash',
+        'blank',
+        'repeated marker',
+        'fenced marker',
+        'no marker',
+      ]) {
+        expect(decisions, contains(required), reason: 'a $required row');
+      }
+
+      final failures = <String>[];
+      var checked = 0;
+      for (final row in rows) {
+        final input = row['input']! as String;
+        final want = [
+          row['person'],
+          (row['chips']! as List).cast<String>(),
+          (row['tags']! as List).cast<String>(),
+        ];
+        for (final on in (row['on']! as List).cast<String>()) {
+          final DailyBody got = switch (on) {
+            'daily' => splitDailyBody(input),
+            'note' => splitNoteBody(input),
+            _ => throw StateError('unknown splitter $on'),
+          };
+          checked++;
+          final gotParts = [got.person, got.chips, got.tags];
+          if (jsonEncode(gotParts) != jsonEncode(want)) {
+            failures.add(
+              '$on / ${row['name']}: ${jsonEncode(input)}\n'
+              '  want ${jsonEncode(want)}\n  got  ${jsonEncode(gotParts)}',
+            );
+          }
+        }
+      }
+      for (final row
+          in (fixture['assemble']! as List).cast<Map<String, Object?>>()) {
+        checked++;
+        final got = assembleDailyBody(
+          row['person']! as String,
+          (row['chips']! as List).cast<String>(),
+        );
+        if (got != row['body']) {
+          failures.add('assemble / ${row['name']}: ${jsonEncode(got)}');
+        }
+      }
+      expect(
+        failures,
+        isEmpty,
+        reason: '${failures.length} of $checked checks failed',
+      );
+    });
+
+    test('both splitters drop footer tag lines and report their names', () {
+      const tagLines = {
+        '#work': 'work',
+        '#My Tag': 'My Tag',
+        '#123': '123',
+        '#x  \r': 'x',
+        '#été': 'été',
+      };
+      for (final MapEntry(key: line, value: name) in tagLines.entries) {
+        final body = 'Day.\n$topicsMarker\n[[X~about]]\n$line\n';
+        for (final got in [splitDailyBody(body), splitNoteBody(body)]) {
+          expect(got.person, 'Day.\n', reason: '$line is not person text');
+          expect(got.chips, ['X'], reason: line);
+          expect(got.tags, [name], reason: '$line is a tag line');
+        }
+      }
+      for (final line in ['# Heading', '##x', '#', '  #x', 'x #y']) {
+        final body = 'Day.\n$topicsMarker\n[[X~about]]\n$line\n';
+        for (final got in [splitDailyBody(body), splitNoteBody(body)]) {
+          expect(got.person, 'Day.\n$line\n', reason: '$line is stray text');
+          expect(got.chips, ['X'], reason: line);
+          expect(got.tags, isEmpty, reason: line);
+        }
+      }
+    });
+
+    test('splitNoteBody ignores a marker inside fenced code', () {
+      for (final fence in ['```', '~~~', '````']) {
+        final body =
+            'Code:\n$fence\n$topicsMarker\n[[X~about]]\n$fence\nAfter.\n';
+        final got = splitNoteBody(body);
+        expect(got.person, body, reason: '$fence: fenced marker is body text');
+        expect(got.chips, isEmpty, reason: fence);
+        expect(got.tags, isEmpty, reason: fence);
+
+        final withFooter = '$body$topicsMarker\n[[Y~about]]\n#y\n';
+        final split = splitNoteBody(withFooter);
+        expect(split.person, body, reason: '$fence: the later marker splits');
+        expect(split.chips, ['Y'], reason: fence);
+        expect(split.tags, ['y'], reason: fence);
+      }
+      const plain = 'Notes.\n$topicsMarker\n[[X~about]]\n#x\nlate\n';
+      final note = splitNoteBody(plain);
+      final daily = splitDailyBody(plain);
+      expect(note.person, 'Notes.\nlate\n');
+      expect(note.person, daily.person);
+      expect(note.chips, daily.chips);
+      expect(note.tags, daily.tags);
+      for (final body in ['', 'Last line', 'a\n\n- b\n']) {
+        final got = splitNoteBody(body);
+        expect(got.person, body);
+        expect(got.chips, isEmpty);
+        expect(got.tags, isEmpty);
+      }
+    });
   });
 }

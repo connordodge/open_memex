@@ -108,6 +108,7 @@ fn split_body_returns_a_daily_body_value() {
         DailyBody {
             person: "Morning pages\n".into(),
             chips: vec!["Sleep".into()],
+            tags: vec![],
         }
     );
     assert_eq!(daily::TOPICS_MARKER, "<!-- memex:topics -->");
@@ -490,5 +491,187 @@ fn is_daily_matches_the_role_exactly() {
         json!(null),
     ] {
         assert!(!daily::is_daily(&fm), "{fm}");
+    }
+}
+
+// ---------- WI #238 (T2): footer tag lines and the non-daily split ----------
+//
+// `app/test/fixtures/tags/footer_split.json` is the contract the Dart port
+// (`segments.dart`) is held to as well (D13). The named tests below it pin
+// each arm of the tag-line predicate and the fence rule on their own.
+
+fn footer_split_fixture() -> serde_json::Value {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../app/test/fixtures/tags/footer_split.json");
+    let raw =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    serde_json::from_str(&raw).expect("footer_split.json is JSON")
+}
+
+fn fixture_strs(v: &serde_json::Value, what: &str) -> Vec<String> {
+    v.as_array()
+        .unwrap_or_else(|| panic!("{what} is an array"))
+        .iter()
+        .map(|s| {
+            s.as_str()
+                .unwrap_or_else(|| panic!("{what} holds strings"))
+                .to_string()
+        })
+        .collect()
+}
+
+fn fixture_str<'a>(v: &'a serde_json::Value, key: &str) -> &'a str {
+    v[key]
+        .as_str()
+        .unwrap_or_else(|| panic!("{key} is a string in {v}"))
+}
+
+fn split_parts(body: &DailyBody) -> (String, Vec<String>, Vec<String>) {
+    (body.person.clone(), body.chips.clone(), body.tags.clone())
+}
+
+#[test]
+fn footer_split_fixture_rows_all_pass() {
+    let fixture = footer_split_fixture();
+    assert_eq!(fixture["marker"], daily::TOPICS_MARKER);
+    let rows = fixture["split"]
+        .as_array()
+        .expect("footer_split.json has a split array");
+
+    // One row per consumer decision the WI's AC names, so the table can't
+    // silently lose one.
+    let decisions: Vec<&str> = rows.iter().map(|r| fixture_str(r, "decision")).collect();
+    for required in [
+        "chip line",
+        "tag line",
+        "legacy tag line",
+        "heading",
+        "double hash",
+        "blank",
+        "repeated marker",
+        "fenced marker",
+        "no marker",
+    ] {
+        assert!(
+            decisions.contains(&required),
+            "footer_split.json has a {required:?} row"
+        );
+    }
+
+    let mut failures = Vec::new();
+    let mut checked = 0;
+    for row in rows {
+        let input = fixture_str(row, "input");
+        let want = (
+            fixture_str(row, "person").to_string(),
+            fixture_strs(&row["chips"], "chips"),
+            fixture_strs(&row["tags"], "tags"),
+        );
+        for on in fixture_strs(&row["on"], "on") {
+            let got = match on.as_str() {
+                "daily" => split_parts(&daily::split_body(input)),
+                "note" => split_parts(&daily::split_note_body(input)),
+                other => panic!("unknown splitter {other:?}"),
+            };
+            checked += 1;
+            if got != want {
+                failures.push(format!(
+                    "{on} / {}: {input:?}\n  want {want:?}\n  got  {got:?}",
+                    fixture_str(row, "name")
+                ));
+            }
+        }
+    }
+    let assembles = fixture["assemble"]
+        .as_array()
+        .expect("footer_split.json has an assemble array");
+    for row in assembles {
+        checked += 1;
+        let chips = fixture_strs(&row["chips"], "chips");
+        let got = daily::assemble(fixture_str(row, "person"), &chips);
+        if got != fixture_str(row, "body") {
+            failures.push(format!(
+                "assemble / {}: got {got:?}",
+                fixture_str(row, "name")
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {checked} footer_split.json checks failed:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn split_body_drops_footer_tag_lines_and_reports_their_names() {
+    let m = daily::TOPICS_MARKER;
+    // Tag lines: `#` then anything but a space or `#`.
+    for (line, name) in [
+        ("#work", "work"),
+        ("#My Tag", "My Tag"),
+        ("#123", "123"),
+        ("#x  \r", "x"),
+        ("#\u{e9}t\u{e9}", "\u{e9}t\u{e9}"),
+    ] {
+        let body = format!("Day.\n{m}\n[[X~about]]\n{line}\n");
+        for (splitter, got) in [
+            ("daily", daily::split_body(&body)),
+            ("note", daily::split_note_body(&body)),
+        ] {
+            assert_eq!(
+                got.person, "Day.\n",
+                "{splitter}: {line:?} is not person text"
+            );
+            assert_eq!(got.chips, ["X"], "{splitter}: {line:?}");
+            assert_eq!(got.tags, [name], "{splitter}: {line:?} is a tag line");
+        }
+    }
+    // Stray lines: `# `, `##`, a bare `#`, an indented `#x`, text then `#y`.
+    for line in ["# Heading", "##x", "#", "  #x", "x #y"] {
+        let body = format!("Day.\n{m}\n[[X~about]]\n{line}\n");
+        for (splitter, got) in [
+            ("daily", daily::split_body(&body)),
+            ("note", daily::split_note_body(&body)),
+        ] {
+            assert_eq!(
+                got.person,
+                format!("Day.\n{line}\n"),
+                "{splitter}: {line:?} moves to the person section"
+            );
+            assert_eq!(got.chips, ["X"], "{splitter}: {line:?}");
+            assert!(got.tags.is_empty(), "{splitter}: {line:?}: {:?}", got.tags);
+        }
+    }
+}
+
+#[test]
+fn split_note_body_ignores_a_marker_inside_fenced_code() {
+    let m = daily::TOPICS_MARKER;
+    for fence in ["```", "~~~", "````"] {
+        let body = format!("Code:\n{fence}\n{m}\n[[X~about]]\n{fence}\nAfter.\n");
+        let got = daily::split_note_body(&body);
+        assert_eq!(got.person, body, "{fence}: the fenced marker is body text");
+        assert!(got.chips.is_empty() && got.tags.is_empty(), "{fence}");
+
+        let with_footer = format!("{body}{m}\n[[Y~about]]\n#y\n");
+        let got = daily::split_note_body(&with_footer);
+        assert_eq!(
+            got.person, body,
+            "{fence}: the marker after the fence splits"
+        );
+        assert_eq!(got.chips, ["Y"], "{fence}");
+        assert_eq!(got.tags, ["y"], "{fence}");
+    }
+    // A marker outside any fence splits exactly like split_body.
+    let plain = format!("Notes.\n{m}\n[[X~about]]\n#x\nlate\n");
+    assert_eq!(daily::split_note_body(&plain), daily::split_body(&plain));
+    assert_eq!(daily::split_note_body(&plain).person, "Notes.\nlate\n");
+    // No marker at all: the whole body, even without a final newline.
+    for body in ["", "Last line", "a\n\n- b\n"] {
+        let got = daily::split_note_body(body);
+        assert_eq!(got.person, body);
+        assert!(got.chips.is_empty() && got.tags.is_empty());
     }
 }
