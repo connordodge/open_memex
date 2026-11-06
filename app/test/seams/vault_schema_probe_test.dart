@@ -309,6 +309,24 @@ void main() {
       },
     );
 
+    test(
+      'vaultV6ReadyProvider needs every V6 table even when the tags columns exist',
+      () {
+        final db = FakeVaultDb.v6();
+        addTearDown(db.close);
+        final c = _container(db: db);
+        final sub = c.listen(vaultV6ReadyProvider, (_, _) {});
+        addTearDown(sub.close);
+        expect(db.hasColumns('tags', v6TagColumns), isTrue);
+        expect(sub.read(), isTrue);
+
+        db.db.execute('DROP TABLE vault_guide_revisions');
+        c.read(vaultRevisionProvider.notifier).state++;
+        expect(db.hasColumns('tags', v6TagColumns), isTrue);
+        expect(sub.read(), isFalse);
+      },
+    );
+
     test('vaultV6ReadyProvider is true for a hosted vault', () {
       final c = ProviderContainer(
         overrides: [
