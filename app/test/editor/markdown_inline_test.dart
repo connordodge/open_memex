@@ -2326,11 +2326,10 @@ void main() {
         // inside the escape, whose escaped character is the opener.
         for (final opener in ['(', '[', '{', '"', "'"]) {
           final text = '\\$opener#x';
-          expect(
-            kindsOf(text),
-            [InlineTokenKind.escape, InlineTokenKind.tag],
-            reason: 'after an escaped $opener',
-          );
+          expect(kindsOf(text), [
+            InlineTokenKind.escape,
+            InlineTokenKind.tag,
+          ], reason: 'after an escaped $opener');
           expect(spansOf(text, InlineTokenKind.tag), [
             [2, 4],
           ], reason: 'after an escaped $opener');
@@ -2409,6 +2408,87 @@ void main() {
         }
         expect(checked, greaterThan(70));
         expect(bad, isEmpty, reason: bad.join('\n'));
+      },
+    );
+
+    test(
+      'a stretch whose real predecessor is a pipe or a quote marker gets no tag token and a space predecessor gets one',
+      () {
+        // A table cell is tokenized apart from its row: `|#x|` is the cell
+        // `#x` with a `|` before it, and the server finds no tag there.
+        expect(spansOf('#x', InlineTokenKind.tag), [
+          [0, 2],
+        ]);
+        expect(tokenizeInline('#x', before: 0x7C), isEmpty);
+        expect(tokenizeInline('#x', before: 0x3E), isEmpty);
+        for (final before in [null, 0x20, 0x28]) {
+          expect(
+            [
+              for (final t in tokenizeInline('#x', before: before))
+                [t.start, t.end],
+            ],
+            [
+              [0, 2],
+            ],
+            reason: 'before $before',
+          );
+        }
+      },
+    );
+
+    test(
+      'before reaches the first line only and later hashes keep their own previous character',
+      () {
+        expect(
+          [
+            for (final t in tokenizeInline('#a #b', before: 0x7C))
+              [t.start, t.end],
+          ],
+          [
+            [3, 5],
+          ],
+        );
+        // The second line starts a line of its own: before is not its predecessor.
+        expect(
+          [
+            for (final t in tokenizeInline('x\n#b', before: 0x7C))
+              [t.start, t.end],
+          ],
+          [
+            [2, 4],
+          ],
+        );
+        // An empty first line is no line: before does not slide to the next one.
+        expect(
+          [
+            for (final t in tokenizeInline('\n#b', before: 0x7C))
+              [t.start, t.end],
+          ],
+          [
+            [1, 3],
+          ],
+        );
+      },
+    );
+
+    test('before does not change any other token of the line', () {
+      const text = '*a* `c` [[w]] #x';
+      expect(
+        _describe(tokenizeInline(text, before: 0x7C)),
+        _describe(tokenizeInline(text)),
+      );
+    });
+
+    test(
+      'unitBeforeInLine gives the previous code unit on the same line and null at a line start',
+      () {
+        expect(unitBeforeInLine('abc', 0), isNull);
+        expect(unitBeforeInLine('abc', 1), 0x61);
+        expect(unitBeforeInLine('abc', 3), 0x63);
+        expect(unitBeforeInLine('a\nbc', 2), isNull);
+        expect(unitBeforeInLine('a\r\nbc', 3), isNull);
+        expect(unitBeforeInLine('a|bc', 2), 0x7C);
+        expect(unitBeforeInLine('a bc', 2), 0x20);
       },
     );
   });

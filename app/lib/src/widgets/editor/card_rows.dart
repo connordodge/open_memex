@@ -3,6 +3,7 @@ import 'package:flutter/widgets.dart';
 
 import '../../editor/editor_rows.dart';
 import '../../editor/row_geometry.dart';
+import '../../editor/tag_grammar.dart' show fencedRowLines;
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import 'editor_row.dart';
@@ -64,6 +65,7 @@ class CardRows extends StatelessWidget {
   Widget build(BuildContext context) {
     final specs = splitRows(text, atSegmentStart: true);
     final geometries = rowGeometries(specs);
+    final fenced = fencedRowLines(text, specs);
     final scaler = MediaQuery.textScalerOf(context);
     final base = _baseStyle();
     bool blank(RowSpec spec) =>
@@ -82,7 +84,7 @@ class CardRows extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         for (var r = first; r <= last; r++)
-          _row(r, specs[r], geometries[r], base, scaler),
+          _row(r, specs[r], geometries[r], fenced[r], base, scaler),
       ],
     );
   }
@@ -91,6 +93,7 @@ class CardRows extends StatelessWidget {
     int r,
     RowSpec spec,
     ItemGeometry? geometry,
+    List<bool> fenced,
     TextStyle base,
     TextScaler scaler,
   ) {
@@ -107,6 +110,7 @@ class CardRows extends StatelessWidget {
           text: rowText,
           style: style,
           headerBand: OmColors.surface4,
+          fenced: fenced,
         ),
       );
     }
@@ -127,6 +131,7 @@ class CardRows extends StatelessWidget {
           quote: quote,
           atSegmentStart: atSegmentStart,
           codeRow: codeRow,
+          fenced: fenced,
         ),
       ),
     );

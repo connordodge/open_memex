@@ -10,6 +10,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/src/editor/editor_rows.dart';
 import 'package:open_memex_app/src/editor/tag_grammar.dart';
 
 Map<String, Object?> _fixture() =>
@@ -731,6 +732,206 @@ void main() {
       for (final MapEntry(key: input, value: want) in cases.entries) {
         expect(normalizeTagName(input), want, reason: 'input: ${_show(input)}');
       }
+    });
+  });
+
+  group('a stretch of a line (table cell, quote text)', () {
+    test(
+      'the Dart port finds no tag where a hash follows a pipe or a quote marker and one where a space precedes it',
+      () {
+        // The reference (tags.rs line_tags): the `#` is judged by the char
+        // before it in the whole line, and `|` is no opener.
+        expect(extractTagNames('|#x|'), isEmpty);
+        expect(extractTagNames('| a |#x |'), isEmpty);
+        expect(extractTagNames('>#x'), isEmpty);
+        expect(extractTagNames('| #x |'), ['x']);
+        expect(extractTagNames('#x | y'), ['x']);
+        expect(extractTagNames('> #x'), ['x']);
+      },
+    );
+
+    test(
+      'findTagsInLine judges the first hash by before and a null before is a line start',
+      () {
+        expect(findTagsInLine('#x'), [TagRange(0, 2, 'x')]);
+        expect(findTagsInLine('#x', before: null), [TagRange(0, 2, 'x')]);
+        expect(findTagsInLine('#x', before: 0x7C), isEmpty);
+        expect(findTagsInLine('#x', before: 0x3E), isEmpty);
+        expect(findTagsInLine('#x', before: 0x20), [TagRange(0, 2, 'x')]);
+        expect(findTagsInLine('#x', before: 0x28), [TagRange(0, 2, 'x')]);
+      },
+    );
+
+    test(
+      'before changes only a hash at offset 0 and later hashes keep their own previous character',
+      () {
+        expect(findTagsInLine('#a #b', before: 0x7C), [TagRange(3, 5, 'b')]);
+        expect(findTagsInLine('a #b', before: 0x7C), [TagRange(2, 4, 'b')]);
+        expect(findTagsInLine('a|#b', before: 0x20), isEmpty);
+      },
+    );
+  });
+
+  group('whitespace matches the reference (char::is_whitespace)', () {
+    // Unicode White_Space, the set tags.rs reads. Every member is in the BMP,
+    // so one code unit is one char. U+180E, U+200B and U+FEFF are not in it.
+    const whitespace = <int>{
+      0x09,
+      0x0A,
+      0x0B,
+      0x0C,
+      0x0D,
+      0x20,
+      0x85,
+      0xA0,
+      0x1680,
+      0x2000,
+      0x2001,
+      0x2002,
+      0x2003,
+      0x2004,
+      0x2005,
+      0x2006,
+      0x2007,
+      0x2008,
+      0x2009,
+      0x200A,
+      0x2028,
+      0x2029,
+      0x202F,
+      0x205F,
+      0x3000,
+    };
+    const opening = <int>{0x28, 0x5B, 0x7B, 0x22, 0x27};
+
+    test(
+      'opensTag is true at exactly the white space set and the five opening marks for every code unit',
+      () {
+        final wrong = <String>[
+          for (var c = 0; c <= 0xFFFF; c++)
+            if (opensTag(c) != (whitespace.contains(c) || opening.contains(c)))
+              c.toRadixString(16),
+        ];
+        expect(wrong, isEmpty);
+      },
+    );
+
+    test(
+      'a closing fence run may be followed only by what the reference trims',
+      () {
+        for (final c in whitespace) {
+          if (c == 0x0A) continue; // A line break ends the closing line.
+          final close = String.fromCharCode(c);
+          expect(extractTagNames('~~~\n#x\n~~~$close\n#y'), [
+            'y',
+          ], reason: 'U+${c.toRadixString(16)} closes');
+        }
+        for (final c in [0x180E, 0x200B, 0xFEFF, 0x61]) {
+          final close = String.fromCharCode(c);
+          expect(
+            extractTagNames('~~~\n#x\n~~~$close\n#y'),
+            isEmpty,
+            reason: 'U+${c.toRadixString(16)} does not close',
+          );
+        }
+      },
+    );
+  });
+
+  group('fencedRowLines', () {
+    List<List<bool>> rowLines(String text) =>
+        fencedRowLines(text, splitRows(text, atSegmentStart: true));
+
+    test('reads a tilde fence across the rows it is split into', () {
+      expect(rowLines('~~~\n- #x\n~~~\n#y'), [
+        [true],
+        [true],
+        [true, false],
+      ]);
+      expect(rowLines('a\n- #x\n~~~\n#y'), [
+        [false],
+        [false],
+        [true, true],
+      ]);
+    });
+
+    test('gives a row one entry per line and a code row all of its lines', () {
+      expect(rowLines('a\nb\n```\n#x\n```\nc'), [
+        [false, false],
+        [true, true, true],
+        [false],
+      ]);
+      expect(rowLines(''), [<bool>[]]);
+    });
+
+    test('a marker keeps an item line from opening a fence', () {
+      expect(rowLines('- ~~~\n#y'), [
+        [false],
+        [false],
+      ]);
+    });
+
+    test('a table row gets a state for each of its lines', () {
+      expect(rowLines('| a |\n|---|\n| c |\n~~~ | o\n| e |'), [
+        [false, false, false, true, true],
+      ]);
+    });
+
+    test('frontmatter lines open no fence', () {
+      expect(rowLines('---\n~~~\n---\n- a\nb'), [
+        [false, false, false],
+        [false],
+        [false],
+      ]);
+    });
+
+    test('a line break at the end has no entry of its own', () {
+      expect(rowLines('~~~\n- a\n'), [
+        [true],
+        [true],
+        <bool>[],
+      ]);
+      expect(rowLines('a\n'), [
+        [false],
+      ]);
+    });
+  });
+
+  group('fencedLines', () {
+    test('marks the opening, inside and closing lines and nothing else', () {
+      expect(fencedLines(const []), isEmpty);
+      expect(fencedLines(const ['a', '#b']), [false, false]);
+      expect(fencedLines(const ['a', '~~~', '#x', '~~~', '#y']), [
+        false,
+        true,
+        true,
+        true,
+        false,
+      ]);
+      expect(fencedLines(const ['```', '#x', '```', '~~~', '#y']), [
+        true,
+        true,
+        true,
+        true,
+        true,
+      ]);
+    });
+
+    test('closes only on the same character at the same length or longer', () {
+      expect(fencedLines(const ['~~~~', '~~~', '#x', '~~~~', '#y']), [
+        true,
+        true,
+        true,
+        true,
+        false,
+      ]);
+      expect(fencedLines(const ['~~~', '```', '#x', '~~~~', '#y']), [
+        true,
+        true,
+        true,
+        true,
+        false,
+      ]);
     });
   });
 }

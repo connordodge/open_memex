@@ -6,6 +6,8 @@
 // only. Pure Dart, no Flutter imports. Every offset is a UTF-16 code-unit
 // index, and no range boundary falls inside a surrogate pair.
 
+import 'editor_rows.dart' show RowSpec;
+import 'markdown_lines.dart' show MdLine, MdLineKind, classifyLines;
 import 'segments.dart' show parseTransclusions;
 
 /// A tag found in one line: the half-open UTF-16 range `[start, end)` of the
@@ -168,13 +170,18 @@ List<(int, int)> _codeSpans(String line) {
 /// The tags in [line], one line of prose (no `\n`), in order of position,
 /// outside code spans, transclusions, wikilinks, markdown links and URLs.
 /// Never call it on a fenced line: fences are the caller's.
-List<TagRange> findTagsInLine(String line) {
+///
+/// [before] is the code unit that precedes [line] in its real line, when
+/// [line] is only a stretch of it (a table cell, or the text after a quote
+/// marker): the server tests the character before a `#` in the whole line,
+/// so `|#x|` holds no tag. Null means [line] starts its line.
+List<TagRange> findTagsInLine(String line, {int? before}) {
   if (!line.contains('#')) return const [];
   final hidden = _hiddenRanges(line);
   final out = <TagRange>[];
   for (var i = 0; i < line.length; i++) {
     if (line.codeUnitAt(i) != _hash) continue;
-    if (!opensTag(i == 0 ? null : line.codeUnitAt(i - 1))) continue;
+    if (!opensTag(i == 0 ? before : line.codeUnitAt(i - 1))) continue;
     if (hidden.any((r) => r.$1 <= i && i < r.$2)) continue;
     final length = _nameLength(line, i + 1);
     if (length == null) continue;
@@ -228,23 +235,68 @@ final class _Fence {
   bool closedBy(String line) {
     final trimmed = _indentTrimmed(line);
     final run = _runLength(trimmed, ch);
-    return run >= length && trimmed.substring(run).trim().isEmpty;
+    // Not `String.trim`: it also strips U+FEFF, which the server keeps.
+    return run >= length &&
+        trimmed.substring(run).codeUnits.every(_isWhitespace);
   }
+}
+
+/// For each of [lines] in order (one line of text each, no `\n`), whether it
+/// is fenced code as the server reads it: a fence's opening line, a line
+/// inside it, or its closing line. An unclosed fence runs to the last line.
+List<bool> fencedLines(List<String> lines) {
+  final out = <bool>[];
+  _Fence? fence;
+  for (final line in lines) {
+    final open = fence;
+    if (open != null) {
+      if (open.closedBy(line)) fence = null;
+      out.add(true);
+    } else {
+      fence = _Fence.openedBy(line);
+      out.add(fence != null);
+    }
+  }
+  return out;
+}
+
+/// [fencedLines] of [lines], the `classifyLines` result for [text]. Frontmatter
+/// is not in the text the server scans, so its lines open no fence.
+List<bool> fencedMdLines(String text, List<MdLine> lines) => fencedLines([
+  for (final line in lines)
+    line.kind == MdLineKind.frontmatter
+        ? ''
+        : text.substring(line.start, line.contentEnd),
+]);
+
+/// For each of [rows] (`splitRows(text, atSegmentStart: true)`), which of its
+/// lines are fenced code as the server reads the whole of [text]. Item, code
+/// and table rows split a tilde fence that the line grammar calls plain, so
+/// no row can tell this from its own text. An item row's line is judged with
+/// its marker, as the server does. A trailing empty line has no entry.
+List<List<bool>> fencedRowLines(String text, List<RowSpec> rows) {
+  final lines = classifyLines(text, atSegmentStart: true);
+  final fenced = fencedMdLines(text, lines);
+  final out = <List<bool>>[];
+  var next = 0;
+  for (final row in rows) {
+    final first = next;
+    while (next < lines.length && lines[next].start < row.end) {
+      next++;
+    }
+    out.add(fenced.sublist(first, next));
+  }
+  return out;
 }
 
 /// The lowercase names of the tags in [personText] (any number of lines,
 /// split on `\n`), sorted by name, one per name, nothing inside fenced code.
 List<String> extractTagNames(String personText) {
   final found = <String>{};
-  _Fence? fence;
-  for (final line in personText.split('\n')) {
-    final open = fence;
-    if (open != null) {
-      if (open.closedBy(line)) fence = null;
-      continue;
-    }
-    fence = _Fence.openedBy(line);
-    if (fence != null) continue;
+  final lines = personText.split('\n');
+  final fenced = fencedLines(lines);
+  for (final (i, line) in lines.indexed) {
+    if (fenced[i]) continue;
     for (final tag in findTagsInLine(line)) {
       found.add(tag.name);
     }

@@ -154,7 +154,8 @@ pub fn list_folders(vault: &Vault) -> Result<SmartFolderList> {
         "SELECT id, title FROM notes
          WHERE NOT EXISTS (SELECT 1 FROM smart_folder_members m WHERE m.note_id = notes.id)
            AND COALESCE(CASE WHEN json_valid(frontmatter)
-                             THEN json_extract(frontmatter, '$.role') END, '') != 'daily'
+                             THEN json_extract(frontmatter, '$.role') END, '')
+               NOT IN ('daily', 'guide')
          ORDER BY title COLLATE NOCASE, id",
     )?;
     let unsorted = stmt
@@ -333,8 +334,9 @@ pub fn delete_folder(vault: &mut Vault, id: &str, caller: Caller) -> Result<()> 
 /// person's membership pin toggle. A person adding a role-less non-daily note
 /// sets its `role: topic` and reindexes it with `embedder`.
 ///
-/// A daily note is `role_rule` for every caller; for the agent so is any
-/// note whose role is not `topic`. An agent never changes an existing pin.
+/// The Vault Guide is `guide_rule` for every caller. A daily note is
+/// `role_rule` for every caller; for the agent so is any note whose role is not
+/// `topic`. An agent never changes an existing pin.
 pub fn add_member(
     vault: &mut Vault,
     folder_id: &str,
@@ -345,6 +347,11 @@ pub fn add_member(
 ) -> Result<Membership> {
     load(vault.conn(), folder_id)?;
     let note = notes::get_note(vault, &NoteId::parse(note_id)?)?;
+    if notes::is_guide(&note.frontmatter) {
+        return Err(MemexError::GuideRule(
+            "the Vault Guide stays out of Smart Folders".into(),
+        ));
+    }
     let role_set = match note.frontmatter.get("role").and_then(Value::as_str) {
         Some(TOPIC) => false,
         None if caller == Caller::Person => true,
