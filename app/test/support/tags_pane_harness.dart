@@ -102,7 +102,6 @@ class TagsDouble extends LocalTagsAccess {
   @override
   Future<List<TagRow>> allTags() async {
     allTagsCalls++;
-    final snapshot = List<TagRow>.of(rows);
     if (gateTags) {
       final gate = Completer<void>();
       tagGates.add(gate);
@@ -110,7 +109,7 @@ class TagsDouble extends LocalTagsAccess {
     }
     final error = failTags;
     if (error != null) throw error;
-    return snapshot;
+    return List<TagRow>.of(rows);
   }
 
   @override

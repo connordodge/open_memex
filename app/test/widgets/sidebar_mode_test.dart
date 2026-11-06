@@ -1,6 +1,7 @@
 // WI #251 (A4): the third sidebar segment, `Days | Topics | Tags`, and the
 // `tags` value of `sidebar_mode` in `<vault>/.memex/ui_state.json`. #23's
 // Days/Topics persistence tests stay in test/state/sidebar_mode_test.dart.
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -50,8 +51,20 @@ Map<String, dynamic> _readJson(String vaultPath) =>
         as Map<String, dynamic>;
 
 /// Waits for the queued `ui_state.json` writes of the vault (real IO).
+///
+/// The write chain's continuations live on the fake-async microtask queue, so
+/// `flush()` cannot complete inside `runAsync` alone: let real IO run, then
+/// pump, until the queue reports done (a condition, not a fixed wait).
 Future<void> _flush(WidgetTester tester, TagsEnv env) async {
-  await tester.runAsync(() => UiStateStore(vaultPath: env.vault.path).flush());
+  var done = false;
+  unawaited(
+    UiStateStore(vaultPath: env.vault.path).flush().then((_) => done = true),
+  );
+  for (var round = 0; round < 400 && !done; round++) {
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pump();
+  }
+  expect(done, isTrue, reason: 'ui_state.json writes never settled');
 }
 
 bool _selected(WidgetTester tester, String key) =>
