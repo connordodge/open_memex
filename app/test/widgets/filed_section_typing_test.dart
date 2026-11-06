@@ -13,6 +13,7 @@ import 'package:open_memex_app/src/widgets/note_editor.dart';
 import 'package:open_memex_app/src/widgets/right_panel.dart';
 
 import '../support/app_harness.dart';
+import '../support/fake_memex_cli.dart';
 import '../support/filed_section_fakes.dart';
 import '../support/review_fakes.dart';
 import '../support/segment_editing_finder.dart';
@@ -341,6 +342,21 @@ void main() {
       await f260Tap(tester, f260Confirm);
 
       expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('a vault error on a fix with the section gone throws nothing', (
+      tester,
+    ) async {
+      final f = await pumpF260(tester);
+      f.server.nextWriteError = FakeMemexCli.error('internal', 'boom');
+
+      await f260Tap(tester, f260Move(f260Loop, f260B1));
+      await f260Tap(tester, f260Option(f260Sleep));
+      await _closeSection(tester, f);
+      await f260Tap(tester, f260Confirm);
+
+      expect(tester.takeException(), isNull);
+      expect(f.moves, hasLength(1), reason: 'the write was tried once');
     });
 
     testWidgets('topics load through the dialog when the section just left', (
