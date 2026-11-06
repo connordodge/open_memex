@@ -1295,3 +1295,129 @@ fn remove_excerpt_block_adds_nothing_beside_the_persons_correction() {
     assert_eq!(rows[0]["correction"]["block_ids"], json!([B7]), "{listed}");
     assert_eq!(feedback_count(&path), 1);
 }
+
+// ======================================================================
+// Verify-mode pins for contracts the tool descriptions promise.
+// ======================================================================
+
+/// `(topic_note_id, origin)` of a daily note's footer chips, oldest first.
+fn v254_chips(path: &str, day: &str) -> Vec<(String, String)> {
+    let db = open_db(Path::new(path));
+    let mut stmt = db
+        .prepare(
+            "SELECT topic_note_id, origin FROM footer_chips WHERE daily_note_id = ? ORDER BY rowid",
+        )
+        .unwrap();
+    let rows = stmt
+        .query_map([day], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    rows
+}
+
+#[test]
+fn remove_excerpt_block_takes_the_date_heading_and_the_excerpt_chip_but_keeps_a_person_chip() {
+    // The description promises both: "The `## <date>` heading goes when nothing
+    // else is under it, and the topic's chip ... once no excerpt of the day
+    // remains (a chip the user added stays)."
+    for person_chip in [false, true] {
+        let mut world = None;
+        let (_dir, path) = vault_with(|v| {
+            let day = fixture_day(v);
+            let topic = person_topic(v, TOPIC);
+            agent_files(v, &topic, &[B7]);
+            if person_chip {
+                memex_core::footer::set_chip(
+                    v,
+                    &NoteId::parse(&day).unwrap(),
+                    &NoteId::parse(&topic).unwrap(),
+                    memex_core::footer::ChipOrigin::Person,
+                    None,
+                )
+                .unwrap();
+            }
+            world = Some((day, topic));
+        });
+        let (day, topic) = world.unwrap();
+        let mut server = Stdio::start(&path);
+
+        let before = server.call("get_note", json!({ "note_id": topic }));
+        let heading = format!("## {DAY}");
+        assert!(
+            str_of(&before, "content_md").contains(&heading),
+            "the day's excerpt sits under its heading: {before}"
+        );
+        let chips_before = v254_chips(&path, &day);
+        assert_eq!(
+            chips_before.len(),
+            1,
+            "one chip for the topic: {chips_before:?}"
+        );
+
+        let removed = server.call(
+            "remove_excerpt_block",
+            json!({ "topic_note_id": topic, "date": DAY, "block_id": B7 }),
+        );
+        assert_eq!(removed["topic_note_id"], json!(topic), "{removed}");
+
+        let after = server.call("get_note", json!({ "note_id": topic }));
+        let content = str_of(&after, "content_md");
+        assert!(
+            !content.contains(&heading) && !content.contains(B7),
+            "the heading and the token went with the last block: {after}"
+        );
+        let chips_after = v254_chips(&path, &day);
+        if person_chip {
+            assert_eq!(
+                chips_after,
+                vec![(topic.clone(), "person".to_string())],
+                "a chip the person added stays"
+            );
+        } else {
+            assert_eq!(
+                chips_after,
+                vec![],
+                "the excerpt chip went with the last block"
+            );
+        }
+    }
+}
+
+#[test]
+fn resolve_feedback_not_found_says_which_thing_is_missing() {
+    // The description: a not_found for the Feedback means the person deleted
+    // it; for a `changes` entry it names a note. "The message says which."
+    let (mut id, mut gone) = (String::new(), String::new());
+    let (_dir, path) = vault_with(|v| {
+        let w = reviewed_world(v);
+        id = comment(v, &w.day, DAY, &w.change, "Wrong topic.", T0 + 1000);
+        gone = comment(v, &w.day, DAY, &w.change, "Never mind.", T0 + 2000);
+        feedback::delete(v, &gone).unwrap();
+    });
+    let mut server = Stdio::start(&path);
+
+    let missing_feedback =
+        server.call_raw("resolve_feedback", json!({ "id": gone, "reply": "Done" }));
+    assert_c1(&missing_feedback, "not_found", "a deleted Feedback");
+    let message = str_of(&missing_feedback["error"], "message").to_string();
+    assert!(
+        message.contains("Feedback") && message.contains(&gone),
+        "names the Feedback: {message}"
+    );
+
+    let missing_note = server.call_raw(
+        "resolve_feedback",
+        json!({
+            "id": id,
+            "reply": "Done",
+            "changes": [{ "note_id": UNKNOWN_ID, "bullets": ["Fine"] }],
+        }),
+    );
+    assert_c1(&missing_note, "not_found", "a change naming no note");
+    let message = str_of(&missing_note["error"], "message").to_string();
+    assert!(
+        message.contains(UNKNOWN_ID) && !message.contains(&format!("Feedback {id}")),
+        "names the note, not the Feedback: {message}"
+    );
+}
