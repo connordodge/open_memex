@@ -113,7 +113,7 @@ class _HistoryKeysState extends ConsumerState<_HistoryKeys> {
   }
 
   bool _onKey(KeyEvent event) {
-    if (event is! KeyDownEvent) return false;
+    if (event is KeyUpEvent) return false;
     final key = event.logicalKey;
     final back = key == LogicalKeyboardKey.bracketLeft;
     if (!back && key != LogicalKeyboardKey.bracketRight) return false;
@@ -126,6 +126,8 @@ class _HistoryKeysState extends ConsumerState<_HistoryKeys> {
     }
     // A modal over the workspace owns the keyboard.
     if (ModalRoute.of(context)?.isCurrent == false) return false;
+    // A held chord is claimed (so macOS does not beep) but steps only once.
+    if (event is! KeyDownEvent) return true;
     final tabs = ref.read(tabsProvider.notifier);
     if (back) {
       tabs.back();
@@ -183,7 +185,11 @@ class _WorkspaceTabBar extends ConsumerWidget {
             ),
           ),
           const SizedBox(width: 6),
-          SizedBox(width: 1, child: ColoredBox(color: OmColors.line1)),
+          SizedBox(
+            width: 1,
+            height: 16,
+            child: ColoredBox(color: OmColors.line1),
+          ),
           Expanded(
             child: ListView.builder(
               scrollDirection: Axis.horizontal,
