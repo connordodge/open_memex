@@ -54,15 +54,15 @@ echo "$VAULT"
    ```
    **Expected**: `review.state` is `Reviewed`; `latest_change` holds one to three one-sentence bullets; `content_md` still begins with your three blocks exactly as written, and below the `<!-- memex:topics -->` marker there is a `[[Some topic~about]]` link for each topic note that holds an excerpt from that day.
 
-## 3. Check topics, excerpts, the Topics footer and Graph view
+## 3. Check topics, excerpts, the Note footer and Graph view
 
 1. Back in the app, look at the Days list. **Expected**: both seeded days now show a green dot. Open one and hover its chip: **expected** a `Reviewed` chip with a hover text such as `Reviewed by agent at 5 Sep 2026, 14:32`.
 2. Click the chip. **Expected**: the right panel opens its `Activity` tab with the agent's bullets, newest first, with the day reviewed.
-3. At the bottom of the daily note, look at the Topics footer. **Expected**: one chip per topic note that holds an excerpt from that day. Click one: the topic note opens.
+3. At the bottom of the daily note, look at the Note footer. **Expected**: one chip per topic note that holds an excerpt from that day. Click one: the topic note opens.
 4. Switch the sidebar to `Topics`. **Expected**: the Smart Folder tree shows the agent's Smart Folders with the topic notes in them (no pinned glyph, because you created none), and an `Unsorted` row last.
 5. In a topic note, find the excerpt cards. **Expected**: each card shows your block text with a date caption such as `2026-09-05`. Click the caption: the daily note opens. Go back, edit the wording of one filed block in the daily note, and return: **expected** the card already shows your new wording (an excerpt is live, never duplicated), and the daily note's chip is now amber `Changed since review`.
 6. Open the note menu on a topic note and choose `Open graph`. **Expected**: a Graph view tab opens with the topic note as a circle, the daily notes it draws from as small squares labelled by date, and the Smart Folder as a soft background shape behind its topic notes. You can pan, zoom and drag a node; nothing is saved.
-7. Click `×` on one excerpt card. **Expected**: the card goes, and if the topic holds nothing else from that day, the daily note's Topics footer loses that chip.
+7. Click `×` on one excerpt card. **Expected**: the card goes, and if the topic holds nothing else from that day, the daily note's Note footer loses that chip.
 
 ## 4. Capture from a live Claude Code session
 
@@ -74,7 +74,7 @@ echo "$VAULT"
 3. **Expected**: after each message the agent replies with one short sentence naming the day it was added to and the topic notes it filed the observation under (or saying it only went into today's daily note). It does not answer, discuss or rewrite the observation.
 4. In the app, open today's daily note. **Expected**: your three observations appear as separate blocks, word for word, in the order typed, with a thin rule in the gutter beside them; hovering it shows `captured via agent` with the time. They slid in without you reloading.
 5. Send a fourth observation, and while the agent works on it, type a sentence in today's note in the app. **Expected**: both your sentence and the agent's block are present afterwards; neither of you loses text.
-6. Check the review state. **Expected**: the first observation of the day found today `Unreviewed` (a new day), so the agent ran a full review of the day before marking it; later ones found it `Reviewed` and marked it again right away. After the last capture, with no edits of yours pending, today's chip is green `Reviewed` and the Topics footer lists the topic notes involved. If you typed in step 5, the chip is amber until the next review.
+6. Check the review state. **Expected**: the first observation of the day found today `Unreviewed` (a new day), so the agent ran a full review of the day before marking it; later ones found it `Reviewed` and marked it again right away. After the last capture, with no edits of yours pending, today's chip is green `Reviewed` and the Note footer lists the topic notes involved. If you typed in step 5, the chip is amber until the next review.
 
 ## 5. Raycast-style quick entry with memex append
 

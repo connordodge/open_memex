@@ -17,6 +17,9 @@
 
 #[path = "support/server.rs"]
 mod server;
+#[path = "support/tool_names.rs"]
+mod tool_names;
+use tool_names::TOOL_COUNT;
 
 use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Write};
@@ -37,10 +40,6 @@ use server::{
     assert_wrong_method_is_c1_405, client, make_vault, raw_request, server_logs, wait_for_logs,
     Reply, ServeCommand, TestServer, ANY_PORT, BODY_LIMIT, TEST_TOKEN, TOKEN_ENV, WAIT,
 };
-
-/// The number of tools `Memex::new` composes (tools.rs 13 + daily 1 +
-/// excerpts 2 + folders 6 + review 3 + settings 1).
-const TOOL_COUNT: usize = 26;
 
 /// What an MCP streamable-HTTP client must accept on a POST.
 const ACCEPT: &str = "application/json, text/event-stream";
@@ -382,13 +381,21 @@ async fn mcp_tools_list_over_http_equals_stdio_tools_list() {
     let mut stdio = Stdio::start(&dir);
     let stdio_tools = by_name(&stdio.request(2, "tools/list", json!({}))["result"]["tools"]);
     drop(stdio);
-    assert_eq!(stdio_tools.len(), TOOL_COUNT, "stdio serves 26 tools");
+    assert_eq!(
+        stdio_tools.len(),
+        TOOL_COUNT,
+        "stdio serves every listed tool"
+    );
 
     // Raw `tools/list`: the whole tool objects match.
     let http_tools = by_name(
         &rpc_result(&rpc(&srv, "work", &request(1, "tools/list", json!({}))).await)["tools"],
     );
-    assert_eq!(http_tools.len(), TOOL_COUNT, "/mcp serves 26 tools");
+    assert_eq!(
+        http_tools.len(),
+        TOOL_COUNT,
+        "/mcp serves every listed tool"
+    );
     let names = |t: &[(String, Value)]| t.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>();
     assert_eq!(names(&http_tools), names(&stdio_tools), "same tool names");
     for ((name, http), (_, stdio)) in http_tools.iter().zip(&stdio_tools) {
@@ -407,7 +414,11 @@ async fn mcp_tools_list_over_http_equals_stdio_tools_list() {
     let c = connect(&srv, "work").await;
     let mut listed = c.list_all_tools().await.expect("rmcp list_all_tools");
     listed.sort_by(|a, b| a.name.cmp(&b.name));
-    assert_eq!(listed.len(), TOOL_COUNT, "rmcp client lists 26 tools");
+    assert_eq!(
+        listed.len(),
+        TOOL_COUNT,
+        "rmcp client lists every listed tool"
+    );
     for (tool, (name, stdio)) in listed.iter().zip(&stdio_tools) {
         assert_eq!(tool.name.as_ref(), name.as_str());
         assert_eq!(
