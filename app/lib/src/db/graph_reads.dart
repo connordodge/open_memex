@@ -35,12 +35,19 @@ class GraphLinkRow {
 /// on every schema version. Smart Folders come from `TopicsReads` and footer
 /// chips from `DailyReads`.
 extension GraphReads on VaultDb {
-  /// Every note with its role, ordered by id.
+  /// SQL true when the note aliased [alias] is not the Vault Guide.
+  static String _notGuide(String alias) =>
+      "COALESCE(CASE WHEN json_valid($alias.frontmatter) "
+      "THEN json_extract($alias.frontmatter, '\$.role') END, '') != 'guide'";
+
+  /// Every note with its role, ordered by id. The Vault Guide is left out.
   List<GraphNoteRow> graphNotes() {
     final rows = db.select(
+      'SELECT id, title, role FROM ('
       'SELECT id, title, (CASE WHEN json_valid(frontmatter) '
       "THEN json_extract(frontmatter, '\$.role') END) AS role "
-      'FROM notes ORDER BY id',
+      'FROM notes) '
+      "WHERE role IS NULL OR role != 'guide' ORDER BY id",
     );
     return rows.map((r) {
       final role = r['role'];
@@ -53,12 +60,14 @@ extension GraphReads on VaultDb {
   }
 
   /// Every link whose target note exists, ordered by source note and
-  /// position.
+  /// position. Links from or to the Vault Guide are left out.
   List<GraphLinkRow> graphLinks() {
     final rows = db.select(
       'SELECT l.from_note_id AS from_id, l.to_note_id AS to_id, '
       'l.link_kind AS kind, l.label AS label FROM links l '
       'JOIN notes t ON t.id = l.to_note_id '
+      'JOIN notes f ON f.id = l.from_note_id '
+      'WHERE ${_notGuide('t')} AND ${_notGuide('f')} '
       'ORDER BY l.from_note_id, l.position',
     );
     return rows
