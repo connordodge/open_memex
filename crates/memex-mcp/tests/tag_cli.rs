@@ -20,9 +20,9 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
-use memex_core::notes::{create_note_as, CreateNote, NoteId};
+use memex_core::notes::NoteId;
 use memex_core::tags::{self, TagOrigin};
-use memex_core::{Caller, MemexError, Vault};
+use memex_core::{guide, MemexError, SystemClock, Vault};
 use regex::Regex;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
@@ -272,21 +272,12 @@ impl Fx {
         assert!(write.changed, "the agent's tag is new");
     }
 
-    /// A `role: guide` note.
+    /// The vault's guide, created the only way the guide rule allows: on first read.
     fn guide(&self) -> String {
         let mut vault = self.vault();
-        create_note_as(
-            &mut vault,
-            CreateNote {
-                title: Some("Vault Guide".into()),
-                content_md: "How to file things.\n".into(),
-                frontmatter: Some(json!({"role": "guide"})),
-            },
-            Caller::Person,
-        )
-        .unwrap()
-        .id
-        .to_string()
+        guide::get_or_create(&mut vault, &SystemClock, None)
+            .unwrap()
+            .note_id
     }
 }
 
