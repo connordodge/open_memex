@@ -179,17 +179,7 @@ pub fn mark_day_reviewed(
         [&note_id],
     )?;
     for entry in changes {
-        tx.execute(
-            "INSERT INTO agent_changes (id, note_id, day, created_at, bullets_json)
-             VALUES (?, ?, ?, ?, ?)",
-            params![
-                Ulid::new().to_string(),
-                entry.note_id,
-                date,
-                now,
-                serde_json::to_string(&entry.bullets)?,
-            ],
-        )?;
+        insert_agent_change(&tx, &entry.note_id, date, now, &entry.bullets)?;
     }
     tx.commit()?;
 
@@ -229,6 +219,34 @@ pub fn note_review_fields(vault: &Vault, note: &Note) -> Result<Map<String, Valu
     );
     fields.insert("latest_change".into(), latest_change(conn, note_id)?);
     Ok(fields)
+}
+
+/// Checks change entries (Req 21) before anything is written, without tying
+/// them to a reviewed day: each entry has 1 to 3 bullets; each bullet is one
+/// line of at most 200 characters without a leading `- `; no note has two
+/// entries. A broken rule fails with `ChangeEntriesInvalid` stating it; an
+/// entry naming a note that does not exist fails with `NotFound`.
+pub(crate) fn validate_change_entries(conn: &Connection, changes: &[ChangeEntry]) -> Result<()> {
+    let notes = check_entry_rules(changes)?;
+    check_entry_notes_exist(conn, notes)
+}
+
+/// Appends one `agent_changes` row and returns its id. `conn` may be a
+/// transaction. The only writer of that table.
+pub(crate) fn insert_agent_change(
+    conn: &Connection,
+    note_id: &str,
+    day: &str,
+    now_ms: i64,
+    bullets: &[String],
+) -> Result<String> {
+    let id = Ulid::new().to_string();
+    conn.execute(
+        "INSERT INTO agent_changes (id, note_id, day, created_at, bullets_json)
+         VALUES (?, ?, ?, ?, ?)",
+        params![id, note_id, day, now_ms, serde_json::to_string(bullets)?],
+    )?;
+    Ok(id)
 }
 
 /// The id of the daily note for `date`: `InvalidDate` unless `date` is a
@@ -291,13 +309,22 @@ fn latest_change(conn: &Connection, note_id: &str) -> Result<Value> {
     Ok(json!({ "day": day, "created_at": created_at, "bullets": bullets }))
 }
 
-/// Checks the change entries of a review (Req 21) before anything is written:
-/// each entry has 1 to 3 bullets; each bullet is one line of at most 200
-/// characters without a leading `- `; no note has two entries; one entry is
-/// for the reviewed daily note (`daily_id`). A broken rule fails with
-/// `ChangeEntriesInvalid` stating it; an entry naming a note that does not
-/// exist fails with `NotFound`.
+/// Checks the change entries of a review: the rules of
+/// [`validate_change_entries`], and one entry is for the reviewed daily note
+/// (`daily_id`), which fails with `ChangeEntriesInvalid` ahead of an unknown
+/// note's `NotFound`.
 fn validate_entries(conn: &Connection, daily_id: &str, changes: &[ChangeEntry]) -> Result<()> {
+    let notes = check_entry_rules(changes)?;
+    if !notes.contains(daily_id) {
+        return Err(MemexError::ChangeEntriesInvalid(format!(
+            "changes must include an entry for the daily note itself ({daily_id})"
+        )));
+    }
+    check_entry_notes_exist(conn, notes)
+}
+
+/// The per-entry rules of [`validate_change_entries`]; returns the notes named.
+fn check_entry_rules(changes: &[ChangeEntry]) -> Result<HashSet<&str>> {
     let invalid = |rule: String| Err(MemexError::ChangeEntriesInvalid(rule));
     let mut seen = HashSet::new();
     for entry in changes {
@@ -331,12 +358,12 @@ fn validate_entries(conn: &Connection, daily_id: &str, changes: &[ChangeEntry]) 
             ));
         }
     }
-    if !seen.contains(daily_id) {
-        return invalid(format!(
-            "changes must include an entry for the daily note itself ({daily_id})"
-        ));
-    }
-    for note_id in seen {
+    Ok(seen)
+}
+
+/// `NotFound` when a change entry names a note that does not exist.
+fn check_entry_notes_exist(conn: &Connection, notes: HashSet<&str>) -> Result<()> {
+    for note_id in notes {
         let exists = conn
             .query_row("SELECT 1 FROM notes WHERE id = ?", [note_id], |_| Ok(()))
             .optional()?
