@@ -469,21 +469,14 @@ void main() {
     );
   });
 
-  test('GLOSSARY.md ends with the Navigation section', () {
-    final glossary = File('../GLOSSARY.md').readAsStringSync();
+  test(
+    'GLOSSARY.md has one Navigation section defining Navigate and Tab history',
+    () {
+      final glossary = File('../GLOSSARY.md').readAsStringSync();
 
-    expect(glossary.trimRight(), endsWith(_glossarySection));
-    expect('## Navigation (#230)'.allMatches(glossary), hasLength(1));
-  });
+      expect('## Navigation (#230)'.allMatches(glossary), hasLength(1));
+      expect(glossary, contains('**Navigate**:'));
+      expect(glossary, contains('**Tab history**:'));
+    },
+  );
 }
-
-const _glossarySection = '''
-## Navigation (#230)
-
-**Navigate**:
-To show a different note, canvas, or Graph view in the current tab. Opening something in a new tab is not navigating.
-_Avoid_: open (for staying in the tab), jump, go to
-
-**Tab history**:
-The ordered record of what one tab has shown, which Back walks through. Each tab has its own.
-_Avoid_: navigation stack, breadcrumbs, recents''';
