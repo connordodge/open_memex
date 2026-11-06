@@ -64,7 +64,7 @@ class TopicsPane extends ConsumerWidget {
     final folderError = ref.watch(smartFolderErrorProvider);
 
     void open(String noteId) =>
-        ref.read(tabsProvider.notifier).openOrFocus(NoteTab(noteId));
+        ref.read(tabsProvider.notifier).follow(NoteTab(noteId));
 
     final rows = <Widget>[];
     void addFolder(FolderNode folder) {

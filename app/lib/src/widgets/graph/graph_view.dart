@@ -222,7 +222,7 @@ class _GraphViewState extends ConsumerState<GraphView>
 
   void _onTapUp(TapUpDetails details) {
     if (_hitNode(details.localPosition) case final id?) {
-      ref.read(tabsProvider.notifier).openOrFocus(NoteTab(id));
+      ref.read(tabsProvider.notifier).follow(NoteTab(id));
     }
   }
 
