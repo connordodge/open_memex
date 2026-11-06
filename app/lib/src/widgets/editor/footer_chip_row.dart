@@ -11,6 +11,7 @@ import '../../state/tabs_state.dart';
 import '../../state/tags_browse_state.dart';
 import '../../state/tags_state.dart';
 import '../../state/today_state.dart';
+import '../../state/vault_access_state.dart';
 import '../../state/vault_state.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
@@ -105,16 +106,24 @@ class _FooterChipBarState extends ConsumerState<FooterChipBar> {
 
   /// The tag leaves the row only after the write returned. A failure keeps it
   /// and shows the inline error; an unreachable server does too, so this
-  /// doesn't go through `guardVaultWrite` and its snackbar.
+  /// doesn't go through `guardVaultWrite` and its snackbar. A vault with no CLI
+  /// (`canWrite` false) never tries the write and says so in the app's own
+  /// copy. Any other failure that isn't a [MemexException] says the vault
+  /// server didn't answer, so its original error goes to the log.
   Future<void> _remove(Note note, String tag) async {
     if (_removing.contains(tag)) return;
+    if (ref.read(vaultAccessProvider)?.canWrite == false) {
+      setState(() => _error = 'The memex CLI is not available.');
+      return;
+    }
     setState(() {
       _removing.add(tag);
       _error = null;
     });
     try {
       await removeTagFromNote(ref, note: note, tag: tag);
-    } catch (e) {
+    } catch (e, stack) {
+      if (e is! MemexException) debugPrint('Removing #$tag failed: $e\n$stack');
       if (!mounted) return;
       setState(() {
         _removing.remove(tag);
