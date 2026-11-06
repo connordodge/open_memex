@@ -22,6 +22,28 @@ const double _bodyHeight = 1.7;
 TextStyle editorBodyStyle() =>
     OmType.mono(size: _bodySize, color: OmColors.fg1, height: _bodyHeight);
 
+/// Hands the [ScrollController] of the [EditorPage] below it to that page,
+/// so `NoteEditor` can own the scroll of the segmented body without
+/// `SegmentedBody` passing it along. A page with no scope above it (Source
+/// mode, a bare pump) scrolls on its own (#270).
+class EditorScrollScope extends InheritedWidget {
+  const EditorScrollScope({
+    super.key,
+    required this.controller,
+    required super.child,
+  });
+
+  final ScrollController controller;
+
+  static ScrollController? maybeOf(BuildContext context) => context
+      .dependOnInheritedWidgetOfExactType<EditorScrollScope>()
+      ?.controller;
+
+  @override
+  bool updateShouldNotify(EditorScrollScope oldWidget) =>
+      controller != oldWidget.controller;
+}
+
 /// The editor page: a scroll view holding [header], the save [errorMessage]
 /// and [body], centred at reading width, with [overlays] stacked on top.
 class EditorPage extends StatelessWidget {
@@ -47,6 +69,7 @@ class EditorPage extends StatelessWidget {
     return Stack(
       children: [
         SingleChildScrollView(
+          controller: EditorScrollScope.maybeOf(context),
           padding: const EdgeInsets.fromLTRB(28, 28, 28, 200),
           child: Center(
             child: ConstrainedBox(

@@ -694,3 +694,38 @@ fn first_line_strips_a_quote_then_a_list_marker_and_only_a_real_task_box() {
         ]
     );
 }
+
+#[test]
+fn first_line_drops_the_heading_marker_after_quote_list_and_task_box() {
+    // D48: Tags mode shows `Pricing #work`, not `# Pricing #work`.
+    let cases = [
+        ("# Pricing #work", "work", "Pricing #work"),
+        ("## Section #y", "y", "Section #y"),
+        ("   # Indented #x", "x", "Indented #x"),
+        ("> # Quoted #x", "x", "Quoted #x"),
+        ("- # Item #x", "x", "Item #x"),
+        ("- [ ] # Task #x", "x", "Task #x"),
+        ("###### Deepest #x", "x", "Deepest #x"),
+        ("#  Spaced heading #x", "x", "Spaced heading #x"),
+        ("# #x", "x", "#x"),
+    ];
+    for (line, name, first_line) in cases {
+        assert_eq!(
+            extract(&format!("{line}\n")),
+            vec![tag(name, first_line)],
+            "{line:?}"
+        );
+    }
+}
+
+#[test]
+fn first_line_keeps_the_hash_run_of_a_line_that_is_not_a_heading() {
+    // Seven hashes, a tag at the line start and a tag glued to a second hash
+    // are not ATX headings, so no marker comes off.
+    assert_eq!(
+        extract("####### seven #x\n"),
+        vec![tag("x", "####### seven #x")]
+    );
+    assert_eq!(extract("#x then text\n"), vec![tag("x", "#x then text")]);
+    assert_eq!(extract("##x #y\n"), vec![tag("y", "##x #y")]);
+}
