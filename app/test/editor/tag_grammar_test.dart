@@ -10,6 +10,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/src/editor/editor_rows.dart';
 import 'package:open_memex_app/src/editor/tag_grammar.dart';
 
 Map<String, Object?> _fixture() =>
@@ -835,6 +836,65 @@ void main() {
         }
       },
     );
+  });
+
+  group('fencedRowLines', () {
+    List<List<bool>> rowLines(String text) =>
+        fencedRowLines(text, splitRows(text, atSegmentStart: true));
+
+    test('reads a tilde fence across the rows it is split into', () {
+      expect(rowLines('~~~\n- #x\n~~~\n#y'), [
+        [true],
+        [true],
+        [true, false],
+      ]);
+      expect(rowLines('a\n- #x\n~~~\n#y'), [
+        [false],
+        [false],
+        [true, true],
+      ]);
+    });
+
+    test('gives a row one entry per line and a code row all of its lines', () {
+      expect(rowLines('a\nb\n```\n#x\n```\nc'), [
+        [false, false],
+        [true, true, true],
+        [false],
+      ]);
+      expect(rowLines(''), [<bool>[]]);
+    });
+
+    test('a marker keeps an item line from opening a fence', () {
+      expect(rowLines('- ~~~\n#y'), [
+        [false],
+        [false],
+      ]);
+    });
+
+    test('a table row gets a state for each of its lines', () {
+      expect(rowLines('| a |\n|---|\n| c |\n~~~ | o\n| e |'), [
+        [false, false, false, true, true],
+      ]);
+    });
+
+    test('frontmatter lines open no fence', () {
+      expect(rowLines('---\n~~~\n---\n- a\nb'), [
+        [false, false, false],
+        [false],
+        [false],
+      ]);
+    });
+
+    test('a line break at the end has no entry of its own', () {
+      expect(rowLines('~~~\n- a\n'), [
+        [true],
+        [true],
+        <bool>[],
+      ]);
+      expect(rowLines('a\n'), [
+        [false],
+      ]);
+    });
   });
 
   group('fencedLines', () {

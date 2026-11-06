@@ -4,7 +4,7 @@ import 'package:flutter/widgets.dart';
 import '../../editor/markdown_inline.dart';
 import '../../editor/markdown_lines.dart';
 import '../../editor/markdown_table.dart';
-import '../../editor/tag_grammar.dart' show fencedLines;
+import '../../editor/tag_grammar.dart' show fencedMdLines;
 import 'live_preview_styles.dart';
 
 /// The controller of every live preview field (D7): its [buildTextSpan]
@@ -18,6 +18,7 @@ import 'live_preview_styles.dart';
 /// - [quote]: the field is a quote line's text;
 /// - [atSegmentStart]: the field's text starts at its text segment's start;
 /// - [codeRow]: the field is a code row's text (ruling D18);
+/// - [fenced]: which of the field's lines are fenced code on the server;
 /// - [revealGate]: true while the field's text segment has focus (markers
 ///   may reveal only then).
 class LivePreviewController extends TextEditingController {
@@ -36,6 +37,12 @@ class LivePreviewController extends TextEditingController {
 
   /// The field's text starts at its text segment's start. Default true.
   bool atSegmentStart = true;
+
+  /// Which of the field's lines are fenced code on the server, read over the
+  /// whole segment (`fencedRowLines`). Null (the default): the field's text
+  /// is judged alone. Like [itemText] and [quote], the host writes it before
+  /// it rebuilds the rows.
+  List<bool>? fenced;
 
   /// The field is a code row's text (a fenced block, ruling D18): its hidden
   /// fence lines lay out at the design's 8 px, so [strutStyle] drops the
@@ -116,6 +123,7 @@ class LivePreviewController extends TextEditingController {
     isResolved: isResolved,
     cmdHover: cmdHover,
     codeRow: codeRow,
+    fenced: fenced,
   );
 }
 
@@ -161,8 +169,10 @@ int tableLastLine(List<MdLine> lines, int header) {
 ///   is a tag only if [before] opens one (the table grid passes it).
 /// - A line the server reads as fenced code, such as a `~~~` fence that the
 ///   line grammar calls plain, gets no tag ink and keeps its other styling
-///   (Rust wins, D34). [text] is judged alone: a fence that crosses rows is
-///   not seen, and [itemText] (one cut line) opens none.
+///   (Rust wins, D34). [fenced] says which, per line of [text], as read over
+///   the whole segment (`fencedRowLines`); a line past its end is not fenced.
+///   Null judges [text] alone: a fence that crosses rows is not seen, and
+///   [itemText] (one cut line) opens none.
 /// - While [codeRow], a hidden fence line's terminator renders hidden too,
 ///   so the line takes its height from the field's strut alone.
 /// - A table's lines (Spec #197 R13) take their inline tokens cell by cell
@@ -188,6 +198,7 @@ TextSpan buildLivePreviewSpan(
   TextRange? cmdHover,
   bool codeRow = false,
   int? before,
+  List<bool>? fenced,
 }) {
   if (text.isEmpty) return TextSpan(style: style, text: text);
   return _SpanBuilder(
@@ -202,6 +213,7 @@ TextSpan buildLivePreviewSpan(
     cmdHover: cmdHover,
     codeRow: codeRow,
     before: before,
+    fenced: fenced,
   ).build(style);
 }
 
@@ -234,6 +246,7 @@ final class _SpanBuilder {
     required this.cmdHover,
     required this.codeRow,
     required this.before,
+    required this.fenced,
   }) : _selection = selection != null && selection.isValid ? selection : null,
        _flags = Uint8List(text.length),
        _ink = Uint8List(text.length);
@@ -251,6 +264,10 @@ final class _SpanBuilder {
   /// The code unit just before [text] in its real line, for a [text] that
   /// is a stretch of a longer line (a table cell); null = a line start.
   final int? before;
+
+  /// Which lines of [text] are fenced code, from the host; null = judge
+  /// [text] alone.
+  final List<bool>? fenced;
   final TextSelection? _selection;
   final Uint8List _flags;
   final Uint8List _ink;
@@ -266,9 +283,9 @@ final class _SpanBuilder {
     final levels = List<int>.filled(lines.length, 0);
     final codeLines = List<bool>.filled(lines.length, false);
     final fenceLines = List<bool>.filled(lines.length, false);
-    final fenced = _serverFenced(lines);
+    final serverFenced = _serverFenced(lines);
     for (final (i, line) in lines.indexed) {
-      _fencedLine = fenced[i];
+      _fencedLine = serverFenced[i];
       switch (itemText ? MdLineKind.plain : line.kind) {
         case MdLineKind.heading:
           levels[i] = line.level;
@@ -329,17 +346,22 @@ final class _SpanBuilder {
     return TextSpan(style: style, children: children);
   }
 
-  /// Which of [lines] the server skips as fenced code. Item text and a table
-  /// cell are cut from a line that starts with a marker or a pipe, which opens
-  /// no fence; frontmatter is not in the text the server scans.
-  List<bool> _serverFenced(List<MdLine> lines) => itemText
-      ? List<bool>.filled(lines.length, false)
-      : fencedLines([
-          for (final line in lines)
-            line.kind == MdLineKind.frontmatter
-                ? ''
-                : text.substring(line.start, line.contentEnd),
-        ]);
+  /// Which of [lines] the server skips as fenced code: the host's answer
+  /// when it gave one. Otherwise [text] alone: item text and a table cell are
+  /// cut from a line that starts with a marker or a pipe, which opens no
+  /// fence.
+  List<bool> _serverFenced(List<MdLine> lines) {
+    final hosted = fenced;
+    if (hosted != null) {
+      return [
+        for (var i = 0; i < lines.length; i++)
+          hosted.elementAtOrNull(i) ?? false,
+      ];
+    }
+    return itemText
+        ? List<bool>.filled(lines.length, false)
+        : fencedMdLines(text, lines);
+  }
 
   /// Which lines reveal their markers: every line the selection touches
   /// (a caret at a line's content end touches that line only), both fence

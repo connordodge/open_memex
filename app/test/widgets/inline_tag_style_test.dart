@@ -39,6 +39,7 @@ import 'package:open_memex_app/src/widgets/editor/text_segment.dart';
 import '../support/editor_scope.dart';
 import '../support/font_fetch_hold.dart';
 import '../support/markdown_fixtures.dart';
+import '../support/table_harness.dart';
 import '../support/wi159_line_geometry.dart' show wi159EditableIn;
 
 /// The body style the span builder is given (mono 13.5, fg0, height 1.7).
@@ -1274,6 +1275,262 @@ void main() {
       expect(inked(span, _range(text, '#a')), isTrue);
       expect(inked(span, _range(text, '#x')), isFalse);
       expect(inked(span, _range(text, '#b')), isTrue);
+    });
+  });
+
+  group('a fence is read across the rows of its segment (AC4)', () {
+    // Item, backtick fence and table lines split a tilde fence into rows, so
+    // the host reads the fence over the whole segment and tells each row.
+    bool inked(TextSpan span, String needle) =>
+        _styleAt(span, _range(span.toPlainText(), needle).$1).color ==
+        OmColors.fg2;
+
+    /// What editor row [r]'s field paints.
+    TextSpan painted(WidgetTester tester, int r) =>
+        tester
+                .state<EditableTextState>(tableRowField(0, r))
+                .renderEditable
+                .text!
+            as TextSpan;
+
+    /// What grid cell ([row], [col]) of editor row [r] paints.
+    TextSpan cell(WidgetTester tester, int r, int row, int col) =>
+        tester
+                .widget<RichText>(
+                  find.descendant(
+                    of: tableCell(0, r, row, col),
+                    matching: find.byType(RichText),
+                  ),
+                )
+                .text
+            as TextSpan;
+
+    Future<void> pumpCard(WidgetTester tester, String text) =>
+        tester.pumpWidget(
+          MaterialApp(
+            theme: buildOmTheme(),
+            home: Scaffold(
+              body: Align(
+                alignment: Alignment.topLeft,
+                child: SizedBox(width: 600, child: CardRows(text: text)),
+              ),
+            ),
+          ),
+        );
+
+    /// What card row [r]'s text paints.
+    TextSpan cardRow(WidgetTester tester, int r) =>
+        tester
+                .widget<RichText>(
+                  find.descendant(
+                    of: find.byKey(Key('card-row-text-$r')),
+                    matching: find.byType(RichText),
+                  ),
+                )
+                .text
+            as TextSpan;
+
+    /// What card table row [r]'s cells paint, by their text.
+    Map<String, TextSpan> cardCells(WidgetTester tester, int r) => {
+      for (final rich in tester.widgetList<RichText>(
+        find.descendant(
+          of: find.byKey(Key('card-table-$r')),
+          matching: find.byType(RichText),
+        ),
+      ))
+        (rich.text as TextSpan).toPlainText(): rich.text as TextSpan,
+    };
+
+    const itemInFence = '~~~\n- #x\n~~~\n#y';
+    const tableInFence = '~~~\n| #a | b |\n|---|---|\n| #c | d |\n~~~\n#y';
+    const tableOpensFence =
+        '| #h | b |\n|---|---|\n| #c | d |\n~~~ | #o\n| #e | f |';
+
+    testWidgets(
+      'a pumped editor gives no ink to an item in a tilde fence and ink to the tag after the fence',
+      (tester) async {
+        await pumpTable(tester, itemInFence);
+        expect(painted(tester, 1).toPlainText(), '#x');
+        expect(inked(painted(tester, 1), '#x'), isFalse);
+        expect(painted(tester, 2).toPlainText(), '~~~\n#y');
+        expect(inked(painted(tester, 2), '#y'), isTrue);
+      },
+    );
+
+    testWidgets(
+      'a pumped card gives no ink to an item in a tilde fence and ink to the tag after the fence',
+      (tester) async {
+        await pumpCard(tester, itemInFence);
+        expect(cardRow(tester, 1).toPlainText(), '#x');
+        expect(inked(cardRow(tester, 1), '#x'), isFalse);
+        expect(cardRow(tester, 2).toPlainText(), '~~~\n#y');
+        expect(inked(cardRow(tester, 2), '#y'), isTrue);
+      },
+    );
+
+    testWidgets(
+      'every item kind in a tilde fence gets no ink and an item after the fence does',
+      (tester) async {
+        await pumpTable(
+          tester,
+          '#a\n- #b\n~~~\n- [ ] #p\n1. #q\n> #r\n~~~\n- #z',
+        );
+        expect(inked(painted(tester, 0), '#a'), isTrue);
+        expect(inked(painted(tester, 1), '#b'), isTrue);
+        expect(inked(painted(tester, 3), '#p'), isFalse);
+        expect(inked(painted(tester, 4), '#q'), isFalse);
+        expect(inked(painted(tester, 5), '#r'), isFalse);
+        expect(inked(painted(tester, 7), '#z'), isTrue);
+      },
+    );
+
+    testWidgets(
+      'a pumped editor gives no ink to a table in a tilde fence in its grid or its field',
+      (tester) async {
+        await pumpTable(tester, tableInFence);
+        expect(inked(cell(tester, 1, 0, 0), '#a'), isFalse);
+        expect(inked(cell(tester, 1, 1, 0), '#c'), isFalse);
+        expect(inked(painted(tester, 1), '#a'), isFalse);
+        expect(inked(painted(tester, 1), '#c'), isFalse);
+        expect(inked(painted(tester, 2), '#y'), isTrue);
+      },
+    );
+
+    testWidgets('a pumped card gives no ink to a table in a tilde fence', (
+      tester,
+    ) async {
+      await pumpCard(tester, tableInFence);
+      final cells = cardCells(tester, 1);
+      expect(inked(cells['#a']!, '#a'), isFalse);
+      expect(inked(cells['#c']!, '#c'), isFalse);
+      expect(inked(cardRow(tester, 2), '#y'), isTrue);
+    });
+
+    testWidgets(
+      'a table line that opens a fence stops the grid ink from that line on',
+      (tester) async {
+        expect(splitRows(tableOpensFence, atSegmentStart: true), hasLength(1));
+        await pumpTable(tester, tableOpensFence);
+        expect(inked(cell(tester, 0, 0, 0), '#h'), isTrue);
+        expect(inked(cell(tester, 0, 1, 0), '#c'), isTrue);
+        expect(inked(cell(tester, 0, 2, 1), '#o'), isFalse);
+        expect(inked(cell(tester, 0, 3, 0), '#e'), isFalse);
+      },
+    );
+
+    testWidgets(
+      'a backtick block inside a tilde fence leaves the lines after it fenced',
+      (tester) async {
+        const text = '~~~\n```\n#x\n```\n#y\n~~~\n#z';
+        await pumpCard(tester, text);
+        final last = cardRow(tester, 2);
+        expect(last.toPlainText(), '#y\n~~~\n#z');
+        expect(inked(last, '#y'), isFalse);
+        expect(inked(last, '#z'), isTrue);
+      },
+    );
+
+    testWidgets('a line break after the fence does not upset the row lines', (
+      tester,
+    ) async {
+      await pumpTable(tester, '$itemInFence\n');
+      expect(painted(tester, 2).toPlainText(), '~~~\n#y\n');
+      expect(inked(painted(tester, 1), '#x'), isFalse);
+      expect(inked(painted(tester, 2), '#y'), isTrue);
+    });
+
+    testWidgets('a tilde line in leading frontmatter fences no later row', (
+      tester,
+    ) async {
+      await pumpCard(tester, '---\n~~~\n---\n- #x\n#y');
+      expect(inked(cardRow(tester, 1), '#x'), isTrue);
+      expect(inked(cardRow(tester, 2), '#y'), isTrue);
+    });
+
+    test(
+      'the fence state from the host replaces the judgement of the text',
+      () {
+        // Alone, `~~~\n#y` reads as an opener; here it is a closing line.
+        const closing = '~~~\n#y';
+        final span = buildLivePreviewSpan(
+          closing,
+          style: _base(),
+          fenced: const [true, false],
+        );
+        expect(inked(span, '#y'), isTrue);
+        final item = buildLivePreviewSpan(
+          '#x',
+          style: _base(),
+          itemText: true,
+          fenced: const [true],
+        );
+        expect(inked(item, '#x'), isFalse);
+      },
+    );
+
+    test('a line past the end of the host fence state is not fenced', () {
+      const text = '#a\n#b';
+      final span = buildLivePreviewSpan(
+        text,
+        style: _base(),
+        fenced: const [true],
+      );
+      expect(inked(span, '#a'), isFalse);
+      expect(inked(span, '#b'), isTrue);
+    });
+
+    testWidgets(
+      'tag ink through a pumped card agrees with every fence row of the grammar fixture',
+      (tester) async {
+        final fixture =
+            jsonDecode(
+                  File('test/fixtures/tags/grammar.json').readAsStringSync(),
+                )
+                as Map<String, Object?>;
+        final bad = <String>[];
+        for (final c in (fixture['cases']! as List).cast<Map>()) {
+          if (c['rule'] != 'excluded-fence') continue;
+          await pumpCard(tester, c['input']! as String);
+          final got = <String>{};
+          for (final rich in tester.widgetList<RichText>(
+            find.descendant(
+              of: find.byType(CardRows),
+              matching: find.byType(RichText),
+            ),
+          )) {
+            final span = rich.text as TextSpan;
+            var offset = 0;
+            for (final line in span.toPlainText().split('\n')) {
+              for (final tag in findTagsInLine(line)) {
+                if (_styleAt(span, offset + tag.start).color == OmColors.fg2) {
+                  got.add(tag.name);
+                }
+              }
+              offset += line.length + 1;
+            }
+          }
+          final want = (c['tags']! as List).cast<String>();
+          final sorted = got.toList()..sort();
+          if (sorted.join(' ') != want.join(' ')) {
+            bad.add('${c['name']}: want $want got $sorted');
+          }
+        }
+        expect(bad, isEmpty, reason: bad.join('\n'));
+      },
+    );
+
+    testWidgets('a fence opened by an edit repaints the rows it reaches', (
+      tester,
+    ) async {
+      final body = await pumpTable(tester, 'a\n- #x\n~~~\n#y');
+      expect(inked(painted(tester, 1), '#x'), isTrue);
+      expect(inked(painted(tester, 2), '#y'), isFalse);
+      await body.serverWrite(itemInFence);
+      expect(inked(painted(tester, 1), '#x'), isFalse);
+      expect(inked(painted(tester, 2), '#y'), isTrue);
+      await body.serverWrite('a\n- #x\n~~~\n#y');
+      expect(inked(painted(tester, 1), '#x'), isTrue);
+      expect(inked(painted(tester, 2), '#y'), isFalse);
     });
   });
 

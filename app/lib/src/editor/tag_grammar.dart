@@ -6,6 +6,8 @@
 // only. Pure Dart, no Flutter imports. Every offset is a UTF-16 code-unit
 // index, and no range boundary falls inside a surrogate pair.
 
+import 'editor_rows.dart' show RowSpec;
+import 'markdown_lines.dart' show MdLine, MdLineKind, classifyLines;
 import 'segments.dart' show parseTransclusions;
 
 /// A tag found in one line: the half-open UTF-16 range `[start, end)` of the
@@ -254,6 +256,35 @@ List<bool> fencedLines(List<String> lines) {
       fence = _Fence.openedBy(line);
       out.add(fence != null);
     }
+  }
+  return out;
+}
+
+/// [fencedLines] of [lines], the `classifyLines` result for [text]. Frontmatter
+/// is not in the text the server scans, so its lines open no fence.
+List<bool> fencedMdLines(String text, List<MdLine> lines) => fencedLines([
+  for (final line in lines)
+    line.kind == MdLineKind.frontmatter
+        ? ''
+        : text.substring(line.start, line.contentEnd),
+]);
+
+/// For each of [rows] (`splitRows(text, atSegmentStart: true)`), which of its
+/// lines are fenced code as the server reads the whole of [text]. Item, code
+/// and table rows split a tilde fence that the line grammar calls plain, so
+/// no row can tell this from its own text. An item row's line is judged with
+/// its marker, as the server does. A trailing empty line has no entry.
+List<List<bool>> fencedRowLines(String text, List<RowSpec> rows) {
+  final lines = classifyLines(text, atSegmentStart: true);
+  final fenced = fencedMdLines(text, lines);
+  final out = <List<bool>>[];
+  var next = 0;
+  for (final row in rows) {
+    final first = next;
+    while (next < lines.length && lines[next].start < row.end) {
+      next++;
+    }
+    out.add(fenced.sublist(first, next));
   }
   return out;
 }
