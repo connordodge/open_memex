@@ -788,7 +788,8 @@ pub fn delete_note(vault: &mut Vault, id: &NoteId) -> Result<()> {
 /// change entries and memberships cascade) and re-renders, then reindexes
 /// with `embedder`, the footer of every note that held a chip for it, daily
 /// or not (Spec #234 TD5); a guide is left as it is (D3). An unknown id is
-/// `NotFound`. The Vault Guide is always `GuideRule`, whatever the version.
+/// `NotFound`. Deleting the Vault Guide is always `GuideRule`, whatever the
+/// version.
 pub fn delete_note_checked(
     vault: &mut Vault,
     id: &NoteId,
