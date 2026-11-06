@@ -4,8 +4,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
+import 'package:open_memex_app/src/editor/segments.dart' show topicsMarker;
 import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
+import 'package:open_memex_app/src/widgets/editor/note_header.dart'
+    show noteWordCount;
 import 'package:open_memex_app/src/widgets/right_panel.dart';
 
 import '../support/app_harness.dart';
@@ -211,6 +214,94 @@ void main() {
         expect(rows.length, greaterThan(1));
       },
     );
+  });
+
+  group('rail word count', () {
+    const person = 'one two three four five\n';
+
+    Finder words(String text) => _inHeader(find.text(text));
+
+    testWidgets('a non-daily note counts only its person section', (
+      tester,
+    ) async {
+      await launchFooterNote(
+        tester,
+        seedFooterVault(
+          body: footerBody(person, chips: ['Pricing'], tags: ['alpha', 'beta']),
+          footerTags: ['alpha', 'beta'],
+          chips: {pricingTopicId: 'Pricing'},
+        ),
+      );
+
+      expect(words('5 words'), findsOneWidget);
+      expect(_inHeader(find.textContaining(' words')), findsOneWidget);
+    });
+
+    testWidgets(
+      'a backfilled note with rows and no footer text counts it all',
+      (tester) async {
+        await launchFooterNote(
+          tester,
+          seedFooterVault(body: person, footerTags: ['alpha']),
+        );
+
+        expect(words('5 words'), findsOneWidget);
+      },
+    );
+
+    testWidgets('a non-daily note keeps a marker inside a fence as text', (
+      tester,
+    ) async {
+      final body = 'alpha beta\n```\n$topicsMarker\ngamma delta\n```\n';
+      await launchFooterNote(tester, seedFooterVault(body: body));
+
+      expect(words('${noteWordCount(body)} words'), findsOneWidget);
+      expect(noteWordCount(body), greaterThan(3));
+    });
+
+    testWidgets('a daily note counts only the text above its marker', (
+      tester,
+    ) async {
+      await launchFooterNote(
+        tester,
+        seedFooterVault(
+          body: footerBody(person, chips: ['Pricing'], tags: ['alpha']),
+          role: 'daily',
+          footerTags: ['alpha'],
+          chips: {pricingTopicId: 'Pricing'},
+        ),
+      );
+
+      expect(words('5 words'), findsOneWidget);
+    });
+
+    testWidgets('a daily note splits at the first marker even inside a fence', (
+      tester,
+    ) async {
+      final body = 'alpha beta\n```\n$topicsMarker\ngamma delta\n```\n';
+      await launchFooterNote(
+        tester,
+        seedFooterVault(body: body, role: 'daily'),
+      );
+
+      // The marker line itself (three words) is no text; the stray lines below
+      // it join the person section.
+      expect(words('${noteWordCount(body) - 3} words'), findsOneWidget);
+      expect(words('${noteWordCount(body)} words'), findsNothing);
+    });
+
+    testWidgets('a guide note counts its whole body, marker line included', (
+      tester,
+    ) async {
+      final body = footerBody(person, chips: ['Pricing'], tags: ['alpha']);
+      await launchFooterNote(
+        tester,
+        seedFooterVault(body: body, role: 'guide'),
+      );
+
+      expect(words('${noteWordCount(body)} words'), findsOneWidget);
+      expect(noteWordCount(body), greaterThan(5));
+    });
   });
 
   group('right panel', () {
