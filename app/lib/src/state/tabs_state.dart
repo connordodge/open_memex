@@ -128,6 +128,19 @@ class TabsState {
   );
 }
 
+/// Told about every target that goes through the navigation seam. Null in the
+/// app; `app/test/support/recording_tabs.dart` supplies one to tests through
+/// [tabsNavigationObserverProvider], so they record clicks on the real
+/// notifier.
+abstract interface class TabsNavigationObserver {
+  /// [target] was passed to [TabsNotifier.follow] or to a function that
+  /// [TabsNotifier.followLater] returned.
+  void followed(WorkspaceTab target);
+
+  /// [target] reached [TabsNotifier.navigate], including through `follow`.
+  void navigated(WorkspaceTab target);
+}
+
 class TabsNotifier extends StateNotifier<TabsState> {
   /// Restores the tabs from [store]. With a [todayDate] (the launch, #22),
   /// today's tab then becomes active: the restored tab of [todayNoteId] when
@@ -138,6 +151,8 @@ class TabsNotifier extends StateNotifier<TabsState> {
     required this.onPersistedSelection,
     String? todayDate,
     String? todayNoteId,
+    this.isNewTabModifierPressed,
+    this.navigationObserver,
   }) : super(TabsState.empty) {
     _hydrate(todayDate, todayNoteId);
   }
@@ -147,6 +162,13 @@ class TabsNotifier extends StateNotifier<TabsState> {
   /// Called with the active note id (or null) so legacy
   /// `selectedNoteIdProvider`-driven widgets stay in sync.
   final void Function(String? activeNoteId) onPersistedSelection;
+
+  /// Whether a click should open a new tab. Null means Cmd, read from
+  /// `HardwareKeyboard.instance.isMetaPressed`.
+  final bool Function()? isNewTabModifierPressed;
+
+  /// See [TabsNavigationObserver].
+  final TabsNavigationObserver? navigationObserver;
 
   bool _hydrated = false;
 
@@ -294,6 +316,19 @@ class TabsNotifier extends StateNotifier<TabsState> {
     _mru.insert(0, tab);
   }
 
+  /// The call for any click that goes somewhere (#230): with the new-tab
+  /// modifier held, [openOrFocus] the [target]; otherwise [navigate] to it.
+  void follow(WorkspaceTab target) {}
+
+  /// Shows [target]. Delegates to [openOrFocus] until #266 makes it navigate
+  /// in the current tab.
+  void navigate(WorkspaceTab target) {}
+
+  /// For a click whose target needs an async lookup: reads the modifier now
+  /// and returns the function to call with the target later. That function
+  /// does nothing once this notifier is disposed.
+  void Function(WorkspaceTab target) followLater() => (WorkspaceTab target) {};
+
   /// [tabs] with the least-recently-used tab other than [active] removed
   /// when they are over [kMaxOpenTabs] (LRU eviction).
   List<WorkspaceTab> _evictOverCap(
@@ -360,6 +395,11 @@ class TabsNotifier extends StateNotifier<TabsState> {
 /// `unawaited` polyfill — avoids pulling in `dart:async` just for the helper.
 void unawaited(Future<void> _) {}
 
+/// The [TabsNavigationObserver] handed to the notifier [tabsProvider] builds.
+final tabsNavigationObserverProvider = Provider<TabsNavigationObserver?>(
+  (_) => null,
+);
+
 /// Provider that yields a fresh `TabsNotifier` per vault. The vault path
 /// drives both the persistence file location and the `selectedNoteIdProvider`
 /// emission.
@@ -378,6 +418,7 @@ final tabsProvider = StateNotifierProvider<TabsNotifier, TabsState>((ref) {
     // date sticks to the tab across midnight (D14).
     todayDate: vaultPath == null ? null : ref.read(todayDateProvider),
     todayNoteId: vaultPath == null ? null : _readTodayNote(ref)?.noteId,
+    navigationObserver: ref.watch(tabsNavigationObserverProvider),
   );
   // Today's note is an async read (#78, D14a): until it lands the launch
   // shows the virtual Today tab, which then resolves onto today's stored
