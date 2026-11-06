@@ -152,19 +152,68 @@ Future<void> rebaseEditorOnVersion(
   // The user may have opened another note while the read was in flight:
   // loading the first note back would clobber the editor.
   if (editor.activeNoteId != fallback.id) return;
-  editor.loadNote(
-    Note(
-      id: stored.id,
-      title: stored.title,
-      contentMd: stored.contentMd,
-      frontmatter: stored.frontmatter,
-      version: version,
-      createdAt: stored.createdAt,
-      updatedAt: stored.updatedAt,
-      tags: stored.tags,
-      footerTags: stored.footerTags,
-    ),
-  );
+  editor.loadNote(_atVersion(stored, version));
   editor.onTitleChanged(title);
   editor.onContentChanged(content);
 }
+
+/// After a write to [note] through [access] has already succeeded (its new
+/// version is [version]), makes that version the editor's base when the note
+/// is open, for a caller that may be gone by then: everything goes through
+/// [container], not a `WidgetRef`, and no read failure escapes.
+///
+/// A clean editor takes the stored note and stays clean, because its copy
+/// still has what the write changed and keeping it would write again. A stored
+/// note that cannot be read leaves its title and text as they are, still
+/// clean. An editor with a pending edit keeps its title and text as they stand
+/// once the read is over (it can last a whole timeout), on the stored note or,
+/// failing that, on [note].
+Future<void> rebaseEditorAfterWrite(
+  ProviderContainer container,
+  VaultAccess access, {
+  required Note note,
+  required int version,
+}) async {
+  final editor = container.read(editorControllerProvider.notifier);
+  if (editor.activeNoteId != note.id) return;
+  Note? stored;
+  try {
+    stored = await access.notes.getNote(note.id);
+  } on Object {
+    // The write went through; the rebase still has to happen.
+    stored = null;
+  }
+  // The user may have opened another note while the read was in flight.
+  if (editor.activeNoteId != note.id) return;
+  final now = container.read(editorControllerProvider);
+  if (now.status == SaveStatus.clean) {
+    editor.loadNote(
+      stored != null
+          ? _atVersion(stored, version)
+          : _atVersion(
+              note,
+              version,
+              title: now.title,
+              contentMd: now.contentMd,
+            ),
+    );
+    return;
+  }
+  editor.loadNote(_atVersion(stored ?? note, version));
+  editor.onTitleChanged(now.title);
+  editor.onContentChanged(now.contentMd);
+}
+
+/// [note] at [version], optionally with another title or text.
+Note _atVersion(Note note, int version, {String? title, String? contentMd}) =>
+    Note(
+      id: note.id,
+      title: title ?? note.title,
+      contentMd: contentMd ?? note.contentMd,
+      frontmatter: note.frontmatter,
+      version: version,
+      createdAt: note.createdAt,
+      updatedAt: note.updatedAt,
+      tags: note.tags,
+      footerTags: note.footerTags,
+    );
