@@ -399,20 +399,14 @@ class TabsNotifier extends StateNotifier<TabsState> {
     return newActive;
   }
 
-  /// Open today's note (#23's `Today` row entry point): focus the leftmost
-  /// tab of today's daily note [noteId] when it is open, otherwise open it;
-  /// when [noteId] is null (no daily note for [date] yet), focus the open
-  /// [VirtualTodayTab] for [date] or insert one as the active tab.
-  void openToday({required String date, String? noteId}) {
-    final today = _todayTab(date, noteId);
-    if (_leavesActive(_indexShowing(today))) {
-      onBeforeLeave?.call();
-      _arrive();
-    }
-    _focusToday(today);
-    _persist();
-    _emitSelection();
-  }
+  /// Open today's note (#23's `Today` row entry point) through [follow]: a
+  /// plain call navigates the active tab to today's daily note [noteId], or to
+  /// the virtual Today note for [date] when [noteId] is null (no daily note
+  /// yet); with the new-tab modifier it focuses the leftmost tab showing today
+  /// or opens one at the end. The launch alone still inserts today's tab first
+  /// ([_focusToday]).
+  void openToday({required String date, String? noteId}) =>
+      follow(_todayTab(date, noteId));
 
   /// The virtual Today note for [date] became the real note [noteId] (its
   /// first edit created or found the daily note, #22): every history entry of
