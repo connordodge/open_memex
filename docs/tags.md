@@ -22,7 +22,7 @@ The whole note is now tagged `work`, not just that line. Your text stays exactly
 
 A tag in your text is the source of truth. Nothing else adds or removes it behind your back.
 
-In the editor a `#tag` shows in a quieter colour, and in a soft highlight while your cursor is inside it.
+In the editor a `#tag` shows in a quieter colour, and in the green accent colour while your cursor is inside it.
 
 ## What counts as a tag
 
@@ -76,7 +76,7 @@ Typing `#` opens a list of your existing tags, in the same style as the `[[` lis
 - At the start of a line the list opens only after the first letter (`#p`), so a bare `#` or `# ` (a heading) shows nothing. Elsewhere a bare `#` opens the list, with your most-used tags first.
 - `##` to `######` (headings) never open it.
 - It doesn't open where a `#` can't start a tag, such as inside code, a URL or a link.
-- The list holds tags you've already written. To make a new tag, just type it. When your text doesn't match an existing tag, the last row offers the name as new. Enter on a name you typed in full, or on that row, just starts a new line and keeps your text as typed. Tab accepts it.
+- The list holds tags you've already written. To make a new tag, just type it. Unless your text is exactly an existing tag, the last row reads `Create new tag #name`. Enter on a name you typed in full, or on that row, just starts a new line and keeps your text as typed. Tab accepts it.
 - System tags (below) aren't offered.
 
 The `[[` list is unchanged.
@@ -134,7 +134,7 @@ Hover over a tag in the footer's Tags row, or move keyboard focus to it, and a �
 
 - The tag stays visible until the removal has been written, then leaves the row and the footer redraws. The open note picks up the new version, so your next save doesn't conflict.
 - Your text isn't touched. The note's review state doesn't change either.
-- If the removal fails, for example because a hosted vault's server can't be reached, the tag stays and an error shows under the row. A tag that was already gone counts as removed.
+- If the removal fails, for example because a hosted vault's server can't be reached, the tag stays and an error shows above the footer's rows. A tag that was already gone counts as removed.
 - A tag written in your text has no ×. Delete the text to remove it. Deleting your own `#tag` is ordinary editing.
 - There's no undo and no replace. To replace a tag, remove it, then write your own.
 - System tags have no ×.
@@ -162,10 +162,10 @@ memex tag add --vault V --note-id N --tag T   # add a tag to a note
 memex tag rm  --vault V --note-id N --tag T   # remove a tag from a note
 memex tag ls  --vault V                       # every tag, with note counts
 memex tag ls  --vault V --note-id N           # one note's tags and where each came from
-memex ls --tag T                              # notes that carry a tag
+memex ls  --vault V --tag T                   # notes that carry a tag
 ```
 
-Each command prints one line of JSON.
+Each `memex tag` command prints one line of JSON. `memex ls` prints one note per line, as its id and title.
 
 - **`memex tag add`** adds a tag to any note except the Vault Guide. The tag isn't written in the note's text: it's a tag you applied, so it shows in the footer's Tags row. The name must follow the rules above (a leading `#` is fine, and capitals are lowercased). Adding a tag also ends any block left by an earlier removal of that tag from that note. A note that already has the tag is left alone.
 - **`memex tag rm`** removes a tag from a note. If an agent applied it, the removal is recorded and blocks the agent, as for the ×. A tag you added yourself, or a system tag, goes without a record. If the tag is written in the note's text, the command fails and tells you to delete the text. If the note doesn't have the tag, it reports `removed: false`.
