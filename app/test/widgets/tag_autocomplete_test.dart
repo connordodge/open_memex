@@ -3021,6 +3021,63 @@ void main() {
       expect(_selectedRows(), ['pa']);
     });
 
+    testWidgets(
+      'Enter after tags land under a lone create row completes the first tag',
+      (tester) async {
+        final load = Completer<VaultScoped<List<TagRow>>>();
+        final field = await _pumpField(
+          tester,
+          overrides: [tagsAsyncProvider.overrideWith((ref) => load.future)],
+        );
+
+        await _type(tester, field, 'x #p');
+        expect(_selectedRows(), ['create']);
+
+        load.complete(VaultScoped(null, [_tag('pa', 2), _tag('pb', 1)]));
+        await _flush(tester);
+        expect(_rowNames(), ['pa', 'pb']);
+        expect(_selectedRows(), ['pa']);
+
+        final handled = await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        expect(handled, isTrue);
+        expect(field.text, 'x #pa ');
+      },
+    );
+
+    testWidgets(
+      'Enter on a create row left alone when the tags go makes a new line',
+      (tester) async {
+        var tags = <TagRow>[_tag('pa', 2), _tag('pb', 1)];
+        final field = await _pumpField(
+          tester,
+          overrides: [
+            tagsAsyncProvider.overrideWith((ref) async {
+              ref.watch(vaultRevisionProvider);
+              return VaultScoped(ref.watch(currentVaultProvider), tags);
+            }),
+          ],
+        );
+        final container = _container(tester);
+
+        await _type(tester, field, 'x #p');
+        await _press(tester, LogicalKeyboardKey.arrowUp);
+        expect(_selectedRows(), ['create']);
+
+        tags = const [];
+        container.read(vaultRevisionProvider.notifier).state++;
+        await _flush(tester);
+        expect(_rowNames(), isEmpty);
+        expect(_selectedRows(), ['create']);
+
+        final handled = await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        expect(handled, isFalse, reason: 'nothing else matches any more');
+        expect(_popover, findsNothing);
+        expect(field.text, 'x #p');
+      },
+    );
+
     testWidgets('a notification with the same value keeps the selection', (
       tester,
     ) async {
