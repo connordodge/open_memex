@@ -11,7 +11,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::blocks::is_list_item;
+use crate::blocks::{is_heading, is_list_item};
 use crate::daily::{self, TOPICS_MARKER};
 use crate::embedder::Embedder;
 use crate::error::MemexError;
@@ -224,7 +224,8 @@ fn code_spans(line: &str) -> Vec<Range<usize>> {
     spans
 }
 
-/// `line` trimmed, without a leading quote marker, list marker and task box.
+/// `line` trimmed, without a leading quote marker, list marker, task box and
+/// heading marker (D48).
 fn first_line_text(line: &str) -> &str {
     let mut text = line.trim();
     if let Some(rest) = text.strip_prefix('>') {
@@ -236,7 +237,10 @@ fn first_line_text(line: &str) -> &str {
             .split_once(' ')
             .map_or("", |(_, rest)| rest)
             .trim_start();
-        text = strip_task_box(text);
+        text = strip_task_box(text).trim_start();
+    }
+    if is_heading(text) {
+        text = text.trim_start_matches('#').trim_start();
     }
     text.trim()
 }
@@ -382,17 +386,6 @@ fn lift_block(conn: &Connection, note_id: &str, tag: &str, now: i64) -> Result<(
         "UPDATE tag_corrections SET cleared_at = ?
          WHERE note_id = ? AND tag = ? AND cleared_at IS NULL",
         params![now, note_id, tag],
-    )?;
-    Ok(())
-}
-
-/// Removes every row a footer renders from on a note becoming `role: guide`,
-/// in that save (R53). Its Corrections stay.
-pub(crate) fn clear_guide_rows(conn: &Connection, note_id: &str) -> Result<()> {
-    conn.execute("DELETE FROM tags WHERE note_id = ?", [note_id])?;
-    conn.execute(
-        "DELETE FROM footer_chips WHERE daily_note_id = ?",
-        [note_id],
     )?;
     Ok(())
 }

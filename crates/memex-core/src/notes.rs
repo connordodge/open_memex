@@ -92,8 +92,8 @@ pub struct CreateOutcome {
 /// gains `role: daily`, keeps its id and content, and gets `content_md`
 /// appended with the C3.1 separator. Its body is stored in the canonical daily
 /// layout with its blocks and `day_reviews` row, in one transaction (D9).
-/// A person's body, unless the note is `role: guide`, gets its body tags in that
-/// transaction; an agent's isn't scanned (Spec #234 R3).
+/// A person's body gets its body tags in that transaction; an agent's isn't
+/// scanned (Spec #234 R3).
 ///
 /// Frontmatter that `is_guide` fails with `guide_rule` for every caller: only
 /// `guide::get_or_create` creates the Vault Guide (#233).
@@ -154,7 +154,7 @@ pub fn create_or_adopt_note(
             now,
         ],
     )?;
-    if caller == Caller::Person && !is_guide(&frontmatter) {
+    if caller == Caller::Person {
         tags::reconcile_body_tags(&tx, id.as_str(), &input.content_md, is_daily, now)?;
     }
     let content_md = if is_daily {
@@ -407,9 +407,8 @@ fn check_guide_fields(
 /// Note footer rendered from its rows (Spec #234 R14); a guide's body is
 /// stored as given. A person's patch with a body re-derives the note's body
 /// tags in the save transaction, unless the note is a guide (R3); no other
-/// save scans. A note becoming a guide loses its tag rows, chips and footer in
-/// that save, whoever writes it (R53). Daily notes rewritten by the rename pass are re-synced
-/// the same way and also get a new `version`; other linkers get their footer
+/// save scans. Daily notes rewritten by the rename pass are re-synced the same
+/// way and also get a new `version`; other linkers get their footer
 /// re-rendered. Callers reindex from the returned note (D8).
 pub fn update_note_as(
     vault: &mut Vault,
@@ -458,7 +457,6 @@ pub fn update_note_as(
     let is_daily = daily::is_daily(&new_fm);
     let becomes_daily = is_daily && !daily::is_daily(&lenient_frontmatter(&current_fm));
     let guide = is_guide(&new_fm);
-    let becomes_guide = guide && !is_guide(&lenient_frontmatter(&current_fm));
     let derives_tags = caller == Caller::Person && patch.content_md.is_some() && !guide;
 
     if title_changed {
@@ -497,9 +495,6 @@ pub fn update_note_as(
         if derives_tags {
             tags::reconcile_body_tags(&tx, id.as_str(), &new_content, is_daily, now)?;
         }
-        if becomes_guide {
-            tags::clear_guide_rows(&tx, id.as_str())?;
-        }
 
         // The note itself first, so a linker's footer below renders the new
         // title. Every note but a guide keeps the footer rendered from its
@@ -514,8 +509,6 @@ pub fn update_note_as(
                 new_version,
                 now,
             )?
-        } else if becomes_guide {
-            daily::split_note_body(&new_content).person
         } else if guide {
             new_content
         } else {
