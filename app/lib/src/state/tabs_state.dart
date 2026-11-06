@@ -77,6 +77,10 @@ class CanvasTab extends WorkspaceTab {
   const CanvasTab(super.id, {this.zoomedNoteId});
 
   /// The note this canvas tab is zoomed into, or null when it shows the canvas.
+  ///
+  /// Part of `==` and `hashCode` (a zoomed entry is a different history entry
+  /// from the canvas itself) but not of [tabId] or [toPersisted]: the tab is
+  /// the same tab and a relaunch shows it unzoomed (R5).
   final String? zoomedNoteId;
 
   @override
@@ -86,10 +90,13 @@ class CanvasTab extends WorkspaceTab {
       PersistedTab(kind: PersistedTab.kindCanvas, id: id);
 
   @override
-  bool operator ==(Object other) => other is CanvasTab && other.id == id;
+  bool operator ==(Object other) =>
+      other is CanvasTab &&
+      other.id == id &&
+      other.zoomedNoteId == zoomedNoteId;
 
   @override
-  int get hashCode => Object.hash('canvas', id);
+  int get hashCode => Object.hash('canvas', id, zoomedNoteId);
 }
 
 /// A read-only Graph view tab (D26). [id] is the scope's persisted id
@@ -240,9 +247,26 @@ class TabsNotifier extends StateNotifier<TabsState> {
   _TabRecord? get _activeRecord =>
       _records.isEmpty ? null : _records[state.activeIndex];
 
+  /// Whether [current] is what a click on [target] focuses. A plain canvas
+  /// target matches a tab on that canvas, zoomed or not (R2); every other
+  /// target, a zoomed canvas included, matches an equal tab. A note is never
+  /// matched by a canvas zoomed into it.
+  static bool _shows(WorkspaceTab current, WorkspaceTab target) =>
+      target is CanvasTab && target.zoomedNoteId == null
+      ? current is CanvasTab && current.id == target.id
+      : current == target;
+
+  /// The note [tab] shows: a note tab's note or the note a canvas tab is
+  /// zoomed into, else null.
+  static String? _shownNoteId(WorkspaceTab? tab) => switch (tab) {
+    NoteTab(:final id) => id,
+    CanvasTab(:final zoomedNoteId) => zoomedNoteId,
+    _ => null,
+  };
+
   /// The index of the leftmost tab showing [tab], or -1.
   int _indexShowing(WorkspaceTab tab) =>
-      _records.indexWhere((r) => r.current == tab);
+      _records.indexWhere((r) => _shows(r.current, tab));
 
   /// Makes [records] the open tabs, [activeIndex] the active one, and writes
   /// the state they give, `canGoBack` and `canGoForward` included.
@@ -385,11 +409,25 @@ class TabsNotifier extends StateNotifier<TabsState> {
     _emitSelection();
   }
 
-  /// Closes every tab showing [tab] (the delete path), in one state write.
+  /// Closes every tab showing [tab] (the delete path), in one state write. A
+  /// canvas closes every tab on it, zoomed or not. A note closes the tabs
+  /// showing it, and a canvas tab zoomed into it stays open and zooms out: its
+  /// current entry becomes the plain canvas, with no new entry (R29-R35).
+  /// Older entries zoomed into the note stay and fall to [targetExists].
   void close(WorkspaceTab tab) {
-    final closing = _records.where((r) => r.current == tab).toSet();
-    if (closing.isEmpty) return;
-    _closeRecords(closing);
+    final closing = _records.where((r) => _shows(r.current, tab)).toSet();
+    final zoomedNote = tab is NoteTab ? tab.id : null;
+    final zoomOut = zoomedNote == null
+        ? const <_TabRecord>{}
+        : _records
+              .where(
+                (r) =>
+                    r.current is CanvasTab &&
+                    (r.current as CanvasTab).zoomedNoteId == zoomedNote,
+              )
+              .toSet();
+    if (closing.isEmpty && zoomOut.isEmpty) return;
+    _closeRecords(closing, zoomOut: zoomOut);
   }
 
   /// Closes the tab at [index], and only that tab.
@@ -398,13 +436,23 @@ class TabsNotifier extends StateNotifier<TabsState> {
     _closeRecords({_records[index]});
   }
 
-  /// Closes [closing] and discards their histories. When the active tab is
-  /// among them, the nearest remaining tab before it becomes active, else the
-  /// first remaining one; otherwise the active tab stays active.
-  void _closeRecords(Set<_TabRecord> closing) {
+  /// Closes [closing] and discards their histories; each of [zoomOut] stays
+  /// open with its current, zoomed entry replaced by the plain canvas. When the
+  /// active tab is among those closed, the nearest remaining tab before it
+  /// becomes active, else the first remaining one; otherwise the active tab
+  /// stays active. [onBeforeLeave] runs once when the active tab is closed or
+  /// zoomed out, and not otherwise.
+  void _closeRecords(
+    Set<_TabRecord> closing, {
+    Set<_TabRecord> zoomOut = const {},
+  }) {
     final active = _activeRecord!;
     final activeCloses = closing.contains(active);
-    if (activeCloses) onBeforeLeave?.call();
+    if (activeCloses || zoomOut.contains(active)) onBeforeLeave?.call();
+    for (final r in zoomOut) {
+      final canvas = r.current as CanvasTab;
+      r.move(r.history.replaceCurrent(CanvasTab(canvas.id)));
+    }
     final remaining = _records.where((r) => !closing.contains(r)).toList();
     _mru.removeWhere(closing.contains);
     int newActive;
@@ -626,14 +674,7 @@ class TabsNotifier extends StateNotifier<TabsState> {
     unawaited(store.write(next));
   }
 
-  void _emitSelection() {
-    final active = state.activeTab;
-    if (active is NoteTab) {
-      onPersistedSelection(active.id);
-    } else {
-      onPersistedSelection(null);
-    }
-  }
+  void _emitSelection() => onPersistedSelection(_shownNoteId(state.activeTab));
 }
 
 /// `unawaited` polyfill — avoids pulling in `dart:async` just for the helper.
@@ -686,7 +727,8 @@ final tabsProvider = StateNotifierProvider<TabsNotifier, TabsState>((ref) {
 });
 
 /// Whether [target] still exists in the open vault (#266, TD9): false only
-/// when `getNote` or `getCanvasDetail` answers null. A virtual Today note, a
+/// when `getNote` or `getCanvasDetail` answers null (a zoomed canvas entry
+/// needs both its canvas and its note). A virtual Today note, a
 /// folder-scoped or whole-vault Graph view, no vault access and any read
 /// failure (`VaultUnreachableException` included) count as existing, with
 /// no read where none is needed.
@@ -699,8 +741,11 @@ Future<bool> _targetExists(Ref<Object?> ref, WorkspaceTab target) async {
     switch (target) {
       case NoteTab(:final id):
         return await access.notes.getNote(id) != null;
-      case CanvasTab(:final id):
-        return await access.canvas.getCanvasDetail(id) != null;
+      case CanvasTab(:final id, :final zoomedNoteId):
+        // The canvas first: with it gone, no note is read.
+        if (await access.canvas.getCanvasDetail(id) == null) return false;
+        return zoomedNoteId == null ||
+            await access.notes.getNote(zoomedNoteId) != null;
       case GraphTab(:final scope):
         return switch (scope.kind) {
           GraphScopeKind.topic ||

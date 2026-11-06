@@ -6,6 +6,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../db.dart';
 import '../state/canvas_state.dart';
+import '../state/tabs_state.dart';
 import '../state/vault_access_state.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
@@ -223,12 +224,13 @@ class _CanvasViewState extends ConsumerState<CanvasView> {
                           },
                           onDoubleTap: () {
                             ref
-                                .read(
-                                  canvasZoomProvider(widget.canvasId).notifier,
-                                )
-                                .state = CanvasZoomState(
-                              zoomedNoteId: n.noteId,
-                            );
+                                .read(tabsProvider.notifier)
+                                .follow(
+                                  CanvasTab(
+                                    widget.canvasId,
+                                    zoomedNoteId: n.noteId,
+                                  ),
+                                );
                           },
                           onEdgeDragStart: () {
                             setState(() {
