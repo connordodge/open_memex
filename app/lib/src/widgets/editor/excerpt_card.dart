@@ -119,14 +119,15 @@ class ExcerptCard extends ConsumerWidget {
     );
   }
 
-  /// Opens the daily note of the card's date as the active tab, looked up
-  /// through the daily domain.
+  /// Follows the card's day link to the daily note of its date, looked up
+  /// through the daily domain: the modifier and the tab are read at the click,
+  /// so a late answer for a plain click is dropped once the tab moved on.
   Future<void> _openDay(WidgetRef ref) async {
     final access = ref.read(vaultAccessProvider);
     if (access == null) return;
-    final tabs = ref.read(tabsProvider.notifier);
+    final follow = ref.read(tabsProvider.notifier).followLater();
     final row = await access.daily.dailyNoteForDate(segment.date);
-    if (row == null || !tabs.mounted) return;
-    tabs.openOrFocus(NoteTab(row.noteId));
+    if (row == null) return;
+    follow(NoteTab(row.noteId));
   }
 }

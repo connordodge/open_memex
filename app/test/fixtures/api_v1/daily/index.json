@@ -43,5 +43,14 @@
   {"method": "GET", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ4TAPTHDWE5PNWE4W5/footer-chips", "response": "footer_chips_day_18_after_add.json", "status": 200},
   {"method": "POST", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ4TAPTHDWE5PNWE4W5/footer-chips", "response": "footer_add_role_rule_topic.json", "status": 422, "request": "footer_add_role_rule_topic.request.json", "headers": {"Content-Type": "application/json"}},
   {"method": "POST", "path": "/vaults/seed/api/v1/notes/01J9Z8Y7X6W5V4T3S2R1Q0P9N8/footer-chips", "response": "footer_add_not_found.json", "status": 404, "request": "footer_add.request.json", "headers": {"Content-Type": "application/json"}},
-  {"method": "POST", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ4TAPTHDWE5PNWE4W5/footer-chips", "response": "footer_add_unknown_topic.json", "status": 404, "request": "footer_add_unknown_topic.request.json", "headers": {"Content-Type": "application/json"}}
+  {"method": "POST", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ4TAPTHDWE5PNWE4W5/footer-chips", "response": "footer_add_unknown_topic.json", "status": 404, "request": "footer_add_unknown_topic.request.json", "headers": {"Content-Type": "application/json"}},
+  {"method": "GET", "path": "/vaults/seed/api/v1/daily-notes/2026-10-18/filing", "response": "filing_day_18.json", "status": 200},
+  {"method": "POST", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ3WP7H0NXZZV9M2315/excerpts", "response": "excerpt_add.json", "status": 200, "request": "excerpt_add.request.json", "headers": {"Content-Type": "application/json"}},
+  {"method": "GET", "path": "/vaults/seed/api/v1/daily-notes/2026-10-18/filing", "response": "filing_day_18_after_excerpt_add.json", "status": 200},
+  {"method": "POST", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ3WP7H0NXZZV9M2315/excerpts/move", "response": "excerpt_move.json", "status": 200, "request": "excerpt_move.request.json", "headers": {"Content-Type": "application/json"}},
+  {"method": "GET", "path": "/vaults/seed/api/v1/daily-notes/2026-10-18/filing", "response": "filing_day_18_after_excerpt_move.json", "status": 200},
+  {"method": "DELETE", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ47QW55S90ZF0A56AH/excerpts/blocks/6v4mr7?date=2026-10-18&note=Not%20prices.", "response": "excerpt_remove_block.json", "status": 200},
+  {"method": "POST", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ3WP7H0NXZZV9M2315/excerpts", "response": "excerpt_add_block_not_found.json", "status": 422, "request": "excerpt_add_unknown_block.request.json", "headers": {"Content-Type": "application/json"}},
+  {"method": "DELETE", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ47QW55S90ZF0A56AH/excerpts/blocks/65a642?date=2026-10-18", "response": "excerpt_remove_block_not_found.json", "status": 404},
+  {"method": "POST", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ3WP7H0NXZZV9M2315/excerpts/move", "response": "excerpt_move_not_found.json", "status": 404, "request": "excerpt_move_not_filed.request.json", "headers": {"Content-Type": "application/json"}}
 ]

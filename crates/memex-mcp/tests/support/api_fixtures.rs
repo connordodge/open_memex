@@ -395,17 +395,12 @@ fn populate(vault: &mut Vault, clock: &StepClock) {
         indexer::reindex_note(vault.connection_mut(), id, content, None).expect("reindex note");
     }
 
-    // Footer chips: an excerpt (origin excerpt) and a person chip.
+    // Footer chips: an excerpt (origin excerpt) and a person chip. The agent
+    // files the excerpt: a person's filing records a Feedback Correction (WI
+    // #250), and this seed is frozen with an empty `feedback` table.
     let block = first_block_id(vault, &unreviewed_day);
-    excerpts::add_excerpt(
-        vault,
-        &economy,
-        "2026-10-19",
-        &[block],
-        Caller::Person,
-        None,
-    )
-    .expect("excerpt into Economy Design");
+    excerpts::add_excerpt(vault, &economy, "2026-10-19", &[block], Caller::Agent, None)
+        .expect("excerpt into Economy Design");
     footer::set_chip(vault, &reviewed_day, &economy, ChipOrigin::Person, None)
         .expect("person footer chip");
 

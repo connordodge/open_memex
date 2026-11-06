@@ -9,6 +9,10 @@
 // fake UrlOpener, under macOS only (mac_editing.dart). Rendered link styles
 // are read from the field render object span, the way the engine paints
 // them; points come from the segment handle caret rects.
+//
+// WI #269 (N6, Spec #232 R8-R15, TD6): a plain click follows a rendered link and
+// plain hover shows it; on a line whose markup shows both still need Cmd. Click
+// tests assert `TabsRecorder.followed` (the navigation seam).
 import 'dart:async';
 import 'dart:io';
 
@@ -19,6 +23,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db.dart';
+import 'package:open_memex_app/src/editor/markdown_inline.dart';
+import 'package:open_memex_app/src/editor/markdown_lines.dart';
 import 'package:open_memex_app/src/state/clock.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
@@ -30,6 +36,7 @@ import 'package:open_memex_app/src/vault_access/vault_scoped.dart';
 import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
 import 'package:open_memex_app/src/widgets/editor/link_region.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
+import 'package:open_memex_app/src/widgets/editor/live_preview_styles.dart';
 
 import '../robots/segmented_editor_robot.dart';
 import '../support/app_harness.dart';
@@ -41,6 +48,7 @@ import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
 import '../support/font_fetch_hold.dart';
 import '../support/mac_editing.dart';
+import '../support/recording_tabs.dart';
 import '../support/segment_editing_finder.dart';
 import '../support/today_cli_fakes.dart';
 import '../support/wi159_line_geometry.dart' show wi159EditableIn;
@@ -58,10 +66,13 @@ class _FakeUrlOpener implements UrlOpener {
 
 /// Everything a links test needs after [_launch].
 class _Links {
-  _Links(this.r, this.opener);
+  _Links(this.r, this.opener, this.doubles);
 
   final SegmentedEditorRobot r;
   final _FakeUrlOpener opener;
+
+  /// The gated notes and daily domains; the vault uses them with `gatedDaily`.
+  final EditorVaultDoubles doubles;
 
   WidgetTester get tester => r.tester;
   WorkspaceHarness get h => r.h;
@@ -100,27 +111,38 @@ class _Links {
 /// Pumps the workspace on [seedSegmentedVault] with the topic note body
 /// [body] (plus a topic note `Known`, id [_knownId]), applies [seed] to the
 /// database, overrides `urlOpenerProvider` with a fake (always: no test
-/// launches `/usr/bin/open`) and opens the topic note.
+/// launches `/usr/bin/open`) and opens the topic note. With [gatedDaily] the
+/// vault's daily domain is `_Links.doubles`'s, whose reads a test can hold.
 Future<_Links> _launch(
   WidgetTester tester,
   String body, {
   void Function(FakeVaultDb db)? seed,
   List<Override> overrides = const [],
+  bool gatedDaily = false,
 }) async {
   final vault = seedSegmentedVault(topicBody: body);
   vault.db.seedTopicNote(_knownId, 'Known');
   seed?.call(vault.db);
   final opener = _FakeUrlOpener();
+  final doubles = EditorVaultDoubles(
+    notesDb: vault.db,
+    dailyDb: vault.db,
+    cli: vault.cli,
+  );
   final h = await pumpWorkspace(
     tester,
     db: vault.db,
     cli: vault.cli,
-    overrides: [urlOpenerProvider.overrideWithValue(opener), ...overrides],
+    overrides: [
+      urlOpenerProvider.overrideWithValue(opener),
+      if (gatedDaily) editorSingleVaultOverride(doubles),
+      ...overrides,
+    ],
   );
   final r = SegmentedEditorRobot(tester, h);
   await r.open(fixtureTopicId);
   await pumpFrames(tester);
-  return _Links(r, opener);
+  return _Links(r, opener, doubles);
 }
 
 /// Overrides `noteTitlesAsyncProvider` with [load]'s titles, scoped to the
@@ -449,14 +471,197 @@ void main() {
   });
 
   // -------------------------------------------------------------------------
-  // AC4: plain click
+  // #269 (N6, Spec #232 R8-R13, TD6): a plain click follows a rendered link.
+  // TEST-CHANGE: this group pinned a plain click placing the caret and opening
+  // nothing; that now holds only on a line whose markup shows when the press
+  // starts.
   // -------------------------------------------------------------------------
   group('plain click', () {
     testWidgets(
-      'a plain click on a wikilink places the caret inside it and opens nothing',
+      'a plain click on a rendered resolved wikilink navigates the current tab with no caret move or reveal before it',
       (tester) async {
-        final t = await _launch(tester, 'See [[Known]] now\n');
+        final tabs = TabsRecorder();
+        final t = await _launch(
+          tester,
+          'See [[Known]] now\nSecond line\n',
+          overrides: [tabs.override],
+        );
         final r = t.r;
+        tabs.followed.clear();
+        tabs.navigated.clear();
+        final (second, _) = _find(r, 0, 'Second');
+        await r.focusSegment(0, offset: second + 2);
+        final before = r.segmentSelection(0);
+        final tabsBefore = t.tabs.length;
+        final (known, _) = _find(r, 0, 'Known');
+        final linkBefore = r.segment(0).rectForOffset(known);
+        final at = _pointOn(r, 0, 'Known');
+
+        // What the source note showed at the moment the tab navigated.
+        TextSelection? selectionAtSwitch;
+        Rect? linkAtSwitch;
+        final sub = t.h.container.listen<TabsState>(tabsProvider, (_, next) {
+          if (next.activeTab == const NoteTab(_knownId)) {
+            selectionAtSwitch ??= r.segmentSelection(0);
+            linkAtSwitch ??= r.segment(0).rectForOffset(known);
+          }
+        });
+        addTearDown(sub.close);
+
+        final mouse = await tester.startGesture(
+          at,
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pump();
+        expect(r.segmentSelection(0), before, reason: 'no caret at the press');
+        expect(
+          r.segment(0).rectForOffset(known),
+          linkBefore,
+          reason: 'the line did not reveal at the press',
+        );
+        r.expectActiveNote(fixtureTopicId);
+
+        await mouse.up();
+        await pumpFrames(tester);
+
+        expect(tabs.followed, [const NoteTab(_knownId)]);
+        expect(tabs.navigated, [const NoteTab(_knownId)]);
+        r.expectActiveNote(_knownId);
+        expect(t.tabs.length, tabsBefore, reason: 'the current tab navigated');
+        expect(t.h.read(tabsProvider).canGoBack, isTrue);
+        expect(selectionAtSwitch, before);
+        expect(linkAtSwitch, linkBefore);
+        expect(t.opener.opened, isEmpty);
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    for (final (name, line) in [
+      (
+        'a plain click on a rendered wikilink in a heading row navigates',
+        '# Plan [[Known]] here',
+      ),
+      (
+        'a plain click on a rendered wikilink in a bullet row navigates',
+        '- Item [[Known]] here',
+      ),
+      (
+        'a plain click on a rendered wikilink in a numbered row navigates',
+        '1. Item [[Known]] here',
+      ),
+      (
+        'a plain click on a rendered wikilink in a task row navigates',
+        '- [ ] Item [[Known]] here',
+      ),
+      (
+        'a plain click on a rendered wikilink in a quote row navigates',
+        '> Item [[Known]] here',
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final tabs = TabsRecorder();
+        final t = await _launch(
+          tester,
+          '$line\n\nAfter\n',
+          overrides: [tabs.override],
+        );
+        tabs.followed.clear();
+
+        await tester.tapAt(
+          _pointOn(t.r, 0, 'Known'),
+          kind: PointerDeviceKind.mouse,
+        );
+        await pumpFrames(tester);
+
+        expect(tabs.followed, [const NoteTab(_knownId)]);
+        t.r.expectActiveNote(_knownId);
+        await t.settle();
+      }, variant: macOnly);
+    }
+
+    testWidgets(
+      'a plain click on a rendered transclusion token navigates to its daily note',
+      (tester) async {
+        final tabs = TabsRecorder();
+        final t = await _launch(
+          tester,
+          'See ![[2026-09-05#^b7k2m9]] now\n',
+          overrides: [tabs.override],
+        );
+        final r = t.r;
+        tabs.followed.clear();
+        final tabsBefore = t.tabs.length;
+
+        await tester.tapAt(
+          _pointOn(r, 0, '2026-09-05'),
+          kind: PointerDeviceKind.mouse,
+        );
+        await pumpFrames(tester);
+
+        expect(tabs.followed, [const NoteTab(fixtureDailyId)]);
+        r.expectActiveNote(fixtureDailyId);
+        expect(t.tabs.length, tabsBefore, reason: 'the current tab navigated');
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a plain click on a transclusion token with no daily note does nothing and one with a daily note navigates',
+      (tester) async {
+        // A topic note titled with the date makes the token resolve, but
+        // there is no daily note for 2026-09-06.
+        final tabs = TabsRecorder();
+        final t = await _launch(
+          tester,
+          'See ![[2026-09-06#^ab12]] here\nAnd ![[2026-09-05#^b7k2m9]] there\n',
+          seed: (db) => db.seedTopicNote('topic-dated', '2026-09-06'),
+          overrides: [tabs.override],
+        );
+        final r = t.r;
+        tabs.followed.clear();
+        expect(_isResolvedLink(_styleOf(tester, r, 0, '2026-09-06')), isTrue);
+        final tabsBefore = List.of(t.tabs);
+        final before = r.segmentSelection(0);
+
+        await tester.tapAt(
+          _pointOn(r, 0, '2026-09-06'),
+          kind: PointerDeviceKind.mouse,
+        );
+        await pumpFrames(tester);
+
+        expect(tabs.followed, isEmpty);
+        r.expectActiveNote(fixtureTopicId);
+        expect(t.tabs, tabsBefore);
+        expect(r.segmentSelection(0), before);
+        expect(t.writes, isEmpty);
+
+        await tester.pump(const Duration(seconds: 1));
+        await tester.tapAt(
+          _pointOn(r, 0, '2026-09-05'),
+          kind: PointerDeviceKind.mouse,
+        );
+        await pumpFrames(tester);
+        expect(tabs.followed, [const NoteTab(fixtureDailyId)]);
+        r.expectActiveNote(fixtureDailyId);
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'on a line with its markup showing a plain click on a wikilink places the caret and a Cmd click follows',
+      (tester) async {
+        final tabs = TabsRecorder();
+        final t = await _launch(
+          tester,
+          'See [[Known]] now\n',
+          overrides: [tabs.override],
+        );
+        final r = t.r;
+        tabs.followed.clear();
+        await r.focusSegment(0, offset: 'See [[Known]] now'.length);
         final (start, end) = _find(r, 0, '[[Known]]');
         final tabsBefore = List.of(t.tabs);
 
@@ -470,14 +675,15 @@ void main() {
         expect(selection.isCollapsed, isTrue);
         expect(selection.baseOffset, greaterThan(start));
         expect(selection.baseOffset, lessThan(end));
+        expect(tabs.followed, isEmpty);
         r.expectActiveNote(fixtureTopicId);
         expect(t.tabs, tabsBefore);
-        expect(t.opener.opened, isEmpty);
 
-        // The same spot with Cmd held opens it (not a double click).
+        // The same spot with Cmd held follows (not a double click).
         await tester.pump(const Duration(seconds: 1));
         await tester.macCmdClick(_pointOn(r, 0, 'Known'));
         await pumpFrames(tester);
+        expect(tabs.followed, [const NoteTab(_knownId)]);
         r.expectActiveNote(_knownId);
         await t.settle();
       },
@@ -485,10 +691,11 @@ void main() {
     );
 
     testWidgets(
-      'a plain click on a URL link places the caret and opens nothing',
+      'on a line with its markup showing a plain click on a URL link places the caret and a Cmd click opens it',
       (tester) async {
         final t = await _launch(tester, 'Go [docs](https://x.y) now\n');
         final r = t.r;
+        await r.focusSegment(0, offset: 'Go [docs](https://x.y) now'.length);
         final (start, end) = _find(r, 0, '[docs](https://x.y)');
 
         await tester.tapAt(
@@ -501,9 +708,7 @@ void main() {
         expect(selection.isCollapsed, isTrue);
         expect(selection.baseOffset, inInclusiveRange(start + 1, end - 1));
         expect(t.opener.opened, isEmpty);
-        r.expectActiveNote(fixtureTopicId);
 
-        // The same spot with Cmd held opens it (not a double click).
         await tester.pump(const Duration(seconds: 1));
         await tester.macCmdClick(_pointOn(r, 0, 'docs'));
         await pumpFrames(tester);
@@ -511,6 +716,952 @@ void main() {
         await t.settle();
       },
       variant: macOnly,
+    );
+
+    testWidgets(
+      'a plain click on a ghost wikilink places the caret and a resolved wikilink on another line navigates',
+      (tester) async {
+        final tabs = TabsRecorder();
+        final t = await _launch(
+          tester,
+          'See [[Missing]] here\nSee [[Known]] now\n',
+          overrides: [tabs.override],
+        );
+        final r = t.r;
+        tabs.followed.clear();
+        expect(_isGhost(_styleOf(tester, r, 0, 'Missing')), isTrue);
+        final (start, end) = _find(r, 0, '[[Missing]]');
+        final tabsBefore = List.of(t.tabs);
+
+        await tester.tapAt(
+          _pointOn(r, 0, 'Missing'),
+          kind: PointerDeviceKind.mouse,
+        );
+        await pumpFrames(tester);
+
+        final selection = r.segmentSelection(0);
+        expect(selection.isCollapsed, isTrue);
+        expect(selection.baseOffset, greaterThan(start));
+        expect(selection.baseOffset, lessThan(end));
+        expect(tabs.followed, isEmpty);
+        expect(t.tabs, tabsBefore);
+        r.expectActiveNote(fixtureTopicId);
+
+        await tester.pump(const Duration(seconds: 1));
+        await tester.tapAt(
+          _pointOn(r, 0, 'Known'),
+          kind: PointerDeviceKind.mouse,
+        );
+        await pumpFrames(tester);
+        expect(tabs.followed, [const NoteTab(_knownId)]);
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    for (final (name, url) in [
+      (
+        'a plain click on a rendered https link opens through the url opener with no tab change and no history entry',
+        'https://x.y',
+      ),
+      (
+        'a plain click on a rendered http link opens through the url opener with no tab change and no history entry',
+        'http://x.y',
+      ),
+      (
+        'a plain click on a rendered mailto link opens through the url opener with no tab change and no history entry',
+        'mailto:a@b.c',
+      ),
+      (
+        'a plain click on a rendered upper case HTTPS link opens through the url opener as written',
+        'HTTPS://X.y/Path',
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final tabs = TabsRecorder();
+        final t = await _launch(
+          tester,
+          'Go [a]($url) now\n',
+          overrides: [tabs.override],
+        );
+        final r = t.r;
+        tabs.followed.clear();
+        tabs.navigated.clear();
+        final tabsBefore = List.of(t.tabs);
+        final canGoBack = t.h.read(tabsProvider).canGoBack;
+        final before = r.segmentSelection(0);
+
+        await tester.tapAt(_pointOn(r, 0, 'a'), kind: PointerDeviceKind.mouse);
+        await pumpFrames(tester);
+
+        expect(t.opener.opened, [url], reason: 'opened once');
+        expect(tabs.followed, isEmpty);
+        expect(tabs.navigated, isEmpty);
+        expect(t.tabs, tabsBefore);
+        expect(t.h.read(tabsProvider).canGoBack, canGoBack);
+        r.expectActiveNote(fixtureTopicId);
+        expect(r.segmentSelection(0), before, reason: 'no caret either');
+        await t.settle();
+      }, variant: macOnly);
+    }
+
+    for (final (name, url) in [
+      (
+        'a plain click on a file link places the caret and an https link on another line opens',
+        'file:///etc',
+      ),
+      (
+        'a plain click on a javascript link places the caret and an https link on another line opens',
+        'javascript:x',
+      ),
+      (
+        'a plain click on a link with no scheme places the caret and an https link on another line opens',
+        'x.y/z',
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final t = await _launch(
+          tester,
+          'Go [a]($url) now\nAnd [ok](https://ok.y) too\n',
+        );
+        final r = t.r;
+        final (start, end) = _find(r, 0, '[a]($url)');
+
+        await tester.tapAt(_pointOn(r, 0, 'a'), kind: PointerDeviceKind.mouse);
+        await pumpFrames(tester);
+
+        final selection = r.segmentSelection(0);
+        expect(selection.isCollapsed, isTrue);
+        expect(selection.baseOffset, inInclusiveRange(start + 1, end - 1));
+        expect(t.opener.opened, isEmpty);
+
+        await tester.pump(const Duration(seconds: 1));
+        await tester.tapAt(_pointOn(r, 0, 'ok'), kind: PointerDeviceKind.mouse);
+        await pumpFrames(tester);
+        expect(t.opener.opened, ['https://ok.y']);
+        await t.settle();
+      }, variant: macOnly);
+    }
+
+    testWidgets(
+      'a plain click that followed a link starts no double click chain so a second click at the same spot is a single click on the new note',
+      (tester) async {
+        final tabs = TabsRecorder();
+        final t = await _launch(
+          tester,
+          'See [[Known]] now\n',
+          seed: (db) => db.db.execute(
+            'UPDATE notes SET content_md = ? WHERE id = ?',
+            ['Plain words on the new note and some more\n', _knownId],
+          ),
+          overrides: [tabs.override],
+        );
+        final r = t.r;
+        final notifier = t.h.read(tabsProvider.notifier);
+        tabs.followed.clear();
+
+        // What navigating to the note leaves, with no click involved.
+        notifier.navigate(const NoteTab(_knownId));
+        await pumpFrames(tester);
+        final navigatedSelection = r.segmentSelection(0);
+        notifier.back();
+        await pumpFrames(tester);
+        r.expectActiveNote(fixtureTopicId);
+
+        final at = _pointOn(r, 0, 'Known');
+        await tester.tapAt(at, kind: PointerDeviceKind.mouse);
+        // Inside kDoubleTapTimeout: only enough time to hydrate the new note.
+        for (var i = 0; i < 4; i++) {
+          await tester.pump(const Duration(milliseconds: 10));
+        }
+        r.expectActiveNote(_knownId);
+        expect(r.segmentText(0), startsWith('Plain words'));
+        expect(
+          r.segmentSelection(0),
+          navigatedSelection,
+          reason:
+              'the followed click leaves no caret of its own on the new note',
+        );
+
+        await tester.tapAt(at, kind: PointerDeviceKind.mouse);
+        await tester.pump();
+
+        final selection = r.segmentSelection(0);
+        expect(selection.isValid, isTrue, reason: 'the click placed a caret');
+        expect(
+          selection.isCollapsed,
+          isTrue,
+          reason: 'a single click, no word',
+        );
+        expect(tabs.followed, [const NoteTab(_knownId)]);
+        await tester.pump(const Duration(seconds: 1));
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'an edit typed less than 500 ms before a plain click on a wikilink is saved with the leaving note id with the clock not advanced',
+      (tester) async {
+        const edited = 'See [[Known]] now\nSecond line!\n';
+        final t = await _launch(tester, 'See [[Known]] now\nSecond line\n');
+        final r = t.r;
+        final h = t.h;
+
+        List<String?>? sentAtSwitch;
+        final sub = h.container.listen<TabsState>(tabsProvider, (_, next) {
+          if (next.activeTab == const NoteTab(_knownId)) {
+            sentAtSwitch ??= [
+              for (final c in h.cli.callsFor('update')) c.stdinBody,
+            ];
+          }
+        });
+        addTearDown(sub.close);
+
+        await r.focusSegment(0);
+        await r.typeInSegment(0, edited);
+        expect(h.cli.callsFor('update'), isEmpty, reason: 'debounce pending');
+        final now = h.clock.now();
+
+        await tester.tapAt(
+          _pointOn(r, 0, 'Known'),
+          kind: PointerDeviceKind.mouse,
+        );
+        await pumpFrames(tester);
+
+        r.expectActiveNote(_knownId);
+        expect(h.clock.now(), now, reason: 'the clock did not advance');
+        expect(sentAtSwitch, [edited]);
+        expect(h.cli.callsFor('update').single.flag('note-id'), fixtureTopicId);
+        expect(h.db.getNote(fixtureTopicId)!.contentMd, edited);
+
+        await r.waitForSave();
+        expect(h.cli.callsFor('update'), hasLength(1));
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'an edit typed less than 500 ms before a plain click on a transclusion token is saved with the leaving note id with the clock not advanced',
+      (tester) async {
+        const edited = 'See ![[2026-09-05#^b7k2m9]] now\nSecond line!\n';
+        final t = await _launch(
+          tester,
+          'See ![[2026-09-05#^b7k2m9]] now\nSecond line\n',
+        );
+        final r = t.r;
+        final h = t.h;
+
+        await r.focusSegment(0);
+        await r.typeInSegment(0, edited);
+        expect(h.cli.callsFor('update'), isEmpty, reason: 'debounce pending');
+        final now = h.clock.now();
+
+        await tester.tapAt(
+          _pointOn(r, 0, '2026-09-05'),
+          kind: PointerDeviceKind.mouse,
+        );
+        await pumpFrames(tester);
+
+        r.expectActiveNote(fixtureDailyId);
+        expect(h.clock.now(), now, reason: 'the clock did not advance');
+        expect(h.cli.callsFor('update').single.flag('note-id'), fixtureTopicId);
+        expect(h.db.getNote(fixtureTopicId)!.contentMd, edited);
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a plain click on a URL link with an edit pending leaves the note and its debounce alone',
+      (tester) async {
+        const edited = 'Go [docs](https://x.y) now\nSecond line!\n';
+        final t = await _launch(tester, 'Go [docs](https://x.y) now\nSecond\n');
+        final r = t.r;
+
+        await r.focusSegment(0);
+        await r.typeInSegment(0, edited);
+
+        await tester.tapAt(
+          _pointOn(r, 0, 'docs'),
+          kind: PointerDeviceKind.mouse,
+        );
+        await pumpFrames(tester);
+
+        expect(t.opener.opened, ['https://x.y']);
+        expect(t.h.cli.callsFor('update'), isEmpty, reason: 'nothing left');
+        await r.waitForSave();
+        expect(t.h.cli.callsFor('update'), hasLength(1));
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    for (final (name, cmd) in [
+      (
+        'a plain click on a wikilink to the active note with an edit pending saves nothing and changes nothing',
+        false,
+      ),
+      (
+        'a Cmd click on a wikilink to the active note with an edit pending saves nothing and changes nothing',
+        true,
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        const edited = 'See [[Player Loop]] now\nSecond line!\n';
+        final tabs = TabsRecorder();
+        final t = await _launch(
+          tester,
+          'See [[Player Loop]] now\nSecond line\n',
+          overrides: [tabs.override],
+        );
+        final r = t.r;
+        tabs.followed.clear();
+
+        await r.focusSegment(0);
+        await r.typeInSegment(0, edited);
+        final tabsBefore = List.of(t.tabs);
+        final before = r.segmentSelection(0);
+
+        await tester.macClick(_pointOn(r, 0, 'Player Loop'), cmd: cmd);
+        await tester.pump();
+
+        expect(tabs.followed, [const NoteTab(fixtureTopicId)]);
+        expect(t.h.cli.callsFor('update'), isEmpty, reason: 'nothing left');
+        expect(t.tabs, tabsBefore);
+        r.expectActiveNote(fixtureTopicId);
+        if (!cmd) expect(r.segmentSelection(0), before);
+
+        await r.waitForSave();
+        expect(t.h.cli.callsFor('update'), hasLength(1));
+        await t.settle();
+      }, variant: macOnly);
+    }
+
+    testWidgets(
+      'source mode follows no link on a plain click or a Cmd click and the normal view does',
+      (tester) async {
+        const body = 'See [[Known]] now\n';
+        final tabs = TabsRecorder();
+        final t = await _launch(tester, body, overrides: [tabs.override]);
+        final r = t.r;
+        tabs.followed.clear();
+        final tabsBefore = List.of(t.tabs);
+
+        await r.toggleSource();
+        final editable = wi159EditableIn(tester, r.sourceBody);
+        final caret = editable.getLocalRectForCaret(
+          TextPosition(offset: body.indexOf('Known') + 2),
+        );
+        final at = editable.localToGlobal(caret.center);
+
+        await tester.tapAt(at, kind: PointerDeviceKind.mouse);
+        await pumpFrames(tester);
+        expect(r.sourceSurface, findsOneWidget);
+        expect(tabs.followed, isEmpty);
+        r.expectActiveNote(fixtureTopicId);
+
+        await tester.pump(const Duration(seconds: 1));
+        await tester.macCmdClick(at);
+        await pumpFrames(tester);
+        expect(r.sourceSurface, findsOneWidget);
+        expect(tabs.followed, isEmpty);
+        expect(t.tabs, tabsBefore);
+        r.expectActiveNote(fixtureTopicId);
+        expect(t.opener.opened, isEmpty);
+
+        await r.toggleSource();
+        await tester.pump(const Duration(seconds: 1));
+        await tester.tapAt(
+          _pointOn(r, 0, 'Known'),
+          kind: PointerDeviceKind.mouse,
+        );
+        await pumpFrames(tester);
+        expect(tabs.followed, [const NoteTab(_knownId)]);
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // #269: Cmd+click goes through the seam (Spec R2)
+  // -------------------------------------------------------------------------
+  group('Cmd click through the seam', () {
+    testWidgets(
+      'a Cmd click on a resolved wikilink follows it and opens a new tab',
+      (tester) async {
+        final tabs = TabsRecorder();
+        final t = await _launch(
+          tester,
+          'See [[Known]] now\n',
+          overrides: [tabs.override],
+        );
+        tabs.followed.clear();
+        tabs.navigated.clear();
+        final before = t.tabs.length;
+
+        await tester.macCmdClick(_pointOn(t.r, 0, 'Known'));
+        await pumpFrames(tester);
+
+        expect(tabs.followed, [const NoteTab(_knownId)]);
+        expect(tabs.navigated, isEmpty);
+        t.r.expectActiveNote(_knownId);
+        expect(t.tabs.length, before + 1);
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a Cmd click on a resolved wikilink follows it and focuses the tab already showing it',
+      (tester) async {
+        final tabs = TabsRecorder();
+        final t = await _launch(
+          tester,
+          'See [[Known]] now\n',
+          overrides: [tabs.override],
+        );
+        final r = t.r;
+        await r.open(_knownId);
+        await r.open(fixtureTopicId);
+        tabs.followed.clear();
+        tabs.navigated.clear();
+        final before = t.tabs.length;
+
+        await tester.macCmdClick(_pointOn(r, 0, 'Known'));
+        await pumpFrames(tester);
+
+        expect(tabs.followed, [const NoteTab(_knownId)]);
+        expect(tabs.navigated, isEmpty);
+        r.expectActiveNote(_knownId);
+        expect(t.tabs.length, before);
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a Cmd click on a transclusion token follows it and opens a new tab',
+      (tester) async {
+        final tabs = TabsRecorder();
+        final t = await _launch(
+          tester,
+          'See ![[2026-09-05#^b7k2m9]] now\n',
+          overrides: [tabs.override],
+        );
+        tabs.followed.clear();
+        tabs.navigated.clear();
+        final before = t.tabs.length;
+
+        await tester.macCmdClick(_pointOn(t.r, 0, '2026-09-05'));
+        await pumpFrames(tester);
+
+        expect(tabs.followed, [const NoteTab(fixtureDailyId)]);
+        expect(tabs.navigated, isEmpty);
+        t.r.expectActiveNote(fixtureDailyId);
+        expect(t.tabs.length, before + 1);
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // #269: a lookup that lands late (Spec R7). The lookup waits on a gate of
+  // Completers; the click is on the tab and the Cmd state at the click.
+  // -------------------------------------------------------------------------
+  group('stale transclusion lookups', () {
+    for (final (name, cmd, close) in [
+      (
+        'a plain click on a transclusion token is dropped when its tab navigated during the lookup',
+        false,
+        false,
+      ),
+      (
+        'a plain click on a transclusion token is dropped when its tab closed during the lookup',
+        false,
+        true,
+      ),
+      (
+        'a Cmd click on a transclusion token still opens its tab when the tab navigated during the lookup',
+        true,
+        false,
+      ),
+      (
+        'a Cmd click on a transclusion token still opens its tab when the tab closed during the lookup',
+        true,
+        true,
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final tabs = TabsRecorder();
+        final t = await _launch(
+          tester,
+          'See ![[2026-09-05#^b7k2m9]] now\n',
+          gatedDaily: true,
+          overrides: [tabs.override],
+        );
+        tabs.followed.clear();
+        final notifier = t.h.read(tabsProvider.notifier);
+        final at = _pointOn(t.r, 0, '2026-09-05');
+        final daily = t.doubles.daily;
+
+        daily.gate.hold();
+        await tester.macClick(at, cmd: cmd);
+        expect(daily.reads, contains('dailyNoteForDate:2026-09-05'));
+        expect(tabs.followed, isEmpty, reason: 'the lookup is still out');
+
+        if (close) {
+          notifier.close(const NoteTab(fixtureTopicId));
+        } else {
+          notifier.navigate(const NoteTab(fixtureZetaId));
+        }
+        await tester.pump();
+        final tabsAfter = List.of(t.tabs);
+        final activeAfter = t.h.read(tabsProvider).activeTab;
+
+        daily.gate.release();
+        await pumpFrames(tester);
+
+        expect(tabs.followed, [const NoteTab(fixtureDailyId)]);
+        if (cmd) {
+          t.r.expectActiveNote(fixtureDailyId);
+          expect(t.tabs.length, tabsAfter.length + 1);
+        } else {
+          expect(t.tabs, tabsAfter);
+          expect(t.h.read(tabsProvider).activeTab, activeAfter);
+        }
+        await t.settle();
+      }, variant: macOnly);
+    }
+
+    testWidgets(
+      'a plain click on a transclusion token stays plain when Cmd goes down during the lookup',
+      (tester) async {
+        final t = await _launch(
+          tester,
+          'See ![[2026-09-05#^b7k2m9]] now\n',
+          gatedDaily: true,
+        );
+        final at = _pointOn(t.r, 0, '2026-09-05');
+        final before = t.tabs.length;
+
+        t.doubles.daily.gate.hold();
+        await tester.tapAt(at, kind: PointerDeviceKind.mouse);
+        await tester.pump();
+        await _cmdDown(tester);
+        t.doubles.daily.gate.release();
+        await pumpFrames(tester);
+        await _cmdUp(tester);
+
+        t.r.expectActiveNote(fixtureDailyId);
+        expect(t.tabs.length, before, reason: 'navigated, no new tab');
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // #269: plain hover over a rendered followable link (Spec R13)
+  // -------------------------------------------------------------------------
+  group('plain hover', () {
+    testWidgets(
+      'plain hover over a rendered resolved wikilink shows the click cursor and the underline',
+      (tester) async {
+        final t = await _launch(tester, 'Read [[Zeta Game]] today\n');
+        final r = t.r;
+        final (start, end) = _find(r, 0, '[[Zeta Game]]');
+
+        final mouse = await _mouseAt(tester, _pointOn(r, 0, 'Zeta Game'));
+        try {
+          expect(_cursor(), SystemMouseCursors.click);
+          expect(
+            _controllerOf(tester, 0).cmdHover,
+            TextRange(start: start, end: end),
+          );
+          final style = _styleOf(tester, r, 0, 'Zeta Game');
+          expect(_isUnderlined(style), isTrue, reason: '$style');
+          expect(style.color, OmColors.accent);
+
+          // Moving off it takes the hover away.
+          await mouse.moveTo(_pointOn(r, 0, 'today'));
+          await tester.pump();
+          expect(_cursor(), SystemMouseCursors.text);
+          expect(_controllerOf(tester, 0).cmdHover, isNull);
+          expect(_isUnderlined(_styleOf(tester, r, 0, 'Zeta Game')), isFalse);
+        } finally {
+          await _removeMouse(tester, mouse);
+        }
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'plain hover over a rendered transclusion token shows the click cursor and the underline',
+      (tester) async {
+        final t = await _launch(tester, 'See ![[2026-09-05#^b7k2m9]] now\n');
+        final r = t.r;
+        final (start, end) = _find(r, 0, '![[2026-09-05#^b7k2m9]]');
+
+        final mouse = await _mouseAt(tester, _pointOn(r, 0, '2026-09-05'));
+        try {
+          expect(_cursor(), SystemMouseCursors.click);
+          expect(
+            _controllerOf(tester, 0).cmdHover,
+            TextRange(start: start, end: end),
+          );
+          expect(_isUnderlined(_styleOf(tester, r, 0, '2026-09-05')), isTrue);
+        } finally {
+          await _removeMouse(tester, mouse);
+        }
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'plain hover over a rendered URL link shows the click cursor and a link with another scheme does not',
+      (tester) async {
+        final t = await _launch(
+          tester,
+          'Go [docs](https://x.y) or [file](file:///etc) now\n',
+        );
+        final r = t.r;
+        final (start, end) = _find(r, 0, '[docs](https://x.y)');
+
+        final mouse = await _mouseAt(tester, _pointOn(r, 0, 'docs'));
+        try {
+          expect(_cursor(), SystemMouseCursors.click);
+          expect(
+            _controllerOf(tester, 0).cmdHover,
+            TextRange(start: start, end: end),
+          );
+          expect(_isUnderlined(_styleOf(tester, r, 0, 'docs')), isTrue);
+
+          await mouse.moveTo(_pointOn(r, 0, 'file'));
+          await tester.pump();
+          expect(_cursor(), SystemMouseCursors.text);
+          expect(_controllerOf(tester, 0).cmdHover, isNull);
+        } finally {
+          await _removeMouse(tester, mouse);
+        }
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'plain hover over a ghost keeps the text cursor and a resolved wikilink beside it shows the click cursor',
+      (tester) async {
+        final t = await _launch(tester, 'See [[Missing]] or [[Known]] now\n');
+        final r = t.r;
+
+        final mouse = await _mouseAt(tester, _pointOn(r, 0, 'Missing'));
+        try {
+          expect(_cursor(), SystemMouseCursors.text);
+          expect(_controllerOf(tester, 0).cmdHover, isNull);
+
+          await mouse.moveTo(_pointOn(r, 0, 'Known'));
+          await tester.pump();
+          expect(_cursor(), SystemMouseCursors.click);
+        } finally {
+          await _removeMouse(tester, mouse);
+        }
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a caret arriving on the hovered line takes the plain hover away until Cmd is held and a caret leaving brings it back',
+      (tester) async {
+        final t = await _launch(tester, 'Read [[Zeta Game]] today\nSecond\n');
+        final r = t.r;
+        final (zeta, _) = _find(r, 0, 'Zeta Game');
+        final (second, _) = _find(r, 0, 'Second');
+        final controller = _controllerOf(tester, 0, offset: zeta);
+
+        final mouse = await _mouseAt(tester, _pointOn(r, 0, 'Zeta Game'));
+        try {
+          expect(_cursor(), SystemMouseCursors.click);
+          expect(controller.cmdHover, isNotNull);
+
+          // The line reveals under a resting mouse.
+          await r.focusSegment(0, offset: zeta);
+          await tester.pump();
+          expect(controller.cmdHover, isNull, reason: 'the line revealed');
+          expect(_cursor(), SystemMouseCursors.text);
+          expect(_isUnderlined(_styleOf(tester, r, 0, 'Zeta Game')), isFalse);
+
+          // Its markup moved the text: aim at the link again.
+          await mouse.moveTo(_pointOn(r, 0, 'Zeta Game'));
+          await tester.pump();
+          expect(controller.cmdHover, isNull, reason: 'it still needs Cmd');
+          expect(_cursor(), SystemMouseCursors.text);
+
+          await _cmdDown(tester);
+          expect(_cursor(), SystemMouseCursors.click);
+          expect(controller.cmdHover, isNotNull);
+          await _cmdUp(tester);
+          expect(_cursor(), SystemMouseCursors.text);
+          expect(controller.cmdHover, isNull);
+
+          // The caret leaves: the line renders and the plain hover is back.
+          r.segment(0).select(TextSelection.collapsed(offset: second));
+          await tester.pump();
+          await mouse.moveTo(_pointOn(r, 0, 'Zeta Game'));
+          await tester.pump();
+          expect(_cursor(), SystemMouseCursors.click);
+          expect(controller.cmdHover, isNotNull);
+        } finally {
+          await _removeMouse(tester, mouse);
+        }
+        await t.settle();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'in a field of several lines only the line the selection touches needs Cmd for the hover',
+      (tester) async {
+        const text = 'One [[Known]] here\nTwo [[Known]] there';
+        final f = await _wi166PumpLinkField(tester, text);
+        f.controller.revealGate = const AlwaysStoppedAnimation<bool>(true);
+        // The caret touches the second line: the first stays rendered.
+        f.controller.selection = TextSelection.collapsed(offset: text.length);
+        await tester.pump();
+
+        final first = text.indexOf('[[Known]]');
+        final mouse = await _mouseAt(tester, f.pointOn('Known'));
+        try {
+          expect(_cursor(), SystemMouseCursors.click);
+          expect(
+            f.controller.cmdHover,
+            TextRange(start: first, end: first + '[[Known]]'.length),
+          );
+
+          // The caret moves to the first line.
+          f.controller.selection = const TextSelection.collapsed(offset: 0);
+          await tester.pump();
+          await tester.pump();
+          expect(_cursor(), SystemMouseCursors.text);
+          expect(f.controller.cmdHover, isNull);
+        } finally {
+          await _removeMouse(tester, mouse);
+        }
+      },
+      variant: macOnly,
+    );
+  });
+
+  group('plain hover on a link that starts a line', () {
+    testWidgets(
+      'plain hover over a link at the start of a line belongs to its own line and not the one before',
+      (tester) async {
+        const text = 'Zero line\n[[Known]] here';
+        final f = await _wi166PumpLinkField(tester, text);
+        f.controller.revealGate = const AlwaysStoppedAnimation<bool>(true);
+        final start = text.indexOf('[[Known]]');
+        final range = TextRange(start: start, end: start + '[[Known]]'.length);
+        // The caret touches the first line only: the link's line stays
+        // rendered, and the line before it ends right where the link starts.
+        f.controller.selection = const TextSelection.collapsed(offset: 2);
+        await tester.pump();
+
+        final mouse = await _mouseAt(tester, f.pointOn('Known'));
+        try {
+          expect(_cursor(), SystemMouseCursors.click);
+          expect(f.controller.cmdHover, range);
+
+          // The caret reaches the link's own line: its markup shows, the line
+          // before is rendered now.
+          f.controller.selection = TextSelection.collapsed(offset: text.length);
+          await tester.pump();
+          await tester.pump();
+          expect(_cursor(), SystemMouseCursors.text);
+          expect(f.controller.cmdHover, isNull);
+        } finally {
+          await _removeMouse(tester, mouse);
+        }
+      },
+      variant: macOnly,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // #269 (rulings D19, D19a): the one predicate of what a plain click follows.
+  // -------------------------------------------------------------------------
+  group('isPlainClickFollowable', () {
+    test(
+      'isPlainClickFollowable is true for wikilink transclusion and link tokens and false for a token of any other kind',
+      () {
+        final tokens = tokenizeInline(
+          '[[A]] ![[2026-09-05#^ab12]] [c](https://x.y) **d** *e* ***f*** ~~g~~ #t `h` \\*',
+        );
+        bool followable(InlineTokenKind kind) =>
+            isPlainClickFollowable(tokens.firstWhere((t) => t.kind == kind));
+
+        expect(followable(InlineTokenKind.wikilink), isTrue);
+        expect(followable(InlineTokenKind.transclusion), isTrue);
+        expect(followable(InlineTokenKind.link), isTrue);
+        // A tag stays unfollowable on a plain click until #309 flips it.
+        expect(followable(InlineTokenKind.tag), isFalse);
+        for (final kind in InlineTokenKind.values) {
+          if (kind == InlineTokenKind.wikilink ||
+              kind == InlineTokenKind.transclusion ||
+              kind == InlineTokenKind.link) {
+            continue;
+          }
+          expect(followable(kind), isFalse, reason: '$kind');
+        }
+      },
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // #269 (TD6, AC15): `revealedLines` agrees with what `buildLivePreviewSpan`
+  // renders: `_wi269ExpectAgrees` reads each line's marker from the span.
+  // -------------------------------------------------------------------------
+  group('revealedLines', () {
+    test('revealedLines agrees with the rendered markers for a caret', () {
+      const text = '# One\n# Two\n# Three';
+      final two = text.indexOf('# Two');
+      _wi269ExpectAgrees(text, TextSelection.collapsed(offset: two + 3), [
+        false,
+        true,
+        false,
+      ]);
+      // At a line's start and at its content end it touches that line only.
+      _wi269ExpectAgrees(text, TextSelection.collapsed(offset: two), [
+        false,
+        true,
+        false,
+      ]);
+      _wi269ExpectAgrees(text, TextSelection.collapsed(offset: two - 1), [
+        true,
+        false,
+        false,
+      ]);
+    });
+
+    test(
+      'revealedLines agrees with the rendered markers for a selection across lines',
+      () {
+        const text = '# One\n# Two\n# Three\n# Four';
+        _wi269ExpectAgrees(
+          text,
+          TextSelection(
+            baseOffset: text.indexOf('One'),
+            extentOffset: text.indexOf('Three') + 1,
+          ),
+          [true, true, true, false],
+        );
+        // A backward selection touches the same lines.
+        _wi269ExpectAgrees(
+          text,
+          TextSelection(
+            baseOffset: text.indexOf('Four'),
+            extentOffset: text.indexOf('Three'),
+          ),
+          [false, false, true, true],
+        );
+      },
+    );
+
+    test(
+      'revealedLines agrees with the rendered markers for a fenced block',
+      () {
+        const text = '# Top\n```\ncode\n```\n# End';
+        // A touch on a code line reveals both fence lines.
+        _wi269ExpectAgrees(
+          text,
+          TextSelection.collapsed(offset: text.indexOf('code') + 1),
+          [false, true, true, true, false],
+        );
+        // A touch on a fence line reveals both, not the code line between.
+        _wi269ExpectAgrees(
+          text,
+          TextSelection.collapsed(offset: text.indexOf('```')),
+          [false, true, false, true, false],
+        );
+        // Away from it: none of them.
+        _wi269ExpectAgrees(text, const TextSelection.collapsed(offset: 1), [
+          true,
+          false,
+          false,
+          false,
+          false,
+        ]);
+      },
+    );
+
+    test(
+      'revealedLines reveals an unclosed fenced block through its last line',
+      () {
+        const text = '```\none\ntwo';
+        expect(
+          _wi269Revealed(
+            text,
+            TextSelection.collapsed(offset: text.indexOf('one')),
+          ),
+          [true, true, true],
+        );
+      },
+    );
+
+    test('revealedLines agrees with the rendered markers for a table', () {
+      const text = '| A |\n| --- |\n| x |\n\n# End';
+      // A touch on any line of the table reveals every line of it.
+      _wi269ExpectAgrees(
+        text,
+        TextSelection.collapsed(offset: text.indexOf('x')),
+        [true, true, true, false, false],
+      );
+      _wi269ExpectAgrees(text, const TextSelection.collapsed(offset: 2), [
+        true,
+        true,
+        true,
+        false,
+        false,
+      ]);
+      _wi269ExpectAgrees(
+        text,
+        TextSelection.collapsed(offset: text.indexOf('End')),
+        [false, false, false, false, true],
+      );
+    });
+
+    test(
+      'revealedLines reveals nothing while forceHidden or with no valid selection',
+      () {
+        const text = '# One\n# Two';
+        const caret = TextSelection.collapsed(offset: 2);
+        expect(_wi269Revealed(text, caret), [true, false]);
+        expect(_wi269Revealed(text, caret, forceHidden: true), [false, false]);
+        expect(_wi269Revealed(text, null), [false, false]);
+        expect(
+          _wi269Revealed(text, const TextSelection.collapsed(offset: -1)),
+          [false, false],
+        );
+      },
+    );
+
+    test(
+      'revealedLines with itemText reveals only the touched lines and no block as a unit',
+      () {
+        const text = '```\ncode\n```';
+        final caret = TextSelection.collapsed(offset: text.indexOf('code'));
+        expect(_wi269Revealed(text, caret), [true, true, true]);
+        expect(_wi269Revealed(text, caret, itemText: true), [
+          false,
+          true,
+          false,
+        ]);
+      },
     );
   });
 
@@ -570,11 +1721,15 @@ void main() {
       await t.settle();
     }, variant: macOnly);
 
+    // TEST-CHANGE (#269): a rendered link now shows the hover without Cmd, so
+    // this pins a line whose markup shows.
     testWidgets(
-      'without Cmd hovering a resolved wikilink keeps the text cursor and no hover',
+      'on a line with its markup showing hovering a resolved wikilink without Cmd keeps the text cursor and no hover',
       (tester) async {
-        final t = await _launch(tester, 'Read [[Zeta Game]] today\n');
+        const line = 'Read [[Zeta Game]] today';
+        final t = await _launch(tester, '$line\n');
         final r = t.r;
+        await r.focusSegment(0, offset: line.length);
         final mouse = await _mouseAt(tester, _pointOn(r, 0, 'Zeta Game'));
         try {
           expect(_cursor(), SystemMouseCursors.text);
@@ -627,11 +1782,15 @@ void main() {
       await t.settle();
     }, variant: macOnly);
 
+    // TEST-CHANGE (#269): a rendered link keeps its hover without Cmd, so this
+    // pins a line whose markup shows.
     testWidgets(
-      'pressing Cmd while resting over a resolved wikilink shows the click cursor and releasing it restores the text cursor',
+      'on a line with its markup showing pressing Cmd while resting over a resolved wikilink shows the click cursor and releasing it restores the text cursor',
       (tester) async {
-        final t = await _launch(tester, 'Read [[Zeta Game]] today\n');
+        const line = 'Read [[Zeta Game]] today';
+        final t = await _launch(tester, '$line\n');
         final r = t.r;
+        await r.focusSegment(0, offset: line.length);
         final (start, end) = _find(r, 0, '[[Zeta Game]]');
         final mouse = await _mouseAt(tester, _pointOn(r, 0, 'Zeta Game'));
         try {
@@ -1723,6 +2882,10 @@ void main() {
       'key events over a link field are left unhandled for the platform and the focused field',
       (tester) async {
         final f = await _wi166PumpLinkField(tester, 'Go [[Known]] now');
+        // TEST-CHANGE (#269): the line shows its markup, so its hover needs Cmd.
+        f.controller.revealGate = const AlwaysStoppedAnimation<bool>(true);
+        f.controller.selection = const TextSelection.collapsed(offset: 0);
+        await tester.pump();
         final mouse = await _mouseAt(tester, f.pointOn('Known'));
         try {
           for (final key in [
@@ -1875,6 +3038,66 @@ void main() {
       },
     );
   });
+}
+
+/// `revealedLines` over the lines of [text].
+List<bool> _wi269Revealed(
+  String text,
+  TextSelection? selection, {
+  bool forceHidden = false,
+  bool itemText = false,
+}) => revealedLines(
+  classifyLines(text, atSegmentStart: true),
+  selection,
+  forceHidden: forceHidden,
+  itemText: itemText,
+);
+
+/// Whether [line]'s first code unit renders as a shown marker of [text] under
+/// [selection]: in a marker style, not the zero-width hidden one or a text one.
+bool _wi269MarkerShown(String text, TextSelection selection, MdLine line) {
+  final span = buildLivePreviewSpan(text, selection: selection);
+  var pos = 0;
+  TextStyle? found;
+  for (final child in span.children!) {
+    final leaf = child as TextSpan;
+    final length = leaf.text!.length;
+    if (line.start >= pos && line.start < pos + length) found = leaf.style;
+    pos += length;
+  }
+  final level = line.kind == MdLineKind.heading ? line.level : 0;
+  return found ==
+          livePreviewMarkerStyle(headingLevel: level, selected: false) ||
+      found == livePreviewMarkerStyle(headingLevel: level, selected: true);
+}
+
+/// Expects `revealedLines` to give [expected] for [selection] over [text], and
+/// the rendered span to show the marker of every line that has one exactly
+/// when that line is revealed.
+void _wi269ExpectAgrees(
+  String text,
+  TextSelection selection,
+  List<bool> expected,
+) {
+  final lines = classifyLines(text, atSegmentStart: true);
+  expect(_wi269Revealed(text, selection), expected, reason: 'revealedLines');
+  for (final (i, line) in lines.indexed) {
+    final hasMarker = switch (line.kind) {
+      MdLineKind.heading ||
+      MdLineKind.fenceOpen ||
+      MdLineKind.fenceClose ||
+      MdLineKind.tableHeader ||
+      MdLineKind.tableDelimiter ||
+      MdLineKind.tableBody => true,
+      _ => false,
+    };
+    if (!hasMarker) continue;
+    expect(
+      _wi269MarkerShown(text, selection, line),
+      expected[i],
+      reason: 'the rendered marker of line $i of "$text"',
+    );
+  }
 }
 
 const _flushId = '01J9FLUSH000000000000000166';

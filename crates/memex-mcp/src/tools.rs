@@ -33,6 +33,7 @@ use crate::state::AppState;
 // One `#[tool_router]` per area (architect ruling D7), composed in `Memex::new`.
 pub mod daily;
 pub mod excerpts;
+pub mod feedback;
 pub mod folders;
 pub mod review;
 pub mod settings;
@@ -53,7 +54,8 @@ impl Memex {
                 + Self::excerpts_router()
                 + Self::folders_router()
                 + Self::review_router()
-                + Self::settings_router(),
+                + Self::settings_router()
+                + Self::feedback_router(),
             prompt_router: Self::prompt_router(),
         }
     }
@@ -1126,6 +1128,7 @@ fn err_from(op: &str, e: &MemexError) -> String {
             | MemexError::InvalidDate(_)
             | MemexError::BlockNotFound(_)
             | MemexError::SettingInvalid(_)
+            | MemexError::GuideRule(_)
     );
     if is_rule {
         e.to_error_json().to_string()
