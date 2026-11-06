@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../db.dart';
+import '../../editor/segments.dart';
 import '../../state/tabs_state.dart';
 import '../../state/tags_browse_state.dart';
 import '../../theme/colors.dart';
@@ -103,7 +104,7 @@ class _MetaRail extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final updated = formatUpdatedAgo(note.updatedAt, now: DateTime.now());
-    final words = noteWordCount(note.contentMd);
+    final words = noteWordCount(_personSection(note));
     final tags = note.visibleTags;
     final style = OmType.mono(size: 11, color: OmColors.fg2);
     return Container(
@@ -149,6 +150,15 @@ class _MetaRail extends ConsumerWidget {
     );
   }
 }
+
+/// The text of [note] a person wrote: what the editor shows as text and cards,
+/// without the footer's marker, chip and tag lines. A guide note has no footer,
+/// so a marker line in it is text like any other.
+String _personSection(Note note) => switch (note.role) {
+  'daily' => splitDailyBody(note.contentMd).person,
+  'guide' => note.contentMd,
+  _ => splitNoteBody(note.contentMd).person,
+};
 
 /// How long before [now] the time [unixMs] was, as the meta rail shows it
 /// ("just now", "5 minutes ago", "1 hour ago", "3 days ago").

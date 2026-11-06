@@ -419,6 +419,16 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
     }
   }
 
+  /// Focuses the text right above the footer with its caret at the end: the
+  /// nearest field, so taking focus from the footer doesn't scroll the note.
+  void _focusLastText() {
+    final last = _segs.whereType<_TextSeg>().last;
+    last.ctrl.selection = TextSelection.collapsed(
+      offset: last.ctrl.text.length,
+    );
+    last.focus.requestFocus();
+  }
+
   Future<void> _remove(_CardSeg card) async {
     final access = ref.read(vaultAccessProvider);
     if (access == null || !access.canWrite) return;
@@ -572,7 +582,11 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
             },
           // Keyed per note: its writes, error and removed tags stay with it.
           if (!_isGuide)
-            FooterChipBar(key: ValueKey(widget.note.id), note: widget.note),
+            FooterChipBar(
+              key: ValueKey(widget.note.id),
+              note: widget.note,
+              onFocusEditor: _focusLastText,
+            ),
         ],
       ),
       overlays: [KindChipLayer(host: _kindChips)],

@@ -14,7 +14,6 @@ import '../../state/today_state.dart';
 import '../../state/vault_state.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
-import '../../vault_access/errors.dart';
 import '../../vault_access/vault_scoped.dart';
 import '../inline_error.dart';
 
@@ -31,11 +30,19 @@ import '../inline_error.dart';
 /// Key this per note: what it holds (writes in flight, the error, removed tags)
 /// belongs to one note.
 class FooterChipBar extends ConsumerStatefulWidget {
-  const FooterChipBar({super.key, required this.note});
+  const FooterChipBar({
+    super.key,
+    required this.note,
+    required this.onFocusEditor,
+  });
 
   /// The note shown. Its tags stand in only until the editor's own read has
   /// this note: the host's copy doesn't change while the note stays open.
   final Note note;
+
+  /// Gives the editor keyboard focus: a focused × left the row and no other ×
+  /// is left to take it.
+  final VoidCallback onFocusEditor;
 
   @override
   ConsumerState<FooterChipBar> createState() => _FooterChipBarState();
@@ -51,6 +58,50 @@ class _FooterChipBarState extends ConsumerState<FooterChipBar> {
   final _removed = <String>{};
 
   String? _error;
+
+  /// The focus node of each tag's ×, kept for the bar's life: a removed tag the
+  /// vault gets back uses its node again.
+  final _xFocus = <String, FocusNode>{};
+
+  /// The tags as last built, in row order.
+  List<String> _shownTags = const [];
+
+  FocusNode _xFocusOf(String tag) => _xFocus.putIfAbsent(
+    tag,
+    () => FocusNode(debugLabel: 'footer-tag-remove'),
+  );
+
+  @override
+  void dispose() {
+    for (final node in _xFocus.values) {
+      node.dispose();
+    }
+    super.dispose();
+  }
+
+  /// Keeps keyboard focus when the focused × leaves the row: it moves to the
+  /// next ×, else the previous one, else the editor, instead of falling to the
+  /// enclosing scope. Rows decide, so this holds however the tag left. A mouse
+  /// click doesn't focus a ×, so it moves nothing.
+  void _keepFocusOnRow(List<String> tags) {
+    final was = _shownTags;
+    _shownTags = tags;
+    final at = was.indexWhere((tag) => _xFocusOf(tag).hasFocus);
+    if (at < 0 || tags.contains(was[at])) return;
+    final target =
+        was.skip(at + 1).where(tags.contains).firstOrNull ??
+        was.take(at).where(tags.contains).lastOrNull;
+    // After this frame: the editor's fallback changes a text selection, which
+    // can't happen during a build.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (target != null) {
+        _xFocusOf(target).requestFocus();
+      } else {
+        widget.onFocusEditor();
+      }
+    });
+  }
 
   /// The tag leaves the row only after the write returned. A failure keeps it
   /// and shows the inline error; an unreachable server does too, so this
@@ -79,10 +130,8 @@ class _FooterChipBarState extends ConsumerState<FooterChipBar> {
   }
 
   static String _failureMessage(String tag, Object error) => switch (error) {
-    VaultUnreachableException() =>
-      "Couldn't remove #$tag. The vault server didn't answer.",
     MemexException(:final message) => message,
-    _ => error.toString(),
+    _ => "Couldn't remove #$tag. The vault server didn't answer.",
   };
 
   @override
@@ -109,6 +158,7 @@ class _FooterChipBarState extends ConsumerState<FooterChipBar> {
       for (final tag in note.footerTags)
         if (!_removed.contains(tag)) tag,
     ];
+    _keepFocusOnRow(tags);
     if (chips.isEmpty && tags.isEmpty) return const SizedBox.shrink();
     final error = _error;
     return Container(
@@ -160,6 +210,7 @@ class _FooterChipBarState extends ConsumerState<FooterChipBar> {
                     key: Key('footer-tag-$tag'),
                     tag: tag,
                     removing: _removing.contains(tag),
+                    focusNode: _xFocusOf(tag),
                     onReveal: () => revealTag(ref, tag),
                     onRemove: () => _remove(note, tag),
                   ),
@@ -210,12 +261,16 @@ class _FooterTagItem extends StatefulWidget {
     super.key,
     required this.tag,
     required this.removing,
+    required this.focusNode,
     required this.onReveal,
     required this.onRemove,
   });
 
   final String tag;
   final bool removing;
+
+  /// The ×'s focus node, owned by the bar.
+  final FocusNode focusNode;
   final VoidCallback onReveal;
   final VoidCallback onRemove;
 
@@ -224,15 +279,8 @@ class _FooterTagItem extends StatefulWidget {
 }
 
 class _FooterTagItemState extends State<_FooterTagItem> {
-  final _focus = FocusNode(debugLabel: 'footer-tag-remove');
   bool _hovered = false;
   bool _focused = false;
-
-  @override
-  void dispose() {
-    _focus.dispose();
-    super.dispose();
-  }
 
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
     final key = event.logicalKey;
@@ -283,7 +331,7 @@ class _FooterTagItemState extends State<_FooterTagItem> {
                 label: 'Remove tag ${widget.tag}',
                 onTap: widget.onRemove,
                 child: Focus(
-                  focusNode: _focus,
+                  focusNode: widget.focusNode,
                   onKeyEvent: _onKey,
                   onFocusChange: (focused) =>
                       setState(() => _focused = focused),
