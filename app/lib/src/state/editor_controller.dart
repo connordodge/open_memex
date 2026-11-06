@@ -352,15 +352,24 @@ class EditorController extends StateNotifier<EditorStateValue> {
   }
 
   /// [flushPendingSave] for a caller that must not go on until the edit is
-  /// stored: true when no save was pending, or the flushed save landed (the
-  /// editor is clean); false when it failed or waits (the editor keeps the
-  /// text and shows the failure).
+  /// stored: true when the editor holds nothing unsaved (no save was pending
+  /// and the status is idle or clean, or the flushed save landed); false when
+  /// the editor still holds text that is not stored: the flushed save failed
+  /// or waits, a save is in flight, or an earlier save failed or conflicted
+  /// (the editor keeps the text and shows the failure).
   Future<bool> flushPendingSaveAndWait() async {
     final pending = _debounce;
-    if (pending == null || !pending.isActive) return true;
-    pending.cancel();
-    await _save(leaving: true);
-    return state.status == SaveStatus.clean;
+    if (pending != null && pending.isActive) {
+      pending.cancel();
+      await _save(leaving: true);
+    }
+    return switch (state.status) {
+      SaveStatus.idle || SaveStatus.clean => true,
+      SaveStatus.dirty ||
+      SaveStatus.saving ||
+      SaveStatus.error ||
+      SaveStatus.conflict => false,
+    };
   }
 
   void _scheduleSave() {
