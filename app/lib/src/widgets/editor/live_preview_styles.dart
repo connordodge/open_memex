@@ -33,6 +33,13 @@ enum LivePreviewInk {
   /// An unresolved (ghost) wikilink's shown text: `fg2`, `fg1` while
   /// selected.
   ghost,
+
+  /// A `#tag` at rest, or inside a range selection: `fg2` (WI #245).
+  tag,
+
+  /// A `#tag` a collapsed caret is in, or a Cmd hover is over: `accentSoft`
+  /// (WI #245).
+  tagActive,
 }
 
 /// The font size of a heading of [level] (#221, design A + D): H1 26, H2 19,
@@ -150,6 +157,8 @@ TextStyle? livePreviewTextStyle({
     LivePreviewInk.link => OmColors.info,
     LivePreviewInk.wikilink => OmColors.accent,
     LivePreviewInk.ghost => OmColors.fg2,
+    LivePreviewInk.tag => OmColors.fg2,
+    LivePreviewInk.tagActive => OmColors.accentSoft,
     LivePreviewInk.none when codeLine || quote => OmColors.fg1,
     LivePreviewInk.none when done => selected ? OmColors.fg1 : OmColors.fg2,
     LivePreviewInk.none => _headingColour(headingLevel),

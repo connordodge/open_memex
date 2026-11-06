@@ -9,6 +9,7 @@
 import 'dart:typed_data';
 
 import 'segments.dart' show parseTransclusions;
+import 'tag_grammar.dart' show findTagsInLine;
 
 /// A half-open UTF-16 range `[start, end)` in the tokenized text.
 final class InlineRange {
@@ -80,6 +81,11 @@ enum InlineTokenKind {
   /// A backslash escape such as `\*`. The backslash stays visible: it is in
   /// no marker range, and the escaped character is the [InlineToken.content].
   escape,
+
+  /// `#work`: an inline tag (WI #245), found by `tag_grammar.dart`. A plain
+  /// [InlineToken] with no markers, whose content is the whole span (the
+  /// `#` included, nothing hidden), and which never nests another token.
+  tag,
 }
 
 /// One inline token: the whole [span], the [markers] live preview hides off
@@ -203,10 +209,13 @@ final class TransclusionLinkToken extends InlineToken {
 ///
 /// Returns tokens sorted by [InlineToken.start] (strictly increasing).
 /// Precedence: code span, then wikilink/transclusion (a transclusion wins
-/// over the wikilink inside it), then `[text](url)`, then emphasis and
-/// strike. A token may only nest inside the [InlineToken.content] of a link,
-/// emphasis or strike token; nothing nests inside a code span, wikilink,
-/// transclusion or escape, and no token touches another's markers.
+/// over the wikilink inside it), then `[text](url)`, then `#tag`, then
+/// emphasis and strike. A tag is an atom for emphasis, so a `_` inside
+/// `#my_tag_x` never opens emphasis, and `*a #x*` keeps its emphasis with the
+/// tag nested inside it. A token may only nest inside the
+/// [InlineToken.content] of a link, emphasis or strike token; nothing nests
+/// inside a code span, wikilink, transclusion, escape or tag, and no token
+/// touches another's markers.
 ///
 /// Rules: code spans match equal-length backtick runs; `_` never opens or
 /// closes inside a word; no token spans a line terminator; unclosed
@@ -217,7 +226,14 @@ final class TransclusionLinkToken extends InlineToken {
 ///
 /// Lines end at `\n`; the `\r` of a `\r\n` pair belongs to no line, as in
 /// the server's `str::lines`.
-List<InlineToken> tokenizeInline(String text) {
+///
+/// [before] is the code unit that precedes [text] in its real line, when
+/// [text] is only a stretch of one (a table cell, or the text after a quote
+/// marker). Only the first line of [text] sees it, and only the `#tag`
+/// opener test reads it: the server judges a `#` by the character before it
+/// in the whole line, so `|#x|` holds no tag. Null means [text] starts its
+/// line. See [unitBeforeInLine].
+List<InlineToken> tokenizeInline(String text, {int? before}) {
   final out = <InlineToken>[];
   var lineStart = 0;
   while (true) {
@@ -229,13 +245,28 @@ List<InlineToken> tokenizeInline(String text) {
       lineEnd--;
     }
     if (lineEnd > lineStart) {
-      _LineTokenizer(text, lineStart, lineEnd, out).run();
+      _LineTokenizer(
+        text,
+        lineStart,
+        lineEnd,
+        out,
+        before: lineStart == 0 ? before : null,
+      ).run();
     }
     if (newline < 0) break;
     lineStart = newline + 1;
   }
   out.sort((a, b) => a.start.compareTo(b.start));
   return out;
+}
+
+/// The code unit just before [offset] in [text] when it is on the same line,
+/// else null (a line start): the `before` of [tokenizeInline] for a stretch
+/// of [text] that starts at [offset].
+int? unitBeforeInLine(String text, int offset) {
+  if (offset <= 0) return null;
+  final unit = text.codeUnitAt(offset - 1);
+  return unit == _lf ? null : unit;
 }
 
 /// The server's `WIKILINK_RE` (`link_extractor.rs:87-91`), verbatim.
@@ -318,13 +349,16 @@ final class _Delimiter {
 
 /// Tokenizes one line `[start, end)` of [text] (no line terminator inside).
 final class _LineTokenizer {
-  _LineTokenizer(this.text, this.start, this.end, this.out)
+  _LineTokenizer(this.text, this.start, this.end, this.out, {this.before})
     : _occupancy = Uint8List(end - start);
 
   final String text;
   final int start;
   final int end;
   final List<InlineToken> out;
+
+  /// The code unit before [start] in its real line (null at a line start).
+  final int? before;
 
   /// [_free], [_inCode] or [_inLinkLike] per code unit, indexed from [start].
   final Uint8List _occupancy;
@@ -374,9 +408,37 @@ final class _LineTokenizer {
         ),
       );
     }
+    _findTags();
     _emphasis(start, end);
     for (final linkText in _linkTexts) {
       _emphasis(linkText.start, linkText.end);
+    }
+  }
+
+  /// `#tag` tokens: the ranges `tag_grammar.dart` finds in the line, minus
+  /// the ones that start inside a code span, wikilink, transclusion, link,
+  /// image or escape the tokenizer found. A tag is an atom for emphasis; it
+  /// has no markers and shows all of its characters.
+  void _findTags() {
+    for (final tag in findTagsInLine(
+      text.substring(start, end),
+      before: before,
+    )) {
+      final from = start + tag.start;
+      final to = start + tag.end;
+      if (_atomEnd.entries.any((a) => a.key <= from && from < a.value)) {
+        continue;
+      }
+      final span = InlineRange(from, to);
+      _atomEnd[from] = to;
+      out.add(
+        InlineToken(
+          kind: InlineTokenKind.tag,
+          span: span,
+          markers: const [],
+          content: span,
+        ),
+      );
     }
   }
 

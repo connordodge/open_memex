@@ -3,6 +3,7 @@ import 'package:flutter/widgets.dart';
 
 import '../../editor/editor_rows.dart';
 import '../../editor/row_geometry.dart';
+import '../../editor/tag_grammar.dart' show fencedRowLines;
 import 'editor_row.dart';
 import 'line_boxes.dart';
 import 'live_preview_controller.dart';
@@ -480,9 +481,11 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
       for (final row in _rows) row.spec,
     ], _segmentSelection(selection));
     final backward = selection.baseOffset > selection.extentOffset;
+    final fenced = fencedRowLines(_text, [for (final row in _rows) row.spec]);
     for (final (j, row) in _rows.indexed) {
       final spec = row.spec;
       row.controller
+        ..fenced = fenced[j]
         ..itemText = spec.isItem
         ..taskDone = spec.done
         ..quote = spec.kind == RowKind.quote
