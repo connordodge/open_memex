@@ -915,12 +915,14 @@ fn create_guide(vault: &mut Vault, body: &str) -> Note {
     get_note(vault, &NoteId::parse(&doc.note_id).unwrap()).unwrap()
 }
 
-/// A `tags` row written straight to the table, as T3's write paths will.
+/// A `tags` row written straight to the table, as T3's write paths do. It
+/// replaces the row a person save already derived from the note's text.
 fn tag_row(vault: &Vault, id: &NoteId, tag: &str, origin: &str) {
     vault
         .connection_ref()
         .execute(
-            "INSERT INTO tags (note_id, tag, origin) VALUES (?, ?, ?)",
+            "INSERT INTO tags (note_id, tag, origin) VALUES (?, ?, ?)
+             ON CONFLICT (note_id, tag) DO UPDATE SET origin = excluded.origin",
             params![id.as_str(), tag, origin],
         )
         .unwrap();

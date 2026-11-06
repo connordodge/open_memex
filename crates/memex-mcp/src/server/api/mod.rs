@@ -6,6 +6,7 @@ use axum::Router;
 
 pub mod canvas;
 pub mod daily;
+pub mod feedback;
 pub mod graph;
 pub mod notes;
 pub mod revision;
@@ -20,4 +21,5 @@ pub fn router() -> Router {
         .merge(canvas::router())
         .merge(graph::router())
         .merge(revision::router())
+        .merge(feedback::router())
 }

@@ -44,8 +44,19 @@ pub struct MarkDayReviewedParams {
 /// (`{"error":{"code","message",…rule fields}}`), `not_found` and
 /// `invalid_date` included. The `op.sub` codes of `tools::err_from` stay with
 /// the tools that had them before C1.
-fn c1_error(e: &MemexError) -> String {
+pub(crate) fn c1_error(e: &MemexError) -> String {
     e.to_error_json().to_string()
+}
+
+/// The `changes` of a tool call as core takes them.
+pub(crate) fn change_entries(changes: Vec<ChangeEntryParams>) -> Vec<ChangeEntry> {
+    changes
+        .into_iter()
+        .map(|c| ChangeEntry {
+            note_id: c.note_id,
+            bullets: c.bullets,
+        })
+        .collect()
 }
 
 /// A current block as the tools show it: `{id, source, text}`.
@@ -153,13 +164,7 @@ impl Memex {
             version,
             changes,
         } = params.0;
-        let changes: Vec<ChangeEntry> = changes
-            .into_iter()
-            .map(|c| ChangeEntry {
-                note_id: c.note_id,
-                bullets: c.bullets,
-            })
-            .collect();
+        let changes = change_entries(changes);
         let mut vault = self.state.vault.lock().await;
         match core_review::mark_day_reviewed(&mut vault, &date, version, &changes, clock) {
             Ok(r) => json!({
