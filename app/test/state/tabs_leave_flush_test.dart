@@ -15,6 +15,8 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/segments.dart';
+import 'package:open_memex_app/src/memex_cli.dart';
+import 'package:open_memex_app/src/state/hosted_connection_state.dart';
 import 'package:open_memex_app/src/state/clock.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
@@ -26,6 +28,7 @@ import 'package:open_memex_app/src/state/vault_state.dart';
 import '../support/fake_clock.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
+import '../support/hosted_notes_fakes.dart';
 import '../support/today_cli_fakes.dart';
 
 const _today = '2026-10-03';
@@ -131,6 +134,8 @@ void _expectNoLeaveThenControl(_Tabs t, WorkspaceTab switchTo) {
 
 const _planId = '01J9PLAN000000000000000264';
 const _otherId = '01J9OTHER00000000000000264';
+const _dailyId = '01J9DAILY00000000000000264';
+const _thirdId = '01J9THIRD00000000000000264';
 
 /// The real `tabsProvider` and `editorControllerProvider` over a FakeVaultDb, a
 /// FakeMemexCli and a FakeClock. No widget tree: nothing hydrates the editor
@@ -200,6 +205,60 @@ void _expectOneSave(_Wired w, String id, String text, int version) {
   expect(call.flag('note-id'), id);
   expect(call.flag('expected-version'), '$version');
   expect(call.stdinBody, text);
+}
+
+/// Scripts the first `update`: with [gate] the answer is held back (a
+/// committed write still changes the stored row before it waits), and
+/// [firstFails] (when given) is what the call answers instead of writing.
+/// Every later `update` writes normally.
+void _scriptFirstUpdate(
+  _Wired w, {
+  Completer<void>? gate,
+  MemexResult? firstFails,
+}) => _scriptUpdates(w, [(gate: gate, fails: firstFails)]);
+
+/// Scripts the first `update` calls in order: call n holds its answer until
+/// its gate completes (a committed write changes the stored row before it
+/// waits) and answers `fails` instead of writing when given. Calls past the
+/// script write normally.
+void _scriptUpdates(
+  _Wired w,
+  List<({Completer<void>? gate, MemexResult? fails})> script,
+) {
+  final writer = FakeMemexCli()..onUpdateWrites(w.db);
+  var n = 0;
+  w.cli.on('update', (call) async {
+    final step = n < script.length ? script[n] : null;
+    n++;
+    if (step?.fails != null) {
+      if (step!.gate != null) await step.gate!.future;
+      return step.fails!;
+    }
+    final result = await writer.run(call.args, stdinBody: call.stdinBody);
+    if (step?.gate != null) await step!.gate!.future;
+    return result;
+  });
+}
+
+/// Every `update` answers [result] without writing.
+void _updatesAnswer(_Wired w, MemexResult result) =>
+    w.cli.on('update', (_) => result);
+
+/// Another writer bumps [id] to [version] on the server.
+void _foreignBump(_Wired w, String id, int version) =>
+    w.db.db.execute('UPDATE notes SET version = ? WHERE id = ?', [version, id]);
+
+/// Types [text] into the open note and leaves it for Other, as the app
+/// does: the tab switch (which flushes), then the editor loads Other.
+Future<void> _typeAndLeave(
+  _Wired w,
+  String text, {
+  String to = _otherId,
+}) async {
+  w.ctrl.onContentChanged(text);
+  w.tabs.openOrFocus(NoteTab(to));
+  w.ctrl.loadNote(w.db.getNote(to)!);
+  await pumpEventQueue();
 }
 
 void main() {
@@ -717,6 +776,456 @@ void main() {
         await pumpEventQueue();
 
         expect(w.updates, hasLength(2), reason: 'control');
+      },
+    );
+  });
+
+  group('a flush that overlaps another save or fails after the leave', () {
+    test(
+      'an edit typed while an earlier save is in flight and left inside the debounce is saved on the version the earlier save stored',
+      () async {
+        final gate = Completer<void>();
+        final w = await _wired();
+        _scriptFirstUpdate(w, gate: gate);
+        w.open(_otherId);
+        w.open(_planId);
+        w.ctrl.onContentChanged('A');
+        await w.fireDebounce();
+        expect(w.updates, hasLength(1), reason: 'the first save is in flight');
+
+        await _typeAndLeave(w, 'B');
+
+        expect(
+          w.updates,
+          hasLength(1),
+          reason: 'the leave save waits for the one in flight',
+        );
+
+        gate.complete();
+        await pumpEventQueue();
+
+        expect(w.updates, hasLength(2));
+        expect(w.updates.last.flag('note-id'), _planId);
+        expect(w.updates.last.flag('expected-version'), '4');
+        expect(w.updates.last.stdinBody, 'B');
+        final stored = w.db.getNote(_planId)!;
+        expect(stored.contentMd, 'B');
+        expect(stored.version, 5);
+        expect(w.c.read(editorControllerProvider).contentMd, 'other body');
+        expect(w.c.read(editorControllerProvider).status, SaveStatus.clean);
+      },
+    );
+
+    test(
+      'a leave save that waited for an earlier save that failed is sent on the old version and holds nothing',
+      () async {
+        final gate = Completer<void>();
+        final w = await _wired();
+        _scriptFirstUpdate(
+          w,
+          gate: gate,
+          firstFails: FakeMemexCli.error('internal', 'disk full'),
+        );
+        w.open(_otherId);
+        w.open(_planId);
+        w.ctrl.onContentChanged('A');
+        await w.fireDebounce();
+        await _typeAndLeave(w, 'B');
+        expect(w.updates, hasLength(1));
+
+        gate.complete();
+        await pumpEventQueue();
+
+        expect(w.updates, hasLength(2));
+        expect(w.updates.last.flag('expected-version'), '3');
+        expect(w.updates.last.stdinBody, 'B');
+        expect(w.db.getNote(_planId)!.contentMd, 'B');
+
+        // Nothing was held for the failed save: Plan opens as stored.
+        w.ctrl.loadNote(w.db.getNote(_planId)!);
+        final shown = w.c.read(editorControllerProvider);
+        expect(shown.contentMd, 'B');
+        expect(shown.status, SaveStatus.clean);
+        expect(shown.lastSavedVersion, 4);
+      },
+    );
+
+    test(
+      'a daily note whose leave save conflicts merges the edit onto the stored version',
+      () async {
+        final w = await _wired();
+        w.db.seedNote(
+          id: _dailyId,
+          title: _today,
+          content: assembleDailyBody('Morning\n', const []),
+          role: 'daily',
+          version: 3,
+        );
+        w.open(_otherId);
+        w.open(_dailyId);
+        _foreignBump(w, _dailyId, 4);
+
+        await _typeAndLeave(w, 'Morning pages');
+
+        expect(w.updates, hasLength(2), reason: 'the save, then the merge');
+        expect(w.updates.first.flag('expected-version'), '3');
+        expect(w.updates.last.flag('expected-version'), '4');
+        final stored = w.db.getNote(_dailyId)!;
+        expect(stored.version, 5);
+        expect(
+          splitDailyBody(stored.contentMd).person.trimRight(),
+          'Morning pages',
+        );
+        expect(w.c.read(editorControllerProvider).contentMd, 'other body');
+        expect(w.c.read(editorControllerProvider).status, SaveStatus.clean);
+      },
+    );
+
+    test(
+      'a leave save that conflicts on a plain note is held and opening the note shows the text as a conflict',
+      () async {
+        final w = await _wired();
+        w.open(_otherId);
+        w.open(_planId);
+        _foreignBump(w, _planId, 4);
+
+        await _typeAndLeave(w, 'my edit');
+
+        expect(w.updates, hasLength(1));
+        expect(w.db.getNote(_planId)!.contentMd, 'old');
+        expect(
+          w.c.read(editorControllerProvider).contentMd,
+          'other body',
+          reason: 'the failure does not touch the note on screen',
+        );
+        expect(w.c.read(editorControllerProvider).status, SaveStatus.clean);
+
+        w.ctrl.loadNote(w.db.getNote(_planId)!);
+        final shown = w.c.read(editorControllerProvider);
+        expect(shown.contentMd, 'my edit');
+        expect(shown.status, SaveStatus.conflict);
+        expect(shown.errorMessage, isNotEmpty);
+        expect(shown.lastSavedVersion, 3);
+      },
+    );
+
+    test(
+      'a leave save that fails with a CLI error is held and opening the note shows the text with the error',
+      () async {
+        final w = await _wired();
+        _updatesAnswer(w, FakeMemexCli.error('internal', 'disk full'));
+        w.open(_otherId);
+        w.open(_planId);
+        w.ctrl.onTitleChanged('Plan B');
+
+        await _typeAndLeave(w, 'my edit');
+
+        expect(
+          w.c.read(editorControllerProvider).contentMd,
+          'other body',
+          reason: 'the failure does not touch the note on screen',
+        );
+        expect(w.c.read(editorControllerProvider).status, SaveStatus.clean);
+
+        w.ctrl.loadNote(w.db.getNote(_planId)!);
+        final shown = w.c.read(editorControllerProvider);
+        expect(shown.contentMd, 'my edit');
+        expect(shown.title, 'Plan B');
+        expect(shown.status, SaveStatus.error);
+        expect(shown.errorMessage, contains('disk full'));
+        expect(shown.lastSavedVersion, 3);
+      },
+    );
+
+    test(
+      'a leave save that fails after the note was opened again shows the held text at once',
+      () async {
+        final gate = Completer<void>();
+        final w = await _wired();
+        _scriptFirstUpdate(
+          w,
+          gate: gate,
+          firstFails: FakeMemexCli.error('internal', 'disk full'),
+        );
+        w.open(_otherId);
+        w.open(_planId);
+        await _typeAndLeave(w, 'my edit');
+        w.ctrl.loadNote(w.db.getNote(_planId)!);
+        expect(w.c.read(editorControllerProvider).contentMd, 'old');
+
+        gate.complete();
+        await pumpEventQueue();
+
+        final shown = w.c.read(editorControllerProvider);
+        expect(shown.contentMd, 'my edit');
+        expect(shown.status, SaveStatus.error);
+        expect(shown.lastSavedVersion, 3);
+      },
+    );
+
+    test(
+      'a held text is dropped when the note is loaded again for a rebase',
+      () async {
+        final w = await _wired();
+        _updatesAnswer(w, FakeMemexCli.error('internal', 'disk full'));
+        w.open(_otherId);
+        w.open(_planId);
+        await _typeAndLeave(w, 'my edit');
+
+        w.ctrl.loadNote(w.db.getNote(_planId)!);
+        expect(w.c.read(editorControllerProvider).contentMd, 'my edit');
+        w.ctrl.loadNote(w.db.getNote(_planId)!);
+        expect(w.c.read(editorControllerProvider).contentMd, 'old');
+
+        w.ctrl.loadNote(w.db.getNote(_otherId)!);
+        w.ctrl.loadNote(w.db.getNote(_planId)!);
+        final shown = w.c.read(editorControllerProvider);
+        expect(shown.contentMd, 'old');
+        expect(shown.status, SaveStatus.clean);
+      },
+    );
+
+    test(
+      'a daily note whose leave save and merged retry both conflict is held as a conflict with the could not save message',
+      () async {
+        final w = await _wired();
+        w.db.seedNote(
+          id: _dailyId,
+          title: _today,
+          content: assembleDailyBody('Morning\n', const []),
+          role: 'daily',
+          version: 3,
+        );
+        final writer = FakeMemexCli()..onUpdateWrites(w.db);
+        var bumps = 3;
+        w.cli.on('update', (call) {
+          // Another writer lands before each of our writes.
+          _foreignBump(w, _dailyId, ++bumps);
+          return writer.run(call.args, stdinBody: call.stdinBody);
+        });
+        w.open(_otherId);
+        w.open(_dailyId);
+
+        await _typeAndLeave(w, 'Morning pages');
+
+        expect(w.updates, hasLength(2), reason: 'the save, then the merge');
+        expect(w.c.read(editorControllerProvider).contentMd, 'other body');
+
+        w.ctrl.loadNote(w.db.getNote(_dailyId)!);
+        final shown = w.c.read(editorControllerProvider);
+        expect(shown.contentMd, 'Morning pages');
+        expect(shown.status, SaveStatus.conflict);
+        expect(shown.errorMessage, couldNotSaveMessage);
+        expect(shown.lastSavedVersion, 3);
+      },
+    );
+
+    test(
+      'a failed save older than a later save that stored holds nothing',
+      () async {
+        final gate = Completer<void>();
+        final w = await _wired();
+        _scriptFirstUpdate(
+          w,
+          gate: gate,
+          firstFails: FakeMemexCli.error('internal', 'disk full'),
+        );
+        w.open(_otherId);
+        w.open(_planId);
+        w.ctrl.onContentChanged('A');
+        await w.fireDebounce();
+        w.ctrl.onContentChanged('B');
+        await w.fireDebounce();
+        expect(w.updates, hasLength(2), reason: 'both debounce saves went out');
+        expect(w.db.getNote(_planId)!.contentMd, 'B');
+
+        w.ctrl.loadNote(w.db.getNote(_otherId)!);
+        gate.complete();
+        await pumpEventQueue();
+
+        w.ctrl.loadNote(w.db.getNote(_planId)!);
+        final shown = w.c.read(editorControllerProvider);
+        expect(shown.contentMd, 'B');
+        expect(shown.status, SaveStatus.clean);
+      },
+    );
+
+    test(
+      'a leave save that throws a non CLI error is held and opening the note shows the text with the error',
+      () async {
+        final w = await _wired();
+        w.cli.on('update', (_) => throw StateError('socket closed'));
+        w.open(_otherId);
+        w.open(_planId);
+
+        await _typeAndLeave(w, 'my edit');
+
+        expect(w.c.read(editorControllerProvider).contentMd, 'other body');
+        w.ctrl.loadNote(w.db.getNote(_planId)!);
+        final shown = w.c.read(editorControllerProvider);
+        expect(shown.contentMd, 'my edit');
+        expect(shown.status, SaveStatus.error);
+        expect(shown.errorMessage, contains('socket closed'));
+        expect(shown.lastSavedVersion, 3);
+      },
+    );
+
+    test(
+      'a failed leave save does not replace the note on screen when it has the same version',
+      () async {
+        final w = await _wired();
+        w.db.seedNote(
+          id: _thirdId,
+          title: 'Third',
+          content: 'third body',
+          version: 3,
+        );
+        _updatesAnswer(w, FakeMemexCli.error('internal', 'disk full'));
+        w.open(_thirdId);
+        w.open(_planId);
+
+        await _typeAndLeave(w, 'my edit', to: _thirdId);
+
+        final shown = w.c.read(editorControllerProvider);
+        expect(shown.contentMd, 'third body');
+        expect(shown.status, SaveStatus.clean);
+      },
+    );
+
+    test(
+      'a failed leave save does not replace text typed after the note was opened again',
+      () async {
+        final gate = Completer<void>();
+        final w = await _wired();
+        _scriptFirstUpdate(
+          w,
+          gate: gate,
+          firstFails: FakeMemexCli.error('internal', 'disk full'),
+        );
+        w.open(_otherId);
+        w.open(_planId);
+        await _typeAndLeave(w, 'my edit');
+        w.ctrl.loadNote(w.db.getNote(_planId)!);
+        w.ctrl.onContentChanged('typed since');
+
+        gate.complete();
+        await pumpEventQueue();
+
+        final shown = w.c.read(editorControllerProvider);
+        expect(shown.contentMd, 'typed since');
+        expect(shown.status, SaveStatus.dirty);
+      },
+    );
+
+    test(
+      'a failed leave save older than a deferred save holds nothing while the deferred save is in flight',
+      () async {
+        final firstGate = Completer<void>();
+        final secondGate = Completer<void>();
+        final w = await _wired();
+        _scriptUpdates(w, [
+          (gate: firstGate, fails: FakeMemexCli.error('internal', 'disk full')),
+          (gate: secondGate, fails: null),
+        ]);
+        w.open(_otherId);
+        w.open(_planId);
+        w.ctrl.onContentChanged('A');
+        await w.fireDebounce();
+        await _typeAndLeave(w, 'B');
+        expect(w.updates, hasLength(1));
+
+        firstGate.complete();
+        await pumpEventQueue();
+        expect(w.updates, hasLength(2), reason: 'the deferred save is out');
+
+        w.ctrl.loadNote(w.db.getNote(_planId)!);
+        final shown = w.c.read(editorControllerProvider);
+        expect(shown.contentMd, isNot('A'), reason: 'the failed text is stale');
+        expect(shown.status, SaveStatus.clean);
+
+        secondGate.complete();
+        await pumpEventQueue();
+        expect(w.db.getNote(_planId)!.contentMd, 'B');
+      },
+    );
+
+    test(
+      'a held text is dropped once a later save of the note succeeds',
+      () async {
+        final w = await _wired();
+        _scriptFirstUpdate(
+          w,
+          firstFails: FakeMemexCli.error('internal', 'disk full'),
+        );
+        w.open(_otherId);
+        w.open(_planId);
+        await _typeAndLeave(w, 'my edit');
+
+        w.ctrl.loadNote(w.db.getNote(_planId)!);
+        w.ctrl.onContentChanged('newer edit');
+        await w.fireDebounce();
+        expect(w.db.getNote(_planId)!.contentMd, 'newer edit');
+
+        w.ctrl.loadNote(w.db.getNote(_otherId)!);
+        w.ctrl.loadNote(w.db.getNote(_planId)!);
+        final shown = w.c.read(editorControllerProvider);
+        expect(shown.contentMd, 'newer edit');
+        expect(shown.status, SaveStatus.clean);
+      },
+    );
+
+    test(
+      'a leave flush on a hosted vault saves the edit with its id text and version',
+      () async {
+        final dir = await Directory.systemTemp.createTemp('tabs_leave_hosted');
+        final db = FakeVaultDb.v5()
+          ..seedNote(id: _planId, title: 'Plan', content: 'old', version: 3)
+          ..seedNote(
+            id: _otherId,
+            title: 'Other',
+            content: 'other body',
+            version: 7,
+          );
+        final cli = FakeMemexCli()..onUpdateWrites(db);
+        final doubles = HostedVaultDoubles(
+          db: db,
+          cli: cli,
+          vaultPath: dir.path,
+        );
+        final c = ProviderContainer(
+          overrides: [
+            currentVaultProvider.overrideWith((_) => hostedPlanVault),
+            vaultDbProvider.overrideWithValue(null),
+            memexCliProvider.overrideWithValue(cli),
+            clockProvider.overrideWithValue(FakeClock()),
+            hostedAccessOverride(doubles),
+          ],
+        );
+        recordHostedOutcomes(doubles, c);
+        addTearDown(() {
+          c.dispose();
+          db.close();
+          if (dir.existsSync()) dir.deleteSync(recursive: true);
+        });
+        c.read(vaultAccessProvider);
+        c.listen(tabsProvider, (_, _) {});
+        c.listen(editorControllerProvider, (_, _) {});
+        setHostedStatus(c, HostedConnectionStatus.connected);
+        await pumpEventQueue();
+        final ctrl = c.read(editorControllerProvider.notifier);
+        c.read(tabsProvider.notifier).openOrFocus(const NoteTab(_planId));
+        ctrl.loadNote(db.getNote(_planId)!);
+
+        ctrl.onContentChanged('hosted edit');
+        c.read(tabsProvider.notifier).openOrFocus(const NoteTab(_otherId));
+        ctrl.loadNote(db.getNote(_otherId)!);
+        await pumpEventQueue();
+
+        expect(doubles.notesFor(hostedPlanVault).writes, [
+          'updateNote:$_planId@3',
+        ]);
+        expect(db.getNote(_planId)!.contentMd, 'hosted edit');
+        expect(db.getNote(_planId)!.version, 4);
       },
     );
   });
