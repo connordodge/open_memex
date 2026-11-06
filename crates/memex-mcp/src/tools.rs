@@ -11,7 +11,7 @@ use memex_core::links::{self as core_links, LinkKind, LinkSource};
 use memex_core::notes::{self, CreateNote, NoteId, RenameOptions, UpdateNote};
 use memex_core::review as core_review;
 use memex_core::search::{self, SearchFilters, SearchMode, SearchOptions};
-use memex_core::tags;
+use memex_core::tags as core_tags;
 use memex_core::{Caller, CanvasId, Clock, MemexError, SystemClock};
 use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -36,6 +36,7 @@ pub mod excerpts;
 pub mod folders;
 pub mod review;
 pub mod settings;
+pub mod tags;
 
 #[derive(Clone)]
 pub struct Memex {
@@ -423,7 +424,7 @@ impl Memex {
         let vault = self.state.vault.lock().await;
         match notes::get_note(&vault, &id) {
             Ok(n) => {
-                let tags = tags::tags_for_note(&vault, n.id.as_str()).unwrap_or_default();
+                let tags = core_tags::tags_for_note(&vault, n.id.as_str()).unwrap_or_default();
                 let (links_map, backlinks_map) = if include_backlinks.unwrap_or(false) {
                     let outgoing = core_links::links_out_for_note(&vault, n.id.as_str())
                         .unwrap_or_default();
@@ -738,7 +739,7 @@ impl Memex {
             }
         }
         for t in &all_tags {
-            let _ = tags::add_tag(&vault, note.id.as_str(), t);
+            let _ = core_tags::add_tag(&vault, note.id.as_str(), t);
         }
 
         let embedder = self.state.embedder.clone();

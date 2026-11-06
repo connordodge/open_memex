@@ -289,6 +289,7 @@ async fn get_note_merges_empty_stub_fields_and_keeps_todays_keys() {
         "created_at",
         "updated_at",
         "tags",
+        "agent_tags",
     ]);
     expected.extend(review_fields.keys().cloned());
     expected.extend(transclusion_fields.keys().cloned());

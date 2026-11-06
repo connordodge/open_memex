@@ -43,7 +43,7 @@ pub const EXISTING_TOOLS: &[&str] = &[
 ];
 
 /// The tag tools (#241 fills this block; owner Spec #234).
-pub const TAG_TOOLS: &[&str] = &[];
+pub const TAG_TOOLS: &[&str] = &["add_footer_topic", "list_tags", "tag_note", "untag_note"];
 
 /// The feedback tools (#254 fills this block; owner Spec #233).
 pub const FEEDBACK_TOOLS: &[&str] = &[];
