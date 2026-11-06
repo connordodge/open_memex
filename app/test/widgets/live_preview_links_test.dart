@@ -1497,10 +1497,10 @@ void main() {
   // -------------------------------------------------------------------------
   group('isPlainClickFollowable', () {
     test(
-      'isPlainClickFollowable is true for wikilink transclusion and link tokens and false for a token of any other kind',
+      'isPlainClickFollowable is true for wikilink transclusion link and tag tokens and false for a token of any other kind',
       () {
         final tokens = tokenizeInline(
-          '[[A]] ![[2026-09-05#^ab12]] [c](https://x.y) **d** *e* ***f*** ~~g~~ `h` \\*',
+          '[[A]] ![[2026-09-05#^ab12]] [c](https://x.y) #t **d** *e* ***f*** ~~g~~ `h` \\*',
         );
         bool followable(InlineTokenKind kind) =>
             isPlainClickFollowable(tokens.firstWhere((t) => t.kind == kind));
@@ -1508,10 +1508,13 @@ void main() {
         expect(followable(InlineTokenKind.wikilink), isTrue);
         expect(followable(InlineTokenKind.transclusion), isTrue);
         expect(followable(InlineTokenKind.link), isTrue);
+        // TEST-CHANGE (#247, D19a): a tag click opens Tags mode.
+        expect(followable(InlineTokenKind.tag), isTrue);
         for (final kind in InlineTokenKind.values) {
           if (kind == InlineTokenKind.wikilink ||
               kind == InlineTokenKind.transclusion ||
-              kind == InlineTokenKind.link) {
+              kind == InlineTokenKind.link ||
+              kind == InlineTokenKind.tag) {
             continue;
           }
           expect(followable(kind), isFalse, reason: '$kind');
