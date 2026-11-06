@@ -20,7 +20,10 @@
 //! Real SQLite, real schema V5, temp vaults only. Block ids are pinned to the
 //! CONTRACTS C4 fixture ids.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use memex_core::daily::{self, ReviewState};
+use memex_core::embedder::{Embedder, FakeEmbedder};
 use memex_core::error::MemexError;
 use memex_core::excerpts::{
     add_excerpt, add_excerpt_with_hook, move_block, move_block_with_hook, note_transclusion_fields,
@@ -2829,4 +2832,368 @@ fn reviewed_day_stays_reviewed_after_remove_excerpt_block_and_move_block() {
         ["b7k2m9", "c3d4e5", "f6g7h8"],
         "the day keeps its block ids"
     );
+}
+
+// ---------------------------------------------------------------------------
+// WI #248: the embedder reaches every write, and what a failure after the
+// topic's save does to the call
+// ---------------------------------------------------------------------------
+
+/// A [`FakeEmbedder`] that fails the calls numbered in `failing` (1-based) with
+/// `EmbedderInfer` and counts every call. Each reindex of a note with chunks
+/// is one call.
+struct Wi248FlakyEmbedder {
+    inner: FakeEmbedder,
+    failing: Vec<usize>,
+    calls: AtomicUsize,
+}
+
+impl Wi248FlakyEmbedder {
+    fn failing_calls(failing: &[usize]) -> Self {
+        Self {
+            inner: FakeEmbedder::new(8),
+            failing: failing.to_vec(),
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn working() -> Self {
+        Self::failing_calls(&[])
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+impl Embedder for Wi248FlakyEmbedder {
+    fn model_version(&self) -> &str {
+        self.inner.model_version()
+    }
+
+    fn dimension(&self) -> usize {
+        self.inner.dimension()
+    }
+
+    fn embed_batch(&self, texts: &[String]) -> memex_core::Result<Vec<Vec<f32>>> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.failing.contains(&call) {
+            return Err(MemexError::EmbedderInfer(format!("call {call} fails")));
+        }
+        self.inner.embed_batch(texts)
+    }
+}
+
+/// The `embed_model_version` of every chunk row of the note; empty when it
+/// has no chunks.
+fn chunk_versions(vault: &Vault, id: &NoteId) -> Vec<Option<String>> {
+    vault
+        .connection_ref()
+        .prepare("SELECT embed_model_version FROM chunks WHERE note_id = ? ORDER BY ord")
+        .unwrap()
+        .query_map([id.as_str()], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+/// Asserts the note has chunks and every one carries the fake's version.
+fn assert_embedded(vault: &Vault, id: &NoteId, what: &str) {
+    let versions = chunk_versions(vault, id);
+    assert!(!versions.is_empty(), "{what}: has chunks");
+    assert!(
+        versions.iter().all(|v| v.as_deref() == Some("fake-v1")),
+        "{what}: reindexed with the embedder, got {versions:?}"
+    );
+}
+
+/// Asserts the note has chunks and none was embedded.
+fn assert_not_embedded(vault: &Vault, id: &NoteId, what: &str) {
+    let versions = chunk_versions(vault, id);
+    assert!(!versions.is_empty(), "{what}: has chunks");
+    assert!(
+        versions.iter().all(Option::is_none),
+        "{what}: not reindexed with the embedder, got {versions:?}"
+    );
+}
+
+#[test]
+fn remove_excerpt_block_reindexes_the_topic_and_the_day_note_with_the_embedder() {
+    let mut w = world();
+    add(&mut w, DAY, &["b7k2m9"]);
+    assert_not_embedded(&w.vault, &w.topic, "precondition: topic");
+    assert_not_embedded(&w.vault, &w.day, "precondition: day");
+    let embedder = Wi248FlakyEmbedder::working();
+
+    remove_excerpt_block(
+        &mut w.vault,
+        &w.topic,
+        DAY,
+        "b7k2m9",
+        Caller::Agent,
+        Some(&embedder),
+    )
+    .unwrap();
+
+    assert_eq!(chip_rows(&w.vault, &w.day), [], "the chip went with it");
+    assert_embedded(&w.vault, &w.topic, "topic note");
+    assert_embedded(&w.vault, &w.day, "day note after the chip removal");
+    assert_eq!(embedder.calls(), 2, "one reindex per written note");
+}
+
+#[test]
+fn move_block_reindexes_the_source_the_target_and_the_day_note_with_the_embedder() {
+    let mut w = world();
+    let source = w.topic.clone();
+    let target = create_topic(&mut w.vault, "Sleep", "Rest.\n");
+    add(&mut w, DAY, &["f6g7h8"]);
+    assert_not_embedded(&w.vault, &source, "precondition: source");
+    assert_not_embedded(&w.vault, &target, "precondition: target");
+    let embedder = Wi248FlakyEmbedder::working();
+
+    move_block(
+        &mut w.vault,
+        DAY,
+        "f6g7h8",
+        &source,
+        &target,
+        Caller::Agent,
+        Some(&embedder),
+    )
+    .unwrap();
+
+    assert_eq!(chip_rows(&w.vault, &w.day), [chip(&target, "excerpt")]);
+    assert_embedded(&w.vault, &target, "target note");
+    assert_embedded(&w.vault, &source, "source note");
+    assert_embedded(&w.vault, &w.day, "day note after the chip removal");
+    assert_eq!(
+        embedder.calls(),
+        4,
+        "target, day (chip added), source, day (chip removed)"
+    );
+}
+
+#[test]
+fn remove_excerpt_block_succeeds_when_the_reindex_after_the_save_fails() {
+    let mut w = world();
+    add(&mut w, DAY, &["b7k2m9"]);
+    let before = stored(&w.vault, &w.topic);
+    let embedder = Wi248FlakyEmbedder::failing_calls(&[1]);
+
+    let saved = remove_excerpt_block(
+        &mut w.vault,
+        &w.topic,
+        DAY,
+        "b7k2m9",
+        Caller::Agent,
+        Some(&embedder),
+    )
+    .expect("the save committed, so the call succeeds");
+
+    let now = stored(&w.vault, &w.topic);
+    assert_eq!(now.content_md, TOPIC_BODY);
+    assert_eq!(now.version, before.version + 1);
+    assert_eq!(saved.version, now.version);
+    assert_eq!(saved.content_md, now.content_md);
+    assert_eq!(chip_rows(&w.vault, &w.day), [], "the chip step still ran");
+    assert_eq!(embedder.calls(), 2, "the day note was reindexed after it");
+}
+
+#[test]
+fn remove_excerpt_block_succeeds_when_the_footer_chip_removal_fails() {
+    let mut w = world();
+    add(&mut w, DAY, &["b7k2m9"]);
+    let before = stored(&w.vault, &w.topic);
+    let embedder = Wi248FlakyEmbedder::failing_calls(&[2]);
+
+    let saved = remove_excerpt_block(
+        &mut w.vault,
+        &w.topic,
+        DAY,
+        "b7k2m9",
+        Caller::Agent,
+        Some(&embedder),
+    )
+    .expect("the save committed, so the call succeeds");
+
+    let now = stored(&w.vault, &w.topic);
+    assert_eq!(now.content_md, TOPIC_BODY);
+    assert_eq!(now.version, before.version + 1);
+    assert_eq!(saved.version, now.version);
+    assert_eq!(embedder.calls(), 2, "the chip removal reached the day note");
+    assert_embedded(&w.vault, &w.topic, "topic note");
+}
+
+#[test]
+fn remove_excerpt_block_that_fails_before_the_save_still_returns_its_error() {
+    let mut w = world();
+    add(&mut w, DAY, &["b7k2m9"]);
+    let before = stored(&w.vault, &w.topic);
+    let embedder = Wi248FlakyEmbedder::working();
+
+    let e = remove_excerpt_block(
+        &mut w.vault,
+        &w.topic,
+        DAY,
+        "c3d4e5",
+        Caller::Agent,
+        Some(&embedder),
+    )
+    .expect_err("no token covers the block");
+
+    assert!(matches!(e, MemexError::NotFound(_)), "{e:?}");
+    assert_eq!(stored(&w.vault, &w.topic).version, before.version);
+    assert_eq!(embedder.calls(), 0);
+}
+
+#[test]
+fn add_excerpt_returns_the_reindex_error_after_its_save_commits() {
+    let mut w = world();
+    let before = stored(&w.vault, &w.topic);
+    let embedder = Wi248FlakyEmbedder::failing_calls(&[1]);
+
+    let e = add_excerpt(
+        &mut w.vault,
+        &w.topic,
+        DAY,
+        &ids(&["b7k2m9"]),
+        Caller::Agent,
+        Some(&embedder),
+    )
+    .expect_err("the reindex fails");
+
+    assert!(matches!(e, MemexError::EmbedderInfer(_)), "{e:?}");
+    let now = stored(&w.vault, &w.topic);
+    assert_eq!(now.version, before.version + 1, "the save had committed");
+    assert_eq!(tokens(&now.content_md), [T_B7]);
+}
+
+#[test]
+fn remove_excerpt_returns_the_reindex_error_after_its_save_commits() {
+    let mut w = world();
+    add(&mut w, DAY, &["b7k2m9"]);
+    let before = stored(&w.vault, &w.topic);
+    let embedder = Wi248FlakyEmbedder::failing_calls(&[1]);
+
+    let e = remove_excerpt(
+        &mut w.vault,
+        &w.topic,
+        DAY,
+        &ids(&["b7k2m9"]),
+        Caller::Agent,
+        Some(&embedder),
+    )
+    .expect_err("the reindex fails");
+
+    assert!(matches!(e, MemexError::EmbedderInfer(_)), "{e:?}");
+    let now = stored(&w.vault, &w.topic);
+    assert_eq!(now.version, before.version + 1, "the save had committed");
+    assert_eq!(tokens(&now.content_md), Vec::<String>::new());
+}
+
+#[test]
+fn move_block_succeeds_when_the_source_reindex_fails_after_its_save() {
+    let mut w = world();
+    let source = w.topic.clone();
+    let target = create_topic(&mut w.vault, "Sleep", "Rest.\n");
+    add(&mut w, DAY, &["f6g7h8"]);
+    let source_before = stored(&w.vault, &source);
+    let target_before = stored(&w.vault, &target);
+    // Calls: 1 target, 2 day (chip added), 3 source, 4 day (chip removed).
+    let embedder = Wi248FlakyEmbedder::failing_calls(&[3]);
+
+    let moved = move_block(
+        &mut w.vault,
+        DAY,
+        "f6g7h8",
+        &source,
+        &target,
+        Caller::Agent,
+        Some(&embedder),
+    )
+    .expect("the source's save committed, so the block has moved");
+
+    let source_after = stored(&w.vault, &source);
+    let target_after = stored(&w.vault, &target);
+    assert_eq!(tokens(&source_after.content_md), Vec::<String>::new());
+    assert_eq!(tokens(&target_after.content_md), [T_F6]);
+    assert_eq!(source_after.version, source_before.version + 1);
+    assert_eq!(target_after.version, target_before.version + 1);
+    assert_eq!(moved.from.version, source_after.version);
+    assert_eq!(moved.to.version, target_after.version);
+    assert_eq!(chip_rows(&w.vault, &w.day), [chip(&target, "excerpt")]);
+    assert_eq!(embedder.calls(), 4);
+}
+
+#[test]
+fn move_block_succeeds_when_the_footer_chip_removal_fails_after_the_source_save() {
+    let mut w = world();
+    let source = w.topic.clone();
+    let target = create_topic(&mut w.vault, "Sleep", "Rest.\n");
+    add(&mut w, DAY, &["f6g7h8"]);
+    let embedder = Wi248FlakyEmbedder::failing_calls(&[4]);
+
+    let moved = move_block(
+        &mut w.vault,
+        DAY,
+        "f6g7h8",
+        &source,
+        &target,
+        Caller::Agent,
+        Some(&embedder),
+    )
+    .expect("the source's save committed, so the block has moved");
+
+    assert_eq!(tokens(&moved.from.content_md), Vec::<String>::new());
+    assert_eq!(tokens(&moved.to.content_md), [T_F6]);
+    assert_eq!(
+        tokens(&stored(&w.vault, &source).content_md),
+        Vec::<String>::new()
+    );
+    assert_eq!(embedder.calls(), 4);
+}
+
+#[test]
+fn move_block_with_a_failing_target_reindex_returns_the_error_and_can_be_retried() {
+    let mut w = world();
+    let source = w.topic.clone();
+    let target = create_topic(&mut w.vault, "Sleep", "Rest.\n");
+    add(&mut w, DAY, &["f6g7h8"]);
+    let broken = Wi248FlakyEmbedder::failing_calls(&[1]);
+
+    let e = move_block(
+        &mut w.vault,
+        DAY,
+        "f6g7h8",
+        &source,
+        &target,
+        Caller::Agent,
+        Some(&broken),
+    )
+    .expect_err("the add leg's reindex fails");
+
+    assert!(matches!(e, MemexError::EmbedderInfer(_)), "{e:?}");
+    assert_eq!(tokens(&body(&w)), [T_F6], "still in the source");
+    assert_eq!(
+        tokens(&stored(&w.vault, &target).content_md),
+        [T_F6],
+        "and in the target, whose save had committed"
+    );
+    let target_version = stored(&w.vault, &target).version;
+    let working = Wi248FlakyEmbedder::working();
+
+    let moved = move_block(
+        &mut w.vault,
+        DAY,
+        "f6g7h8",
+        &source,
+        &target,
+        Caller::Agent,
+        Some(&working),
+    )
+    .expect("the retry moves it");
+
+    assert_eq!(tokens(&moved.from.content_md), Vec::<String>::new());
+    assert_eq!(moved.to.version, target_version, "already there");
+    assert_embedded(&w.vault, &source, "source note after the retry");
 }

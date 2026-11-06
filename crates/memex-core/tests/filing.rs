@@ -301,6 +301,32 @@ fn day_filing_breaks_title_ties_by_note_id() {
         })
         .collect();
     expected.sort();
+    // The scan reads the notes in rowid order. Give the topics rowids that
+    // run against their ids, so only the tie-break (not the order they were
+    // stored in, nor the clock the ids were minted by) puts them in id order.
+    for (n, (id, _)) in expected.iter().enumerate() {
+        let moved = w
+            .vault
+            .connection_ref()
+            .execute(
+                "UPDATE notes SET rowid = ? WHERE id = ?",
+                params![1_000_000 - n as i64, id],
+            )
+            .unwrap();
+        assert_eq!(moved, 1, "topic {id}");
+    }
+    let scan: Vec<String> = w
+        .vault
+        .connection_ref()
+        .prepare("SELECT id FROM notes WHERE title LIKE 'same' AND instr(content_md, '![[') > 0")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let mut descending: Vec<String> = expected.iter().map(|(id, _)| id.clone()).collect();
+    descending.reverse();
+    assert_eq!(scan, descending, "precondition: stored against id order");
     mark_reviewed(&mut w.vault, DAY);
 
     let got: Vec<(String, String)> = filing(&w)
