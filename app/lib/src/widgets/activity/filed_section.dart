@@ -97,15 +97,13 @@ class _FiledSectionState extends ConsumerState<FiledSection> {
     await _run(
       block.id,
       picked,
-      (target) => ref
-          .read(feedbackActionsProvider)
-          .moveBlock(
-            fromTopicNoteId: from.topicNoteId,
-            toTopicNoteId: target!,
-            date: widget.note.title,
-            blockId: block.id,
-            note: picked.why,
-          ),
+      (read, target) => read(feedbackActionsProvider).moveBlock(
+        fromTopicNoteId: from.topicNoteId,
+        toTopicNoteId: target!,
+        date: widget.note.title,
+        blockId: block.id,
+        note: picked.why,
+      ),
     );
   }
 
@@ -116,14 +114,12 @@ class _FiledSectionState extends ConsumerState<FiledSection> {
     await _run(
       block.id,
       null,
-      (_) => ref
-          .read(feedbackActionsProvider)
-          .removeBlock(
-            topicNoteId: from.topicNoteId,
-            date: widget.note.title,
-            blockId: block.id,
-            note: picked.why,
-          ),
+      (read, _) => read(feedbackActionsProvider).removeBlock(
+        topicNoteId: from.topicNoteId,
+        date: widget.note.title,
+        blockId: block.id,
+        note: picked.why,
+      ),
     );
   }
 
@@ -139,14 +135,12 @@ class _FiledSectionState extends ConsumerState<FiledSection> {
     await _run(
       block.id,
       picked,
-      (target) => ref
-          .read(feedbackActionsProvider)
-          .fileBlock(
-            topicNoteId: target!,
-            date: widget.note.title,
-            blockId: block.id,
-            note: picked.why,
-          ),
+      (read, target) => read(feedbackActionsProvider).fileBlock(
+        topicNoteId: target!,
+        date: widget.note.title,
+        blockId: block.id,
+        note: picked.why,
+      ),
     );
   }
 
@@ -155,24 +149,34 @@ class _FiledSectionState extends ConsumerState<FiledSection> {
   /// note rebases the editor on the note's new version (D23).
   ///
   /// With a [picked] `Create "<name>"`, the topic note is created first (and
-  /// stays when [write] then fails); [write] gets the target topic note id
-  /// (null without [picked]). The write bumps `vaultRevisionProvider` itself
-  /// (`FeedbackActions`): nothing here bumps.
+  /// stays when [write] then fails); [write] gets a reader and the target
+  /// topic note id (null without [picked]). The write bumps
+  /// `vaultRevisionProvider` itself (`FeedbackActions`): nothing here bumps.
+  ///
+  /// Everything after the first await reads through a container taken up
+  /// front: the right-panel tab can change while the fix runs, and the
+  /// rebase must still happen (the pending edit would else hit a version
+  /// conflict on its next save).
   Future<void> _run(
     String id,
     TopicPickResult? picked,
-    Future<Object?> Function(String? target) write,
+    Future<Object?> Function(
+      T Function<T>(ProviderListenable<T> provider) read,
+      String? target,
+    )
+    write,
   ) async {
     if (!_inFlight.add(id)) return;
+    final container = ProviderScope.containerOf(context);
+    final daily = widget.note;
     setState(() => _errors.remove(id));
     var worked = false;
     try {
       var target = picked?.topicNoteId;
       final createTitle = picked?.createTitle;
       if (createTitle != null) {
-        target = await guardVaultWrite(
-          context,
-          () => ref
+        target = await _guarded(
+          () => container
               .read(vaultAccessProvider)!
               .notes
               .addNote(
@@ -183,9 +187,7 @@ class _FiledSectionState extends ConsumerState<FiledSection> {
         );
       }
       if (picked == null || target != null) {
-        final result = mounted
-            ? await guardVaultWrite(context, () => write(target))
-            : await write(target);
+        final result = await _guarded(() => write(container.read, target));
         worked = result != null;
       }
     } on MemexException catch (e) {
@@ -197,25 +199,15 @@ class _FiledSectionState extends ConsumerState<FiledSection> {
     } catch (e) {
       if (mounted) setState(() => _errors[id] = e.toString());
     }
-    if (worked && mounted) await _rebaseDaily();
-    if (mounted) setState(() => _inFlight.remove(id));
+    if (worked) await _rebaseDaily(container, daily);
+    _inFlight.remove(id);
+    if (mounted) setState(() {});
   }
 
-  Future<void> _rebaseDaily() async {
-    final note = widget.note;
-    final editor = ref.read(editorControllerProvider.notifier);
-    if (editor.activeNoteId != note.id) return;
-    final stored = await ref.read(vaultAccessProvider)?.notes.getNote(note.id);
-    if (stored == null || !mounted || editor.activeNoteId != note.id) return;
-    final state = ref.read(editorControllerProvider);
-    if (stored.version <= (state.lastSavedVersion ?? stored.version)) return;
-    await rebaseEditorOnVersion(
-      ref,
-      fallback: note,
-      version: stored.version,
-      content: state.contentMd,
-    );
-  }
+  /// [guardVaultWrite] while mounted (its snackbar needs the context); a bare
+  /// run once the section is gone.
+  Future<T?> _guarded<T>(Future<T> Function() write) =>
+      mounted ? guardVaultWrite(context, write) : write();
 
   @override
   Widget build(BuildContext context) {
@@ -359,4 +351,26 @@ class _BlockRow extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Rebases the editor on [daily]'s new version after a fix changed the note
+/// on the server, when [daily] is the editor's active note and its stored
+/// version moved past the last one the editor saved (D23). Over [container]
+/// so it still runs after the section unmounted.
+Future<void> _rebaseDaily(ProviderContainer container, Note daily) async {
+  final editor = container.read(editorControllerProvider.notifier);
+  if (editor.activeNoteId != daily.id) return;
+  final stored = await container
+      .read(vaultAccessProvider)
+      ?.notes
+      .getNote(daily.id);
+  if (stored == null || editor.activeNoteId != daily.id) return;
+  final state = container.read(editorControllerProvider);
+  if (stored.version <= (state.lastSavedVersion ?? stored.version)) return;
+  await rebaseEditorOnVersionIn(
+    container,
+    fallback: daily,
+    version: stored.version,
+    content: state.contentMd,
+  );
 }
