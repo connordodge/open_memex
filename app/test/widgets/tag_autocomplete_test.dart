@@ -2462,6 +2462,33 @@ void main() {
     });
   });
 
+  group('a field that starts holding a query', () {
+    testWidgets(
+      'a tags load does not open the popover for text that was never typed',
+      (tester) async {
+        final load = Completer<VaultScoped<List<TagRow>>>();
+        final field = await _pumpField(
+          tester,
+          controller: TextEditingController.fromValue(
+            const TextEditingValue(
+              text: 'x #pr',
+              selection: TextSelection.collapsed(offset: 5),
+            ),
+          ),
+          overrides: [tagsAsyncProvider.overrideWith((ref) => load.future)],
+        );
+        expect(_popover, findsNothing, reason: 'no rows yet');
+
+        load.complete(VaultScoped(null, _sample));
+        await _flush(tester);
+        expect(_popover, findsNothing, reason: 'a load is no typing (D41)');
+
+        await _type(tester, field, 'x #pri');
+        expect(_popover, findsOneWidget, reason: 'control: typing opens it');
+      },
+    );
+  });
+
   group('the popover opens only in a focused field', () {
     const fieldA = Key('field-a');
     const fieldB = Key('field-b');
