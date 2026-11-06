@@ -16,7 +16,7 @@ Review the person's Open Memex vault through the memex MCP tools. A review files
 
 ## Ground rules
 
-- Never rewrite, reorder, delete, summarise, clean up or merge the person's text, in a daily note or anywhere else. You file their blocks by reference with `add_excerpt`; you never copy their words into a topic note, never add text to a daily note during a review, and never write transclusion or Topics footer syntax by hand. The server maintains the Topics footer.
+- Never rewrite, reorder, delete, summarise, clean up or merge the person's text, in a daily note or anywhere else. You file their blocks by reference with `add_excerpt`; you never copy their words into a topic note, never add text to a daily note during a review, and never write transclusion or Note footer syntax by hand. The server maintains the Note footer.
 - Pinned Smart Folders and pinned memberships were set by the person. Respect pinned items exactly as step 6 says.
 - If a tool returns an error, read its `code` and message and change what you send. Never repeat the same failing call unchanged.
 
@@ -46,7 +46,7 @@ Only when no topic note matches, create one with `create_note`, passing `role: t
 
 ## 5. Add excerpts
 
-For each topic note, call `add_excerpt` with its `topic_note_id`, the `date` and the `block_ids` to file there, in the order they appear in the day. The server writes the transclusion under that date's heading in the topic note, joins consecutive blocks into one range, and adds the topic note to the day's Topics footer. Never add the same block to the same topic note twice.
+For each topic note, call `add_excerpt` with its `topic_note_id`, the `date` and the `block_ids` to file there, in the order they appear in the day. The server writes the transclusion under that date's heading in the topic note, joins consecutive blocks into one range, and adds the topic note to the day's Note footer. Never add the same block to the same topic note twice.
 
 ## 6. Link topic notes and place them in Smart Folders
 

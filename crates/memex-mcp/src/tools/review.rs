@@ -63,7 +63,7 @@ fn removed_json(b: &SnapshotBlock) -> Value {
 impl Memex {
     #[tool(description = "List the daily notes that still need a review: \
         state `Unreviewed` or `Changed since review`, oldest date first, \
-        skipping days with nothing written above the Topics footer. Each day \
+        skipping days with nothing written above the Note footer. Each day \
         has date, note_id, state, content_version and reviewed_content_version \
         (null when never reviewed).")]
     pub async fn list_unreviewed_days(
