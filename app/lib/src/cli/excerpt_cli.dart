@@ -57,9 +57,19 @@ extension ExcerptFilingCli on MemexCli {
     required String date,
     required String blockId,
     String? note,
-  }) => Future.value(
-    const ExcerptEditResult(vaultId: '', topicNoteId: '', version: 0),
-  );
+  }) => _call(this, 'excerpt add', [
+    'excerpt',
+    'add',
+    '--vault',
+    vaultPath,
+    '--topic-note-id',
+    topicNoteId,
+    '--date',
+    date,
+    '--block-id',
+    blockId,
+    if (note != null) ...['--note', note],
+  ], parseExcerptEditResult);
 
   /// `memex excerpt remove-block --vault V --topic-note-id T --date D
   /// --block-id B [--note TEXT]`.
@@ -69,9 +79,19 @@ extension ExcerptFilingCli on MemexCli {
     required String date,
     required String blockId,
     String? note,
-  }) => Future.value(
-    const ExcerptEditResult(vaultId: '', topicNoteId: '', version: 0),
-  );
+  }) => _call(this, 'excerpt remove-block', [
+    'excerpt',
+    'remove-block',
+    '--vault',
+    vaultPath,
+    '--topic-note-id',
+    topicNoteId,
+    '--date',
+    date,
+    '--block-id',
+    blockId,
+    if (note != null) ...['--note', note],
+  ], parseExcerptEditResult);
 
   /// `memex excerpt move --vault V --date D --block-id B --from-topic-note-id
   /// A --to-topic-note-id C [--note TEXT]`.
@@ -82,15 +102,82 @@ extension ExcerptFilingCli on MemexCli {
     required String fromTopicNoteId,
     required String toTopicNoteId,
     String? note,
-  }) => Future.value(
-    const ExcerptMoveResult(
-      vaultId: '',
-      fromTopicNoteId: '',
-      fromVersion: 0,
-      toTopicNoteId: '',
-      toVersion: 0,
-    ),
-  );
+  }) => _call(this, 'excerpt move', [
+    'excerpt',
+    'move',
+    '--vault',
+    vaultPath,
+    '--date',
+    date,
+    '--block-id',
+    blockId,
+    '--from-topic-note-id',
+    fromTopicNoteId,
+    '--to-topic-note-id',
+    toTopicNoteId,
+    if (note != null) ...['--note', note],
+  ], parseExcerptMoveResult);
+}
+
+/// The [ExcerptEditResult] of `{vault_id, topic_note_id, version}`, or null.
+/// Shared by the CLI and the hosted route.
+ExcerptEditResult? parseExcerptEditResult(Map<String, Object?> json) {
+  if (json case {
+    'vault_id': final String vaultId,
+    'topic_note_id': final String topicNoteId,
+    'version': final int version,
+  }) {
+    return ExcerptEditResult(
+      vaultId: vaultId,
+      topicNoteId: topicNoteId,
+      version: version,
+    );
+  }
+  return null;
+}
+
+/// The [ExcerptMoveResult] of `memex excerpt move` stdout, or null.
+ExcerptMoveResult? parseExcerptMoveResult(Map<String, Object?> json) {
+  if (json case {
+    'vault_id': final String vaultId,
+    'from_topic_note_id': final String fromTopicNoteId,
+    'from_version': final int fromVersion,
+    'to_topic_note_id': final String toTopicNoteId,
+    'to_version': final int toVersion,
+  }) {
+    return ExcerptMoveResult(
+      vaultId: vaultId,
+      fromTopicNoteId: fromTopicNoteId,
+      fromVersion: fromVersion,
+      toTopicNoteId: toTopicNoteId,
+      toVersion: toVersion,
+    );
+  }
+  return null;
+}
+
+/// Runs [args], throws the C1 error of a failure, and returns what [parse]
+/// makes of the JSON object on stdout; [parse] returning null (or stdout that
+/// is not a JSON object) throws a null-code [MemexException].
+Future<T> _call<T extends Object>(
+  MemexCli cli,
+  String operation,
+  List<String> args,
+  T? Function(Map<String, Object?> json) parse,
+) async {
+  final r = await cli.run(args);
+  if (r.exitCode != 0) throw MemexException.fromCliFailure(operation, r);
+  Object? json;
+  try {
+    json = jsonDecode(r.stdout.trim());
+  } on FormatException {
+    json = null;
+  }
+  final result = json is Map<String, Object?> ? parse(json) : null;
+  if (result == null) {
+    throw MemexException('$operation: could not parse output: ${r.stdout}');
+  }
+  return result;
 }
 
 /// `memex excerpt rm` wrapper (C2.4, D21).

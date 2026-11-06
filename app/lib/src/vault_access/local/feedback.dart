@@ -5,6 +5,7 @@ import '../../db.dart';
 import '../../db/feedback_reads.dart';
 import '../../memex_cli.dart';
 import '../feedback_access.dart';
+import 'write_guard.dart';
 
 /// [FeedbackAccess] for a local vault: Feedback and guide revisions from
 /// [db], everything else through [cli] with `--vault` [vaultPath]. Either may
@@ -16,15 +17,13 @@ class LocalFeedbackAccess implements FeedbackAccess {
   final VaultDb? db;
   final MemexCli? cli;
 
+  MemexCli get _cli => requireLocalCli(cli);
+
+  // ---------- filing and block writes (CLI) ----------
+
   @override
-  Future<Filing> filing(String date) async => const Filing(
-    vaultId: '',
-    date: '',
-    noteId: '',
-    reviewed: false,
-    topics: [],
-    notFiled: [],
-  );
+  Future<Filing> filing(String date) async =>
+      _cli.filing(vaultPath: vaultPath, date: date);
 
   @override
   Future<ExcerptEditResult> fileBlock({
@@ -32,7 +31,13 @@ class LocalFeedbackAccess implements FeedbackAccess {
     required String date,
     required String blockId,
     String? note,
-  }) async => const ExcerptEditResult(vaultId: '', topicNoteId: '', version: 0);
+  }) async => _cli.addExcerpt(
+    vaultPath: vaultPath,
+    topicNoteId: topicNoteId,
+    date: date,
+    blockId: blockId,
+    note: note,
+  );
 
   @override
   Future<ExcerptMoveResult> moveBlock({
@@ -41,12 +46,13 @@ class LocalFeedbackAccess implements FeedbackAccess {
     required String date,
     required String blockId,
     String? note,
-  }) async => const ExcerptMoveResult(
-    vaultId: '',
-    fromTopicNoteId: '',
-    fromVersion: 0,
-    toTopicNoteId: '',
-    toVersion: 0,
+  }) async => _cli.moveExcerptBlock(
+    vaultPath: vaultPath,
+    date: date,
+    blockId: blockId,
+    fromTopicNoteId: fromTopicNoteId,
+    toTopicNoteId: toTopicNoteId,
+    note: note,
   );
 
   @override
@@ -55,7 +61,15 @@ class LocalFeedbackAccess implements FeedbackAccess {
     required String date,
     required String blockId,
     String? note,
-  }) async => const ExcerptEditResult(vaultId: '', topicNoteId: '', version: 0);
+  }) async => _cli.removeExcerptBlock(
+    vaultPath: vaultPath,
+    topicNoteId: topicNoteId,
+    date: date,
+    blockId: blockId,
+    note: note,
+  );
+
+  // ---------- comments (CLI) ----------
 
   @override
   Future<FeedbackRow> addComment({
@@ -63,41 +77,44 @@ class LocalFeedbackAccess implements FeedbackAccess {
     required String date,
     required String changeId,
     required String text,
-  }) async => _neutralRow;
+  }) async => _cli.addFeedback(
+    vaultPath: vaultPath,
+    noteId: noteId,
+    date: date,
+    changeId: changeId,
+    text: text,
+  );
 
   @override
   Future<FeedbackRow> editComment({
     required String id,
     required String text,
-  }) async => _neutralRow;
+  }) async => _cli.editFeedback(vaultPath: vaultPath, id: id, text: text);
 
   @override
   Future<FeedbackRemoveResult> deleteComment({required String id}) async =>
-      const FeedbackRemoveResult(vaultId: '', id: '');
+      _cli.removeFeedback(vaultPath: vaultPath, id: id);
+
+  // ---------- reads (database) ----------
 
   @override
-  Future<List<FeedbackRow>> feedbackForNote(String noteId) async => const [];
+  Future<List<FeedbackRow>> feedbackForNote(String noteId) async =>
+      db?.feedbackForNote(noteId) ?? const [];
 
   @override
-  Future<List<FeedbackRow>> feedbackWithoutNote() async => const [];
+  Future<List<FeedbackRow>> feedbackWithoutNote() async =>
+      db?.feedbackWithoutNote() ?? const [];
+
+  // ---------- Vault Guide ----------
 
   @override
-  Future<VaultGuide> guide() async =>
-      const VaultGuide(vaultId: '', noteId: '', version: 0, contentMd: '');
+  Future<VaultGuide> guide() async => _cli.getGuide(vaultPath: vaultPath);
 
   @override
-  Future<List<GuideRevisionRow>> guideRevisions() async => const [];
+  Future<List<GuideRevisionRow>> guideRevisions() async =>
+      db?.guideRevisions() ?? const [];
 
   @override
   Future<GuideRestoreResult> restoreGuide(String revisionId) async =>
-      const GuideRestoreResult(vaultId: '', noteId: '', version: 0);
+      _cli.restoreGuide(vaultPath: vaultPath, revisionId: revisionId);
 }
-
-const _neutralRow = FeedbackRow(
-  id: '',
-  kind: FeedbackKind.comment,
-  source: FeedbackSource.person,
-  status: FeedbackStatus.open,
-  createdAt: 0,
-  updatedAt: 0,
-);
