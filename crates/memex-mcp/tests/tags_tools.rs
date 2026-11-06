@@ -782,6 +782,20 @@ async fn untag_note_for_a_tag_the_note_lacks_returns_removed_false_and_keeps_the
 }
 
 #[tokio::test]
+async fn untag_note_echoes_an_input_outside_the_grammar_without_its_leading_hash() {
+    let (_dir, state, m) = fresh();
+    let id = person_note(&state, "Plain", "Person text.\n").await;
+    let before = stored(&state, &id).await;
+
+    let v = untag_note(&m, &id, "#not a tag!").await;
+
+    assert_output_fields(&v, &["note_id", "tag", "removed", "version"]);
+    assert_eq!(v["tag"], json!("not a tag!"), "{v}");
+    assert_eq!(v["removed"], json!(false), "{v}");
+    assert_eq!(stored(&state, &id).await, before, "nothing is written");
+}
+
+#[tokio::test]
 async fn untag_note_on_a_daily_note_leaves_its_review_state_and_content_version_unchanged() {
     let (_dir, state, m) = fresh();
     vocabulary(&state, &["work"]).await;
