@@ -21,6 +21,7 @@ use memex_core::canvas::SystemClock;
 use memex_core::daily::{self, ReviewState};
 use memex_core::error::MemexError;
 use memex_core::footer::{self, ChipOrigin, FooterWrite, RemoveMode};
+use memex_core::guide;
 use memex_core::indexer;
 use memex_core::notes::{
     create_note_as, delete_note_checked, get_note, update_note_as, CreateNote, Note, NoteId,
@@ -28,7 +29,7 @@ use memex_core::notes::{
 };
 use memex_core::search::{search, SearchFilters, SearchMode, SearchOptions};
 use memex_core::smart_folders;
-use memex_core::{Caller, Vault};
+use memex_core::{Caller, Clock, Vault};
 use rusqlite::params;
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -887,8 +888,31 @@ fn create_plain(vault: &mut Vault, title: &str, body: &str) -> Note {
     create(vault, title, body, None)
 }
 
+/// A clock that stays where it is put (no wall-clock reads).
+struct GuideFixtureClock(i64);
+
+impl Clock for GuideFixtureClock {
+    fn now_ms(&self) -> i64 {
+        self.0
+    }
+}
+
+/// The vault's real guide, built the only way D10 allows: `guide::get_or_create`
+/// (`create_note_as` rejects `role: guide`), then `guide::update` to `body`.
 fn create_guide(vault: &mut Vault, body: &str) -> Note {
-    create(vault, "Vault Guide", body, Some(json!({ "role": "guide" })))
+    let clock = GuideFixtureClock(1_759_500_000_000);
+    let seeded = guide::get_or_create(vault, &clock, None).expect("create the guide");
+    let doc = guide::update(
+        vault,
+        seeded.version,
+        body,
+        &["Set up the guide".to_string()],
+        "2026-09-05",
+        &clock,
+        None,
+    )
+    .expect("write the guide body");
+    get_note(vault, &NoteId::parse(&doc.note_id).unwrap()).unwrap()
 }
 
 /// A `tags` row written straight to the table, as T3's write paths do. It
