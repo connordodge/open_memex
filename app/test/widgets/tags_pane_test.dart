@@ -1215,4 +1215,231 @@ void main() {
       },
     );
   });
+
+  group('revealTag contracts', () {
+    final many = [
+      for (var i = 0; i < 60; i++)
+        tagRow('t${i.toString().padLeft(2, '0')}', i + 1),
+    ];
+    final manyNotes = {
+      't59': [tagNote('x-1', 'Far one'), tagNote('x-2', 'Far two')],
+    };
+
+    testWidgets('revealTag of a plain tag leaves System closed', (
+      tester,
+    ) async {
+      final env = await pumpTagsPane(tester, tags: TagsDouble());
+
+      revealTag(env.ref, 'work');
+      await env.settle(tester);
+
+      expect(_isOpen('work'), isTrue);
+      expect(_system(), findsOneWidget);
+      expect(_row('inbox'), findsNothing);
+      expect(_row('agent-authored'), findsNothing);
+    });
+
+    testWidgets('revealTag of a system tag keeps a plain tag row closed', (
+      tester,
+    ) async {
+      final env = await pumpTagsPane(tester, tags: TagsDouble());
+
+      revealTag(env.ref, 'inbox');
+      await env.settle(tester);
+
+      expect(env.container.read(tagsSystemOpenProvider), isTrue);
+      expect(env.container.read(expandedTagProvider), 'inbox');
+      expect(_isOpen('work'), isFalse);
+    });
+
+    testWidgets(
+      'a served scroll request is cleared and a ghost tag is dropped',
+      (tester) async {
+        final env = await pumpTagsPane(
+          tester,
+          tags: TagsDouble(rows: many, notes: manyNotes),
+          height: 300,
+        );
+
+        revealTag(env.ref, 't59');
+        expect(env.container.read(tagsScrollRequestProvider)?.tag, 't59');
+        await env.settle(tester);
+        expect(env.container.read(tagsScrollRequestProvider), isNull);
+        expect(_inView(tester, _row('t59')), isTrue);
+
+        revealTag(env.ref, 'ghost');
+        expect(env.container.read(tagsScrollRequestProvider)?.tag, 'ghost');
+        await env.settle(tester);
+        expect(env.container.read(tagsScrollRequestProvider), isNull);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets('a ghost system tag with no row opens System and is dropped', (
+      tester,
+    ) async {
+      final env = await pumpTagsPane(tester, tags: TagsDouble());
+
+      revealTag(env.ref, 'inbox');
+      await env.settle(tester);
+      expect(env.container.read(tagsScrollRequestProvider), isNull);
+
+      // A request for a tag that exists only as a ghost never lingers either.
+      revealTag(env.ref, 'zzz');
+      await env.settle(tester);
+      expect(env.container.read(tagsScrollRequestProvider), isNull);
+      expect(_row('zzz'), findsNothing);
+    });
+
+    testWidgets('revealTag many times in a row scrolls to the tag every time', (
+      tester,
+    ) async {
+      final env = await pumpTagsPane(
+        tester,
+        tags: TagsDouble(rows: many, notes: manyNotes),
+        height: 300,
+      );
+
+      for (var round = 0; round < 6; round++) {
+        await tester.drag(
+          find.byKey(const Key('tags-pane')),
+          const Offset(0, 9000),
+        );
+        await env.settle(tester);
+        expect(_row('t59'), findsNothing, reason: 'round $round at the top');
+
+        revealTag(env.ref, 't59');
+        await env.settle(tester);
+
+        expect(_row('t59'), findsOneWidget, reason: 'round $round');
+        expect(_inView(tester, _row('t59')), isTrue, reason: 'round $round');
+      }
+    });
+
+    testWidgets('revealTag scrolls a far tag into view at a large text scale', (
+      tester,
+    ) async {
+      final env = await pumpTagsPane(
+        tester,
+        tags: TagsDouble(rows: many, notes: manyNotes),
+        height: 400,
+        textScale: 2,
+      );
+
+      revealTag(env.ref, 't59');
+      await env.settle(tester);
+
+      expect(_row('t59'), findsOneWidget);
+      expect(_inView(tester, _row('t59')), isTrue);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets(
+      'revealTag scrolls a tag in the middle into view at a large text scale',
+      (tester) async {
+        final env = await pumpTagsPane(
+          tester,
+          tags: TagsDouble(
+            rows: many,
+            notes: {
+              't30': [tagNote('m-1', 'Middle one')],
+            },
+          ),
+          height: 300,
+          textScale: 3,
+        );
+        expect(_row('t30'), findsNothing);
+
+        revealTag(env.ref, 't30');
+        await env.settle(tester);
+
+        expect(_row('t30'), findsOneWidget);
+        expect(_inView(tester, _row('t30')), isTrue);
+        expect(tester.getSize(_row('t30')).height, greaterThan(40));
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'revealTag of a system tag below a long list scrolls it into view',
+      (tester) async {
+        final env = await pumpTagsPane(
+          tester,
+          tags: TagsDouble(
+            rows: [...many, tagRow('inbox', 4, system: true)],
+            notes: {
+              'inbox': [tagNote('i-1', 'Inbox one')],
+            },
+          ),
+          height: 300,
+        );
+        expect(_system(), findsNothing, reason: 'below the fold');
+
+        revealTag(env.ref, 'inbox');
+        await env.settle(tester);
+
+        expect(_row('inbox'), findsOneWidget);
+        expect(_inView(tester, _row('inbox')), isTrue);
+        expect(_note('inbox', 'i-1'), findsOneWidget);
+        expect(env.container.read(tagsScrollRequestProvider), isNull);
+      },
+    );
+
+    testWidgets(
+      'revealTag starts the notes read of the tag before its row is built',
+      (tester) async {
+        final tags = TagsDouble(rows: many, notes: manyNotes);
+        final env = await pumpTagsPane(tester, tags: tags, height: 300);
+        expect(tags.notesCalls, isEmpty);
+
+        revealTag(env.ref, 't59');
+        await tester.pump();
+
+        expect(_row('t59'), findsNothing, reason: 'not built on this frame');
+        expect(tags.notesCalls, ['t59']);
+      },
+    );
+
+    testWidgets(
+      'the pane going away while a scroll is retried throws nothing',
+      (tester) async {
+        final env = await pumpTagsPane(
+          tester,
+          tags: TagsDouble(rows: many, notes: manyNotes),
+          height: 300,
+        );
+
+        revealTag(env.ref, 't59');
+        // The first frame jumps near the row and looks again on the next one.
+        await tester.pump();
+        expect(_row('t59'), findsNothing);
+        await tester.pumpWidget(const SizedBox());
+        await tester.pump();
+
+        expect(tester.takeException(), isNull);
+      },
+    );
+  });
+
+  group('note row contracts', () {
+    testWidgets('an empty first line shows the title only', (tester) async {
+      final env = await pumpTagsPane(
+        tester,
+        tags: TagsDouble(
+          rows: [tagRow('work', 1)],
+          notes: {
+            'work': [
+              tagNote('w-empty', 'No line', firstLine: ''),
+              tagNote('w-line', 'With line', firstLine: 'a #work line'),
+            ],
+          },
+        ),
+      );
+      await _tap(tester, env, _row('work'));
+
+      expect(tester.getSize(_note('work', 'w-empty')).height, 22);
+      expect(_inNote('work', 'w-empty', find.byType(Text)), findsOneWidget);
+      expect(tester.getSize(_note('work', 'w-line')).height, 36);
+    });
+  });
 }
