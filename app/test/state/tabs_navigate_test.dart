@@ -615,30 +615,37 @@ void main() {
       },
     );
 
+    // #271 (N8) TEST-CHANGE: openToday is `follow` of today's target now, so a
+    // plain click navigates the active tab and no longer inserts a tab first.
     test(
-      'openToday inserting a tab first keeps each tab history with its tab',
+      'a plain openToday navigates the active tab and keeps each tab history with its tab',
       () async {
         final p = await _probe();
-        p.open([_a]);
+        p.open([_a, _x], active: 0);
         p.walk([_b]);
 
         p.notifier.openToday(date: _today);
-        _expectTabs(p, [_virtual, _b], 0);
+        _expectTabs(p, [_virtual, _x], 0, back: true);
 
         p.notifier.setActive(1);
-        _expectTabs(p, [_virtual, _b], 1, back: true);
+        _expectTabs(p, [_virtual, _x], 1);
+        p.notifier.setActive(0);
+        p.notifier.back();
+        _expectTabs(p, [_b, _x], 0, back: true, forward: true);
       },
     );
 
     test(
-      'openToday focuses the leftmost tab showing today when values repeat and keeps its history',
+      'a Cmd openToday focuses the leftmost tab showing today when values repeat and keeps its history',
       () async {
-        final p = await _probe();
+        var cmd = false;
+        final p = await _probe(modifier: () => cmd);
         p.open([_a, _real], active: 0);
         p.notifier.navigate(_real); // [real*] [real]
         p.notifier.setActive(1);
         p.reset();
 
+        cmd = true;
         p.notifier.openToday(date: _today, noteId: _realId);
 
         _expectTabs(p, [_real, _real], 0, back: true);

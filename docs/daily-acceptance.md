@@ -138,6 +138,43 @@ echo "$VAULT"
 2. **Expected**: with no prompts and no session, the command prints a short summary and exits 0. Today's chip in the app is green again and the topic note the agent used has an Activity entry.
 3. Run `memex prompt capture` and `memex prompt review`. **Expected**: each prints the raw prompt text, no JSON.
 
+## 9. Feedback and a Correction: the agent fixes the filing, replies and updates the Vault Guide
+
+Needs the reviewed days from section 2, so the days are filed into topic notes. Use two topic notes from the review, and one block that sits in the first.
+
+1. Find a block and where it is filed:
+   ```bash
+   memex filing --vault "$VAULT" --date 2026-09-05
+   ```
+   **Expected**: JSON with `topics` (each with its `topic_note_id`, `title` and `blocks`) and `not_filed`. Pick a block in one topic note (call it A) and a second topic note (B).
+2. As the person, make a Correction: move the block from A to B, with a note saying why.
+   ```bash
+   memex excerpt move --vault "$VAULT" --date 2026-09-05 --block-id <block id> \
+     --from-topic-note-id <id of A> --to-topic-note-id <id of B> --note "This is about B, not A"
+   ```
+   **Expected**: the command succeeds. In the app, the Activity tab of the daily note for 2026-09-05 shows a Correction for it, open.
+3. Leave a written comment about a filing the Correction does not fix. Choose an entry in a note's Activity tab, press `Comment`, and write `Keep sleep notes out of the Player Loop topic`. Or from the shell:
+   ```bash
+   memex feedback add --vault "$VAULT" --note-id <note id> --date 2026-09-05 --change-id <Activity entry id> --text "Keep sleep notes out of the Player Loop topic"
+   ```
+   **Expected**: the comment shows as open Feedback in Activity.
+4. In the Claude Code session from section 2, run `/mcp__memex__review_daily_notes`.
+5. **Expected**: the agent calls `get_vault_guide`, then `list_open_feedback`, before it takes any day, and works through the open Feedback oldest first. For the comment it fixes the filing it names (`remove_excerpt_block` plus `add_excerpt` for one block), and distills the lasting decision into the Vault Guide with `update_vault_guide`. It marks each item Handled with `resolve_feedback` and a one-line reply that says what it did or why it could not, and never quotes your text. It does not sweep older days for work the Feedback does not name.
+6. Check the app. **Expected**: both Feedback rows read `Handled` with the agent's reply, the Correction is not undone, and the Vault Guide's Activity tab has a new entry from the agent. Check the text with `memex guide get --vault "$VAULT"`: **expected** it keeps its `## Framework` and `## Decisions` sections and holds the new decision in a short sentence, and `memex guide revisions --vault "$VAULT"` lists the text it replaced.
+
+## 10. A comment about filing in a live Review session
+
+1. In a new Claude Code session started the same way as section 2, run `/mcp__memex__review_daily_notes`. When the agent has finished, or while it works, type: `Sleep notes belong in the Sleep topic, not the Player Loop topic.`
+2. **Expected**: the agent treats the comment as Feedback. It fixes the filing on the spot, records your words as you typed them with `record_feedback` (with a one-line reply), and, since the comment is lasting, updates the Vault Guide. Any change it makes outside marking a day reviewed is listed in the `changes` of the call.
+3. In the app, open the topic note it changed and its Activity tab. **Expected**: an entry for the fix. The `From chat` row is on the note your comment names, or on the Vault Guide's Activity tab if the agent recorded it with no note. It reads `Handled`, with your sentence exactly as typed. It was Handled when it was stored, so it never shows as open.
+
+## 11. After a Correction, a later review does not redo it
+
+1. Take a block out of a topic note yourself, as in section 9 step 2 (or with `memex excerpt remove-block --vault "$VAULT" --topic-note-id <id> --date 2026-09-05 --block-id <block id>`), so the Correction names a block and a topic note.
+2. Without editing that day, run `/mcp__memex__review_daily_notes` again in Claude Code. If the agent reports no day to review, that is the expected case here.
+3. **Expected**: the agent works through the Correction as Feedback and marks it Handled. It does not re-file the block into the topic note you took it out of, and it does not re-add a topic note to a Smart Folder you took it out of. Check with `memex filing --vault "$VAULT" --date 2026-09-05`: the block is not back in that topic note.
+4. Edit the block so that its text is clearly about another subject, and review once more. **Expected**: the block is filed where it now belongs, which is the agent's judgment, and the earlier Correction still shows in Activity.
+
 ## Clean up
 
 Close the app's scratch vault tab, then `rm -rf "$SCRATCH"` (check `echo "$SCRATCH"` first: it must be the temporary directory from the Prereqs).

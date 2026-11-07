@@ -16,7 +16,8 @@ Commands:
   prompt       Print an agent prompt's raw text
   rm           Delete a note
   excerpt      Excerpt operations on topic notes
-  footer       Topic footer operations on daily notes
+  footer       Note footer operations
+  tag          Add, remove or list tags
   folder       Smart Folder operations
   settings     Read or change vault settings
   filing       Print where the blocks of one day are filed

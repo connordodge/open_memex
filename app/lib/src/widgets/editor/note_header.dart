@@ -1,16 +1,18 @@
 import 'package:flutter/material.dart';
-import 'package:lucide_icons_flutter/lucide_icons.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../db.dart';
+import '../../editor/segments.dart';
 import '../../state/tabs_state.dart';
+import '../../state/tags_browse_state.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import 'daily_date_header.dart';
 import 'review_chip.dart';
 
-/// The top of an open note (Key `note-header`): the meta rail, the
-/// [DailyDateHeader] slot, the title field (Key `editor-title`), the
-/// [ReviewChip] slot and the tags.
+/// The top of an open note (Key `note-header`): the meta rail with the note's
+/// tags, the [DailyDateHeader] slot, the title field (Key `editor-title`) and
+/// the [ReviewChip] slot.
 ///
 /// A `role: daily` note's [DailyDateHeader] replaces the title field: its
 /// title is not editable (Req 49). The unsaved virtual Today note has no
@@ -75,20 +77,6 @@ class NoteHeader extends StatelessWidget {
             onChanged: onTitleChanged,
           ),
         if (saved) ReviewChip(note: note),
-        if (note.tags.isNotEmpty) ...[
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 6,
-            runSpacing: 4,
-            children: [
-              for (final t in note.tags)
-                Text(
-                  '#$t',
-                  style: OmType.mono(size: 12, color: OmColors.accentSoft),
-                ),
-            ],
-          ),
-        ],
       ],
     );
   }
@@ -117,13 +105,18 @@ class _PendingRail extends StatelessWidget {
   }
 }
 
-class _MetaRail extends StatelessWidget {
+/// The meta rail: when the note was updated, its word count and its non-system
+/// tags (`Note.visibleTags`), read-only, each revealing its tag in Tags mode
+/// (Key `rail-tag-<tag>`).
+class _MetaRail extends ConsumerWidget {
   const _MetaRail({required this.note});
   final Note note;
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final updated = formatUpdatedAgo(note.updatedAt, now: DateTime.now());
-    final words = noteWordCount(note.contentMd);
+    final words = noteWordCount(_personSection(note));
+    final tags = note.visibleTags;
+    final style = OmType.mono(size: 11, color: OmColors.fg2);
     return Container(
       padding: const EdgeInsets.only(bottom: 10),
       decoration: BoxDecoration(
@@ -134,27 +127,48 @@ class _MetaRail extends StatelessWidget {
         runSpacing: 6,
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(LucideIcons.clock, size: 11, color: OmColors.fg3),
-              const SizedBox(width: 5),
-              Text(
-                'updated $updated',
-                style: OmType.mono(size: 11, color: OmColors.fg3),
-              ),
-            ],
-          ),
-          Text('·', style: OmType.mono(size: 11, color: OmColors.fg4)),
-          Text(
-            '$words words',
-            style: OmType.mono(size: 11, color: OmColors.fg3),
-          ),
+          Text('updated $updated', style: style),
+          Text('·', style: style),
+          Text('$words words', style: style),
+          if (tags.isNotEmpty) ...[
+            Text('·', style: style),
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                for (final tag in tags)
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: GestureDetector(
+                      key: Key('rail-tag-$tag'),
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => revealTag(ref, tag),
+                      child: Text(
+                        '#$tag',
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: TextOverflow.ellipsis,
+                        style: style,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ],
         ],
       ),
     );
   }
 }
+
+/// The text of [note] a person wrote: what the editor shows as text and cards,
+/// without the footer's marker, chip and tag lines. A guide note has no footer,
+/// so a marker line in it is text like any other.
+String _personSection(Note note) => switch (note.role) {
+  'daily' => splitDailyBody(note.contentMd).person,
+  'guide' => note.contentMd,
+  _ => splitNoteBody(note.contentMd).person,
+};
 
 /// How long before [now] the time [unixMs] was, as the meta rail shows it
 /// ("just now", "5 minutes ago", "1 hour ago", "3 days ago").

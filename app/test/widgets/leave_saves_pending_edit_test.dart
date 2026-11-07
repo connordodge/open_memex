@@ -390,7 +390,9 @@ void main() {
         await _tap(tester, _chip(_other));
         await _tap(tester, _chip(_plan));
         await _tap(tester, _todayRow);
-        await _tap(tester, _chip(_plan));
+        // #271 TEST-CHANGE: the Today row navigates the Plan tab to today now,
+        // so Plan is opened again in a tab of its own.
+        await _show(tester, h, _plan);
         await _tap(tester, _chipClose(_plan));
         await _show(tester, h, _plan);
         h.clock.advance(saveDebounce);

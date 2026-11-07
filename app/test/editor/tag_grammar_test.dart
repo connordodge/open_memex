@@ -735,6 +735,85 @@ void main() {
     });
   });
 
+  group('tagQueryAt (#246)', () {
+    // Each row: text, caret, then the expected (start, lineStart, query), or
+    // null where no tag is being typed.
+    final cases = <(String, int?, (int, int, String)?)>[
+      ('#', null, (0, 0, '')),
+      ('#pr', null, (0, 0, 'pr')),
+      ('x #pr', null, (2, 0, 'pr')),
+      ('x #', null, (2, 0, '')),
+      ('a#', null, null),
+      ('x #1', null, null),
+      ('x #a b', null, null),
+      ('x #pr', 4, (2, 0, 'p')),
+      ('x #pr', 1, null),
+      ('one\ntwo #q3-', null, (8, 4, 'q3-')),
+      ('one #a\ntwo', 6, (4, 0, 'a')),
+      ('one #a\nx', 8, null),
+      ('`x #p`', 5, null),
+      ('`x` #p', 6, (4, 0, 'p')),
+      // An unclosed [[ is the widget's rule (the wikilink popover wins).
+      ('[[a #p', 6, (4, 0, 'p')),
+      ('[[a]] #p', 8, (6, 0, 'p')),
+      ('https://x.y/ #p', 15, (13, 0, 'p')),
+      ('https://x.y/#p', 14, null),
+      ('```\nx #p', 8, null),
+      ('```\nx\n```\nx #p', 14, (12, 10, 'p')),
+      ('\u{1D49C} #\u{1D49C}b', null, (3, 0, '\u{1D49C}b')),
+    ];
+    for (final (text, caret, want) in cases) {
+      test('tagQueryAt ${_show(text)} at ${caret ?? 'the end'}', () {
+        final got = tagQueryAt(text, caret ?? text.length);
+        if (want == null) {
+          expect(got, isNull);
+        } else {
+          expect(got, isNotNull);
+          expect((got!.start, got.lineStart, got.query), want);
+        }
+      });
+    }
+
+    test('tagQueryAt takes the fence state of each line from the host', () {
+      // Alone, `~~~` opens a fence; the host says it closes one.
+      expect(tagQueryAt('~~~\n#y', 6), isNull);
+      final after = tagQueryAt('~~~\n#y', 6, fenced: const [true, false]);
+      expect((after!.start, after.lineStart, after.query), (4, 4, 'y'));
+
+      // Alone, `#x` is prose; the host says it sits in a fence.
+      expect(tagQueryAt('#x', 2)?.query, 'x');
+      expect(tagQueryAt('#x', 2, fenced: const [true]), isNull);
+
+      // The state read is the caret line's, not the first or the last line's.
+      const three = 'a\n#x\nb';
+      expect(tagQueryAt(three, 4, fenced: const [false, true, false]), isNull);
+      expect(
+        tagQueryAt(three, 4, fenced: const [true, false, true])?.query,
+        'x',
+      );
+    });
+
+    test('tagQueryAt reads a line past the end of the host state as open', () {
+      expect(tagQueryAt('a\n#x', 4, fenced: const [true])?.query, 'x');
+      expect(tagQueryAt('#x', 2, fenced: const [])?.query, 'x');
+    });
+
+    test('TagQuery name drops trailing dashes and underscores', () {
+      final names = <String, String>{
+        '': '',
+        'a': 'a',
+        'q3-': 'q3',
+        'q3_': 'q3',
+        'a-_': 'a',
+        'a-b_': 'a-b',
+        'Road-': 'Road',
+      };
+      for (final MapEntry(key: query, value: name) in names.entries) {
+        expect(TagQuery(0, 0, query).name, name, reason: 'query: $query');
+      }
+    });
+  });
+
   group('a stretch of a line (table cell, quote text)', () {
     test(
       'the Dart port finds no tag where a hash follows a pipe or a quote marker and one where a space precedes it',

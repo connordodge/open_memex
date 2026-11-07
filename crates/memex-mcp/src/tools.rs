@@ -11,7 +11,7 @@ use memex_core::links::{self as core_links, LinkKind, LinkSource};
 use memex_core::notes::{self, CreateNote, NoteId, RenameOptions, UpdateNote};
 use memex_core::review as core_review;
 use memex_core::search::{self, SearchFilters, SearchMode, SearchOptions};
-use memex_core::tags;
+use memex_core::tags as core_tags;
 use memex_core::{Caller, CanvasId, Clock, MemexError, SystemClock};
 use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -37,6 +37,7 @@ pub mod feedback;
 pub mod folders;
 pub mod review;
 pub mod settings;
+pub mod tags;
 
 #[derive(Clone)]
 pub struct Memex {
@@ -55,7 +56,8 @@ impl Memex {
                 + Self::folders_router()
                 + Self::review_router()
                 + Self::settings_router()
-                + Self::feedback_router(),
+                + Self::feedback_router()
+                + Self::tags_router(),
             prompt_router: Self::prompt_router(),
         }
     }
@@ -118,6 +120,8 @@ pub struct GetNoteEnvelope {
     pub created_at: i64,
     pub updated_at: i64,
     pub tags: Vec<String>,
+    /// What the agent can remove with `untag_note`: its non-system tags.
+    pub agent_tags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub links: Option<serde_json::Map<String, serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -425,7 +429,8 @@ impl Memex {
         let vault = self.state.vault.lock().await;
         match notes::get_note(&vault, &id) {
             Ok(n) => {
-                let tags = tags::tags_for_note(&vault, n.id.as_str()).unwrap_or_default();
+                let tags = core_tags::tags_for_note(&vault, n.id.as_str()).unwrap_or_default();
+                let agent_tags = core_tags::agent_tags_for_note(&vault, &n.id).unwrap_or_default();
                 let (links_map, backlinks_map) = if include_backlinks.unwrap_or(false) {
                     let outgoing = core_links::links_out_for_note(&vault, n.id.as_str())
                         .unwrap_or_default();
@@ -456,6 +461,7 @@ impl Memex {
                     created_at: n.created_at,
                     updated_at: n.updated_at,
                     tags,
+                    agent_tags,
                     links: links_map,
                     backlinks: backlinks_map,
                     fields,
@@ -682,6 +688,10 @@ impl Memex {
             agent_id,
             role,
         } = params.0;
+        // D43: rejected before anything is written.
+        if let Some(rejected) = tag_list.as_deref().and_then(tags::invalid_tag_name) {
+            return rejected;
+        }
         let role = match role {
             None => None,
             Some(r) => match Role::parse(&r) {
@@ -739,12 +749,26 @@ impl Memex {
                 all_tags.push(t.to_string());
             }
         }
-        for t in &all_tags {
-            let _ = tags::add_tag(&vault, note.id.as_str(), t);
-        }
-
         let embedder = self.state.embedder.clone();
         let embedder_ref = embedder.as_deref();
+        // D16: agent-origin, with footer text in the same call unless it's a
+        // system tag. Every name is valid by now (D43); any other failure to
+        // apply a tag doesn't fail the note.
+        for t in &all_tags {
+            let _ = core_tags::apply_tag(
+                &mut vault,
+                &note.id,
+                t,
+                core_tags::TagOrigin::Agent,
+                embedder_ref,
+            );
+        }
+        // A footer write moved the note's version and body.
+        let note = match notes::get_note(&vault, &note.id) {
+            Ok(n) => n,
+            Err(e) => return err_from("create_note", &e),
+        };
+
         if let Err(e) = indexer::reindex_note(
             vault.connection_mut(),
             note.id.as_str(),

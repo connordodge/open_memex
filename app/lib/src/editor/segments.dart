@@ -50,18 +50,27 @@ DailyBody splitDailyBody(String body) {
 /// inside fenced code is body text, so only the first marker line outside
 /// fenced code starts the footer. Without one the whole body is person.
 DailyBody splitNoteBody(String body) {
+  final at = _noteFooterStart(body);
+  return at == null
+      ? DailyBody(person: body, chips: const [])
+      : _splitAtMarker(body, at);
+}
+
+/// Where the Note footer of a non-daily note's [body] starts: the offset of
+/// the first marker line outside fenced code, or null without one.
+int? _noteFooterStart(String body) {
   _Fence? fence;
   for (final line in _lines(body)) {
     final open = fence;
     if (open != null) {
       if (open.closedBy(line.content)) fence = null;
     } else if (_trimLineEnd(line.content) == topicsMarker) {
-      return _splitAtMarker(body, line.start);
+      return line.start;
     } else {
       fence = _Fence.openedBy(line.content);
     }
   }
-  return DailyBody(person: body, chips: const []);
+  return null;
 }
 
 /// The name of a footer tag line (Spec #234 R12): `#` followed by a character
@@ -234,11 +243,16 @@ class TransclusionSegment extends Segment {
   final String? to;
 }
 
-/// The daily note's Topics footer chip row.
+/// The footer text of a note: read-only, never part of the editable text.
 class FooterSegment extends Segment {
-  const FooterSegment(this.chips);
+  const FooterSegment(this.chips, {this.raw});
 
   final List<String> chips;
+
+  /// A non-daily note's footer exactly as stored, from its marker line to the
+  /// end of the body, so [join] gives it back byte for byte. Null on a daily
+  /// note, whose footer [join] assembles from [chips].
+  final String? raw;
 }
 
 /// Splits [markdown] into segments.
@@ -249,14 +263,26 @@ class FooterSegment extends Segment {
 /// (trailing spaces and `\r` ignored) is exactly one transclusion token becomes
 /// a [TransclusionSegment] that keeps its raw line. A [TextSegment], possibly
 /// empty, always sits at the start, at the end and between adjacent cards.
-List<Segment> split(String markdown, {required bool isDaily}) {
+/// With a marker line outside fenced code ([splitNoteBody]) that line and
+/// everything below it become a last [FooterSegment] holding them as
+/// [FooterSegment.raw]; without one there is no [FooterSegment].
+///
+/// With [noteFooter] false (a guide note, which has no footer) a marker line is
+/// plain text.
+List<Segment> split(
+  String markdown, {
+  required bool isDaily,
+  bool noteFooter = true,
+}) {
   if (isDaily) {
     final daily = splitDailyBody(markdown);
     return [TextSegment(daily.person), FooterSegment(daily.chips)];
   }
+  final footerAt = noteFooter ? _noteFooterStart(markdown) : null;
+  final person = footerAt == null ? markdown : markdown.substring(0, footerAt);
   final segments = <Segment>[];
   var textStart = 0;
-  for (final line in _lines(markdown)) {
+  for (final line in _lines(person)) {
     final content = _trimLineEnd(line.content);
     final tokens = parseTransclusions(content);
     if (tokens.length != 1 ||
@@ -266,10 +292,10 @@ List<Segment> split(String markdown, {required bool isDaily}) {
     }
     final token = tokens.single;
     segments
-      ..add(TextSegment(markdown.substring(textStart, line.start)))
+      ..add(TextSegment(person.substring(textStart, line.start)))
       ..add(
         TransclusionSegment(
-          raw: markdown.substring(line.start, line.end),
+          raw: person.substring(line.start, line.end),
           date: token.date,
           from: token.from,
           to: token.to,
@@ -277,31 +303,45 @@ List<Segment> split(String markdown, {required bool isDaily}) {
       );
     textStart = line.end;
   }
-  segments.add(TextSegment(markdown.substring(textStart)));
+  segments.add(TextSegment(person.substring(textStart)));
+  if (footerAt != null) {
+    segments.add(
+      FooterSegment(
+        splitNoteBody(markdown).chips,
+        raw: markdown.substring(footerAt),
+      ),
+    );
+  }
   return segments;
 }
 
 /// Joins segments back into one markdown string.
 ///
-/// When [segments] hold a [FooterSegment] the result is the canonical daily
-/// body: the other segments' text as the person section, then the footer
-/// ([assembleDailyBody]). Otherwise the segments' raw text is concatenated, so
+/// When [segments] hold a [FooterSegment] without [FooterSegment.raw] the result
+/// is the canonical daily body: the other segments' text as the person section,
+/// then the footer ([assembleDailyBody]). Otherwise the segments' raw text is
+/// concatenated, with a raw footer starting on its own line, so
 /// `join(split(s, isDaily: false)) == s`.
 String join(List<Segment> segments) {
   final out = StringBuffer();
-  List<String>? chips;
+  FooterSegment? footer;
   for (final segment in segments) {
     switch (segment) {
       case TextSegment(:final text):
         out.write(text);
       case TransclusionSegment(:final raw):
         out.write(raw);
-      case FooterSegment(chips: final footerChips):
-        chips = footerChips;
+      case final FooterSegment f:
+        footer = f;
     }
   }
   final person = out.toString();
-  return chips == null ? person : assembleDailyBody(person, chips);
+  if (footer == null) return person;
+  final raw = footer.raw;
+  if (raw == null) return assembleDailyBody(person, footer.chips);
+  return person.isEmpty || person.endsWith('\n')
+      ? '$person$raw'
+      : '$person\n$raw';
 }
 
 /// One line of a string: [content] excludes the `\n` terminator; [start] and
