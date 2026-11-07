@@ -140,9 +140,9 @@ struct FooterAdd {
     topic_note_id: String,
 }
 
-/// `POST /notes/{daily_note_id}/footer-chips {"topic_note_id"}`: the `memex
-/// footer add` output (`{vault_id, daily_note_id, topic_note_id, origin,
-/// version}`).
+/// `POST /notes/{note_id}/footer-chips {"topic_note_id"}`, on any note but a
+/// guide: the `memex footer add` output (`{vault_id, daily_note_id,
+/// topic_note_id, origin, version}`, `daily_note_id` holding the note).
 async fn footer_add(
     ServedVault(entry): ServedVault,
     clock: RequestClock,

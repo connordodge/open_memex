@@ -10,6 +10,7 @@ pub mod feedback;
 pub mod graph;
 pub mod notes;
 pub mod revision;
+pub mod tags;
 pub mod topics;
 
 /// Every domain's routes, nested under `/vaults/{name}/api/v1`.
@@ -21,5 +22,6 @@ pub fn router() -> Router {
         .merge(canvas::router())
         .merge(graph::router())
         .merge(revision::router())
+        .merge(tags::router())
         .merge(feedback::router())
 }

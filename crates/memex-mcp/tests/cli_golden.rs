@@ -325,12 +325,12 @@ fn golden_get_prints_the_note_object_with_and_without_links() {
     );
     assert!(!b.is_empty());
     let out = f.ok(&["get", "--vault", f.v(), "--note-id", &a], None);
-    assert_eq!(out, "{\"content_md\":\"Alpha links [[Beta]] and [[Beta~extends|more]].\\n\",\"created_at\":<MS>,\"frontmatter\":{},\"note_id\":\"<A>\",\"tags\":[\"games\"],\"title\":\"Alpha\",\"updated_at\":<MS>,\"version\":1}\n");
+    assert_eq!(out, "{\"content_md\":\"Alpha links [[Beta]] and [[Beta~extends|more]].\\n<!-- memex:topics -->\\n#games\\n\",\"created_at\":<MS>,\"frontmatter\":{},\"note_id\":\"<A>\",\"tags\":[\"games\"],\"title\":\"Alpha\",\"updated_at\":<MS>,\"version\":2}\n");
     let out = f.ok(
         &["get", "--vault", f.v(), "--note-id", &a, "--include-links"],
         None,
     );
-    assert_eq!(out, "{\"backlinks\":{},\"content_md\":\"Alpha links [[Beta]] and [[Beta~extends|more]].\\n\",\"created_at\":<MS>,\"frontmatter\":{},\"links\":{\"extends\":[{\"from_note_id\":\"<A>\",\"label\":\"more\",\"link_id\":\"<ULID>\",\"link_text\":\"Beta\",\"position\":25,\"source\":\"inline_body\",\"to_note_id\":\"<B>\"}],\"references\":[{\"from_note_id\":\"<A>\",\"label\":null,\"link_id\":\"<ULID>\",\"link_text\":\"Beta\",\"position\":12,\"source\":\"inline_body\",\"to_note_id\":\"<B>\"}]},\"note_id\":\"<A>\",\"tags\":[\"games\"],\"title\":\"Alpha\",\"updated_at\":<MS>,\"version\":1}\n");
+    assert_eq!(out, "{\"backlinks\":{},\"content_md\":\"Alpha links [[Beta]] and [[Beta~extends|more]].\\n<!-- memex:topics -->\\n#games\\n\",\"created_at\":<MS>,\"frontmatter\":{},\"links\":{\"extends\":[{\"from_note_id\":\"<A>\",\"label\":\"more\",\"link_id\":\"<ULID>\",\"link_text\":\"Beta\",\"position\":25,\"source\":\"inline_body\",\"to_note_id\":\"<B>\"}],\"references\":[{\"from_note_id\":\"<A>\",\"label\":null,\"link_id\":\"<ULID>\",\"link_text\":\"Beta\",\"position\":12,\"source\":\"inline_body\",\"to_note_id\":\"<B>\"}]},\"note_id\":\"<A>\",\"tags\":[\"games\"],\"title\":\"Alpha\",\"updated_at\":<MS>,\"version\":2}\n");
     let out = f.ok(
         &["get", "--vault", f.v(), "--note-id", &b, "--include-links"],
         None,
@@ -972,7 +972,7 @@ fn golden_failures_print_one_c1_line_and_exit_1() {
 /// The person subcommands whose rows `memex --help` must keep. Other rows
 /// (`serve`, `help`, and subcommands other Work Items add) are not this
 /// WI's surface.
-const PERSON_COMMANDS: [&str; 19] = [
+const PERSON_COMMANDS: [&str; 20] = [
     "init",
     "add",
     "ls",
@@ -987,6 +987,7 @@ const PERSON_COMMANDS: [&str; 19] = [
     "rm",
     "excerpt",
     "footer",
+    "tag",
     "folder",
     "settings",
     "filing",
@@ -1040,7 +1041,7 @@ fn top_level_help_keeps_every_person_subcommand_row() {
 }
 
 /// Every person subcommand and sub-subcommand, as (args, golden file).
-const HELP_CASES: [(&str, &str); 49] = [
+const HELP_CASES: [(&str, &str); 53] = [
     ("init", "init"),
     ("add", "add"),
     ("ls", "ls"),
@@ -1080,6 +1081,10 @@ const HELP_CASES: [(&str, &str); 49] = [
     ("guide restore", "guide_restore"),
     ("footer", "footer"),
     ("footer add", "footer_add"),
+    ("tag", "tag"),
+    ("tag add", "tag_add"),
+    ("tag rm", "tag_rm"),
+    ("tag ls", "tag_ls"),
     ("folder", "folder"),
     ("folder ls", "folder_ls"),
     ("folder new", "folder_new"),

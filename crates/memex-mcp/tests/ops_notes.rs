@@ -182,7 +182,10 @@ fn ops_add_returns_note_id_title_tags_and_created() {
     assert!(!out.adopted, "a plain add creates");
     let stored = f.stored(&out.note_id);
     assert_eq!(stored.title, "Alpha");
-    assert_eq!(stored.content_md, "Alpha body.\n");
+    assert_eq!(
+        stored.content_md, "Alpha body.\n<!-- memex:topics -->\n#games\n#loop\n",
+        "non-system tags get their footer text in the same call (R40)"
+    );
     assert_eq!(stored.frontmatter, json!({}));
     assert_eq!(
         tags::tags_for_note(&f.vault, &out.note_id).unwrap(),
