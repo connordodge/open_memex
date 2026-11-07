@@ -29,6 +29,12 @@ added the lessons marked (run 1).
   How: enforced: the Flutter suite has a 900 s timeout (`FLUTTER_SUITE_TIMEOUT`), an
   `INFRA: ENOSPC` line marks disk-full failures (re-run, don't fix code), `suite-slot.sh`
   kills a suite after 25 min, and `wi-setup.sh` warns under 20 GB free.
+  (run 20261106-229-230) Every step, suite and mutant now runs under `run-guarded.sh`: a time
+  ceiling plus a per-process memory ceiling (`GUARD_MEM_MB`, default a quarter of RAM), because a
+  `tags.rs::code_spans` mutant looped at over 8 GB/s and panicked the Mac. `reset_gate` prints
+  `GATE WARN` when `_gate` holds uncommitted changes, such as a mutant a crash left behind. It
+  logs the size of `target/debug/deps` and prunes it past `DEPS_PRUNE_AT` (300k): at 1.2M entries
+  every `rustc` spent about 65 s listing it, and suites timed out. All enforced.
 - **The mutation floor needs 2+ mutants.** (run 1)
   Why: a 1-mutant run passed with its only mutant surviving (#32).
   How: enforced in `merge-check.sh` and `mutation-spot.sh`.
@@ -59,6 +65,10 @@ mid-run) added the lessons below.
   race (`Directory not empty`).
   How: wait on an event or a FakeClock, not a fixed `Instant` budget; await every store's
   `flush()` before deleting a test dir.
+  (run 20261106-229-230) Both hit again. `bridge_rereads_the_utc_offset…` failed #301's gate and
+  still needs its event wait. `pending_saves_test.dart:1025` hit `Directory not empty` in #296's
+  gate and #289's verify. #311 fixed that one by flushing before delete. Each new temp-vault test
+  repeats the race, so a shared `tempVault` helper that flushes before deleting is still due.
 - **`app/pubspec.lock` is gitignored in this repo,** so plugin adds change only pubspec.yaml.
   `GeneratedPluginRegistrant.swift` is gitignored too.
 
@@ -71,6 +81,9 @@ mutation on, Flutter only) added the lessons below.
   files (no test split rows away from a segment start), `shouldRepaint` `||` chains, key handlers'
   `return true`, and `_applying` guard initializers.
   How: before ready, the verify test author names a flipping test for each such site.
+  (run 20261106-229-230) Same pattern: every MUTATION fail was tricky widget code (#296's 8 of 16,
+  #302 and #309's 6), and the Rust core had none. #309's survivors were `||` chains over line
+  kinds, a tag span's bounds and a `fenced` default.
 - **Write max/min with `dart:math`, not a ternary.**
   Why: `a > b ? a : b` mutated to `>=` is always equivalent; #185's `composeEdits` needed five
   exemption write-ups (row_edits.dart:177–203) that `max(a, b)` would not have produced.
@@ -98,3 +111,18 @@ added the lessons below.
   pumps a field with the controller strut and compares against plain body lines.
 - **Reuse the staging worktree instead of removing it.** The last macOS build leaves `app/macos`
   dirty, and `git worktree remove` refuses (run 20261102-221). How to apply: adapter Release step 3.
+
+Run 20261106-229-230 (#229 Tags, #230 back navigation, #231 review feedback: 3 Specs, 36 WIs, 39 PRs
+across 9 leads; review off, mutation on, schema V6; one kernel panic and a night of host freezes)
+added the lessons below.
+
+- **A `Closes #N` line doesn't always close the WI.** #264, #266 and #267 stayed OPEN after #275,
+  #278 and #279 merged into main with `Closes` in their bodies (cause not found).
+  How: merge-pr checks the WI's state after merging and prints `ISSUE WARN` (enforced). It never
+  closes the issue; the lead does it, or Connor.
+- **OPEN, for Connor: the host froze system-wide from 16:27 on 2026-11-06 until a quiet morning.**
+  Why: `flutter test` froze at random points in most gates, and `ps`, `lsof` and a 5 s probe each
+  blocked for 15–30 min (U state). Earlier, a `dartaotruntime` in cmux's coalition had written
+  2,199 GB in 3.5 h (diag `dartaotruntime_2026-11-06-152613`), and `~/.dartServer` is 14 GB. The
+  same PRs passed in 2 min the next morning, after the orphaned testers were killed.
+  How: on a freeze, stop the queue rather than re-gating. Check SSD wear and the analysis server.

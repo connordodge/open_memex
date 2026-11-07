@@ -250,6 +250,12 @@ elif [ "$LINK" != closes ]; then echo "TICK-AC SKIP: PR is 'Part of #$WI', not '
 elif [ ! -x "$TICK" ]; then echo "TICK-AC WARN: $TICK missing; tick WI #$WI's ACs by hand"
 elif [ "$DRY" = 1 ]; then echo "DRY RUN: would run: $TICK --repo $REPO $WI"
 else "$TICK" --repo "$REPO" "$WI" || echo "TICK-AC WARN: tick-ac.sh failed for WI #$WI"; fi
+# A `Closes #N` line doesn't always fire: #264, #266 and #267 stayed OPEN after their PRs merged into main
+# (run 20261106-229-230, cause unknown). Report it; never close the issue here (the lead or Connor does).
+if [ -n "$WI" ] && [ "$LINK" = closes ] && [ "$DRY" != 1 ]; then
+  st=""; for _ in 1 2 3 4; do st=$(gh issue view "$WI" -R "$REPO" --json state -q .state 2>/dev/null); [ "$st" = CLOSED ] && break; sleep 5; done
+  [ "$st" = CLOSED ] || echo "ISSUE WARN: WI #$WI is ${st:-unknown} after the merge; its Closes line didn't fire. Tell the lead."
+fi
 
 LEDGER="$RUN/COORDINATION.md"
 kind=gate; [ "$GATE_RC" = 2 ] && kind="gate+CI"
