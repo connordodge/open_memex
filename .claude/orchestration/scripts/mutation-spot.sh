@@ -188,15 +188,8 @@ if [ $LANG_ = dart ]; then
   done
 fi
 
-with_timeout() { # with_timeout <secs> <cmd...>; exit 124 on timeout; kills the whole process group
-  perl -e '
-    my $t = shift; my $pid = fork; die "fork: $!" unless defined $pid;
-    if ($pid == 0) { setpgrp(0, 0); exec @ARGV; exit 127 }
-    my $kill = sub { kill "TERM", -$pid; for (1 .. 10) { last unless kill 0, -$pid; sleep 1 } kill "KILL", -$pid };
-    $SIG{INT} = $SIG{TERM} = sub { $kill->(); exit 130 };
-    $SIG{ALRM} = sub { $kill->(); waitpid($pid, 0); exit 124 };
-    alarm $t; waitpid($pid, 0); alarm 0; my $s = $?;
-    exit($s & 127 ? 128 + ($s & 127) : $s >> 8);' "$@"
+with_timeout() { # with_timeout <secs> <cmd...>; exit 124 on timeout, 125 past the memory ceiling (run-guarded.sh)
+  "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run-guarded.sh" "$@"
 }
 run_tests() { # run_tests <secs> <log>
   if [ $LANG_ = rs ]; then
@@ -227,7 +220,17 @@ compile_error() { # prints "<file>:<line>" of the first compile error, exit 0 if
 CUR=""; CUR_BAK=""
 # Restore WITHOUT -p and touch: cargo fingerprints by mtime, so putting back the original (older)
 # mtime would leave the mutant build cached and every later run would test the mutant.
-restore_current() { [ -n "$CUR" ] && cp "$CUR_BAK" "$CUR" && touch "$CUR"; CUR=""; }
+restore_current() { [ -n "$CUR" ] && cp "$CUR_BAK" "$CUR" && touch "$CUR" && rm -rf "$JOURNAL"; CUR=""; }
+# Crash journal: while a mutant is applied, its path and original bytes sit in the worktree's git dir, which
+# survives a reboot (/tmp doesn't). A kernel panic skips the EXIT trap (run 20261106-229-230 left tags.rs:199
+# mutated in _gate), so the next run restores the file first.
+JOURNAL="$(git rev-parse --absolute-git-dir)/mutation-spot-applied"
+if [ -f "$JOURNAL/path" ] && [ -f "$JOURNAL/orig" ]; then
+  jp=$(cat "$JOURNAL/path")
+  { cp "$JOURNAL/orig" "$jp" && touch "$jp" && echo "MUTATION WARN: restored $jp, left mutated by an interrupted run"; } \
+    || { echo "MUTATION FAIL: could not restore $jp from $JOURNAL"; exit 1; }
+fi
+rm -rf "$JOURNAL"
 trap 'restore_current' EXIT
 trap 'restore_current; exit 130' INT TERM
 # flutter test runs an implicit pub get, and Flutter 3.47+ pub get rewrites app/analysis_options.yaml
@@ -259,6 +262,8 @@ while IFS="$(printf '\t')" read -r file line col before after; do
   bak="$WORK/orig.$idx"
   cp -p "$file" "$bak"
   pre_sum=$(shasum < "$file"); pre_diff=$(git diff "$FORK" -- "$file" | shasum)
+  mkdir -p "$JOURNAL" && cp -p "$file" "$JOURNAL/orig" && printf '%s\n' "$(pwd)/$file" > "$JOURNAL/path" \
+    || { echo "MUTATION FAIL: could not write the crash journal $JOURNAL"; exit 1; }
   CUR=$file; CUR_BAK=$bak
   if ! perl -e '
       my ($f, $ln, $col, $from, $to) = @ARGV; open my $in, "<", $f or die; my @l = <$in>; close $in;
@@ -284,6 +289,11 @@ while IFS="$(printf '\t')" read -r file line col before after; do
   elif where=$(compile_error "$log"); then
     # the baseline compiled, so ANY compile error comes from the mutant; it proves nothing about the tests
     echo "MUTANT INVALID $label (compile error at ${where:-?}; not counted, trying another site)"
+  elif [ $rc = 125 ]; then
+    # The tests did detect the change: the mutant made them blow up instead of pass. Count it as killed (Connor,
+    # run 20261106-229-230). TIMEOUT stays uncounted because host load alone can cause one; memory can't.
+    killed=$((killed + 1)); evaluated=$((evaluated + 1))
+    echo "MUTANT MEMORY $label (passed the memory ceiling, likely an unbounded loop; counted as killed) (${secs}s)"
   elif [ $rc = 124 ] && ! saw_failure "$log"; then
     echo "MUTANT TIMEOUT $label (no failure before ${PER}s; not counted, trying another site)"
   else

@@ -10,6 +10,7 @@
 #
 # What it does (idempotent):
 #   - refuses to run in the main checkout or in the gate worktree ($MAIN/worktrees/_gate)
+#   - run from a run's bin/, appends this worktree to <runDir>/worktrees.txt (read by cleanup-run.sh)
 #   - git fetch origin (3 tries: parallel fetches race on locks), then creates <branch-name> at
 #     <base-ref>; an existing branch is checked out untouched. If another worktree holds the
 #     branch (test author -> implementer hand-off) and is clean, it is detached so this one can
@@ -40,6 +41,11 @@ TOP=$(git rev-parse --show-toplevel)
 if [ "$TOP" = "$MAIN" ]; then echo "WI-SETUP REFUSING: this is the main checkout. Run inside your own worktree." >&2; exit 1; fi
 if [ "$TOP" = "$MAIN/worktrees/_gate" ]; then echo "WI-SETUP REFUSING: this is the merge-check gate worktree." >&2; exit 1; fi
 cd "$TOP"
+# Run from a run's bin/, record this worktree for cleanup-run.sh (PROTOCOL §1 promised it; run 20261106-229-230
+# found the list missing, so cleanup missed agent worktrees under .claude/worktrees/).
+if [ -f "$SCRIPT_DIR/../run.json" ] && ! grep -qxF "$TOP" "$SCRIPT_DIR/../worktrees.txt" 2>/dev/null; then
+  echo "$TOP" >> "$SCRIPT_DIR/../worktrees.txt"
+fi
 
 for i in 1 2 3; do git fetch origin --quiet && break; echo "WI-SETUP WARN: git fetch failed (attempt $i; parallel fetches race on locks)" >&2; sleep $((i * 3)); done
 if git show-ref --verify --quiet "refs/heads/$BR"; then

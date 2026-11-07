@@ -100,15 +100,8 @@ fail() { FAILED="$FAILED $1"; }
 T0=0
 section() { T0=$SECONDS; CUR_SECTION=$1; }
 section_end() { echo "TIME $CUR_SECTION: $((SECONDS - T0))s"; }
-with_timeout() { # with_timeout <secs> <cmd...>; exit 124 on timeout; kills the whole process group
-  perl -e '
-    my $t = shift; my $pid = fork; die "fork: $!" unless defined $pid;
-    if ($pid == 0) { setpgrp(0, 0); exec @ARGV; exit 127 }
-    my $kill = sub { kill "TERM", -$pid; for (1 .. 10) { last unless kill 0, -$pid; sleep 1 } kill "KILL", -$pid };
-    $SIG{INT} = $SIG{TERM} = sub { $kill->(); exit 130 };
-    $SIG{ALRM} = sub { $kill->(); waitpid($pid, 0); exit 124 };
-    alarm $t; waitpid($pid, 0); alarm 0; my $s = $?;
-    exit($s & 127 ? 128 + ($s & 127) : $s >> 8);' "$@"
+with_timeout() { # with_timeout <secs> <cmd...>; exit 124 on timeout, 125 past the memory ceiling (run-guarded.sh)
+  "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run-guarded.sh" "$@"
 }
 # Pure test files: Dart tests under app/test or app/integration_test, Rust integration tests.
 is_test_path() { echo "$1" | grep -qE '^app/(test|integration_test)/|_test\.dart$|^crates/[^/]+/tests/'; }
@@ -135,8 +128,20 @@ reset_gate() {
       echo "GATE NOTE: removed a stale $lk"; rm -f "$lk"
     fi
     git merge --abort >/dev/null 2>&1
+    # A crash mid-gate can leave a mutant applied here (run 20261106-229-230: tags.rs:199, a mutant that panics the
+    # Mac). Say so before the reset clears it; nothing but this script may build or test in $G.
+    dirty=$(git status --porcelain=v1 --untracked-files=no 2>/dev/null | head -5 | tr '\n' ' ')
+    [ -n "$dirty" ] && echo "GATE WARN: $G had uncommitted tracked changes (crashed gate or leftover mutant); reset: $dirty"
     git reset -q --hard >/dev/null 2>&1
     git clean -qfd >/dev/null 2>&1   # keeps ignored target/ and app/.dart_tool/ warm between gates
+    # Each mutant rebuild adds files to target/debug/deps. At 1.2M files every rustc call spent ~65 s listing it and
+    # suites timed out (run 20261106-229-230). Past DEPS_PRUNE_AT entries, move target/ aside and delete it niced.
+    n=$( [ -d target/debug/deps ] && find target/debug/deps -maxdepth 1 2>/dev/null | wc -l | tr -d ' ' || echo 0)
+    echo "GATE NOTE: target/debug/deps has $n entries"
+    if [ "${n:-0}" -gt "${DEPS_PRUNE_AT:-300000}" ]; then
+      old="$(dirname "$G")/.gate-target-prune.$$"; mv target "$old" && { nohup nice -n 19 rm -rf "$old" >/dev/null 2>&1 & }
+      echo "GATE NOTE: pruned target/ ($n deps entries over ${DEPS_PRUNE_AT:-300000}); this gate builds cold"
+    fi
     [ -n "${BASE_SHA:-}" ] && git checkout -q --detach "$BASE_SHA" >/dev/null 2>&1
     true )
 }
@@ -554,9 +559,10 @@ mutation() {
     echo "$out" | grep -E '^MUTANT '
     echo "$out" | grep -E '^MUTATION ' | sed "s#^MUTATION #  mutation-spot $p: #"
     if echo "$out" | grep -qE '^MUTATION FAIL: (baseline|could not restore|worktree differs|usage|test file|cannot read|no such|unknown base)'; then
+      echo "$out" | grep -A6 -E '^MUTATION FAIL: baseline' | grep -E '^  ' | cut -c1-220   # the baseline's own failure lines
       echo "MUTATION FAIL: mutation-spot error in $p (see above)"; return 1
     fi
-    k=$((k + $(echo "$out" | grep -c '^MUTANT KILLED'))); s=$((s + $(echo "$out" | grep -c '^MUTANT SURVIVED')))
+    k=$((k + $(echo "$out" | grep -cE '^MUTANT (KILLED|MEMORY)'))); s=$((s + $(echo "$out" | grep -c '^MUTANT SURVIVED')))
     surv="$surv $(echo "$out" | awk '/^MUTANT SURVIVED/ {print $3}' | tr '\n' ' ')"
   done
   # Equivalent mutants: the PR body may list "- <file>:<line> — <reason>" under "## Mutation exemptions".

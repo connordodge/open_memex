@@ -32,7 +32,8 @@ Connor's decision (2026-10-03): ignore CI and coverage Actions; do local builds 
 | `wi-setup.sh <id> <branch> [base-ref]` | First command in every new worktree. Creates or takes over the branch, copies `.claude/settings.local.json`, runs `flutter pub get` in `app/` and `cargo fetch`. Refuses the main checkout and the gate worktree. |
 | `suite-slot.sh <cmd…>` | Every FULL `cargo test --workspace` and every full `flutter test` runs through this. 3 slots machine-wide. Focused single-file runs skip it. |
 | `merge-check.sh <pr> [--base ref] [--complexity auto\|routine\|tricky] [--skip-suites] [--ac-map-only] [--pr-body-file f]` | The merged-tree check, below. Exit 0 pass, 1 fail. |
-| `mutation-spot.sh …` | Operator mutants on the PR's added `.rs` and `.dart` lines. Called by merge-check on tricky WIs. |
+| `mutation-spot.sh …` | Operator mutants on the PR's added `.rs` and `.dart` lines. Called by merge-check on tricky WIs. Journals each applied mutant in the worktree's git dir and restores it after a crash; a mutant that hits the memory ceiling counts as killed. |
+| `run-guarded.sh <secs> <cmd…>` | Runs a command in its own process group with a time ceiling (exit 124) and a per-process memory ceiling (exit 125; `GUARD_MEM_MB`, default a quarter of RAM). Used by every gate step, mutant and suite-slot. **Agents wrap every hand-mutant test run in it.** |
 | `merge-pr.sh <pr> <runDir> "<note>"` | Runs the merge check (log in `<runDir>/gate-<pr>-<stamp>.log`), waits for mergeable, re-gates if main moved, checks GitHub mergeable before gating, merges exactly the tested head with a merge commit, ticks the WI's ACs, and appends to the ledger. No required GitHub checks. Exit 0 merged, 1 fail, 3 not mergeable. |
 | `merge-queue.sh <runDir>` | The one merge queue: pops `<runDir>/merge-queue.txt` (append or reorder it), runs merge-pr per PR, drops a PR that fails, and stops (PR kept) on infra failures. `MUTATION_OFF=1` pauses the MUTATION stage. Never run two at once. |
 
@@ -63,7 +64,9 @@ These rules are appended to PROTOCOL.md for every run.
 - **Full suites** for what you touch, with the pass counts in the PR body:
   - Rust: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
     `<runDir>/bin/suite-slot.sh cargo test --workspace`.
-  - App: `cd app && flutter analyze && <runDir>/bin/suite-slot.sh flutter test`.
+  - App: `cd app && flutter analyze && <runDir>/bin/suite-slot.sh flutter test`. Mapped runs:
+    `flutter test --concurrency=2 <files>` (run 20261106-229-230: default concurrency across six
+    pipelines drove load to 268).
   - A PR touching both runs both.
   - Baseline on origin/main 6f09189 (2026-10-03): `cargo test --workspace` 133 passed,
     `flutter test` 25 passed, clippy 0 warnings, `flutter analyze` no issues. A full gate
@@ -117,6 +120,9 @@ These add to the generic rubric:
 - the app's segmented editor, conflict merge and polling (editor logic, row editing and line
   geometry; a colour or style constant with no geometry change is routine, run 20261102-221 D2);
 - anything that reads or writes the vault from both the app and the server.
+- new interactive app widgets (pointer, hover, focus or keyboard handling) are full tricky, not
+  "tricky (scale)": run 20261106-229-230's scale-only #245, #260 and #262 all escalated to
+  coding-tricky after blocking findings, and every MUTATION fail was widget code.
 
 ## Review notes
 

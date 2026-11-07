@@ -18,5 +18,5 @@ while :; do
   # drop the first line naming this PR
   awk -v p="$p" 'done!=1 && $1==p {done=1; next} {print}' "$Q" > "$Q.tmp" && mv "$Q.tmp" "$Q"
   echo "== #$p exit=$rc $(date +%H:%M)"
-  echo "$out" | grep -E "GATE (PASS|FAIL)|MERGED|ALREADY MERGED|MERGE FAIL|MERGE-PR STOP|RED ON MAIN (OK|FAIL)|AC MAP (OK|FAIL)|SUITE FAIL|INFRA|conflict:" | tail -6
+  echo "$out" | grep -E "GATE (PASS|FAIL)|MERGED|ALREADY MERGED|MERGE FAIL|MERGE-PR STOP|RED ON MAIN (OK|FAIL)|AC MAP (OK|FAIL)|SUITE FAIL|INFRA|conflict:|ISSUE WARN|GATE WARN|GUARD MEMORY" | tail -8
 done
