@@ -66,8 +66,8 @@ async fn list_notes(
     Ok(Json(json!({ "notes": notes })))
 }
 
-/// `GET /notes/{note_id}`: the `memex get` object without links; an unknown
-/// id is `not_found`.
+/// `GET /notes/{note_id}`: the `memex get` object without links, plus
+/// `footer_tags`; an unknown id is `not_found`.
 async fn get_note(
     ServedVault(entry): ServedVault,
     ApiPath(path): ApiPath<NotePath>,
@@ -158,7 +158,8 @@ struct AddNote {
 }
 
 /// `POST /notes`: 201 with the `memex add` output (`{note_id, title, tags,
-/// adopted}`).
+/// adopted}`). A tag name outside the grammar is `invalid_argument`, with no
+/// note created (D43).
 async fn add_note(
     ServedVault(entry): ServedVault,
     clock: RequestClock,

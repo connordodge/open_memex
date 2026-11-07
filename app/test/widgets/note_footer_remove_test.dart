@@ -972,6 +972,23 @@ void main() {
       semantics.dispose();
     });
 
+    testWidgets('the x is announced as a button for every tag', (tester) async {
+      final semantics = tester.ensureSemantics();
+      await launchFooterNote(tester, _vault());
+
+      for (final tag in ['pricing', 'memex']) {
+        expect(
+          tester.getSemantics(find.bySemanticsLabel('Remove tag $tag')),
+          isSemantics(
+            label: 'Remove tag $tag',
+            isButton: true,
+            hasTapAction: true,
+          ),
+        );
+      }
+      semantics.dispose();
+    });
+
     testWidgets('Space on a focused x removes the tag', (tester) async {
       final r = await launchFooterNote(tester, _vault());
 

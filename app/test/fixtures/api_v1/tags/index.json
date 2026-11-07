@@ -1,0 +1,17 @@
+[
+  {"method": "GET", "path": "/vaults/seed/api/v1/tags", "response": "tags.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/tags/core/notes", "response": "tag_notes_core.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/tags/idea/notes", "response": "tag_notes_idea.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/tags/nobody/notes", "response": "tag_notes_nobody.json", "status": 200},
+  {"method": "POST", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ4RYSGA8T0YEEF8QRS/tags", "response": "tag_add.json", "status": 200, "request": "tag_add.request.json", "headers": {"Content-Type": "application/json"}},
+  {"method": "POST", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ4RYSGA8T0YEEF8QRS/tags", "response": "tag_add_repeat.json", "status": 200, "request": "tag_add.request.json", "headers": {"Content-Type": "application/json"}},
+  {"method": "POST", "path": "/vaults/seed/api/v1/notes/01J9Z8Y7X6W5V4T3S2R1Q0P9N8/tags", "response": "tag_add_not_found.json", "status": 404, "request": "tag_add.request.json", "headers": {"Content-Type": "application/json"}},
+  {"method": "GET", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ4RYSGA8T0YEEF8QRS", "response": "get_note_after_tag_add.json", "status": 200},
+  {"method": "POST", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ4RYSGA8T0YEEF8QRS/tags", "response": "tag_add_non_ascii.json", "status": 200, "request": "tag_add_non_ascii.request.json", "headers": {"Content-Type": "application/json"}},
+  {"method": "GET", "path": "/vaults/seed/api/v1/tags/r%C3%A9sum%C3%A9/notes", "response": "tag_notes_non_ascii.json", "status": 200},
+  {"method": "DELETE", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ4RYSGA8T0YEEF8QRS/tags/r%C3%A9sum%C3%A9", "response": "tag_rm_non_ascii.json", "status": 200},
+  {"method": "DELETE", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ4RYSGA8T0YEEF8QRS/tags/maybe", "response": "tag_rm.json", "status": 200},
+  {"method": "DELETE", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ4RYSGA8T0YEEF8QRS/tags/maybe", "response": "tag_rm_gone.json", "status": 200},
+  {"method": "DELETE", "path": "/vaults/seed/api/v1/notes/01J9Z8Y7X6W5V4T3S2R1Q0P9N8/tags/maybe", "response": "tag_rm_not_found.json", "status": 404},
+  {"method": "GET", "path": "/vaults/seed/api/v1/tags", "response": "tags_after_writes.json", "status": 200}
+]

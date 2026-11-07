@@ -1,6 +1,7 @@
 {
   "content_md": "Its frontmatter is not JSON, so every reader treats it as role-less.\n",
   "created_at": 1760000540000,
+  "footer_tags": [],
   "frontmatter": "{\"role\": \"topic\"",
   "note_id": "01M5DQAYZ5RH88SRZGPY15XXVM",
   "tags": [],

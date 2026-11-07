@@ -1,6 +1,10 @@
 {
   "content_md": "# Player Loop\n\nExplore, gather, build, repeat. The loop feeds the [[Economy Design]] and an idea nobody has written yet: [[Unwritten Idea]].\n",
   "created_at": 1760000000000,
+  "footer_tags": [
+    "core",
+    "loop"
+  ],
   "frontmatter": {
     "role": "topic"
   },

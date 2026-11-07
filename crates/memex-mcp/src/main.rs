@@ -57,6 +57,9 @@ enum Commands {
         /// Max notes to show.
         #[arg(long, default_value = "20")]
         limit: i64,
+        /// Only notes with this tag.
+        #[arg(long)]
+        tag: Option<String>,
     },
     /// Update an existing note. Body comes from stdin.
     Update {
@@ -164,8 +167,10 @@ enum Commands {
     Rm(cli::rm::RmArgs),
     /// Excerpt operations on topic notes.
     Excerpt(cli::excerpt::ExcerptArgs),
-    /// Topic footer operations on daily notes.
+    /// Note footer operations.
     Footer(cli::footer::FooterArgs),
+    /// Add, remove or list tags.
+    Tag(cli::tag::TagArgs),
     /// Smart Folder operations.
     Folder(cli::folder::FolderArgs),
     /// Read or change vault settings.
@@ -286,7 +291,7 @@ async fn dispatch(command: Commands) -> Result<()> {
             role,
             with_embeddings,
         } => cmd_add(vault, title, tags, role, with_embeddings).await,
-        Commands::Ls { vault, limit } => cmd_ls(vault, limit),
+        Commands::Ls { vault, limit, tag } => cmd_ls(vault, limit, tag),
         Commands::Update {
             vault,
             note_id,
@@ -338,6 +343,7 @@ async fn dispatch(command: Commands) -> Result<()> {
         Commands::Rm(args) => cli::rm::run(args),
         Commands::Excerpt(args) => cli::excerpt::run(args),
         Commands::Footer(args) => cli::footer::run(args),
+        Commands::Tag(args) => cli::tag::run(args),
         Commands::Folder(args) => cli::folder::run(args),
         Commands::Settings(args) => cli::settings::run(args),
         Commands::Filing(args) => cli::filing::run(args),
@@ -402,9 +408,15 @@ async fn cmd_add(
     Ok(())
 }
 
-fn cmd_ls(vault_path: PathBuf, limit: i64) -> Result<()> {
+fn cmd_ls(vault_path: PathBuf, limit: i64, tag: Option<String>) -> Result<()> {
     let absolute = make_absolute(&vault_path)?;
     let vault = Vault::open(&absolute)?;
+    if let Some(tag) = tag {
+        for n in ops::tags::notes_with_tag(&vault, &tag, limit)? {
+            println!("{}  {}", n.note_id, n.title);
+        }
+        return Ok(());
+    }
     let listed = list_notes(&vault, limit)?;
     if listed.is_empty() {
         println!("(empty vault)");

@@ -45,6 +45,8 @@ const _itemPrefix = 'tag-autocomplete-item-';
 final Finder _popover = find.byKey(const Key('tag-autocomplete'));
 final Finder _createRow = find.byKey(const Key('tag-autocomplete-create'));
 final Finder _wikilinkPopover = find.byKey(const Key('wikilink-popover'));
+final Finder _wikilinkCreate = find.byKey(const Key('wikilink-popover-create'));
+const _nestedOverlayKey = Key('nested-overlay');
 
 Finder _row(String tag) => find.byKey(Key('$_itemPrefix$tag'));
 
@@ -85,23 +87,27 @@ Future<TextEditingController> _pumpField(
   List<NoteTitle> titles = const [],
   ValueChanged<String>? onChanged,
   FocusNode? Function()? onMoveDown,
+  bool nestedOverlay = false,
 }) async {
   final field = controller ?? TextEditingController();
   addTearDown(field.dispose);
   final host = chips ?? KindChipHost();
   if (chips == null) addTearDown(host.dispose);
+  final segment = TextSegmentField(
+    controller: field,
+    kindChips: host,
+    onChanged: onChanged,
+    onMoveDown: onMoveDown,
+  );
+  final Widget body = nestedOverlay
+      ? Overlay(
+          key: _nestedOverlayKey,
+          initialEntries: [OverlayEntry(builder: (_) => segment)],
+        )
+      : segment;
   await pumpEditorScoped(
     tester,
-    MaterialApp(
-      home: Scaffold(
-        body: TextSegmentField(
-          controller: field,
-          kindChips: host,
-          onChanged: onChanged,
-          onMoveDown: onMoveDown,
-        ),
-      ),
-    ),
+    MaterialApp(home: Scaffold(body: body)),
     titles: titles,
     overrides: overrides ?? [_tagsLoad(tags ?? _sample)],
   );
@@ -169,6 +175,41 @@ List<String> _selectedRows() => [
     if (_isSelected(_row(name))) name,
   if (_createRow.evaluate().isNotEmpty && _isSelected(_createRow)) 'create',
 ];
+
+/// The wikilink popover's rows, top to bottom, as (key, selected): the note
+/// rows, then the create row.
+List<(String, bool)> _wikilinkRows() {
+  final rows = find
+      .byWidgetPredicate((w) {
+        final key = w.key;
+        return key is ValueKey<String> &&
+            (key.value.startsWith('wikilink-popover-item-') ||
+                key.value == 'wikilink-popover-create');
+      })
+      .evaluate()
+      .toList();
+  double top(Element e) =>
+      (e.renderObject! as RenderBox).localToGlobal(Offset.zero).dy;
+  rows.sort((a, b) => top(a).compareTo(top(b)));
+  return [
+    for (final e in rows)
+      (
+        (e.widget.key! as ValueKey<String>).value,
+        _isSelected(find.byKey(e.widget.key!)),
+      ),
+  ];
+}
+
+/// The index of the one selected wikilink row, failing when not exactly one.
+int _wikilinkSelectedIndex() {
+  final rows = _wikilinkRows();
+  final selected = [
+    for (final (i, r) in rows.indexed)
+      if (r.$2) i,
+  ];
+  expect(selected, hasLength(1), reason: 'one row is selected in $rows');
+  return selected.single;
+}
 
 Future<void> _press(WidgetTester tester, LogicalKeyboardKey key) async {
   await tester.sendKeyEvent(key);
@@ -1724,6 +1765,60 @@ void main() {
       expect(field.text, '[[Pricing]] #pricing ');
     });
 
+    testWidgets('the wikilink popover highlights the row the arrows reach', (
+      tester,
+    ) async {
+      final field = await _pumpField(
+        tester,
+        titles: [
+          NoteTitle(id: 'n1', title: 'Pricing', updatedAt: 0),
+          NoteTitle(id: 'n2', title: 'Primer', updatedAt: 0),
+        ],
+      );
+
+      await _type(tester, field, 'read [[pri');
+      expect(_wikilinkRows(), hasLength(3), reason: 'two notes and create');
+      expect(_wikilinkRows().last.$1, 'wikilink-popover-create');
+      expect(_wikilinkSelectedIndex(), 0, reason: 'the first row starts');
+
+      await _press(tester, LogicalKeyboardKey.arrowDown);
+      expect(_wikilinkSelectedIndex(), 1);
+      await _press(tester, LogicalKeyboardKey.arrowDown);
+      expect(_wikilinkSelectedIndex(), 2, reason: 'the create row');
+      expect(_isSelected(_wikilinkCreate), isTrue);
+      await _press(tester, LogicalKeyboardKey.arrowDown);
+      expect(_wikilinkSelectedIndex(), 0, reason: 'down wraps');
+      await _press(tester, LogicalKeyboardKey.arrowUp);
+      expect(_wikilinkSelectedIndex(), 2, reason: 'up wraps to create');
+      await _press(tester, LogicalKeyboardKey.arrowUp);
+      expect(_wikilinkSelectedIndex(), 1);
+    });
+
+    testWidgets('a wikilink create row on its own is the highlighted row', (
+      tester,
+    ) async {
+      final field = await _pumpField(
+        tester,
+        titles: [NoteTitle(id: 'n1', title: 'Pricing', updatedAt: 0)],
+      );
+
+      await _type(tester, field, '[[zzzz');
+      expect(_wikilinkRows().map((r) => r.$1), ['wikilink-popover-create']);
+      expect(_isSelected(_wikilinkCreate), isTrue);
+    });
+
+    testWidgets('an exact wikilink title leaves its note row highlighted', (
+      tester,
+    ) async {
+      final field = await _pumpField(
+        tester,
+        titles: [NoteTitle(id: 'n1', title: 'Pricing', updatedAt: 0)],
+      );
+
+      await _type(tester, field, '[[Pricing');
+      expect(_wikilinkRows(), [('wikilink-popover-item-Pricing', true)]);
+    });
+
     testWidgets('escaping a wikilink popover does not open the tag popover', (
       tester,
     ) async {
@@ -3271,6 +3366,60 @@ void main() {
       expect(field.text, 'x #Road ');
       expect(field.selection, const TextSelection.collapsed(offset: 8));
       expect(_popover, findsNothing);
+    });
+  });
+
+  group('the popover box (r5 mutants)', () {
+    testWidgets('the tag popover height tracks its rows', (tester) async {
+      final field = await _pumpField(tester);
+
+      await _type(tester, field, 'x #roadmap');
+      final lone = tester.getSize(_popover).height;
+      await _type(tester, field, 'x #');
+      expect(_rowNames(), hasLength(5), reason: 'control: all five tags');
+      final five = tester.getSize(_popover).height;
+
+      expect(lone, lessThan(five), reason: 'one row is shorter than five');
+      expect(five, lessThan(280), reason: 'five rows do not fill the box');
+    });
+
+    testWidgets('the wikilink popover height tracks its rows', (tester) async {
+      final field = await _pumpField(
+        tester,
+        titles: [
+          NoteTitle(id: 'n1', title: 'Pricing', updatedAt: 0),
+          NoteTitle(id: 'n2', title: 'Primer', updatedAt: 0),
+        ],
+      );
+
+      await _type(tester, field, '[[zzzz');
+      final lone = tester.getSize(_wikilinkPopover).height;
+      await _type(tester, field, '[[pri');
+      expect(_wikilinkRows(), hasLength(3), reason: 'control: two and create');
+      final three = tester.getSize(_wikilinkPopover).height;
+
+      expect(lone, lessThan(three));
+      expect(three, lessThan(280));
+    });
+
+    testWidgets('the tag popover opens in the root overlay', (tester) async {
+      final field = await _pumpField(tester, nestedOverlay: true);
+      expect(
+        find.descendant(
+          of: find.byKey(_nestedOverlayKey),
+          matching: find.byType(TextSegmentField),
+        ),
+        findsOneWidget,
+        reason: 'control: the field sits in the nested overlay',
+      );
+
+      await _type(tester, field, 'x #');
+      expect(_popover, findsOneWidget);
+      expect(
+        find.descendant(of: find.byKey(_nestedOverlayKey), matching: _popover),
+        findsNothing,
+        reason: 'the popover is not clipped to a field-level overlay',
+      );
     });
   });
 }

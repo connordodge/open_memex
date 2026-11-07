@@ -8,11 +8,13 @@ use memex_core::notes::{
     create_or_adopt_note, delete_note_checked, get_note, update_note_with_options, CreateNote,
     RenameOptions, UpdateNote,
 };
-use memex_core::{daily, excerpts, indexer, review, tags};
+use memex_core::tags::{self, TagOrigin};
+use memex_core::{daily, excerpts, indexer, review};
 use memex_core::{Caller, Clock, NoteId, Vault};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 
+use super::tags::{is_valid_name, stored_name};
 use crate::cli::{InvalidArgument, Role};
 
 /// The input of [`add`]: the note body plus `memex add`'s flags.
@@ -23,7 +25,8 @@ pub struct AddInput {
     pub title: Option<String>,
     /// The note body (stdin for the CLI).
     pub content_md: String,
-    /// Tags added to the note after it is created.
+    /// Tags added to the note after it is created, as `person` tags with
+    /// footer text (R40). Any name in the grammar (D43).
     pub tags: Vec<String>,
     /// The `role` frontmatter value.
     pub role: Option<Role>,
@@ -32,18 +35,22 @@ pub struct AddInput {
 impl AddInput {
     /// The checks `memex add` makes before it opens the vault: a body is
     /// required unless the note is a daily note (C2.1: a day may start
-    /// empty). [`add`] makes the same checks.
+    /// empty), and every tag name is in the grammar (D43). [`add`] makes the
+    /// same checks.
     pub fn validate(&self) -> anyhow::Result<()> {
         if self.content_md.trim().is_empty() && self.role != Some(Role::Daily) {
             let msg = "stdin was empty — nothing to add".to_string();
             return Err(InvalidArgument(msg).into());
+        }
+        if let Some(bad) = self.tags.iter().find(|tag| !is_valid_name(tag)) {
+            return Err(InvalidArgument(format!("{bad:?} is not a valid tag name")).into());
         }
         Ok(())
     }
 }
 
 /// What `memex add` prints: `Created note` (or `Adopted note`), then
-/// `note_id`, `title`, and `tags` when there are any.
+/// `note_id`, `title`, and `tags` (their stored names) when there are any.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AddOutput {
     pub note_id: String,
@@ -89,10 +96,16 @@ pub fn add(
         }
     };
     let outcome = create_or_adopt_note(vault, create, Caller::Person, clock)?;
-    let note = outcome.note;
-    for t in &tag_list {
-        tags::add_tag(vault, note.id.as_str(), t)?;
-    }
+    let id = outcome.note.id;
+    let stored_tags = tag_list
+        .iter()
+        .map(|tag| {
+            // The index below reads the note once all its footer lines are in.
+            tags::apply_tag(vault, &id, tag, TagOrigin::Person, None)?;
+            stored_name(vault, &id, tag)
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let note = get_note(vault, &id)?;
     indexer::reindex_note(
         vault.connection_mut(),
         note.id.as_str(),
@@ -102,7 +115,7 @@ pub fn add(
     Ok(AddOutput {
         note_id: note.id.to_string(),
         title: note.title,
-        tags: tag_list,
+        tags: stored_tags,
         adopted: outcome.adopted,
     })
 }

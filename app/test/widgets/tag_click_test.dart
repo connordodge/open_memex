@@ -1346,6 +1346,33 @@ void main() {
       },
       variant: macOnly,
     );
+
+    testWidgets(
+      'a segment start change on the same text takes the click off a tag in leading frontmatter and gives it back',
+      (tester) async {
+        // At a segment start the leading `---` lines are frontmatter and the
+        // tag between them is no link; mid-segment they are rules.
+        final f = await _pumpField(tester, '---\n#work\n---\n');
+        expect(f.controller.atSegmentStart, isTrue);
+
+        await _cmdClick(tester, f.on('#work'));
+        expect(f.expanded, isNull, reason: 'frontmatter at a segment start');
+        await _dropClickMouse(tester);
+
+        f.controller.atSegmentStart = false;
+        await tester.pump();
+        await _cmdClick(tester, f.on('#work'));
+        expect(f.expanded, 'work', reason: 'rules, not frontmatter');
+        f.reset();
+        await _dropClickMouse(tester);
+
+        f.controller.atSegmentStart = true;
+        await tester.pump();
+        await _cmdClick(tester, f.on('#work'));
+        expect(f.expanded, isNull, reason: 'frontmatter again');
+      },
+      variant: macOnly,
+    );
   });
 
   // ------------------------------------------------- a rendered table (D51 c)
@@ -1993,6 +2020,34 @@ void main() {
 
         await _click(tester, _onCard(t, '#work'));
         t.expectOpened('work');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a press on the last sliver of a card tag whose nearest text offset is past the tag opens nothing and a press a pixel inside opens it',
+      (tester) async {
+        // The italic closer after the tag renders zero-width, so the paragraph
+        // maps the last sliver of the k to the offset after the closer.
+        final t = await _launchCard(tester, ['*x #work* y']);
+        final rect = _cardRect(t, '#work');
+        final (paragraph, at) = _cardHit(t, '#work');
+        final sliver = Offset(rect.right - 0.001, rect.center.dy);
+        expect(rect.contains(sliver), isTrue, reason: 'inside the glyph box');
+        expect(
+          paragraph
+              .getPositionForOffset(paragraph.globalToLocal(sliver))
+              .offset,
+          greaterThan(at + '#work'.length),
+          reason: 'the SDK maps the sliver past the tag end',
+        );
+
+        await _click(tester, sliver);
+        t.expectModeAlone(why: 'the offset is past the tag');
+        await _dropClickMouse(tester);
+
+        await _click(tester, Offset(rect.right - 1, rect.center.dy));
+        t.expectOpened('work', why: 'a pixel inside the last glyph');
       },
       variant: macOnly,
     );

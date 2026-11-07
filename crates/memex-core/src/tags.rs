@@ -662,7 +662,7 @@ fn tag_tallies(vault: &Vault) -> Result<Vec<TagTally>> {
     let conn = vault.connection_ref();
     let mut stmt = conn.prepare(
         "SELECT t.tag, t.origin, n.frontmatter FROM tags t JOIN notes n ON n.id = t.note_id
-         ORDER BY lower(t.tag), t.tag",
+         ORDER BY t.tag COLLATE NOCASE, t.tag",
     )?;
     let rows = stmt.query_map([], |r| {
         Ok((
