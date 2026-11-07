@@ -47,7 +47,7 @@ Open-source, local-first, AI-native knowledge base. The user's notes live on the
   - capture and excerpts: `append_to_daily_note`, `add_excerpt`, `remove_excerpt`
   - Smart Folders and settings: `list_smart_folders`, `create_smart_folder`, `update_smart_folder`, `delete_smart_folder`, `add_to_smart_folder`, `remove_from_smart_folder`, `get_vault_settings`
   - tags and footer topics: `list_tags`, `tag_note`, `untag_note`, `add_footer_topic`
-- None of the tools renames, edits or deletes an existing note, and the only write into a daily note body is `append_to_daily_note`.
+- None of the tools renames, edits or deletes an existing note, with one exception: `update_vault_guide` rewrites the Vault Guide, the one note the agent may rewrite. The only write into a daily note body is `append_to_daily_note`; `tag_note`, `untag_note` and `add_footer_topic` write Note footer text only, never the person's own text.
 - 2 MCP prompts: `review_daily_notes` and `capture` (the same texts print with `memex prompt review` and `memex prompt capture`)
 
 ## Upgrading to schema V5
@@ -168,7 +168,7 @@ cd app && flutter analyze && flutter test
 - In-editor wikilink rendering + click-to-navigate (today the right-panel Connections tab handles navigation; styled `TextSpan` + tap routing on `EditableText` is the v2 work)
 - Plugin system
 - Encryption at rest
-- MCP tools that rename, edit or delete existing notes (people do those through the app or `memex update` and `memex rm`; by design agents only create notes, append to daily notes, file excerpts, and write footer text with `tag_note`, `untag_note` and `add_footer_topic`, including on daily notes, never the person's own text)
+- MCP tools that rename, edit or delete existing notes (people do those through the app or `memex update` and `memex rm`; by design agents only create notes, append to daily notes, file excerpts, rewrite the Vault Guide with `update_vault_guide` (the one note an agent may edit), and write footer text with `tag_note`, `untag_note` and `add_footer_topic`, including on daily notes, never the person's own text)
 - Transclusion of whole notes (`![[Title]]`); only blocks of daily notes can be transcluded, as excerpts
 
 ## License

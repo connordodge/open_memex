@@ -22,6 +22,6 @@ pub fn router() -> Router {
         .merge(canvas::router())
         .merge(graph::router())
         .merge(revision::router())
-        .merge(tags::router())
         .merge(feedback::router())
+        .merge(tags::router())
 }

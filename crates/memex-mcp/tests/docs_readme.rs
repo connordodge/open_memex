@@ -2095,16 +2095,27 @@ fn review_guide_lists_list_tags_and_tag_note_in_the_order_a_review_uses_the_tool
 }
 
 #[test]
-fn review_guide_states_the_served_tool_count_not_a_stale_one() {
+fn review_guide_names_no_tool_count_and_points_to_the_readme_list() {
+    // TEST-CHANGE (#257, lead decision 2): the guide used to state the served
+    // count and went stale again when the Feedback tools landed. It now names no
+    // count at all and points to the README's list, so it cannot go stale.
     let doc = daily_review();
+    let count = Regex::new(r"\b\d+ (MCP )?tools\b").unwrap();
+    let stale: Vec<&str> = count.find_iter(&doc).map(|m| m.as_str()).collect();
     assert!(
-        !doc.contains("26 tools"),
-        "docs/daily-review.md still says 26 tools"
+        stale.is_empty(),
+        "docs/daily-review.md names a tool count, which goes stale: {stale:?}"
+    );
+    let line = wi243_lines_with(&doc, "The full list of tools is in the");
+    assert_eq!(
+        line.len(),
+        1,
+        "one line says 'The full list of tools is in the README': {line:?}"
     );
     assert!(
-        doc.contains(&format!("{} tools", tool_names::TOOL_COUNT)),
-        "docs/daily-review.md states the served tool count ({} tools)",
-        tool_names::TOOL_COUNT
+        line[0].contains("[README](../README.md)"),
+        "that line links the README: {}",
+        line[0]
     );
 }
 
@@ -2170,5 +2181,530 @@ fn readme_and_review_guide_document_memex_tag_ls_tag_filter_and_footer_add_by_no
             "{name} documents `memex footer add --note-id`"
         );
         assert_commands_are_real(name, &doc);
+    }
+}
+
+// ======================================================================
+// WI #257 (Spec #233 R34-R38, R46, D44): Feedback, Corrections and the Vault
+// Guide in the README and the docs.
+//
+// The prose is read by hand; these tests pin the facts that can be checked
+// mechanically. Helpers carry a `wi257_` prefix.
+// ======================================================================
+
+/// The tool names a doc may name in code formatting for Feedback and the guide.
+fn wi257_assert_feedback_tool_names_are_real(what: &str, text: &str) {
+    let real = tool_names::all_tool_names();
+    let name = Regex::new(r"`([a-z][a-z_]*)`").unwrap();
+    let verbs = [
+        "resolve_", "record_", "get_", "list_", "update_", "remove_", "tag_", "untag_",
+    ];
+    for c in name.captures_iter(text) {
+        let token = &c[1];
+        if verbs.iter().any(|v| token.starts_with(v)) && token.contains('_') {
+            assert!(
+                real.contains(&token) || ["update_note", "delete_note"].contains(&token),
+                "{what} names `{token}`, which the server does not expose: {real:?}"
+            );
+        }
+    }
+}
+
+/// Every match of `(?i)vault guide` in prose is spelled `Vault Guide`.
+fn wi257_assert_vault_guide_spelling(what: &str, md: &str) {
+    let re = Regex::new(r"(?i)\bvault guide\b").unwrap();
+    for m in re.find_iter(&prose_only(md)) {
+        assert_eq!(m.as_str(), "Vault Guide", "{what} spells the glossary term");
+    }
+}
+
+#[test]
+fn readme_invariant_line_names_the_vault_guide_exception_and_the_three_footer_writers() {
+    let readme = readme();
+    let lines: Vec<&str> = readme
+        .lines()
+        .filter(|l| l.contains("`append_to_daily_note`") && l.contains("daily note body"))
+        .collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "one README line states the invariant (it names `append_to_daily_note` as the only write \
+         into a daily note body): {lines:?}"
+    );
+    let line = lines[0];
+    assert!(line.starts_with("- "), "it stays one bullet line: {line}");
+    // The Vault Guide is the one note the agent may rewrite.
+    assert!(
+        line.contains("Vault Guide") && line.contains("`update_vault_guide`"),
+        "the invariant names the Vault Guide and `update_vault_guide`: {line}"
+    );
+    assert!(
+        Regex::new(r"(?i)\b(one|only)\b[^.]{0,40}\bnote\b[^.]{0,60}\b(rewrit\w*|edit\w*)")
+            .unwrap()
+            .is_match(line),
+        "the Vault Guide is the one note the agent may rewrite: {line}"
+    );
+    // The footer writers, by name, and what they write.
+    for tool in ["tag_note", "untag_note", "add_footer_topic"] {
+        assert!(
+            line.contains(&format!("`{tool}`")),
+            "the invariant names `{tool}` as a writer of Note footer text: {line}"
+        );
+    }
+    assert!(
+        line.contains("Note footer"),
+        "the invariant says Note footer, the glossary term: {line}"
+    );
+    // The invariant for every other note stays.
+    let lower = line.to_lowercase();
+    assert!(
+        lower.contains("renames") && lower.contains("deletes"),
+        "the invariant still says no tool renames or deletes a note: {line}"
+    );
+}
+
+#[test]
+fn readme_by_design_bullet_adds_the_vault_guide_exception_to_the_footer_writers() {
+    let readme = readme();
+    let line = wi243_lines_with(&readme, "by design agents only");
+    assert_eq!(line.len(), 1, "one 'by design agents only' line: {line:?}");
+    let line = line[0];
+    assert!(
+        line.contains("Vault Guide") && line.contains("`update_vault_guide`"),
+        "the 'by design' bullet names the Vault Guide exception (`update_vault_guide`): {line}"
+    );
+    // The #243 statement is kept.
+    wi243_assert_footer_write_line("README.md", line);
+}
+
+#[test]
+fn review_guide_tool_order_starts_with_the_vault_guide_and_open_feedback_and_places_resolve_feedback(
+) {
+    let doc = daily_review();
+    let line = wi243_lines_with(&doc, "in the order a review uses them");
+    assert_eq!(line.len(), 1, "one ordered tool list: {line:?}");
+    let line = line[0];
+    let at = |tool: &str| {
+        line.find(&format!("`{tool}`"))
+            .unwrap_or_else(|| panic!("`{tool}` missing from the ordered tool list: {line}"))
+    };
+    assert!(
+        at("get_vault_guide") < at("list_open_feedback"),
+        "the guide is read first: {line}"
+    );
+    assert!(
+        at("list_open_feedback") < at("list_unreviewed_days"),
+        "Feedback is worked before the unreviewed days: {line}"
+    );
+    assert!(
+        at("list_open_feedback") < at("resolve_feedback"),
+        "`resolve_feedback` comes after `list_open_feedback`: {line}"
+    );
+}
+
+#[test]
+fn review_guide_agent_limits_name_the_vault_guide_as_the_one_note_the_agent_rewrites() {
+    let doc = daily_review();
+    let section = wi243_section(&doc, "### What the agent can and cannot do");
+    let lines = wi243_lines_with(&section, "`update_vault_guide`");
+    assert_eq!(
+        lines.len(),
+        1,
+        "one statement in 'What the agent can and cannot do' names `update_vault_guide`:\n{section}"
+    );
+    let line = lines[0];
+    assert!(line.contains("Vault Guide"), "{line}");
+    assert!(
+        Regex::new(r"(?i)\b(one|only)\b[^.]{0,40}\bnote\b")
+            .unwrap()
+            .is_match(line)
+            && Regex::new(r"(?i)\brewrit\w*\b").unwrap().is_match(line),
+        "it says the Vault Guide is the one note the agent may rewrite: {line}"
+    );
+    // The other limits stay: no rename, delete or merge of notes.
+    assert!(
+        section.contains("It cannot rename, delete or merge notes"),
+        "the rename/delete/merge limit stays:\n{section}"
+    );
+}
+
+#[test]
+fn review_guide_model_defines_feedback_correction_vault_guide_and_handled_in_glossary_terms() {
+    let doc = daily_review();
+    let model = wi243_section(&doc, "## 1. The model");
+    let bullet = |term: &str| -> String {
+        let lines = wi243_lines_with(&model, &format!("- **{term}**"));
+        assert_eq!(
+            lines.len(),
+            1,
+            "the model section has one `- **{term}**` bullet:\n{model}"
+        );
+        lines[0].to_string()
+    };
+    let feedback = bullet("Feedback");
+    assert!(
+        feedback.to_lowercase().contains("comment") && feedback.contains("Correction"),
+        "Feedback is a written comment or a Correction: {feedback}"
+    );
+    let correction = bullet("Correction");
+    assert!(
+        correction.contains("Feedback"),
+        "a Correction is recorded as Feedback: {correction}"
+    );
+    let guide = bullet("Vault Guide");
+    let guide_lower = guide.to_lowercase();
+    assert!(
+        guide_lower.contains("agent")
+            && guide_lower.contains("review")
+            && guide_lower.contains("capture"),
+        "the Vault Guide is read by the agent before every Review and Capture: {guide}"
+    );
+    assert!(
+        model.contains("Handled"),
+        "the model section says what Handled means:\n{model}"
+    );
+    wi257_assert_vault_guide_spelling("docs/daily-review.md", &doc);
+    wi257_assert_vault_guide_spelling("README.md", &readme());
+    wi257_assert_vault_guide_spelling("docs/daily-acceptance.md", &daily_acceptance());
+}
+
+#[test]
+fn review_guide_has_an_activity_section_on_comments_corrections_chat_feedback_and_the_vault_guide()
+{
+    let doc = daily_review();
+    let section = hosted_section(&doc, "the Activity tab", r"activity");
+    let flat = section.body.clone();
+    for term in [
+        "Feedback",
+        "Correction",
+        "Handled",
+        "From chat",
+        "Vault Guide",
+        "Comment",
+    ] {
+        assert!(
+            flat.contains(term),
+            "the Activity section uses `{term}`:\n{flat}"
+        );
+    }
+    // How a person writes a comment from the shell.
+    assert!(
+        flat.contains("memex feedback add"),
+        "the Activity section shows `memex feedback add`:\n{flat}"
+    );
+    assert_commands_are_real("docs/daily-review.md", &doc);
+}
+
+#[test]
+fn review_guide_prompts_section_describes_the_feedback_pass_and_the_capture_guide_read() {
+    let doc = daily_review();
+    let prompts = wi243_section(&doc, "## 2. The two prompts");
+    let review = wi243_lines_with(&prompts, "**`review_daily_notes`**");
+    assert_eq!(review.len(), 1, "one review paragraph: {review:?}");
+    let review = review[0];
+    for tool in ["get_vault_guide", "list_open_feedback", "resolve_feedback"] {
+        assert!(
+            review.contains(&format!("`{tool}`")),
+            "the review paragraph names `{tool}`: {review}"
+        );
+    }
+    assert!(
+        review.contains("Feedback") && review.contains("Vault Guide"),
+        "the review paragraph says Feedback and Vault Guide: {review}"
+    );
+    assert!(
+        Regex::new(r"(?i)\beven (when|if)\b")
+            .unwrap()
+            .is_match(review),
+        "the review paragraph says Feedback is worked even when no day is unreviewed: {review}"
+    );
+
+    let capture = wi243_lines_with(&prompts, "**`capture`**");
+    assert_eq!(capture.len(), 1, "one capture paragraph: {capture:?}");
+    let capture = capture[0];
+    assert!(
+        capture.contains("Vault Guide") && capture.contains("`get_vault_guide`"),
+        "the capture paragraph says it reads the Vault Guide: {capture}"
+    );
+    assert!(
+        Regex::new(r"(?i)\b(never|does not|do not)\b[^.]{0,40}\bwrit\w*\b")
+            .unwrap()
+            .is_match(capture),
+        "the capture paragraph says capture does not write the guide: {capture}"
+    );
+    wi257_assert_feedback_tool_names_are_real("docs/daily-review.md", &doc);
+}
+
+/// `(number, heading, body)` of each numbered `## N. ` section; the body runs to
+/// the next `## ` heading, so `## Clean up` ends the last one.
+fn wi257_numbered_sections(doc: &str) -> Vec<(u32, String, String)> {
+    let heading = Regex::new(r"^## (\d+)\. (.+)$").unwrap();
+    let mut out: Vec<(u32, String, String)> = Vec::new();
+    let mut inside = false;
+    for line in doc.lines() {
+        if let Some(c) = heading.captures(line) {
+            out.push((c[1].parse().unwrap(), c[2].to_string(), String::new()));
+            inside = true;
+        } else if line.starts_with("## ") {
+            inside = false;
+        } else if inside {
+            let body = &mut out.last_mut().unwrap().2;
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    out
+}
+
+#[test]
+fn daily_acceptance_script_has_a_section_for_each_manual_feedback_journey_before_clean_up() {
+    let doc = daily_acceptance();
+    let sections = wi257_numbered_sections(&doc);
+    let numbers: Vec<u32> = sections.iter().map(|(n, _, _)| *n).collect();
+    assert_eq!(
+        numbers,
+        (1..=numbers.len() as u32).collect::<Vec<_>>(),
+        "sections are numbered 1..n in order"
+    );
+    assert!(
+        numbers.len() >= 11,
+        "sections 1-8 stay and three new ones follow (one per manual journey): {numbers:?}"
+    );
+    let clean_up = doc
+        .find("## Clean up")
+        .expect("the script keeps `## Clean up`");
+    let last_numbered = doc
+        .rfind(&format!("## {}. ", numbers.len()))
+        .expect("the last numbered heading");
+    assert!(
+        last_numbered < clean_up,
+        "every numbered section comes before `## Clean up`"
+    );
+
+    // The three MANUAL ACs, each in a section of its own.
+    let new: Vec<&(u32, String, String)> = sections.iter().filter(|(n, _, _)| *n >= 9).collect();
+    let fixes_feedback = |s: &str| {
+        s.contains("Feedback")
+            && s.contains("Correction")
+            && s.contains("Vault Guide")
+            && s.contains("Handled")
+            && s.contains("`resolve_feedback`")
+            && Regex::new(r"memex (feedback add|excerpt (move|remove-block))")
+                .unwrap()
+                .is_match(s)
+    };
+    let fixes_on_the_spot = |s: &str| {
+        s.contains("`record_feedback`")
+            && s.contains("From chat")
+            && s.contains("Activity")
+            && s.contains("/mcp__memex__review_daily_notes")
+    };
+    let does_not_redo = |s: &str| {
+        s.contains("Correction")
+            && s.contains("review_daily_notes")
+            && Regex::new(r"(?i)\b(redo|redone|re-?fil\w*|re-?add\w*)\b")
+                .unwrap()
+                .is_match(s)
+    };
+    let mut found = false;
+    for a in &new {
+        for b in &new {
+            for c in &new {
+                if a.0 != b.0
+                    && a.0 != c.0
+                    && b.0 != c.0
+                    && fixes_feedback(&a.2)
+                    && fixes_on_the_spot(&b.2)
+                    && does_not_redo(&c.2)
+                {
+                    found = true;
+                }
+            }
+        }
+    }
+    assert!(
+        found,
+        "three different new sections: (1) open Feedback and a Correction are fixed, replied to \
+         (Handled) and the Vault Guide updated, seeded with `memex feedback add` or `memex excerpt \
+         move`/`remove-block`; (2) a comment in a live Review session is recorded with \
+         `record_feedback` and shows `From chat` in Activity; (3) a later `review_daily_notes` run \
+         does not redo a Correction. Sections: {:?}",
+        new.iter()
+            .map(|(n, h, _)| format!("{n}. {h}"))
+            .collect::<Vec<_>>()
+    );
+
+    // Real tool names only, like the rest of the script.
+    for (_, _, body) in &new {
+        wi257_assert_feedback_tool_names_are_real("docs/daily-acceptance.md", body);
+    }
+}
+
+// ---- WI 257 verify: doc claims the implementer's handoff listed as unpinned ----
+
+#[test]
+fn review_guide_activity_section_says_what_handled_shows_what_restore_does_and_that_deleted_open_feedback_is_skipped(
+) {
+    let doc = daily_review();
+    let section = hosted_section(&doc, "the Activity tab", r"activity");
+    let body = section.body.clone();
+    // Open Feedback reads `Open`, then `Handled` with the agent's one-line reply.
+    assert!(
+        Regex::new(r"(?is)reads `Open`.{0,120}`Handled`.{0,60}\bone-line reply\b")
+            .unwrap()
+            .is_match(&body),
+        "Open becomes Handled with the agent's one-line reply:\n{body}"
+    );
+    assert!(
+        Regex::new(r"(?is)reply,? which never quotes your text")
+            .unwrap()
+            .is_match(&body),
+        "the reply never quotes the person's text:\n{body}"
+    );
+    // Deleting open Feedback before the agent reaches it is safe.
+    assert!(
+        Regex::new(r"(?is)\bdelete open Feedback\b.{0,80}\bcarries on without it\b")
+            .unwrap()
+            .is_match(&body),
+        "deleted open Feedback is skipped:\n{body}"
+    );
+    // The guide's own Activity tab, with Restore and the three guide commands.
+    assert!(
+        Regex::new(r"(?is)`Restore`.{0,80}\bearlier text\b")
+            .unwrap()
+            .is_match(&body),
+        "`Restore` returns to the earlier text:\n{body}"
+    );
+    for cmd in [
+        "memex guide get",
+        "memex guide revisions",
+        "memex guide restore",
+    ] {
+        assert!(
+            body.contains(cmd),
+            "the Activity section shows `{cmd}`:\n{body}"
+        );
+    }
+    // Corrections: the things a person can undo, and where each one shows (R3, R23).
+    for what in [
+        "moving a block to another topic note",
+        "`File in…`",
+        "a tag Review applied",
+        "a Smart Folder the agent placed it in",
+        "a Smart Folder the agent created",
+        "the day's daily note",
+    ] {
+        assert!(
+            body.contains(what),
+            "a Correction is recorded when you {what}:\n{body}"
+        );
+    }
+    assert_commands_are_real("docs/daily-review.md", &doc);
+}
+
+#[test]
+fn review_guide_no_shell_access_list_names_the_new_write_subcommands() {
+    let doc = daily_review();
+    let line = wi243_lines_with(&doc, "do not give an agent shell access");
+    assert_eq!(line.len(), 1, "one no-shell-access paragraph: {line:?}");
+    for sub in [
+        "`excerpt move`",
+        "`excerpt remove-block`",
+        "`feedback add`",
+        "`guide restore`",
+    ] {
+        assert!(
+            line[0].contains(sub),
+            "the no-shell-access list names {sub}: {}",
+            line[0]
+        );
+    }
+}
+
+#[test]
+fn review_guide_prompts_section_says_the_review_never_redoes_a_correction_and_capture_never_writes_the_guide(
+) {
+    let doc = daily_review();
+    let prompts = wi243_section(&doc, "## 2. The two prompts");
+    assert!(
+        Regex::new(r"(?is)never redoes a Correction")
+            .unwrap()
+            .is_match(&prompts),
+        "the Review paragraph says the agent never redoes a Correction:\n{prompts}"
+    );
+    assert!(
+        Regex::new(r"(?is)\bit never writes the guide\b")
+            .unwrap()
+            .is_match(&prompts),
+        "the Capture paragraph says it never writes the guide:\n{prompts}"
+    );
+    assert!(
+        Regex::new(r"(?is)\bcomment from you about filing is Feedback\b.{0,200}`record_feedback`")
+            .unwrap()
+            .is_match(&prompts),
+        "a comment about filing in a live session is Feedback, recorded with `record_feedback`:\n{prompts}"
+    );
+}
+
+#[test]
+fn daily_acceptance_feedback_sections_each_have_an_expected_line_and_state_what_must_not_happen() {
+    let doc = daily_acceptance();
+    let sections = wi257_numbered_sections(&doc);
+    for n in [9u32, 10, 11] {
+        let (_, heading, body) = sections
+            .iter()
+            .find(|(k, _, _)| *k == n)
+            .unwrap_or_else(|| panic!("acceptance section {n} exists"));
+        assert!(
+            body.contains("**Expected**"),
+            "section {n} ({heading}) has an **Expected** line:\n{body}"
+        );
+    }
+    let body = |n: u32| {
+        sections
+            .iter()
+            .find(|(k, _, _)| *k == n)
+            .map(|(_, _, b)| b.clone())
+            .unwrap()
+    };
+    // 9: oldest first, no sweep of older days, reply never quotes, Correction not undone.
+    let nine = body(9);
+    for phrase in [
+        "oldest first",
+        "does not sweep older days",
+        "never quotes your text",
+        "the Correction is not undone",
+        "`update_vault_guide`",
+    ] {
+        assert!(
+            nine.contains(phrase),
+            "section 9 expects `{phrase}`:\n{nine}"
+        );
+    }
+    // 10: the fix, the verbatim record, the `From chat` row already Handled, never open.
+    let ten = body(10);
+    for phrase in [
+        "fixes the filing on the spot",
+        "as you typed them",
+        "`From chat`",
+        "never shows as open",
+    ] {
+        assert!(
+            ten.contains(phrase),
+            "section 10 expects `{phrase}`:\n{ten}"
+        );
+    }
+    // 11: no re-file into the topic note, no re-add to the Smart Folder, then a real change is judged.
+    let eleven = body(11);
+    for phrase in [
+        "does not re-file the block into the topic note",
+        "does not re-add a topic note to a Smart Folder",
+        "the block is not back in that topic note",
+        "the earlier Correction still shows in Activity",
+    ] {
+        assert!(
+            eleven.contains(phrase),
+            "section 11 expects `{phrase}`:\n{eleven}"
+        );
     }
 }
