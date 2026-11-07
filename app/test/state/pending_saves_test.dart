@@ -21,6 +21,7 @@ import 'package:open_memex_app/src/state/pending_saves.dart';
 import 'package:open_memex_app/src/state/settings.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/state/today_state.dart';
+import 'package:open_memex_app/src/state/ui_state_store.dart';
 import 'package:open_memex_app/src/state/vault_access_state.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 
@@ -138,6 +139,19 @@ Future<_H> _hosted(
   }
   await pumpEventQueue();
   return _H(c, doubles, db, fakeCli, clock);
+}
+
+/// A temp folder for a local vault, whose UI state store writes into it.
+/// Teardowns run last-added first, so this one runs after [_hosted]'s has
+/// disposed the container. It awaits the writes still queued before deleting:
+/// one landing during `deleteSync` fails it with "Directory not empty".
+Future<Directory> _localVaultDir() async {
+  final dir = await Directory.systemTemp.createTemp('om102_local');
+  addTearDown(() async {
+    await UiStateStore(vaultPath: dir.path).flush();
+    if (dir.existsSync()) dir.deleteSync(recursive: true);
+  });
+  return dir;
 }
 
 /// A vault with the plain notes "Plan" (`old`, version 3) and "Other"
@@ -1000,10 +1014,7 @@ void main() {
       ),
     ]) {
       test(name, () async {
-        final dir = await Directory.systemTemp.createTemp('om102_local');
-        addTearDown(() {
-          if (dir.existsSync()) dir.deleteSync(recursive: true);
-        });
+        final dir = await _localVaultDir();
         final h = await _hosted(_plainVault(), vault: LocalVaultRef(dir.path));
         h.ctrl.loadNote(h.stored(_planId));
         h.serverDown(error);
@@ -1020,10 +1031,7 @@ void main() {
     test(
       'a failed save elsewhere on a local vault is still swallowed and queues nothing',
       () async {
-        final dir = await Directory.systemTemp.createTemp('om102_local');
-        addTearDown(() {
-          if (dir.existsSync()) dir.deleteSync(recursive: true);
-        });
+        final dir = await _localVaultDir();
         final db = _plainVault();
         final gate = Completer<void>();
         final cli = FakeMemexCli()
