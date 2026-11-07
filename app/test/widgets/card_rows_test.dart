@@ -86,17 +86,20 @@ Future<void> _wi172PumpRows(
     );
   }
   await tester.pumpWidget(
-    MaterialApp(
-      theme: buildOmTheme(),
-      home: Scaffold(
-        body: Align(
-          alignment: Alignment.topLeft,
-          child: RepaintBoundary(
-            key: _wi172BoundaryKey,
-            child: Container(
-              color: OmColors.surface3,
-              padding: const EdgeInsets.all(20),
-              child: SizedBox(width: width, child: rows),
+    // A card tag's click reads providers (#247).
+    ProviderScope(
+      child: MaterialApp(
+        theme: buildOmTheme(),
+        home: Scaffold(
+          body: Align(
+            alignment: Alignment.topLeft,
+            child: RepaintBoundary(
+              key: _wi172BoundaryKey,
+              child: Container(
+                color: OmColors.surface3,
+                padding: const EdgeInsets.all(20),
+                child: SizedBox(width: width, child: rows),
+              ),
             ),
           ),
         ),

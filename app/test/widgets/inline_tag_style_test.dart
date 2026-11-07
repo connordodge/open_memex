@@ -22,6 +22,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show RenderEditable;
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/editor_rows.dart';
 import 'package:open_memex_app/src/editor/tag_grammar.dart';
@@ -1035,12 +1036,14 @@ void main() {
   group('excerpt card (AC6)', () {
     Future<TextSpan> pumpRow(WidgetTester tester, String text, int row) async {
       await tester.pumpWidget(
-        MaterialApp(
-          theme: buildOmTheme(),
-          home: Scaffold(
-            body: Align(
-              alignment: Alignment.topLeft,
-              child: SizedBox(width: 600, child: CardRows(text: text)),
+        ProviderScope(
+          child: MaterialApp(
+            theme: buildOmTheme(),
+            home: Scaffold(
+              body: Align(
+                alignment: Alignment.topLeft,
+                child: SizedBox(width: 600, child: CardRows(text: text)),
+              ),
             ),
           ),
         ),
@@ -1252,12 +1255,14 @@ void main() {
     ) async {
       const text = '#a\n~~~\n#x\n~~~\n#b';
       await tester.pumpWidget(
-        MaterialApp(
-          theme: buildOmTheme(),
-          home: Scaffold(
-            body: Align(
-              alignment: Alignment.topLeft,
-              child: SizedBox(width: 600, child: CardRows(text: text)),
+        ProviderScope(
+          child: MaterialApp(
+            theme: buildOmTheme(),
+            home: Scaffold(
+              body: Align(
+                alignment: Alignment.topLeft,
+                child: SizedBox(width: 600, child: CardRows(text: text)),
+              ),
             ),
           ),
         ),
@@ -1307,12 +1312,14 @@ void main() {
 
     Future<void> pumpCard(WidgetTester tester, String text) =>
         tester.pumpWidget(
-          MaterialApp(
-            theme: buildOmTheme(),
-            home: Scaffold(
-              body: Align(
-                alignment: Alignment.topLeft,
-                child: SizedBox(width: 600, child: CardRows(text: text)),
+          ProviderScope(
+            child: MaterialApp(
+              theme: buildOmTheme(),
+              home: Scaffold(
+                body: Align(
+                  alignment: Alignment.topLeft,
+                  child: SizedBox(width: 600, child: CardRows(text: text)),
+                ),
               ),
             ),
           ),
@@ -1601,14 +1608,16 @@ void main() {
       tester,
     ) async {
       await tester.pumpWidget(
-        MaterialApp(
-          theme: buildOmTheme(),
-          home: const Scaffold(
-            body: Align(
-              alignment: Alignment.topLeft,
-              child: SizedBox(
-                width: 600,
-                child: CardRows(text: '>#x\n\n> >#y'),
+        ProviderScope(
+          child: MaterialApp(
+            theme: buildOmTheme(),
+            home: const Scaffold(
+              body: Align(
+                alignment: Alignment.topLeft,
+                child: SizedBox(
+                  width: 600,
+                  child: CardRows(text: '>#x\n\n> >#y'),
+                ),
               ),
             ),
           ),
@@ -1651,20 +1660,22 @@ void main() {
       required bool card,
     }) async {
       await tester.pumpWidget(
-        MaterialApp(
-          theme: buildOmTheme(),
-          home: Scaffold(
-            body: Align(
-              alignment: Alignment.topLeft,
-              child: SizedBox(
-                width: 600,
-                child: card
-                    ? CardRows(text: table)
-                    : TableGrid(
-                        key: const ValueKey('editor-table-0-0'),
-                        text: table,
-                        style: const TextStyle(fontSize: 13.5),
-                      ),
+        ProviderScope(
+          child: MaterialApp(
+            theme: buildOmTheme(),
+            home: Scaffold(
+              body: Align(
+                alignment: Alignment.topLeft,
+                child: SizedBox(
+                  width: 600,
+                  child: card
+                      ? CardRows(text: table)
+                      : TableGrid(
+                          key: const ValueKey('editor-table-0-0'),
+                          text: table,
+                          style: const TextStyle(fontSize: 13.5),
+                        ),
+                ),
               ),
             ),
           ),

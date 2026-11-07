@@ -10,7 +10,9 @@ import '../../db.dart';
 import '../../editor/markdown_inline.dart';
 import '../../editor/markdown_lines.dart';
 import '../../editor/markdown_table.dart';
+import '../../editor/tag_grammar.dart' show fencedMdLines, normalizeTagName;
 import '../../state/tabs_state.dart';
+import '../../state/tags_browse_state.dart';
 import '../../state/url_opener.dart';
 import '../../state/vault_access_state.dart';
 import '../../state/vault_state.dart';
@@ -30,6 +32,7 @@ const Set<String> _openableSchemes = {'http', 'https', 'mailto'};
 /// opens is a separate question (`_actionable`).
 bool isPlainClickFollowable(InlineToken token) => switch (token) {
   WikilinkToken() || TransclusionLinkToken() || LinkToken() => true,
+  InlineToken(kind: InlineTokenKind.tag) => true,
   _ => false,
 };
 
@@ -46,6 +49,11 @@ bool isPlainClickFollowable(InlineToken token) => switch (token) {
 /// - Cmd+click on such a token follows it: a wikilink's note or a transclusion
 ///   token's daily note through `TabsNotifier`, or a link's URL through
 ///   `urlOpenerProvider`.
+/// - A rendered `#tag` is such a token too, unless its line is fenced code on
+///   the server (rulings D19a, D51): following it opens Tags mode on its
+///   normalized name through `revealTag`, with no navigation. A plain hover
+///   over it shows the cursor only; `cmdHover` is set only with Cmd held
+///   (ruling D52).
 /// - A plain press on such a token, on a line whose markup is hidden, is
 ///   marked on [controller] (Spec #232 TD6) with the token it captured; the
 ///   segment's pointer layer follows it on a release inside the slop. Every
@@ -107,6 +115,7 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
   String? _tokensText;
   bool? _tokensItemText;
   bool? _tokensAtStart;
+  List<bool>? _tokensFenced;
   List<_Link> _links = const [];
 
   @override
@@ -246,14 +255,17 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
     final at = _pointer;
     _refreshedSelection = widget.controller.selection;
     final link = at == null ? null : _actionableAt(at);
-    final hover =
-        link != null &&
-            (HardwareKeyboard.instance.isMetaPressed || _plainFollows(link))
+    final cmd = HardwareKeyboard.instance.isMetaPressed;
+    final hover = link != null && (cmd || _plainFollows(link))
         ? link.span
         : null;
     if (hover != _hover) setState(() => _hover = hover);
-    if (widget.controller.cmdHover != hover) {
-      widget.controller.cmdHover = hover;
+    // A plain hover over a tag is the click cursor alone (D52).
+    final inked = link?.token.kind == InlineTokenKind.tag && !cmd
+        ? null
+        : hover;
+    if (widget.controller.cmdHover != inked) {
+      widget.controller.cmdHover = inked;
     }
   }
 
@@ -330,6 +342,8 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
         unawaited(_openDay(date));
       case LinkToken(:final url):
         unawaited(ref.read(urlOpenerProvider).open(url));
+      case InlineToken(kind: InlineTokenKind.tag):
+        revealTag(ref, link.tag!);
       default:
         break;
     }
@@ -358,17 +372,18 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
     for (final link in _linksOf(widget.controller).reversed) {
       final shown = link.shown;
       if (offset < shown.start || offset > shown.end) continue;
-      if (!_actionable(link.token)) continue;
+      if (!_actionable(link)) continue;
       if (source.boxesFor(shown).any((r) => r.contains(local))) return link;
     }
     return null;
   }
 
-  /// Whether a click can follow [token].
-  bool _actionable(InlineToken token) => switch (token) {
+  /// Whether a click can follow [link].
+  bool _actionable(_Link link) => switch (link.token) {
     WikilinkToken(:final target) => _ids?.containsKey(target) ?? false,
     TransclusionLinkToken(:final date) => _ids?.containsKey(date) ?? false,
     LinkToken(:final url) => _openable(url),
+    InlineToken(kind: InlineTokenKind.tag) => !link.fenced,
     _ => false,
   };
 
@@ -378,24 +393,46 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
     final text = controller.text;
     if (text == _tokensText &&
         controller.itemText == _tokensItemText &&
-        controller.atSegmentStart == _tokensAtStart) {
+        controller.atSegmentStart == _tokensAtStart &&
+        identical(controller.fenced, _tokensFenced)) {
       return _links;
     }
+    final lines = classifyLines(
+      text,
+      atSegmentStart: controller.atSegmentStart,
+    );
+    // As `buildLivePreviewSpan` judges them: item text is cut from a line that
+    // starts with a marker, which opens no fence.
+    final fenced =
+        controller.fenced ??
+        (controller.itemText ? const <bool>[] : fencedMdLines(text, lines));
     final links = <_Link>[];
+    var lineFenced = false;
     void tokenize(int start, int end) {
-      for (final t in tokenizeInline(text.substring(start, end))) {
+      final stretch = text.substring(start, end);
+      for (final t in tokenizeInline(
+        stretch,
+        before: unitBeforeInLine(text, start),
+      )) {
         if (t is WikilinkToken ||
             t is TransclusionLinkToken ||
             t is LinkToken) {
           links.add(_Link(t, start));
+        } else if (t.kind == InlineTokenKind.tag) {
+          links.add(
+            _Link(
+              t,
+              start,
+              tag: normalizeTagName(stretch.substring(t.start + 1, t.end)),
+              fenced: lineFenced,
+            ),
+          );
         }
       }
     }
 
-    for (final line in classifyLines(
-      text,
-      atSegmentStart: controller.atSegmentStart,
-    )) {
+    for (final (i, line) in lines.indexed) {
+      lineFenced = fenced.elementAtOrNull(i) ?? false;
       switch (controller.itemText ? MdLineKind.plain : line.kind) {
         case MdLineKind.heading ||
             MdLineKind.bullet ||
@@ -422,6 +459,7 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
     _tokensText = text;
     _tokensItemText = controller.itemText;
     _tokensAtStart = controller.atSegmentStart;
+    _tokensFenced = controller.fenced;
     return _links = links;
   }
 }
@@ -449,10 +487,17 @@ final class _LinkPress implements GestureArenaMember {
 /// A link [token] of a field's text, tokenized from the line (or table
 /// cell) text starting at [base].
 final class _Link {
-  const _Link(this.token, this.base);
+  const _Link(this.token, this.base, {this.tag, this.fenced = false});
 
   final InlineToken token;
   final int base;
+
+  /// A tag token's normalized name, else null.
+  final String? tag;
+
+  /// Whether a tag token's line is fenced code on the server: the tokenizer
+  /// still finds the token there and only its ink is dropped.
+  final bool fenced;
 
   /// The whole token in the field's text, markers included.
   TextRange get span =>
