@@ -290,9 +290,11 @@ void main() {
         final chip = find.byKey(const Key('footer-chip-$createdTopicId'));
         expect(chip, findsOneWidget);
         expect(
-          find.descendant(of: chip, matching: find.text('PLAYER LOOP')),
+          // TEST-CHANGE (#253): footer topics are plain text now, not chips
+          // that upper-case their label.
+          find.descendant(of: chip, matching: find.text('Player Loop')),
           findsOneWidget,
-          reason: 'the chip shows the topic title (chips upper-case it)',
+          reason: 'the footer item shows the topic title',
         );
       },
     );

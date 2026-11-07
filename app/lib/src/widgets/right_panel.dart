@@ -209,7 +209,7 @@ class _ConnectionsTab extends ConsumerWidget {
       value: combined,
       empty: const _Connections([], {}),
       builder: (context, data) => _connectionsList(
-        selected.tags.length,
+        selected.visibleTags.length,
         data.outgoing,
         data.backlinksByKind,
       ),

@@ -23,8 +23,9 @@ import 'live_preview_controller.dart';
 import 'segment_view.dart';
 import 'text_segment.dart';
 
-/// One segment on screen: an editable text run, an excerpt card or the
-/// daily footer.
+/// One segment of the note: an editable text run, an excerpt card or the
+/// footer's text, which keeps that text out of the editable text and draws
+/// nothing itself ([FooterChipBar] draws from the note's rows).
 sealed class _Seg {}
 
 class _TextSeg extends _Seg {
@@ -86,11 +87,12 @@ class _FooterSeg extends _Seg {
 
 /// The segmented note body (WI #27): the note's markdown split by
 /// `segments.dart`'s [split] into editable text segments
-/// (Key `text-segment-<index>`), read-only [ExcerptCard]s and, for a daily
-/// note, the [FooterChipBar]. `<index>` is the segment's position in
-/// [split]'s list. The first text segment (a daily note's person field)
-/// also carries Key `editor-body` and uses [primaryFocusNode]. Each text
-/// segment is a [SegmentView]: editor rows over the segment's text (#167).
+/// (Key `text-segment-<index>`) and read-only [ExcerptCard]s, with the
+/// [FooterChipBar] after them on every note but a guide note. `<index>` is the
+/// segment's position in [split]'s list. The first text segment (a daily note's
+/// person field) also carries Key `editor-body` and uses [primaryFocusNode].
+/// Each text segment is a [SegmentView]: editor rows over the segment's text
+/// (#167).
 ///
 /// Edits report [join] of all segments through [onContentChanged]. The
 /// segment list is not rebuilt while typing: it is recomputed when
@@ -143,6 +145,10 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
   List<_Seg> _segs = const [];
   late bool _isDaily;
 
+  /// A guide note has no footer (D3): nothing renders, and a marker line in its
+  /// body is text like any other, as the server treats it.
+  late bool _isGuide;
+
   /// False for a daily note whose body has no Topics marker yet (e.g. the
   /// virtual Today note): its body is saved as the person text alone.
   late bool _withFooter;
@@ -160,6 +166,7 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
   void initState() {
     super.initState();
     _isDaily = widget.note.role == 'daily';
+    _isGuide = widget.note.role == 'guide';
     _resplit(widget.content);
   }
 
@@ -168,16 +175,19 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
     super.didUpdateWidget(old);
     if (old.note.id != widget.note.id) _error = null;
     final isDaily = widget.note.role == 'daily';
+    final isGuide = widget.note.role == 'guide';
     final content = widget.content;
-    if (isDaily != _isDaily || content != _joined) {
+    final kindChanged = isDaily != _isDaily || isGuide != _isGuide;
+    if (kindChanged || content != _joined) {
       // A server write to the loaded note (a polled update, a merged save)
       // keeps the selection; loading a note puts the caret at the end.
       final serverWrite =
           old.note.id == widget.note.id &&
-          isDaily == _isDaily &&
+          !kindChanged &&
           old.savedVersion != null;
       _isDaily = isDaily;
-      _resplit(content, keepCaret: serverWrite);
+      _isGuide = isGuide;
+      _resplit(content, keepCaret: serverWrite, rebuild: kindChanged);
     } else if (widget.savedVersion != old.savedVersion) {
       _resplit(_joined, keepCaret: true);
     }
@@ -206,17 +216,19 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
   /// their text is replaced; otherwise new segments are built and focus moves
   /// to the text segment holding the caret's position. A replaced text puts
   /// the caret at its end, or keeps the selection (both ends, clamped to the
-  /// new text) with [keepCaret].
-  void _resplit(String text, {bool keepCaret = false}) {
-    final next = split(text, isDaily: _isDaily);
+  /// new text) with [keepCaret]. [rebuild] builds new segments whatever the
+  /// shape: the note became another kind of note.
+  void _resplit(String text, {bool keepCaret = false, bool rebuild = false}) {
+    final next = split(text, isDaily: _isDaily, noteFooter: !_isGuide);
     _withFooter = !_isDaily || splitDailyBody(text).person != text;
-    if (_sameShape(next)) {
+    if (!rebuild && _sameShape(next)) {
       // A segment's rows re-derive from its new text without reporting it
       // (SegmentView).
       for (var i = 0; i < next.length; i++) {
-        final seg = _segs[i];
         final n = next[i];
-        if (seg is _TextSeg && n is TextSegment && seg.ctrl.text != n.text) {
+        if (n is! TextSegment) continue;
+        final seg = _segs[i];
+        if (seg is _TextSeg && seg.ctrl.text != n.text) {
           seg.ctrl.value = TextEditingValue(
             text: n.text,
             selection: keepCaret
@@ -300,11 +312,19 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
 
   /// True when [next] has the current segments' shape: the same cards (raw
   /// token lines) at the same positions. split() alternates text segments
-  /// and cards, and a daily split is always text then footer, so equal card
-  /// positions mean equal kinds everywhere.
+  /// and cards, so equal card positions mean equal kinds everywhere. The
+  /// footer doesn't count: it is always last and has no field, and a server
+  /// write that adds a note's first footer item or removes its last must not
+  /// rebuild the text segment under the caret.
   bool _sameShape(List<Segment> next) => listEquals(
-    [for (final s in _segs) s is _CardSeg ? s.segment.raw : null],
-    [for (final n in next) n is TransclusionSegment ? n.raw : null],
+    [
+      for (final s in _segs)
+        if (s is! _FooterSeg) s is _CardSeg ? s.segment.raw : null,
+    ],
+    [
+      for (final n in next)
+        if (n is! FooterSegment) n is TransclusionSegment ? n.raw : null,
+    ],
   );
 
   /// The markdown of text segment [i] of [segs] as [join] gets it: a
@@ -397,6 +417,16 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
         return s.focus;
       }
     }
+  }
+
+  /// Focuses the text right above the footer with its caret at the end: the
+  /// nearest field, so taking focus from the footer doesn't scroll the note.
+  void _focusLastText() {
+    final last = _segs.whereType<_TextSeg>().last;
+    last.ctrl.selection = TextSelection.collapsed(
+      offset: last.ctrl.text.length,
+    );
+    last.focus.requestFocus();
   }
 
   Future<void> _remove(_CardSeg card) async {
@@ -548,8 +578,15 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
                 segment: c.segment,
                 onRemove: _removing ? null : () => _remove(c),
               ),
-              _FooterSeg() => FooterChipBar(dailyNoteId: widget.note.id),
+              _FooterSeg() => const SizedBox.shrink(),
             },
+          // Keyed per note: its writes, error and removed tags stay with it.
+          if (!_isGuide)
+            FooterChipBar(
+              key: ValueKey(widget.note.id),
+              note: widget.note,
+              onFocusEditor: _focusLastText,
+            ),
         ],
       ),
       overlays: [KindChipLayer(host: _kindChips)],

@@ -452,9 +452,11 @@ void main() {
       ]);
     });
 
-    test('split non-daily does not treat the Topics marker as a footer', () {
+    // TEST-CHANGE (#253, R10): every note can have a Note footer now, so this
+    // no longer pins that a non-daily marker is plain text.
+    test('split non-daily treats the Topics marker as a footer', () {
       final segments = split(s2, isDaily: false);
-      expect(segments.whereType<FooterSegment>(), isEmpty);
+      expect(segments.whereType<FooterSegment>(), hasLength(1));
       expect(join(segments), s2);
     });
 
@@ -636,5 +638,171 @@ void main() {
         expect(got.tags, isEmpty);
       }
     });
+  });
+
+  // WI #253 (A5): the Note footer on every note. Non-daily footer text stays
+  // out of the editable text and `join` gives it back byte for byte; a note
+  // with no marker splits as it always did.
+  group('split and join on a non-daily note with a footer', () {
+    const marker = topicsMarker;
+    const footer = '$marker\n[[Pricing~about]]\n#memex\n#pricing\n';
+    const card = '![[2026-09-05#^b7k2m9..^c3d4e5]]\n';
+
+    test(
+      'split on a non-daily note ends in a FooterSegment holding its chips',
+      () {
+        final segments = split('Plan\n$footer', isDaily: false);
+
+        expect(segments, hasLength(2));
+        expect((segments[0] as TextSegment).text, 'Plan\n');
+        expect((segments[1] as FooterSegment).chips, ['Pricing']);
+      },
+    );
+
+    test(
+      'cards above the marker stay cards and the footer comes after the last text',
+      () {
+        final segments = split('A\n${card}B\n$footer', isDaily: false);
+
+        expect(_describe(segments), [
+          ['text', 'A\n'],
+          ['card', card, '2026-09-05', 'b7k2m9', 'c3d4e5'],
+          ['text', 'B\n'],
+          [
+            'footer',
+            ['Pricing'],
+          ],
+        ]);
+      },
+    );
+
+    test(
+      'join of split round-trips a non-daily note with a footer and transclusions',
+      () {
+        final body = 'Intro\n${card}Middle\n$card$footer';
+
+        final segments = split(body, isDaily: false);
+
+        expect(segments.last, isA<FooterSegment>());
+        expect(segments.whereType<TransclusionSegment>(), hasLength(2));
+        expect(join(segments), body);
+      },
+    );
+
+    for (final (name, body) in const [
+      ('only a marker', '$marker\n'),
+      ('a marker with no final newline', 'Plan\n$marker'),
+      ('a footer with no final newline', 'Plan\n$marker\n#memex'),
+      ('a CRLF footer', 'Plan\r\n$marker\r\n[[A~about]]\r\n#memex\r\n'),
+      ('trailing spaces on the marker', 'Plan\n$marker  \n#memex  \n'),
+      ('blank lines in the footer', 'Plan\n$marker\n\n#memex\n\n'),
+      ('a second marker', 'Plan\n$marker\n#memex\n$marker\n#work\n'),
+      ('tag lines before chip lines', 'Plan\n$marker\n#memex\n[[A~about]]\n'),
+      ('a stray line below the marker', 'Plan\n$marker\n#memex\nstray\n'),
+      (
+        'a transclusion token below the marker',
+        'Plan\n$marker\n![[2026-09-05#^b7k2m9]]\n',
+      ),
+      ('an empty person section', '$marker\n[[A~about]]\n'),
+    ]) {
+      test('join of split round-trips $name', () {
+        final segments = split(body, isDaily: false);
+
+        expect(segments.last, isA<FooterSegment>());
+        expect(join(segments), body);
+      });
+    }
+
+    test('split keeps the footer text out of every text segment', () {
+      final segments = split('Plan\n$card$footer', isDaily: false);
+
+      final text = segments.whereType<TextSegment>().map((s) => s.text).join();
+      expect(text, 'Plan\n');
+    });
+
+    test('a transclusion token below the marker is not a card', () {
+      final segments = split(
+        'Plan\n$marker\n![[2026-09-05#^b7k2m9]]\n',
+        isDaily: false,
+      );
+
+      expect(segments.whereType<TransclusionSegment>(), isEmpty);
+      expect(segments.last, isA<FooterSegment>());
+    });
+
+    test('a marker inside fenced code on a non-daily note is body text', () {
+      const fenced = 'Code:\n```\n$marker\n#memex\n```\nAfter\n';
+
+      expect(_describe(split(fenced, isDaily: false)), [
+        ['text', fenced],
+      ]);
+      expect(join(split(fenced, isDaily: false)), fenced);
+    });
+
+    test('a marker after a closed fence starts the footer', () {
+      const body = '```\ncode\n```\n$marker\n#memex\n';
+
+      final segments = split(body, isDaily: false);
+
+      expect((segments.first as TextSegment).text, '```\ncode\n```\n');
+      expect(segments.last, isA<FooterSegment>());
+      expect(join(segments), body);
+    });
+
+    test(
+      'a non-daily note with no marker splits as it did before the footer',
+      () {
+        const body = 'Intro\n$card\nOutro\n';
+
+        expect(_describe(split(body, isDaily: false)), [
+          ['text', 'Intro\n'],
+          ['card', card, '2026-09-05', 'b7k2m9', 'c3d4e5'],
+          ['text', '\nOutro\n'],
+        ]);
+        expect(join(split(body, isDaily: false)), body);
+      },
+    );
+
+    test(
+      'an edited text segment with no final newline keeps the marker on its own line',
+      () {
+        final segments = split('Plan\n$footer', isDaily: false);
+        segments[0] = const TextSegment('Plan edited');
+
+        expect(join(segments), 'Plan edited\n$footer');
+      },
+    );
+
+    test('an edited text segment keeps the footer bytes as they were', () {
+      const raw = '$marker  \r\n\r\n#memex  \n[[A~about]]';
+      final segments = split('Plan\n$raw', isDaily: false);
+      segments[0] = const TextSegment('Plan edited\n');
+
+      expect(join(segments), 'Plan edited\n$raw');
+    });
+
+    test('emptying the text segment keeps the footer with no blank line', () {
+      final segments = split('Plan\n$footer', isDaily: false);
+      segments[0] = const TextSegment('');
+
+      expect(join(segments), footer);
+    });
+
+    test('a removed card leaves the footer where it was', () {
+      final segments = split('A\n${card}B\n$footer', isDaily: false)
+        ..removeAt(1);
+
+      expect(segments.last, isA<FooterSegment>());
+      expect(join(segments), 'A\nB\n$footer');
+    });
+
+    test(
+      'a daily note still joins to the canonical body without tag lines',
+      () {
+        final segments = split('Day\n$footer', isDaily: true);
+
+        expect(join(segments), 'Day\n$marker\n[[Pricing~about]]\n');
+      },
+    );
   });
 }
