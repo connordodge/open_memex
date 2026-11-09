@@ -126,3 +126,11 @@ added the lessons below.
   2,199 GB in 3.5 h (diag `dartaotruntime_2026-11-06-152613`), and `~/.dartServer` is 14 GB. The
   same PRs passed in 2 min the next morning, after the orphaned testers were killed.
   How: on a freeze, stop the queue rather than re-gating. Check SSD wear and the analysis server.
+
+## Staging 2026-11-09
+
+- **An incremental release build can ship a stale signature.** Why: staging-20261109.1's
+  `flutter build macos --release` rebuilt App.framework but kept the old ad-hoc signature.
+  `codesign --verify --deep` said "nested code is modified or invalid", and the bad copy had already
+  gone into /Applications. How: `staging-build.sh` verifies the signature and rebuilds from clean
+  if it fails (enforced). Check the installed copy too.

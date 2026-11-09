@@ -33,6 +33,7 @@ Connor's decision (2026-10-03): ignore CI and coverage Actions; do local builds 
 | `suite-slot.sh <cmd…>` | Every FULL `cargo test --workspace` and every full `flutter test` runs through this. 3 slots machine-wide. Focused single-file runs skip it. |
 | `merge-check.sh <pr> [--base ref] [--complexity auto\|routine\|tricky] [--skip-suites] [--ac-map-only] [--pr-body-file f]` | The merged-tree check, below. Exit 0 pass, 1 fail. |
 | `mutation-spot.sh …` | Operator mutants on the PR's added `.rs` and `.dart` lines. Called by merge-check on tricky WIs. Journals each applied mutant in the worktree's git dir and restores it after a crash; a mutant that hits the memory ceiling counts as killed. |
+| `staging-build.sh <tag>` | Release staging step 3: points `worktrees/_staging` at the tag, builds the CLI and macOS app, and verifies the app's signature (rebuilds once from clean on `SIGN WARN`; `SIGN FAIL` exits 1). |
 | `run-guarded.sh <secs> <cmd…>` | Runs a command in its own process group with a time ceiling (exit 124) and a per-process memory ceiling (exit 125; `GUARD_MEM_MB`, default a quarter of RAM). Used by every gate step, mutant and suite-slot. **Agents wrap every hand-mutant test run in it.** |
 | `merge-pr.sh <pr> <runDir> "<note>"` | Runs the merge check (log in `<runDir>/gate-<pr>-<stamp>.log`), waits for mergeable, re-gates if main moved, checks GitHub mergeable before gating, merges exactly the tested head with a merge commit, ticks the WI's ACs, and appends to the ledger. No required GitHub checks. Exit 0 merged, 1 fail, 3 not mergeable. |
 | `merge-queue.sh <runDir>` | The one merge queue: pops `<runDir>/merge-queue.txt` (append or reorder it), runs merge-pr per PR, drops a PR that fails, and stops (PR kept) on infra failures. `MUTATION_OFF=1` pauses the MUTATION stage. Never run two at once. |
@@ -165,13 +166,13 @@ Connor's decision (2026-10-03): no CI, local builds only.
 1. `n` = 1 + the highest existing `staging-<YYYYMMDD>.*` tag for today.
 2. `git tag -a staging-<YYYYMMDD>.<n> -m "<run summary>" origin/main`, then
    `git push origin staging-<YYYYMMDD>.<n>`. Push the **tag only**.
-3. Point `<repo>/worktrees/_staging` at the tag. If it already exists, reuse it: the last
-   `flutter build macos` leaves `app/macos/Podfile`, `Runner.xcodeproj` and SwiftPM folders
-   dirty, so `git worktree remove` refuses and auto mode blocks `--force`. Run
-   `git -C worktrees/_staging restore app/macos && git -C worktrees/_staging clean -fdq app/macos`,
-   then `git -C worktrees/_staging checkout --detach staging-<…>`. Otherwise
-   `git worktree add --detach <repo>/worktrees/_staging staging-<…>`. Then in the background:
-   `cargo build --release -p memex-mcp` and `cd app && flutter build macos --release`.
+3. In the background, run `.claude/orchestration/scripts/staging-build.sh staging-<…>`. It
+   points `<repo>/worktrees/_staging` at the tag, reusing the worktree if it exists (the last
+   `flutter build macos` leaves `app/macos` dirty, so it restores and cleans that first; auto
+   mode blocks `git worktree remove --force`). It runs `cargo build --release -p memex-mcp` and
+   `flutter build macos --release`, then checks the app with `codesign --verify --deep --strict`.
+   If the check fails, it rebuilds once from clean. Hand nothing over unless it printed
+   `SIGN OK`.
 4. Hand Connor:
    - the app at `worktrees/_staging/app/build/macos/Build/Products/Release/`;
    - the binary at `worktrees/_staging/target/release/memex`;
@@ -179,6 +180,10 @@ Connor's decision (2026-10-03): no CI, local builds only.
      `cargo install --path worktrees/_staging/crates/memex-mcp --locked`;
    - a warning that opening an existing vault with the new binary applies the schema
      migration to it, so test on a scratch vault first.
+5. Install into `/Applications` only when Connor asks. Quit the app first
+   (`osascript -e 'quit app "Open Memex"'`, then wait for its PID to exit), run
+   `rm -rf "/Applications/Open Memex.app"`, then `ditto` the built app there. Run
+   `codesign --verify --deep --strict` on the installed copy too.
 
 **Prod.** Only after Connor's explicit go: a version tag `v<ver>` on the merged main,
 pushed by Connor himself (auto mode blocks it). No release pipeline or notes publishing.
