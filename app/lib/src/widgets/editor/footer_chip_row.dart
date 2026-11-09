@@ -18,12 +18,15 @@ import '../../theme/typography.dart';
 import '../../vault_access/vault_scoped.dart';
 import '../inline_error.dart';
 
-/// A note's Note footer (Key `footer-chip-row`, Spec #234, board B3): two
-/// aligned rows of plain text. Topics has one item per footer topic of [note]
-/// (Key `footer-chip-<topicNoteId>`), each opening its topic note; Tags has one
-/// item per `footerTags` entry (Key `footer-tag-<tag>`), each revealing its tag
-/// in Tags mode. A row with no items is left out; with neither, nothing renders.
-/// Never a text field.
+/// A note's Note footer (Key `footer-chip-row`, Spec #234): two aligned rows
+/// of pills. Topics has one pill per footer topic of [note] (Key
+/// `footer-chip-<topicNoteId>`), each opening its topic note. Tags has one pill
+/// per non-system tag of the note (Key `footer-tag-<tag>`), whether written in
+/// the body or applied by an agent or the CLI, each revealing its tag in Tags
+/// mode; only a tag not written in the body (`footerTags`) has a ×, since a
+/// body tag goes when its text does. The footer is the one place a note's tags
+/// are listed (Connor, 2026-11-09). A row with no items is left out; with
+/// neither, nothing renders. Never a text field.
 ///
 /// Rows decide what shows, not the note's footer text: a backfilled note has
 /// rows and no marker until its next footer write (L10).
@@ -164,10 +167,14 @@ class _FooterChipBarState extends ConsumerState<FooterChipBar> {
       const <FooterChipRow>[],
     );
     final tags = [
-      for (final tag in note.footerTags)
+      for (final tag in note.visibleTags)
         if (!_removed.contains(tag)) tag,
     ];
-    _keepFocusOnRow(tags);
+    final removable = note.footerTags.toSet();
+    _keepFocusOnRow([
+      for (final tag in tags)
+        if (removable.contains(tag)) tag,
+    ]);
     if (chips.isEmpty && tags.isEmpty) return const SizedBox.shrink();
     final error = _error;
     return Container(
@@ -190,22 +197,12 @@ class _FooterChipBarState extends ConsumerState<FooterChipBar> {
               label: 'TOPICS',
               items: [
                 for (final chip in chips)
-                  MouseRegion(
-                    cursor: SystemMouseCursors.click,
-                    child: GestureDetector(
-                      key: Key('footer-chip-${chip.topicNoteId}'),
-                      behavior: HitTestBehavior.opaque,
-                      onTap: () => ref
-                          .read(tabsProvider.notifier)
-                          .follow(NoteTab(chip.topicNoteId)),
-                      child: Text(
-                        chip.topicTitle,
-                        maxLines: 1,
-                        softWrap: false,
-                        overflow: TextOverflow.ellipsis,
-                        style: OmType.mono(size: 12, color: OmColors.fg1),
-                      ),
-                    ),
+                  FooterPill(
+                    key: Key('footer-chip-${chip.topicNoteId}'),
+                    label: chip.topicTitle,
+                    onTap: () => ref
+                        .read(tabsProvider.notifier)
+                        .follow(NoteTab(chip.topicNoteId)),
                   ),
               ],
             ),
@@ -218,6 +215,7 @@ class _FooterChipBarState extends ConsumerState<FooterChipBar> {
                   _FooterTagItem(
                     key: Key('footer-tag-$tag'),
                     tag: tag,
+                    removable: removable.contains(tag),
                     removing: _removing.contains(tag),
                     focusNode: _xFocusOf(tag),
                     onReveal: () => revealTag(ref, tag),
@@ -246,7 +244,8 @@ class _FooterRow extends StatelessWidget {
       SizedBox(
         width: 64,
         child: Padding(
-          padding: const EdgeInsets.only(top: 1),
+          // Centres the label on the first run of 22 px pills.
+          padding: const EdgeInsets.only(top: 5),
           // Not `Eyebrow`: its Row overflows this column at a large text scale.
           child: Text(
             label,
@@ -256,19 +255,104 @@ class _FooterRow extends StatelessWidget {
           ),
         ),
       ),
-      Expanded(child: Wrap(spacing: 14, runSpacing: 6, children: items)),
+      Expanded(child: Wrap(spacing: 6, runSpacing: 6, children: items)),
     ],
   );
 }
 
-/// One tag on the Tags row: its name, clickable, and the permanently reserved
-/// slot (Key `footer-tag-remove-<tag>`, 16 x 18) of its ×, so showing the ×
-/// shifts nothing. The × shows while the item is hovered or the slot has
-/// keyboard focus. While [removing], the slot holds a spinner instead.
+/// One footer pill (the chip shape of `OmChip`: surface3, a 1 px line2 border,
+/// radius 4, mono 11), with [label] as written, then [trailing] inside the
+/// pill. Hovered (or [highlight] when given), the border and label turn
+/// accentSoft; the cursor is always a hand and a tap calls [onTap]. A long
+/// label ellipsizes within the row's width.
+class FooterPill extends StatefulWidget {
+  const FooterPill({
+    super.key,
+    required this.label,
+    required this.onTap,
+    this.trailing,
+    this.onHover,
+    this.highlight,
+  });
+
+  final String label;
+  final VoidCallback onTap;
+  final Widget? trailing;
+
+  /// Overrides the pill's own hover state when non-null.
+  final bool? highlight;
+
+  /// Called with the hover state as the pointer enters and leaves.
+  final ValueChanged<bool>? onHover;
+
+  @override
+  State<FooterPill> createState() => _FooterPillState();
+}
+
+class _FooterPillState extends State<FooterPill> {
+  bool _hovered = false;
+
+  void _setHovered(bool hovered) {
+    setState(() => _hovered = hovered);
+    widget.onHover?.call(hovered);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final color = (widget.highlight ?? _hovered) ? OmColors.accentSoft : null;
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => _setHovered(true),
+      onExit: (_) => _setHovered(false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onTap,
+        child: Container(
+          constraints: const BoxConstraints(minHeight: 22),
+          padding: EdgeInsets.only(
+            left: 8,
+            right: widget.trailing == null ? 8 : 4,
+          ),
+          decoration: BoxDecoration(
+            color: OmColors.surface3,
+            border: Border.all(color: color ?? OmColors.line2, width: 1),
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Flexible(
+                child: Text(
+                  widget.label,
+                  maxLines: 1,
+                  softWrap: false,
+                  overflow: TextOverflow.ellipsis,
+                  style: OmType.mono(
+                    size: 11,
+                    weight: FontWeight.w500,
+                    color: color ?? OmColors.fg1,
+                  ),
+                ),
+              ),
+              ?widget.trailing,
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// One tag on the Tags row: a [FooterPill] reading `#tag`. A [removable] tag
+/// (not written in the body) also has its × slot (Key
+/// `footer-tag-remove-<tag>`, 16 x 18) inside the pill, always reserved so
+/// showing the × shifts nothing. The × shows while the pill is hovered or the
+/// slot has keyboard focus. While [removing], the slot holds a spinner instead.
 class _FooterTagItem extends StatefulWidget {
   const _FooterTagItem({
     super.key,
     required this.tag,
+    required this.removable,
     required this.removing,
     required this.focusNode,
     required this.onReveal,
@@ -276,6 +360,7 @@ class _FooterTagItem extends StatefulWidget {
   });
 
   final String tag;
+  final bool removable;
   final bool removing;
 
   /// The ×'s focus node, owned by the bar.
@@ -305,32 +390,14 @@ class _FooterTagItemState extends State<_FooterTagItem> {
   @override
   Widget build(BuildContext context) {
     final active = !widget.removing && (_hovered || _focused);
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.onReveal,
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Flexible(
-              child: Text(
-                '#${widget.tag}',
-                maxLines: 1,
-                softWrap: false,
-                overflow: TextOverflow.ellipsis,
-                style:
-                    OmType.mono(
-                      size: 12,
-                      color: active ? OmColors.accentSoft : OmColors.fg2,
-                    ).copyWith(
-                      decoration: active ? TextDecoration.underline : null,
-                    ),
-              ),
-            ),
-            SizedBox(
+    return FooterPill(
+      label: '#${widget.tag}',
+      onTap: widget.onReveal,
+      onHover: (hovered) => setState(() => _hovered = hovered),
+      highlight: active,
+      trailing: !widget.removable
+          ? null
+          : SizedBox(
               key: Key('footer-tag-remove-${widget.tag}'),
               width: 16,
               height: 18,
@@ -364,9 +431,6 @@ class _FooterTagItemState extends State<_FooterTagItem> {
                 ),
               ),
             ),
-          ],
-        ),
-      ),
     );
   }
 }

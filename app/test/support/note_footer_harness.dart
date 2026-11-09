@@ -186,7 +186,6 @@ Future<SegmentedEditorRobot> launchFooterNote(
 // ------------------------------------------------------------------- finders
 
 Finder get footerRow => find.byKey(const Key('footer-chip-row'));
-Finder railTag(String tag) => find.byKey(Key('rail-tag-$tag'));
 Finder footerTag(String tag) => find.byKey(Key('footer-tag-$tag'));
 Finder footerRemove(String tag) => find.byKey(Key('footer-tag-remove-$tag'));
 Finder footerChip(String topicId) => find.byKey(Key('footer-chip-$topicId'));
@@ -195,6 +194,15 @@ Finder get noteHeader => find.byKey(const Key('note-header'));
 /// An eyebrow label of the footer, as drawn (`TOPICS`, `TAGS`).
 Finder footerLabel(String label) =>
     find.descendant(of: footerRow, matching: find.text(label));
+
+/// The border colour of the footer pill at [item] (a topic or tag key).
+Color footerPillBorder(WidgetTester tester, Finder item) {
+  final box = tester.widget<Container>(
+    find.descendant(of: item, matching: find.byType(Container)).first,
+  );
+  final border = (box.decoration! as BoxDecoration).border! as Border;
+  return border.top.color;
+}
 
 /// The `#tag` text inside its footer item.
 Finder footerTagName(String tag) =>

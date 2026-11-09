@@ -115,7 +115,6 @@ void main() {
       await r.open(_dailyId);
       expect(r.segmentText(0), _person, reason: 'the daily note is open');
       expect(footerTag('pricing'), findsOneWidget);
-      expect(railTag('pricing'), findsOneWidget);
       expect(find.byKey(const Key('days-pane')), findsOneWidget);
       expect(find.byKey(const Key('tags-pane')), findsNothing);
 
@@ -183,7 +182,6 @@ void main() {
       await pumpFrames(tester, frames: 8);
       r.expectActiveNote(_dailyId);
       expect(footerTag('pricing'), findsOneWidget);
-      expect(railTag('pricing'), findsOneWidget);
       final personBefore = r.segmentText(0);
       // The stored daily body ends its person section with a newline.
       expect(
@@ -202,7 +200,6 @@ void main() {
         findsNothing,
         reason: 'the footer tag is gone',
       );
-      expect(railTag('pricing'), findsNothing, reason: 'and the rail tag');
       expect(
         r.segmentText(0),
         personBefore,

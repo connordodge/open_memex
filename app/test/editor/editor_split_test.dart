@@ -727,7 +727,7 @@ void main() {
   // -------------------------------------------------------------------------
   group('NoteHeader (widgets/editor/note_header.dart)', () {
     testWidgets(
-      'the note header renders with Key note-header and holds the title, tags, meta rail and empty DailyDateHeader and ReviewChip slots',
+      'the note header renders with Key note-header and holds the title, meta rail (no tags) and empty DailyDateHeader and ReviewChip slots',
       (tester) async {
         await _pumpEditor(tester, note: _note());
 
@@ -739,9 +739,9 @@ void main() {
         expect(title, findsOneWidget);
         expect(tester.widget<TextField>(title).controller!.text, 'My Note');
 
-        // Tags.
-        expect(_in(_header(), find.text('#alpha')), findsOneWidget);
-        expect(_in(_header(), find.text('#beta')), findsOneWidget);
+        // Tags are listed in the Note footer, not the header.
+        expect(_in(_header(), find.text('#alpha')), findsNothing);
+        expect(_in(_header(), find.text('#beta')), findsNothing);
 
         // Meta rail: relative update time + word count.
         expect(_in(_header(), find.textContaining('updated ')), findsOneWidget);
