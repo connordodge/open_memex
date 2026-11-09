@@ -103,8 +103,7 @@ The sidebar switch is now `Days | Topics | Tags`. Open `Tags` to browse. Open Me
 Clicking a tag takes you to Tags mode with that tag expanded and scrolled into view. You can click a tag in:
 
 - **A note's text.** Cmd+click works anywhere. A plain click works on a line where the markup is hidden, that is, a line your cursor isn't on. On the line your cursor is on, a plain click only moves the cursor. Hold Cmd to see the underline on tags you can open.
-- **The meta rail** at the top of a note, which lists every tag on the note (system tags excepted). It is read-only.
-- **The footer's Tags row.**
+- **The footer's Tags row**, which lists every tag on the note (system tags excepted).
 - **An excerpt in a topic note.**
 
 Clicking a tag changes the sidebar and opens no new tab.
@@ -115,10 +114,10 @@ Every note can have a Note footer: a block at the bottom, below the `<!-- memex:
 
 The footer has up to two rows:
 
-- **Topics:** the topic notes linked to this note, as chips. Click one to open that topic note. Chips are never added automatically. You add one with `memex footer add --note-id <note> --topic-note-id <topic>`; the target must be a topic note, and a note can't chip itself. There's no add-chip button in the app.
-- **Tags:** every tag on the note that isn't written in its text, whoever applied it (Review, `memex add --tags`, `memex tag add`). It's plain text, with no label saying who added it.
+- **Topics:** the topic notes linked to this note, as pills. Click one to open that topic note. Chips are never added automatically. You add one with `memex footer add --note-id <note> --topic-note-id <topic>`; the target must be a topic note, and a note can't chip itself. There's no add-chip button in the app.
+- **Tags:** every tag on the note, as pills: the ones you wrote in your text and the ones applied without touching it (Review, `memex add --tags`, `memex tag add`). This is the one place the app lists a note's tags. No label says who added a tag, but only a tag not written in your text has a ×.
 
-A row with nothing in it is left out, and a note with both rows empty shows no footer. A note with no footer content has no marker in its file either: the first item adds it, and removing the last removes it and leaves your text as it was.
+A row with nothing in it is left out, and a note with both rows empty shows no footer. The file's footer holds only the topics and the tags not written in your text, so a note whose only tags are in its text shows a Tags row in the app but has no marker in its file. The first footer item adds the marker, and removing the last removes it and leaves your text as it was.
 
 Your text is everything above the marker. The footer is rebuilt from the note's tags and topics, never from text. So in Source mode you can see the marker and the lines below it, but a footer line you type there isn't kept, and a `#x` typed below the marker doesn't become a tag. Saving never brings back a tag you removed.
 

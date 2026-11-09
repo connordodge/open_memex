@@ -1,7 +1,8 @@
 // WI #253 (A5): the Note footer on every note. Rows decide what shows (a
 // backfilled note has rows and no footer text until its next footer write, L10);
-// split only keeps footer text out of the editable text. Design pack 253: two
-// aligned rows of plain text under TOPICS and TAGS, no chips.
+// split only keeps footer text out of the editable text. Two aligned rows of
+// pills under TOPICS and TAGS; the Tags row lists every non-system tag, body
+// and footer alike (Connor, 2026-11-09).
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -11,8 +12,9 @@ import 'package:open_memex_app/src/state/editor_controller.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
-import 'package:open_memex_app/src/widgets/atoms.dart';
 import 'package:open_memex_app/src/widgets/editor/capture_gutter.dart';
+import 'package:open_memex_app/src/widgets/editor/footer_chip_row.dart'
+    show FooterPill;
 
 import '../robots/segmented_editor_robot.dart';
 import '../support/app_harness.dart';
@@ -212,32 +214,42 @@ void main() {
     });
 
     testWidgets(
-      'the Tags row shows footerTags and never system tags or body tags',
+      'the Tags row shows body and footer tags alphabetically and never system tags',
       (tester) async {
         await launchFooterNote(
           tester,
           seedFooterVault(
             footerTags: ['pricing'],
-            bodyTags: ['work'],
+            bodyTags: ['work', 'alpha'],
             systemTags: ['inbox', 'agent-authored'],
           ),
         );
 
-        expect(footerTag('pricing'), findsOneWidget);
-        expect(footerTag('work'), findsNothing);
+        for (final tag in ['alpha', 'pricing', 'work']) {
+          expect(footerTagName(tag), findsOneWidget);
+        }
+        final xs = [
+          for (final tag in ['alpha', 'pricing', 'work'])
+            tester.getTopLeft(footerTag(tag)).dx,
+        ];
+        expect(xs, orderedEquals([...xs]..sort()));
         expect(footerTag('inbox'), findsNothing);
         expect(footerTag('agent-authored'), findsNothing);
-        expect(
-          find.descendant(of: footerRow, matching: find.text('#work')),
-          findsNothing,
-        );
         expect(
           find.descendant(of: footerRow, matching: find.text('#inbox')),
           findsNothing,
         );
-        expect(footerTagName('pricing'), findsOneWidget);
       },
     );
+
+    testWidgets('a note with only body tags shows the Tags row', (
+      tester,
+    ) async {
+      await launchFooterNote(tester, seedFooterVault(bodyTags: ['work']));
+
+      expect(footerLabel('TAGS'), findsOneWidget);
+      expect(footerTag('work'), findsOneWidget);
+    });
 
     testWidgets('a daily note shows both rows like any other note', (
       tester,
@@ -320,7 +332,7 @@ void main() {
     );
 
     testWidgets(
-      'a tag the person writes in the body leaves the footer and stays in the rail',
+      'a tag the person writes in the body stays in the footer and loses its x',
       (tester) async {
         final r = await launchFooterNote(
           tester,
@@ -335,9 +347,9 @@ void main() {
         r.h.read(vaultRevisionProvider.notifier).state++;
         await pumpFrames(tester);
 
-        expect(footerTag('pricing'), findsNothing);
-        expect(footerTag('memex'), findsOneWidget);
-        expect(railTag('pricing'), findsOneWidget);
+        expect(footerTag('pricing'), findsOneWidget);
+        expect(footerRemove('pricing'), findsNothing);
+        expect(footerRemove('memex'), findsOneWidget);
       },
     );
   });
@@ -508,31 +520,56 @@ void main() {
     });
   });
 
-  group('the look (board B3)', () {
+  group('the look', () {
     testWidgets(
-      'rows are plain text with fg2 labels, fg1 topics and fg2 tags',
+      'topics and tags are pills: fg1 on surface3 with a line2 border, fg2 labels',
       (tester) async {
         await launchFooterNote(tester, _full());
 
         expect(
-          find.descendant(of: footerRow, matching: find.byType(OmChip)),
-          findsNothing,
+          find.descendant(of: footerRow, matching: find.byType(FooterPill)),
+          findsNWidgets(4),
         );
         expect(colorOf(tester, footerLabel('TOPICS')), OmColors.fg2);
         expect(colorOf(tester, footerLabel('TAGS')), OmColors.fg2);
-        expect(
-          colorOf(
-            tester,
-            find.descendant(
-              of: footerChip(pricingTopicId),
-              matching: find.text('Pricing'),
-            ),
-          ),
-          OmColors.fg1,
+        final pricing = find.descendant(
+          of: footerChip(pricingTopicId),
+          matching: find.text('Pricing'),
         );
-        expect(colorOf(tester, footerTagName('memex')), OmColors.fg2);
+        expect(colorOf(tester, pricing), OmColors.fg1);
+        expect(colorOf(tester, footerTagName('memex')), OmColors.fg1);
+        for (final item in [footerChip(pricingTopicId), footerTag('memex')]) {
+          expect(footerPillBorder(tester, item), OmColors.line2);
+          final box = tester.widget<Container>(
+            find.descendant(of: item, matching: find.byType(Container)).first,
+          );
+          final deco = box.decoration! as BoxDecoration;
+          expect(deco.color, OmColors.surface3);
+          expect(deco.borderRadius, BorderRadius.circular(4));
+        }
       },
     );
+
+    testWidgets('hovering a topic pill turns it accentSoft', (tester) async {
+      await launchFooterNote(tester, _full());
+      final mouse = await addMouse(tester);
+      final title = find.descendant(
+        of: footerChip(pricingTopicId),
+        matching: find.text('Pricing'),
+      );
+
+      await hover(tester, mouse, footerChip(pricingTopicId));
+
+      expect(colorOf(tester, title), OmColors.accentSoft);
+      expect(
+        footerPillBorder(tester, footerChip(pricingTopicId)),
+        OmColors.accentSoft,
+      );
+      expect(
+        footerPillBorder(tester, footerChip(memexTopicId)),
+        OmColors.line2,
+      );
+    });
 
     testWidgets('both rows start their items 64 px after the labels', (
       tester,
@@ -545,22 +582,22 @@ void main() {
       expect(tester.getTopLeft(footerTag('memex')).dx, labels + 64);
     });
 
-    testWidgets('items in a row sit 14 px apart', (tester) async {
+    testWidgets('pills in a row sit 6 px apart', (tester) async {
       await launchFooterNote(tester, _full());
 
       expect(
         tester.getTopLeft(footerChip(memexTopicId)).dx -
             tester.getTopRight(footerChip(pricingTopicId)).dx,
-        14,
+        6,
       );
       expect(
         tester.getTopLeft(footerTag('pricing')).dx -
             tester.getTopRight(footerTag('memex')).dx,
-        14,
+        6,
       );
     });
 
-    testWidgets('the rows are 18 high with 6 between them at text scale 1', (
+    testWidgets('the pills are 22 high with 6 between rows at text scale 1', (
       tester,
     ) async {
       final vault = _full();
@@ -568,12 +605,12 @@ void main() {
       await pumpBareNote(tester, vault.db, width: 1400, textScale: 1);
 
       expect(tester.takeException(), isNull);
-      expect(tester.getSize(footerChip(pricingTopicId)).height, 18);
-      expect(tester.getSize(footerTag('memex')).height, 18);
+      expect(tester.getSize(footerChip(pricingTopicId)).height, 22);
+      expect(tester.getSize(footerTag('memex')).height, 22);
       expect(
         tester.getTopLeft(footerTag('memex')).dy -
             tester.getTopLeft(footerChip(pricingTopicId)).dy,
-        24,
+        28,
       );
     });
 

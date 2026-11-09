@@ -122,35 +122,31 @@ void main() {
       expect(footerXShown(tester, 'pricing'), isFalse);
     });
 
-    testWidgets('hover and focus turn the name accentSoft and underlined', (
+    testWidgets('hover and focus turn the name and pill border accentSoft', (
       tester,
     ) async {
       await launchFooterNote(tester, _vault());
       final mouse = await addMouse(tester);
-      expect(colorOf(tester, footerTagName('pricing')), OmColors.fg2);
-      expect(
-        effectiveStyle(tester, footerTagName('pricing')).decoration ??
-            TextDecoration.none,
-        TextDecoration.none,
-      );
+      expect(colorOf(tester, footerTagName('pricing')), OmColors.fg1);
+      expect(footerPillBorder(tester, footerTag('pricing')), OmColors.line2);
 
       await hover(tester, mouse, footerTag('pricing'));
 
       expect(colorOf(tester, footerTagName('pricing')), OmColors.accentSoft);
       expect(
-        effectiveStyle(tester, footerTagName('pricing')).decoration,
-        TextDecoration.underline,
+        footerPillBorder(tester, footerTag('pricing')),
+        OmColors.accentSoft,
       );
 
       await mouse.moveTo(tester.getCenter(footerLabel('TAGS')));
       await pumpFrames(tester);
-      expect(colorOf(tester, footerTagName('pricing')), OmColors.fg2);
+      expect(colorOf(tester, footerTagName('pricing')), OmColors.fg1);
 
       expect(await shiftTabToX(tester, 'pricing'), isTrue);
       expect(colorOf(tester, footerTagName('pricing')), OmColors.accentSoft);
       expect(
-        effectiveStyle(tester, footerTagName('pricing')).decoration,
-        TextDecoration.underline,
+        footerPillBorder(tester, footerTag('pricing')),
+        OmColors.accentSoft,
       );
     });
 
@@ -171,7 +167,7 @@ void main() {
       expect(tester.getRect(footerRow), footer);
     });
 
-    testWidgets('the slot is 16 by 18 at the end of the item after the name', (
+    testWidgets('the slot is 16 by 18 inside the pill after the name', (
       tester,
     ) async {
       await launchFooterNote(tester, _vault());
@@ -180,9 +176,31 @@ void main() {
       final slot = tester.getRect(footerRemove('pricing'));
       final name = tester.getRect(footerTagName('pricing'));
       expect(slot.size, const Size(16, 18));
-      expect(slot.right, item.right);
+      // 1 px border, then 4 px padding after the slot and 8 px before the name.
+      expect(slot.right, item.right - 5);
       expect(slot.left, name.right);
-      expect(item.left, name.left);
+      expect(name.left, item.left + 9);
+    });
+
+    testWidgets('a tag written in the body has no x', (tester) async {
+      await launchFooterNote(
+        tester,
+        seedFooterVault(footerTags: _tags, bodyTags: ['work']),
+      );
+      final mouse = await addMouse(tester);
+
+      await hover(tester, mouse, footerTag('work'));
+
+      expect(footerTag('work'), findsOneWidget);
+      expect(footerRemove('work'), findsNothing);
+      expect(
+        find.descendant(
+          of: footerTag('work'),
+          matching: find.byIcon(LucideIcons.x),
+        ),
+        findsNothing,
+      );
+      expect(footerRemove('pricing'), findsOneWidget);
     });
 
     testWidgets('the x glyph is 12 px fg2', (tester) async {
@@ -232,20 +250,17 @@ void main() {
         await clickX(tester, mouse, 'pricing');
         await pumpFrames(tester);
 
-        // In flight: the tag stays, here and in the rail.
+        // In flight: the tag stays.
         expect(_removals(r), hasLength(1));
         expect(_removals(r).single.flag('note-id'), footerNoteId);
         expect(_removals(r).single.flag('tag'), 'pricing');
         expect(footerTag('pricing'), findsOneWidget);
-        expect(railTag('pricing'), findsOneWidget);
 
         gate.complete();
         await pumpFrames(tester);
 
         expect(footerTag('pricing'), findsNothing);
-        expect(railTag('pricing'), findsNothing);
         expect(footerTag('memex'), findsOneWidget);
-        expect(railTag('memex'), findsOneWidget);
         expect(_removals(r), hasLength(1));
         expect(tester.takeException(), isNull);
       },
@@ -276,7 +291,7 @@ void main() {
     });
 
     testWidgets(
-      'a remove in progress shows a spinner in the slot with the name in fg2',
+      'a remove in progress shows a spinner in the slot with the name at rest',
       (tester) async {
         final vault = _vault();
         final gate = _holdWrites(vault);
@@ -291,7 +306,7 @@ void main() {
         expect(spinner.size, 12);
         expect(spinner.color, OmColors.fg2);
         expect(footerXShown(tester, 'pricing'), isFalse);
-        expect(colorOf(tester, footerTagName('pricing')), OmColors.fg2);
+        expect(colorOf(tester, footerTagName('pricing')), OmColors.fg1);
         expect(footerSpinner('memex'), findsNothing);
 
         gate.complete();
@@ -536,7 +551,6 @@ void main() {
         await _remove(tester, mouse, 'pricing');
 
         expect(footerTag('pricing'), findsOneWidget);
-        expect(railTag('pricing'), findsOneWidget);
         expect(footerSpinner('pricing'), findsNothing);
         expect(footerError, findsOneWidget);
         expect(
@@ -752,7 +766,6 @@ void main() {
       expect(find.byKey(const Key('inline-error')), findsNothing);
       expect(find.byType(SnackBar), findsNothing);
       expect(footerTag('pricing'), findsNothing);
-      expect(railTag('pricing'), findsNothing);
       expect(footerTag('memex'), findsOneWidget);
     });
 

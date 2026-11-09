@@ -1,18 +1,16 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../db.dart';
 import '../../editor/segments.dart';
 import '../../state/tabs_state.dart';
-import '../../state/tags_browse_state.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import 'daily_date_header.dart';
 import 'review_chip.dart';
 
-/// The top of an open note (Key `note-header`): the meta rail with the note's
-/// tags, the [DailyDateHeader] slot, the title field (Key `editor-title`) and
-/// the [ReviewChip] slot.
+/// The top of an open note (Key `note-header`): the meta rail, the
+/// [DailyDateHeader] slot, the title field (Key `editor-title`) and the
+/// [ReviewChip] slot.
 ///
 /// A `role: daily` note's [DailyDateHeader] replaces the title field: its
 /// title is not editable (Req 49). The unsaved virtual Today note has no
@@ -105,17 +103,15 @@ class _PendingRail extends StatelessWidget {
   }
 }
 
-/// The meta rail: when the note was updated, its word count and its non-system
-/// tags (`Note.visibleTags`), read-only, each revealing its tag in Tags mode
-/// (Key `rail-tag-<tag>`).
-class _MetaRail extends ConsumerWidget {
+/// The meta rail: when the note was updated and its word count. A note's tags
+/// are listed only in the Note footer (`FooterChipBar`, Connor 2026-11-09).
+class _MetaRail extends StatelessWidget {
   const _MetaRail({required this.note});
   final Note note;
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final updated = formatUpdatedAgo(note.updatedAt, now: DateTime.now());
     final words = noteWordCount(_personSection(note));
-    final tags = note.visibleTags;
     final style = OmType.mono(size: 11, color: OmColors.fg2);
     return Container(
       padding: const EdgeInsets.only(bottom: 10),
@@ -130,31 +126,6 @@ class _MetaRail extends ConsumerWidget {
           Text('updated $updated', style: style),
           Text('·', style: style),
           Text('$words words', style: style),
-          if (tags.isNotEmpty) ...[
-            Text('·', style: style),
-            Wrap(
-              spacing: 8,
-              runSpacing: 6,
-              children: [
-                for (final tag in tags)
-                  MouseRegion(
-                    cursor: SystemMouseCursors.click,
-                    child: GestureDetector(
-                      key: Key('rail-tag-$tag'),
-                      behavior: HitTestBehavior.opaque,
-                      onTap: () => revealTag(ref, tag),
-                      child: Text(
-                        '#$tag',
-                        maxLines: 1,
-                        softWrap: false,
-                        overflow: TextOverflow.ellipsis,
-                        style: style,
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ],
         ],
       ),
     );
