@@ -217,6 +217,56 @@ void main() {
     );
 
     test(
+      'check-version prints one success line on stdout naming the tag and the three files',
+      () async {
+        final root = await _fixture();
+        final r = await _check(root, 'v0.2.0');
+        expect(r.exitCode, 0, reason: '$r');
+        final out = r.stdout
+            .split('\n')
+            .map((l) => l.trim())
+            .where((l) => l.isNotEmpty)
+            .toList();
+        expect(out, hasLength(1), reason: '$r');
+        for (final part in [
+          'v0.2.0',
+          'app/pubspec.yaml',
+          'Cargo.toml',
+          'release-notes/v0.2.0.md',
+        ]) {
+          expect(out.single, contains(part), reason: '$r');
+        }
+        expect(r.stderr.trim(), isEmpty, reason: '$r');
+      },
+    );
+
+    test(
+      'check-version rejects a wrong argument count with a usage line',
+      () async {
+        final root = await _fixture();
+        final iso = _isoByRoot[root]!;
+        for (final args in [
+          <String>[],
+          ['v0.2.0', 'v0.2.0'],
+        ]) {
+          final r = await runScript(
+            _script,
+            args,
+            env: iso.env,
+            workingDirectory: root,
+          );
+          expect(r.exitCode, 1, reason: 'args $args\n$r');
+          expect(
+            _lines(r).where((l) => l.contains('usage')),
+            hasLength(1),
+            reason: 'args $args\n$r',
+          );
+          expect(r.stdout.trim(), isEmpty, reason: 'args $args\n$r');
+        }
+      },
+    );
+
+    test(
       'check-version accepts a pubspec version with no build number',
       () async {
         final root = await _fixture(pubspec: '0.2.0');

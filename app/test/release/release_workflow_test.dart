@@ -347,6 +347,25 @@ void main() {
     );
 
     test(
+      'the always step also removes the decoded p8 key and the p12 file',
+      () {
+        final steps = _steps(_releaseJob(_workflow()).value);
+        final cleanup = steps.where(
+          (s) => _isAlways(s) && _run(s).contains('security delete-keychain'),
+        );
+        expect(cleanup, hasLength(1));
+        final run = _run(cleanup.single);
+        expect(run, matches(RegExp(r'rm\s+-f[^\n]*notary-key\.p8')));
+        expect(run, matches(RegExp(r'rm\s+-f[^\n]*signing\.p12')));
+        // The files it removes are the ones earlier steps wrote.
+        expect(
+          steps.where((s) => _run(s).contains('notary-key.p8')).length,
+          greaterThan(1),
+        );
+      },
+    );
+
+    test(
       'the release job runs check-version before the signed build with the notary and leak env from secrets',
       () {
         final wf = _workflow();
