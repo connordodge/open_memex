@@ -108,6 +108,15 @@ void _expectUnchanged(_Wi350Env env) {
   expect(find.byKey(const Key('recent-row-0')), findsOneWidget);
 }
 
+/// A Trash seam whose move throws instead of answering.
+class _Wi350ThrowingTrash extends FakeVaultTrash {
+  @override
+  Future<TrashResult> trash(String path) async {
+    calls.add(path);
+    throw StateError('trash exploded');
+  }
+}
+
 /// The OmButton drawn for the DialogButton keyed [key].
 OmButton _om(WidgetTester tester, Key key) => tester.widget<OmButton>(
   find.descendant(of: find.byKey(key), matching: find.byType(OmButton)),
@@ -438,6 +447,72 @@ void main() {
         expect(_dialog, findsNothing);
         expect(env.trash.calls, [env.path]);
         expect(env.settings.recentRefs, isEmpty);
+      },
+    );
+
+    testWidgets('two presses in the same frame start one move', (tester) async {
+      final hold = Completer<TrashResult>();
+      final env = await _pump(tester, trash: FakeVaultTrash()..hold(hold));
+      await _open(tester);
+
+      // No pump between the presses: the button still holds the first
+      // press's closure, so only the dialog's own guard stops a second move.
+      await tester.tap(find.byKey(_confirm));
+      await tester.tap(find.byKey(_confirm), warnIfMissed: false);
+      await wi97Settle(tester);
+
+      expect(env.trash.calls, [env.path], reason: 'exactly one move');
+      hold.complete(const Trashed());
+      await wi97Settle(tester);
+      expect(env.trash.calls, [env.path]);
+      expect(_dialog, findsNothing);
+    });
+
+    testWidgets('two Space presses in the same frame start one move', (
+      tester,
+    ) async {
+      final hold = Completer<TrashResult>();
+      final env = await _pump(tester, trash: FakeVaultTrash()..hold(hold));
+      await _open(tester);
+      await wi349TabTo(tester, find.byKey(_confirm), max: 4);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.space);
+      await tester.sendKeyEvent(LogicalKeyboardKey.space);
+      await wi97Settle(tester);
+
+      expect(env.trash.calls, [env.path], reason: 'exactly one move');
+      hold.complete(const Trashed());
+      await wi97Settle(tester);
+      expect(env.trash.calls, [env.path]);
+    });
+
+    testWidgets(
+      'when the delete flow throws the error surfaces and the dialog is not stuck busy',
+      (tester) async {
+        final env = await _pump(tester, trash: _Wi350ThrowingTrash());
+        await _open(tester);
+
+        // The flow's error is rethrown (not swallowed, no invented copy):
+        // it reaches the zone as an uncaught async error.
+        final errors = <Object>[];
+        await runZonedGuarded(() async {
+          await tester.tap(find.byKey(_confirm));
+          await wi97Settle(tester);
+        }, (e, _) => errors.add(e));
+
+        expect(errors, [isA<StateError>()]);
+        expect(env.trash.calls, [env.path]);
+        expect(_dialog, findsOneWidget);
+        expect(_om(tester, _confirm).onPressed, isNotNull);
+        expect(_om(tester, _cancel).onPressed, isNotNull);
+        expect(find.text('moving to trash…'), findsNothing);
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await wi97Settle(tester);
+        expect(_dialog, findsNothing);
+        expect(env.settings.recentRefs, [LocalVaultRef(env.path)]);
+        expect(env.settings.vaultBackups[env.path]?.keep, env.backups.keep);
+        expect(Directory(env.path).existsSync(), isTrue);
       },
     );
   });
