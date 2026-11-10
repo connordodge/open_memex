@@ -21,8 +21,10 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/backup_controller.dart';
+import 'package:open_memex_app/src/state/backup_messages.dart';
 import 'package:open_memex_app/src/state/backup_models.dart';
 import 'package:open_memex_app/src/state/backup_settings_state.dart';
+import 'package:open_memex_app/src/state/hosted_identity.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/vault_access/hosted/backup.dart';
 
@@ -196,6 +198,7 @@ Future<_Rig> _rig({
   Map<String, VaultBackupSettings> settings = const {},
   Map<(String, String), BackupStatus> state = const {},
   FakeClock? clock,
+  String? serverName,
   void Function(BackupHarness h)? before,
 }) async {
   final h = await createBackupContainer(
@@ -216,6 +219,8 @@ Future<_Rig> _rig({
         (ref, path) =>
             ref.watch(settingsState)[path] ?? const VaultBackupSettings(),
       ),
+      if (serverName != null)
+        hostedServerNameProvider.overrideWith((ref, id) => serverName),
       backupControllerProvider,
     ],
   );
@@ -1115,6 +1120,512 @@ void main() {
         );
         expect(r.view(_hosted).mode, BackupSheetMode.hostedNotConfigured);
         expect(r.view(_hosted).warning, isFalse);
+      },
+    );
+  });
+
+  // ------------------------------------------------------------------
+  // The view state's run origin, times and card (Q1)
+  // ------------------------------------------------------------------
+  group('view state fields', () {
+    test(
+      'a running local backup reports when it started and an automatic failure when it ended',
+      () async {
+        final r = await _rig(settings: {_vaultA.path: _on()});
+        r.recordOnRun = (_) => null;
+        r.runner.scriptBackup(
+          const BackupFailure(code: 'internal', message: 'manifest unreadable'),
+        );
+        r.clock.advance(const Duration(minutes: 17));
+        final gate = r.hold();
+        await r.open(_vaultA);
+        final running = r.view(_vaultA);
+        expect(running.mode, BackupSheetMode.backingUp);
+        expect(running.startedAt, _start.add(const Duration(minutes: 17)));
+        expect(running.failedAt, isNull);
+        expect(running.message, isNull);
+        r.clock.advance(const Duration(minutes: 5));
+        gate.complete();
+        await r.settle();
+        final failedAt = _start.add(const Duration(minutes: 22));
+        final view = r.view(_vaultA);
+        expect(view.mode, BackupSheetMode.error);
+        expect(view.errorCode, 'internal');
+        expect(view.automatic, isTrue);
+        expect(view.failedAt, failedAt);
+        expect(view.startedAt, isNull);
+        expect(
+          view.message,
+          backupFailureMessage(
+            code: 'internal',
+            message: 'manifest unreadable',
+            automatic: true,
+            failedAt: failedAt,
+            now: r.clock.now(),
+            destination: _destA,
+            provider: BackupProvider.icloud,
+          ),
+        );
+        expect(view.message, isNotNull);
+        // The failure keeps the time it happened, not the time it is read.
+        r.clock.advance(const Duration(minutes: 3));
+        expect(r.view(_vaultA).failedAt, failedAt);
+      },
+    );
+
+    for (final (name, result, mode) in [
+      (
+        'a failed Back up now carries its press time and no automatic flag for a failure code',
+        const BackupFailure(code: 'backup_failed', message: 'disk full')
+            as BackupRunResult,
+        BackupSheetMode.error,
+      ),
+      (
+        'a failed Back up now carries its press time and no automatic flag for exit 2',
+        const BackupTooOld() as BackupRunResult,
+        BackupSheetMode.memexTooOld,
+      ),
+      (
+        'a failed Back up now carries its press time and no automatic flag for a missing binary',
+        const BackupBinaryNotFound() as BackupRunResult,
+        BackupSheetMode.binaryNotFound,
+      ),
+    ]) {
+      test(name, () async {
+        final r = await _rig(
+          vault: _vaultA,
+          settings: {_vaultA.path: _on(automatic: false)},
+          state: {(_vaultA.path, _destA): _ok(_start)},
+        );
+        r.recordOnRun = (_) => null;
+        r.runner.scriptBackup(result);
+        r.clock.advance(const Duration(minutes: 4));
+        final gate = r.hold();
+        final press = r.controller.backUpNow(_vaultA);
+        await r.settle();
+        expect(
+          r.view(_vaultA).startedAt,
+          _start.add(const Duration(minutes: 4)),
+        );
+        r.clock.advance(const Duration(minutes: 3));
+        gate.complete();
+        await press;
+        await r.settle();
+        final view = r.view(_vaultA);
+        expect(view.mode, mode);
+        expect(view.automatic, isFalse);
+        expect(view.failedAt, _start.add(const Duration(minutes: 7)));
+        expect(view.startedAt, isNull);
+        expect(view.message, isNotNull);
+        expect(
+          view.warning,
+          isFalse,
+          reason: 'an unrecorded manual failure is not an automatic failure',
+        );
+        if (result is BackupFailure) {
+          expect(
+            view.message,
+            backupFailureMessage(
+              code: result.code,
+              message: result.message,
+              automatic: false,
+              failedAt: _start.add(const Duration(minutes: 7)),
+              now: r.clock.now(),
+              destination: _destA,
+              provider: BackupProvider.icloud,
+            ),
+          );
+        } else if (result is BackupTooOld) {
+          expect(view.message, backupTooOldMessage());
+        } else {
+          expect(view.message, backupBinaryNotFoundMessage());
+        }
+      });
+    }
+
+    test(
+      'a failed Back up now after an automatic failure keeps the warning on',
+      () async {
+        final r = await _rig(settings: {_vaultA.path: _on()});
+        r.recordOnRun = (_) => null;
+        r.runner.scriptBackup(const BackupBinaryNotFound());
+        await r.open(_vaultA);
+        expect(r.view(_vaultA).warning, isTrue);
+        expect(r.view(_vaultA).automatic, isTrue);
+        r.clock.advance(const Duration(minutes: 9));
+        r.runner.scriptBackup(
+          const BackupFailure(code: 'internal', message: 'again'),
+        );
+        await r.controller.backUpNow(_vaultA);
+        await r.settle();
+        final view = r.view(_vaultA);
+        expect(view.mode, BackupSheetMode.error);
+        expect(view.automatic, isFalse, reason: 'the latest run was a press');
+        expect(view.failedAt, _start.add(const Duration(minutes: 9)));
+        expect(view.warning, isTrue, reason: 'still no success since');
+      },
+    );
+
+    test(
+      'an error recorded by a run the controller did not start is automatic and keeps its recorded time',
+      () async {
+        final attempt = _start.subtract(const Duration(minutes: 30));
+        final r = await _rig(
+          vault: _vaultA,
+          settings: {_vaultA.path: _on()},
+          state: {
+            (_vaultA.path, _destA): _failed(
+              attempt,
+              lastSuccess: _start.subtract(const Duration(hours: 1)),
+            ),
+          },
+        );
+        expect(r.calls, isEmpty, reason: 'not due');
+        final view = r.view(_vaultA);
+        expect(view.mode, BackupSheetMode.error);
+        expect(view.automatic, isTrue);
+        expect(view.failedAt, attempt);
+        expect(view.startedAt, isNull);
+        expect(
+          view.message,
+          backupFailureMessage(
+            code: 'backup_destination_unavailable',
+            message: 'cannot write to the backup folder',
+            automatic: true,
+            failedAt: attempt,
+            now: r.clock.now(),
+            destination: _destA,
+            provider: BackupProvider.icloud,
+          ),
+        );
+        expect(view.message, isNotNull);
+      },
+    );
+
+    test(
+      'a recorded error without an attempt time is stamped with the time it was read',
+      () async {
+        final r = await _rig(
+          vault: _vaultA,
+          settings: {_vaultA.path: _on()},
+          state: {
+            (_vaultA.path, _destA): BackupStatus(
+              lastSuccessAt: _start.subtract(const Duration(hours: 1)),
+              lastResult: 'backup_failed',
+              lastError: 'quick_check failed',
+            ),
+          },
+        );
+        r.clock.advance(const Duration(minutes: 10));
+        final view = r.view(_vaultA);
+        expect(view.mode, BackupSheetMode.error);
+        expect(view.automatic, isTrue);
+        expect(view.failedAt, _start.add(const Duration(minutes: 10)));
+      },
+    );
+
+    for (final (name, destination, provider) in [
+      (
+        'the failure card is built for an iCloud folder with a trailing slash',
+        '$_destA/',
+        BackupProvider.icloud,
+      ),
+      (
+        'the failure card is built for a Google Drive folder',
+        _destB,
+        BackupProvider.googleDrive,
+      ),
+      (
+        'the failure card is built for a OneDrive folder',
+        '/Users/tester/Library/CloudStorage/OneDrive-Personal/'
+            'Open Memex Backups',
+        BackupProvider.oneDrive,
+      ),
+      (
+        'the failure card is built for a chosen folder with no provider',
+        '/Users/tester/Backups/My Vault Copies',
+        null,
+      ),
+      (
+        'the failure card is built for a chosen folder inside a provider root with no provider',
+        '/Users/tester/Library/CloudStorage/GoogleDrive-connor@example.com/'
+            'My Drive/Work/Backups',
+        null,
+      ),
+    ]) {
+      test(name, () async {
+        final attempt = _start.subtract(const Duration(minutes: 30));
+        final r = await _rig(
+          vault: _vaultA,
+          settings: {_vaultA.path: _on(destination: destination)},
+          state: {
+            (_vaultA.path, destination): _failed(
+              attempt,
+              lastSuccess: _start.subtract(const Duration(hours: 1)),
+            ),
+          },
+        );
+        expect(
+          r.view(_vaultA).message,
+          backupFailureMessage(
+            code: 'backup_destination_unavailable',
+            message: 'cannot write to the backup folder',
+            automatic: true,
+            failedAt: attempt,
+            now: r.clock.now(),
+            destination: destination,
+            provider: provider,
+          ),
+        );
+        expect(r.view(_vaultA).message, isNotNull);
+      });
+    }
+
+    test(
+      'a Back up now answered backup_in_progress shows a manual error card until the next state read',
+      () async {
+        final r = await _rig(
+          vault: _vaultA,
+          settings: {_vaultA.path: _on(automatic: false)},
+          state: {(_vaultA.path, _destA): _ok(_start)},
+        );
+        r.recordOnRun = (_) => null;
+        r.runner.scriptBackup(
+          const BackupFailure(
+            code: 'backup_in_progress',
+            message: 'a backup of this vault is already running',
+          ),
+        );
+        final gate = r.hold();
+        final press = r.controller.backUpNow(_vaultA);
+        await r.settle();
+        r.clock.advance(const Duration(minutes: 2));
+        gate.complete();
+        await press;
+        await r.settle();
+        final view = r.view(_vaultA);
+        expect(view.mode, BackupSheetMode.error);
+        expect(view.errorCode, 'backup_in_progress');
+        expect(view.automatic, isFalse);
+        expect(view.failedAt, _start.add(const Duration(minutes: 2)));
+        expect(view.warning, isFalse, reason: 'never a warning');
+        expect(view.status, _ok(_start), reason: 'state untouched');
+        expect(
+          view.message,
+          backupFailureMessage(
+            code: 'backup_in_progress',
+            message: 'a backup of this vault is already running',
+            automatic: false,
+            failedAt: _start.add(const Duration(minutes: 2)),
+            now: r.clock.now(),
+            destination: _destA,
+            provider: BackupProvider.icloud,
+          ),
+        );
+        expect(view.message, isNotNull);
+        r.controller.openSheet(_vaultA);
+        await r.settle();
+        expect(r.view(_vaultA).mode, BackupSheetMode.success);
+        expect(r.view(_vaultA).errorCode, isNull);
+      },
+    );
+
+    test(
+      'a backup_in_progress card of the old destination is hidden once the destination changes',
+      () async {
+        final r = await _rig(
+          vault: _vaultA,
+          settings: {_vaultA.path: _on(automatic: false)},
+        );
+        r.recordOnRun = (_) => null;
+        r.runner.scriptBackup(
+          const BackupFailure(
+            code: 'backup_in_progress',
+            message: 'a backup of this vault is already running',
+          ),
+        );
+        await r.controller.backUpNow(_vaultA);
+        await r.settle();
+        expect(r.view(_vaultA).errorCode, 'backup_in_progress');
+        r.setSettings(_vaultA.path, _on(destination: _destB, automatic: false));
+        await r.settle();
+        expect(r.view(_vaultA).mode, BackupSheetMode.neverBackedUp);
+        expect(r.view(_vaultA).errorCode, isNull);
+      },
+    );
+
+    test(
+      'a state attempt newer than an unrecorded failure replaces it and an older one does not',
+      () async {
+        final r = await _rig(settings: {_vaultA.path: _on()});
+        r.recordOnRun = (_) => null;
+        r.runner.scriptBackup(const BackupBinaryNotFound());
+        await r.open(_vaultA);
+        expect(r.view(_vaultA).mode, BackupSheetMode.binaryNotFound);
+        // A scheduled `memex backup` that ran before the failure.
+        r.reader.setEntry(
+          _vaultA.path,
+          _destA,
+          _ok(_start.subtract(const Duration(hours: 1))),
+        );
+        await r.advance(_hour);
+        expect(r.view(_vaultA).mode, BackupSheetMode.binaryNotFound);
+        expect(r.view(_vaultA).warning, isTrue);
+        // One that ran after it.
+        r.reader.setEntry(
+          _vaultA.path,
+          _destA,
+          _ok(_start.add(const Duration(minutes: 90))),
+        );
+        await r.advance(_hour);
+        expect(r.view(_vaultA).mode, BackupSheetMode.success);
+        expect(r.view(_vaultA).warning, isFalse);
+      },
+    );
+
+    test(
+      'changing the destination hides an unrecorded failure of the old one',
+      () async {
+        final r = await _rig(settings: {_vaultA.path: _on()});
+        r.recordOnRun = (_) => null;
+        r.runner.scriptBackup(const BackupBinaryNotFound());
+        await r.open(_vaultA);
+        expect(r.view(_vaultA).warning, isTrue);
+        r.setSettings(_vaultA.path, _on(destination: _destB, automatic: false));
+        await r.settle();
+        expect(r.view(_vaultA).warning, isFalse);
+        expect(r.view(_vaultA).mode, BackupSheetMode.neverBackedUp);
+        // A manual failure at the new destination starts from no warning.
+        r.runner.scriptBackup(
+          const BackupFailure(code: 'internal', message: 'oops'),
+        );
+        await r.controller.backUpNow(_vaultA);
+        await r.settle();
+        expect(r.view(_vaultA).mode, BackupSheetMode.error);
+        expect(r.view(_vaultA).warning, isFalse);
+      },
+    );
+
+    test(
+      'a hosted press reports its POST time and its failure as manual',
+      () async {
+        final r = await _rig(vault: _hosted, serverName: 'Home NAS');
+        r.clock.advance(const Duration(minutes: 10));
+        r.controller.openSheet(_hosted);
+        await r.settle();
+        final postedAt = _start.add(const Duration(minutes: 10));
+        final release = r.api.holdStart();
+        final press = r.controller.backUpNow(_hosted);
+        await r.settle();
+        expect(r.view(_hosted).mode, BackupSheetMode.backingUp);
+        expect(r.view(_hosted).startedAt, postedAt, reason: 'POST pending');
+        release.complete();
+        await press;
+        await r.settle();
+        expect(r.view(_hosted).startedAt, postedAt, reason: 'answered 202');
+        r.api.defaultStatus = _hostedStatus(inProgress: true);
+        await r.advance(_s2, step: _s1);
+        expect(r.view(_hosted).startedAt, postedAt, reason: 'polling');
+        final attempt = _start.add(const Duration(minutes: 12));
+        r.api.defaultStatus = _hostedStatus(
+          result: 'backup_failed',
+          at: attempt,
+        );
+        await r.advance(_s2, step: _s1);
+        var view = r.view(_hosted);
+        expect(view.mode, BackupSheetMode.error);
+        expect(view.automatic, isFalse, reason: 'the failed run was our press');
+        expect(view.failedAt, attempt);
+        expect(view.startedAt, isNull);
+        expect(view.warning, isTrue);
+        expect(
+          view.message,
+          backupFailureMessage(
+            code: 'backup_failed',
+            message: 'disk full',
+            automatic: false,
+            failedAt: attempt,
+            now: r.clock.now(),
+            serverName: 'Home NAS',
+          ),
+        );
+        expect(view.message, isNotNull);
+        // The server's own schedule fails later: another attempt, automatic.
+        final later = _start.add(const Duration(hours: 1));
+        r.api.defaultStatus = _hostedStatus(result: 'backup_failed', at: later);
+        await r.advance(_hour);
+        view = r.view(_hosted);
+        expect(view.mode, BackupSheetMode.error);
+        expect(view.automatic, isTrue);
+        expect(view.failedAt, later);
+      },
+    );
+
+    test(
+      'a hosted backup the controller did not start has no start time and its failure is automatic',
+      () async {
+        final r = await _rig(
+          vault: _hosted,
+          serverName: 'Home NAS',
+          before: (h) =>
+              h.hostedApi.defaultStatus = _hostedStatus(inProgress: true),
+        );
+        expect(r.view(_hosted).mode, BackupSheetMode.backingUp);
+        expect(r.view(_hosted).startedAt, isNull, reason: 'a server run');
+        final attempt = _start.add(const Duration(minutes: 20));
+        r.api.defaultStatus = _hostedStatus(
+          result: 'backup_failed',
+          at: attempt,
+        );
+        await r.advance(_hour);
+        final view = r.view(_hosted);
+        expect(view.mode, BackupSheetMode.error);
+        expect(view.automatic, isTrue);
+        expect(view.failedAt, attempt);
+        expect(view.startedAt, isNull);
+        expect(
+          view.message,
+          backupFailureMessage(
+            code: 'backup_failed',
+            message: 'disk full',
+            automatic: true,
+            failedAt: attempt,
+            now: r.clock.now(),
+            serverName: 'Home NAS',
+          ),
+        );
+        expect(view.message, isNotNull);
+      },
+    );
+
+    test(
+      'a hosted error without an attempt time is automatic and stamped with the time it was read',
+      () async {
+        final r = await _rig(
+          vault: _hosted,
+          before: (h) => h.hostedApi.defaultStatus = _hostedStatus(
+            result: 'backup_failed',
+          ),
+        );
+        r.clock.advance(const Duration(minutes: 10));
+        final view = r.view(_hosted);
+        expect(view.mode, BackupSheetMode.error);
+        expect(view.automatic, isTrue);
+        expect(view.failedAt, _start.add(const Duration(minutes: 10)));
+      },
+    );
+
+    test(
+      'a hosted POST answered 409 backup_in_progress has no start time',
+      () async {
+        final r = await _rig(vault: _hosted);
+        r.controller.openSheet(_hosted);
+        await r.settle();
+        r.api.scriptStart(const HostedBackupAlreadyRunning());
+        await r.controller.backUpNow(_hosted);
+        await r.settle();
+        expect(r.view(_hosted).mode, BackupSheetMode.backingUp);
+        expect(r.view(_hosted).startedAt, isNull);
       },
     );
   });
