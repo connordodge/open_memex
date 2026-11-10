@@ -695,12 +695,50 @@ fn daily_acceptance_script_covers_review_capture_quick_entry_pinning_and_depth()
     );
 }
 
+/// Home-directory names a doc may show as an obvious placeholder.
+const PLACEHOLDER_USERS: [&str; 7] = [
+    "you",
+    "YOU",
+    "YOUR_USERNAME",
+    "test",
+    "tester",
+    "person",
+    "me",
+];
+
+/// Every absolute `/Users/<name>/` path in `doc` whose `<name>` is not a placeholder.
+fn non_placeholder_home_paths(doc: &str) -> Vec<String> {
+    let home = Regex::new(r"/Users/([^/\s`]+)/").unwrap();
+    home.captures_iter(doc)
+        .filter(|c| !PLACEHOLDER_USERS.contains(&&c[1]))
+        .map(|c| c[0].to_string())
+        .collect()
+}
+
+#[test]
+fn home_path_scan_flags_a_real_name_and_allows_placeholders() {
+    let real = format!("cd /{}/{}/memex && ls", "Users", "alice");
+    assert_eq!(
+        non_placeholder_home_paths(&real),
+        vec![format!("/{}/{}/", "Users", "alice")]
+    );
+    for name in PLACEHOLDER_USERS {
+        let doc = format!("export VAULT=/{}/{}/scratch-vault", "Users", name);
+        assert!(
+            non_placeholder_home_paths(&doc).is_empty(),
+            "placeholder `{name}` is allowed"
+        );
+    }
+    assert!(non_placeholder_home_paths("no paths here, only ~/memex").is_empty());
+}
+
 #[test]
 fn daily_acceptance_script_runs_against_a_scratch_vault_never_the_real_one() {
     let doc = daily_acceptance();
-    assert!(
-        !doc.contains("~/memex"),
-        "the script never touches the real vault"
+    assert_eq!(
+        non_placeholder_home_paths(&doc),
+        Vec::<String>::new(),
+        "the script never names a real home path or vault"
     );
     assert!(
         doc.to_lowercase().contains("scratch"),
