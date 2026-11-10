@@ -25,6 +25,7 @@
 // use a tall window; the layout tests use the real widths.
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Directory, Link;
 import 'dart:ui' show CheckedState;
 
 import 'package:flutter/material.dart';
@@ -496,7 +497,7 @@ void _seedProviders(FakeCloudFolderProbe probe, {bool backupFolders = true}) {
 /// the test lets it), and whose symlink resolution waits on [resolveGate]
 /// while one is set (the folder a pick resolves stays pending).
 class _Wi325GatedProbe extends FakeCloudFolderProbe {
-  _Wi325GatedProbe(this.gate);
+  _Wi325GatedProbe(this.gate, {super.home});
 
   final Completer<void>? gate;
   Completer<void>? resolveGate;
@@ -531,6 +532,8 @@ Future<_Wi325Sheet> _open(
   bool providers = true,
   bool backupFolders = true,
   Completer<void>? discoveryGate,
+  String? home,
+  void Function(FakeCloudFolderProbe probe)? seedProbe,
   Size size = _tall,
   double textScale = 1.0,
   Set<String> inFlight = const {},
@@ -543,8 +546,9 @@ Future<_Wi325Sheet> _open(
     addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
   }
 
-  final probe = _Wi325GatedProbe(discoveryGate);
+  final probe = _Wi325GatedProbe(discoveryGate, home: home ?? fakeHome);
   if (providers) _seedProviders(probe, backupFolders: backupFolders);
+  seedProbe?.call(probe);
   probe.addDirectory(_chosenDest);
   probe.addDirectory(_otherChosenDest);
   final controller = FakeBackupController();
@@ -688,6 +692,10 @@ String _textIn(WidgetTester tester, Finder of) => _plainOf(
     find.descendant(of: of, matching: find.byType(RichText)),
   ),
 );
+
+/// The separate lines of text inside [of] (an icon is a line of its own).
+List<String> _lines(WidgetTester tester, Finder of) =>
+    _textIn(tester, of).split('\n').map((l) => l.trim()).toList();
 
 /// The status column's text (`backups-status`).
 String _status(WidgetTester tester) {
@@ -908,6 +916,60 @@ String _unavailableDetail(String destination, BackupProvider? provider) =>
       destination: destination,
       provider: provider,
     ).detail;
+
+/// Real folders for the symlink tests: the stored destination is A2's
+/// symlink-resolved path while discovery's row runs through a symlink.
+typedef _Wi325Tree = ({
+  String base,
+  String home,
+  String storage,
+  String optionPath,
+  String resolved,
+});
+
+/// `<home>/Library/CloudStorage/GoogleDrive-connor@example.com` is a link to
+/// a real folder holding `My Drive/Open Memex Backups`.
+_Wi325Tree _wi325LinkedGoogleDrive() {
+  final base = Directory.systemTemp
+      .createTempSync('wi325-link-')
+      .resolveSymbolicLinksSync();
+  addTearDown(() => Directory(base).deleteSync(recursive: true));
+  final real = '$base/real-drive';
+  Directory('$real/My Drive/$_backupsFolder').createSync(recursive: true);
+  final storage = '$base/home/Library/CloudStorage';
+  Directory(storage).createSync(recursive: true);
+  Link('$storage/GoogleDrive-connor@example.com').createSync(real);
+  return (
+    base: base,
+    home: '$base/home',
+    storage: storage,
+    optionPath:
+        '$storage/GoogleDrive-connor@example.com/My Drive/$_backupsFolder',
+    resolved: '$real/My Drive/$_backupsFolder',
+  );
+}
+
+/// iCloud (missing on disk), the linked Google Drive, a second Google Drive
+/// (missing on disk) and choose folder.
+List<BackupDestinationOption> _wi325LinkedOptions(_Wi325Tree t) => [
+  BackupDestinationOption(
+    provider: BackupProvider.icloud,
+    label: 'iCloud Drive',
+    path:
+        '${t.home}/Library/Mobile Documents/com~apple~CloudDocs/$_backupsFolder',
+  ),
+  BackupDestinationOption(
+    provider: BackupProvider.googleDrive,
+    label: 'Google Drive · connor@example.com',
+    path: t.optionPath,
+  ),
+  BackupDestinationOption(
+    provider: BackupProvider.googleDrive,
+    label: 'Google Drive · work@example.com',
+    path: '${t.storage}/GoogleDrive-work@example.com/My Drive/$_backupsFolder',
+  ),
+  _chooseOption,
+];
 
 void main() {
   // ================================================================ AC 1
@@ -4278,6 +4340,459 @@ void main() {
           'hourly.',
         ),
       );
+    });
+  });
+
+  // ================================================================ round 4
+  // A stored destination is A2's symlink-resolved path, while discovery's
+  // rows run through the symlink. The sheet compares the two through the real
+  // file system (`resolveSymbolicLinksSync`), so these tests build real
+  // folders under a temp dir.
+  group('AC9 verify round 4: a provider folder reached through a symlink', () {
+    Finder checkIn(Key key) => find.descendant(
+      of: find.byKey(key),
+      matching: find.byWidgetPredicate(
+        (w) => w is Icon && w.icon == LucideIcons.check,
+      ),
+    );
+
+    final googleKey = backupDestinationKey(BackupProvider.googleDrive, 0);
+    final google2Key = backupDestinationKey(BackupProvider.googleDrive, 1);
+    final icloudKey = backupDestinationKey(BackupProvider.icloud, 0);
+
+    VaultBackupSettings storedAt(String destination) =>
+        _on.copyWith(destination: destination);
+
+    BackupViewState successAt(_Wi325Tree t, List<BackupDestinationOption> o) =>
+        BackupViewState(
+          mode: BackupSheetMode.success,
+          settings: storedAt(t.resolved),
+          status: _successStatus(),
+          options: o,
+        );
+
+    testWidgets(
+      'the menu marks the provider row whose folder the stored resolved path is',
+      (tester) async {
+        final t = _wi325LinkedGoogleDrive();
+        expect(t.resolved, isNot(t.optionPath), reason: 'a real symlink');
+        await _open(
+          tester,
+          view: successAt(t, _wi325LinkedOptions(t)),
+          home: t.home,
+        );
+        await _tapKey(tester, _menuKey);
+        for (final key in [googleKey, google2Key, icloudKey]) {
+          expect(find.byKey(key), findsOneWidget, reason: '$key');
+        }
+        // The first Google Drive row is the symlinked folder; the missing
+        // folders before and after it are compared by their plain paths and
+        // are not marked.
+        expect(checkIn(googleKey), findsOneWidget, reason: 'the linked row');
+        expect(checkIn(icloudKey), findsNothing);
+        expect(checkIn(google2Key), findsNothing);
+        expect(checkIn(backupsDestinationChooseKey), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'the card the destination row and the success line name the provider',
+      (tester) async {
+        final t = _wi325LinkedGoogleDrive();
+        await _open(
+          tester,
+          view: successAt(t, _wi325LinkedOptions(t)),
+          home: t.home,
+        );
+        expect(
+          _textIn(tester, find.byKey(_menuKey)),
+          contains('Google Drive · connor@example.com'),
+        );
+        expect(_sheetText(tester), contains('My Drive/Open Memex Backups'));
+        expect(_status(tester), contains(_providerLine('google drive')));
+        expect(_sheetText(tester), isNot(contains(t.resolved)));
+
+        // B2-9's compact card names it too, while the menu is open.
+        await _tapKey(tester, _menuKey);
+        expect(
+          _status(tester),
+          contains(
+            '${backupSize(_bytes)} · Open Memex Backups in google drive',
+          ),
+        );
+        expect(_status(tester), isNot(contains(t.resolved)));
+      },
+    );
+
+    testWidgets(
+      'the sheet discovers the providers on open to name a symlinked folder',
+      (tester) async {
+        final t = _wi325LinkedGoogleDrive();
+        // The view state carries no options: only the sheet's own discovery
+        // (over a probe seeded under the real home) can name the folder.
+        final s = await _open(
+          tester,
+          view: BackupViewState(
+            mode: BackupSheetMode.success,
+            settings: storedAt(t.resolved),
+            status: _successStatus(),
+          ),
+          home: t.home,
+          providers: false,
+          seedProbe: (probe) => probe.seedGoogleDrive('connor@example.com'),
+        );
+        expect(s.probe.calls, contains('home'), reason: 'discovery ran');
+        expect(
+          _textIn(tester, find.byKey(_menuKey)),
+          contains('Google Drive · connor@example.com'),
+        );
+        expect(_status(tester), contains(_providerLine('google drive')));
+        await _tapKey(tester, _menuKey);
+        expect(checkIn(googleKey), findsOneWidget);
+        expect(_sheetText(tester), isNot(contains(t.resolved)));
+      },
+    );
+
+    testWidgets(
+      'a stored provider folder opens without discovery and a chosen folder with it',
+      (tester) async {
+        final plain = await _open(tester, view: _successView());
+        expect(plain.probe.calls, isEmpty, reason: 'it reads as google drive');
+
+        final chosen = await _open(
+          tester,
+          view: _successView(_on.copyWith(destination: _chosenDest)),
+        );
+        expect(chosen.probe.calls, contains('home'), reason: 'discovery ran');
+        // Not a provider folder: it stays a chosen folder.
+        expect(_lines(tester, find.byKey(_menuKey)), contains('memex-backups'));
+        expect(_sheetText(tester), contains(_chosenDest));
+      },
+    );
+
+    testWidgets(
+      'a stored path that reads as a provider folder by itself keeps its own provider',
+      (tester) async {
+        final t = _wi325LinkedGoogleDrive();
+        // The stored path reads as a Google Drive folder, but it is a link to
+        // the iCloud row's folder: the stored path's own reading wins.
+        final icloudFolder =
+            '${t.home}/Library/Mobile Documents/com~apple~CloudDocs/$_backupsFolder';
+        Directory(icloudFolder).createSync(recursive: true);
+        // A google-looking path that is the Open Memex Backups link itself.
+        final googleLooking =
+            '${t.storage}/GoogleDrive-other@example.com/My Drive';
+        Directory(googleLooking).createSync(recursive: true);
+        final link = '$googleLooking/$_backupsFolder';
+        Link(link).createSync(icloudFolder);
+        await _open(
+          tester,
+          view: BackupViewState(
+            mode: BackupSheetMode.success,
+            settings: storedAt(link),
+            status: _successStatus(),
+            options: [
+              BackupDestinationOption(
+                provider: BackupProvider.icloud,
+                label: 'iCloud Drive',
+                path: icloudFolder,
+              ),
+              _chooseOption,
+            ],
+          ),
+          home: t.home,
+        );
+        expect(
+          _lines(tester, find.byKey(_menuKey)),
+          contains('Google Drive · other@example.com'),
+        );
+        expect(_status(tester), contains(_providerLine('google drive')));
+        expect(_status(tester), isNot(contains('icloud')));
+      },
+    );
+
+    testWidgets(
+      'a symlinked row that is not a provider folder is named by the stored path',
+      (tester) async {
+        final t = _wi325LinkedGoogleDrive();
+        final real = '${t.base}/plain/dest';
+        Directory(real).createSync(recursive: true);
+        final link = '${t.base}/link-to-dest';
+        Link(link).createSync(real);
+        await _open(
+          tester,
+          view: BackupViewState(
+            mode: BackupSheetMode.success,
+            settings: storedAt(real),
+            status: _successStatus(),
+            options: [
+              BackupDestinationOption(
+                provider: BackupProvider.googleDrive,
+                label: 'Google Drive · connor@example.com',
+                path: link,
+              ),
+              _chooseOption,
+            ],
+          ),
+          home: t.home,
+        );
+        // A chosen folder: its own name and full path, not the row's.
+        expect(_lines(tester, find.byKey(_menuKey)), contains('dest'));
+        expect(_sheetText(tester), contains(real));
+        expect(_sheetText(tester), isNot(contains(link)));
+        expect(_status(tester), isNot(contains('google drive')));
+        expect(_status(tester), contains(real));
+        // The row is still the folder: it carries the mark.
+        await _tapKey(tester, _menuKey);
+        expect(checkIn(googleKey), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'a provider folder that is missing still compares equal by its plain path',
+      (tester) async {
+        final t = _wi325LinkedGoogleDrive();
+        // Nothing exists at the stored path, so there is nothing to resolve.
+        final gone =
+            '${t.storage}/GoogleDrive-work@example.com/My Drive/'
+            '$_backupsFolder';
+        await _open(
+          tester,
+          view: BackupViewState(
+            mode: BackupSheetMode.success,
+            settings: storedAt(gone),
+            status: _successStatus(),
+            options: _wi325LinkedOptions(t),
+          ),
+          home: t.home,
+        );
+        expect(
+          _textIn(tester, find.byKey(_menuKey)),
+          contains('Google Drive · work@example.com'),
+        );
+        expect(_status(tester), contains(_providerLine('google drive')));
+        await _tapKey(tester, _menuKey);
+        expect(checkIn(google2Key), findsOneWidget, reason: 'the missing row');
+        expect(checkIn(googleKey), findsNothing);
+        expect(checkIn(icloudKey), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'a stored path that runs through a symlink marks the row with the resolved path',
+      (tester) async {
+        final t = _wi325LinkedGoogleDrive();
+        // The stored destination is the link path and discovery's row is the
+        // folder it leads to: both are compared resolved.
+        await _open(
+          tester,
+          view: BackupViewState(
+            mode: BackupSheetMode.success,
+            settings: storedAt(t.optionPath),
+            status: _successStatus(),
+            options: [
+              BackupDestinationOption(
+                provider: BackupProvider.googleDrive,
+                label: 'Google Drive · connor@example.com',
+                path: t.resolved,
+              ),
+              _chooseOption,
+            ],
+          ),
+          home: t.home,
+        );
+        await _tapKey(tester, _menuKey);
+        expect(checkIn(googleKey), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'the success line names the provider folder and not the name of the link target',
+      (tester) async {
+        final t = _wi325LinkedGoogleDrive();
+        // The Open Memex Backups folder is itself a link to a folder with
+        // another name; the stored destination is that other name.
+        final drive = '${t.storage}/GoogleDrive-other@example.com/My Drive';
+        Directory(drive).createSync(recursive: true);
+        final store = '${t.base}/elsewhere/memex-store';
+        Directory(store).createSync(recursive: true);
+        final link = '$drive/$_backupsFolder';
+        Link(link).createSync(store);
+        await _open(
+          tester,
+          view: BackupViewState(
+            mode: BackupSheetMode.success,
+            settings: storedAt(store),
+            status: _successStatus(),
+            options: [
+              BackupDestinationOption(
+                provider: BackupProvider.googleDrive,
+                label: 'Google Drive · other@example.com',
+                path: link,
+              ),
+              _chooseOption,
+            ],
+          ),
+          home: t.home,
+        );
+        expect(_status(tester), contains(_providerLine('google drive')));
+        expect(_status(tester), isNot(contains('memex-store')));
+        await _tapKey(tester, _menuKey);
+        expect(
+          _status(tester),
+          contains(
+            '${backupSize(_bytes)} · Open Memex Backups in google drive',
+          ),
+        );
+        expect(_status(tester), isNot(contains('memex-store')));
+      },
+    );
+
+    testWidgets(
+      'picking the symlinked row again resolves it to the stored path and saves nothing',
+      (tester) async {
+        final t = _wi325LinkedGoogleDrive();
+        final s = await _open(
+          tester,
+          view: successAt(t, _wi325LinkedOptions(t)),
+          home: t.home,
+        );
+        // A2's resolver follows the same link.
+        s.probe
+          ..addDirectory(t.resolved)
+          ..addSymlink(t.optionPath, t.resolved);
+        final before = s.resolveCalls;
+        await _tapKey(tester, _menuKey);
+        await _tap(tester, find.byKey(googleKey));
+        expect(s.resolveCalls, before + 1);
+        expect(s.saves, isEmpty, reason: 'it is the current destination');
+      },
+    );
+  });
+
+  // ================================================================ counts
+  group('AC3 and AC9 verify round 4: resolve and save call counts', () {
+    const link = '/Volumes/real/gdrive-backups';
+    const missing = '/Volumes/missing/backups';
+
+    testWidgets(
+      'one turn on press resolves the provider folder once and saves the resolved path',
+      (tester) async {
+        final s = await _open(tester, view: _offView(), backupFolders: false);
+        s.probe
+          ..addDirectory(link)
+          ..addSymlink(_googleDest, link);
+        await _tapKey(tester, backupsToggleKey);
+        await _tapKey(tester, _discoveredKeys[1]);
+        final before = s.resolveCalls;
+        await _tapKey(tester, _turnOnKey);
+        await _frames(tester);
+        expect(s.resolveCalls, before + 1, reason: 'one resolve per press');
+        expect(s.saves, hasLength(1));
+        expect(s.saves.single.settings.destination, link);
+        expect(s.saves.single.settings.destination, isNot(_googleDest));
+        expect(s.saves.single.settings.enabled, isTrue);
+        _expectZeroRuns(s);
+      },
+    );
+
+    testWidgets(
+      'one menu pick resolves the provider folder once and saves the resolved path',
+      (tester) async {
+        final s = await _open(tester, view: _successView());
+        s.probe
+          ..addDirectory(link)
+          ..addSymlink(_oneDriveDest, link);
+        await _tapKey(tester, _menuKey);
+        final before = s.resolveCalls;
+        await _tap(tester, find.byKey(_discoveredKeys[3]));
+        await _frames(tester);
+        expect(s.resolveCalls, before + 1, reason: 'one resolve per pick');
+        expect(s.saves, hasLength(1));
+        expect(s.saves.single.settings, _on.copyWith(destination: link));
+        expect(s.saves.single.settings.destination, isNot(_oneDriveDest));
+        _expectZeroRuns(s);
+      },
+    );
+
+    testWidgets(
+      'a second turn on press while the folder resolves adds no resolve',
+      (tester) async {
+        final s = await _open(tester, view: _offView());
+        await _tapKey(tester, backupsToggleKey);
+        await _tapKey(tester, _discoveredKeys[0]);
+        final before = s.resolveCalls;
+        final gate = s.holdResolves();
+        await tester.tap(find.byKey(_turnOnKey));
+        await _frames(tester);
+        expect(_button(tester, _turnOnKey).onPressed, isNull);
+        await tester.tap(find.byKey(_turnOnKey), warnIfMissed: false);
+        await _frames(tester);
+        gate.complete();
+        await _frames(tester);
+        expect(s.resolveCalls, before + 1, reason: 'one resolve in all');
+        expect(s.saves, hasLength(1));
+        expect(s.saves.single.settings.destination, _icloudDest);
+      },
+    );
+
+    testWidgets(
+      'a folder that cannot be resolved is tried once saves nothing and shows the text',
+      (tester) async {
+        final s = await _open(tester, view: _offView());
+        s.picker.directories.add(missing);
+        await _tapKey(tester, backupsToggleKey);
+        await _tapKey(tester, backupsDestinationChooseKey);
+        final before = s.resolveCalls;
+        await _tapKey(tester, _turnOnKey);
+        expect(s.resolveCalls, before + 1);
+        expect(s.saves, isEmpty);
+        expect(_status(tester), contains(_unavailableDetail(missing, null)));
+
+        // From the menu: one resolve, no save, the text under the settings.
+        final m = await _open(tester, view: _successView());
+        m.picker.directories.add(missing);
+        await _tapKey(tester, _menuKey);
+        final beforeMenu = m.resolveCalls;
+        await _tapKey(tester, backupsDestinationChooseKey);
+        expect(m.resolveCalls, beforeMenu + 1);
+        expect(m.saves, isEmpty);
+        expect(_sheetText(tester), contains(_unavailableDetail(missing, null)));
+      },
+    );
+
+    testWidgets('cancel resolves nothing and saves nothing', (tester) async {
+      final s = await _open(tester, view: _offView());
+      await _tapKey(tester, backupsToggleKey);
+      await _tapKey(tester, _discoveredKeys[0]);
+      final before = s.resolveCalls;
+      await _tapKey(tester, _cancelKey);
+      expect(s.resolveCalls, before);
+      expect(s.saves, isEmpty);
+      expect(_status(tester), contains(_offTitle));
+    });
+
+    testWidgets('a cancelled folder pick resolves nothing and saves nothing', (
+      tester,
+    ) async {
+      // Turn on: the picker's queue is empty, so the dialog is cancelled.
+      final s = await _open(tester, view: _offView());
+      await _tapKey(tester, backupsToggleKey);
+      await _tapKey(tester, _discoveredKeys[0]);
+      final before = s.resolveCalls;
+      await _tapKey(tester, backupsDestinationChooseKey);
+      expect(s.picker.calls, hasLength(1));
+      expect(s.resolveCalls, before);
+      expect(s.saves, isEmpty);
+
+      // From the menu.
+      final m = await _open(tester, view: _successView());
+      await _tapKey(tester, _menuKey);
+      final beforeMenu = m.resolveCalls;
+      await _tap(tester, find.byKey(backupsDestinationChooseKey));
+      expect(m.picker.calls, hasLength(1));
+      expect(m.resolveCalls, beforeMenu);
+      expect(m.saves, isEmpty);
     });
   });
 }
