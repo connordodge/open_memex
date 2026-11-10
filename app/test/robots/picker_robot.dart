@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/widgets/atoms.dart';
+import 'package:open_memex_app/src/widgets/backups/backup_keys.dart';
 
 import '../support/journey_harness.dart';
 
@@ -26,7 +27,11 @@ import '../support/journey_harness.dart';
 /// - set-up sheet (#100): `setup-sheet`, `setup-connect`, `setup-close`;
 /// - refusals (#92): `network-drive-refusal`, `network-drive-refusal-setup`,
 ///   `network-drive-refusal-connect`, `network-drive-refusal-cancel`,
-///   `memex-too-old-refusal`, `memex-too-old-locate`.
+///   `memex-too-old-refusal`, `memex-too-old-locate`;
+/// - restore from backup (#327): `vault-picker-restore`, `restore-dialog`,
+///   `restore-name`, `restore-folder`, `restore-submit`, `restore-error`
+///   (frozen, `backup_keys.dart`) and the dialog's local `restore-cancel`,
+///   `restore-file`, `restore-meta`, `restore-target`.
 class PickerRobot {
   PickerRobot(this.app);
 
@@ -90,6 +95,17 @@ class PickerRobot {
   Finder get tooOldRefusal => key('memex-too-old-refusal');
   Finder get tooOldLocate => key('memex-too-old-locate');
 
+  Finder get restoreFromBackup => find.byKey(vaultPickerRestoreKey);
+  Finder get restoreDialog => find.byKey(restoreDialogKey);
+  Finder get restoreName => find.byKey(restoreNameKey);
+  Finder get restoreFolder => find.byKey(restoreFolderKey);
+  Finder get restoreSubmit => find.byKey(restoreSubmitKey);
+  Finder get restoreError => find.byKey(restoreErrorKey);
+  Finder get restoreCancel => key('restore-cancel');
+  Finder get restoreFile => key('restore-file');
+  Finder get restoreMeta => key('restore-meta');
+  Finder get restoreTarget => key('restore-target');
+
   /// [matching] inside the widget keyed [k].
   Finder inside(String k, Finder matching) =>
       find.descendant(of: key(k), matching: matching);
@@ -144,6 +160,29 @@ class PickerRobot {
     return tester.widget<OmButton>(inside(k, find.byType(OmButton)).first);
   }
 
+  /// Every text under [of] (itself included): each RichText's plain text
+  /// and each EditableText's value, joined by a space.
+  String textIn(Finder of) => [
+    for (final e
+        in find
+            .descendant(
+              of: of,
+              matching: find.byType(RichText),
+              matchRoot: true,
+            )
+            .evaluate())
+      (e.widget as RichText).text.toPlainText(),
+    for (final e
+        in find
+            .descendant(
+              of: of,
+              matching: find.byType(EditableText),
+              matchRoot: true,
+            )
+            .evaluate())
+      (e.widget as EditableText).controller.text,
+  ].join(' ');
+
   // ---------------------------------------------------------------- actions
 
   Future<void> tap(Finder f) async {
@@ -177,5 +216,26 @@ class PickerRobot {
   Future<void> pickConnectInServerMenu() async {
     await tap(serverMenu);
     await tap(serverSelectConnect);
+  }
+
+  /// "restore from backup…" in the picker; the native file picker answers
+  /// whatever the test queued (nothing: cancelled).
+  Future<void> openRestore() => _tapOne(restoreFromBackup);
+
+  /// The Restore dialog's "choose…": the native folder picker answers
+  /// whatever the test queued.
+  Future<void> chooseRestoreFolder() => _tapOne(restoreFolder);
+
+  /// Types [name] into the Restore dialog's vault-name field.
+  Future<void> enterRestoreName(String name) => enter(restoreName, name);
+
+  /// Presses the Restore dialog's "restore".
+  Future<void> submitRestore() => _tapOne(restoreSubmit);
+
+  /// [tap] after checking [f] is on screen, so a missing control fails by
+  /// name.
+  Future<void> _tapOne(Finder f) async {
+    expect(f, findsOneWidget);
+    await tap(f);
   }
 }
