@@ -1,7 +1,7 @@
-// WI #321 (A0, D19): the backup seam's contracts. The frozen models and Keys
-// (group 1-3, red until implemented), the stub files (group 4: each filler
-// deletes its stub's test when it replaces the stub), and the harness and
-// fakes (group 5, which every later backup WI builds on).
+// WI #321 (A0, D19): the backup seam's contracts. The frozen models and Keys,
+// and the harness and fakes that every later backup WI builds on. The
+// stub-neutral tests live one file per filler in
+// `backup_seam_stubs_a1..a4_test.dart`; no filler edits this file.
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -1453,5 +1453,62 @@ void main() {
         expect(done, isTrue);
       },
     );
+  });
+  group('backup seam test layout', () {
+    test('seam test file holds no stub-neutral tests', () {
+      final source = File(
+        'test/state/backup_seam_test.dart',
+      ).readAsStringSync();
+      // Needles are split so this test's own source does not match them.
+      final needles = <String>[
+        'stubs filled'
+            ' by',
+        'Unimplemented'
+            'Error',
+        ' stub '
+            'returns',
+        ' stub '
+            'reads',
+        ' stub '
+            'lists',
+        ' stub '
+            'completes',
+        ' stub '
+            'has no result',
+        'declares a'
+            ' null stub',
+      ];
+      for (final needle in needles) {
+        expect(
+          source.contains(needle),
+          isFalse,
+          reason:
+              'stub-neutral tests belong in backup_seam_stubs_aN_test.dart '
+              '(one file per filler), found "$needle"',
+        );
+      }
+    });
+
+    test('seam test file does not import the stub-only support', () {
+      // The filler files own these imports; backup_seam_test.dart must not
+      // grow a dependency a filler would have to delete.
+      final source = File(
+        'test/state/backup_seam_test.dart',
+      ).readAsStringSync();
+      expect(
+        source.contains(
+          'src/state/backup_'
+          'settings_state.dart',
+        ),
+        isFalse,
+      );
+      expect(
+        source.contains(
+          'src/widgets/backups/'
+          'backups_sheet.dart',
+        ),
+        isFalse,
+      );
+    });
   });
 }
