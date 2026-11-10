@@ -7,7 +7,9 @@
 // Tab applies.
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/src/widgets/editor/source_surface.dart';
 
 import '../robots/segmented_editor_robot.dart';
 import '../support/app_harness.dart';
@@ -64,6 +66,26 @@ Future<bool> _pressTab(SegmentedEditorRobot r, {bool shift = false}) async {
     await tester.pump();
     return false;
   }
+  return handled;
+}
+
+/// Presses Tab (Shift+Tab with [shift]) the way a keyboard reaches an IME:
+/// the framework's key handlers see it, and if none consumes it the platform
+/// text system (here: nothing) gets it. `sendKeyEvent` would add flutter_test's
+/// stand-in for macOS answering an unhandled Tab with `insertTab:`, which a
+/// composing IME would swallow instead. Returns whether Flutter consumed it.
+Future<bool> _tabToIme(WidgetTester tester, {bool shift = false}) async {
+  if (shift) {
+    await KeyEventSimulator.simulateKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+  }
+  final handled = await KeyEventSimulator.simulateKeyDownEvent(
+    LogicalKeyboardKey.tab,
+  );
+  await KeyEventSimulator.simulateKeyUpEvent(LogicalKeyboardKey.tab);
+  if (shift) {
+    await KeyEventSimulator.simulateKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+  }
+  await tester.pump();
   return handled;
 }
 
@@ -251,27 +273,30 @@ void main() {
     tester,
   ) async {
     final r = await _openSource(tester, '- a\n- b');
-    // A Tab that leaves the body (focus traversal) ends the IME session, so
-    // the composing range is set again before each press.
-    Future<void> compose() async {
-      tester.testTextInput.updateEditingValue(
-        const TextEditingValue(
-          text: '- a\n- bk',
-          selection: TextSelection.collapsed(offset: 8),
-          composing: TextRange(start: 7, end: 8),
-        ),
-      );
-      await tester.pump();
-      expect(_ctrl(r).value.composing, const TextRange(start: 7, end: 8));
-    }
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: '- a\n- bk',
+        selection: TextSelection.collapsed(offset: 8),
+        composing: TextRange(start: 7, end: 8),
+      ),
+    );
+    await tester.pump();
+    expect(_ctrl(r).value.composing, const TextRange(start: 7, end: 8));
 
-    await compose();
-    final handled = await _pressTab(r);
+    // Spec #193 R7: the key goes to the IME unchanged. The sidebar's backups
+    // row (WI #326) is a tab stop, so the default focus traversal must not
+    // take it: focus stays in the body and the composing range survives
+    // (a focus move would end the IME session). No focus restore and no
+    // re-compose.
+    final handled = await _tabToIme(tester);
     expect(handled, isFalse, reason: 'Tab goes to the IME');
+    expect(_bodyHasFocus(r), isTrue, reason: 'focus stays in the body');
+    expect(_ctrl(r).value.composing, const TextRange(start: 7, end: 8));
     expect(r.sourceText, '- a\n- bk');
-    await compose();
-    final shifted = await _pressTab(r, shift: true);
+    final shifted = await _tabToIme(tester, shift: true);
     expect(shifted, isFalse, reason: 'Shift+Tab goes to the IME');
+    expect(_bodyHasFocus(r), isTrue, reason: 'focus stays in the body');
+    expect(_ctrl(r).value.composing, const TextRange(start: 7, end: 8));
     expect(r.sourceText, '- a\n- bk');
     // Control: once the composing range ends, the same Tab indents, so the
     // checks above pass because of the IME rule and not for lack of a handler.
@@ -343,6 +368,73 @@ void main() {
       expect(handled, isTrue);
       expect(r.sourceText, '- [ ] a\n  - [x] b');
       await r.waitForSave();
+    },
+    variant: _mac,
+  );
+
+  testWidgets(
+    'Source mode Tab while composing reaches no handler above the editor',
+    (tester) async {
+      // Spec #193 R7. In the app, an ancestor above the editor (the default
+      // Tab shortcut, focus traversal into the sidebar backups row, WI #326)
+      // sees a Tab the editor leaves alone and can take it from the IME.
+      // While composing, the editor must stop the key from climbing, for Tab
+      // and Shift+Tab; Enter still climbs (the platform inserts the newline).
+      final ctrl = TextEditingController(text: '- a\n- bk');
+      addTearDown(ctrl.dispose);
+      final above = <LogicalKeyboardKey>[];
+      await tester.pumpWidget(
+        ProviderScope(
+          child: MaterialApp(
+            home: Scaffold(
+              body: Focus(
+                onKeyEvent: (_, event) {
+                  if (event is KeyDownEvent) above.add(event.logicalKey);
+                  return KeyEventResult.ignored;
+                },
+                child: SourceSurface(bodyCtrl: ctrl, onContentChanged: (_) {}),
+              ),
+            ),
+          ),
+        ),
+      );
+      final body = find.descendant(
+        of: find.byKey(const Key('editor-body')),
+        matching: find.byType(EditableText),
+      );
+      await tester.showKeyboard(body);
+      ctrl.value = const TextEditingValue(
+        text: '- a\n- bk',
+        selection: TextSelection.collapsed(offset: 8),
+        composing: TextRange(start: 7, end: 8),
+      );
+      await tester.pump();
+
+      expect(await _tabToIme(tester), isFalse);
+      expect(await _tabToIme(tester, shift: true), isFalse);
+      expect(
+        above.where((k) => k == LogicalKeyboardKey.tab),
+        isEmpty,
+        reason: 'no ancestor sees Tab while composing',
+      );
+      expect(ctrl.text, '- a\n- bk');
+      expect(ctrl.value.composing, const TextRange(start: 7, end: 8));
+
+      // Enter is not Tab: it still reaches the ancestors while composing.
+      await KeyEventSimulator.simulateKeyDownEvent(LogicalKeyboardKey.enter);
+      await KeyEventSimulator.simulateKeyUpEvent(LogicalKeyboardKey.enter);
+      expect(above, contains(LogicalKeyboardKey.enter));
+
+      // Control: with no composing range the editor takes Tab itself and
+      // indents, so the ancestor still never sees it, and the check above was
+      // not passing for want of a handler.
+      ctrl.value = const TextEditingValue(
+        text: '- a\n- bk',
+        selection: TextSelection.collapsed(offset: 8),
+      );
+      await tester.pump();
+      expect(await _tabToIme(tester), isTrue);
+      expect(ctrl.text, '- a\n  - bk');
     },
     variant: _mac,
   );
