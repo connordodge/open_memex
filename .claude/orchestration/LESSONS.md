@@ -155,3 +155,18 @@ Rust + Flutter) added the lessons below.
 - **Rust MUTATION in memex-mcp costs ~60 s per mutant, about 2× memex-core.**
   Why: #340's server mutants took 59–62 s each, against 21–23 s for memex-core in #332.
   How to apply: plan a ~10 min gate for a tricky server WI. Load from parallel verify suites stretches it further.
+
+Run 20261110-347 (#347 delete a vault from the app: 3 WIs, one lead; review on, Flutter + a Swift
+method channel) added the lessons below.
+
+- **A press handler sees repeats before any rebuild: test held keys and same-frame double presses.**
+  Why: #352 r1: a held Enter/Space fired once per key repeat (`KeyRepeatEvent`). #353 r1 (blocking):
+  `if (_busy) return;` was called an equivalent mutant because `onPressed` is null while busy, but
+  `setState` nulls it only on the next frame, so two presses in one frame started two moves.
+  How: keyboard activation ignores `KeyRepeatEvent`; a busy guard is never exempt, and gets a
+  "two presses in the same frame start one action" test (pump once, not pumpAndSettle).
+- **Keep Swift method-channel handlers a thin pass-through; map errors in Dart.**
+  Why: AC MAP takes no Swift test path and nothing here runs XCTest (#347 refine dropped one); #351
+  put the NSError domain/code → result mapping in Dart, tested over a mock `MethodChannel`.
+  How: Swift replies with `{domain, code}` and the message only; real native behavior is a MANUAL
+  row, and the gate's NATIVE NOTE reminds that the app must be built by hand before release.
