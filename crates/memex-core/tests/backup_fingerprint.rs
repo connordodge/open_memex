@@ -355,16 +355,24 @@ fn length_prefixes_keep_every_part_boundary_distinct() {
 #[test]
 fn a_read_error_in_the_snapshot_or_an_object_is_returned() {
     let mut fp = Fingerprinter::new();
+    let err = fp
+        .snapshot(&mut Failing { ok: 50 })
+        .expect_err("a snapshot read error is an error, not a short snapshot");
+    assert_eq!(err.code(), "backup_failed", "{err:?}");
     assert!(
-        fp.snapshot(&mut Failing { ok: 50 }).is_err(),
-        "a snapshot read error is an error, not a short snapshot"
+        err.to_string().contains("disk went away"),
+        "{err} keeps the cause"
     );
     let mut fp = Fingerprinter::new();
     fp.snapshot(&mut [1u8; 10].as_slice()).unwrap();
     fp.manifest(b"{}");
+    let err = fp
+        .object("a b/c", &mut Failing { ok: 3 })
+        .expect_err("an object read error is an error, not a short object");
+    assert_eq!(err.code(), "backup_failed", "{err:?}");
     assert!(
-        fp.object("a", &mut Failing { ok: 3 }).is_err(),
-        "an object read error is an error, not a short object"
+        err.to_string().contains("a b/c") && err.to_string().contains("disk went away"),
+        "{err} names the object and keeps the cause"
     );
 }
 

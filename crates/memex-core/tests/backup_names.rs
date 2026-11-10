@@ -396,8 +396,22 @@ fn label_for_replaces_each_character_and_cuts_to_64_characters() {
     // Cut by characters: 63 ASCII then a 4-byte character then more.
     let folder = format!("{}📚tail", "e".repeat(63));
     assert_eq!(names::label_for(&folder), format!("{}-", "e".repeat(63)));
+    // Non-ASCII characters whose low byte is a label byte ('A', 'C', 'd', 'z',
+    // '0', '_' ...) are still replaced: `c as u8` alone would keep them.
+    assert_eq!(names::label_for("Łódź"), "--d-");
+    assert_eq!(names::label_for("\u{0141}\u{0143}"), "--");
+    assert_eq!(names::label_for("\u{0130}\u{017A}\u{0230}\u{015F}"), "----");
+    assert_eq!(names::label_for("\u{0141}ab\u{0143}"), "-ab-");
     // Every label_for result is a label the parser accepts.
-    for folder in ["My Notes", "Notes 📚", "Café", &"é".repeat(70), "x"] {
+    for folder in [
+        "My Notes",
+        "Notes 📚",
+        "Café",
+        &"é".repeat(70),
+        "x",
+        "Łódź",
+        "\u{0141}\u{0143}\u{0130}\u{017A}",
+    ] {
         let label = names::label_for(folder);
         let name = names::file_name(&label, 1_794_214_800_000, VAULT_ID);
         assert_eq!(
@@ -446,6 +460,112 @@ fn file_name_is_utc_whatever_the_local_time_zone() {
             out.status.success() && stdout.contains(TZ_CHILD_OK),
             "TZ={tz}: child failed ({:?})\nstdout:\n{stdout}\nstderr:\n{stderr}",
             out.status
+        );
+    }
+}
+
+#[test]
+fn file_name_with_an_out_of_range_instant_falls_back_to_the_epoch_without_panicking() {
+    // No clock reads these, but a corrupt value must not panic (chrono's
+    // range ends far below `i64::MAX` milliseconds).
+    for at_ms in [i64::MAX, i64::MIN] {
+        let name = names::file_name("v", at_ms, VAULT_ID);
+        assert_eq!(
+            name,
+            format!("v-19700101T000000Z-{VAULT_ID}.memex.zip"),
+            "at_ms {at_ms}"
+        );
+        assert_eq!(
+            names::parse_file_name(&name),
+            Some(parsed("v", "19700101T000000Z", VAULT_ID))
+        );
+    }
+}
+
+#[test]
+fn parse_file_name_label_length_and_vault_id_class_edges() {
+    const TS: &str = "20261109T090000Z";
+    // A label of 64 characters parses, 65 does not.
+    let max = "m".repeat(64);
+    assert_eq!(
+        names::parse_file_name(&format!("{max}-{TS}-{VAULT_ID}.memex.zip")),
+        Some(parsed(&max, TS, VAULT_ID))
+    );
+    assert_eq!(
+        names::parse_file_name(&format!("{max}m-{TS}-{VAULT_ID}.memex.zip")),
+        None,
+        "a 65-character label"
+    );
+    // No label at all: an empty label, or no label separator.
+    assert_eq!(
+        names::parse_file_name(&format!("-{TS}-{VAULT_ID}.memex.zip")),
+        None,
+        "empty label"
+    );
+    assert_eq!(
+        names::parse_file_name(&format!("{TS}-{VAULT_ID}.memex.zip")),
+        None,
+        "no label"
+    );
+    assert_eq!(
+        names::parse_file_name(&format!("{TS}{VAULT_ID}.memex.zip")),
+        None,
+        "no label and no separator"
+    );
+    // The vault_id is 26 ASCII letters or digits; `_`, `-` and `.` are not
+    // vault_id characters.
+    for bad in [
+        "01JCB7Q4M8V2X5N9R3T6W0YZ_E",
+        "01JCB7Q4M8V2X5N9R3T6W0YZ-E",
+        "-1JCB7Q4M8V2X5N9R3T6W0YZAE",
+        "01JCB7Q4M8V2X5N9R3T6W0YZ.E",
+        "01JCB7Q4M8V2X5N9R3T6W0YZ E",
+    ] {
+        assert_eq!(
+            names::parse_file_name(&format!("notes-{TS}-{bad}.memex.zip")),
+            None,
+            "vault_id {bad:?}"
+        );
+    }
+    // Letters and digits in either case are taken as given.
+    for ok in ["abcdefghijklmnopqrstuvwxyz", "0123456789ABCDEFGHIJKLMNOP"] {
+        assert_eq!(
+            names::parse_file_name(&format!("notes-{TS}-{ok}.memex.zip")),
+            Some(parsed("notes", TS, ok))
+        );
+    }
+    // The shortest valid name has a one-character label.
+    assert_eq!(
+        names::parse_file_name(&format!("n-{TS}-{VAULT_ID}.memex.zip")),
+        Some(parsed("n", TS, VAULT_ID))
+    );
+}
+
+#[test]
+fn is_partial_for_needs_the_dot_the_final_name_and_the_partial_suffix() {
+    let name = format!("notes-20261109T090000Z-{VAULT_ID}.memex.zip");
+    assert!(names::is_partial_for(&format!(".{name}.partial"), VAULT_ID));
+    for not_partial in [
+        // No leading dot.
+        format!("{name}.partial"),
+        // No `.partial` suffix.
+        format!(".{name}"),
+        name.clone(),
+        // Wrong suffix, or a second one.
+        format!(".{name}.partial.partial"),
+        format!(".{name}.Partial"),
+        format!(".{name}.partial "),
+        // Two dots.
+        format!("..{name}.partial"),
+        // The inner name is not a final backup name.
+        format!(".notes-20261109T090000Z-{VAULT_ID}.partial"),
+        ".partial".to_string(),
+        "..partial".to_string(),
+        String::new(),
+    ] {
+        assert!(
+            !names::is_partial_for(&not_partial, VAULT_ID),
+            "{not_partial:?}"
         );
     }
 }

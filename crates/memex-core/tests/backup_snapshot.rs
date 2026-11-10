@@ -676,6 +676,128 @@ fn snapshot_of_a_vault_without_memex_db_fails_and_never_creates_it() {
     );
 }
 
+#[test]
+fn snapshot_failures_that_never_reach_a_copy_are_backup_failed() {
+    let tmp = tempfile::tempdir().unwrap();
+    // No vault folder at all.
+    let missing = tmp.path().join("No Such Vault");
+    let err = snapshot::take_snapshot(&missing).expect_err("no vault folder");
+    assert_eq!(err.code(), "backup_failed", "{err:?}");
+    assert!(!missing.exists(), "a snapshot never creates the vault");
+    // A memex.db that is not a database.
+    let root = tmp.path().join("Junk Vault");
+    std::fs::create_dir_all(&root).unwrap();
+    let junk = vec![b'x'; 4096];
+    std::fs::write(root.join("memex.db"), &junk).unwrap();
+    let err = snapshot::take_snapshot(&root).expect_err("not a database");
+    assert_eq!(err.code(), "backup_failed", "{err:?}");
+    assert_eq!(
+        std::fs::read(root.join("memex.db")).unwrap(),
+        junk,
+        "a failed snapshot leaves memex.db as it was"
+    );
+}
+
+#[test]
+fn snapshot_as_the_last_connection_on_a_non_empty_wal_never_writes_the_source() {
+    // A vault whose last writer died: memex.db plus a hot -wal and no other
+    // connection. If the snapshot's own connection checkpointed on close, it
+    // would rewrite memex.db and remove the -wal.
+    let (_tmp, root, vault) = new_vault();
+    insert_notes(vault.connection_ref(), 0, 5, "checkpointed");
+    drop(vault);
+    let writer = Connection::open(root.join("memex.db")).unwrap();
+    writer.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+    insert_notes(&writer, 5, 20, "only in the wal");
+    let wal = std::fs::read(root.join("memex.db-wal")).unwrap();
+    assert!(!wal.is_empty(), "the rows are in memex.db-wal");
+
+    let dead = tempfile::tempdir().unwrap();
+    let dead_root = dead.path().join("Dead Writer Vault");
+    std::fs::create_dir_all(&dead_root).unwrap();
+    std::fs::write(
+        dead_root.join("memex.db"),
+        std::fs::read(root.join("memex.db")).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(dead_root.join("memex.db-wal"), &wal).unwrap();
+    drop(writer);
+    let main_before = std::fs::read(dead_root.join("memex.db")).unwrap();
+
+    let snap = take(&dead_root);
+    let (_copy_dir, copy) = open_copy(&snap);
+    assert_eq!(quick_check(&copy), "ok");
+    assert_eq!(
+        count(&copy, "SELECT COUNT(*) FROM notes"),
+        25,
+        "the snapshot holds the rows that are only in the -wal"
+    );
+    drop(copy);
+    drop(snap);
+
+    assert_eq!(
+        std::fs::read(dead_root.join("memex.db")).unwrap(),
+        main_before,
+        "memex.db is byte-identical: closing the snapshot connection did not checkpoint"
+    );
+    assert_eq!(
+        std::fs::read(dead_root.join("memex.db-wal")).unwrap(),
+        wal,
+        "the -wal is untouched"
+    );
+}
+
+#[test]
+fn snapshot_waits_for_a_transient_exclusive_holder_instead_of_failing() {
+    let (_tmp, root, vault) = new_vault();
+    insert_notes(vault.connection_ref(), 0, 10, "body");
+    drop(vault);
+    let holder = Connection::open(root.join("memex.db")).unwrap();
+    holder
+        .pragma_update(None, "locking_mode", "EXCLUSIVE")
+        .unwrap();
+    holder
+        .execute(
+            "UPDATE notes SET content_md = 'held' WHERE title = 'note 0'",
+            [],
+        )
+        .unwrap();
+
+    let (started_tx, started_rx) = mpsc::channel::<()>();
+    let worker = {
+        let root = root.clone();
+        thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            snapshot::take_snapshot(&root)
+        })
+    };
+    started_rx.recv().unwrap();
+    // The snapshot has no way to read while the holder has the file, and it
+    // waits (it does not fail at once). This only ever fails if it gives up
+    // early, never because the machine is slow.
+    for _ in 0..30 {
+        thread::sleep(std::time::Duration::from_millis(10));
+        assert!(
+            !worker.is_finished(),
+            "the snapshot finished while the exclusive holder still had the file"
+        );
+    }
+    drop(holder);
+    let snap = worker
+        .join()
+        .expect("snapshot thread")
+        .unwrap_or_else(|e| panic!("the snapshot after the holder let go: {e:?}"));
+    let (_copy_dir, copy) = open_copy(&snap);
+    assert_eq!(quick_check(&copy), "ok");
+    assert_eq!(
+        count(
+            &copy,
+            "SELECT COUNT(*) FROM notes WHERE content_md = 'held'"
+        ),
+        1
+    );
+}
+
 /// Child half of the temp-file test: one `take_snapshot` in a process whose
 /// `TMPDIR` is a private folder, then that folder must be empty. Run by its
 /// parent, not directly.
@@ -766,4 +888,75 @@ fn no_snapshot_temp_file_remains_after_success_failure_or_drop() {
         .unwrap();
     run_child_with_private_tmpdir(&busy_root, "backup_failed");
     drop(holder);
+}
+
+/// A vault folder at `<tmp>/<name>` whose `memex.db` is prepared by `seed`
+/// (which may leave it absent). Returns the folder and the bytes it ended up
+/// with, if any.
+fn vault_with_db(
+    tmp: &tempfile::TempDir,
+    name: &str,
+    seed: impl FnOnce(&Path),
+) -> (PathBuf, Option<Vec<u8>>) {
+    let root = tmp.path().join(name);
+    std::fs::create_dir_all(&root).unwrap();
+    let db = root.join("memex.db");
+    seed(&db);
+    let bytes = std::fs::read(&db).ok();
+    (root, bytes)
+}
+
+#[test]
+fn snapshot_of_a_memex_db_with_no_memex_schema_fails_with_backup_failed_and_leaves_no_temp_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    // An empty file (a truncation or a disk-full incident).
+    let (empty, empty_bytes) = vault_with_db(&tmp, "Empty File", |db| {
+        std::fs::write(db, b"").unwrap();
+    });
+    // A valid SQLite file with other tables but no schema_version table.
+    let (no_table, no_table_bytes) = vault_with_db(&tmp, "No Version Table", |db| {
+        let conn = Connection::open(db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notes (id INTEGER PRIMARY KEY, title TEXT);
+             INSERT INTO notes(title) VALUES ('a');",
+        )
+        .unwrap();
+    });
+    // A schema_version table with no rows.
+    let (empty_table, empty_table_bytes) = vault_with_db(&tmp, "Empty Version Table", |db| {
+        let conn = Connection::open(db).unwrap();
+        conn.execute_batch("CREATE TABLE schema_version (version INTEGER PRIMARY KEY);")
+            .unwrap();
+    });
+    // A schema_version table holding only version 0.
+    let (zero_row, zero_row_bytes) = vault_with_db(&tmp, "Version Zero Row", |db| {
+        let conn = Connection::open(db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+             INSERT INTO schema_version(version) VALUES (0);",
+        )
+        .unwrap();
+    });
+    let cases = [
+        ("0-byte memex.db", empty, empty_bytes),
+        ("no schema_version table", no_table, no_table_bytes),
+        ("empty schema_version table", empty_table, empty_table_bytes),
+        ("schema_version of 0", zero_row, zero_row_bytes),
+    ];
+
+    for (what, root, before) in &cases {
+        let err = snapshot::take_snapshot(root).expect_err(what);
+        assert_eq!(err.code(), "backup_failed", "{what}: {err:?}");
+        assert!(
+            err.to_string().contains("schema version"),
+            "{what}: the message names the missing schema: {err}"
+        );
+        assert_eq!(
+            &std::fs::read(root.join("memex.db")).ok(),
+            before,
+            "{what}: a failed snapshot leaves memex.db as it was"
+        );
+        // No snapshot temp file remains (checked in a private TMPDIR).
+        run_child_with_private_tmpdir(root, "backup_failed");
+    }
 }

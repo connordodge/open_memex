@@ -162,6 +162,59 @@ fn try_lock_takes_an_existing_backup_lock_file() {
 }
 
 #[test]
+fn try_lock_keeps_the_lock_files_content_and_never_deletes_it() {
+    let _serial = serial();
+    let (_tmp, vault) = vault_dir();
+    let lock_path = vault.join(LOCK_FILE);
+    std::fs::write(&lock_path, b"seeded").expect("seed backup.lock");
+    let held = take(&vault);
+    assert_eq!(
+        std::fs::read(&lock_path).unwrap(),
+        b"seeded",
+        "taking the lock does not truncate the file"
+    );
+    drop(held);
+    assert_eq!(
+        std::fs::read(&lock_path).unwrap(),
+        b"seeded",
+        "releasing the lock does not delete or rewrite the file"
+    );
+    drop(take(&vault));
+    assert!(lock_path.is_file());
+}
+
+#[test]
+fn backup_in_progress_names_the_lock_file() {
+    let _serial = serial();
+    let (_tmp, vault) = vault_dir();
+    let held = take(&vault);
+    let err = lock::try_lock(&vault).expect_err("the lock is held");
+    assert_eq!(err.code(), "backup_in_progress");
+    let message = err.to_string();
+    assert!(
+        message.contains(&vault.join(LOCK_FILE).display().to_string()),
+        "{message:?} names the lock file"
+    );
+    drop(held);
+}
+
+#[test]
+fn try_lock_that_cannot_open_the_lock_file_is_backup_failed_not_in_progress() {
+    let _serial = serial();
+    let tmp = tempfile::tempdir().expect("temp dir");
+    // The vault folder does not exist.
+    let missing = tmp.path().join("No Such Vault");
+    let err = lock::try_lock(&missing).expect_err("no vault folder");
+    assert_eq!(err.code(), "backup_failed", "{err:?}");
+    assert!(!missing.exists(), "try_lock never creates the vault folder");
+    // The lock path is a folder: it cannot be opened for writing.
+    let (_tmp2, vault) = vault_dir();
+    std::fs::create_dir(vault.join(LOCK_FILE)).expect("folder named backup.lock");
+    let err = lock::try_lock(&vault).expect_err("backup.lock is a folder");
+    assert_eq!(err.code(), "backup_failed", "{err:?}");
+}
+
+#[test]
 fn a_held_lock_on_one_vault_does_not_block_another_vault() {
     let _serial = serial();
     let (_tmp_a, a) = vault_dir();
