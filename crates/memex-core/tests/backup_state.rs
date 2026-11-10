@@ -858,6 +858,19 @@ fn destination_key_of_a_path_through_an_unsearchable_folder_is_the_canonical_anc
     );
 }
 
+/// Verify-mode pin: only a missing, non-directory or access-refused folder is
+/// walked up. Any other I/O error (here a symlink loop, ELOOP) is returned as
+/// an `internal` error rather than keyed as if the path were merely absent.
+#[test]
+fn destination_key_of_a_symlink_loop_is_an_io_error_not_a_walked_up_key() {
+    let fx = Fx::new();
+    let looped = fx.root.join("loop");
+    std::os::unix::fs::symlink(&looped, &looped).unwrap();
+    let err = destination_key(&looped.join("sub"))
+        .expect_err("a symlink loop is an I/O error, not a missing path");
+    assert_eq!(err.code(), "internal", "{err}");
+}
+
 /// Verify-mode pin: a key is JSON text, so a non-UTF-8 destination is an
 /// error (never a lossy key that two different folders could share).
 #[cfg(unix)]
