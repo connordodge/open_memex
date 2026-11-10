@@ -110,6 +110,19 @@ _fake_log() {
 }
 ''';
 
+/// Shell function: a digest of a bundle's files, leaving out every
+/// `_CodeSignature` directory and the `CodeResources` ticket file. The fake
+/// codesign records it as the bundle's seal, and the tests recompute it.
+const _digestFn = r'''
+_fake_digest() {
+  (
+    cd "$1" || exit 1
+    find . -type f ! -path '*/_CodeSignature/*' ! -name CodeResources -print0 |
+      LC_ALL=C sort -z | xargs -0 shasum -a 256 | shasum -a 256 | cut -d' ' -f1
+  )
+}
+''';
+
 const _fakeCargo = r'''
 _fake_log cargo "$@"
 case "${1:-}" in
@@ -125,6 +138,9 @@ case "${1:-}" in
     {
       printf 'MACOSX_DEPLOYMENT_TARGET=%s\n' "${MACOSX_DEPLOYMENT_TARGET-<unset>}"
       printf 'RUSTFLAGS=%s\n' "${RUSTFLAGS-<unset>}"
+      printf 'CARGO_ENCODED_RUSTFLAGS=%s\n' "${CARGO_ENCODED_RUSTFLAGS-<unset>}"
+      printf 'CFLAGS_aarch64_apple_darwin=%s\n' "${CFLAGS_aarch64_apple_darwin-<unset>}"
+      printf 'CXXFLAGS_aarch64_apple_darwin=%s\n' "${CXXFLAGS_aarch64_apple_darwin-<unset>}"
     } >>"$FAKE_ENV_LOG"
     td="${CARGO_TARGET_DIR:-$PWD/target}"
     triple=""
@@ -216,6 +232,11 @@ PLIST
     ln -s Versions/Current/Resources "$fw/Resources"
   done
   printf 'FAKE-DYLIB\000end\n' >"$app/Contents/Frameworks/libfake_plugin.dylib"
+  if [ "${FAKE_FLUTTER_DEEP:-}" = 1 ]; then
+    deep="$app/Contents/Frameworks/FlutterMacOS.framework/Versions/A/Libraries"
+    mkdir -p "$deep" || exit 1
+    printf 'FAKE-DYLIB deep\000end\n' >"$deep/libdeep.dylib"
+  fi
 fi
 exit 0
 ''';
@@ -229,6 +250,29 @@ for a in "$@"; do
         echo "fake codesign: a sealed resource is missing or invalid" >&2
         exit 1
       fi
+      # A bundle whose files changed after it was signed has a broken seal.
+      prev=""
+      for t in "$@"; do
+        skip=0
+        case "$prev" in -R | -r) skip=1 ;; esac
+        case "$t" in -*) skip=1 ;; esac
+        if [ "$skip" = 0 ]; then
+          if [ -f "$t/Contents/_CodeSignature/CodeResources" ]; then
+            seal="$t/Contents/_CodeSignature/CodeResources"
+          else
+            seal="$t/_CodeSignature/CodeResources"
+          fi
+          if [ -d "$t" ] && [ -f "$seal" ]; then
+            want=$(sed -n 's/^SEAL //p' "$seal")
+            have=$(_fake_digest "$t")
+            if [ "$want" != "$have" ]; then
+              echo "fake codesign: a sealed resource is missing or invalid: $t" >&2
+              exit 1
+            fi
+          fi
+        fi
+        prev="$t"
+      done
       exit 0
       ;;
   esac
@@ -255,12 +299,22 @@ for a in "$@"; do
   esac
   case "$a" in -*) skip=1 ;; esac
   if [ "$skip" = 0 ]; then
+    if [ -n "${FAKE_CODESIGN_SIGN_FAIL:-}" ]; then
+      case "${a%/}" in
+        *"$FAKE_CODESIGN_SIGN_FAIL")
+          echo "fake codesign: $a: the signing identity cannot sign this" >&2
+          exit 1
+          ;;
+      esac
+    fi
     if [ -d "$a/Contents" ]; then
       mkdir -p "$a/Contents/_CodeSignature"
       printf 'FAKE-CODESIGN %s\n' "$ident" >"$a/Contents/_CodeSignature/CodeResources"
+      printf 'SEAL %s\n' "$(_fake_digest "$a")" >>"$a/Contents/_CodeSignature/CodeResources"
     elif [ -d "$a" ]; then
       mkdir -p "$a/_CodeSignature"
       printf 'FAKE-CODESIGN %s\n' "$ident" >"$a/_CodeSignature/CodeResources"
+      printf 'SEAL %s\n' "$(_fake_digest "$a")" >>"$a/_CodeSignature/CodeResources"
     elif [ -f "$a" ]; then
       printf '\nFAKE-CODESIGN %s\n' "$ident" >>"$a"
     fi
@@ -322,6 +376,13 @@ case "$tool" in
     if [ "$sub" = staple ]; then
       p=""
       for a in "$@"; do p="$a"; done
+      sn=$(cat "$FAKE_STATE/staple-n" 2>/dev/null || echo 0)
+      sn=$((sn + 1))
+      echo "$sn" >"$FAKE_STATE/staple-n"
+      if [ -n "${FAKE_STAPLER_FAIL:-}" ] && [ "$sn" = "$FAKE_STAPLER_FAIL" ]; then
+        echo "fake stapler: could not staple $p: the ticket is not available" >&2
+        exit 65
+      fi
       if [ -d "$p/Contents" ]; then
         printf 'FAKE-STAPLED-TICKET\n' >"$p/Contents/CodeResources"
       elif [ -f "$p" ]; then
@@ -604,7 +665,7 @@ Future<_Fx> _fixture({String licenseExtra = ''}) async {
 
   for (final e in _fakes.entries) {
     final f = File('$bin/${e.key}');
-    f.writeAsStringSync('#!/bin/bash\n$_logFn\n${e.value}');
+    f.writeAsStringSync('#!/bin/bash\n$_logFn\n$_digestFn\n${e.value}');
     await _sh(['/bin/chmod', '755', f.path]);
   }
 
@@ -980,6 +1041,59 @@ void _expectRefused(ScriptResult r, _Fx fx, String mention) {
   expect(r.output, contains(mention), reason: 'the refusal names $mention\n$r');
 }
 
+/// The code-signature seals in an app: bundle name -> whether the bundle's
+/// files still hash to the digest the fake codesign recorded when it signed
+/// it. A write to a bundle after it was signed makes its seal stale.
+Future<Map<String, bool>> _sealState(String app) async {
+  final out = <String, bool>{};
+  for (final e in Directory(app).listSync(recursive: true)) {
+    if (!e.path.endsWith('/_CodeSignature/CodeResources')) continue;
+    if (e is! File) continue;
+    var bundle = e.path.substring(
+      0,
+      e.path.length - '/_CodeSignature/CodeResources'.length,
+    );
+    if (bundle.endsWith('/Contents')) {
+      bundle = bundle.substring(0, bundle.length - '/Contents'.length);
+    }
+    final want = e
+        .readAsLinesSync()
+        .where((l) => l.startsWith('SEAL '))
+        .map((l) => l.substring('SEAL '.length))
+        .toList();
+    final r = await Process.run('/bin/bash', [
+      '-c',
+      '$_digestFn\n_fake_digest "\$1"',
+      '_',
+      bundle,
+    ]);
+    expect(r.exitCode, 0, reason: 'digest of $bundle: ${r.stderr}');
+    out[bundle.split('/').last] =
+        want.length == 1 && want.single == (r.stdout as String).trim();
+  }
+  return out;
+}
+
+const _sealedBundles = {
+  _appName,
+  'App.framework',
+  'FlutterMacOS.framework',
+  'CSQLite.framework',
+  'objective_c.framework',
+};
+
+/// Asserts the app in the DMG was not touched after it was signed.
+Future<void> _expectAppSealed(_Fx fx) async {
+  final vol = await _openDmg(fx, '${fx.out}/$_dmgName');
+  final seals = await _sealState('$vol/$_appName');
+  expect(seals.keys.toSet(), _sealedBundles, reason: '$seals');
+  expect(
+    seals.entries.where((e) => !e.value).map((e) => e.key),
+    isEmpty,
+    reason: 'bundles changed after they were signed: $seals',
+  );
+}
+
 void main() {
   group('dry run with fake tools', () {
     late _Fx fx;
@@ -1183,11 +1297,11 @@ void main() {
       final zip = '${fx.out}/$_zipName';
       expect(File(zip).existsSync(), isTrue, reason: '$_zipName in --out');
       final entries = await _zipEntries(zip);
-      expect(entries.map((e) => e.split('/').last).toSet(), {
+      expect(entries.toSet(), {
         'memex',
         'LICENSE',
         _notices,
-      }, reason: '$entries');
+      }, reason: 'the zip holds these three files at its top level: $entries');
       final memex = entries.firstWhere((e) => e.split('/').last == 'memex');
       expect(await _unzipEntry(zip, memex), contains(_memexMarker));
       final lic = entries.firstWhere((e) => e.split('/').last == 'LICENSE');
@@ -1206,6 +1320,39 @@ void main() {
       final memex = entries.firstWhere((e) => e.split('/').last == 'memex');
       expect(await _unzipEntry(zip, memex), contains('FAKE-CODESIGN -'));
     });
+
+    test(
+      'the app in the DMG holds exactly the files it had when it was signed',
+      () async {
+        expect(r.exitCode, 0, reason: '$r');
+        await _expectAppSealed(fx);
+      },
+    );
+
+    test(
+      'dry run signs code nested deeper in a framework before the framework',
+      () async {
+        final fx = await _fixture();
+        final r = await _runBuild(
+          fx,
+          _dryArgs(fx),
+          env: {'FAKE_FLUTTER_DEEP': '1'},
+        );
+        expect(r.exitCode, 0, reason: '$r');
+        final calls = _calls(fx);
+        int signOf(String suffix) => _indexWhere(
+          calls,
+          (c) => _isSign(c) && _targets(c).any((t) => t.endsWith(suffix)),
+        );
+        final deep = signOf('/Libraries/libdeep.dylib');
+        final framework = signOf('/FlutterMacOS.framework');
+        final app = signOf('.app');
+        expect(deep, greaterThanOrEqualTo(0), reason: _callList(calls));
+        expect(framework, greaterThan(deep), reason: _callList(calls));
+        expect(app, greaterThan(framework), reason: _callList(calls));
+        await _expectAppSealed(fx);
+      },
+    );
 
     test(
       'SHA256SUMS lists the DMG the zip and the notices with matching hashes',
@@ -1594,6 +1741,20 @@ void main() {
             reason: '$n changed after $_sums was written',
           );
         }
+      },
+    );
+
+    test(
+      'signed mode ships the app with the files it had when it was signed and stapled',
+      () async {
+        expect(r.exitCode, 0, reason: '$r');
+        // Stapling adds a ticket to the bundle but does not break its seal.
+        final vol = await _openDmg(fx, '${fx.out}/$_dmgName');
+        expect(
+          File('$vol/$_appName/Contents/CodeResources').readAsStringSync(),
+          contains(_stapleMarker),
+        );
+        await _expectAppSealed(fx);
       },
     );
 
@@ -2150,6 +2311,254 @@ void main() {
       final r = await _runBuild(fx, _dryArgs(fx));
       expect(r.exitCode, 0, reason: '$r');
       expect(_calls(fx).where((c) => c.tool == 'xcrun'), isEmpty);
+    });
+  });
+
+  group('signing and stapling failures', () {
+    // (test name, env, the failing step, submits made before it, staples
+    // made before it, whether the app was signed).
+    final cases = <(String, Map<String, String>, int, int, int)>[
+      (
+        'a failing codesign of memex fails step 5 and signs nothing else',
+        {'FAKE_CODESIGN_SIGN_FAIL': '/Contents/MacOS/memex'},
+        5,
+        0,
+        0,
+      ),
+      (
+        'a failing codesign of a framework fails step 5 before the app is signed',
+        {'FAKE_CODESIGN_SIGN_FAIL': '/App.framework'},
+        5,
+        0,
+        0,
+      ),
+      (
+        'a failing codesign of the app fails step 5 and notarizes nothing',
+        {'FAKE_CODESIGN_SIGN_FAIL': '.app'},
+        5,
+        0,
+        0,
+      ),
+      (
+        'a failing stapler for the app fails step 6 and builds no DMG',
+        {'FAKE_STAPLER_FAIL': '1'},
+        6,
+        1,
+        1,
+      ),
+      (
+        'a failing codesign of the DMG fails step 7 and notarizes no DMG',
+        {'FAKE_CODESIGN_SIGN_FAIL': '.dmg'},
+        7,
+        1,
+        1,
+      ),
+      (
+        'a failing stapler for the DMG fails step 7 and makes no zip',
+        {'FAKE_STAPLER_FAIL': '2'},
+        7,
+        2,
+        2,
+      ),
+    ];
+    for (final (name, env, step, submits, staples) in cases) {
+      test(name, () async {
+        final fx = await _fixture();
+        final r = await _runBuild(
+          fx,
+          _signedArgs(fx),
+          env: {..._signedEnv(fx), ...env},
+        );
+        final calls = _calls(fx);
+        final why = '$r\n${_callList(calls)}';
+        expect(r.exitCode, 1, reason: why);
+        expect(_failed(r), [step], reason: why);
+        expect(_steps(r).last, step, reason: why);
+        expect(calls.where(_isSubmit), hasLength(submits), reason: why);
+        expect(calls.where(_isStaple), hasLength(staples), reason: why);
+        final kinds = _inAppSignings(calls).map((s) => s.kind).toList();
+        if (name.contains('of memex')) {
+          expect(kinds, ['memex'], reason: why);
+        } else if (name.contains('of a framework')) {
+          expect(kinds, isNot(contains('app')), reason: why);
+          expect(kinds, contains('nested:App.framework'), reason: why);
+        } else if (name.contains('of the app')) {
+          expect(kinds.last, 'app', reason: why);
+          expect(calls.where(_isVerify), isEmpty, reason: why);
+        }
+        if (step < 7) {
+          expect(calls.where(_isHdiCreate), isEmpty, reason: why);
+        } else {
+          expect(calls.where(_isHdiCreate), isNotEmpty, reason: why);
+        }
+        expect(_steps(r), isNot(contains(step + 1)), reason: why);
+        expect(File('${fx.out}/$_sums').existsSync(), isFalse);
+        expect(Directory(fx.out).listSync(), isEmpty, reason: why);
+      });
+    }
+  });
+
+  group('the clean checkout rule', () {
+    Future<_Fx> committed() async {
+      final fx = await _fixture();
+      final s = await runGit(fx.iso, fx.root, ['status', '--porcelain']);
+      expect(s.stdout.trim(), isEmpty, reason: 'the fixture starts clean');
+      return fx;
+    }
+
+    test(
+      'signed mode with a modified tracked file exits 2 before STEP 1',
+      () async {
+        final fx = await committed();
+        File(
+          '${fx.root}/app/pubspec.yaml',
+        ).writeAsStringSync('# local edit\n', mode: FileMode.append);
+        final r = await _runBuild(fx, _signedArgs(fx), env: _signedEnv(fx));
+        _expectRefused(r, fx, 'clean checkout');
+      },
+    );
+
+    test(
+      'signed mode with an untracked file under app exits 2 before STEP 1',
+      () async {
+        final fx = await committed();
+        File('${fx.root}/app/lib_extra.dart').writeAsStringSync('// new\n');
+        final r = await _runBuild(fx, _signedArgs(fx), env: _signedEnv(fx));
+        _expectRefused(r, fx, 'clean checkout');
+      },
+    );
+
+    test(
+      'signed mode with an untracked Rust file exits 2 before STEP 1',
+      () async {
+        final fx = await committed();
+        File(
+          '${fx.root}/crates/memex-mcp/extra.rs',
+        ).writeAsStringSync('// new\n');
+        final r = await _runBuild(fx, _signedArgs(fx), env: _signedEnv(fx));
+        _expectRefused(r, fx, 'clean checkout');
+      },
+    );
+
+    test(
+      'signed mode with a staged but uncommitted file exits 2 before STEP 1',
+      () async {
+        final fx = await committed();
+        File('${fx.root}/app/staged.txt').writeAsStringSync('x\n');
+        await runGit(fx.iso, fx.root, ['add', 'app/staged.txt']);
+        final r = await _runBuild(fx, _signedArgs(fx), env: _signedEnv(fx));
+        _expectRefused(r, fx, 'clean checkout');
+      },
+    );
+
+    test('signed mode outside a git checkout exits 2 before STEP 1', () async {
+      final fx = await committed();
+      Directory('${fx.root}/.git').deleteSync(recursive: true);
+      final r = await _runBuild(fx, _signedArgs(fx), env: _signedEnv(fx));
+      _expectRefused(r, fx, 'git checkout');
+    });
+
+    test('signed mode ignores files that git ignores', () async {
+      final fx = await committed();
+      File('${fx.root}/dist/old/leftover.txt')
+        ..createSync(recursive: true)
+        ..writeAsStringSync('an earlier build\n');
+      File('${fx.root}/target/debug/junk')
+        ..createSync(recursive: true)
+        ..writeAsStringSync('x\n');
+      final r = await _runBuild(fx, _signedArgs(fx), env: _signedEnv(fx));
+      expect(r.exitCode, 0, reason: '$r');
+      expect(_steps(r), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], reason: '$r');
+      expect(r.stderr, isNot(contains('clean checkout')), reason: '$r');
+    });
+
+    test(
+      'a dry run with local changes warns on stderr and builds anyway',
+      () async {
+        final fx = await committed();
+        File('${fx.root}/app/lib_extra.dart').writeAsStringSync('// new\n');
+        final r = await _runBuild(fx, _dryArgs(fx));
+        expect(r.exitCode, 0, reason: '$r');
+        expect(_steps(r), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], reason: '$r');
+        expect(r.stderr, contains('uncommitted or untracked'), reason: '$r');
+        expect(r.output, contains('leaks: 0'), reason: '$r');
+      },
+    );
+
+    test('a dry run on a clean checkout prints no warning', () async {
+      final fx = await committed();
+      final r = await _runBuild(fx, _dryArgs(fx));
+      expect(r.exitCode, 0, reason: '$r');
+      expect(r.stderr, isNot(contains('uncommitted')), reason: '$r');
+      expect(r.stderr, isNot(contains('WARNING')), reason: '$r');
+      expect(_steps(r), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], reason: '$r');
+    });
+  });
+
+  group('the memex build environment', () {
+    late _Fx fx;
+    late ScriptResult r;
+    late Map<String, String> env;
+
+    setUpAll(() async {
+      fx = await _fixture();
+      // A flag list in cargo's encoded form would take precedence over
+      // RUSTFLAGS, so the prefix maps would never apply.
+      r = await _runBuild(
+        fx,
+        _dryArgs(fx),
+        env: {'CARGO_ENCODED_RUSTFLAGS': '-Cdebuginfo=2'},
+      );
+      env = {};
+      for (final l in File(fx.envLog).readAsLinesSync()) {
+        final i = l.indexOf('=');
+        if (i > 0) env[l.substring(0, i)] = l.substring(i + 1);
+      }
+    });
+
+    Set<String> both(String dir) => {
+      dir,
+      Directory(dir).resolveSymbolicLinksSync(),
+    };
+
+    test('the memex build clears CARGO_ENCODED_RUSTFLAGS', () {
+      expect(r.exitCode, 0, reason: '$r');
+      expect(env['RUSTFLAGS'], isNot('<unset>'), reason: '$env');
+      expect(env['CARGO_ENCODED_RUSTFLAGS'], '<unset>', reason: '$env');
+    });
+
+    test(
+      'the memex build maps HOME before the checkout so the later map wins',
+      () {
+        expect(r.exitCode, 0, reason: '$r');
+        final flags = env['RUSTFLAGS']!;
+        final home = both(fx.iso.home)
+            .map((h) => flags.indexOf('--remap-path-prefix=$h=~'))
+            .where((i) => i >= 0)
+            .toList();
+        final root = both(fx.root)
+            .map((h) => flags.indexOf('--remap-path-prefix=$h=.'))
+            .where((i) => i >= 0)
+            .toList();
+        expect(home, isNotEmpty, reason: flags);
+        expect(root, isNotEmpty, reason: flags);
+        expect(home.reduce((a, b) => a > b ? a : b), lessThan(root.first));
+      },
+    );
+
+    test('the memex build maps HOME and the checkout out of C and C++', () {
+      expect(r.exitCode, 0, reason: '$r');
+      for (final v in [
+        env['CFLAGS_aarch64_apple_darwin']!,
+        env['CXXFLAGS_aarch64_apple_darwin']!,
+      ]) {
+        for (final h in both(fx.iso.home)) {
+          expect(v, contains('-ffile-prefix-map=$h=~'), reason: v);
+        }
+        for (final d in both(fx.root)) {
+          expect(v, contains('-ffile-prefix-map=$d=.'), reason: v);
+        }
+      }
     });
   });
 }
