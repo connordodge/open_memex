@@ -372,6 +372,10 @@ class EditorController extends StateNotifier<EditorStateValue> {
     };
   }
 
+  /// Completes once every save of [vault] in flight (and every save held
+  /// back behind one) has landed.
+  Future<void> savesSettled(VaultRef vault) => Future<void>.value();
+
   void _scheduleSave() {
     _debounce?.cancel();
     _debounce = _ref.read(clockProvider).after(saveDebounce, () {

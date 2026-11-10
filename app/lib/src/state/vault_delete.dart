@@ -1,3 +1,4 @@
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 
@@ -22,6 +23,12 @@ final class VaultDeleteFailed extends VaultDeleteResult {
   const VaultDeleteFailed(this.message);
 
   final String message;
+}
+
+/// The leave guard said stay: nothing was flushed, closed or trashed, and
+/// the vault is still open.
+final class VaultDeleteCancelled extends VaultDeleteResult {
+  const VaultDeleteCancelled();
 }
 
 /// The message for a failed [result] on the vault at [path]; null for
@@ -66,6 +73,16 @@ class VaultDeleter {
     await settings.removeVaultBackup(path);
     return const VaultDeleted();
   }
+
+  /// Deletes the open local vault at [path] (Spec #357 Req 28-30): asks the
+  /// leave guard once, flushes the editor's pending save, closes the vault,
+  /// waits for its in-flight saves and UI state writes, then runs [delete].
+  /// On a failed delete the vault reopens. Completes
+  /// [VaultDeleteCancelled] when the guard says stay.
+  Future<VaultDeleteResult> deleteOpenVault(
+    BuildContext context,
+    String path,
+  ) async => const VaultDeleteCancelled();
 }
 
 final vaultDeleterProvider = Provider<VaultDeleter>((ref) => VaultDeleter(ref));

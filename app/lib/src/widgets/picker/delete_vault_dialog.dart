@@ -66,6 +66,8 @@ class _DeleteVaultDialogState extends ConsumerState<DeleteVaultDialog> {
           _busy = false;
           _error = message;
         });
+      case VaultDeleteCancelled():
+        setState(() => _busy = false);
     }
   }
 

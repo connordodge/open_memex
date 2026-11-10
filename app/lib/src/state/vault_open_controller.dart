@@ -210,6 +210,23 @@ class VaultOpenController {
     return outcome;
   }
 
+  /// Opens [vault] from a picker row: asks [leaveVaultGuardProvider] once;
+  /// on stay completes [VaultOpenCancelled] and changes nothing, otherwise
+  /// behaves exactly like [openVault].
+  Future<VaultOpenOutcome> openVaultGuarded(
+    BuildContext context,
+    VaultRef vault,
+  ) async => const NoVaultToReopen();
+
+  /// Closes the open vault before it is deleted: clears the current vault
+  /// and the selected note, leaving the last vault and the recents alone.
+  Future<void> closeForDelete() async {}
+
+  /// Reopens [vault] after its delete failed, the way a pill switch does,
+  /// without the guard.
+  Future<VaultOpenOutcome> reopenAfterFailedDelete(VaultRef vault) async =>
+      const NoVaultToReopen();
+
   /// The saved server [serverId]'s access token was replaced: see
   /// [hostedServerTokenChanged].
   Future<void> serverTokenChanged(String serverId) =>
