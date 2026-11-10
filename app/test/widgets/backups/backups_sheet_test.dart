@@ -26,7 +26,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show Directory, Link;
-import 'dart:ui' show CheckedState;
+import 'dart:ui' show CheckedState, PointerDeviceKind;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -4794,5 +4794,598 @@ void main() {
       expect(m.resolveCalls, beforeMenu);
       expect(m.saves, isEmpty);
     });
+  });
+
+  // Hand mutants of review r4 (finding 1): the semantics flags, the focus
+  // ring, the hover fill, the initial state fields, the error-flag clears
+  // and the keep field's focus guards of backups_sheet*.dart.
+  group('AC12 verify round 5: semantics flags of the press targets', () {
+    final icloudKey = backupDestinationKey(BackupProvider.icloud, 0);
+
+    /// The node inside [key]'s box that takes a tap.
+    SemanticsNode pressNode(WidgetTester tester, Key key) {
+      final nodes = _semanticsAt(
+        tester,
+        key,
+      ).where((n) => n.getSemanticsData().hasAction(SemanticsAction.tap));
+      expect(nodes, isNotEmpty, reason: 'a tap node inside $key');
+      return nodes.first;
+    }
+
+    testWidgets('buttons report button and nothing of a switch or a radio', (
+      tester,
+    ) async {
+      await _open(tester, view: _neverView());
+      final handle = tester.ensureSemantics();
+      await tester.pump();
+      for (final (key, label) in [
+        (backupsNowKey, _backUpNow),
+        (backupsToggleKey, _turnOff),
+        (_closeKey, 'close'),
+        (_keepIncKey, 'keep one more backup'),
+        (_keepDecKey, 'keep one fewer backup'),
+      ]) {
+        expect(
+          pressNode(tester, key),
+          isSemantics(
+            label: label,
+            isButton: true,
+            hasEnabledState: true,
+            isEnabled: true,
+            hasTapAction: true,
+            hasToggledState: false,
+            hasCheckedState: false,
+            isInMutuallyExclusiveGroup: false,
+          ),
+          reason: '$key',
+        );
+      }
+      handle.dispose();
+    });
+
+    testWidgets('the switch is a toggle and not a button', (tester) async {
+      await _open(tester, view: _neverView());
+      final handle = tester.ensureSemantics();
+      await tester.pump();
+      expect(
+        pressNode(tester, backupsAutomaticKey),
+        isSemantics(
+          label: 'back up automatically',
+          isButton: false,
+          hasToggledState: true,
+          isToggled: true,
+          hasCheckedState: false,
+          isInMutuallyExclusiveGroup: false,
+          hasTapAction: true,
+        ),
+      );
+      handle.dispose();
+    });
+
+    testWidgets('a picking row is a radio of one group and not a button', (
+      tester,
+    ) async {
+      await _open(tester, view: _pickingView());
+      final handle = tester.ensureSemantics();
+      await tester.pump();
+      for (final key in [icloudKey, backupsDestinationChooseKey]) {
+        expect(
+          pressNode(tester, key),
+          isSemantics(
+            isButton: false,
+            hasCheckedState: true,
+            isChecked: false,
+            isInMutuallyExclusiveGroup: true,
+            hasToggledState: false,
+            hasTapAction: true,
+          ),
+          reason: '$key',
+        );
+      }
+      handle.dispose();
+    });
+
+    testWidgets('a press target is one node that names itself once', (
+      tester,
+    ) async {
+      await _open(tester, view: _neverView());
+      final handle = tester.ensureSemantics();
+      await tester.pump();
+      for (final (key, label) in [
+        (backupsNowKey, _backUpNow),
+        (backupsToggleKey, _turnOff),
+        (_closeKey, 'close'),
+        (backupsAutomaticKey, 'back up automatically'),
+        (_menuKey, 'destination: Google Drive · connor@example.com'),
+      ]) {
+        final labelled = _semanticsAt(
+          tester,
+          key,
+        ).where((n) => n.label.trim().isNotEmpty).toList();
+        expect(labelled, hasLength(1), reason: 'one labelled node at $key');
+        expect(labelled.single.label, label, reason: '$key says it once');
+        // The overlay portal around the destination button keeps its own
+        // anchor node (the one with a traversal parent); the button's
+        // label and tap are not merged into it.
+        expect(
+          labelled.single.getSemanticsData().traversalParentIdentifier,
+          isNull,
+          reason: '$key is not the portal anchor node',
+        );
+      }
+      await _open(tester, view: _pickingView());
+      await tester.pump();
+      final row = _semanticsAt(
+        tester,
+        icloudKey,
+      ).where((n) => n.label.trim().isNotEmpty).toList();
+      expect(row, hasLength(1));
+      expect('Open Memex Backups'.allMatches(row.single.label), hasLength(1));
+      expect(row.single.label, startsWith('iCloud Drive, '));
+      handle.dispose();
+    });
+
+    testWidgets('the keep field is one text field node labelled keep', (
+      tester,
+    ) async {
+      await _open(tester, view: _neverView());
+      final handle = tester.ensureSemantics();
+      await tester.pump();
+      final nodes = _semanticsAt(
+        tester,
+        backupsKeepKey,
+      ).where((n) => n.label.trim().isNotEmpty || n.value.trim().isNotEmpty);
+      expect(nodes, hasLength(1), reason: 'label and value are one node');
+      expect(
+        nodes.single,
+        isSemantics(isTextField: true, label: 'keep', value: '30'),
+      );
+      handle.dispose();
+    });
+
+    testWidgets('a disabled button reports disabled and still a button', (
+      tester,
+    ) async {
+      await _open(tester, view: _pickingView());
+      final handle = tester.ensureSemantics();
+      await tester.pump();
+      expect(
+        pressNode(tester, _cancelKey),
+        isSemantics(
+          isButton: true,
+          hasEnabledState: true,
+          isEnabled: true,
+          label: 'cancel',
+        ),
+      );
+      final turnOn = _semanticsAt(
+        tester,
+        _turnOnKey,
+      ).firstWhere((n) => n.label.toLowerCase().contains('turn on backups'));
+      expect(
+        turnOn,
+        isSemantics(isButton: true, hasEnabledState: true, isEnabled: false),
+      );
+      handle.dispose();
+    });
+
+    testWidgets('the status column is one live region holding its text', (
+      tester,
+    ) async {
+      for (final (vault, view, title, other) in [
+        (_local, _neverView(), _neverTitle, _backUpNow),
+        (_local, _offView(), _offTitle, _turnOnEllipsis),
+        (_hosted, _hostedNotConfiguredView(), _notConfiguredTitle, 'copy'),
+      ]) {
+        await _open(tester, vault: vault, view: view);
+        final handle = tester.ensureSemantics();
+        await tester.pump();
+        final status = _semanticsAt(
+          tester,
+          backupsStatusKey,
+        ).where((n) => n.label.toLowerCase().contains(title)).toList();
+        expect(status, hasLength(1), reason: '${view.mode}: one status node');
+        expect(status.single, isSemantics(isLiveRegion: true));
+        expect(
+          status.single.label.toLowerCase(),
+          isNot(contains(other.toLowerCase())),
+          reason: '${view.mode}: the card action is a node of its own',
+        );
+        // No other node in the sheet is a live region.
+        final live = _semanticsAt(tester, backupsSheetKey)
+            .where((n) => n.getSemanticsData().flagsCollection.isLiveRegion)
+            .toList();
+        expect(live, hasLength(1), reason: '${view.mode}: one live region');
+        handle.dispose();
+      }
+    });
+  });
+
+  group('AC12 verify round 5: focus ring and hover fill', () {
+    Finder rings([Key? within]) => find.descendant(
+      of: within == null ? _sheet : find.byKey(within),
+      matching: find.byWidgetPredicate(
+        (w) =>
+            w is DecoratedBox &&
+            w.position == DecorationPosition.foreground &&
+            w.decoration is BoxDecoration &&
+            (w.decoration as BoxDecoration).border != null,
+      ),
+    );
+
+    testWidgets('only the press target with the keyboard focus draws a ring', (
+      tester,
+    ) async {
+      await _open(tester, view: _neverView());
+      expect(rings(), findsNothing, reason: 'nothing is focused on open');
+
+      await _tabTo(tester, backupsToggleKey);
+      expect(rings(backupsToggleKey), findsOneWidget);
+      expect(rings(), findsOneWidget, reason: 'one ring in the sheet');
+      final ring =
+          tester.widget<DecoratedBox>(rings(backupsToggleKey)).decoration
+              as BoxDecoration;
+      expect(ring.border, Border.all(color: OmColors.accent));
+
+      await _tabTo(tester, backupsAutomaticKey);
+      expect(rings(backupsAutomaticKey), findsOneWidget);
+      expect(rings(backupsToggleKey), findsNothing, reason: 'it moved on');
+      expect(rings(), findsOneWidget);
+
+      await _tabTo(tester, _closeKey);
+      expect(rings(_closeKey), findsOneWidget);
+      expect(rings(backupsAutomaticKey), findsNothing);
+      expect(rings(), findsOneWidget);
+    });
+
+    testWidgets('a press target loses its ring when the focus leaves it', (
+      tester,
+    ) async {
+      await _open(tester, view: _neverView());
+      await _tabTo(tester, backupsNowKey);
+      expect(rings(backupsNowKey), findsOneWidget);
+      // Into the keep field, which has no ring of its own.
+      await _tabTo(tester, backupsKeepKey);
+      expect(rings(), findsNothing);
+    });
+
+    testWidgets(
+      'a self-handled target shows the click cursor only when enabled',
+      (tester) async {
+        // keep 1: the minus cell is disabled, the plus cell is not.
+        await _open(tester, view: _neverView(_on.copyWith(keep: 1)));
+        final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+        addTearDown(mouse.removePointer);
+        await mouse.addPointer(location: const Offset(2, 2));
+        await tester.pump();
+        MouseCursor cursor() =>
+            RendererBinding.instance.mouseTracker.debugDeviceActiveCursor(1)!;
+
+        await mouse.moveTo(tester.getCenter(find.byKey(_keepIncKey)));
+        await tester.pump();
+        expect(cursor(), SystemMouseCursors.click, reason: 'plus');
+
+        await mouse.moveTo(tester.getCenter(find.byKey(_keepDecKey)));
+        await tester.pump();
+        expect(
+          cursor(),
+          isNot(SystemMouseCursors.click),
+          reason: 'minus is disabled at 1',
+        );
+
+        await mouse.moveTo(tester.getCenter(find.byKey(_closeKey)));
+        await tester.pump();
+        expect(cursor(), SystemMouseCursors.click, reason: 'close');
+      },
+    );
+
+    testWidgets('the icon button fills on hover and clears on leaving', (
+      tester,
+    ) async {
+      await _open(tester, view: _neverView());
+      Color? fill() {
+        final f = find.descendant(
+          of: find.byKey(_closeKey),
+          matching: find.byWidgetPredicate(
+            (w) =>
+                w is DecoratedBox &&
+                w.decoration is BoxDecoration &&
+                (w.decoration as BoxDecoration).color != null,
+          ),
+        );
+        expect(f, findsOneWidget);
+        return (tester.widget<DecoratedBox>(f).decoration as BoxDecoration)
+            .color;
+      }
+
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      addTearDown(mouse.removePointer);
+      await mouse.addPointer(location: const Offset(2, 2));
+      await tester.pump();
+      expect(fill(), Colors.transparent, reason: 'the pointer is elsewhere');
+
+      await mouse.moveTo(tester.getCenter(find.byKey(_closeKey)));
+      await tester.pump();
+      expect(fill(), OmColors.surface3, reason: 'hovered');
+
+      await mouse.moveTo(const Offset(2, 2));
+      await tester.pump();
+      expect(fill(), Colors.transparent, reason: 'left');
+    });
+  });
+
+  group('AC3 AC8 AC9 verify round 5: initial state of a fresh sheet', () {
+    Finder dangerText() => find.descendant(
+      of: _sheet,
+      matching: find.byWidgetPredicate(
+        (w) => w is RichText && w.text.style?.color == OmColors.danger,
+      ),
+    );
+
+    testWidgets('an off sheet starts on the off card and not on the list', (
+      tester,
+    ) async {
+      await _open(tester, view: _offView());
+      expect(_status(tester), contains(_offTitle));
+      expect(find.byKey(backupsDestinationChooseKey), findsNothing);
+      expect(_button(tester, backupsToggleKey).onPressed, isNotNull);
+      expect(dangerText(), findsNothing);
+    });
+
+    testWidgets('a reported picking sheet starts on the list, nothing chosen', (
+      tester,
+    ) async {
+      await _open(tester, view: _pickingView());
+      expect(_status(tester), contains(_pickTitle));
+      expect(find.byKey(backupsDestinationChooseKey), findsOneWidget);
+      expect(_button(tester, _cancelKey).onPressed, isNotNull);
+      expect(_button(tester, _turnOnKey).onPressed, isNull);
+      expect(dangerText(), findsNothing);
+      expect(_cardIcon(LucideIcons.triangleAlert), findsNothing);
+      expect(_sheetText(tester), contains(_pickBody));
+
+      // The choose row alone, with no folder picked, turns nothing on.
+      await _open(tester, view: _pickingView(const [_chooseOption]));
+      expect(_button(tester, _turnOnKey).onPressed, isNull);
+    });
+
+    testWidgets('an on sheet starts idle with the menu closed and no error', (
+      tester,
+    ) async {
+      await _open(tester, view: _successView());
+      expect(_button(tester, backupsNowKey).onPressed, isNotNull);
+      expect(_sheetText(tester), contains(_req25));
+      expect(_sheetText(tester), isNot(contains(_oldFolderNote)));
+      expect(find.byKey(backupsDestinationChooseKey), findsNothing);
+      expect(dangerText(), findsNothing);
+      expect(_button(tester, backupsToggleKey).onPressed, isNotNull);
+    });
+  });
+
+  group('AC3 and AC9 verify round 5: a destination failure line clears', () {
+    String detail() => _unavailableDetail(_icloudDest, BackupProvider.icloud);
+
+    /// A failed turn on of iCloud from the list.
+    Future<_Wi325Sheet> failedTurnOn(WidgetTester tester) async {
+      final s = await _open(tester, view: _offView(), backupFolders: false);
+      s.probe.denyCreate(_icloudDest);
+      await _tapKey(tester, backupsToggleKey);
+      await _tapKey(tester, _discoveredKeys[0]);
+      await _tapKey(tester, _turnOnKey);
+      expect(_status(tester), contains(detail()));
+      return s;
+    }
+
+    /// A failed menu pick of iCloud in the on state.
+    Future<_Wi325Sheet> failedMenuPick(WidgetTester tester) async {
+      final s = await _open(tester, view: _successView(), backupFolders: false);
+      s.probe.denyCreate(_icloudDest);
+      await _tapKey(tester, _menuKey);
+      await _tap(tester, find.byKey(_discoveredKeys[0]));
+      expect(_sheetText(tester), contains(detail()));
+      return s;
+    }
+
+    testWidgets('cancel clears the failure for the next time backups show', (
+      tester,
+    ) async {
+      final s = await failedTurnOn(tester);
+      await _tapKey(tester, _cancelKey);
+      expect(_status(tester), contains(_offTitle));
+      // The controller then reports backups on (from elsewhere): the old
+      // failure is not shown.
+      s.setView(_neverView());
+      await _frames(tester);
+      expect(find.byKey(_menuKey), findsOneWidget, reason: 'the on state');
+      expect(_sheetText(tester), isNot(contains(detail())));
+    });
+
+    testWidgets('turn on backups clears a failure left from the on state', (
+      tester,
+    ) async {
+      final s = await failedMenuPick(tester);
+      // The controller reports backups off (from elsewhere), then the user
+      // presses turn on: the list opens without the old failure.
+      s.setView(_offView());
+      await _frames(tester);
+      await _tapKey(tester, backupsToggleKey);
+      expect(find.byKey(backupsDestinationChooseKey), findsOneWidget);
+      expect(_sheetText(tester), isNot(contains(detail())));
+      expect(_status(tester), contains(_pickBody));
+      expect(_cardIcon(LucideIcons.triangleAlert), findsNothing);
+    });
+
+    testWidgets('turn off backups clears a failure left from the menu', (
+      tester,
+    ) async {
+      final s = await failedMenuPick(tester);
+      await _tapKey(tester, backupsToggleKey);
+      expect(_status(tester), contains(_offTitle));
+      s.setView(_neverView());
+      await _frames(tester);
+      expect(find.byKey(_menuKey), findsOneWidget, reason: 'the on state');
+      expect(_sheetText(tester), isNot(contains(detail())));
+    });
+
+    testWidgets('a good turn on after a failed one clears the failure', (
+      tester,
+    ) async {
+      final s = await failedTurnOn(tester);
+      await _tapKey(tester, _discoveredKeys[3]);
+      s.holdSaves();
+      await _tapKey(tester, _turnOnKey);
+      expect(
+        _status(tester),
+        isNot(contains(detail())),
+        reason: 'gone as soon as the next turn on starts',
+      );
+      s.releaseSaves();
+      await _frames(tester);
+      expect(s.saves.single.settings.destination, _oneDriveDest);
+      expect(_sheetText(tester), isNot(contains(detail())));
+    });
+
+    testWidgets('a good menu pick after a failed one clears the failure', (
+      tester,
+    ) async {
+      final s = await failedMenuPick(tester);
+      await _tapKey(tester, _menuKey);
+      s.holdResolves();
+      await _tap(tester, find.byKey(_discoveredKeys[3]));
+      expect(
+        _sheetText(tester),
+        isNot(contains(detail())),
+        reason: 'gone as soon as the next pick starts',
+      );
+    });
+  });
+
+  group('AC8 verify round 5: the keep field and the settings it mirrors', () {
+    ProviderContainer container(WidgetTester tester) =>
+        ProviderScope.containerOf(tester.element(find.byKey(_launcherKey)));
+
+    void storeKeep(WidgetTester tester, int keep) => container(tester)
+        .read(_wi325SettingsStore.notifier)
+        .update((m) => {...m, _local.path: _on.copyWith(keep: keep)});
+
+    testWidgets('a stored change shows in the field while it is not focused', (
+      tester,
+    ) async {
+      await _open(tester, view: _neverView());
+      expect(_keepText(tester), '30');
+      storeKeep(tester, 40);
+      await _frames(tester);
+      expect(_keepText(tester), '40');
+    });
+
+    testWidgets('a stored change does not overwrite what is being typed', (
+      tester,
+    ) async {
+      final s = await _open(tester, view: _neverView());
+      await _tabTo(tester, backupsKeepKey);
+      tester.testTextInput.enterText('12');
+      await tester.pump();
+      storeKeep(tester, 40);
+      await _frames(tester);
+      expect(_keepText(tester), '12', reason: 'still being typed');
+      expect(s.saves, isEmpty, reason: 'nothing saved before the blur');
+    });
+
+    testWidgets('leaving the field saves what was typed', (tester) async {
+      final s = await _open(tester, view: _neverView());
+      await _tabTo(tester, backupsKeepKey);
+      expect(s.saves, isEmpty, reason: 'focusing saves nothing');
+      tester.testTextInput.enterText('12');
+      await tester.pump();
+      expect(s.saves, isEmpty, reason: 'typing saves nothing');
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await _frames(tester);
+      expect(s.saves.single.settings, _on.copyWith(keep: 12));
+      expect(_keepText(tester), '12');
+    });
+
+    testWidgets(
+      'focusing the field saves nothing even when the text is ahead',
+      (tester) async {
+        // A failed step leaves the field showing 31 over a stored 30.
+        final s = await _open(tester, view: _neverView());
+        s.saveError = Exception('disk full');
+        await _tapKey(tester, _keepIncKey);
+        expect(s.saves, hasLength(1), reason: 'the step tried to save');
+        expect(tester.takeException(), isNotNull, reason: 'the failure shows');
+        expect(_keepText(tester), '31');
+        await _tabTo(tester, backupsKeepKey);
+        expect(s.saves, hasLength(1), reason: 'only losing focus commits');
+      },
+    );
+
+    testWidgets('leaving the field on text that is not a number restores it', (
+      tester,
+    ) async {
+      final s = await _open(tester, view: _neverView());
+      await _tabTo(tester, backupsKeepKey);
+      tester.testTextInput.enterText('abc');
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await _frames(tester);
+      expect(s.saves, isEmpty);
+      expect(_keepText(tester), '30');
+    });
+  });
+
+  group('AC13 verify round 5: a short window scrolls the sheet body', () {
+    testWidgets('the body scrolls so the last row can be reached', (
+      tester,
+    ) async {
+      const window = Size(900, 420);
+      for (final view in [_neverView(), _pickingView()]) {
+        final lastKey = view.mode == BackupSheetMode.pickingDestination
+            ? _turnOnKey
+            : backupsToggleKey;
+        await _open(tester, view: view, size: window);
+        expect(tester.takeException(), isNull, reason: '${view.mode}');
+        final scroll = find.descendant(
+          of: _sheet,
+          matching: find.byType(SingleChildScrollView),
+        );
+        expect(scroll, findsOneWidget, reason: '${view.mode}: it scrolls');
+        expect(
+          tester.getRect(_sheet).height,
+          lessThanOrEqualTo(window.height),
+          reason: '${view.mode}: the panel fits the window',
+        );
+        expect(
+          tester.getRect(find.byKey(lastKey)).bottom,
+          greaterThan(window.height),
+          reason: '${view.mode}: the last row starts below the window',
+        );
+        await tester.drag(scroll, const Offset(0, -2000));
+        await _frames(tester);
+        expect(
+          tester.getRect(find.byKey(lastKey)).bottom,
+          lessThanOrEqualTo(window.height),
+          reason: '${view.mode}: scrolled to the last row',
+        );
+        expect(tester.takeException(), isNull);
+      }
+    });
+  });
+
+  group('AC9 verify round 5: Escape reaches the opened menu', () {
+    testWidgets(
+      'Escape right after a click on the destination closes the menu and keeps the sheet',
+      (tester) async {
+        await _open(tester, view: _successView());
+        await _tapKey(tester, _menuKey);
+        expect(find.byKey(backupsDestinationChooseKey), findsOneWidget);
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await _frames(tester);
+        expect(find.byKey(backupsDestinationChooseKey), findsNothing);
+        expect(_sheet, findsOneWidget, reason: 'the first Escape keeps it');
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await _frames(tester);
+        expect(_sheet, findsNothing, reason: 'the second Escape closes it');
+      },
+    );
   });
 }
