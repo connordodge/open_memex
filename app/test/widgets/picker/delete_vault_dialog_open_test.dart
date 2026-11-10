@@ -772,6 +772,47 @@ void main() {
     );
 
     testWidgets(
+      'a backup that starts while the open vault is being closed refuses the delete and leaves no stale line after it ends',
+      (tester) async {
+        final env = await _wi360Pump(tester);
+        env.guardHold = Completer<bool>();
+        await _wi360Open(tester, env.path);
+        await tester.tap(find.byKey(_confirm));
+        await _wi360Settle(tester, rounds: 2);
+        expect(env.guardCalls, [true]);
+
+        // The guard allows and a backup of the vault starts in the same turn.
+        env.guardHold!.complete(true);
+        env.c.read(backupInFlightProvider.notifier).state = {env.path};
+        await _wi360Settle(tester);
+
+        // The delete was refused: nothing moved, the vault is open again,
+        // and the backup line shows while the backup runs.
+        expect(env.trash.calls, isEmpty);
+        expect(env.current, LocalVaultRef(env.path));
+        expect(_dialog, findsOneWidget);
+        expect(_inDialog(find.text(_backupCopy(env.path))), findsOneWidget);
+        expect(_om(tester, _confirm).onPressed, isNull);
+
+        // The backup ends: the line goes and the dialog re-enables.
+        env.c.read(backupInFlightProvider.notifier).state = const {};
+        await _wi360Settle(tester, rounds: 2);
+        expect(
+          _inDialog(find.text(_backupCopy(env.path))),
+          findsNothing,
+          reason: 'the refusal is not kept as the dialog own error',
+        );
+        expect(_inDialog(find.byIcon(LucideIcons.triangleAlert)), findsNothing);
+        _expectButtons(
+          tester,
+          confirmEnabled: true,
+          cancelEnabled: true,
+          label: 'move to trash',
+        );
+      },
+    );
+
+    testWidgets(
       'a backup of another vault running leaves move to trash enabled for the open vault',
       (tester) async {
         final env = await _wi360Pump(tester);

@@ -2217,7 +2217,7 @@ void main() {
     test(
       'an automatic check that resumes after the vault was closed for delete starts no backup',
       () async {
-        // WI #360 (Spec #357 Req 32): closeForDelete leaves no vault open
+        // WI #360 (Spec #357 Req 33): closeForDelete leaves no vault open
         // while the folder moves to the Trash; a check still reading the
         // state file must not start `memex backup` on it.
         final reader = _TestReader();
