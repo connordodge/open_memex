@@ -13,6 +13,7 @@ library;
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 
@@ -26,7 +27,8 @@ final _hitLine = RegExp(r'^LEAK (.+):(\d+) (\S+)', multiLine: true);
 const _warn = 'LEAK WARN: no deny-list';
 
 // Runtime-built fixtures (never literal in the source).
-final _stranger = leakPath('stranger');
+const _strangerName = 'stranger';
+final _stranger = leakPath(_strangerName);
 final _homeStranger = ['', 'home', 'stranger', ''].join('/');
 final _email = ['jo.private', 'example.org'].join('@');
 final _denyPath = ['', 'srv', 'privateproj'].join('/');
@@ -45,6 +47,7 @@ const _placeholderNames = [
   't',
   'jane',
   'connor',
+  'alice',
   'mcp',
   'memex',
   'Library',
@@ -197,6 +200,77 @@ Future<String> _zip(IsolatedEnv iso, String srcDir, String zipPath) async {
     '.',
   ], workingDirectory: srcDir);
   return zipPath;
+}
+
+int _crc32(List<int> data) {
+  var c = 0xFFFFFFFF;
+  for (final b in data) {
+    c ^= b;
+    for (var k = 0; k < 8; k++) {
+      c = (c & 1) != 0 ? (c >> 1) ^ 0xEDB88320 : c >> 1;
+    }
+  }
+  return c ^ 0xFFFFFFFF;
+}
+
+/// A zip archive of (name, text) entries, deflated, written by hand so a
+/// name can repeat (`zip` never writes two entries with one name).
+List<int> _zipBytes(List<(String, String)> entries) {
+  final out = BytesBuilder();
+  final central = BytesBuilder();
+  void u16(BytesBuilder b, int v) => b.add([v & 0xFF, (v >> 8) & 0xFF]);
+  void u32(BytesBuilder b, int v) =>
+      b.add([v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF]);
+  for (final (name, text) in entries) {
+    final nameBytes = utf8.encode(name);
+    final raw = utf8.encode(text);
+    final packed = ZLibCodec(raw: true, level: 9).encode(raw);
+    final crc = _crc32(raw);
+    final offset = out.length;
+    u32(out, 0x04034b50);
+    u16(out, 20);
+    u16(out, 0);
+    u16(out, 8);
+    u16(out, 0);
+    u16(out, 0x21);
+    u32(out, crc);
+    u32(out, packed.length);
+    u32(out, raw.length);
+    u16(out, nameBytes.length);
+    u16(out, 0);
+    out.add(nameBytes);
+    out.add(packed);
+    u32(central, 0x02014b50);
+    u16(central, 20);
+    u16(central, 20);
+    u16(central, 0);
+    u16(central, 8);
+    u16(central, 0);
+    u16(central, 0x21);
+    u32(central, crc);
+    u32(central, packed.length);
+    u32(central, raw.length);
+    u16(central, nameBytes.length);
+    u16(central, 0);
+    u16(central, 0);
+    u16(central, 0);
+    u16(central, 0);
+    u32(central, 0);
+    u32(central, offset);
+    central.add(nameBytes);
+  }
+  final start = out.length;
+  final dir = central.takeBytes();
+  out.add(dir);
+  u32(out, 0x06054b50);
+  u16(out, 0);
+  u16(out, 0);
+  u16(out, entries.length);
+  u16(out, entries.length);
+  u32(out, dir.length);
+  u32(out, start);
+  u16(out, 0);
+  return out.takeBytes();
 }
 
 Future<String> _dmg(IsolatedEnv iso, String srcDir, String dmgPath) async {
@@ -437,6 +511,12 @@ void main() {
         final r = await _leak(iso, ['--text', text, '--allow-empty-patterns']);
         _expectLeak(r, hidden: [iso.home], what: 'HOME');
         expect(r.output, contains(_warn));
+        // The whole HOME path is the redacted span, not a part of it.
+        expect(
+          r.stdout,
+          contains('config at [redacted]/.config/app.toml'),
+          reason: 'HOME is redacted whole\n$r',
+        );
 
         // Under another HOME the same text is clean: the hit came from rule b.
         final other = await isolatedEnv();
@@ -460,8 +540,19 @@ void main() {
         );
         _expectLeak(
           await _leak(iso, ['--text', users, '--allow-empty-patterns']),
-          hidden: [_stranger],
+          hidden: [_stranger, _strangerName],
           what: 'Users path',
+        );
+        // Only the user name is the redacted span, and all of it.
+        final usersOut = await _leak(iso, [
+          '--text',
+          users,
+          '--allow-empty-patterns',
+        ]);
+        expect(
+          usersOut.stdout,
+          contains('open ${leakPath('[redacted]')}notes/x.md'),
+          reason: 'the whole name is redacted\n$usersOut',
         );
 
         final home = await _write(
@@ -471,8 +562,20 @@ void main() {
         );
         _expectLeak(
           await _leak(iso, ['--text', home, '--allow-empty-patterns']),
-          hidden: [_homeStranger],
+          hidden: [_homeStranger, _strangerName],
           what: 'home path',
+        );
+        final homeOut = await _leak(iso, [
+          '--text',
+          home,
+          '--allow-empty-patterns',
+        ]);
+        expect(
+          homeOut.stdout,
+          contains(
+            'open ${['', 'home', '[redacted]', ''].join('/')}notes/x.md',
+          ),
+          reason: 'the whole name is redacted\n$homeOut',
         );
 
         final vault = await _write(
@@ -532,7 +635,7 @@ void main() {
         );
         _expectLeak(
           await _leak(iso, ['--text', f, '--allow-empty-patterns']),
-          hidden: [_stranger],
+          hidden: [_stranger, _strangerName],
           what: 'mixed line',
         );
       },
@@ -663,12 +766,19 @@ void main() {
         );
         _expectLeak(
           r,
-          hidden: [_denyPath, other, _stranger, _email],
+          hidden: [_denyPath, other, _stranger, _strangerName, _email],
           what: 'multi',
         );
         final lines = _hits(r).map((m) => m.group(2)).toSet();
         expect(lines, containsAll(['1', '3']), reason: '$r');
         expect(lines.contains('2'), isFalse, reason: '$r');
+        expect(
+          r.stdout,
+          contains(
+            'a [redacted] b [redacted] c ${leakPath('[redacted]')}d [redacted]',
+          ),
+          reason: 'each span, the user name included, is redacted whole\n$r',
+        );
         expect(r.stdout, contains('[redacted]'));
       },
     );
@@ -680,7 +790,7 @@ void main() {
         '-',
         '--allow-empty-patterns',
       ], stdin: 'pr body\nsee ${_stranger}x\n');
-      _expectLeak(r, hidden: [_stranger], what: 'stdin');
+      _expectLeak(r, hidden: [_stranger, _strangerName], what: 'stdin');
       final clean = await _leak(iso, [
         '--text',
         '-',
@@ -868,7 +978,7 @@ void main() {
         );
         _expectLeak(
           await _leak(iso, ['--diff', added], env: env),
-          hidden: [_email, _stranger],
+          hidden: [_email, _stranger, _strangerName],
           what: 'added line',
         );
 
@@ -945,7 +1055,16 @@ void main() {
           '${iso.work.path}/text',
           '--allow-empty-patterns',
         ]);
-        _expectLeak(textHit, hidden: [_stranger], what: 'text file');
+        _expectLeak(
+          textHit,
+          hidden: [_stranger, _strangerName],
+          what: 'text file',
+        );
+        expect(
+          textHit.stdout,
+          contains('run ${leakPath('[redacted]')}bin/tool'),
+          reason: 'the whole user name is redacted\n$textHit',
+        );
         expect(
           _hits(
             textHit,
@@ -965,7 +1084,11 @@ void main() {
           '${iso.work.path}/binary',
           '--allow-empty-patterns',
         ]);
-        _expectLeak(binHit, hidden: [_stranger], what: 'binary file');
+        _expectLeak(
+          binHit,
+          hidden: [_stranger, _strangerName],
+          what: 'binary file',
+        );
         expect(
           _hits(binHit).any((m) => m.group(1)!.endsWith('CSQLite')),
           isTrue,
@@ -988,7 +1111,7 @@ void main() {
           '${iso.work.path}/tree',
           '--allow-empty-patterns',
         ]),
-        hidden: [_stranger],
+        hidden: [_stranger, _strangerName],
         what: 'hidden dir',
       );
     });
@@ -1015,7 +1138,11 @@ void main() {
         await _commit(iso, oldBlob, {
           'notes.txt': 'vault at ~/vault\n',
         }, 'tidy notes');
-        _expectLeak(await scan(oldBlob), hidden: [_stranger], what: 'old blob');
+        _expectLeak(
+          await scan(oldBlob),
+          hidden: [_stranger, _strangerName],
+          what: 'old blob',
+        );
 
         final path = await _cleanRepo(iso, 'path');
         await _commit(iso, path, {
@@ -1031,10 +1158,16 @@ void main() {
         await _commit(iso, message, {
           'm.txt': 'm\n',
         }, 'fix crash in ${_stranger}code/app');
+        final messageHit = await scan(message);
         _expectLeak(
-          await scan(message),
-          hidden: [_stranger],
+          messageHit,
+          hidden: [_stranger, _strangerName],
           what: 'commit message',
+        );
+        expect(
+          messageHit.stdout,
+          contains('fix crash in ${leakPath('[redacted]')}code/app'),
+          reason: 'the whole user name is redacted\n$messageHit',
         );
 
         final author = await _cleanRepo(iso, 'author');
@@ -1069,7 +1202,11 @@ void main() {
           '-m',
           'notes for ${_stranger}release',
         ]);
-        _expectLeak(await scan(tag), hidden: [_stranger], what: 'tag message');
+        _expectLeak(
+          await scan(tag),
+          hidden: [_stranger, _strangerName],
+          what: 'tag message',
+        );
       },
     );
 
@@ -1121,7 +1258,7 @@ void main() {
           ['--history', '$repo/.git'],
           env: {'LEAK_PATTERNS': _email},
         );
-        _expectLeak(r, hidden: [_stranger], what: 'side branch');
+        _expectLeak(r, hidden: [_stranger, _strangerName], what: 'side branch');
       },
     );
   });
@@ -1147,7 +1284,7 @@ void main() {
         final bin = await _writeBytes(iso, 'art/memex', _binaryAround(leak));
         _expectLeak(
           await _leak(iso, ['--artifact', bin], env: env),
-          hidden: [_stranger],
+          hidden: [_stranger, _strangerName],
           what: 'binary',
         );
 
@@ -1165,7 +1302,7 @@ void main() {
         );
         _expectLeak(
           await _leak(iso, ['--artifact', zip], env: env),
-          hidden: [_stranger],
+          hidden: [_stranger, _strangerName],
           what: 'zip entry',
         );
 
@@ -1187,7 +1324,7 @@ void main() {
         );
         _expectLeak(
           await _leak(iso, ['--artifact', dmg], env: env),
-          hidden: [_stranger],
+          hidden: [_stranger, _strangerName],
           what: 'DMG file',
         );
         expect(
@@ -1241,7 +1378,7 @@ void main() {
       );
       _expectLeak(
         await _leak(iso, ['--artifact', app], env: env),
-        hidden: [_stranger],
+        hidden: [_stranger, _strangerName],
         what: 'zip inside app',
       );
     });
@@ -1255,10 +1392,27 @@ void main() {
         'b.bin',
         _binaryAround(_email.toUpperCase()),
       );
+      final last = await _leak(iso, ['--artifact', a, b], env: env);
+      _expectLeak(last, hidden: [_email], what: 'second path');
+      expect(
+        _hits(last).map((m) => m.group(1)!.split('/').last.split(':').first),
+        everyElement(startsWith('b.bin')),
+        reason: 'only the second path leaks\n$last',
+      );
+      // The leaking path first: a loop that skips its first path misses it.
+      final first = await _leak(iso, ['--artifact', b, a], env: env);
+      _expectLeak(first, hidden: [_email], what: 'first path');
+      expect(
+        _hits(first).map((m) => m.group(1)!.split('/').last.split(':').first),
+        everyElement(startsWith('b.bin')),
+        reason: 'only the first path leaks\n$first',
+      );
+      // Three paths, the leak in the middle.
+      final c = await _writeBytes(iso, 'c.bin', _binaryAround('fine'));
       _expectLeak(
-        await _leak(iso, ['--artifact', a, b], env: env),
+        await _leak(iso, ['--artifact', a, b, c], env: env),
         hidden: [_email],
-        what: 'second path',
+        what: 'middle path',
       );
     });
   });
@@ -1283,17 +1437,12 @@ void main() {
         final pairs = _hits(
           r,
         ).map((m) => '${m.group(2)}:${m.group(3)}').toSet();
-        expect(
-          pairs,
-          containsAll(['2:HOME', '4:home-path', '5:deny-list']),
-          reason: '$r',
-        );
-        expect(
-          pairs.contains('5:HOME') || pairs.contains('2:deny-list'),
-          isFalse,
-          reason: 'a rule is reported on a line it did not hit\n$r',
-        );
-        _expectHidden(r, [_stranger, _email], 'rule tokens');
+        expect(pairs, {
+          '2:HOME',
+          '4:home-path',
+          '5:deny-list',
+        }, reason: 'each line names exactly the rule it hit\n$r');
+        _expectHidden(r, [_stranger, _strangerName, _email], 'rule tokens');
 
         final bytes = [
           ...utf8.encode('abc\n'),
@@ -1305,7 +1454,11 @@ void main() {
           '${iso.work.path}/bintree',
           '--allow-empty-patterns',
         ]);
-        _expectLeak(bin, hidden: [_stranger], what: 'binary offset');
+        _expectLeak(
+          bin,
+          hidden: [_stranger, _strangerName],
+          what: 'binary offset',
+        );
         expect(
           _hits(bin).any(
             (m) =>
@@ -1340,7 +1493,7 @@ void main() {
         ].join('\n');
         final f = await _write(iso, 'lines.diff', diff);
         final r = await _leak(iso, ['--diff', f, '--allow-empty-patterns']);
-        _expectLeak(r, hidden: [_stranger], what: 'diff lines');
+        _expectLeak(r, hidden: [_stranger, _strangerName], what: 'diff lines');
         final pairs = _hits(
           r,
         ).map((m) => '${m.group(1)}:${m.group(2)}').toSet();
@@ -1479,7 +1632,11 @@ void main() {
           '$w/linktree',
           '--allow-empty-patterns',
         ]);
-        _expectLeak(byLink, hidden: [_stranger], what: 'symlink target');
+        _expectLeak(
+          byLink,
+          hidden: [_stranger, _strangerName],
+          what: 'symlink target',
+        );
         expect(
           _hits(byLink).any(
             (m) => m.group(1)!.endsWith('/lnk (symlink)') && m.group(2) == '1',
@@ -1523,7 +1680,11 @@ void main() {
           app2,
           '--allow-empty-patterns',
         ]);
-        _expectLeak(appLink, hidden: [_stranger], what: 'app symlink target');
+        _expectLeak(
+          appLink,
+          hidden: [_stranger, _strangerName],
+          what: 'app symlink target',
+        );
         expect(
           _hits(appLink).any((m) => m.group(1)!.endsWith('/lnk (symlink)')),
           isTrue,
@@ -1542,7 +1703,11 @@ void main() {
         await _write(iso, 'real/f.txt', 'path ${_stranger}x\n');
         Link('$w/lnk-dir').createSync('$w/real');
         final tree = await _leak(iso, ['--tree', '$w/lnk-dir'], env: env);
-        _expectLeak(tree, hidden: [_stranger], what: 'symlinked tree root');
+        _expectLeak(
+          tree,
+          hidden: [_stranger, _strangerName],
+          what: 'symlinked tree root',
+        );
         expect(
           _hits(tree).any((m) => m.group(1)!.startsWith('$w/lnk-dir')),
           isTrue,
@@ -1550,7 +1715,7 @@ void main() {
         );
         _expectLeak(
           await _leak(iso, ['--artifact', '$w/lnk-dir'], env: env),
-          hidden: [_stranger],
+          hidden: [_stranger, _strangerName],
           what: 'symlinked artifact dir',
         );
 
@@ -1562,7 +1727,7 @@ void main() {
         Link('$w/lnk-bin').createSync(bin);
         _expectLeak(
           await _leak(iso, ['--artifact', '$w/lnk-bin'], env: env),
-          hidden: [_stranger],
+          hidden: [_stranger, _strangerName],
           what: 'symlinked binary',
         );
 
@@ -1571,7 +1736,7 @@ void main() {
         Link('$w/lnk-zip').createSync(zip);
         _expectLeak(
           await _leak(iso, ['--artifact', '$w/lnk-zip'], env: env),
-          hidden: [_stranger],
+          hidden: [_stranger, _strangerName],
           what: 'symlinked zip',
         );
 
@@ -1586,7 +1751,7 @@ void main() {
         );
         _expectLeak(
           await _leak(iso, ['--tree', '$w/outside'], env: env),
-          hidden: [_stranger],
+          hidden: [_stranger, _strangerName],
           what: 'the linked directory itself',
         );
       },
@@ -1605,7 +1770,9 @@ void main() {
         for (final c in [
           ('as-given', '$viaLink/docs', viaLink),
           ('resolved', '$real/docs', viaLink),
-          ('trailing-slash', '$viaLink/docs', '$viaLink/'),
+          // HOME ends in a slash, the text does not: only the slash trim
+          // lets the HOME rule hit it.
+          ('trailing-slash', viaLink, '$viaLink/'),
         ]) {
           final f = await _write(iso, 'home-${c.$1}.txt', 'at ${c.$2}\n');
           final r = await _leak(
@@ -1893,7 +2060,7 @@ void main() {
         );
         _expectLeak(
           await _leak(iso, ['--history', '$repo/.git'], env: env),
-          hidden: [_stranger],
+          hidden: [_stranger, _strangerName],
           what: 'replaced commit',
         );
       },
@@ -2027,6 +2194,533 @@ void main() {
           reason: '$both',
         );
         _expectHidden(both, [_email], 'unreadable file and a leak');
+      },
+    );
+  });
+
+  group('review round 2: home names', () {
+    test(
+      'rule c flags user names with spaces or non-ASCII characters and ignores placeholders that are not names',
+      () async {
+        final iso = await isolatedEnv();
+        final names = ['John Smith', 'jörg', 'Ünal Çelik'];
+        for (var i = 0; i < names.length; i++) {
+          final name = names[i];
+          final f = await _write(
+            iso,
+            'names/n$i.txt',
+            'open ${leakPath(name)}Documents/x\n',
+          );
+          final r = await _leak(iso, ['--text', f, '--allow-empty-patterns']);
+          _expectLeak(r, hidden: [name, leakPath(name)], what: name);
+          expect(
+            r.stdout,
+            contains('open ${leakPath('[redacted]')}Documents/x'),
+            reason: 'the whole name is redacted\n$r',
+          );
+          expect(_hits(r).map((m) => m.group(3)).toSet(), {
+            'home-path',
+          }, reason: '$r');
+        }
+
+        final plain = await _write(
+          iso,
+          'names/not-names.txt',
+          [
+            'a ${leakPath('<name>')}x',
+            'b ${leakPath(r'$USER')}x',
+            'c ${leakPath('*')}x',
+            'd ${leakPath('{user}')}x',
+            'e ${leakPath('%USERNAME%')}x',
+            'f see ${leakPath('')}and ${['', 'home', ''].join('/')}as roots',
+            'g ${leakPath(' padded ')}x',
+            '',
+          ].join('\n'),
+        );
+        _expectClean(
+          await _leak(iso, ['--text', plain, '--allow-empty-patterns']),
+          what: 'placeholders that are not names',
+        );
+      },
+    );
+
+    test(
+      'rule c finds a home path nested in another one and redacts both names',
+      () async {
+        final iso = await isolatedEnv();
+        // The first name is "home": the path that starts at its trailing
+        // slash is a second home path, with its own name.
+        final inner = await _write(
+          iso,
+          'nested-home.txt',
+          'x ${leakPath('home')}stranger/y\n',
+        );
+        final r = await _leak(iso, ['--text', inner, '--allow-empty-patterns']);
+        _expectLeak(r, hidden: [_strangerName], what: 'nested home path');
+        expect(
+          r.stdout,
+          contains('x ${leakPath('[redacted]')}[redacted]/y'),
+          reason: 'both names are redacted\n$r',
+        );
+
+        // The first name is allow-listed, so only the nested one leaks.
+        final allowed = await _write(
+          iso,
+          'nested-allowed.txt',
+          'x ${leakPath('test')}Users/stranger/y\n',
+        );
+        final r2 = await _leak(iso, [
+          '--text',
+          allowed,
+          '--allow-empty-patterns',
+        ]);
+        _expectLeak(r2, hidden: [_strangerName], what: 'nested after allowed');
+        expect(
+          r2.stdout,
+          contains('x ${leakPath('test')}Users/[redacted]/y'),
+          reason: 'only the nested name is redacted\n$r2',
+        );
+      },
+    );
+
+    test(
+      'a name that starts with a dot is not a user name while a dot-free unlisted name under home still exits 1',
+      () async {
+        final iso = await isolatedEnv();
+        final cargo = ['', 'fake', 'home', '.cargo', 'bin', 'memex'].join('/');
+        final dots = await _write(
+          iso,
+          'dots.txt',
+          'run $cargo\nsee ${leakPath('.hidden')}x\nsee ${['', 'home', '..', ''].join('/')}x\n',
+        );
+        _expectClean(
+          await _leak(iso, ['--text', dots, '--allow-empty-patterns']),
+          what: 'dot names',
+        );
+
+        final mixed = await _write(
+          iso,
+          'dots-mixed.txt',
+          'run $cargo\nopen ${_homeStranger}notes\nname ${['', 'home', 'foo.bar', ''].join('/')}x\n',
+        );
+        final r = await _leak(iso, ['--text', mixed, '--allow-empty-patterns']);
+        _expectLeak(r, hidden: [_strangerName, 'foo.bar'], what: 'mixed');
+        expect(_hits(r).map((m) => m.group(2)).toSet(), {
+          '2',
+          '3',
+        }, reason: 'only the dot-free names leak\n$r');
+      },
+    );
+  });
+
+  group('review round 2: diff input', () {
+    Future<String> gitDiff(
+      IsolatedEnv iso,
+      String repo,
+      List<String> args, {
+      String? config,
+    }) async => (await runGit(iso, repo, [
+      if (config != null) ...['-c', config],
+      'diff',
+      ...args,
+    ])).stdout;
+
+    test(
+      'diff mode reads colourised git diff output and flags the added line',
+      () async {
+        final iso = await isolatedEnv();
+        final repo = await _makeRepo(iso, 'colour');
+        await _commit(iso, repo, {'notes.txt': 'hello\n'}, 'first');
+        await File(
+          '$repo/notes.txt',
+        ).writeAsString('hello\nsee ${_stranger}x\n');
+        final colour = await gitDiff(iso, repo, ['--color=always']);
+        expect(
+          colour.contains('\u001b['),
+          isTrue,
+          reason: 'fixture: the diff must hold colour codes',
+        );
+        final f = await _write(iso, 'colour.diff', colour);
+        final r = await _leak(iso, ['--diff', f, '--allow-empty-patterns']);
+        _expectLeak(r, hidden: [_stranger, _strangerName], what: 'colour diff');
+        expect(
+          _hits(r).any(
+            (m) =>
+                m.group(1)!.endsWith('notes.txt') &&
+                m.group(2) == '2' &&
+                m.group(3) == 'home-path',
+          ),
+          isTrue,
+          reason: 'the added line is notes.txt line 2\n$r',
+        );
+
+        // The same change with nothing leaked is clean in colour too.
+        await File('$repo/notes.txt').writeAsString('hello\nfine\n');
+        final clean = await _write(
+          iso,
+          'colour-clean.diff',
+          await gitDiff(iso, repo, ['--color=always']),
+        );
+        _expectClean(
+          await _leak(iso, ['--diff', clean, '--allow-empty-patterns']),
+          what: 'clean colour diff',
+        );
+      },
+    );
+
+    test(
+      'diff mode exits 2 on a word diff a combined diff and text that is not a diff while empty input exits 0',
+      () async {
+        final iso = await isolatedEnv();
+        final repo = await _makeRepo(iso, 'words');
+        await _commit(iso, repo, {'notes.txt': 'hello there\n'}, 'first');
+        await File(
+          '$repo/notes.txt',
+        ).writeAsString('hello ${_stranger}x there\n');
+        final word = await _write(
+          iso,
+          'word.diff',
+          await gitDiff(iso, repo, ['--word-diff']),
+        );
+        final w = await _leak(iso, ['--diff', word, '--allow-empty-patterns']);
+        expect(w.exitCode, 2, reason: 'word diff\n$w');
+        expect(w.stderr, contains('--diff'), reason: '$w');
+        _expectHidden(w, [_stranger, _strangerName], 'word diff');
+
+        final combined = await _write(
+          iso,
+          'combined.diff',
+          [
+            'diff --cc notes.txt',
+            'index 1111111,2222222..3333333',
+            '--- a/notes.txt',
+            '+++ b/notes.txt',
+            '@@@ -1,1 -1,1 +1,2 @@@',
+            '  hello',
+            '++see ${_stranger}x',
+            '',
+          ].join('\n'),
+        );
+        final c = await _leak(iso, [
+          '--diff',
+          combined,
+          '--allow-empty-patterns',
+        ]);
+        expect(c.exitCode, 2, reason: 'combined diff\n$c');
+        expect(c.stderr, contains('--diff'), reason: '$c');
+        _expectHidden(c, [_stranger, _strangerName], 'combined diff');
+
+        final prose = await _write(
+          iso,
+          'prose.txt',
+          'This is a note, not a diff.\nit mentions ${_stranger}x\n',
+        );
+        final p = await _leak(iso, ['--diff', prose, '--allow-empty-patterns']);
+        expect(p.exitCode, 2, reason: 'not a diff\n$p');
+        expect(p.stderr, contains('--diff'), reason: '$p');
+        _expectHidden(p, [_stranger, _strangerName], 'not a diff');
+
+        for (final blank in ['', '\n\n']) {
+          final e = await _write(iso, 'blank.diff', blank);
+          _expectClean(
+            await _leak(iso, ['--diff', e, '--allow-empty-patterns']),
+            what: 'empty input ${blank.length}',
+          );
+        }
+        final viaStdin = await _leak(iso, [
+          '--diff',
+          '-',
+          '--allow-empty-patterns',
+        ], stdin: '');
+        _expectClean(viaStdin, what: 'empty stdin');
+      },
+    );
+
+    test(
+      'diff mode flags the path of an empty added file under diff.noprefix and diff.mnemonicPrefix',
+      () async {
+        final iso = await isolatedEnv();
+        final env = {'LEAK_PATTERNS': 'secretclient'};
+        final repo = await _makeRepo(iso, 'prefixes');
+        await _commit(iso, repo, {'README.md': 'hello\n'}, 'first');
+        await Directory('$repo/docs/secretclient').create(recursive: true);
+        await File('$repo/docs/secretclient/empty.txt').writeAsString('');
+        await File('$repo/docs/clean.txt').writeAsString('');
+        await runGit(iso, repo, ['add', '-A']);
+
+        for (final cfg in ['diff.noprefix=true', 'diff.mnemonicPrefix=true']) {
+          final diff = await gitDiff(iso, repo, ['--cached'], config: cfg);
+          final f = await _write(iso, 'prefix-$cfg.diff', diff);
+          final r = await _leak(iso, ['--diff', f], env: env);
+          _expectLeak(r, hidden: ['secretclient'], what: cfg);
+          expect(
+            _hits(r).any((m) => m.group(1)!.contains('(name)')),
+            isTrue,
+            reason: '$cfg: the path is reported as a name\n$r',
+          );
+        }
+
+        // The same prefixes without a leaking path stay clean.
+        await runGit(iso, repo, [
+          'rm',
+          '-q',
+          '-r',
+          '--cached',
+          'docs/secretclient',
+        ]);
+        for (final cfg in ['diff.noprefix=true', 'diff.mnemonicPrefix=true']) {
+          final diff = await gitDiff(iso, repo, ['--cached'], config: cfg);
+          expect(diff, contains('clean.txt'), reason: 'fixture');
+          final f = await _write(iso, 'prefix-clean-$cfg.diff', diff);
+          _expectClean(
+            await _leak(iso, ['--diff', f], env: env),
+            what: '$cfg clean',
+          );
+        }
+      },
+    );
+  });
+
+  group('review round 2: history and artifacts', () {
+    test(
+      'history mode reads blobs as stored whatever info attributes or the user attributes file say',
+      () async {
+        final iso = await isolatedEnv();
+        final env = {'LEAK_PATTERNS': _email};
+        final repo = await _cleanRepo(iso, 'attrs');
+        await _commit(iso, repo, {
+          'notes.txt': 'contact $_email today\n',
+        }, 'add notes');
+        _expectLeak(
+          await _leak(iso, ['--history', '$repo/.git'], env: env),
+          hidden: [_email],
+          what: 'before any attribute',
+        );
+
+        // Re-encoded on checkout, the blob would hold UTF-16 text with a NUL
+        // after every letter, and the deny-list entry would never match.
+        // (The script names each blob file by its hash, so match every name.)
+        await _write(
+          iso,
+          'attrs/.git/info/attributes',
+          '* working-tree-encoding=UTF-16\n',
+        );
+        _expectLeak(
+          await _leak(iso, ['--history', '$repo/.git'], env: env),
+          hidden: [_email],
+          what: 'info/attributes',
+        );
+        await File('$repo/.git/info/attributes').delete();
+
+        final attrs = await _write(
+          iso,
+          'user-attributes',
+          '* working-tree-encoding=UTF-16\n',
+        );
+        final cfg = File(iso.env['GIT_CONFIG_GLOBAL']!);
+        await cfg.writeAsString(
+          '[core]\n\tattributesFile = $attrs\n',
+          mode: FileMode.append,
+        );
+        _expectLeak(
+          await _leak(iso, ['--history', '$repo/.git'], env: env),
+          hidden: [_email],
+          what: 'core.attributesFile',
+        );
+      },
+    );
+
+    test(
+      'artifact mode exits 2 on a zip whose entries share a name and scans a zip of distinct entries',
+      () async {
+        final iso = await isolatedEnv();
+        final env = {'LEAK_PATTERNS': _email};
+        final leak = _compressible(_email);
+
+        final distinct = await _writeBytes(
+          iso,
+          'zips/distinct.zip',
+          _zipBytes([('first.txt', leak), ('second.txt', 'fine\n')]),
+        );
+        expect(
+          _bytesContain(File(distinct).readAsBytesSync(), utf8.encode(_email)),
+          isFalse,
+          reason: 'fixture: the raw zip must not hold the leak',
+        );
+        _expectLeak(
+          await _leak(iso, ['--artifact', distinct], env: env),
+          hidden: [_email],
+          what: 'distinct entries',
+        );
+
+        // Extraction would overwrite the leaky first entry with the clean
+        // second one, and the deflated leak would go unseen.
+        final same = await _writeBytes(
+          iso,
+          'zips/same.zip',
+          _zipBytes([('data.txt', leak), ('data.txt', 'fine\n')]),
+        );
+        final r = await _leak(iso, ['--artifact', same], env: env);
+        expect(r.exitCode, 2, reason: 'same name twice\n$r');
+        expect(r.stderr, contains('collide'), reason: '$r');
+        _expectHidden(r, [_email], 'colliding entries');
+
+        // The leaky entry second and the clean one first: still incomplete.
+        final reversed = await _writeBytes(
+          iso,
+          'zips/reversed.zip',
+          _zipBytes([('data.txt', 'fine\n'), ('data.txt', leak)]),
+        );
+        final rr = await _leak(iso, ['--artifact', reversed], env: env);
+        expect(rr.exitCode, 2, reason: 'same name twice, leak last\n$rr');
+        _expectHidden(rr, [_email], 'colliding entries, leak last');
+
+        // Names that differ only in case collide on a case-insensitive
+        // volume and are two files on a case-sensitive one.
+        final probe = File('${iso.work.path}/CaseProbe')..writeAsStringSync('');
+        final insensitive = File('${iso.work.path}/caseprobe').existsSync();
+        probe.deleteSync();
+        final cased = await _writeBytes(
+          iso,
+          'zips/cased.zip',
+          _zipBytes([('Data.txt', leak), ('data.txt', 'fine\n')]),
+        );
+        final rc = await _leak(iso, ['--artifact', cased], env: env);
+        if (insensitive) {
+          expect(rc.exitCode, 2, reason: 'names differing by case\n$rc');
+          _expectHidden(rc, [_email], 'case collision');
+        } else {
+          _expectLeak(rc, hidden: [_email], what: 'case-sensitive volume');
+        }
+      },
+    );
+
+    test(
+      'a DMG is attached read-only and nobrowse and detached from the same mountpoint on a clean and a leaky scan',
+      () async {
+        final iso = await isolatedEnv();
+        final env = {'LEAK_PATTERNS': _email};
+        final wrap = Directory('${iso.root.path}/wrapbin')..createSync();
+        final log = File('${iso.root.path}/hdiutil.log');
+        final shim = File('${wrap.path}/hdiutil')
+          ..writeAsStringSync(
+            [
+              '#!/bin/bash',
+              'for a in "\$@"; do printf "%s\\t" "\$a" >> "${log.path}"; done',
+              'printf "\\n" >> "${log.path}"',
+              'exec /usr/bin/hdiutil "\$@"',
+              '',
+            ].join('\n'),
+          );
+        await Process.run('chmod', ['755', shim.path]);
+        final scanEnv = {
+          ...env,
+          'PATH': '${wrap.path}:${Platform.environment['PATH']}',
+        };
+
+        await _write(
+          iso,
+          'dmgleak/Open Memex.app/Contents/Resources/config.txt',
+          _compressible(_email),
+        );
+        await _write(
+          iso,
+          'dmgfine/Open Memex.app/Contents/Resources/config.txt',
+          _compressible('fine'),
+        );
+        await Directory('${iso.work.path}/art').create();
+        final leaky = await _dmg(
+          iso,
+          '${iso.work.path}/dmgleak',
+          '${iso.work.path}/art/leaky-${_uniq()}.dmg',
+        );
+        final fine = await _dmg(
+          iso,
+          '${iso.work.path}/dmgfine',
+          '${iso.work.path}/art/fine-${_uniq()}.dmg',
+        );
+
+        for (final (dmg, leaks) in [(leaky, true), (fine, false)]) {
+          log.writeAsStringSync('');
+          final r = await _leak(iso, ['--artifact', dmg], env: scanEnv);
+          if (leaks) {
+            _expectLeak(r, hidden: [_email], what: 'leaky DMG');
+          } else {
+            _expectClean(r, what: 'clean DMG');
+          }
+          final calls = log
+              .readAsLinesSync()
+              .map((l) => l.split('\t')..removeLast())
+              .toList();
+          final attach = calls.indexWhere((c) => c.first == 'attach');
+          expect(attach, isNot(-1), reason: 'no attach call\n$calls');
+          final args = calls[attach];
+          expect(args, contains('-readonly'), reason: '$args');
+          expect(args, contains('-nobrowse'), reason: '$args');
+          expect(args, isNot(contains('-readwrite')), reason: '$args');
+          // The script resolves the path (/var becomes /private/var).
+          expect(args.last, endsWith(dmg.split('/').last), reason: '$args');
+          final at = args.indexOf('-mountpoint');
+          expect(at, isNot(-1), reason: '$args');
+          final mount = args[at + 1];
+          final detach = calls.indexWhere(
+            (c) => c.first == 'detach' && c.contains(mount),
+          );
+          expect(
+            detach,
+            greaterThan(attach),
+            reason: 'no detach of $mount after the attach\n$calls',
+          );
+          expect(await _dmgAttached(iso, dmg), isFalse, reason: dmg);
+        }
+      },
+    );
+
+    test(
+      'a leaking archive name never appears in the error of an archive that cannot be read',
+      () async {
+        final iso = await isolatedEnv();
+        final env = {'LEAK_PATTERNS': _email};
+        final bad = await _write(iso, 'art/x-$_email.zip', 'not a zip file\n');
+        final r = await _leak(iso, ['--artifact', bad], env: env);
+        expect(r.exitCode, 2, reason: '$r');
+        expect(r.stderr, contains('could not unzip'), reason: '$r');
+        expect(r.stderr, contains('[redacted]'), reason: '$r');
+        _expectHidden(r, [_email], 'error about a leaking archive name');
+      },
+    );
+
+    test(
+      'history mode scans a work tree path and a linked worktree as well as a git dir',
+      () async {
+        final iso = await isolatedEnv();
+        final env = {'LEAK_PATTERNS': _email};
+        final repo = await _cleanRepo(iso, 'main-wt');
+        await _commit(iso, repo, {'m.txt': 'm\n'}, 'mail $_email');
+        _expectLeak(
+          await _leak(iso, ['--history', repo], env: env),
+          hidden: [_email],
+          what: 'work tree path',
+        );
+        final linked = '${iso.work.path}/linked-wt';
+        await runGit(iso, repo, [
+          'worktree',
+          'add',
+          '-q',
+          '-b',
+          'side',
+          linked,
+        ]);
+        _expectLeak(
+          await _leak(iso, ['--history', linked], env: env),
+          hidden: [_email],
+          what: 'linked worktree',
+        );
+        final clean = await _cleanRepo(iso, 'clean-wt');
+        _expectClean(
+          await _leak(iso, ['--history', clean], env: env),
+          what: 'clean work tree path',
+        );
       },
     );
   });
