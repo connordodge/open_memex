@@ -39,7 +39,10 @@
 # A symlink given as the --tree or --artifact root is read through; symlinks
 # below it are never followed. --diff cannot see a binary file's bytes, so it
 # prints "LEAK WARN: binary file not scanned: <path>" on stderr for each one
-# (the exit status is unchanged). --history reads objects as stored, ignoring
+# that is not deleted, with any hit in <path> shown as [redacted]. The warning
+# leaves the exit status unchanged; a hit in the binary file's path is still
+# a LEAK line ("<path> (name):1") and exit 1. Scanning the bytes is the
+# caller's job (--tree or --artifact on the merged tree). --history reads objects as stored, ignoring
 # refs/replace, and refuses a repository with an info/grafts file.
 #
 # Exit status: 0 clean, 1 at least one leak, 2 usage error (unknown mode,
@@ -93,6 +96,10 @@ usage: leak-check.sh [--patterns <file>]... [--allow-empty-patterns] MODE
     --history <git-dir>   every reachable blob, file path, commit and tag
     --artifact <path>...  an .app, binary, zip or DMG, and archives inside
   Deny-list entries also come from LEAK_PATTERNS (newline-separated).
+  --diff cannot see a binary file's bytes: it prints
+    LEAK WARN: binary file not scanned: <path, hits [redacted]>
+  on stderr and leaves the exit status unchanged (a hit in that path is
+  still a LEAK line and exit 1). Scan the file itself with --tree/--artifact.
   Exit status: 0 clean, 1 leak, 2 usage error or incomplete scan.
 EOF
 }
@@ -276,8 +283,8 @@ END { if (!redactonly) exit found }
 
 # The added lines of a unified diff, labelled <new file>:<new line>, and the
 # path of every added, renamed or copied file, labelled "<path> (name):1".
-# The new path of a binary file (whose bytes a diff does not show) goes to
-# the file LK_BINLIST.
+# The new path of a binary file (whose bytes a diff does not show) is also
+# scanned as a "(name)" record, added or not, and goes to the file LK_BINLIST.
 DIFF_PRODUCER='
 function unq(s) {
   if (length(s) > 1 && substr(s, 1, 1) == "\"" && substr(s, length(s)) == "\"")
@@ -305,6 +312,7 @@ function name(p) {
 function bin(p) {
   if (p == "" || p == "/dev/null" || (p in binseen)) return
   binseen[p] = 1
+  name(p)
   print p > binf
 }
 # Ends the "diff --git" section in progress.
