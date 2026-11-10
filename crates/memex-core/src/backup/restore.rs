@@ -14,7 +14,7 @@ pub fn restore_with(
     _r: &RestoreRequest,
     _probe: &dyn Fn(&Path) -> io::Result<FsInfo>,
 ) -> Result<RestoreOutcome> {
-    Err(MemexError::BackupInvalid(
+    Err(MemexError::BackupFailed(
         "memex restore: not implemented yet".into(),
     ))
 }
