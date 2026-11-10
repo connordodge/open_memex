@@ -35,6 +35,10 @@ const _pickNote =
 const _chooseFolder = 'choose folder…';
 const _chooseFolderSub = 'a nas share, an external disk or any folder';
 const _neverTitle = 'no backup yet';
+
+/// A card title for a failed state whose view state carries no message (the
+/// controller always sets one; this only keeps the card from being empty).
+const _failedFallback = 'backup failed';
 const _neverBody = 'the first automatic backup runs within the hour.';
 const _backingUpTitle = 'backing up…';
 const _backingUpBody =

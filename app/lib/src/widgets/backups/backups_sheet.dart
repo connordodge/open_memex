@@ -103,14 +103,6 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
   /// This sheet's `backUpNow` call is still running.
   bool _pending = false;
 
-  /// A run was started from this sheet (its failure reads "back up now
-  /// failed"), and when.
-  bool _pressed = false;
-  DateTime? _pressedAt;
-
-  /// When the running backup started, if this sheet saw it start.
-  DateTime? _startedAt;
-
   bool _menuOpen = false;
   OverlayPortalController _menu = OverlayPortalController();
   final _menuLink = LayerLink();
@@ -153,35 +145,12 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
     if (_pending) return;
     setState(() {
       _pending = true;
-      _pressed = true;
-      _pressedAt = ref.read(clockProvider).now();
     });
     try {
       await ref.read(backupControllerProvider.notifier).backUpNow(widget.vault);
     } finally {
       if (mounted) setState(() => _pending = false);
     }
-  }
-
-  /// Notes when a run this sheet sees start began: the press time for a
-  /// run this sheet started, else the moment the state turned to backing
-  /// up. A sheet opened mid-run does not know, and shows no start time.
-  void _onViewChange(
-    Map<VaultRef, BackupViewState>? before,
-    Map<VaultRef, BackupViewState> after,
-  ) {
-    if (before == null) return;
-    final was = before[widget.vault]?.mode;
-    final mode = ref
-        .read(backupControllerProvider.notifier)
-        .viewStateOf(widget.vault)
-        .mode;
-    if (was == mode) return;
-    DateTime? started;
-    if (mode == BackupSheetMode.backingUp) {
-      started = _pending ? _pressedAt : ref.read(clockProvider).now();
-    }
-    setState(() => _startedAt = started);
   }
 
   Future<void> _discover() async {
@@ -246,7 +215,10 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
 
   void _stepKeep(int delta) {
     final current = _stored(_path!);
-    final next = (current.keep + delta).clamp(backupKeepMin, backupKeepMax);
+    final next = math.min(
+      backupKeepMax,
+      math.max(backupKeepMin, current.keep + delta),
+    );
     if (next == current.keep) return;
     _keepText.text = '$next';
     _save(current.copyWith(keep: next));
@@ -256,19 +228,21 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
     if (!_keepFocus.hasFocus) _commitKeep();
   }
 
-  /// Saves the typed keep count when it is a whole number in 1-365 and
-  /// differs from the stored one; otherwise the field shows the stored one.
+  /// Saves the typed keep count, clamped to 1-365, when it is a whole
+  /// number and differs from the stored one; otherwise the field shows the
+  /// stored one.
   void _commitKeep() {
     final path = _path;
     if (!mounted || path == null) return;
     final current = _stored(path);
     final typed = int.tryParse(_keepText.text.trim());
-    if (typed == null || typed < backupKeepMin || typed > backupKeepMax) {
+    if (typed == null) {
       _keepText.text = '${current.keep}';
       return;
     }
-    _keepText.text = '$typed';
-    if (typed != current.keep) _save(current.copyWith(keep: typed));
+    final keep = math.min(backupKeepMax, math.max(backupKeepMin, typed));
+    _keepText.text = '$keep';
+    if (keep != current.keep) _save(current.copyWith(keep: keep));
   }
 
   void _openMenu() {
@@ -303,7 +277,6 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
   @override
   Widget build(BuildContext context) {
     ref.watch(backupControllerProvider);
-    ref.listen(backupControllerProvider, _onViewChange);
     final view = ref
         .read(backupControllerProvider.notifier)
         .viewStateOf(widget.vault);
@@ -648,7 +621,7 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
     final destination = stored.destination;
     switch (view.mode) {
       case BackupSheetMode.backingUp:
-        final started = _startedAt;
+        final started = view.startedAt;
         return _StatusCard(
           tone: _Tone.running,
           icon: LucideIcons.loaderCircle,
@@ -680,37 +653,27 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
           action: _nowAction(view, busy: busy),
         );
       case BackupSheetMode.error:
-        final message = backupFailureMessage(
-          code: view.errorCode ?? status?.lastResult ?? 'internal',
-          message: status?.lastError,
-          automatic: !_pressed,
-          failedAt: status?.lastAttemptAt ?? now,
-          now: now,
-          destination: destination,
-          provider: destination == null ? null : _whereOf(destination).provider,
-        );
+        final message = view.message;
         return _StatusCard(
           tone: _Tone.error,
           icon: LucideIcons.triangleAlert,
-          title: message.title,
+          title: message?.title ?? _failedFallback,
           body: [
-            _paragraph(view.message ?? message.detail),
+            if (message != null) _paragraph(message.detail),
             const SizedBox(height: 6),
             _small(_lastGoodLine(status, now, retries: stored.automatic)),
           ],
           action: _retryAction(busy: busy, icon: LucideIcons.refreshCw),
         );
       case BackupSheetMode.memexTooOld || BackupSheetMode.binaryNotFound:
-        final message = view.mode == BackupSheetMode.memexTooOld
-            ? backupTooOldMessage()
-            : backupBinaryNotFoundMessage();
+        final message = view.message;
         final binary = app.memexBinaryPath;
         return _StatusCard(
           tone: _Tone.error,
           icon: LucideIcons.triangleAlert,
-          title: message.title,
+          title: message?.title ?? _failedFallback,
           body: [
-            _paragraph(view.message ?? message.detail),
+            if (message != null) _paragraph(message.detail),
             if (binary != null) Text(binary, style: _monoSubStyle),
             const SizedBox(height: 10),
             _SheetButton(
@@ -940,20 +903,13 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
           action: _nowAction(view, busy: busy),
         );
       case BackupSheetMode.error:
-        final message = backupFailureMessage(
-          code: view.errorCode ?? status?.lastResult ?? 'internal',
-          message: status?.lastError,
-          automatic: !_pressed,
-          failedAt: status?.lastAttemptAt ?? now,
-          now: now,
-          serverName: server,
-        );
+        final message = view.message;
         return _StatusCard(
           tone: _Tone.error,
           icon: LucideIcons.triangleAlert,
-          title: message.title,
+          title: message?.title ?? _failedFallback,
           body: [
-            _paragraph(view.message ?? message.detail),
+            if (message != null) _paragraph(message.detail),
             const SizedBox(height: 6),
             _small(_lastGoodLine(status, now, server: server, retries: true)),
           ],

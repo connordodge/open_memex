@@ -279,6 +279,7 @@ BackupViewState _errorView(
   String? raw,
   VaultBackupSettings settings = _on,
   bool withGood = true,
+  bool automatic = true,
 }) => BackupViewState(
   mode: BackupSheetMode.error,
   settings: settings,
@@ -287,22 +288,25 @@ BackupViewState _errorView(
   message: _localFailure(
     code,
     raw: raw,
+    automatic: automatic,
     destination: settings.destination ?? _googleDest,
-  ).detail,
+  ),
+  automatic: automatic,
+  failedAt: _failedAt,
   warning: true,
 );
 
 BackupViewState _tooOldView() => BackupViewState(
   mode: BackupSheetMode.memexTooOld,
   settings: _on,
-  message: backupTooOldMessage().detail,
+  message: backupTooOldMessage(),
   warning: true,
 );
 
 BackupViewState _binaryNotFoundView() => BackupViewState(
   mode: BackupSheetMode.binaryNotFound,
   settings: _on,
-  message: backupBinaryNotFoundMessage().detail,
+  message: backupBinaryNotFoundMessage(),
   warning: true,
 );
 
@@ -354,7 +358,9 @@ BackupViewState _hostedErrorView() => BackupViewState(
   message: _hostedFailure(
     'backup_destination_unavailable',
     raw: 'permission denied',
-  ).detail,
+  ),
+  automatic: true,
+  failedAt: _failedAt,
   warning: true,
 );
 
@@ -1214,6 +1220,29 @@ void main() {
 
   // ================================================================ AC 5
   group('AC5 backing up', () {
+    testWidgets('backing up shows the view state start time when it has one', (
+      tester,
+    ) async {
+      final started = DateTime.utc(2026, 11, 9, 14, 3);
+      final local = started.toLocal();
+      String two(int n) => n.toString().padLeft(2, '0');
+      await _open(
+        tester,
+        view: BackupViewState(
+          mode: BackupSheetMode.backingUp,
+          settings: _on,
+          status: _successStatus(),
+          startedAt: started,
+        ),
+      );
+      expect(
+        _status(tester),
+        contains('started ${two(local.hour)}:${two(local.minute)}.'),
+      );
+      await _open(tester, view: _backingUpView());
+      expect(_status(tester), isNot(contains('started ')));
+    });
+
     testWidgets('backing up shows backing up and backups-now is disabled', (
       tester,
     ) async {
@@ -1387,6 +1416,51 @@ void main() {
       }
     });
 
+    testWidgets('the error card shows the view state message verbatim', (
+      tester,
+    ) async {
+      const seeded = BackupMessage(
+        title: 'seeded title from the controller',
+        detail: 'seeded detail from the controller',
+        short: 'seeded short',
+      );
+      for (final mode in [
+        BackupSheetMode.error,
+        BackupSheetMode.memexTooOld,
+        BackupSheetMode.binaryNotFound,
+      ]) {
+        await _open(
+          tester,
+          view: BackupViewState(
+            mode: mode,
+            settings: _on,
+            status: _failedStatus('backup_failed', raw: 'disk full'),
+            errorCode: 'backup_failed',
+            message: seeded,
+            automatic: false,
+            failedAt: _failedAt,
+          ),
+        );
+        final status = _status(tester);
+        expect(status, contains(seeded.title), reason: '$mode');
+        expect(status, contains(seeded.detail), reason: '$mode');
+      }
+      await _open(
+        tester,
+        vault: _hosted,
+        view: BackupViewState(
+          mode: BackupSheetMode.error,
+          hosted: true,
+          status: _failedStatus('backup_failed'),
+          errorCode: 'backup_failed',
+          message: seeded,
+        ),
+      );
+      final status = _status(tester);
+      expect(status, contains(seeded.title));
+      expect(status, contains(seeded.detail));
+    });
+
     testWidgets(
       'the error state shows the last good backup and when it retries',
       (tester) async {
@@ -1483,21 +1557,35 @@ void main() {
       expect(s.saves.single.settings, _on.copyWith(keep: 45));
     });
 
-    testWidgets('keep rejects values outside 1 to 365 without saving them', (
-      tester,
-    ) async {
-      final s = await _open(tester, view: _neverView());
-      for (final v in ['0', '366', '1000', '', 'abc', '-3']) {
-        await tester.enterText(find.byKey(backupsKeepKey), v);
-        await tester.testTextInput.receiveAction(TextInputAction.done);
-        await _frames(tester);
-        expect(tester.takeException(), isNull, reason: '"$v"');
-      }
-      for (final save in s.saves) {
-        expect(save.settings.keep, inInclusiveRange(1, 365));
-        expect(save.settings.keep, 30, reason: 'nothing new was accepted');
-      }
-    });
+    testWidgets(
+      'keep clamps typed values to 1 to 365 and ignores non numbers',
+      (tester) async {
+        final s = await _open(tester, view: _neverView());
+        for (final (typed, saved) in [
+          ('0', 1),
+          ('999', 365),
+          ('-3', 1),
+          ('366', 365),
+        ]) {
+          final before = s.saves.length;
+          await tester.enterText(find.byKey(backupsKeepKey), typed);
+          await tester.testTextInput.receiveAction(TextInputAction.done);
+          await _frames(tester);
+          expect(tester.takeException(), isNull, reason: '"$typed"');
+          expect(s.saves, hasLength(before + 1), reason: '"$typed"');
+          expect(s.saves.last.settings.keep, saved, reason: '"$typed"');
+          expect(_keepText(tester), '$saved', reason: '"$typed"');
+        }
+        final before = s.saves.length;
+        for (final v in ['', 'abc']) {
+          await tester.enterText(find.byKey(backupsKeepKey), v);
+          await tester.testTextInput.receiveAction(TextInputAction.done);
+          await _frames(tester);
+          expect(tester.takeException(), isNull, reason: '"$v"');
+        }
+        expect(s.saves, hasLength(before), reason: 'nothing to save');
+      },
+    );
 
     testWidgets('keep plus and minus save one more and one less', (
       tester,
