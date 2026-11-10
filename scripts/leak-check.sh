@@ -13,7 +13,7 @@
 #   (c) home-path  a /Users/<name>/ or /home/<name>/ path whose <name> is not
 #                  a placeholder name in scripts/leak-allow.txt. A <name> is
 #                  letters, digits, . _ - and non-ASCII bytes, with inner
-#                  spaces allowed.
+#                  spaces allowed and no leading dot.
 # Text that starts with a third-party prefix from leak-allow.txt is exempt
 # from rules (b) and (c), never from rule (a).
 #
@@ -197,9 +197,11 @@ function scan(s,    i, M, LS, start, t, ns, name, abs) {
   return hA || hB || hC
 }
 # A user name: letters, digits, . _ - and non-ASCII bytes, with inner (never
-# leading or trailing) spaces. Anything else (<name>, $USER, *) is not one.
+# leading or trailing) spaces, and never a leading dot (.cargo, .., .hidden
+# are hidden dirs, not users). Anything else (<name>, $USER, *) is not one.
 function isname(n,    r, i) {
   if (substr(n, 1, 1) == " " || substr(n, length(n)) == " ") return 0
+  if (substr(n, 1, 1) == ".") return 0
   r = n
   gsub(/[A-Za-z0-9._ -]/, "", r)
   for (i = 1; i <= length(r); i++) if (!(substr(r, i, 1) in HI)) return 0
