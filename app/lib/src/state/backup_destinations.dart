@@ -36,11 +36,15 @@ abstract class CloudFolderProbe {
 
 /// The real probe over `dart:io`.
 class IoCloudFolderProbe implements CloudFolderProbe {
-  const IoCloudFolderProbe();
+  /// [environment] defaults to the process environment; tests pass their own.
+  const IoCloudFolderProbe({Map<String, String>? environment})
+    : _environment = environment;
+
+  final Map<String, String>? _environment;
 
   @override
   Future<String> home() async {
-    final home = Platform.environment['HOME'];
+    final home = (_environment ?? Platform.environment)['HOME'];
     if (home == null || home.isEmpty) {
       throw const FileSystemException('The HOME folder is not set');
     }
@@ -73,7 +77,8 @@ final cloudFolderProbeProvider = Provider<CloudFolderProbe>(
 /// Drive by account, OneDrive by name, then "choose folder…" (provider null,
 /// path null, label exactly `choose folder…`). A label is the bare
 /// distinguishing text: `iCloud Drive`, the account (`connor@example.com`), the
-/// name after `OneDrive-` (`Personal`); A4 composes `Google Drive · <label>`. A provider that isn't installed is not listed; with none
+/// name after `OneDrive-` (`Personal`; `OneDrive-SharedLibraries[-<org>]` is
+/// skipped, it holds SharePoint libraries); A4 composes `Google Drive · <label>`. A provider that isn't installed is not listed; with none
 /// found, only "choose folder…" is. Each provider row's [path] is
 /// `<provider folder>/Open Memex Backups`, not yet created.
 Future<List<BackupDestinationOption>> discoverBackupDestinations(
@@ -81,6 +86,7 @@ Future<List<BackupDestinationOption>> discoverBackupDestinations(
 ) async {
   const googlePrefix = 'GoogleDrive-';
   const oneDrivePrefix = 'OneDrive-';
+  const sharedLibraries = 'OneDrive-SharedLibraries';
   final options = <BackupDestinationOption>[];
 
   final String home;
@@ -119,6 +125,11 @@ Future<List<BackupDestinationOption>> discoverBackupDestinations(
       }
     } else if (name.startsWith(oneDrivePrefix) &&
         name.length > oneDrivePrefix.length) {
+      // `OneDrive-SharedLibraries[-<org>]` holds SharePoint libraries, not a
+      // OneDrive root.
+      if (name == sharedLibraries || name.startsWith('$sharedLibraries-')) {
+        continue;
+      }
       if (await probe.isDirectory(p.posix.join(cloudStorage, name))) {
         oneDriveNames.add(name.substring(oneDrivePrefix.length));
       }
@@ -201,7 +212,8 @@ class BackupDestinationResolver {
 
   /// A provider row creates `option.path` (the provider folder plus
   /// `Open Memex Backups`) through the probe only when missing, then answers its
-  /// symlink-resolved path. The "Choose folder" row (provider null) answers the
+  /// symlink-resolved path; when the provider folder itself is gone it answers
+  /// [BackupDestinationUnavailable] and creates nothing. The "Choose folder" row (provider null) answers the
   /// symlink-resolved [pickedFolder], nothing appended. A
   /// `FileSystemException` from creating or resolving answers
   /// [BackupDestinationUnavailable]. It never saves: A4 saves on "turn on
@@ -218,6 +230,15 @@ class BackupDestinationResolver {
     } else {
       target = option.path ?? (throw ArgumentError('option has no path'));
       create = !await _probe.isDirectory(target);
+      // The provider folder must still be there: creating it would make an
+      // ordinary local folder that no provider client syncs.
+      if (create && !await _probe.isDirectory(p.posix.dirname(target))) {
+        return BackupDestinationUnavailable(
+          message:
+              'Could not use the folder $target: '
+              'its parent folder no longer exists',
+        );
+      }
     }
     try {
       if (create) await _probe.createDirectory(target);

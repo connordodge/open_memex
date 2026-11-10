@@ -171,6 +171,52 @@ void main() {
       );
     });
 
+    test('a vault id of 26 characters must be ASCII letters and numbers', () {
+      final control = parseBackupFileName(_name('notes'));
+      expect(control, isNotNull);
+      expect(control!.vaultId, _vaultId);
+
+      for (final bad in ['-', '_', '.', ' ', '~', '@', 'é', 'Ł', '😀']) {
+        final id = '${_vaultId.substring(0, 24)}$bad${_vaultId[25]}';
+        expect(
+          id.runes.length,
+          26,
+          reason: 'the id is 26 characters long ($bad)',
+        );
+        expect(
+          parseBackupFileName('notes-20261109T090000Z-$id.memex.zip'),
+          isNull,
+          reason: 'a vault id holding "$bad"',
+        );
+      }
+      // The first character is held to the class too.
+      expect(
+        parseBackupFileName(
+          'notes-20261109T090000Z--${_vaultId.substring(1)}.memex.zip',
+        ),
+        isNull,
+      );
+    });
+
+    test('the dots of the extension are literal dots', () {
+      expect(parseBackupFileName(_name('notes')), isNotNull);
+
+      for (final tail in [
+        '${_vaultId}xmemex.zip',
+        '$_vaultId.memexxzip',
+        '${_vaultId}xmemexxzip',
+        '$_vaultId-memex-zip',
+        '$_vaultId.memex.zi',
+        '$_vaultId.memex.zipp',
+      ]) {
+        expect(
+          parseBackupFileName('notes-20261109T090000Z-$tail'),
+          isNull,
+          reason: tail,
+        );
+      }
+    });
+
     test('a timestamp of the wrong shape does not parse', () {
       expect(parseBackupFileName(_name('notes')), isNotNull);
 
@@ -287,6 +333,44 @@ void main() {
         final label = backupLabelFor(folder);
         expect(parseBackupFileName(_name(label))?.label, label, reason: folder);
       }
+    });
+  });
+
+  group('ASCII only', () {
+    test(
+      'a non ASCII scalar that truncates to an ASCII byte is still a dash',
+      () {
+        // U+0141 'Ł' & 0xFF == 0x41 'A' (Rust's `c as u8` bug, R1a #332).
+        expect(backupLabelFor('Ł'), '-');
+        expect(backupLabelFor('š'), '-'); // & 0xFF == 0x61 'a'
+        expect(backupLabelFor('İ'), '-'); // & 0xFF == 0x30 '0'
+        expect(backupLabelFor('aŁ\u{1F4DA}b'), 'a--b');
+      },
+    );
+
+    test('exactly the ASCII letters digits underscore and dash are kept', () {
+      for (var rune = 0; rune < 128; rune++) {
+        final char = String.fromCharCode(rune);
+        final kept = RegExp(r'^[A-Za-z0-9_-]$').hasMatch(char);
+
+        expect(
+          backupLabelFor(char),
+          kept ? char : '-',
+          reason: 'U+${rune.toRadixString(16)}',
+        );
+      }
+    });
+
+    test('non ASCII digits and letters are not part of a name', () {
+      expect(
+        parseBackupFileName(_name('notes', stamp: '٢026110٩T090000Z')),
+        isNull,
+      );
+      expect(parseBackupFileName(_name('nötes')), isNull);
+      expect(
+        parseBackupFileName(_name('notes', stamp: '2026110９T090000Z')),
+        isNull,
+      );
     });
   });
 }

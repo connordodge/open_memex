@@ -27,6 +27,7 @@ use crate::cli::InvalidArgument;
 
 pub mod api;
 pub mod auth;
+pub mod backup;
 pub mod bridge;
 pub mod error;
 pub mod log;
@@ -36,6 +37,7 @@ pub mod request_clock;
 pub mod token;
 pub mod vaults;
 
+use backup::{BackupArchiveHook, BackupConfig, BackupService};
 use error::ApiError;
 use registry::Registry;
 use request_clock::{BaseClock, SharedClock};
@@ -46,6 +48,9 @@ pub const API_VERSION: u32 = 1;
 /// The largest request body the server reads (req 19): 8 MiB.
 pub const BODY_LIMIT: usize = 8 * 1024 * 1024;
 
+/// How often the vault server checks which vaults are due a backup (req 28).
+const BACKUP_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
 /// What the vault server needs to build its router. The token is already
 /// resolved and trimmed; `router()` never reads the environment.
 #[derive(Clone)]
@@ -55,6 +60,8 @@ pub struct ServerConfig {
     with_embeddings: bool,
     embedder: Option<Arc<dyn Embedder>>,
     clock: SharedClock,
+    backups: Option<BackupConfig>,
+    backup_archive_hook: Option<BackupArchiveHook>,
 }
 
 impl ServerConfig {
@@ -66,6 +73,8 @@ impl ServerConfig {
             with_embeddings: false,
             embedder: None,
             clock: Arc::new(SystemClock),
+            backups: None,
+            backup_archive_hook: None,
         }
     }
 
@@ -104,18 +113,56 @@ impl ServerConfig {
     pub fn clock(&self) -> SharedClock {
         self.clock.clone()
     }
+
+    /// Turns on backups of every served vault (`--backup-dir`, D15).
+    pub fn with_backups(mut self, backups: BackupConfig) -> Self {
+        self.backups = Some(backups);
+        self
+    }
+
+    /// Wraps each backup's `.partial` file in `hook` (tests hold a backup
+    /// mid-run with it).
+    #[doc(hidden)]
+    pub fn with_backup_archive_hook<F>(mut self, hook: F) -> Self
+    where
+        F: Fn(&Path, std::fs::File) -> std::io::Result<Box<dyn memex_core::backup::ArchiveSink>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.backup_archive_hook = Some(Arc::new(hook));
+        self
+    }
 }
 
 /// The whole vault server: every route, then the auth layer, the body limit
 /// and the access log (D7).
 pub fn router(config: ServerConfig) -> Router {
-    let token = auth::AccessToken::new(&config.token);
+    app(config).0
+}
+
+/// [`router`], plus the server's [`BackupService`] (D15).
+///
+/// The service never starts the hourly schedule itself: [`run`] does, and
+/// only with `--backup-dir`.
+pub fn app(config: ServerConfig) -> (Router, Arc<BackupService>) {
     let embedder = match (&config.embedder, config.with_embeddings) {
         (Some(embedder), _) => Some(embedder.clone()),
         (None, true) => Some(crate::state::build_embedder_in(&config.root)),
         (None, false) => None,
     };
     let registry = Arc::new(Registry::new(config.root.clone(), embedder));
+    let service = Arc::new(BackupService::new(
+        config.backups.clone(),
+        config.backup_archive_hook.clone(),
+        registry.clone(),
+        config.clock(),
+    ));
+    (routes(&config, registry, service.clone()), service)
+}
+
+fn routes(config: &ServerConfig, registry: Arc<Registry>, service: Arc<BackupService>) -> Router {
+    let token = auth::AccessToken::new(&config.token);
     Router::new()
         .route("/api/v1/info", get(info))
         .route("/api/v1/vaults", get(vaults::list).post(vaults::create))
@@ -131,6 +178,7 @@ pub fn router(config: ServerConfig) -> Router {
         .method_not_allowed_fallback(method_not_allowed)
         .layer(from_fn_with_state(registry.clone(), vaults::vault_guard))
         .layer(Extension(registry))
+        .layer(Extension(service))
         .layer(Extension(BaseClock(config.clock())))
         .layer(from_fn(request_clock::caller_utc_offset))
         .layer(DefaultBodyLimit::disable())
@@ -183,6 +231,8 @@ pub struct RunOptions {
     pub listen: String,
     pub with_embeddings: bool,
     pub log_level: String,
+    /// `--backup-dir` and `--backup-keep`, when given.
+    pub backup: Option<BackupConfig>,
 }
 
 /// Runs the vault server until SIGINT or SIGTERM. Every startup failure is
@@ -199,6 +249,13 @@ pub async fn run_with_probe(
 ) -> Result<()> {
     let filter = log::filter(&opts.log_level)?;
     let root = vault_root(&opts.root, probe)?;
+    let backups = match opts.backup {
+        Some(b) => Some(BackupConfig {
+            dir: backup::check_dir(&b.dir, &root)?,
+            keep: b.keep,
+        }),
+        None => None,
+    };
     let embedder = if opts.with_embeddings {
         Some(warm_embedder(&root).await?)
     } else {
@@ -247,12 +304,43 @@ pub async fn run_with_probe(
     if let Some(embedder) = embedder {
         config = config.with_embedder(embedder);
     }
-    axum::serve(listener, router(config))
+    let scheduled = backups.is_some();
+    if let Some(backups) = backups {
+        tracing::info!(
+            backup_dir = %backups.dir.display(),
+            keep = backups.keep,
+            "backups on"
+        );
+        config = config.with_backups(backups);
+    }
+    let (router, service) = app(config);
+    if scheduled {
+        // The hourly due check (D16). The task is dropped at shutdown, and a
+        // running backup's thread is never waited for (req 29).
+        spawn_backup_checks(service);
+    }
+    axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())
         .await
         .context("serve")?;
     tracing::info!("vault server stopped");
     Ok(())
+}
+
+/// Starts the due check of every served vault: now, and then one
+/// [`BACKUP_CHECK_EVERY`] after each check starts, never sooner and never in
+/// a burst after a check that overran (D16, req 29). The task ends when the
+/// returned handle is aborted or the runtime is dropped.
+#[doc(hidden)]
+pub fn spawn_backup_checks(service: Arc<BackupService>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut every_hour = tokio::time::interval(BACKUP_CHECK_EVERY);
+        every_hour.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            every_hour.tick().await;
+            service.run_due_checks().await;
+        }
+    })
 }
 
 /// The embedder every served vault shares, loaded (downloading the model
@@ -302,5 +390,15 @@ async fn shutdown_signal() {
     tokio::select! {
         () = ctrl_c => {}
         () = term => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BACKUP_CHECK_EVERY;
+
+    #[test]
+    fn the_backup_due_check_runs_every_hour() {
+        assert_eq!(BACKUP_CHECK_EVERY.as_secs(), 3600);
     }
 }
