@@ -519,6 +519,51 @@ void main() {
       );
     });
 
+    const tooNewNoVersions =
+        'this backup was made by a newer memex. update memex, then try again.';
+    final tooNewCases = <(String, Map<String, Object?>)>[
+      ('a newer backup with no version fields drops the versions', {}),
+      (
+        'a newer backup missing only schema_version drops the versions',
+        {'supported_schema_version': 6},
+      ),
+      (
+        'a newer backup missing only supported_schema_version drops the versions',
+        {'schema_version': 7},
+      ),
+      (
+        'a newer backup with null versions drops the versions',
+        {'schema_version': null, 'supported_schema_version': null},
+      ),
+      (
+        'a newer backup with a string schema_version drops the versions',
+        {'schema_version': '7', 'supported_schema_version': 6},
+      ),
+      (
+        'a newer backup with a string supported_schema_version drops the versions',
+        {'schema_version': 7, 'supported_schema_version': '6'},
+      ),
+      (
+        'a newer backup with a non-integer number drops the versions',
+        {'schema_version': 7.5, 'supported_schema_version': 6},
+      ),
+    ];
+    for (final (name, fields) in tooNewCases) {
+      test(name, () {
+        final text = message(
+          RestoreFailure(
+            code: 'backup_too_new',
+            message: 'raw detail',
+            fields: fields,
+          ),
+        );
+        expect(text, tooNewNoVersions);
+        expect(text, isNot(contains('null')));
+        expect(text, isNot(contains('V')));
+        expect(text, isNot(contains('raw detail')));
+      });
+    }
+
     test('a network drive uses the existing refusal copy', () {
       expect(
         message(
