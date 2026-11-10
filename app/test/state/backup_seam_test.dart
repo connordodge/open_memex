@@ -22,7 +22,6 @@ import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/vault_access/errors.dart';
 import 'package:open_memex_app/src/vault_access/hosted/backup.dart';
 import 'package:open_memex_app/src/widgets/backups/backup_keys.dart';
-import 'package:open_memex_app/src/widgets/backups/backups_sheet.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../support/backup_fakes.dart';
@@ -826,28 +825,6 @@ void main() {
       expect(h.hostedApi.calls, isEmpty);
       expect(h.read(backupInFlightProvider), isEmpty);
       expect(h.read(backupControllerProvider), isEmpty);
-    });
-  });
-
-  group('stubs filled by A4 (#325)', () {
-    testWidgets('showBackupsSheet stub completes at once', (tester) async {
-      var completed = false;
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Builder(
-            builder: (context) => TextButton(
-              onPressed: () async {
-                await showBackupsSheet(context, const LocalVaultRef('/v'));
-                completed = true;
-              },
-              child: const Text('open'),
-            ),
-          ),
-        ),
-      );
-      await tester.tap(find.text('open'));
-      await tester.pump();
-      expect(completed, isTrue);
     });
   });
 
