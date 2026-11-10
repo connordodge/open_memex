@@ -1263,6 +1263,774 @@ void main() {
     });
   });
 
+  group('output detail', () {
+    test(
+      'every hit line names its rule and its line number or byte offset',
+      () async {
+        final iso = await isolatedEnv();
+        final home = '${iso.home}/vault';
+        final f = await _write(
+          iso,
+          'rules.txt',
+          'one\nhome $home here\ntwo\nuser ${_stranger}x\nmail $_email\n',
+        );
+        final r = await _leak(
+          iso,
+          ['--text', f],
+          env: {'LEAK_PATTERNS': _email},
+        );
+        expect(r.exitCode, 1, reason: '$r');
+        final pairs = _hits(
+          r,
+        ).map((m) => '${m.group(2)}:${m.group(3)}').toSet();
+        expect(
+          pairs,
+          containsAll(['2:HOME', '4:home-path', '5:deny-list']),
+          reason: '$r',
+        );
+        expect(
+          pairs.contains('5:HOME') || pairs.contains('2:deny-list'),
+          isFalse,
+          reason: 'a rule is reported on a line it did not hit\n$r',
+        );
+        _expectHidden(r, [_stranger, _email], 'rule tokens');
+
+        final bytes = [
+          ...utf8.encode('abc\n'),
+          ..._binaryAround('${_stranger}x'),
+        ];
+        await _writeBytes(iso, 'bintree/blob.bin', bytes);
+        final bin = await _leak(iso, [
+          '--tree',
+          '${iso.work.path}/bintree',
+          '--allow-empty-patterns',
+        ]);
+        _expectLeak(bin, hidden: [_stranger], what: 'binary offset');
+        expect(
+          _hits(bin).any(
+            (m) =>
+                m.group(1)!.endsWith('blob.bin') &&
+                m.group(2) == '22' &&
+                m.group(3) == 'home-path',
+          ),
+          isTrue,
+          reason: 'the name starts at byte 22 (4 + 11 + 7)\n$bin',
+        );
+        expect(bin.stdout, contains('[byte offset]'), reason: '$bin');
+      },
+    );
+
+    test(
+      'diff mode reports the new file name and the new line number of each added line',
+      () async {
+        final iso = await isolatedEnv();
+        final diff = [
+          'diff --git a/notes.md b/notes.md',
+          'index 1111111..2222222 100644',
+          '--- a/notes.md',
+          '+++ b/notes.md',
+          '@@ -10,2 +20,3 @@',
+          ' ctx',
+          '+first ${_stranger}a',
+          ' tail',
+          '@@ -50,1 +60,2 @@',
+          ' ctx two',
+          '+second ${_stranger}b',
+          '',
+        ].join('\n');
+        final f = await _write(iso, 'lines.diff', diff);
+        final r = await _leak(iso, ['--diff', f, '--allow-empty-patterns']);
+        _expectLeak(r, hidden: [_stranger], what: 'diff lines');
+        final pairs = _hits(
+          r,
+        ).map((m) => '${m.group(1)}:${m.group(2)}').toSet();
+        expect(pairs, {'notes.md:21', 'notes.md:61'}, reason: '$r');
+      },
+    );
+
+    test(
+      'a deny-list entry that holds a home path is redacted whole and overlapping hits merge',
+      () async {
+        final iso = await isolatedEnv();
+        // The entry also trips rule c, so two hits overlap on one line.
+        final entry = '${_stranger}secretproj';
+        final f1 = await _write(iso, 'overlap.txt', 'x $entry/y z\n');
+        final r1 = await _leak(
+          iso,
+          ['--text', f1],
+          env: {'LEAK_PATTERNS': entry},
+        );
+        _expectLeak(
+          r1,
+          hidden: [entry, 'stranger', 'secretproj'],
+          what: 'nested',
+        );
+        expect(r1.stdout, contains('x [redacted]/y z'), reason: '$r1');
+        expect(_hits(r1).map((m) => m.group(3)).toSet(), {
+          'deny-list',
+          'home-path',
+        }, reason: '$r1');
+
+        final a = ['', 'srv', 'alphabeta'].join('/');
+        const b = 'betagamma';
+        final f2 = await _write(iso, 'overlap2.txt', 'p ${a}gamma q\n');
+        final r2 = await _leak(
+          iso,
+          ['--text', f2],
+          env: {'LEAK_PATTERNS': '$a\n$b'},
+        );
+        _expectLeak(r2, hidden: [a, b, 'gamma', 'alphabeta'], what: 'partial');
+        expect(r2.stdout, contains('p [redacted] q'), reason: '$r2');
+
+        // Entries listed in the opposite order to where they occur.
+        final first = ['', 'srv', 'first-secret'].join('/');
+        final second = ['', 'srv', 'second-secret'].join('/');
+        final f3 = await _write(
+          iso,
+          'order.txt',
+          'A $second then $first end\n',
+        );
+        final r3 = await _leak(
+          iso,
+          ['--text', f3],
+          env: {'LEAK_PATTERNS': '$first\n$second'},
+        );
+        _expectLeak(r3, hidden: [first, second], what: 'order');
+        expect(
+          r3.stdout,
+          contains('A [redacted] then [redacted] end'),
+          reason: '$r3',
+        );
+      },
+    );
+
+    test(
+      'the location of a hit is redacted in a text path a tree path and a tree entry name',
+      () async {
+        final iso = await isolatedEnv();
+        final env = {'LEAK_PATTERNS': 'secretclient'};
+
+        final text = await _write(
+          iso,
+          'secretclient/body.txt',
+          'see secretclient\n',
+        );
+        final t = await _leak(iso, ['--text', text], env: env);
+        _expectLeak(t, hidden: ['secretclient'], what: 'text location');
+        expect(
+          _hits(t).any((m) => m.group(1)!.endsWith('/[redacted]/body.txt')),
+          isTrue,
+          reason: '$t',
+        );
+
+        await _write(iso, 'loc/secretclient/inner.txt', 'fine\n');
+        final tree = await _leak(iso, [
+          '--tree',
+          '${iso.work.path}/loc',
+        ], env: env);
+        _expectLeak(tree, hidden: ['secretclient'], what: 'tree location');
+        expect(
+          _hits(tree).every((m) => m.group(1)!.contains('/loc/[redacted]')),
+          isTrue,
+          reason: '$tree',
+        );
+        expect(
+          _hits(tree).any((m) => m.group(1)!.endsWith('(name)')),
+          isTrue,
+          reason: 'the directory name is reported\n$tree',
+        );
+      },
+    );
+  });
+
+  group('names and links', () {
+    test(
+      'tree and artifact modes flag a leak in an entry name and in a symlink target',
+      () async {
+        final iso = await isolatedEnv();
+        final env = {'LEAK_PATTERNS': 'secretclient'};
+        final w = iso.work.path;
+
+        await _write(iso, 'cleantree/readme.md', 'fine\n');
+        Link('$w/cleantree/ok-link').createSync('../elsewhere');
+        _expectClean(
+          await _leak(iso, ['--tree', '$w/cleantree'], env: env),
+          what: 'clean tree with a clean link',
+        );
+
+        await _write(iso, 'nametree/secretclient.txt', 'fine\n');
+        final byName = await _leak(iso, ['--tree', '$w/nametree'], env: env);
+        _expectLeak(byName, hidden: ['secretclient'], what: 'file name');
+        expect(
+          _hits(byName).any(
+            (m) =>
+                m.group(1)!.endsWith('(name)') &&
+                m.group(2) == '1' &&
+                m.group(3) == 'deny-list',
+          ),
+          isTrue,
+          reason: '$byName',
+        );
+
+        await _write(iso, 'linktree/readme.md', 'fine\n');
+        Link('$w/linktree/lnk').createSync('${_stranger}project');
+        final byLink = await _leak(iso, [
+          '--tree',
+          '$w/linktree',
+          '--allow-empty-patterns',
+        ]);
+        _expectLeak(byLink, hidden: [_stranger], what: 'symlink target');
+        expect(
+          _hits(byLink).any(
+            (m) => m.group(1)!.endsWith('/lnk (symlink)') && m.group(2) == '1',
+          ),
+          isTrue,
+          reason: '$byLink',
+        );
+
+        final app = '$w/Open Memex.app';
+        await _writeBytes(
+          iso,
+          'Open Memex.app/Contents/MacOS/Open Memex',
+          _binaryAround('/usr/lib/libobjc.A.dylib'),
+        );
+        _expectClean(
+          await _leak(iso, ['--artifact', app], env: env),
+          what: 'clean app',
+        );
+        await _write(
+          iso,
+          'Open Memex.app/Contents/Frameworks/secretclient.dylib',
+          'x',
+        );
+        final appName = await _leak(iso, ['--artifact', app], env: env);
+        _expectLeak(appName, hidden: ['secretclient'], what: 'app entry name');
+        expect(
+          _hits(appName).any((m) => m.group(1)!.endsWith('(name)')),
+          isTrue,
+          reason: '$appName',
+        );
+
+        final app2 = '$w/Other.app';
+        await _writeBytes(
+          iso,
+          'Other.app/Contents/MacOS/Other',
+          _binaryAround('x'),
+        );
+        Link('$app2/Contents/lnk').createSync('${_stranger}build');
+        final appLink = await _leak(iso, [
+          '--artifact',
+          app2,
+          '--allow-empty-patterns',
+        ]);
+        _expectLeak(appLink, hidden: [_stranger], what: 'app symlink target');
+        expect(
+          _hits(appLink).any((m) => m.group(1)!.endsWith('/lnk (symlink)')),
+          isTrue,
+          reason: '$appLink',
+        );
+      },
+    );
+
+    test(
+      'a symlinked tree or artifact root is read through and links below it are never followed',
+      () async {
+        final iso = await isolatedEnv();
+        final env = {'LEAK_PATTERNS': _email};
+        final w = iso.work.path;
+
+        await _write(iso, 'real/f.txt', 'path ${_stranger}x\n');
+        Link('$w/lnk-dir').createSync('$w/real');
+        final tree = await _leak(iso, ['--tree', '$w/lnk-dir'], env: env);
+        _expectLeak(tree, hidden: [_stranger], what: 'symlinked tree root');
+        expect(
+          _hits(tree).any((m) => m.group(1)!.startsWith('$w/lnk-dir')),
+          isTrue,
+          reason: 'labelled with the path as given\n$tree',
+        );
+        _expectLeak(
+          await _leak(iso, ['--artifact', '$w/lnk-dir'], env: env),
+          hidden: [_stranger],
+          what: 'symlinked artifact dir',
+        );
+
+        final bin = await _writeBytes(
+          iso,
+          'realbin/memex',
+          _binaryAround('${_stranger}x'),
+        );
+        Link('$w/lnk-bin').createSync(bin);
+        _expectLeak(
+          await _leak(iso, ['--artifact', '$w/lnk-bin'], env: env),
+          hidden: [_stranger],
+          what: 'symlinked binary',
+        );
+
+        await _write(iso, 'zipsrc/data.txt', _compressible('${_stranger}x'));
+        final zip = await _zip(iso, '$w/zipsrc', '$w/realbin/pack.zip');
+        Link('$w/lnk-zip').createSync(zip);
+        _expectLeak(
+          await _leak(iso, ['--artifact', '$w/lnk-zip'], env: env),
+          hidden: [_stranger],
+          what: 'symlinked zip',
+        );
+
+        // A link below the root is not followed (a link to / would otherwise
+        // scan the machine).
+        await _write(iso, 'outside/leaky.txt', 'path ${_stranger}x\n');
+        await _write(iso, 'below/clean.txt', 'fine\n');
+        Link('$w/below/out').createSync('../outside');
+        _expectClean(
+          await _leak(iso, ['--tree', '$w/below'], env: env),
+          what: 'link below the root',
+        );
+        _expectLeak(
+          await _leak(iso, ['--tree', '$w/outside'], env: env),
+          hidden: [_stranger],
+          what: 'the linked directory itself',
+        );
+      },
+    );
+
+    test(
+      'HOME is matched as given with a trailing slash and with symlinks resolved and a HOME of slash matches nothing',
+      () async {
+        final iso = await isolatedEnv();
+        final w = iso.work.path;
+        await Directory('$w/realhome').create();
+        Link('$w/homelink').createSync('$w/realhome');
+        final real = Directory('$w/realhome').resolveSymbolicLinksSync();
+        final viaLink = '$w/homelink';
+
+        for (final c in [
+          ('as-given', '$viaLink/docs', viaLink),
+          ('resolved', '$real/docs', viaLink),
+          ('trailing-slash', '$viaLink/docs', '$viaLink/'),
+        ]) {
+          final f = await _write(iso, 'home-${c.$1}.txt', 'at ${c.$2}\n');
+          final r = await _leak(
+            iso,
+            ['--text', f, '--allow-empty-patterns'],
+            env: {'HOME': c.$3},
+          );
+          _expectLeak(r, hidden: [c.$2], what: 'HOME ${c.$1}');
+          expect(
+            _hits(r).any((m) => m.group(3) == 'HOME'),
+            isTrue,
+            reason: '${c.$1}\n$r',
+          );
+        }
+
+        final f = await _write(iso, 'root-home.txt', 'at /usr/bin/tool\n');
+        _expectClean(
+          await _leak(
+            iso,
+            ['--text', f, '--allow-empty-patterns'],
+            env: {'HOME': '/'},
+          ),
+          what: 'HOME is slash',
+        );
+      },
+    );
+  });
+
+  group('diff mode paths and binary files', () {
+    String textDiff(String path) => [
+      'diff --git a/$path b/$path',
+      'index 1111111..2222222 100644',
+      '--- a/$path',
+      '+++ b/$path',
+      '@@ -1 +1 @@',
+      '-old',
+      '+new',
+      '',
+    ].join('\n');
+
+    String binDiff(String path, String kind) {
+      switch (kind) {
+        case 'added':
+          return [
+            'diff --git a/$path b/$path',
+            'new file mode 100644',
+            'index 0000000..2222222',
+            'Binary files /dev/null and b/$path differ',
+            '',
+          ].join('\n');
+        case 'deleted':
+          return [
+            'diff --git a/$path b/$path',
+            'deleted file mode 100644',
+            'index 1111111..0000000',
+            'Binary files a/$path and /dev/null differ',
+            '',
+          ].join('\n');
+        case 'patch':
+          return [
+            'diff --git a/$path b/$path',
+            'new file mode 100644',
+            'index 0000000..2222222',
+            'GIT binary patch',
+            'literal 4',
+            'LcmZQzU|?VZ0001vw1fo',
+            '',
+            'literal 0',
+            'HcmV?d00001',
+            '',
+            '',
+          ].join('\n');
+        case 'headerless':
+          return 'Binary files /dev/null and b/$path differ\n';
+        default:
+          return [
+            'diff --git a/$path b/$path',
+            'index 1111111..2222222 100644',
+            'Binary files a/$path and b/$path differ',
+            '',
+          ].join('\n');
+      }
+    }
+
+    const kinds = ['modified', 'added', 'patch', 'headerless'];
+
+    // A clean text section first, except for the headerless entry: it has no
+    // "diff --git" line, so it would read as part of the section before it.
+    String withText(String bin, String kind) =>
+        kind == 'headerless' ? bin : '${textDiff('notes.md')}$bin';
+
+    test(
+      'a binary file in a diff warns on stderr with its path and leaves the exit status unchanged',
+      () async {
+        final iso = await isolatedEnv();
+        final env = {'LEAK_PATTERNS': _email};
+        for (final kind in kinds) {
+          final f = await _write(
+            iso,
+            'bin-$kind.diff',
+            withText(binDiff('img.png', kind), kind),
+          );
+          final r = await _leak(iso, ['--diff', f], env: env);
+          expect(r.exitCode, 0, reason: '$kind\n$r');
+          expect(_hits(r), isEmpty, reason: '$kind\n$r');
+          expect(
+            r.stderr,
+            contains('LEAK WARN: binary file not scanned: img.png'),
+            reason: kind,
+          );
+        }
+
+        // The same text hunk without a binary entry: no warning.
+        final textOnly = await _write(
+          iso,
+          'text-only.diff',
+          textDiff('notes.md'),
+        );
+        final t = await _leak(iso, ['--diff', textOnly], env: env);
+        expect(t.exitCode, 0, reason: '$t');
+        expect(
+          t.stderr,
+          isNot(contains('binary file not scanned')),
+          reason: '$t',
+        );
+      },
+    );
+
+    test(
+      'a leaking path of an added or modified binary file in a diff is a leak and is shown redacted in the warning',
+      () async {
+        final iso = await isolatedEnv();
+        final env = {'LEAK_PATTERNS': 'secretclient'};
+        const path = 'assets/secretclient/img.png';
+        for (final kind in kinds) {
+          final f = await _write(
+            iso,
+            'leaky-$kind.diff',
+            withText(binDiff(path, kind), kind),
+          );
+          final r = await _leak(iso, ['--diff', f], env: env);
+          _expectLeak(r, hidden: ['secretclient'], what: kind);
+          expect(
+            _hits(r).any(
+              (m) =>
+                  m.group(1) == 'assets/[redacted]/img.png (name)' &&
+                  m.group(2) == '1' &&
+                  m.group(3) == 'deny-list',
+            ),
+            isTrue,
+            reason: '$kind\n$r',
+          );
+          expect(
+            r.stderr,
+            contains(
+              'LEAK WARN: binary file not scanned: assets/[redacted]/img.png',
+            ),
+            reason: kind,
+          );
+        }
+      },
+    );
+
+    test(
+      'a deleted binary file in a diff is neither warned about nor flagged',
+      () async {
+        final iso = await isolatedEnv();
+        final env = {'LEAK_PATTERNS': 'secretclient'};
+        final f = await _write(
+          iso,
+          'deleted.diff',
+          '${binDiff('assets/secretclient/old.png', 'deleted')}${binDiff('keep.png', 'added')}',
+        );
+        final r = await _leak(iso, ['--diff', f], env: env);
+        expect(r.exitCode, 0, reason: '$r');
+        expect(_hits(r), isEmpty, reason: '$r');
+        expect(
+          r.stderr,
+          contains('LEAK WARN: binary file not scanned: keep.png'),
+          reason: '$r',
+        );
+        expect(r.stderr, isNot(contains('old.png')), reason: '$r');
+      },
+    );
+
+    test(
+      'diff mode flags a leaking path of an added file a renamed file and a copied file but not a deleted one',
+      () async {
+        final iso = await isolatedEnv();
+        final env = {'LEAK_PATTERNS': 'secretclient'};
+        const dir = 'docs/secretclient';
+        final cases = <String, List<String>>{
+          'added': [
+            'diff --git a/$dir/new.md b/$dir/new.md',
+            'new file mode 100644',
+            'index 0000000..2222222',
+            '--- /dev/null',
+            '+++ b/$dir/new.md',
+            '@@ -0,0 +1 @@',
+            '+hello',
+            '',
+          ],
+          'renamed': [
+            'diff --git a/old.md b/$dir/moved.md',
+            'similarity index 100%',
+            'rename from old.md',
+            'rename to $dir/moved.md',
+            '',
+          ],
+          'copied': [
+            'diff --git a/old.md b/$dir/copy.md',
+            'similarity index 100%',
+            'copy from old.md',
+            'copy to $dir/copy.md',
+            '',
+          ],
+        };
+        for (final e in cases.entries) {
+          final f = await _write(iso, '${e.key}.diff', e.value.join('\n'));
+          final r = await _leak(iso, ['--diff', f], env: env);
+          _expectLeak(r, hidden: ['secretclient'], what: e.key);
+          expect(
+            _hits(r).any(
+              (m) =>
+                  m.group(1)!.startsWith('docs/[redacted]/') &&
+                  m.group(1)!.endsWith('.md (name)') &&
+                  m.group(3) == 'deny-list',
+            ),
+            isTrue,
+            reason: '${e.key}\n$r',
+          );
+        }
+
+        final deleted = await _write(
+          iso,
+          'deleted-text.diff',
+          [
+            'diff --git a/$dir/gone.md b/$dir/gone.md',
+            'deleted file mode 100644',
+            'index 1111111..0000000',
+            '--- a/$dir/gone.md',
+            '+++ /dev/null',
+            '@@ -1 +0,0 @@',
+            '-hello',
+            '',
+          ].join('\n'),
+        );
+        final d = await _leak(iso, ['--diff', deleted], env: env);
+        expect(d.exitCode, 0, reason: '$d');
+        expect(_hits(d), isEmpty, reason: '$d');
+      },
+    );
+  });
+
+  group('history mode objects as stored', () {
+    test(
+      'a replace ref does not hide a leaky commit from history mode',
+      () async {
+        final iso = await isolatedEnv();
+        final env = {'LEAK_PATTERNS': _email};
+        final repo = await _cleanRepo(iso, 'replaced');
+        await _commit(iso, repo, {
+          'leaky.txt': 'path ${_stranger}vault\n',
+        }, 'add leaky file');
+        final leakySha = (await runGit(iso, repo, [
+          'rev-parse',
+          'HEAD',
+        ])).stdout.trim();
+        final cleanSha = (await runGit(iso, repo, [
+          'rev-parse',
+          'HEAD~1',
+        ])).stdout.trim();
+        // With the replacement, HEAD reads as the clean commit.
+        await runGit(iso, repo, ['replace', leakySha, cleanSha]);
+        final shown = await runGit(iso, repo, [
+          'ls-tree',
+          '-r',
+          '--name-only',
+          'HEAD',
+        ]);
+        expect(
+          shown.stdout,
+          isNot(contains('leaky.txt')),
+          reason: 'fixture: the replace ref hides the leaky file from HEAD',
+        );
+        _expectLeak(
+          await _leak(iso, ['--history', '$repo/.git'], env: env),
+          hidden: [_stranger],
+          what: 'replaced commit',
+        );
+      },
+    );
+
+    test(
+      'a repository with an info grafts file exits 2 instead of scanning a rewritten history',
+      () async {
+        final iso = await isolatedEnv();
+        final env = {'LEAK_PATTERNS': _email};
+        final repo = await _cleanRepo(iso, 'grafted');
+        await _commit(iso, repo, {'more.txt': 'more\n'}, 'third commit');
+        _expectClean(
+          await _leak(iso, ['--history', '$repo/.git'], env: env),
+          what: 'before the graft file',
+        );
+        final head = (await runGit(iso, repo, [
+          'rev-parse',
+          'HEAD',
+        ])).stdout.trim();
+        await _write(iso, 'grafted/.git/info/grafts', '$head\n');
+        final r = await _leak(iso, ['--history', '$repo/.git'], env: env);
+        expect(r.exitCode, 2, reason: '$r');
+        expect(_hits(r), isEmpty, reason: '$r');
+        expect(r.stderr, contains('grafts'), reason: '$r');
+      },
+    );
+
+    test(
+      'history mode flags a file path that only the root commit adds when the user config hides root commits',
+      () async {
+        final iso = await isolatedEnv();
+        final env = {'LEAK_PATTERNS': 'secretclient'};
+        final repo = await _makeRepo(iso, 'rootpath');
+        await _commit(iso, repo, {
+          'secretclient/plan.md': 'plan\n',
+        }, 'root commit');
+        await _commit(iso, repo, {'other.txt': 'other\n'}, 'second commit');
+        await runGit(iso, repo, ['config', 'log.showRoot', 'false']);
+        await runGit(iso, repo, ['config', 'diff.relative', 'true']);
+        _expectLeak(
+          await _leak(iso, ['--history', '$repo/.git'], env: env),
+          hidden: ['secretclient'],
+          what: 'root commit path',
+        );
+      },
+    );
+  });
+
+  group('incomplete scans', () {
+    test(
+      'a corrupt zip and a corrupt DMG exit 2 even when another path leaks',
+      () async {
+        final iso = await isolatedEnv();
+        final env = {'LEAK_PATTERNS': _email};
+        final good = await _writeBytes(iso, 'good.bin', _binaryAround('fine'));
+        final leaky = await _writeBytes(
+          iso,
+          'leaky.bin',
+          _binaryAround(_email),
+        );
+        _expectLeak(
+          await _leak(iso, ['--artifact', leaky], env: env),
+          hidden: [_email],
+          what: 'the leaky path alone',
+        );
+        final badZip = await _write(
+          iso,
+          'bad.zip',
+          'this is not a zip archive\n',
+        );
+        final badDmg = await _write(
+          iso,
+          'bad.dmg',
+          'this is not a disk image\n',
+        );
+
+        for (final bad in [badZip, badDmg]) {
+          final alone = await _leak(iso, ['--artifact', bad], env: env);
+          expect(alone.exitCode, 2, reason: '$bad\n$alone');
+          expect(_hits(alone), isEmpty, reason: '$alone');
+          expect(
+            alone.stderr,
+            contains('the scan did not complete'),
+            reason: '$alone',
+          );
+          final both = await _leak(iso, [
+            '--artifact',
+            good,
+            bad,
+            leaky,
+          ], env: env);
+          expect(both.exitCode, 2, reason: '$bad\n$both');
+          expect(
+            both.stderr,
+            contains('the scan did not complete'),
+            reason: '$both',
+          );
+          _expectHidden(both, [_email], 'incomplete scan');
+        }
+      },
+    );
+
+    test(
+      'an unreadable file in a tree exits 2 even when another file leaks',
+      () async {
+        final uid = Process.runSync('id', ['-u']).stdout.toString().trim();
+        if (uid == '0') {
+          markTestSkipped('chmod 000 does not stop root from reading');
+          return;
+        }
+        final iso = await isolatedEnv();
+        final env = {'LEAK_PATTERNS': _email};
+        final tree = '${iso.work.path}/locked';
+        await _write(iso, 'locked/ok.txt', 'fine\n');
+        final secret = await _write(iso, 'locked/secret.txt', 'fine\n');
+        await runTool(iso, 'chmod', ['000', secret], workingDirectory: tree);
+        addTearDown(() => Process.run('chmod', ['644', secret]));
+
+        final r = await _leak(iso, ['--tree', tree], env: env);
+        expect(r.exitCode, 2, reason: '$r');
+        expect(_hits(r), isEmpty, reason: '$r');
+        expect(r.stderr, contains('the scan did not complete'), reason: '$r');
+
+        await _write(iso, 'locked/other.txt', 'mail ${_email.toUpperCase()}\n');
+        final both = await _leak(iso, ['--tree', tree], env: env);
+        expect(both.exitCode, 2, reason: 'incomplete beats leak\n$both');
+        expect(
+          both.stderr,
+          contains('the scan did not complete'),
+          reason: '$both',
+        );
+        _expectHidden(both, [_email], 'unreadable file and a leak');
+      },
+    );
+  });
+
   group('repo self-check', () {
     test(
       'tree mode over scripts and app/test/release with allow-empty-patterns exits 0',
