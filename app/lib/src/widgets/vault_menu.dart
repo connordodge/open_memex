@@ -94,18 +94,24 @@ final _itemStyle = ButtonStyle(
 /// row has no delete button. The first item takes the focus when the menu
 /// opens; the arrow keys move it and Enter or Space choose an item once
 /// per key press.
+///
+/// [onOpenChanged] hears `true` when the menu opens and `false` when it
+/// closes (not when the region is disposed with the menu open). A region
+/// with no items never opens, so never calls it.
 class VaultMenuRegion extends ConsumerStatefulWidget {
   const VaultMenuRegion({
     super.key,
     required this.vault,
     required this.isOpen,
     this.onManage,
+    this.onOpenChanged,
     required this.child,
   });
 
   final VaultRef vault;
   final bool isOpen;
   final VoidCallback? onManage;
+  final ValueChanged<bool>? onOpenChanged;
   final Widget child;
 
   @override
@@ -246,6 +252,8 @@ class _VaultMenuRegionState extends ConsumerState<VaultMenuRegion> {
     return MenuAnchor(
       controller: _controller,
       style: _menuStyle,
+      onOpen: () => widget.onOpenChanged?.call(true),
+      onClose: () => widget.onOpenChanged?.call(false),
       menuChildren: _menuChildren(),
       child: GestureDetector(onSecondaryTapUp: _open, child: widget.child),
     );

@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:path/path.dart' as p;
@@ -20,10 +23,14 @@ import '../vault_access/errors.dart';
 import '../vault_access/vault_async_view.dart';
 import 'atoms.dart';
 import 'backups/backup_entry.dart';
+import 'dialog_button.dart' show keyboardButtonShortcuts;
+import 'picker/vault_picker_modal.dart';
 import 'sidebar/canvases_rail.dart';
 import 'sidebar/days_pane.dart';
 import 'sidebar/tags_pane.dart';
 import 'sidebar/topics_pane.dart';
+import 'vault_color.dart';
+import 'vault_menu.dart';
 import 'vault_open_refusal.dart';
 
 /// Left sidebar: brand header → command/search button → vault pills →
@@ -65,8 +72,8 @@ class Sidebar extends ConsumerWidget {
           PanelHeader(
             eyebrow: 'vaults',
             count: _vaultPillCount(settings),
-            action: '+ new',
-            onAction: () => _switchVault(context, ref),
+            padding: _vaultsHeaderPadding,
+            trailing: const _ManageButton(),
           ),
           _VaultPillsRow(currentVault: currentVault),
           const BackupEntry(),
@@ -151,9 +158,106 @@ class Sidebar extends ConsumerWidget {
       },
     );
   }
+}
 
-  Future<void> _switchVault(BuildContext context, WidgetRef ref) =>
-      ref.read(vaultOpenControllerProvider).leaveVault(context);
+/// The VAULTS header's padding (pack 363, S1): R8.5 so MANAGE's text lines
+/// up 16 from the edge, and the top and bottom each taken in by half of what
+/// the 22-high button adds over the 16.5-high eyebrow, so the header stays
+/// 41 high with the eyebrow where it was.
+const _vaultsHeaderPadding = EdgeInsets.fromLTRB(16, 11.25, 8.5, 7.25);
+
+/// The VAULTS header's MANAGE button (key `sidebar-vaults-manage`, pack
+/// 363, S1): 57x22, radius 4. It opens the vault picker modal over the open
+/// vault and draws pressed (`surface4` fill and border, `fg0` text) until
+/// that modal closes; a press while it shows opens nothing more. It takes
+/// the keyboard focus with a 1px `accentSoft` ring; Enter or Space press it
+/// once per key press (repeats are ignored).
+class _ManageButton extends StatefulWidget {
+  const _ManageButton();
+
+  @override
+  State<_ManageButton> createState() => _ManageButtonState();
+}
+
+class _ManageButtonState extends State<_ManageButton> {
+  /// True from a press until the modal it opened closes.
+  bool _pressed = false;
+  bool _highlight = false;
+
+  late final Map<Type, Action<Intent>> _actions = {
+    ActivateIntent: CallbackAction<ActivateIntent>(onInvoke: (_) => _press()),
+    ButtonActivateIntent: CallbackAction<ButtonActivateIntent>(
+      onInvoke: (_) => _press(),
+    ),
+  };
+
+  void _press() {
+    if (_pressed) return;
+    setState(() => _pressed = true);
+    unawaited(
+      showVaultPickerModal(context).whenComplete(() {
+        if (mounted) setState(() => _pressed = false);
+      }),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final border = _pressed
+        ? OmColors.surface4
+        : _highlight
+        ? OmColors.accentSoft
+        : Colors.transparent;
+    return SizedBox(
+      key: const Key('sidebar-vaults-manage'),
+      width: 57,
+      height: 22,
+      child: FocusableActionDetector(
+        shortcuts: keyboardButtonShortcuts,
+        actions: _actions,
+        onShowFocusHighlight: (v) => setState(() => _highlight = v),
+        child: Semantics(
+          button: true,
+          label: 'manage vaults: open the vault picker',
+          onTap: _press,
+          excludeSemantics: true,
+          child: MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _press,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: _pressed ? OmColors.surface4 : null,
+                  border: Border.all(color: border, width: 1),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    vertical: 3,
+                    horizontal: 6,
+                  ),
+                  child: Center(
+                    child: Text(
+                      'manage'.toUpperCase(),
+                      maxLines: 1,
+                      softWrap: false,
+                      overflow: TextOverflow.visible,
+                      style: OmType.mono(
+                        size: 10.5,
+                        color: _pressed ? OmColors.fg0 : OmColors.fg2,
+                        letterSpacing: 0.8,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// The sidebar's `Days` / `Topics` / `Tags` switch (Req 50; Keys
@@ -365,15 +469,28 @@ class _VaultPillsRow extends ConsumerWidget {
         children: [
           for (final r in settings.recentRefs)
             if (r case LocalVaultRef(:final path))
-              _VaultPill(path: path, active: path == currentVault)
+              _PillMenu(
+                vault: r,
+                isOpen: path == currentVault,
+                builder: (menuOpen) => _VaultPill(
+                  path: path,
+                  active: path == currentVault,
+                  menuOpen: menuOpen,
+                ),
+              )
             else if (r case HostedVaultRef(:final serverId))
               for (final s in settings.savedServers)
                 if (s.id == serverId)
-                  _HostedVaultPill(
+                  _PillMenu(
                     key: Key('vault-pill-$serverId-${r.vaultName}'),
                     vault: r,
-                    serverName: s.name,
-                    active: r == current,
+                    isOpen: r == current,
+                    builder: (menuOpen) => _HostedVaultPill(
+                      vault: r,
+                      serverName: s.name,
+                      active: r == current,
+                      menuOpen: menuOpen,
+                    ),
                   ),
         ],
       ),
@@ -381,18 +498,70 @@ class _VaultPillsRow extends ConsumerWidget {
   }
 }
 
+/// A pill's vault menu (#361's [VaultMenuRegion], Spec #357 Req 19, 26): a
+/// secondary click opens [vault]'s items then `manage…`, which opens the
+/// vault picker modal. [builder] draws the pill, told whether its menu is
+/// open (pack 363, S2: `surface3` / `line3`).
+class _PillMenu extends StatefulWidget {
+  const _PillMenu({
+    super.key,
+    required this.vault,
+    required this.isOpen,
+    required this.builder,
+  });
+  final VaultRef vault;
+  final bool isOpen;
+  final Widget Function(bool menuOpen) builder;
+
+  @override
+  State<_PillMenu> createState() => _PillMenuState();
+}
+
+class _PillMenuState extends State<_PillMenu> {
+  bool _menuOpen = false;
+
+  void _onOpenChanged(bool open) {
+    void apply() {
+      if (mounted && _menuOpen != open) setState(() => _menuOpen = open);
+    }
+
+    // A menu closed mid-build restyles its pill once the frame is drawn.
+    if (SchedulerBinding.instance.schedulerPhase ==
+        SchedulerPhase.persistentCallbacks) {
+      SchedulerBinding.instance.addPostFrameCallback((_) => apply());
+    } else {
+      apply();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => VaultMenuRegion(
+    vault: widget.vault,
+    isOpen: widget.isOpen,
+    onManage: () => unawaited(showVaultPickerModal(context)),
+    onOpenChanged: _onOpenChanged,
+    child: widget.builder(_menuOpen),
+  );
+}
+
 class _VaultPill extends ConsumerWidget {
-  const _VaultPill({required this.path, required this.active});
+  const _VaultPill({
+    required this.path,
+    required this.active,
+    required this.menuOpen,
+  });
   final String path;
   final bool active;
+  final bool menuOpen;
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final name = p.basename(path);
     return _PillFrame(
       active: active,
+      menuOpen: menuOpen,
       onTap: () => _openFromPill(context, LocalVaultRef(path)),
       children: [
-        OmDot(color: _vaultColorFor(name), size: 6),
+        Icon(LucideIcons.folder, size: 11, color: vaultColorFor(name)),
         const SizedBox(width: 7),
         _PillLabel(name, active: active),
       ],
@@ -405,14 +574,15 @@ class _VaultPill extends ConsumerWidget {
 /// in `hostedConnectionStatusProvider` (checking until one exists).
 class _HostedVaultPill extends ConsumerWidget {
   const _HostedVaultPill({
-    super.key,
     required this.vault,
     required this.serverName,
     required this.active,
+    required this.menuOpen,
   });
   final HostedVaultRef vault;
   final String serverName;
   final bool active;
+  final bool menuOpen;
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final label = hostedVaultLabel(vault.vaultName, serverName);
@@ -427,9 +597,10 @@ class _HostedVaultPill extends ConsumerWidget {
     };
     return _PillFrame(
       active: active,
+      menuOpen: menuOpen,
       onTap: () => _openFromPill(context, vault),
       children: [
-        Icon(LucideIcons.server, size: 11, color: _vaultColorFor(label)),
+        Icon(LucideIcons.server, size: 11, color: vaultColorFor(label)),
         const SizedBox(width: 7),
         _PillLabel(label, active: active),
         const SizedBox(width: 8),
@@ -453,14 +624,18 @@ class _HostedVaultPill extends ConsumerWidget {
   }
 }
 
-/// A vault pill's outline: 26 px high, fully rounded, filled when [active].
+/// A vault pill's outline: 26 px high, fully rounded; `surface4` / `line3`
+/// when [active], else `surface3` / `line3` while its menu is open
+/// ([menuOpen]), else no fill and `line1`.
 class _PillFrame extends StatelessWidget {
   const _PillFrame({
     required this.active,
+    required this.menuOpen,
     required this.onTap,
     required this.children,
   });
   final bool active;
+  final bool menuOpen;
   final VoidCallback onTap;
   final List<Widget> children;
   @override
@@ -473,9 +648,13 @@ class _PillFrame extends StatelessWidget {
           height: 26,
           padding: const EdgeInsets.fromLTRB(8, 0, 10, 0),
           decoration: BoxDecoration(
-            color: active ? OmColors.surface4 : Colors.transparent,
+            color: active
+                ? OmColors.surface4
+                : menuOpen
+                ? OmColors.surface3
+                : Colors.transparent,
             border: Border.all(
-              color: active ? OmColors.line3 : OmColors.line1,
+              color: active || menuOpen ? OmColors.line3 : OmColors.line1,
               width: 1,
             ),
             borderRadius: BorderRadius.circular(999),
@@ -496,19 +675,6 @@ class _PillLabel extends StatelessWidget {
     text,
     style: OmType.mono(size: 11.5, color: active ? OmColors.fg0 : OmColors.fg2),
   );
-}
-
-/// A pill's vault colour, hashed from its full label (pack 96).
-Color _vaultColorFor(String label) {
-  final h = label.hashCode;
-  const palette = [
-    OmColors.accent,
-    OmColors.info,
-    OmColors.warn,
-    OmColors.agent,
-    OmColors.fg2,
-  ];
-  return palette[h.abs() % palette.length];
 }
 
 /// Opens [vault] from its pill: asks the leave guard, then opens it. A

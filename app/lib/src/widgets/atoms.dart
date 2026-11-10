@@ -368,7 +368,12 @@ class PanelHeader extends StatelessWidget {
     this.action,
     this.onAction,
     this.trailing,
+    this.padding = defaultPadding,
   });
+
+  /// The header's padding unless a caller gives its own.
+  static const defaultPadding = EdgeInsets.fromLTRB(16, 14, 16, 10);
+
   final String eyebrow;
   final int? count;
   final String? action;
@@ -377,10 +382,13 @@ class PanelHeader extends StatelessWidget {
   /// When given, shown in place of the text [action] (#363's MANAGE).
   final Widget? trailing;
 
+  /// Space around the row ([defaultPadding] unless given).
+  final EdgeInsetsGeometry padding;
+
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
+      padding: padding,
       child: Row(
         children: [
           Eyebrow(eyebrow),
@@ -396,7 +404,9 @@ class PanelHeader extends StatelessWidget {
             ),
           ],
           const Spacer(),
-          if (action != null)
+          if (trailing case final trailing?)
+            trailing
+          else if (action != null)
             MouseRegion(
               cursor: SystemMouseCursors.click,
               child: GestureDetector(
