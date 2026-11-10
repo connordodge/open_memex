@@ -11,6 +11,7 @@ use memex_core::MemexError;
 use serde_json::{json, Value};
 
 pub mod append;
+pub mod backup;
 pub mod excerpt;
 pub mod feedback;
 pub mod filing;
@@ -18,6 +19,7 @@ pub mod folder;
 pub mod footer;
 pub mod guide;
 pub mod prompt;
+pub mod restore;
 pub mod rm;
 pub mod serve;
 pub mod settings;
@@ -104,6 +106,14 @@ pub fn error_json(err: &anyhow::Error) -> Value {
         "internal"
     };
     json!({ "error": { "code": code, "message": format!("{err:#}") } })
+}
+
+/// Prints `value` as one line of compact JSON on `out` with one `writeln!`,
+/// after every effect of the command is done (Spec #315 req 17a). A closed
+/// stdout (`BrokenPipe`) is not an error: the effects already happened.
+pub fn write_json_line(_out: &mut dyn std::io::Write, _value: &Value) -> anyhow::Result<()> {
+    // TODO(#316): stub.
+    Ok(())
 }
 
 /// The result of a subcommand whose behaviour a later Work Item supplies.

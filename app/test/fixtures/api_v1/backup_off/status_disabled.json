@@ -1,0 +1,12 @@
+{
+  "enabled": false,
+  "keep": null,
+  "in_progress": false,
+  "last_attempt_at": null,
+  "last_success_at": null,
+  "last_result": null,
+  "last_error": null,
+  "last_file": null,
+  "last_file_created_at": null,
+  "last_bytes": null
+}

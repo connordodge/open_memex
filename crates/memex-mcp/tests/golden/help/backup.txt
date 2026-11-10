@@ -1,0 +1,10 @@
+Back up a vault into a folder as one .memex.zip file
+
+Usage: memex backup [OPTIONS] --vault <VAULT> --dest <DEST>
+
+Options:
+      --vault <VAULT>  Vault directory
+      --dest <DEST>    Destination folder (must already exist)
+      --keep <KEEP>    How many backups of this vault the destination keeps (1-365) [default: 30]
+      --if-changed     Skip writing a backup when the vault is unchanged since the last backup to this destination
+  -h, --help           Print help

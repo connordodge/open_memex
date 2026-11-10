@@ -1,0 +1,4 @@
+[
+  {"method": "GET", "path": "/vaults/seed/api/v1/backup", "response": "status_disabled.json", "status": 200},
+  {"method": "POST", "path": "/vaults/seed/api/v1/backup", "response": "start_not_configured.json", "status": 409}
+]
