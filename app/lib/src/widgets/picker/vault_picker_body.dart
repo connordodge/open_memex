@@ -145,6 +145,11 @@ class VaultPickerBodyState extends ConsumerState<VaultPickerBody> {
 
   /// Req 42: with no saved server, "connect" first; [flow] runs once it
   /// saved one. A cancelled connect runs nothing else.
+  ///
+  /// With a vault open, a hosted open the flow commits (a new
+  /// `hostedSessionProvider` session, even for the hosted vault already
+  /// open, which leaves `currentVaultProvider` as it was) closes the modal
+  /// (Req 10, AC 7).
   Future<void> _serverFlow(
     Future<void> Function(PickerActions actions, BuildContext context) flow,
   ) => _guarded(() async {
@@ -153,16 +158,55 @@ class VaultPickerBodyState extends ConsumerState<VaultPickerBody> {
       final saved = await actions.connect(context);
       if (saved == null || !mounted) return;
     }
-    await flow(actions, context);
+    final opened = _vaultOpen
+        ? ref.listenManual<HostedSession?>(hostedSessionProvider, (
+            previous,
+            next,
+          ) {
+            if (next != null && !identical(previous, next)) _closeOnOpened();
+          })
+        : null;
+    try {
+      await flow(actions, context);
+    } finally {
+      if (mounted) opened?.close();
+    }
   });
+
+  /// A flow opened a vault with a vault open: closes the modal, also when
+  /// the vault it opened is the one already open (`currentVaultProvider`
+  /// then does not change, so the modal's own listener does not fire).
+  void _closeOnOpened() {
+    if (mounted) widget.onClose?.call();
+  }
+
+  /// Shows what a flow's open gave ([present]); a [VaultOpened] closes the
+  /// modal instead ([_closeOnOpened]).
+  Future<void> _presentFlow(
+    VaultOpenOutcome outcome, {
+    required String eyebrow,
+  }) async {
+    if (outcome is VaultOpened) {
+      _closeOnOpened();
+      return;
+    }
+    await present(outcome, eyebrow: eyebrow);
+  }
 
   Future<void> _connect() => ref.read(pickerActionsProvider).connect(context);
 
   /// Req 46: the remove confirm, then `removeServer` (token, server and its
   /// hosted recents).
+  ///
+  /// Never while an open or flow from the modal runs (fail closed): a
+  /// hosted open still on its network round trips would otherwise commit
+  /// on the server just removed, leaving the open hosted vault on an
+  /// unsaved server with no token (Req 13).
   Future<void> _removeServer(SavedServer server) async {
+    if (_busy) return;
     final settings = ref.read(settingsProvider.notifier);
     if (!await confirmRemoveServer(context, serverName: server.name)) return;
+    if (_busy) return;
     await settings.removeServer(server.id);
   }
 
@@ -177,11 +221,15 @@ class VaultPickerBodyState extends ConsumerState<VaultPickerBody> {
         cli == null ||
         (_unstartableBinary != null && cli.binaryPath == _unstartableBinary);
     // With a vault open it comes first; the others keep their recents
-    // order. The recents setting itself is never reordered here.
+    // order. The recents setting itself is never reordered here. Another
+    // spelling of the open vault's folder (a symlink, a trailing slash, a
+    // case variant) is the open vault too, so it gets no row of its own:
+    // its delete would move the live vault's folder to the Trash without
+    // closing it first.
     final recents = [
       ?current,
       for (final r in settings.recentRefs)
-        if (r != current) r,
+        if (current == null || !_sameVault(r, current)) r,
     ];
     final servers = settings.savedServers;
     final openHosted = current is HostedVaultRef ? current : null;
@@ -341,7 +389,7 @@ class VaultPickerBodyState extends ConsumerState<VaultPickerBody> {
     final outcome = await ref
         .read(vaultOpenControllerProvider)
         .createLocalVault(fullPath);
-    await present(outcome, eyebrow: _createEyebrow);
+    await _presentFlow(outcome, eyebrow: _createEyebrow);
   }
 
   /// Req 35: pick a `.zip`, then the Restore dialog; it runs the restore
@@ -364,7 +412,7 @@ class VaultPickerBodyState extends ConsumerState<VaultPickerBody> {
     final outcome = await ref
         .read(vaultOpenControllerProvider)
         .openVault(LocalVaultRef(restored));
-    await present(outcome, eyebrow: vaultPickerOpenEyebrow);
+    await _presentFlow(outcome, eyebrow: vaultPickerOpenEyebrow);
   }
 
   Future<void> _openExistingVault() async {
@@ -375,8 +423,29 @@ class VaultPickerBodyState extends ConsumerState<VaultPickerBody> {
     final outcome = await ref
         .read(vaultOpenControllerProvider)
         .openVault(LocalVaultRef(selected));
-    await present(outcome, eyebrow: vaultPickerOpenEyebrow);
+    await _presentFlow(outcome, eyebrow: vaultPickerOpenEyebrow);
   }
+}
+
+/// Whether [a] and [b] are the same vault: equal refs, or local refs whose
+/// folders are the same once canonical ([_canonicalFolder]).
+bool _sameVault(VaultRef a, VaultRef b) {
+  if (a == b) return true;
+  if (a is! LocalVaultRef || b is! LocalVaultRef) return false;
+  return _canonicalFolder(a.path) == _canonicalFolder(b.path);
+}
+
+/// [path] with its symlinks resolved (when the folder exists), normalised
+/// (no trailing slash, `.` or `..`) and case-folded, as APFS compares names
+/// by default.
+String _canonicalFolder(String path) {
+  var resolved = path;
+  try {
+    resolved = Directory(path).resolveSymbolicLinksSync();
+  } on FileSystemException {
+    // A missing folder: its spelling as given.
+  }
+  return p.normalize(resolved).toLowerCase();
 }
 
 /// The full-screen picker's brand row (A3): the ring logo, `open memex` and

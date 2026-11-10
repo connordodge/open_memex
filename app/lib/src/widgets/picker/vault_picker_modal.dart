@@ -26,7 +26,8 @@ Future<void> showVaultPickerModal(BuildContext context) => showDialog<void>(
 /// The dialog card (pack 362): `min(640, window width - 48)` wide, height
 /// hugging its content (scrolling when the window is shorter), `surface1`
 /// with a 1 px `line3` border, radius 10, and 32/40 padding inside the
-/// border, over the `dialogShadow` scrim.
+/// border, over the `dialogShadow` scrim. Errors the body shows in a
+/// SnackBar show inside the card.
 class _VaultPickerModal extends ConsumerStatefulWidget {
   const _VaultPickerModal();
 
@@ -87,9 +88,26 @@ class _VaultPickerModalState extends ConsumerState<_VaultPickerModal> {
               ),
             ],
           ),
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(40, 32, 40, 32),
-            child: VaultPickerBody(onClose: _close),
+          clipBehavior: Clip.antiAlias,
+          // The modal's own messenger and a see-through Scaffold over the
+          // card: an open error's SnackBar shows inside the modal, above the
+          // scrim, not on the workspace under it. The Scaffold takes no
+          // pointer, so the rows under a SnackBar still work.
+          child: ScaffoldMessenger(
+            child: Stack(
+              fit: StackFit.passthrough,
+              children: [
+                SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(40, 32, 40, 32),
+                  child: VaultPickerBody(onClose: _close),
+                ),
+                const Positioned.fill(
+                  child: IgnorePointer(
+                    child: Scaffold(backgroundColor: Colors.transparent),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
