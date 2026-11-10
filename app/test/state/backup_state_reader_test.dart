@@ -158,13 +158,16 @@ void main() {
       });
     }
 
-    test('the fixture holds exactly the destinations these cases cover', () async {
-      await _expectFixtureReads(_vaultWithFixture());
-      final destinations =
-          (_fixtureJson()['destinations']! as Map<String, Object?>).keys
-              .toSet();
-      expect(destinations, {_google, _onedrive, _icloud, _nas, _oldDisk});
-    });
+    test(
+      'the fixture holds exactly the destinations these cases cover',
+      () async {
+        await _expectFixtureReads(_vaultWithFixture());
+        final destinations =
+            (_fixtureJson()['destinations']! as Map<String, Object?>).keys
+                .toSet();
+        expect(destinations, {_google, _onedrive, _icloud, _nas, _oldDisk});
+      },
+    );
 
     test(
       'a failed attempt reads as failed and a created one does not',

@@ -267,9 +267,12 @@ void main() {
         m.detail,
         "can't write to Open Memex Backups in google drive$_unavailableTail",
       );
-      expect(m.short, "can't write to google drive");
+      expect(m.short, "can't write to Google Drive");
     });
 
+    // Pack 325: <where> is lowercase ("in icloud drive"); <provider> in the
+    // short tail is the display name ("iCloud Drive"), as pack 326's
+    // semantic label shows it ("can't write to Google Drive").
     test('destination unavailable names each provider in lowercase', () {
       final icloud = _local(
         'backup_destination_unavailable',
@@ -280,7 +283,7 @@ void main() {
         icloud.detail,
         "can't write to Open Memex Backups in icloud drive$_unavailableTail",
       );
-      expect(icloud.short, "can't write to icloud drive");
+      expect(icloud.short, "can't write to iCloud Drive");
       final onedrive = _local(
         'backup_destination_unavailable',
         destination: _onedrive,
@@ -290,7 +293,7 @@ void main() {
         onedrive.detail,
         "can't write to Open Memex Backups in onedrive$_unavailableTail",
       );
-      expect(onedrive.short, "can't write to onedrive");
+      expect(onedrive.short, "can't write to OneDrive");
     });
 
     test('destination unavailable for a chosen folder names its full path', () {
