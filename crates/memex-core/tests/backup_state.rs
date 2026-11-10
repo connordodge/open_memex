@@ -809,6 +809,100 @@ fn destination_key_ignores_a_trailing_slash() {
     );
 }
 
+/// Verify-mode pin (review r1 #1): `memex backup --dest backups` passes a
+/// relative path, and req 10 keys state by the absolute path. Relative
+/// destinations (missing or existing) resolve against the working directory.
+#[test]
+fn destination_key_of_a_relative_destination_is_keyed_under_the_working_directory() {
+    let cwd = fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
+    let unique = format!(
+        "no-such-dir-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let missing = Path::new(&unique).join("Open Memex Backups");
+    assert_eq!(
+        destination_key(&missing).unwrap(),
+        key(&cwd.join(&unique).join("Open Memex Backups")),
+        "a relative missing destination is keyed under the working directory"
+    );
+    assert!(
+        !cwd.join(&unique).exists(),
+        "destination_key creates nothing"
+    );
+
+    assert_eq!(
+        destination_key(Path::new(".")).unwrap(),
+        key(&cwd),
+        "a relative existing destination is its canonical path"
+    );
+    assert!(Path::new(&destination_key(Path::new(&unique)).unwrap()).is_absolute());
+}
+
+/// Verify-mode pin (review r1 #2): a `..` after a missing component cancels
+/// it lexically; a `..` left over once an existing ancestor is reached steps
+/// up from that ancestor's canonical path (so a symlink is resolved first).
+#[test]
+fn destination_key_resolves_dot_and_dot_dot_components_without_creating_anything() {
+    let fx = Fx::new();
+    let root = &fx.root;
+
+    // `..` right after a missing folder cancels it.
+    assert_eq!(
+        destination_key(&root.join("nope/../Backups")).unwrap(),
+        key(&root.join("Backups"))
+    );
+    assert_eq!(
+        destination_key(&root.join("nope/x/../../y")).unwrap(),
+        key(&root.join("y"))
+    );
+    assert_eq!(destination_key(&root.join("nope/..")).unwrap(), key(root));
+
+    // Leftover `..` steps up from the existing ancestor.
+    fx.dest("ex");
+    assert_eq!(
+        destination_key(&root.join("ex/nope/../..")).unwrap(),
+        key(root),
+        "two `..` after one missing name: one cancels it, one leaves the existing folder"
+    );
+    assert_eq!(
+        destination_key(&root.join("ex/nope/../../..")).unwrap(),
+        key(root.parent().unwrap()),
+        "three `..` step up twice from the existing folder"
+    );
+    assert_eq!(
+        destination_key(&root.join("ex/nope/../sibling")).unwrap(),
+        key(&root.join("ex/sibling"))
+    );
+
+    // `..` after a symlink steps up from the link's canonical target.
+    let real = fx.dest("a/real");
+    std::os::unix::fs::symlink(&real, root.join("link")).unwrap();
+    assert_eq!(
+        destination_key(&root.join("link/../nope")).unwrap(),
+        key(&root.join("a/nope")),
+        "link/.. is the parent of the link's target, not of the link"
+    );
+
+    // `.` components are dropped.
+    assert_eq!(
+        destination_key(&root.join("nope/./x")).unwrap(),
+        key(&root.join("nope/x"))
+    );
+    assert_eq!(
+        destination_key(&root.join("ex/./.")).unwrap(),
+        key(&root.join("ex"))
+    );
+
+    for made in ["nope", "x", "y", "Backups", "sibling"] {
+        assert!(!root.join(made).exists(), "{made} was created");
+    }
+    assert!(!root.join("ex/nope").exists() && !root.join("ex/sibling").exists());
+}
+
 /// Verify-mode pin: a destination spelled below a regular file (a typo, or
 /// a file where a folder was) is walked up like a missing one, so the key is
 /// still the canonical existing part plus the remaining names and the start-up
