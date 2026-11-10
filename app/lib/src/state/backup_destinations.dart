@@ -2,7 +2,10 @@
 // (Spec technical decision 9), so no test touches the real `~/Library`. The
 // interface, provider and discovery signature are frozen; the bodies are the
 // stubs A2 (#323) replaces.
+import 'dart:io';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path/path.dart' as p;
 
 import 'backup_models.dart';
 
@@ -31,24 +34,35 @@ abstract class CloudFolderProbe {
   Future<String> resolveSymbolicLinks(String path);
 }
 
-/// The real probe over `dart:io`. Stub: neutral values, no I/O.
+/// The real probe over `dart:io`.
 class IoCloudFolderProbe implements CloudFolderProbe {
   const IoCloudFolderProbe();
 
   @override
-  Future<String> home() async => '';
+  Future<String> home() async {
+    final home = Platform.environment['HOME'];
+    if (home == null || home.isEmpty) {
+      throw const FileSystemException('The HOME folder is not set');
+    }
+    return home;
+  }
 
   @override
-  Future<bool> isDirectory(String path) async => false;
+  Future<bool> isDirectory(String path) => FileSystemEntity.isDirectory(path);
 
   @override
-  Future<List<String>> listNames(String directory) async => const [];
+  Future<List<String>> listNames(String directory) async => [
+    await for (final e in Directory(directory).list()) p.basename(e.path),
+  ];
 
   @override
-  Future<void> createDirectory(String path) async {}
+  Future<void> createDirectory(String path) async {
+    await Directory(path).create(recursive: true);
+  }
 
   @override
-  Future<String> resolveSymbolicLinks(String path) async => '';
+  Future<String> resolveSymbolicLinks(String path) =>
+      File(path).resolveSymbolicLinks();
 }
 
 final cloudFolderProbeProvider = Provider<CloudFolderProbe>(
@@ -56,10 +70,169 @@ final cloudFolderProbeProvider = Provider<CloudFolderProbe>(
 );
 
 /// The destination rows to list (req 20, D22), in order: iCloud Drive, Google
-/// Drive by account, OneDrive by name, then "Choose folder…" (provider null,
-/// path null). A provider that isn't installed is not listed; with none
-/// found, only "Choose folder…" is. Each provider row's [path] is
+/// Drive by account, OneDrive by name, then "choose folder…" (provider null,
+/// path null, label exactly `choose folder…`). A label is the bare
+/// distinguishing text: `iCloud Drive`, the account (`connor@example.com`), the
+/// name after `OneDrive-` (`Personal`); A4 composes `Google Drive · <label>`. A provider that isn't installed is not listed; with none
+/// found, only "choose folder…" is. Each provider row's [path] is
 /// `<provider folder>/Open Memex Backups`, not yet created.
 Future<List<BackupDestinationOption>> discoverBackupDestinations(
   CloudFolderProbe probe,
-) async => const [];
+) async {
+  const googlePrefix = 'GoogleDrive-';
+  const oneDrivePrefix = 'OneDrive-';
+  final options = <BackupDestinationOption>[];
+
+  final String home;
+  try {
+    home = await probe.home();
+  } on FileSystemException {
+    return [_chooseFolderOption];
+  }
+  final library = p.posix.join(home, 'Library');
+
+  final icloud = p.posix.join(
+    library,
+    'Mobile Documents',
+    'com~apple~CloudDocs',
+  );
+  if (await probe.isDirectory(icloud)) {
+    options.add(_providerOption(BackupProvider.icloud, 'iCloud Drive', icloud));
+  }
+
+  final cloudStorage = p.posix.join(library, 'CloudStorage');
+  List<String> names;
+  try {
+    names = await probe.listNames(cloudStorage);
+  } on FileSystemException {
+    // No CloudStorage folder: no Google Drive or OneDrive installed.
+    names = const [];
+  }
+
+  final accounts = <String>[];
+  final oneDriveNames = <String>[];
+  for (final name in names) {
+    if (name.startsWith(googlePrefix) && name.length > googlePrefix.length) {
+      final folder = p.posix.join(cloudStorage, name, 'My Drive');
+      if (await probe.isDirectory(folder)) {
+        accounts.add(name.substring(googlePrefix.length));
+      }
+    } else if (name.startsWith(oneDrivePrefix) &&
+        name.length > oneDrivePrefix.length) {
+      if (await probe.isDirectory(p.posix.join(cloudStorage, name))) {
+        oneDriveNames.add(name.substring(oneDrivePrefix.length));
+      }
+    }
+  }
+  accounts.sort();
+  oneDriveNames.sort();
+
+  for (final account in accounts) {
+    options.add(
+      _providerOption(
+        BackupProvider.googleDrive,
+        account,
+        p.posix.join(cloudStorage, '$googlePrefix$account', 'My Drive'),
+      ),
+    );
+  }
+  for (final name in oneDriveNames) {
+    options.add(
+      _providerOption(
+        BackupProvider.oneDrive,
+        name,
+        p.posix.join(cloudStorage, '$oneDrivePrefix$name'),
+      ),
+    );
+  }
+  options.add(_chooseFolderOption);
+  return options;
+}
+
+const _backupFolderName = 'Open Memex Backups';
+
+const _chooseFolderOption = BackupDestinationOption(label: 'choose folder…');
+
+BackupDestinationOption _providerOption(
+  BackupProvider provider,
+  String label,
+  String providerFolder,
+) => BackupDestinationOption(
+  provider: provider,
+  label: label,
+  path: p.posix.join(providerFolder, _backupFolderName),
+);
+
+/// The C1 code of a destination that could not be made or resolved (the same
+/// string `memex backup` fails with).
+const backupDestinationUnavailableCode = 'backup_destination_unavailable';
+
+/// What resolving a picked destination came to. Resolving saves nothing: the
+/// caller saves through `saveVaultBackupSettingsProvider`.
+sealed class BackupDestinationResolution {
+  const BackupDestinationResolution();
+}
+
+/// The destination exists and is [path], symlinks resolved (the form
+/// `backup-state.json` keys it by).
+final class BackupDestinationResolved extends BackupDestinationResolution {
+  const BackupDestinationResolved(this.path);
+
+  final String path;
+}
+
+/// The destination could not be made or resolved. [code] is
+/// [backupDestinationUnavailableCode]; [message] says why, for the user.
+final class BackupDestinationUnavailable extends BackupDestinationResolution {
+  const BackupDestinationUnavailable({
+    this.code = backupDestinationUnavailableCode,
+    required this.message,
+  });
+
+  final String code;
+  final String message;
+}
+
+/// Turns a picked [BackupDestinationOption] into the destination to store.
+class BackupDestinationResolver {
+  const BackupDestinationResolver(this._probe);
+
+  final CloudFolderProbe _probe;
+
+  /// A provider row creates `option.path` (the provider folder plus
+  /// `Open Memex Backups`) through the probe only when missing, then answers its
+  /// symlink-resolved path. The "Choose folder" row (provider null) answers the
+  /// symlink-resolved [pickedFolder], nothing appended. A
+  /// `FileSystemException` from creating or resolving answers
+  /// [BackupDestinationUnavailable]. It never saves: A4 saves on "turn on
+  /// backups" or a destination-menu pick, so cancelling saves nothing.
+  Future<BackupDestinationResolution> resolve(
+    BackupDestinationOption option, {
+    String? pickedFolder,
+  }) async {
+    final String target;
+    final bool create;
+    if (option.provider == null) {
+      target = pickedFolder ?? (throw ArgumentError.notNull('pickedFolder'));
+      create = false;
+    } else {
+      target = option.path ?? (throw ArgumentError('option has no path'));
+      create = !await _probe.isDirectory(target);
+    }
+    try {
+      if (create) await _probe.createDirectory(target);
+      return BackupDestinationResolved(
+        await _probe.resolveSymbolicLinks(target),
+      );
+    } on FileSystemException catch (e) {
+      final reason = e.osError?.message ?? e.message;
+      return BackupDestinationUnavailable(
+        message: 'Could not use the folder $target: $reason',
+      );
+    }
+  }
+}
+
+final resolveBackupDestinationProvider = Provider<BackupDestinationResolver>(
+  (ref) => BackupDestinationResolver(ref.watch(cloudFolderProbeProvider)),
+);
