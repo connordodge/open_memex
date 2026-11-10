@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
@@ -9,6 +11,7 @@ import 'settings.dart';
 import 'ui_state_store.dart';
 import 'vault_open_controller.dart';
 import 'vault_open_hosted.dart';
+import 'vault_paths.dart';
 import 'vault_state.dart';
 import 'vault_trash.dart';
 
@@ -58,6 +61,51 @@ String vaultBackupRunningMessage(String path) =>
     'a backup of ${p.basename(path)} is running. try again when it '
     'finishes. nothing was deleted.';
 
+/// Whether [inFlight] (the paths of the running backups,
+/// [backupInFlightProvider]) holds [path]'s folder in any spelling
+/// ([isSameVaultFolder]).
+bool isVaultBackingUp(Iterable<String> inFlight, String path) =>
+    inFlight.any((running) => isSameVaultFolder(running, path));
+
+/// Whether [path] is the open vault's folder [openPath] itself, so that
+/// deleting [path] closes the vault and moves the open folder.
+///
+/// It is when the two strings are equal, or when they name the same folder
+/// in any spelling ([isSameVaultFolder]) and [path]'s own last entry is
+/// either [openPath]'s own last entry (another spelling of the path the
+/// vault was opened through, a symlink among them) or the open folder
+/// itself. A symlink to the open folder that the vault was not opened
+/// through is not it (the Trash would move the link and leave the folder),
+/// nor is a folder whose name differs only in case on a case-sensitive
+/// volume. A path that can't be checked on disk is not it.
+bool isOpenVaultFolder(String openPath, String path) {
+  if (openPath == path) return true;
+  if (!isSameVaultFolder(openPath, path)) return false;
+  final entry = p.normalize(p.absolute(path));
+  return _sameEntry(p.normalize(p.absolute(openPath)), entry) ||
+      _sameEntry(_resolvedOrNull(openPath), entry);
+}
+
+/// Whether [a] and [b] are the same file system entry, without following
+/// a final symlink; false when either is null or can't be checked.
+bool _sameEntry(String? a, String b) {
+  if (a == null) return false;
+  try {
+    return FileSystemEntity.identicalSync(a, b);
+  } on FileSystemException {
+    return false;
+  }
+}
+
+/// [path]'s folder with every symlink resolved, or null when it can't be.
+String? _resolvedOrNull(String path) {
+  try {
+    return Directory(path).resolveSymbolicLinksSync();
+  } on FileSystemException {
+    return null;
+  }
+}
+
 /// Moves a local vault's folder to the Trash and forgets it.
 class VaultDeleter {
   VaultDeleter(this._ref);
@@ -81,11 +129,7 @@ class VaultDeleter {
     final result = await _ref.read(vaultTrashProvider).trash(path);
     final message = vaultDeleteMessage(result, path);
     if (message != null) return VaultDeleteFailed(message);
-    final ref = LocalVaultRef(path);
-    final settings = _ref.read(settingsProvider.notifier);
-    await settings.forgetRef(ref);
-    _ref.read(recentRowOutcomeProvider(ref).notifier).state = null;
-    await settings.removeVaultBackup(path);
+    await _forget(LocalVaultRef(path));
     return const VaultDeleted();
   }
 
@@ -102,15 +146,23 @@ class VaultDeleter {
   /// [context] must stay mounted while the guard runs: pass the delete
   /// dialog's own, since closing the vault unmounts whatever opened it.
   ///
-  /// When [path] is not the open vault this is [delete]. While a backup of
+  /// [path] is the open vault when [isOpenVaultFolder] says so, in any
+  /// spelling of the open folder; the close, the settle and the reopen use
+  /// the open vault's own ref, and on success that ref is forgotten too.
+  /// When [path] is not the open vault (a symlink to the open folder that
+  /// the vault was not opened through among them) this is [delete], and
+  /// the vault stays open. While a backup of
   /// [path] runs it refuses before the guard and closes nothing; a backup
   /// that starts after that is refused by [delete], and the vault reopens.
   Future<VaultDeleteResult> deleteOpenVault(
     BuildContext context,
     String path,
   ) async {
-    final vault = LocalVaultRef(path);
-    if (_ref.read(currentVaultProvider) != vault) return delete(path);
+    final current = _ref.read(currentVaultProvider);
+    if (current is! LocalVaultRef || !isOpenVaultFolder(current.path, path)) {
+      return delete(path);
+    }
+    final vault = current;
     if (_backingUp(path)) {
       return VaultDeleteFailed(vaultBackupRunningMessage(path));
     }
@@ -124,7 +176,7 @@ class VaultDeleter {
     final VaultDeleteResult result;
     try {
       await editor.savesSettled(vault);
-      await UiStateStore(vaultPath: path).flush();
+      await UiStateStore(vaultPath: vault.path).flush();
       result = await delete(path);
     } catch (_) {
       // Never leave the vault closed on a throw: reopen it, then report.
@@ -133,12 +185,25 @@ class VaultDeleter {
     }
     if (result is VaultDeleteFailed) {
       await opener.reopenAfterFailedDelete(vault);
+    } else if (vault.path != path) {
+      // [delete] forgot [path]'s spelling. [isOpenVaultFolder] made [path]'s
+      // own entry the open folder or the entry it was opened through, so
+      // the open vault's path is gone now.
+      await _forget(vault);
     }
     return result;
   }
 
+  Future<void> _forget(LocalVaultRef ref) async {
+    final settings = _ref.read(settingsProvider.notifier);
+    await settings.forgetRef(ref);
+    _ref.read(recentRowOutcomeProvider(ref).notifier).state = null;
+    await settings.removeVaultBackup(ref.path);
+  }
+
+  /// Whether a backup of [path]'s folder, in any spelling, is running.
   bool _backingUp(String path) =>
-      _ref.read(backupInFlightProvider).contains(path);
+      isVaultBackingUp(_ref.read(backupInFlightProvider), path);
 }
 
 final vaultDeleterProvider = Provider<VaultDeleter>((ref) => VaultDeleter(ref));

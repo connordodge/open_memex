@@ -46,7 +46,7 @@ class _Rig {
   static Future<_Rig> create({bool lastIsVault = true}) async {
     final root = await Directory.systemTemp.createTemp('memex_348_');
     SharedPreferences.setMockInitialValues({'memex.binary_path': 'fake-memex'});
-    final settings = await SettingsController.load(
+    final settings = await loadSettingsKeepingPickedBinary(
       tokenStore: FakeTokenStore(),
     );
     final trash = FakeVaultTrash();
@@ -191,7 +191,7 @@ void main() {
           await rig.deleter.delete(rig.vault);
           expect(rig.settings.state.recentRefs, [LocalVaultRef(rig.other)]);
           // And the stored recents agree: a fresh load shows the same.
-          final reloaded = await SettingsController.load(
+          final reloaded = await loadSettingsKeepingPickedBinary(
             tokenStore: FakeTokenStore(),
           );
           expect(reloaded.state.recentRefs, [LocalVaultRef(rig.other)]);
@@ -206,7 +206,7 @@ void main() {
           expect(rig.settings.state.lastVaultRef, LocalVaultRef(rig.vault));
           await rig.deleter.delete(rig.vault);
           expect(rig.settings.state.lastVaultRef, isNull);
-          final reloaded = await SettingsController.load(
+          final reloaded = await loadSettingsKeepingPickedBinary(
             tokenStore: FakeTokenStore(),
           );
           expect(reloaded.state.lastVaultRef, isNull);
@@ -252,7 +252,7 @@ void main() {
           final stored =
               jsonDecode(prefs.getString(_backupsKey)!) as Map<String, Object?>;
           expect(stored.keys, [rig.other]);
-          final reloaded = await SettingsController.load(
+          final reloaded = await loadSettingsKeepingPickedBinary(
             tokenStore: FakeTokenStore(),
           );
           expect(reloaded.state.vaultBackups, {rig.other: otherSettings});

@@ -17,8 +17,6 @@ app/macos/Flutter/ephemeral/
 app/macos/Flutter/Flutter-Generated.xcconfig
 app/macos/Flutter/GeneratedPluginRegistrant.swift
 app/macos/Pods/
-app/macos/Podfile.lock
-app/pubspec.lock
 app/.idea/
 app/*.iml
 
@@ -39,3 +37,10 @@ app/macos/Frameworks/
 
 # Orchestration worktrees
 /worktrees/
+
+# Maintainer-only dev files (kept out of the public tree)
+.claude/orchestration
+.act
+CLAUDE.md
+AGENTS.md
+ai_specs

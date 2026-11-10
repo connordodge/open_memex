@@ -11,4 +11,4 @@ PRODUCT_NAME = Open Memex
 PRODUCT_BUNDLE_IDENTIFIER = dev.openmemex.openMemexApp
 
 // The copyright displayed in application information
-PRODUCT_COPYRIGHT = Copyright © 2026 dev.openmemex. All rights reserved.
+PRODUCT_COPYRIGHT = Copyright © 2026 Connor Dodge LLC. MIT License.

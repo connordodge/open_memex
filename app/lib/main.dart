@@ -15,11 +15,13 @@ import 'src/state/vault_open_controller.dart';
 import 'src/state/vault_open_hosted.dart';
 import 'src/state/vault_state.dart';
 import 'src/theme/app_theme.dart';
+import 'src/theme/font_setup.dart';
 import 'src/widgets/hosted/hosted_bindings.dart';
 import 'src/widgets/hosted/leave_confirm_dialog.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  configureFonts();
   final settings = await SettingsController.load();
   // Hosted vaults keep their UI state here (Req 35, D19).
   final appSupport = await getApplicationSupportDirectory();

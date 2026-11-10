@@ -260,7 +260,7 @@ _wi96Build({
   final tokens = FakeTokenStore({
     for (final s in servers) s.id: ?s.storedToken,
   });
-  final settings = await SettingsController.load(tokenStore: tokens);
+  final settings = await loadSettingsKeepingPickedBinary(tokenStore: tokens);
   final router = FakeVaultServerRouter([for (final s in servers) s.server]);
   final fakeClock = clock ?? FakeClock(DateTime(2026, 10, 19, 9));
   final appSupport = Directory.systemTemp.createTempSync('om96_support_');

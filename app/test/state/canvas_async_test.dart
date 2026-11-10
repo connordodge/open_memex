@@ -30,6 +30,7 @@ import '../support/canvas_robot.dart';
 import '../support/canvas_seeds.dart';
 import '../support/fake_vault_db.dart';
 import '../support/vault_scoped_reads.dart';
+import '../support/token_store_fakes.dart';
 
 const _a = LocalVaultRef('/tmp/om-89-vault-a');
 const _b = LocalVaultRef('/tmp/om-89-vault-b');
@@ -765,7 +766,7 @@ Future<ProviderContainer> _pumpSidebarWith(
   SharedPreferences.setMockInitialValues({
     'memex.binary_path': '/nonexistent/memex-test-binary',
   });
-  final settings = await SettingsController.load();
+  final settings = await loadSettingsKeepingPickedBinary();
   final vaultDir = Directory.systemTemp.createTempSync('canvas_async_test');
   addTearDown(() {
     if (vaultDir.existsSync()) vaultDir.deleteSync(recursive: true);

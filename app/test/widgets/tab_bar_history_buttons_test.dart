@@ -23,6 +23,7 @@ import 'package:open_memex_app/src/widgets/atoms.dart';
 import '../support/app_harness.dart';
 import '../support/canvas_seeds.dart';
 import '../support/fake_vault_db.dart';
+import '../support/font_fetch_hold.dart';
 import '../support/segment_editing_finder.dart';
 
 const _aId = '01J9NOTEA00000000000000267';
@@ -130,6 +131,7 @@ Finder get _line1Fills => find.descendant(
 );
 
 void main() {
+  holdFontFetches();
   group('the buttons in the bar (AC1, AC2)', () {
     testWidgets(
       'the back and forward buttons sit left of the chips at 24 by 24 inside the 32 px bar',
