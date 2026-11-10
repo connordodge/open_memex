@@ -60,5 +60,23 @@ Future<SettingsController> relaunchSettings({TokenStore? tokenStore}) async {
     for (final key in prefs.getKeys()) key: prefs.get(key)!,
   };
   SharedPreferences.setMockInitialValues(dump);
-  return SettingsController.load(tokenStore: tokenStore);
+  return loadSettingsKeepingPickedBinary(tokenStore: tokenStore);
+}
+
+/// Like [SettingsController.load], but only the path the preferences hold in
+/// `memex.binary_path` exists, and nothing is Bundled. WI #372 (D8): load now
+/// skips a picked path that is not a file, so tests that seed a fake binary
+/// name (`fake-memex`) keep it here instead of depending on the machine's
+/// real `~/.cargo/bin/memex`.
+Future<SettingsController> loadSettingsKeepingPickedBinary({
+  TokenStore? tokenStore,
+}) async {
+  final prefs = await SharedPreferences.getInstance();
+  final picked = prefs.getString('memex.binary_path');
+  return SettingsController.load(
+    tokenStore: tokenStore,
+    executablePath: '/nonexistent-bundle/Contents/MacOS/app',
+    home: '/nonexistent-home',
+    exists: (path) => picked != null && picked.isNotEmpty && path == picked,
+  );
 }

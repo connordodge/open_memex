@@ -151,9 +151,21 @@ class SettingsController extends StateNotifier<AppSettings> {
 
   /// Loads settings. [tokenStore] keeps the saved servers' access tokens
   /// (default: the macOS Keychain).
-  static Future<SettingsController> load({TokenStore? tokenStore}) async {
+  static Future<SettingsController> load({
+    TokenStore? tokenStore,
+    String? executablePath,
+    bool Function(String path)? exists,
+    String? home,
+  }) async {
     final prefs = await SharedPreferences.getInstance();
-    final binary = prefs.getString(_kBinary) ?? MemexCli.autodiscover();
+    // A picked path that no longer exists is skipped, never removed from
+    // prefs, so it works again if the file comes back.
+    final binary = MemexCli.autodiscover(
+      executablePath: executablePath,
+      exists: exists,
+      home: home,
+      picked: prefs.getString(_kBinary),
+    );
 
     final List<VaultRef> refs;
     final VaultRef? last;

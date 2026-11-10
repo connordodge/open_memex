@@ -26,6 +26,7 @@ import '../support/fake_clock.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
 import '../support/vault_folders.dart';
+import '../support/token_store_fakes.dart';
 
 /// A directory chooser that answers every `getDirectoryPath` with [answer].
 class _Wi69FakePicker extends FilePicker {
@@ -56,7 +57,7 @@ Future<ProviderContainer> _pumpPicker(
     'memex.binary_path': 'fake-memex',
     'memex.recent_vaults': recents,
   });
-  final settings = (await tester.runAsync(SettingsController.load))!;
+  final settings = (await tester.runAsync(loadSettingsKeepingPickedBinary))!;
   final db = FakeVaultDb.v5();
   tester.view.physicalSize = const Size(1600, 1000);
   tester.view.devicePixelRatio = 1.0;

@@ -61,4 +61,17 @@ class OmColors {
 
   // Dialog shadow (packs 100, 103: black at 60%).
   static const dialogShadow = Color(0x99000000);
+
+  // Vault picker rows and menus (pack 361 lead rulings).
+  /// The open picker row's border: accent at 0x4D.
+  static final accentLine30 = accent.withAlpha(77);
+
+  /// The OPEN tag's border: accent at 0x45.
+  static final accentLine = accent.withAlpha(69);
+
+  /// A danger outline: danger at 0x45.
+  static final dangerLine = danger.withAlpha(69);
+
+  /// The vault menu's shadow (black at 55%).
+  static const menuShadow = Color(0x8C000000);
 }
