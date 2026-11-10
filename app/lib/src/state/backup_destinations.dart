@@ -36,11 +36,15 @@ abstract class CloudFolderProbe {
 
 /// The real probe over `dart:io`.
 class IoCloudFolderProbe implements CloudFolderProbe {
-  const IoCloudFolderProbe();
+  /// [environment] defaults to the process environment; tests pass their own.
+  const IoCloudFolderProbe({Map<String, String>? environment})
+    : _environment = environment;
+
+  final Map<String, String>? _environment;
 
   @override
   Future<String> home() async {
-    final home = Platform.environment['HOME'];
+    final home = (_environment ?? Platform.environment)['HOME'];
     if (home == null || home.isEmpty) {
       throw const FileSystemException('The HOME folder is not set');
     }
@@ -201,7 +205,8 @@ class BackupDestinationResolver {
 
   /// A provider row creates `option.path` (the provider folder plus
   /// `Open Memex Backups`) through the probe only when missing, then answers its
-  /// symlink-resolved path. The "Choose folder" row (provider null) answers the
+  /// symlink-resolved path; when the provider folder itself is gone it answers
+  /// [BackupDestinationUnavailable] and creates nothing. The "Choose folder" row (provider null) answers the
   /// symlink-resolved [pickedFolder], nothing appended. A
   /// `FileSystemException` from creating or resolving answers
   /// [BackupDestinationUnavailable]. It never saves: A4 saves on "turn on
@@ -218,6 +223,15 @@ class BackupDestinationResolver {
     } else {
       target = option.path ?? (throw ArgumentError('option has no path'));
       create = !await _probe.isDirectory(target);
+      // The provider folder must still be there: creating it would make an
+      // ordinary local folder that no provider client syncs.
+      if (create && !await _probe.isDirectory(p.posix.dirname(target))) {
+        return BackupDestinationUnavailable(
+          message:
+              'Could not use the folder $target: '
+              'its parent folder no longer exists',
+        );
+      }
     }
     try {
       if (create) await _probe.createDirectory(target);

@@ -462,6 +462,34 @@ void main() {
       },
     );
 
+    test(
+      'vaultBackupSettingsProvider of a vault is not rebuilt by a save for another vault',
+      () async {
+        final h = await createBackupContainer(prefs: {_prefKey: _seedJson()});
+        final seenA = <VaultBackupSettings>[];
+        final seenC = <VaultBackupSettings>[];
+        h.container.listen(
+          vaultBackupSettingsProvider(_vaultA),
+          (_, next) => seenA.add(next),
+        );
+        h.container.listen(
+          vaultBackupSettingsProvider(_vaultC),
+          (_, next) => seenC.add(next),
+        );
+        // An unrelated setting changes: no vault is notified.
+        await h.read(settingsProvider.notifier).setMemexBinary('other-memex');
+        await pumpEventQueue();
+        expect(seenA, isEmpty);
+        expect(seenC, isEmpty);
+
+        await h.read(saveVaultBackupSettingsProvider)(_vaultC, _settingsC());
+        await pumpEventQueue();
+
+        expect(seenC, [_settingsC()]);
+        expect(seenA, isEmpty);
+      },
+    );
+
     test('saving one vault leaves another vault settings unchanged', () async {
       final h = await createBackupContainer(prefs: {_prefKey: _seedJson()});
       await h.read(saveVaultBackupSettingsProvider)(_vaultC, _settingsC());
