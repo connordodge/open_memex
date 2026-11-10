@@ -35,6 +35,7 @@ Open-source, local-first, AI-native knowledge base. The user's notes live on the
   - A read-only **Graph view** of notes and wikilinks, opened from a Smart Folder, topic note or day.
   - **Capture**: type observations to a Claude Code session and each is appended verbatim to today's daily note and filed. Quick entry: `memex append` from any launcher; the next review files it.
 - **Flutter macOS app** (`app/`) with vault picker, multi-vault recents, **tabbed workspace** (note + canvas tabs persist per-vault), note list, plain-markdown editor, debounced save, **wikilink autocomplete (`[[`) with create-on-the-fly**, **inline kind chip**, and a **real backlinks panel** grouped by kind
+  - **Delete a vault**: on the vault picker, a local vault's delete button (the trash icon on its recent row) moves its folder to the Trash; Finder's Put Back restores it until you empty the Trash, and its backups are kept. A hosted vault can't be deleted from the app: remove its folder from the vault server's vault root (see [`docs/hosted-vault.md`](docs/hosted-vault.md)).
 - **Canvas view**: user-curated boards where notes become draggable nodes and wikilinks render as labelled lines. Drag from the rail to place; drag from a node's edge handle to draw a typed link; click a line to edit kind/label; double-click a node to zoom into its editor. See [`docs/canvas.md`](docs/canvas.md).
 - SQLite-backed vault (`memex.db`) with WAL, FTS5, and a `vec0` virtual table from `sqlite-vec`
 - Markdown chunker + inline indexing on every note write
