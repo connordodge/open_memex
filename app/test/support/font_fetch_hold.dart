@@ -5,15 +5,16 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
-/// google_fonts fetches OmType's fonts over HTTP. The test binding answers
-/// every request with a 400, and the font load's failure lands in whichever
-/// test is running when a `runAsync` or a real-async test lets that request
-/// finish (e.g. a test that renders the editor). Call once at the top of
-/// `main()`: font requests then never answer, the fallback test font stays,
-/// and no error reaches a test zone. Setting
-/// `GoogleFonts.config.allowRuntimeFetching = false` does not help: it throws
-/// in the same place instead. App HTTP goes through
-/// `hostedHttpClientProvider` (a MockClient), never through `HttpClient`.
+/// OmType's fonts are bundled under `assets/google_fonts/` (#373), and
+/// google_fonts loads a bundled font before it would ever fetch, so tests
+/// make no font request and this hold normally sees none. It stays as a
+/// guard: if a font OmType asks for were ever missing from the bundle,
+/// google_fonts would fetch it over HTTP, the test binding would answer
+/// with a 400, and the failure would land in whichever test is running when
+/// a `runAsync` or a real-async test lets that request finish. Call once at
+/// the top of `main()`: font requests then never answer and no error reaches
+/// a test zone. App HTTP goes through `hostedHttpClientProvider` (a
+/// MockClient), never through `HttpClient`.
 void holdFontFetches() {
   HttpOverrides? previous;
   setUpAll(() {
