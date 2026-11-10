@@ -17,7 +17,8 @@
 #
 # Signed mode (no --dry-run) refuses to start, exit 2, unless these are all
 # set and non-empty: MACOS_SIGN_IDENTITY, NOTARY_KEY_P8_PATH, NOTARY_KEY_ID,
-# NOTARY_ISSUER_ID, and a deny-list (LEAK_PATTERNS or --patterns).
+# NOTARY_ISSUER_ID, and a deny-list (LEAK_PATTERNS or --patterns). It also
+# refuses a checkout with uncommitted or untracked files (a dry run warns).
 #
 # Steps (each prints `STEP <n> <name>`; a failing step prints
 # `FAILED <n> <name>` and exits 1):
@@ -162,6 +163,23 @@ tools="git tar cargo flutter codesign hdiutil ditto lipo jq shasum"
 for t in $tools; do
   command -v "$t" >/dev/null 2>&1 || die_usage "$t is required on PATH"
 done
+
+# A release is built from a clean checkout: step 1 builds memex from the whole
+# working tree and step 2 copies the tracked app/ files as they are on disk, so
+# local edits or untracked files would ship in a build that matches no commit.
+# Signed mode refuses; a dry run warns. Ignored files (target/, dist/) do not count.
+if ! dirty=$(git -C "$ROOT" status --porcelain --untracked-files=normal 2>/dev/null); then
+  [ "$DRY_RUN" = 1 ] || { printf 'build: signed mode needs a git checkout\n' >&2; exit 2; }
+  dirty=""
+fi
+if [ -n "$dirty" ]; then
+  if [ "$DRY_RUN" = 1 ]; then
+    printf 'build: WARNING: the checkout has uncommitted or untracked files; a signed run refuses this\n' >&2
+  else
+    printf 'build: signed mode needs a clean checkout (commit or remove local changes and untracked files)\n' >&2
+    exit 2
+  fi
+fi
 
 [ -n "$OUT" ] || OUT="$ROOT/dist"
 mkdir -p "$OUT" || die_usage "cannot create --out"
