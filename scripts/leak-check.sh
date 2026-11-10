@@ -33,6 +33,14 @@
 # [redacted]. Binary content is searched as raw bytes; a hit in a line that
 # holds a NUL byte reports its byte offset instead of a line number. The
 # leaked text never appears in stdout or stderr.
+# A hit in a file's own name is reported as "<path> (name):1" (--tree and
+# --artifact: every entry below the root; --diff: every added, renamed or
+# copied file), and one in a symlink's target as "<link> (symlink):1".
+# A symlink given as the --tree or --artifact root is read through; symlinks
+# below it are never followed. --diff cannot see a binary file's bytes, so it
+# prints "LEAK WARN: binary file not scanned: <path>" on stderr for each one
+# (the exit status is unchanged). --history reads objects as stored, ignoring
+# refs/replace, and refuses a repository with an info/grafts file.
 #
 # Exit status: 0 clean, 1 at least one leak, 2 usage error (unknown mode,
 # missing input path or patterns file, an empty deny-list without
@@ -266,16 +274,52 @@ redactonly {
 END { if (!redactonly) exit found }
 '
 
-# The added lines of a unified diff, labelled <new file>:<new line>.
+# The added lines of a unified diff, labelled <new file>:<new line>, and the
+# path of every added, renamed or copied file, labelled "<path> (name):1".
+# The new path of a binary file (whose bytes a diff does not show) goes to
+# the file LK_BINLIST.
 DIFF_PRODUCER='
+function unq(s) {
+  if (length(s) > 1 && substr(s, 1, 1) == "\"" && substr(s, length(s)) == "\"")
+    s = substr(s, 2, length(s) - 2)
+  return s
+}
 function hdr(s, pre) {
   s = substr(s, 5)
   sub(/\t.*$/, "", s)
+  s = unq(s)
   if (substr(s, 1, 2) == pre) s = substr(s, 3)
   return s
 }
+function lastidx(s, t,    k, at) {
+  at = 0
+  while ((k = index(substr(s, at + 1), t)) > 0) at += k
+  return at
+}
 function emit(text) { printf "%s\001%d:-1:%s\n", file, nl, text; nl++ }
-BEGIN { file = ENVIRON["LK_DIFFNAME"]; inh = 0; nl = 1; nc = 0; oc = 0 }
+function name(p) {
+  if (p == "" || p == "/dev/null" || (p in seen)) return
+  seen[p] = 1
+  printf "%s (name)\0011:-1:%s\n", p, p
+}
+function bin(p) {
+  if (p == "" || p == "/dev/null" || (p in binseen)) return
+  binseen[p] = 1
+  print p > binf
+}
+# Ends the "diff --git" section in progress.
+function flush() {
+  if (gp != "" && !gdel) {
+    if (gnew) name(gp)
+    if (gbin) bin(gp)
+  }
+  gp = ""; gnew = 0; gdel = 0; gbin = 0
+}
+BEGIN {
+  file = ENVIRON["LK_DIFFNAME"]; binf = ENVIRON["LK_BINLIST"]
+  inh = 0; nl = 1; nc = 0; oc = 0; pnull = 0
+  gp = ""; gnew = 0; gdel = 0; gbin = 0
+}
 {
   if (inh) {
     c = substr($0, 1, 1)
@@ -289,8 +333,44 @@ BEGIN { file = ENVIRON["LK_DIFFNAME"]; inh = 0; nl = 1; nc = 0; oc = 0 }
       next
     }
   }
-  if (substr($0, 1, 4) == "+++ ") { f = hdr($0, "b/"); if (f != "/dev/null") file = f; next }
-  if (substr($0, 1, 4) == "--- ") { f = hdr($0, "a/"); if (f != "/dev/null") file = f; next }
+  if (substr($0, 1, 11) == "diff --git ") {
+    flush()
+    s = substr($0, 12)
+    k = lastidx(s, " \"b/")
+    if (k) gp = unq(substr(s, k + 1))
+    else if ((k = lastidx(s, " b/")) > 0) gp = substr(s, k + 1)
+    else gp = ""
+    if (substr(gp, 1, 2) == "b/") gp = substr(gp, 3)
+    next
+  }
+  if (substr($0, 1, 14) == "new file mode ") { gnew = 1; next }
+  if (substr($0, 1, 18) == "deleted file mode ") { gdel = 1; next }
+  if (substr($0, 1, 10) == "rename to ") { name(unq(substr($0, 11))); next }
+  if (substr($0, 1, 8) == "copy to ") { name(unq(substr($0, 9))); next }
+  if ($0 == "GIT binary patch") { gbin = 1; next }
+  if (substr($0, 1, 13) == "Binary files " && substr($0, length($0) - 6) == " differ") {
+    if (gp != "") { gbin = 1; next }
+    s = substr($0, 14, length($0) - 20)
+    k = lastidx(s, " and ")
+    if (!k) next
+    a = unq(substr(s, 1, k - 1)); f = unq(substr(s, k + 5))
+    if (substr(f, 1, 2) == "b/") f = substr(f, 3)
+    if (a == "/dev/null") name(f)
+    bin(f)
+    next
+  }
+  if (substr($0, 1, 4) == "+++ ") {
+    f = hdr($0, "b/")
+    if (f != "/dev/null") { file = f; if (pnull) name(f) }
+    pnull = 0
+    next
+  }
+  if (substr($0, 1, 4) == "--- ") {
+    f = hdr($0, "a/")
+    pnull = (f == "/dev/null")
+    if (!pnull) file = f
+    next
+  }
   if (substr($0, 1, 3) == "@@ ") {
     oc = 1; nc = 1; nl = 1
     if (match($0, /-[0-9]+(,[0-9]+)?/)) {
@@ -311,6 +391,7 @@ BEGIN { file = ENVIRON["LK_DIFFNAME"]; inh = 0; nl = 1; nc = 0; oc = 0 }
   # hunk counts cannot hide one.
   if (substr($0, 1, 1) == "+") emit(substr($0, 2))
 }
+END { flush() }
 '
 
 # git cat-file --batch output (commit and tag objects) as one record per line.
@@ -334,6 +415,13 @@ PATH_PRODUCER='
 substr($0, 1, 1) == "\001" { c = substr($0, 2, 12); next }
 $0 == "" { next }
 !($0 in seen) { seen[$0] = 1; printf "path in commit %s\0011:-1:%s\n", c, $0 }
+'
+
+# find output (one path per line) as one record per entry: the label is the
+# path, the content the part of it below the root LK_ROOT.
+NAMES_PRODUCER='
+BEGIN { root = ENVIRON["LK_ROOT"]; n = length(root) }
+substr($0, 1, n) == root { printf "%s (name)\0011:-1:%s\n", $0, substr($0, n + 1) }
 '
 
 # ---------------------------------------------------------------------------
@@ -378,6 +466,58 @@ scan_files() {
   note 0 "${s[2]}"
 }
 
+# The name of every entry below the directory $1 and the target of every
+# symlink in it (neither grep -r nor find -type f reads a link). Labels as in
+# scan_files.
+scan_names() {
+  local s l t
+  {
+    find "$1" -mindepth 1 -print0 2>/dev/null |
+      tr '\n\000' '?\n' |
+      LK_ROOT="$1" awk "$NAMES_PRODUCER"
+    find "$1" -mindepth 1 -type l -print0 2>/dev/null |
+      while IFS= read -r -d '' l; do
+        t=$(readlink -- "$l") || { printf '%s (symlink)\0011:-1:\n' "$l"; continue; }
+        t=${t//$'\n'/?}
+        l=${l//$'\n'/?}
+        printf '%s (symlink)\0011:-1:%s\n' "$l" "$t"
+      done
+  } | LK_STRIP="$2" LK_PUT="$3" awk "$MATCHER"
+  s=("${PIPESTATUS[@]}")
+  note 0 "${s[1]}"
+}
+
+# Sets REAL to $1 with every symlink in it resolved. BSD grep -r and find
+# skip a symlink even when it is the path they are given, so a symlinked
+# root would otherwise be scanned as empty. Only the root is resolved:
+# symlinks below it are never followed.
+resolve() {
+  local p="$1" t n=0
+  while [ -L "$p" ]; do
+    n=$((n + 1))
+    [ "$n" -le 40 ] || return 1
+    t=$(readlink -- "$p") || return 1
+    case "$t" in
+      /*) p=$t ;;
+      *) p=$(dirname -- "$p")/$t ;;
+    esac
+  done
+  if [ -d "$p" ]; then
+    p=$(CDPATH='' cd -P -- "$p" && pwd -P) || return 1
+  else
+    t=$(CDPATH='' cd -P -- "$(dirname -- "$p")" && pwd -P) || return 1
+    p=${t%/}/$(basename -- "$p")
+  fi
+  REAL=$p
+}
+
+# $1 without trailing slashes (but never empty).
+noslash() {
+  local v="$1"
+  while [ "${v%/}" != "$v" ] && [ "${v%/}" != "" ]; do v=${v%/}; done
+  printf '%s' "$v"
+}
+
 # One file (a regular file, a FIFO or a copy of stdin), shown as $2.
 scan_text() {
   local s
@@ -389,25 +529,41 @@ scan_text() {
 }
 
 scan_diff() {
-  local s
+  local s bins="$TMP/binaries"
+  : >"$bins"
   tr '\000' '\001' <"$1" |
-    LK_DIFFNAME="$2" awk "$DIFF_PRODUCER" |
+    LK_DIFFNAME="$2" LK_BINLIST="$bins" awk "$DIFF_PRODUCER" |
     awk "$MATCHER"
   s=("${PIPESTATUS[@]}")
   note "${s[1]}" "${s[2]}"
+  # A diff does not show a binary file's bytes: say so (redacted), so the
+  # caller can scan the file itself with --text or --tree.
+  if [ -s "$bins" ]; then
+    LK_MODE=redact awk "$MATCHER" <"$bins" |
+      while IFS= read -r l; do
+        printf 'LEAK WARN: binary file not scanned: %s\n' "$l" >&2
+      done
+  fi
 }
 
 scan_history() {
   local in="$1" g h s
-  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_REPLACE_REF_BASE
+  newtmp hist
+  h=$NEWDIR
+  # Read the objects as stored: git push sends them so, whatever
+  # refs/replace or a graft file says. (The replacement objects are still
+  # scanned, since refs/replace/* are among --all.)
+  export GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE="$h/no-grafts"
   if [ -e "$in/.git" ]; then
     g=$(git -C "$in" rev-parse --absolute-git-dir 2>/dev/null)
   else
     g=$(git --git-dir="$in" rev-parse --absolute-git-dir 2>/dev/null)
   fi
   [ -n "$g" ] || die "--history: not a git repository"
-  newtmp hist
-  h=$NEWDIR
+  if [ -s "$g/info/grafts" ]; then
+    die "--history: info/grafts is not supported (git replace --convert-graft-file)"
+  fi
   mkdir "$h/blobs" || die "cannot create a temp dir"
 
   git --git-dir="$g" rev-list --all --objects >"$h/revs" ||
@@ -442,9 +598,12 @@ scan_history() {
   note "${s[1]}" "${s[4]}"
 
   # Every file path in every reachable tree: each one is added by some
-  # commit relative to some parent (or the root), so -m covers merges.
+  # commit relative to some parent (or the empty tree, for a root commit),
+  # so --root and a diff per merge parent cover them all.
   git --git-dir="$g" -c core.quotePath=false -c log.showSignature=false \
-    log --all -m --no-renames --no-ext-diff --no-textconv --no-notes \
+    -c log.showRoot=true -c diff.relative=false \
+    log --all --root --diff-merges=separate --no-relative --no-renames \
+    --no-ext-diff --no-textconv --no-notes \
     --name-only --format='%x01%H' |
     awk "$PATH_PRODUCER" |
     awk "$MATCHER"
@@ -510,6 +669,7 @@ scan_artifact() {
   local p="$1" label="$2" depth="${3:-0}" list f
   scan_files "$p" "$p" "$label"
   if [ -d "$p" ]; then
+    scan_names "$p" "$p" "$label"
     newtmp list
     list=$NEWDIR
     find "$p" -type f \( -iname '*.zip' -o -iname '*.dmg' \) -print0 >"$list/files" 2>/dev/null
@@ -677,14 +837,19 @@ case "$MODE" in
     fi
     ;;
   tree)
-    scan_files "${INPUTS[0]}" "" ""
+    f=${INPUTS[0]}
+    resolve "$f" || die "--tree: cannot resolve the directory"
+    shown=$(noslash "$f")
+    scan_files "$REAL" "$REAL" "$shown"
+    scan_names "$REAL" "$REAL" "$shown"
     ;;
   history)
     scan_history "${INPUTS[0]}"
     ;;
   artifact)
     for f in "${INPUTS[@]}"; do
-      scan_artifact "$f" "$f" 0
+      resolve "$f" || die "--artifact: cannot resolve a path"
+      scan_artifact "$REAL" "$(noslash "$f")" 0
     done
     ;;
 esac
