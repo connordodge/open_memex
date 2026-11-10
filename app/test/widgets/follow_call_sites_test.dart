@@ -308,14 +308,13 @@ void main() {
           overrides: [tabs.override],
         );
 
-        // The second "+ NEW" in the sidebar; the first is the vaults header.
+        // The only "+ NEW" in the sidebar: the vaults header shows MANAGE
+        // since #363.
         await tester.tap(
-          find
-              .descendant(
-                of: find.byType(Sidebar),
-                matching: find.text('+ NEW'),
-              )
-              .at(1),
+          find.descendant(
+            of: find.byType(Sidebar),
+            matching: find.text('+ NEW'),
+          ),
         );
         await pumpFrames(tester);
         await tester.enterText(
@@ -771,10 +770,9 @@ FakeMemexCli _n3NewCanvasCli(FakeVaultDb db) => FakeMemexCli()
   });
 
 Future<void> _n3NewCanvas(WidgetTester tester) async {
+  // The only "+ NEW": the vaults header shows MANAGE since #363.
   await tester.tap(
-    find
-        .descendant(of: find.byType(Sidebar), matching: find.text('+ NEW'))
-        .at(1),
+    find.descendant(of: find.byType(Sidebar), matching: find.text('+ NEW')),
   );
   await pumpFrames(tester);
   await tester.enterText(
