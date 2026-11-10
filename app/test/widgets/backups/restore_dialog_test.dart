@@ -7,8 +7,10 @@
 // writing 41 MB): `FakeFilePicker.pickFiles` reports size 0, so the dialog
 // reads the size from the file itself. Copy and layout are the design pack's
 // (`design/315-vault-backups/packs/327.md`); the design wins over the WI.
+import 'dart:async';
 import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -18,6 +20,7 @@ import 'package:open_memex_app/src/state/backup_messages.dart';
 import 'package:open_memex_app/src/state/backup_models.dart';
 import 'package:open_memex_app/src/state/vault_open_controller.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
+import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/widgets/atoms.dart';
 import 'package:open_memex_app/src/widgets/backups/backup_keys.dart';
 import 'package:path/path.dart' as p;
@@ -125,6 +128,8 @@ Future<_Picker> _pumpPicker(
   String fileName = _req4Name,
   int bytes = _req4Bytes,
   double textScale = 1.0,
+  FakeBackupRunner? runner,
+  FakeFilePicker? nativePicker,
 }) async {
   final dir = Directory.systemTemp.createTempSync('om327_');
   addTearDown(() {
@@ -132,7 +137,8 @@ Future<_Picker> _pumpPicker(
   });
   final file = p.join(dir.path, fileName);
   _sparseFile(file, bytes);
-  final picker = installFakeFilePicker();
+  final picker = nativePicker ?? FakeFilePicker();
+  FilePicker.platform = picker;
   if (textScale != 1.0) {
     tester.platformDispatcher.textScaleFactorTestValue = textScale;
     addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
@@ -141,6 +147,7 @@ Future<_Picker> _pumpPicker(
   final harness = await pumpBackupWidget(
     tester,
     const VaultPickerScreen(),
+    runner: runner,
     surfaceSize: const Size(1280, 1100),
     overrides: [
       vaultOpenControllerProvider.overrideWith(
@@ -237,6 +244,46 @@ String _target(WidgetTester tester) =>
 
 String _error() => _textIn(find.byKey(restoreErrorKey)).trim();
 
+/// The border colour of the vault-name field's box.
+Color _nameBorder(WidgetTester tester) {
+  final box = tester.widget<Container>(
+    find
+        .ancestor(
+          of: find.byKey(restoreNameKey),
+          matching: find.byType(Container),
+        )
+        .first,
+  );
+  return ((box.decoration! as BoxDecoration).border! as Border).top.color;
+}
+
+/// Whether the focus is inside the vault-name field.
+bool _nameHasFocus() {
+  final focus = FocusManager.instance.primaryFocus;
+  final context = focus?.context;
+  if (context == null) return false;
+  return find
+      .descendant(
+        of: find.byKey(restoreNameKey),
+        matching: find.byWidget(context.widget),
+        matchRoot: true,
+      )
+      .evaluate()
+      .isNotEmpty;
+}
+
+/// Whether the focus sits on [key]'s box (same place, similar size).
+bool _focusIsAt(Key key) {
+  final focus = FocusManager.instance.primaryFocus;
+  if (focus == null || focus.context == null) return false;
+  final target = find.byKey(key).evaluate().single.renderObject! as RenderBox;
+  final box = target.localToGlobal(Offset.zero) & target.size;
+  final r = focus.rect;
+  final a = r.width * r.height;
+  final b = box.width * box.height;
+  return r.overlaps(box) && a <= 4 * b && b <= 4 * a;
+}
+
 /// The OmButton at or under [key].
 OmButton _button(WidgetTester tester, Key key) {
   final w = tester.widget(find.byKey(key));
@@ -259,6 +306,65 @@ RegExp _metaPattern(int bytes, DateTime stamp) {
     '^${RegExp.escape(backupSize(bytes))} · made ${local.day} '
     '${_months[local.month - 1]} ${local.year} at $hhmm\$',
   );
+}
+
+/// A [FakeFilePicker] that also records the filter `pickFiles` was asked for,
+/// reports [reportedSize] as the picked file's size (the real picker reports
+/// the file's size; the base fake reports 0), and can hold either picker open.
+class _RecordingPicker extends FakeFilePicker {
+  final List<(FileType, List<String>?)> filters = [];
+  int reportedSize = 0;
+  Completer<void>? holdPick;
+  Completer<void>? holdDirectory;
+
+  @override
+  Future<FilePickerResult?> pickFiles({
+    String? dialogTitle,
+    String? initialDirectory,
+    FileType type = FileType.any,
+    List<String>? allowedExtensions,
+    Function(FilePickerStatus)? onFileLoading,
+    bool allowCompression = true,
+    int compressionQuality = 30,
+    bool allowMultiple = false,
+    bool withData = false,
+    bool withReadStream = false,
+    bool lockParentWindow = false,
+    bool readSequential = false,
+  }) async {
+    filters.add((type, allowedExtensions));
+    final hold = holdPick;
+    if (hold != null) await hold.future;
+    final result = await super.pickFiles(dialogTitle: dialogTitle);
+    final f = result?.files.single;
+    if (f == null) return null;
+    return FilePickerResult([
+      PlatformFile(path: f.path, name: f.name, size: reportedSize),
+    ]);
+  }
+
+  @override
+  Future<String?> getDirectoryPath({
+    String? dialogTitle,
+    bool lockParentWindow = false,
+    String? initialDirectory,
+  }) async {
+    final hold = holdDirectory;
+    if (hold != null) await hold.future;
+    return super.getDirectoryPath(dialogTitle: dialogTitle);
+  }
+}
+
+/// A runner whose `restore` throws, the way a bug in the runner would.
+class _ThrowingRunner extends FakeBackupRunner {
+  @override
+  Future<RestoreRunResult> restore({
+    required String from,
+    required String to,
+  }) async {
+    calls.add(FakeRestoreCall(from: from, to: to));
+    throw StateError('the runner blew up');
+  }
 }
 
 // ----------------------------------------------------------------- semantics
@@ -1167,5 +1273,313 @@ void main() {
       expect(hint, findsOneWidget);
       _expectNothingClipped(tester, hint, 'picker row');
     });
+  });
+
+  // ===================================================== verify-mode additions
+  // Sites the handoff listed as untested: the picker flow, the thrown-runner
+  // catch, the mounted guards, the refocus and the target block.
+  group('picker flow', () {
+    testWidgets('the file picker is asked for zip files only', (tester) async {
+      final picker = _RecordingPicker();
+      final s = await _pumpPicker(tester, nativePicker: picker);
+      picker.files.add(s.file);
+
+      await _tap(tester, find.byKey(vaultPickerRestoreKey));
+
+      expect(picker.filters, hasLength(1));
+      expect(picker.filters.single.$1, FileType.custom);
+      expect(picker.filters.single.$2, ['zip']);
+    });
+
+    testWidgets(
+      'the dialog reads the size from the file and ignores the size the picker reports',
+      (tester) async {
+        final picker = _RecordingPicker()..reportedSize = 7;
+        final s = await _pumpPicker(tester, nativePicker: picker);
+
+        await _openDialog(tester, s);
+
+        expect(
+          _textIn(find.byKey(_restoreMetaKey)).trim(),
+          matches(_metaPattern(_req4Bytes, _req4Stamp)),
+        );
+      },
+    );
+
+    testWidgets(
+      'a file whose size cannot be read shows the size the picker reports',
+      (tester) async {
+        final picker = _RecordingPicker()..reportedSize = _oldCopyBytes;
+        final s = await _pumpPicker(tester, nativePicker: picker);
+        File(s.file).deleteSync();
+
+        await _openDialog(tester, s);
+
+        expect(
+          _textIn(find.byKey(_restoreMetaKey)).trim(),
+          matches(_metaPattern(_oldCopyBytes, _req4Stamp)),
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'a picker answered after the screen is gone opens no dialog and runs no restore',
+      (tester) async {
+        final picker = _RecordingPicker()..holdPick = Completer<void>();
+        final s = await _pumpPicker(tester, nativePicker: picker);
+        picker.files.add(s.file);
+        await _tap(tester, find.byKey(vaultPickerRestoreKey));
+        await tester.pumpWidget(const SizedBox());
+
+        picker.holdPick!.complete();
+        await _frames(tester);
+
+        expect(tester.takeException(), isNull);
+        expect(find.byKey(restoreDialogKey), findsNothing);
+        expect(s.restoreCalls, isEmpty);
+        expect(s.opened, isEmpty);
+      },
+    );
+  });
+
+  group('the run and the dialog going away', () {
+    testWidgets(
+      'a runner that throws ends the run with its message and the next press runs again',
+      (tester) async {
+        final runner = _ThrowingRunner();
+        final s = await _pumpPicker(tester, runner: runner);
+        await _openDialog(tester, s);
+        final parent = s.parent('parent');
+        await _chooseParent(tester, s, parent);
+
+        await _tap(tester, find.byKey(restoreSubmitKey));
+
+        expect(s.restoreCalls, hasLength(1));
+        expect(find.byKey(restoreDialogKey), findsOneWidget);
+        expect(_error(), contains('the runner blew up'));
+        expect(_button(tester, restoreSubmitKey).onPressed, isNotNull);
+        expect(_button(tester, _restoreCancelKey).onPressed, isNotNull);
+        expect(s.opened, isEmpty);
+
+        await _tap(tester, find.byKey(restoreSubmitKey));
+
+        expect(s.restoreCalls, hasLength(2));
+        expect(find.byKey(restoreDialogKey), findsOneWidget);
+        expect(s.opened, isEmpty);
+      },
+    );
+
+    final answers = <(String, RestoreRunResult?)>[
+      ('succeeds', null),
+      ('fails', const RestoreFailure(code: 'backup_invalid', message: 'bad')),
+    ];
+    for (final (what, answer) in answers) {
+      testWidgets(
+        'a run that $what after the screen is gone ends quietly and opens nothing',
+        (tester) async {
+          final s = await _pumpPicker(tester);
+          await _openDialog(tester, s);
+          await _chooseParent(tester, s, s.parent('parent'));
+          if (answer != null) s.runner.scriptRestore(answer);
+          final hold = s.runner.holdRuns();
+          await _tap(tester, find.byKey(restoreSubmitKey));
+          expect(s.restoreCalls, hasLength(1));
+          await tester.pumpWidget(const SizedBox());
+
+          hold.complete();
+          await _frames(tester);
+
+          expect(tester.takeException(), isNull);
+          expect(s.restoreCalls, hasLength(1));
+          expect(s.opened, isEmpty);
+        },
+      );
+    }
+
+    testWidgets(
+      'a parent folder answered after the dialog closed changes nothing',
+      (tester) async {
+        final picker = _RecordingPicker()..holdDirectory = Completer<void>();
+        final s = await _pumpPicker(tester, nativePicker: picker);
+        await _openDialog(tester, s);
+        picker.directories.add(s.parent('late'));
+        await _tap(tester, find.byKey(restoreFolderKey));
+        await _tap(tester, find.byKey(_restoreCancelKey));
+        expect(find.byKey(restoreDialogKey), findsNothing);
+
+        picker.holdDirectory!.complete();
+        await _frames(tester);
+
+        expect(tester.takeException(), isNull);
+        expect(s.restoreCalls, isEmpty);
+        expect(s.opened, isEmpty);
+      },
+    );
+
+    testWidgets(
+      'a cancelled parent folder picker keeps the parent and the error',
+      (tester) async {
+        final s = await _pumpPicker(tester);
+        await _openDialog(tester, s);
+        final parent = s.parent('parent');
+        await _chooseParent(tester, s, parent);
+        s.runner.scriptRestore(
+          const RestoreFailure(
+            code: 'restore_target_not_empty',
+            message: 'not empty',
+          ),
+        );
+        await _tap(tester, find.byKey(restoreSubmitKey));
+        final message = _error();
+        expect(message, contains(parent));
+
+        // The queue is empty: the native dialog is cancelled.
+        await _tap(tester, find.byKey(restoreFolderKey));
+
+        expect(
+          s.picker.calls.where((c) => c.method == 'getDirectoryPath'),
+          hasLength(2),
+        );
+        expect(_error(), message);
+        expect(find.text(parent), findsOneWidget);
+        expect(find.text('(none selected)'), findsNothing);
+
+        await _tap(tester, find.byKey(restoreSubmitKey));
+
+        expect(s.restoreCalls.last.to, p.join(parent, 'memex'));
+      },
+    );
+  });
+
+  group('the name field, the target and the focus', () {
+    testWidgets('an empty name hides the target and its hint', (tester) async {
+      final s = await _pumpPicker(tester);
+      await _openDialog(tester, s);
+      await _chooseParent(tester, s, s.parent('parent'));
+      expect(find.byKey(_restoreTargetKey), findsOneWidget);
+      expect(find.text('will be restored to'), findsOneWidget);
+      expect(find.text(_hint), findsOneWidget);
+
+      await _enterName(tester, '   ');
+
+      expect(find.byKey(_restoreTargetKey), findsNothing);
+      expect(find.text('will be restored to'), findsNothing);
+      expect(find.text(_hint), findsNothing);
+      expect(find.byKey(restoreErrorKey), findsNothing);
+    });
+
+    testWidgets(
+      'a name error puts focus back in the name field and marks it with the danger border until the name changes',
+      (tester) async {
+        final s = await _pumpPicker(tester);
+        await _openDialog(tester, s);
+        await _chooseParent(tester, s, s.parent('parent'));
+        await _enterName(tester, 'a/b');
+        expect(_nameBorder(tester), isNot(OmColors.danger));
+        await _tabTo(tester, restoreSubmitKey);
+        expect(_nameHasFocus(), isFalse);
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await _frames(tester);
+
+        expect(find.byKey(restoreErrorKey), findsOneWidget);
+        expect(s.restoreCalls, isEmpty);
+        expect(_nameHasFocus(), isTrue);
+        expect(_nameBorder(tester), OmColors.danger);
+
+        await _enterName(tester, 'ab');
+
+        expect(find.byKey(restoreErrorKey), findsNothing);
+        expect(_nameBorder(tester), isNot(OmColors.danger));
+      },
+    );
+
+    testWidgets(
+      'a target not empty error marks the name field and a backup invalid error does not',
+      (tester) async {
+        final s = await _pumpPicker(tester);
+        await _openDialog(tester, s);
+        await _chooseParent(tester, s, s.parent('parent'));
+        s.runner
+          ..scriptRestore(
+            const RestoreFailure(
+              code: 'restore_target_not_empty',
+              message: 'not empty',
+            ),
+          )
+          ..scriptRestore(
+            const RestoreFailure(code: 'backup_invalid', message: 'bad'),
+          );
+
+        await _tap(tester, find.byKey(restoreSubmitKey));
+        expect(_nameBorder(tester), OmColors.danger);
+
+        await _tap(tester, find.byKey(restoreSubmitKey));
+        expect(_error(), contains('damaged'));
+        expect(_nameBorder(tester), isNot(OmColors.danger));
+      },
+    );
+
+    testWidgets(
+      'a failure that is not about the name leaves the focus on restore',
+      (tester) async {
+        final s = await _pumpPicker(tester);
+        await _openDialog(tester, s);
+        await _chooseParent(tester, s, s.parent('parent'));
+        await _tabTo(tester, restoreSubmitKey);
+        s.runner.scriptRestore(
+          const RestoreFailure(code: 'backup_invalid', message: 'bad'),
+        );
+        final hold = s.runner.holdRuns();
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await _frames(tester);
+
+        // Restoring: the disabled button keeps its focus.
+        expect(_button(tester, restoreSubmitKey).onPressed, isNull);
+        expect(_focusIsAt(restoreSubmitKey), isTrue);
+
+        hold.complete();
+        await _frames(tester);
+
+        expect(find.byKey(restoreErrorKey), findsOneWidget);
+        expect(_button(tester, restoreSubmitKey).onPressed, isNotNull);
+        expect(_focusIsAt(restoreSubmitKey), isTrue);
+        expect(_nameHasFocus(), isFalse);
+      },
+    );
+
+    testWidgets(
+      'return in the name field and enter on restore while restoring make no second call',
+      (tester) async {
+        final s = await _pumpPicker(tester);
+        await _openDialog(tester, s);
+        final parent = s.parent('parent');
+        await _chooseParent(tester, s, parent);
+        await _tabTo(tester, restoreSubmitKey);
+        final hold = s.runner.holdRuns();
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await _frames(tester);
+        expect(s.restoreCalls, hasLength(1));
+
+        // Enter again on the disabled button, then Return in the field.
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await _frames(tester);
+        tester.widget<TextField>(find.byKey(restoreNameKey)).onSubmitted!(
+          'memex',
+        );
+        await _frames(tester);
+
+        expect(s.restoreCalls, hasLength(1));
+        expect(s.runner.inFlight, 1);
+
+        hold.complete();
+        await _frames(tester);
+
+        expect(s.restoreCalls, hasLength(1));
+        expect(s.opened, [LocalVaultRef(p.join(parent, 'memex'))]);
+      },
+    );
   });
 }
