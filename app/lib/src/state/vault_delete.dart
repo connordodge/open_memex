@@ -71,22 +71,38 @@ bool isVaultBackingUp(Iterable<String> inFlight, String path) =>
 /// deleting [path] closes the vault and moves the open folder.
 ///
 /// It is when the two strings are equal, or when they name the same folder
-/// in any spelling ([isSameVaultFolder]) and [path]'s own last entry is the
-/// open folder: a symlink to the open folder is not it (the Trash would
-/// move the link and leave the folder), nor is a folder whose name differs
-/// only in case on a case-sensitive volume. A path that can't be checked
-/// on disk is not it.
+/// in any spelling ([isSameVaultFolder]) and [path]'s own last entry is
+/// either [openPath]'s own last entry (another spelling of the path the
+/// vault was opened through, a symlink among them) or the open folder
+/// itself. A symlink to the open folder that the vault was not opened
+/// through is not it (the Trash would move the link and leave the folder),
+/// nor is a folder whose name differs only in case on a case-sensitive
+/// volume. A path that can't be checked on disk is not it.
 bool isOpenVaultFolder(String openPath, String path) {
   if (openPath == path) return true;
   if (!isSameVaultFolder(openPath, path)) return false;
+  final entry = p.normalize(p.absolute(path));
+  return _sameEntry(p.normalize(p.absolute(openPath)), entry) ||
+      _sameEntry(_resolvedOrNull(openPath), entry);
+}
+
+/// Whether [a] and [b] are the same file system entry, without following
+/// a final symlink; false when either is null or can't be checked.
+bool _sameEntry(String? a, String b) {
+  if (a == null) return false;
   try {
-    final openFolder = Directory(openPath).resolveSymbolicLinksSync();
-    return FileSystemEntity.identicalSync(
-      openFolder,
-      p.normalize(p.absolute(path)),
-    );
+    return FileSystemEntity.identicalSync(a, b);
   } on FileSystemException {
     return false;
+  }
+}
+
+/// [path]'s folder with every symlink resolved, or null when it can't be.
+String? _resolvedOrNull(String path) {
+  try {
+    return Directory(path).resolveSymbolicLinksSync();
+  } on FileSystemException {
+    return null;
   }
 }
 
@@ -133,8 +149,9 @@ class VaultDeleter {
   /// [path] is the open vault when [isOpenVaultFolder] says so, in any
   /// spelling of the open folder; the close, the settle and the reopen use
   /// the open vault's own ref, and on success that ref is forgotten too.
-  /// When [path] is not the open vault (a symlink to the open folder among
-  /// them) this is [delete], and the vault stays open. While a backup of
+  /// When [path] is not the open vault (a symlink to the open folder that
+  /// the vault was not opened through among them) this is [delete], and
+  /// the vault stays open. While a backup of
   /// [path] runs it refuses before the guard and closes nothing; a backup
   /// that starts after that is refused by [delete], and the vault reopens.
   Future<VaultDeleteResult> deleteOpenVault(
@@ -170,7 +187,8 @@ class VaultDeleter {
       await opener.reopenAfterFailedDelete(vault);
     } else if (vault.path != path) {
       // [delete] forgot [path]'s spelling. [isOpenVaultFolder] made [path]'s
-      // own entry the open folder, so that folder is in the Trash now.
+      // own entry the open folder or the entry it was opened through, so
+      // the open vault's path is gone now.
       await _forget(vault);
     }
     return result;
