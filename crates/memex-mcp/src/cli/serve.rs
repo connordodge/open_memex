@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{ArgGroup, Args};
+use memex_core::backup::{KEEP_DEFAULT, KEEP_MAX};
 use memex_core::{SystemClock, Vault};
 use rmcp::transport::stdio;
 use rmcp::ServiceExt;
@@ -21,6 +22,7 @@ use tracing_subscriber::EnvFilter;
 
 use super::{CodedError, InvalidArgument};
 use crate::server;
+use crate::server::backup::BackupConfig;
 use crate::server::bridge::{self, BridgeOptions};
 use crate::server::token::TOKEN_ENV;
 use crate::state::{build_default_embedder, AppState};
@@ -62,11 +64,18 @@ pub struct ServeArgs {
     pub log_level: Option<String>,
     /// Back up every served vault into <dir>/<vault folder name>/ (needs
     /// --root).
-    #[arg(long)]
+    #[arg(long, requires = "root", conflicts_with_all = ["vault", "remote"])]
     pub backup_dir: Option<PathBuf>,
     /// The backups of each vault the vault server keeps, 1-365 (default
     /// 30; needs --backup-dir).
-    #[arg(long)]
+    #[arg(
+        long,
+        requires = "backup_dir",
+        // clap lets a missing `--backup-dir` pass when it conflicts with an
+        // arg given, so the conflicts are repeated here.
+        conflicts_with_all = ["vault", "remote"],
+        value_parser = clap::value_parser!(u16).range(1..=i64::from(KEEP_MAX))
+    )]
     pub backup_keep: Option<u16>,
 }
 
@@ -83,7 +92,10 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                 listen,
                 with_embeddings: args.with_embeddings,
                 log_level,
-                backup: None,
+                backup: args.backup_dir.map(|dir| BackupConfig {
+                    dir,
+                    keep: args.backup_keep.unwrap_or(KEEP_DEFAULT),
+                }),
             })
             .await
         }
