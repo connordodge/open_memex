@@ -11,7 +11,9 @@
 #                  regular expressions.
 #   (b) HOME       the running machine's $HOME path.
 #   (c) home-path  a /Users/<name>/ or /home/<name>/ path whose <name> is not
-#                  a placeholder name in scripts/leak-allow.txt.
+#                  a placeholder name in scripts/leak-allow.txt. A <name> is
+#                  letters, digits, . _ - and non-ASCII bytes, with inner
+#                  spaces allowed and no leading dot.
 # Text that starts with a third-party prefix from leak-allow.txt is exempt
 # from rules (b) and (c), never from rule (a).
 #
@@ -42,8 +44,12 @@
 # that is not deleted, with any hit in <path> shown as [redacted]. The warning
 # leaves the exit status unchanged; a hit in the binary file's path is still
 # a LEAK line ("<path> (name):1") and exit 1. Scanning the bytes is the
-# caller's job (--tree or --artifact on the merged tree). --history reads objects as stored, ignoring
-# refs/replace, and refuses a repository with an info/grafts file.
+# caller's job (--tree or --artifact on the merged tree). --diff strips colour
+# codes, and a scan fails (exit 2) on input it cannot read as a plain unified
+# diff: no diff header or hunk at all, a word diff or a combined diff.
+# --history reads objects as stored, ignoring refs/replace, gitattributes and
+# filters, and refuses a repository with an info/grafts file. --artifact
+# fails on a zip whose entry names collide.
 #
 # Exit status: 0 clean, 1 at least one leak, 2 usage error (unknown mode,
 # missing input path or patterns file, an empty deny-list without
@@ -100,6 +106,7 @@ usage: leak-check.sh [--patterns <file>]... [--allow-empty-patterns] MODE
     LEAK WARN: binary file not scanned: <path, hits [redacted]>
   on stderr and leaves the exit status unchanged (a hit in that path is
   still a LEAK line and exit 1). Scan the file itself with --tree/--artifact.
+  --diff exits 2 on input that is not a plain unified diff (colour is fine).
   Exit status: 0 clean, 1 leak, 2 usage error or incomplete scan.
 EOF
 }
@@ -175,17 +182,30 @@ function scan(s,    i, M, LS, start, t, ns, name, abs) {
   start = 1
   while (1) {
     t = substr(M, start)
-    if (!match(t, /\/(Users|home)\/[A-Za-z0-9._-]+\//)) break
+    if (!match(t, /\/(Users|home)\/[^\/]+\//)) break
     ns = (substr(t, RSTART + 1, 1) == "U") ? 7 : 6
     name = substr(t, RSTART + ns, RLENGTH - ns - 1)
-    if (!(name in ALLOW)) {
+    if (isname(name) && !(name in ALLOW)) {
       abs = start + RSTART - 1 + ns
       addI(abs, abs + length(name) - 1)
       hC = 1
     }
-    start = start + RSTART + RLENGTH - 2
+    # Go on from the slash before the name, so a home path that starts
+    # inside this one (its name being Users or home) is found too.
+    start = start + RSTART + ns - 2
   }
   return hA || hB || hC
+}
+# A user name: letters, digits, . _ - and non-ASCII bytes, with inner (never
+# leading or trailing) spaces, and never a leading dot (.cargo, .., .hidden
+# are hidden dirs, not users). Anything else (<name>, $USER, *) is not one.
+function isname(n,    r, i) {
+  if (substr(n, 1, 1) == " " || substr(n, length(n)) == " ") return 0
+  if (substr(n, 1, 1) == ".") return 0
+  r = n
+  gsub(/[A-Za-z0-9._ -]/, "", r)
+  for (i = 1; i <= length(r); i++) if (!(substr(r, i, 1) in HI)) return 0
+  return 1
 }
 # s with every interval from the last scan replaced by [redacted]; sets
 # first to the position of the first hit.
@@ -231,6 +251,7 @@ function fixlabel(l) {
 }
 BEGIN {
   split("", P); split("", E); split("", H); split("", X); split("", N)
+  for (i = 128; i < 256; i++) HI[sprintf("%c", i)] = 1
   np = loadlist(ENVIRON["LK_PATHS"], P)
   ne = loadlist(ENVIRON["LK_EMAILS"], E)
   for (i = 1; i <= ne; i++) E[i] = tolower(E[i])
@@ -323,31 +344,61 @@ function flush() {
   }
   gp = ""; gnew = 0; gdel = 0; gbin = 0
 }
+# The new path of "diff --git <a> <b>" without the usual b/ prefix: both
+# halves the same (diff.noprefix), or the same after a one-letter prefix
+# (diff.mnemonicPrefix: i/ w/ c/ o/).
+function samehalves(s,    n, h, a, b) {
+  n = length(s)
+  if (n % 2 == 0) return ""
+  h = (n - 1) / 2
+  if (substr(s, h + 1, 1) != " ") return ""
+  a = substr(s, 1, h); b = substr(s, h + 2)
+  if (a == b) return b
+  if (h > 2 && substr(a, 2, 1) == "/" && substr(b, 2, 1) == "/" && substr(a, 3) == substr(b, 3))
+    return substr(b, 3)
+  return ""
+}
 BEGIN {
   file = ENVIRON["LK_DIFFNAME"]; binf = ENVIRON["LK_BINLIST"]
   inh = 0; nl = 1; nc = 0; oc = 0; pnull = 0
   gp = ""; gnew = 0; gdel = 0; gbin = 0
+  # bad: 3 a hunk line that is not context, added or removed (a word diff),
+  # 4 a combined diff, 5 no diff structure at all. Each fails the scan.
+  bad = 0; shape = 0; text = 0
 }
 {
+  # Colour (git diff --color=always, color.ui=always) would hide every line.
+  gsub(/\033\[[0-9;]*[A-Za-z]/, "")
+  if (!text && $0 ~ /[^ \t\r]/) text = 1
   if (inh) {
     c = substr($0, 1, 1)
     if (c == "+") { emit(substr($0, 2)); nc-- }
     else if (c == "-") { oc-- }
     else if (c == " " || $0 == "") { nl++; nc--; oc-- }
     else if (c == "\\") { }
-    else inh = 0
+    else {
+      inh = 0
+      # Wrong hunk counts may run into the next header; anything else in a
+      # hunk is a format this parser cannot read.
+      if (substr($0, 1, 5) != "diff " && substr($0, 1, 2) != "@@" && !bad) bad = 3
+    }
     if (inh) {
       if (nc <= 0 && oc <= 0) inh = 0
       next
     }
   }
+  if (substr($0, 1, 10) == "diff --cc " || substr($0, 1, 16) == "diff --combined " || substr($0, 1, 4) == "@@@ ") {
+    bad = 4
+    next
+  }
   if (substr($0, 1, 11) == "diff --git ") {
     flush()
+    shape = 1
     s = substr($0, 12)
     k = lastidx(s, " \"b/")
     if (k) gp = unq(substr(s, k + 1))
     else if ((k = lastidx(s, " b/")) > 0) gp = substr(s, k + 1)
-    else gp = ""
+    else gp = samehalves(s)
     if (substr(gp, 1, 2) == "b/") gp = substr(gp, 3)
     next
   }
@@ -357,6 +408,7 @@ BEGIN {
   if (substr($0, 1, 8) == "copy to ") { name(unq(substr($0, 9))); next }
   if ($0 == "GIT binary patch") { gbin = 1; next }
   if (substr($0, 1, 13) == "Binary files " && substr($0, length($0) - 6) == " differ") {
+    shape = 1
     if (gp != "") { gbin = 1; next }
     s = substr($0, 14, length($0) - 20)
     k = lastidx(s, " and ")
@@ -368,6 +420,7 @@ BEGIN {
     next
   }
   if (substr($0, 1, 4) == "+++ ") {
+    shape = 1
     f = hdr($0, "b/")
     if (f != "/dev/null") { file = f; if (pnull) name(f) }
     pnull = 0
@@ -380,6 +433,7 @@ BEGIN {
     next
   }
   if (substr($0, 1, 3) == "@@ ") {
+    shape = 1
     oc = 1; nc = 1; nl = 1
     if (match($0, /-[0-9]+(,[0-9]+)?/)) {
       s = substr($0, RSTART + 1, RLENGTH - 1)
@@ -399,7 +453,11 @@ BEGIN {
   # hunk counts cannot hide one.
   if (substr($0, 1, 1) == "+") emit(substr($0, 2))
 }
-END { flush() }
+END {
+  flush()
+  if (!bad && text && !shape) bad = 5
+  exit bad
+}
 '
 
 # git cat-file --batch output (commit and tag objects) as one record per line.
@@ -544,6 +602,13 @@ scan_diff() {
     awk "$MATCHER"
   s=("${PIPESTATUS[@]}")
   note "${s[1]}" "${s[2]}"
+  case "${s[1]}" in
+    0) ;;
+    3) warn "--diff: a hunk holds a line that is not context, added or removed (a word diff?)" ;;
+    4) warn "--diff: combined diffs (diff --cc) are not supported" ;;
+    5) warn "--diff: the input is not a unified diff" ;;
+    *) warn "--diff: could not parse the diff" ;;
+  esac
   # A diff does not show a binary file's bytes: say so (redacted), so the
   # caller can scan the file itself with --text or --tree.
   if [ -s "$bins" ]; then
@@ -555,8 +620,10 @@ scan_diff() {
 }
 
 scan_history() {
-  local in="$1" g h s
-  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_REPLACE_REF_BASE
+  local in="$1" g h s common
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_REPLACE_REF_BASE \
+    GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES \
+    GIT_NAMESPACE GIT_ATTR_SOURCE
   newtmp hist
   h=$NEWDIR
   # Read the objects as stored: git push sends them so, whatever
@@ -569,10 +636,21 @@ scan_history() {
     g=$(git --git-dir="$in" rev-parse --absolute-git-dir 2>/dev/null)
   fi
   [ -n "$g" ] || die "--history: not a git repository"
-  if [ -s "$g/info/grafts" ]; then
+  # A linked worktree keeps its objects and info/ in the common dir.
+  common=$(git --git-dir="$g" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  [ -n "$common" ] || die "--history: not a git repository"
+  if [ -s "$g/info/grafts" ] || [ -s "$common/info/grafts" ]; then
     die "--history: info/grafts is not supported (git replace --convert-graft-file)"
   fi
   mkdir "$h/blobs" || die "cannot create a temp dir"
+  # Blobs are checked out through an empty repository that borrows the
+  # scanned one's objects, so no gitattributes (info/attributes, the user's
+  # or the system's) and no filter or encoding in its config rewrite them.
+  git init -q --bare --template= "$h/repo" >/dev/null 2>&1 ||
+    die "--history: git init failed"
+  mkdir -p "$h/repo/objects/info" &&
+    printf '%s\n' "$common/objects" >"$h/repo/objects/info/alternates" ||
+    die "cannot create a temp dir"
 
   git --git-dir="$g" rev-list --all --objects >"$h/revs" ||
     die "--history: git rev-list failed"
@@ -587,11 +665,12 @@ scan_history() {
     printf "%s\tblob %s %s\n", $2, substr($2, 1, 12), p
   }' "$h/objs" >"$h/map"
   if [ -s "$h/idx" ]; then
-    GIT_INDEX_FILE="$h/index" git --git-dir="$g" --work-tree="$h/blobs" \
+    GIT_INDEX_FILE="$h/index" git --git-dir="$h/repo" --work-tree="$h/blobs" \
       update-index --index-info <"$h/idx" || die "--history: git update-index failed"
-    (cd "$h/blobs" && GIT_INDEX_FILE="$h/index" git --git-dir="$g" --work-tree=. \
-      -c core.autocrlf=false -c core.eol=lf -c core.safecrlf=false \
-      -c core.fsmonitor=false checkout-index -a -f) ||
+    (cd "$h/blobs" && GIT_ATTR_NOSYSTEM=1 GIT_INDEX_FILE="$h/index" \
+      git --git-dir="$h/repo" --work-tree=. \
+      -c core.attributesFile=/dev/null -c core.autocrlf=false -c core.eol=lf \
+      -c core.safecrlf=false -c core.fsmonitor=false checkout-index -a -f) ||
       die "--history: git checkout-index failed"
     scan_files "$h/blobs" "$h/blobs/" "" "$h/map"
   fi
@@ -638,7 +717,7 @@ is_zip() {
 
 # Scans the zip or DMG $1 (shown as $2) from the inside.
 scan_container() {
-  local f="$1" label="$2" depth="$3" d
+  local f="$1" label="$2" depth="$3" d want got
   if [ "$depth" -gt 6 ]; then
     fail_about 'archives nested too deep at' "$label"
     return
@@ -666,6 +745,15 @@ scan_container() {
     unzip -qq -o "$f" -d "$d" </dev/null >/dev/null 2>&1
     if [ $? -gt 1 ]; then
       fail_about 'could not unzip' "$label"
+      return
+    fi
+    # Entries whose names collide (the same name twice, or names that differ
+    # only in case on a case-insensitive volume) extract to one file, and
+    # the others would go unscanned: every entry must have its own file.
+    want=$(unzip -Z1 "$f" </dev/null 2>/dev/null | grep -c -v '/$')
+    got=$(find "$d" ! -type d -print0 2>/dev/null | tr -cd '\000' | wc -c | tr -d ' ')
+    if [ "$want" != "$got" ]; then
+      fail_about 'zip entries collide (or could not be listed) in' "$label"
       return
     fi
     scan_artifact "$d" "$label!" $((depth + 1))
