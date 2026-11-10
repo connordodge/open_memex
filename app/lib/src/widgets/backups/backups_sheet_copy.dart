@@ -121,6 +121,24 @@ String _lastGoodLine(
       : '$head $server tries again hourly.';
 }
 
+/// The "choose folder…" row as A2's resolver takes it (no provider).
+const _chooseFolderOption = BackupDestinationOption(label: _chooseFolder);
+
+/// A provider row's name as the pack draws it. A2's discovery hands over
+/// the bare distinguishing text (`iCloud Drive`, the account, the OneDrive
+/// name); the sheet composes `Google Drive · <account>` and
+/// `OneDrive · <name>`. A label that already carries its provider's prefix
+/// is shown as it is.
+String _optionName(BackupDestinationOption option) {
+  final prefix = switch (option.provider) {
+    BackupProvider.googleDrive => 'Google Drive · ',
+    BackupProvider.oneDrive => 'OneDrive · ',
+    BackupProvider.icloud || null => '',
+  };
+  final label = option.label;
+  return label.startsWith(prefix) ? label : '$prefix$label';
+}
+
 /// How a destination folder reads in the sheet.
 class _Where {
   const _Where({
