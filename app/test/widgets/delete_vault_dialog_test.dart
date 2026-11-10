@@ -12,6 +12,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:open_memex_app/src/state/backup_models.dart';
@@ -115,6 +116,42 @@ OmButton _om(WidgetTester tester, Key key) => tester.widget<OmButton>(
 /// The semantics data of the button keyed [key], read as [label].
 SemanticsData _sem(WidgetTester tester, Key key, String label) =>
     wi349NodeLabelled(tester, find.byKey(key), label).getSemanticsData();
+
+/// The dialog on its own (no picker), over a plain app at [size], for layout
+/// checks at text scales the picker itself can't hold.
+Future<void> _pumpBare(WidgetTester tester, {double scale = 1}) async {
+  tester.platformDispatcher.textScaleFactorTestValue = scale;
+  addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+  tester.view.physicalSize = const Size(1280, 1600);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.reset);
+  late BuildContext ctx;
+  await tester.pumpWidget(
+    ProviderScope(
+      child: MaterialApp(
+        home: Builder(
+          builder: (c) {
+            ctx = c;
+            return const SizedBox();
+          },
+        ),
+      ),
+    ),
+  );
+  unawaited(confirmDeleteVault(ctx, path: '/tmp/om350_bare/vault'));
+  await tester.pumpAndSettle();
+  expect(_dialog, findsOneWidget);
+}
+
+/// The dialog's decorated shell box.
+Finder get _shell => find
+    .descendant(
+      of: _dialog,
+      matching: find.byWidgetPredicate(
+        (w) => w is Container && w.decoration is BoxDecoration,
+      ),
+    )
+    .first;
 
 void main() {
   holdFontFetches();
@@ -620,6 +657,70 @@ void main() {
   });
 
   group('layout', () {
+    testWidgets(
+      'the buttons sit side by side against the right edge at the default size',
+      (tester) async {
+        await _pumpBare(tester);
+
+        final cancel = tester.getRect(find.byKey(_cancel));
+        final confirm = tester.getRect(find.byKey(_confirm));
+        final dialog = tester.getRect(_shell);
+        expect(cancel.top, confirm.top, reason: 'one line');
+        expect(cancel.right, lessThan(confirm.left), reason: 'cancel first');
+        expect(confirm.left - cancel.right, 8, reason: 'the Wrap spacing');
+        // Each button is as wide as its label, not the whole Wrap.
+        expect(cancel.width, lessThan(200));
+        expect(confirm.width, lessThan(260));
+        // Against the right edge of the 24 px padded shell (1 px border).
+        expect(confirm.right, dialog.right - 24 - 1);
+      },
+    );
+
+    testWidgets(
+      'at 3x text the buttons that no longer fit one line wrap onto two within the dialog',
+      (tester) async {
+        await _pumpBare(tester, scale: 3);
+
+        expect(tester.takeException(), isNull);
+        final cancel = tester.getRect(find.byKey(_cancel));
+        final confirm = tester.getRect(find.byKey(_confirm));
+        final dialog = tester.getRect(_shell);
+        expect(
+          confirm.top,
+          greaterThan(cancel.bottom),
+          reason: 'the second button runs onto its own line',
+        );
+        for (final r in [cancel, confirm]) {
+          expect(r.left, greaterThanOrEqualTo(dialog.left));
+          expect(r.right, lessThanOrEqualTo(dialog.right));
+        }
+        await tester.tap(find.byKey(_cancel));
+        await tester.pumpAndSettle();
+        expect(_dialog, findsNothing);
+      },
+    );
+
+    for (final scale in [1.0, 3.0]) {
+      testWidgets(
+        'the button row reports the size it lays out at when measured dry at ${scale}x text',
+        (tester) async {
+          await _pumpBare(tester, scale: scale);
+
+          final row = tester.renderObject<RenderBox>(
+            find.ancestor(
+              of: find.byType(Wrap),
+              matching: find.byWidgetPredicate(
+                (w) => w.runtimeType.toString() == '_EndAligned',
+              ),
+            ),
+          );
+          final constraints = row.constraints;
+          expect(row.getDryLayout(constraints), row.size);
+          expect(row.size.width, constraints.maxWidth, reason: 'fills width');
+        },
+      );
+    }
+
     testWidgets(
       'at 1.3x text and a 720 px window the dialog with a long path wraps the path with no overflow',
       (tester) async {
