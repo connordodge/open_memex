@@ -24,6 +24,7 @@ import '../support/canvas_seeds.dart';
 import '../support/daily_seed.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
+import '../support/font_fetch_hold.dart';
 import '../support/footer_cli_fakes.dart';
 import '../support/graph_seeds.dart';
 import '../support/recording_tabs.dart';
@@ -70,6 +71,8 @@ Future<void> _tapNoteMenuGraph(
 }
 
 void main() {
+  holdFontFetches();
+
   group('sidebar rows, chips and nodes record their follow target', () {
     testWidgets('a click on a footer topic chip records its follow target', (
       tester,

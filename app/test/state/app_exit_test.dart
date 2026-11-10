@@ -15,6 +15,7 @@ import 'package:open_memex_app/src/state/unsent_hosted_text.dart';
 
 import '../support/app_exit_fakes.dart';
 import '../support/app_harness.dart';
+import '../support/font_fetch_hold.dart';
 import '../support/wi363_sidebar.dart';
 
 const _confirm = Key('leave-confirm');
@@ -33,6 +34,8 @@ final _unsent = UnsentHostedText(
 );
 
 void main() {
+  holdFontFetches();
+
   group('window channel windowShouldClose (AC6)', () {
     testWidgets(
       'windowShouldClose with no unsent text replies true at once with no dialog',

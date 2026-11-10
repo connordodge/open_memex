@@ -30,6 +30,7 @@ import 'package:path/path.dart' as p;
 import '../support/app_harness.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_server.dart';
+import '../support/font_fetch_hold.dart';
 import '../support/hosted_harness.dart';
 import '../support/vault_folders.dart';
 
@@ -125,6 +126,8 @@ Future<(HostedHarness, HostedServerFixture, List<int>)> _pumpOpen(
 }
 
 void main() {
+  holdFontFetches();
+
   group('refused local pill taps (AC1, lead update on #117)', () {
     /// The workspace on a local vault, with a second local vault in the
     /// recents whose `memex vault check` answers [check].

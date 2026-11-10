@@ -16,6 +16,7 @@ import 'package:path/path.dart' as p;
 
 import '../support/app_harness.dart';
 import '../support/fake_vault_server.dart';
+import '../support/font_fetch_hold.dart';
 import '../support/hosted_harness.dart';
 import '../support/vault_folders.dart';
 
@@ -58,6 +59,8 @@ Future<HostedHarness> _wi96PumpOpen(
 }
 
 void main() {
+  holdFontFetches();
+
   group('hosted pill contracts (AC9, pack 96)', () {
     testWidgets(
       'a hosted pill for an incompatible server shows the token rejected dot and copy',

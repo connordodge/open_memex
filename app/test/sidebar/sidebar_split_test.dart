@@ -29,6 +29,7 @@ import 'package:open_memex_app/src/widgets/sidebar/canvases_rail.dart';
 import 'package:open_memex_app/src/widgets/sidebar/notes_pane.dart';
 import 'package:open_memex_app/src/widgets/sidebar/topics_pane.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../support/font_fetch_hold.dart';
 import '../support/token_store_fakes.dart';
 
 // ---------------------------------------------------------------------------
@@ -224,6 +225,8 @@ Finder _in(Finder parent, Finder child) =>
     find.descendant(of: parent, matching: child);
 
 void main() {
+  holdFontFetches();
+
   // -------------------------------------------------------------------------
   // AC 8: NotesPane renders the list (notes-rail / note-list-item-<id>) and
   // its empty state.

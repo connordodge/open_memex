@@ -23,6 +23,7 @@ import '../support/app_harness.dart';
 import '../support/fake_clock.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
+import '../support/font_fetch_hold.dart';
 import '../support/vault_folders.dart';
 import '../support/token_store_fakes.dart';
 import '../support/wi363_sidebar.dart';
@@ -134,6 +135,8 @@ Future<ProviderContainer> _launchApp(
 }
 
 void main() {
+  holdFontFetches();
+
   group('launch reopen (review round 1)', () {
     // #92 TEST-CHANGE (lead ruling): `currentVaultProvider` starts null, so
     // the first frame is the picker with the last vault row opening, and the

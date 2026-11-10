@@ -24,6 +24,7 @@ import 'package:open_memex_app/src/widgets/sidebar.dart';
 import '../support/app_harness.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
+import '../support/font_fetch_hold.dart';
 import '../support/note_cli_fakes.dart';
 import '../support/vault_scoped_reads.dart';
 
@@ -193,6 +194,8 @@ Finder _textStarting(String prefix) => find.byWidgetPredicate(
 );
 
 void main() {
+  holdFontFetches();
+
   group('new note through VaultAccess (AC6)', () {
     testWidgets(
       'new note adds an Untitled note through VaultAccess bumps the vault revision once and opens its tab',

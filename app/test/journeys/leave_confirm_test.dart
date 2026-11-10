@@ -27,6 +27,7 @@ import '../support/app_harness.dart';
 import '../support/fake_clock.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
+import '../support/font_fetch_hold.dart';
 import '../support/poll_fakes.dart';
 import '../support/vault_folders.dart';
 import '../support/wi363_sidebar.dart';
@@ -179,6 +180,8 @@ Future<(LiveRobot, String)> _liveWithTypedText(
 }
 
 void main() {
+  holdFontFetches();
+
   group('no unsent hosted text (AC1)', () {
     testWidgets(
       'with no unsent hosted text the close seam answers true with no dialog',
