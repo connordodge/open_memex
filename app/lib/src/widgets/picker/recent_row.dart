@@ -38,6 +38,7 @@ class RecentRow extends ConsumerStatefulWidget {
     required this.opening,
     required this.binaryMissing,
     required this.onOpen,
+    this.open = false,
   });
 
   final int index;
@@ -45,6 +46,10 @@ class RecentRow extends ConsumerStatefulWidget {
   final bool opening;
   final bool binaryMissing;
   final VoidCallback onOpen;
+
+  /// Whether [entry] is the open vault (#362's modal): an `OPEN` tag
+  /// (`recent-row-open-tag-<index>`), no × and no "remove from recents".
+  final bool open;
 
   @override
   ConsumerState<RecentRow> createState() => _RecentRowState();
