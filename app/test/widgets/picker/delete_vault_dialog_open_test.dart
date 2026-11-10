@@ -318,9 +318,16 @@ void main() {
         final trash = _Wi360MovingTrash();
         final env = await _wi360Pump(tester, trash: trash);
         await _wi360Open(tester, env.path);
+        // Two UI state writes queued when the person presses: the second
+        // only starts once the first landed, so unless the delete waits
+        // for the queue it starts after the move and recreates <vault>/.memex.
+        final store = UiStateStore(vaultPath: env.path);
+        unawaited(store.write(UiState.empty()));
+        unawaited(store.write(UiState.empty()));
 
         await tester.tap(find.byKey(_confirm));
-        await _wi360Settle(tester);
+        // Each queued write needs a few real I/O round trips.
+        await _wi360Settle(tester, rounds: 40);
         expect(env.trash.calls, [env.path]);
         expect(env.guardCalls, [true], reason: 'the open-vault delete ran');
         expect(env.current, isNull, reason: 'the vault was closed first');
@@ -571,6 +578,34 @@ void main() {
       },
     );
 
+    testWidgets(
+      'the busy dialog of a vault that is not open shows no open line and leaves the open vault open',
+      (tester) async {
+        final hold = Completer<TrashResult>();
+        final env = await _wi360Pump(
+          tester,
+          trash: FakeVaultTrash()..hold(hold),
+        );
+        final other = createVaultFolder('om360_other_').path;
+        await _wi360Open(tester, other);
+
+        await tester.tap(find.byKey(_confirm));
+        await _wi360Settle(tester, rounds: 2);
+
+        _expectBusy(tester);
+        expect(env.trash.calls, [other]);
+        expect(find.byKey(_openLine), findsNothing);
+        expect(env.guardCalls, isEmpty, reason: 'not the open vault');
+        expect(env.editor.flushes, 0);
+        expect(env.current, LocalVaultRef(env.path), reason: 'still open');
+
+        hold.complete(const Trashed());
+        await _wi360Settle(tester);
+        expect(_dialog, findsNothing);
+        expect(env.current, LocalVaultRef(env.path));
+      },
+    );
+
     testWidgets('two presses in the same frame start one open-vault delete', (
       tester,
     ) async {
@@ -697,6 +732,42 @@ void main() {
         await _wi360Settle(tester);
         expect(env.trash.calls, [other]);
         expect(env.current, LocalVaultRef(env.path));
+      },
+    );
+
+    testWidgets(
+      'a press in the frame a backup starts moves nothing and leaves no stale refusal after the backup ends',
+      (tester) async {
+        final env = await _wi360Pump(tester);
+        await _wi360Open(tester, env.path);
+        expect(_om(tester, _confirm).onPressed, isNotNull);
+
+        // The backup starts and the press lands before the next frame
+        // rebuilds the button as disabled.
+        env.c.read(backupInFlightProvider.notifier).state = {env.path};
+        await tester.tap(find.byKey(_confirm));
+        await _wi360Settle(tester);
+
+        expect(env.guardCalls, isEmpty, reason: 'the press started nothing');
+        expect(env.editor.flushes, 0);
+        expect(env.trash.calls, isEmpty);
+        expect(env.current, LocalVaultRef(env.path));
+        expect(_dialog, findsOneWidget);
+
+        env.c.read(backupInFlightProvider.notifier).state = const {};
+        await _wi360Settle(tester, rounds: 2);
+        expect(
+          _inDialog(find.text(_backupCopy(env.path))),
+          findsNothing,
+          reason: 'the press left no refusal of its own behind',
+        );
+        expect(_inDialog(find.byIcon(LucideIcons.triangleAlert)), findsNothing);
+        _expectButtons(
+          tester,
+          confirmEnabled: true,
+          cancelEnabled: true,
+          label: 'move to trash',
+        );
       },
     );
 

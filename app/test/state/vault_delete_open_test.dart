@@ -16,6 +16,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
+import 'package:open_memex_app/src/state/backup_controller.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';
 import 'package:open_memex_app/src/state/settings.dart';
 import 'package:open_memex_app/src/state/ui_state_store.dart';
@@ -478,6 +479,137 @@ void main() {
         expect(rig.c.read(currentVaultProvider), LocalVaultRef(rig.vault));
         expect(rig.cli.callsFor('vault check'), hasLength(1));
         expect(await tester.runAsync(rig.snapshot), before);
+      },
+    );
+  });
+
+  group('a backup of the vault is running', () {
+    String running(String path) =>
+        'a backup of ${p.basename(path)} is running. try again when it '
+        'finishes. nothing was deleted.';
+
+    testWidgets(
+      'delete refuses while a backup of the vault runs and moves nothing',
+      (tester) async {
+        final rig = (await tester.runAsync(_wi360Create))!;
+        rig.c.read(backupInFlightProvider.notifier).state = {rig.other};
+        final before = (await tester.runAsync(rig.snapshot))!;
+
+        final refused = await tester.runAsync(
+          () => rig.deleter.delete(rig.other),
+        );
+
+        expect(
+          refused,
+          isA<VaultDeleteFailed>().having(
+            (f) => f.message,
+            'message',
+            running(rig.other),
+          ),
+        );
+        expect(rig.trash.calls, isEmpty, reason: 'nothing moved');
+        expect(await tester.runAsync(rig.snapshot), before);
+
+        // Only that vault's backup refuses: the open vault's runs.
+        rig.c.read(backupInFlightProvider.notifier).state = {rig.vault};
+        final allowed = await tester.runAsync(
+          () => rig.deleter.delete(rig.other),
+        );
+
+        expect(allowed, isA<VaultDeleted>());
+        expect(rig.trash.calls, [rig.other]);
+      },
+    );
+
+    testWidgets(
+      'deleteOpenVault while a backup of the vault runs refuses before the guard and closes nothing',
+      (tester) async {
+        final context = await _wi360Context(tester);
+        final rig = (await tester.runAsync(_wi360Create))!;
+        rig.c.read(backupInFlightProvider.notifier).state = {rig.vault};
+        final before = (await tester.runAsync(rig.snapshot))!;
+
+        final result = await tester.runAsync(
+          () => rig.deleter.deleteOpenVault(context, rig.vault),
+        );
+
+        expect(
+          result,
+          isA<VaultDeleteFailed>().having(
+            (f) => f.message,
+            'message',
+            running(rig.vault),
+          ),
+        );
+        expect(rig.events, isEmpty, reason: 'no guard, flush or close');
+        expect(rig.guardCalls, isEmpty);
+        expect(rig.trash.calls, isEmpty);
+        expect(rig.c.read(currentVaultProvider), LocalVaultRef(rig.vault));
+        expect(rig.c.read(selectedNoteIdProvider), '01NOTE360');
+        expect(await tester.runAsync(rig.snapshot), before);
+      },
+    );
+
+    testWidgets(
+      'deleteOpenVault when a backup starts during the settle never trashes and reopens the vault',
+      (tester) async {
+        final context = await _wi360Context(tester);
+        final rig = (await tester.runAsync(_wi360Create))!;
+        final before = (await tester.runAsync(rig.snapshot))!;
+
+        await tester.runAsync(() async {
+          final hold = Completer<void>();
+          rig.editor.settleHold = hold;
+          final future = rig.deleter.deleteOpenVault(context, rig.vault);
+          await pumpEventQueue();
+          expect(rig.events, contains('settle ${rig.vault}'));
+          expect(rig.c.read(currentVaultProvider), isNull, reason: 'closed');
+          // A backup starts while the saves settle.
+          rig.c.read(backupInFlightProvider.notifier).state = {rig.vault};
+          hold.complete();
+
+          final result = await future;
+
+          expect(
+            result,
+            isA<VaultDeleteFailed>().having(
+              (f) => f.message,
+              'message',
+              running(rig.vault),
+            ),
+          );
+        });
+
+        expect(
+          rig.trash.calls,
+          isEmpty,
+          reason: 'a backup runs: nothing moves',
+        );
+        expect(rig.c.read(currentVaultProvider), LocalVaultRef(rig.vault));
+        expect(rig.cli.callsFor('vault check'), hasLength(1), reason: 'reopen');
+        expect(await tester.runAsync(rig.snapshot), before);
+      },
+    );
+  });
+
+  group('a vault that is not open', () {
+    testWidgets(
+      'deleteOpenVault on a vault that is not open is the plain delete and leaves the open vault alone',
+      (tester) async {
+        final context = await _wi360Context(tester);
+        final rig = (await tester.runAsync(_wi360Create))!;
+
+        final result = await tester.runAsync(
+          () => rig.deleter.deleteOpenVault(context, rig.other),
+        );
+
+        expect(result, isA<VaultDeleted>());
+        expect(rig.events, ['trash ${rig.other}'], reason: 'no guard or close');
+        expect(rig.guardCalls, isEmpty);
+        expect(rig.c.read(currentVaultProvider), LocalVaultRef(rig.vault));
+        expect(rig.c.read(selectedNoteIdProvider), '01NOTE360');
+        expect(rig.settings.recentRefs, [LocalVaultRef(rig.vault)]);
+        expect(rig.settings.lastVaultRef, LocalVaultRef(rig.vault));
       },
     );
   });
