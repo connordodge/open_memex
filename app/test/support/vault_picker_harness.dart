@@ -205,7 +205,9 @@ String _encodeRef(VaultRef ref) => jsonEncode(switch (ref) {
 ///   before the first frame;
 /// - [beforePump] runs on the fakes before the picker first builds (e.g.
 ///   `hold()` a server so its probe stays in flight);
-/// - [trash] as `vaultTrashProvider` when given (#350: a FakeVaultTrash).
+/// - [trash] as `vaultTrashProvider` when given (#350: a FakeVaultTrash);
+/// - [extraOverrides] last, after every override above (#374: the app
+///   version).
 Future<Wi97Picker> pumpVaultPicker(
   WidgetTester tester, {
   List<SavedServer> savedServers = const [wi97Nas],
@@ -217,6 +219,7 @@ Future<Wi97Picker> pumpVaultPicker(
   void Function(Map<String, FakeVaultServer> servers)? beforePump,
   void Function(Wi97OpenController opener)? configureOpener,
   VaultTrash? trash,
+  List<Override> extraOverrides = const [],
 }) async {
   SharedPreferences.setMockInitialValues({
     'memex.binary_path': 'fake-memex',
@@ -276,6 +279,7 @@ Future<Wi97Picker> pumpVaultPicker(
         configureOpener?.call(c);
         return c;
       }),
+      ...extraOverrides,
     ],
   );
   addTearDown(db.close);
