@@ -52,6 +52,7 @@ import '../../support/backup_fakes.dart';
 import '../../support/backup_harness.dart';
 import '../../support/fake_clock.dart';
 import '../../support/file_picker_fakes.dart';
+import '../../support/font_fetch_hold.dart';
 
 // ------------------------------------------------------------------ fixtures
 
@@ -972,6 +973,7 @@ List<BackupDestinationOption> _wi325LinkedOptions(_Wi325Tree t) => [
 ];
 
 void main() {
+  holdFontFetches();
   // ================================================================ AC 1
   group('AC1 the panel opens and closes', () {
     testWidgets(
