@@ -89,6 +89,20 @@ Future<bool> _tabToIme(WidgetTester tester, {bool shift = false}) async {
   return handled;
 }
 
+/// A controller whose value, while [noCaret] is set, has no valid selection.
+class _NoCaretController extends TextEditingController {
+  _NoCaretController(String text) : super(text: text);
+
+  bool noCaret = false;
+
+  @override
+  TextEditingValue get value => noCaret
+      ? super.value.copyWith(
+          selection: const TextSelection.collapsed(offset: -1),
+        )
+      : super.value;
+}
+
 void main() {
   testWidgets(
     'Source mode Tab indents the bullet line from any caret on it in one value change and Shift Tab restores it',
@@ -435,6 +449,57 @@ void main() {
       await tester.pump();
       expect(await _tabToIme(tester), isTrue);
       expect(ctrl.text, '- a\n  - bk');
+    },
+    variant: _mac,
+  );
+
+  testWidgets(
+    'Source mode Tab with no valid selection and no composing is left alone for the ancestors',
+    (tester) async {
+      // The editor has no caret to indent at, so it neither indents nor
+      // consumes the key: an ancestor above it still sees Tab.
+      // A focused field always gets a caret from the framework, so the
+      // controller reports the value the key handler reads with none.
+      final ctrl = _NoCaretController('- a\n- b');
+      addTearDown(ctrl.dispose);
+      final above = <LogicalKeyboardKey>[];
+      await tester.pumpWidget(
+        ProviderScope(
+          child: MaterialApp(
+            home: Scaffold(
+              body: Focus(
+                onKeyEvent: (_, event) {
+                  if (event is KeyDownEvent) above.add(event.logicalKey);
+                  return KeyEventResult.ignored;
+                },
+                child: SourceSurface(bodyCtrl: ctrl, onContentChanged: (_) {}),
+              ),
+            ),
+          ),
+        ),
+      );
+      final body = find.descendant(
+        of: find.byKey(const Key('editor-body')),
+        matching: find.byType(EditableText),
+      );
+      await tester.showKeyboard(body);
+      await tester.pump();
+      ctrl.noCaret = true;
+      expect(ctrl.value.selection.isValid, isFalse);
+      expect(ctrl.value.composing.isValid, isFalse);
+
+      await _tabToIme(tester);
+      await _tabToIme(tester, shift: true);
+      expect(
+        above.where((k) => k == LogicalKeyboardKey.tab),
+        hasLength(2),
+        reason: 'the editor left both Tab presses to the ancestors',
+      );
+      // Enter has no caret to continue a list from either.
+      await KeyEventSimulator.simulateKeyDownEvent(LogicalKeyboardKey.enter);
+      await KeyEventSimulator.simulateKeyUpEvent(LogicalKeyboardKey.enter);
+      expect(above, contains(LogicalKeyboardKey.enter));
+      expect(ctrl.text, '- a\n- b');
     },
     variant: _mac,
   );

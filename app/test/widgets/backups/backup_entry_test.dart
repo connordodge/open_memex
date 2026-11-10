@@ -29,9 +29,11 @@ import 'package:open_memex_app/src/state/backup_controller.dart';
 import 'package:open_memex_app/src/state/backup_messages.dart';
 import 'package:open_memex_app/src/state/backup_models.dart';
 import 'package:open_memex_app/src/state/backup_settings_state.dart';
+import 'package:open_memex_app/src/state/settings.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/theme/app_theme.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
+import 'package:open_memex_app/src/theme/typography.dart';
 import 'package:open_memex_app/src/widgets/backups/backup_entry.dart';
 import 'package:open_memex_app/src/widgets/backups/backup_keys.dart';
 import 'package:open_memex_app/src/vault_access/hosted/backup.dart';
@@ -270,6 +272,18 @@ BackupViewState _hostedUnreachableView() => BackupViewState(
   status: _hostedOk(_hostedAt),
 );
 
+/// A fake controller that counts how often the row asked for its view state:
+/// one read per build, so a count that moves means the row redrew.
+class _Wi326ReadCounter extends FakeBackupController {
+  int reads = 0;
+
+  @override
+  BackupViewState viewStateOf(VaultRef vault) {
+    reads++;
+    return super.viewStateOf(vault);
+  }
+}
+
 // ------------------------------------------------------------------- the rig
 
 class _Wi326Rig {
@@ -300,13 +314,16 @@ Future<_Wi326Rig> _pump(
   Map<String, VaultBackupSettings> settings = const {},
   double textScale = 1.0,
   bool withEditor = false,
+  double width = 268,
+  bool shadowDefaultKeys = false,
+  FakeBackupController? controller,
 }) async {
   final harness = await createBackupContainer(
     clock: clock ?? FakeClock(_now),
     runner: runner,
     reader: reader,
     hostedApi: hostedApi,
-    controller: live ? null : FakeBackupController(),
+    controller: live ? null : (controller ?? FakeBackupController()),
     realController: live,
     vault: vault,
     prefs: {
@@ -342,7 +359,7 @@ Future<_Wi326Rig> _pump(
           body: Align(
             alignment: Alignment.topLeft,
             child: SizedBox(
-              width: 268,
+              width: width,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -352,7 +369,23 @@ Future<_Wi326Rig> _pump(
                       key: _editorKey,
                       decoration: InputDecoration(hintText: 'type here'),
                     ),
-                  const BackupEntry(),
+                  if (shadowDefaultKeys)
+                    // A shortcut layer above the row that swallows Enter and
+                    // Space before the app's defaults (MaterialApp maps them
+                    // to ActivateIntent): the row's own keys must win.
+                    Shortcuts(
+                      shortcuts: const <ShortcutActivator, Intent>{
+                        SingleActivator(LogicalKeyboardKey.enter):
+                            DoNothingAndStopPropagationIntent(),
+                        SingleActivator(LogicalKeyboardKey.numpadEnter):
+                            DoNothingAndStopPropagationIntent(),
+                        SingleActivator(LogicalKeyboardKey.space):
+                            DoNothingAndStopPropagationIntent(),
+                      },
+                      child: const BackupEntry(),
+                    )
+                  else
+                    const BackupEntry(),
                 ],
               ),
             ),
@@ -2685,6 +2718,448 @@ void main() {
         await _frames(tester);
         expect(tester.hasRunningAnimations, isFalse, reason: 'stops again');
         expect(s.controller.openSheetCalls, isEmpty);
+      },
+    );
+  });
+
+  group('verify round 2 widget-layer hand mutants', () {
+    testWidgets(
+      'the row is one focusable button node carrying the whole label with no text child',
+      (tester) async {
+        final handle = tester.ensureSemantics();
+        final cases = <(String, VaultRef, BackupViewState, String)>[
+          ('off', _local, _offView(), 'backups for memex: off. open backups'),
+          (
+            'local failure',
+            _local,
+            _localFailedView(),
+            'backups for memex: the automatic backup failed today at 09:00, '
+                "can't write to Google Drive. open backups",
+          ),
+          (
+            'hosted ok',
+            _hosted,
+            _hostedSuccessView(),
+            "backups for work: nas's last backup today at 03:00. open backups",
+          ),
+        ];
+        for (final (state, vault, view, label) in cases) {
+          // An editor field above the row: its semantics must stay its own.
+          final s = await _pump(
+            tester,
+            vault: vault,
+            view: view,
+            withEditor: true,
+          );
+          final node = tester.getSemantics(_entry);
+          expect(
+            node,
+            matchesSemantics(
+              label: label,
+              textDirection: TextDirection.ltr,
+              isButton: true,
+              isFocusable: true,
+              hasTapAction: true,
+              hasFocusAction: true,
+            ),
+            reason: state,
+          );
+          expect(node.childrenCount, 0, reason: '$state: no child nodes');
+          expect(
+            node.rect.size,
+            _entryRect(tester).size,
+            reason: '$state: the node is the row, not a container around it',
+          );
+          // A screen reader's activate presses the row once.
+          node.owner!.performAction(node.id, SemanticsAction.tap);
+          await _frames(tester);
+          _expectSheetOnce(s, vault, '$state: the semantics tap action');
+        }
+        handle.dispose();
+      },
+    );
+
+    testWidgets(
+      'a click on the very corner pixels of the row opens the sheet',
+      (tester) async {
+        final points = <(String, Offset Function(Rect))>[
+          ('top left', (r) => r.topLeft + const Offset(0.5, 0.5)),
+          ('top right', (r) => r.topRight + const Offset(-0.5, 0.5)),
+          ('bottom left', (r) => r.bottomLeft + const Offset(0.5, -0.5)),
+          ('bottom right', (r) => r.bottomRight - const Offset(0.5, 0.5)),
+        ];
+        for (final (where, at) in points) {
+          final s = await _pump(tester, view: _offView());
+          await tester.tapAt(at(_entryRect(tester)));
+          await _frames(tester);
+          _expectSheetOnce(s, _local, 'a click at the $where corner');
+        }
+      },
+    );
+
+    testWidgets(
+      'Enter numpad Enter and Space open the row even under a shortcut layer that swallows them',
+      (tester) async {
+        for (final key in [
+          LogicalKeyboardKey.enter,
+          LogicalKeyboardKey.numpadEnter,
+          LogicalKeyboardKey.space,
+        ]) {
+          final s = await _pump(
+            tester,
+            view: _offView(),
+            shadowDefaultKeys: true,
+          );
+          await _tabToEntry(tester);
+          await tester.sendKeyEvent(key);
+          await _frames(tester);
+          _expectSheetOnce(
+            s,
+            _local,
+            '${key.keyLabel} under a swallowing layer',
+          );
+        }
+      },
+    );
+
+    testWidgets(
+      'the focus ring lies two pixels outside the border, is rounded 8, is not clipped and takes no hits',
+      (tester) async {
+        for (final view in [_offView(), _localFailedView()]) {
+          await _pump(tester, view: view);
+          await _tabToEntry(tester);
+          final ring = find.descendant(
+            of: find.byType(Scaffold),
+            matching: find.byWidgetPredicate((w) {
+              if (w is! DecoratedBox) return false;
+              final d = w.decoration;
+              return d is BoxDecoration &&
+                  d.border is Border &&
+                  (d.border! as Border).top.width == 2;
+            }),
+          );
+          expect(ring, findsOneWidget);
+          final entry = _entryRect(tester);
+          expect(tester.getRect(ring), entry.inflate(2));
+          expect(
+            (tester.widget<DecoratedBox>(ring).decoration as BoxDecoration)
+                .borderRadius,
+            BorderRadius.circular(8),
+          );
+          final stack = tester.widget<Stack>(
+            find.ancestor(of: ring, matching: find.byType(Stack)).first,
+          );
+          expect(
+            stack.clipBehavior,
+            Clip.none,
+            reason: 'the ring outside the box is not clipped away',
+          );
+          final ringRender = tester.renderObject(ring);
+          final hit = tester.hitTestOnBinding(entry.center);
+          expect(
+            hit.path.map((e) => e.target),
+            isNot(contains(ringRender)),
+            reason: 'the ring takes no hits',
+          );
+        }
+      },
+    );
+
+    testWidgets(
+      'label and status use the design type and sit centred with an 8 px gap after the icon',
+      (tester) async {
+        await _pump(tester, view: _offView());
+        final entry = _entryRect(tester);
+        expect(entry.top, 0, reason: 'no margin above the row');
+        final label = tester.widget<Text>(find.text('backups'));
+        final status = tester.widget<Text>(find.text('off'));
+        expect(label.style!.fontSize, 12.5);
+        expect(label.style!.height, 1.2);
+        expect(label.style!.fontFamily, OmType.sans(size: 12.5).fontFamily);
+        expect(status.style!.fontSize, 10.5);
+        expect(status.style!.height, 1.24);
+        expect(status.style!.fontFamily, OmType.mono(size: 10.5).fontFamily);
+
+        final icon = tester.getRect(
+          find.descendant(of: _entry, matching: find.byType(Icon)),
+        );
+        final labelRect = tester.getRect(_rowText('backups'));
+        final statusRect = tester.getRect(_rowText('off'));
+        expect(labelRect.left - icon.right, 8, reason: 'icon to label gap');
+        expect(
+          statusRect.right,
+          moreOrLessEquals(entry.right - 11, epsilon: 0.01),
+          reason:
+              'the status is pushed to the right edge inside border+padding',
+        );
+        expect(
+          statusRect.center.dy,
+          moreOrLessEquals(labelRect.center.dy, epsilon: 0.01),
+          reason: 'label and status are vertically centred on one line',
+        );
+      },
+    );
+
+    testWidgets(
+      'the status drops under the label when the gap of 8 px no longer fits and not before',
+      (tester) async {
+        await _pump(tester, vault: _hosted, view: _hostedSuccessView());
+        final l = tester.getRect(_rowText('backups on nas')).width;
+        final st = tester.getRect(_rowText('03:00')).width;
+        // The Wrap's width: sidebar - 2x12 margin - border 2 - padding 20 -
+        // icon 12 - gap 8.
+        const chrome = 24 + 2 + 20 + 12 + 8;
+        for (final (fits, extra) in [(true, 0.25), (false, -0.25)]) {
+          await _pump(
+            tester,
+            vault: _hosted,
+            view: _hostedSuccessView(),
+            width: chrome + l + st + 8 + extra,
+          );
+          final label = tester.getRect(_rowText('backups on nas'));
+          final status = tester.getRect(_rowText('03:00'));
+          if (fits) {
+            expect(status.top, lessThan(label.bottom - 1), reason: 'one line');
+          } else {
+            expect(
+              status.top,
+              greaterThanOrEqualTo(label.bottom - 0.01),
+              reason: 'the 8 px spacing no longer fits, so it wraps',
+            );
+          }
+        }
+      },
+    );
+
+    testWidgets(
+      'the amber row with no failure time still looks like a warning',
+      (tester) async {
+        for (final (vault, label) in [
+          (_local, 'backup failed'),
+          (_hosted, 'nas backup failed'),
+        ]) {
+          await _pump(
+            tester,
+            vault: vault,
+            view: vault == _hosted
+                ? BackupViewState(
+                    mode: BackupSheetMode.backingUp,
+                    hosted: true,
+                    status: _hostedOk(_hostedAt, inProgress: true),
+                    startedAt: _now.toUtc(),
+                    warning: true,
+                  )
+                : _noTimeWarningView(),
+          );
+          // The warning holds with a run under way and no time known.
+          expect(_badge, findsOneWidget, reason: label);
+          expect(_rowText(label), findsOneWidget, reason: _entryText(tester));
+          final icon = _icon(tester);
+          expect(icon.icon, LucideIcons.triangleAlert, reason: label);
+          expect(icon.color, OmColors.warn, reason: label);
+          expect(icon.size, 12, reason: label);
+          expect(_textColor(tester, label), OmColors.warn, reason: label);
+          expect(_box(tester).color, OmColors.warnBg, reason: label);
+          expect(_borderColor(_box(tester)), _warnLine, reason: label);
+          expect(tester.hasRunningAnimations, isFalse, reason: 'no spinner');
+        }
+      },
+    );
+
+    testWidgets('a renamed saved server renames the hosted row', (
+      tester,
+    ) async {
+      final s = await _pump(tester, vault: _hosted, view: _hostedSuccessView());
+      expect(_rowText('backups on nas'), findsOneWidget);
+      await tester.runAsync(
+        () => s.container
+            .read(settingsProvider.notifier)
+            .updateServer('srv-nas', name: 'garage'),
+      );
+      await _frames(tester);
+      expect(
+        _rowText('backups on garage'),
+        findsOneWidget,
+        reason: _entryText(tester),
+      );
+      expect(_rowText('backups on nas'), findsNothing);
+    });
+
+    testWidgets(
+      'choosing a destination reads off like a row with backups off',
+      (tester) async {
+        await _pump(
+          tester,
+          view: const BackupViewState(
+            mode: BackupSheetMode.pickingDestination,
+            settings: VaultBackupSettings(),
+          ),
+        );
+        expect(_rowText('off'), findsOneWidget, reason: _entryText(tester));
+        expect(_rowText('never'), findsNothing);
+        expect(_icon(tester).icon, LucideIcons.archive);
+      },
+    );
+
+    testWidgets(
+      'a hosted last backup takes the backup file time before the last success time',
+      (tester) async {
+        await _pump(
+          tester,
+          vault: _hosted,
+          view: BackupViewState(
+            mode: BackupSheetMode.success,
+            hosted: true,
+            status: BackupStatus(
+              enabled: true,
+              keep: 30,
+              lastAttemptAt: DateTime(2026, 11, 9, 4).toUtc(),
+              lastSuccessAt: DateTime(2026, 11, 9, 4).toUtc(),
+              lastResult: 'created',
+              lastFile: _hostedFile,
+              lastFileCreatedAt: DateTime(2026, 11, 9, 2).toUtc(),
+            ),
+          ),
+        );
+        expect(_rowText('02:00'), findsOneWidget, reason: _entryText(tester));
+        expect(_rowText('04:00'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'the redraw timer falls due exactly when the shown text next turns and not before',
+      (tester) async {
+        final cases = <(String, DateTime, BackupViewState, Duration)>[
+          (
+            'exactly one minute old turns at two',
+            _now,
+            _successView(at: _now.subtract(const Duration(minutes: 1))),
+            const Duration(minutes: 1),
+          ),
+          (
+            'five and a half minutes old turns at six',
+            _now,
+            _successView(
+              at: _now.subtract(const Duration(minutes: 5, seconds: 30)),
+            ),
+            const Duration(seconds: 30),
+          ),
+          (
+            'exactly one hour old turns at two hours',
+            _now,
+            _successView(at: _now.subtract(const Duration(hours: 1))),
+            const Duration(hours: 1),
+          ),
+          (
+            'a day and fourteen hours old turns at two days',
+            DateTime(2026, 11, 9, 10),
+            _successView(at: DateTime(2026, 11, 7, 20)),
+            const Duration(hours: 10),
+          ),
+          (
+            'a failure time today turns at local midnight',
+            DateTime(2026, 11, 9, 23, 59, 30),
+            _localFailedView(),
+            const Duration(seconds: 30),
+          ),
+        ];
+        for (final (name, start, view, turnIn) in cases) {
+          final counter = _Wi326ReadCounter();
+          final s = await _pump(
+            tester,
+            view: view,
+            clock: FakeClock(start),
+            controller: counter,
+          );
+          final before = _entryText(tester);
+          final reads = counter.reads;
+          s.clock.advance(turnIn - const Duration(milliseconds: 1));
+          await _frames(tester);
+          expect(counter.reads, reads, reason: '$name: no redraw before');
+          expect(_entryText(tester), before, reason: name);
+          s.clock.advance(const Duration(milliseconds: 1));
+          await _frames(tester);
+          expect(counter.reads, greaterThan(reads), reason: '$name: redraws');
+          expect(_entryText(tester), isNot(before), reason: '$name: it turned');
+        }
+      },
+    );
+
+    testWidgets(
+      'times near local midnight are read in local time for a local or a UTC clock',
+      (tester) async {
+        // A UTC instant that falls on another calendar day than the local
+        // one: late evening in the west, just after midnight in the east.
+        for (final (name, nowLocal, atLocal) in [
+          (
+            'late evening',
+            DateTime(2026, 11, 9, 23, 50),
+            DateTime(2026, 11, 9, 23, 30),
+          ),
+          (
+            'after midnight',
+            DateTime(2026, 11, 9, 0, 50),
+            DateTime(2026, 11, 9, 0, 30),
+          ),
+        ]) {
+          for (final utcClock in [false, true]) {
+            final start = utcClock ? nowLocal.toUtc() : nowLocal;
+            final tag = '$name, ${utcClock ? 'UTC' : 'local'} clock';
+
+            // The local clock time of the same local day, from a UTC stamp.
+            await _pump(
+              tester,
+              vault: _hosted,
+              view: BackupViewState(
+                mode: BackupSheetMode.success,
+                hosted: true,
+                status: _hostedOk(atLocal),
+              ),
+              clock: FakeClock(start),
+            );
+            final hh = atLocal.hour.toString().padLeft(2, '0');
+            final mm = atLocal.minute.toString().padLeft(2, '0');
+            expect(_rowText('$hh:$mm'), findsOneWidget, reason: tag);
+
+            // A local failure time on the same day reads as a clock time.
+            await _pump(
+              tester,
+              view: _localFailedView(at: atLocal),
+              clock: FakeClock(start),
+            );
+            expect(_rowText('$hh:$mm'), findsOneWidget, reason: tag);
+
+            // The redraw is set for the next local midnight.
+            final counter = _Wi326ReadCounter();
+            final s = await _pump(
+              tester,
+              view: _localFailedView(at: atLocal),
+              clock: FakeClock(start),
+              controller: counter,
+            );
+            final toMidnight = DateTime(2026, 11, 10).difference(nowLocal);
+            final reads = counter.reads;
+            s.clock.advance(toMidnight - const Duration(milliseconds: 1));
+            await _frames(tester);
+            expect(counter.reads, reads, reason: '$tag: not before midnight');
+            s.clock.advance(const Duration(milliseconds: 1));
+            await _frames(tester);
+            expect(
+              counter.reads,
+              greaterThan(reads),
+              reason: '$tag: at midnight',
+            );
+          }
+        }
+
+        // An earlier day is named by its local day and month.
+        for (final (at, text) in [
+          (DateTime(2026, 11, 7, 23, 30), '7 nov'),
+          (DateTime(2026, 11, 7, 0, 30), '7 nov'),
+        ]) {
+          await _pump(tester, view: _localFailedView(at: at));
+          expect(_rowText(text), findsOneWidget, reason: _entryText(tester));
+        }
       },
     );
   });
