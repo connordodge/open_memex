@@ -30,10 +30,17 @@ fn readme_upgrading_to_schema_v6_states_backup_scratch_vault_and_quitting_client
         .expect("README has an `## Upgrading to schema V6` section");
     let lower = v6.to_lowercase();
 
-    // Back up all three database files.
-    assert!(lower.contains("back up"), "{v6}");
-    for file in ["`memex.db`", "`memex.db-wal`", "`memex.db-shm`"] {
-        assert!(v6.contains(file), "the V6 section must name {file}: {v6}");
+    // Back up with `memex backup` (Spec #315 req 38), not by copying the
+    // three database files by hand.
+    assert!(
+        v6.contains("`memex backup"),
+        "the V6 section must tell the reader to run `memex backup`: {v6}"
+    );
+    for file in ["memex.db-wal", "memex.db-shm"] {
+        assert!(
+            !v6.contains(file),
+            "the V6 section no longer lists the manual copy of {file}: {v6}"
+        );
     }
     // Try a scratch vault first.
     assert!(lower.contains("scratch vault"), "{v6}");
@@ -44,6 +51,15 @@ fn readme_upgrading_to_schema_v6_states_backup_scratch_vault_and_quitting_client
     assert!(
         lower.contains("before") && lower.contains("first"),
         "the section must say to quit before the first V6 open: {v6}"
+    );
+    // The order: quit, then back up, then install the new `memex` (the first
+    // thing that opens the vault with it).
+    let quit = lower.find("quit").expect("quit");
+    let backup = v6.find("`memex backup").expect("memex backup");
+    let install = v6.find("cargo install").expect("the install step");
+    assert!(
+        quit < backup && backup < install,
+        "quit clients, then `memex backup`, then install the new binary: {v6}"
     );
 
     // The V5 section stays.
