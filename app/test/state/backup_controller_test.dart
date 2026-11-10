@@ -2214,6 +2214,29 @@ void main() {
       },
     );
 
+    test(
+      'an automatic check that resumes after the vault was closed for delete starts no backup',
+      () async {
+        // WI #360 (Spec #357 Req 33): closeForDelete leaves no vault open
+        // while the folder moves to the Trash; a check still reading the
+        // state file must not start `memex backup` on it.
+        final reader = _TestReader();
+        final r = await _rig(settings: {_vaultA.path: _on()}, reader: reader);
+        final release = reader.holdNextRead();
+        await r.open(_vaultA);
+        expect(reader.reads, hasLength(1), reason: 'the read is pending');
+        await r.open(null);
+        release.complete();
+        await r.settle();
+        expect(r.calls, isEmpty, reason: 'the vault closed during the read');
+        expect(r.inFlight, isEmpty);
+        // Open again (the reopen after a failed delete), it is still due.
+        await r.open(_vaultA);
+        expect(r.calls, hasLength(1));
+        expect(r.calls.single.vaultPath, _vaultA.path);
+      },
+    );
+
     test('dispose with a hosted poll pending cancels the poll', () async {
       final r = await _rig(
         vault: _hosted,

@@ -314,6 +314,9 @@ class LiveBackupController extends BackupController {
     }
     final last = _states[path]?.status?.lastSuccessAt;
     if (!isBackupDue(last, _clock.now())) return;
+    // A vault closed while its state was read (an open-vault delete may be
+    // moving its folder, Spec #357 Req 33) is not backed up.
+    if (_ref.read(currentVaultProvider) != LocalVaultRef(path)) return;
     await _run(path, settings, automatic: true);
   }
 
