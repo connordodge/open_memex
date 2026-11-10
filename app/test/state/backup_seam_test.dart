@@ -323,6 +323,9 @@ void main() {
           -9007199254740991,
           8640000000000001,
           -8640000000000001,
+          // The int64 extremes: abs() of the minimum overflows to itself.
+          9223372036854775807,
+          -9223372036854775807 - 1,
         ]) {
           expect(
             () => BackupStatus.fromStateJson({'last_attempt_at': ms}),
