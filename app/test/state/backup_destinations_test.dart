@@ -211,6 +211,94 @@ void main() {
       );
     });
 
+    test(
+      'a SharedLibraries folder next to a personal OneDrive lists only the personal one',
+      () async {
+        final probe = FakeCloudFolderProbe()
+          ..seedOneDrive('Personal')
+          ..seedOneDrive('SharedLibraries-Contoso');
+        final options = await _discover(probe);
+        expect(options, [
+          BackupDestinationOption(
+            provider: BackupProvider.oneDrive,
+            label: 'Personal',
+            path: p.posix.join(probe.oneDriveFolder('Personal'), _folderName),
+          ),
+          _choose(),
+        ]);
+      },
+    );
+
+    test('SharedLibraries alone lists no OneDrive row', () async {
+      final probe = FakeCloudFolderProbe()
+        ..seedOneDrive('SharedLibraries-Contoso')
+        ..seedOneDrive('SharedLibraries-Fabrikam');
+      expect(await _discover(probe), [_choose()]);
+    });
+
+    test(
+      'the exact name OneDrive-SharedLibraries without an org is skipped',
+      () async {
+        final probe = FakeCloudFolderProbe()
+          ..seedOneDrive('SharedLibraries')
+          ..seedOneDrive('Personal');
+        expect(
+          [for (final o in await _discover(probe)) o.label],
+          ['Personal', 'choose folder…'],
+        );
+      },
+    );
+
+    test(
+      'OneDrive rows stay contiguous when SharedLibraries sorts between two names',
+      () async {
+        final probe = FakeCloudFolderProbe()
+          ..seedIcloud()
+          ..seedOneDrive('Zeta')
+          ..seedOneDrive('SharedLibraries-Contoso')
+          ..seedOneDrive('Alpha')
+          ..seedOneDrive('Sierra');
+        final options = await _discover(probe);
+        expect(
+          [for (final o in options) o.label],
+          ['iCloud Drive', 'Alpha', 'Sierra', 'Zeta', 'choose folder…'],
+        );
+        expect(
+          [for (final o in options) o.provider],
+          [
+            BackupProvider.icloud,
+            BackupProvider.oneDrive,
+            BackupProvider.oneDrive,
+            BackupProvider.oneDrive,
+            null,
+          ],
+        );
+        expect(
+          options.where((o) => o.path?.contains('SharedLibraries') ?? false),
+          isEmpty,
+        );
+      },
+    );
+
+    test(
+      'a OneDrive folder whose name only resembles SharedLibraries is still listed',
+      () async {
+        final probe = FakeCloudFolderProbe()
+          ..seedOneDrive('SharedStuff')
+          ..seedOneDrive('Personal')
+          ..seedOneDrive('sharedlibraries-Contoso');
+        expect(
+          [for (final o in await _discover(probe)) o.label],
+          [
+            'Personal',
+            'SharedStuff',
+            'sharedlibraries-Contoso',
+            'choose folder…',
+          ],
+        );
+      },
+    );
+
     test('iCloud is not listed when its folder is a file', () async {
       final probe = FakeCloudFolderProbe()..addFile(_icloudPath(fakeHome));
       expect(
