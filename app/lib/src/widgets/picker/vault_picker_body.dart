@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:path/path.dart' as p;
 
+import '../../state/app_version.dart';
 import '../../state/picker_actions.dart';
 import '../../state/server_probes.dart';
 import '../../state/settings.dart';
@@ -438,11 +439,12 @@ bool _sameVault(VaultRef a, VaultRef b) {
 
 /// The full-screen picker's brand row (A3): the ring logo, `open memex` and
 /// the version.
-class _BrandRow extends StatelessWidget {
+class _BrandRow extends ConsumerWidget {
   const _BrandRow();
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final version = ref.watch(appVersionProvider);
     return Row(
       children: [
         Container(
@@ -474,10 +476,15 @@ class _BrandRow extends StatelessWidget {
           ),
         ),
         const Spacer(),
-        Text(
-          'v0.4',
-          style: OmType.mono(size: 11, color: OmColors.fg3, letterSpacing: 0.8),
-        ),
+        if (version.isNotEmpty)
+          Text(
+            'v$version',
+            style: OmType.mono(
+              size: 11,
+              color: OmColors.fg3,
+              letterSpacing: 0.8,
+            ),
+          ),
       ],
     );
   }
@@ -803,7 +810,8 @@ class _BinaryNotFoundCard extends ConsumerWidget {
           ),
           const SizedBox(height: 8),
           SelectableText(
-            'install with:\n  cargo install --path crates/memex-mcp --locked',
+            'reinstall Open Memex, or build it from source:\n'
+            '  cargo install --path crates/memex-mcp --locked',
             style: OmType.mono(size: 11.5, color: OmColors.fg1, height: 1.5),
           ),
           const SizedBox(height: 8),

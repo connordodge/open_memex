@@ -167,6 +167,7 @@ Future<Wi362Env> wi362PumpLocal(
   List<String> recentsOrder = const ['other', 'open', 'hosted'],
   bool openNote = true,
   List<VaultRef> Function(String openPath)? aliases,
+  List<Override> extraOverrides = const [],
 }) async {
   final openPath = wi361VaultNamed('memex');
   final otherPath = wi361VaultNamed('work-notes');
@@ -200,6 +201,7 @@ Future<Wi362Env> wi362PumpLocal(
     overrides: [
       vaultDbProvider.overrideWithValue(db),
       ..._wi362Overrides(() => env, actions, trash, revealer),
+      ...extraOverrides,
     ],
   );
   env = Wi362Env(
