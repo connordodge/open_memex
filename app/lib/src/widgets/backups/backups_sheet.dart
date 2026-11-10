@@ -3,6 +3,7 @@
 // design/315-vault-backups/packs/325.md, option B). The sheet renders the
 // controller's view state and calls the controller and the settings save; it
 // holds no schedule, CLI or polling logic.
+import 'dart:io' show Directory, FileSystemException;
 import 'dart:math' as math;
 
 import 'package:file_picker/file_picker.dart';
@@ -136,6 +137,15 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
           : '${ref.read(vaultBackupSettingsProvider(path)).keep}',
     );
     _keepFocus.addListener(_onKeepFocus);
+    // A stored destination is symlink-resolved, so a provider folder reached
+    // through a symlink no longer reads as its provider by its own path:
+    // discovery's rows let the card and the menu name it.
+    final destination = path == null
+        ? null
+        : ref.read(vaultBackupSettingsProvider(path)).destination;
+    if (destination != null && _whereOf(destination).provider == null) {
+      _discover();
+    }
   }
 
   @override
@@ -794,7 +804,12 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
         final file = status?.lastFile;
         final saved = destination == null
             ? null
-            : _savedLine(status?.lastBytes, destination, compact: _menuOpen);
+            : _savedLine(
+                status?.lastBytes,
+                destination,
+                _whereOfStored(destination, _providerOptions(view)),
+                compact: _menuOpen,
+              );
         return _StatusCard(
           tone: _Tone.ok,
           icon: LucideIcons.check,
@@ -855,10 +870,12 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
 
   Widget _destinationRow(BackupViewState view, VaultBackupSettings stored) {
     final destination = stored.destination;
-    final where = destination == null ? null : _whereOf(destination);
-    final label = where?.label ?? _chooseFolder;
-    final current = destination;
     final options = _keyed(_providerOptions(view));
+    final where = destination == null
+        ? null
+        : _whereOfStored(destination, [for (final (o, _) in options) o]);
+    final label = where?.label ?? _chooseFolder;
+    final current = destination == null ? null : _canonicalPath(destination);
     return _SettingRow(
       label: _destinationLabel,
       sub: where?.relative ?? '',
@@ -894,7 +911,7 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
                           _MenuItem(
                             key: key,
                             label: _optionName(option),
-                            current: option.path == current,
+                            current: _canonicalPath(option.path!) == current,
                             onTap: () => _menuSelect(option),
                           ),
                       ],
