@@ -3,12 +3,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 
 import '../db.dart';
+import 'backup_controller.dart';
 import 'editor_controller.dart';
 import 'settings.dart';
 import 'ui_state_store.dart';
 import 'vault_open_controller.dart';
 import 'vault_open_hosted.dart';
-import 'vault_ref.dart';
+import 'vault_state.dart';
 import 'vault_trash.dart';
 
 /// How a vault delete came out.
@@ -51,6 +52,12 @@ String? vaultDeleteMessage(TrashResult result, String path) {
   };
 }
 
+/// The refusal while a backup of the vault at [path] runs (Spec #357
+/// Req 33).
+String vaultBackupRunningMessage(String path) =>
+    'a backup of ${p.basename(path)} is running. try again when it '
+    'finishes. nothing was deleted.';
+
 /// Moves a local vault's folder to the Trash and forgets it.
 class VaultDeleter {
   VaultDeleter(this._ref);
@@ -60,7 +67,12 @@ class VaultDeleter {
   /// Re-checks that [path] is still a vault, moves it to the Trash and, only
   /// when that succeeds, forgets it, its recorded row outcome and its backup
   /// settings. This deletes nothing itself and leaves every backup alone.
+  /// While a backup of [path] runs ([backupInFlightProvider]) it refuses
+  /// with [vaultBackupRunningMessage] and moves nothing.
   Future<VaultDeleteResult> delete(String path) async {
+    if (_backingUp(path)) {
+      return VaultDeleteFailed(vaultBackupRunningMessage(path));
+    }
     if (!VaultDb.isVault(path)) {
       return VaultDeleteFailed(
         vaultDeleteMessage(const TrashNotFound(), path)!,
@@ -89,14 +101,22 @@ class VaultDeleter {
   ///
   /// [context] must stay mounted while the guard runs: pass the delete
   /// dialog's own, since closing the vault unmounts whatever opened it.
+  ///
+  /// When [path] is not the open vault this is [delete]. While a backup of
+  /// [path] runs it refuses before the guard and closes nothing; a backup
+  /// that starts after that is refused by [delete], and the vault reopens.
   Future<VaultDeleteResult> deleteOpenVault(
     BuildContext context,
     String path,
   ) async {
+    final vault = LocalVaultRef(path);
+    if (_ref.read(currentVaultProvider) != vault) return delete(path);
+    if (_backingUp(path)) {
+      return VaultDeleteFailed(vaultBackupRunningMessage(path));
+    }
     if (!await _ref.read(leaveVaultGuardProvider)(context)) {
       return const VaultDeleteCancelled();
     }
-    final vault = LocalVaultRef(path);
     final editor = _ref.read(editorControllerProvider.notifier);
     final opener = _ref.read(vaultOpenControllerProvider);
     editor.flushPendingSave();
@@ -116,6 +136,9 @@ class VaultDeleter {
     }
     return result;
   }
+
+  bool _backingUp(String path) =>
+      _ref.read(backupInFlightProvider).contains(path);
 }
 
 final vaultDeleterProvider = Provider<VaultDeleter>((ref) => VaultDeleter(ref));

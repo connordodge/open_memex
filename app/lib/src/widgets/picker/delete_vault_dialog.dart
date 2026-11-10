@@ -63,7 +63,9 @@ class _DeleteVaultDialogState extends ConsumerState<DeleteVaultDialog> {
   bool _deletingOpen = false;
 
   Future<void> _delete() async {
-    if (_busy) return;
+    // The button is disabled while a backup of the vault runs; a press
+    // that still arrives moves nothing.
+    if (_busy || _backingUp()) return;
     final open = ref.read(currentVaultProvider) == LocalVaultRef(widget.path);
     setState(() {
       _busy = true;
@@ -96,6 +98,8 @@ class _DeleteVaultDialogState extends ConsumerState<DeleteVaultDialog> {
     }
   }
 
+  bool _backingUp() => ref.read(backupInFlightProvider).contains(widget.path);
+
   @override
   Widget build(BuildContext context) {
     final name = p.basename(widget.path);
@@ -107,10 +111,7 @@ class _DeleteVaultDialogState extends ConsumerState<DeleteVaultDialog> {
     final backingUp = ref.watch(
       backupInFlightProvider.select((paths) => paths.contains(widget.path)),
     );
-    final error = backingUp
-        ? 'a backup of $name is running. try again when it finishes. '
-              'nothing was deleted.'
-        : _error;
+    final error = backingUp ? vaultBackupRunningMessage(widget.path) : _error;
     return PopScope(
       canPop: !_busy,
       child: Dialog(

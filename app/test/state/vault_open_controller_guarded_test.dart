@@ -364,4 +364,64 @@ void main() {
       },
     );
   });
+
+  group('launchReopen while a delete has the vault closed', () {
+    test(
+      'launchReopen leaves the vault closed for its delete closed and asks nothing',
+      () async {
+        final open = createVaultFolder('om360_open_');
+        final app = await _wi360Pump(recents: [open.path], open: open.path);
+        await app.ctrl.closeForDelete();
+        final before = await app.snapshot();
+
+        final outcome = await app.ctrl.launchReopen();
+
+        expect(outcome, isA<NoVaultToReopen>());
+        expect(app.c.read(currentVaultProvider), isNull);
+        expect(app.cli.calls, isEmpty, reason: 'no vault check, no open');
+        expect(await app.snapshot(), before);
+      },
+    );
+
+    test(
+      'launchReopen reopens the last vault again once the reopen after a failed delete failed',
+      () async {
+        final open = createVaultFolder('om360_open_');
+        final app = await _wi360Pump(
+          recents: [open.path],
+          open: open.path,
+          cli: _wi360Cli(FakeMemexCli.error('io', 'permission denied')),
+        );
+        await app.ctrl.closeForDelete();
+        await app.ctrl.reopenAfterFailedDelete(LocalVaultRef(open.path));
+        expect(app.c.read(currentVaultProvider), isNull);
+        app.cli.on('vault check', (_) => FakeMemexCli.ok());
+
+        final outcome = await app.ctrl.launchReopen();
+
+        expect(
+          outcome,
+          isA<VaultOpened>().having(
+            (o) => o.vault,
+            'vault',
+            LocalVaultRef(open.path),
+          ),
+        );
+        expect(app.c.read(currentVaultProvider), LocalVaultRef(open.path));
+      },
+    );
+
+    test(
+      'launchReopen reopens the last vault when no delete closed it',
+      () async {
+        final open = createVaultFolder('om360_open_');
+        final app = await _wi360Pump(recents: [open.path]);
+
+        final outcome = await app.ctrl.launchReopen();
+
+        expect(outcome, isA<VaultOpened>());
+        expect(app.cli.callsFor('vault check'), hasLength(1));
+      },
+    );
+  });
 }

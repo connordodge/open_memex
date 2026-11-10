@@ -252,10 +252,13 @@ class VaultOpenController {
   /// (the failed re-check may be why the delete failed), and without the
   /// guard. Writes no settings: the last vault and the recents were never
   /// changed. Completes with the open's outcome; on a failure no vault is
-  /// open.
-  Future<VaultOpenOutcome> reopenAfterFailedDelete(VaultRef vault) {
-    _closedForDelete = null;
-    return _openVault(vault, checkFolder: false, remember: false);
+  /// open. [launchReopen] leaves the vault closed until this completes.
+  Future<VaultOpenOutcome> reopenAfterFailedDelete(VaultRef vault) async {
+    try {
+      return await _openVault(vault, checkFolder: false, remember: false);
+    } finally {
+      _closedForDelete = null;
+    }
   }
 
   /// The saved server [serverId]'s access token was replaced: see
