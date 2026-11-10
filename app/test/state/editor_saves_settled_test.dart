@@ -14,15 +14,18 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/clock.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
+import 'package:open_memex_app/src/state/today_state.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 
 import '../support/editor_access_doubles.dart';
 import '../support/fake_clock.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
+import '../support/today_cli_fakes.dart';
 
 const _noteA = '01J9NOTEA00000000000000360A';
 const _noteB = '01J9NOTEB00000000000000360B';
+const _today = '2026-11-10';
 
 /// `memex update` calls that wait, one gate per call, until the test lets
 /// them through; then it writes like the real `memex update` (version + 1)
@@ -284,6 +287,67 @@ void main() {
       unawaited(old.savesSettled(e.a).then((_) => after = true));
       await pumpEventQueue();
       expect(after, isTrue, reason: 'a disposed controller writes nothing');
+    },
+  );
+
+  test(
+    'savesSettled waits for the virtual Today create in flight and completes when it lands',
+    () async {
+      final e = await _wi360Editor();
+      final gate = Completer<void>();
+      e.cli.onAddDailyCreates(e.db, gate: gate);
+      e.ctrl.loadNote(virtualTodayNote(_today));
+      await e.typeAndSave('first line of today');
+      expect(e.cli.callsFor('add'), hasLength(1), reason: 'the create is sent');
+      expect(e.updates.gates, isEmpty, reason: 'no note exists to update yet');
+
+      final w = e.watch(e.a);
+      await pumpEventQueue();
+      expect(w.done(), isFalse, reason: 'the create has not landed');
+
+      gate.complete();
+      await pumpEventQueue();
+      expect(w.done(), isTrue);
+      expect(e.db.getNote(createdDailyId), isNotNull, reason: 'created');
+    },
+  );
+
+  test(
+    'savesSettled waits for the save of a note the person left until it lands',
+    () async {
+      final e = await _wi360Editor();
+      final gate = Completer<void>();
+      e.cli.onAddDailyCreates(e.db, gate: gate);
+      e.ctrl.loadNote(virtualTodayNote(_today));
+      await e.typeAndSave('hi');
+      expect(e.cli.callsFor('add'), hasLength(1));
+      // More text while the create is in flight, then the person leaves
+      // the Today note: the extra text is saved to the created note once
+      // the create answers (no editor state to report to).
+      e.ctrl.onContentChanged('hi there');
+      e.ctrl.loadNote(e.db.getNote(_noteA));
+      await pumpEventQueue();
+
+      final w = e.watch(e.a);
+      await pumpEventQueue();
+      expect(w.done(), isFalse, reason: 'the create has not landed');
+
+      gate.complete();
+      await pumpEventQueue();
+      expect(
+        e.updates.gates,
+        hasLength(1),
+        reason: 'the left note is saved through update after the create',
+      );
+      expect(
+        w.done(),
+        isFalse,
+        reason: 'the save of the note the person left still writes',
+      );
+
+      await e.updates.release(0);
+      expect(w.done(), isTrue);
+      expect(e.db.getNote(createdDailyId)!.contentMd, contains('hi there'));
     },
   );
 }

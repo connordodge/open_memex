@@ -30,3 +30,7 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    # Bundled fonts and their OFL texts (#373); google_fonts loads these
+    # instead of fetching at run time.
+    - assets/google_fonts/

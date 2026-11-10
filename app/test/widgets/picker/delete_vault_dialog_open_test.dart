@@ -318,9 +318,16 @@ void main() {
         final trash = _Wi360MovingTrash();
         final env = await _wi360Pump(tester, trash: trash);
         await _wi360Open(tester, env.path);
+        // Two UI state writes queued when the person presses: the second
+        // only starts once the first landed, so unless the delete waits
+        // for the queue it starts after the move and recreates <vault>/.memex.
+        final store = UiStateStore(vaultPath: env.path);
+        unawaited(store.write(UiState.empty()));
+        unawaited(store.write(UiState.empty()));
 
         await tester.tap(find.byKey(_confirm));
-        await _wi360Settle(tester);
+        // Each queued write needs a few real I/O round trips.
+        await _wi360Settle(tester, rounds: 40);
         expect(env.trash.calls, [env.path]);
         expect(env.guardCalls, [true], reason: 'the open-vault delete ran');
         expect(env.current, isNull, reason: 'the vault was closed first');
@@ -571,6 +578,34 @@ void main() {
       },
     );
 
+    testWidgets(
+      'the busy dialog of a vault that is not open shows no open line and leaves the open vault open',
+      (tester) async {
+        final hold = Completer<TrashResult>();
+        final env = await _wi360Pump(
+          tester,
+          trash: FakeVaultTrash()..hold(hold),
+        );
+        final other = createVaultFolder('om360_other_').path;
+        await _wi360Open(tester, other);
+
+        await tester.tap(find.byKey(_confirm));
+        await _wi360Settle(tester, rounds: 2);
+
+        _expectBusy(tester);
+        expect(env.trash.calls, [other]);
+        expect(find.byKey(_openLine), findsNothing);
+        expect(env.guardCalls, isEmpty, reason: 'not the open vault');
+        expect(env.editor.flushes, 0);
+        expect(env.current, LocalVaultRef(env.path), reason: 'still open');
+
+        hold.complete(const Trashed());
+        await _wi360Settle(tester);
+        expect(_dialog, findsNothing);
+        expect(env.current, LocalVaultRef(env.path));
+      },
+    );
+
     testWidgets('two presses in the same frame start one open-vault delete', (
       tester,
     ) async {
@@ -701,6 +736,83 @@ void main() {
     );
 
     testWidgets(
+      'a press in the frame a backup starts moves nothing and leaves no stale refusal after the backup ends',
+      (tester) async {
+        final env = await _wi360Pump(tester);
+        await _wi360Open(tester, env.path);
+        expect(_om(tester, _confirm).onPressed, isNotNull);
+
+        // The backup starts and the press lands before the next frame
+        // rebuilds the button as disabled.
+        env.c.read(backupInFlightProvider.notifier).state = {env.path};
+        await tester.tap(find.byKey(_confirm));
+        await _wi360Settle(tester);
+
+        expect(env.guardCalls, isEmpty, reason: 'the press started nothing');
+        expect(env.editor.flushes, 0);
+        expect(env.trash.calls, isEmpty);
+        expect(env.current, LocalVaultRef(env.path));
+        expect(_dialog, findsOneWidget);
+
+        env.c.read(backupInFlightProvider.notifier).state = const {};
+        await _wi360Settle(tester, rounds: 2);
+        expect(
+          _inDialog(find.text(_backupCopy(env.path))),
+          findsNothing,
+          reason: 'the press left no refusal of its own behind',
+        );
+        expect(_inDialog(find.byIcon(LucideIcons.triangleAlert)), findsNothing);
+        _expectButtons(
+          tester,
+          confirmEnabled: true,
+          cancelEnabled: true,
+          label: 'move to trash',
+        );
+      },
+    );
+
+    testWidgets(
+      'a backup that starts while the open vault is being closed refuses the delete and leaves no stale line after it ends',
+      (tester) async {
+        final env = await _wi360Pump(tester);
+        env.guardHold = Completer<bool>();
+        await _wi360Open(tester, env.path);
+        await tester.tap(find.byKey(_confirm));
+        await _wi360Settle(tester, rounds: 2);
+        expect(env.guardCalls, [true]);
+
+        // The guard allows and a backup of the vault starts in the same turn.
+        env.guardHold!.complete(true);
+        env.c.read(backupInFlightProvider.notifier).state = {env.path};
+        await _wi360Settle(tester);
+
+        // The delete was refused: nothing moved, the vault is open again,
+        // and the backup line shows while the backup runs.
+        expect(env.trash.calls, isEmpty);
+        expect(env.current, LocalVaultRef(env.path));
+        expect(_dialog, findsOneWidget);
+        expect(_inDialog(find.text(_backupCopy(env.path))), findsOneWidget);
+        expect(_om(tester, _confirm).onPressed, isNull);
+
+        // The backup ends: the line goes and the dialog re-enables.
+        env.c.read(backupInFlightProvider.notifier).state = const {};
+        await _wi360Settle(tester, rounds: 2);
+        expect(
+          _inDialog(find.text(_backupCopy(env.path))),
+          findsNothing,
+          reason: 'the refusal is not kept as the dialog own error',
+        );
+        expect(_inDialog(find.byIcon(LucideIcons.triangleAlert)), findsNothing);
+        _expectButtons(
+          tester,
+          confirmEnabled: true,
+          cancelEnabled: true,
+          label: 'move to trash',
+        );
+      },
+    );
+
+    testWidgets(
       'a backup of another vault running leaves move to trash enabled for the open vault',
       (tester) async {
         final env = await _wi360Pump(tester);
@@ -717,6 +829,97 @@ void main() {
         await _wi360Settle(tester);
         expect(env.guardCalls, [true]);
         expect(env.trash.calls, [env.path]);
+      },
+    );
+  });
+
+  // Review r2 finding 1 (ruling F1): another spelling of the open vault
+  // folder is still the open vault.
+  group('another spelling of the open vault folder', () {
+    testWidgets(
+      'a trailing slash spelling of the open vault shows the open line and confirming closes the vault before the trash',
+      (tester) async {
+        final trash = _Wi360MovingTrash();
+        final env = await _wi360Pump(tester, trash: trash);
+        final spelling = '${env.path}/';
+        await _wi360Open(tester, spelling);
+
+        expect(_inDialog(find.byKey(_openLine)), findsOneWidget);
+        expect(_inDialog(find.text(_openCopy(env.path))), findsOneWidget);
+
+        await tester.tap(find.byKey(_confirm));
+        await _wi360Settle(tester);
+
+        expect(env.guardCalls, [true], reason: 'asked once, mounted context');
+        expect(env.editor.flushes, 1);
+        expect(env.trash.calls, [spelling]);
+        expect(_dialog, findsNothing, reason: 'the dialog closes on success');
+        expect(env.current, isNull);
+        expect(find.byType(VaultPickerScreen), findsOneWidget);
+        expect(env.settings.lastVaultRef, isNull);
+        expect(env.settings.recentRefs, isEmpty);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'a symlink to the open vault shows no open line and confirming trashes only the link and keeps the vault open',
+      (tester) async {
+        final env = await _wi360Pump(tester);
+        final links = createPlainFolder('om360_dlglink_');
+        final link = Link(p.join(links.path, 'link'))..createSync(env.path);
+        await _wi360Open(tester, link.path);
+
+        expect(_inDialog(find.byKey(_openLine)), findsNothing);
+        expect(_inDialog(find.text(_openCopy(env.path))), findsNothing);
+
+        await tester.tap(find.byKey(_confirm));
+        await _wi360Settle(tester);
+
+        expect(env.guardCalls, isEmpty, reason: 'nothing is closed');
+        expect(env.editor.flushes, 0);
+        expect(env.trash.calls, [link.path]);
+        expect(_dialog, findsNothing, reason: 'the dialog closes on success');
+        expect(env.current, LocalVaultRef(env.path));
+        expect(find.byType(Workspace), findsOneWidget);
+        expect(env.settings.lastVaultRef, LocalVaultRef(env.path));
+        expect(env.settings.recentRefs, [LocalVaultRef(env.path)]);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'a backup running under another spelling of the open vault disables move to trash and re-enables when it ends',
+      (tester) async {
+        final env = await _wi360Pump(tester);
+        // The recents spelling has a trailing slash; the backup records the
+        // folder as opened (no slash).
+        final spelling = '${env.path}/';
+        env.c.read(backupInFlightProvider.notifier).state = {env.path};
+        await _wi360Settle(tester, rounds: 2);
+        await _wi360Open(tester, spelling);
+
+        expect(_inDialog(find.text(_backupCopy(spelling))), findsOneWidget);
+        _expectButtons(
+          tester,
+          confirmEnabled: false,
+          cancelEnabled: true,
+          label: 'move to trash',
+        );
+        await tester.tap(find.byKey(_confirm), warnIfMissed: false);
+        await _wi360Settle(tester);
+        expect(env.guardCalls, isEmpty, reason: 'nothing starts');
+        expect(env.trash.calls, isEmpty);
+        expect(env.current, LocalVaultRef(env.path));
+
+        env.c.read(backupInFlightProvider.notifier).state = const {};
+        await _wi360Settle(tester, rounds: 2);
+        _expectButtons(
+          tester,
+          confirmEnabled: true,
+          cancelEnabled: true,
+          label: 'move to trash',
+        );
       },
     );
   });

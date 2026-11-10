@@ -7,12 +7,12 @@
 // - `reopenAfterFailedDelete` reopens the way a pill switch does: no guard,
 //   `memex vault check`, no folder shape check.
 // Seams: FakeMemexCli (`vault check`), mock prefs, temp vault folders.
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:open_memex_app/src/db.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
 import 'package:open_memex_app/src/state/settings.dart';
 import 'package:open_memex_app/src/state/vault_open_controller.dart';
@@ -21,6 +21,7 @@ import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../support/fake_memex_cli.dart';
+import '../support/token_store_fakes.dart';
 import '../support/vault_folders.dart';
 
 /// One app state: prefs with [recents] (most recent first, the first is the
@@ -61,7 +62,7 @@ Future<_Wi360App> _wi360Pump({
   bool realDb = false,
 }) async {
   SharedPreferences.setMockInitialValues({'memex.binary_path': 'fake-memex'});
-  final settings = await SettingsController.load();
+  final settings = await loadSettingsKeepingPickedBinary();
   for (final path in recents.reversed) {
     await settings.rememberVault(path);
   }
@@ -265,17 +266,26 @@ void main() {
         open: open.path,
         realDb: true,
       );
-      final sub = app.c.listen<VaultDb?>(vaultDbProvider, (_, _) {});
-      final db = sub.read()!;
+      // Read, not listened to: nothing rebuilds the provider on its own
+      // until a frame, as in the app between a close and the next frame.
+      final db = app.c.read(vaultDbProvider)!;
       expect(db.db.select('SELECT 1 AS one').single['one'], 1);
 
-      await app.ctrl.closeForDelete();
+      // No await before the checks: the handle is closed by the time the
+      // call returns, not on the next frame or microtask turn (the Trash
+      // call follows at once and must find memex.db closed).
+      final closed = app.ctrl.closeForDelete();
 
-      expect(sub.read(), isNull, reason: 'no handle with no vault open');
       expect(
         () => db.db.select('SELECT 1'),
         throwsA(anything),
         reason: 'the old handle is closed, so nothing holds memex.db open',
+      );
+      await closed;
+      expect(
+        app.c.read(vaultDbProvider),
+        isNull,
+        reason: 'no handle with no vault open',
       );
     });
   });
@@ -407,6 +417,60 @@ void main() {
             LocalVaultRef(open.path),
           ),
         );
+        expect(app.c.read(currentVaultProvider), LocalVaultRef(open.path));
+      },
+    );
+
+    test(
+      'launchReopen leaves the vault closed while the reopen after a failed delete is still checking it',
+      () async {
+        final open = createVaultFolder('om360_open_');
+        final app = await _wi360Pump(recents: [open.path], open: open.path);
+        final gate = Completer<void>();
+        app.cli.on('vault check', (_) async {
+          await gate.future;
+          return FakeMemexCli.ok();
+        });
+        await app.ctrl.closeForDelete();
+        final reopen = app.ctrl.reopenAfterFailedDelete(
+          LocalVaultRef(open.path),
+        );
+        await pumpEventQueue();
+        expect(app.cli.callsFor('vault check'), hasLength(1), reason: 'held');
+        expect(app.c.read(currentVaultProvider), isNull);
+
+        // The picker mounts meanwhile and asks for its launch reopen.
+        final launch = await app.ctrl.launchReopen();
+
+        expect(launch, isA<NoVaultToReopen>());
+        expect(
+          app.cli.callsFor('vault check'),
+          hasLength(1),
+          reason: 'no second open runs in parallel',
+        );
+        gate.complete();
+        expect(await reopen, isA<VaultOpened>());
+        expect(app.c.read(currentVaultProvider), LocalVaultRef(open.path));
+        expect(app.cli.callsFor('vault check'), hasLength(1));
+      },
+    );
+
+    test(
+      'launchReopen reopens the last vault again once the vault was opened again after its close for a delete',
+      () async {
+        final open = createVaultFolder('om360_open_');
+        final app = await _wi360Pump(recents: [open.path], open: open.path);
+        await app.ctrl.closeForDelete();
+        expect(await app.ctrl.launchReopen(), isA<NoVaultToReopen>());
+
+        // The person opens the same vault again, then leaves it.
+        final opened = await app.ctrl.openVault(LocalVaultRef(open.path));
+        expect(opened, isA<VaultOpened>());
+        app.c.read(currentVaultProvider.notifier).state = null;
+
+        final outcome = await app.ctrl.launchReopen();
+
+        expect(outcome, isA<VaultOpened>());
         expect(app.c.read(currentVaultProvider), LocalVaultRef(open.path));
       },
     );

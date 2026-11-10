@@ -66,7 +66,7 @@ class _DeleteVaultDialogState extends ConsumerState<DeleteVaultDialog> {
     // The button is disabled while a backup of the vault runs; a press
     // that still arrives moves nothing.
     if (_busy || _backingUp()) return;
-    final open = ref.read(currentVaultProvider) == LocalVaultRef(widget.path);
+    final open = _isOpen(ref.read(currentVaultProvider));
     setState(() {
       _busy = true;
       _deletingOpen = open;
@@ -91,25 +91,37 @@ class _DeleteVaultDialogState extends ConsumerState<DeleteVaultDialog> {
       case VaultDeleteFailed(:final message):
         setState(() {
           _busy = false;
-          _error = message;
+          // A backup that started during the delete refused it. That line
+          // comes from the backup state, so it goes when the backup ends;
+          // kept here it would stay after the button re-enables.
+          _error = message == vaultBackupRunningMessage(widget.path)
+              ? null
+              : message;
         });
       case VaultDeleteCancelled():
         setState(() => _busy = false);
     }
   }
 
-  bool _backingUp() => ref.read(backupInFlightProvider).contains(widget.path);
+  bool _backingUp() =>
+      isVaultBackingUp(ref.read(backupInFlightProvider), widget.path);
+
+  /// Whether [current] is this dialog's vault, in any spelling of its
+  /// folder ([isOpenVaultFolder]).
+  bool _isOpen(VaultRef? current) =>
+      current is LocalVaultRef && isOpenVaultFolder(current.path, widget.path);
 
   @override
   Widget build(BuildContext context) {
     final name = p.basename(widget.path);
-    final isOpen =
-        ref.watch(currentVaultProvider) == LocalVaultRef(widget.path);
+    final isOpen = _isOpen(ref.watch(currentVaultProvider));
     final openLine = _busy ? _deletingOpen : isOpen;
     // A backup of this vault running refuses the delete until it ends
-    // (Spec #357 Req 32); the dialog re-enables by itself.
+    // (Spec #357 Req 33); the dialog re-enables by itself.
     final backingUp = ref.watch(
-      backupInFlightProvider.select((paths) => paths.contains(widget.path)),
+      backupInFlightProvider.select(
+        (paths) => isVaultBackingUp(paths, widget.path),
+      ),
     );
     final error = backingUp ? vaultBackupRunningMessage(widget.path) : _error;
     return PopScope(
