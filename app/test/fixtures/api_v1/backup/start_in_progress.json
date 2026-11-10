@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "backup_in_progress",
+    "message": "a backup of this vault is already running: seed"
+  }
+}

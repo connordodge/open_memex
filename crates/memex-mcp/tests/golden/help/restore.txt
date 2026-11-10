@@ -1,0 +1,8 @@
+Make a new vault folder from a backup file
+
+Usage: memex restore --from <FROM> --to <TO>
+
+Options:
+      --from <FROM>  Backup file (`.memex.zip`)
+      --to <TO>      New vault folder (must not exist, or be an empty folder)
+  -h, --help         Print help
