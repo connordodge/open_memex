@@ -7,7 +7,9 @@
 // Tab applies.
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/src/widgets/editor/source_surface.dart';
 
 import '../robots/segmented_editor_robot.dart';
 import '../support/app_harness.dart';
@@ -48,14 +50,57 @@ TextEditingController _ctrl(SegmentedEditorRobot r) =>
 bool _bodyHasFocus(SegmentedEditorRobot r) =>
     r.tester.widget<EditableText>(_sourceEditable(r)).focusNode.hasFocus;
 
-/// Presses Tab (Shift+Tab with [shift]); returns whether Flutter handled it.
+/// Presses Tab (Shift+Tab with [shift]); returns whether the editor's Tab
+/// branch consumed it. The sidebar's backups row (WI #326) is a tab stop, so
+/// a Tab the editor leaves alone is now taken by the default focus traversal
+/// (`sendKeyEvent` answers true) and moves focus out of the body; that counts
+/// as "not handled" here, and the body gets its focus back for the next press.
 Future<bool> _pressTab(SegmentedEditorRobot r, {bool shift = false}) async {
   final tester = r.tester;
   if (shift) await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
   final handled = await tester.sendKeyEvent(LogicalKeyboardKey.tab);
   if (shift) await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
   await tester.pump();
+  if (!_bodyHasFocus(r)) {
+    await tester.showKeyboard(r.sourceBody);
+    await tester.pump();
+    return false;
+  }
   return handled;
+}
+
+/// Presses Tab (Shift+Tab with [shift]) the way a keyboard reaches an IME:
+/// the framework's key handlers see it, and if none consumes it the platform
+/// text system (here: nothing) gets it. `sendKeyEvent` would add flutter_test's
+/// stand-in for macOS answering an unhandled Tab with `insertTab:`, which a
+/// composing IME would swallow instead. Returns whether Flutter consumed it.
+Future<bool> _tabToIme(WidgetTester tester, {bool shift = false}) async {
+  if (shift) {
+    await KeyEventSimulator.simulateKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+  }
+  final handled = await KeyEventSimulator.simulateKeyDownEvent(
+    LogicalKeyboardKey.tab,
+  );
+  await KeyEventSimulator.simulateKeyUpEvent(LogicalKeyboardKey.tab);
+  if (shift) {
+    await KeyEventSimulator.simulateKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+  }
+  await tester.pump();
+  return handled;
+}
+
+/// A controller whose value, while [noCaret] is set, has no valid selection.
+class _NoCaretController extends TextEditingController {
+  _NoCaretController(String text) : super(text: text);
+
+  bool noCaret = false;
+
+  @override
+  TextEditingValue get value => noCaret
+      ? super.value.copyWith(
+          selection: const TextSelection.collapsed(offset: -1),
+        )
+      : super.value;
 }
 
 void main() {
@@ -252,11 +297,20 @@ void main() {
     await tester.pump();
     expect(_ctrl(r).value.composing, const TextRange(start: 7, end: 8));
 
-    final handled = await _pressTab(r);
+    // Spec #193 R7: the key goes to the IME unchanged. The sidebar's backups
+    // row (WI #326) is a tab stop, so the default focus traversal must not
+    // take it: focus stays in the body and the composing range survives
+    // (a focus move would end the IME session). No focus restore and no
+    // re-compose.
+    final handled = await _tabToIme(tester);
     expect(handled, isFalse, reason: 'Tab goes to the IME');
+    expect(_bodyHasFocus(r), isTrue, reason: 'focus stays in the body');
+    expect(_ctrl(r).value.composing, const TextRange(start: 7, end: 8));
     expect(r.sourceText, '- a\n- bk');
-    final shifted = await _pressTab(r, shift: true);
+    final shifted = await _tabToIme(tester, shift: true);
     expect(shifted, isFalse, reason: 'Shift+Tab goes to the IME');
+    expect(_bodyHasFocus(r), isTrue, reason: 'focus stays in the body');
+    expect(_ctrl(r).value.composing, const TextRange(start: 7, end: 8));
     expect(r.sourceText, '- a\n- bk');
     // Control: once the composing range ends, the same Tab indents, so the
     // checks above pass because of the IME rule and not for lack of a handler.
@@ -328,6 +382,124 @@ void main() {
       expect(handled, isTrue);
       expect(r.sourceText, '- [ ] a\n  - [x] b');
       await r.waitForSave();
+    },
+    variant: _mac,
+  );
+
+  testWidgets(
+    'Source mode Tab while composing reaches no handler above the editor',
+    (tester) async {
+      // Spec #193 R7. In the app, an ancestor above the editor (the default
+      // Tab shortcut, focus traversal into the sidebar backups row, WI #326)
+      // sees a Tab the editor leaves alone and can take it from the IME.
+      // While composing, the editor must stop the key from climbing, for Tab
+      // and Shift+Tab; Enter still climbs (the platform inserts the newline).
+      final ctrl = TextEditingController(text: '- a\n- bk');
+      addTearDown(ctrl.dispose);
+      final above = <LogicalKeyboardKey>[];
+      await tester.pumpWidget(
+        ProviderScope(
+          child: MaterialApp(
+            home: Scaffold(
+              body: Focus(
+                onKeyEvent: (_, event) {
+                  if (event is KeyDownEvent) above.add(event.logicalKey);
+                  return KeyEventResult.ignored;
+                },
+                child: SourceSurface(bodyCtrl: ctrl, onContentChanged: (_) {}),
+              ),
+            ),
+          ),
+        ),
+      );
+      final body = find.descendant(
+        of: find.byKey(const Key('editor-body')),
+        matching: find.byType(EditableText),
+      );
+      await tester.showKeyboard(body);
+      ctrl.value = const TextEditingValue(
+        text: '- a\n- bk',
+        selection: TextSelection.collapsed(offset: 8),
+        composing: TextRange(start: 7, end: 8),
+      );
+      await tester.pump();
+
+      expect(await _tabToIme(tester), isFalse);
+      expect(await _tabToIme(tester, shift: true), isFalse);
+      expect(
+        above.where((k) => k == LogicalKeyboardKey.tab),
+        isEmpty,
+        reason: 'no ancestor sees Tab while composing',
+      );
+      expect(ctrl.text, '- a\n- bk');
+      expect(ctrl.value.composing, const TextRange(start: 7, end: 8));
+
+      // Enter is not Tab: it still reaches the ancestors while composing.
+      await KeyEventSimulator.simulateKeyDownEvent(LogicalKeyboardKey.enter);
+      await KeyEventSimulator.simulateKeyUpEvent(LogicalKeyboardKey.enter);
+      expect(above, contains(LogicalKeyboardKey.enter));
+
+      // Control: with no composing range the editor takes Tab itself and
+      // indents, so the ancestor still never sees it, and the check above was
+      // not passing for want of a handler.
+      ctrl.value = const TextEditingValue(
+        text: '- a\n- bk',
+        selection: TextSelection.collapsed(offset: 8),
+      );
+      await tester.pump();
+      expect(await _tabToIme(tester), isTrue);
+      expect(ctrl.text, '- a\n  - bk');
+    },
+    variant: _mac,
+  );
+
+  testWidgets(
+    'Source mode Tab with no valid selection and no composing is left alone for the ancestors',
+    (tester) async {
+      // The editor has no caret to indent at, so it neither indents nor
+      // consumes the key: an ancestor above it still sees Tab.
+      // A focused field always gets a caret from the framework, so the
+      // controller reports the value the key handler reads with none.
+      final ctrl = _NoCaretController('- a\n- b');
+      addTearDown(ctrl.dispose);
+      final above = <LogicalKeyboardKey>[];
+      await tester.pumpWidget(
+        ProviderScope(
+          child: MaterialApp(
+            home: Scaffold(
+              body: Focus(
+                onKeyEvent: (_, event) {
+                  if (event is KeyDownEvent) above.add(event.logicalKey);
+                  return KeyEventResult.ignored;
+                },
+                child: SourceSurface(bodyCtrl: ctrl, onContentChanged: (_) {}),
+              ),
+            ),
+          ),
+        ),
+      );
+      final body = find.descendant(
+        of: find.byKey(const Key('editor-body')),
+        matching: find.byType(EditableText),
+      );
+      await tester.showKeyboard(body);
+      await tester.pump();
+      ctrl.noCaret = true;
+      expect(ctrl.value.selection.isValid, isFalse);
+      expect(ctrl.value.composing.isValid, isFalse);
+
+      await _tabToIme(tester);
+      await _tabToIme(tester, shift: true);
+      expect(
+        above.where((k) => k == LogicalKeyboardKey.tab),
+        hasLength(2),
+        reason: 'the editor left both Tab presses to the ancestors',
+      );
+      // Enter has no caret to continue a list from either.
+      await KeyEventSimulator.simulateKeyDownEvent(LogicalKeyboardKey.enter);
+      await KeyEventSimulator.simulateKeyUpEvent(LogicalKeyboardKey.enter);
+      expect(above, contains(LogicalKeyboardKey.enter));
+      expect(ctrl.text, '- a\n- b');
     },
     variant: _mac,
   );
