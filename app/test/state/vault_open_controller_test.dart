@@ -39,7 +39,7 @@ Future<ProviderContainer> _app({
     'memex.recent_vaults': recents,
     'memex.last_vault': ?lastVault,
   });
-  final settings = await SettingsController.load();
+  final settings = await loadSettingsKeepingPickedBinary();
   final db = FakeVaultDb.v5();
   final c = ProviderContainer(
     overrides: [
@@ -718,7 +718,7 @@ void main() {
           'memex.recent_vaults': [open.path, other.path],
           'memex.last_vault': open.path,
         });
-        final settings = await SettingsController.load();
+        final settings = await loadSettingsKeepingPickedBinary();
         // The real vaultDbProvider and tabsProvider: only the settings, the
         // CLI and the clock are faked.
         final c = ProviderContainer(

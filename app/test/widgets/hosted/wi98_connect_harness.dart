@@ -136,7 +136,7 @@ Future<Wi98Env> pumpWi98Host(
   SharedPreferences.setMockInitialValues({'memex.binary_path': 'fake-memex'});
   final tokens = tokenStore ?? FakeTokenStore();
   final settings = (await tester.runAsync(
-    () => SettingsController.load(tokenStore: tokens),
+    () => loadSettingsKeepingPickedBinary(tokenStore: tokens),
   ))!;
   for (final s in seed) {
     await tester.runAsync(

@@ -12,6 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'fake_clock.dart';
 import 'fake_memex_cli.dart';
 import 'fake_vault_db.dart';
+import 'token_store_fakes.dart';
 
 /// C2.11 stdout sample for `memex settings get --key smart_folder_max_depth`.
 const settingsGetMaxDepthStdout =
@@ -77,7 +78,7 @@ Future<WorkspaceHarness> pumpWorkspace(
     'memex.recent_vaults': <String>[vaultDir.path],
     'memex.last_vault': vaultDir.path,
   });
-  final settings = await SettingsController.load();
+  final settings = await loadSettingsKeepingPickedBinary();
 
   tester.view.physicalSize = surfaceSize;
   tester.view.devicePixelRatio = 1.0;
