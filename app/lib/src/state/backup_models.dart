@@ -7,6 +7,8 @@
 // (`backup-state.json`, the hosted `GET .../backup` body, `memex restore`'s
 // `created_at`), and `fromJson` converts with `isUtc: true`.
 
+import 'backup_messages.dart';
+
 /// Smallest and largest `--keep` (Spec req 12) and its default.
 const int backupKeepMin = 1;
 const int backupKeepMax = 365;
@@ -554,6 +556,9 @@ class BackupViewState {
     this.status,
     this.errorCode,
     this.message,
+    this.automatic = false,
+    this.failedAt,
+    this.startedAt,
     this.options = const [],
     this.warning = false,
   });
@@ -574,8 +579,28 @@ class BackupViewState {
   final String? errorCode;
 
   /// For [BackupSheetMode.error] and the too-old / not-found states: the
-  /// plain-language text from `backup_messages.dart` (req 22a).
-  final String? message;
+  /// card's title, detail and warning tail, as `backup_messages.dart` built
+  /// them (req 22a). The controller builds it (it knows [automatic],
+  /// [failedAt] and the destination), so the sheet and the entry only show
+  /// it.
+  final BackupMessage? message;
+
+  /// For [BackupSheetMode.error]: the failed run was an automatic one (false:
+  /// it came from "Back up now"). The card title differs ("the automatic
+  /// backup failed ..." / "back up now failed ..."), and neither the state
+  /// file nor [warning] records it.
+  final bool automatic;
+
+  /// For [BackupSheetMode.error]: when the failed run failed. For a recorded
+  /// failure this is `status.lastAttemptAt`; an unrecorded one (exit 2,
+  /// binary not found, `network_filesystem`, `internal` before the lock) is
+  /// kept in memory (D23) and its time is only here.
+  final DateTime? failedAt;
+
+  /// For [BackupSheetMode.backingUp]: when the running backup started
+  /// ("started 14:03"). `status.lastAttemptAt` is the previous attempt, as
+  /// the state file is written only when a run finishes.
+  final DateTime? startedAt;
 
   /// For [BackupSheetMode.pickingDestination]: the rows to list.
   final List<BackupDestinationOption> options;
@@ -594,6 +619,9 @@ class BackupViewState {
           other.status == status &&
           other.errorCode == errorCode &&
           other.message == message &&
+          other.automatic == automatic &&
+          other.failedAt == failedAt &&
+          other.startedAt == startedAt &&
           _listEquals(other.options, options) &&
           other.warning == warning;
 
@@ -605,6 +633,9 @@ class BackupViewState {
     status,
     errorCode,
     message,
+    automatic,
+    failedAt,
+    startedAt,
     Object.hashAll(options),
     warning,
   );
@@ -613,6 +644,7 @@ class BackupViewState {
   String toString() =>
       'BackupViewState($mode, hosted: $hosted, settings: $settings, '
       'status: $status, errorCode: $errorCode, message: $message, '
+      'automatic: $automatic, failedAt: $failedAt, startedAt: $startedAt, '
       'options: $options, warning: $warning)';
 }
 
@@ -640,11 +672,18 @@ bool? _readBool(Map<String, Object?> json, String key) {
   throw FormatException('"$key" must be a boolean, got ${v.runtimeType}');
 }
 
+const _maxInstantMs = 8640000000000000;
+
 DateTime? _readInstant(Map<String, Object?> json, String key) {
   final ms = _readInt(json, key);
-  return ms == null
-      ? null
-      : DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true);
+  if (ms == null) return null;
+  // DateTime holds +-8.64e15 ms; a wider value is malformed input, not a
+  // RangeError for the caller to miss.
+  // Not `ms.abs()`: it overflows for the int64 minimum.
+  if (ms < -_maxInstantMs || ms > _maxInstantMs) {
+    throw FormatException('"$key" is not a valid time: $ms');
+  }
+  return DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true);
 }
 
 bool _listEquals<T>(List<T> a, List<T> b) {

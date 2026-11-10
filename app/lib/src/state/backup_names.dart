@@ -18,6 +18,20 @@ class ParsedBackupName {
 
   /// 26 characters.
   final String vaultId;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ParsedBackupName &&
+          other.label == label &&
+          other.timestamp == timestamp &&
+          other.vaultId == vaultId;
+
+  @override
+  int get hashCode => Object.hash(label, timestamp, vaultId);
+
+  @override
+  String toString() => 'ParsedBackupName($label, $timestamp, $vaultId)';
 }
 
 /// Parses [fileName] by the strict, case-sensitive grammar, from the right:
