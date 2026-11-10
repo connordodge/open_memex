@@ -117,6 +117,80 @@ class _SkewedClock extends FakeClock {
   DateTime now() => super.now().add(skew);
 }
 
+/// A hosted API whose next `GET`s can be held: the answer is fixed when the
+/// request goes out (script, unreachable), and delivered when the returned
+/// completer completes, as a slow connection would.
+class _GatedHostedApi extends FakeHostedBackupApi {
+  final List<Completer<void>> _gates = [];
+
+  /// The next `GET` waits for the returned completer before it answers.
+  Completer<void> holdNextStatus() {
+    final gate = Completer<void>();
+    _gates.add(gate);
+    return gate;
+  }
+
+  @override
+  Future<HostedBackupResult> status() async {
+    final gate = _gates.isEmpty ? null : _gates.removeAt(0);
+    HostedBackupResult? result;
+    Object? error;
+    StackTrace? stack;
+    try {
+      result = await super.status();
+    } catch (e, s) {
+      error = e;
+      stack = s;
+    }
+    if (gate != null) await gate.future;
+    if (error != null) Error.throwWithStackTrace(error, stack!);
+    return result!;
+  }
+}
+
+/// A state reader that can throw, or hold its answer until released.
+class _TestReader extends FakeBackupStateReader {
+  /// Every later `read` throws.
+  bool throwOnRead = false;
+
+  Completer<void>? _gate;
+
+  /// The next `read` answers when the returned completer completes (the
+  /// answer is the file's content when the read began).
+  Completer<void> holdNextRead() => _gate = Completer<void>();
+
+  @override
+  Future<BackupStatus?> read({
+    required String vaultPath,
+    required String destination,
+  }) async {
+    final gate = _gate;
+    _gate = null;
+    final status = await super.read(
+      vaultPath: vaultPath,
+      destination: destination,
+    );
+    if (throwOnRead) throw StateError('backup-state.json is unreadable');
+    if (gate != null) await gate.future;
+    return status;
+  }
+}
+
+/// What a view says besides its card text, which may read the clock
+/// ("3 hours ago") and so differ between two moments.
+BackupViewState _sansMessage(BackupViewState v) => BackupViewState(
+  mode: v.mode,
+  hosted: v.hosted,
+  settings: v.settings,
+  status: v.status,
+  errorCode: v.errorCode,
+  automatic: v.automatic,
+  failedAt: v.failedAt,
+  startedAt: v.startedAt,
+  options: v.options,
+  warning: v.warning,
+);
+
 /// The live controller over A0's harness, with per-vault settings a test can
 /// change, and a runner that writes the state file the way `memex backup`
 /// does (through [recordOnRun], once the run is released by [hold]).
@@ -141,6 +215,10 @@ class _Rig {
   final StateProvider<Map<String, VaultBackupSettings>> _settings;
   Completer<void>? _gate;
 
+  /// Every state map `backupControllerProvider` published, in order: what a
+  /// widget watching it rebuilds from.
+  final List<Map<VaultRef, BackupViewState>> published = [];
+
   /// What the CLI records for a run (null: records nothing). Defaults to a
   /// success at the run's time.
   BackupStatus? Function(FakeBackupCall call)? recordOnRun;
@@ -155,6 +233,18 @@ class _Rig {
   BackupController get controller => c.read(backupControllerProvider.notifier);
 
   BackupViewState view(VaultRef vault) => controller.viewStateOf(vault);
+
+  /// The state map's entry for [vault], as a widget watching the provider
+  /// sees it (null: never published).
+  BackupViewState? publishedView(VaultRef vault) =>
+      c.read(backupControllerProvider)[vault];
+
+  /// The published entry for [vault] says what [view] says now.
+  void expectPublished(VaultRef vault, {String? reason}) {
+    final shown = publishedView(vault);
+    expect(shown, isNotNull, reason: reason ?? 'published');
+    expect(_sansMessage(shown!), _sansMessage(view(vault)), reason: reason);
+  }
 
   /// Read from the harness container (it outlives the controller's).
   Set<String> get inFlight => h.container.read(backupInFlightProvider);
@@ -199,11 +289,15 @@ Future<_Rig> _rig({
   Map<(String, String), BackupStatus> state = const {},
   FakeClock? clock,
   String? serverName,
+  FakeBackupStateReader? reader,
+  FakeHostedBackupApi? hostedApi,
   void Function(BackupHarness h)? before,
 }) async {
   final h = await createBackupContainer(
     vault: vault,
     clock: clock ?? FakeClock(_start),
+    reader: reader,
+    hostedApi: hostedApi,
   );
   for (final e in state.entries) {
     h.reader.setEntry(e.key.$1, e.key.$2, e.value);
@@ -227,7 +321,7 @@ Future<_Rig> _rig({
   addTearDown(c.dispose);
   final rig = _Rig(h, c, settingsState);
   rig.recordOnRun = (call) => _ok(h.clock.now());
-  c.listen(backupControllerProvider, (_, _) {});
+  c.listen(backupControllerProvider, (_, next) => rig.published.add(next));
   await rig.settle();
   return rig;
 }
@@ -746,6 +840,33 @@ void main() {
     );
 
     test(
+      'an automatic backup_in_progress after an unrecorded failure leaves its warning and card as they were',
+      () async {
+        final r = await _rig(settings: {_vaultA.path: _on()});
+        r.recordOnRun = (_) => null;
+        r.runner.scriptBackup(const BackupBinaryNotFound());
+        await r.open(_vaultA);
+        expect(r.view(_vaultA).warning, isTrue);
+        expect(r.view(_vaultA).mode, BackupSheetMode.binaryNotFound);
+        r.runner.scriptBackup(
+          const BackupFailure(
+            code: 'backup_in_progress',
+            message: 'a backup of this vault is already running',
+          ),
+        );
+        await r.advance(_hour);
+        expect(r.calls, hasLength(2), reason: 'still due: the tick ran');
+        final view = r.view(_vaultA);
+        expect(view.warning, isTrue, reason: 'not a success, so not cleared');
+        expect(view.mode, BackupSheetMode.binaryNotFound);
+        expect(view.failedAt, _start, reason: 'the original failure');
+        expect(view.automatic, isTrue);
+        expect(r.inFlight, isEmpty);
+        r.expectPublished(_vaultA);
+      },
+    );
+
+    test(
       'no warning shows while backups are off whatever the state file says',
       () async {
         final r = await _rig(
@@ -922,6 +1043,10 @@ void main() {
       await r.advance(_hour);
       expect(r.api.statusCalls, 2);
       expect(r.view(_hosted).warning, isTrue, reason: 'unchanged');
+      // Req 31: the sheet shows the unreachable state, though a status was
+      // read before; only the warning stays as it was.
+      expect(r.view(_hosted).mode, BackupSheetMode.hostedUnreachable);
+      expect(r.view(_hosted).status, isNotNull, reason: 'the last status');
       r.api.comeBack();
       r.api.defaultStatus = _hostedStatus(
         result: 'created',
@@ -929,6 +1054,7 @@ void main() {
       );
       await r.advance(_hour);
       expect(r.view(_hosted).warning, isFalse);
+      expect(r.view(_hosted).mode, BackupSheetMode.success);
     });
 
     test(
@@ -1489,6 +1615,103 @@ void main() {
     );
 
     test(
+      'an unrecorded failure stays while the state entry is the same or gone and goes when another attempt appears',
+      () async {
+        final seen = _ok(_start.subtract(const Duration(hours: 30)));
+        final r = await _rig(
+          settings: {_vaultA.path: _on(automatic: false)},
+          state: {(_vaultA.path, _destA): seen},
+        );
+        r.recordOnRun = (_) => null;
+        r.controller.openSheet(_vaultA);
+        await r.settle();
+        r.runner.scriptBackup(const BackupBinaryNotFound());
+        await r.controller.backUpNow(_vaultA);
+        await r.settle();
+        expect(r.view(_vaultA).mode, BackupSheetMode.binaryNotFound);
+        r.controller.openSheet(_vaultA);
+        await r.settle();
+        expect(
+          r.view(_vaultA).mode,
+          BackupSheetMode.binaryNotFound,
+          reason: 'same',
+        );
+        // The entry vanishes (the file was deleted): no news either.
+        r.reader.clearEntry(_vaultA.path, _destA);
+        r.controller.openSheet(_vaultA);
+        await r.settle();
+        expect(
+          r.view(_vaultA).mode,
+          BackupSheetMode.binaryNotFound,
+          reason: 'gone',
+        );
+        r.reader.setEntry(_vaultA.path, _destA, _ok(_start));
+        r.controller.openSheet(_vaultA);
+        await r.settle();
+        expect(
+          r.view(_vaultA).mode,
+          BackupSheetMode.success,
+          reason: 'another',
+        );
+        r.expectPublished(_vaultA);
+      },
+    );
+
+    test(
+      'a wall clock step back keeps no unrecorded failure once a later success is recorded',
+      () async {
+        final clock = _SkewedClock(_start);
+        final r = await _rig(settings: {_vaultA.path: _on()}, clock: clock);
+        r.recordOnRun = (_) => null;
+        r.runner.scriptBackup(const BackupBinaryNotFound());
+        await r.open(_vaultA);
+        expect(r.view(_vaultA).mode, BackupSheetMode.binaryNotFound);
+        expect(r.view(_vaultA).failedAt, _start);
+        // The wall clock steps back two hours; a scheduled `memex backup`
+        // succeeds at 07:30 wall time, before the failure's 09:00.
+        clock.skew = const Duration(hours: -2);
+        r.reader.setEntry(
+          _vaultA.path,
+          _destA,
+          _ok(DateTime.utc(2026, 11, 9, 7, 30)),
+        );
+        await r.advance(_hour);
+        expect(r.calls, hasLength(1), reason: 'a success half an hour ago');
+        expect(r.view(_vaultA).mode, BackupSheetMode.success);
+        expect(r.view(_vaultA).warning, isFalse);
+      },
+    );
+
+    test(
+      'an unreadable state file after a failed run keeps the attempt seen before the run',
+      () async {
+        final seen = _ok(_start.subtract(const Duration(hours: 30)));
+        final reader = _TestReader();
+        final r = await _rig(
+          settings: {_vaultA.path: _on(automatic: false)},
+          state: {(_vaultA.path, _destA): seen},
+          reader: reader,
+        );
+        r.controller.openSheet(_vaultA);
+        await r.settle();
+        r.recordOnRun = (_) {
+          reader.throwOnRead = true;
+          return null;
+        };
+        r.runner.scriptBackup(const BackupBinaryNotFound());
+        await r.controller.backUpNow(_vaultA);
+        await r.settle();
+        reader.throwOnRead = false;
+        expect(r.view(_vaultA).mode, BackupSheetMode.binaryNotFound);
+        // The file reads again, with the attempt that was there before the
+        // run: nothing new, so the failure stays.
+        r.controller.openSheet(_vaultA);
+        await r.settle();
+        expect(r.view(_vaultA).mode, BackupSheetMode.binaryNotFound);
+      },
+    );
+
+    test(
       'changing the destination hides an unrecorded failure of the old one',
       () async {
         final r = await _rig(settings: {_vaultA.path: _on()});
@@ -1662,6 +1885,153 @@ void main() {
     );
 
     test(
+      'a hosted POST pending after an unreachable read shows backing up not unreachable',
+      () async {
+        final r = await _rig(
+          vault: _hosted,
+          before: (h) => h.hostedApi.goUnreachable(),
+        );
+        expect(r.view(_hosted).mode, BackupSheetMode.hostedUnreachable);
+        r.api.comeBack();
+        final release = r.api.holdStart();
+        final press = r.controller.backUpNow(_hosted);
+        await r.settle();
+        expect(r.view(_hosted).mode, BackupSheetMode.backingUp);
+        expect(r.view(_hosted).startedAt, _start);
+        r.expectPublished(_hosted);
+        release.complete();
+        await press;
+        await r.settle();
+        expect(r.view(_hosted).mode, BackupSheetMode.backingUp);
+        expect(r.api.startCalls, 1);
+      },
+    );
+
+    test(
+      'a hosted server that goes away mid run shows unreachable and stops the 2 s poll until the next hourly read',
+      () async {
+        final r = await _rig(
+          vault: _hosted,
+          before: (h) =>
+              h.hostedApi.defaultStatus = _hostedStatus(inProgress: true),
+        );
+        r.controller.openSheet(_hosted);
+        await r.settle();
+        expect(r.api.statusCalls, 2);
+        expect(r.view(_hosted).mode, BackupSheetMode.backingUp);
+        r.api.goUnreachable();
+        await r.advance(_s2, step: _s1);
+        expect(r.api.statusCalls, 3, reason: 'the poll GET that fails');
+        expect(r.view(_hosted).mode, BackupSheetMode.hostedUnreachable);
+        expect(r.view(_hosted).warning, isFalse);
+        r.expectPublished(_hosted);
+        await r.advance(const Duration(minutes: 30), step: _s1 * 60);
+        expect(r.api.statusCalls, 3, reason: 'no 2 s poll while unreachable');
+        await r.advance(const Duration(minutes: 30), step: _s1 * 60);
+        expect(r.api.statusCalls, 4, reason: 'the hourly read tries again');
+        expect(r.view(_hosted).mode, BackupSheetMode.hostedUnreachable);
+        r.api.comeBack();
+        r.api.defaultStatus = _hostedStatus(
+          result: 'created',
+          at: _start.add(_hour),
+        );
+        await r.advance(_hour);
+        expect(r.view(_hosted).mode, BackupSheetMode.success);
+        r.expectPublished(_hosted);
+      },
+    );
+
+    test(
+      'a hosted GET sent before a press and answered after it is dropped',
+      () async {
+        final api = _GatedHostedApi();
+        final r = await _rig(vault: _hosted, hostedApi: api);
+        // The sheet opens: its GET still waits for the server (the answer is
+        // the server's old failure from its own schedule).
+        final old = _start.subtract(const Duration(hours: 2));
+        final stale = api.holdNextStatus();
+        api.scriptStatus(_hostedStatus(result: 'backup_failed', at: old));
+        r.controller.openSheet(_hosted);
+        await r.settle();
+        expect(api.statusCalls, 2);
+        await r.controller.backUpNow(_hosted);
+        await r.settle();
+        expect(r.view(_hosted).mode, BackupSheetMode.backingUp);
+        // The old GET answers now: it is older news than the press.
+        stale.complete();
+        await r.settle();
+        expect(r.view(_hosted).mode, BackupSheetMode.backingUp);
+        expect(r.view(_hosted).startedAt, _start);
+        expect(r.view(_hosted).warning, isFalse);
+        expect(api.startCalls, 1);
+        // The poll the press set up is still there; the run ends as ours.
+        final attempt = _start.add(const Duration(minutes: 1));
+        api.defaultStatus = _hostedStatus(result: 'backup_failed', at: attempt);
+        await r.advance(_s2, step: _s1);
+        expect(api.statusCalls, 3, reason: 'the 2 s poll still runs');
+        final view = r.view(_hosted);
+        expect(view.mode, BackupSheetMode.error);
+        expect(view.failedAt, attempt);
+        expect(view.automatic, isFalse, reason: 'it was the press');
+        r.expectPublished(_hosted);
+      },
+    );
+
+    test(
+      'a hosted GET sent while a press waits and answered after it is dropped',
+      () async {
+        final api = _GatedHostedApi();
+        final r = await _rig(vault: _hosted, hostedApi: api);
+        final release = api.holdStart();
+        final press = r.controller.backUpNow(_hosted);
+        await r.settle();
+        final stale = api.holdNextStatus();
+        api.scriptStatus(
+          _hostedStatus(
+            result: 'backup_failed',
+            at: _start.subtract(const Duration(hours: 2)),
+          ),
+        );
+        r.controller.openSheet(_hosted);
+        await r.settle();
+        expect(api.statusCalls, 2, reason: 'the GET goes out during the POST');
+        release.complete();
+        await press;
+        await r.settle();
+        stale.complete();
+        await r.settle();
+        expect(r.view(_hosted).mode, BackupSheetMode.backingUp);
+        expect(r.view(_hosted).startedAt, _start);
+        api.defaultStatus = _hostedStatus(result: 'created', at: _start);
+        await r.advance(_s2, step: _s1);
+        expect(api.statusCalls, 3, reason: 'the 2 s poll still runs');
+        expect(r.view(_hosted).mode, BackupSheetMode.success);
+      },
+    );
+
+    test(
+      'a hosted GET that could not reach the server before a press is dropped when it answers after it',
+      () async {
+        final api = _GatedHostedApi();
+        final r = await _rig(vault: _hosted, hostedApi: api);
+        final stale = api.holdNextStatus();
+        api.goUnreachable();
+        r.controller.openSheet(_hosted);
+        await r.settle();
+        api.comeBack();
+        await r.controller.backUpNow(_hosted);
+        await r.settle();
+        expect(r.view(_hosted).mode, BackupSheetMode.backingUp);
+        stale.complete();
+        await r.settle();
+        expect(r.view(_hosted).mode, BackupSheetMode.backingUp);
+        expect(r.view(_hosted).mode, isNot(BackupSheetMode.hostedUnreachable));
+        await r.advance(_s2, step: _s1);
+        expect(api.statusCalls, 3, reason: 'the 2 s poll still runs');
+      },
+    );
+
+    test(
       'a hosted POST answered 409 backup_in_progress has no start time',
       () async {
         final r = await _rig(vault: _hosted);
@@ -1674,6 +2044,332 @@ void main() {
         expect(r.view(_hosted).startedAt, isNull);
       },
     );
+  });
+
+  // ------------------------------------------------------------------
+  // The published state map: what the sidebar entry and the sheet watch.
+  // Every other test reads `viewStateOf`, which recomputes on each call.
+  // ------------------------------------------------------------------
+  group('published state', () {
+    test('the published state follows a local run from start to end', () async {
+      final r = await _rig(settings: {_vaultA.path: _on()});
+      expect(r.publishedView(_vaultA), isNull, reason: 'not seen yet');
+      final gate = r.hold();
+      await r.open(_vaultA);
+      expect(r.publishedView(_vaultA)?.mode, BackupSheetMode.backingUp);
+      expect(r.publishedView(_vaultA)?.startedAt, _start);
+      r.expectPublished(_vaultA);
+      gate.complete();
+      await r.settle();
+      expect(r.publishedView(_vaultA)?.mode, BackupSheetMode.success);
+      expect(r.publishedView(_vaultA)?.startedAt, isNull);
+      r.expectPublished(_vaultA);
+    });
+
+    test(
+      'the published warning turns on after an automatic failure and off after a later success',
+      () async {
+        final r = await _rig(settings: {_vaultA.path: _on()});
+        r.recordOnRun = (_) => null;
+        r.runner.scriptBackup(const BackupBinaryNotFound());
+        await r.open(_vaultA);
+        expect(r.publishedView(_vaultA)?.warning, isTrue);
+        expect(r.publishedView(_vaultA)?.mode, BackupSheetMode.binaryNotFound);
+        r.expectPublished(_vaultA);
+        r.recordOnRun = (call) => _ok(r.clock.now());
+        await r.controller.backUpNow(_vaultA);
+        await r.settle();
+        expect(r.publishedView(_vaultA)?.warning, isFalse);
+        expect(r.publishedView(_vaultA)?.mode, BackupSheetMode.success);
+        r.expectPublished(_vaultA);
+      },
+    );
+
+    test('the published warning follows an error in the state file', () async {
+      final r = await _rig(
+        vault: _vaultA,
+        settings: {_vaultA.path: _on(automatic: false)},
+        state: {(_vaultA.path, _destA): _ok(_start)},
+      );
+      expect(r.publishedView(_vaultA)?.warning, isFalse);
+      r.reader.setEntry(
+        _vaultA.path,
+        _destA,
+        _failed(_start.add(_s1), lastSuccess: _start),
+      );
+      await r.advance(_hour);
+      expect(r.publishedView(_vaultA)?.warning, isTrue);
+      expect(r.publishedView(_vaultA)?.mode, BackupSheetMode.error);
+      r.expectPublished(_vaultA);
+    });
+
+    test(
+      'the published state turns off at once when backups are turned off',
+      () async {
+        final r = await _rig(
+          vault: _vaultA,
+          settings: {_vaultA.path: _on()},
+          state: {(_vaultA.path, _destA): _ok(_start)},
+        );
+        expect(r.publishedView(_vaultA)?.mode, BackupSheetMode.success);
+        r.setSettings(_vaultA.path, _on(enabled: false));
+        await r.settle();
+        expect(r.publishedView(_vaultA)?.mode, BackupSheetMode.off);
+        r.expectPublished(_vaultA);
+        r.setSettings(_vaultA.path, _on(destination: _destB));
+        await r.settle();
+        expect(r.publishedView(_vaultA)?.mode, BackupSheetMode.neverBackedUp);
+        expect(r.publishedView(_vaultA)?.settings?.destination, _destB);
+        r.expectPublished(_vaultA);
+      },
+    );
+
+    test('a check that finds nothing new publishes nothing', () async {
+      final r = await _rig(
+        vault: _vaultA,
+        settings: {_vaultA.path: _on()},
+        state: {(_vaultA.path, _destA): _ok(_start)},
+      );
+      expect(r.publishedView(_vaultA)?.mode, BackupSheetMode.success);
+      final before = r.published.length;
+      await r.advance(const Duration(hours: 3));
+      expect(r.calls, isEmpty, reason: 'not due');
+      expect(r.reader.reads.length, greaterThan(3), reason: 'ticks re-read');
+      expect(r.published, hasLength(before), reason: 'nothing changed');
+    });
+
+    test('the published hosted state follows a press and its poll', () async {
+      final r = await _rig(vault: _hosted);
+      r.controller.openSheet(_hosted);
+      await r.settle();
+      expect(r.publishedView(_hosted)?.mode, BackupSheetMode.neverBackedUp);
+      final release = r.api.holdStart();
+      final press = r.controller.backUpNow(_hosted);
+      await r.settle();
+      expect(r.publishedView(_hosted)?.mode, BackupSheetMode.backingUp);
+      r.expectPublished(_hosted);
+      release.complete();
+      await press;
+      await r.settle();
+      expect(r.publishedView(_hosted)?.mode, BackupSheetMode.backingUp);
+      r.api.defaultStatus = _hostedStatus(result: 'created', at: _start);
+      await r.advance(_s2, step: _s1);
+      expect(r.publishedView(_hosted)?.mode, BackupSheetMode.success);
+      expect(r.publishedView(_hosted)?.warning, isFalse);
+      r.expectPublished(_hosted);
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Defensive branches the ACs do not name
+  // ------------------------------------------------------------------
+  group('defensive branches', () {
+    test(
+      'an unreadable state file reads as no entry and the check still runs',
+      () async {
+        final reader = _TestReader()..throwOnRead = true;
+        final r = await _rig(settings: {_vaultA.path: _on()}, reader: reader);
+        await r.open(_vaultA);
+        expect(r.calls, hasLength(1), reason: 'no entry: due');
+        expect(r.inFlight, isEmpty);
+        expect(r.view(_vaultA).mode, BackupSheetMode.neverBackedUp);
+        expect(r.view(_vaultA).warning, isFalse);
+        r.expectPublished(_vaultA);
+      },
+    );
+
+    test(
+      'a destination changed while the state is read stops the check',
+      () async {
+        final reader = _TestReader();
+        final r = await _rig(settings: {_vaultA.path: _on()}, reader: reader);
+        final release = reader.holdNextRead();
+        await r.open(_vaultA);
+        expect(reader.reads, hasLength(1), reason: 'the read is pending');
+        r.setSettings(_vaultA.path, _on(destination: _destB));
+        await r.settle();
+        release.complete();
+        await r.settle();
+        expect(r.calls, isEmpty, reason: 'the check was for the old folder');
+        expect(r.inFlight, isEmpty);
+        // The next tick checks the new destination.
+        await r.advance(_hour);
+        expect(r.calls, hasLength(1));
+        expect(r.calls.single.destination, _destB);
+      },
+    );
+
+    test(
+      'a backup turned off while the state is read stops the check',
+      () async {
+        final reader = _TestReader();
+        final r = await _rig(settings: {_vaultA.path: _on()}, reader: reader);
+        final release = reader.holdNextRead();
+        await r.open(_vaultA);
+        r.setSettings(_vaultA.path, _on(enabled: false));
+        await r.settle();
+        release.complete();
+        await r.settle();
+        expect(r.calls, isEmpty);
+      },
+    );
+
+    test('dispose with a hosted poll pending cancels the poll', () async {
+      final r = await _rig(
+        vault: _hosted,
+        before: (h) =>
+            h.hostedApi.defaultStatus = _hostedStatus(inProgress: true),
+      );
+      r.controller.openSheet(_hosted);
+      await r.settle();
+      expect(r.clock.pendingTimers, 2, reason: 'hourly tick and the 2 s poll');
+      r.c.dispose();
+      expect(r.clock.pendingTimers, 0);
+      final seen = r.api.statusCalls;
+      await r.advance(const Duration(hours: 2));
+      expect(r.api.statusCalls, seen);
+    });
+
+    test('closing the sheet cancels a pending hosted poll', () async {
+      final r = await _rig(
+        vault: _hosted,
+        before: (h) =>
+            h.hostedApi.defaultStatus = _hostedStatus(inProgress: true),
+      );
+      r.controller.openSheet(_hosted);
+      await r.settle();
+      expect(r.clock.pendingTimers, 2);
+      r.controller.closeSheet(_hosted);
+      expect(r.clock.pendingTimers, 1, reason: 'only the hourly tick');
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // The cards' wording comes from A1's message functions (`backupFailure
+  // Message` and the others), still constant stubs while #322 is unmerged:
+  // every `expect(view.message, backupFailureMessage(...))` above then holds
+  // whatever the controller passes. Once A1's wording differs by provider
+  // and server, this group checks that the controller passes them; until
+  // then it skips, loudly, instead of passing for nothing.
+  // ------------------------------------------------------------------
+  group('card arguments', () {
+    BackupMessage card({BackupProvider? provider, String? serverName}) =>
+        backupFailureMessage(
+          code: 'backup_destination_unavailable',
+          message: 'cannot write to the backup folder',
+          automatic: true,
+          failedAt: _start,
+          now: _start,
+          destination: serverName == null ? _destA : null,
+          provider: provider,
+          serverName: serverName,
+        );
+    final wordingLanded =
+        card(provider: BackupProvider.icloud) !=
+            card(provider: BackupProvider.googleDrive) &&
+        card(provider: BackupProvider.googleDrive) != card() &&
+        card(serverName: 'Home NAS') != card(serverName: 'Other');
+    const skipReason =
+        'A1 (#322) has not landed: its message functions are constant stubs, '
+        'so the card text cannot show which arguments the controller passes';
+
+    for (final (name, destination, provider) in [
+      (
+        'an iCloud folder with a trailing slash',
+        '$_destA/',
+        BackupProvider.icloud,
+      ),
+      ('a Google Drive folder', _destB, BackupProvider.googleDrive),
+      (
+        'a OneDrive folder',
+        '/Users/tester/Library/CloudStorage/OneDrive-Personal/'
+            'Open Memex Backups',
+        BackupProvider.oneDrive,
+      ),
+      (
+        'a chosen folder inside a provider root',
+        '/Users/tester/Library/CloudStorage/GoogleDrive-connor@example.com/'
+            'My Drive/Work/Backups',
+        null,
+      ),
+    ]) {
+      test('the local failure card names the provider of $name', () async {
+        final r = await _rig(
+          vault: _vaultA,
+          settings: {_vaultA.path: _on(destination: destination)},
+          state: {
+            (_vaultA.path, destination): _failed(
+              _start.subtract(const Duration(minutes: 30)),
+              lastSuccess: _start.subtract(const Duration(hours: 1)),
+            ),
+          },
+        );
+        final view = r.view(_vaultA);
+        final built = backupFailureMessage(
+          code: 'backup_destination_unavailable',
+          message: 'cannot write to the backup folder',
+          automatic: true,
+          failedAt: _start.subtract(const Duration(minutes: 30)),
+          now: r.clock.now(),
+          destination: destination,
+          provider: provider,
+        );
+        expect(view.message, built);
+        for (final other in [...BackupProvider.values, null]) {
+          if (other == provider) continue;
+          expect(
+            view.message,
+            isNot(
+              backupFailureMessage(
+                code: 'backup_destination_unavailable',
+                message: 'cannot write to the backup folder',
+                automatic: true,
+                failedAt: _start.subtract(const Duration(minutes: 30)),
+                now: r.clock.now(),
+                destination: destination,
+                provider: other,
+              ),
+            ),
+            reason: 'not the card of $other',
+          );
+        }
+      }, skip: wordingLanded ? false : skipReason);
+    }
+
+    test('the hosted failure card names the server', () async {
+      final r = await _rig(
+        vault: _hosted,
+        serverName: 'Home NAS',
+        before: (h) => h.hostedApi.defaultStatus = _hostedStatus(
+          result: 'backup_failed',
+          at: _start,
+        ),
+      );
+      expect(
+        r.view(_hosted).message,
+        backupFailureMessage(
+          code: 'backup_failed',
+          message: 'disk full',
+          automatic: true,
+          failedAt: _start,
+          now: r.clock.now(),
+          serverName: 'Home NAS',
+        ),
+      );
+      expect(
+        r.view(_hosted).message,
+        isNot(
+          backupFailureMessage(
+            code: 'backup_failed',
+            message: 'disk full',
+            automatic: true,
+            failedAt: _start,
+            now: r.clock.now(),
+            serverName: 'Other',
+          ),
+        ),
+      );
+    }, skip: wordingLanded ? false : skipReason);
   });
 
   // ------------------------------------------------------------------
