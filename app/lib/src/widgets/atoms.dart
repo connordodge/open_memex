@@ -367,11 +367,15 @@ class PanelHeader extends StatelessWidget {
     this.count,
     this.action,
     this.onAction,
+    this.trailing,
   });
   final String eyebrow;
   final int? count;
   final String? action;
   final VoidCallback? onAction;
+
+  /// When given, shown in place of the text [action] (#363's MANAGE).
+  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {

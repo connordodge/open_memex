@@ -170,10 +170,14 @@ void main() {
               matching: find.byType(Row),
             )
             .first;
-        final omDot = tester.widget<OmDot>(
-          find.descendant(of: localRow, matching: find.byType(OmDot)),
+        // #363: the local pill leads with a folder icon in its colour.
+        final folder = tester.widget<Icon>(
+          find.descendant(
+            of: localRow,
+            matching: find.byIcon(LucideIcons.folder),
+          ),
         );
-        expect(omDot.color, _wi96Bucket(localName));
+        expect(folder.color, _wi96Bucket(localName));
       },
     );
 

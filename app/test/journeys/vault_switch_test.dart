@@ -1,6 +1,7 @@
-// WI #69 (D12): the picker recent row, the sidebar vault pills and the vaults
-// header "+ new" (switch vault) go through the vault open controller, and
-// leaving the current vault asks `leaveVaultGuardProvider` first.
+// WI #69 (D12): the picker recent row, the sidebar vault pills and switch
+// vault (`VaultOpenController.leaveVault`, no longer on the sidebar since
+// #363's MANAGE) go through the vault open controller, and leaving the
+// current vault asks `leaveVaultGuardProvider` first.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -14,7 +15,6 @@ import 'package:open_memex_app/src/state/clock.dart';
 import 'package:open_memex_app/src/state/settings.dart';
 import 'package:open_memex_app/src/state/vault_open_controller.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
-import 'package:open_memex_app/src/widgets/atoms.dart';
 import 'package:open_memex_app/src/widgets/sidebar.dart';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -24,17 +24,9 @@ import '../support/fake_clock.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
 import '../support/vault_folders.dart';
+import '../support/wi363_sidebar.dart';
 
 const _keptNote = '01J9KKKKKKKKKKKKKKKKKKKKKK';
-
-/// The vaults header action ("+ new", drawn upper case).
-Finder _switchVaultAction() => find.descendant(
-  of: find.ancestor(
-    of: find.text('VAULTS'),
-    matching: find.byType(PanelHeader),
-  ),
-  matching: find.text('+ NEW'),
-);
 
 /// The sidebar pill for the vault folder at [path].
 Finder _pill(String path) => find.descendant(
@@ -325,7 +317,7 @@ void main() {
       (tester) async {
         final (h, _) = await _workspaceWithSecondVault(tester);
 
-        await tester.tap(_switchVaultAction());
+        wi363LeaveVault(tester);
         await tester.runAsync(() => Future<void>.delayed(Duration.zero));
         await pumpFrames(tester);
 
@@ -342,7 +334,7 @@ void main() {
         final guard = _Wi69Guard(allow: true);
         final (h, _) = await _workspaceWithSecondVault(tester, guard: guard);
 
-        await tester.tap(_switchVaultAction());
+        wi363LeaveVault(tester);
         await tester.runAsync(() => Future<void>.delayed(Duration.zero));
         await pumpFrames(tester);
 
@@ -360,7 +352,7 @@ void main() {
         final guard = _Wi69Guard(allow: false);
         final (h, _) = await _workspaceWithSecondVault(tester, guard: guard);
 
-        await tester.tap(_switchVaultAction());
+        wi363LeaveVault(tester);
         await tester.runAsync(() => Future<void>.delayed(Duration.zero));
         await pumpFrames(tester);
 
