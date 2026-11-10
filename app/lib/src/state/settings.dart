@@ -158,13 +158,14 @@ class SettingsController extends StateNotifier<AppSettings> {
     String? home,
   }) async {
     final prefs = await SharedPreferences.getInstance();
-    final binary =
-        prefs.getString(_kBinary) ??
-        MemexCli.autodiscover(
-          executablePath: executablePath,
-          exists: exists,
-          home: home,
-        );
+    // A picked path that no longer exists is skipped, never removed from
+    // prefs, so it works again if the file comes back.
+    final binary = MemexCli.autodiscover(
+      executablePath: executablePath,
+      exists: exists,
+      home: home,
+      picked: prefs.getString(_kBinary),
+    );
 
     final List<VaultRef> refs;
     final VaultRef? last;
