@@ -40,6 +40,7 @@ import 'fake_clock.dart';
 import 'fake_memex_cli.dart';
 import 'fake_vault_db.dart';
 import 'segment_editing_finder.dart';
+import 'token_store_fakes.dart';
 
 /// Today for every live-update test: the [FakeClock]'s date.
 const liveToday = '2026-10-03';
@@ -483,7 +484,7 @@ Future<LiveRobot> pumpLiveWorkspace(
     'memex.recent_vaults': <String>[vaultDir.path],
     'memex.last_vault': vaultDir.path,
   });
-  final settings = await SettingsController.load();
+  final settings = await loadSettingsKeepingPickedBinary();
 
   tester.view.physicalSize = const Size(1600, 1000);
   tester.view.devicePixelRatio = 1.0;

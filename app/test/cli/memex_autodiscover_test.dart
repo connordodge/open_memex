@@ -54,6 +54,34 @@ void main() {
       );
     });
 
+    test('an empty picked path is skipped and never looked up', () {
+      final asked = <String>[];
+      final found = MemexCli.autodiscover(
+        executablePath: _exe,
+        exists: (path) {
+          asked.add(path);
+          return path.isEmpty || path == _bundled;
+        },
+        home: _home,
+        picked: '',
+      );
+
+      expect(found, _bundled);
+      expect(asked, isNot(contains('')));
+    });
+
+    test('a picked path that exists is returned as given', () {
+      expect(
+        MemexCli.autodiscover(
+          executablePath: _exe,
+          exists: {'/fake/picked/memex', _bundled}.contains,
+          home: _home,
+          picked: '/fake/picked/memex',
+        ),
+        '/fake/picked/memex',
+      );
+    });
+
     test('a null HOME skips the cargo location and still finds the rest', () {
       expect(
         MemexCli.autodiscover(
