@@ -1616,6 +1616,45 @@ void main() {
     );
 
     test(
+      'a runner that throws is an automatic internal failure and frees the vault',
+      () async {
+        final r = await _rig(settings: {_vaultA.path: _on()});
+        r.runner.onCall = (_) => throw StateError('spawn failed');
+        await r.open(_vaultA);
+        expect(r.calls, hasLength(1));
+        expect(r.inFlight, isEmpty);
+        final view = r.view(_vaultA);
+        expect(view.mode, BackupSheetMode.error);
+        expect(view.errorCode, 'internal');
+        expect(view.automatic, isTrue);
+        expect(view.warning, isTrue);
+        expect(view.failedAt, _start);
+        expect(view.message, isNotNull);
+        await r.controller.backUpNow(_vaultA);
+        await r.settle();
+        expect(r.calls, hasLength(2), reason: 'the vault is not stuck');
+      },
+    );
+
+    test(
+      'a hosted POST that cannot reach the server leaves the state as it was and a later press posts again',
+      () async {
+        final r = await _rig(vault: _hosted);
+        r.api.goUnreachable();
+        await r.controller.backUpNow(_hosted);
+        await r.settle();
+        expect(r.api.startCalls, 1);
+        expect(r.view(_hosted).mode, BackupSheetMode.neverBackedUp);
+        expect(r.view(_hosted).startedAt, isNull);
+        expect(r.view(_hosted).warning, isFalse);
+        r.api.comeBack();
+        await r.controller.backUpNow(_hosted);
+        await r.settle();
+        expect(r.api.startCalls, 2, reason: 'the first press is not pending');
+      },
+    );
+
+    test(
       'a hosted POST answered 409 backup_in_progress has no start time',
       () async {
         final r = await _rig(vault: _hosted);
