@@ -315,17 +315,9 @@ pub async fn run_with_probe(
     }
     let (router, service) = app(config);
     if scheduled {
-        // The hourly due check (D16): the first tick is now. The task is
-        // dropped at shutdown, and a running backup's thread is never
-        // waited for (req 29).
-        tokio::spawn(async move {
-            let mut every_hour = tokio::time::interval(BACKUP_CHECK_EVERY);
-            every_hour.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            loop {
-                every_hour.tick().await;
-                service.run_due_checks().await;
-            }
-        });
+        // The hourly due check (D16). The task is dropped at shutdown, and a
+        // running backup's thread is never waited for (req 29).
+        spawn_backup_checks(service);
     }
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())
@@ -333,6 +325,22 @@ pub async fn run_with_probe(
         .context("serve")?;
     tracing::info!("vault server stopped");
     Ok(())
+}
+
+/// Starts the due check of every served vault: now, and then one
+/// [`BACKUP_CHECK_EVERY`] after each check starts, never sooner and never in
+/// a burst after a check that overran (D16, req 29). The task ends when the
+/// returned handle is aborted or the runtime is dropped.
+#[doc(hidden)]
+pub fn spawn_backup_checks(service: Arc<BackupService>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut every_hour = tokio::time::interval(BACKUP_CHECK_EVERY);
+        every_hour.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            every_hour.tick().await;
+            service.run_due_checks().await;
+        }
+    })
 }
 
 /// The embedder every served vault shares, loaded (downloading the model

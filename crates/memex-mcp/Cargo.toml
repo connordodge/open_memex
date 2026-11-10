@@ -40,3 +40,5 @@ chrono = { workspace = true }
 tempfile = { workspace = true }
 regex = { workspace = true }
 reqwest = { workspace = true }
+# start_paused: the hourly backup check is tested on a paused clock.
+tokio = { workspace = true, features = ["test-util"] }

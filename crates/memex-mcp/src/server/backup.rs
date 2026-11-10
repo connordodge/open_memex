@@ -398,3 +398,15 @@ impl Job {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::key_of;
+
+    #[test]
+    fn the_in_flight_key_ignores_the_case_of_a_folder_name() {
+        assert_eq!(key_of("Notes"), "notes");
+        assert_eq!(key_of("Notes"), key_of("nOTES"));
+        assert_ne!(key_of("notes"), key_of("notes2"));
+    }
+}

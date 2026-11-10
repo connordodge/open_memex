@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 use memex_core::backup::{self as core_backup, state, ArchiveSink, BackupRequest, BackupSource};
 use memex_core::Clock;
 use memex_mcp::server::backup::{BackupConfig, BackupService};
-use memex_mcp::server::{app, ServerConfig};
+use memex_mcp::server::{app, spawn_backup_checks, ServerConfig};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -127,6 +127,8 @@ struct Hooks {
     holds: Mutex<HashMap<String, Arc<Gate>>>,
     hold_next: Mutex<Option<Arc<Gate>>>,
     panics: Mutex<HashSet<String>>,
+    /// Backups of these folders fail (`backup_failed`) once they are let go.
+    fails: Mutex<HashSet<String>>,
     checks: Mutex<Vec<Check>>,
 }
 
@@ -152,6 +154,11 @@ impl Hooks {
     /// The next backup of `folder` panics at the write step.
     fn panic_once(&self, folder: &str) {
         self.panics.lock().unwrap().insert(folder.to_string());
+    }
+
+    /// The next backup of `folder` fails at the write step, after any hold.
+    fn fail_once(&self, folder: &str) {
+        self.fails.lock().unwrap().insert(folder.to_string());
     }
 
     fn check(&self, check: impl Fn(&str, &[String]) + Send + Sync + 'static) {
@@ -194,6 +201,11 @@ impl Hooks {
         let next = self.hold_next.lock().unwrap().take();
         if let Some(gate) = held.or(next) {
             gate.wait();
+        }
+        if self.fails.lock().unwrap().remove(&name) {
+            return Err(io::Error::other(format!(
+                "test hook: the backup of {name} fails"
+            )));
         }
         Ok(Box::new(file))
     }
@@ -778,6 +790,55 @@ async fn due_checks_during_a_held_post_skip_that_vault_and_start_the_next_only_a
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_due_check_skips_a_vault_held_by_a_post_even_when_that_backup_fails_and_leaves_it_due() {
+    let env = Env::start(&["alpha", "bravo"]).await;
+    let gate = env.hooks.hold("alpha");
+    env.hooks.fail_once("alpha");
+
+    let r = env.post("alpha").await;
+    assert_eq!(r.status, 202, "{}", r.body);
+    env.wait_entered("alpha", 1).await;
+
+    env.clock.set(T0 + MINUTE);
+    let service = env.service.clone();
+    let mut checks = tokio::spawn(async move { service.run_due_checks().await });
+    let early = tokio::time::timeout(GRACE, &mut checks).await;
+    assert!(early.is_err(), "bravo waits for the one runner");
+
+    gate.open();
+    tokio::time::timeout(WAIT, checks)
+        .await
+        .expect("run_due_checks resolved once alpha's backup ended")
+        .expect("run_due_checks did not panic");
+
+    // alpha's POST backup failed, so alpha is still due: a scheduler that
+    // queued it behind the POST (rather than skipping it while claimed) would
+    // have made a second attempt now.
+    assert_eq!(
+        env.hooks.entries(),
+        vec!["alpha", "bravo"],
+        "the check made no attempt on alpha"
+    );
+    let alpha = env.recorded("alpha");
+    assert_eq!(alpha.last_attempt_at, T0, "the POST's attempt: {alpha:?}");
+    assert_eq!(alpha.last_success_at, None, "{alpha:?}");
+    assert_eq!(alpha.last_result, "backup_failed", "{alpha:?}");
+    assert!(env.zips("alpha").is_empty());
+    let bravo = env.recorded("bravo");
+    assert_eq!(
+        (bravo.last_result.as_str(), bravo.last_attempt_at),
+        ("created", T0 + MINUTE),
+        "{bravo:?}"
+    );
+
+    // Not in flight any more, the next check does retry alpha.
+    env.clock.set(T0 + HOUR);
+    env.run_due_checks().await;
+    assert_eq!(env.hooks.count("alpha"), 2, "retried");
+    assert_eq!(env.recorded("alpha").last_result, "created");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn due_checks_back_up_one_vault_at_a_time() {
     let env = Env::start(&["alpha", "bravo"]).await;
     let gate = env.hooks.hold_next();
@@ -829,13 +890,21 @@ async fn the_in_flight_set_is_keyed_by_the_lowercased_name_and_backups_go_to_the
     let env = Env::start(&["Notes"]).await;
     let gate = env.hooks.hold("Notes");
 
-    let r = env.post("Notes").await;
+    // The backup is requested in a case other than the folder's: it must
+    // still go to `<dir>/Notes` and be recorded there.
+    let r = env.post("notes").await;
     assert_eq!(r.status, 202, "{}", r.body);
     env.wait_entered("Notes", 1).await;
-    let r = env.post("notes").await;
-    assert_eq!(r.status, 409, "another case of the same name: {}", r.body);
-    assert_eq!(r.c1_code(), "backup_in_progress");
-    assert_eq!(env.get("NOTES").await.json()["in_progress"], json!(true));
+    for other in ["NOTES", "Notes", "nOTES"] {
+        let r = env.post(other).await;
+        assert_eq!(r.status, 409, "{other}: {}", r.body);
+        assert_eq!(r.c1_code(), "backup_in_progress", "{other}");
+        assert_eq!(
+            env.get(other).await.json()["in_progress"],
+            json!(true),
+            "{other}"
+        );
+    }
 
     gate.open();
     let done = env.wait_idle("notes").await;
@@ -843,10 +912,34 @@ async fn the_in_flight_set_is_keyed_by_the_lowercased_name_and_backups_go_to_the
     assert_eq!(
         names_in(&env.dir),
         vec!["Notes".to_string()],
-        "the vault's folder name as on disk"
+        "the vault's folder name as on disk, not the case of the request"
     );
     assert_eq!(env.zips("Notes").len(), 1);
+    assert_eq!(
+        env.recorded("Notes").last_result,
+        "created",
+        "recorded for the folder the backups go to"
+    );
     assert_eq!(env.hooks.count("Notes"), 1);
+
+    // A scheduled backup claims the same entry as a POST in any case.
+    let gate = env.hooks.hold("Notes");
+    touch(&env.vault("Notes"), "changed");
+    env.clock.set(T0 + DAY);
+    let service = env.service.clone();
+    let checks = tokio::spawn(async move { service.run_due_checks().await });
+    env.wait_entered("Notes", 2).await;
+    let r = env.post("nOTES").await;
+    assert_eq!(r.status, 409, "{}", r.body);
+    assert_eq!(r.c1_code(), "backup_in_progress");
+    assert_eq!(env.get("notes").await.json()["in_progress"], json!(true));
+    gate.open();
+    tokio::time::timeout(WAIT, checks)
+        .await
+        .expect("run_due_checks resolved")
+        .expect("no panic");
+    assert_eq!(names_in(&env.dir), vec!["Notes".to_string()]);
+    assert_eq!(env.zips("Notes").len(), 2);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -893,6 +986,126 @@ async fn a_scheduled_backup_that_panics_frees_its_vault_and_the_runner() {
         "alpha retried"
     );
     assert_eq!(env.hooks.count("bravo"), 1, "bravo is not due yet");
+}
+
+// ---------------------------------------------------------------------------
+// Spec req 29: the hourly check (`spawn_backup_checks`), on a paused clock
+// ---------------------------------------------------------------------------
+
+/// Makes every backup of `vault` leave the vault changed and the fake clock a
+/// day and an hour on, so the next due check finds it due *and* changed and
+/// writes a file: the number of files is then the number of checks.
+fn every_backup_leaves_the_vault_due_and_changed(env: &Env, vault: &str) {
+    let (path, clock) = (env.vault(vault), env.clock.clone());
+    let n = AtomicI64::new(1);
+    env.hooks.check(move |_, _| {
+        let k = n.fetch_add(1, Ordering::SeqCst);
+        touch(&path, &format!("change {k}"));
+        clock.set(T0 + k * (DAY + HOUR));
+    });
+}
+
+/// Waits in real time: the runtime stays busy, so tokio's paused clock never
+/// auto-advances while a backup thread runs.
+async fn real_wait(what: &str, mut done: impl FnMut() -> bool) {
+    let started = Instant::now();
+    while !done() {
+        assert!(started.elapsed() < WAIT, "{what}: not after {WAIT:?}");
+        tokio::task::yield_now().await;
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Lets the runtime and backup threads run for [`GRACE`] of real time.
+async fn real_grace() {
+    let started = Instant::now();
+    while started.elapsed() < GRACE {
+        tokio::task::yield_now().await;
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn minutes(n: u64) -> Duration {
+    Duration::from_secs(60 * n)
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_hourly_check_runs_at_start_up_then_once_an_hour_and_never_sooner() {
+    let env = Env::start(&["alpha"]).await;
+    every_backup_leaves_the_vault_due_and_changed(&env, "alpha");
+    let checks = spawn_backup_checks(env.service.clone());
+
+    real_wait("the start-up check backs alpha up", || {
+        env.hooks.count("alpha") == 1
+    })
+    .await;
+    real_grace().await;
+    assert_eq!(
+        env.hooks.count("alpha"),
+        1,
+        "alpha is due and changed again, yet no second check ran at once"
+    );
+
+    tokio::time::advance(minutes(59)).await;
+    real_grace().await;
+    assert_eq!(env.hooks.count("alpha"), 1, "no check 59 minutes on");
+
+    tokio::time::advance(minutes(1)).await;
+    real_wait("the check an hour after start-up", || {
+        env.hooks.count("alpha") == 2
+    })
+    .await;
+    real_grace().await;
+    assert_eq!(env.hooks.count("alpha"), 2);
+
+    tokio::time::advance(minutes(59)).await;
+    real_grace().await;
+    assert_eq!(env.hooks.count("alpha"), 2, "no check 59 minutes later");
+    tokio::time::advance(minutes(1)).await;
+    real_wait("the check two hours on: the loop goes on", || {
+        env.hooks.count("alpha") == 3
+    })
+    .await;
+    real_wait("three files written", || env.zips("alpha").len() == 3).await;
+    checks.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_check_that_overran_is_followed_by_one_catch_up_check_and_the_next_an_hour_after_it() {
+    let env = Env::start(&["alpha"]).await;
+    every_backup_leaves_the_vault_due_and_changed(&env, "alpha");
+    let gate = env.hooks.hold("alpha");
+    let checks = spawn_backup_checks(env.service.clone());
+    real_wait("the start-up check is held", || {
+        env.hooks.count("alpha") == 1
+    })
+    .await;
+
+    // The check overruns by two and a half hours of ticks.
+    tokio::time::advance(minutes(150)).await;
+    gate.open();
+    real_wait("one catch-up check", || env.hooks.count("alpha") == 2).await;
+    real_grace().await;
+    assert_eq!(
+        env.hooks.count("alpha"),
+        2,
+        "missed ticks are not made up in a burst"
+    );
+
+    // The next check is an hour after the catch-up (3 h 30 m), not at the
+    // next hour mark (3 h).
+    tokio::time::advance(minutes(30)).await;
+    real_grace().await;
+    assert_eq!(env.hooks.count("alpha"), 2, "3 h: the grid is not kept");
+    tokio::time::advance(minutes(29)).await;
+    real_grace().await;
+    assert_eq!(env.hooks.count("alpha"), 2, "3 h 29 m");
+    tokio::time::advance(minutes(1)).await;
+    real_wait("the check an hour after the catch-up", || {
+        env.hooks.count("alpha") == 3
+    })
+    .await;
+    checks.abort();
 }
 
 // ---------------------------------------------------------------------------
