@@ -205,6 +205,10 @@ class SettingsController extends StateNotifier<AppSettings> {
     state = state.copyWith(vaultBackups: updated);
   }
 
+  /// Removes the backup settings saved for the local vault at [path] and
+  /// changes no other vault's entry; a no-op when there is none.
+  Future<void> removeVaultBackup(String path) async {}
+
   Future<void> setMemexBinary(String? path) async {
     if (path == null || path.isEmpty) {
       await _prefs.remove(_kBinary);

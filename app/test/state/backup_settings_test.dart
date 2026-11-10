@@ -306,6 +306,58 @@ void main() {
     );
   });
 
+  group('SettingsController.removeVaultBackup (WI #348)', () {
+    test('removeVaultBackup removes only that vault entry', () async {
+      final c = await _seeded();
+      await c.removeVaultBackup(_vaultA);
+      expect(c.state.vaultBackups, {_vaultB: _settingsB()});
+      expect(await _stored(), {_vaultB: _settingsB().toJson()});
+      // A fresh load reads the same.
+      final reloaded = await SettingsController.load(
+        tokenStore: FakeTokenStore(),
+      );
+      expect(reloaded.state.vaultBackups, {_vaultB: _settingsB()});
+    });
+
+    test('removeVaultBackup of every entry leaves an empty map', () async {
+      final c = await _seeded();
+      await c.removeVaultBackup(_vaultA);
+      await c.removeVaultBackup(_vaultB);
+      expect(c.state.vaultBackups, isEmpty);
+      final reloaded = await SettingsController.load(
+        tokenStore: FakeTokenStore(),
+      );
+      expect(reloaded.state.vaultBackups, isEmpty);
+    });
+
+    test('removeVaultBackup of a path with no entry changes nothing', () async {
+      final c = await _seeded();
+      await c.removeVaultBackup(_vaultC);
+      await _expectSeedIntact(c);
+      // Control: the same call on a present path does remove it.
+      await c.removeVaultBackup(_vaultB);
+      expect(c.state.vaultBackups, {_vaultA: _settingsA()});
+    });
+
+    test(
+      'removeVaultBackup changes nothing outside memex.vault_backups',
+      () async {
+        final c = await _seeded();
+        await c.rememberVault('/some/vault');
+        final prefs = await SharedPreferences.getInstance();
+        final recentsBefore = prefs.getStringList('memex.recent_refs');
+        final lastBefore = prefs.getString('memex.last_vault_ref');
+        await c.removeVaultBackup(_vaultA);
+        expect(c.state.vaultBackups.containsKey(_vaultA), isFalse);
+        expect(c.state.recentVaults, ['/some/vault']);
+        expect(c.state.lastVault, '/some/vault');
+        expect(c.state.memexBinaryPath, 'fake-memex');
+        expect(prefs.getStringList('memex.recent_refs'), recentsBefore);
+        expect(prefs.getString('memex.last_vault_ref'), lastBefore);
+      },
+    );
+  });
+
   group('existing setters keep vaultBackups intact', () {
     test('setMemexBinary keeps vaultBackups intact', () async {
       final c = await _seeded();
