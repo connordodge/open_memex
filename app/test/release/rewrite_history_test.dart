@@ -1090,6 +1090,8 @@ void main() {
       for (final (what, content) in [
         ('empty file', ''),
         ('blank lines only', '\n\n\n'),
+        // an entry counts only when it is non-empty after trimming
+        ('whitespace only', '  \n\t\n \r\n'),
       ]) {
         final f = File('${iso.root.path}/empty-$what.txt')
           ..writeAsStringSync(content);
@@ -1534,6 +1536,148 @@ void main() {
         expect(kv['home'], '~/cfg', reason: '$kv');
         expect(kv['real-home'], '~/cfg', reason: '$kv');
         await _expectUntouched(fx, before, r);
+      },
+    );
+  });
+
+  group('fix round 1 contracts', () {
+    // The harness strips GIT_* from the child, so each variable is added
+    // back here. Each would redirect a git -C step, or the clone, onto the
+    // source (or an empty store) unless the script clears it first.
+    for (final name in [
+      'GIT_DIR',
+      'GIT_WORK_TREE',
+      'GIT_COMMON_DIR',
+      'GIT_INDEX_FILE',
+      'GIT_OBJECT_DIRECTORY',
+      'GIT_NAMESPACE',
+    ]) {
+      test(
+        'an inherited $name does not redirect the rewrite to the source',
+        () async {
+          final iso = await isolatedEnv();
+          final fx = await _baseline(iso);
+          final emptyObjects = Directory('${iso.root.path}/inherited-objects')
+            ..createSync();
+          final value = switch (name) {
+            'GIT_DIR' || 'GIT_COMMON_DIR' => '${fx.source}/.git',
+            'GIT_WORK_TREE' => fx.source,
+            'GIT_INDEX_FILE' => '${iso.root.path}/inherited-index',
+            'GIT_OBJECT_DIRECTORY' => emptyObjects.path,
+            _ => 'inherited-ns',
+          };
+          final before = await _snapshot(fx);
+          final r = await _rewrite(fx, env: {name: value});
+          expect(r.exitCode, 0, reason: 'exit with $name set\n$r');
+          // <out> is the rewritten mirror, not an untouched copy
+          expect(await _refs(iso, fx.out), {
+            'refs/heads/main',
+            'refs/tags/v0.1.0',
+          }, reason: 'refs in out\n$r');
+          expect(
+            await _git(iso, fx.out, ['log', '-1', '--format=%s', 'main']),
+            _finalMessage,
+            reason: 'final commit\n$r',
+          );
+          expect(
+            await _git(iso, fx.out, ['show', 'refs/heads/main:src/lib.txt']),
+            'see ~/code',
+            reason: 'blob rewritten\n$r',
+          );
+          // and the source kept its own refs, remotes and files
+          await _expectUntouched(fx, before, r);
+        },
+      );
+    }
+
+    test(
+      'a deny-list email that ends another deny-list email is replaced after the longer one',
+      () async {
+        final iso = await isolatedEnv();
+        // short sorts before long bytewise, and ends the long one
+        final short = ['a', 'x.example'].join('@');
+        final long = ['ba', 'x.example'].join('@');
+        final fx = await _baseline(iso, extraDeny: [short, long]);
+        await runGit(iso, fx.source, ['checkout', '-q', 'main']);
+        await _commit(
+          iso,
+          fx.source,
+          {
+            'mails.txt': [
+              'short: $short',
+              'long: $long',
+              'long-upper: ${long.toUpperCase()}',
+              'both: $long and $short',
+              '',
+            ].join('\n'),
+          },
+          'add mails',
+          body: 'cc $long',
+        );
+        await runGit(iso, fx.source, [
+          'update-ref',
+          'refs/remotes/origin/main',
+          'main',
+        ]);
+        final before = await _snapshot(fx);
+
+        final r = await _rewrite(fx);
+        expect(r.exitCode, 0, reason: '$r');
+        final kv = _kv(
+          await _git(iso, fx.out, ['show', 'refs/heads/main:mails.txt']),
+        );
+        expect(kv['short'], _noreply, reason: '$kv');
+        // not "b" + noreply: the longer entry went first
+        expect(kv['long'], _noreply, reason: '$kv');
+        expect(kv['long-upper'], _noreply, reason: '$kv');
+        expect(kv['both'], '$_noreply and $_noreply', reason: '$kv');
+        final c = await _bySubject(iso, fx.out);
+        expect(
+          await _git(iso, fx.out, [
+            'log',
+            '-1',
+            '--format=%b',
+            c['add mails']!,
+          ]),
+          'cc $_noreply',
+        );
+        await _expectUntouched(fx, before, r);
+      },
+    );
+
+    test(
+      'a source that is a subdirectory of the working tree is read from the top of the tree',
+      () async {
+        final iso = await isolatedEnv();
+        final base = await _baseline(iso);
+        expect(
+          Directory('${base.source}/src').existsSync(),
+          isTrue,
+          reason: 'the fixture has a src dir',
+        );
+        final sub = _Fx(
+          iso,
+          base.origin,
+          '${base.source}/src',
+          base.marker,
+          base.patterns,
+        );
+        final before = await _snapshot(base);
+        final r = await _rewrite(sub);
+        expect(r.exitCode, 0, reason: '$r');
+        expect(await _refs(iso, base.out), {
+          'refs/heads/main',
+          'refs/tags/v0.1.0',
+        });
+        expect(
+          await _git(iso, base.out, ['log', '-1', '--format=%s', 'main']),
+          _finalMessage,
+        );
+        expect(
+          await _git(iso, base.out, ['show', 'refs/heads/main:src/lib.txt']),
+          'see ~/code',
+        );
+        await _expectUntouched(base, before, r);
       },
     );
   });
