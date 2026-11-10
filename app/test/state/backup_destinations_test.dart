@@ -9,6 +9,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/backup_destinations.dart';
 import 'package:open_memex_app/src/state/backup_models.dart';
 import 'package:open_memex_app/src/state/backup_settings_state.dart';
+import 'package:open_memex_app/src/state/settings.dart';
 import 'package:path/path.dart' as p;
 
 import '../support/backup_fakes.dart';
@@ -18,7 +19,7 @@ const _vault = '/Users/test/My Vaults/alpha @home~1';
 const _folderName = 'Open Memex Backups';
 
 BackupDestinationOption _choose() =>
-    const BackupDestinationOption(label: 'Choose folder…');
+    const BackupDestinationOption(label: 'choose folder…');
 
 BackupDestinationOption _icloud(FakeCloudFolderProbe probe) =>
     BackupDestinationOption(
@@ -57,7 +58,7 @@ void main() {
       final choose = (await _discover(probe)).single;
       expect(choose.provider, isNull);
       expect(choose.path, isNull);
-      expect(choose.label, 'Choose folder…');
+      expect(choose.label, 'choose folder…');
     });
 
     test(
@@ -154,7 +155,7 @@ void main() {
           'Alpha',
           'Beta',
           'Gamma',
-          'Choose folder…',
+          'choose folder…',
         ]);
       },
     );
@@ -179,10 +180,20 @@ void main() {
         final options = await _discover(probe);
         expect(
           [for (final o in options) o.label],
-          ['with@example.com', 'Choose folder…'],
+          ['with@example.com', 'choose folder…'],
         );
       },
     );
+
+    test('a label keeps hyphens after the provider prefix', () async {
+      final probe = FakeCloudFolderProbe()
+        ..seedGoogleDrive('a-b@example.com')
+        ..seedOneDrive('Work-Org-2');
+      expect(
+        [for (final o in await _discover(probe)) o.label],
+        ['a-b@example.com', 'Work-Org-2', 'choose folder…'],
+      );
+    });
 
     test('discovery ignores entries that are not provider folders', () async {
       final probe = FakeCloudFolderProbe()
@@ -196,7 +207,7 @@ void main() {
       final options = await _discover(probe);
       expect(
         [for (final o in options) o.label],
-        ['Personal', 'Choose folder…'],
+        ['Personal', 'choose folder…'],
       );
     });
 
@@ -204,7 +215,7 @@ void main() {
       final probe = FakeCloudFolderProbe()..addFile(_icloudPath(fakeHome));
       expect(
         [for (final o in await _discover(probe)) o.label],
-        ['Choose folder…'],
+        ['choose folder…'],
       );
     });
 
@@ -221,7 +232,7 @@ void main() {
         final options = await _discover(probe);
         expect(
           [for (final o in options) o.label],
-          ['link@example.com', 'Choose folder…'],
+          ['link@example.com', 'choose folder…'],
         );
         expect(
           options.first.path,
@@ -276,38 +287,69 @@ void main() {
     );
   });
 
-  group('pickBackupDestinationProvider', () {
-    Future<BackupDestinationResult> pick(
+  group('resolveBackupDestinationProvider', () {
+    Future<BackupDestinationResolution> resolve(
       BackupHarness h,
       BackupDestinationOption option, {
       String? pickedFolder,
-      String vault = _vault,
-    }) => h.read(pickBackupDestinationProvider)(
-      vault,
-      option,
-      pickedFolder: pickedFolder,
-    );
+    }) => h
+        .read(resolveBackupDestinationProvider)
+        .resolve(option, pickedFolder: pickedFolder);
+
+    /// Nothing was saved: the vault still reads the defaults and the settings
+    /// hold no entry at all.
+    void expectNothingSaved(BackupHarness h) {
+      expect(
+        h.read(vaultBackupSettingsProvider(_vault)),
+        VaultBackupSettings(),
+      );
+      expect(h.read(settingsProvider).vaultBackups, isEmpty);
+    }
 
     test(
-      'picking a provider creates its Open Memex Backups folder once and stores the resolved path',
+      'picking a provider creates its Open Memex Backups folder once and resolves the path',
       () async {
         final probe = FakeCloudFolderProbe()
           ..seedGoogleDrive('a b@example.com');
         final h = await createBackupContainer(probe: probe);
-        final option = (await _firstProvider(probe));
+        final option = await _firstProvider(probe);
         final folder =
             '${probe.googleDriveFolder('a b@example.com')}/$_folderName';
         expect(option.path, folder);
 
-        final result = await pick(h, option);
+        final result = await resolve(h, option);
 
-        expect(result, isA<BackupDestinationPicked>());
-        expect((result as BackupDestinationPicked).destination, folder);
+        expect(result, isA<BackupDestinationResolved>());
+        expect((result as BackupDestinationResolved).path, folder);
         expect(probe.createdDirectories, [folder]);
         expect(await probe.isDirectory(folder), isTrue);
-        // Stored on the vault, in the resolved form.
+        // Resolving saves nothing: A4 saves, so a cancelled pick stores none.
+        expectNothingSaved(h);
+        expect(h.cli.calls, isEmpty);
+      },
+    );
+
+    test(
+      'the resolved provider path is stored through saveVaultBackupSettingsProvider and read back',
+      () async {
+        final probe = FakeCloudFolderProbe()..seedIcloud();
+        final h = await createBackupContainer(probe: probe);
+        final option = _icloud(probe);
+
+        final result = await resolve(h, option);
+        final path = (result as BackupDestinationResolved).path;
+        expect(path, option.path);
+        final before = h.read(vaultBackupSettingsProvider(_vault));
+        await h.read(saveVaultBackupSettingsProvider)(
+          _vault,
+          before.copyWith(destination: path),
+        );
+
         final stored = h.read(vaultBackupSettingsProvider(_vault));
-        expect(stored.destination, folder);
+        expect(stored, VaultBackupSettings(destination: option.path));
+        expect(stored.enabled, isFalse);
+        expect(stored.keep, 30);
+        expect(stored.automatic, isTrue);
       },
     );
 
@@ -319,17 +361,15 @@ void main() {
         final option = _icloud(probe);
         probe.addDirectory(option.path!);
 
-        final result = await pick(h, option);
+        final result = await resolve(h, option);
 
-        expect((result as BackupDestinationPicked).destination, option.path);
+        expect(result, isA<BackupDestinationResolved>());
+        expect((result as BackupDestinationResolved).path, option.path);
         expect(
           probe.calls.where((c) => c.startsWith('createDirectory')),
           isEmpty,
         );
-        expect(
-          h.read(vaultBackupSettingsProvider(_vault)).destination,
-          option.path,
-        );
+        expect(probe.createdDirectories, isEmpty);
       },
     );
 
@@ -339,8 +379,10 @@ void main() {
         final probe = FakeCloudFolderProbe()..seedIcloud();
         final h = await createBackupContainer(probe: probe);
         final option = _icloud(probe);
-        await pick(h, option);
-        await pick(h, option, vault: '/Users/test/other vault');
+        final first = await resolve(h, option);
+        final second = await resolve(h, option);
+        expect((first as BackupDestinationResolved).path, option.path);
+        expect((second as BackupDestinationResolved).path, option.path);
         expect(probe.calls.where((c) => c.startsWith('createDirectory')), [
           'createDirectory ${option.path}',
         ]);
@@ -349,7 +391,7 @@ void main() {
     );
 
     test(
-      'picking a provider stores the path with symbolic links resolved',
+      'picking a provider resolves symbolic links in the path it answers',
       () async {
         final probe = FakeCloudFolderProbe()
           ..addDirectory('/Volumes/Big Disk/Drive')
@@ -359,47 +401,38 @@ void main() {
             '/Volumes/Big Disk/Drive',
           );
         final h = await createBackupContainer(probe: probe);
-        final option = (await _firstProvider(probe));
+        final option = await _firstProvider(probe);
 
-        final result = await pick(h, option);
+        final result = await resolve(h, option);
 
         const resolved = '/Volumes/Big Disk/Drive/$_folderName';
-        expect((result as BackupDestinationPicked).destination, resolved);
-        expect(
-          h.read(vaultBackupSettingsProvider(_vault)).destination,
-          resolved,
-        );
+        expect((result as BackupDestinationResolved).path, resolved);
         expect(probe.createdDirectories, [resolved]);
       },
     );
 
     test(
-      'a failed folder creation gives backup_destination_unavailable and stores nothing',
+      'a failed folder creation gives backup_destination_unavailable and saves nothing',
       () async {
         final probe = FakeCloudFolderProbe()..seedGoogleDrive('a@example.com');
-        final option = (await _firstProvider(probe));
+        final option = await _firstProvider(probe);
         probe.denyCreate(option.path!);
         final h = await createBackupContainer(probe: probe);
 
-        final result = await pick(h, option);
+        final result = await resolve(h, option);
 
-        expect(result, isA<BackupDestinationFailed>());
-        expect(
-          (result as BackupDestinationFailed).code,
-          'backup_destination_unavailable',
-        );
-        expect(result.code, backupDestinationUnavailableCode);
-        expect(h.read(vaultBackupSettingsProvider(_vault)).destination, isNull);
-        expect(
-          h.read(vaultBackupSettingsProvider(_vault)),
-          VaultBackupSettings(),
-        );
+        expect(result, isA<BackupDestinationUnavailable>());
+        final unavailable = result as BackupDestinationUnavailable;
+        expect(unavailable.code, 'backup_destination_unavailable');
+        expect(unavailable.code, backupDestinationUnavailableCode);
+        expect(unavailable.message, isNotEmpty);
         expect(probe.createdDirectories, isEmpty);
+        expectNothingSaved(h);
       },
     );
 
     test(
-      'a failed folder creation keeps the destination the vault already had',
+      'a failed folder creation leaves the destination the vault already had',
       () async {
         final probe = FakeCloudFolderProbe()..seedIcloud();
         final option = _icloud(probe);
@@ -413,26 +446,26 @@ void main() {
         );
         await h.read(saveVaultBackupSettingsProvider)(_vault, before);
 
-        final result = await pick(h, option);
+        final result = await resolve(h, option);
 
-        expect(result, isA<BackupDestinationFailed>());
+        expect(result, isA<BackupDestinationUnavailable>());
         expect(h.read(vaultBackupSettingsProvider(_vault)), before);
       },
     );
 
     test(
-      'a folder in the way of the new destination gives backup_destination_unavailable',
+      'a file in the way of the new destination gives backup_destination_unavailable',
       () async {
         final probe = FakeCloudFolderProbe()..seedIcloud();
         final option = _icloud(probe);
         probe.addFile(option.path!);
         final h = await createBackupContainer(probe: probe);
 
-        final result = await pick(h, option);
+        final result = await resolve(h, option);
 
         expect(
           result,
-          isA<BackupDestinationFailed>().having(
+          isA<BackupDestinationUnavailable>().having(
             (r) => r.code,
             'code',
             'backup_destination_unavailable',
@@ -442,25 +475,42 @@ void main() {
     );
 
     test(
-      'Choose folder stores the picked folder resolved with nothing appended',
+      'a provider folder that cannot be resolved after creation gives backup_destination_unavailable',
+      () async {
+        final probe = _Wi323ResolveFailsProbe()..seedIcloud();
+        final h = await createBackupContainer(probe: probe);
+
+        final result = await resolve(h, _icloud(probe));
+
+        expect(
+          result,
+          isA<BackupDestinationUnavailable>().having(
+            (r) => r.code,
+            'code',
+            'backup_destination_unavailable',
+          ),
+        );
+        expectNothingSaved(h);
+      },
+    );
+
+    test(
+      'Choose folder resolves the picked folder with nothing appended',
       () async {
         final probe = FakeCloudFolderProbe()
           ..addDirectory('/Volumes/NAS share')
           ..addSymlink('/Users/test/nas link', '/Volumes/NAS share');
         final h = await createBackupContainer(probe: probe);
 
-        final result = await pick(
+        final result = await resolve(
           h,
           _choose(),
           pickedFolder: '/Users/test/nas link',
         );
 
+        expect(result, isA<BackupDestinationResolved>());
         expect(
-          (result as BackupDestinationPicked).destination,
-          '/Volumes/NAS share',
-        );
-        expect(
-          h.read(vaultBackupSettingsProvider(_vault)).destination,
+          (result as BackupDestinationResolved).path,
           '/Volumes/NAS share',
         );
         // Nothing was created, and nothing was appended.
@@ -470,6 +520,35 @@ void main() {
           isEmpty,
         );
         expect(await probe.listNames('/Volumes/NAS share'), isEmpty);
+        expectNothingSaved(h);
+      },
+    );
+
+    test(
+      'Choose folder stores the picked folder resolved through saveVaultBackupSettingsProvider',
+      () async {
+        final probe = FakeCloudFolderProbe()
+          ..addDirectory('/Volumes/NAS share')
+          ..addSymlink('/Users/test/nas link', '/Volumes/NAS share');
+        final h = await createBackupContainer(probe: probe);
+
+        final result = await resolve(
+          h,
+          _choose(),
+          pickedFolder: '/Users/test/nas link',
+        );
+        final path = (result as BackupDestinationResolved).path;
+        await h.read(saveVaultBackupSettingsProvider)(
+          _vault,
+          h
+              .read(vaultBackupSettingsProvider(_vault))
+              .copyWith(destination: path),
+        );
+
+        expect(
+          h.read(vaultBackupSettingsProvider(_vault)).destination,
+          '/Volumes/NAS share',
+        );
       },
     );
 
@@ -477,16 +556,16 @@ void main() {
       'Choose folder keeps a picked folder that has no symbolic link as it is',
       () async {
         final probe = FakeCloudFolderProbe()
-          ..addDirectory('/Volumes/Big Disk/x');
+          ..addDirectory('/Volumes/Big Disk/x y');
         final h = await createBackupContainer(probe: probe);
-        final result = await pick(
+        final result = await resolve(
           h,
           _choose(),
-          pickedFolder: '/Volumes/Big Disk/x',
+          pickedFolder: '/Volumes/Big Disk/x y',
         );
         expect(
-          (result as BackupDestinationPicked).destination,
-          '/Volumes/Big Disk/x',
+          (result as BackupDestinationResolved).path,
+          '/Volumes/Big Disk/x y',
         );
       },
     );
@@ -496,21 +575,26 @@ void main() {
       () async {
         final probe = FakeCloudFolderProbe();
         final h = await createBackupContainer(probe: probe);
-        final result = await pick(h, _choose(), pickedFolder: '/Volumes/Gone');
+        final result = await resolve(
+          h,
+          _choose(),
+          pickedFolder: '/Volumes/Gone',
+        );
         expect(
           result,
-          isA<BackupDestinationFailed>().having(
+          isA<BackupDestinationUnavailable>().having(
             (r) => r.code,
             'code',
             'backup_destination_unavailable',
           ),
         );
-        expect(h.read(vaultBackupSettingsProvider(_vault)).destination, isNull);
+        expect((result as BackupDestinationUnavailable).message, isNotEmpty);
+        expectNothingSaved(h);
       },
     );
 
     test(
-      'picking changes only the destination and only for that vault',
+      'saving a resolved destination changes only that destination of that vault and deletes nothing',
       () async {
         final probe = FakeCloudFolderProbe()..seedIcloud();
         final h = await createBackupContainer(probe: probe);
@@ -526,7 +610,13 @@ void main() {
         probe.addDirectory('/Volumes/NAS share/Open Memex Backups');
         probe.addFile('/Volumes/NAS share/Open Memex Backups/x.memex.zip');
 
-        await pick(h, _icloud(probe));
+        final result = await resolve(h, _icloud(probe));
+        await h.read(saveVaultBackupSettingsProvider)(
+          _vault,
+          mine.copyWith(
+            destination: (result as BackupDestinationResolved).path,
+          ),
+        );
 
         final after = h.read(vaultBackupSettingsProvider(_vault));
         expect(after.destination, _icloud(probe).path);
@@ -540,20 +630,6 @@ void main() {
         expect(await probe.listNames('/Volumes/NAS share/Open Memex Backups'), [
           'x.memex.zip',
         ]);
-      },
-    );
-
-    test(
-      'picking for a vault with no settings starts from the defaults',
-      () async {
-        final probe = FakeCloudFolderProbe()..seedIcloud();
-        final h = await createBackupContainer(probe: probe);
-        await pick(h, _icloud(probe));
-        final stored = h.read(vaultBackupSettingsProvider(_vault));
-        expect(stored, VaultBackupSettings(destination: _icloud(probe).path));
-        expect(stored.enabled, isFalse);
-        expect(stored.keep, 30);
-        expect(stored.automatic, isTrue);
       },
     );
   });
@@ -670,3 +746,11 @@ void main() {
 /// The iCloud folder under [home] (the fake's layout).
 String _icloudPath(String home) =>
     p.posix.join(home, 'Library', 'Mobile Documents', 'com~apple~CloudDocs');
+
+/// A probe whose `resolveSymbolicLinks` always fails, for a path that was just
+/// created (a folder removed or refused between the two calls).
+class _Wi323ResolveFailsProbe extends FakeCloudFolderProbe {
+  @override
+  Future<String> resolveSymbolicLinks(String path) async =>
+      throw FileSystemException('Cannot resolve', path);
+}

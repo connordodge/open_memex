@@ -56,9 +56,11 @@ final cloudFolderProbeProvider = Provider<CloudFolderProbe>(
 );
 
 /// The destination rows to list (req 20, D22), in order: iCloud Drive, Google
-/// Drive by account, OneDrive by name, then "Choose folder…" (provider null,
-/// path null). A provider that isn't installed is not listed; with none
-/// found, only "Choose folder…" is. Each provider row's [path] is
+/// Drive by account, OneDrive by name, then "choose folder…" (provider null,
+/// path null, label exactly `choose folder…`). A label is the bare
+/// distinguishing text: `iCloud Drive`, the account (`connor@example.com`), the
+/// name after `OneDrive-` (`Personal`); A4 composes `Google Drive · <label>`. A provider that isn't installed is not listed; with none
+/// found, only "choose folder…" is. Each provider row's [path] is
 /// `<provider folder>/Open Memex Backups`, not yet created.
 Future<List<BackupDestinationOption>> discoverBackupDestinations(
   CloudFolderProbe probe,
@@ -68,41 +70,53 @@ Future<List<BackupDestinationOption>> discoverBackupDestinations(
 /// string `memex backup` fails with).
 const backupDestinationUnavailableCode = 'backup_destination_unavailable';
 
-/// What picking a destination came to.
-sealed class BackupDestinationResult {
-  const BackupDestinationResult();
+/// What resolving a picked destination came to. Resolving saves nothing: the
+/// caller saves through `saveVaultBackupSettingsProvider`.
+sealed class BackupDestinationResolution {
+  const BackupDestinationResolution();
 }
 
-/// The destination was made (if needed), resolved and saved: [destination] is
-/// the stored, symlink-resolved path.
-final class BackupDestinationPicked extends BackupDestinationResult {
-  const BackupDestinationPicked(this.destination);
+/// The destination exists and is [path], symlinks resolved (the form
+/// `backup-state.json` keys it by).
+final class BackupDestinationResolved extends BackupDestinationResolution {
+  const BackupDestinationResolved(this.path);
 
-  final String destination;
+  final String path;
 }
 
-/// Nothing was saved. [code] is [backupDestinationUnavailableCode].
-final class BackupDestinationFailed extends BackupDestinationResult {
-  const BackupDestinationFailed(this.code);
+/// The destination could not be made or resolved. [code] is
+/// [backupDestinationUnavailableCode]; [message] says why, for the user.
+final class BackupDestinationUnavailable extends BackupDestinationResolution {
+  const BackupDestinationUnavailable({
+    this.code = backupDestinationUnavailableCode,
+    required this.message,
+  });
 
   final String code;
+  final String message;
 }
 
-/// Picks [option] as the destination of the local vault at `vaultPath`: a
-/// provider row creates `option.path` through the probe when it is missing; the
-/// "Choose folder…" row (provider null) takes `pickedFolder` as it is. Either
-/// way the symlink-resolved path is saved as the vault's destination (the
-/// other settings stay as they are). A failure to create or resolve saves
-/// nothing and answers [BackupDestinationFailed]. Stub: A2 (#323) fills it.
-final pickBackupDestinationProvider =
-    Provider<
-      Future<BackupDestinationResult> Function(
-        String vaultPath,
-        BackupDestinationOption option, {
-        String? pickedFolder,
-      })
-    >(
-      (ref) =>
-          (vaultPath, option, {pickedFolder}) async =>
-              const BackupDestinationPicked(''),
-    );
+/// Turns a picked [BackupDestinationOption] into the destination to store.
+/// Stub: A2 (#323) fills it.
+class BackupDestinationResolver {
+  const BackupDestinationResolver(this._probe);
+
+  // ignore: unused_field
+  final CloudFolderProbe _probe;
+
+  /// A provider row creates `option.path` (the provider folder plus
+  /// `Open Memex Backups`) through the probe only when missing, then answers its
+  /// symlink-resolved path. The "Choose folder" row (provider null) answers the
+  /// symlink-resolved [pickedFolder], nothing appended. A
+  /// `FileSystemException` from creating or resolving answers
+  /// [BackupDestinationUnavailable]. It never saves: A4 saves on "turn on
+  /// backups" or a destination-menu pick, so cancelling saves nothing.
+  Future<BackupDestinationResolution> resolve(
+    BackupDestinationOption option, {
+    String? pickedFolder,
+  }) async => const BackupDestinationResolved('');
+}
+
+final resolveBackupDestinationProvider = Provider<BackupDestinationResolver>(
+  (ref) => BackupDestinationResolver(ref.watch(cloudFolderProbeProvider)),
+);
