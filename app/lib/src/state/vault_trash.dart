@@ -51,7 +51,37 @@ class PlatformVaultTrash implements VaultTrash {
   const PlatformVaultTrash();
 
   @override
-  Future<TrashResult> trash(String path) async => const TrashFailed('');
+  Future<TrashResult> trash(String path) async {
+    try {
+      await vaultFilesChannel.invokeMethod<void>('trashItem', path);
+      return const Trashed();
+    } on PlatformException catch (e) {
+      return _mapError(e);
+    } on MissingPluginException catch (e) {
+      return TrashFailed(e.toString());
+    }
+  }
+
+  static TrashResult _mapError(PlatformException e) {
+    final details = e.details;
+    if (e.code == 'trash_failed' && details is Map) {
+      final domain = details['domain'];
+      final code = details['code'];
+      if (domain == 'NSCocoaErrorDomain' && code is int) {
+        switch (code) {
+          case 3328:
+            return const TrashNoTrash();
+          case 257:
+          case 513:
+            return const TrashPermission();
+          case 4:
+          case 260:
+            return const TrashNotFound();
+        }
+      }
+    }
+    return TrashFailed(e.message ?? 'the system gave no reason (${e.code})');
+  }
 }
 
 /// The Trash seam.
