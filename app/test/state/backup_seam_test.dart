@@ -499,6 +499,52 @@ void main() {
     });
   });
 
+  group('run result singletons', () {
+    test('BackupRunResult and RestoreRunResult singletons hash and print', () {
+      // Run-time instances (not canonical consts) so == and hashCode run.
+      final a = [BackupTooOld(), BackupBinaryNotFound()];
+      final b = [BackupTooOld(), BackupBinaryNotFound()];
+      for (var i = 0; i < a.length; i++) {
+        expect(identical(a[i], b[i]), isFalse);
+        expect(a[i], b[i]);
+        expect(a[i].hashCode, b[i].hashCode);
+      }
+      expect(a[0].hashCode, isNot(a[1].hashCode));
+      expect(a[0].toString(), 'BackupTooOld()');
+      expect(a[1].toString(), 'BackupBinaryNotFound()');
+      final ra = [RestoreTooOld(), RestoreBinaryNotFound()];
+      final rb = [RestoreTooOld(), RestoreBinaryNotFound()];
+      for (var i = 0; i < ra.length; i++) {
+        expect(identical(ra[i], rb[i]), isFalse);
+        expect(ra[i], rb[i]);
+        expect(ra[i].hashCode, rb[i].hashCode);
+      }
+      expect(ra[0].hashCode, isNot(ra[1].hashCode));
+      expect(ra[0].toString(), 'RestoreTooOld()');
+      expect(ra[1].toString(), 'RestoreBinaryNotFound()');
+    });
+  });
+
+  group('BackupMessage', () {
+    test('BackupMessage equals and hashCode distinguish every field', () {
+      BackupMessage m({
+        String title = 'Backup failed',
+        String detail = 'The folder is not reachable.',
+        String short = 'cannot write to google drive',
+      }) => BackupMessage(title: title, detail: detail, short: short);
+      _expectValueSemantics(m(), m(), [
+        m(title: 'Backup could not finish'),
+        m(detail: 'The folder moved.'),
+        m(short: 'cannot write to icloud'),
+      ]);
+      expect(
+        m().toString(),
+        'BackupMessage(Backup failed, The folder is not reachable., '
+        'cannot write to google drive)',
+      );
+    });
+  });
+
   group('BackupViewState', () {
     test('BackupViewState has a value for each Backups sheet state', () {
       expect(
