@@ -1451,7 +1451,10 @@ fn an_encrypted_member_fails_with_backup_invalid_and_leaves_no_temp() {
         let before = fx.before();
 
         assert_eq!(code_of(fx.restore(&from)), "backup_invalid", "{name}");
-        before.assert_untouched(&fx, name);
+        // Refused from the central directory, before anything is written
+        // (req 33a): extracting the member would also fail, but only after
+        // the temp folder was created, which moves the parent's mtime.
+        before.assert_nothing_written(&fx, name);
     }
 }
 
@@ -1633,4 +1636,231 @@ fn no_wal_or_shm_file_is_left_beside_the_restored_snapshot() {
         parts.db,
         "the snapshot is byte-for-byte what the backup holds"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Fix round 1: manifest.json must be one Vault::open and `memex backup` accept;
+// a snapshot with no memex schema is not a snapshot
+// ---------------------------------------------------------------------------
+
+type JsonObject = serde_json::Map<String, Value>;
+
+/// The manifest with `edit` applied to its JSON object.
+fn edited_manifest(manifest: &[u8], edit: impl FnOnce(&mut JsonObject)) -> Vec<u8> {
+    let mut m: Value = serde_json::from_slice(manifest).unwrap();
+    edit(m.as_object_mut().unwrap());
+    serde_json::to_vec_pretty(&m).unwrap()
+}
+
+/// The source snapshot with `schema_version` holding exactly `versions`.
+fn db_at_versions(db: &[u8], versions: &[i64]) -> Vec<u8> {
+    let mut sql = String::from("DELETE FROM schema_version;");
+    for v in versions {
+        sql.push_str(&format!(
+            "INSERT INTO schema_version(version) VALUES ({v});"
+        ));
+    }
+    with_sql(db, &sql)
+}
+
+/// A valid SQLite file that was never a memex snapshot.
+fn unrelated_db() -> Vec<u8> {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("unrelated.db");
+    let conn = Connection::open(&path).unwrap();
+    conn.pragma_update(None, "journal_mode", "DELETE").unwrap();
+    conn.execute_batch("CREATE TABLE unrelated(x); INSERT INTO unrelated VALUES (1);")
+        .unwrap();
+    drop(conn);
+    fs::read(&path).unwrap()
+}
+
+#[test]
+fn a_manifest_json_that_vault_open_would_reject_fails_with_backup_invalid() {
+    let source = notes_source();
+    let with_manifest = |edit: fn(&mut JsonObject)| {
+        let mut parts = Parts::of(&source);
+        parts.manifest = edited_manifest(&source.manifest, edit);
+        parts.zip()
+    };
+    assert_each_invalid_before_any_write(vec![
+        (
+            "manifest without created_at",
+            with_manifest(|m| {
+                m.remove("created_at");
+            }),
+        ),
+        (
+            "manifest without schema_version",
+            with_manifest(|m| {
+                m.remove("schema_version");
+            }),
+        ),
+        (
+            "manifest schema_version as text",
+            with_manifest(|m| {
+                m.insert("schema_version".into(), json!("6"));
+            }),
+        ),
+        (
+            "manifest created_at as text",
+            with_manifest(|m| {
+                m.insert("created_at".into(), json!("yesterday"));
+            }),
+        ),
+        (
+            "manifest created_at as null",
+            with_manifest(|m| {
+                m.insert("created_at".into(), Value::Null);
+            }),
+        ),
+    ]);
+}
+
+#[test]
+fn a_vault_id_that_is_not_a_ulid_fails_with_backup_invalid() {
+    let source = notes_source();
+    let cases: Vec<(&str, String)> = vec![
+        ("a path-like id", "a/b".into()),
+        ("text", "not-a-ulid".into()),
+        ("25 characters", source.vault_id[..25].to_string()),
+        ("27 characters", format!("{}A", source.vault_id)),
+        (
+            "26 characters with a dash",
+            format!("{}-", &source.vault_id[..25]),
+        ),
+    ];
+    let archives = cases
+        .iter()
+        .map(|(case, id)| {
+            // The same id in both files, so only the ULID rule can refuse it.
+            let mut parts = Parts::of(&source);
+            parts.manifest = edited_manifest(&source.manifest, |m| {
+                m.insert("vault_id".into(), json!(id));
+            });
+            parts.backup_json["vault_id"] = json!(id);
+            (*case, parts.zip())
+        })
+        .collect();
+    assert_each_invalid_before_any_write(archives);
+}
+
+#[test]
+fn a_manifest_json_schema_newer_than_supported_fails_with_backup_too_new() {
+    // backup.json and the snapshot are current; only manifest.json is newer.
+    let source = notes_source();
+    let newer = APP_SCHEMA_VERSION + 1;
+    let mut parts = Parts::of(&source);
+    parts.manifest = manifest_at(&source.manifest, newer);
+    let fx = Fx::new();
+    let from = fx.backup_file(&parts.zip());
+    let before = fx.before();
+
+    let err = error_of(fx.restore(&from));
+
+    assert_eq!(err.code(), "backup_too_new");
+    let c1 = err.to_error_json();
+    assert_eq!(c1["error"]["schema_version"], newer, "{c1}");
+    assert_eq!(
+        c1["error"]["supported_schema_version"], APP_SCHEMA_VERSION,
+        "{c1}"
+    );
+    before.assert_nothing_written(&fx, "manifest.json too new");
+}
+
+#[test]
+fn only_backup_json_newer_than_supported_fails_with_backup_too_new() {
+    // manifest.json and the snapshot are current; only backup.json is newer.
+    let source = notes_source();
+    let newer = APP_SCHEMA_VERSION + 1;
+    let mut parts = Parts::of(&source);
+    parts.backup_json["schema_version"] = json!(newer);
+    let fx = Fx::new();
+    let from = fx.backup_file(&parts.zip());
+    let before = fx.before();
+
+    let err = error_of(fx.restore(&from));
+
+    assert_eq!(err.code(), "backup_too_new");
+    assert_eq!(err.to_error_json()["error"]["schema_version"], newer);
+    before.assert_nothing_written(&fx, "backup.json too new");
+}
+
+#[test]
+fn a_backup_json_schema_version_below_one_fails_with_backup_invalid() {
+    // Everything else agrees on the version, so only "below 1" can refuse.
+    let source = notes_source();
+    let mut cases = Vec::new();
+    for (case, version) in [("schema_version 0", 0_i64), ("schema_version -1", -1)] {
+        let mut parts = Parts::of(&source);
+        parts.db = db_at_versions(&source.db, &[version]);
+        parts.manifest = manifest_at(&source.manifest, version);
+        parts.backup_json["schema_version"] = json!(version);
+        cases.push((case, parts.zip()));
+    }
+    assert_each_invalid_before_any_write(cases);
+}
+
+#[test]
+fn a_backup_at_schema_version_one_is_not_below_one_and_restores() {
+    // Boundary of the "below 1" rule.
+    let source = notes_source();
+    let mut parts = Parts::of(&source);
+    parts.db = db_at_versions(&source.db, &[1]);
+    assert_eq!(db_schema_version(&parts.db), 1, "fixture: a V1 snapshot");
+    parts.manifest = manifest_at(&source.manifest, 1);
+    parts.backup_json["schema_version"] = json!(1);
+    let fx = Fx::new();
+    let from = fx.backup_file(&parts.zip());
+
+    let outcome = fx.restore(&from).expect("a V1 backup restores");
+
+    assert_eq!(outcome.vault_id, source.vault_id);
+}
+
+#[test]
+fn a_memex_db_with_no_memex_schema_fails_with_backup_invalid_and_leaves_no_temp() {
+    let source = notes_source();
+    let no_table = with_sql(&source.db, "DROP TABLE schema_version;");
+    let empty_table = db_at_versions(&source.db, &[]);
+    let cases: Vec<(&str, Vec<u8>, i64)> = vec![
+        (
+            "no schema_version table, backup.json at 0",
+            no_table.clone(),
+            0,
+        ),
+        ("an unrelated database, backup.json at 0", unrelated_db(), 0),
+        (
+            "no schema_version table, backup.json current",
+            no_table,
+            APP_SCHEMA_VERSION,
+        ),
+        (
+            "an empty schema_version table, backup.json current",
+            empty_table.clone(),
+            APP_SCHEMA_VERSION,
+        ),
+        (
+            "an unrelated database, backup.json current",
+            unrelated_db(),
+            APP_SCHEMA_VERSION,
+        ),
+        (
+            "an empty schema_version table, backup.json at 1",
+            empty_table,
+            1,
+        ),
+    ];
+    for (case, db, claimed) in cases {
+        let mut parts = Parts::of(&source);
+        parts.db = db;
+        parts.manifest = manifest_at(&source.manifest, claimed);
+        parts.backup_json["schema_version"] = json!(claimed);
+        let fx = Fx::new();
+        let from = fx.backup_file(&parts.zip());
+        let before = fx.before();
+
+        assert_eq!(code_of(fx.restore(&from)), "backup_invalid", "{case}");
+        before.assert_untouched(&fx, case);
+    }
 }
