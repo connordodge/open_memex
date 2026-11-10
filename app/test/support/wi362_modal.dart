@@ -158,13 +158,15 @@ List<Override> _wi362Overrides(
 /// The app with the local vault `memex` open (the last vault), and the
 /// recents [work-notes, memex, seed on nas] unless [recentsOrder] says
 /// otherwise (`'open'`, `'other'`, `'hosted'`). [servers] are saved (default:
-/// nas). With [openNote] a note tab is open and selected.
+/// nas). With [openNote] a note tab is open and selected. [aliases] adds
+/// more recents (after the others) built from the open vault's folder.
 Future<Wi362Env> wi362PumpLocal(
   WidgetTester tester, {
   Size size = const Size(1280, 800),
   List<HostedServerFixture>? servers,
   List<String> recentsOrder = const ['other', 'open', 'hosted'],
   bool openNote = true,
+  List<VaultRef> Function(String openPath)? aliases,
 }) async {
   final openPath = wi361VaultNamed('memex');
   final otherPath = wi361VaultNamed('work-notes');
@@ -187,7 +189,10 @@ Future<Wi362Env> wi362PumpLocal(
   final h = await pumpHostedApp(
     tester,
     servers: saved,
-    recents: [for (final r in recentsOrder) refs[r]!],
+    recents: [
+      for (final r in recentsOrder) refs[r]!,
+      ...?aliases?.call(openPath),
+    ],
     lastVault: LocalVaultRef(openPath),
     current: LocalVaultRef(openPath),
     cli: cli,
