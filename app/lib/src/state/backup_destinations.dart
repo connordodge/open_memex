@@ -63,3 +63,46 @@ final cloudFolderProbeProvider = Provider<CloudFolderProbe>(
 Future<List<BackupDestinationOption>> discoverBackupDestinations(
   CloudFolderProbe probe,
 ) async => const [];
+
+/// The C1 code of a destination that could not be made or resolved (the same
+/// string `memex backup` fails with).
+const backupDestinationUnavailableCode = 'backup_destination_unavailable';
+
+/// What picking a destination came to.
+sealed class BackupDestinationResult {
+  const BackupDestinationResult();
+}
+
+/// The destination was made (if needed), resolved and saved: [destination] is
+/// the stored, symlink-resolved path.
+final class BackupDestinationPicked extends BackupDestinationResult {
+  const BackupDestinationPicked(this.destination);
+
+  final String destination;
+}
+
+/// Nothing was saved. [code] is [backupDestinationUnavailableCode].
+final class BackupDestinationFailed extends BackupDestinationResult {
+  const BackupDestinationFailed(this.code);
+
+  final String code;
+}
+
+/// Picks [option] as the destination of the local vault at `vaultPath`: a
+/// provider row creates `option.path` through the probe when it is missing; the
+/// "Choose folder…" row (provider null) takes `pickedFolder` as it is. Either
+/// way the symlink-resolved path is saved as the vault's destination (the
+/// other settings stay as they are). A failure to create or resolve saves
+/// nothing and answers [BackupDestinationFailed]. Stub: A2 (#323) fills it.
+final pickBackupDestinationProvider =
+    Provider<
+      Future<BackupDestinationResult> Function(
+        String vaultPath,
+        BackupDestinationOption option, {
+        String? pickedFolder,
+      })
+    >(
+      (ref) =>
+          (vaultPath, option, {pickedFolder}) async =>
+              const BackupDestinationPicked(''),
+    );

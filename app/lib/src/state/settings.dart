@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../memex_cli.dart';
+import 'backup_models.dart';
 import 'token_store.dart';
 import 'vault_ref.dart';
 
@@ -30,6 +31,7 @@ class AppSettings {
     List<VaultRef>? recentRefs,
     VaultRef? lastVaultRef,
     List<SavedServer>? savedServers,
+    Map<String, VaultBackupSettings>? vaultBackups,
   }) : recentRefs = List.unmodifiable(
          recentRefs ??
              [
@@ -40,7 +42,9 @@ class AppSettings {
        lastVaultRef =
            lastVaultRef ??
            (lastVault == null ? null : LocalVaultRef(lastVault)),
-       savedServers = List.unmodifiable(savedServers ?? const <SavedServer>[]);
+       savedServers = List.unmodifiable(savedServers ?? const <SavedServer>[]),
+       // Stub: A2 (#323) stores the given map (unmodifiable).
+       vaultBackups = const <String, VaultBackupSettings>{};
 
   final String? memexBinaryPath;
 
@@ -53,6 +57,10 @@ class AppSettings {
 
   /// Saved vault servers, in the order they were first saved.
   final List<SavedServer> savedServers;
+
+  /// Per-vault backup settings (D22), keyed by the local vault path as
+  /// opened. Unmodifiable. Absent key = the defaults.
+  final Map<String, VaultBackupSettings> vaultBackups;
 
   /// The local paths in [recentRefs], in order. Hosted entries are left out.
   late final List<String> recentVaults = List.unmodifiable([
@@ -73,6 +81,7 @@ class AppSettings {
     List<VaultRef>? recentRefs,
     VaultRef? lastVaultRef,
     List<SavedServer>? savedServers,
+    Map<String, VaultBackupSettings>? vaultBackups,
   }) => AppSettings(
     memexBinaryPath: memexBinaryPath ?? this.memexBinaryPath,
     recentRefs:
@@ -178,6 +187,13 @@ class SettingsController extends StateNotifier<AppSettings> {
       ),
     );
   }
+
+  /// Saves [settings] for the local vault at [path] (the path as opened) and
+  /// changes no other vault's entry. Stub: A2 (#323) fills it.
+  Future<void> setVaultBackup(
+    String path,
+    VaultBackupSettings settings,
+  ) async {}
 
   Future<void> setMemexBinary(String? path) async {
     if (path == null || path.isEmpty) {
