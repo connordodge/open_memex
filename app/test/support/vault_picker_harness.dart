@@ -22,6 +22,7 @@ import 'package:open_memex_app/src/state/token_store.dart';
 import 'package:open_memex_app/src/state/vault_open_controller.dart';
 import 'package:open_memex_app/src/state/vault_open_hosted.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
+import 'package:open_memex_app/src/state/vault_trash.dart';
 import 'package:open_memex_app/src/vault_access/hosted/hosted_vault_access.dart';
 import 'package:open_memex_app/src/widgets/atoms.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -203,7 +204,8 @@ String _encodeRef(VaultRef ref) => jsonEncode(switch (ref) {
 /// - [recorded] row outcomes written to #96's `recentRowOutcomeProvider`
 ///   before the first frame;
 /// - [beforePump] runs on the fakes before the picker first builds (e.g.
-///   `hold()` a server so its probe stays in flight).
+///   `hold()` a server so its probe stays in flight);
+/// - [trash] as `vaultTrashProvider` when given (#350: a FakeVaultTrash).
 Future<Wi97Picker> pumpVaultPicker(
   WidgetTester tester, {
   List<SavedServer> savedServers = const [wi97Nas],
@@ -214,6 +216,7 @@ Future<Wi97Picker> pumpVaultPicker(
   Map<VaultRef, RecentRowOutcome> recorded = const {},
   void Function(Map<String, FakeVaultServer> servers)? beforePump,
   void Function(Wi97OpenController opener)? configureOpener,
+  VaultTrash? trash,
 }) async {
   SharedPreferences.setMockInitialValues({
     'memex.binary_path': 'fake-memex',
@@ -267,6 +270,7 @@ Future<Wi97Picker> pumpVaultPicker(
       hostedHttpClientProvider.overrideWithValue(router),
       appFocusProvider.overrideWith(() => FakeAppFocus()),
       pickerActionsProvider.overrideWithValue(actions),
+      if (trash != null) vaultTrashProvider.overrideWithValue(trash),
       vaultOpenControllerProvider.overrideWith((ref) {
         final c = Wi97OpenController(ref);
         configureOpener?.call(c);

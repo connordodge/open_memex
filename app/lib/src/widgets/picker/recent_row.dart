@@ -14,6 +14,7 @@ import '../../state/vault_ref.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import '../atoms.dart';
+import 'delete_vault_dialog.dart';
 import 'server_row.dart';
 
 /// A RECENT row (key `recent-row-<index>`, pack 97, board A3 state 3) for
@@ -25,7 +26,11 @@ import 'server_row.dart';
 /// true while no `memex` binary can run: local rows then show "needs the
 /// memex binary" and do not open. [onOpen] opens [entry] (a tap, or a
 /// hosted row's "retry").
-class RecentRow extends ConsumerWidget {
+///
+/// A local row whose folder is a vault also has a delete button
+/// (`recent-row-delete-<index>`) before its ×; it opens the delete-vault
+/// dialog, and the row re-checks its folder when the dialog closes.
+class RecentRow extends ConsumerStatefulWidget {
   const RecentRow({
     super.key,
     required this.index,
@@ -42,7 +47,18 @@ class RecentRow extends ConsumerWidget {
   final VoidCallback onOpen;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<RecentRow> createState() => _RecentRowState();
+}
+
+class _RecentRowState extends ConsumerState<RecentRow> {
+  int get index => widget.index;
+  VaultRef get entry => widget.entry;
+  bool get opening => widget.opening;
+  bool get binaryMissing => widget.binaryMissing;
+  VoidCallback get onOpen => widget.onOpen;
+
+  @override
+  Widget build(BuildContext context) {
     final recorded = ref.watch(recentRowOutcomeProvider(entry));
     final isOpening = opening || recorded is RecentRowOpening;
     final key = Key('recent-row-$index');
@@ -92,10 +108,26 @@ class RecentRow extends ConsumerWidget {
               'needs the memex binary',
               style: OmType.mono(size: 10.5, color: OmColors.fg2),
             ),
+          if (exists) _deleteButton(path),
           _removeButton(ref),
         ],
       ),
     );
+  }
+
+  Widget _deleteButton(String path) => PickerRowIconButton(
+    key: Key('recent-row-delete-$index'),
+    icon: LucideIcons.trash,
+    tooltip: 'delete vault',
+    semanticLabel: 'delete vault ${p.basename(path)}',
+    onPressed: () => _delete(path),
+  );
+
+  /// Opens the delete-vault dialog, then rebuilds so the row re-checks
+  /// `VaultDb.isVault` (a folder gone during a failed delete shows folderX).
+  Future<void> _delete(String path) async {
+    await confirmDeleteVault(context, path: path);
+    if (mounted) setState(() {});
   }
 
   Widget _hostedRow(
