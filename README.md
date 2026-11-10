@@ -10,7 +10,7 @@ Two ways to use it: a Flutter macOS desktop app for typing/editing notes, and an
 
 1. Download the DMG from the [Releases page](https://github.com/connordodge/open_memex/releases) and drag Open Memex to Applications.
 2. Requirements: Apple silicon Mac, macOS 14 or later.
-3. First launch: choose "Create new vault…" to make a vault, or "Open existing vault…" to pick one you already have.
+3. First launch: choose "create local vault…" to make a vault, or "open local vault…" to pick one you already have.
 
 **For agents and the terminal.** The app ships its own `memex` command, the Bundled memex, at `/Applications/Open Memex.app/Contents/MacOS/memex`. Point an MCP client's `command` at that path (see [`docs/claude-desktop-setup.md`](docs/claude-desktop-setup.md)). To run `memex` in a terminal, link it once:
 
@@ -158,7 +158,7 @@ flutter run -d macos       # development
 flutter build macos        # release build at build/macos/Build/Products/Release/
 ```
 
-On first launch, click "Open existing vault…" and pick the same folder, or "Create new vault…" to make a fresh one. The app looks for the `memex` binary in this order: the picked path if it exists, then the Bundled memex, then `~/.cargo/bin`, `/usr/local/bin`, `/opt/homebrew/bin`.
+On first launch, click "open local vault…" and pick the same folder, or "create local vault…" to make a fresh one. The app looks for the `memex` binary in this order: the picked path if it exists, then the Bundled memex, then `~/.cargo/bin`, `/usr/local/bin`, `/opt/homebrew/bin`.
 
 ### Claude Desktop integration
 

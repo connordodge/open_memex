@@ -4141,10 +4141,30 @@ fn readme_install_section_states_the_requirements_and_the_first_launch() {
         "Install states `Apple silicon Mac, macOS 14 or later`:\n{}",
         install.body
     );
-    assert!(
-        install.body.contains("Create new vault…"),
-        "Install's first launch step names `Create new vault…`"
-    );
+    // The first launch step must name the buttons the vault picker really
+    // has (the WI text said "Create new vault…", which no button carries).
+    let picker = read_repo_file("app/lib/src/screens/vault_picker.dart");
+    let first_launch = install
+        .body
+        .lines()
+        .find(|l| wi377_flat(l).contains("first launch"))
+        .unwrap_or_else(|| panic!("Install has a first launch step:\n{}", install.body));
+    for label in ["create local vault…", "open local vault…"] {
+        assert!(
+            picker.contains(&format!("label: '{label}'")),
+            "the vault picker has a button labelled `{label}`"
+        );
+        assert!(
+            first_launch.contains(&format!("\"{label}\"")),
+            "Install's first launch step names the real button \"{label}\": {first_launch}"
+        );
+    }
+    for stale in ["Create new vault…", "Open existing vault…"] {
+        assert!(
+            !readme().contains(stale),
+            "README.md names no button the picker lacks (`{stale}`)"
+        );
+    }
 }
 
 #[test]
@@ -4227,6 +4247,40 @@ fn readme_install_section_keeps_every_memex_command_real() {
         "the Install section exists and is about the app"
     );
     assert_commands_are_real("README.md", &readme());
+    // The new text itself: every `memex <subcommand>` it shows is real, and
+    // every `--flag` it shows is a flag some `memex` command really takes.
+    let top = subcommands_of(&[]);
+    for (sub, _) in memex_invocations(&install.body) {
+        assert!(
+            top.contains(&sub),
+            "the Install section shows `memex {sub}`, which is not a subcommand: {top:?}"
+        );
+    }
+    let mut help = String::new();
+    for args in std::iter::once(Vec::new()).chain(top.iter().map(|s| vec![s.as_str()])) {
+        let out = Command::new(env!("CARGO_BIN_EXE_memex"))
+            .args(&args)
+            .arg("--help")
+            .output()
+            .expect("run memex --help");
+        help.push_str(&String::from_utf8_lossy(&out.stdout));
+    }
+    let flag = Regex::new(r"--[a-z][a-z-]+").unwrap();
+    let mut flags = 0;
+    for snippet in code_snippets(&install.body) {
+        for m in flag.find_iter(&snippet) {
+            flags += 1;
+            assert!(
+                help.contains(m.as_str()),
+                "the Install section shows `{}`, which no memex command takes",
+                m.as_str()
+            );
+        }
+    }
+    assert!(
+        flags >= 1,
+        "the Install section shows `memex --with-embeddings`, so a flag to check"
+    );
 }
 
 // ---------- README: binary lookup and Build from source ----------
@@ -4656,12 +4710,41 @@ fn releasing_doc_recovery_deletes_the_draft_and_the_tag_fixes_and_retags() {
         "recovery deletes the draft and the tag: {}",
         section.body
     );
+    // The numbered steps run in order: delete the Release and the tag, check
+    // the tag is gone, fix the cause, and only then re-tag.
+    let items = wi377_numbered_items(&section.body);
+    let steps: [(&str, &[&str]); 4] = [
+        (
+            "delete the Release and its tag",
+            &["delete", "release", "tag"],
+        ),
+        (
+            "the tag is gone everywhere",
+            &["git push origin --delete", "git tag -d"],
+        ),
+        ("fix the cause on main", &["fix", "main", "pr"]),
+        ("re-tag", &["re-tag", "push"]),
+    ];
+    wi377_assert_steps_in_order("the recovery list", &items, &steps, true);
     assert!(
-        flat.contains("fix")
-            && (flat.contains("re-tag") || flat.contains("retag") || flat.contains("tag again")),
-        "recovery fixes the cause, then re-tags: {}",
-        section.body
+        section
+            .body
+            .contains("gh release delete v<ver> --cleanup-tag"),
+        "recovery names the one-command delete"
     );
+    // `--cleanup-tag` is a real `gh release delete` flag (checked when gh is
+    // installed on this machine; CI images without it skip only this check).
+    if let Ok(out) = Command::new("gh")
+        .args(["release", "delete", "--help"])
+        .output()
+    {
+        if out.status.success() {
+            assert!(
+                String::from_utf8_lossy(&out.stdout).contains("--cleanup-tag"),
+                "gh release delete takes --cleanup-tag"
+            );
+        }
+    }
 }
 
 #[test]
@@ -4725,6 +4808,218 @@ fn releasing_doc_names_only_scripts_and_flags_that_exist() {
     assert!(
         doc.contains("leak-check.sh"),
         "the runbook names the Leak check script"
+    );
+    // Every `--flag` on a line that names a script is a flag that script has.
+    let flag = Regex::new(r"--[a-z][a-z-]+").unwrap();
+    let mut checked = BTreeSet::new();
+    let code_lines: Vec<String> = code_snippets(&doc)
+        .iter()
+        .flat_map(|snippet| {
+            snippet
+                .replace("\\\n", " ")
+                .lines()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    for line in code_lines.iter().map(String::as_str) {
+        for script in path.find_iter(line) {
+            let source = read_repo_file(script.as_str());
+            for f in flag.find_iter(line) {
+                checked.insert((script.as_str().to_string(), f.as_str().to_string()));
+                assert!(
+                    source.contains(f.as_str()),
+                    "the runbook passes {} to {}, which does not take it: {line}",
+                    f.as_str(),
+                    script.as_str()
+                );
+            }
+        }
+    }
+    for expected in [
+        ("scripts/leak-check.sh", "--artifact"),
+        ("scripts/leak-check.sh", "--patterns"),
+        ("scripts/public-cutover/rewrite-history.sh", "--noreply"),
+    ] {
+        assert!(
+            checked.contains(&(expected.0.to_string(), expected.1.to_string())),
+            "the runbook shows {} with {}: {checked:?}",
+            expected.0,
+            expected.1
+        );
+    }
+    // The leak-check command the runbook gives for a `.sketch` file must work
+    // as written: it needs `--patterns` (without it the script exits 2).
+    let line = doc
+        .lines()
+        .find(|l| l.contains("--artifact"))
+        .expect("the runbook gives a leak-check --artifact command");
+    assert!(
+        line.contains("--patterns ~/.claude/orchestration/open_memex/leak-patterns.txt"),
+        "the --artifact command carries --patterns: {line}"
+    );
+}
+
+#[test]
+fn releasing_doc_design_review_commands_work_on_a_bare_mirror_and_the_scan_is_no_substitute() {
+    let doc = wi377_releasing();
+    let section = wi377_releasing_section("the one-time cutover", r"^one-time cutover");
+    let items = wi377_numbered_items(&section.body);
+    let step4 = items
+        .iter()
+        .find(|i| i.starts_with("4. "))
+        .expect("cutover step 4");
+    let flat = wi377_flat(step4);
+    // The scan is not offered as a substitute for looking.
+    assert!(
+        !flat.contains("or scan them"),
+        "step 4 never offers a scan instead of opening the exports: {step4}"
+    );
+    for needle in [
+        "open every png",
+        "yourself",
+        "never replaces looking",
+        "deny-list",
+        "its own path",
+        "stop and do not push",
+    ] {
+        assert!(
+            flat.contains(needle),
+            "step 4 says `{needle}` about the design exports:\n{step4}"
+        );
+    }
+    // The two commands step 4 gives must work on a bare mirror like the one
+    // rewrite-history.sh writes: build one with a design/ folder in it.
+    let tmp = tempfile::tempdir().unwrap();
+    let work = tmp.path().join("work");
+    let bare = tmp.path().join("mirror.git");
+    let scratch = tmp.path().join("scratch");
+    std::fs::create_dir_all(work.join("design")).unwrap();
+    std::fs::create_dir_all(&scratch).unwrap();
+    std::fs::write(work.join("design/board.png"), b"png-bytes").unwrap();
+    std::fs::write(work.join("design/kit.sketch"), b"sketch-bytes").unwrap();
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args([
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.com",
+            ])
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultBranch=main",
+            ])
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    git(&work, &["init", "-q"]);
+    git(&work, &["add", "-A"]);
+    git(&work, &["commit", "-q", "-m", "fixture"]);
+    git(
+        tmp.path(),
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            work.to_str().unwrap(),
+            bare.to_str().unwrap(),
+        ],
+    );
+    let code = Regex::new(r"`(git --git-dir <out> [^`]+)`").unwrap();
+    let commands: Vec<String> = code
+        .captures_iter(step4)
+        .map(|c| c[1].to_string())
+        .collect();
+    assert_eq!(
+        commands.len(),
+        2,
+        "step 4 gives a list command and an extract command: {commands:?}\n{step4}"
+    );
+    assert!(
+        doc.contains("<scratch-dir>") && doc.contains("<out>"),
+        "the placeholders are shown"
+    );
+    let run = |cmd: &str| {
+        let cmd = cmd
+            .replace("<out>", bare.to_str().unwrap())
+            .replace("<scratch-dir>", scratch.to_str().unwrap());
+        let out = Command::new("sh")
+            .current_dir(tmp.path())
+            .args(["-c", &cmd])
+            .output()
+            .expect("run sh");
+        assert!(
+            out.status.success(),
+            "step 4 command `{cmd}` fails on a bare mirror: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let listed = run(&commands[0]);
+    assert!(
+        listed.contains("design/board.png") && listed.contains("design/kit.sketch"),
+        "the ls-tree command lists the design files: {listed}"
+    );
+    run(&commands[1]);
+    assert_eq!(
+        std::fs::read(scratch.join("design/board.png")).unwrap(),
+        b"png-bytes",
+        "the archive command extracts the design files into the scratch folder"
+    );
+    assert!(scratch.join("design/kit.sketch").is_file());
+}
+
+#[test]
+fn releasing_doc_checksum_step_ignores_the_assets_that_were_not_downloaded() {
+    let section = wi377_releasing_section("every release", r"^every release");
+    let items = wi377_numbered_items(&section.body);
+    let check = items
+        .iter()
+        .find(|i| i.starts_with("6. "))
+        .expect("every-release step 6, the Release check");
+    assert!(
+        check.contains("shasum -a 256 -c --ignore-missing SHA256SUMS.txt"),
+        "the DMG-only checksum check passes on a good Release: {check}"
+    );
+    // The reason holds: with only some assets downloaded, `-c` alone fails
+    // and `--ignore-missing` passes. Run both on a fixture sums file that
+    // lists a file that is not there.
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("a.dmg"), b"dmg").unwrap();
+    std::fs::write(tmp.path().join("b.zip"), b"zip").unwrap();
+    let sums = Command::new("shasum")
+        .current_dir(tmp.path())
+        .args(["-a", "256", "a.dmg", "b.zip"])
+        .output()
+        .expect("run shasum");
+    std::fs::write(tmp.path().join("SHA256SUMS.txt"), &sums.stdout).unwrap();
+    std::fs::remove_file(tmp.path().join("b.zip")).unwrap();
+    let strict = Command::new("shasum")
+        .current_dir(tmp.path())
+        .args(["-a", "256", "-c", "SHA256SUMS.txt"])
+        .output()
+        .unwrap();
+    assert!(!strict.status.success(), "plain -c fails on a missing file");
+    let relaxed = Command::new("shasum")
+        .current_dir(tmp.path())
+        .args(["-a", "256", "-c", "--ignore-missing", "SHA256SUMS.txt"])
+        .output()
+        .unwrap();
+    assert!(
+        relaxed.status.success(),
+        "--ignore-missing passes with only the DMG: {}",
+        String::from_utf8_lossy(&relaxed.stderr)
     );
 }
 
@@ -4836,6 +5131,13 @@ fn release_notes_v0_2_0_has_the_three_sections_with_the_exact_upgrade_and_requir
         "bundled memex",
         "mcp server",
         "readme",
+        "signed and notarized",
+        "dmg",
+        "memex zip",
+        "sha256sums.txt",
+        "mit licence",
+        "fonts are bundled",
+        "never fetches fonts at runtime",
     ] {
         assert!(
             highlights.contains(needle),
