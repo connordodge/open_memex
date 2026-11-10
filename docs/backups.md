@@ -165,8 +165,8 @@ To keep the backups on a different disk from the vaults, mount that disk's folde
 
 A vault server writes to its own disk. To get a copy off that disk, point a NAS tool at the backup directory (and only at it, never at a live vault):
 
-- Synology: Hyper Backup can copy the backup directory to another disk, another NAS or a cloud provider. Synology's package that mirrors a folder to a cloud provider also works for this folder.
-- QNAP: HBS 3 can do the same: copy the backup directory to another disk, another NAS or a cloud provider.
+- Synology: Synology Hyper Backup can copy the backup directory to another disk, another NAS or a cloud provider. Synology Cloud Sync, the package that mirrors a folder to a cloud provider, also works for this folder.
+- QNAP: QNAP HBS 3 can do the same: copy the backup directory to another disk, another NAS or a cloud provider.
 - Other tools (rclone, a provider's own app on a Mac that mounts the folder) work the same way: they only need to copy finished `.memex.zip` files. Skip names that start with a dot and end in `.partial`; those are backups still being written.
 
 The cloud copy is made by that tool, not by Open Memex. Check its schedule and its own errors in its own screens.

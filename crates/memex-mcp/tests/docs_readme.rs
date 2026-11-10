@@ -1546,23 +1546,51 @@ fn readme_claude_desktop_setup_and_canvas_drop_single_device_lines_and_link_the_
 
 // ---------- AC 8: no word starting with "sync" (req 56) ----------
 
+/// The one third-party product name the docs may spell out: the Spec bans
+/// the word for a Backup, not for the name of a NAS package.
+const SYNC_PRODUCT_NAME: &str = "Synology Cloud Sync";
+
+/// Words starting with `sync` on one line, after the exact product name
+/// `Synology Cloud Sync` (case-sensitive) is set aside.
+fn sync_words(line: &str) -> Vec<String> {
+    let word = Regex::new(r"(?i)\bsync([a-z]*)").unwrap();
+    let line = line.replace(SYNC_PRODUCT_NAME, "");
+    word.captures_iter(&line)
+        // `async` never matches (no word boundary); `synchron...` is allowed.
+        .filter(|c| !c[1].to_lowercase().starts_with("hron"))
+        .map(|c| c[0].to_string())
+        .collect()
+}
+
+#[test]
+fn sync_scan_exempts_only_the_exact_product_name_synology_cloud_sync() {
+    assert!(sync_words("Use Synology Cloud Sync or Hyper Backup.").is_empty());
+    assert!(sync_words("Synology Cloud Sync, then Synology Cloud Sync again").is_empty());
+    for bare in [
+        "The backup is a sync.",
+        "Use Cloud Sync.",
+        "Use Cloud Sync on Synology.",
+        "Use Synology cloud sync.",
+        "Use synology Cloud Sync.",
+        "Use Synology Cloud Sync and then sync the vault.",
+        "A synced vault.",
+    ] {
+        assert!(!sync_words(bare).is_empty(), "must be flagged: {bare}");
+    }
+}
+
 #[test]
 fn no_word_starting_with_sync_appears_in_readme_or_any_doc() {
     let root = repo_root();
     let mut files = vec![root.join("README.md")];
     wi104_walk(&root.join("docs"), &mut files);
-    let word = Regex::new(r"(?i)\bsync([a-z]*)").unwrap();
     let mut hits = Vec::new();
     for path in &files {
         let Ok(text) = std::fs::read_to_string(path) else {
             continue; // not text
         };
         for (n, line) in text.lines().enumerate() {
-            for c in word.captures_iter(line) {
-                // `async` never matches (no word boundary); `synchron...` is allowed.
-                if c[1].to_lowercase().starts_with("hron") {
-                    continue;
-                }
+            for _ in sync_words(line) {
                 hits.push(format!(
                     "{}:{}: {}",
                     path.strip_prefix(&root).unwrap().display(),
@@ -3152,10 +3180,9 @@ fn backups_doc_covers_the_vault_server_backup_dir_a_nas_docker_and_cloud_tools()
             "<root>/.backups",
             "vault server",
             "Docker",
-            "Synology",
-            "Hyper Backup",
-            "QNAP",
-            "HBS 3",
+            "Synology Cloud Sync",
+            "Synology Hyper Backup",
+            "QNAP HBS 3",
         ],
     );
     // The Docker route: the same volume mount pattern as docs/hosted-vault.md.
