@@ -95,13 +95,14 @@ class ClientHostedBackupApi implements HostedBackupApi {
   /// The vault's name on the server.
   final String vaultName;
 
+  // Stub: the neutral value is an empty status.
   @override
-  Future<HostedBackupResult> status() =>
-      throw UnimplementedError('A1 (#322) fills ClientHostedBackupApi.status');
+  Future<HostedBackupResult> status() async =>
+      const HostedBackupOk(BackupStatus());
 
   @override
-  Future<HostedBackupResult> start() =>
-      throw UnimplementedError('A1 (#322) fills ClientHostedBackupApi.start');
+  Future<HostedBackupResult> start() async =>
+      const HostedBackupOk(BackupStatus());
 }
 
 /// The open hosted vault's backup API; null when no hosted vault is open.

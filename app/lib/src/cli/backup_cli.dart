@@ -34,20 +34,20 @@ class CliBackupRunner implements BackupRunner {
 
   final MemexCli? cli;
 
-  // Stub: a sealed result has no neutral value.
+  // Stub: the neutral value of a sealed result is an empty failure.
   @override
   Future<BackupRunResult> backup({
     required String vaultPath,
     required String destination,
     required int keep,
     required bool ifChanged,
-  }) => throw UnimplementedError('A1 (#322) fills CliBackupRunner.backup');
+  }) async => const BackupFailure(code: '', message: '');
 
   @override
   Future<RestoreRunResult> restore({
     required String from,
     required String to,
-  }) => throw UnimplementedError('A1 (#322) fills CliBackupRunner.restore');
+  }) async => const RestoreFailure(code: '', message: '');
 }
 
 /// The runner over the configured `memex` (`memexCliProvider`). Stub: A1

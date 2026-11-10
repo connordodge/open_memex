@@ -43,3 +43,8 @@ ParsedBackupName? parseBackupFileName(String fileName) => null;
 /// The vault name the Restore dialog prefills (req 35): the parsed label, or,
 /// for a name that doesn't match, [fileName] without `.memex.zip` or `.zip`.
 String suggestedRestoreName(String fileName) => '';
+
+/// The label a backup of the vault folder [folder] gets (D10): every Unicode
+/// scalar outside `[A-Za-z0-9_-]` becomes one `-`, cut to 64 characters. The
+/// Dart port of Rust's `label_for`; it iterates runes, not UTF-16 code units.
+String backupLabelFor(String folder) => '';
