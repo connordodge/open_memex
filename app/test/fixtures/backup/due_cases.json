@@ -1,0 +1,71 @@
+{
+  "due_after_ms": 86400000,
+  "cases": [
+    {
+      "name": "never backed up",
+      "last_success_at": null,
+      "now": 1794214800000,
+      "due": true
+    },
+    {
+      "name": "never backed up, clock at the epoch",
+      "last_success_at": null,
+      "now": 0,
+      "due": true
+    },
+    {
+      "name": "just backed up",
+      "last_success_at": 1794214800000,
+      "now": 1794214800000,
+      "due": false
+    },
+    {
+      "name": "one hour later",
+      "last_success_at": 1794214800000,
+      "now": 1794218400000,
+      "due": false
+    },
+    {
+      "name": "one millisecond short of 24 hours",
+      "last_success_at": 1794214800000,
+      "now": 1794301199999,
+      "due": false
+    },
+    {
+      "name": "exactly 24 hours",
+      "last_success_at": 1794214800000,
+      "now": 1794301200000,
+      "due": true
+    },
+    {
+      "name": "24 hours and one millisecond",
+      "last_success_at": 1794214800000,
+      "now": 1794301200001,
+      "due": true
+    },
+    {
+      "name": "three days later",
+      "last_success_at": 1794214800000,
+      "now": 1794474000000,
+      "due": true
+    },
+    {
+      "name": "clock went back one millisecond",
+      "last_success_at": 1794214800000,
+      "now": 1794214799999,
+      "due": true
+    },
+    {
+      "name": "clock went back a day",
+      "last_success_at": 1794214800000,
+      "now": 1794128400000,
+      "due": true
+    },
+    {
+      "name": "backed up at the epoch, one millisecond short of 24 hours",
+      "last_success_at": 0,
+      "now": 86399999,
+      "due": false
+    }
+  ]
+}

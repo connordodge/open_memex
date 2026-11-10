@@ -181,6 +181,10 @@ enum Commands {
     Feedback(cli::feedback::FeedbackArgs),
     /// Read the Vault Guide or return to an earlier text.
     Guide(cli::guide::GuideArgs),
+    /// Back up a vault into a folder as one .memex.zip file.
+    Backup(cli::backup::BackupArgs),
+    /// Make a new vault folder from a backup file.
+    Restore(cli::restore::RestoreArgs),
     /// Run as an MCP server over stdio, as the vault server over HTTP, or as
     /// a stdio bridge to a hosted vault.
     Serve(cli::serve::ServeArgs),
@@ -349,6 +353,8 @@ async fn dispatch(command: Commands) -> Result<()> {
         Commands::Filing(args) => cli::filing::run(args),
         Commands::Feedback(args) => cli::feedback::run(args),
         Commands::Guide(args) => cli::guide::run(args),
+        Commands::Backup(args) => cli::backup::run(args),
+        Commands::Restore(args) => cli::restore::run(args),
         Commands::Serve(args) => cli::serve::run(args).await,
     }
 }

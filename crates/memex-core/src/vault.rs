@@ -10,13 +10,13 @@ use crate::error::MemexError;
 use crate::fs_guard::{self, FsInfo};
 use crate::{schema, Result};
 
-const MANIFEST_FILENAME: &str = "manifest.json";
-const DB_FILENAME: &str = "memex.db";
-const OBJECTS_DIR: &str = "objects";
+pub(crate) const MANIFEST_FILENAME: &str = "manifest.json";
+pub(crate) const DB_FILENAME: &str = "memex.db";
+pub(crate) const OBJECTS_DIR: &str = "objects";
 
 static SQLITE_VEC_INIT: Once = Once::new();
 
-fn ensure_sqlite_vec_registered() {
+pub(crate) fn ensure_sqlite_vec_registered() {
     SQLITE_VEC_INIT.call_once(|| {
         // Register sqlite-vec as an auto-extension so every new SQLite
         // connection in this process loads it without needing to call

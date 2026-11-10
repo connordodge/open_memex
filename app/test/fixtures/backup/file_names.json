@@ -1,0 +1,218 @@
+{
+  "vault_id": "01JCB7Q4M8V2X5N9R3T6W0YZAE",
+  "valid": [
+    {
+      "name": "notes-20261109T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.memex.zip",
+      "label": "notes",
+      "timestamp": "20261109T090000Z",
+      "vault_id": "01JCB7Q4M8V2X5N9R3T6W0YZAE"
+    },
+    {
+      "name": "notes-20261108T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.memex.zip",
+      "label": "notes",
+      "timestamp": "20261108T090000Z",
+      "vault_id": "01JCB7Q4M8V2X5N9R3T6W0YZAE"
+    },
+    {
+      "name": "notes-20261007T235959Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.memex.zip",
+      "label": "notes",
+      "timestamp": "20261007T235959Z",
+      "vault_id": "01JCB7Q4M8V2X5N9R3T6W0YZAE"
+    },
+    {
+      "name": "My-Notes-2026-20261109T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.memex.zip",
+      "label": "My-Notes-2026",
+      "timestamp": "20261109T090000Z",
+      "vault_id": "01JCB7Q4M8V2X5N9R3T6W0YZAE"
+    },
+    {
+      "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-20261109T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.memex.zip",
+      "label": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "timestamp": "20261109T090000Z",
+      "vault_id": "01JCB7Q4M8V2X5N9R3T6W0YZAE"
+    },
+    {
+      "name": "--20261109T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.memex.zip",
+      "label": "-",
+      "timestamp": "20261109T090000Z",
+      "vault_id": "01JCB7Q4M8V2X5N9R3T6W0YZAE"
+    },
+    {
+      "name": "notes_v2-20261109T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAF.memex.zip",
+      "label": "notes_v2",
+      "timestamp": "20261109T090000Z",
+      "vault_id": "01JCB7Q4M8V2X5N9R3T6W0YZAF"
+    }
+  ],
+  "look_alikes": [
+    {
+      "name": "notes-20261109T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAF.memex.zip",
+      "why": "another vault's backup",
+      "parses": {
+        "label": "notes",
+        "timestamp": "20261109T090000Z",
+        "vault_id": "01JCB7Q4M8V2X5N9R3T6W0YZAF"
+      }
+    },
+    {
+      "name": "notes-20261109T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.MEMEX.ZIP",
+      "why": "upper-case .MEMEX.ZIP",
+      "parses": null
+    },
+    {
+      "name": "notes-20261109T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.memex.zip.partial",
+      "why": ".partial without the leading dot",
+      "parses": null
+    },
+    {
+      "name": ".notes-20261109T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAF.memex.zip.partial",
+      "why": "another vault's .partial",
+      "parses": null
+    },
+    {
+      "name": "notes-20261109T090000-01JCB7Q4M8V2X5N9R3T6W0YZAE.memex.zip",
+      "why": "timestamp without Z",
+      "parses": null
+    },
+    {
+      "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-20261109T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.memex.zip",
+      "why": "65-character label",
+      "parses": null
+    },
+    {
+      "name": "x.memex.zip",
+      "why": "no timestamp or vault_id",
+      "parses": null
+    },
+    {
+      "name": "notes-20261109T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.zip",
+      "why": "plain .zip",
+      "parses": null
+    },
+    {
+      "name": "notes-20261109T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAE 2.memex.zip",
+      "why": "a sync client's conflict copy",
+      "parses": null
+    },
+    {
+      "name": "my notes-20261109T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.memex.zip",
+      "why": "space in the label",
+      "parses": null
+    },
+    {
+      "name": "-20261109T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.memex.zip",
+      "why": "empty label",
+      "parses": null
+    },
+    {
+      "name": "notes-2026119T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.memex.zip",
+      "why": "seven-digit date",
+      "parses": null
+    },
+    {
+      "name": "notes-20261109T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZA.memex.zip",
+      "why": "25-character vault_id",
+      "parses": null
+    }
+  ],
+  "partials": [
+    {
+      "name": ".notes-20261109T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.memex.zip.partial",
+      "vault_id": "01JCB7Q4M8V2X5N9R3T6W0YZAE",
+      "is_partial_for": true
+    },
+    {
+      "name": ".notes-20261109T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAF.memex.zip.partial",
+      "vault_id": "01JCB7Q4M8V2X5N9R3T6W0YZAE",
+      "is_partial_for": false
+    },
+    {
+      "name": "notes-20261109T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.memex.zip.partial",
+      "vault_id": "01JCB7Q4M8V2X5N9R3T6W0YZAE",
+      "is_partial_for": false
+    },
+    {
+      "name": ".notes-20261109T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.memex.zip",
+      "vault_id": "01JCB7Q4M8V2X5N9R3T6W0YZAE",
+      "is_partial_for": false
+    },
+    {
+      "name": ".notes-20261109T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.MEMEX.ZIP.partial",
+      "vault_id": "01JCB7Q4M8V2X5N9R3T6W0YZAE",
+      "is_partial_for": false
+    }
+  ],
+  "file_names": [
+    {
+      "label": "notes",
+      "at_ms": 1794214800000,
+      "vault_id": "01JCB7Q4M8V2X5N9R3T6W0YZAE",
+      "name": "notes-20261109T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.memex.zip",
+      "partial": ".notes-20261109T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.memex.zip.partial"
+    },
+    {
+      "label": "notes",
+      "at_ms": 1794214800999,
+      "vault_id": "01JCB7Q4M8V2X5N9R3T6W0YZAE",
+      "name": "notes-20261109T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.memex.zip",
+      "partial": ".notes-20261109T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.memex.zip.partial"
+    },
+    {
+      "label": "My-Notes",
+      "at_ms": 1794086130000,
+      "vault_id": "01JCB7Q4M8V2X5N9R3T6W0YZAE",
+      "name": "My-Notes-20261107T211530Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.memex.zip",
+      "partial": ".My-Notes-20261107T211530Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.memex.zip.partial"
+    }
+  ],
+  "labels": [
+    {
+      "folder": "notes",
+      "label": "notes"
+    },
+    {
+      "folder": "My Notes",
+      "label": "My-Notes"
+    },
+    {
+      "folder": "work.vault",
+      "label": "work-vault"
+    },
+    {
+      "folder": "a_b-c",
+      "label": "a_b-c"
+    },
+    {
+      "folder": "Notes (2)",
+      "label": "Notes--2-"
+    },
+    {
+      "folder": "Café",
+      "label": "Caf-"
+    },
+    {
+      "folder": "Café",
+      "label": "Cafe-"
+    },
+    {
+      "folder": "Notes 📚",
+      "label": "Notes--"
+    },
+    {
+      "folder": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "label": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "folder": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "label": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "folder": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx y",
+      "label": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-"
+    },
+    {
+      "folder": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+      "label": "----------------------------------------------------------------"
+    }
+  ]
+}

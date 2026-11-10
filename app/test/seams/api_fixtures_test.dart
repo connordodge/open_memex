@@ -724,9 +724,11 @@ void main() {
     test(
       'compat domain returns its one dart only info row with the full response',
       () {
+        // #316 (D18) adds the old-server `GET …/backup` → 404 row; every
+        // compat row is dart_only, and exactly one is the info row.
         final rows = loadFixtureRows('$apiV1FixturesDir/compat');
-        expect(rows, hasLength(1));
-        final row = rows.single;
+        expect(rows.every((r) => r.dartOnly), isTrue);
+        final row = rows.where((r) => r.path == '/api/v1/info').single;
         expect(row.method, 'GET');
         expect(row.path, '/api/v1/info');
         expect(row.status, 200);

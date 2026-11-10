@@ -1350,8 +1350,15 @@ fn utc_offsets_fixture_has_valid_invalid_and_format_rows() {
 fn compat_domain_has_one_dart_only_info_row_and_the_runner_skips_it() {
     let dir = committed_api_v1_dir().join("compat");
     let rows = load_rows(&dir).expect("compat/index.json parses");
-    assert_eq!(rows.len(), 1, "compat holds exactly one row");
-    let row = &rows[0];
+    // #316 (D18) adds the old-server `GET …/backup` → 404 row; every compat
+    // row is dart_only, and exactly one is the info row.
+    assert!(
+        rows.iter().all(|r| r.dart_only),
+        "every compat row is dart_only"
+    );
+    let info: Vec<&FixtureRow> = rows.iter().filter(|r| r.path == "/api/v1/info").collect();
+    assert_eq!(info.len(), 1, "compat holds exactly one info row");
+    let row = info[0];
     assert_eq!(row.method, "GET");
     assert_eq!(row.path, "/api/v1/info");
     assert_eq!(row.status, 200);
