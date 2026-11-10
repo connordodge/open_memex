@@ -710,8 +710,36 @@ void main() {
       expect(await reader.read(vaultPath: '/v', destination: '/d'), isNull);
     });
 
-    test('backupMessage stub returns the empty string', () {
-      expect(backupMessage('backup_failed', message: 'm'), '');
+    test('backup messages stubs return their neutral values', () {
+      final at = DateTime.utc(2026, 11, 9, 9);
+      expect(
+        backupFailureMessage(
+          code: 'backup_failed',
+          message: 'm',
+          automatic: true,
+          failedAt: at,
+          now: at,
+        ),
+        const BackupMessage(title: '', detail: '', short: ''),
+      );
+      expect(
+        backupTooOldMessage(),
+        const BackupMessage(title: '', detail: '', short: ''),
+      );
+      expect(
+        backupBinaryNotFoundMessage(),
+        const BackupMessage(title: '', detail: '', short: ''),
+      );
+      expect(
+        restoreFailureMessage(
+          RestoreFailure(code: 'backup_invalid', message: 'm'),
+          name: 'Notes',
+          parent: '/p',
+        ),
+        '',
+      );
+      expect(backupWhen(at, at), '');
+      expect(backupSize(1), '');
     });
 
     test('backup names stubs return their neutral values', () {

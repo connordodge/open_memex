@@ -1,9 +1,7 @@
 // WI #321 (A0, D19): the frozen backup models. Every app backup WI (#322-#328)
 // builds on these names and shapes; they change only by lead ruling.
 //
-// SKELETON (red mode): signatures and fields only. `==`, `hashCode`, JSON,
-// `copyWith`, the keep range check and the constructor defaults are the
-// implementer's work; each is pinned by `test/state/backup_seam_test.dart`.
+// Each contract below is pinned by `test/state/backup_seam_test.dart`.
 //
 // Times: every instant is a UTC [DateTime]. JSON carries unix milliseconds
 // (`backup-state.json`, the hosted `GET .../backup` body, `memex restore`'s
@@ -22,19 +20,33 @@ const int backupKeepDefault = 30;
 /// constructor throws an [AssertionError] (debug) and `fromJson` throws a
 /// [FormatException] (always).
 class VaultBackupSettings {
-  // Skeleton: neutral defaults; the implementer sets keep 30, automatic true.
   const VaultBackupSettings({
     this.enabled = false,
     this.destination,
-    this.keep = 0,
-    this.automatic = false,
-  });
+    this.keep = backupKeepDefault,
+    this.automatic = true,
+  }) : assert(
+         keep >= backupKeepMin && keep <= backupKeepMax,
+         'keep must be $backupKeepMin to $backupKeepMax',
+       );
 
   /// Reads `{"enabled":bool,"destination":string|null,"keep":int,
   /// "automatic":bool}`. A missing key takes its default; a value of the
   /// wrong type, or a keep out of range, throws [FormatException].
-  factory VaultBackupSettings.fromJson(Map<String, Object?> json) =>
-      const VaultBackupSettings();
+  factory VaultBackupSettings.fromJson(Map<String, Object?> json) {
+    final keep = _readInt(json, 'keep') ?? backupKeepDefault;
+    if (keep < backupKeepMin || keep > backupKeepMax) {
+      throw FormatException(
+        'keep must be $backupKeepMin to $backupKeepMax, got $keep',
+      );
+    }
+    return VaultBackupSettings(
+      enabled: _readBool(json, 'enabled') ?? false,
+      destination: _readString(json, 'destination'),
+      keep: keep,
+      automatic: _readBool(json, 'automatic') ?? true,
+    );
+  }
 
   /// Whether backups are on for this vault.
   final bool enabled;
@@ -51,7 +63,12 @@ class VaultBackupSettings {
 
   /// `{"enabled":…,"destination":…,"keep":…,"automatic":…}`; a null
   /// destination is written as JSON null.
-  Map<String, Object?> toJson() => const {};
+  Map<String, Object?> toJson() => {
+    'enabled': enabled,
+    'destination': destination,
+    'keep': keep,
+    'automatic': automatic,
+  };
 
   /// A copy with the given fields replaced. [destination] cannot be cleared
   /// through this method (pass a new settings value instead).
@@ -60,7 +77,27 @@ class VaultBackupSettings {
     String? destination,
     int? keep,
     bool? automatic,
-  }) => this;
+  }) => VaultBackupSettings(
+    enabled: enabled ?? this.enabled,
+    destination: destination ?? this.destination,
+    keep: keep ?? this.keep,
+    automatic: automatic ?? this.automatic,
+  );
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is VaultBackupSettings &&
+          other.enabled == enabled &&
+          other.destination == destination &&
+          other.keep == keep &&
+          other.automatic == automatic;
+
+  @override
+  int get hashCode => Object.hash(enabled, destination, keep, automatic);
+
+  @override
+  String toString() => 'VaultBackupSettings(${toJson()})';
 }
 
 /// A cloud provider whose sync folder the destination picker can find.
@@ -70,7 +107,11 @@ enum BackupProvider {
   oneDrive;
 
   /// The id used in Keys and wire text: `icloud`, `google_drive`, `onedrive`.
-  String get wireId => '';
+  String get wireId => switch (this) {
+    BackupProvider.icloud => 'icloud',
+    BackupProvider.googleDrive => 'google_drive',
+    BackupProvider.oneDrive => 'onedrive',
+  };
 }
 
 /// One row of the destination picker (req 20): a provider's folder or
@@ -92,6 +133,20 @@ class BackupDestinationOption {
   /// The destination this row makes (`<provider folder>/Open Memex Backups`);
   /// null for "Choose folder…", which asks the folder picker.
   final String? path;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BackupDestinationOption &&
+          other.provider == provider &&
+          other.label == label &&
+          other.path == path;
+
+  @override
+  int get hashCode => Object.hash(provider, label, path);
+
+  @override
+  String toString() => 'BackupDestinationOption($provider, $label, $path)';
 }
 
 /// One destination's backup history (req 10a): a `backup-state.json` entry,
@@ -114,15 +169,34 @@ class BackupStatus {
 
   /// One `backup-state.json` destination entry (all keys of req 10a). A
   /// missing key is null; a wrong-typed value throws [FormatException].
-  factory BackupStatus.fromStateJson(Map<String, Object?> json) =>
-      const BackupStatus();
+  factory BackupStatus.fromStateJson(Map<String, Object?> json) => BackupStatus(
+    lastAttemptAt: _readInstant(json, 'last_attempt_at'),
+    lastSuccessAt: _readInstant(json, 'last_success_at'),
+    lastResult: _readString(json, 'last_result'),
+    lastError: _readString(json, 'last_error'),
+    lastFile: _readString(json, 'last_file'),
+    lastFileCreatedAt: _readInstant(json, 'last_file_created_at'),
+    lastBytes: _readInt(json, 'last_bytes'),
+    lastFingerprint: _readString(json, 'last_fingerprint'),
+  );
 
   /// The hosted `GET .../backup` body (D17): the state keys except
   /// `last_fingerprint`, plus `enabled`, `keep` and `in_progress`. A missing
   /// key is null (`in_progress` false); a wrong-typed value throws
   /// [FormatException].
   factory BackupStatus.fromHostedJson(Map<String, Object?> json) =>
-      const BackupStatus();
+      BackupStatus(
+        lastAttemptAt: _readInstant(json, 'last_attempt_at'),
+        lastSuccessAt: _readInstant(json, 'last_success_at'),
+        lastResult: _readString(json, 'last_result'),
+        lastError: _readString(json, 'last_error'),
+        lastFile: _readString(json, 'last_file'),
+        lastFileCreatedAt: _readInstant(json, 'last_file_created_at'),
+        lastBytes: _readInt(json, 'last_bytes'),
+        enabled: _readBool(json, 'enabled'),
+        keep: _readInt(json, 'keep'),
+        inProgress: _readBool(json, 'in_progress') ?? false,
+      );
 
   final DateTime? lastAttemptAt;
   final DateTime? lastSuccessAt;
@@ -149,17 +223,77 @@ class BackupStatus {
 
   /// True when the last attempt ended in an error code: [lastResult] is set
   /// and is neither `created` nor `unchanged` (req 24's warning rule).
-  bool get lastAttemptFailed => false;
+  bool get lastAttemptFailed {
+    final result = lastResult;
+    return result != null && result != 'created' && result != 'unchanged';
+  }
 
   /// True when a backup file was ever written there ([lastFile] is set).
   /// False reads as "Never" in the sheet.
-  bool get hasBackup => false;
+  bool get hasBackup => lastFile != null;
 
   /// The `backup-state.json` entry shape (req 10a), times as unix ms.
-  Map<String, Object?> toStateJson() => const {};
+  Map<String, Object?> toStateJson() => {
+    'last_attempt_at': lastAttemptAt?.millisecondsSinceEpoch,
+    'last_success_at': lastSuccessAt?.millisecondsSinceEpoch,
+    'last_result': lastResult,
+    'last_error': lastError,
+    'last_file': lastFile,
+    'last_file_created_at': lastFileCreatedAt?.millisecondsSinceEpoch,
+    'last_bytes': lastBytes,
+    'last_fingerprint': lastFingerprint,
+  };
 
-  /// The hosted `GET` body shape (D17), times as unix ms.
-  Map<String, Object?> toHostedJson() => const {};
+  /// The hosted `GET` body shape (D17), times as unix ms. A null [enabled] is
+  /// written false.
+  Map<String, Object?> toHostedJson() => {
+    'enabled': enabled ?? false,
+    'keep': keep,
+    'in_progress': inProgress,
+    'last_attempt_at': lastAttemptAt?.millisecondsSinceEpoch,
+    'last_success_at': lastSuccessAt?.millisecondsSinceEpoch,
+    'last_result': lastResult,
+    'last_error': lastError,
+    'last_file': lastFile,
+    'last_file_created_at': lastFileCreatedAt?.millisecondsSinceEpoch,
+    'last_bytes': lastBytes,
+  };
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BackupStatus &&
+          other.lastAttemptAt == lastAttemptAt &&
+          other.lastSuccessAt == lastSuccessAt &&
+          other.lastResult == lastResult &&
+          other.lastError == lastError &&
+          other.lastFile == lastFile &&
+          other.lastFileCreatedAt == lastFileCreatedAt &&
+          other.lastBytes == lastBytes &&
+          other.lastFingerprint == lastFingerprint &&
+          other.enabled == enabled &&
+          other.keep == keep &&
+          other.inProgress == inProgress;
+
+  @override
+  int get hashCode => Object.hash(
+    lastAttemptAt,
+    lastSuccessAt,
+    lastResult,
+    lastError,
+    lastFile,
+    lastFileCreatedAt,
+    lastBytes,
+    lastFingerprint,
+    enabled,
+    keep,
+    inProgress,
+  );
+
+  @override
+  String toString() =>
+      'BackupStatus(${toStateJson()}, enabled: $enabled, '
+      'keep: $keep, inProgress: $inProgress)';
 }
 
 /// The outcome of one `memex backup` run (D20).
@@ -183,6 +317,22 @@ final class BackupCreated extends BackupRunResult {
 
   /// Absolute paths retention deleted.
   final List<String> removed;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BackupCreated &&
+          other.file == file &&
+          other.bytes == bytes &&
+          other.fingerprint == fingerprint &&
+          _listEquals(other.removed, removed);
+
+  @override
+  int get hashCode =>
+      Object.hash(file, bytes, fingerprint, Object.hashAll(removed));
+
+  @override
+  String toString() => 'BackupCreated($file, $bytes, $fingerprint, $removed)';
 }
 
 /// Exit 0, `{"result":"unchanged",...}`: `--if-changed` found nothing new.
@@ -191,6 +341,17 @@ final class BackupUnchanged extends BackupRunResult {
 
   /// The absolute path of the last backup, or null when there never was one.
   final String? lastFile;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BackupUnchanged && other.lastFile == lastFile;
+
+  @override
+  int get hashCode => Object.hash(BackupUnchanged, lastFile);
+
+  @override
+  String toString() => 'BackupUnchanged($lastFile)';
 }
 
 /// A C1 failure (exit 1): [code] is the C1 error code, [message] its raw
@@ -200,16 +361,45 @@ final class BackupFailure extends BackupRunResult {
 
   final String code;
   final String message;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BackupFailure && other.code == code && other.message == message;
+
+  @override
+  int get hashCode => Object.hash(BackupFailure, code, message);
+
+  @override
+  String toString() => 'BackupFailure($code, $message)';
 }
 
 /// Exit 2: this `memex` predates `backup` (whatever stderr says).
 final class BackupTooOld extends BackupRunResult {
   const BackupTooOld();
+
+  @override
+  bool operator ==(Object other) => other is BackupTooOld;
+
+  @override
+  int get hashCode => (BackupTooOld).hashCode;
+
+  @override
+  String toString() => 'BackupTooOld()';
 }
 
 /// The `memex` binary could not be started (`ProcessException`).
 final class BackupBinaryNotFound extends BackupRunResult {
   const BackupBinaryNotFound();
+
+  @override
+  bool operator ==(Object other) => other is BackupBinaryNotFound;
+
+  @override
+  int get hashCode => (BackupBinaryNotFound).hashCode;
+
+  @override
+  String toString() => 'BackupBinaryNotFound()';
 }
 
 /// The outcome of one `memex restore` run (D20).
@@ -232,6 +422,20 @@ final class RestoreOk extends RestoreRunResult {
 
   /// When the backup was made (UTC).
   final DateTime createdAt;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is RestoreOk &&
+          other.vaultId == vaultId &&
+          other.path == path &&
+          other.createdAt == createdAt;
+
+  @override
+  int get hashCode => Object.hash(vaultId, path, createdAt);
+
+  @override
+  String toString() => 'RestoreOk($vaultId, $path, $createdAt)';
 }
 
 /// A C1 failure (exit 1): [fields] are the C1 object's keys other than
@@ -247,16 +451,55 @@ final class RestoreFailure extends RestoreRunResult {
   final String code;
   final String message;
   final Map<String, Object?> fields;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is RestoreFailure &&
+          other.code == code &&
+          other.message == message &&
+          _mapEquals(other.fields, fields);
+
+  @override
+  int get hashCode => Object.hash(
+    code,
+    message,
+    // Order-independent, as map equality is.
+    Object.hashAllUnordered(
+      fields.entries.map((e) => Object.hash(e.key, e.value)),
+    ),
+  );
+
+  @override
+  String toString() => 'RestoreFailure($code, $message, $fields)';
 }
 
 /// Exit 2: this `memex` predates `restore`.
 final class RestoreTooOld extends RestoreRunResult {
   const RestoreTooOld();
+
+  @override
+  bool operator ==(Object other) => other is RestoreTooOld;
+
+  @override
+  int get hashCode => (RestoreTooOld).hashCode;
+
+  @override
+  String toString() => 'RestoreTooOld()';
 }
 
 /// The `memex` binary could not be started.
 final class RestoreBinaryNotFound extends RestoreRunResult {
   const RestoreBinaryNotFound();
+
+  @override
+  bool operator ==(Object other) => other is RestoreBinaryNotFound;
+
+  @override
+  int get hashCode => (RestoreBinaryNotFound).hashCode;
+
+  @override
+  String toString() => 'RestoreBinaryNotFound()';
 }
 
 /// Which Backups sheet state a vault is in (req 19-31b, design option B).
@@ -331,7 +574,7 @@ class BackupViewState {
   final String? errorCode;
 
   /// For [BackupSheetMode.error] and the too-old / not-found states: the
-  /// plain-language text from `backupMessage` (req 22a).
+  /// plain-language text from `backup_messages.dart` (req 22a).
   final String? message;
 
   /// For [BackupSheetMode.pickingDestination]: the rows to list.
@@ -340,4 +583,82 @@ class BackupViewState {
   /// The entry's automatic-failure warning (req 24, 31a): on until a later
   /// backup to the destination succeeds; never on while backups are off.
   final bool warning;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BackupViewState &&
+          other.mode == mode &&
+          other.hosted == hosted &&
+          other.settings == settings &&
+          other.status == status &&
+          other.errorCode == errorCode &&
+          other.message == message &&
+          _listEquals(other.options, options) &&
+          other.warning == warning;
+
+  @override
+  int get hashCode => Object.hash(
+    mode,
+    hosted,
+    settings,
+    status,
+    errorCode,
+    message,
+    Object.hashAll(options),
+    warning,
+  );
+
+  @override
+  String toString() =>
+      'BackupViewState($mode, hosted: $hosted, settings: $settings, '
+      'status: $status, errorCode: $errorCode, message: $message, '
+      'options: $options, warning: $warning)';
+}
+
+// JSON readers: a missing or null key is null; any other type is a
+// FormatException.
+
+String? _readString(Map<String, Object?> json, String key) {
+  final v = json[key];
+  if (v == null) return null;
+  if (v is String) return v;
+  throw FormatException('"$key" must be a string, got ${v.runtimeType}');
+}
+
+int? _readInt(Map<String, Object?> json, String key) {
+  final v = json[key];
+  if (v == null) return null;
+  if (v is int) return v;
+  throw FormatException('"$key" must be an integer, got ${v.runtimeType}');
+}
+
+bool? _readBool(Map<String, Object?> json, String key) {
+  final v = json[key];
+  if (v == null) return null;
+  if (v is bool) return v;
+  throw FormatException('"$key" must be a boolean, got ${v.runtimeType}');
+}
+
+DateTime? _readInstant(Map<String, Object?> json, String key) {
+  final ms = _readInt(json, key);
+  return ms == null
+      ? null
+      : DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true);
+}
+
+bool _listEquals<T>(List<T> a, List<T> b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}
+
+bool _mapEquals(Map<String, Object?> a, Map<String, Object?> b) {
+  if (a.length != b.length) return false;
+  for (final e in a.entries) {
+    if (!b.containsKey(e.key) || b[e.key] != e.value) return false;
+  }
+  return true;
 }
