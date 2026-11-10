@@ -59,7 +59,13 @@ class BackupHarness {
 /// Builds the harness: a container with an override for every backup seam. [prefs] seeds mock
 /// SharedPreferences (the `memex.binary_path` of the fake binary is always
 /// present). [realController] leaves `backupControllerProvider` to the live
-/// controller (A3's tests); otherwise a [FakeBackupController] answers.
+/// controller (A3's tests); otherwise a [FakeBackupController] answers (an
+/// injected [controller] always wins). [noHostedApi] makes
+/// `hostedBackupApiProvider` answer null, as it does when no hosted vault is
+/// open: [BackupHarness.hostedApi] is then a fake nothing is wired to, so its
+/// `calls` stay empty. [overrides] are appended after every harness override
+/// (a test's own win): the way to override providers the harness does not
+/// know (the sidebar's, a vault's), so no filler needs to bypass it.
 Future<BackupHarness> _build({
   FakeClock? clock,
   FakeBackupRunner? runner,
@@ -69,6 +75,8 @@ Future<BackupHarness> _build({
   FakeMemexCli? cli,
   FakeBackupController? controller,
   bool realController = false,
+  bool noHostedApi = false,
+  List<Override> overrides = const [],
   VaultRef? vault,
   Map<String, Object> prefs = const {},
 }) async {
@@ -83,23 +91,26 @@ Future<BackupHarness> _build({
   final fakeReader = reader ?? FakeBackupStateReader();
   final fakeApi = hostedApi ?? FakeHostedBackupApi();
   final fakeProbe = probe ?? FakeCloudFolderProbe();
-  final fakeController = realController
+  // An injected controller always wins over `realController`.
+  final fakeController = realController && controller == null
       ? null
       : (controller ?? FakeBackupController());
-  final overrides = <Override>[
+  final allOverrides = <Override>[
     settingsProvider.overrideWith((_) => settings),
     clockProvider.overrideWithValue(fakeClock),
     memexCliProvider.overrideWithValue(fakeCli),
     backupRunnerProvider.overrideWithValue(fakeRunner),
     backupStateReaderProvider.overrideWithValue(fakeReader),
-    hostedBackupApiProvider.overrideWithValue(fakeApi),
+    hostedBackupApiProvider.overrideWithValue(noHostedApi ? null : fakeApi),
     cloudFolderProbeProvider.overrideWithValue(fakeProbe),
     if (fakeController != null)
       backupControllerProvider.overrideWith((_) => fakeController),
     if (vault != null) currentVaultProvider.overrideWith((_) => vault),
+    // Last, so a test's own override wins over the harness's.
+    ...overrides,
   ];
   return BackupHarness(
-    container: ProviderContainer(overrides: overrides),
+    container: ProviderContainer(overrides: allOverrides),
     clock: fakeClock,
     cli: fakeCli,
     runner: fakeRunner,
@@ -125,6 +136,8 @@ Future<BackupHarness> createBackupContainer({
   FakeMemexCli? cli,
   FakeBackupController? controller,
   bool realController = true,
+  bool noHostedApi = false,
+  List<Override> overrides = const [],
   VaultRef? vault,
   Map<String, Object> prefs = const {},
 }) async {
@@ -136,7 +149,9 @@ Future<BackupHarness> createBackupContainer({
     probe: probe,
     cli: cli,
     controller: controller,
-    realController: realController && controller == null,
+    realController: realController,
+    noHostedApi: noHostedApi,
+    overrides: overrides,
     vault: vault,
     prefs: prefs,
   );
@@ -162,6 +177,8 @@ Future<BackupHarness> pumpBackupWidget(
   FakeMemexCli? cli,
   FakeBackupController? controller,
   bool realController = false,
+  bool noHostedApi = false,
+  List<Override> overrides = const [],
   VaultRef? vault,
   Map<String, Object> prefs = const {},
   Size surfaceSize = const Size(1200, 900),
@@ -175,6 +192,8 @@ Future<BackupHarness> pumpBackupWidget(
     cli: cli,
     controller: controller,
     realController: realController,
+    noHostedApi: noHostedApi,
+    overrides: overrides,
     vault: vault,
     prefs: prefs,
   );

@@ -679,7 +679,8 @@ DateTime? _readInstant(Map<String, Object?> json, String key) {
   if (ms == null) return null;
   // DateTime holds +-8.64e15 ms; a wider value is malformed input, not a
   // RangeError for the caller to miss.
-  if (ms.abs() > _maxInstantMs) {
+  // Not `ms.abs()`: it overflows for the int64 minimum.
+  if (ms < -_maxInstantMs || ms > _maxInstantMs) {
     throw FormatException('"$key" is not a valid time: $ms');
   }
   return DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true);
