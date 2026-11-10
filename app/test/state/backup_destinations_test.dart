@@ -285,6 +285,32 @@ void main() {
         );
       },
     );
+    test(
+      'discovery lists only Choose folder when the home folder cannot be found',
+      () async {
+        final probe = _Wi323NoHomeProbe()
+          ..seedIcloud()
+          ..seedGoogleDrive('a@example.com');
+        final options = await _discover(probe);
+        expect(options, [_choose()]);
+        // Nothing below an unknown home was looked at.
+        expect(probe.calls, ['home']);
+      },
+    );
+
+    test(
+      'a GoogleDrive or OneDrive folder with no account or name is not listed',
+      () async {
+        final probe = FakeCloudFolderProbe()
+          ..seedOneDrive('Personal')
+          ..addDirectory('$fakeHome/Library/CloudStorage/GoogleDrive-/My Drive')
+          ..addDirectory('$fakeHome/Library/CloudStorage/OneDrive-');
+        expect(
+          [for (final o in await _discover(probe)) o.label],
+          ['Personal', 'choose folder…'],
+        );
+      },
+    );
   });
 
   group('resolveBackupDestinationProvider', () {
@@ -594,6 +620,59 @@ void main() {
     );
 
     test(
+      'a refused folder creation says which folder and what the system said',
+      () async {
+        final probe = FakeCloudFolderProbe()..seedIcloud();
+        final option = _icloud(probe);
+        probe.denyCreate(option.path!);
+        final h = await createBackupContainer(probe: probe);
+
+        final result = await resolve(h, option);
+
+        final message = (result as BackupDestinationUnavailable).message;
+        expect(message, contains(option.path!));
+        expect(message, contains('Operation not permitted'));
+      },
+    );
+
+    test(
+      'an exception with no system error is reported by its own message',
+      () async {
+        final probe = _Wi323ResolveFailsProbe()..seedIcloud();
+        final h = await createBackupContainer(probe: probe);
+
+        final result = await resolve(h, _icloud(probe));
+
+        final message = (result as BackupDestinationUnavailable).message;
+        expect(message, contains('Cannot resolve'));
+        expect(message, contains(_icloud(probe).path!));
+      },
+    );
+
+    test(
+      'Choose folder without a picked folder is a programming error',
+      () async {
+        final probe = FakeCloudFolderProbe();
+        final h = await createBackupContainer(probe: probe);
+        await expectLater(resolve(h, _choose()), throwsArgumentError);
+        expect(probe.createdDirectories, isEmpty);
+        expectNothingSaved(h);
+      },
+    );
+
+    test('a provider option with no path is a programming error', () async {
+      final probe = FakeCloudFolderProbe()..seedIcloud();
+      final h = await createBackupContainer(probe: probe);
+      const noPath = BackupDestinationOption(
+        provider: BackupProvider.icloud,
+        label: 'iCloud Drive',
+      );
+      await expectLater(resolve(h, noPath), throwsArgumentError);
+      expect(probe.createdDirectories, isEmpty);
+      expectNothingSaved(h);
+    });
+
+    test(
       'saving a resolved destination changes only that destination of that vault and deletes nothing',
       () async {
         final probe = FakeCloudFolderProbe()..seedIcloud();
@@ -753,4 +832,13 @@ class _Wi323ResolveFailsProbe extends FakeCloudFolderProbe {
   @override
   Future<String> resolveSymbolicLinks(String path) async =>
       throw FileSystemException('Cannot resolve', path);
+}
+
+/// A probe whose home folder cannot be found (HOME unset).
+class _Wi323NoHomeProbe extends FakeCloudFolderProbe {
+  @override
+  Future<String> home() async {
+    calls.add('home');
+    throw const FileSystemException('The HOME folder is not set');
+  }
 }
