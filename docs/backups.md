@@ -25,7 +25,7 @@ Making a backup never writes to your vault, never runs a migration and never wai
 
 ## Choose where backups go
 
-In the app, press the **backups** row in the sidebar (under the vault pills) to open the Backups sheet, then choose **Turn on backups…**. The sheet lists the folders it finds on this Mac, and a **Choose folder…** row for any folder.
+The app shows its button labels in lower case (for example "back up now"); this page writes them with a capital letter. In the app, press the **backups** row in the sidebar (under the vault pills) to open the Backups sheet, then choose **Turn on backups…**. The sheet lists the folders it finds on this Mac, and a **Choose folder…** row for any folder.
 
 | Choice | Notes |
 |---|---|
@@ -206,7 +206,7 @@ A restored copy keeps the original's vault id, because a backup carries the vaul
 
 ## Error codes
 
-Every failure of `memex backup`, `memex restore` and a vault server's backup carries one of these codes. The command line prints them in one line of JSON on stderr and exits non-zero. A vault server's automatic backup records its code and message in the status the app reads, and answers a request with an HTTP status only in the two cases marked here.
+The failures specific to backups and restores carry one of these eight codes. Other failures come out as the codes `memex` uses everywhere: `network_filesystem` (the vault, or a restore's `--to` folder, is on a network drive, which is refused) and `internal` (for example the vault folder or its `manifest.json` is missing, or the `--from` file does not exist). A script that switches on the codes should treat any code not listed here as a failure too. The command line prints them in one line of JSON on stderr and exits non-zero. A vault server's automatic backup records its code and message in the status the app reads, and answers a request with an HTTP status only in the two cases marked here.
 
 | Code | HTTP status | What it means |
 |---|---|---|
