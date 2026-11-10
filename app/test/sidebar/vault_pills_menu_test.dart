@@ -15,6 +15,7 @@
 // wi363_sidebar.dart. Never a real Finder, Trash or vault.
 import 'dart:io';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -316,6 +317,37 @@ void main() {
     );
 
     testWidgets(
+      'a pill restyles on the very frame its menu opens and on the frame it closes',
+      (tester) async {
+        await wi362PumpLocal(tester, openNote: false);
+        const name = 'work-notes';
+        expect(wi363PillStyle(tester, name).fill, isNull);
+
+        // One frame after the click, no settling: the pill is already drawn
+        // in its menu-open style (never a frame late).
+        await tester.tapAt(
+          tester.getCenter(wi363PillLabel(name)),
+          buttons: kSecondaryButton,
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pump();
+        expect(wi363MenuShown(tester), isNotEmpty, reason: 'the menu shows');
+        var style = wi363PillStyle(tester, name);
+        expect(style.fill, OmColors.surface3, reason: 'one frame: surface3');
+        expect(style.border, OmColors.line3, reason: 'one frame: line3');
+
+        // One frame after Escape the menu is gone and the pill is idle.
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.escape);
+        await tester.pump();
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.escape);
+        expect(wi363MenuShown(tester), isEmpty, reason: 'Escape closed it');
+        style = wi363PillStyle(tester, name);
+        expect(style.fill, isNull, reason: 'one frame: no fill');
+        expect(style.border, OmColors.line1, reason: 'one frame: line1');
+      },
+    );
+
+    testWidgets(
       'a pill returns to its normal style when a window resize closes its menu',
       (tester) async {
         await wi362PumpLocal(tester, openNote: false);
@@ -399,6 +431,67 @@ void main() {
         expect(wi363MenuShown(tester), isEmpty);
         expect(wi363PillStyle(tester, name).fill, isNull);
         expect(wi363PillStyle(tester, name).border, OmColors.line1);
+      },
+    );
+  });
+
+  group('a pill menu keeps its own vault across a recents reorder (AC5)', () {
+    // Right-click work-notes (second pill), then the vault switches to it
+    // while the menu is up: the recents reorder to [work-notes, memex, seed]
+    // and the pills trade places. The open menu still acts on work-notes.
+    Future<Wi362Env> openMenuThenSwitch(WidgetTester tester) async {
+      final env = await wi362PumpLocal(
+        tester,
+        openNote: false,
+        recentsOrder: const ['open', 'other', 'hosted'],
+      );
+      final switchTo = LocalVaultRef(env.otherPath!);
+      await wi363SecondaryClick(tester, wi363PillLabel('work-notes'));
+      expect(wi363MenuShown(tester), [_finder, _remove, _delete, _manage]);
+      await pumpWhile(tester, () => env.controller.openVault(switchTo));
+      await wi362Settle(tester);
+      expect(env.current, switchTo, reason: 'the vault switched');
+      expect(
+        env.settings.recentRefs.first,
+        switchTo,
+        reason: 'the recents were reordered',
+      );
+      expect(wi363MenuShown(tester), [
+        _finder,
+        _remove,
+        _delete,
+        _manage,
+      ], reason: 'the menu is still up');
+      return env;
+    }
+
+    testWidgets(
+      'show in Finder on a pill menu still open after a recents reorder reveals the vault that was right clicked',
+      (tester) async {
+        final env = await openMenuThenSwitch(tester);
+
+        await wi363PressMenu(tester, _finder);
+
+        expect(env.revealer.paths, [env.otherPath!]);
+      },
+    );
+
+    testWidgets(
+      'remove from recents on a pill menu still open after a recents reorder removes the vault that was right clicked',
+      (tester) async {
+        final env = await openMenuThenSwitch(tester);
+
+        await wi363PressMenu(tester, _remove);
+
+        expect(
+          env.settings.recentRefs,
+          isNot(contains(LocalVaultRef(env.otherPath!))),
+        );
+        expect(
+          env.settings.recentRefs,
+          contains(LocalVaultRef(env.openPath!)),
+          reason: 'the other pill is untouched',
+        );
       },
     );
   });

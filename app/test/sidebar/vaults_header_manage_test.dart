@@ -146,6 +146,46 @@ void main() {
     );
 
     testWidgets(
+      'the MANAGE button grows with a larger text scale and keeps its label inside its outline',
+      (tester) async {
+        await wi362PumpLocal(tester, openNote: false);
+        // The harness draws at scale 0.5 (the test font is far wider than
+        // the real one); raise it after the pump. Other sidebar rows run out
+        // of room at these scales on main too, so their overflow reports
+        // are set aside; MANAGE's own box is asserted instead.
+        final onError = FlutterError.onError;
+        FlutterError.onError = (details) {
+          if (details.exceptionAsString().contains('overflowed')) return;
+          onError?.call(details);
+        };
+        addTearDown(() => FlutterError.onError = onError);
+        addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+
+        var lastWidth = tester.getSize(wi363Manage).width;
+        expect(lastWidth, 57, reason: 'at the harness scale it is 57 wide');
+        for (final scale in [0.75, 1.0, 1.5, 2.0]) {
+          tester.platformDispatcher.textScaleFactorTestValue = scale;
+          await tester.pump();
+          final box = tester.getRect(wi363Manage);
+          final label = tester.getRect(find.text('MANAGE'));
+          expect(box.width, greaterThan(lastWidth), reason: 'scale $scale');
+          expect(box.height, greaterThanOrEqualTo(22), reason: 'scale $scale');
+          expect(
+            box.contains(label.topLeft) && box.contains(label.bottomRight),
+            isTrue,
+            reason: 'scale $scale: label $label inside the button $box',
+          );
+          expect(
+            label.center.dx,
+            moreOrLessEquals(box.center.dx, epsilon: 0.5),
+            reason: 'scale $scale: the label stays centred',
+          );
+          lastWidth = box.width;
+        }
+      },
+    );
+
+    testWidgets(
       'the MANAGE button reads as one button labelled manage vaults open the vault picker',
       (tester) async {
         final handle = tester.ensureSemantics();
