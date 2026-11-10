@@ -15,6 +15,8 @@ import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
 import '../widgets/atoms.dart';
+import '../widgets/backups/backup_keys.dart';
+import '../widgets/backups/restore_dialog.dart';
 import '../widgets/memex_too_old_dialog.dart';
 import '../widgets/picker/recent_row.dart';
 import '../widgets/picker/remove_server_dialog.dart';
@@ -292,6 +294,32 @@ class _VaultPickerScreenState extends ConsumerState<VaultPickerScreen> {
                     ),
                   ),
                 ),
+                const SizedBox(height: 8),
+                _GridRow(
+                  label: 'BACKUP',
+                  left: KeyedSubtree(
+                    key: vaultPickerRestoreKey,
+                    child: OmButton(
+                      kind: OmButtonKind.secondary,
+                      size: 36,
+                      icon: LucideIcons.history,
+                      label: 'restore from backup…',
+                      onPressed: binaryNotFound ? null : _restoreFromBackup,
+                    ),
+                  ),
+                  right: Padding(
+                    padding: const EdgeInsets.only(left: 4),
+                    child: Text(
+                      'makes a new vault from a .memex.zip; never writes '
+                      'over one',
+                      style: OmType.sans(
+                        size: 12,
+                        color: OmColors.fg2,
+                        height: 1.5,
+                      ),
+                    ),
+                  ),
+                ),
               ],
             ),
           ),
@@ -313,6 +341,29 @@ class _VaultPickerScreenState extends ConsumerState<VaultPickerScreen> {
     await _present(outcome, eyebrow: _createEyebrow);
   }
 
+  /// Req 35: pick a `.zip`, then the Restore dialog; it runs the restore
+  /// and closes only on success, with the restored folder, which opens.
+  Future<void> _restoreFromBackup() async {
+    final picked = await FilePicker.platform.pickFiles(
+      dialogTitle: 'Choose a backup to restore',
+      type: FileType.custom,
+      allowedExtensions: const ['zip'],
+    );
+    final file = picked?.files.firstOrNull;
+    final path = file?.path;
+    if (path == null || !mounted) return;
+    final restored = await showRestoreDialog(
+      context,
+      file: path,
+      bytes: _sizeOf(path, fallback: file!.size),
+    );
+    if (restored == null || !mounted) return;
+    final outcome = await ref
+        .read(vaultOpenControllerProvider)
+        .openVault(LocalVaultRef(restored));
+    await _present(outcome, eyebrow: _openEyebrow);
+  }
+
   Future<void> _openExistingVault() async {
     final selected = await FilePicker.platform.getDirectoryPath(
       dialogTitle: 'Choose a vault folder',
@@ -325,8 +376,19 @@ class _VaultPickerScreenState extends ConsumerState<VaultPickerScreen> {
   }
 }
 
+/// The size of the file at [path] read from the file itself; [fallback]
+/// (the picker's report) when it can't be read.
+int _sizeOf(String path, {required int fallback}) {
+  try {
+    return File(path).lengthSync();
+  } on FileSystemException {
+    return fallback;
+  }
+}
+
 /// A row of the action grid (pack 97): a 92 px upper-case mono label, then
-/// two equal 36 px buttons, gaps 8.
+/// two equal cells, gaps 8. At least 36 high, so a text cell can wrap at
+/// large text (pack 327).
 class _GridRow extends StatelessWidget {
   const _GridRow({
     required this.label,
@@ -340,8 +402,8 @@ class _GridRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 36,
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minHeight: 36),
       child: Row(
         children: [
           SizedBox(
