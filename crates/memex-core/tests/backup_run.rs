@@ -1770,6 +1770,15 @@ fn fixture_matching(fx: &Value) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Whether `dir` treats names that differ only by case as one file.
+fn case_insensitive(dir: &Path) -> bool {
+    let probe = dir.join("case-probe");
+    fs::write(&probe, b"").unwrap();
+    let folded = dir.join("CASE-PROBE").exists();
+    fs::remove_file(&probe).unwrap();
+    folded
+}
+
 #[test]
 fn retention_keeps_the_newest_keep_and_spares_every_look_alike() {
     let fixture = file_names_fixture();
@@ -1787,6 +1796,18 @@ fn retention_keeps_the_newest_keep_and_spares_every_look_alike() {
     // keep values whose cut never falls inside a run of equal timestamps.
     for keep in [1_u16, 5, 6, 7, 30] {
         let fx = Fx::with_id(THIS);
+        // A case-insensitive folder (macOS APFS by default) holds one file for
+        // `x.memex.zip` and `x.MEMEX.ZIP` (and for their `.partial`s), so an
+        // upper-case look-alike can't be seeded beside its twin there: the
+        // lower-case name is seeded and the other skipped. The upper-case
+        // look-alikes get their own tests (this one covers them wherever the
+        // folder is case-sensitive).
+        let folded = case_insensitive(&fx.dest);
+        let all: BTreeSet<String> = all
+            .iter()
+            .filter(|n| !(folded && all.iter().any(|m| m > *n && m.eq_ignore_ascii_case(n))))
+            .cloned()
+            .collect();
         for name in &all {
             fx.seed(name);
         }
