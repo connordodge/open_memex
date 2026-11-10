@@ -746,6 +746,37 @@ void main() {
     );
 
     test(
+      'the output keeps no object that only a dropped ref reached',
+      () async {
+        expectRan();
+        // Dropped refs are deleted before filter-repo, so its gc prunes
+        // what only they reached: the out repo holds the objects of main and
+        // v0.1.0 and nothing else.
+        Future<Set<String>> lines(List<String> args) async =>
+            (await _git(iso, fx.out, args)).split('\n').toSet();
+        final stored = await lines([
+          'cat-file',
+          '--batch-all-objects',
+          '--batch-check=%(objectname)',
+        ]);
+        final reachable = (await lines([
+          'rev-list',
+          '--objects',
+          '--all',
+        ])).map((l) => l.split(' ').first).toSet();
+        expect(reachable.length, greaterThan(10), reason: 'objects of main');
+        expect(stored, reachable);
+
+        // beside it: the commits of the kept refs are all there
+        expect(await _bySubject(iso, fx.out), contains('after release'));
+        final all = await _git(iso, fx.out, ['log', '--all', '--format=%s']);
+        expect(all, isNot(contains('feature x work')));
+        expect(all, isNot(contains('feature y work')));
+        expect(all, isNot(contains('upstream only')));
+      },
+    );
+
+    test(
       'a successful rewrite leaves the source refs remotes working tree and origin unchanged and pushes nothing',
       () async {
         expectRan();
@@ -1047,6 +1078,145 @@ void main() {
         ], env: iso.env);
         expect(noOut.exitCode, 2, reason: 'no --out\n$noOut');
         await _expectUntouched(fx, before, noOut);
+      },
+    );
+  });
+
+  group('further refusals and contracts', () {
+    test('refuses with exit 2 when out is inside the source', () async {
+      final iso = await isolatedEnv();
+      final fx = await _baseline(iso);
+      final before = await _snapshot(fx);
+      for (final inside in ['${fx.source}/out', '${fx.source}/.git/out']) {
+        final r = await _rewrite(fx, out: inside);
+        expect(r.exitCode, 2, reason: 'out $inside\n$r');
+        expect(r.output.trim(), isNotEmpty, reason: '$r');
+        expect(Directory(inside).existsSync(), isFalse, reason: 'out $inside');
+        await _expectUntouched(fx, before, r);
+      }
+      // beside it: out next to the source is fine
+      final ok = await _rewrite(fx);
+      expect(ok.exitCode, 0, reason: '$ok');
+    });
+
+    test('refuses with exit 2 when the source has an untracked file', () async {
+      final iso = await isolatedEnv();
+      final fx = await _baseline(iso);
+      File('${fx.source}/scratch.txt').writeAsStringSync('draft\n');
+      final before = await _snapshot(fx);
+      expect(before, contains('?? scratch.txt'));
+      final r = await _rewrite(fx);
+      await _expectRefusal(fx, before, r, what: 'untracked file');
+    });
+
+    test(
+      'refuses with exit 2 when noreply has an empty or odd local part',
+      () async {
+        final iso = await isolatedEnv();
+        final fx = await _baseline(iso);
+        final before = await _snapshot(fx);
+        for (final bad in [
+          '@users.noreply.github.com',
+          'odd name@users.noreply.github.com',
+          'a/b@users.noreply.github.com',
+          'a&b@users.noreply.github.com',
+          'a@b@users.noreply.github.com',
+        ]) {
+          final r = await _rewrite(fx, noreply: bad);
+          await _expectRefusal(fx, before, r, what: 'noreply $bad');
+        }
+        // beside it: a plain id+name address is accepted
+        final ok = await _rewrite(
+          fx,
+          noreply: 'x.y_z-1+n@users.noreply.github.com',
+        );
+        expect(ok.exitCode, 0, reason: '$ok');
+      },
+    );
+
+    test(
+      'the help flag exits 0 with usage and an unknown flag exits 2',
+      () async {
+        final iso = await isolatedEnv();
+        final help = await runScript(_script, ['--help'], env: iso.env);
+        expect(help.exitCode, 0, reason: '$help');
+        expect(help.output.toLowerCase(), contains('usage'), reason: '$help');
+        final bad = await runScript(_script, ['--frobnicate'], env: iso.env);
+        expect(bad.exitCode, 2, reason: '$bad');
+      },
+    );
+
+    test('the output has no remote that points back at the source', () async {
+      final iso = await isolatedEnv();
+      final fx = await _baseline(iso);
+      final r = await _rewrite(fx);
+      expect(r.exitCode, 0, reason: '$r');
+      expect(await _git(iso, fx.out, ['remote']), isEmpty);
+      final cfg = await _git(iso, fx.out, ['config', '--local', '--list']);
+      expect(cfg, isNot(contains('remote.')), reason: cfg);
+      expect(cfg, isNot(contains(fx.source)), reason: cfg);
+      // beside it: the kept refs are there
+      expect(await _refs(iso, fx.out), {'refs/heads/main', 'refs/tags/v0.1.0'});
+    });
+
+    test(
+      'deny-list entries are literals trimmed of whitespace and replaced longest first',
+      () async {
+        final iso = await isolatedEnv();
+        final fx = await _baseline(iso);
+        final deep = '$_denyProj/deep';
+        final meta = ['', 'opt', 'we*ird', '(p)'].join('/');
+        final decoy = ['', 'opt', 'weeeird', 'p'].join('/');
+        final realHome = Directory(iso.home).resolveSymbolicLinksSync();
+        await runGit(iso, fx.source, ['checkout', '-q', 'main']);
+        await _commit(iso, fx.source, {
+          'paths.txt': [
+            'deep: $deep/x',
+            'proj: $_denyProj/other',
+            'meta: $meta/f',
+            'decoy: $decoy/f',
+            'crlf: $_denyHome/z',
+            'home: ${iso.home}/cfg',
+            'real-home: $realHome/cfg',
+            '',
+          ].join('\n'),
+        }, 'add paths');
+        await runGit(iso, fx.source, [
+          'update-ref',
+          'refs/remotes/origin/main',
+          'main',
+        ]);
+        final patterns = File('${iso.root.path}/odd-patterns.txt')
+          ..writeAsStringSync(
+            [
+              '  $_denyProj \t',
+              deep,
+              meta,
+              '$_denyHome\r',
+              _email1,
+              '',
+            ].join('\n'),
+          );
+        final before = await _snapshot(fx);
+
+        final r = await _rewrite(fx, patterns: patterns.path);
+        expect(r.exitCode, 0, reason: '$r');
+        final kv = _kv(
+          await _git(iso, fx.out, ['show', 'refs/heads/main:paths.txt']),
+        );
+        // the longer entry went first: nothing of it is left behind
+        expect(kv['deep'], '~/x', reason: '$kv');
+        // the trimmed shorter entry still applies to everything else
+        expect(kv['proj'], '~/other', reason: '$kv');
+        // entries are literals: * and () are not regex syntax
+        expect(kv['meta'], '~/f', reason: '$kv');
+        expect(kv['decoy'], '$decoy/f', reason: 'a look-alike is kept\n$kv');
+        // a CR at the end of a line is not part of the entry
+        expect(kv['crlf'], '~/z', reason: '$kv');
+        // HOME as given and with symlinks resolved
+        expect(kv['home'], '~/cfg', reason: '$kv');
+        expect(kv['real-home'], '~/cfg', reason: '$kv');
+        await _expectUntouched(fx, before, r);
       },
     );
   });
