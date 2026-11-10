@@ -1265,6 +1265,134 @@ async fn a_missing_backup_dir_records_destination_unavailable_for_each_vault_and
 }
 
 // ---------------------------------------------------------------------------
+// The debug log of a backup folder that could not be created
+// ---------------------------------------------------------------------------
+
+/// Every `could not create the vault's backup folder` event this process
+/// logs: (level, the `path` field).
+static FOLDER_LOG: Mutex<Vec<(tracing::Level, String)>> = Mutex::new(Vec::new());
+
+/// Records the folder-creation log. Installed once as the process-wide
+/// subscriber, because the backup runs on its own thread.
+struct FolderLogLayer;
+
+/// Reads one named field of an event.
+struct FieldText {
+    name: &'static str,
+    text: String,
+}
+
+impl tracing::field::Visit for FieldText {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == self.name {
+            self.text = format!("{value:?}");
+        }
+    }
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for FolderLogLayer {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        let mut message = FieldText {
+            name: "message",
+            text: String::new(),
+        };
+        event.record(&mut message);
+        if !message
+            .text
+            .contains("could not create the vault's backup folder")
+        {
+            return;
+        }
+        let mut path = FieldText {
+            name: "path",
+            text: String::new(),
+        };
+        event.record(&mut path);
+        FOLDER_LOG
+            .lock()
+            .unwrap()
+            .push((*event.metadata().level(), path.text));
+    }
+}
+
+fn install_folder_log() {
+    use tracing_subscriber::layer::SubscriberExt;
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let subscriber = tracing_subscriber::registry().with(FolderLogLayer);
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("no other subscriber in this test binary");
+    });
+}
+
+/// The folder-creation log events for paths under `dir`.
+fn folder_log_under(dir: &Path) -> Vec<(tracing::Level, String)> {
+    let dir = dir.display().to_string();
+    FOLDER_LOG
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, path)| path.contains(&dir))
+        .cloned()
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_backup_folder_that_cannot_be_created_is_logged_at_debug_with_its_path() {
+    install_folder_log();
+    let env = Env::start_with(
+        Opts {
+            dir_exists: false,
+            ..Opts::default()
+        },
+        |root| {
+            make_vault(root, "alpha");
+        },
+    )
+    .await;
+
+    env.run_due_checks().await;
+    assert_eq!(
+        env.recorded("alpha").last_result,
+        "backup_destination_unavailable"
+    );
+    let logged = folder_log_under(&env.dir);
+    assert_eq!(logged.len(), 1, "one create_dir failure logged: {logged:?}");
+    assert_eq!(logged[0].0, tracing::Level::DEBUG);
+    assert!(
+        logged[0].1.contains("alpha"),
+        "the log names the vault's folder: {logged:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_backup_folder_that_already_exists_is_not_logged_as_a_failure() {
+    install_folder_log();
+    let env = Env::start(&["notes"]).await;
+
+    env.run_due_checks().await;
+    assert_eq!(env.recorded("notes").last_result, "created");
+    assert!(env.dest("notes").is_dir());
+    env.clock.set(T0 + DAY);
+    env.run_due_checks().await;
+    assert_eq!(
+        env.recorded("notes").last_attempt_at,
+        T0 + DAY,
+        "the second check ran onto the existing folder"
+    );
+    let post = env.post("notes").await;
+    assert_eq!(post.status, 202, "{}", post.body);
+    env.wait_idle("notes").await;
+    assert_eq!(
+        env.hooks.count("notes"),
+        2,
+        "the first backup and the post wrote, the second check was unchanged"
+    );
+    let logged = folder_log_under(&env.dir);
+    assert!(logged.is_empty(), "AlreadyExists is not logged: {logged:?}");
+}
+
+// ---------------------------------------------------------------------------
 // AC 7: a never-requested V5 vault
 // ---------------------------------------------------------------------------
 
