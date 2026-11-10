@@ -464,6 +464,16 @@ class _Wi325Sheet {
   FakeBackupController get controller => harness.controller!;
   FakeCloudFolderProbe get probe => harness.probe;
 
+  /// From now on resolving a picked folder waits for the returned completer.
+  Completer<void> holdResolves() {
+    final gate = Completer<void>();
+    (probe as _Wi325GatedProbe).resolveGate = gate;
+    return gate;
+  }
+
+  /// How many symlink resolutions the probe has been asked for.
+  int get resolveCalls => (probe as _Wi325GatedProbe).resolveRequests;
+
   void setView(BackupViewState view) => controller.setViewState(vault, view);
 }
 
@@ -482,17 +492,29 @@ void _seedProviders(FakeCloudFolderProbe probe, {bool backupFolders = true}) {
   }
 }
 
-/// A probe whose first answer waits on [gate]: discovery finishes only when
-/// the test lets it.
+/// A probe whose first answer waits on [gate] (discovery finishes only when
+/// the test lets it), and whose symlink resolution waits on [resolveGate]
+/// while one is set (the folder a pick resolves stays pending).
 class _Wi325GatedProbe extends FakeCloudFolderProbe {
   _Wi325GatedProbe(this.gate);
 
-  final Completer<void> gate;
+  final Completer<void>? gate;
+  Completer<void>? resolveGate;
+
+  /// Every symlink resolution asked for, answered or still waiting.
+  int resolveRequests = 0;
 
   @override
   Future<String> home() async {
-    await gate.future;
+    await gate?.future;
     return super.home();
+  }
+
+  @override
+  Future<String> resolveSymbolicLinks(String path) async {
+    resolveRequests++;
+    await resolveGate?.future;
+    return super.resolveSymbolicLinks(path);
   }
 }
 
@@ -521,9 +543,7 @@ Future<_Wi325Sheet> _open(
     addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
   }
 
-  final probe = discoveryGate == null
-      ? FakeCloudFolderProbe()
-      : _Wi325GatedProbe(discoveryGate);
+  final probe = _Wi325GatedProbe(discoveryGate);
   if (providers) _seedProviders(probe, backupFolders: backupFolders);
   probe.addDirectory(_chosenDest);
   probe.addDirectory(_otherChosenDest);
@@ -3255,6 +3275,267 @@ void main() {
         expect(_sheetText(tester), isNot(contains(detail)));
       },
     );
+  });
+
+  group('AC2 and AC3 verify round 2: provider row names', () {
+    /// A Text whose whole plain text is [name], inside the row at [key].
+    Finder named(Key key, String name) => find.descendant(
+      of: find.byKey(key),
+      matching: find.byWidgetPredicate(
+        (w) => w is RichText && w.text.toPlainText() == name,
+      ),
+    );
+
+    const names = [
+      'iCloud Drive',
+      'Google Drive · connor@example.com',
+      'Google Drive · work@example.com',
+      'OneDrive · Personal',
+    ];
+
+    testWidgets(
+      'a label that already has its provider prefix is not given it twice',
+      (tester) async {
+        // The view state's options carry composed labels.
+        await _open(tester, view: _pickingView());
+        for (final (i, name) in names.indexed) {
+          expect(named(_discoveredKeys[i], name), findsOneWidget, reason: name);
+        }
+      },
+    );
+
+    testWidgets(
+      'composed labels in a menu are not given the provider prefix twice',
+      (tester) async {
+        final composed = BackupViewState(
+          mode: BackupSheetMode.success,
+          settings: _on,
+          status: _successStatus(),
+          options: _allOptions,
+        );
+        await _open(tester, view: composed);
+        await _tapKey(tester, _menuKey);
+        for (final (i, name) in names.indexed) {
+          expect(named(_discoveredKeys[i], name), findsOneWidget, reason: name);
+        }
+      },
+    );
+
+    testWidgets(
+      'bare labels from discovery are given their provider prefix once in the list',
+      (tester) async {
+        await _open(tester, view: _offView());
+        await _tapKey(tester, backupsToggleKey);
+        for (final (i, name) in names.indexed) {
+          expect(named(_discoveredKeys[i], name), findsOneWidget, reason: name);
+        }
+      },
+    );
+
+    testWidgets(
+      'bare labels from discovery are given their provider prefix once in the menu',
+      (tester) async {
+        await _open(tester, view: _successView());
+        await _tapKey(tester, _menuKey);
+        for (final (i, name) in names.indexed) {
+          expect(named(_discoveredKeys[i], name), findsOneWidget, reason: name);
+        }
+      },
+    );
+  });
+
+  group('AC3 and AC9 verify round 2: the picked folder is resolved first', () {
+    const link = '/Volumes/nas/link-to-backups';
+    const target = '/Volumes/real/nas-backups';
+    const missing = '/Volumes/missing/backups';
+
+    testWidgets('turning on a chosen folder saves its symlink resolved path', (
+      tester,
+    ) async {
+      final s = await _open(tester, view: _offView());
+      s.probe
+        ..addDirectory(target)
+        ..addSymlink(link, target);
+      s.picker.directories.add(link);
+      await _tapKey(tester, backupsToggleKey);
+      await _tapKey(tester, backupsDestinationChooseKey);
+      await _tapKey(tester, _turnOnKey);
+      expect(s.saves, hasLength(1));
+      expect(s.saves.single.settings.destination, target);
+      expect(s.saves.single.settings.enabled, isTrue);
+      expect(
+        s.probe.createdDirectories,
+        isEmpty,
+        reason: 'a chosen folder is never made',
+      );
+    });
+
+    testWidgets('a chosen folder from the menu is saved symlink resolved', (
+      tester,
+    ) async {
+      final s = await _open(tester, view: _successView());
+      s.probe
+        ..addDirectory(target)
+        ..addSymlink(link, target);
+      s.picker.directories.add(link);
+      await _tapKey(tester, _menuKey);
+      await _tapKey(tester, backupsDestinationChooseKey);
+      expect(s.saves, hasLength(1));
+      expect(s.saves.single.settings, _on.copyWith(destination: target));
+      expect(s.probe.createdDirectories, isEmpty);
+    });
+
+    testWidgets(
+      'a chosen folder that cannot be resolved saves nothing and names the picked folder',
+      (tester) async {
+        final s = await _open(tester, view: _offView());
+        s.picker.directories.add(missing);
+        await _tapKey(tester, backupsToggleKey);
+        await _tapKey(tester, backupsDestinationChooseKey);
+        await _tapKey(tester, _turnOnKey);
+
+        expect(s.saves, isEmpty);
+        expect(tester.takeException(), isNull);
+        final detail = _unavailableDetail(missing, null);
+        expect(detail, startsWith("can't write to $missing."));
+        expect(_status(tester), contains(detail));
+        expect(_cardIcon(LucideIcons.triangleAlert), findsOneWidget);
+        // Still picking, with the button working again for another folder.
+        expect(find.byKey(_turnOnKey), findsOneWidget);
+        expect(_button(tester, _turnOnKey).onPressed, isNotNull);
+        s.picker.directories.add(_otherChosenDest);
+        await _tapKey(tester, backupsDestinationChooseKey);
+        await _tapKey(tester, _turnOnKey);
+        expect(s.saves.single.settings.destination, _otherChosenDest);
+        expect(_sheetText(tester), isNot(contains(detail)));
+      },
+    );
+
+    testWidgets(
+      'a chosen folder from the menu that cannot be resolved saves nothing and says why',
+      (tester) async {
+        final s = await _open(tester, view: _successView());
+        s.picker.directories.add(missing);
+        await _tapKey(tester, _menuKey);
+        await _tapKey(tester, backupsDestinationChooseKey);
+
+        expect(s.saves, isEmpty);
+        expect(tester.takeException(), isNull);
+        final detail = _unavailableDetail(missing, null);
+        expect(_sheetText(tester), contains(detail));
+        expect(_status(tester), isNot(contains(detail)));
+        expect(_sheetText(tester), contains('My Drive/Open Memex Backups'));
+        // The next pick clears the line and saves.
+        s.picker.directories.add(_otherChosenDest);
+        await _tapKey(tester, _menuKey);
+        await _tapKey(tester, backupsDestinationChooseKey);
+        expect(s.saves.single.settings.destination, _otherChosenDest);
+        expect(_sheetText(tester), isNot(contains(detail)));
+      },
+    );
+
+    testWidgets(
+      'turn on backups stays disabled while the folder is being resolved',
+      (tester) async {
+        final s = await _open(tester, view: _offView());
+        await _tapKey(tester, backupsToggleKey);
+        await _tapKey(tester, _discoveredKeys[0]);
+        final before = s.resolveCalls;
+        final gate = s.holdResolves();
+        await tester.tap(find.byKey(_turnOnKey));
+        await _frames(tester);
+
+        // Mid resolve: still the list, the button off, nothing saved.
+        expect(s.resolveCalls, before + 1);
+        expect(s.saves, isEmpty);
+        expect(find.byKey(_discoveredKeys[0]), findsOneWidget);
+        expect(_button(tester, _turnOnKey).onPressed, isNull);
+        await tester.tap(find.byKey(_turnOnKey), warnIfMissed: false);
+        await _frames(tester);
+        expect(s.resolveCalls, before + 1, reason: 'no second resolve');
+        expect(s.saves, isEmpty);
+
+        gate.complete();
+        await _frames(tester);
+        expect(s.saves, hasLength(1));
+        expect(s.saves.single.settings.destination, _icloudDest);
+        expect(find.byKey(_turnOnKey), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'a destination menu pick saves only once the folder is resolved',
+      (tester) async {
+        final s = await _open(tester, view: _successView());
+        await _tapKey(tester, _menuKey);
+        final gate = s.holdResolves();
+        await _tap(tester, find.byKey(_discoveredKeys[3]));
+        expect(s.saves, isEmpty);
+        expect(find.byKey(_discoveredKeys[3]), findsNothing, reason: 'closed');
+        gate.complete();
+        await _frames(tester);
+        expect(s.saves, hasLength(1));
+        expect(s.saves.single.settings.destination, _oneDriveDest);
+      },
+    );
+
+    testWidgets('closing the sheet while turn on resolves saves nothing', (
+      tester,
+    ) async {
+      final s = await _open(tester, view: _offView());
+      await _tapKey(tester, backupsToggleKey);
+      await _tapKey(tester, _discoveredKeys[0]);
+      final gate = s.holdResolves();
+      await _tapKey(tester, _turnOnKey);
+      await _tapKey(tester, _closeKey);
+      expect(_sheet, findsNothing);
+      gate.complete();
+      await _frames(tester);
+      expect(tester.takeException(), isNull);
+      expect(s.saves, isEmpty);
+    });
+
+    testWidgets(
+      'closing the sheet while an unusable folder resolves raises nothing',
+      (tester) async {
+        for (final fromMenu in [false, true]) {
+          final s = await _open(
+            tester,
+            view: fromMenu ? _successView() : _offView(),
+          );
+          s.picker.directories.add(missing);
+          if (fromMenu) {
+            await _tapKey(tester, _menuKey);
+          } else {
+            await _tapKey(tester, backupsToggleKey);
+          }
+          final gate = s.holdResolves();
+          await _tapKey(tester, backupsDestinationChooseKey);
+          if (!fromMenu) await _tapKey(tester, _turnOnKey);
+          await _tapKey(tester, _closeKey);
+          expect(_sheet, findsNothing, reason: 'fromMenu $fromMenu');
+          gate.complete();
+          await _frames(tester);
+          expect(tester.takeException(), isNull, reason: 'fromMenu $fromMenu');
+          expect(s.saves, isEmpty, reason: 'fromMenu $fromMenu');
+        }
+      },
+    );
+
+    testWidgets('closing the sheet while a menu pick resolves saves nothing', (
+      tester,
+    ) async {
+      final s = await _open(tester, view: _successView());
+      await _tapKey(tester, _menuKey);
+      final gate = s.holdResolves();
+      await _tap(tester, find.byKey(_discoveredKeys[0]));
+      await _tapKey(tester, _closeKey);
+      expect(_sheet, findsNothing);
+      gate.complete();
+      await _frames(tester);
+      expect(tester.takeException(), isNull);
+      expect(s.saves, isEmpty);
+    });
   });
 
   group('AC3 and AC8 verify: settings saves are awaited and serialised', () {
