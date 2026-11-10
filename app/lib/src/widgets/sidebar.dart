@@ -167,7 +167,8 @@ class Sidebar extends ConsumerWidget {
 const _vaultsHeaderPadding = EdgeInsets.fromLTRB(16, 11.25, 8.5, 7.25);
 
 /// The VAULTS header's MANAGE button (key `sidebar-vaults-manage`, pack
-/// 363, S1): 57x22, radius 4. It opens the vault picker modal over the open
+/// 363, S1): 57x22 at text scale 1, growing with a larger text scale so the
+/// label stays inside its outline; radius 4. It opens the vault picker modal over the open
 /// vault and draws pressed (`surface4` fill and border, `fg0` text) until
 /// that modal closes; a press while it shows opens nothing more. It takes
 /// the keyboard focus with a 1px `accentSoft` ring; Enter or Space press it
@@ -208,10 +209,9 @@ class _ManageButtonState extends State<_ManageButton> {
         : _highlight
         ? OmColors.accentSoft
         : Colors.transparent;
-    return SizedBox(
+    return ConstrainedBox(
       key: const Key('sidebar-vaults-manage'),
-      width: 57,
-      height: 22,
+      constraints: const BoxConstraints(minWidth: 57, minHeight: 22),
       child: FocusableActionDetector(
         shortcuts: keyboardButtonShortcuts,
         actions: _actions,
@@ -232,17 +232,19 @@ class _ManageButtonState extends State<_ManageButton> {
                   border: Border.all(color: border, width: 1),
                   borderRadius: BorderRadius.circular(4),
                 ),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    vertical: 3,
-                    horizontal: 6,
-                  ),
-                  child: Center(
+                // Sized by its label (at least 57x22), the label centred.
+                child: Center(
+                  widthFactor: 1,
+                  heightFactor: 1,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      vertical: 3,
+                      horizontal: 6,
+                    ),
                     child: Text(
                       'manage'.toUpperCase(),
                       maxLines: 1,
                       softWrap: false,
-                      overflow: TextOverflow.visible,
                       style: OmType.mono(
                         size: 10.5,
                         color: _pressed ? OmColors.fg0 : OmColors.fg2,
@@ -469,7 +471,10 @@ class _VaultPillsRow extends ConsumerWidget {
         children: [
           for (final r in settings.recentRefs)
             if (r case LocalVaultRef(:final path))
+              // Keyed by vault so an open menu stays with its own vault when
+              // a switch reorders the recents.
               _PillMenu(
+                key: ValueKey<VaultRef>(r),
                 vault: r,
                 isOpen: path == currentVault,
                 builder: (menuOpen) => _VaultPill(
