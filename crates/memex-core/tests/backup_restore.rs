@@ -1408,3 +1408,229 @@ fn a_missing_from_file_fails_with_internal_and_creates_nothing() {
     before.assert_nothing_written(&fx, "missing --from");
     assert!(fx.tmp.path().join("My Drive backups").is_dir());
 }
+
+// ---------------------------------------------------------------------------
+// Verify round: contracts the implementer listed as unpinned
+// ---------------------------------------------------------------------------
+
+/// Sets the "encrypted" general-purpose flag (bit 0) of the member `name`
+/// in its local header and in the central directory.
+fn set_encrypted_flag(archive: &[u8], name: &str) -> Vec<u8> {
+    let mut out = archive.to_vec();
+    let (mut local, mut central) = (0, 0);
+    for i in 0..out.len().saturating_sub(46) {
+        if out[i..i + 4] == [0x50, 0x4b, 0x03, 0x04] {
+            let n = u16::from_le_bytes([out[i + 26], out[i + 27]]) as usize;
+            if out.get(i + 30..i + 30 + n) == Some(name.as_bytes()) {
+                out[i + 6] |= 1;
+                local += 1;
+            }
+        } else if out[i..i + 4] == [0x50, 0x4b, 0x01, 0x02] {
+            let n = u16::from_le_bytes([out[i + 28], out[i + 29]]) as usize;
+            if out.get(i + 46..i + 46 + n) == Some(name.as_bytes()) {
+                out[i + 8] |= 1;
+                central += 1;
+            }
+        }
+    }
+    assert_eq!(
+        (local, central),
+        (1, 1),
+        "fixture: one entry named {name:?}"
+    );
+    out
+}
+
+#[test]
+fn an_encrypted_member_fails_with_backup_invalid_and_leaves_no_temp() {
+    let source = notes_source();
+    let parts = Parts::of(&source);
+    for name in ["objects/top level.txt", "memex.db", "manifest.json"] {
+        let fx = Fx::new();
+        let from = fx.backup_file(&set_encrypted_flag(&parts.zip(), name));
+        let before = fx.before();
+
+        assert_eq!(code_of(fx.restore(&from)), "backup_invalid", "{name}");
+        before.assert_untouched(&fx, name);
+    }
+}
+
+impl Parts {
+    /// The archive with several extra members inserted before backup.json.
+    fn zip_with_all(&self, extra: Vec<Member>) -> Vec<u8> {
+        let mut members = self.members();
+        let last = members.len() - 1;
+        for (i, m) in extra.into_iter().enumerate() {
+            members.insert(last + i, m);
+        }
+        zip_of(&members)
+    }
+}
+
+#[test]
+fn a_file_sharing_a_path_with_a_folder_fails_with_backup_invalid_before_any_write() {
+    let parts = Parts::of(&notes_source());
+    let x = b"x".as_slice();
+    assert_each_invalid_before_any_write(vec![
+        (
+            "a file and a folder entry of one name",
+            parts.zip_with_all(vec![file("objects/clash", x), dir("objects/clash/")]),
+        ),
+        (
+            "a file with a file inside it",
+            parts.zip_with_all(vec![file("objects/clash", x), file("objects/clash/b", x)]),
+        ),
+        (
+            "a file two levels above another",
+            parts.zip_with_all(vec![file("objects/clash", x), file("objects/clash/b/c", x)]),
+        ),
+        (
+            "a folder entry, then a file of its name",
+            parts.zip_with_all(vec![dir("objects/clash/"), file("objects/clash", x)]),
+        ),
+    ]);
+}
+
+/// True when `dir`'s filesystem treats `a` and `A` as one name.
+fn is_case_insensitive(dir: &Path) -> bool {
+    let probe = dir.join("CaseProbe");
+    fs::write(&probe, b"x").unwrap();
+    let same = dir.join("caseprobe").exists();
+    fs::remove_file(&probe).unwrap();
+    same
+}
+
+#[test]
+fn two_members_landing_on_one_path_on_a_case_insensitive_disk_fail_with_backup_invalid() {
+    let fx = Fx::new();
+    if !is_case_insensitive(&fx.parent) {
+        eprintln!("skipped: this disk is case-sensitive, the two names stay apart");
+        return;
+    }
+    let parts = Parts::of(&notes_source());
+    let x = b"x".as_slice();
+    for (case, extra) in [
+        (
+            "two files",
+            vec![file("objects/Clash.txt", x), file("objects/clash.txt", x)],
+        ),
+        (
+            "a file and a folder",
+            vec![file("objects/Clash", x), dir("objects/clash/")],
+        ),
+    ] {
+        let from = fx.backup_file(&parts.zip_with_all(extra));
+        let before = fx.before();
+
+        assert_eq!(code_of(fx.restore(&from)), "backup_invalid", "{case}");
+        before.assert_untouched(&fx, case);
+    }
+}
+
+#[test]
+fn a_json_member_of_exactly_one_mib_is_read_and_one_byte_more_is_refused() {
+    let source = notes_source();
+    // `pad` grows backup.json to exactly `size` bytes.
+    let sized = |size: usize| {
+        let mut parts = Parts::of(&source);
+        parts.backup_json["pad"] = json!("");
+        let base = serde_json::to_vec(&parts.backup_json).unwrap().len();
+        parts.backup_json["pad"] = json!("p".repeat(size - base));
+        assert_eq!(serde_json::to_vec(&parts.backup_json).unwrap().len(), size);
+        parts
+    };
+    let one_mib = 1usize << 20;
+
+    let fx = Fx::new();
+    let from = fx.backup_file(&sized(one_mib).zip());
+    let outcome = fx.restore(&from).expect("exactly 1 MiB is read");
+    assert_eq!(outcome.vault_id, source.vault_id);
+
+    let fx = Fx::new();
+    let from = fx.backup_file(&sized(one_mib + 1).zip());
+    let before = fx.before();
+    assert_eq!(code_of(fx.restore(&from)), "backup_invalid");
+    before.assert_untouched(&fx, "backup.json of 1 MiB + 1");
+
+    // The same limit holds for manifest.json.
+    let mut parts = Parts::of(&source);
+    let mut manifest: Value = serde_json::from_slice(&parts.manifest).unwrap();
+    manifest["pad"] = json!("p".repeat(one_mib));
+    parts.manifest = serde_json::to_vec(&manifest).unwrap();
+    assert!(parts.manifest.len() > one_mib);
+    let fx = Fx::new();
+    let from = fx.backup_file(&parts.zip());
+    let before = fx.before();
+    assert_eq!(code_of(fx.restore(&from)), "backup_invalid");
+    before.assert_untouched(&fx, "manifest.json over 1 MiB");
+}
+
+#[test]
+fn parents_created_by_a_failed_restore_are_removed_again() {
+    let source = notes_source();
+    // Fails after the parents exist: the snapshot's schema disagrees.
+    let mut mismatch = Parts::of(&source);
+    mismatch.backup_json["schema_version"] = json!(5);
+    let mut too_new_snapshot = Parts::of(&source);
+    too_new_snapshot.db = with_sql(
+        &source.db,
+        "INSERT INTO schema_version(version) VALUES (9999);",
+    );
+    for (case, parts) in [
+        ("a schema mismatch", mismatch),
+        ("a snapshot newer than this memex", too_new_snapshot),
+    ] {
+        let fx = Fx::new();
+        let to = fx.parent.join("fresh one").join("fresh two").join("vault");
+        let from = fx.backup_file(&parts.zip());
+        let before = fx.before();
+
+        assert!(fx.restore_to(&from, &to).is_err(), "{case}");
+
+        assert_eq!(
+            listing(&fx.parent),
+            before.parent_listing,
+            "{case}: the folders this restore created are gone again"
+        );
+        assert!(!to.exists(), "{case}");
+    }
+}
+
+#[test]
+fn an_existing_parent_is_kept_when_the_restore_fails() {
+    let source = notes_source();
+    let mut mismatch = Parts::of(&source);
+    mismatch.backup_json["schema_version"] = json!(5);
+    let fx = Fx::new();
+    let existing = fx.parent.join("already here");
+    fs::create_dir(&existing).unwrap();
+    fs::write(existing.join("keep.txt"), b"mine").unwrap();
+    let to = existing.join("missing").join("vault");
+    let from = fx.backup_file(&mismatch.zip());
+
+    assert!(fx.restore_to(&from, &to).is_err());
+
+    assert_eq!(listing(&existing), vec!["keep.txt".to_string()]);
+}
+
+#[test]
+fn no_wal_or_shm_file_is_left_beside_the_restored_snapshot() {
+    let parts = Parts::of(&notes_source());
+    let fx = Fx::new();
+    let from = fx.backup_file(&parts.zip());
+
+    fx.restore(&from).expect("restore");
+
+    let names = listing(&fx.to);
+    assert!(
+        !names
+            .iter()
+            .any(|n| n.ends_with("-wal") || n.ends_with("-shm")),
+        "the check's read-only connection left {names:?}"
+    );
+    assert_eq!(
+        fs::read(fx.to.join("memex.db")).unwrap(),
+        parts.db,
+        "the snapshot is byte-for-byte what the backup holds"
+    );
+}
