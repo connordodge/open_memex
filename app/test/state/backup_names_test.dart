@@ -171,6 +171,52 @@ void main() {
       );
     });
 
+    test('a vault id of 26 characters must be ASCII letters and numbers', () {
+      final control = parseBackupFileName(_name('notes'));
+      expect(control, isNotNull);
+      expect(control!.vaultId, _vaultId);
+
+      for (final bad in ['-', '_', '.', ' ', '~', '@', 'é', 'Ł', '😀']) {
+        final id = '${_vaultId.substring(0, 24)}$bad${_vaultId[25]}';
+        expect(
+          id.runes.length,
+          26,
+          reason: 'the id is 26 characters long ($bad)',
+        );
+        expect(
+          parseBackupFileName('notes-20261109T090000Z-$id.memex.zip'),
+          isNull,
+          reason: 'a vault id holding "$bad"',
+        );
+      }
+      // The first character is held to the class too.
+      expect(
+        parseBackupFileName(
+          'notes-20261109T090000Z--${_vaultId.substring(1)}.memex.zip',
+        ),
+        isNull,
+      );
+    });
+
+    test('the dots of the extension are literal dots', () {
+      expect(parseBackupFileName(_name('notes')), isNotNull);
+
+      for (final tail in [
+        '${_vaultId}xmemex.zip',
+        '$_vaultId.memexxzip',
+        '${_vaultId}xmemexxzip',
+        '$_vaultId-memex-zip',
+        '$_vaultId.memex.zi',
+        '$_vaultId.memex.zipp',
+      ]) {
+        expect(
+          parseBackupFileName('notes-20261109T090000Z-$tail'),
+          isNull,
+          reason: tail,
+        );
+      }
+    });
+
     test('a timestamp of the wrong shape does not parse', () {
       expect(parseBackupFileName(_name('notes')), isNotNull);
 

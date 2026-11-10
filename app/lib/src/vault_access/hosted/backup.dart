@@ -1,13 +1,17 @@
 // WI #321 (A0, D19, D21): the hosted vault's backup routes. The types and
 // provider are frozen; WI #322 (A1) filled `HostedBackupApi`'s bodies and the
 // provider's wiring.
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../memex_cli.dart';
 import '../../state/backup_models.dart';
+import '../../state/vault_open_controller.dart';
 import '../../state/vault_open_hosted.dart';
 import '../../state/vault_state.dart';
 import 'hosted_client.dart';
+import 'hosted_vault_access.dart' show vaultNotFoundCode;
 
 /// What the vault server answered for `GET` or `POST .../backup` (D21). An
 /// unreachable server is not a result: it throws the real
@@ -91,9 +95,17 @@ abstract class HostedBackupApi {
 
 /// [HostedBackupApi] through `HostedClient.vaultRequest` (A1 fills it).
 class ClientHostedBackupApi implements HostedBackupApi {
-  ClientHostedBackupApi({required this.client, required this.vaultName});
+  ClientHostedBackupApi({
+    required this.client,
+    required this.vaultName,
+    this.onVaultGone,
+  });
 
   final HostedClient client;
+
+  /// Runs when a request fails with C1 `vault_not_found` (Req 53a, D21): the
+  /// existing vault-gone flow. The error still reaches the caller.
+  final void Function()? onVaultGone;
 
   /// The vault's name on the server.
   final String vaultName;
@@ -119,6 +131,7 @@ class ClientHostedBackupApi implements HostedBackupApi {
         operation: operation,
       );
     } on MemexException catch (e) {
+      if (e.code == vaultNotFoundCode) onVaultGone?.call();
       if (e.code == 'not_found') return const HostedBackupServerTooOld();
       if (method == 'POST') {
         if (e.code == 'backup_in_progress') {
@@ -146,8 +159,18 @@ final hostedBackupApiProvider = Provider<HostedBackupApi?>((ref) {
   if (vault is! HostedVaultRef) return null;
   final session = ref.watch(hostedSessionProvider);
   if (session == null || session.vault != vault) return null;
+  var disposed = false;
+  ref.onDispose(() => disposed = true);
   return ClientHostedBackupApi(
     client: session.client,
     vaultName: vault.vaultName,
+    // As `vaultAccessProvider`: a `vault_not_found` on a backup request turns
+    // the vault-gone flow on, unless this api's vault is no longer open.
+    onVaultGone: () {
+      if (disposed) return;
+      unawaited(
+        ref.read(vaultOpenControllerProvider).hostedVaultGoneWhileOpen(vault),
+      );
+    },
   );
 });
