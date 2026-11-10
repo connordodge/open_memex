@@ -57,6 +57,9 @@ class RecentRow extends ConsumerStatefulWidget {
 
   /// Whether [entry] is the open vault (#362's modal): an `OPEN` tag
   /// (`recent-row-open-tag-<index>`), no × and no "remove from recents".
+  /// A tap on an open row always calls [onOpen] (Spec #357 Req 8: it only
+  /// closes the modal), even when its folder, binary or server would stop a
+  /// closed row from opening.
   final bool open;
 
   @override
@@ -155,7 +158,7 @@ class _RecentRowState extends ConsumerState<RecentRow> {
     }
     return PickerRowShell(
       key: key,
-      onTap: exists && !binaryMissing ? onOpen : null,
+      onTap: widget.open || (exists && !binaryMissing) ? onOpen : null,
       border: widget.open ? OmColors.accentLine30 : null,
       child: _RowBody(
         icon: Icon(icon, size: 14, color: iconColor),
@@ -276,7 +279,7 @@ class _RecentRowState extends ConsumerState<RecentRow> {
 
     return PickerRowShell(
       key: key,
-      onTap: view.opens ? onOpen : null,
+      onTap: widget.open || view.opens ? onOpen : null,
       border: widget.open ? OmColors.accentLine30 : view.border,
       child: _RowBody(
         icon: Icon(
