@@ -1173,8 +1173,16 @@ void main() {
         expect(counter.reads, 0);
         expect(clock.activeWith(_s2), isEmpty);
         expect(clock.activeWith(_s30), isEmpty);
+        // The backup controller's hourly tick is app-wide (D23, kept alive by
+        // Sidebar.build, WI #326) and outlives the workspace; no poller timer
+        // is a 1 h one.
         expect(
-          clock.timers.where((t) => t.periodic && t.timer.isActive),
+          clock.timers.where(
+            (t) =>
+                t.periodic &&
+                t.timer.isActive &&
+                t.duration != const Duration(hours: 1),
+          ),
           isEmpty,
         );
       },
