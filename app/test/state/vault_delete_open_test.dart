@@ -614,4 +614,76 @@ void main() {
       },
     );
   });
+
+  // Review r2 finding 1 (ruling F1): another spelling of the open vault
+  // folder is still the open vault.
+  group('another spelling of the open vault folder', () {
+    Future<void> deletesTheOpenVault(
+      WidgetTester tester,
+      String Function(_Wi360Rig rig) spelling,
+    ) async {
+      final context = await _wi360Context(tester);
+      final rig = (await tester.runAsync(_wi360Create))!;
+      final path = spelling(rig);
+      final v = rig.vault;
+      expect(path, isNot(v));
+
+      final result = await tester.runAsync(
+        () => rig.deleter.deleteOpenVault(context, path),
+      );
+
+      expect(result, isA<VaultDeleted>());
+      final e = rig.events;
+      expect(rig.guardCalls, [same(context)], reason: 'asked once');
+      expect(_at(e, 'guard'), lessThan(_at(e, 'flush open=$v')));
+      expect(_at(e, 'flush open=$v'), lessThan(_at(e, 'current null')));
+      expect(_at(e, 'current null'), lessThan(_at(e, 'settle $v')));
+      expect(_at(e, 'settled $v'), lessThan(_at(e, 'trash $path')));
+      expect(rig.trash.calls, [path]);
+      expect(rig.c.read(currentVaultProvider), isNull);
+      expect(rig.settings.lastVaultRef, isNull);
+      expect(rig.settings.recentRefs, [
+        LocalVaultRef(rig.other),
+      ], reason: 'the open spelling is forgotten too');
+      expect(rig.cli.callsFor('vault check'), isEmpty, reason: 'no reopen');
+    }
+
+    testWidgets(
+      'deleteOpenVault on a trailing slash spelling of the open vault closes it before the trash',
+      (tester) => deletesTheOpenVault(tester, (rig) => '${rig.vault}/'),
+    );
+
+    testWidgets(
+      'deleteOpenVault on a symlinked parent spelling of the open vault closes it before the trash',
+      (tester) => deletesTheOpenVault(tester, (rig) {
+        final links = createPlainFolder('om360_links_');
+        final link = Link(p.join(links.path, 'parent'))
+          ..createSync(p.dirname(rig.vault));
+        // Registered after the folder, so it runs first: the link goes
+        // before its folder is removed.
+        addTearDown(() {
+          if (link.existsSync()) link.deleteSync();
+        });
+        return p.join(link.path, p.basename(rig.vault));
+      }),
+    );
+
+    testWidgets(
+      'deleteOpenVault on a trailing slash spelling refuses while a backup of the open spelling runs',
+      (tester) async {
+        final context = await _wi360Context(tester);
+        final rig = (await tester.runAsync(_wi360Create))!;
+        rig.c.read(backupInFlightProvider.notifier).state = {rig.vault};
+
+        final result = await tester.runAsync(
+          () => rig.deleter.deleteOpenVault(context, '${rig.vault}/'),
+        );
+
+        expect(result, isA<VaultDeleteFailed>());
+        expect(rig.guardCalls, isEmpty);
+        expect(rig.trash.calls, isEmpty);
+        expect(rig.c.read(currentVaultProvider), LocalVaultRef(rig.vault));
+      },
+    );
+  });
 }

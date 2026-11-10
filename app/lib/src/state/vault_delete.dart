@@ -9,6 +9,7 @@ import 'settings.dart';
 import 'ui_state_store.dart';
 import 'vault_open_controller.dart';
 import 'vault_open_hosted.dart';
+import 'vault_paths.dart';
 import 'vault_state.dart';
 import 'vault_trash.dart';
 
@@ -58,6 +59,12 @@ String vaultBackupRunningMessage(String path) =>
     'a backup of ${p.basename(path)} is running. try again when it '
     'finishes. nothing was deleted.';
 
+/// Whether [inFlight] (the paths of the running backups,
+/// [backupInFlightProvider]) holds [path]'s folder in any spelling
+/// ([isSameVaultFolder]).
+bool isVaultBackingUp(Iterable<String> inFlight, String path) =>
+    inFlight.any((running) => isSameVaultFolder(running, path));
+
 /// Moves a local vault's folder to the Trash and forgets it.
 class VaultDeleter {
   VaultDeleter(this._ref);
@@ -81,11 +88,7 @@ class VaultDeleter {
     final result = await _ref.read(vaultTrashProvider).trash(path);
     final message = vaultDeleteMessage(result, path);
     if (message != null) return VaultDeleteFailed(message);
-    final ref = LocalVaultRef(path);
-    final settings = _ref.read(settingsProvider.notifier);
-    await settings.forgetRef(ref);
-    _ref.read(recentRowOutcomeProvider(ref).notifier).state = null;
-    await settings.removeVaultBackup(path);
+    await _forget(LocalVaultRef(path));
     return const VaultDeleted();
   }
 
@@ -102,15 +105,22 @@ class VaultDeleter {
   /// [context] must stay mounted while the guard runs: pass the delete
   /// dialog's own, since closing the vault unmounts whatever opened it.
   ///
-  /// When [path] is not the open vault this is [delete]. While a backup of
-  /// [path] runs it refuses before the guard and closes nothing; a backup
-  /// that starts after that is refused by [delete], and the vault reopens.
+  /// [path] is the open vault when it names the open vault's folder in any
+  /// spelling ([isSameVaultFolder]); the close, the settle and the reopen
+  /// use the open vault's own ref, and on success that ref is forgotten
+  /// too. When [path] is not the open vault this is [delete]. While a
+  /// backup of [path] runs it refuses before the guard and closes nothing;
+  /// a backup that starts after that is refused by [delete], and the vault
+  /// reopens.
   Future<VaultDeleteResult> deleteOpenVault(
     BuildContext context,
     String path,
   ) async {
-    final vault = LocalVaultRef(path);
-    if (_ref.read(currentVaultProvider) != vault) return delete(path);
+    final current = _ref.read(currentVaultProvider);
+    if (current is! LocalVaultRef || !isSameVaultFolder(current.path, path)) {
+      return delete(path);
+    }
+    final vault = current;
     if (_backingUp(path)) {
       return VaultDeleteFailed(vaultBackupRunningMessage(path));
     }
@@ -124,7 +134,7 @@ class VaultDeleter {
     final VaultDeleteResult result;
     try {
       await editor.savesSettled(vault);
-      await UiStateStore(vaultPath: path).flush();
+      await UiStateStore(vaultPath: vault.path).flush();
       result = await delete(path);
     } catch (_) {
       // Never leave the vault closed on a throw: reopen it, then report.
@@ -133,12 +143,24 @@ class VaultDeleter {
     }
     if (result is VaultDeleteFailed) {
       await opener.reopenAfterFailedDelete(vault);
+    } else if (vault.path != path) {
+      // [delete] forgot [path]'s spelling; the open one names the same
+      // folder, which is gone now.
+      await _forget(vault);
     }
     return result;
   }
 
+  Future<void> _forget(LocalVaultRef ref) async {
+    final settings = _ref.read(settingsProvider.notifier);
+    await settings.forgetRef(ref);
+    _ref.read(recentRowOutcomeProvider(ref).notifier).state = null;
+    await settings.removeVaultBackup(ref.path);
+  }
+
+  /// Whether a backup of [path]'s folder, in any spelling, is running.
   bool _backingUp(String path) =>
-      _ref.read(backupInFlightProvider).contains(path);
+      isVaultBackingUp(_ref.read(backupInFlightProvider), path);
 }
 
 final vaultDeleterProvider = Provider<VaultDeleter>((ref) => VaultDeleter(ref));

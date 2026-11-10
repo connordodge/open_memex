@@ -832,4 +832,34 @@ void main() {
       },
     );
   });
+
+  // Review r2 finding 1 (ruling F1): another spelling of the open vault
+  // folder is still the open vault.
+  group('another spelling of the open vault folder', () {
+    testWidgets(
+      'a trailing slash spelling of the open vault shows the open line and confirming closes the vault before the trash',
+      (tester) async {
+        final trash = _Wi360MovingTrash();
+        final env = await _wi360Pump(tester, trash: trash);
+        final spelling = '${env.path}/';
+        await _wi360Open(tester, spelling);
+
+        expect(_inDialog(find.byKey(_openLine)), findsOneWidget);
+        expect(_inDialog(find.text(_openCopy(env.path))), findsOneWidget);
+
+        await tester.tap(find.byKey(_confirm));
+        await _wi360Settle(tester);
+
+        expect(env.guardCalls, [true], reason: 'asked once, mounted context');
+        expect(env.editor.flushes, 1);
+        expect(env.trash.calls, [spelling]);
+        expect(_dialog, findsNothing, reason: 'the dialog closes on success');
+        expect(env.current, isNull);
+        expect(find.byType(VaultPickerScreen), findsOneWidget);
+        expect(env.settings.lastVaultRef, isNull);
+        expect(env.settings.recentRefs, isEmpty);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  });
 }
