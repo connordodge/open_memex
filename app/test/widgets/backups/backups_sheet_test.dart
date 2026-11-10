@@ -3538,6 +3538,113 @@ void main() {
     });
   });
 
+  group('AC3 verify round 3: cancel is disabled while turn on is pending', () {
+    const missing = '/Volumes/missing/backups';
+
+    testWidgets(
+      'cancel is disabled while the folder resolves and a tap on it keeps the list',
+      (tester) async {
+        final s = await _open(tester, view: _offView());
+        final handle = tester.ensureSemantics();
+        await _tapKey(tester, backupsToggleKey);
+        await _tapKey(tester, _discoveredKeys[0]);
+        expect(_button(tester, _cancelKey).onPressed, isNotNull);
+        final gate = s.holdResolves();
+        await _tapKey(tester, _turnOnKey);
+
+        expect(_button(tester, _cancelKey).onPressed, isNull);
+        expect(
+          _labelled(tester, _cancelKey, 'cancel'),
+          isSemantics(isButton: true, hasEnabledState: true, isEnabled: false),
+        );
+        await tester.tap(find.byKey(_cancelKey), warnIfMissed: false);
+        await _frames(tester);
+        // Still the list, not the off view, and nothing saved yet.
+        expect(find.byKey(_turnOnKey), findsOneWidget);
+        expect(find.byKey(_discoveredKeys[0]), findsOneWidget);
+        expect(_status(tester), contains(_pickTitle));
+        expect(_status(tester), isNot(contains(_offTitle)));
+        expect(s.saves, isEmpty);
+
+        // The pending turn on still lands, exactly once, and shows the on view.
+        gate.complete();
+        await _frames(tester);
+        expect(s.saves, hasLength(1));
+        expect(s.saves.single.settings.enabled, isTrue);
+        expect(s.saves.single.settings.destination, _icloudDest);
+        expect(find.byKey(_turnOnKey), findsNothing);
+        expect(find.byKey(_cancelKey), findsNothing);
+        expect(_status(tester), isNot(contains(_offTitle)));
+        handle.dispose();
+      },
+    );
+
+    testWidgets('cancel is disabled while the save is in flight', (
+      tester,
+    ) async {
+      final s = await _open(tester, view: _offView());
+      await _tapKey(tester, backupsToggleKey);
+      await _tapKey(tester, _discoveredKeys[0]);
+      s.holdSaves();
+      await _tapKey(tester, _turnOnKey);
+      expect(s.saves, hasLength(1));
+
+      expect(_button(tester, _cancelKey).onPressed, isNull);
+      await tester.tap(find.byKey(_cancelKey), warnIfMissed: false);
+      await _frames(tester);
+      expect(find.byKey(_turnOnKey), findsOneWidget);
+      expect(_status(tester), contains(_pickTitle));
+
+      s.releaseSaves();
+      await _frames(tester);
+      expect(s.saves, hasLength(1));
+      expect(s.saves.single.settings.enabled, isTrue);
+      expect(find.byKey(_cancelKey), findsNothing);
+    });
+
+    testWidgets(
+      'cancel works again after a folder that cannot be resolved and leaves backups off',
+      (tester) async {
+        final s = await _open(tester, view: _offView());
+        s.picker.directories.add(missing);
+        await _tapKey(tester, backupsToggleKey);
+        await _tapKey(tester, backupsDestinationChooseKey);
+        final gate = s.holdResolves();
+        await _tapKey(tester, _turnOnKey);
+        expect(_button(tester, _cancelKey).onPressed, isNull);
+
+        gate.complete();
+        await _frames(tester);
+        expect(_sheetText(tester), contains(_unavailableDetail(missing, null)));
+        expect(_button(tester, _cancelKey).onPressed, isNotNull);
+
+        await _tapKey(tester, _cancelKey);
+        expect(_status(tester), contains(_offTitle));
+        expect(find.byKey(_turnOnKey), findsNothing);
+        expect(s.saves, isEmpty);
+      },
+    );
+
+    testWidgets(
+      'cancel works again after a failed save and leaves backups off',
+      (tester) async {
+        final s = await _open(tester, view: _offView());
+        await _tapKey(tester, backupsToggleKey);
+        await _tapKey(tester, _discoveredKeys[0]);
+        s.saveError = Exception('could not create the folder');
+        await _tapKey(tester, _turnOnKey);
+        expect(tester.takeException(), isNull);
+        expect(_button(tester, _cancelKey).onPressed, isNotNull);
+
+        await _tapKey(tester, _cancelKey);
+        expect(_status(tester), contains(_offTitle));
+        expect(find.byKey(_turnOnKey), findsNothing);
+        // The one attempted save was the failed turn on; cancel saved nothing.
+        expect(s.saves, hasLength(1));
+      },
+    );
+  });
+
   group('AC3 and AC8 verify: settings saves are awaited and serialised', () {
     testWidgets(
       'two quick keep presses step twice while the first save is in flight',
