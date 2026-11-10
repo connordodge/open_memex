@@ -10,10 +10,10 @@ use std::io::{self, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::fs_guard::FsInfo;
-use crate::{Clock, Result};
+use crate::{Clock, Result, SystemClock};
 
 pub mod fingerprint;
 pub mod lock;
@@ -37,8 +37,8 @@ pub const KEEP_MAX: u16 = 365;
 pub const DUE_AFTER_MS: i64 = 86_400_000;
 
 /// Who made a backup: `memex backup` or the vault server (req 3).
-// TODO(#316): serde names are "local" | "hosted".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum BackupSource {
     Local,
     Hosted,
@@ -70,30 +70,17 @@ pub struct BackupSeams<'a> {
 impl BackupSeams<'static> {
     /// The system clock, the real `fs_guard` probe and the plain file.
     pub fn system() -> Self {
-        // TODO(#316): stub.
         BackupSeams {
-            clock: &StubClock,
-            probe: &stub_probe,
-            wrap_archive: &stub_wrap,
+            clock: &SystemClock,
+            probe: &crate::fs_guard::probe,
+            wrap_archive: &plain_file,
         }
     }
 }
 
-// TODO(#316): stub seams; the implementer replaces them.
-struct StubClock;
-
-impl Clock for StubClock {
-    fn now_ms(&self) -> i64 {
-        0
-    }
-}
-
-fn stub_probe(_path: &Path) -> io::Result<FsInfo> {
-    Err(io::Error::other("not implemented"))
-}
-
-fn stub_wrap(_file: File) -> io::Result<Box<dyn ArchiveSink>> {
-    Err(io::Error::other("not implemented"))
+/// The production archive sink: the `.partial` file itself.
+fn plain_file(file: File) -> io::Result<Box<dyn ArchiveSink>> {
+    Ok(Box::new(file))
 }
 
 /// The result of a backup that succeeded (req 17).
@@ -116,9 +103,38 @@ pub enum BackupOutcome {
 impl BackupOutcome {
     /// The line `memex backup` prints (req 17), exactly.
     pub fn to_json(&self) -> Value {
-        // TODO(#316): stub.
-        Value::Null
+        match self {
+            BackupOutcome::Created {
+                vault_id,
+                file,
+                bytes,
+                fingerprint,
+                removed,
+            } => json!({
+                "result": "created",
+                "vault_id": vault_id,
+                "file": path_text(file),
+                "bytes": bytes,
+                "fingerprint": fingerprint,
+                "removed": removed.iter().map(|p| path_text(p)).collect::<Vec<_>>(),
+            }),
+            BackupOutcome::Unchanged {
+                vault_id,
+                fingerprint,
+                last_file,
+            } => json!({
+                "result": "unchanged",
+                "vault_id": vault_id,
+                "fingerprint": fingerprint,
+                "last_file": last_file.as_deref().map(path_text),
+            }),
+        }
     }
+}
+
+/// A path as the JSON lines print it.
+fn path_text(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
 }
 
 /// One backup of a local vault, through the system seams.
@@ -149,8 +165,11 @@ pub struct RestoreOutcome {
 impl RestoreOutcome {
     /// The line `memex restore` prints (req 34), exactly.
     pub fn to_json(&self) -> Value {
-        // TODO(#316): stub.
-        Value::Null
+        json!({
+            "vault_id": self.vault_id,
+            "path": path_text(&self.path),
+            "created_at": self.created_at,
+        })
     }
 }
 

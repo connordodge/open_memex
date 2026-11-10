@@ -167,6 +167,13 @@ impl MemexError {
             MemexError::GuideRule(_) => "guide_rule",
             MemexError::FeedbackHandled(_) => "feedback_handled",
             MemexError::FeedbackInvalid(_) => "feedback_invalid",
+            MemexError::BackupDestinationUnavailable(_) => "backup_destination_unavailable",
+            MemexError::BackupDestinationInsideVault(_) => "backup_destination_inside_vault",
+            MemexError::BackupInProgress(_) => "backup_in_progress",
+            MemexError::BackupFailed(_) => "backup_failed",
+            MemexError::BackupInvalid(_) => "backup_invalid",
+            MemexError::BackupTooNew { .. } => "backup_too_new",
+            MemexError::RestoreTargetNotEmpty(_) => "restore_target_not_empty",
             MemexError::Io(_)
             | MemexError::Sqlite(_)
             | MemexError::Json(_)
@@ -178,14 +185,7 @@ impl MemexError {
             | MemexError::TitleInvalid(_)
             | MemexError::TooManyDedupCollisions { .. }
             | MemexError::InvalidLinkKind(_)
-            | MemexError::Yaml(_)
-            | MemexError::BackupDestinationUnavailable(_)
-            | MemexError::BackupDestinationInsideVault(_)
-            | MemexError::BackupInProgress(_)
-            | MemexError::BackupFailed(_)
-            | MemexError::BackupInvalid(_)
-            | MemexError::BackupTooNew { .. }
-            | MemexError::RestoreTargetNotEmpty(_) => "internal",
+            | MemexError::Yaml(_) => "internal",
         }
     }
 
@@ -232,6 +232,10 @@ impl MemexError {
                     ("current", (*current).into()),
                 ]
             }
+            MemexError::BackupTooNew { backup, supported } => vec![
+                ("schema_version", (*backup).into()),
+                ("supported_schema_version", (*supported).into()),
+            ],
             MemexError::NotFound(_)
             | MemexError::InvalidId(_)
             | MemexError::MarkerRule(_)
@@ -265,7 +269,6 @@ impl MemexError {
             | MemexError::BackupInProgress(_)
             | MemexError::BackupFailed(_)
             | MemexError::BackupInvalid(_)
-            | MemexError::BackupTooNew { .. }
             | MemexError::RestoreTargetNotEmpty(_) => Vec::new(),
         }
     }

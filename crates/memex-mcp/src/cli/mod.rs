@@ -111,9 +111,11 @@ pub fn error_json(err: &anyhow::Error) -> Value {
 /// Prints `value` as one line of compact JSON on `out` with one `writeln!`,
 /// after every effect of the command is done (Spec #315 req 17a). A closed
 /// stdout (`BrokenPipe`) is not an error: the effects already happened.
-pub fn write_json_line(_out: &mut dyn std::io::Write, _value: &Value) -> anyhow::Result<()> {
-    // TODO(#316): stub.
-    Ok(())
+pub fn write_json_line(out: &mut dyn std::io::Write, value: &Value) -> anyhow::Result<()> {
+    match writeln!(out, "{value}").and_then(|()| out.flush()) {
+        Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => Err(e.into()),
+        _ => Ok(()),
+    }
 }
 
 /// The result of a subcommand whose behaviour a later Work Item supplies.
