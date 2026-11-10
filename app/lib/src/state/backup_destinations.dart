@@ -206,7 +206,7 @@ class BackupDestinationResolver {
   /// A provider row creates `option.path` (the provider folder plus
   /// `Open Memex Backups`) through the probe only when missing, then answers its
   /// symlink-resolved path; when the provider folder itself is gone it answers
-/// [BackupDestinationUnavailable] and creates nothing. The "Choose folder" row (provider null) answers the
+  /// [BackupDestinationUnavailable] and creates nothing. The "Choose folder" row (provider null) answers the
   /// symlink-resolved [pickedFolder], nothing appended. A
   /// `FileSystemException` from creating or resolving answers
   /// [BackupDestinationUnavailable]. It never saves: A4 saves on "turn on

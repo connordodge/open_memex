@@ -520,6 +520,104 @@ void main() {
       },
     );
 
+    /// Discovers [seed]'s providers, makes the provider folder of the first row
+    /// vanish (signed out, client quit), then picks that row.
+    Future<void> expectVanishedProviderRefused(
+      _Wi323VanishingProbe probe,
+      String providerFolder,
+    ) async {
+      final h = await createBackupContainer(probe: probe);
+      final option = await _firstProvider(probe);
+      expect(option.path, p.posix.join(providerFolder, _folderName));
+      final before = h.read(vaultBackupSettingsProvider(_vault));
+      probe.vanish(providerFolder);
+
+      final result = await resolve(h, option);
+
+      expect(result, isA<BackupDestinationUnavailable>());
+      final unavailable = result as BackupDestinationUnavailable;
+      expect(unavailable.code, 'backup_destination_unavailable');
+      expect(unavailable.message, contains(option.path!));
+      expect(unavailable.message, contains('parent folder no longer exists'));
+      // Nothing was made (an ordinary local folder no client syncs), and
+      // nothing was saved.
+      expect(
+        probe.calls.where((c) => c.startsWith('createDirectory')),
+        isEmpty,
+      );
+      expect(probe.createdDirectories, isEmpty);
+      expect(h.read(vaultBackupSettingsProvider(_vault)), before);
+      expectNothingSaved(h);
+    }
+
+    test(
+      'picking iCloud after its folder vanished gives backup_destination_unavailable and creates nothing',
+      () async {
+        final probe = _Wi323VanishingProbe()..seedIcloud();
+        await expectVanishedProviderRefused(probe, probe.icloudFolder);
+      },
+    );
+
+    test(
+      'picking Google Drive after its My Drive folder vanished gives backup_destination_unavailable and creates nothing',
+      () async {
+        final probe = _Wi323VanishingProbe()..seedGoogleDrive('a@example.com');
+        await expectVanishedProviderRefused(
+          probe,
+          probe.googleDriveFolder('a@example.com'),
+        );
+      },
+    );
+
+    test(
+      'picking OneDrive after its folder vanished gives backup_destination_unavailable and creates nothing',
+      () async {
+        final probe = _Wi323VanishingProbe()..seedOneDrive('Personal');
+        await expectVanishedProviderRefused(
+          probe,
+          probe.oneDriveFolder('Personal'),
+        );
+      },
+    );
+
+    test(
+      'a provider folder that vanished is refused even when only its parents are left',
+      () async {
+        // Only `Library/Mobile Documents` is left of the iCloud path: the
+        // check is on the provider folder, not on any ancestor.
+        final probe = FakeCloudFolderProbe()
+          ..addDirectory('$fakeHome/Library/Mobile Documents');
+        final h = await createBackupContainer(probe: probe);
+
+        final result = await resolve(h, _icloud(probe));
+
+        expect(result, isA<BackupDestinationUnavailable>());
+        expect(probe.createdDirectories, isEmpty);
+        expect(
+          probe.calls.where((c) => c.startsWith('createDirectory')),
+          isEmpty,
+        );
+        expectNothingSaved(h);
+      },
+    );
+
+    test(
+      'a provider folder that is there still gets its Open Memex Backups folder created',
+      () async {
+        // The twin of the vanished case: with the parent present, creation goes
+        // ahead, so the parent check refuses only a missing provider folder.
+        final probe = _Wi323VanishingProbe()..seedGoogleDrive('b@example.com');
+        final h = await createBackupContainer(probe: probe);
+        final option = await _firstProvider(probe);
+        probe.vanish('/somewhere/else');
+
+        final result = await resolve(h, option);
+
+        expect(result, isA<BackupDestinationResolved>());
+        expect(probe.createdDirectories, [option.path]);
+      },
+    );
+
     test(
       'Choose folder resolves the picked folder with nothing appended',
       () async {
@@ -736,6 +834,82 @@ void main() {
     });
 
     test(
+      'IoCloudFolderProbe home is the HOME of the environment it is given',
+      () async {
+        final probe = IoCloudFolderProbe(environment: {'HOME': root.path});
+        expect(await probe.home(), root.path);
+      },
+    );
+
+    test(
+      'IoCloudFolderProbe home fails with a FileSystemException when HOME is unset or empty',
+      () async {
+        await expectLater(
+          const IoCloudFolderProbe(environment: {}).home(),
+          throwsA(isA<FileSystemException>()),
+        );
+        await expectLater(
+          const IoCloudFolderProbe(environment: {'HOME': ''}).home(),
+          throwsA(isA<FileSystemException>()),
+        );
+        // Other variables are not a home.
+        await expectLater(
+          const IoCloudFolderProbe(environment: {'USERPROFILE': '/x'}).home(),
+          throwsA(isA<FileSystemException>()),
+        );
+      },
+    );
+
+    test(
+      'discovery over the real probe with HOME unset lists only Choose folder',
+      () async {
+        expect(
+          await discoverBackupDestinations(
+            const IoCloudFolderProbe(environment: {}),
+          ),
+          [_choose()],
+        );
+        expect(
+          await discoverBackupDestinations(
+            const IoCloudFolderProbe(environment: {'HOME': ''}),
+          ),
+          [_choose()],
+        );
+      },
+    );
+
+    test(
+      'discovery over the real probe lists the providers of a real folder tree',
+      () async {
+        final home = root.path;
+        for (final dir in [
+          'Library/Mobile Documents/com~apple~CloudDocs',
+          'Library/CloudStorage/GoogleDrive-a@example.com/My Drive',
+          'Library/CloudStorage/OneDrive-Personal',
+        ]) {
+          await Directory(p.join(home, dir)).create(recursive: true);
+        }
+
+        final options = await discoverBackupDestinations(
+          IoCloudFolderProbe(environment: {'HOME': home}),
+        );
+
+        expect(
+          [for (final o in options) o.label],
+          ['iCloud Drive', 'a@example.com', 'Personal', 'choose folder…'],
+        );
+        expect(
+          options.first.path,
+          p.join(
+            home,
+            'Library/Mobile Documents/com~apple~CloudDocs',
+            _folderName,
+          ),
+        );
+      },
+    );
+
+    test(
       'IoCloudFolderProbe isDirectory is true only for a folder or a link to one',
       () async {
         const probe = IoCloudFolderProbe();
@@ -840,5 +1014,22 @@ class _Wi323NoHomeProbe extends FakeCloudFolderProbe {
   Future<String> home() async {
     calls.add('home');
     throw const FileSystemException('The HOME folder is not set');
+  }
+}
+
+/// A probe whose listed folders can be made to vanish after discovery (a
+/// provider client signed out or quit): `isDirectory` answers false for the
+/// folder and everything below it.
+class _Wi323VanishingProbe extends FakeCloudFolderProbe {
+  final Set<String> _gone = {};
+
+  void vanish(String path) => _gone.add(p.posix.normalize(path));
+
+  @override
+  Future<bool> isDirectory(String path) async {
+    final result = await super.isDirectory(path);
+    final normal = p.posix.normalize(path);
+    final gone = _gone.any((g) => normal == g || p.posix.isWithin(g, normal));
+    return result && !gone;
   }
 }
