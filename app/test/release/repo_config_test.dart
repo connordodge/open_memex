@@ -120,7 +120,8 @@ void main() {
       () {
         final cargo = _read('Cargo.toml');
         final workspacePackage = RegExp(
-          r'\[workspace\.package\]([^\[]*)',
+          r'^\[workspace\.package\]\n([\s\S]*?)(?=^\[|\z)',
+          multiLine: true,
         ).firstMatch(cargo);
         expect(workspacePackage, isNotNull);
         final section = workspacePackage!.group(1)!;
