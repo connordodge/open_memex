@@ -127,6 +127,12 @@ A vault the app opens by directory path on the same machine.
 The one shared secret every client presents to a vault server.
 _Avoid_: API key, password
 
+## Vault management (#355)
+
+**Vault picker**:
+The one place that lists the person's vaults and offers opening, creating, restoring and deleting them: full screen when no vault is open, and over the workspace when opened from the sidebar's VAULTS header.
+_Avoid_: vault manager, vault switcher, vaults screen
+
 ## Backups (#315)
 
 **Backup**:

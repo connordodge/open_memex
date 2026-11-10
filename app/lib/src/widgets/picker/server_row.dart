@@ -40,6 +40,11 @@ String incompatibleCopy(SavedServer server, ServerProbe? probe) =>
 /// The shared chrome of a picker row (pack 97 "Row chrome"): min height 56,
 /// padding 12/10/8/10, `surface2` fill (`surface3` on hover), a 1 px
 /// [border] (default `line2`) and radius 6.
+///
+/// It takes the keyboard focus (Tab), even without [onTap] (a server row),
+/// and while the focus highlight is on it draws a 1 px `accentSoft` ring
+/// 1 px outside its fill, radius 7.5 (board S4). Enter and Space call
+/// [onTap] once per key press, however long the key is held.
 class PickerRowShell extends StatefulWidget {
   const PickerRowShell({
     super.key,
@@ -58,26 +63,67 @@ class PickerRowShell extends StatefulWidget {
 
 class _PickerRowShellState extends State<PickerRowShell> {
   bool _hover = false;
+  bool _highlight = false;
+
+  late final Map<Type, Action<Intent>> _actions = {
+    ActivateIntent: CallbackAction<ActivateIntent>(onInvoke: _activate),
+    ButtonActivateIntent: CallbackAction<ButtonActivateIntent>(
+      onInvoke: _activate,
+    ),
+  };
+
+  Object? _activate(Intent _) {
+    widget.onTap?.call();
+    return null;
+  }
 
   @override
   Widget build(BuildContext context) {
     final tappable = widget.onTap != null;
-    return MouseRegion(
-      cursor: tappable ? SystemMouseCursors.click : SystemMouseCursors.basic,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.onTap,
-        child: Container(
-          constraints: const BoxConstraints(minHeight: 56),
-          padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
-          decoration: BoxDecoration(
-            color: _hover && tappable ? OmColors.surface3 : OmColors.surface2,
-            border: Border.all(color: widget.border ?? OmColors.line2),
-            borderRadius: BorderRadius.circular(6),
+    return FocusableActionDetector(
+      shortcuts: keyboardButtonShortcuts,
+      actions: _actions,
+      onShowFocusHighlight: (v) => setState(() => _highlight = v),
+      child: MouseRegion(
+        cursor: tappable ? SystemMouseCursors.click : SystemMouseCursors.basic,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: widget.onTap,
+          child: Stack(
+            clipBehavior: Clip.none,
+            fit: StackFit.passthrough,
+            children: [
+              Container(
+                constraints: const BoxConstraints(minHeight: 56),
+                padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+                decoration: BoxDecoration(
+                  color: _hover && tappable
+                      ? OmColors.surface3
+                      : OmColors.surface2,
+                  border: Border.all(color: widget.border ?? OmColors.line2),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: widget.child,
+              ),
+              if (_highlight)
+                Positioned(
+                  left: -1,
+                  top: -1,
+                  right: -1,
+                  bottom: -1,
+                  child: IgnorePointer(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        border: Border.all(color: OmColors.accentSoft),
+                        borderRadius: BorderRadius.circular(7.5),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
           ),
-          child: widget.child,
         ),
       ),
     );
@@ -96,11 +142,15 @@ TextStyle pickerRowNameStyle(Color color) => OmType.sans(
 TextStyle pickerRowSublineStyle(Color color) =>
     OmType.mono(size: 10.5, color: color, height: 15.75 / 10.5);
 
-/// A 24×24 trailing icon button (radius 5, 12 px `fg2` glyph, no fill).
-/// It works from the keyboard: Tab reaches it, Enter and Space press it
-/// (once per key press, however long the key is held), it
-/// draws an `accentSoft` radius-5 ring while the focus highlight is on, and
-/// it reads as a button labelled [semanticLabel] (else [tooltip]).
+/// A 24×24 trailing icon button (radius 5, [iconSize] `fg2` glyph, no
+/// fill). It works from the keyboard: Tab reaches it, Enter and Space press
+/// it (once per key press, however long the key is held), it draws an
+/// `accentSoft` radius-5 ring while the focus highlight is on, and it reads
+/// as a button labelled [semanticLabel] (else [tooltip]).
+///
+/// With [onPressed] null it is disabled: drawn at 40% opacity, never
+/// focused or pressed, read as a disabled button, and [tooltip] still shows
+/// on hover (to say why).
 class PickerRowIconButton extends StatefulWidget {
   const PickerRowIconButton({
     super.key,
@@ -108,14 +158,19 @@ class PickerRowIconButton extends StatefulWidget {
     required this.tooltip,
     required this.onPressed,
     this.semanticLabel,
+    this.iconSize = 12,
   });
 
   final IconData icon;
-  final String tooltip;
-  final VoidCallback onPressed;
+
+  /// The hover tooltip; none when null.
+  final String? tooltip;
+  final VoidCallback? onPressed;
 
   /// What a screen reader reads for this button; defaults to [tooltip].
   final String? semanticLabel;
+
+  final double iconSize;
 
   @override
   State<PickerRowIconButton> createState() => _PickerRowIconButtonState();
@@ -132,28 +187,53 @@ class _PickerRowIconButtonState extends State<PickerRowIconButton> {
   };
 
   Object? _press(Intent _) {
-    widget.onPressed();
+    widget.onPressed?.call();
     return null;
+  }
+
+  Widget _glyph() => SizedBox(
+    width: 24,
+    height: 24,
+    child: Center(
+      child: Icon(widget.icon, size: widget.iconSize, color: OmColors.fg2),
+    ),
+  );
+
+  Widget _withTooltip(Widget child) {
+    final tooltip = widget.tooltip;
+    return tooltip == null ? child : Tooltip(message: tooltip, child: child);
   }
 
   @override
   Widget build(BuildContext context) {
-    return Tooltip(
-      message: widget.tooltip,
-      child: FocusableActionDetector(
+    final onPressed = widget.onPressed;
+    final label = widget.semanticLabel ?? widget.tooltip;
+    if (onPressed == null) {
+      return _withTooltip(
+        Semantics(
+          button: true,
+          enabled: false,
+          label: label,
+          excludeSemantics: true,
+          child: IgnorePointer(child: Opacity(opacity: 0.4, child: _glyph())),
+        ),
+      );
+    }
+    return _withTooltip(
+      FocusableActionDetector(
         shortcuts: keyboardButtonShortcuts,
         actions: _actions,
         onShowFocusHighlight: (v) => setState(() => _highlight = v),
         child: Semantics(
           button: true,
-          label: widget.semanticLabel ?? widget.tooltip,
-          onTap: widget.onPressed,
+          label: label,
+          onTap: onPressed,
           excludeSemantics: true,
           child: MouseRegion(
             cursor: SystemMouseCursors.click,
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
-              onTap: widget.onPressed,
+              onTap: onPressed,
               child: DecoratedBox(
                 position: DecorationPosition.foreground,
                 decoration: BoxDecoration(
@@ -162,13 +242,7 @@ class _PickerRowIconButtonState extends State<PickerRowIconButton> {
                       : null,
                   borderRadius: BorderRadius.circular(5),
                 ),
-                child: SizedBox(
-                  width: 24,
-                  height: 24,
-                  child: Center(
-                    child: Icon(widget.icon, size: 12, color: OmColors.fg2),
-                  ),
-                ),
+                child: _glyph(),
               ),
             ),
           ),
@@ -181,18 +255,24 @@ class _PickerRowIconButtonState extends State<PickerRowIconButton> {
 /// A SERVERS row (key `server-row-<id>`, pack 97): server icon, name, the
 /// status dot and URL (or, for an incompatible server, its message in
 /// `danger`), then edit (`server-row-edit-<id>`) and remove
-/// (`server-row-remove-<id>`).
+/// (`server-row-remove-<id>`). With [removeDisabledReason] set, remove is
+/// disabled and its tooltip is that reason (the open hosted vault's server,
+/// Spec #357 Req 13); edit still works.
 class ServerRow extends ConsumerWidget {
   const ServerRow({
     super.key,
     required this.server,
     required this.onEdit,
     required this.onRemove,
+    this.removeDisabledReason,
   });
 
   final SavedServer server;
   final VoidCallback onEdit;
   final VoidCallback onRemove;
+
+  /// Why remove server is disabled on this row; null keeps it enabled.
+  final String? removeDisabledReason;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -252,8 +332,9 @@ class ServerRow extends ConsumerWidget {
           PickerRowIconButton(
             key: Key('server-row-remove-${server.id}'),
             icon: LucideIcons.trash,
-            tooltip: 'remove server',
-            onPressed: onRemove,
+            tooltip: removeDisabledReason ?? 'remove server',
+            semanticLabel: 'remove server',
+            onPressed: removeDisabledReason == null ? onRemove : null,
           ),
         ],
       ),
