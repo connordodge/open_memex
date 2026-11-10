@@ -11,6 +11,7 @@ import '../../state/server_probes.dart';
 import '../../state/settings.dart';
 import '../../state/vault_open_controller.dart';
 import '../../state/vault_open_hosted.dart';
+import '../../state/vault_paths.dart';
 import '../../state/vault_state.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
@@ -428,24 +429,11 @@ class VaultPickerBodyState extends ConsumerState<VaultPickerBody> {
 }
 
 /// Whether [a] and [b] are the same vault: equal refs, or local refs whose
-/// folders are the same once canonical ([_canonicalFolder]).
+/// folders are the same folder ([isSameVaultFolder]).
 bool _sameVault(VaultRef a, VaultRef b) {
   if (a == b) return true;
   if (a is! LocalVaultRef || b is! LocalVaultRef) return false;
-  return _canonicalFolder(a.path) == _canonicalFolder(b.path);
-}
-
-/// [path] with its symlinks resolved (when the folder exists), normalised
-/// (no trailing slash, `.` or `..`) and case-folded, as APFS compares names
-/// by default.
-String _canonicalFolder(String path) {
-  var resolved = path;
-  try {
-    resolved = Directory(path).resolveSymbolicLinksSync();
-  } on FileSystemException {
-    // A missing folder: its spelling as given.
-  }
-  return p.normalize(resolved).toLowerCase();
+  return isSameVaultFolder(a.path, b.path);
 }
 
 /// The full-screen picker's brand row (A3): the ring logo, `open memex` and
