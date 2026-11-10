@@ -25,6 +25,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
+import 'package:open_memex_app/src/state/backup_controller.dart';
 import 'package:open_memex_app/src/state/backup_messages.dart';
 import 'package:open_memex_app/src/state/backup_models.dart';
 import 'package:open_memex_app/src/state/backup_settings_state.dart';
@@ -163,6 +164,51 @@ BackupViewState _localFailedView({
     warning: true,
   );
 }
+
+/// What the live controller shows while a run is under way with the warning
+/// on: the warning flag and the state file's status, but none of the
+/// failure's own fields (no failedAt, automatic or message).
+BackupViewState _retryingView() => BackupViewState(
+  mode: BackupSheetMode.backingUp,
+  settings: _on,
+  status: _failedStatus(_failedAt, 'backup_destination_unavailable'),
+  startedAt: _now.toUtc(),
+  warning: true,
+);
+
+/// A "Back up now" press that found a backup already running (Spec req 22:
+/// not a failure), while the warning from an earlier automatic failure holds.
+BackupViewState _busyPressView({DateTime? at}) {
+  final pressed = at ?? _now;
+  return BackupViewState(
+    mode: BackupSheetMode.error,
+    settings: _on,
+    status: _failedStatus(_failedAt, 'backup_destination_unavailable'),
+    errorCode: 'backup_in_progress',
+    automatic: false,
+    failedAt: pressed.toUtc(),
+    message: backupFailureMessage(
+      code: 'backup_in_progress',
+      message: 'a backup is already running',
+      automatic: false,
+      failedAt: pressed.toUtc(),
+      now: _now,
+      destination: _googleDest,
+      provider: BackupProvider.googleDrive,
+    ),
+    warning: true,
+  );
+}
+
+/// A retry under way with the warning flag on and no failure to state: the
+/// state file's last attempt succeeded.
+BackupViewState _noTimeWarningView() => BackupViewState(
+  mode: BackupSheetMode.backingUp,
+  settings: _on,
+  status: _created(_lastBackup),
+  startedAt: _now.toUtc(),
+  warning: true,
+);
 
 /// An automatic run that exit 2 answered (unrecorded, kept in memory, D23).
 BackupViewState _tooOldWarningView() => BackupViewState(
@@ -355,6 +401,13 @@ String _entryText(WidgetTester tester) => tester
     )
     .map((w) => w.text.toPlainText())
     .join('\n');
+
+/// The strings of the entry's Text widgets (label, then status), in order;
+/// the icon's glyph is not one.
+List<String?> _shownTexts(WidgetTester tester) => tester
+    .widgetList<Text>(find.descendant(of: _entry, matching: find.byType(Text)))
+    .map((w) => w.data)
+    .toList();
 
 Color? _textColor(WidgetTester tester, String s) {
   final f = _rowText(s);
@@ -778,13 +831,16 @@ void main() {
     );
 
     testWidgets(
-      'the row reads the controller only and runs no backup read or timer itself',
+      'the row reads the controller only and runs no backup read or CLI call itself',
       (tester) async {
         final s = await _pump(tester, view: _localFailedView());
         expect(_badge, findsOneWidget);
-        expect(s.clock.pendingTimers, 0, reason: 'no timer of its own');
+        // Its only timer redraws the shown time at local midnight (finding 1
+        // of review r1); it reads and runs nothing when it fires.
+        expect(s.clock.pendingTimers, 1, reason: 'the one redraw timer');
         s.clock.advance(const Duration(hours: 3));
         await _frames(tester);
+        expect(_rowText('09:00'), findsOneWidget, reason: 'not midnight yet');
         expect(s.harness.runner.calls, isEmpty, reason: 'no backup run');
         expect(s.harness.reader.reads, isEmpty, reason: 'no state read');
         expect(s.harness.hostedApi.calls, isEmpty, reason: 'no hosted call');
@@ -1538,17 +1594,15 @@ void main() {
     testWidgets(
       'a backing up view with the warning flag on keeps the amber row and the badge',
       (tester) async {
-        // Q1: the amber row wins over the backing up mode.
-        final local = BackupViewState(
-          mode: BackupSheetMode.backingUp,
-          settings: _on,
-          status: _failedStatus(_failedAt, 'backup_destination_unavailable'),
-          automatic: true,
-          failedAt: _failedAt.toUtc(),
-          startedAt: _now.toUtc(),
-          warning: true,
-        );
-        await _pump(tester, view: local);
+        // Q1: the amber row wins over the backing up mode. The controller's
+        // backing up view carries the warning flag and the state file's
+        // status, but none of the failure's own fields (failedAt, automatic,
+        // message): the row goes on stating the failure it last showed.
+        final s = await _pump(tester, view: _localFailedView());
+        expect(_rowText('09:00'), findsOneWidget);
+
+        s.controller.setViewState(_local, _retryingView());
+        await _frames(tester);
         expect(
           _rowText('backup failed'),
           findsOneWidget,
@@ -1559,21 +1613,29 @@ void main() {
         expect(_badge, findsOneWidget, reason: 'local: the badge stays');
         expect(_box(tester).color, OmColors.warnBg);
 
-        final hosted = BackupViewState(
-          mode: BackupSheetMode.backingUp,
-          hosted: true,
-          status: _hostedFailed(_hostedAt),
-          automatic: true,
-          failedAt: _hostedAt.toUtc(),
-          startedAt: _now.toUtc(),
-          warning: true,
+        final hosted = await _pump(
+          tester,
+          vault: _hosted,
+          view: _hostedFailedView(),
         );
-        await _pump(tester, vault: _hosted, view: hosted);
+        expect(_rowText('03:00'), findsOneWidget);
+        hosted.controller.setViewState(
+          _hosted,
+          BackupViewState(
+            mode: BackupSheetMode.backingUp,
+            hosted: true,
+            status: _hostedFailed(_hostedAt),
+            startedAt: _now.toUtc(),
+            warning: true,
+          ),
+        );
+        await _frames(tester);
         expect(
           _rowText('nas backup failed'),
           findsOneWidget,
           reason: _entryText(tester),
         );
+        expect(_rowText('03:00'), findsOneWidget, reason: _entryText(tester));
         expect(_rowText('backing up…'), findsNothing);
         expect(_badge, findsOneWidget, reason: 'hosted: the badge stays');
       },
@@ -2022,6 +2084,607 @@ void main() {
 
         await _pump(tester, view: _successView());
         expect(turn, findsNothing);
+      },
+    );
+  });
+
+  // ===================================================== review r1 fixes
+  group('the row redraws as its time text turns (r1 finding 1)', () {
+    testWidgets(
+      'the age turns at each minute hour and day boundary as the clock advances with no new view',
+      (tester) async {
+        final s = await _pump(tester, view: _successView(at: _now));
+        Future<void> after(Duration d, String text) async {
+          s.clock.advanceTo(_now.add(d));
+          await _frames(tester);
+          expect(
+            _rowText(text),
+            findsOneWidget,
+            reason: 'after $d: ${_entryText(tester)}',
+          );
+        }
+
+        expect(_rowText('just now'), findsOneWidget);
+        await after(const Duration(seconds: 59), 'just now');
+        await after(const Duration(minutes: 1), '1 min ago');
+        await after(const Duration(minutes: 59, seconds: 59), '59 min ago');
+        await after(const Duration(hours: 1), '1 h ago');
+        await after(const Duration(hours: 2), '2 h ago');
+        await after(
+          const Duration(hours: 23, minutes: 59, seconds: 59),
+          '23 h ago',
+        );
+        await after(const Duration(hours: 24), '1 d ago');
+        await after(
+          const Duration(hours: 47, minutes: 59, seconds: 59),
+          '1 d ago',
+        );
+        await after(const Duration(hours: 48), '2 d ago');
+      },
+    );
+
+    testWidgets('a jump of several hours at once lands on the right age', (
+      tester,
+    ) async {
+      final s = await _pump(tester, view: _successView(at: _now));
+      s.clock.advance(const Duration(hours: 5, minutes: 30));
+      await _frames(tester);
+      expect(_rowText('5 h ago'), findsOneWidget, reason: _entryText(tester));
+      expect(_rowText('just now'), findsNothing);
+    });
+
+    testWidgets('a local failure time turns into its date at local midnight', (
+      tester,
+    ) async {
+      final s = await _pump(tester, view: _localFailedView());
+      expect(_rowText('09:00'), findsOneWidget);
+
+      s.clock.advanceTo(DateTime(2026, 11, 9, 23, 59, 59));
+      await _frames(tester);
+      expect(_rowText('09:00'), findsOneWidget, reason: _entryText(tester));
+
+      s.clock.advanceTo(DateTime(2026, 11, 10));
+      await _frames(tester);
+      expect(_rowText('9 nov'), findsOneWidget, reason: _entryText(tester));
+      expect(_rowText('09:00'), findsNothing);
+      expect(_badge, findsOneWidget, reason: 'still a warning');
+      expect(_rowText('backup failed'), findsOneWidget);
+    });
+
+    testWidgets(
+      'a hosted clock time turns into the age at local midnight and then keeps counting',
+      (tester) async {
+        final s = await _pump(
+          tester,
+          vault: _hosted,
+          view: _hostedSuccessView(),
+        );
+        expect(_rowText('03:00'), findsOneWidget);
+
+        s.clock.advanceTo(DateTime(2026, 11, 9, 23, 59, 59));
+        await _frames(tester);
+        expect(_rowText('03:00'), findsOneWidget, reason: _entryText(tester));
+
+        s.clock.advanceTo(DateTime(2026, 11, 10));
+        await _frames(tester);
+        expect(
+          _rowText('21 h ago'),
+          findsOneWidget,
+          reason: _entryText(tester),
+        );
+        expect(_rowText('03:00'), findsNothing);
+
+        s.clock.advanceTo(DateTime(2026, 11, 10, 1));
+        await _frames(tester);
+        expect(
+          _rowText('22 h ago'),
+          findsOneWidget,
+          reason: _entryText(tester),
+        );
+      },
+    );
+
+    testWidgets(
+      'the semantic label turns from yesterday to the date at local midnight with the age text unchanged',
+      (tester) async {
+        // 1 d ago holds for a day, so only local midnight turns the label.
+        final handle = tester.ensureSemantics();
+        final s = await _pump(
+          tester,
+          view: _successView(at: _now.subtract(const Duration(days: 1))),
+        );
+        expect(_rowText('1 d ago'), findsOneWidget);
+        _labelled(
+          tester,
+          'backups for memex: last backup yesterday at 16:03. open backups',
+        );
+        s.clock.advanceTo(DateTime(2026, 11, 9, 23, 59, 59));
+        await _frames(tester);
+        _labelled(
+          tester,
+          'backups for memex: last backup yesterday at 16:03. open backups',
+        );
+        s.clock.advanceTo(DateTime(2026, 11, 10));
+        await _frames(tester);
+        expect(_rowText('1 d ago'), findsOneWidget, reason: _entryText(tester));
+        _labelled(
+          tester,
+          'backups for memex: last backup 8 nov at 16:03. open backups',
+        );
+        handle.dispose();
+      },
+    );
+
+    testWidgets(
+      'a hosted semantic label turns from yesterday to the date at local midnight with the age text unchanged',
+      (tester) async {
+        final handle = tester.ensureSemantics();
+        final s = await _pump(
+          tester,
+          vault: _hosted,
+          view: BackupViewState(
+            mode: BackupSheetMode.success,
+            hosted: true,
+            status: _hostedOk(_now.subtract(const Duration(days: 1))),
+          ),
+        );
+        expect(_rowText('1 d ago'), findsOneWidget, reason: _entryText(tester));
+        _labelled(
+          tester,
+          "backups for work: nas's last backup yesterday at 16:03. open backups",
+        );
+        s.clock.advanceTo(DateTime(2026, 11, 10));
+        await _frames(tester);
+        expect(_rowText('1 d ago'), findsOneWidget, reason: _entryText(tester));
+        _labelled(
+          tester,
+          "backups for work: nas's last backup 8 nov at 16:03. open backups",
+        );
+        handle.dispose();
+      },
+    );
+
+    testWidgets('a row keeps one redraw timer only while it shows a time', (
+      tester,
+    ) async {
+      final cases = <(String, VaultRef, BackupViewState, int)>[
+        ('off', _local, _offView(), 0),
+        ('never', _local, _neverView(), 0),
+        ('local backing up', _local, _backingUpView(), 0),
+        ('local success', _local, _successView(), 1),
+        ('local failure', _local, _localFailedView(), 1),
+        ('warning with no time known', _local, _noTimeWarningView(), 0),
+        ('hosted success', _hosted, _hostedSuccessView(), 1),
+        ('hosted failure', _hosted, _hostedFailedView(), 1),
+        ('hosted not configured', _hosted, _hostedNotConfiguredView(), 0),
+        ('hosted server too old', _hosted, _hostedTooOldView(), 0),
+        ('hosted backing up', _hosted, _hostedBackingUpView(), 0),
+        (
+          'hosted not read yet',
+          _hosted,
+          const BackupViewState(mode: BackupSheetMode.off, hosted: true),
+          0,
+        ),
+      ];
+      for (final (name, vault, view, timers) in cases) {
+        final s = await _pump(tester, vault: vault, view: view);
+        expect(s.clock.pendingTimers, timers, reason: name);
+      }
+    });
+
+    testWidgets(
+      'the redraw timer is replaced not doubled and cancelled when the row stops showing a time',
+      (tester) async {
+        final s = await _pump(tester, view: _successView(at: _now));
+        expect(s.clock.pendingTimers, 1);
+
+        s.clock.advance(const Duration(seconds: 30));
+        await _frames(tester);
+        expect(_rowText('just now'), findsOneWidget);
+        expect(s.clock.pendingTimers, 1, reason: 'no turn yet, still one');
+
+        s.controller.setViewState(
+          _local,
+          _successView(at: _now.subtract(const Duration(minutes: 5))),
+        );
+        await _frames(tester);
+        expect(_rowText('5 min ago'), findsOneWidget);
+        expect(s.clock.pendingTimers, 1, reason: 'replaced, not doubled');
+
+        s.controller.setViewState(_local, _backingUpView());
+        await _frames(tester);
+        expect(s.clock.pendingTimers, 0, reason: 'backing up shows no time');
+
+        s.controller.setViewState(_local, _offView());
+        await _frames(tester);
+        expect(s.clock.pendingTimers, 0, reason: 'off shows no time');
+
+        s.controller.setViewState(_local, _localFailedView());
+        await _frames(tester);
+        expect(s.clock.pendingTimers, 1, reason: 'a failure time');
+
+        s.container.read(currentVaultProvider.notifier).state = null;
+        await _frames(tester);
+        expect(s.clock.pendingTimers, 0, reason: 'no vault, no row, no timer');
+
+        s.container.read(currentVaultProvider.notifier).state = _local;
+        await _frames(tester);
+        expect(s.clock.pendingTimers, 1);
+
+        await tester.pumpWidget(const SizedBox());
+        expect(s.clock.pendingTimers, 0, reason: 'cancelled when removed');
+      },
+    );
+  });
+
+  group(
+    'the warning keeps naming its failure through a retry or a busy press (r1 findings 3 and 4)',
+    () {
+      testWidgets(
+        'a retry keeps the earlier failure in the label and a newer failure replaces it',
+        (tester) async {
+          final handle = tester.ensureSemantics();
+          final s = await _pump(tester, view: _localFailedView());
+          const cause = "can't write to Google Drive";
+          _labelled(
+            tester,
+            'backups for memex: the automatic backup failed today at 09:00, '
+            '$cause. open backups',
+          );
+
+          s.controller.setViewState(_local, _retryingView());
+          await _frames(tester);
+          _labelled(
+            tester,
+            'backups for memex: the automatic backup failed today at 09:00, '
+            '$cause. open backups',
+          );
+          expect(_rowText('09:00'), findsOneWidget);
+
+          // The retry fails too: the newer failure is the one stated.
+          s.controller.setViewState(
+            _local,
+            _localFailedView(at: DateTime(2026, 11, 9, 10)),
+          );
+          await _frames(tester);
+          expect(_rowText('10:00'), findsOneWidget, reason: _entryText(tester));
+          s.controller.setViewState(_local, _retryingView());
+          await _frames(tester);
+          expect(_rowText('10:00'), findsOneWidget, reason: _entryText(tester));
+          expect(_rowText('09:00'), findsNothing);
+          handle.dispose();
+        },
+      );
+
+      testWidgets(
+        'a back up now that finds a backup running keeps the earlier failure and is not stated as one',
+        (tester) async {
+          final handle = tester.ensureSemantics();
+          final s = await _pump(tester, view: _localFailedView());
+          s.controller.setViewState(
+            _local,
+            _busyPressView(at: DateTime(2026, 11, 9, 10, 15)),
+          );
+          await _frames(tester);
+          expect(_rowText('backup failed'), findsOneWidget);
+          expect(_rowText('09:00'), findsOneWidget, reason: _entryText(tester));
+          expect(
+            _rowText('10:15'),
+            findsNothing,
+            reason: 'the press is no failure',
+          );
+          expect(_badge, findsOneWidget);
+          final labels = _semanticsInEntry(tester).map((n) => n.label).toList();
+          expect(
+            labels.any(
+              (l) =>
+                  l.contains('the automatic backup failed today at 09:00') &&
+                  l.contains("can't write to Google Drive"),
+            ),
+            isTrue,
+            reason: '$labels',
+          );
+          expect(
+            labels.any(
+              (l) =>
+                  l.contains('already running') ||
+                  l.contains('back up now failed'),
+            ),
+            isFalse,
+            reason: '$labels',
+          );
+          handle.dispose();
+        },
+      );
+
+      testWidgets(
+        'a busy press before any failure was shown falls back to the failed attempt in the state file',
+        (tester) async {
+          await _pump(tester, view: _busyPressView());
+          expect(_rowText('backup failed'), findsOneWidget);
+          expect(_rowText('09:00'), findsOneWidget, reason: _entryText(tester));
+          expect(_rowText('16:03'), findsNothing);
+        },
+      );
+
+      testWidgets(
+        'with no failure known a retry or a busy press shows amber with no time and a clearing success forgets the kept failure',
+        (tester) async {
+          final handle = tester.ensureSemantics();
+          final s = await _pump(tester, view: _noTimeWarningView());
+          expect(
+            _rowText('backup failed'),
+            findsOneWidget,
+            reason: _entryText(tester),
+          );
+          expect(_rowText('backing up…'), findsNothing);
+          expect(_badge, findsOneWidget);
+          expect(_box(tester).color, OmColors.warnBg);
+          expect(_shownTexts(tester), [
+            'backup failed',
+          ], reason: 'no time: a label and no status');
+          _labelled(
+            tester,
+            'backups for memex: the automatic backup failed. open backups',
+          );
+
+          // The same with a busy press and no failure known.
+          s.controller.setViewState(
+            _local,
+            BackupViewState(
+              mode: BackupSheetMode.error,
+              settings: _on,
+              status: _created(_lastBackup),
+              errorCode: 'backup_in_progress',
+              failedAt: _now.toUtc(),
+              warning: true,
+            ),
+          );
+          await _frames(tester);
+          expect(_shownTexts(tester), ['backup failed']);
+
+          // A failure is shown, then a success clears the warning and the kept
+          // failure with it: a later retry with the flag on states no time.
+          s.controller.setViewState(_local, _localFailedView());
+          await _frames(tester);
+          expect(_rowText('09:00'), findsOneWidget);
+          s.controller.setViewState(_local, _successView(at: _now));
+          await _frames(tester);
+          expect(_badge, findsNothing);
+          s.controller.setViewState(_local, _noTimeWarningView());
+          await _frames(tester);
+          expect(_rowText('09:00'), findsNothing, reason: _entryText(tester));
+          expect(_shownTexts(tester), ['backup failed']);
+          handle.dispose();
+        },
+      );
+
+      testWidgets('a kept failure is per vault', (tester) async {
+        final s = await _pump(tester, view: _localFailedView());
+        expect(_rowText('09:00'), findsOneWidget);
+        s.controller.setViewState(_other, _noTimeWarningView());
+        s.container.read(currentVaultProvider.notifier).state = _other;
+        await _frames(tester);
+        expect(_shownTexts(tester), [
+          'backup failed',
+        ], reason: 'memex failure is not journal failure');
+      });
+
+      testWidgets(
+        'the failed attempt in the state file stands in only when it failed',
+        (tester) async {
+          // Warning flag on, a retry running, nothing shown before: the
+          // recorded failed attempt names the time.
+          await _pump(tester, view: _retryingView());
+          expect(_rowText('09:00'), findsOneWidget, reason: _entryText(tester));
+          expect(_rowText('backup failed'), findsOneWidget);
+
+          // The recorded attempt succeeded: its time is not a failure time.
+          await _pump(
+            tester,
+            view: BackupViewState(
+              mode: BackupSheetMode.backingUp,
+              settings: _on,
+              status: _created(_lastBackup),
+              startedAt: _now.toUtc(),
+              warning: true,
+            ),
+          );
+          expect(_rowText('14:03'), findsNothing, reason: _entryText(tester));
+          expect(_shownTexts(tester), ['backup failed']);
+        },
+      );
+
+      testWidgets(
+        'the warning flag with no failure to state and no run under way shows the plain row',
+        (tester) async {
+          await _pump(
+            tester,
+            view: BackupViewState(
+              mode: BackupSheetMode.success,
+              settings: _on,
+              status: _created(_lastBackup),
+              warning: true,
+            ),
+          );
+          expect(
+            _rowText('2 h ago'),
+            findsOneWidget,
+            reason: _entryText(tester),
+          );
+          expect(_badge, findsNothing);
+          expect(_noFill(_box(tester)), isTrue);
+        },
+      );
+
+      testWidgets(
+        'a hosted server that cannot be reached keeps stating the failure it showed',
+        (tester) async {
+          final s = await _pump(
+            tester,
+            vault: _hosted,
+            view: _hostedFailedView(),
+          );
+          expect(_rowText('03:00'), findsOneWidget);
+          s.controller.setViewState(
+            _hosted,
+            BackupViewState(
+              mode: BackupSheetMode.hostedUnreachable,
+              hosted: true,
+              status: _hostedFailed(_hostedAt),
+              warning: true,
+            ),
+          );
+          await _frames(tester);
+          expect(
+            _rowText('nas backup failed'),
+            findsOneWidget,
+            reason: _entryText(tester),
+          );
+          expect(_rowText('03:00'), findsOneWidget);
+          expect(_badge, findsOneWidget);
+        },
+      );
+
+      testWidgets(
+        'a real automatic failure then a held retry then a busy press keep the row naming the failure',
+        (tester) async {
+          // Live controller end to end: the views the controller really
+          // produces carry the warning flag but not the failure's fields.
+          final handle = tester.ensureSemantics();
+          final clock = FakeClock(DateTime(2026, 11, 9, 8));
+          final reader = FakeBackupStateReader()
+            ..setEntry(
+              _vaultPath,
+              _googleDest,
+              _created(DateTime(2026, 11, 8, 9)),
+            );
+          final runner = FakeBackupRunner();
+          final s = await _pump(
+            tester,
+            live: true,
+            clock: clock,
+            reader: reader,
+            runner: runner,
+            settings: {_vaultPath: _on},
+          );
+          await _settle(tester);
+          expect(runner.backupCalls, isEmpty, reason: 'not due at 08:00');
+
+          runner.scriptBackup(
+            const BackupFailure(
+              code: 'backup_destination_unavailable',
+              message: 'the folder is gone',
+            ),
+          );
+          runner.onCall = (_) {
+            reader.setEntry(
+              _vaultPath,
+              _googleDest,
+              _failedStatus(clock.now(), 'backup_destination_unavailable'),
+            );
+          };
+          clock.advance(const Duration(hours: 1));
+          await _settle(tester);
+          expect(_rowText('09:00'), findsOneWidget, reason: _entryText(tester));
+          expect(_badge, findsOneWidget);
+          const stated =
+              'backups for memex: the automatic backup failed today at 09:00, '
+              "can't write to Google Drive. open backups";
+          _labelled(tester, stated);
+
+          // 10:00: the hourly retry starts and is held in flight.
+          final hold = runner.holdRuns();
+          runner.scriptBackup(
+            const BackupFailure(
+              code: 'backup_destination_unavailable',
+              message: 'the folder is gone',
+            ),
+          );
+          clock.advance(const Duration(hours: 1));
+          await _settle(tester);
+          expect(runner.inFlight, 1, reason: 'the retry is under way');
+          expect(
+            s.container
+                .read(backupControllerProvider.notifier)
+                .viewStateOf(_local)
+                .mode,
+            BackupSheetMode.backingUp,
+          );
+          expect(_rowText('backing up…'), findsNothing);
+          expect(_rowText('backup failed'), findsOneWidget);
+          expect(_rowText('09:00'), findsOneWidget, reason: _entryText(tester));
+          expect(_badge, findsOneWidget);
+          _labelled(tester, stated);
+
+          // The retry fails too: the newer failure is stated.
+          hold.complete();
+          await _settle(tester);
+          expect(_rowText('10:00'), findsOneWidget, reason: _entryText(tester));
+
+          // 10:15: a launchd run holds the lock; Back up now is answered
+          // backup_in_progress. Not a failure: the row keeps the 10:00 one.
+          clock.advance(const Duration(minutes: 15));
+          runner.onCall = null; // the lock holder is a launchd run, not ours
+          runner.scriptBackup(
+            const BackupFailure(
+              code: 'backup_in_progress',
+              message: 'a backup is already running',
+            ),
+          );
+          await s.container
+              .read(backupControllerProvider.notifier)
+              .backUpNow(_local);
+          await _settle(tester);
+          final view = s.container
+              .read(backupControllerProvider.notifier)
+              .viewStateOf(_local);
+          expect(view.errorCode, 'backup_in_progress');
+          expect(_rowText('10:00'), findsOneWidget, reason: _entryText(tester));
+          expect(_rowText('10:15'), findsNothing);
+          expect(_badge, findsOneWidget);
+          _labelled(
+            tester,
+            'backups for memex: the automatic backup failed today at 10:00, '
+            "can't write to Google Drive. open backups",
+          );
+          handle.dispose();
+        },
+      );
+    },
+  );
+
+  group('reduced motion (r1 nit)', () {
+    testWidgets(
+      'the backing up spinner stands still while the platform asks for reduced motion and turns again when it does not',
+      (tester) async {
+        tester.platformDispatcher.accessibilityFeaturesTestValue =
+            const FakeAccessibilityFeatures(disableAnimations: true);
+        addTearDown(
+          tester.platformDispatcher.clearAccessibilityFeaturesTestValue,
+        );
+        final s = await _pump(tester, view: _backingUpView());
+        expect(_icon(tester).icon, LucideIcons.loaderCircle);
+        expect(
+          tester.hasRunningAnimations,
+          isFalse,
+          reason: 'reduced motion: the spinner does not turn',
+        );
+
+        tester.platformDispatcher.accessibilityFeaturesTestValue =
+            const FakeAccessibilityFeatures();
+        await _frames(tester);
+        expect(
+          tester.hasRunningAnimations,
+          isTrue,
+          reason: 'motion allowed again: it turns',
+        );
+
+        tester.platformDispatcher.accessibilityFeaturesTestValue =
+            const FakeAccessibilityFeatures(disableAnimations: true);
+        await _frames(tester);
+        expect(tester.hasRunningAnimations, isFalse, reason: 'stops again');
+        expect(s.controller.openSheetCalls, isEmpty);
       },
     );
   });
