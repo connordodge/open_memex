@@ -190,7 +190,8 @@ impl Content<'_> {
             }
             Err(e) => {
                 // ZipWriter finishes the archive on drop, writing to stderr
-                // when that fails; the sink now swallows the rest instead.
+                // when that fails; the sink now swallows the rest instead. (A
+                // failing sink has already latched this; a failed read hasn't.)
                 aborted.set(true);
                 drop(zip);
                 Err(e)
@@ -298,12 +299,27 @@ impl Read for Tee<'_> {
 }
 
 /// The archive sink, which once `aborted` is set takes every write and seek
-/// without passing it on.
+/// without passing it on. The first failed write, flush or seek of the inner
+/// sink sets `aborted` itself, so ZipWriter's retry on drop (after a failed
+/// `finish`) writes nothing and prints nothing.
 struct Abortable<'a, W> {
     inner: W,
     aborted: &'a Cell<bool>,
-    /// The position reported while aborted.
+    /// The position: the inner sink's while it works, then the one reported
+    /// while aborted.
     pos: u64,
+}
+
+impl<W> Abortable<'_, W> {
+    /// Latches `aborted` on a real failure (not a retried interruption).
+    fn check<T>(&self, result: io::Result<T>) -> io::Result<T> {
+        if let Err(e) = &result {
+            if e.kind() != io::ErrorKind::Interrupted {
+                self.aborted.set(true);
+            }
+        }
+        result
+    }
 }
 
 impl<W: Write> Write for Abortable<'_, W> {
@@ -312,14 +328,18 @@ impl<W: Write> Write for Abortable<'_, W> {
             self.pos = self.pos.saturating_add(buf.len() as u64);
             return Ok(buf.len());
         }
-        self.inner.write(buf)
+        let written = self.inner.write(buf);
+        let n = self.check(written)?;
+        self.pos = self.pos.saturating_add(n as u64);
+        Ok(n)
     }
 
     fn flush(&mut self) -> io::Result<()> {
         if self.aborted.get() {
             return Ok(());
         }
-        self.inner.flush()
+        let flushed = self.inner.flush();
+        self.check(flushed)
     }
 }
 
@@ -332,7 +352,8 @@ impl<W: Seek> Seek for Abortable<'_, W> {
             };
             return Ok(self.pos);
         }
-        self.pos = self.inner.seek(to)?;
+        let sought = self.inner.seek(to);
+        self.pos = self.check(sought)?;
         Ok(self.pos)
     }
 }

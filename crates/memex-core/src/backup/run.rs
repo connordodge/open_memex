@@ -153,8 +153,9 @@ impl Run<'_> {
         partial.rename_to(&final_path)?;
         sync_folder(&dest);
 
-        // (10)
-        let removed = retention(&dest, vault_id, &final_name, r.keep)?;
+        // (10) The new file is in place, so nothing from here on may turn
+        // this run into a failure that leaves it there (req 5).
+        let removed = retention(&dest, vault_id, &final_name, r.keep);
         // (11)
         state::record_created(
             r.vault,
@@ -320,9 +321,18 @@ fn delete_leftover_partials(dest: &Path, vault_id: &str, own: &str) -> Result<()
 /// Step 10 (req 11): of the files in `dest` that parse as backups of
 /// `vault_id`, keeps the one just written plus the newest `keep - 1` others
 /// by file-name timestamp, and deletes the rest. Nothing else is read or
-/// touched. Returns the deleted paths.
-fn retention(dest: &Path, vault_id: &str, written: &str, keep: u16) -> Result<Vec<PathBuf>> {
-    let mut others: Vec<(String, String)> = names_in(dest)?
+/// touched. Returns the deleted paths. It runs after the rename, so it never
+/// fails the run: a file that can't be deleted (or a folder that can't be
+/// listed) is logged, left in place and not returned.
+fn retention(dest: &Path, vault_id: &str, written: &str, keep: u16) -> Vec<PathBuf> {
+    let names = match names_in(dest) {
+        Ok(names) => names,
+        Err(e) => {
+            tracing::warn!(error = %e, "backup: retention skipped");
+            return Vec::new();
+        }
+    };
+    let mut others: Vec<(String, String)> = names
         .into_iter()
         .filter(|(name, kind)| kind.is_file() && name != written)
         .filter_map(|(name, _)| {
@@ -340,10 +350,12 @@ fn retention(dest: &Path, vault_id: &str, written: &str, keep: u16) -> Result<Ve
             Ok(()) => removed.push(path),
             // Someone else removed it first.
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(failed(&format!("retention: delete {}", path.display()), e)),
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "backup: retention could not delete an old backup");
+            }
         }
     }
-    Ok(removed)
+    removed
 }
 
 /// Makes the rename durable. Some network filesystems refuse to sync a
