@@ -1,0 +1,32 @@
+# Allow-list for scripts/leak-check.sh (the Leak check).
+#
+# One entry per line. Blank lines and lines starting with # are ignored, and
+# surrounding spaces are trimmed. There are two kinds of entry:
+#
+#   <name>          A placeholder user name. It exempts rule (c) only: a
+#                   home-directory path (under Users or home) whose user name
+#                   is exactly <name>, with the same case, is not a leak.
+#   prefix:<path>   An exact third-party path prefix, trailing slash included.
+#                   Text that starts with <path> is exempt from rules (b) and
+#                   (c). It is never exempt from rule (a), the private
+#                   deny-list.
+#
+# Placeholder names used in docs, examples and test fixtures.
+you
+YOU
+YOUR_USERNAME
+test
+tester
+person
+me
+a
+t
+jane
+connor
+mcp
+memex
+Library
+#
+# The ort-artifacts build directory: ort's prebuilt onnxruntime embeds 549
+# __FILE__ paths under it, and they end up in the release binary.
+prefix:/Users/runner/work/ort-artifacts/
