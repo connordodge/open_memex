@@ -37,7 +37,10 @@ pub struct DestinationState {
 
 /// The key a destination is recorded and looked up under: its canonical
 /// path, or for a missing path the canonical nearest existing ancestor plus
-/// the remaining components. A `..` after a missing component cancels it
+/// the remaining components. A path that cannot be resolved because a folder
+/// on it refuses access (a permission or macOS privacy refusal) is walked up
+/// the same way, so its failure can be recorded under a key; any other I/O
+/// error is returned. A `..` after a missing component cancels it
 /// lexically (a missing folder cannot be a symlink); a `..` left over once an
 /// existing ancestor is reached steps up from that canonical ancestor. One
 /// function for the CLI, the server, start-up validation and lookups.
@@ -53,7 +56,9 @@ pub fn destination_key(destination: &Path) -> Result<String> {
             Err(e)
                 if matches!(
                     e.kind(),
-                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                    io::ErrorKind::NotFound
+                        | io::ErrorKind::NotADirectory
+                        | io::ErrorKind::PermissionDenied
                 ) =>
             {
                 match (existing.parent(), existing.file_name()) {
