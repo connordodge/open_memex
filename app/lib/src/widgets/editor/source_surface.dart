@@ -82,9 +82,15 @@ class _SourceSurfaceState extends State<SourceSurface> {
       return KeyEventResult.ignored;
     }
     final value = widget.bodyCtrl.value;
-    if (value.composing.isValid || !value.selection.isValid) {
-      return KeyEventResult.ignored;
+    if (value.composing.isValid) {
+      // Spec #193 R7: while composing, Tab and Shift+Tab go to the IME
+      // unchanged. Skipping the remaining handlers keeps the app's default
+      // Tab (focus traversal) from taking the key and ending the composition.
+      return isTab
+          ? KeyEventResult.skipRemainingHandlers
+          : KeyEventResult.ignored;
     }
+    if (!value.selection.isValid) return KeyEventResult.ignored;
     if (isTab) return _onTab(value, outdent: keys.isShiftPressed);
     final edit = sourceEnter(
       value.text,

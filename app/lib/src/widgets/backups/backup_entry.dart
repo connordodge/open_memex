@@ -1,6 +1,8 @@
 // WI #326 (A5, D24): the sidebar "backups" row under the vault pills and the
 // automatic-failure warning (Spec #315 reqs 24, 31a, 37; design pack
 // design/315-vault-backups/packs/326.md, board B1).
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -39,27 +41,61 @@ const _monthNames = [
 /// The open vault's backups row: its state as text (off, never, the last
 /// backup's age, backing up…, or the amber failure), and a press opens
 /// `showBackupsSheet`. Reads the state from `backupControllerProvider` only:
-/// no schedule, CLI call, poll or timer of its own. Renders nothing with no
-/// vault open.
-class BackupEntry extends ConsumerWidget {
+/// no schedule, CLI call or poll of its own. While it shows a time (an age, a
+/// clock time or a date), one `clockProvider` timer redraws it when that text
+/// next turns: the age's next minute, hour or day, or local midnight.
+/// Renders nothing with no vault open.
+class BackupEntry extends ConsumerStatefulWidget {
   const BackupEntry({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<BackupEntry> createState() => _BackupEntryState();
+}
+
+class _BackupEntryState extends ConsumerState<BackupEntry> {
+  /// The failure each vault's warning row last stated, kept while its
+  /// warning holds. A retry (backing up) or a "Back up now" that finds a
+  /// backup already running keeps the warning but carries no failure of its
+  /// own, so the row goes on naming the failure that raised the warning.
+  final Map<VaultRef, _Failure> _stated = {};
+
+  Timer? _redraw;
+  DateTime? _redrawAt;
+
+  @override
+  void dispose() {
+    _redraw?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     ref.watch(backupControllerProvider);
     final vault = ref.watch(currentVaultProvider);
-    if (vault == null) return const SizedBox.shrink();
+    final clock = ref.read(clockProvider);
+    if (vault == null) {
+      _scheduleRedraw(clock, null, null);
+      return const SizedBox.shrink();
+    }
     final view = ref.read(backupControllerProvider.notifier).viewStateOf(vault);
-    final now = ref.read(clockProvider).now();
+    final now = clock.now();
+    final failure = _failureOf(vault, view);
     final row = switch (vault) {
-      LocalVaultRef(:final path) => _localRow(view, now, p.basename(path)),
+      LocalVaultRef(:final path) => _localRow(
+        view,
+        failure,
+        now,
+        p.basename(path),
+      ),
       HostedVaultRef(:final serverId, :final vaultName) => _hostedRow(
         view,
+        failure,
         now,
         vaultName,
         ref.watch(hostedServerNameProvider(serverId)),
       ),
     };
+    _scheduleRedraw(clock, now, row.redrawAt);
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
       child: KeyedSubtree(
@@ -71,6 +107,60 @@ class BackupEntry extends ConsumerWidget {
       ),
     );
   }
+
+  /// The failure [vault]'s warning names, or null with no warning. A view
+  /// that carries its own failure (a failed run) is stated and kept. One that
+  /// doesn't (a retry running, a press that found a backup already running,
+  /// an unreachable server) states the kept one, else the failed attempt the
+  /// state file recorded.
+  _Failure? _failureOf(VaultRef vault, BackupViewState view) {
+    if (!view.warning) {
+      _stated.remove(vault);
+      return null;
+    }
+    final failedAt = view.failedAt;
+    if (failedAt != null && view.errorCode != _busyCode) {
+      return _stated[vault] = _Failure(failedAt, view.automatic, view.message);
+    }
+    final kept = _stated[vault];
+    if (kept != null) return kept;
+    final status = view.status;
+    final attemptAt = status?.lastAttemptAt;
+    if (status != null && status.lastAttemptFailed && attemptAt != null) {
+      return _Failure(attemptAt, true, null);
+    }
+    return null;
+  }
+
+  /// Keeps one timer, due at [at] (when the shown time text next turns), or
+  /// none when [at] is null.
+  void _scheduleRedraw(AppClock clock, DateTime? now, DateTime? at) {
+    if (at == _redrawAt && (at == null || _redraw != null)) return;
+    _redraw?.cancel();
+    _redraw = null;
+    _redrawAt = at;
+    if (now == null || at == null) return;
+    _redraw = clock.after(at.difference(now), () {
+      _redraw = null;
+      _redrawAt = null;
+      if (mounted) setState(() {});
+    });
+  }
+}
+
+/// A press that found a backup already running: not a failure (Spec req 22),
+/// so it never stands in for the warning's failure.
+const _busyCode = 'backup_in_progress';
+
+/// The failure a warning row states: when, whether the automatic backup or
+/// "Back up now" failed, and the controller's message (its `short` is the
+/// semantic-label tail).
+class _Failure {
+  const _Failure(this.at, this.automatic, this.message);
+
+  final DateTime at;
+  final bool automatic;
+  final BackupMessage? message;
 }
 
 /// What one row shows.
@@ -83,6 +173,7 @@ class _Row {
     required this.semantics,
     this.warning = false,
     this.spinning = false,
+    this.redrawAt,
   });
 
   final IconData icon;
@@ -96,6 +187,9 @@ class _Row {
   /// The amber failure look and the `backups-entry-warning` badge.
   final bool warning;
   final bool spinning;
+
+  /// When the shown time text next turns; null when no time is shown.
+  final DateTime? redrawAt;
 }
 
 String _semantic(String vaultName, String state) =>
@@ -109,6 +203,7 @@ _Row _plain(
   IconData icon = LucideIcons.archive,
   Color iconColor = OmColors.fg2,
   bool spinning = false,
+  DateTime? redrawAt,
 }) => _Row(
   icon: icon,
   iconColor: iconColor,
@@ -116,6 +211,7 @@ _Row _plain(
   status: status,
   semantics: _semantic(vaultName, state),
   spinning: spinning,
+  redrawAt: redrawAt,
 );
 
 _Row _backingUp(String vaultName, String label) => _plain(
@@ -131,36 +227,62 @@ _Row _backingUp(String vaultName, String label) => _plain(
 _Row _failure(
   String vaultName,
   String label,
-  DateTime failedAt,
+  _Failure? failure,
   DateTime now,
   String clause,
-  BackupMessage? message,
 ) {
+  if (failure == null) {
+    // The warning holds but no failure time is known: amber, no time.
+    return _Row(
+      icon: LucideIcons.triangleAlert,
+      iconColor: OmColors.warn,
+      label: label,
+      status: '',
+      semantics: _semantic(vaultName, clause),
+      warning: true,
+    );
+  }
+  final message = failure.message;
   final tail = message == null ? '' : ', ${message.short}';
   return _Row(
     icon: LucideIcons.triangleAlert,
     iconColor: OmColors.warn,
     label: label,
-    status: _failureTime(failedAt, now),
+    status: _failureTime(failure.at, now),
     semantics: _semantic(
       vaultName,
-      '$clause ${backupWhen(failedAt, now)}$tail',
+      '$clause ${backupWhen(failure.at, now)}$tail',
     ),
     warning: true,
+    redrawAt: _nextMidnight(now),
   );
 }
 
-_Row _localRow(BackupViewState view, DateTime now, String vaultName) {
+/// Whether the row shows the amber warning: the warning holds and names a
+/// failure, or a retry or a press that found a backup already running is
+/// under way while it holds (lead ruling Q1), even with no failure time known.
+bool _warns(BackupViewState view, _Failure? failure) =>
+    view.warning &&
+    (failure != null ||
+        view.mode == BackupSheetMode.backingUp ||
+        view.errorCode == _busyCode);
+
+_Row _localRow(
+  BackupViewState view,
+  _Failure? failure,
+  DateTime now,
+  String vaultName,
+) {
   final status = view.status;
-  final failedAt = view.failedAt ?? status?.lastAttemptAt;
-  if (view.warning && failedAt != null) {
+  if (_warns(view, failure)) {
     return _failure(
       vaultName,
       'backup failed',
-      failedAt,
+      failure,
       now,
-      view.automatic ? 'the automatic backup failed' : 'back up now failed',
-      view.message,
+      (failure?.automatic ?? true)
+          ? 'the automatic backup failed'
+          : 'back up now failed',
     );
   }
   switch (view.mode) {
@@ -188,11 +310,13 @@ _Row _localRow(BackupViewState view, DateTime now, String vaultName) {
     state: 'last backup ${backupWhen(fileAt, now)}',
     icon: LucideIcons.check,
     iconColor: OmColors.accent,
+    redrawAt: _earlier(_ageTurn(fileAt, now), _nextMidnight(now)),
   );
 }
 
 _Row _hostedRow(
   BackupViewState view,
+  _Failure? failure,
   DateTime now,
   String vaultName,
   String server,
@@ -209,15 +333,13 @@ _Row _hostedRow(
       _ => BackupSheetMode.success,
     };
   }
-  final failedAt = view.failedAt ?? status?.lastAttemptAt;
-  if (view.warning && failedAt != null) {
+  if (_warns(view, failure)) {
     return _failure(
       vaultName,
       '$server backup failed',
-      failedAt,
+      failure,
       now,
       "$server's backup failed",
-      view.message,
     );
   }
   switch (mode) {
@@ -248,15 +370,39 @@ _Row _hostedRow(
     }
     return _plain(vaultName, label, status: 'never', state: 'never backed up');
   }
+  final sameDay = _sameDay(fileAt, now);
   return _plain(
     vaultName,
     label,
-    status: _sameDay(fileAt, now) ? _clock(fileAt) : _age(fileAt, now),
+    status: sameDay ? _clock(fileAt) : _age(fileAt, now),
     state: "$server's last backup ${backupWhen(fileAt, now)}",
     icon: LucideIcons.check,
     iconColor: OmColors.accent,
+    redrawAt: sameDay
+        ? _nextMidnight(now)
+        : _earlier(_ageTurn(fileAt, now), _nextMidnight(now)),
   );
 }
+
+/// When [_age] of [at] next reads differently: the next whole minute, hour
+/// or day since [at]. A time after [now] reads "just now" until a minute
+/// after it.
+DateTime _ageTurn(DateTime at, DateTime now) {
+  final ago = now.difference(at);
+  if (ago.inMinutes < 1) return at.add(const Duration(minutes: 1));
+  if (ago.inHours < 1) return at.add(Duration(minutes: ago.inMinutes + 1));
+  if (ago.inDays < 1) return at.add(Duration(hours: ago.inHours + 1));
+  return at.add(Duration(days: ago.inDays + 1));
+}
+
+/// The next local midnight after [now], when "today" turns into "yesterday"
+/// and a clock time into a date.
+DateTime _nextMidnight(DateTime now) {
+  final local = now.toLocal();
+  return DateTime(local.year, local.month, local.day + 1);
+}
+
+DateTime _earlier(DateTime a, DateTime b) => a.isBefore(b) ? a : b;
 
 /// "just now" (under a minute, or a time after [now]), "N min ago",
 /// "N h ago", "N d ago".
@@ -456,7 +602,18 @@ class _SpinnerState extends State<_Spinner>
   late final AnimationController _turns = AnimationController(
     vsync: this,
     duration: const Duration(seconds: 1),
-  )..repeat();
+  );
+
+  /// Turns unless the platform asks for reduced motion.
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _turns.stop();
+    } else if (!_turns.isAnimating) {
+      _turns.repeat();
+    }
+  }
 
   @override
   void dispose() {
