@@ -1893,6 +1893,134 @@ fn retention_orders_by_the_file_name_timestamp_not_the_modification_time() {
     assert!(newest.exists());
 }
 
+/// A look-alike named exactly like a backup but with an upper-case extension
+/// is not one: on its own (no lower-case twin, so a case-insensitive folder
+/// holds it too) it survives byte-identical and is not listed as removed.
+#[test]
+fn retention_spares_an_upper_case_extension_look_alike_on_its_own() {
+    let fx = Fx::with_id(THIS);
+    let older = final_of(LABEL, T1 - 86_400_000, THIS);
+    let look_alike = fx.seed(&older.replace(".memex.zip", ".MEMEX.ZIP"));
+    let (_, file, _, _, removed) = created(fx.run(T1, 1, false).unwrap());
+    assert!(
+        removed.is_empty(),
+        "nothing parses as a backup: {removed:?}"
+    );
+    assert!(file.exists());
+    let name = look_alike.file_name().unwrap().to_string_lossy();
+    assert_eq!(
+        fs::read(&look_alike).unwrap(),
+        format!("seeded {name}").into_bytes()
+    );
+}
+
+/// Only files are backups: a folder with a backup's name is left alone.
+#[test]
+fn retention_never_removes_a_folder_named_like_a_backup() {
+    let fx = Fx::new();
+    let folder = fx.dest.join(fx.final_name(T1 - 86_400_000));
+    fs::create_dir(&folder).unwrap();
+    fs::write(folder.join("keep.txt"), b"inside").unwrap();
+    let result = fx.run(T1, 1, false);
+    let (_, file, _, _, removed) = created(result.unwrap());
+    assert!(removed.is_empty(), "{removed:?}");
+    assert!(file.exists());
+    assert_eq!(fs::read(folder.join("keep.txt")).unwrap(), b"inside");
+}
+
+/// Retention always keeps the file just written, even when the clock is
+/// behind the names already there (the documented choice in `retention`),
+/// plus the newest `keep - 1` others.
+#[test]
+fn retention_keeps_the_file_just_written_when_the_clock_is_behind_existing_names() {
+    let fx = Fx::new();
+    let day = 86_400_000;
+    let newest = fx.seed(&fx.final_name(T1 + 3 * day));
+    let middle = fx.seed(&fx.final_name(T1 + 2 * day));
+    let oldest = fx.seed(&fx.final_name(T1 + day));
+    let (_, file, _, _, removed) = created(fx.run(T1, 2, false).unwrap());
+    assert!(file.exists(), "the file just written is kept");
+    assert!(newest.exists(), "the newest other is kept");
+    assert!(!middle.exists() && !oldest.exists());
+    let removed: BTreeSet<PathBuf> = removed.into_iter().collect();
+    assert_eq!(removed, BTreeSet::from([middle, oldest]));
+}
+
+/// A symlink where this run's `.partial` would go is never written through.
+#[test]
+fn a_symlink_with_this_runs_partial_name_fails_backup_failed_and_its_target_is_untouched() {
+    let fx = Fx::new();
+    let victim = fx.root.join("victim.txt");
+    fs::write(&victim, b"precious").unwrap();
+    symlink(&victim, fx.dest.join(partial_of(&fx.final_name(T1)))).unwrap();
+    let result = fx.run(T1, 30, false);
+    assert_eq!(code(&result), "backup_failed", "{result:?}");
+    assert_eq!(fs::read(&victim).unwrap(), b"precious");
+    assert!(backups_of(&fx.dest, &fx.vault_id).is_empty());
+    assert_eq!(fx.state().expect("recorded").last_result, "backup_failed");
+}
+
+/// A manifest.json that isn't JSON is `backup_failed`; a missing one is
+/// `internal` (req 17). Both fail before the lock and are never recorded.
+#[test]
+fn a_manifest_that_is_not_json_fails_backup_failed_and_a_missing_one_fails_internal() {
+    let fx = Fx::new();
+    let manifest = fx.vault.join("manifest.json");
+    for (bytes, want) in [
+        (Some(&b"{ not json"[..]), "backup_failed"),
+        (None, "internal"),
+    ] {
+        match bytes {
+            Some(b) => fs::write(&manifest, b).unwrap(),
+            None => fs::remove_file(&manifest).unwrap(),
+        }
+        let result = fx.run(T1, 30, false);
+        assert_eq!(code(&result), want, "{result:?}");
+        assert!(!fx.vault.join(LOCK_FILE).exists(), "before the lock");
+        assert_eq!(fx.state_bytes(), None, "not recorded");
+        assert!(names(&fx.dest).is_empty());
+    }
+}
+
+/// A vault with no `objects/` folder has no objects: the zip still holds a
+/// bare `objects/` member (req 1).
+#[test]
+fn a_vault_without_an_objects_folder_backs_up_with_a_bare_objects_member() {
+    let fx = Fx::new();
+    fs::remove_dir_all(fx.vault.join("objects")).unwrap();
+    let (_, file, ..) = created(fx.run(T1, 30, false).unwrap());
+    let members = read_zip(&file);
+    let order: Vec<&str> = members.iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(
+        order,
+        ["memex.db", "manifest.json", "objects/", "backup.json"]
+    );
+}
+
+/// Small members never use Zip64 (version needed to extract stays below
+/// 4.5), so every unzip tool reads them.
+#[test]
+fn small_members_are_not_written_as_zip64() {
+    let fx = Fx::new();
+    let (_, file, ..) = created(fx.run(T1, 30, false).unwrap());
+    let bytes = fs::read(&file).unwrap();
+    let central: Vec<usize> = bytes
+        .windows(4)
+        .enumerate()
+        .filter(|(_, w)| *w == b"PK\x01\x02")
+        .map(|(i, _)| i)
+        .collect();
+    assert!(central.len() >= MEMBER_ORDER.len(), "central headers found");
+    for at in central {
+        let version_needed = u16::from_le_bytes([bytes[at + 6], bytes[at + 7]]);
+        assert!(version_needed < 45, "member at {at} needs {version_needed}");
+    }
+    assert!(
+        !bytes.windows(4).any(|w| w == b"PK\x06\x06"),
+        "no Zip64 end-of-central-directory record"
+    );
+}
+
 #[test]
 fn unchanged_run_removes_no_backup_files() {
     let fx = Fx::new();
