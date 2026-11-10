@@ -96,7 +96,10 @@ TextStyle pickerRowSublineStyle(Color color) =>
     OmType.mono(size: 10.5, color: color, height: 15.75 / 10.5);
 
 /// A 24×24 trailing icon button (radius 5, 12 px `fg2` glyph, no fill).
-class PickerRowIconButton extends StatelessWidget {
+/// It works from the keyboard: Tab reaches it, Enter and Space press it, it
+/// draws an `accentSoft` radius-5 ring while the focus highlight is on, and
+/// it reads as a button labelled [semanticLabel] (else [tooltip]).
+class PickerRowIconButton extends StatefulWidget {
   const PickerRowIconButton({
     super.key,
     required this.icon,
@@ -113,18 +116,58 @@ class PickerRowIconButton extends StatelessWidget {
   final String? semanticLabel;
 
   @override
+  State<PickerRowIconButton> createState() => _PickerRowIconButtonState();
+}
+
+class _PickerRowIconButtonState extends State<PickerRowIconButton> {
+  bool _highlight = false;
+
+  late final Map<Type, Action<Intent>> _actions = {
+    ActivateIntent: CallbackAction<ActivateIntent>(onInvoke: _press),
+    ButtonActivateIntent: CallbackAction<ButtonActivateIntent>(
+      onInvoke: _press,
+    ),
+  };
+
+  Object? _press(Intent _) {
+    widget.onPressed();
+    return null;
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Tooltip(
-      message: tooltip,
-      child: MouseRegion(
-        cursor: SystemMouseCursors.click,
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: onPressed,
-          child: SizedBox(
-            width: 24,
-            height: 24,
-            child: Center(child: Icon(icon, size: 12, color: OmColors.fg2)),
+      message: widget.tooltip,
+      child: FocusableActionDetector(
+        actions: _actions,
+        onShowFocusHighlight: (v) => setState(() => _highlight = v),
+        child: Semantics(
+          button: true,
+          label: widget.semanticLabel ?? widget.tooltip,
+          onTap: widget.onPressed,
+          excludeSemantics: true,
+          child: MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: widget.onPressed,
+              child: DecoratedBox(
+                position: DecorationPosition.foreground,
+                decoration: BoxDecoration(
+                  border: _highlight
+                      ? Border.all(color: OmColors.accentSoft)
+                      : null,
+                  borderRadius: BorderRadius.circular(5),
+                ),
+                child: SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: Center(
+                    child: Icon(widget.icon, size: 12, color: OmColors.fg2),
+                  ),
+                ),
+              ),
+            ),
           ),
         ),
       ),

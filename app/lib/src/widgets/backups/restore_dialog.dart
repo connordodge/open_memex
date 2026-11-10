@@ -18,6 +18,7 @@ import '../../state/backup_names.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import '../atoms.dart';
+import '../dialog_button.dart';
 import 'backup_keys.dart';
 
 const _cancelKey = Key('restore-cancel');
@@ -265,7 +266,7 @@ class _RestoreDialogState extends ConsumerState<RestoreDialog> {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  _DialogButton(
+                  DialogButton(
                     key: restoreFolderKey,
                     kind: OmButtonKind.secondary,
                     label: 'choose…',
@@ -317,14 +318,14 @@ class _RestoreDialogState extends ConsumerState<RestoreDialog> {
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              _DialogButton(
+              DialogButton(
                 key: _cancelKey,
                 kind: OmButtonKind.ghost,
                 label: 'cancel',
                 onPressed: _running ? null : () => Navigator.of(context).pop(),
               ),
               const SizedBox(width: 8),
-              _DialogButton(
+              DialogButton(
                 key: restoreSubmitKey,
                 kind: OmButtonKind.primary,
                 icon: _running ? LucideIcons.loader2 : null,
@@ -492,71 +493,6 @@ class _ErrorBox extends StatelessWidget {
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-/// An [OmButton] that works from the keyboard: it takes focus (Tab), Enter
-/// and Space press it, and it reads as a labelled button. A disabled one
-/// keeps its focus, so a failed run leaves the focus where it was.
-class _DialogButton extends StatefulWidget {
-  const _DialogButton({
-    super.key,
-    required this.kind,
-    required this.label,
-    required this.onPressed,
-    this.icon,
-  });
-
-  final OmButtonKind kind;
-  final String label;
-  final IconData? icon;
-  final VoidCallback? onPressed;
-
-  @override
-  State<_DialogButton> createState() => _DialogButtonState();
-}
-
-class _DialogButtonState extends State<_DialogButton> {
-  bool _highlight = false;
-
-  late final Map<Type, Action<Intent>> _actions = {
-    ActivateIntent: CallbackAction<ActivateIntent>(onInvoke: _press),
-    ButtonActivateIntent: CallbackAction<ButtonActivateIntent>(
-      onInvoke: _press,
-    ),
-  };
-
-  Object? _press(Intent _) {
-    widget.onPressed?.call();
-    return null;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FocusableActionDetector(
-      actions: _actions,
-      onShowFocusHighlight: (v) => setState(() => _highlight = v),
-      child: Semantics(
-        button: true,
-        enabled: widget.onPressed != null,
-        label: widget.label,
-        onTap: widget.onPressed,
-        excludeSemantics: true,
-        child: DecoratedBox(
-          position: DecorationPosition.foreground,
-          decoration: BoxDecoration(
-            border: _highlight ? Border.all(color: OmColors.accentSoft) : null,
-            borderRadius: BorderRadius.circular(6),
-          ),
-          child: OmButton(
-            kind: widget.kind,
-            icon: widget.icon,
-            label: widget.label,
-            onPressed: widget.onPressed,
-          ),
-        ),
       ),
     );
   }
