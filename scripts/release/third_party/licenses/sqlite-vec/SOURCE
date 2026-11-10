@@ -1,0 +1,7 @@
+Crate: sqlite-vec 0.1.9
+Declared licence: MIT/Apache-2.0
+Upstream: https://github.com/asg017/sqlite-vec
+Copied from: tag v0.1.9 (commit e9f598abfa0c06b328d8fe5da9c3760cce74be10), repository root
+Files: LICENSE-APACHE, LICENSE-MIT
+Why: the sqlite-vec 0.1.9 package on crates.io ships no licence file.
+The files are copied verbatim from that commit.

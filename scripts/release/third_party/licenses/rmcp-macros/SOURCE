@@ -1,0 +1,7 @@
+Crate: rmcp-macros 1.5.0
+Declared licence: Apache-2.0
+Upstream: https://github.com/modelcontextprotocol/rust-sdk
+Copied from: commit 020a38b6ad3d0f26487c464250a484fad2a06b0e (the commit the crate was published from, per its .cargo_vcs_info.json), repository root
+Files: LICENSE
+Why: the rmcp-macros 1.5.0 package on crates.io ships no licence file.
+The files are copied verbatim from that commit.

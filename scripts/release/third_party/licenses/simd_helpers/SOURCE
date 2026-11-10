@@ -1,0 +1,8 @@
+Crate: simd_helpers 0.1.0
+Declared licence: MIT
+Upstream: https://github.com/lu-zero/simd_helpers
+Copied from: commit 82040194cd05affb060bf94d6f19f82a771d07fb, repository root
+Files: LICENSE
+Why: the simd_helpers 0.1.0 package on crates.io ships no licence file.
+The crate was published from commit ca1a2f84aa386d758e98f8a609d990263932fb85, which has no licence file; 82040194 is the next commit and the one that adds LICENSE.
+The files are copied verbatim from that commit.
