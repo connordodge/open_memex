@@ -1697,6 +1697,27 @@ void main() {
       },
     );
 
+    testWidgets(
+      'a hosted server that has never backed up shows never and the never backed up label',
+      (tester) async {
+        final handle = tester.ensureSemantics();
+        await _pump(
+          tester,
+          vault: _hosted,
+          view: const BackupViewState(
+            mode: BackupSheetMode.neverBackedUp,
+            hosted: true,
+            status: BackupStatus(enabled: true, keep: 30),
+          ),
+        );
+        expect(_rowText('backups on nas'), findsOneWidget);
+        expect(_rowText('never'), findsOneWidget, reason: _entryText(tester));
+        expect(_badge, findsNothing);
+        _labelled(tester, 'backups for work: never backed up. open backups');
+        handle.dispose();
+      },
+    );
+
     testWidgets('keyboard focus draws a two pixel ring around the row', (
       tester,
     ) async {
@@ -1735,6 +1756,274 @@ void main() {
         const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       );
     });
+  });
+
+  group('boundaries and fallbacks the mutator would flip', () {
+    testWidgets(
+      'the age flips to the next unit at exactly one minute one hour and one day',
+      (tester) async {
+        final now = DateTime(2026, 11, 9, 16, 3, 30);
+        final cases = <(Duration, String)>[
+          (const Duration(seconds: 59), 'just now'),
+          (const Duration(seconds: 60), '1 min ago'),
+          (const Duration(minutes: 59, seconds: 59), '59 min ago'),
+          (const Duration(minutes: 60), '1 h ago'),
+          (const Duration(hours: 23, minutes: 59), '23 h ago'),
+          (const Duration(hours: 24), '1 d ago'),
+        ];
+        for (final (ago, expected) in cases) {
+          await _pump(
+            tester,
+            clock: FakeClock(now),
+            view: _successView(at: now.subtract(ago)),
+          );
+          expect(
+            _rowText(expected),
+            findsOneWidget,
+            reason: '$ago: ${_entryText(tester)}',
+          );
+        }
+      },
+    );
+
+    testWidgets('a failure on an earlier day names its month in every month', (
+      tester,
+    ) async {
+      const months = [
+        'jan', 'feb', 'mar', 'apr', 'may', 'jun', //
+        'jul', 'aug', 'sep', 'oct', 'nov', 'dec',
+      ];
+      for (var m = 1; m <= 12; m++) {
+        await _pump(
+          tester,
+          clock: FakeClock(DateTime(2027, 6, 20, 12)),
+          view: _localFailedView(at: DateTime(2026, m, 5, 9)),
+        );
+        expect(
+          _rowText('5 ${months[m - 1]}'),
+          findsOneWidget,
+          reason: 'month $m: ${_entryText(tester)}',
+        );
+      }
+    });
+
+    testWidgets('the same day number in another month is not today', (
+      tester,
+    ) async {
+      // 9 Oct 09:00 against now 9 Nov: same day of month, same year.
+      await _pump(tester, view: _localFailedView(at: DateTime(2026, 10, 9, 9)));
+      expect(_rowText('9 oct'), findsOneWidget, reason: _entryText(tester));
+      expect(_rowText('09:00'), findsNothing);
+    });
+
+    testWidgets(
+      'a warning with no failure time anywhere shows the plain row and no badge',
+      (tester) async {
+        await _pump(
+          tester,
+          view: const BackupViewState(
+            mode: BackupSheetMode.error,
+            settings: _on,
+            warning: true,
+          ),
+        );
+        expect(_badge, findsNothing, reason: _entryText(tester));
+        expect(_rowText('never'), findsOneWidget);
+
+        await _pump(
+          tester,
+          vault: _hosted,
+          view: const BackupViewState(
+            mode: BackupSheetMode.error,
+            hosted: true,
+            warning: true,
+          ),
+        );
+        expect(_badge, findsNothing, reason: _entryText(tester));
+        expect(_rowText('backups on nas'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'a warning without a kept failure time uses the recorded attempt time and with no message names no cause',
+      (tester) async {
+        final handle = tester.ensureSemantics();
+        await _pump(
+          tester,
+          view: BackupViewState(
+            mode: BackupSheetMode.error,
+            settings: _on,
+            status: _failedStatus(_failedAt, 'backup_failed'),
+            errorCode: 'backup_failed',
+            automatic: true,
+            warning: true,
+          ),
+        );
+        expect(_rowText('09:00'), findsOneWidget, reason: _entryText(tester));
+        expect(_badge, findsOneWidget);
+        _labelled(
+          tester,
+          'backups for memex: the automatic backup failed today at 09:00. '
+          'open backups',
+        );
+
+        await _pump(
+          tester,
+          vault: _hosted,
+          view: BackupViewState(
+            mode: BackupSheetMode.error,
+            hosted: true,
+            status: _hostedFailed(_hostedAt),
+            warning: true,
+          ),
+        );
+        expect(_rowText('03:00'), findsOneWidget, reason: _entryText(tester));
+        expect(_rowText('nas backup failed'), findsOneWidget);
+        _labelled(
+          tester,
+          "backups for work: nas's backup failed today at 03:00. open backups",
+        );
+        handle.dispose();
+      },
+    );
+
+    testWidgets(
+      'the age falls back to the last success time when no file time is recorded',
+      (tester) async {
+        await _pump(
+          tester,
+          view: BackupViewState(
+            mode: BackupSheetMode.success,
+            settings: _on,
+            status: BackupStatus(
+              lastSuccessAt: _lastBackup.toUtc(),
+              lastResult: 'created',
+            ),
+          ),
+        );
+        expect(_rowText('2 h ago'), findsOneWidget, reason: _entryText(tester));
+        await _pump(
+          tester,
+          vault: _hosted,
+          view: BackupViewState(
+            mode: BackupSheetMode.success,
+            hosted: true,
+            status: BackupStatus(
+              enabled: true,
+              lastSuccessAt: _hostedAt.toUtc(),
+              lastResult: 'created',
+            ),
+          ),
+        );
+        expect(_rowText('03:00'), findsOneWidget, reason: _entryText(tester));
+      },
+    );
+
+    testWidgets(
+      'an unreachable server keeps what was last read for every kind of last value',
+      (tester) async {
+        final cases = <(String, BackupStatus?, String?)>[
+          ('nothing read yet', null, null),
+          (
+            'no backups on the server',
+            const BackupStatus(enabled: false),
+            'set on nas',
+          ),
+          (
+            'never backed up',
+            const BackupStatus(enabled: true, keep: 30),
+            'never',
+          ),
+        ];
+        for (final (why, status, shown) in cases) {
+          await _pump(
+            tester,
+            vault: _hosted,
+            view: BackupViewState(
+              mode: BackupSheetMode.hostedUnreachable,
+              hosted: true,
+              status: status,
+            ),
+          );
+          expect(_rowText('backups on nas'), findsOneWidget);
+          if (shown != null) {
+            expect(
+              _rowText(shown),
+              findsOneWidget,
+              reason: '$why: ${_entryText(tester)}',
+            );
+          } else {
+            expect(
+              _entryText(tester).split('\n').where((l) => l.trim().length > 1),
+              ['backups on nas'],
+              reason: why,
+            );
+          }
+          expect(_badge, findsNothing, reason: why);
+        }
+      },
+    );
+
+    testWidgets('a failed row keeps its warning fill under the pointer', (
+      tester,
+    ) async {
+      await _pump(tester, view: _localFailedView());
+      final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      addTearDown(gesture.removePointer);
+      await gesture.addPointer(location: const Offset(1100, 800));
+      await gesture.moveTo(tester.getCenter(_entry));
+      await _frames(tester);
+      expect(_box(tester).color, OmColors.warnBg);
+    });
+
+    testWidgets(
+      'the focus ring is glow green on a normal row and warn line on a failed row',
+      (tester) async {
+        Color? ringColor() {
+          for (final e
+              in find
+                  .descendant(
+                    of: find.byType(Scaffold),
+                    matching: find.byType(DecoratedBox),
+                  )
+                  .evaluate()) {
+            final d = (e.widget as DecoratedBox).decoration;
+            if (d is BoxDecoration &&
+                d.border is Border &&
+                (d.border! as Border).top.width == 2) {
+              return (d.border! as Border).top.color;
+            }
+          }
+          return null;
+        }
+
+        await _pump(tester, view: _offView());
+        await _tabToEntry(tester);
+        expect(ringColor(), OmColors.accentGlow);
+        await _pump(tester, view: _localFailedView());
+        await _tabToEntry(tester);
+        expect(ringColor(), _warnLine);
+      },
+    );
+
+    testWidgets(
+      'the backing up icon turns while it shows and a settled row does not',
+      (tester) async {
+        final turn = find.descendant(
+          of: _entry,
+          matching: find.byType(RotationTransition),
+        );
+        await _pump(tester, view: _backingUpView());
+        expect(turn, findsOneWidget);
+        final before = tester.widget<RotationTransition>(turn).turns.value;
+        await tester.pump(const Duration(milliseconds: 400));
+        final after = tester.widget<RotationTransition>(turn).turns.value;
+        expect(after, isNot(before), reason: 'the icon turns');
+
+        await _pump(tester, view: _successView());
+        expect(turn, findsNothing);
+      },
+    );
   });
 
   // A guard for the rig itself: the stored settings decode as the live
