@@ -100,6 +100,14 @@ List<String> wi361MenuShown(WidgetTester tester) {
   return shown;
 }
 
+/// How many `surface3` Materials are on screen: the menu panel is one (a
+/// secondary click that wrongly opens an empty menu still draws it, with no
+/// items), so a test compares the count before and after the click.
+int wi361MenuSurfaces() => find
+    .byWidgetPredicate((w) => w is Material && w.color == OmColors.surface3)
+    .evaluate()
+    .length;
+
 /// A secondary (right) click on [target], at [at] when given (global), else
 /// at its centre; then lets the menu draw.
 Future<void> wi361SecondaryClick(

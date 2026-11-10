@@ -148,11 +148,17 @@ void main() {
       'an open hosted vault menu without onManage opens no menu on a secondary click',
       (tester) async {
         await wi361PumpMenu(tester, vault: _wi361Team, isOpen: true);
+        final surfacesBefore = wi361MenuSurfaces();
         await wi361SecondaryClick(tester, wi361Anchor);
 
         expect(wi361MenuShown(tester), isEmpty);
         expect(find.byType(MenuItemButton), findsNothing);
         expect(find.byType(Divider), findsNothing);
+        expect(
+          wi361MenuSurfaces(),
+          surfacesBefore,
+          reason: 'no empty menu panel is drawn',
+        );
 
         // The same region with onManage does open, so the empty case is real.
         await wi361PumpMenu(
@@ -161,8 +167,14 @@ void main() {
           isOpen: true,
           onManage: () {},
         );
+        final withManageBefore = wi361MenuSurfaces();
         await wi361SecondaryClick(tester, wi361Anchor);
         expect(wi361MenuShown(tester), ['vault-menu-manage']);
+        expect(
+          wi361MenuSurfaces(),
+          greaterThan(withManageBefore),
+          reason: 'an opened menu draws its panel, so the check above bites',
+        );
       },
     );
   });

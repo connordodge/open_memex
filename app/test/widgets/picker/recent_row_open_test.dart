@@ -8,6 +8,7 @@
 // temp vault folders.
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/src/state/vault_open_hosted.dart';
 import 'package:open_memex_app/src/state/vault_ref.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/widgets/atoms.dart';
@@ -26,6 +27,12 @@ Finder _key(String k) => find.byKey(Key(k));
 Finder _row(int i) => _key('recent-row-$i');
 
 const _wi361Team = HostedVaultRef(fakeServerId, 'team');
+
+const _wi361Refused = HostedSchemaRefused(
+  _wi361Team,
+  fakeServerName,
+  'the server refused this vault',
+);
 
 /// The PickerRowShell of row [i] (the key may sit on it or on a wrapper).
 PickerRowShell _wi361Shell(WidgetTester tester, int i) =>
@@ -131,9 +138,15 @@ void main() {
       expect(_key('recent-row-remove-0'), findsNothing);
       expect(_key('recent-row-finder-0'), findsNothing);
 
+      final surfacesBefore = wi361MenuSurfaces();
       await wi361SecondaryClick(tester, _row(0));
       expect(wi361MenuShown(tester), isEmpty);
       expect(find.byType(MenuItemButton), findsNothing);
+      expect(
+        wi361MenuSurfaces(),
+        surfacesBefore,
+        reason: 'no empty menu panel is drawn',
+      );
 
       // A tap still calls onOpen (#362 closes the modal with it).
       await tester.tap(_row(0));
@@ -217,6 +230,103 @@ void main() {
       expect(text.style?.fontSize, 10);
       expect(text.style?.fontWeight, FontWeight.w500);
       expect(text.style?.letterSpacing, 0.8);
+    },
+  );
+
+  testWidgets(
+    'an open hosted row draws the same accent border as an open local row',
+    (tester) async {
+      await wi361PumpRows(
+        tester,
+        entries: const [_wi361Team, HostedVaultRef(fakeServerId, 'other')],
+        openIndex: 0,
+      );
+
+      expect(_wi361Shell(tester, 0).border, OmColors.accentLine30);
+      expect(
+        _wi361Shell(tester, 1).border,
+        isNull,
+        reason: 'a hosted row that is not open keeps its state border',
+      );
+    },
+  );
+
+  testWidgets(
+    'a tap on an open local row whose folder is no longer a vault calls onOpen once',
+    (tester) async {
+      final vault = createVaultFolder('om361_opengone_');
+      wi361Unvault(vault.path);
+      final env = await wi361PumpRows(
+        tester,
+        entries: [LocalVaultRef(vault.path)],
+        openIndex: 0,
+      );
+
+      await tester.tap(
+        wi97Inside('recent-row-0', find.text(p.basename(vault.path))),
+      );
+      await wi97Settle(tester);
+
+      expect(env.opened, [LocalVaultRef(vault.path)]);
+    },
+  );
+
+  testWidgets(
+    'a tap on an open local row with the memex binary missing calls onOpen once',
+    (tester) async {
+      final vault = createVaultFolder('om361_openbin_');
+      final env = await wi361PumpRows(
+        tester,
+        entries: [LocalVaultRef(vault.path)],
+        openIndex: 0,
+        binaryMissing: true,
+      );
+
+      await tester.tap(
+        wi97Inside('recent-row-0', find.text(p.basename(vault.path))),
+      );
+      await wi97Settle(tester);
+
+      expect(env.opened, [LocalVaultRef(vault.path)]);
+    },
+  );
+
+  testWidgets(
+    'a tap on an open hosted row whose server refused the vault calls onOpen once',
+    (tester) async {
+      final env = await wi361PumpRows(
+        tester,
+        entries: const [_wi361Team],
+        openIndex: 0,
+        recorded: {_wi361Team: const RecentRowFailed(_wi361Refused)},
+      );
+
+      await tester.tap(_row(0));
+      await wi97Settle(tester);
+
+      expect(env.opened, [_wi361Team]);
+    },
+  );
+
+  testWidgets(
+    'a tap on a row that is not open opens nothing when its folder is gone or its server refused',
+    (tester) async {
+      final vault = createVaultFolder('om361_closedgone_');
+      wi361Unvault(vault.path);
+      final env = await wi361PumpRows(
+        tester,
+        entries: [LocalVaultRef(vault.path), _wi361Team],
+        recorded: {_wi361Team: const RecentRowFailed(_wi361Refused)},
+      );
+
+      await tester.tap(
+        wi97Inside('recent-row-0', find.text(p.basename(vault.path))),
+      );
+      await wi97Settle(tester);
+      await tester.tap(_row(1));
+      await wi97Settle(tester);
+
+      expect(env.opened, isEmpty);
     },
   );
 }
