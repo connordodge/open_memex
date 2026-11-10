@@ -2,12 +2,14 @@ import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'src/screens/vault_picker.dart';
 import 'src/screens/workspace.dart';
 import 'src/state/app_exit.dart';
 import 'src/state/app_support_dir.dart';
+import 'src/state/app_version.dart';
 import 'src/state/hosted_identity.dart';
 import 'src/state/picker_actions.dart';
 import 'src/state/settings.dart';
@@ -25,11 +27,15 @@ Future<void> main() async {
   final settings = await SettingsController.load();
   // Hosted vaults keep their UI state here (Req 35, D19).
   final appSupport = await getApplicationSupportDirectory();
+  // The app's own version for the picker and sidebar labels (never the
+  // build number).
+  final info = await PackageInfo.fromPlatform();
   runApp(
     ProviderScope(
       overrides: [
         settingsProvider.overrideWith((_) => settings),
         appSupportDirProvider.overrideWithValue(appSupport.path),
+        appVersionProvider.overrideWithValue(info.version),
         ...appRootOverrides,
       ],
       child: const OpenMemexApp(),

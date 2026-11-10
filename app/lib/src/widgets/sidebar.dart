@@ -7,6 +7,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:path/path.dart' as p;
 
 import '../db.dart' show CanvasRow;
+import '../state/app_version.dart';
 import '../state/backup_controller.dart';
 import '../state/canvas_state.dart';
 import '../state/hosted_connection_state.dart';
@@ -357,9 +358,10 @@ class _ModeSegment extends StatelessWidget {
   }
 }
 
-class _BrandRow extends StatelessWidget {
+class _BrandRow extends ConsumerWidget {
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final version = ref.watch(appVersionProvider);
     return Container(
       height: 44,
       padding: const EdgeInsets.symmetric(horizontal: 14),
@@ -394,14 +396,15 @@ class _BrandRow extends StatelessWidget {
             ),
           ),
           const Spacer(),
-          Text(
-            'v0.4',
-            style: OmType.mono(
-              size: 10,
-              color: OmColors.fg3,
-              letterSpacing: 0.8,
+          if (version.isNotEmpty)
+            Text(
+              'v$version',
+              style: OmType.mono(
+                size: 10,
+                color: OmColors.fg3,
+                letterSpacing: 0.8,
+              ),
             ),
-          ),
         ],
       ),
     );
