@@ -118,6 +118,10 @@ case "${1:-}" in
     exit 0
     ;;
   build)
+    if [ "${FAKE_CARGO_FAIL:-}" = 1 ]; then
+      echo "fake cargo: error: could not compile memex-mcp" >&2
+      exit 101
+    fi
     {
       printf 'MACOSX_DEPLOYMENT_TARGET=%s\n' "${MACOSX_DEPLOYMENT_TARGET-<unset>}"
       printf 'RUSTFLAGS=%s\n' "${RUSTFLAGS-<unset>}"
@@ -150,7 +154,25 @@ exit 0
 
 const _fakeFlutter = r'''
 _fake_log flutter "$@"
+if [ "${1:-}" = pub ] && [ "${2:-}" = get ]; then
+  printf 'FLUTTER_PUBGET_PWD=%s\n' "$PWD" >>"$FAKE_ENV_LOG"
+  if [ "${FAKE_FLUTTER_FAIL:-}" = pubget ]; then
+    echo "fake flutter: pub get failed" >&2
+    exit 1
+  fi
+fi
 if [ "${1:-}" = build ] && [ "${2:-}" = macos ]; then
+  {
+    printf 'FLUTTER_BUILD_PWD=%s\n' "$PWD"
+    printf 'FLUTTER_BUILD_LS=%s\n' "$(ls | tr '\n' ' ')"
+    printf 'FLUTTER_XCODE_OTHER_CFLAGS=%s\n' "${FLUTTER_XCODE_OTHER_CFLAGS-<unset>}"
+    printf 'FLUTTER_XCODE_OTHER_SWIFT_FLAGS=%s\n' "${FLUTTER_XCODE_OTHER_SWIFT_FLAGS-<unset>}"
+    printf 'FLUTTER_XCODE_OTHER_LDFLAGS=%s\n' "${FLUTTER_XCODE_OTHER_LDFLAGS-<unset>}"
+  } >>"$FAKE_ENV_LOG"
+  if [ "${FAKE_FLUTTER_FAIL:-}" = build ]; then
+    echo "fake flutter: build failed" >&2
+    exit 1
+  fi
   mode=Debug
   for a in "$@"; do [ "$a" = --release ] && mode=Release; done
   if [ ! -f pubspec.yaml ]; then
@@ -269,7 +291,8 @@ case "$tool" in
         n=$((n + 1))
         echo "$n" >"$FAKE_STATE/notary-n"
         id="00000000-0000-4000-8000-00000000000$n"
-        if [ "${FAKE_NOTARY_FAIL:-}" = 1 ]; then
+        if [ "${FAKE_NOTARY_FAIL:-}" = 1 ] &&
+          { [ -z "${FAKE_NOTARY_FAIL_AT:-}" ] || [ "$n" = "$FAKE_NOTARY_FAIL_AT" ]; }; then
           status=Invalid
           code="${FAKE_NOTARY_INVALID_EXIT:-1}"
         else
@@ -323,6 +346,10 @@ last=""
 for a in "$@"; do last="$a"; done
 case "$sub" in
   create)
+    if [ "${FAKE_HDIUTIL_FAIL:-}" = 1 ]; then
+      echo "fake hdiutil: create failed" >&2
+      exit 1
+    fi
     src=""
     prev=""
     for a in "$@"; do
@@ -400,9 +427,16 @@ const _fakeLipo = r'''
 _fake_log lipo "$@"
 last=""
 for a in "$@"; do last="$a"; done
+bad="${FAKE_LIPO_BAD:-}"
 for a in "$@"; do
   case "$a" in
-    -archs) echo arm64; exit 0 ;;
+    -archs)
+      case "$last" in
+        *"$bad"*) if [ -n "$bad" ]; then echo "${FAKE_LIPO_ARCHS:-arm64 x86_64}"; exit 0; fi ;;
+      esac
+      echo arm64
+      exit 0
+      ;;
     -info) echo "Non-fat file: $last is architecture: arm64"; exit 0 ;;
   esac
 done
@@ -1677,5 +1711,445 @@ void main() {
         expect(File('${fx.out}/$_sums').existsSync(), isFalse);
       });
     }
+  });
+
+  group('build locations and outputs', () {
+    Map<String, String> envMap(_Fx fx) {
+      final out = <String, String>{};
+      for (final l in File(fx.envLog).readAsLinesSync()) {
+        final i = l.indexOf('=');
+        if (i > 0) out[l.substring(0, i)] = l.substring(i + 1);
+      }
+      return out;
+    }
+
+    Set<String> both(String dir) => {
+      dir,
+      Directory(dir).resolveSymbolicLinksSync(),
+    };
+
+    bool under(String path, Set<String> dirs) =>
+        dirs.any((d) => path == d || path.startsWith('$d/'));
+
+    Future<String> status(_Fx fx) async =>
+        (await runGit(fx.iso, fx.root, ['status', '--porcelain'])).stdout;
+
+    test(
+      'the app is built in a neutral copy of the tracked app files outside HOME and the checkout',
+      () async {
+        final fx = await _fixture();
+        File('${fx.root}/app/untracked_marker.txt').writeAsStringSync('x');
+        final before = await status(fx);
+        final r = await _runBuild(fx, _dryArgs(fx));
+        expect(r.exitCode, 0, reason: '$r');
+        final env = envMap(fx);
+        final build = env['FLUTTER_BUILD_PWD']!;
+        expect(build, endsWith('/app'), reason: build);
+        expect(env['FLUTTER_PUBGET_PWD'], build, reason: '$env');
+        expect(under(build, both(fx.iso.home)), isFalse, reason: build);
+        expect(under(build, both(fx.root)), isFalse, reason: build);
+        final ls = env['FLUTTER_BUILD_LS']!.split(' ');
+        expect(ls, contains('pubspec.yaml'), reason: env['FLUTTER_BUILD_LS']);
+        expect(ls, isNot(contains('untracked_marker.txt')));
+        // Nothing the build does touches the checkout.
+        expect(await status(fx), before);
+        expect(
+          Directory('${fx.root}/app/build').existsSync(),
+          isFalse,
+          reason: 'the app was built inside the checkout',
+        );
+      },
+    );
+
+    test(
+      'the app build location stays outside HOME when TMPDIR is under HOME',
+      () async {
+        final fx = await _fixture();
+        final tmp = Directory('${fx.iso.home}/scratch')..createSync();
+        final r = await _runBuild(fx, _dryArgs(fx), env: {'TMPDIR': tmp.path});
+        expect(r.exitCode, 0, reason: '$r');
+        final build = envMap(fx)['FLUTTER_BUILD_PWD']!;
+        expect(under(build, both(fx.iso.home)), isFalse, reason: build);
+        expect(under(build, both(tmp.path)), isFalse, reason: build);
+      },
+    );
+
+    test(
+      'the app build maps HOME and the build location out of its binaries',
+      () async {
+        final fx = await _fixture();
+        final r = await _runBuild(fx, _dryArgs(fx));
+        expect(r.exitCode, 0, reason: '$r');
+        final env = envMap(fx);
+        final build = env['FLUTTER_BUILD_PWD']!;
+        final src = build.substring(0, build.length - '/app'.length);
+        final cflags = env['FLUTTER_XCODE_OTHER_CFLAGS']!;
+        final swift = env['FLUTTER_XCODE_OTHER_SWIFT_FLAGS']!;
+        final ld = env['FLUTTER_XCODE_OTHER_LDFLAGS']!;
+        for (final h in both(fx.iso.home)) {
+          expect(cflags, contains('-ffile-prefix-map=$h=~'), reason: cflags);
+          expect(swift, contains('-file-prefix-map $h=~'), reason: swift);
+        }
+        expect(cflags, contains('-ffile-prefix-map=$src=.'), reason: cflags);
+        expect(swift, contains('-file-prefix-map $src=.'), reason: swift);
+        expect(ld, contains('-oso_prefix,$src/'), reason: ld);
+        for (final v in [cflags, swift, ld]) {
+          expect(v, startsWith(r'$(inherited)'), reason: v);
+        }
+      },
+    );
+
+    test('dry run runs lipo -archs on every Mach-O the app ships', () async {
+      final fx = await _fixture();
+      final r = await _runBuild(fx, _dryArgs(fx));
+      expect(r.exitCode, 0, reason: '$r');
+      final archs = _calls(fx)
+          .where((c) => c.tool == 'lipo' && c.args.contains('-archs'))
+          .map((c) => c.args.last)
+          .toList();
+      for (final suffix in [
+        'Contents/MacOS/Open Memex',
+        'Contents/MacOS/memex',
+        'App.framework/App',
+        'FlutterMacOS.framework/FlutterMacOS',
+        'CSQLite.framework/CSQLite',
+        'objective_c.framework/objective_c',
+        'libfake_plugin.dylib',
+      ]) {
+        expect(
+          archs.where((a) => a.endsWith(suffix)),
+          isNotEmpty,
+          reason: 'no lipo -archs for $suffix in $archs',
+        );
+      }
+    });
+
+    // (test name, what the fake lipo reports on, its archs)
+    final fatCases = <(String, String, String)>[
+      (
+        'a fat memex fails step 3 and signs nothing',
+        'Contents/MacOS/memex',
+        'arm64 x86_64',
+      ),
+      (
+        'an x86_64 only framework fails step 3 and signs nothing',
+        'FlutterMacOS.framework/FlutterMacOS',
+        'x86_64',
+      ),
+      (
+        'a fat app executable fails step 3 and signs nothing',
+        'Contents/MacOS/Open Memex',
+        'x86_64 arm64',
+      ),
+      (
+        'a fat dylib fails step 3 and signs nothing',
+        'libfake_plugin.dylib',
+        'arm64 x86_64',
+      ),
+    ];
+    for (final (name, bad, archs) in fatCases) {
+      test(name, () async {
+        final fx = await _fixture();
+        final r = await _runBuild(
+          fx,
+          _dryArgs(fx),
+          env: {'FAKE_LIPO_BAD': bad, 'FAKE_LIPO_ARCHS': archs},
+        );
+        final calls = _calls(fx);
+        expect(r.exitCode, 1, reason: '$r');
+        expect(_failed(r), [3], reason: '$r');
+        expect(_steps(r), [1, 2, 3], reason: '$r');
+        expect(r.output, contains(bad.split('/').last), reason: '$r');
+        expect(calls.where(_isSign), isEmpty, reason: _callList(calls));
+        expect(Directory(fx.out).listSync(), isEmpty);
+      });
+    }
+
+    test('a failing leak check leaves the output directory empty', () async {
+      final fx = await _fixture();
+      final r = await _runBuild(
+        fx,
+        _dryArgs(fx),
+        env: {'FAKE_MEMEX_PLANT': _stranger},
+      );
+      expect(r.exitCode, 1, reason: '$r');
+      expect(_failed(r), [9], reason: '$r');
+      expect(
+        Directory(fx.out).listSync().map((e) => e.path.split('/').last),
+        isEmpty,
+        reason: 'nothing reaches --out before the leak check passes',
+      );
+    });
+
+    test(
+      'a leak check that cannot run fails step 9 and writes nothing',
+      () async {
+        final fx = await _fixture();
+        File('${fx.root}/scripts/leak-check.sh').deleteSync();
+        final r = await _runBuild(fx, _dryArgs(fx));
+        expect(r.exitCode, 1, reason: '$r');
+        expect(_failed(r), [9], reason: '$r');
+        expect(r.output, isNot(contains('leaks: 0')), reason: '$r');
+        expect(_steps(r), isNot(contains(10)), reason: '$r');
+        expect(Directory(fx.out).listSync(), isEmpty);
+      },
+    );
+
+    test(
+      'a successful run leaves exactly the four release files in --out',
+      () async {
+        final fx = await _fixture();
+        final r = await _runBuild(fx, _dryArgs(fx));
+        expect(r.exitCode, 0, reason: '$r');
+        expect(
+          Directory(
+            fx.out,
+          ).listSync().map((e) => e.path.split('/').last).toSet(),
+          {_dmgName, _zipName, _notices, _sums},
+        );
+      },
+    );
+
+    test(
+      'a rerun replaces the files and checksums of an earlier run',
+      () async {
+        final fx = await _fixture();
+        Directory(fx.out).createSync(recursive: true);
+        for (final n in [_dmgName, _zipName, _notices]) {
+          File('${fx.out}/$n').writeAsStringSync('STALE $n');
+        }
+        File('${fx.out}/$_sums').writeAsStringSync('STALE sums');
+        final r = await _runBuild(fx, _dryArgs(fx));
+        expect(r.exitCode, 0, reason: '$r');
+        for (final n in [_dmgName, _zipName, _notices, _sums]) {
+          expect(
+            _readLoose('${fx.out}/$n').startsWith('STALE'),
+            isFalse,
+            reason: '$n was not replaced',
+          );
+        }
+        await _expectSumsMatch(fx.out);
+      },
+    );
+
+    test('the file names carry the version that was asked for', () async {
+      final fx = await _fixture();
+      final r = await _runBuild(fx, [
+        '--dry-run',
+        '--version',
+        '12.30.4',
+        '--out',
+        fx.out,
+      ]);
+      expect(r.exitCode, 0, reason: '$r');
+      expect(
+        File('${fx.out}/Open-Memex-12.30.4-arm64.dmg').existsSync(),
+        isTrue,
+      );
+      expect(
+        File('${fx.out}/memex-12.30.4-macos-arm64.zip').existsSync(),
+        isTrue,
+      );
+      final create = _calls(fx).firstWhere(_isHdiCreate);
+      expect(_optValue(create, '-volname'), 'Open Memex 12.30.4');
+    });
+  });
+
+  group('build step failures', () {
+    // (test name, env, failing step, the tool that must not have run)
+    final cases = <(String, Map<String, String>, int, String)>[
+      (
+        'a failing cargo build fails step 1 and builds nothing else',
+        {'FAKE_CARGO_FAIL': '1'},
+        1,
+        'flutter',
+      ),
+      (
+        'a failing flutter pub get fails step 2 and builds no app',
+        {'FAKE_FLUTTER_FAIL': 'pubget'},
+        2,
+        'codesign',
+      ),
+      (
+        'a failing flutter build fails step 2 and signs nothing',
+        {'FAKE_FLUTTER_FAIL': 'build'},
+        2,
+        'codesign',
+      ),
+      (
+        'a failing hdiutil fails step 7 and makes no zip',
+        {'FAKE_HDIUTIL_FAIL': '1'},
+        7,
+        'ditto-zip',
+      ),
+    ];
+    for (final (name, env, step, absent) in cases) {
+      test(name, () async {
+        final fx = await _fixture();
+        final r = await _runBuild(fx, _dryArgs(fx), env: env);
+        final calls = _calls(fx);
+        expect(r.exitCode, 1, reason: '$r');
+        expect(_failed(r), [step], reason: '$r');
+        expect(_steps(r).last, step, reason: '$r');
+        if (absent == 'ditto-zip') {
+          expect(
+            calls.where((c) => c.tool == 'ditto' && c.args.contains('-c')),
+            isEmpty,
+            reason: _callList(calls),
+          );
+        } else if (absent == 'codesign') {
+          expect(calls.where(_isSign), isEmpty, reason: _callList(calls));
+        } else {
+          expect(
+            calls.where((c) => c.tool == absent),
+            isEmpty,
+            reason: _callList(calls),
+          );
+        }
+        expect(Directory(fx.out).listSync(), isEmpty);
+      });
+    }
+
+    test('unreadable cargo metadata fails step 4 and signs nothing', () async {
+      final fx = await _fixture();
+      final broken = File('${fx.state}/broken-metadata.json')
+        ..writeAsStringSync('{}');
+      final r = await _runBuild(
+        fx,
+        _dryArgs(fx),
+        env: {'FAKE_CARGO_METADATA': broken.path},
+      );
+      final calls = _calls(fx);
+      expect(r.exitCode, 1, reason: '$r');
+      expect(_failed(r), [4], reason: '$r');
+      expect(calls.where(_isSign), isEmpty, reason: _callList(calls));
+      expect(Directory(fx.out).listSync(), isEmpty);
+    });
+
+    // The Nth notarization submit is rejected: 2 is the DMG, 3 the zip.
+    final notaryCases = <(String, String, int)>[
+      ('a rejected DMG notarization fails step 7 and writes nothing', '2', 7),
+      ('a rejected zip notarization fails step 8 and writes nothing', '3', 8),
+    ];
+    for (final (name, at, step) in notaryCases) {
+      test(name, () async {
+        final fx = await _fixture();
+        final r = await _runBuild(
+          fx,
+          _signedArgs(fx),
+          env: {
+            ..._signedEnv(fx),
+            'FAKE_NOTARY_FAIL': '1',
+            'FAKE_NOTARY_FAIL_AT': at,
+          },
+        );
+        final calls = _calls(fx);
+        expect(r.exitCode, 1, reason: '$r');
+        expect(_failed(r), [step], reason: '$r');
+        expect(r.output, contains(_notaryLogMarker), reason: '$r');
+        expect(_steps(r), isNot(contains(9)), reason: '$r');
+        expect(
+          calls.where(_isSubmit).length,
+          int.parse(at),
+          reason: _callList(calls),
+        );
+        expect(Directory(fx.out).listSync(), isEmpty);
+      });
+    }
+  });
+
+  group('usage refusals', () {
+    final badVersions = <(String, String)>[
+      ('build.sh refuses version 1.2 before STEP 1', '1.2'),
+      ('build.sh refuses version 1.2.3.4 before STEP 1', '1.2.3.4'),
+      ('build.sh refuses version v1.2.3 before STEP 1', 'v1.2.3'),
+      ('build.sh refuses version 1.2.3-rc1 before STEP 1', '1.2.3-rc1'),
+      ('build.sh refuses version 1..3 before STEP 1', '1..3'),
+      (
+        'build.sh refuses version with a path in it before STEP 1',
+        '1.2.3/../x',
+      ),
+      ('build.sh refuses an empty version before STEP 1', ''),
+    ];
+    for (final (name, v) in badVersions) {
+      test(name, () async {
+        final fx = await _fixture();
+        final r = await _runBuild(fx, [
+          '--dry-run',
+          '--version',
+          v,
+          '--out',
+          fx.out,
+        ]);
+        _expectRefused(r, fx, '--version');
+        expect(Directory(fx.out).existsSync(), isFalse, reason: '--out made');
+      });
+    }
+
+    test(
+      'build.sh with --version as the last argument exits 2 before STEP 1',
+      () async {
+        final fx = await _fixture();
+        final r = await _runBuild(fx, ['--dry-run', '--version']);
+        _expectRefused(r, fx, '--version');
+      },
+    );
+
+    test(
+      'build.sh with a missing --patterns file exits 2 before STEP 1',
+      () async {
+        final fx = await _fixture();
+        final r = await _runBuild(fx, [
+          ..._dryArgs(fx),
+          '--patterns',
+          '${fx.state}/no-such-patterns.txt',
+        ]);
+        _expectRefused(r, fx, '--patterns');
+      },
+    );
+
+    test(
+      'build.sh with a HOME that has white space exits 2 before STEP 1',
+      () async {
+        final fx = await _fixture();
+        final home = Directory('${fx.iso.work.path}/my home')..createSync();
+        final r = await _runBuild(fx, _dryArgs(fx), env: {'HOME': home.path});
+        _expectRefused(r, fx, 'white space');
+      },
+    );
+
+    test(
+      'build.sh with a missing tool exits 2 naming it before STEP 1',
+      () async {
+        final fx = await _fixture();
+        File('${fx.bin}/cargo').deleteSync();
+        final r = await _runBuild(fx, _dryArgs(fx));
+        _expectRefused(r, fx, 'cargo');
+      },
+    );
+
+    test(
+      'signed mode with an unreadable notary key file exits 2 before STEP 1',
+      () async {
+        final fx = await _fixture();
+        final r = await _runBuild(
+          fx,
+          _signedArgs(fx),
+          env: {
+            ..._signedEnv(fx),
+            'NOTARY_KEY_P8_PATH': '${fx.state}/nokey.p8',
+          },
+        );
+        _expectRefused(r, fx, 'NOTARY_KEY_P8_PATH');
+      },
+    );
+
+    test('a dry run needs no xcrun', () async {
+      final fx = await _fixture();
+      File('${fx.bin}/xcrun').deleteSync();
+      final r = await _runBuild(fx, _dryArgs(fx));
+      expect(r.exitCode, 0, reason: '$r');
+      expect(_calls(fx).where((c) => c.tool == 'xcrun'), isEmpty);
+    });
   });
 }

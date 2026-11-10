@@ -345,14 +345,31 @@ Future<_Fx> _fixture({List<_Crate> extraLinked = const []}) async {
   );
 }
 
-Future<ScriptResult> _run(_Fx fx, {Map<String, String> env = const {}}) {
+Future<ScriptResult> _run(
+  _Fx fx, {
+  Map<String, String> env = const {},
+  List<String> extraArgs = const [],
+}) {
   Directory(File(fx.out).parent.path).createSync(recursive: true);
   return runScript(
     _notices,
-    ['--fonts-dir', fx.fonts, fx.out],
+    ['--fonts-dir', fx.fonts, ...extraArgs, fx.out],
     env: {...fx.env, ...env},
   );
 }
+
+/// A committed-overrides directory for `--licenses-dir`: one subdirectory per
+/// crate, each holding the given files.
+String _overrides(_Fx fx, Map<String, Map<String, String>> crates) {
+  final d = Directory('${fx.iso.work.path}/licenses')..createSync();
+  crates.forEach((crate, files) {
+    final c = Directory('${d.path}/$crate')..createSync();
+    files.forEach((n, text) => File('${c.path}/$n').writeAsStringSync(text));
+  });
+  return d.path;
+}
+
+const _sourceMarker = 'SOURCE-NOTE-NOT-FOR-NOTICES';
 
 String _read(_Fx fx) {
   final f = File(fx.out);
@@ -567,6 +584,203 @@ void main() {
         .map((f) => f.readAsStringSync())
         .join('\n');
     expect(version.hasMatch(all), isTrue, reason: 'no upstream version noted');
+  });
+
+  group('committed licence overrides', () {
+    test(
+      'notices use the override text for a crate that ships no licence file',
+      () async {
+        final fx = await _fixture(extraLinked: [_noLicense]);
+        final dir = _overrides(fx, {
+          _noLicense.name: {
+            'LICENSE': 'OVERRIDE-TEXT nolicense LICENSE',
+            'LICENSE-EXTRA': 'OVERRIDE-TEXT nolicense EXTRA',
+            'SOURCE': _sourceMarker,
+          },
+        });
+        final r = await _run(fx, extraArgs: ['--licenses-dir', dir]);
+        expect(r.exitCode, 0, reason: '$r');
+        final text = _read(fx);
+        expect(_nameVersion(_noLicense).hasMatch(text), isTrue);
+        expect(text, contains('License: ${_noLicense.license}'));
+        expect(text, contains('OVERRIDE-TEXT nolicense LICENSE'));
+        expect(text, contains('OVERRIDE-TEXT nolicense EXTRA'));
+        expect(text, isNot(contains(_sourceMarker)), reason: 'SOURCE copied');
+      },
+    );
+
+    test('notices prefer a crate own licence files over an override', () async {
+      final fx = await _fixture();
+      final dir = _overrides(fx, {
+        _anyhow.name: {'LICENSE': 'OVERRIDE-TEXT anyhow', 'SOURCE': 'x'},
+      });
+      final r = await _run(fx, extraArgs: ['--licenses-dir', dir]);
+      expect(r.exitCode, 0, reason: '$r');
+      final text = _read(fx);
+      expect(text, contains(_mark('anyhow-1.0.102', 'LICENSE-MIT')));
+      expect(text, isNot(contains('OVERRIDE-TEXT anyhow')));
+    });
+
+    test(
+      'notices fail naming every crate that has neither its own text nor an override',
+      () async {
+        final fx = await _fixture(
+          extraLinked: [
+            _noLicense,
+            const _Crate('also-missing', '1.4.0', license: 'MIT'),
+            const _Crate('covered-by-override', '0.9.0', license: 'MIT'),
+          ],
+        );
+        final dir = _overrides(fx, {
+          'covered-by-override': {'LICENSE': 'OVERRIDE-TEXT covered'},
+          // A SOURCE note alone is not a licence text.
+          'also-missing': {'SOURCE': _sourceMarker},
+        });
+        final r = await _run(fx, extraArgs: ['--licenses-dir', dir]);
+        expect(r.exitCode, 1, reason: '$r');
+        expect(r.output, contains(_noLicense.name), reason: '$r');
+        expect(r.output, contains('also-missing'), reason: '$r');
+        expect(r.output, isNot(contains('covered-by-override')), reason: '$r');
+        expect(r.output, isNot(contains(_tempfile.name)), reason: '$r');
+      },
+    );
+
+    test('an override for a crate that is not linked is not used', () async {
+      final fx = await _fixture();
+      final dir = _overrides(fx, {
+        'not-linked-anywhere': {'LICENSE': 'OVERRIDE-TEXT unlinked'},
+        _tempfile.name: {'LICENSE': 'OVERRIDE-TEXT tempfile'},
+      });
+      final r = await _run(fx, extraArgs: ['--licenses-dir', dir]);
+      expect(r.exitCode, 0, reason: '$r');
+      expect(_read(fx), isNot(contains('OVERRIDE-TEXT')));
+    });
+
+    test('the committed overrides each hold a licence text and a SOURCE', () {
+      final dir = Directory(
+        '${repoRoot()}/scripts/release/third_party/licenses',
+      );
+      expect(dir.existsSync(), isTrue, reason: '${dir.path} is missing');
+      final crates = dir
+          .listSync()
+          .whereType<Directory>()
+          .map((d) => d.path.split('/').last)
+          .toList();
+      // The crates in cargo metadata that ship no licence file (Q1 ruling).
+      expect(
+        crates.toSet(),
+        containsAll([
+          'rmcp',
+          'rmcp-macros',
+          'sqlite-vec',
+          'zune-inflate',
+          'profiling',
+          'profiling-procmacros',
+          'simd_helpers',
+        ]),
+      );
+      for (final c in crates) {
+        final files = Directory('${dir.path}/$c')
+            .listSync()
+            .whereType<File>()
+            .map((f) => f.path.split('/').last)
+            .toList();
+        expect(files, contains('SOURCE'), reason: '$c has no SOURCE');
+        final texts = files.where((n) => n != 'SOURCE').toList();
+        expect(texts, isNotEmpty, reason: '$c has no licence text');
+        for (final n in texts) {
+          expect(
+            File('${dir.path}/$c/$n').readAsStringSync().trim().length,
+            greaterThan(100),
+            reason: '$c/$n is too short for a licence text',
+          );
+        }
+        final source = File('${dir.path}/$c/SOURCE').readAsStringSync();
+        expect(source, contains('https://'), reason: '$c SOURCE has no URL');
+        expect(source, contains('Crate: $c '), reason: '$c SOURCE names it');
+        expect(source, contains('Declared licence:'), reason: '$c SOURCE');
+      }
+    });
+  });
+
+  group('licence files a crate ships', () {
+    test(
+      'notices include a NOTICE file and a lower case licence file',
+      () async {
+        final fx = await _fixture(
+          extraLinked: [
+            _Crate(
+              'noticed',
+              '1.0.0',
+              license: 'Apache-2.0',
+              files: {
+                'NOTICE': _mark('noticed', 'NOTICE'),
+                'license-apache': _mark('noticed', 'license-apache'),
+                'README-LICENSE-HISTORY.md': 'not a licence file',
+              },
+            ),
+          ],
+        );
+        final r = await _run(fx);
+        expect(r.exitCode, 0, reason: '$r');
+        final text = _read(fx);
+        expect(text, contains(_mark('noticed', 'NOTICE')));
+        expect(text, contains(_mark('noticed', 'license-apache')));
+        // The README next to them is not a licence file, and the fixture
+        // README.md every crate has is never copied.
+        expect(text, isNot(contains('readme noticed')));
+      },
+    );
+
+    test('notices write the crates in name and version order', () async {
+      final fx = await _fixture();
+      final r = await _run(fx);
+      expect(r.exitCode, 0, reason: '$r');
+      final text = _read(fx);
+      final order = [
+        _anyhow,
+        _bitflags1,
+        _bitflags2,
+        _memchr,
+        _onceCell,
+        _regex,
+        _regexSyntax,
+        _serde,
+      ].map((c) => _nameVersion(c).firstMatch(text)?.start ?? -1).toList();
+      expect(order, everyElement(greaterThanOrEqualTo(0)), reason: '$order');
+      expect(order, [...order]..sort(), reason: 'not sorted: $order');
+    });
+
+    test('notices list the crates before onnxruntime and the fonts', () async {
+      final fx = await _fixture();
+      final r = await _run(fx);
+      expect(r.exitCode, 0, reason: '$r');
+      final text = _read(fx);
+      final crate = text.indexOf(_mark('serde-1.0.228', 'LICENSE-MIT'));
+      final ort = text.indexOf('onnxruntime LICENSE');
+      final font = text.indexOf(_ofl.values.first);
+      expect(crate, greaterThanOrEqualTo(0));
+      expect(ort, greaterThan(crate));
+      expect(font, greaterThan(ort));
+    });
+
+    test('notices fail when the fonts directory holds no OFL file', () async {
+      final fx = await _fixture();
+      for (final f in Directory(fx.fonts).listSync().whereType<File>()) {
+        if (f.path.split('/').last.startsWith('OFL-')) f.deleteSync();
+      }
+      final r = await _run(fx);
+      expect(r.exitCode, 1, reason: '$r');
+      expect(r.output.toLowerCase(), contains('font'), reason: '$r');
+      expect(File(fx.out).existsSync(), isFalse, reason: 'partial notices');
+    });
+
+    test('a failed notices run writes no output file', () async {
+      final fx = await _fixture(extraLinked: [_noLicense]);
+      final r = await _run(fx);
+      expect(r.exitCode, 1, reason: '$r');
+      expect(File(fx.out).existsSync(), isFalse, reason: 'partial notices');
+    });
   });
 
   test('notices.sh is an executable bash script', () {
