@@ -82,16 +82,22 @@ void main() {
       );
     });
 
-    test('a null HOME skips the cargo location and still finds the rest', () {
-      expect(
-        MemexCli.autodiscover(
-          executablePath: _exe,
-          exists: {_cargo, _usrLocal}.contains,
-          home: null,
-        ),
-        isNot(_cargo),
-      );
-    });
+    // A null home seam means the real HOME (or no cargo location when HOME is
+    // unset): either way the fake cargo path is not consulted, and the lookup
+    // must still fall through to /usr/local rather than give up.
+    test(
+      'a null home never consults the fake cargo path and finds usr local',
+      () {
+        expect(
+          MemexCli.autodiscover(
+            executablePath: _exe,
+            exists: {_cargo, _usrLocal}.contains,
+            home: null,
+          ),
+          _usrLocal,
+        );
+      },
+    );
   });
 
   group('autodiscover with real files (default file-exists)', () {
