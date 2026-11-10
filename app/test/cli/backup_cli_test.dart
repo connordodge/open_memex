@@ -650,4 +650,136 @@ void main() {
       expect(await _restore(cli), const RestoreTooOld());
     });
   });
+
+  group('output contract strictness', () {
+    const created = {
+      'result': 'created',
+      'file': '/d/x-20261109T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.memex.zip',
+      'bytes': 10,
+      'fingerprint': 'ab',
+    };
+
+    Future<BackupRunResult> backupOf(Object json) =>
+        _backup(backupFakeCli(backup: FakeMemexCli.ok(jsonEncode(json))));
+
+    test(
+      'exit 0 created without a removed key has an empty removed list',
+      () async {
+        final result = await backupOf(created);
+
+        expect(result, isA<BackupCreated>());
+        expect((result as BackupCreated).removed, isEmpty);
+      },
+    );
+
+    test(
+      'exit 0 created with a missing or wrong typed field is internal',
+      () async {
+        final bad = <String, Map<String, Object?>>{
+          'no file': {...created}..remove('file'),
+          'no bytes': {...created}..remove('bytes'),
+          'no fingerprint': {...created}..remove('fingerprint'),
+          'file is a number': {...created, 'file': 3},
+          'bytes is a string': {...created, 'bytes': '10'},
+          'bytes is a double': {...created, 'bytes': 10.5},
+          'fingerprint is a number': {...created, 'fingerprint': 1},
+          'removed is a string': {...created, 'removed': 'a'},
+          'removed holds a number': {
+            ...created,
+            'removed': ['a', 1],
+          },
+        };
+        for (final entry in bad.entries) {
+          final result = await backupOf(entry.value);
+
+          expect(result, isA<BackupFailure>(), reason: entry.key);
+          expect((result as BackupFailure).code, 'internal', reason: entry.key);
+        }
+      },
+    );
+
+    test('exit 0 unchanged without a last file has no last file', () async {
+      expect(
+        await backupOf({'result': 'unchanged'}),
+        const BackupUnchanged(lastFile: null),
+      );
+    });
+
+    test('exit 0 unchanged with a wrong typed last file is internal', () async {
+      final result = await backupOf({'result': 'unchanged', 'last_file': 5});
+
+      expect(result, isA<BackupFailure>());
+      expect((result as BackupFailure).code, 'internal');
+    });
+
+    test('exit 0 output with surrounding whitespace still parses', () async {
+      final cli = backupFakeCli(
+        backup: FakeMemexCli.ok('\n  ${jsonEncode(created)}\n\n'),
+      );
+
+      expect(await _backup(cli), isA<BackupCreated>());
+    });
+
+    test(
+      'restore exit 0 with a missing or wrong typed field is internal',
+      () async {
+        const ok = {
+          'vault_id': '01JCB7Q4M8V2X5N9R3T6W0YZAE',
+          'path': '/d/restored',
+          'created_at': 1000,
+        };
+        final bad = <String, Map<String, Object?>>{
+          'no vault_id': {...ok}..remove('vault_id'),
+          'no path': {...ok}..remove('path'),
+          'no created_at': {...ok}..remove('created_at'),
+          'vault_id is a number': {...ok, 'vault_id': 1},
+          'path is a number': {...ok, 'path': 1},
+          'created_at is a string': {...ok, 'created_at': '1000'},
+          'created_at is a double': {...ok, 'created_at': 1000.5},
+        };
+        for (final entry in bad.entries) {
+          final result = await _restore(
+            backupFakeCli(restore: FakeMemexCli.ok(jsonEncode(entry.value))),
+          );
+
+          expect(result, isA<RestoreFailure>(), reason: entry.key);
+          expect(
+            (result as RestoreFailure).code,
+            'internal',
+            reason: entry.key,
+          );
+        }
+      },
+    );
+
+    test(
+      'restore created_at at the DateTime limits parses and past them is internal',
+      () async {
+        const limit = 8640000000000000;
+        Future<RestoreRunResult> at(int ms) => _restore(
+          backupFakeCli(
+            restore: FakeMemexCli.ok(
+              jsonEncode({
+                'vault_id': '01JCB7Q4M8V2X5N9R3T6W0YZAE',
+                'path': '/d/restored',
+                'created_at': ms,
+              }),
+            ),
+          ),
+        );
+
+        expect(
+          await at(limit),
+          RestoreOk(
+            vaultId: '01JCB7Q4M8V2X5N9R3T6W0YZAE',
+            path: '/d/restored',
+            createdAt: DateTime.fromMillisecondsSinceEpoch(limit, isUtc: true),
+          ),
+        );
+        expect(await at(-limit), isA<RestoreOk>());
+        expect(await at(limit + 1), isA<RestoreFailure>());
+        expect(await at(-limit - 1), isA<RestoreFailure>());
+      },
+    );
+  });
 }

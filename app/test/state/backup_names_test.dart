@@ -289,4 +289,42 @@ void main() {
       }
     });
   });
+
+  group('ASCII only', () {
+    test(
+      'a non ASCII scalar that truncates to an ASCII byte is still a dash',
+      () {
+        // U+0141 'Ł' & 0xFF == 0x41 'A' (Rust's `c as u8` bug, R1a #332).
+        expect(backupLabelFor('Ł'), '-');
+        expect(backupLabelFor('š'), '-'); // & 0xFF == 0x61 'a'
+        expect(backupLabelFor('İ'), '-'); // & 0xFF == 0x30 '0'
+        expect(backupLabelFor('aŁ\u{1F4DA}b'), 'a--b');
+      },
+    );
+
+    test('exactly the ASCII letters digits underscore and dash are kept', () {
+      for (var rune = 0; rune < 128; rune++) {
+        final char = String.fromCharCode(rune);
+        final kept = RegExp(r'^[A-Za-z0-9_-]$').hasMatch(char);
+
+        expect(
+          backupLabelFor(char),
+          kept ? char : '-',
+          reason: 'U+${rune.toRadixString(16)}',
+        );
+      }
+    });
+
+    test('non ASCII digits and letters are not part of a name', () {
+      expect(
+        parseBackupFileName(_name('notes', stamp: '٢026110٩T090000Z')),
+        isNull,
+      );
+      expect(parseBackupFileName(_name('nötes')), isNull);
+      expect(
+        parseBackupFileName(_name('notes', stamp: '2026110９T090000Z')),
+        isNull,
+      );
+    });
+  });
 }

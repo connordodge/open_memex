@@ -571,4 +571,136 @@ void main() {
       );
     });
   });
+
+  group('verify: boundaries and fallbacks', () {
+    test(
+      'backupSize switches unit exactly at 1000 and rounds up across units',
+      () {
+        const expected = {
+          0: '0 B',
+          999: '999 B',
+          1000: '1 KB',
+          1499: '1 KB',
+          1500: '2 KB',
+          999499: '999 KB',
+          999500: '1.0 MB',
+          999999: '1.0 MB',
+          1000000: '1.0 MB',
+          999949999: '999.9 MB',
+          999950000: '1.0 GB',
+          1000000000: '1.0 GB',
+          1550000000: '1.6 GB',
+        };
+        for (final entry in expected.entries) {
+          expect(backupSize(entry.key), entry.value, reason: '${entry.key}');
+        }
+      },
+    );
+
+    test('an empty message leaves the colon out like a missing one', () {
+      expect(
+        _local('backup_failed', message: '').detail,
+        "the backup couldn't be made.",
+      );
+      expect(
+        _hosted('backup_failed', message: '').detail,
+        "nas couldn't make the backup.",
+      );
+      expect(
+        restoreFailureMessage(
+          const RestoreFailure(code: 'internal', message: ''),
+          name: 'w',
+          parent: '/p',
+        ),
+        "the backup couldn't be restored.",
+      );
+    });
+
+    test(
+      'a chosen folder is named by its last segment however it is written',
+      () {
+        const folders = {
+          '/Volumes/nas share/memex/': 'memex',
+          r'C:\Backups\memex': 'memex',
+          '/memex': 'memex',
+          'memex': 'memex',
+          '/': 'the backup folder',
+          '': 'the backup folder',
+        };
+        for (final entry in folders.entries) {
+          final m = _local(
+            'backup_destination_unavailable',
+            destination: entry.key,
+            provider: null,
+          );
+
+          expect(m.short, "can't write to ${entry.value}", reason: entry.key);
+        }
+        final none = _local(
+          'backup_destination_unavailable',
+          destination: null,
+          provider: null,
+        );
+        expect(none.short, "can't write to the backup folder");
+        expect(
+          none.detail,
+          startsWith("can't write to the backup folder. check"),
+        );
+      },
+    );
+
+    test(
+      'a day with the same date in another month or year reads as a date',
+      () {
+        final now = DateTime(2026, 11, 9, 14, 3);
+
+        expect(backupWhen(DateTime(2026, 10, 9, 14, 3), now), '9 oct at 14:03');
+        expect(backupWhen(DateTime(2025, 11, 9, 14, 3), now), '9 nov at 14:03');
+        expect(
+          backupWhen(DateTime(2026, 11, 8, 23, 59), now),
+          'yesterday at 23:59',
+        );
+        expect(
+          backupWhen(DateTime(2026, 11, 7, 23, 59), now),
+          '7 nov at 23:59',
+        );
+      },
+    );
+
+    test(
+      'a failure title keeps a date or yesterday and only drops the today word',
+      () {
+        expect(
+          _local('backup_failed', failedAt: DateTime(2026, 11, 8, 9, 0)).title,
+          'the automatic backup failed yesterday at 09:00',
+        );
+        expect(
+          _local('backup_failed', failedAt: DateTime(2026, 11, 2, 9, 0)).title,
+          'the automatic backup failed 2 nov at 09:00',
+        );
+        expect(
+          _local('backup_failed').title,
+          'the automatic backup failed at 09:00',
+        );
+      },
+    );
+
+    test(
+      'backup_too_new names the versions found in the fields whatever they are',
+      () {
+        expect(
+          restoreFailureMessage(
+            const RestoreFailure(
+              code: 'backup_too_new',
+              message: 'raw',
+              fields: {'schema_version': 3, 'supported_schema_version': 2},
+            ),
+            name: 'w',
+            parent: '/p',
+          ),
+          contains('(schema V3; this memex supports V2)'),
+        );
+      },
+    );
+  });
 }
