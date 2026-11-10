@@ -48,13 +48,22 @@ TextEditingController _ctrl(SegmentedEditorRobot r) =>
 bool _bodyHasFocus(SegmentedEditorRobot r) =>
     r.tester.widget<EditableText>(_sourceEditable(r)).focusNode.hasFocus;
 
-/// Presses Tab (Shift+Tab with [shift]); returns whether Flutter handled it.
+/// Presses Tab (Shift+Tab with [shift]); returns whether the editor's Tab
+/// branch consumed it. The sidebar's backups row (WI #326) is a tab stop, so
+/// a Tab the editor leaves alone is now taken by the default focus traversal
+/// (`sendKeyEvent` answers true) and moves focus out of the body; that counts
+/// as "not handled" here, and the body gets its focus back for the next press.
 Future<bool> _pressTab(SegmentedEditorRobot r, {bool shift = false}) async {
   final tester = r.tester;
   if (shift) await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
   final handled = await tester.sendKeyEvent(LogicalKeyboardKey.tab);
   if (shift) await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
   await tester.pump();
+  if (!_bodyHasFocus(r)) {
+    await tester.showKeyboard(r.sourceBody);
+    await tester.pump();
+    return false;
+  }
   return handled;
 }
 
@@ -242,19 +251,25 @@ void main() {
     tester,
   ) async {
     final r = await _openSource(tester, '- a\n- b');
-    tester.testTextInput.updateEditingValue(
-      const TextEditingValue(
-        text: '- a\n- bk',
-        selection: TextSelection.collapsed(offset: 8),
-        composing: TextRange(start: 7, end: 8),
-      ),
-    );
-    await tester.pump();
-    expect(_ctrl(r).value.composing, const TextRange(start: 7, end: 8));
+    // A Tab that leaves the body (focus traversal) ends the IME session, so
+    // the composing range is set again before each press.
+    Future<void> compose() async {
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '- a\n- bk',
+          selection: TextSelection.collapsed(offset: 8),
+          composing: TextRange(start: 7, end: 8),
+        ),
+      );
+      await tester.pump();
+      expect(_ctrl(r).value.composing, const TextRange(start: 7, end: 8));
+    }
 
+    await compose();
     final handled = await _pressTab(r);
     expect(handled, isFalse, reason: 'Tab goes to the IME');
     expect(r.sourceText, '- a\n- bk');
+    await compose();
     final shifted = await _pressTab(r, shift: true);
     expect(shifted, isFalse, reason: 'Shift+Tab goes to the IME');
     expect(r.sourceText, '- a\n- bk');
