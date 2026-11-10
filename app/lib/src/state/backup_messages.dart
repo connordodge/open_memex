@@ -182,7 +182,8 @@ BackupMessage backupBinaryNotFoundMessage() => const BackupMessage(
 /// `RestoreOk` has no error and gives the empty string). [name] is the
 /// trimmed vault-name field and [parent] the parent folder as shown, for
 /// `restore_target_not_empty`; `backup_too_new` reads `schema_version` and
-/// `supported_schema_version` from `RestoreFailure.fields`.
+/// `supported_schema_version` from `RestoreFailure.fields` and shows them only
+/// when both are ints; otherwise it drops the whole parenthetical.
 String restoreFailureMessage(
   RestoreRunResult result, {
   required String name,
@@ -207,6 +208,10 @@ String restoreFailureMessage(
         case 'backup_too_new':
           final found = fields['schema_version'];
           final supported = fields['supported_schema_version'];
+          if (found is! int || supported is! int) {
+            return 'this backup was made by a newer memex. update memex, then '
+                'try again.';
+          }
           return 'this backup was made by a newer memex (schema V$found; this '
               'memex supports V$supported). update memex, then try again.';
         case 'network_filesystem':
