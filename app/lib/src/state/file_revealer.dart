@@ -18,11 +18,12 @@ abstract interface class FileRevealer {
 class SystemFileRevealer implements FileRevealer {
   SystemFileRevealer({FileProcessRunner? run}) : _run = run ?? Process.run;
 
-  // ignore: unused_field
   final FileProcessRunner _run;
 
   @override
-  Future<void> reveal(String path) async {}
+  Future<void> reveal(String path) async {
+    await _run('/usr/bin/open', ['-R', path]);
+  }
 }
 
 /// The app's [FileRevealer]. Tests override it with a fake.

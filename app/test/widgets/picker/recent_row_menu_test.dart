@@ -80,6 +80,32 @@ void main() {
       },
     );
 
+    // Lead ruling Q1: the folderX row keeps only its x, and its menu is
+    // show in Finder then remove from recents, with no delete vault.
+    testWidgets(
+      'a missing folder row keeps only the x and its menu is show in Finder then remove from recents',
+      (tester) async {
+        final gone = p.join(createPlainFolder('om361_q1_').path, 'gone');
+        final env = await wi361PumpRows(tester, entries: [LocalVaultRef(gone)]);
+
+        expect(_key('recent-row-remove-0'), findsOneWidget);
+        expect(_key('recent-row-finder-0'), findsNothing);
+        expect(_key('recent-row-delete-0'), findsNothing);
+
+        await wi361SecondaryClick(tester, _row(0));
+        expect(wi361MenuShown(tester), [
+          'vault-menu-finder',
+          'vault-menu-remove',
+        ]);
+        expect(find.text('delete vault…'), findsNothing);
+
+        await tester.tap(_key('vault-menu-finder'));
+        await wi97Settle(tester);
+        expect(env.revealer.paths, isEmpty);
+        expect(find.text('$gone is no longer a vault folder.'), findsOneWidget);
+      },
+    );
+
     testWidgets('each row opens the menu of its own vault in a mixed list', (
       tester,
     ) async {
