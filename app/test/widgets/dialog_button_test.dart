@@ -155,6 +155,46 @@ void main() {
       });
     }
 
+    for (final (name, key) in [
+      (
+        'a held Enter on a focused DialogButton calls onPressed once',
+        LogicalKeyboardKey.enter,
+      ),
+      (
+        'a held numpad Enter on a focused DialogButton calls onPressed once',
+        LogicalKeyboardKey.numpadEnter,
+      ),
+      (
+        'a held Space on a focused DialogButton calls onPressed once',
+        LogicalKeyboardKey.space,
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final presses = _Presses();
+        await _pump(tester, [
+          DialogButton(
+            key: _aKey,
+            kind: OmButtonKind.primary,
+            label: 'restore',
+            onPressed: presses.call,
+          ),
+        ]);
+        await wi349TabTo(tester, find.byKey(_aKey));
+
+        await wi349HoldKey(tester, key);
+
+        expect(
+          presses.count,
+          1,
+          reason: 'a held key presses once, not once per key repeat',
+        );
+        expect(wi349FocusIn(find.byKey(_aKey)), isTrue);
+
+        await wi349HoldKey(tester, key, repeats: 0);
+        expect(presses.count, 2, reason: 'a second key press presses again');
+      });
+    }
+
     testWidgets(
       'a DialogButton that loses its onPressed keeps the focus and Enter and Space do nothing',
       (tester) async {

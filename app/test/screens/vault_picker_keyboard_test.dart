@@ -40,6 +40,34 @@ void main() {
     expect(env.opener.opened, isEmpty, reason: 'Enter on x opens nothing');
   });
 
+  testWidgets('a held Enter on a recent row x forgets exactly one vault', (
+    tester,
+  ) async {
+    final a = createVaultFolder();
+    final b = createVaultFolder();
+    final c = createVaultFolder();
+    final env = await pumpVaultPicker(
+      tester,
+      recents: [
+        LocalVaultRef(a.path),
+        LocalVaultRef(b.path),
+        LocalVaultRef(c.path),
+      ],
+    );
+    await wi349TabTo(tester, find.byKey(const Key('recent-row-remove-0')));
+
+    // A real held key: one key-down, then repeats until it is released.
+    await wi349HoldKey(tester, LogicalKeyboardKey.enter);
+    await wi97Settle(tester);
+
+    expect(env.settings.recentRefs, [
+      LocalVaultRef(b.path),
+      LocalVaultRef(c.path),
+    ], reason: 'only the first row is forgotten, not one per key repeat');
+    expect(find.text(p.basename(b.path)), findsOneWidget);
+    expect(find.text(p.basename(c.path)), findsOneWidget);
+  });
+
   testWidgets(
     'Tab reaches a server row edit and Enter calls editServer for that server',
     (tester) async {
