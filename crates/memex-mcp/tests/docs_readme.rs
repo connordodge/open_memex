@@ -4969,3 +4969,34 @@ _Avoid_: secret scan (secrets are only one kind of leak), audit";
         "the section appears once"
     );
 }
+
+#[test]
+fn releasing_doc_lists_the_four_release_assets_release_yml_uploads() {
+    let workflow = read_repo_file(".github/workflows/release.yml");
+    let upload = workflow
+        .split("gh release upload")
+        .nth(1)
+        .expect("release.yml uploads the assets");
+    let upload = upload.split("- name:").next().unwrap();
+    let asset = Regex::new(r#"dist/([A-Za-z0-9_$.\-]+)"#).unwrap();
+    let assets: Vec<String> = asset
+        .captures_iter(upload)
+        .map(|c| c[1].replace("$version", "<ver>"))
+        .collect();
+    assert_eq!(
+        assets.len(),
+        4,
+        "release.yml uploads four assets: {assets:?}"
+    );
+    let doc = wi377_releasing();
+    for name in &assets {
+        assert!(
+            doc.contains(name.as_str()),
+            "docs/releasing.md names the uploaded asset `{name}`"
+        );
+    }
+    assert!(
+        doc.contains("--cleanup-tag"),
+        "recovery deletes the tag with gh release delete --cleanup-tag"
+    );
+}
