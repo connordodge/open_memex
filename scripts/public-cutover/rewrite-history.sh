@@ -26,7 +26,8 @@
 #         commit and tag messages, matched case-sensitively. So does this
 #         machine's $HOME, as given and with symlinks resolved.
 #     Entries are literals, never regular expressions. Emails are replaced
-#     before paths, and longer paths before shorter ones. File names are
+#     before paths, and within each, longer entries before shorter ones, so
+#     an entry inside another never cuts into it. File names are
 #     not rewritten, and filter-repo leaves binary blobs alone: the Leak
 #     check below reports what survives.
 #   - One final commit on main, authored and committed as <noreply>, that
@@ -62,6 +63,17 @@
 export LC_ALL=C
 set -u
 set -o pipefail
+
+# Repositories are chosen only by path (git -C, --git-dir). An inherited
+# GIT_DIR, GIT_WORK_TREE and the like (from a git hook or a wrapper) would
+# override -C and point every step at another repo, <source> included, so
+# git's repo-local variables (git rev-parse --local-env-vars) and
+# GIT_NAMESPACE are cleared first.
+unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS \
+  GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE \
+  GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS \
+  GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR \
+  GIT_NAMESPACE
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 LEAK_CHECK="$SCRIPT_DIR/../leak-check.sh"
@@ -305,16 +317,21 @@ if [ -n "$home" ]; then
   fi
 fi
 
-# filter-repo applies the lines in order: emails first, then paths, longest
-# first, so a shorter entry never cuts into a longer one.
+# Unique lines of file $1, longest first (ties in byte order).
+longest_first() {
+  sort -u "$1" | awk '{ print length($0) "\t" $0 }' | sort -t "$(printf '\t')" -k1,1nr -k2 |
+    cut -f2-
+}
+
+# filter-repo applies the lines in order: emails first, then paths, each
+# longest first, so a shorter entry never cuts into a longer one.
 {
-  sort -u "$EMAILS" | while IFS= read -r e; do
+  longest_first "$EMAILS" | while IFS= read -r e; do
     printf 'regex:(?i)%s==>%s\n' "$(regex_literal "$e")" "$NOREPLY"
   done
-  sort -u "$PATHS" | awk '{ print length($0) "\t" $0 }' | sort -t "$(printf '\t')" -k1,1nr -k2 |
-    cut -f2- | while IFS= read -r p; do
-      printf 'regex:%s==>~\n' "$(regex_literal "$p")"
-    done
+  longest_first "$PATHS" | while IFS= read -r p; do
+    printf 'regex:%s==>~\n' "$(regex_literal "$p")"
+  done
 } >"$EXPRS"
 
 # ---------------------------------------------------------------------------
