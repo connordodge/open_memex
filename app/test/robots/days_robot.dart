@@ -18,6 +18,7 @@ import '../support/app_harness.dart';
 import '../support/fake_clock.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
+import '../support/token_store_fakes.dart';
 
 /// Robot for the sidebar Days mode and the Days/Topics switch (WI #23).
 /// Finds widgets by the WI's stable Keys: `sidebar-mode-days`,
@@ -58,7 +59,7 @@ class DaysRobot {
       'memex.recent_vaults': <String>[vaultDir.path],
       'memex.last_vault': vaultDir.path,
     });
-    final settings = await SettingsController.load();
+    final settings = await loadSettingsKeepingPickedBinary();
 
     tester.view.physicalSize = const Size(1600, 1000);
     tester.view.devicePixelRatio = 1.0;

@@ -24,6 +24,7 @@ import '../support/fake_clock.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
 import '../support/vault_folders.dart';
+import '../support/token_store_fakes.dart';
 import '../support/wi363_sidebar.dart';
 
 const _keptNote = '01J9KKKKKKKKKKKKKKKKKKKKKK';
@@ -101,7 +102,7 @@ Future<ProviderContainer> _launchApp(
     'memex.recent_vaults': <String>[lastVault],
     'memex.last_vault': lastVault,
   });
-  final settings = (await tester.runAsync(SettingsController.load))!;
+  final settings = (await tester.runAsync(loadSettingsKeepingPickedBinary))!;
   final db = FakeVaultDb.v5();
   final cli = FakeMemexCli()
     // #92: launch reopens the last vault through `memex vault check`.
@@ -237,7 +238,7 @@ void main() {
         'memex.binary_path': 'fake-memex',
         'memex.recent_vaults': <String>[vault.path],
       });
-      final settings = await SettingsController.load();
+      final settings = await loadSettingsKeepingPickedBinary();
       final db = FakeVaultDb.v5();
       final cli = FakeMemexCli()
         // #92: a recent row runs `memex vault check` first.

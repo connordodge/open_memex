@@ -186,7 +186,7 @@ Future<Wi361Rows> _wi361Env(
     for (final s in savedServers) s.id: wi97TokenFor(s.id),
   });
   final settings = (await tester.runAsync(
-    () => SettingsController.load(tokenStore: tokens),
+    () => loadSettingsKeepingPickedBinary(tokenStore: tokens),
   ))!;
   final revealer = FakeFileRevealer();
   final trash = FakeVaultTrash();

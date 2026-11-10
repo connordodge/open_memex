@@ -243,7 +243,7 @@ Future<Wi99Env> pumpWi99Host(
   SharedPreferences.setMockInitialValues({'memex.binary_path': 'fake-memex'});
   final env = Wi99Env._(tester);
   env.settings = (await tester.runAsync(
-    () => SettingsController.load(tokenStore: env.tokens),
+    () => loadSettingsKeepingPickedBinary(tokenStore: env.tokens),
   ))!;
   env.nasSaved = (await tester.runAsync(
     () => env.settings.saveServer(

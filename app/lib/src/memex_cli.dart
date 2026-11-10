@@ -9,16 +9,30 @@ class MemexCli {
 
   final String binaryPath;
 
-  /// Find a `memex` binary in well-known places. Returns the first that exists.
-  static String? autodiscover() {
-    final home = Platform.environment['HOME'];
+  /// Find a `memex` binary. Order: [picked] if it exists, the Bundled memex
+  /// beside the executable, then `~/.cargo/bin`, `/usr/local/bin` and
+  /// `/opt/homebrew/bin`. A missing or empty [picked] is skipped.
+  /// Seams (production defaults): [executablePath]
+  /// (`Platform.resolvedExecutable`), [exists] (`File(path).existsSync()`),
+  /// [home] (`$HOME`) and [picked] (a user-picked path).
+  static String? autodiscover({
+    String? executablePath,
+    bool Function(String path)? exists,
+    String? home,
+    String? picked,
+  }) {
+    final fileExists = exists ?? (path) => File(path).existsSync();
+    final homeDir = home ?? Platform.environment['HOME'];
+    final exe = executablePath ?? Platform.resolvedExecutable;
     final candidates = <String>[
-      if (home != null) p.join(home, '.cargo', 'bin', 'memex'),
+      if (picked != null && picked.isNotEmpty) picked,
+      p.join(p.dirname(exe), 'memex'),
+      if (homeDir != null) p.join(homeDir, '.cargo', 'bin', 'memex'),
       '/usr/local/bin/memex',
       '/opt/homebrew/bin/memex',
     ];
     for (final c in candidates) {
-      if (File(c).existsSync()) return c;
+      if (fileExists(c)) return c;
     }
     return null;
   }

@@ -29,6 +29,7 @@ import 'package:open_memex_app/src/widgets/sidebar/canvases_rail.dart';
 import 'package:open_memex_app/src/widgets/sidebar/notes_pane.dart';
 import 'package:open_memex_app/src/widgets/sidebar/topics_pane.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../support/token_store_fakes.dart';
 
 // ---------------------------------------------------------------------------
 // Fakes and fixtures
@@ -151,7 +152,7 @@ Future<_Harness> _pump(
   SharedPreferences.setMockInitialValues({
     'memex.binary_path': '/nonexistent/memex-test-binary',
   });
-  final settings = await SettingsController.load();
+  final settings = await loadSettingsKeepingPickedBinary();
   final h = _Harness(_tempVault(), _FakeCli());
 
   await tester.pumpWidget(

@@ -59,7 +59,7 @@ Future<SettingsController> _load({Map<String, Object> prefs = const {}}) async {
     'memex.binary_path': 'fake-memex',
     ...prefs,
   });
-  return SettingsController.load(tokenStore: FakeTokenStore());
+  return loadSettingsKeepingPickedBinary(tokenStore: FakeTokenStore());
 }
 
 Future<Object?> _stored() async {
@@ -143,7 +143,7 @@ void main() {
       });
 
       // A fresh load (same stored prefs) reads the same values back.
-      final reloaded = await SettingsController.load(
+      final reloaded = await loadSettingsKeepingPickedBinary(
         tokenStore: FakeTokenStore(),
       );
       expect(reloaded.state.vaultBackups, _seed());
@@ -155,7 +155,7 @@ void main() {
       expect(c.state.memexBinaryPath, 'fake-memex');
       // The empty map is not sticky: the first save is stored and reloads.
       await c.setVaultBackup(_vaultA, _settingsA());
-      final reloaded = await SettingsController.load(
+      final reloaded = await loadSettingsKeepingPickedBinary(
         tokenStore: FakeTokenStore(),
       );
       expect(reloaded.state.vaultBackups, {_vaultA: _settingsA()});
@@ -313,7 +313,7 @@ void main() {
       expect(c.state.vaultBackups, {_vaultB: _settingsB()});
       expect(await _stored(), {_vaultB: _settingsB().toJson()});
       // A fresh load reads the same.
-      final reloaded = await SettingsController.load(
+      final reloaded = await loadSettingsKeepingPickedBinary(
         tokenStore: FakeTokenStore(),
       );
       expect(reloaded.state.vaultBackups, {_vaultB: _settingsB()});
@@ -324,7 +324,7 @@ void main() {
       await c.removeVaultBackup(_vaultA);
       await c.removeVaultBackup(_vaultB);
       expect(c.state.vaultBackups, isEmpty);
-      final reloaded = await SettingsController.load(
+      final reloaded = await loadSettingsKeepingPickedBinary(
         tokenStore: FakeTokenStore(),
       );
       expect(reloaded.state.vaultBackups, isEmpty);
