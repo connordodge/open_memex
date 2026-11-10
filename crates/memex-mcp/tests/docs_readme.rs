@@ -3255,6 +3255,184 @@ fn backups_doc_says_a_restored_copy_shares_keep_last_n_with_its_original() {
     );
 }
 
+// ---------- the vault server's status, cadence and file names ----------
+
+#[path = "support/server.rs"]
+mod wi328_server;
+
+/// `GET …/backup` bodies of a real in-process vault server: `(without
+/// --backup-dir, with it, the POST status without it)`.
+fn wi328_server_status() -> (Value, Value, u16) {
+    use memex_mcp::server::backup::BackupConfig;
+    use memex_mcp::server::{router, ServerConfig};
+    use wi328_server as server;
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    rt.block_on(async {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().join("root");
+        let dir = scratch.path().join("backups");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&dir).unwrap();
+        server::make_vault(&root, "notes");
+        let bearer = format!("Bearer {}", server::TEST_TOKEN);
+        let path = "/vaults/notes/api/v1/backup";
+        let mut bodies = Vec::new();
+        let mut post_status = 0;
+        for configured in [false, true] {
+            let mut config = ServerConfig::new(root.clone(), server::TEST_TOKEN);
+            if configured {
+                config = config.with_backups(BackupConfig {
+                    dir: dir.clone(),
+                    keep: 30,
+                });
+            }
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let app = router(config);
+            let task = tokio::spawn(async move {
+                axum::serve(listener, app).await.expect("serve");
+            });
+            let get = server::client()
+                .get(format!("http://{addr}{path}"))
+                .header("authorization", &bearer)
+                .send()
+                .await
+                .expect("GET backup");
+            let reply = server::Reply::read(get).await;
+            assert_eq!(reply.status, 200, "GET {path}: {}", reply.body);
+            bodies.push(reply.json());
+            if !configured {
+                let post = server::client()
+                    .post(format!("http://{addr}{path}"))
+                    .header("authorization", &bearer)
+                    .send()
+                    .await
+                    .expect("POST backup");
+                post_status = server::Reply::read(post).await.status;
+            }
+            task.abort();
+        }
+        let configured = bodies.pop().unwrap();
+        let disabled = bodies.pop().unwrap();
+        (disabled, configured, post_status)
+    })
+}
+
+#[test]
+fn backups_doc_lists_every_key_of_the_vault_server_status_and_its_real_path() {
+    let doc = wi328_doc();
+    let (disabled, configured, post_status) = wi328_server_status();
+    let keys_of =
+        |v: &Value| -> BTreeSet<String> { v.as_object().unwrap().keys().cloned().collect() };
+    assert_eq!(
+        keys_of(&disabled),
+        keys_of(&configured),
+        "the status has the same keys with and without --backup-dir"
+    );
+    assert_eq!(disabled["enabled"], json!(false));
+    assert_eq!(configured["enabled"], json!(true));
+    assert_eq!(configured["keep"], json!(30));
+    let keys = keys_of(&configured);
+    assert_eq!(keys.len(), 10, "{keys:?}");
+    // The one paragraph that describes the status names the real path (the
+    // server answered 200 to GET there above) and every key, each as a code
+    // span.
+    let mut needles: Vec<String> = keys.iter().map(|k| format!("`{k}`")).collect();
+    needles.push("/vaults/<name>/api/v1/backup".to_string());
+    needles.push("post".to_string());
+    let refs: Vec<&str> = needles.iter().map(String::as_str).collect();
+    wi328_assert_item_with_all("the vault server status keys and path", &doc, &refs);
+    // A POST to a server without --backup-dir is the 409 the table lists.
+    assert_eq!(post_status, 409, "POST without --backup-dir");
+}
+
+#[test]
+fn backups_doc_states_the_vault_servers_hourly_check_and_once_a_day_cadence_the_code_has() {
+    let doc = wi328_doc();
+    // Once a day: a backup is due 24 hours after the last success.
+    assert_eq!(memex_core::backup::DUE_AFTER_MS, 24 * 60 * 60 * 1000);
+    wi328_assert_item_with(
+        "a vault server backs up a vault once a day",
+        &doc,
+        &["vault server", "once a day"],
+        &["changed", "edits"],
+    );
+    // Hourly: the check interval is a private constant of the server, so it
+    // is read off the source text (its behaviour is tested in
+    // server_backup.rs).
+    let source = include_str!("../src/server/mod.rs");
+    let every =
+        Regex::new(r"const BACKUP_CHECK_EVERY: [^=]*=\s*[\w:]*Duration::from_secs\(([\d\s*]+)\)")
+            .unwrap()
+            .captures(source)
+            .expect("src/server/mod.rs defines BACKUP_CHECK_EVERY");
+    let seconds: u64 = every[1]
+        .split('*')
+        .map(|n| n.trim().parse::<u64>().unwrap())
+        .product();
+    assert_eq!(seconds, 60 * 60, "the vault server checks every hour");
+    wi328_assert_item_with(
+        "a vault server checks when it starts and then every hour",
+        &doc,
+        &["vault server", "every hour", "starts"],
+        &["checks"],
+    );
+    wi328_assert_item_with(
+        "a vault copied in later is picked up by the next hourly check",
+        &doc,
+        &["hourly check"],
+        &["copied into the root"],
+    );
+}
+
+#[test]
+fn backups_doc_file_name_pattern_and_partial_name_are_the_ones_the_code_writes() {
+    use memex_core::backup::names;
+    let doc = wi328_doc();
+    // A real name, built by the code.
+    let at_ms = 1_794_232_980_000_i64;
+    let vault_id = "01J8Z6K3Q4W9X2V5B7N1M0C8DA";
+    let name = names::file_name("Notes", at_ms, vault_id);
+    assert_eq!(
+        name,
+        "Notes-20261109T140300Z-01J8Z6K3Q4W9X2V5B7N1M0C8DA.memex.zip"
+    );
+    let parsed = names::parse_file_name(&name).expect("a real name parses");
+    assert_eq!(
+        (parsed.label.as_str(), parsed.vault_id.as_str()),
+        ("Notes", vault_id)
+    );
+    // The doc's pattern and its example are that shape.
+    assert!(
+        doc.contains("`<label>-<YYYYMMDDTHHMMSSZ>-<vault_id>.memex.zip`"),
+        "the doc gives the file name pattern"
+    );
+    assert!(doc.contains(&name), "the doc's example is {name}");
+    // The partial name is a dot, the final name, then `.partial`.
+    assert_eq!(names::partial_name(&name), format!(".{name}.partial"));
+    assert!(
+        doc.contains("`.<name>.partial`"),
+        "the doc names the partial file `.<name>.partial`"
+    );
+    wi328_assert_item_with(
+        "a half-written backup never has a real name",
+        &doc,
+        &["hidden name", "renamed"],
+        &["complete"],
+    );
+    // The restore example's created_at is the example file's timestamp.
+    let at = chrono::DateTime::from_timestamp_millis(at_ms).unwrap();
+    assert_eq!(at.format("%Y%m%dT%H%M%SZ").to_string(), parsed.timestamp);
+    assert!(
+        doc.contains(&format!("\"created_at\":{at_ms}")),
+        "the restore JSON example has created_at {at_ms}, the time in the example file name"
+    );
+}
+
 // ---------- the error codes table ----------
 
 fn wi328_error_codes() -> Vec<String> {
@@ -3322,19 +3500,144 @@ fn backups_doc_error_codes_table_gives_the_http_status_where_the_server_sends_on
     let doc = wi328_doc();
     let section = hosted_section(&doc, "the Error codes table", r"error codes");
     for code in wi328_error_codes() {
-        let row = wi328_error_row(&section.body, &code).join(" | ");
+        let cells = wi328_error_row(&section.body, &code);
+        let status_cell = cells[1].as_str();
         let server_status = memex_mcp::server::error::status_for_code(&code).as_u16();
         if code == "backup_in_progress" || code == "backups_not_configured" {
             // The only two codes a vault server answers a request with.
             assert_eq!(server_status, 409, "{code}");
-            assert!(row.contains("409"), "the `{code}` row says 409: {row}");
+            assert_eq!(status_cell, "409", "the `{code}` row says 409: {cells:?}");
         } else {
-            assert!(
-                !row.contains("409"),
-                "the `{code}` row does not claim a 409: {row}"
+            // A POST answers at once, so a failed automatic backup is never an
+            // HTTP status: the cell says `none`, not a number.
+            assert_eq!(
+                status_cell, "none",
+                "the `{code}` row says `none` for the HTTP status: {cells:?}"
             );
         }
     }
+}
+
+#[test]
+fn backups_doc_error_codes_table_says_what_each_code_means_in_its_own_row() {
+    let doc = wi328_doc();
+    let section = hosted_section(&doc, "the Error codes table", r"error codes");
+    // Every one of these phrases must be in that code's own meaning cell, so
+    // two meanings swapped between rows fail.
+    let expected: [(&str, &[&str]); 8] = [
+        (
+            "backup_destination_unavailable",
+            &["is missing", "not a folder", "macos refused"],
+        ),
+        (
+            "backup_destination_inside_vault",
+            &["the vault folder", "inside it", "outside the vault"],
+        ),
+        (
+            "backup_in_progress",
+            &["already running", "second back up now"],
+        ),
+        (
+            "backup_failed",
+            &["part way", "integrity check", "no backup file is left"],
+        ),
+        ("backup_invalid", &["not a zip", "damaged parts"]),
+        ("backup_too_new", &["newer schema", "update memex"]),
+        (
+            "restore_target_not_empty",
+            &["`--to`", "not empty", "empty one"],
+        ),
+        (
+            "backups_not_configured",
+            &["only a vault server", "without `--backup-dir`", "restart"],
+        ),
+    ];
+    let codes = wi328_error_codes();
+    assert_eq!(expected.len(), codes.len());
+    for (code, phrases) in expected {
+        assert!(codes.iter().any(|c| c == code), "{code} is a real code");
+        let meaning = wi328_error_row(&section.body, code)[2].to_lowercase();
+        for phrase in phrases {
+            assert!(
+                meaning.contains(phrase),
+                "the `{code}` meaning says `{phrase}`: {meaning}"
+            );
+        }
+    }
+}
+
+#[test]
+fn backups_doc_error_codes_intro_names_the_codes_other_failures_carry() {
+    use memex_core::MemexError as E;
+    let doc = wi328_doc();
+    let section = hosted_section(&doc, "the Error codes table", r"error codes");
+    let intro = hosted_flat_lower(section.body.split("\n|").next().unwrap());
+    // The two other codes the text names are real `memex` codes.
+    assert_eq!(
+        E::NetworkFilesystem("x".into()).code(),
+        "network_filesystem"
+    );
+    assert_eq!(E::Io(std::io::Error::other("x")).code(), "internal");
+    for code in ["network_filesystem", "internal"] {
+        assert!(
+            intro.contains(&format!("`{code}`")),
+            "the intro names `{code}`: {intro}"
+        );
+    }
+    // It must not claim that the eight codes are the only ones.
+    assert!(
+        !intro.contains("every failure"),
+        "the intro does not say every failure carries one of the eight: {intro}"
+    );
+    assert!(
+        intro.contains("specific to backups and restores"),
+        "the eight are the backup and restore specific failures: {intro}"
+    );
+    assert!(
+        intro.contains("any code not listed here"),
+        "scripts are told to treat an unlisted code as a failure: {intro}"
+    );
+}
+
+#[test]
+fn backups_doc_other_codes_are_what_the_binary_prints_for_a_missing_vault_or_backup_file() {
+    use std::ffi::OsStr;
+    let scratch = tempfile::tempdir().unwrap();
+    let dest = scratch.path().join("dest");
+    std::fs::create_dir(&dest).unwrap();
+    let missing = scratch.path().join("missing");
+    let code_of = |stderr: &str| -> String {
+        let line = stderr.lines().last().unwrap_or("");
+        let v: Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("one line of JSON on stderr ({e}): {stderr:?}"));
+        v["error"]["code"].as_str().unwrap().to_string()
+    };
+    // "the vault folder or its manifest.json is missing"
+    let (ok, _, stderr) = wi328_run(&[
+        OsStr::new("backup"),
+        OsStr::new("--vault"),
+        missing.as_os_str(),
+        OsStr::new("--dest"),
+        dest.as_os_str(),
+    ]);
+    assert!(!ok, "a backup of a missing vault fails");
+    assert_eq!(code_of(&stderr), "internal", "{stderr}");
+    // "the `--from` file does not exist"
+    let (ok, _, stderr) = wi328_run(&[
+        OsStr::new("restore"),
+        OsStr::new("--from"),
+        missing.as_os_str(),
+        OsStr::new("--to"),
+        scratch.path().join("restored").as_os_str(),
+    ]);
+    assert!(!ok, "a restore of a missing file fails");
+    assert_eq!(code_of(&stderr), "internal", "{stderr}");
+    let section = hosted_section(&wi328_doc(), "the Error codes table", r"error codes");
+    let intro = hosted_flat_lower(section.body.split("\n|").next().unwrap());
+    assert!(
+        intro.contains("manifest.json") && intro.contains("`--from` file does not exist"),
+        "the intro gives both examples of `internal`: {intro}"
+    );
 }
 
 #[test]
@@ -3525,6 +3828,51 @@ fn readme_upgrade_sections_run_memex_backup_before_the_new_binary_opens_the_vaul
                 "the {what} section no longer lists the manual copy of {file}:\n{section}"
             );
         }
+    }
+}
+
+#[test]
+fn readme_upgrade_sections_cover_an_older_memex_that_has_no_memex_backup() {
+    let readme = readme();
+    let do_step = Regex::new(r"do step (\d+) first").unwrap();
+    for (what, title_re) in [
+        ("V5", r"upgrading to schema v5"),
+        ("V6", r"upgrading to schema v6"),
+    ] {
+        let section = hosted_section(&readme, what, title_re).body;
+        // The backup step says what to do with a `memex` that predates
+        // `memex backup`: do the install step first, then back up, and keep
+        // everything closed until the backup is done.
+        let step = section
+            .lines()
+            .find(|l| l.contains("`memex backup"))
+            .unwrap_or_else(|| panic!("the {what} section has a backup step:\n{section}"));
+        let flat = hosted_flat_lower(step);
+        assert!(
+            flat.contains("older and has no `memex backup`"),
+            "{what}: the backup step covers an older memex without the command: {step}"
+        );
+        assert!(
+            flat.contains("until the backup is done"),
+            "{what}: the old-binary case says to wait for the backup: {step}"
+        );
+        assert!(
+            flat.contains("keep everything closed") || flat.contains("do not start the app"),
+            "{what}: the old-binary case says to keep the app and clients closed: {step}"
+        );
+        // "do step N first" points at the step that installs the binary.
+        let n = do_step
+            .captures(&flat)
+            .unwrap_or_else(|| panic!("{what}: the backup step says `do step N first`: {step}"))[1]
+            .to_string();
+        let install_step = section
+            .lines()
+            .find(|l| l.starts_with(&format!("{n}. ")))
+            .unwrap_or_else(|| panic!("{what}: the section has a step {n}:\n{section}"));
+        assert!(
+            install_step.contains("cargo install"),
+            "{what}: step {n} is the install step: {install_step}"
+        );
     }
 }
 

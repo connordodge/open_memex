@@ -187,7 +187,7 @@ memex restore --from "$HOME/Backups/Notes-20261109T140300Z-01J8Z6K3Q4W9X2V5B7N1M
 It prints one line of JSON: `"vault_id"` (the restored vault's id), `"path"` (the new vault folder) and `"created_at"` (when the backup was made, in milliseconds since 1970).
 
 ```json
-{"vault_id":"01J8Z6K3Q4W9X2V5B7N1M0C8DA","path":"/Users/me/memex-restored","created_at":1762697000000}
+{"vault_id":"01J8Z6K3Q4W9X2V5B7N1M0C8DA","path":"/Users/me/memex-restored","created_at":1794232980000}
 ```
 
 A restore does not migrate the vault. A backup of an older vault restores as an older vault, and the first normal open upgrades it, as in the README's upgrade steps. A backup that holds a newer schema than your `memex` supports is refused, so update `memex` first.
