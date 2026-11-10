@@ -7,7 +7,6 @@ import 'package:path/path.dart' as p;
 
 import '../../state/backup_controller.dart';
 import '../../state/vault_delete.dart';
-import '../../state/vault_paths.dart';
 import '../../state/vault_state.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
@@ -108,9 +107,9 @@ class _DeleteVaultDialogState extends ConsumerState<DeleteVaultDialog> {
       isVaultBackingUp(ref.read(backupInFlightProvider), widget.path);
 
   /// Whether [current] is this dialog's vault, in any spelling of its
-  /// folder.
+  /// folder ([isOpenVaultFolder]).
   bool _isOpen(VaultRef? current) =>
-      current is LocalVaultRef && isSameVaultFolder(current.path, widget.path);
+      current is LocalVaultRef && isOpenVaultFolder(current.path, widget.path);
 
   @override
   Widget build(BuildContext context) {

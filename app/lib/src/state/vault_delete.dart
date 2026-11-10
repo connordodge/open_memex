@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
@@ -65,6 +67,29 @@ String vaultBackupRunningMessage(String path) =>
 bool isVaultBackingUp(Iterable<String> inFlight, String path) =>
     inFlight.any((running) => isSameVaultFolder(running, path));
 
+/// Whether [path] is the open vault's folder [openPath] itself, so that
+/// deleting [path] closes the vault and moves the open folder.
+///
+/// It is when the two strings are equal, or when they name the same folder
+/// in any spelling ([isSameVaultFolder]) and [path]'s own last entry is the
+/// open folder: a symlink to the open folder is not it (the Trash would
+/// move the link and leave the folder), nor is a folder whose name differs
+/// only in case on a case-sensitive volume. A path that can't be checked
+/// on disk is not it.
+bool isOpenVaultFolder(String openPath, String path) {
+  if (openPath == path) return true;
+  if (!isSameVaultFolder(openPath, path)) return false;
+  try {
+    final openFolder = Directory(openPath).resolveSymbolicLinksSync();
+    return FileSystemEntity.identicalSync(
+      openFolder,
+      p.normalize(p.absolute(path)),
+    );
+  } on FileSystemException {
+    return false;
+  }
+}
+
 /// Moves a local vault's folder to the Trash and forgets it.
 class VaultDeleter {
   VaultDeleter(this._ref);
@@ -105,19 +130,19 @@ class VaultDeleter {
   /// [context] must stay mounted while the guard runs: pass the delete
   /// dialog's own, since closing the vault unmounts whatever opened it.
   ///
-  /// [path] is the open vault when it names the open vault's folder in any
-  /// spelling ([isSameVaultFolder]); the close, the settle and the reopen
-  /// use the open vault's own ref, and on success that ref is forgotten
-  /// too. When [path] is not the open vault this is [delete]. While a
-  /// backup of [path] runs it refuses before the guard and closes nothing;
-  /// a backup that starts after that is refused by [delete], and the vault
-  /// reopens.
+  /// [path] is the open vault when [isOpenVaultFolder] says so, in any
+  /// spelling of the open folder; the close, the settle and the reopen use
+  /// the open vault's own ref, and on success that ref is forgotten too.
+  /// When [path] is not the open vault (a symlink to the open folder among
+  /// them) this is [delete], and the vault stays open. While a backup of
+  /// [path] runs it refuses before the guard and closes nothing; a backup
+  /// that starts after that is refused by [delete], and the vault reopens.
   Future<VaultDeleteResult> deleteOpenVault(
     BuildContext context,
     String path,
   ) async {
     final current = _ref.read(currentVaultProvider);
-    if (current is! LocalVaultRef || !isSameVaultFolder(current.path, path)) {
+    if (current is! LocalVaultRef || !isOpenVaultFolder(current.path, path)) {
       return delete(path);
     }
     final vault = current;
@@ -144,8 +169,8 @@ class VaultDeleter {
     if (result is VaultDeleteFailed) {
       await opener.reopenAfterFailedDelete(vault);
     } else if (vault.path != path) {
-      // [delete] forgot [path]'s spelling; the open one names the same
-      // folder, which is gone now.
+      // [delete] forgot [path]'s spelling. [isOpenVaultFolder] made [path]'s
+      // own entry the open folder, so that folder is in the Trash now.
       await _forget(vault);
     }
     return result;
