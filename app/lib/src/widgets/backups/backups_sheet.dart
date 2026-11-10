@@ -103,6 +103,18 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
   /// This sheet's `backUpNow` call is still running.
   bool _pending = false;
 
+  /// "turn on backups" is saving: the list stays, its button disabled, until
+  /// the save lands.
+  bool _turningOn = false;
+
+  /// Why the last destination save failed (`backup_destination_unavailable`
+  /// copy), shown until the next destination save or pick.
+  String? _saveError;
+
+  /// The tail of the settings saves in flight. Each change reads the stored
+  /// settings only after the one before it landed.
+  Future<void>? _saving;
+
   bool _menuOpen = false;
   OverlayPortalController _menu = OverlayPortalController();
   final _menuLink = LayerLink();
@@ -138,8 +150,57 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
   VaultBackupSettings _stored(String path) =>
       ref.read(vaultBackupSettingsProvider(path));
 
-  Future<void> _save(VaultBackupSettings settings) =>
-      ref.read(saveVaultBackupSettingsProvider)(_path!, settings);
+  /// Saves [change] of the stored settings, after any save still in flight,
+  /// and skips the save when nothing changes. With no save in flight the
+  /// save starts before this returns.
+  Future<void> _update(
+    VaultBackupSettings Function(VaultBackupSettings current) change,
+  ) {
+    Future<void> run() async {
+      final path = _path;
+      if (path == null || !mounted) return;
+      final current = _stored(path);
+      final next = change(current);
+      if (next == current) return;
+      await ref.read(saveVaultBackupSettingsProvider)(path, next);
+    }
+
+    final previous = _saving;
+    final future = previous == null ? run() : previous.then((_) => run());
+    late final Future<void> tail;
+    tail = future.then<void>((_) {}, onError: (Object _) {}).then((_) {
+      if (identical(_saving, tail)) _saving = null;
+    });
+    _saving = tail;
+    return future;
+  }
+
+  /// Reports a failed settings save that has no copy of its own.
+  void _settle(Future<void> save) {
+    save.catchError((Object error, StackTrace stack) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: error,
+          stack: stack,
+          library: 'backups sheet',
+          context: ErrorDescription('while saving backup settings'),
+        ),
+      );
+    });
+  }
+
+  /// The copy for a destination the save could not create or use.
+  String _destinationError(String destination) {
+    final now = ref.read(clockProvider).now();
+    return backupFailureMessage(
+      code: 'backup_destination_unavailable',
+      automatic: false,
+      failedAt: now,
+      now: now,
+      destination: destination,
+      provider: _whereOf(destination).provider,
+    ).detail;
+  }
 
   Future<void> _runBackup() async {
     if (_pending) return;
@@ -167,6 +228,7 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
       _selectedPath = null;
       _chooseSelected = false;
       _chosenFolder = null;
+      _saveError = null;
     });
     _discover();
   }
@@ -174,6 +236,7 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
   void _cancelPicking() => setState(() {
     _picking = false;
     _pickCancelled = true;
+    _saveError = null;
   });
 
   void _selectProvider(String path) => setState(() {
@@ -192,36 +255,60 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
     });
   }
 
-  void _turnOnBackups(String destination) {
-    final path = _path!;
+  /// Saves [destination] with backups on. The list stays until the save
+  /// lands; a save that fails keeps it, with the failure in its card.
+  Future<void> _turnOnBackups(String destination) async {
     setState(() {
+      _turningOn = true;
+      _saveError = null;
+    });
+    try {
+      await _update(
+        (current) => current.copyWith(enabled: true, destination: destination),
+      );
+    } on Exception {
+      if (!mounted) return;
+      setState(() {
+        _turningOn = false;
+        _saveError = _destinationError(destination);
+      });
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _turningOn = false;
       _picking = false;
       _pickCancelled = false;
     });
-    _save(_stored(path).copyWith(enabled: true, destination: destination));
   }
 
   void _turnOffBackups() {
-    final path = _path!;
     _closeMenu();
-    setState(() => _picking = false);
-    _save(_stored(path).copyWith(enabled: false));
+    setState(() {
+      _picking = false;
+      _saveError = null;
+    });
+    _settle(_update((current) => current.copyWith(enabled: false)));
   }
 
   void _toggleAutomatic() {
-    final current = _stored(_path!);
-    _save(current.copyWith(automatic: !current.automatic));
+    _settle(
+      _update((current) => current.copyWith(automatic: !current.automatic)),
+    );
   }
 
   void _stepKeep(int delta) {
-    final current = _stored(_path!);
-    final next = math.min(
-      backupKeepMax,
-      math.max(backupKeepMin, current.keep + delta),
+    _settle(
+      _update((current) {
+        final next = math.min(
+          backupKeepMax,
+          math.max(backupKeepMin, current.keep + delta),
+        );
+        if (next == current.keep) return current;
+        _keepText.text = '$next';
+        return current.copyWith(keep: next);
+      }),
     );
-    if (next == current.keep) return;
-    _keepText.text = '$next';
-    _save(current.copyWith(keep: next));
   }
 
   void _onKeepFocus() {
@@ -234,15 +321,14 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
   void _commitKeep() {
     final path = _path;
     if (!mounted || path == null) return;
-    final current = _stored(path);
     final typed = int.tryParse(_keepText.text.trim());
     if (typed == null) {
-      _keepText.text = '${current.keep}';
+      _keepText.text = '${_stored(path).keep}';
       return;
     }
     final keep = math.min(backupKeepMax, math.max(backupKeepMin, typed));
     _keepText.text = '$keep';
-    if (keep != current.keep) _save(current.copyWith(keep: keep));
+    _settle(_update((current) => current.copyWith(keep: keep)));
   }
 
   void _openMenu() {
@@ -256,11 +342,22 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
     if (_menuOpen) setState(() => _menuOpen = false);
   }
 
-  void _menuSelect(String destination) {
+  /// Saves [destination] at once; a save that fails shows why under the
+  /// settings.
+  Future<void> _menuSelect(String destination) async {
     _closeMenu();
-    final current = _stored(_path!);
-    if (destination == current.destination) return;
-    _save(current.copyWith(destination: destination));
+    if (_saveError != null) setState(() => _saveError = null);
+    try {
+      await _update(
+        (current) => destination == current.destination
+            ? current
+            : current.copyWith(destination: destination),
+      );
+    } on Exception {
+      if (mounted) {
+        setState(() => _saveError = _destinationError(destination));
+      }
+    }
   }
 
   Future<void> _menuChooseFolder() async {
@@ -269,7 +366,7 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
       dialogTitle: 'Choose where backups go',
     );
     if (folder == null || !mounted) return;
-    _menuSelect(folder);
+    await _menuSelect(folder);
   }
 
   // --------------------------------------------------------------- build
@@ -422,6 +519,10 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
             _automaticRow(stored),
           ],
         ),
+        if (_saveError case final error?) ...[
+          const SizedBox(height: 10),
+          Text(error, style: _smallStyle.copyWith(color: OmColors.danger)),
+        ],
         const SizedBox(height: 14),
         if (_menuOpen)
           _small(_oldFolderNote)
@@ -498,14 +599,15 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
   Widget _pickingBody(BackupViewState view, VaultBackupSettings stored) {
     final options = _keyed(_providerOptions(view));
     final selection = _chooseSelected ? _chosenFolder : _selectedPath;
+    final error = _saveError;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _StatusCard(
-          tone: _Tone.normal,
-          icon: LucideIcons.archive,
+          tone: error == null ? _Tone.normal : _Tone.error,
+          icon: error == null ? LucideIcons.archive : LucideIcons.triangleAlert,
           title: _pickTitle,
-          body: [_small(_pickBody)],
+          body: [_small(error ?? _pickBody)],
         ),
         const SizedBox(height: 20),
         _eyebrow(_settingsEyebrow),
@@ -581,7 +683,7 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
             _SheetButton(
               key: _turnOnKey,
               label: _turnOn,
-              onPressed: selection == null
+              onPressed: selection == null || _turningOn
                   ? null
                   : () => _turnOnBackups(selection),
             ),
@@ -723,23 +825,31 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
               child: TapRegion(
                 groupId: _menuGroup,
                 onTapOutside: (_) => _closeMenu(),
-                child: Material(
-                  type: MaterialType.transparency,
-                  child: _MenuPanel(
-                    providers: [
-                      for (final (option, key) in options)
-                        _MenuItem(
-                          key: key,
-                          label: option.label,
-                          current: option.path == current,
-                          onTap: () => _menuSelect(option.path!),
-                        ),
-                    ],
-                    choose: _MenuItem(
-                      key: backupsDestinationChooseKey,
-                      label: _chooseFolder,
-                      current: false,
-                      onTap: _menuChooseFolder,
+                // A click opens the menu without focusing anything: take
+                // focus into it, so Escape reaches the sheet's Actions and
+                // closes the menu, not the sheet. Opened from the keyboard,
+                // the destination button keeps focus.
+                child: Focus(
+                  autofocus: true,
+                  skipTraversal: true,
+                  child: Material(
+                    type: MaterialType.transparency,
+                    child: _MenuPanel(
+                      providers: [
+                        for (final (option, key) in options)
+                          _MenuItem(
+                            key: key,
+                            label: option.label,
+                            current: option.path == current,
+                            onTap: () => _menuSelect(option.path!),
+                          ),
+                      ],
+                      choose: _MenuItem(
+                        key: backupsDestinationChooseKey,
+                        label: _chooseFolder,
+                        current: false,
+                        onTap: _menuChooseFolder,
+                      ),
                     ),
                   ),
                 ),
@@ -833,6 +943,20 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
             const SizedBox(height: 20),
             const _GuideFooter(),
           ],
+        );
+      case BackupSheetMode.off || BackupSheetMode.pickingDestination:
+        // The server's status isn't read yet: claim nothing about it, and
+        // send nothing until it is known.
+        return _StatusCard(
+          tone: _Tone.normal,
+          icon: LucideIcons.server,
+          title: _hostedCheckingTitle(server),
+          body: [_small(_unreachableBody(server))],
+          action: const _CardAction(
+            key: backupsNowKey,
+            label: _backUpNow,
+            onPressed: null,
+          ),
         );
       case _:
         // The note shows with a result (B3-1); not while running or after a

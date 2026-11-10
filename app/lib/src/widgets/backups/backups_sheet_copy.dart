@@ -82,6 +82,10 @@ String _tooOldTitle(String server) => "$server doesn't support backups yet";
 String _tooOldBody(String server) =>
     'update memex on $server and restart memex serve, then reopen this sheet.';
 
+/// A hosted vault whose status the controller hasn't read yet (no board;
+/// lead ruling pending, see the PR's questions).
+String _hostedCheckingTitle(String server) => 'checking backups on $server…';
+
 String _hostedNeverBody(String server) =>
     '$server makes the first one within the hour.';
 
@@ -145,38 +149,49 @@ class _Where {
   };
 }
 
-final _icloudRoot = RegExp(
-  r'/Library/Mobile Documents/com~apple~CloudDocs(?=/|$)',
+// A provider's backup folder as discovery offers it and as A3's controller
+// reads it for its failure copy (Spec req 20): `<provider folder>/Open Memex
+// Backups`. Any other folder, one elsewhere in a provider's tree included,
+// reads as a chosen folder, so the card and the failure copy agree.
+final _icloudFolder = RegExp(
+  r'/Library/Mobile Documents/com~apple~CloudDocs/(Open Memex Backups)$',
 );
-final _googleRoot = RegExp(r'/Library/CloudStorage/GoogleDrive-([^/]+)/');
-final _oneDriveRoot = RegExp(
-  r'/Library/CloudStorage/(OneDrive-([^/]+))(?=/|$)',
+final _googleFolder = RegExp(
+  r'/Library/CloudStorage/GoogleDrive-([^/]+)/(My Drive/Open Memex Backups)$',
+);
+final _oneDriveFolder = RegExp(
+  r'/Library/CloudStorage/(OneDrive-([^/]+)/Open Memex Backups)$',
 );
 
-/// Reads [path] as a provider folder (macOS File Provider locations, as A2's
-/// discovery lists them) or as a chosen folder.
+/// Reads [path] as a provider's backup folder (the macOS File Provider
+/// locations discovery lists, ending in `Open Memex Backups`) or as a chosen
+/// folder.
 _Where _whereOf(String path) {
-  final icloud = _icloudRoot.firstMatch(path);
+  var trimmed = path;
+  while (trimmed.length > 1 && trimmed.endsWith('/')) {
+    trimmed = trimmed.substring(0, trimmed.length - 1);
+  }
+  final icloud = _icloudFolder.firstMatch(trimmed);
   if (icloud != null) {
     return _Where(
       provider: BackupProvider.icloud,
-      relative: 'iCloud Drive${path.substring(icloud.end)}',
+      relative: 'iCloud Drive/${icloud[1]}',
       label: 'iCloud Drive',
     );
   }
-  final google = _googleRoot.firstMatch(path);
+  final google = _googleFolder.firstMatch(trimmed);
   if (google != null) {
     return _Where(
       provider: BackupProvider.googleDrive,
-      relative: path.substring(google.end),
+      relative: google[2]!,
       label: 'Google Drive · ${google[1]}',
     );
   }
-  final oneDrive = _oneDriveRoot.firstMatch(path);
+  final oneDrive = _oneDriveFolder.firstMatch(trimmed);
   if (oneDrive != null) {
     return _Where(
       provider: BackupProvider.oneDrive,
-      relative: '${oneDrive[1]}${path.substring(oneDrive.end)}',
+      relative: oneDrive[1]!,
       label: 'OneDrive · ${oneDrive[2]}',
     );
   }

@@ -939,10 +939,10 @@ class _CommandRow extends StatelessWidget {
       child: Row(
         children: [
           Expanded(
+            // Wraps rather than clips: `--backup-dir <dir>` is the point.
             child: Text(
               _hostedCommand,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+              softWrap: true,
               style: OmType.mono(size: 12, color: OmColors.fg1),
             ),
           ),
