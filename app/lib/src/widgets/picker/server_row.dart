@@ -102,11 +102,15 @@ class PickerRowIconButton extends StatelessWidget {
     required this.icon,
     required this.tooltip,
     required this.onPressed,
+    this.semanticLabel,
   });
 
   final IconData icon;
   final String tooltip;
   final VoidCallback onPressed;
+
+  /// What a screen reader reads for this button; defaults to [tooltip].
+  final String? semanticLabel;
 
   @override
   Widget build(BuildContext context) {
