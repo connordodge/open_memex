@@ -267,6 +267,41 @@ fn memex_backup_prints_the_created_line_with_absolute_paths_and_exits_0() {
     );
 }
 
+/// `backup.json` of the zip at `file`, read with the system `unzip` (this
+/// crate has no zip dependency).
+fn backup_json_of(file: &Path) -> Value {
+    let out = Command::new("/usr/bin/unzip")
+        .args(["-p"])
+        .arg(file)
+        .arg("backup.json")
+        .output()
+        .expect("spawn unzip");
+    assert!(out.status.success(), "unzip -p {}: {out:?}", file.display());
+    serde_json::from_slice(&out.stdout).expect("backup.json is JSON")
+}
+
+/// Req 3: the CLI is a local backup, so `backup.json` says `source: "local"`,
+/// and its fingerprint is the one printed and recorded.
+#[test]
+fn memex_backup_writes_source_local_and_the_printed_fingerprint_into_backup_json() {
+    let fx = Fx::new();
+    let line = success_line(&memex(&["backup", "--vault", fx.v(), "--dest", fx.d()]));
+    let bj = backup_json_of(&path_of(&line["file"]));
+
+    assert_eq!(bj["source"], json!("local"), "{bj}");
+    assert_eq!(
+        bj["fingerprint"], line["fingerprint"],
+        "printed = in the zip"
+    );
+    assert_eq!(bj["vault_id"], json!(fx.vault_id));
+    let recorded = state::destination_state(&fx.vault, &fx.dest).expect("recorded");
+    assert_eq!(
+        recorded.last_fingerprint.as_deref(),
+        bj["fingerprint"].as_str(),
+        "recorded = in the zip"
+    );
+}
+
 #[test]
 fn memex_backup_if_changed_prints_unchanged_with_the_absolute_last_file() {
     let fx = Fx::new();

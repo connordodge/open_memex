@@ -2213,6 +2213,301 @@ fn objects_non_utf8_name_fails_backup_failed_and_is_recorded() {
     assert_objects_entry_fails(&fx);
 }
 
+// ---- fix round 1: retention never fails the run, the sink latches, the pre-pass -----------------
+
+/// A file flagged user-immutable (Finder's "Locked"): `unlink` fails with
+/// EPERM until the flag is cleared, which the guard does on drop so the temp
+/// folder can be removed even when the test fails.
+#[cfg(target_os = "macos")]
+struct Immutable(std::ffi::CString);
+
+#[cfg(target_os = "macos")]
+impl Immutable {
+    fn set(path: &Path) -> Self {
+        use std::os::unix::ffi::OsStrExt;
+        let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::chflags(c.as_ptr(), libc::UF_IMMUTABLE) }, 0);
+        Immutable(c)
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for Immutable {
+    fn drop(&mut self) {
+        unsafe { libc::chflags(self.0.as_ptr(), 0) };
+    }
+}
+
+/// Retention runs after the rename (D9 step 10), so a backup it cannot
+/// delete (here a Locked one) is left in place and left out of `removed`; the
+/// run still ends `created`, with the new file recorded and printed
+/// (Spec req 5: a failed run leaves no file under the final name, so a run
+/// whose file is in place is not failed).
+#[cfg(target_os = "macos")]
+#[test]
+fn a_retention_delete_that_fails_never_fails_the_run_and_is_left_out_of_removed() {
+    let fx = Fx::new();
+    let day = 86_400_000;
+    let locked = fx.seed(&fx.final_name(T1 - 2 * day));
+    let deletable = fx.seed(&fx.final_name(T1 - day));
+    let _locked = Immutable::set(&locked);
+
+    let result = fx.run(T1, 1, false);
+    let (vault_id, file, bytes, fingerprint, removed) =
+        created(result.expect("a retention failure never fails the run"));
+
+    assert_eq!(vault_id, fx.vault_id);
+    assert_eq!(file, fx.final_path(T1));
+    assert!(file.exists(), "the new file is in place");
+    assert_eq!(bytes, fs::metadata(&file).unwrap().len());
+    assert_eq!(removed, vec![deletable.clone()], "exactly what was deleted");
+    assert!(!deletable.exists(), "the deletable older backup went");
+    assert_eq!(
+        fs::read(&locked).unwrap(),
+        format!("seeded {}", fx.final_name(T1 - 2 * day)).into_bytes(),
+        "the locked one survives, untouched"
+    );
+    assert!(partials(&fx.dest).is_empty());
+
+    let s = fx.state().expect("recorded");
+    assert_eq!(s.last_result, "created", "{s:?}");
+    assert_eq!(s.last_error, None);
+    assert_eq!(s.last_file, Some(fx.final_name(T1)));
+    assert_eq!(s.last_success_at, Some(T1));
+    assert_eq!(s.last_fingerprint, Some(fingerprint));
+}
+
+/// What a [`TailSink`] fails on.
+#[derive(Clone, Copy)]
+enum TailFault {
+    /// The first write that carries this byte string (the zip's end-of-
+    /// central-directory signature, in the last flush of `finish`).
+    WriteWith(&'static [u8]),
+    /// The seek to the end that `finish` makes after the footer is written.
+    SeekToEnd,
+}
+
+/// What a [`TailSink`] saw: whether it failed, and which calls still reached
+/// it afterwards.
+#[derive(Default)]
+struct TailWatch {
+    tripped: AtomicBool,
+    writes_after_trip: AtomicUsize,
+    flushes_and_seeks_after_trip: AtomicUsize,
+}
+
+/// A sink that works until the zip's tail, fails there, and counts every
+/// call that reaches it afterwards.
+struct TailSink {
+    file: File,
+    fault: TailFault,
+    watch: Arc<TailWatch>,
+}
+
+impl TailSink {
+    /// `Err` for a call after the trip, which it also counts: a write in
+    /// `writes`, a flush or seek in the other count.
+    fn after_trip(&self, write: bool) -> io::Result<()> {
+        if self.watch.tripped.load(Ordering::SeqCst) {
+            let count = if write {
+                &self.watch.writes_after_trip
+            } else {
+                &self.watch.flushes_and_seeks_after_trip
+            };
+            count.fetch_add(1, Ordering::SeqCst);
+            return Err(io::Error::other("test sink: disk full, still"));
+        }
+        Ok(())
+    }
+
+    fn trip(&self) -> io::Error {
+        self.watch.tripped.store(true, Ordering::SeqCst);
+        io::Error::other("test sink: disk full in the zip's tail")
+    }
+}
+
+impl Write for TailSink {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.after_trip(true)?;
+        if let TailFault::WriteWith(signature) = self.fault {
+            if buf.windows(signature.len()).any(|w| w == signature) {
+                return Err(self.trip());
+            }
+        }
+        self.file.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.after_trip(false)?;
+        self.file.flush()
+    }
+}
+
+impl Seek for TailSink {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        self.after_trip(false)?;
+        if matches!((self.fault, pos), (TailFault::SeekToEnd, SeekFrom::End(_))) {
+            return Err(self.trip());
+        }
+        self.file.seek(pos)
+    }
+}
+
+/// A backup whose sink fails only in the zip's tail (after every member's
+/// data): the run fails `backup_failed`, leaves no final name and no
+/// partial, records the failure, and the sink sees no flush or seek after the
+/// first failed call (and at most the one write of `BufWriter`'s own flush on
+/// drop). `ZipWriter` retries `finalize` when it is dropped after a failed
+/// `finish`, and prints to stderr when that fails too, so a retry that
+/// reaches the sink (it ends in a seek) is what breaks the one-line C1
+/// contract on stderr.
+fn assert_tail_failure_is_latched(fault: TailFault) {
+    let fx = Fx::new();
+    let watch = Arc::new(TailWatch::default());
+    let wrap = {
+        let watch = Arc::clone(&watch);
+        move |file: File| -> io::Result<Box<dyn ArchiveSink>> {
+            Ok(Box::new(TailSink {
+                file,
+                fault,
+                watch: Arc::clone(&watch),
+            }))
+        }
+    };
+    let clock = TestClock::fixed(T1);
+    let seams = BackupSeams {
+        clock: &clock,
+        probe: &local_probe,
+        wrap_archive: &wrap,
+    };
+    let result = backup::backup_with(&fx.request(30, false), &seams);
+
+    assert!(
+        watch.tripped.load(Ordering::SeqCst),
+        "the fault was reached"
+    );
+    assert_eq!(code(&result), "backup_failed", "{result:?}");
+    assert_eq!(
+        watch.flushes_and_seeks_after_trip.load(Ordering::SeqCst),
+        0,
+        "no retry of finalize reaches the sink after its first failure"
+    );
+    assert!(
+        watch.writes_after_trip.load(Ordering::SeqCst) <= 1,
+        "at most the buffer's own flush on drop"
+    );
+    assert!(!fx.final_path(T1).exists());
+    assert!(partials(&fx.dest).is_empty());
+    assert!(backups_of(&fx.dest, &fx.vault_id).is_empty());
+    assert_eq!(fx.state().expect("recorded").last_result, "backup_failed");
+}
+
+#[test]
+fn a_write_that_fails_in_the_zip_tail_reaches_the_sink_once() {
+    assert_tail_failure_is_latched(TailFault::WriteWith(b"PK\x05\x06"));
+}
+
+#[test]
+fn a_seek_that_fails_in_the_zip_tail_reaches_the_sink_once() {
+    assert_tail_failure_is_latched(TailFault::SeekToEnd);
+}
+
+/// D7: the recorded and printed fingerprint is the write pass's, never the
+/// `--if-changed` pre-pass's. A prior backup exists, an object changes (so
+/// the pre-pass says "changed"), and another changes again after the
+/// pre-pass: the outcome, `backup.json` and the state hold the value of the
+/// bytes in the zip, which is not the pre-pass's.
+#[test]
+fn if_changed_records_the_write_pass_fingerprint_not_the_pre_pass_one() {
+    let fx = Fx::new();
+    let (.., first_fp, _) = created(fx.run(T1, 30, false).unwrap());
+    fs::write(fx.vault.join("objects/a.txt"), b"alpha object, changed").unwrap();
+
+    // What the pre-pass sees: a backup of this very state, into a folder of
+    // its own (a different destination key, so it does not touch the state
+    // under test).
+    let elsewhere = fx.root.join("Elsewhere");
+    fs::create_dir(&elsewhere).unwrap();
+    let pre_pass_fp = {
+        let clock = TestClock::fixed(T1);
+        let seams = BackupSeams {
+            clock: &clock,
+            probe: &local_probe,
+            wrap_archive: &plain_sink,
+        };
+        let request = BackupRequest {
+            destination: &elsewhere,
+            ..fx.request(30, false)
+        };
+        created(backup::backup_with(&request, &seams).unwrap()).3
+    };
+    assert_ne!(pre_pass_fp, first_fp, "the first change is seen");
+
+    let changed = fx.vault.join("objects/B.txt");
+    let wrap = |file: File| -> io::Result<Box<dyn ArchiveSink>> {
+        fs::write(&changed, b"bravo object, changed after the pre-pass")?;
+        Ok(Box::new(file))
+    };
+    let clock = TestClock::fixed(T2);
+    let seams = BackupSeams {
+        clock: &clock,
+        probe: &local_probe,
+        wrap_archive: &wrap,
+    };
+    let (_, file, _, fingerprint, _) =
+        created(backup::backup_with(&fx.request(30, true), &seams).unwrap());
+
+    let members = read_zip(&file);
+    assert_eq!(fingerprint, fingerprint_of(&members), "outcome = zip bytes");
+    assert_ne!(fingerprint, pre_pass_fp, "not the pre-pass value");
+    assert_eq!(backup_json(&members)["fingerprint"], json!(fingerprint));
+    assert_eq!(
+        fx.state().unwrap().last_fingerprint.as_deref(),
+        Some(fingerprint.as_str())
+    );
+}
+
+/// The inside-vault check compares canonical paths on both sides: a vault
+/// reached through a symlink (macOS's `/tmp`) and a destination named by its
+/// real path inside it is inside the vault.
+#[test]
+fn a_vault_reached_through_a_symlink_still_rejects_a_destination_inside_it() {
+    let fx = Fx::new();
+    let inner = fx.vault.join("inner");
+    fs::create_dir(&inner).unwrap();
+    let link = fx.root.join("vault link");
+    symlink(&fx.vault, &link).unwrap();
+    let before = names(&inner);
+
+    let clock = TestClock::fixed(T1);
+    let seams = BackupSeams {
+        clock: &clock,
+        probe: &local_probe,
+        wrap_archive: &plain_sink,
+    };
+    for dest in [&inner, &fx.vault] {
+        let request = BackupRequest {
+            vault: &link,
+            destination: dest,
+            ..fx.request(30, false)
+        };
+        let result = backup::backup_with(&request, &seams);
+        assert_eq!(
+            code(&result),
+            "backup_destination_inside_vault",
+            "{}: {result:?}",
+            dest.display()
+        );
+    }
+    assert_eq!(names(&inner), before, "nothing was written inside");
+    assert!(
+        names(&fx.vault)
+            .iter()
+            .all(|n| !n.ends_with(".memex.zip") && !n.ends_with(".partial")),
+        "no zip or partial in the vault"
+    );
+}
+
 // ---- the V5 schema, as shipped (copied from migration_v6.rs) ----------------------------------
 
 /// The shipped V5 schema (v1..v5), FTS included, pinned at version 5.
