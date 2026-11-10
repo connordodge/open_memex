@@ -79,14 +79,17 @@ const _months = [
 
 /// The open controller with every `openVault` recorded; it opens nothing.
 class _RecordingOpener extends VaultOpenController {
-  _RecordingOpener(super.ref);
+  _RecordingOpener(super.ref, [this.outcomeFor]);
+
+  /// What an open gives; null opens the vault.
+  final VaultOpenOutcome Function(VaultRef)? outcomeFor;
 
   final List<VaultRef> opened = [];
 
   @override
   Future<VaultOpenOutcome> openVault(VaultRef vault) async {
     opened.add(vault);
-    return VaultOpened(vault);
+    return outcomeFor?.call(vault) ?? VaultOpened(vault);
   }
 }
 
@@ -130,6 +133,7 @@ Future<_Picker> _pumpPicker(
   double textScale = 1.0,
   FakeBackupRunner? runner,
   FakeFilePicker? nativePicker,
+  VaultOpenOutcome Function(VaultRef)? openOutcome,
 }) async {
   final dir = Directory.systemTemp.createTempSync('om327_');
   addTearDown(() {
@@ -151,7 +155,7 @@ Future<_Picker> _pumpPicker(
     surfaceSize: const Size(1280, 1100),
     overrides: [
       vaultOpenControllerProvider.overrideWith(
-        (ref) => opener ??= _RecordingOpener(ref),
+        (ref) => opener ??= _RecordingOpener(ref, openOutcome),
       ),
     ],
   );
@@ -1272,6 +1276,113 @@ void main() {
       final hint = find.text(_rowHint);
       expect(hint, findsOneWidget);
       _expectNothingClipped(tester, hint, 'picker row');
+    });
+  });
+
+  group('AC6 the message names what was tried', () {
+    testWidgets(
+      'a target not empty message names the trimmed name that was tried',
+      (tester) async {
+        final s = await _pumpPicker(tester);
+        await _openDialog(tester, s);
+        final parent = s.parent('my backups');
+        await _chooseParent(tester, s, parent);
+        await _enterName(tester, '  photos  ');
+        s.runner.scriptRestore(
+          const RestoreFailure(
+            code: 'restore_target_not_empty',
+            message: 'restore target is not empty',
+          ),
+        );
+
+        await _tap(tester, find.byKey(restoreSubmitKey));
+
+        expect(s.restoreCalls.single.to, p.join(parent, 'photos'));
+        expect(
+          _error(),
+          "a folder named photos already exists in $parent and isn't empty. "
+          'choose another name or folder.',
+        );
+      },
+    );
+  });
+
+  // ===================================================== open after restore
+  // Review r1: the restore succeeded and the open of the restored folder
+  // failed. The picker must show what the open gave, under the open eyebrow.
+  group('the open after a successful restore', () {
+    testWidgets(
+      'a restored folder on a network drive shows the refusal under the open eyebrow',
+      (tester) async {
+        late String target;
+        final s = await _pumpPicker(
+          tester,
+          openOutcome: (_) => VaultOnNetworkDrive(target, 'on a network drive'),
+        );
+        await _openDialog(tester, s);
+        final parent = s.parent('my backups');
+        target = p.join(parent, 'memex');
+        await _chooseParent(tester, s, parent);
+
+        await _tap(tester, find.byKey(restoreSubmitKey));
+
+        expect(s.restoreCalls, hasLength(1));
+        expect(find.byKey(restoreDialogKey), findsNothing);
+        expect(s.opened, [LocalVaultRef(target)]);
+        final refusal = find.byKey(const Key('network-drive-refusal'));
+        expect(refusal, findsOneWidget);
+        expect(
+          find.descendant(of: refusal, matching: find.text('OPEN LOCAL VAULT')),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(of: refusal, matching: find.text('CREATE NEW VAULT')),
+          findsNothing,
+        );
+        expect(
+          find.descendant(of: refusal, matching: find.text(target)),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'a restored folder that fails to open shows the open error in a snackbar',
+      (tester) async {
+        final s = await _pumpPicker(
+          tester,
+          openOutcome: (_) => const VaultOpenFailure('could not open it.'),
+        );
+        await _openDialog(tester, s);
+        final parent = s.parent('my backups');
+        await _chooseParent(tester, s, parent);
+
+        await _tap(tester, find.byKey(restoreSubmitKey));
+
+        expect(s.restoreCalls, hasLength(1));
+        expect(find.byKey(restoreDialogKey), findsNothing);
+        expect(s.opened, [LocalVaultRef(p.join(parent, 'memex'))]);
+        expect(find.byType(SnackBar), findsOneWidget);
+        expect(
+          find.descendant(
+            of: find.byType(SnackBar),
+            matching: find.text('could not open it.'),
+          ),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets('a restored folder that opens shows no error', (tester) async {
+      final s = await _pumpPicker(tester);
+      await _openDialog(tester, s);
+      await _chooseParent(tester, s, s.parent('my backups'));
+
+      await _tap(tester, find.byKey(restoreSubmitKey));
+
+      expect(s.opened, hasLength(1));
+      expect(find.byType(SnackBar), findsNothing);
+      expect(find.byKey(const Key('network-drive-refusal')), findsNothing);
     });
   });
 
