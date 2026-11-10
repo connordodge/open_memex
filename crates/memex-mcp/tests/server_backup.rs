@@ -699,7 +699,7 @@ async fn a_post_answers_202_in_progress_before_its_held_backup_finishes_and_a_se
     // The backup never takes the vault's lock: the vault serves meanwhile.
     let bearer = env.bearer();
     let r = env
-        .call("GET", "/vaults/alpha/api/v1/notes", Some(&bearer))
+        .call("GET", "/vaults/alpha/api/v1/notes?limit=10", Some(&bearer))
         .await;
     assert_eq!(r.status, 200, "notes during the backup: {}", r.body);
     let r = env
@@ -981,7 +981,7 @@ async fn a_missing_backup_dir_records_destination_unavailable_for_each_vault_and
         "{v}"
     );
     let r = env
-        .call("GET", "/vaults/bravo/api/v1/notes", Some(&bearer))
+        .call("GET", "/vaults/bravo/api/v1/notes?limit=10", Some(&bearer))
         .await;
     assert_eq!(r.status, 200, "{}", r.body);
 }
