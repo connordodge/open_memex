@@ -110,7 +110,7 @@ Clicking a tag changes the sidebar and opens no new tab.
 
 ## The Note footer
 
-Every note can have a Note footer: a block at the bottom, below the `<!-- memex:topics -->` marker, kept by the server. (It used to be called the Topics footer. The marker and the `memex footer` command keep their names, so no note needs rewriting.)
+Every note can have a Note footer: a block at the bottom, below the `<!-- memex:topics -->` marker, kept by the server. (It had a different name before. The marker and the `memex footer` command keep their names, so no note needs rewriting.)
 
 The footer has up to two rows:
 
