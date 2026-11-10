@@ -10,6 +10,8 @@ This page takes you from nothing to a working hosted vault:
 4. connect the app, Claude Desktop, Raycast and Claude Code;
 5. fix the usual problems.
 
+To back up the vaults on a vault server, and to restore one, see [`backups.md`](backups.md).
+
 ## What the vault server serves
 
 - The **vault root** is the folder you pass to `--root`. Every immediate subfolder that is a vault is served under its folder name, so `<root>/home` is the vault `home` at `/vaults/home/`.

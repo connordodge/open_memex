@@ -18,6 +18,8 @@ Open-source, local-first, AI-native knowledge base. The user's notes live on the
   - `memex serve --root <dir> --listen <host:port>` — run the vault server: serve every vault in `<dir>` over HTTP to the app and agents on your trusted LAN or tailnet. `--listen` has no default. See [`docs/hosted-vault.md`](docs/hosted-vault.md) for a NAS, Linux or an always-on Mac
   - `memex serve --remote <url>` — bridge stdio MCP to a hosted vault (`<server-url>/vaults/<name>/mcp`, token from `MEMEX_ACCESS_TOKEN`), for Claude Desktop and Raycast
   - `memex vault check --vault <path>` — exit 0 when the folder is safe for a vault (not on a network drive)
+  - `memex backup --vault <path> --dest <folder> [--keep <n>] [--if-changed]` — back up a vault into a folder as one `.memex.zip` file and print the result as JSON; it never opens the vault for writing, so it is safe to run while the app is open. Backups also run from the app and the vault server; see [`docs/backups.md`](docs/backups.md)
+  - `memex restore --from <file> --to <new-folder>` — make a new vault folder from a backup file (see [`docs/backups.md`](docs/backups.md))
   - `memex add --role daily|topic` — create a daily note or a topic note (`memex add --vault <path> --title 2026-09-05 --role daily`)
   - `memex append --vault <path> [--date YYYY-MM-DD] [TEXT]` — quick entry: append text to a daily note (today by default; text from the argument or stdin) and print the new block ids, the content version and the day's prior review state as JSON. The one CLI write meant for automation (Raycast, Alfred, Shortcuts, shell aliases).
   - `memex prompt review` / `memex prompt capture` — print the agent prompt texts
@@ -54,7 +56,7 @@ Open-source, local-first, AI-native knowledge base. The user's notes live on the
 
 Daily notes, topic notes, review state and Smart Folders need schema V5. The first time the new `memex` binary (the CLI, `memex serve` or the app's `memex` calls) opens a vault, it migrates that vault to V5 in place. Older `memex` binaries refuse to open a V5 vault, so there is no going back except from a backup. Before you upgrade:
 
-1. Quit the app and any MCP client, then back up the vault's `memex.db`, `memex.db-wal` and `memex.db-shm` (all three; the last two exist while a vault is open or was not closed cleanly).
+1. Quit the app and any MCP client, then back up the vault with `memex backup --vault <path> --dest <folder>` (the folder must already exist). Run it before anything opens the vault with the new `memex`: it reads a consistent copy, whether or not the vault is open, and never migrates the vault, so the new binary can make this backup too. If the `memex` you have now is older and has no `memex backup`, do step 2 first, and do not start the app, an MCP client or `memex serve` until the backup is done. Keep the backup file: it is your way back (see [`docs/backups.md`](docs/backups.md) to restore it).
 2. Install the new `memex` binary and the new app together (`cargo install --path crates/memex-mcp --locked --force`, then rebuild the app). The app drives the binary at `~/.cargo/bin/memex`, and an old binary with a new app, or the reverse, will not work.
 3. Restart your MCP clients afterwards: Claude Desktop keeps `memex serve` running from the old binary until you quit and reopen it. Do the same for Raycast and any other long-running MCP client.
 4. Try the upgrade on a scratch vault first (`memex init` a new one, or run `docs/daily-acceptance.md`), not on your only copy.
@@ -64,7 +66,7 @@ Daily notes, topic notes, review state and Smart Folders need schema V5. The fir
 Tags (where each tag came from, and the tags you removed) and feedback on reviews (Feedback and the Vault Guide) need schema V6. The first time the new `memex` binary opens a vault, it migrates that vault to V6 in place: it adds the new tables and columns and records the `#tags` already written in each note's body. It changes no note body. Older `memex` binaries refuse to open a V6 vault, so there is no going back except from a backup. Before you upgrade:
 
 1. Quit the app, every MCP client (Claude Desktop, Raycast and any other) and any `memex serve` you started yourself, before the first V6 open. A `memex serve` left running from the old binary keeps writing to the vault without the V6 rules.
-2. Back up the vault's `memex.db`, `memex.db-wal` and `memex.db-shm` (all three; the last two exist while a vault is open or was not closed cleanly).
+2. Back up the vault with `memex backup --vault <path> --dest <folder>` (the folder must already exist) before anything opens the vault with the new `memex`. It reads a consistent copy and never migrates the vault, so the new binary can make this backup too. Keep the file: it is your way back (see [`docs/backups.md`](docs/backups.md) to restore it).
 3. Install the new `memex` binary and the new app together (`cargo install --path crates/memex-mcp --locked --force`, then rebuild the app), then reopen your MCP clients so they start the new `memex serve`.
 4. Try the upgrade on a scratch vault first (a copy of your vault, or `memex init` a new one), not on your only copy, and compare a few note bodies afterwards.
 

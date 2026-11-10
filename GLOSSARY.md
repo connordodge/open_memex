@@ -127,6 +127,18 @@ A vault the app opens by directory path on the same machine.
 The one shared secret every client presents to a vault server.
 _Avoid_: API key, password
 
+## Backups (#315)
+
+**Backup**:
+One finished `.memex.zip` file holding a copy of a vault (its database, manifest and attachments), made while the vault stays in use and written into a backup destination. A backup is how a vault is brought back after a loss or an upgrade that cannot be undone.
+_Avoid_: snapshot, export, sync, archive
+
+**Backup destination**:
+The folder a vault's backups are written into: a folder in iCloud Drive, Google Drive or OneDrive, a NAS share, an external disk or any other folder outside the vault. The provider's own app, if any, uploads what lands there.
+
+**Restore**:
+Making a new vault folder from a backup. A restore never changes a vault that already exists, and the new vault keeps the backed-up vault's id.
+
 ## Markdown tables (#192)
 
 **Table**:
