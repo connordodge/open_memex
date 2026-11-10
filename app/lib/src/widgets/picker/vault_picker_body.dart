@@ -111,12 +111,14 @@ class VaultPickerBodyState extends ConsumerState<VaultPickerBody> {
     if (_busy) return;
     _busy = true;
     // Read before the open: the modal closes (and this body goes) as soon
-    // as the vault changes.
-    final selected = ref.read(selectedNoteIdProvider.notifier);
+    // as the vault changes. Clearing goes through an invalidate (back to
+    // its null default): only the tabs callback and the vault open
+    // controllers write the selection (WI #271).
+    final container = ProviderScope.containerOf(context, listen: false);
     try {
       final outcome = await controller.openVaultGuarded(context, vault);
       if (outcome is VaultOpened) {
-        selected.state = null;
+        container.invalidate(selectedNoteIdProvider);
         return;
       }
       await present(outcome, eyebrow: vaultPickerOpenEyebrow);
