@@ -3,6 +3,7 @@
 // design/315-vault-backups/packs/325.md, option B). The sheet renders the
 // controller's view state and calls the controller and the settings save; it
 // holds no schedule, CLI or polling logic.
+import 'dart:io' show Directory, FileSystemException;
 import 'dart:math' as math;
 
 import 'package:file_picker/file_picker.dart';
@@ -91,8 +92,8 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
   /// when the view state lists none.
   List<BackupDestinationOption>? _discovered;
 
-  /// The selected provider row's path.
-  String? _selectedPath;
+  /// The selected provider row.
+  BackupDestinationOption? _selectedOption;
 
   /// "choose folder…" is the selected row (with [_chosenFolder]).
   bool _chooseSelected = false;
@@ -103,8 +104,9 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
   /// This sheet's `backUpNow` call is still running.
   bool _pending = false;
 
-  /// "turn on backups" is saving: the list stays, its button disabled, until
-  /// the save lands.
+  /// "turn on backups" is resolving and saving: the list stays, with
+  /// "turn on backups" and "cancel" disabled, until the save lands, so a
+  /// cancel can't be overtaken by the save.
   bool _turningOn = false;
 
   /// Why the last destination save failed (`backup_destination_unavailable`
@@ -135,6 +137,15 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
           : '${ref.read(vaultBackupSettingsProvider(path)).keep}',
     );
     _keepFocus.addListener(_onKeepFocus);
+    // A stored destination is symlink-resolved, so a provider folder reached
+    // through a symlink no longer reads as its provider by its own path:
+    // discovery's rows let the card and the menu name it.
+    final destination = path == null
+        ? null
+        : ref.read(vaultBackupSettingsProvider(path)).destination;
+    if (destination != null && _whereOf(destination).provider == null) {
+      _discover();
+    }
   }
 
   @override
@@ -189,17 +200,43 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
     });
   }
 
-  /// The copy for a destination the save could not create or use.
-  String _destinationError(String destination) {
+  /// The copy for a destination that could not be made, resolved or saved.
+  String _destinationError(String destination, BackupProvider? provider) {
     final now = ref.read(clockProvider).now();
     return backupFailureMessage(
-      code: 'backup_destination_unavailable',
+      code: backupDestinationUnavailableCode,
       automatic: false,
       failedAt: now,
       now: now,
       destination: destination,
-      provider: _whereOf(destination).provider,
+      provider: provider,
     ).detail;
+  }
+
+  /// [option]'s folder, made when missing and symlinks resolved (A2's
+  /// resolver), or null with [_saveError] set to why it can't be used.
+  /// [picked] is the folder "choose folder…" picked.
+  Future<String?> _resolve(
+    BackupDestinationOption option, {
+    String? picked,
+  }) async {
+    final resolution = await ref
+        .read(resolveBackupDestinationProvider)
+        .resolve(option, pickedFolder: picked);
+    switch (resolution) {
+      case BackupDestinationResolved(:final path):
+        return path;
+      case BackupDestinationUnavailable():
+        if (mounted) {
+          setState(
+            () => _saveError = _destinationError(
+              picked ?? option.path!,
+              option.provider,
+            ),
+          );
+        }
+        return null;
+    }
   }
 
   Future<void> _runBackup() async {
@@ -225,7 +262,7 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
     setState(() {
       _picking = true;
       _pickCancelled = false;
-      _selectedPath = null;
+      _selectedOption = null;
       _chooseSelected = false;
       _chosenFolder = null;
       _saveError = null;
@@ -239,8 +276,8 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
     _saveError = null;
   });
 
-  void _selectProvider(String path) => setState(() {
-    _selectedPath = path;
+  void _selectProvider(BackupDestinationOption option) => setState(() {
+    _selectedOption = option;
     _chooseSelected = false;
   });
 
@@ -255,13 +292,24 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
     });
   }
 
-  /// Saves [destination] with backups on. The list stays until the save
-  /// lands; a save that fails keeps it, with the failure in its card.
-  Future<void> _turnOnBackups(String destination) async {
+  /// Makes and resolves [option]'s folder ([picked] for "choose folder…"),
+  /// then saves it with backups on. The list stays, "turn on backups" and
+  /// "cancel" disabled, until the save lands; a folder that can't be used, or a save that
+  /// fails, keeps it with why in its card.
+  Future<void> _turnOnBackups(
+    BackupDestinationOption option, {
+    String? picked,
+  }) async {
     setState(() {
       _turningOn = true;
       _saveError = null;
     });
+    final destination = await _resolve(option, picked: picked);
+    if (!mounted) return;
+    if (destination == null) {
+      setState(() => _turningOn = false);
+      return;
+    }
     try {
       await _update(
         (current) => current.copyWith(enabled: true, destination: destination),
@@ -270,7 +318,7 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
       if (!mounted) return;
       setState(() {
         _turningOn = false;
-        _saveError = _destinationError(destination);
+        _saveError = _destinationError(picked ?? option.path!, option.provider);
       });
       return;
     }
@@ -342,11 +390,17 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
     if (_menuOpen) setState(() => _menuOpen = false);
   }
 
-  /// Saves [destination] at once; a save that fails shows why under the
-  /// settings.
-  Future<void> _menuSelect(String destination) async {
+  /// Makes and resolves [option]'s folder ([picked] for "choose folder…")
+  /// and saves it at once; a folder that can't be used, or a save that
+  /// fails, shows why under the settings.
+  Future<void> _menuSelect(
+    BackupDestinationOption option, {
+    String? picked,
+  }) async {
     _closeMenu();
     if (_saveError != null) setState(() => _saveError = null);
+    final destination = await _resolve(option, picked: picked);
+    if (destination == null || !mounted) return;
     try {
       await _update(
         (current) => destination == current.destination
@@ -355,7 +409,12 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
       );
     } on Exception {
       if (mounted) {
-        setState(() => _saveError = _destinationError(destination));
+        setState(
+          () => _saveError = _destinationError(
+            picked ?? option.path!,
+            option.provider,
+          ),
+        );
       }
     }
   }
@@ -366,7 +425,7 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
       dialogTitle: 'Choose where backups go',
     );
     if (folder == null || !mounted) return;
-    await _menuSelect(folder);
+    await _menuSelect(_chooseFolderOption, picked: folder);
   }
 
   // --------------------------------------------------------------- build
@@ -598,7 +657,18 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
 
   Widget _pickingBody(BackupViewState view, VaultBackupSettings stored) {
     final options = _keyed(_providerOptions(view));
-    final selection = _chooseSelected ? _chosenFolder : _selectedPath;
+    final chosen = _chosenFolder;
+    final provider = _selectedOption;
+    final VoidCallback? turnOn;
+    if (_turningOn) {
+      turnOn = null;
+    } else if (_chooseSelected) {
+      turnOn = chosen == null
+          ? null
+          : () => _turnOnBackups(_chooseFolderOption, picked: chosen);
+    } else {
+      turnOn = provider == null ? null : () => _turnOnBackups(provider);
+    }
     final error = _saveError;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -637,12 +707,12 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
                             for (final (option, key) in options) ...[
                               _OptionRow(
                                 key: key,
-                                name: option.label,
+                                name: _optionName(option),
                                 path: _whereOf(option.path!).relative,
                                 selected:
                                     !_chooseSelected &&
-                                    _selectedPath == option.path,
-                                onTap: () => _selectProvider(option.path!),
+                                    _selectedOption?.path == option.path,
+                                onTap: () => _selectProvider(option),
                               ),
                               Container(height: 1, color: OmColors.line1),
                             ],
@@ -677,16 +747,10 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
               key: _cancelKey,
               kind: OmButtonKind.ghost,
               label: _cancel,
-              onPressed: _cancelPicking,
+              onPressed: _turningOn ? null : _cancelPicking,
             ),
             const SizedBox(width: 8),
-            _SheetButton(
-              key: _turnOnKey,
-              label: _turnOn,
-              onPressed: selection == null || _turningOn
-                  ? null
-                  : () => _turnOnBackups(selection),
-            ),
+            _SheetButton(key: _turnOnKey, label: _turnOn, onPressed: turnOn),
           ],
         ),
       ],
@@ -740,7 +804,12 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
         final file = status?.lastFile;
         final saved = destination == null
             ? null
-            : _savedLine(status?.lastBytes, destination, compact: _menuOpen);
+            : _savedLine(
+                status?.lastBytes,
+                destination,
+                _whereOfStored(destination, _providerOptions(view)),
+                compact: _menuOpen,
+              );
         return _StatusCard(
           tone: _Tone.ok,
           icon: LucideIcons.check,
@@ -801,10 +870,12 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
 
   Widget _destinationRow(BackupViewState view, VaultBackupSettings stored) {
     final destination = stored.destination;
-    final where = destination == null ? null : _whereOf(destination);
-    final label = where?.label ?? _chooseFolder;
-    final current = destination;
     final options = _keyed(_providerOptions(view));
+    final where = destination == null
+        ? null
+        : _whereOfStored(destination, [for (final (o, _) in options) o]);
+    final label = where?.label ?? _chooseFolder;
+    final current = destination == null ? null : _canonicalPath(destination);
     return _SettingRow(
       label: _destinationLabel,
       sub: where?.relative ?? '',
@@ -839,9 +910,9 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
                         for (final (option, key) in options)
                           _MenuItem(
                             key: key,
-                            label: option.label,
-                            current: option.path == current,
-                            onTap: () => _menuSelect(option.path!),
+                            label: _optionName(option),
+                            current: _canonicalPath(option.path!) == current,
+                            onTap: () => _menuSelect(option),
                           ),
                       ],
                       choose: _MenuItem(

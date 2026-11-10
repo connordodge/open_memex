@@ -121,6 +121,24 @@ String _lastGoodLine(
       : '$head $server tries again hourly.';
 }
 
+/// The "choose folder…" row as A2's resolver takes it (no provider).
+const _chooseFolderOption = BackupDestinationOption(label: _chooseFolder);
+
+/// A provider row's name as the pack draws it. A2's discovery hands over
+/// the bare distinguishing text (`iCloud Drive`, the account, the OneDrive
+/// name); the sheet composes `Google Drive · <account>` and
+/// `OneDrive · <name>`. A label that already carries its provider's prefix
+/// is shown as it is.
+String _optionName(BackupDestinationOption option) {
+  final prefix = switch (option.provider) {
+    BackupProvider.googleDrive => 'Google Drive · ',
+    BackupProvider.oneDrive => 'OneDrive · ',
+    BackupProvider.icloud || null => '',
+  };
+  final label = option.label;
+  return label.startsWith(prefix) ? label : '$prefix$label';
+}
+
 /// How a destination folder reads in the sheet.
 class _Where {
   const _Where({
@@ -198,14 +216,50 @@ _Where _whereOf(String path) {
   return _Where(provider: null, relative: path, label: p.basename(path));
 }
 
+/// [path] with symlinks resolved, or [path] itself when it can't be (the
+/// folder is missing). The stored destination is A2's resolved path while a
+/// discovered row's path may run through a symlink, so the sheet compares
+/// the two in this form.
+String _canonicalPath(String path) {
+  try {
+    return Directory(path).resolveSymbolicLinksSync();
+  } on FileSystemException {
+    return path;
+  }
+}
+
+/// How the stored (symlink-resolved) [destination] reads: by its own path
+/// when that is a provider folder, else as the provider row of [options]
+/// whose folder it is once symlinks are resolved, else as a chosen folder.
+_Where _whereOfStored(
+  String destination,
+  List<BackupDestinationOption> options,
+) {
+  final direct = _whereOf(destination);
+  if (direct.provider != null) return direct;
+  final canonical = _canonicalPath(destination);
+  for (final option in options) {
+    final path = option.path;
+    if (path == null || _canonicalPath(path) != canonical) continue;
+    final where = _whereOf(path);
+    if (where.provider != null) return where;
+  }
+  return direct;
+}
+
 /// The success card's size line: requirement 26's upload line for a
-/// provider folder, the full path for a chosen folder. [compact] is B2-9's
-/// card while the destination menu is open.
-String _savedLine(int? bytes, String destination, {required bool compact}) {
-  final where = _whereOf(destination);
+/// provider folder, the full path for a chosen folder. [where] is how
+/// [destination] reads ([_whereOfStored]). [compact] is B2-9's card while
+/// the destination menu is open.
+String _savedLine(
+  int? bytes,
+  String destination,
+  _Where where, {
+  required bool compact,
+}) {
   final words = where.providerWords;
   if (words == null) return '${_sizePrefix(bytes)}$destination';
-  final folder = p.basename(destination);
+  final folder = p.basename(where.relative);
   if (compact) return '${_sizePrefix(bytes)}$folder in $words';
   return '${_sizePrefix(bytes)}saved to $folder in $words. the $words app '
       "uploads it; open memex can't see when that's done.";
