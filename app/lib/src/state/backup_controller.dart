@@ -109,10 +109,16 @@ class _RunFailure {
     required this.at,
     required this.automatic,
     required this.warn,
+    required this.seenAttemptAt,
   });
 
   final String destination;
   final BackupRunResult result;
+
+  /// The state file's `lastAttemptAt` as read when the run ended (null: no
+  /// entry). A later read with another attempt time is newer news; wall
+  /// times are never compared, so a clock jump cannot keep the failure.
+  final DateTime? seenAttemptAt;
 
   /// When the run ended (the card's `<failedAt>`).
   final DateTime at;
@@ -157,6 +163,14 @@ class _HostedEntry {
   /// `lastAttemptAt` of the result that backup left: a failure with this
   /// attempt time came from "Back up now", not the server's schedule.
   DateTime? manualAttemptAt;
+
+  /// The number of requests sent; each request takes the next one.
+  int sent = 0;
+
+  /// A `GET` numbered at or below this was sent before the latest `POST`
+  /// was sent or answered: its answer is older news and is dropped, so a
+  /// slow `GET` cannot end the pressed backup or stop its poll.
+  int staleUpTo = 0;
 
   BackupStatus? get status => switch (last) {
     HostedBackupOk(:final status) => status,
@@ -314,6 +328,7 @@ class LiveBackupController extends BackupController {
     final busy = _inFlight.state;
     if (busy.contains(path)) return;
     final runner = _ref.read(backupRunnerProvider);
+    final before = _attemptAt(path, destination);
     _startedAt[path] = _clock.now();
     _inFlight.state = {...busy, path};
     try {
@@ -331,7 +346,14 @@ class LiveBackupController extends BackupController {
       if (!mounted) return;
       await _readState(path, destination, publish: false);
       if (!mounted) return;
-      _record(path, destination, result, automatic: automatic);
+      _record(
+        path,
+        destination,
+        result,
+        automatic: automatic,
+        // An unreadable file after the run keeps the attempt seen before it.
+        seenAttemptAt: _attemptAt(path, destination) ?? before,
+      );
     } finally {
       _startedAt.remove(path);
       _inFlight.state = {..._inFlight.state}..remove(path);
@@ -343,6 +365,7 @@ class LiveBackupController extends BackupController {
     String destination,
     BackupRunResult result, {
     required bool automatic,
+    required DateTime? seenAttemptAt,
   }) {
     switch (result) {
       case BackupCreated() || BackupUnchanged():
@@ -364,6 +387,7 @@ class LiveBackupController extends BackupController {
           at: _clock.now(),
           automatic: automatic,
           warn: automatic || warned,
+          seenAttemptAt: seenAttemptAt,
         );
     }
   }
@@ -391,11 +415,18 @@ class LiveBackupController extends BackupController {
     if (failure != null &&
         failure.destination == destination &&
         attempted != null &&
-        attempted.isAfter(failure.at)) {
+        attempted != failure.seenAttemptAt) {
       // A later attempt (a scheduled `memex backup`) is newer news.
       _failures.remove(path);
     }
     if (publish) _publish(LocalVaultRef(path));
+  }
+
+  /// `lastAttemptAt` of the last state read for [path] at [destination].
+  DateTime? _attemptAt(String path, String destination) {
+    final entry = _states[path];
+    if (entry == null || entry.destination != destination) return null;
+    return entry.status?.lastAttemptAt;
   }
 
   // -------------------------------------------------------------------
@@ -408,12 +439,14 @@ class LiveBackupController extends BackupController {
     final api = _apiFor(vault);
     if (api == null) return;
     final entry = _hosted.putIfAbsent(vault, _HostedEntry.new);
+    final id = ++entry.sent;
     try {
       final result = await api.status();
       if (!mounted) return;
+      if (id <= entry.staleUpTo) return;
       _applyHosted(entry, result);
     } on VaultUnreachableException {
-      if (!mounted) return;
+      if (!mounted || id <= entry.staleUpTo) return;
       entry.unreachable = true;
     } catch (_) {
       // Anything else leaves the last value as it was.
@@ -432,6 +465,7 @@ class LiveBackupController extends BackupController {
     if (api == null) return;
     entry.posting = true;
     entry.postedAt = _clock.now();
+    entry.staleUpTo = ++entry.sent;
     _publish(vault);
     try {
       final result = await api.start();
@@ -445,6 +479,8 @@ class LiveBackupController extends BackupController {
     } finally {
       entry.posting = false;
       if (!entry.pressed) entry.postedAt = null;
+      // A `GET` sent while the `POST` waited answers older news than it.
+      entry.staleUpTo = entry.sent;
     }
     _publish(vault);
     _schedulePoll(vault);
@@ -488,11 +524,17 @@ class LiveBackupController extends BackupController {
   }
 
   /// The 2 s poll: one `GET` 2 s after the last answer while a sheet is open
-  /// on [vault] and its backup runs; cancelled otherwise.
+  /// on [vault] and its backup runs; cancelled otherwise, and while the
+  /// server cannot be reached (the hourly read and the next sheet open try
+  /// again).
   void _schedulePoll(HostedVaultRef vault) {
     if (!mounted) return;
     final entry = _hosted[vault];
-    final wanted = entry != null && entry.running && _sheets.contains(vault);
+    final wanted =
+        entry != null &&
+        entry.running &&
+        !entry.unreachable &&
+        _sheets.contains(vault);
     if (!wanted) {
       _polls.remove(vault)?.cancel();
       return;
@@ -676,6 +718,11 @@ class LiveBackupController extends BackupController {
           startedAt: startedAt,
           warning: warning,
         );
+    if (entry.unreachable && !entry.posting) {
+      // The sheet's unreachable state, whatever was read before; the warning
+      // stays as the last status left it (31a).
+      return view(BackupSheetMode.hostedUnreachable);
+    }
     if (last is HostedBackupServerTooOld) {
       return view(BackupSheetMode.hostedServerTooOld);
     }
@@ -685,13 +732,7 @@ class LiveBackupController extends BackupController {
     if (entry.running) {
       return view(BackupSheetMode.backingUp, startedAt: entry.postedAt);
     }
-    if (status == null) {
-      return view(
-        entry.unreachable
-            ? BackupSheetMode.hostedUnreachable
-            : BackupSheetMode.off,
-      );
-    }
+    if (status == null) return view(BackupSheetMode.off);
     if (status.lastResult == null) return view(BackupSheetMode.neverBackedUp);
     if (status.lastAttemptFailed) {
       final code = status.lastResult!;
