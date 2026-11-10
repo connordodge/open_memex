@@ -1455,29 +1455,34 @@ void main() {
     );
 
     test(
-      'a state attempt newer than an unrecorded failure replaces it and an older one does not',
+      'a different state attempt than the one seen with an unrecorded failure replaces it and the same one does not',
       () async {
-        final r = await _rig(settings: {_vaultA.path: _on()});
+        final seen = _ok(_start.subtract(const Duration(hours: 30)));
+        final r = await _rig(
+          settings: {_vaultA.path: _on()},
+          state: {(_vaultA.path, _destA): seen},
+        );
         r.recordOnRun = (_) => null;
+        r.runner.scriptBackup(const BackupBinaryNotFound());
         r.runner.scriptBackup(const BackupBinaryNotFound());
         await r.open(_vaultA);
         expect(r.view(_vaultA).mode, BackupSheetMode.binaryNotFound);
-        // A scheduled `memex backup` that ran before the failure.
+        // The next tick reads the very attempt seen when the run failed: no
+        // news, and its retry fails the same way.
+        await r.advance(_hour);
+        expect(r.calls, hasLength(2));
+        expect(r.view(_vaultA).mode, BackupSheetMode.binaryNotFound);
+        expect(r.view(_vaultA).warning, isTrue);
+        // A scheduled `memex backup` left another attempt. It is older than
+        // the failure on the wall clock and still replaces it: attempts are
+        // told apart, never ordered by time.
         r.reader.setEntry(
           _vaultA.path,
           _destA,
           _ok(_start.subtract(const Duration(hours: 1))),
         );
         await r.advance(_hour);
-        expect(r.view(_vaultA).mode, BackupSheetMode.binaryNotFound);
-        expect(r.view(_vaultA).warning, isTrue);
-        // One that ran after it.
-        r.reader.setEntry(
-          _vaultA.path,
-          _destA,
-          _ok(_start.add(const Duration(minutes: 90))),
-        );
-        await r.advance(_hour);
+        expect(r.calls, hasLength(2), reason: 'a success an hour ago: not due');
         expect(r.view(_vaultA).mode, BackupSheetMode.success);
         expect(r.view(_vaultA).warning, isFalse);
       },
@@ -1637,20 +1642,22 @@ void main() {
     );
 
     test(
-      'a hosted POST that cannot reach the server leaves the state as it was and a later press posts again',
+      'a hosted POST that cannot reach the server shows unreachable with no warning and a later press posts again',
       () async {
         final r = await _rig(vault: _hosted);
         r.api.goUnreachable();
         await r.controller.backUpNow(_hosted);
         await r.settle();
         expect(r.api.startCalls, 1);
-        expect(r.view(_hosted).mode, BackupSheetMode.neverBackedUp);
+        // Req 31: unreachable, though the open read succeeded.
+        expect(r.view(_hosted).mode, BackupSheetMode.hostedUnreachable);
         expect(r.view(_hosted).startedAt, isNull);
         expect(r.view(_hosted).warning, isFalse);
         r.api.comeBack();
         await r.controller.backUpNow(_hosted);
         await r.settle();
         expect(r.api.startCalls, 2, reason: 'the first press is not pending');
+        expect(r.view(_hosted).mode, BackupSheetMode.backingUp);
       },
     );
 
