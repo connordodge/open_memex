@@ -60,6 +60,14 @@ pub struct ServeArgs {
     /// or <root>/.memex/server.log for the vault server.
     #[arg(long)]
     pub log_level: Option<String>,
+    /// Back up every served vault into <dir>/<vault folder name>/ (needs
+    /// --root).
+    #[arg(long)]
+    pub backup_dir: Option<PathBuf>,
+    /// The backups of each vault the vault server keeps, 1-365 (default
+    /// 30; needs --backup-dir).
+    #[arg(long)]
+    pub backup_keep: Option<u16>,
 }
 
 /// Runs the chosen mode.
@@ -75,6 +83,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                 listen,
                 with_embeddings: args.with_embeddings,
                 log_level,
+                backup: None,
             })
             .await
         }

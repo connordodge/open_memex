@@ -27,6 +27,7 @@ use crate::cli::InvalidArgument;
 
 pub mod api;
 pub mod auth;
+pub mod backup;
 pub mod bridge;
 pub mod error;
 pub mod log;
@@ -36,6 +37,7 @@ pub mod request_clock;
 pub mod token;
 pub mod vaults;
 
+use backup::{BackupArchiveHook, BackupConfig, BackupService};
 use error::ApiError;
 use registry::Registry;
 use request_clock::{BaseClock, SharedClock};
@@ -55,6 +57,8 @@ pub struct ServerConfig {
     with_embeddings: bool,
     embedder: Option<Arc<dyn Embedder>>,
     clock: SharedClock,
+    backups: Option<BackupConfig>,
+    backup_archive_hook: Option<BackupArchiveHook>,
 }
 
 impl ServerConfig {
@@ -66,6 +70,8 @@ impl ServerConfig {
             with_embeddings: false,
             embedder: None,
             clock: Arc::new(SystemClock),
+            backups: None,
+            backup_archive_hook: None,
         }
     }
 
@@ -104,11 +110,44 @@ impl ServerConfig {
     pub fn clock(&self) -> SharedClock {
         self.clock.clone()
     }
+
+    /// Turns on backups of every served vault (`--backup-dir`, D15).
+    pub fn with_backups(mut self, backups: BackupConfig) -> Self {
+        self.backups = Some(backups);
+        self
+    }
+
+    /// Wraps each backup's `.partial` file in `hook` (tests hold a backup
+    /// mid-run with it).
+    #[doc(hidden)]
+    pub fn with_backup_archive_hook<F>(mut self, hook: F) -> Self
+    where
+        F: Fn(&Path, std::fs::File) -> std::io::Result<Box<dyn memex_core::backup::ArchiveSink>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.backup_archive_hook = Some(Arc::new(hook));
+        self
+    }
 }
 
 /// The whole vault server: every route, then the auth layer, the body limit
 /// and the access log (D7).
 pub fn router(config: ServerConfig) -> Router {
+    app(config).0
+}
+
+/// [`router`], plus the server's [`BackupService`] (D15).
+pub fn app(config: ServerConfig) -> (Router, Arc<BackupService>) {
+    let service = Arc::new(BackupService::new(
+        config.backups.clone(),
+        config.backup_archive_hook.clone(),
+    ));
+    (routes(config), service)
+}
+
+fn routes(config: ServerConfig) -> Router {
     let token = auth::AccessToken::new(&config.token);
     let embedder = match (&config.embedder, config.with_embeddings) {
         (Some(embedder), _) => Some(embedder.clone()),
@@ -183,6 +222,8 @@ pub struct RunOptions {
     pub listen: String,
     pub with_embeddings: bool,
     pub log_level: String,
+    /// `--backup-dir` and `--backup-keep`, when given.
+    pub backup: Option<BackupConfig>,
 }
 
 /// Runs the vault server until SIGINT or SIGTERM. Every startup failure is

@@ -340,6 +340,7 @@ async fn server_root_probe_error_is_not_reported_as_network() {
         listen: held.local_addr().unwrap().to_string(),
         with_embeddings: false,
         log_level: "info".to_string(),
+        backup: None,
     };
     let err = tokio::time::timeout(
         LIMIT,
@@ -518,6 +519,7 @@ async fn server_root_on_network_fails_with_network_filesystem_before_binding() {
         listen: addr.to_string(),
         with_embeddings: false,
         log_level: "info".to_string(),
+        backup: None,
     };
 
     let err = memex_mcp::server::run_with_probe(opts, &probe)
@@ -655,6 +657,7 @@ fn server_run_and_run_with_probe_futures_are_send() {
         listen: ANY_PORT.to_string(),
         with_embeddings: false,
         log_level: "info".to_string(),
+        backup: None,
     };
     let recorded = std::sync::Mutex::new(Vec::<PathBuf>::new());
     let capturing = |p: &Path| {
