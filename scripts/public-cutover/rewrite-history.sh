@@ -51,7 +51,8 @@
 #   2  refused, with nothing created or changed: a usage error, a missing
 #      patterns file, a non-empty <out>, <out> inside <source>, a dirty
 #      <source>, <source>'s refs/heads/main not equal to its
-#      refs/remotes/origin/main, no `git filter-repo` on PATH, a --noreply
+#      refs/remotes/origin/main, a <source> with no refs/tags/v0.1.0, no
+#      `git filter-repo` on PATH, a --noreply
 #      that is not a users.noreply.github.com address, or an empty
 #      deny-list.
 #
@@ -271,6 +272,8 @@ ORIGIN_MAIN=$(git -C "$SOURCE" rev-parse -q --verify 'refs/remotes/origin/main^{
   refuse "--source has no refs/remotes/origin/main"
 [ "$MAIN" = "$ORIGIN_MAIN" ] ||
   refuse "--source main ($MAIN) differs from its refs/remotes/origin/main ($ORIGIN_MAIN); push or pull first (this script never fetches)"
+git -C "$SOURCE" rev-parse -q --verify "$KEEP_TAG" >/dev/null ||
+  refuse "--source has no $KEEP_TAG (the release tag the push command publishes)"
 
 [ -f "$LEAK_CHECK" ] || refuse "leak-check.sh is missing next to scripts/public-cutover"
 
