@@ -137,7 +137,7 @@ sudo cat /srv/memex/.memex/access-token
 
 ## Set up on an always-on Mac (launchd)
 
-Install `memex` on the Mac that stays on:
+Build `memex` from source on the Mac that stays on (or use the standalone `memex-<ver>-macos-arm64.zip` from the [Releases page](https://github.com/connordodge/open_memex/releases), which holds only the `memex` binary):
 
 ```bash
 git clone https://github.com/connordodge/open_memex.git
@@ -147,7 +147,7 @@ mkdir -p ~/memex-server
 memex init ~/memex-server/home
 ```
 
-`cargo install` puts the binary at `~/.cargo/bin/memex`. Keep the vault root on the Mac's internal disk or an external disk that is a local drive, not a network share.
+Installing from source with `cargo install` puts the binary at `~/.cargo/bin/memex`. Keep the vault root on the Mac's internal disk or an external disk that is a local drive, not a network share.
 
 Save this as `~/Library/LaunchAgents/com.openmemex.vault-server.plist`. launchd does not expand `~`, so write out your user name, and use your own time zone and address:
 
@@ -257,13 +257,13 @@ Every client needs the server URL, the vault name and the access token. Replace 
 
 ### Claude Desktop
 
-Add this to `~/Library/Application Support/Claude/claude_desktop_config.json` (merge it into the existing `mcpServers`), then restart Claude Desktop. Use the absolute path to `memex`; Claude Desktop does not expand `~`.
+Add this to `~/Library/Application Support/Claude/claude_desktop_config.json` (merge it into the existing `mcpServers`), then restart Claude Desktop. Use the absolute path to `memex` (here the Bundled memex inside the app, which the README's Install section describes; for a terminal, run the `ln -s` step in the [README](../README.md)); Claude Desktop does not expand `~`.
 
 ```json
 {
   "mcpServers": {
     "memex-home": {
-      "command": "/Users/YOUR_USERNAME/.cargo/bin/memex",
+      "command": "/Applications/Open Memex.app/Contents/MacOS/memex",
       "args": ["serve", "--remote", "http://192.168.1.20:7878/vaults/home/mcp"],
       "env": { "MEMEX_ACCESS_TOKEN": "paste-the-access-token-here" }
     }
@@ -279,7 +279,7 @@ Add a server in Raycast's MCP server settings (the menu names change between Ray
 {
   "mcpServers": {
     "memex-home": {
-      "command": "/Users/YOUR_USERNAME/.cargo/bin/memex",
+      "command": "/Applications/Open Memex.app/Contents/MacOS/memex",
       "args": ["serve", "--remote", "http://192.168.1.20:7878/vaults/home/mcp"],
       "env": { "MEMEX_ACCESS_TOKEN": "paste-the-access-token-here" }
     }

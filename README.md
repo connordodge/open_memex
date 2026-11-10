@@ -2,7 +2,33 @@
 
 Open-source, local-first, AI-native knowledge base. The user's notes live on their device. AI agents access them through a standard MCP server.
 
-**Status: prototype.** Two ways to use it: a Flutter macOS desktop app for typing/editing notes, and an MCP server for AI agents (e.g. Claude Desktop) to read, search, and write the same vault.
+**Status: public preview.** Expect rough edges, and back up your vault.
+
+Two ways to use it: a Flutter macOS desktop app for typing/editing notes, and an MCP server for AI agents (e.g. Claude Desktop) to read, search, and write the same vault.
+
+## Install
+
+1. Download the DMG from the [Releases page](https://github.com/connordodge/open_memex/releases) and drag Open Memex to Applications.
+2. Requirements: Apple silicon Mac, macOS 14 or later.
+3. First launch: choose "Create new vault…" to make a vault, or "Open existing vault…" to pick one you already have.
+
+**For agents and the terminal.** The app ships its own `memex` command, the Bundled memex, at `/Applications/Open Memex.app/Contents/MacOS/memex`. Point an MCP client's `command` at that path (see [`docs/claude-desktop-setup.md`](docs/claude-desktop-setup.md)). To run `memex` in a terminal, link it once:
+
+```bash
+sudo ln -s "/Applications/Open Memex.app/Contents/MacOS/memex" /usr/local/bin/memex
+```
+
+**Upgrading.**
+
+1. Read the Upgrade notes in the new Release, and back up your vault first (see [`docs/backups.md`](docs/backups.md)).
+2. Quit the app and any MCP client, download the new DMG and replace the app in Applications.
+3. Restart your MCP clients so they start the new Bundled memex.
+
+To hear about new Releases, open the repo on GitHub and choose Watch → Custom → Releases.
+
+**Privacy.** The app makes no network request unless you connect a hosted vault. `memex --with-embeddings` downloads its embedding model once, the first time you use it.
+
+Open Memex is released under the [MIT license](LICENSE). To contribute, see [CONTRIBUTING.md](CONTRIBUTING.md); to report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## What works today
 
@@ -58,7 +84,7 @@ Open-source, local-first, AI-native knowledge base. The user's notes live on the
 Daily notes, topic notes, review state and Smart Folders need schema V5. The first time the new `memex` binary (the CLI, `memex serve` or the app's `memex` calls) opens a vault, it migrates that vault to V5 in place. Older `memex` binaries refuse to open a V5 vault, so there is no going back except from a backup. Before you upgrade:
 
 1. Quit the app and any MCP client, then back up the vault with `memex backup --vault <path> --dest <folder>` (the folder must already exist). Run it before anything opens the vault with the new `memex`: it reads a consistent copy, whether or not the vault is open, and never migrates the vault, so the new binary can make this backup too. If the `memex` you have now is older and has no `memex backup`, do step 2 first, and do not start the app, an MCP client or `memex serve` until the backup is done. Keep the backup file: it is your way back (see [`docs/backups.md`](docs/backups.md) to restore it).
-2. Install the new `memex` binary and the new app together (`cargo install --path crates/memex-mcp --locked --force`, then rebuild the app). The app drives the binary at `~/.cargo/bin/memex`, and an old binary with a new app, or the reverse, will not work.
+2. Install the new `memex` binary and the new app together. Either download the new DMG and install the new app, which includes memex (see [Install](#install)), or build from source (`cargo install --path crates/memex-mcp --locked --force`, then rebuild the app). The app drives a `memex` binary it finds by the lookup order under Build from source, and an old binary with a new app, or the reverse, will not work.
 3. Restart your MCP clients afterwards: Claude Desktop keeps `memex serve` running from the old binary until you quit and reopen it. Do the same for Raycast and any other long-running MCP client.
 4. Try the upgrade on a scratch vault first (`memex init` a new one, or run `docs/daily-acceptance.md`), not on your only copy.
 
@@ -68,7 +94,7 @@ Tags (where each tag came from, and the tags you removed) and feedback on review
 
 1. Quit the app, every MCP client (Claude Desktop, Raycast and any other) and any `memex serve` you started yourself, before the first V6 open. A `memex serve` left running from the old binary keeps writing to the vault without the V6 rules.
 2. Back up the vault with `memex backup --vault <path> --dest <folder>` (the folder must already exist) before anything opens the vault with the new `memex`. It reads a consistent copy and never migrates the vault, so the new binary can make this backup too. If the `memex` you have now is older and has no `memex backup`, do step 3 first (install the new `memex`), run `memex backup`, and keep everything closed until the backup is done. Keep the file: it is your way back (see [`docs/backups.md`](docs/backups.md) to restore it).
-3. Install the new `memex` binary and the new app together (`cargo install --path crates/memex-mcp --locked --force`, then rebuild the app), then reopen your MCP clients so they start the new `memex serve`.
+3. Install the new `memex` binary and the new app together. Either download the new DMG and install the new app, which includes memex (see [Install](#install)), or build from source (`cargo install --path crates/memex-mcp --locked --force`, then rebuild the app). Then reopen your MCP clients so they start the new `memex serve`.
 4. Try the upgrade on a scratch vault first (a copy of your vault, or `memex init` a new one), not on your only copy, and compare a few note bodies afterwards.
 
 A vault may hold one note with `role: guide` (the Vault Guide). If it already has two or more, the V6 migration stops and leaves the vault at V5 unchanged. Keep one: copy what you need out of the others, delete them with the previous `memex`, then open the vault again.
@@ -109,7 +135,7 @@ A vault may hold one note with `role: guide` (the Vault Guide). If it already ha
 
 The Flutter app and the MCP server both go through the same `memex` Rust binary for writes (so indexing logic lives in one place), and SQLite WAL mode lets them share the vault concurrently.
 
-## Quick start
+## Build from source
 
 ```bash
 # Build & install the CLI / MCP server
@@ -132,7 +158,7 @@ flutter run -d macos       # development
 flutter build macos        # release build at build/macos/Build/Products/Release/
 ```
 
-On first launch, click "Open existing vault…" and pick the same folder, or "Create new vault…" to make a fresh one. The app finds the `memex` binary at `~/.cargo/bin/memex` automatically.
+On first launch, click "Open existing vault…" and pick the same folder, or "Create new vault…" to make a fresh one. The app looks for the `memex` binary in this order: the picked path if it exists, then the Bundled memex, then `~/.cargo/bin`, `/usr/local/bin`, `/opt/homebrew/bin`.
 
 ### Claude Desktop integration
 
