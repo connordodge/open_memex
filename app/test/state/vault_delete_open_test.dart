@@ -771,6 +771,86 @@ void main() {
     );
   });
 
+  // Review r4 finding 1: another spelling of the very link the vault was
+  // opened through is the open vault; a different link to the folder is not.
+  group('a vault opened through a symlink, deleted by another spelling', () {
+    String linkTo(String target) {
+      final links = createPlainFolder('om360_r4link_');
+      final link = Link(p.join(links.path, 'link'))..createSync(target);
+      return link.path;
+    }
+
+    Future<void> closesFirst(
+      WidgetTester tester,
+      String Function(String link) spelling,
+    ) async {
+      final context = await _wi360Context(tester);
+      final rig = (await tester.runAsync(_wi360Create))!;
+      final link = linkTo(rig.vault);
+      await tester.runAsync(() async {
+        rig.c.read(currentVaultProvider.notifier).state = LocalVaultRef(link);
+      });
+      rig.events.clear();
+      final path = spelling(link);
+      expect(path, isNot(link), reason: 'a different spelling');
+
+      final result = await tester.runAsync(
+        () => rig.deleter.deleteOpenVault(context, path),
+      );
+
+      expect(result, isA<VaultDeleted>());
+      final e = rig.events;
+      expect(rig.guardCalls, [same(context)], reason: 'asked once');
+      expect(_at(e, 'guard'), lessThan(_at(e, 'flush open=$link')));
+      expect(_at(e, 'flush open=$link'), lessThan(_at(e, 'current null')));
+      expect(_at(e, 'current null'), lessThan(_at(e, 'settle $link')));
+      expect(_at(e, 'settled $link'), lessThan(_at(e, 'trash $path')));
+      expect(rig.trash.calls, [path]);
+      expect(rig.c.read(currentVaultProvider), isNull);
+      expect(rig.cli.callsFor('vault check'), isEmpty, reason: 'no reopen');
+    }
+
+    testWidgets(
+      'deleteOpenVault on a trailing slash spelling of the link the vault was opened through closes it before the trash',
+      (tester) => closesFirst(tester, (link) => '$link/'),
+    );
+
+    testWidgets(
+      'deleteOpenVault on a dot segment spelling of the link the vault was opened through closes it before the trash',
+      (tester) => closesFirst(
+        tester,
+        (link) => p.join(p.dirname(link), '.', p.basename(link)),
+      ),
+    );
+
+    testWidgets(
+      'deleteOpenVault on a different link to the folder the vault was opened through a link to trashes only that link and keeps the vault open',
+      (tester) async {
+        final context = await _wi360Context(tester);
+        final rig = (await tester.runAsync(_wi360Create))!;
+        final opened = linkTo(rig.vault);
+        final other = linkTo(rig.vault);
+        await tester.runAsync(() async {
+          rig.c.read(currentVaultProvider.notifier).state = LocalVaultRef(
+            opened,
+          );
+        });
+        rig.events.clear();
+
+        final result = await tester.runAsync(
+          () => rig.deleter.deleteOpenVault(context, other),
+        );
+
+        expect(result, isA<VaultDeleted>());
+        expect(rig.events, ['trash $other'], reason: 'no guard, flush, close');
+        expect(rig.guardCalls, isEmpty);
+        expect(rig.trash.calls, [other]);
+        expect(rig.c.read(currentVaultProvider), LocalVaultRef(opened));
+        expect(rig.cli.callsFor('vault check'), isEmpty, reason: 'no reopen');
+      },
+    );
+  });
+
   group('isOpenVaultFolder', () {
     late Directory folder;
     late String link;
@@ -816,6 +896,28 @@ void main() {
       'the real folder is the open vault when it was opened through a symlink',
       () {
         expect(isOpenVaultFolder(link, folder.path), isTrue);
+      },
+    );
+
+    test(
+      'another spelling of the symlink the vault was opened through is the open vault',
+      () {
+        expect(isOpenVaultFolder(link, '$link/'), isTrue);
+        expect(
+          isOpenVaultFolder(link, p.join(p.dirname(link), '.', 'link')),
+          isTrue,
+        );
+      },
+    );
+
+    test(
+      'a different symlink to the folder is not the open vault when it was opened through a symlink',
+      () {
+        final other = (Link(
+          p.join(createPlainFolder('om360_samelink2_').path, 'l'),
+        )..createSync(folder.path)).path;
+        expect(isOpenVaultFolder(link, other), isFalse);
+        expect(isOpenVaultFolder(link, '$other/'), isFalse);
       },
     );
 
