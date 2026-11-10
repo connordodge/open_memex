@@ -2377,4 +2377,387 @@ void main() {
       }
     });
   });
+
+  // ================================================================ verify
+  // Contracts the implementer's doc comments promise, pinned from the view
+  // state alone (so they hold before A2's discovery lands).
+  group('AC9 and AC12 verify: the destination menu and focus contracts', () {
+    BackupViewState withOptions() => BackupViewState(
+      mode: BackupSheetMode.success,
+      settings: _on,
+      status: _successStatus(),
+      options: _allOptions,
+    );
+
+    Finder checkIn(Key key) => find.descendant(
+      of: find.byKey(key),
+      matching: find.byWidgetPredicate(
+        (w) => w is Icon && w.icon == LucideIcons.check,
+      ),
+    );
+
+    final icloudKey = backupDestinationKey(BackupProvider.icloud, 0);
+    final googleKey = backupDestinationKey(BackupProvider.googleDrive, 0);
+    final google2Key = backupDestinationKey(BackupProvider.googleDrive, 1);
+    final oneDriveKey = backupDestinationKey(BackupProvider.oneDrive, 0);
+
+    testWidgets(
+      'the destination menu lists the view state options and marks the current one',
+      (tester) async {
+        await _open(tester, view: withOptions());
+        expect(find.byKey(icloudKey), findsNothing, reason: 'closed menu');
+        await _tapKey(tester, _menuKey);
+        for (final key in [icloudKey, googleKey, google2Key, oneDriveKey]) {
+          expect(find.byKey(key), findsOneWidget, reason: '$key');
+        }
+        expect(find.byKey(backupsDestinationChooseKey), findsOneWidget);
+        expect(checkIn(googleKey), findsOneWidget, reason: 'current row');
+        for (final key in [icloudKey, google2Key, oneDriveKey]) {
+          expect(checkIn(key), findsNothing, reason: '$key is not current');
+        }
+        expect(checkIn(backupsDestinationChooseKey), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'a menu row saves that destination at once and closes the menu',
+      (tester) async {
+        final s = await _open(tester, view: withOptions());
+        await _tapKey(tester, _menuKey);
+        await _tapKey(tester, oneDriveKey);
+        expect(s.saves, hasLength(1));
+        expect(
+          s.saves.single.settings,
+          _on.copyWith(destination: _oneDriveDest),
+        );
+        expect(find.byKey(oneDriveKey), findsNothing, reason: 'menu closed');
+        expect(_sheetText(tester), contains(_req25));
+        _expectZeroRuns(s);
+      },
+    );
+
+    testWidgets(
+      'the current destination row closes the menu and saves nothing',
+      (tester) async {
+        final s = await _open(tester, view: withOptions());
+        await _tapKey(tester, _menuKey);
+        await _tapKey(tester, googleKey);
+        expect(s.saves, isEmpty);
+        expect(find.byKey(googleKey), findsNothing, reason: 'menu closed');
+        expect(_sheetText(tester), contains(_req25));
+      },
+    );
+
+    testWidgets('a picked folder from the menu saves it at once', (
+      tester,
+    ) async {
+      final s = await _open(tester, view: withOptions());
+      s.picker.directories.add(_otherChosenDest);
+      await _tapKey(tester, _menuKey);
+      await _tapKey(tester, backupsDestinationChooseKey);
+      expect(s.saves, hasLength(1));
+      expect(
+        s.saves.single.settings,
+        _on.copyWith(destination: _otherChosenDest),
+      );
+      expect(find.byKey(backupsDestinationChooseKey), findsNothing);
+    });
+
+    testWidgets('a second press on the destination button closes the menu', (
+      tester,
+    ) async {
+      final s = await _open(tester, view: withOptions());
+      await _tapKey(tester, _menuKey);
+      expect(find.byKey(googleKey), findsOneWidget);
+      // The open menu covers the button's lower part: press its top edge.
+      await tester.tapAt(
+        tester.getRect(find.byKey(_menuKey)).topCenter + const Offset(0, 4),
+      );
+      await _frames(tester);
+      expect(find.byKey(googleKey), findsNothing);
+      expect(_sheetText(tester), contains(_req25));
+      expect(_sheet, findsOneWidget);
+      expect(s.saves, isEmpty);
+    });
+
+    testWidgets('Escape closes the open menu first and the sheet second', (
+      tester,
+    ) async {
+      final s = await _open(tester, view: withOptions());
+      await _tabTo(tester, _menuKey);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await _frames(tester);
+      expect(find.byKey(googleKey), findsOneWidget);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _frames(tester);
+      expect(find.byKey(googleKey), findsNothing, reason: 'menu closed');
+      expect(_sheet, findsOneWidget, reason: 'the sheet stays open');
+      expect(s.controller.closeSheetCalls, isEmpty);
+      expect(_sheetText(tester), contains(_req25));
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _frames(tester);
+      expect(_sheet, findsNothing);
+      expect(s.controller.closeSheetCalls, [_local]);
+    });
+
+    testWidgets('a tap outside the menu closes it and keeps the sheet', (
+      tester,
+    ) async {
+      final s = await _open(tester, view: withOptions());
+      await _tapKey(tester, _menuKey);
+      expect(find.byKey(googleKey), findsOneWidget);
+      final card = tester.getTopLeft(find.byKey(backupsStatusKey));
+      await tester.tapAt(card + const Offset(2, 2));
+      await _frames(tester);
+      expect(find.byKey(googleKey), findsNothing, reason: 'menu closed');
+      expect(_sheet, findsOneWidget);
+      expect(s.saves, isEmpty);
+      expect(_sheetText(tester), contains(_req25));
+    });
+
+    testWidgets('the vault going off under an open menu closes the menu', (
+      tester,
+    ) async {
+      final s = await _open(tester, view: withOptions());
+      await _tapKey(tester, _menuKey);
+      expect(find.byKey(googleKey), findsOneWidget);
+      s.setView(_offView());
+      await _frames(tester);
+      expect(tester.takeException(), isNull);
+      expect(_status(tester), contains(_offTitle));
+      expect(find.byKey(googleKey), findsNothing);
+      // Back on: the menu is closed, not stuck open.
+      s.setView(withOptions());
+      await _frames(tester);
+      expect(find.byKey(googleKey), findsNothing);
+      expect(_sheetText(tester), contains(_req25));
+      expect(_sheetText(tester), isNot(contains(_oldFolderNote)));
+      await _tapKey(tester, _menuKey);
+      expect(find.byKey(googleKey), findsOneWidget);
+    });
+  });
+
+  group('AC3 verify: the picking selection', () {
+    testWidgets('choose folder then a provider saves the provider', (
+      tester,
+    ) async {
+      final s = await _open(tester, view: _pickingView());
+      s.picker.directories.add(_chosenDest);
+      await _tapKey(tester, backupsDestinationChooseKey);
+      await _tapKey(tester, backupDestinationKey(BackupProvider.oneDrive, 0));
+      await _tapKey(tester, _turnOnKey);
+      expect(s.saves, hasLength(1));
+      expect(s.saves.single.settings.destination, _oneDriveDest);
+    });
+
+    testWidgets('a provider then a picked folder saves the folder', (
+      tester,
+    ) async {
+      final s = await _open(tester, view: _pickingView());
+      await _tapKey(tester, backupDestinationKey(BackupProvider.icloud, 0));
+      s.picker.directories.add(_chosenDest);
+      await _tapKey(tester, backupsDestinationChooseKey);
+      await _tapKey(tester, _turnOnKey);
+      expect(s.saves.single.settings.destination, _chosenDest);
+    });
+
+    testWidgets(
+      'a reported picking state cancels to off and picks again clean',
+      (tester) async {
+        final s = await _open(tester, view: _pickingView());
+        await _tapKey(tester, backupDestinationKey(BackupProvider.icloud, 0));
+        expect(_button(tester, _turnOnKey).onPressed, isNotNull);
+        await _tapKey(tester, _cancelKey);
+        expect(_status(tester), contains(_offTitle));
+        expect(find.byKey(_turnOnKey), findsNothing);
+        expect(s.saves, isEmpty);
+
+        await _tapKey(tester, backupsToggleKey);
+        expect(find.byKey(backupsDestinationChooseKey), findsOneWidget);
+        expect(
+          _button(tester, _turnOnKey).onPressed,
+          isNull,
+          reason: 'the earlier choice is forgotten',
+        );
+      },
+    );
+
+    testWidgets('a picked folder is forgotten when picking starts again', (
+      tester,
+    ) async {
+      final s = await _open(tester, view: _offView());
+      await _tapKey(tester, backupsToggleKey);
+      s.picker.directories.add(_chosenDest);
+      await _tapKey(tester, backupsDestinationChooseKey);
+      expect(_button(tester, _turnOnKey).onPressed, isNotNull);
+      await _tapKey(tester, _cancelKey);
+      await _tapKey(tester, backupsToggleKey);
+      expect(_button(tester, _turnOnKey).onPressed, isNull);
+      expect(
+        _textIn(tester, find.byKey(backupsDestinationChooseKey)),
+        isNot(contains(_chosenDest)),
+      );
+      expect(s.saves, isEmpty);
+    });
+  });
+
+  group('AC8 verify: keep field and stepper', () {
+    testWidgets('keep normalises what was typed and skips an unchanged save', (
+      tester,
+    ) async {
+      final s = await _open(tester, view: _neverView());
+      await tester.enterText(find.byKey(backupsKeepKey), '042');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await _frames(tester);
+      expect(s.saves, hasLength(1));
+      expect(s.saves.single.settings.keep, 42);
+      expect(_keepText(tester), '42');
+
+      // The stored value again, typed with a leading zero: no save.
+      await tester.enterText(find.byKey(backupsKeepKey), '042');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await _frames(tester);
+      expect(s.saves, hasLength(1), reason: 'unchanged keep saves nothing');
+      expect(_keepText(tester), '42');
+
+      // Not a number: the field shows the stored value again.
+      for (final junk in ['abc', '', ' ']) {
+        await tester.enterText(find.byKey(backupsKeepKey), junk);
+        await tester.testTextInput.receiveAction(TextInputAction.done);
+        await _frames(tester);
+        expect(_keepText(tester), '42', reason: '"$junk"');
+      }
+      expect(s.saves, hasLength(1));
+
+      // Spaces around a number are ignored.
+      await tester.enterText(find.byKey(backupsKeepKey), ' 7 ');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await _frames(tester);
+      expect(s.saves.last.settings.keep, 7);
+    });
+
+    testWidgets('keep plus and minus are disabled at their bounds', (
+      tester,
+    ) async {
+      final handle = tester.ensureSemantics();
+      for (final (keep, incOn, decOn) in [
+        (30, true, true),
+        (365, false, true),
+        (364, true, true),
+        (1, true, false),
+        (2, true, true),
+      ]) {
+        await _open(tester, view: _neverView(_on.copyWith(keep: keep)));
+        await tester.pump();
+        expect(
+          _labelled(tester, _keepIncKey, 'keep one more'),
+          isSemantics(hasEnabledState: true, isEnabled: incOn),
+          reason: 'plus at $keep',
+        );
+        expect(
+          _labelled(tester, _keepDecKey, 'keep one fewer'),
+          isSemantics(hasEnabledState: true, isEnabled: decOn),
+          reason: 'minus at $keep',
+        );
+      }
+      handle.dispose();
+    });
+  });
+
+  group('AC5 and AC12 verify: disabled controls and the spinner', () {
+    testWidgets(
+      'a disabled control is focusable but Enter and Space do nothing',
+      (tester) async {
+        // back up now while backing up.
+        var s = await _open(tester, view: _backingUpView());
+        await _tabTo(tester, backupsNowKey);
+        for (final key in [
+          LogicalKeyboardKey.enter,
+          LogicalKeyboardKey.space,
+        ]) {
+          await tester.sendKeyEvent(key);
+          await _frames(tester);
+        }
+        expect(s.controller.backUpNowCalls, isEmpty);
+
+        // turn on backups until a choice.
+        s = await _open(tester, view: _pickingView());
+        await _tabTo(tester, _turnOnKey);
+        for (final key in [
+          LogicalKeyboardKey.enter,
+          LogicalKeyboardKey.space,
+        ]) {
+          await tester.sendKeyEvent(key);
+          await _frames(tester);
+        }
+        expect(s.saves, isEmpty);
+        expect(find.byKey(_turnOnKey), findsOneWidget, reason: 'still picking');
+
+        // keep plus at 365.
+        s = await _open(tester, view: _neverView(_on.copyWith(keep: 365)));
+        await _tabTo(tester, _keepIncKey);
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await _frames(tester);
+        expect(s.saves, isEmpty);
+
+        // back up now on an unreachable hosted vault.
+        s = await _open(tester, vault: _hosted, view: _hostedUnreachableView());
+        await _tabTo(tester, backupsNowKey);
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await _frames(tester);
+        expect(s.controller.backUpNowCalls, isEmpty);
+      },
+    );
+
+    testWidgets(
+      'the running spinner turns and stands still with animations off',
+      (tester) async {
+        await _open(tester, view: _backingUpView());
+        expect(_cardIcon(LucideIcons.loaderCircle), findsOneWidget);
+        expect(
+          tester.binding.transientCallbackCount,
+          greaterThan(0),
+          reason: 'the spinner is animating',
+        );
+
+        tester.platformDispatcher.accessibilityFeaturesTestValue =
+            const FakeAccessibilityFeatures(disableAnimations: true);
+        addTearDown(
+          tester.platformDispatcher.clearAccessibilityFeaturesTestValue,
+        );
+        await _open(tester, view: _backingUpView());
+        expect(_cardIcon(LucideIcons.loaderCircle), findsOneWidget);
+        expect(
+          tester.binding.transientCallbackCount,
+          0,
+          reason: 'no animation with disableAnimations',
+        );
+      },
+    );
+  });
+
+  group('AC11 verify: the hosted note', () {
+    const note = 'to restore a hosted vault, see docs/backups.md.';
+
+    testWidgets(
+      'the hosted note shows with a result and not while running or failed',
+      (tester) async {
+        for (final (view, shown) in [
+          (_hostedSuccessView(), true),
+          (_hostedNeverView(), true),
+          (_hostedBackingUpView(), false),
+          (_hostedErrorView(), false),
+        ]) {
+          await _open(tester, vault: _hosted, view: view);
+          expect(
+            _sheetText(tester),
+            shown ? contains(note) : isNot(contains(note)),
+            reason: '${view.mode}',
+          );
+        }
+      },
+    );
+  });
 }
