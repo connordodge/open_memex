@@ -44,6 +44,7 @@ const _placeholderNames = [
   'person',
   'me',
   'a',
+  'a b',
   't',
   'jane',
   'connor',
@@ -608,6 +609,40 @@ void main() {
             await _leak(iso, ['--text', f, '--allow-empty-patterns']),
             what: name,
           );
+        }
+      },
+    );
+
+    test(
+      'a placeholder name with a space passes and a near name does not',
+      () async {
+        final iso = await isolatedEnv();
+        final spaced = ['a', 'b'].join(' ');
+        final ok = await _write(
+          iso,
+          'spaced-ok.txt',
+          'a ${leakPath(spaced)}My Vault\nb ${['', 'home', spaced, ''].join('/')}x\n',
+        );
+        _expectClean(
+          await _leak(iso, ['--text', ok, '--allow-empty-patterns']),
+          what: 'name with a space',
+        );
+
+        for (final name in [
+          ['a', 'c'].join(' '),
+          ['a', 'b'].join('  '),
+          ['a', 'bb'].join(' '),
+          ['a', 'b', 'c'].join(' '),
+          ['A', 'b'].join(' '),
+        ]) {
+          final f = await _write(
+            iso,
+            'spaced-near/${name.replaceAll(' ', '_')}-${name.length}.txt',
+            'x ${leakPath(name)}y\ny ${['', 'home', name, ''].join('/')}z\n',
+          );
+          final r = await _leak(iso, ['--text', f, '--allow-empty-patterns']);
+          _expectLeak(r, hidden: [leakPath(name)], what: '"$name"');
+          expect(_hits(r), hasLength(2), reason: 'both lines for "$name"\n$r');
         }
       },
     );
