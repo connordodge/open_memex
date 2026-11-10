@@ -1,9 +1,12 @@
 // WI #321 (A0, D19, D21): the hosted vault's backup routes. The types and
-// provider are frozen; `HostedBackupApi`'s bodies and the provider's wiring
-// are the stubs A1 (#322) replaces.
+// provider are frozen; WI #322 (A1) filled `HostedBackupApi`'s bodies and the
+// provider's wiring.
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../memex_cli.dart';
 import '../../state/backup_models.dart';
+import '../../state/vault_open_hosted.dart';
+import '../../state/vault_state.dart';
 import 'hosted_client.dart';
 
 /// What the vault server answered for `GET` or `POST .../backup` (D21). An
@@ -95,16 +98,56 @@ class ClientHostedBackupApi implements HostedBackupApi {
   /// The vault's name on the server.
   final String vaultName;
 
-  // Stub: the neutral value is an empty status.
   @override
-  Future<HostedBackupResult> status() async =>
-      const HostedBackupOk(BackupStatus());
+  Future<HostedBackupResult> status() => _send('GET', 'backup status');
 
   @override
-  Future<HostedBackupResult> start() async =>
-      const HostedBackupOk(BackupStatus());
+  Future<HostedBackupResult> start() => _send('POST', 'backup start');
+
+  /// One request (no body, no polling). Only `404 not_found` (both methods)
+  /// and, for `POST`, `409 backup_in_progress` / `backups_not_configured` are
+  /// results; every other refusal, `vault_not_found` included, is the
+  /// client's own [MemexException], and an unreachable server throws
+  /// `VaultUnreachableException`.
+  Future<HostedBackupResult> _send(String method, String operation) async {
+    final Map<String, Object?> body;
+    try {
+      body = await client.vaultRequest(
+        method,
+        vaultName,
+        '/backup',
+        operation: operation,
+      );
+    } on MemexException catch (e) {
+      if (e.code == 'not_found') return const HostedBackupServerTooOld();
+      if (method == 'POST') {
+        if (e.code == 'backup_in_progress') {
+          return const HostedBackupAlreadyRunning();
+        }
+        if (e.code == 'backups_not_configured') {
+          return const HostedBackupNotConfigured();
+        }
+      }
+      rethrow;
+    }
+    try {
+      return HostedBackupOk(BackupStatus.fromHostedJson(body));
+    } on FormatException catch (e) {
+      throw MemexException('$operation failed: ${e.message}');
+    }
+  }
 }
 
-/// The open hosted vault's backup API; null when no hosted vault is open.
-/// Stub: A1 builds it from `hostedSessionProvider`.
-final hostedBackupApiProvider = Provider<HostedBackupApi?>((ref) => null);
+/// The open hosted vault's backup API; null unless the open vault is a hosted
+/// vault whose session is for that same vault (as `vaultAccessProvider`). It
+/// follows `currentVaultProvider` and `hostedSessionProvider`.
+final hostedBackupApiProvider = Provider<HostedBackupApi?>((ref) {
+  final vault = ref.watch(currentVaultProvider);
+  if (vault is! HostedVaultRef) return null;
+  final session = ref.watch(hostedSessionProvider);
+  if (session == null || session.vault != vault) return null;
+  return ClientHostedBackupApi(
+    client: session.client,
+    vaultName: vault.vaultName,
+  );
+});
