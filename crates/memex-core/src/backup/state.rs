@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -37,57 +37,60 @@ pub struct DestinationState {
 
 /// The key a destination is recorded and looked up under: its canonical
 /// path, or for a missing path the canonical nearest existing ancestor plus
-/// the remaining components. One function for the CLI, the server, start-up
-/// validation and lookups.
+/// the remaining components. A path that cannot be resolved because a folder
+/// on it refuses access (a permission or macOS privacy refusal) is walked up
+/// the same way, so its failure can be recorded under a key; any other I/O
+/// error is returned. A `..` after a missing component cancels it
+/// lexically (a missing folder cannot be a symlink); a `..` left over once an
+/// existing ancestor is reached steps up from that canonical ancestor. One
+/// function for the CLI, the server, start-up validation and lookups.
 pub fn destination_key(destination: &Path) -> Result<String> {
     let absolute = std::path::absolute(destination)?;
     let mut missing: Vec<&OsStr> = Vec::new();
+    // `..` components seen while walking up, not yet matched with a name.
+    let mut pending_up = 0usize;
     let mut existing = absolute.as_path();
-    let base = loop {
+    let mut key = loop {
         match fs::canonicalize(existing) {
             Ok(canonical) => break canonical,
             Err(e)
                 if matches!(
                     e.kind(),
-                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                    io::ErrorKind::NotFound
+                        | io::ErrorKind::NotADirectory
+                        | io::ErrorKind::PermissionDenied
                 ) =>
             {
                 match (existing.parent(), existing.file_name()) {
                     (Some(parent), Some(name)) => {
-                        missing.push(name);
+                        if pending_up > 0 {
+                            pending_up -= 1;
+                        } else {
+                            missing.push(name);
+                        }
                         existing = parent;
                     }
-                    // A path ending in `..`, or the root itself.
-                    _ => return Err(e.into()),
+                    // The path ends in `..`.
+                    (Some(parent), None) => {
+                        pending_up += 1;
+                        existing = parent;
+                    }
+                    // The root itself.
+                    (None, _) => return Err(e.into()),
                 }
             }
             Err(e) => return Err(e.into()),
         }
     };
-    let mut key = base;
+    for _ in 0..pending_up {
+        key.pop();
+    }
     for name in missing.into_iter().rev() {
         key.push(name);
     }
-    let key = normalize(&key);
     key.to_str()
         .map(str::to_string)
         .ok_or_else(|| MemexError::InvalidPath(format!("{} is not UTF-8", key.display())))
-}
-
-/// Drops `.` and resolves `..` lexically in the missing tail (the existing
-/// part is already canonical, so it holds neither).
-fn normalize(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            other => out.push(other),
-        }
-    }
-    out
 }
 
 /// The vault's backup history. A missing file, bad JSON or a `format` other
@@ -119,7 +122,7 @@ pub fn is_due(last_success_at: Option<i64>, now: i64) -> bool {
     match last_success_at {
         None => true,
         Some(last) if last > now => true,
-        Some(last) => now - last >= super::DUE_AFTER_MS,
+        Some(last) => now.saturating_sub(last) >= super::DUE_AFTER_MS,
     }
 }
 
