@@ -17,6 +17,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
 import 'package:open_memex_app/src/state/backup_controller.dart';
+import 'package:open_memex_app/src/state/backup_models.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';
 import 'package:open_memex_app/src/state/settings.dart';
 import 'package:open_memex_app/src/state/ui_state_store.dart';
@@ -685,5 +686,151 @@ void main() {
         expect(rig.c.read(currentVaultProvider), LocalVaultRef(rig.vault));
       },
     );
+  });
+
+  // Review r3 finding 1: a path that is only a link to the open folder (or a
+  // spelling that does not exist) is not the open vault itself.
+  group('a path that is not the open vault folder itself', () {
+    String linkTo(String target) {
+      final links = createPlainFolder('om360_link_');
+      final link = Link(p.join(links.path, 'link'))..createSync(target);
+      return link.path;
+    }
+
+    Future<void> deletesOnlyThePath(
+      WidgetTester tester,
+      String Function(String link) spelling,
+    ) async {
+      final context = await _wi360Context(tester);
+      final rig = (await tester.runAsync(_wi360Create))!;
+      final path = spelling(linkTo(rig.vault));
+      const backup = VaultBackupSettings(enabled: true, destination: '/b');
+      await tester.runAsync(
+        () => rig.c
+            .read(settingsProvider.notifier)
+            .setVaultBackup(rig.vault, backup),
+      );
+      final v = rig.vault;
+
+      final result = await tester.runAsync(
+        () => rig.deleter.deleteOpenVault(context, path),
+      );
+
+      expect(result, isA<VaultDeleted>());
+      expect(rig.events, ['trash $path'], reason: 'no guard, flush or close');
+      expect(rig.guardCalls, isEmpty);
+      expect(rig.trash.calls, [path]);
+      expect(rig.c.read(currentVaultProvider), LocalVaultRef(v));
+      expect(rig.c.read(selectedNoteIdProvider), '01NOTE360');
+      expect(rig.settings.lastVaultRef, LocalVaultRef(v));
+      expect(rig.settings.recentRefs, [
+        LocalVaultRef(v),
+        LocalVaultRef(rig.other),
+      ]);
+      expect(rig.settings.vaultBackups, {v: backup});
+      expect(rig.cli.callsFor('vault check'), isEmpty, reason: 'no reopen');
+    }
+
+    testWidgets(
+      'deleteOpenVault on a symlink to the open vault trashes only the link and keeps the vault open',
+      (tester) => deletesOnlyThePath(tester, (link) => link),
+    );
+
+    testWidgets(
+      'deleteOpenVault on a symlink to the open vault with a trailing slash trashes only that path and keeps the vault open',
+      (tester) => deletesOnlyThePath(tester, (link) => '$link/'),
+    );
+
+    testWidgets(
+      'deleteOpenVault on the real path of a vault opened through a symlink closes it before the trash',
+      (tester) async {
+        final context = await _wi360Context(tester);
+        final rig = (await tester.runAsync(_wi360Create))!;
+        final link = linkTo(rig.vault);
+        await tester.runAsync(() async {
+          rig.c.read(currentVaultProvider.notifier).state = LocalVaultRef(link);
+        });
+        rig.events.clear();
+        final real = rig.vault;
+
+        final result = await tester.runAsync(
+          () => rig.deleter.deleteOpenVault(context, real),
+        );
+
+        expect(result, isA<VaultDeleted>());
+        final e = rig.events;
+        expect(rig.guardCalls, [same(context)], reason: 'asked once');
+        expect(_at(e, 'guard'), lessThan(_at(e, 'flush open=$link')));
+        expect(_at(e, 'flush open=$link'), lessThan(_at(e, 'current null')));
+        expect(_at(e, 'current null'), lessThan(_at(e, 'settle $link')));
+        expect(_at(e, 'settled $link'), lessThan(_at(e, 'trash $real')));
+        expect(rig.trash.calls, [real]);
+        expect(rig.c.read(currentVaultProvider), isNull);
+        expect(rig.cli.callsFor('vault check'), isEmpty, reason: 'no reopen');
+      },
+    );
+  });
+
+  group('isOpenVaultFolder', () {
+    late Directory folder;
+    late String link;
+
+    setUp(() {
+      folder = createPlainFolder('om360_same_');
+      final links = createPlainFolder('om360_samelink_');
+      link = (Link(p.join(links.path, 'link'))..createSync(folder.path)).path;
+    });
+
+    test('equal strings are the open vault, even when nothing is on disk', () {
+      expect(isOpenVaultFolder('/om360/none', '/om360/none'), isTrue);
+      expect(isOpenVaultFolder(folder.path, folder.path), isTrue);
+    });
+
+    test(
+      'a trailing slash and dot segments of the folder are the open vault',
+      () {
+        expect(isOpenVaultFolder(folder.path, '${folder.path}/'), isTrue);
+        expect(
+          isOpenVaultFolder(folder.path, p.join(folder.path, '.')),
+          isTrue,
+        );
+        expect(
+          isOpenVaultFolder(
+            folder.path,
+            p.join(folder.path, '..', p.basename(folder.path)),
+          ),
+          isTrue,
+        );
+      },
+    );
+
+    test(
+      'a symlink to the open folder is not the open vault, with or without a trailing slash',
+      () {
+        expect(isOpenVaultFolder(folder.path, link), isFalse);
+        expect(isOpenVaultFolder(folder.path, '$link/'), isFalse);
+      },
+    );
+
+    test(
+      'the real folder is the open vault when it was opened through a symlink',
+      () {
+        expect(isOpenVaultFolder(link, folder.path), isTrue);
+      },
+    );
+
+    test(
+      'a spelling of a folder that does not exist is not the open vault',
+      () {
+        final missing = p.join(folder.path, 'gone');
+        expect(isOpenVaultFolder(missing, '$missing/'), isFalse);
+      },
+    );
+
+    test('another folder is not the open vault', () {
+      final other = createPlainFolder('om360_samother_');
+      expect(isOpenVaultFolder(folder.path, other.path), isFalse);
+      expect(isOpenVaultFolder(folder.path, p.dirname(folder.path)), isFalse);
+    });
   });
 }

@@ -863,6 +863,32 @@ void main() {
     );
 
     testWidgets(
+      'a symlink to the open vault shows no open line and confirming trashes only the link and keeps the vault open',
+      (tester) async {
+        final env = await _wi360Pump(tester);
+        final links = createPlainFolder('om360_dlglink_');
+        final link = Link(p.join(links.path, 'link'))..createSync(env.path);
+        await _wi360Open(tester, link.path);
+
+        expect(_inDialog(find.byKey(_openLine)), findsNothing);
+        expect(_inDialog(find.text(_openCopy(env.path))), findsNothing);
+
+        await tester.tap(find.byKey(_confirm));
+        await _wi360Settle(tester);
+
+        expect(env.guardCalls, isEmpty, reason: 'nothing is closed');
+        expect(env.editor.flushes, 0);
+        expect(env.trash.calls, [link.path]);
+        expect(_dialog, findsNothing, reason: 'the dialog closes on success');
+        expect(env.current, LocalVaultRef(env.path));
+        expect(find.byType(Workspace), findsOneWidget);
+        expect(env.settings.lastVaultRef, LocalVaultRef(env.path));
+        expect(env.settings.recentRefs, [LocalVaultRef(env.path)]);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
       'a backup running under another spelling of the open vault disables move to trash and re-enables when it ends',
       (tester) async {
         final env = await _wi360Pump(tester);
