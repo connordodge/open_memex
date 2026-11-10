@@ -160,3 +160,17 @@ _Avoid_: open (for staying in the tab), jump, go to
 **Tab history**:
 The ordered record of what one tab has shown, which Back walks through. Each tab has its own.
 _Avoid_: navigation stack, breadcrumbs, recents
+
+## Releases (#356)
+
+**Release**:
+A published version of Open Memex on the public repo's GitHub Releases: the DMG, the standalone `memex` zip, their SHA-256 sums and the release notes, all for one `v<version>` tag.
+_Avoid_: staging build (a local build for Connor), download, distribution
+
+**Bundled memex**:
+The `memex` binary shipped inside `Open Memex.app` (`Contents/MacOS/memex`), always the same version as the app around it.
+_Avoid_: embedded CLI, helper, sidecar
+
+**Leak check**:
+The check that fails when a file, diff or build artifact contains a home directory path, a personal email address or another private identifier that must not go public.
+_Avoid_: secret scan (secrets are only one kind of leak), audit

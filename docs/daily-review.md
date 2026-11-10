@@ -69,7 +69,7 @@ Output is the raw prompt text, no JSON. In Claude Code the prompts are also slas
 
 ## 3. Connecting a client
 
-All three clients launch the same server, `memex serve`, over stdio. Use absolute paths for the binary and the vault. Install the binary with `cargo install --path crates/memex-mcp --locked`.
+All three clients launch the same server, `memex serve`, over stdio. Use absolute paths for the binary and the vault. The binary is the Bundled memex inside the app, `/Applications/Open Memex.app/Contents/MacOS/memex` (see the README's Install section). To use `memex` in a terminal, run the `ln -s` step in the [README](../README.md) once. To build from source instead, run `cargo install --path crates/memex-mcp --locked`; the binary is then at `~/.cargo/bin/memex`.
 
 ### Claude Desktop
 
@@ -80,7 +80,7 @@ Follow [`docs/claude-desktop-setup.md`](claude-desktop-setup.md) (install, vault
 Register the server once, then start a session in any directory:
 
 ```bash
-claude mcp add --scope user memex -- /Users/YOU/.cargo/bin/memex serve --vault /Users/YOU/Documents/MyMemex
+claude mcp add --scope user memex -- "/Applications/Open Memex.app/Contents/MacOS/memex" serve --vault /Users/YOU/Documents/MyMemex
 claude
 ```
 
@@ -94,7 +94,7 @@ Add `memex` as an MCP server in Raycast's MCP server settings (the menu names ch
 {
   "mcpServers": {
     "memex": {
-      "command": "/Users/YOU/.cargo/bin/memex",
+      "command": "/Applications/Open Memex.app/Contents/MacOS/memex",
       "args": ["serve", "--vault", "/Users/YOU/Documents/MyMemex"]
     }
   }
@@ -155,7 +155,7 @@ Claude Desktop must be running at the scheduled time.
 `claude -p` runs Claude Code once without a session and prints the result. Register the server first (section 3), then add a crontab entry (`crontab -e`) that passes the review prompt text from `memex prompt review` and pre-approves the `memex` tools, since nobody is there to click Allow:
 
 ```cron
-0 21 * * * /Users/YOU/.local/bin/claude -p "$(/Users/YOU/.cargo/bin/memex prompt review)" --allowedTools "mcp__memex" >> /Users/YOU/memex-review.txt 2>&1
+0 21 * * * /Users/YOU/.local/bin/claude -p "$("/Applications/Open Memex.app/Contents/MacOS/memex" prompt review)" --allowedTools "mcp__memex" >> /Users/YOU/memex-review.txt 2>&1
 ```
 
 This runs at 21:00 every day. Use absolute paths because cron has a minimal `PATH` (find yours with `which claude`). Check the result in the output file, or in the app: reviewed days turn green and each touched note's Activity tab lists what changed.

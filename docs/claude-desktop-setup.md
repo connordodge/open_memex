@@ -4,7 +4,15 @@ This walks you through wiring up the `memex` MCP server so Claude Desktop can se
 
 ## 1. Install the binary
 
-From the repo root:
+Install Open Memex from the [Releases page](https://github.com/connordodge/open_memex/releases) (see the README's Install section). The app ships the `memex` binary, the Bundled memex, at:
+
+```
+/Applications/Open Memex.app/Contents/MacOS/memex
+```
+
+Claude Desktop runs that path directly, so you do not need anything else on your `PATH` for it. To type `memex` commands in a terminal, run the `ln -s` step in the [README](../README.md) once. The shell commands in this guide assume it.
+
+To build from source instead, from the repo root:
 
 ```bash
 cargo install --path crates/memex-mcp --locked
@@ -72,7 +80,7 @@ Add (or merge into) the `mcpServers` block:
 {
   "mcpServers": {
     "memex": {
-      "command": "/Users/YOUR_USERNAME/.cargo/bin/memex",
+      "command": "/Applications/Open Memex.app/Contents/MacOS/memex",
       "args": [
         "serve",
         "--vault", "/Users/YOUR_USERNAME/Documents/MyMemex"
@@ -82,7 +90,7 @@ Add (or merge into) the `mcpServers` block:
 }
 ```
 
-> Use **absolute paths** for both the binary and the vault — Claude Desktop will not expand `~` or `$HOME`.
+> Use **absolute paths** for both the binary and the vault — Claude Desktop will not expand `~` or `$HOME`. If you built from source, use the path of the binary you built (`/Users/YOUR_USERNAME/.cargo/bin/memex`) as the `command` instead.
 
 ### With semantic (vector) search enabled
 
@@ -100,7 +108,7 @@ The first time Claude calls `search` or `create_note` with this flag, the BGE-sm
 
 ## 5. Restart Claude Desktop
 
-Fully quit and re-open it. Claude Desktop keeps `memex serve` running from whichever binary it started, so do this after every `cargo install` too (see "Upgrading to schema V5" in the [README](../README.md) before you point a new binary at an existing vault). After restart, you should see the memex tools in Claude's tools panel. The server exposes 37 tools; the README lists them all. The core ones:
+Fully quit and re-open it. Claude Desktop keeps `memex serve` running from whichever binary it started, so do this after every app upgrade and every `cargo install` from source too (see "Upgrading to schema V5" in the [README](../README.md) before you point a new binary at an existing vault). After restart, you should see the memex tools in Claude's tools panel. The server exposes 37 tools; the README lists them all. The core ones:
 
 - `search` — hybrid keyword + semantic search across your notes.
 - `get_note` — fetch the full content of a note. Pass `include_backlinks: true` to also receive `links` (outgoing) and `backlinks` (incoming) maps grouped by kind.
