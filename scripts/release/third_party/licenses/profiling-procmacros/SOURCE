@@ -1,0 +1,7 @@
+Crate: profiling-procmacros 1.0.17
+Declared licence: MIT OR Apache-2.0
+Upstream: https://github.com/aclysma/profiling
+Copied from: commit 740d74c82212f1f0584cfa5c6d884c5ab5367101 (the commit the crate was published from, per its .cargo_vcs_info.json), repository root
+Files: LICENSE-APACHE, LICENSE-MIT
+Why: the profiling-procmacros 1.0.17 package on crates.io ships no licence file.
+The files are copied verbatim from that commit.

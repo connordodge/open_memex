@@ -3,6 +3,9 @@
 **/*.rs.bk
 Cargo.lock.bak
 
+# Release build output (scripts/release/build.sh)
+/dist/
+
 # Flutter
 app/build/
 app/.dart_tool/

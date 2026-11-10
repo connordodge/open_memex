@@ -1,0 +1,8 @@
+Crate: zune-inflate 0.2.54
+Declared licence: MIT OR Apache-2.0 OR Zlib
+Upstream: https://github.com/etemesi254/zune-image
+Copied from: commit 69502ce83fdfecdd0beefd677e2abb3781b29d98 (the commit the crate was published from, per its .cargo_vcs_info.json), repository root
+Files: LICENSE.md, LICENSE-ZLIB
+Why: the zune-inflate 0.2.54 package on crates.io ships no licence file.
+The repository holds only these two licence files; it has no separate MIT or Apache-2.0 text.
+The files are copied verbatim from that commit.
