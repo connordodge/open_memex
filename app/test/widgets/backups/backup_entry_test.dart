@@ -1533,6 +1533,210 @@ void main() {
     );
   });
 
+  // ======================================================= lead rulings Q1-Q3
+  group('rulings Q1 to Q3 the warning flag decides the amber row', () {
+    testWidgets(
+      'a backing up view with the warning flag on keeps the amber row and the badge',
+      (tester) async {
+        // Q1: the amber row wins over the backing up mode.
+        final local = BackupViewState(
+          mode: BackupSheetMode.backingUp,
+          settings: _on,
+          status: _failedStatus(_failedAt, 'backup_destination_unavailable'),
+          automatic: true,
+          failedAt: _failedAt.toUtc(),
+          startedAt: _now.toUtc(),
+          warning: true,
+        );
+        await _pump(tester, view: local);
+        expect(
+          _rowText('backup failed'),
+          findsOneWidget,
+          reason: _entryText(tester),
+        );
+        expect(_rowText('09:00'), findsOneWidget, reason: _entryText(tester));
+        expect(_rowText('backing up…'), findsNothing);
+        expect(_badge, findsOneWidget, reason: 'local: the badge stays');
+        expect(_box(tester).color, OmColors.warnBg);
+
+        final hosted = BackupViewState(
+          mode: BackupSheetMode.backingUp,
+          hosted: true,
+          status: _hostedFailed(_hostedAt),
+          automatic: true,
+          failedAt: _hostedAt.toUtc(),
+          startedAt: _now.toUtc(),
+          warning: true,
+        );
+        await _pump(tester, vault: _hosted, view: hosted);
+        expect(
+          _rowText('nas backup failed'),
+          findsOneWidget,
+          reason: _entryText(tester),
+        );
+        expect(_rowText('backing up…'), findsNothing);
+        expect(_badge, findsOneWidget, reason: 'hosted: the badge stays');
+      },
+    );
+
+    testWidgets(
+      'an unrecorded manual failure with the warning flag off shows the age or never and no badge',
+      (tester) async {
+        // Q2: a failure kept in memory (exit 2, binary not found, back up now)
+        // raises no warning; the row reads as without it.
+        for (final mode in [
+          BackupSheetMode.error,
+          BackupSheetMode.memexTooOld,
+          BackupSheetMode.binaryNotFound,
+        ]) {
+          await _pump(
+            tester,
+            view: BackupViewState(
+              mode: mode,
+              settings: _on,
+              status: _created(_lastBackup),
+              errorCode: 'backup_failed',
+              failedAt: _failedAt.toUtc(),
+            ),
+          );
+          expect(
+            _rowText('2 h ago'),
+            findsOneWidget,
+            reason: '${mode.name}: ${_entryText(tester)}',
+          );
+          expect(_rowText('backups'), findsOneWidget, reason: mode.name);
+          expect(_badge, findsNothing, reason: '${mode.name}: no badge');
+          expect(_noFill(_box(tester)), isTrue, reason: '${mode.name}: fill');
+
+          await _pump(
+            tester,
+            view: BackupViewState(
+              mode: mode,
+              settings: _on,
+              errorCode: 'backup_failed',
+              failedAt: _failedAt.toUtc(),
+            ),
+          );
+          expect(
+            _rowText('never'),
+            findsOneWidget,
+            reason: '${mode.name}: ${_entryText(tester)}',
+          );
+          expect(_badge, findsNothing, reason: '${mode.name}: no badge');
+        }
+      },
+    );
+
+    testWidgets(
+      'a hosted vault with no status yet shows the label only and its semantic label',
+      (tester) async {
+        // Q3: the controller's unseen hosted view (mode off, no status).
+        final handle = tester.ensureSemantics();
+        await _pump(
+          tester,
+          vault: _hosted,
+          view: const BackupViewState(mode: BackupSheetMode.off, hosted: true),
+        );
+        final texts = tester
+            .widgetList<Text>(
+              find.descendant(of: _entry, matching: find.byType(Text)),
+            )
+            .map((w) => w.data)
+            .toList();
+        expect(texts, ['backups on nas'], reason: 'label only, no status');
+        expect(_badge, findsNothing);
+        _labelled(tester, 'backups for work: backups on nas. open backups');
+        handle.dispose();
+      },
+    );
+  });
+
+  group('pinned contracts from the handoff', () {
+    testWidgets(
+      'numpad Enter with focus on backups-entry opens the sheet once',
+      (tester) async {
+        final s = await _pump(tester, view: _offView());
+        await _tabToEntry(tester);
+        await tester.sendKeyEvent(LogicalKeyboardKey.numpadEnter);
+        await _frames(tester);
+        _expectSheetOnce(s, _local, 'numpad Enter with focus');
+      },
+    );
+
+    testWidgets(
+      'a hosted last backup from an earlier day reads as an age and a hosted failure from an earlier day as a date',
+      (tester) async {
+        await _pump(
+          tester,
+          vault: _hosted,
+          view: BackupViewState(
+            mode: BackupSheetMode.success,
+            hosted: true,
+            status: _hostedOk(DateTime(2026, 11, 7, 3)),
+          ),
+        );
+        expect(_rowText('2 d ago'), findsOneWidget, reason: _entryText(tester));
+        expect(_rowText('03:00'), findsNothing);
+
+        final earlier = DateTime(2026, 11, 7, 3);
+        await _pump(
+          tester,
+          vault: _hosted,
+          view: BackupViewState(
+            mode: BackupSheetMode.error,
+            hosted: true,
+            status: _hostedFailed(earlier),
+            errorCode: 'backup_destination_unavailable',
+            automatic: true,
+            failedAt: earlier.toUtc(),
+            warning: true,
+          ),
+        );
+        expect(_rowText('7 nov'), findsOneWidget, reason: _entryText(tester));
+        expect(_rowText('nas backup failed'), findsOneWidget);
+      },
+    );
+
+    testWidgets('keyboard focus draws a two pixel ring around the row', (
+      tester,
+    ) async {
+      bool hasRing() => find
+          .descendant(
+            of: find.byType(Scaffold),
+            matching: find.byWidgetPredicate((w) {
+              if (w is! DecoratedBox) return false;
+              final d = w.decoration;
+              return d is BoxDecoration &&
+                  d.border is Border &&
+                  (d.border! as Border).top.width == 2;
+            }),
+          )
+          .evaluate()
+          .isNotEmpty;
+      await _pump(tester, view: _offView());
+      expect(hasRing(), isFalse, reason: 'no ring before focus');
+      await _tabToEntry(tester);
+      expect(hasRing(), isTrue, reason: 'ring with keyboard focus');
+    });
+
+    testWidgets('the row pads four pixels above and below only at large text', (
+      tester,
+    ) async {
+      EdgeInsetsGeometry? padding() => tester
+          .widget<Container>(
+            find.descendant(of: _entry, matching: find.byType(Container)).first,
+          )
+          .padding;
+      await _pump(tester, view: _offView());
+      expect(padding(), const EdgeInsets.symmetric(horizontal: 10));
+      await _pump(tester, view: _offView(), textScale: 1.3);
+      expect(
+        padding(),
+        const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      );
+    });
+  });
+
   // A guard for the rig itself: the stored settings decode as the live
   // controller reads them.
   test('the settings prefs the rig writes decode per vault path', () {
