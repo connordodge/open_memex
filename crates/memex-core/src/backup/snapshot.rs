@@ -17,7 +17,7 @@ use tempfile::TempPath;
 
 use crate::error::MemexError;
 use crate::vault::{ensure_sqlite_vec_registered, DB_FILENAME};
-use crate::{schema, Result};
+use crate::Result;
 
 /// How long a writer may hold the source before the snapshot fails.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -73,7 +73,7 @@ pub fn take_snapshot(vault: &Path) -> Result<Snapshot> {
     if check != "ok" {
         return Err(failed("quick_check", check));
     }
-    let schema_version = schema::current_version(&dst).map_err(|e| failed("schema version", e))?;
+    let schema_version = schema_version(&dst)?;
     // Closing checkpoints and removes any -wal/-shm beside the temp file, so
     // its bytes alone are the whole snapshot.
     dst.close().map_err(|(_, e)| failed("close", e))?;
@@ -103,6 +103,24 @@ fn copy(src: &Connection, dst: &mut Connection) -> Result<()> {
             other => return Err(failed("copy", format!("unexpected step result {other:?}"))),
         }
     }
+}
+
+/// The snapshot's memex schema version. Unlike `schema::current_version`,
+/// which reads a missing `schema_version` table as 0, a copy with no memex
+/// schema (an empty or truncated memex.db) is backup_failed, never a
+/// backup of an empty database.
+fn schema_version(conn: &Connection) -> Result<i64> {
+    let version: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| failed("schema version", e))?;
+    if version < 1 {
+        return Err(failed("schema version", "memex.db has no memex schema"));
+    }
+    Ok(version)
 }
 
 fn quick_check(conn: &Connection) -> Result<String> {

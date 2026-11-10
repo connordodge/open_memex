@@ -889,3 +889,74 @@ fn no_snapshot_temp_file_remains_after_success_failure_or_drop() {
     run_child_with_private_tmpdir(&busy_root, "backup_failed");
     drop(holder);
 }
+
+/// A vault folder at `<tmp>/<name>` whose `memex.db` is prepared by `seed`
+/// (which may leave it absent). Returns the folder and the bytes it ended up
+/// with, if any.
+fn vault_with_db(
+    tmp: &tempfile::TempDir,
+    name: &str,
+    seed: impl FnOnce(&Path),
+) -> (PathBuf, Option<Vec<u8>>) {
+    let root = tmp.path().join(name);
+    std::fs::create_dir_all(&root).unwrap();
+    let db = root.join("memex.db");
+    seed(&db);
+    let bytes = std::fs::read(&db).ok();
+    (root, bytes)
+}
+
+#[test]
+fn snapshot_of_a_memex_db_with_no_memex_schema_fails_with_backup_failed_and_leaves_no_temp_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    // An empty file (a truncation or a disk-full incident).
+    let (empty, empty_bytes) = vault_with_db(&tmp, "Empty File", |db| {
+        std::fs::write(db, b"").unwrap();
+    });
+    // A valid SQLite file with other tables but no schema_version table.
+    let (no_table, no_table_bytes) = vault_with_db(&tmp, "No Version Table", |db| {
+        let conn = Connection::open(db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notes (id INTEGER PRIMARY KEY, title TEXT);
+             INSERT INTO notes(title) VALUES ('a');",
+        )
+        .unwrap();
+    });
+    // A schema_version table with no rows.
+    let (empty_table, empty_table_bytes) = vault_with_db(&tmp, "Empty Version Table", |db| {
+        let conn = Connection::open(db).unwrap();
+        conn.execute_batch("CREATE TABLE schema_version (version INTEGER PRIMARY KEY);")
+            .unwrap();
+    });
+    // A schema_version table holding only version 0.
+    let (zero_row, zero_row_bytes) = vault_with_db(&tmp, "Version Zero Row", |db| {
+        let conn = Connection::open(db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+             INSERT INTO schema_version(version) VALUES (0);",
+        )
+        .unwrap();
+    });
+    let cases = [
+        ("0-byte memex.db", empty, empty_bytes),
+        ("no schema_version table", no_table, no_table_bytes),
+        ("empty schema_version table", empty_table, empty_table_bytes),
+        ("schema_version of 0", zero_row, zero_row_bytes),
+    ];
+
+    for (what, root, before) in &cases {
+        let err = snapshot::take_snapshot(root).expect_err(what);
+        assert_eq!(err.code(), "backup_failed", "{what}: {err:?}");
+        assert!(
+            err.to_string().contains("schema version"),
+            "{what}: the message names the missing schema: {err}"
+        );
+        assert_eq!(
+            &std::fs::read(root.join("memex.db")).ok(),
+            before,
+            "{what}: a failed snapshot leaves memex.db as it was"
+        );
+        // No snapshot temp file remains (checked in a private TMPDIR).
+        run_child_with_private_tmpdir(root, "backup_failed");
+    }
+}
