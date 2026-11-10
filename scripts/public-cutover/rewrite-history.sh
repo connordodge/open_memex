@@ -42,8 +42,12 @@
 #
 # Exit status:
 #   0  rewritten, and the Leak check is clean.
-#   1  the Leak check found a leak (its redacted LEAK lines are printed), or
-#      a step after <out> was created failed. <out> is left in place.
+#   1  the Leak check found a leak (its redacted LEAK lines are printed):
+#      <out> is left in place, refs and all, for inspection, and must not be
+#      pushed. Or a step after the clone into <out> failed, or the run was
+#      interrupted (INT, TERM, HUP): then every ref in <out> is deleted
+#      (the objects stay), so there is nothing to push, and the message says
+#      where main was.
 #   2  refused, with nothing created or changed: a usage error, a missing
 #      patterns file, a non-empty <out>, <out> inside <source>, a dirty
 #      <source>, <source>'s refs/heads/main not equal to its
@@ -67,10 +71,42 @@ KEEP_MAIN='refs/heads/main'
 KEEP_TAG='refs/tags/v0.1.0'
 
 TMP=""
+# 1 from just before the clone into <out> until the Leak check has run: an
+# exit in that window, for any reason, deletes every ref in <out>.
+ARMED=0
 cleanup() {
   if [ -n "$TMP" ] && [ -d "$TMP" ]; then rm -rf "$TMP"; fi
 }
-trap cleanup EXIT
+
+# Leaves <out> with no refs, so a half-done rewrite (the original history
+# before filter-repo, or a tree that still has the dev files before the
+# final commit) cannot be pushed. Uses --git-dir, never discovery, so it
+# can only touch the repo the clone made.
+disarm_out() {
+  ARMED=0
+  git --git-dir="$OUT" rev-parse --git-dir >/dev/null 2>&1 || return 0
+  local at
+  at=$(git --git-dir="$OUT" rev-parse -q --verify "$KEEP_MAIN" 2>/dev/null)
+  git --git-dir="$OUT" for-each-ref --format='%(refname)' 2>/dev/null |
+    while IFS= read -r r; do printf 'option no-deref\ndelete %s\n' "$r"; done |
+    git --git-dir="$OUT" update-ref --stdin 2>/dev/null
+  if [ -z "$(git --git-dir="$OUT" for-each-ref --format='%(refname)' 2>/dev/null)" ]; then
+    printf 'rewrite-history: the rewrite did not finish, so every ref in %s was deleted: do NOT push it. Run again into a new --out.\n' "$OUT" >&2
+    if [ -n "$at" ]; then
+      printf 'rewrite-history: main was at %s (unfinished; kept only as objects for inspection).\n' "$at" >&2
+    fi
+  else
+    printf 'rewrite-history: the rewrite did not finish and the refs in %s could not be deleted: do NOT push it. Delete it and run again.\n' "$OUT" >&2
+  fi
+}
+
+on_exit() {
+  local status=$?
+  if [ "$ARMED" = 1 ]; then disarm_out; fi
+  cleanup
+  exit "$status"
+}
+trap on_exit EXIT
 trap 'exit 1' INT TERM HUP
 
 usage() {
@@ -80,8 +116,9 @@ usage: rewrite-history.sh --source <repo-path> --out <dir>
                           --patterns <file>
   Writes a rewritten mirror of <source> into <out> (empty or missing).
   Never pushes, fetches or writes to <source>.
-  Exit status: 0 done and leak-free, 1 leak found or step failed (<out>
-  kept), 2 refused (nothing changed).
+  Exit status: 0 done and leak-free, 1 leak found (<out> kept, do not
+  push) or a step failed or was interrupted (<out> kept with no refs),
+  2 refused (nothing changed).
 EOF
 }
 
@@ -91,7 +128,7 @@ refuse() {
 }
 
 fail() {
-  printf 'rewrite-history: failed: %s (%s is left in place)\n' "$1" "$OUT" >&2
+  printf 'rewrite-history: failed: %s\n' "$1" >&2
   exit 1
 }
 
@@ -278,9 +315,11 @@ fi
 } >"$EXPRS"
 
 # ---------------------------------------------------------------------------
-# The mirror. From here on a failure exits 1 and leaves <out>.
+# The mirror. From here on a failure exits 1 and leaves <out> with no refs.
 
-git clone -q --mirror --no-local "$SOURCE" "$OUT" || fail "git clone --mirror"
+# The top of the working tree, so a --source inside it works too.
+ARMED=1
+git clone -q --mirror --no-local "$SRC_TOP" "$OUT" || fail "git clone --mirror"
 OUT=$(cd "$OUT" && pwd) || fail "cannot enter --out"
 
 # Drop the remote that points back at <source> (filter-repo would also run
@@ -316,7 +355,11 @@ if email.lower() in g["_rw_deny_emails"]:
   return os.environ["RW_NOREPLY"].encode()
 return email
 '
+# Never prune: a commit that only scrubbed a deny-listed string becomes
+# empty after the replacements, and a merge of such commits degenerate.
+# filter-repo's default would drop both and move a tag on one to its parent.
 if ! git -C "$OUT" filter-repo --force --quiet \
+  --prune-empty never --prune-degenerate never \
   --replace-text "$EXPRS" \
   --replace-message "$EXPRS" \
   --email-callback "$EMAIL_CALLBACK" >"$TMP/filter-repo.log" 2>&1; then
@@ -351,7 +394,11 @@ git -C "$OUT" update-ref "$KEEP_MAIN" "$FINAL" || fail "cannot move main to the 
 # ---------------------------------------------------------------------------
 # The Leak check on the result.
 
-if ! bash "$LEAK_CHECK" --history "$OUT" --patterns "$PATTERNS"; then
+LEAK_OK=1
+bash "$LEAK_CHECK" --history "$OUT" --patterns "$PATTERNS" || LEAK_OK=0
+# The run is complete either way: a leak keeps <out> whole for inspection.
+ARMED=0
+if [ "$LEAK_OK" = 0 ]; then
   printf 'rewrite-history: the Leak check found private data in %s (see the LEAK lines above);\n' "$OUT" >&2
   printf 'rewrite-history: nothing to push. Fix the deny-list or the history and run again into a new --out.\n' >&2
   exit 1
