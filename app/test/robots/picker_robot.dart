@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/widgets/atoms.dart';
 import 'package:open_memex_app/src/widgets/backups/backup_keys.dart';
@@ -14,6 +15,10 @@ import '../support/journey_harness.dart';
 ///   `remove-server-confirm`, `remove-server-cancel`, `recent-row-<i>`,
 ///   `recent-row-retry-<i>`, `recent-row-update-token-<i>`,
 ///   `recent-row-remove-from-recents-<i>`, `recent-row-remove-<i>`;
+/// - vault picker modal (#362, frozen for #363): `vault-picker-modal`,
+///   `vault-picker-modal-close`, and in its RECENT rows (#361)
+///   `recent-row-open-tag-<i>`, `recent-row-finder-<i>`,
+///   `recent-row-delete-<i>`;
 /// - connect / edit-server dialog (#98): `connect-server-dialog`,
 ///   `connect-name`, `connect-url`, `connect-token`, `connect-submit`,
 ///   `connect-cancel`, `connect-setup-link`, `connect-error`;
@@ -61,6 +66,19 @@ class PickerRobot {
   Finder recentRemoveFromRecents(int i) =>
       key('recent-row-remove-from-recents-$i');
   Finder recentRemove(int i) => key('recent-row-remove-$i');
+
+  Finder get modal => key('vault-picker-modal');
+  Finder get modalClose => key('vault-picker-modal-close');
+  Finder recentOpenTag(int i) => key('recent-row-open-tag-$i');
+  Finder recentFinder(int i) => key('recent-row-finder-$i');
+  Finder recentDelete(int i) => key('recent-row-delete-$i');
+
+  /// [matching] inside the vault picker modal.
+  Finder inModal(Finder matching) =>
+      find.descendant(of: modal, matching: matching);
+
+  /// The RECENT row [i] inside the vault picker modal.
+  Finder modalRecentRow(int i) => inModal(recentRow(i));
 
   Finder get connectDialog => key('connect-server-dialog');
   Finder get connectName => key('connect-name');
@@ -231,6 +249,54 @@ class PickerRobot {
 
   /// Presses the Restore dialog's "restore".
   Future<void> submitRestore() => _tapOne(restoreSubmit);
+
+  // ------------------------------------------------------- picker modal
+
+  /// Whether the vault picker modal shows.
+  bool get modalShows => modal.evaluate().isNotEmpty;
+
+  /// The vault picker modal shows, with the open vault [openName] first
+  /// in RECENT under the OPEN tag (when given).
+  void expectModalOpen({String? openName}) {
+    expect(modal, findsOneWidget, reason: 'the vault picker modal shows');
+    if (openName == null) return;
+    expect(inModal(recentOpenTag(0)), findsOneWidget);
+    expect(
+      within(modalRecentRow(0), find.text(openName)),
+      findsOneWidget,
+      reason: 'the open vault is the first RECENT row',
+    );
+  }
+
+  /// The vault picker modal is gone.
+  void expectModalClosed() =>
+      expect(modal, findsNothing, reason: 'the vault picker modal closed');
+
+  /// The modal's x.
+  Future<void> closeModal() => _tapOne(modalClose);
+
+  /// Esc while the modal shows.
+  Future<void> escapeModal() async {
+    expect(modal, findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await app.settle();
+  }
+
+  /// A click on the scrim, halfway between the window's left edge and the
+  /// dialog's.
+  Future<void> tapScrim() async {
+    final dialog = tester.getRect(modal);
+    await tester.tapAt(Offset(dialog.left / 2, dialog.center.dy));
+    await app.settle();
+  }
+
+  /// Clicks the RECENT row [i] in the modal (the open row closes it; any
+  /// other row asks the leave guard, then opens that vault).
+  Future<void> openRecentInModal(int i) => _tapOne(modalRecentRow(i));
+
+  /// The delete button of the RECENT row [i] in the modal: the delete
+  /// vault dialog opens.
+  Future<void> deleteRecentInModal(int i) => _tapOne(inModal(recentDelete(i)));
 
   /// [tap] after checking [f] is on screen, so a missing control fails by
   /// name.
