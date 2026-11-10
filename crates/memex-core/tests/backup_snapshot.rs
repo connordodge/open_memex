@@ -960,3 +960,26 @@ fn snapshot_of_a_memex_db_with_no_memex_schema_fails_with_backup_failed_and_leav
         run_child_with_private_tmpdir(root, "backup_failed");
     }
 }
+
+#[test]
+fn snapshot_of_a_memex_db_at_exactly_schema_version_1_succeeds_with_schema_version_1() {
+    // The lowest valid memex schema: a `schema_version` table whose highest
+    // row is 1. Only 0 and "no table" mean "no memex schema".
+    let tmp = tempfile::tempdir().unwrap();
+    let (root, _) = vault_with_db(&tmp, "Version One", |db| {
+        let conn = Connection::open(db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+             INSERT INTO schema_version(version) VALUES (1);",
+        )
+        .unwrap();
+    });
+    let snap = take(&root);
+    assert_eq!(snap.schema_version, 1);
+    let (_copy_dir, copy) = open_copy(&snap);
+    assert_eq!(
+        count(&copy, "SELECT MAX(version) FROM schema_version"),
+        1,
+        "the snapshot is the version-1 database"
+    );
+}
