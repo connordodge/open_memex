@@ -4,6 +4,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:path/path.dart' as p;
 
 import '../db.dart' show CanvasRow;
+import '../state/backup_controller.dart';
 import '../state/canvas_state.dart';
 import '../state/hosted_connection_state.dart';
 import '../state/settings.dart';
@@ -18,6 +19,7 @@ import '../theme/typography.dart';
 import '../vault_access/errors.dart';
 import '../vault_access/vault_async_view.dart';
 import 'atoms.dart';
+import 'backups/backup_entry.dart';
 import 'sidebar/canvases_rail.dart';
 import 'sidebar/days_pane.dart';
 import 'sidebar/tags_pane.dart';
@@ -33,6 +35,9 @@ class Sidebar extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // D23: keeps the app-wide backup controller (schedule, hosted status)
+    // alive; Sidebar is always mounted.
+    ref.watch(backupControllerProvider);
     final settings = ref.watch(settingsProvider);
     final currentVault = ref.watch(currentVaultProvider).localPath;
     final activeTab = ref.watch(activeTabProvider);
@@ -64,6 +69,7 @@ class Sidebar extends ConsumerWidget {
             onAction: () => _switchVault(context, ref),
           ),
           _VaultPillsRow(currentVault: currentVault),
+          const BackupEntry(),
           const OmHairline(),
           PanelHeader(
             eyebrow: 'canvases',
