@@ -20,6 +20,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../support/app_harness.dart' show settingsGetMaxDepthStdout;
 import '../support/fake_memex_cli.dart';
 import '../support/vault_folders.dart';
+import '../support/token_store_fakes.dart';
 
 /// clap's answer from a memex without `vault check` (exit 2).
 const _clapUsageError =
@@ -42,7 +43,7 @@ Future<ProviderContainer> _app({
     'memex.recent_vaults': recents,
     'memex.last_vault': ?lastVault,
   });
-  final settings = await SettingsController.load();
+  final settings = await loadSettingsKeepingPickedBinary();
   final c = ProviderContainer(
     overrides: [
       settingsProvider.overrideWith((_) => settings),
