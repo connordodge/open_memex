@@ -231,7 +231,7 @@ Future<Wi97Picker> pumpVaultPicker(
     for (final s in savedServers) s.id: wi97TokenFor(s.id),
   });
   final settings = (await tester.runAsync(
-    () => SettingsController.load(tokenStore: tokens),
+    () => loadSettingsKeepingPickedBinary(tokenStore: tokens),
   ))!;
 
   final servers = {

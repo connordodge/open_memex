@@ -24,7 +24,7 @@ Future<(SettingsController, FakeTokenStore)> _load(
 ) async {
   SharedPreferences.setMockInitialValues(seed);
   final store = FakeTokenStore();
-  final settings = await SettingsController.load(tokenStore: store);
+  final settings = await loadSettingsKeepingPickedBinary(tokenStore: store);
   return (settings, store);
 }
 

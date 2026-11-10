@@ -33,6 +33,7 @@ import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
 import '../support/file_picker_fakes.dart';
 import '../support/vault_folders.dart';
+import '../support/token_store_fakes.dart';
 
 // Spec copy, verbatim (req 31, L20).
 const _networkCopy =
@@ -106,7 +107,7 @@ Future<ProviderContainer> _pumpApp(
     'memex.recent_vaults': recents,
     'memex.last_vault': ?lastVault,
   });
-  final settings = await SettingsController.load();
+  final settings = await loadSettingsKeepingPickedBinary();
   final fakeDb = db ?? FakeVaultDb.v5();
   tester.view.physicalSize = const Size(1600, 1000);
   tester.view.devicePixelRatio = 1.0;

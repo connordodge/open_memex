@@ -84,7 +84,9 @@ Future<BackupHarness> _build({
     'memex.binary_path': 'fake-memex',
     ...prefs,
   });
-  final settings = await SettingsController.load(tokenStore: FakeTokenStore());
+  final settings = await loadSettingsKeepingPickedBinary(
+    tokenStore: FakeTokenStore(),
+  );
   final fakeClock = clock ?? FakeClock();
   final fakeCli = cli ?? FakeMemexCli();
   final fakeRunner = runner ?? FakeBackupRunner();

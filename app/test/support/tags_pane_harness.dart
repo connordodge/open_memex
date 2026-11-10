@@ -21,6 +21,7 @@ import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'recording_tabs.dart';
+import 'token_store_fakes.dart';
 
 TagRow tagRow(String tag, int count, {bool system = false}) =>
     TagRow(tag: tag, noteCount: count, system: system);
@@ -181,7 +182,7 @@ Future<TagsEnv> _pump(
   SharedPreferences.setMockInitialValues({
     'memex.binary_path': '/nonexistent/memex-test-binary',
   });
-  final settings = await SettingsController.load();
+  final settings = await loadSettingsKeepingPickedBinary();
   final env = TagsEnv(vault, TabsRecorder());
   await tester.pumpWidget(
     ProviderScope(

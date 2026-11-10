@@ -174,7 +174,7 @@ Future<JourneyApp> pumpJourneyApp(
     for (final s in servers) s.id: ?s.storedToken,
   });
   final settings = (await tester.runAsync(
-    () => SettingsController.load(tokenStore: tokens),
+    () => loadSettingsKeepingPickedBinary(tokenStore: tokens),
   ))!;
   final router = FakeVaultServerRouter([for (final s in servers) s.server]);
   final fakeClock = clock ?? FakeClock(DateTime(2026, 10, 19, 9));

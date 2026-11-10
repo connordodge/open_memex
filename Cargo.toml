@@ -9,7 +9,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-authors = ["Connor Dodge <12689103+connordodge@users.noreply.github.com>"]
+authors = ["Connor Dodge LLC"]
 repository = "https://github.com/connordodge/open_memex"
 
 [workspace.dependencies]

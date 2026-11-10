@@ -12,6 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../support/fake_memex_cli.dart';
 import '../support/vault_folders.dart';
+import '../support/token_store_fakes.dart';
 
 /// Launch the app state as `main()` does: settings loaded from (mock)
 /// SharedPreferences, no override of `currentVaultProvider`.
@@ -23,7 +24,7 @@ Future<ProviderContainer> _launch(
     'memex.binary_path': 'fake-memex',
     ...prefs,
   });
-  final settings = await SettingsController.load();
+  final settings = await loadSettingsKeepingPickedBinary();
   final c = ProviderContainer(
     overrides: [settingsProvider.overrideWith((_) => settings), ...overrides],
   );

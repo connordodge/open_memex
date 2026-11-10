@@ -174,7 +174,7 @@ void main() {
         await store.write('srv-91-mock', 'tok-mock-0001');
         expect(values, hasLength(1));
         final key = values.keys.single;
-          expect(key, isNot(contains('tok-mock-0001')));
+        expect(key, isNot(contains('tok-mock-0001')));
         expect(values[key], 'tok-mock-0001');
         expect(await store.read('srv-91-mock'), 'tok-mock-0001');
 

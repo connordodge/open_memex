@@ -18,6 +18,7 @@ import '../support/fake_clock.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
 import '../support/segment_editing_finder.dart';
+import '../support/token_store_fakes.dart';
 
 /// Robot for the launch-on-today journeys (WI #22). Finds widgets by Key:
 /// `daily-date-header`, `daily-today-badge`, `editor-title`, `editor-body`,
@@ -62,7 +63,7 @@ class TodayRobot {
       'memex.recent_vaults': <String>[vaultDir.path],
       'memex.last_vault': vaultDir.path,
     });
-    final settings = await SettingsController.load();
+    final settings = await loadSettingsKeepingPickedBinary();
 
     tester.view.physicalSize = const Size(1600, 1000);
     tester.view.devicePixelRatio = 1.0;
