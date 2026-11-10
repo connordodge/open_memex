@@ -77,7 +77,8 @@ final cloudFolderProbeProvider = Provider<CloudFolderProbe>(
 /// Drive by account, OneDrive by name, then "choose folder…" (provider null,
 /// path null, label exactly `choose folder…`). A label is the bare
 /// distinguishing text: `iCloud Drive`, the account (`connor@example.com`), the
-/// name after `OneDrive-` (`Personal`); A4 composes `Google Drive · <label>`. A provider that isn't installed is not listed; with none
+/// name after `OneDrive-` (`Personal`; `OneDrive-SharedLibraries[-<org>]` is
+/// skipped, it holds SharePoint libraries); A4 composes `Google Drive · <label>`. A provider that isn't installed is not listed; with none
 /// found, only "choose folder…" is. Each provider row's [path] is
 /// `<provider folder>/Open Memex Backups`, not yet created.
 Future<List<BackupDestinationOption>> discoverBackupDestinations(
@@ -85,6 +86,7 @@ Future<List<BackupDestinationOption>> discoverBackupDestinations(
 ) async {
   const googlePrefix = 'GoogleDrive-';
   const oneDrivePrefix = 'OneDrive-';
+  const sharedLibraries = 'OneDrive-SharedLibraries';
   final options = <BackupDestinationOption>[];
 
   final String home;
@@ -123,6 +125,11 @@ Future<List<BackupDestinationOption>> discoverBackupDestinations(
       }
     } else if (name.startsWith(oneDrivePrefix) &&
         name.length > oneDrivePrefix.length) {
+      // `OneDrive-SharedLibraries[-<org>]` holds SharePoint libraries, not a
+      // OneDrive root.
+      if (name == sharedLibraries || name.startsWith('$sharedLibraries-')) {
+        continue;
+      }
       if (await probe.isDirectory(p.posix.join(cloudStorage, name))) {
         oneDriveNames.add(name.substring(oneDrivePrefix.length));
       }
