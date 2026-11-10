@@ -297,17 +297,38 @@ void main() {
       ('check-version rejects a tag with letters for version parts', 'vx.y.z'),
       ('check-version rejects a tag with an empty version part', 'v0..0'),
       ('check-version rejects a full ref instead of a tag', 'refs/tags/v0.2.0'),
+      ('check-version rejects a tag with a prefix before the v', 'xv0.2.0'),
+      (
+        'check-version rejects a tag with a suffix after the version',
+        'v0.2.0x',
+      ),
     ]) {
       test(name, () async {
+        // The fixture matches v0.2.0 everywhere else, so a tag the shape
+        // check lets through (an unanchored pattern) leaves no other failure
+        // line behind for the assertions below to be satisfied by.
         final root = await _fixture();
         final r = await _check(root, tag);
         expect(r.exitCode, 1, reason: '$r');
         expect(
-          _lines(
-            r,
-          ).where((l) => l.contains(tag) && l.toLowerCase().contains('tag')),
-          isNotEmpty,
-          reason: 'a line names the tag $tag as malformed\n$r',
+          _linesWith(r, ['is not v<x.y.z>']),
+          hasLength(1),
+          reason: 'one line names the tag as malformed\n$r',
+        );
+        expect(
+          _lines(r).first,
+          contains('tag'),
+          reason: 'the line starts with the failure: $r',
+        );
+        expect(
+          _lines(r).where((l) => l.contains('app/pubspec.yaml')),
+          isEmpty,
+          reason: 'a malformed tag stops the other checks\n$r',
+        );
+        expect(
+          _lines(r).where((l) => l.contains('Cargo.toml')),
+          isEmpty,
+          reason: '$r',
         );
       });
     }

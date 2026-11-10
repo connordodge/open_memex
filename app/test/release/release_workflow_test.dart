@@ -42,7 +42,15 @@ const _releaseSecrets = [
   'LEAK_PATTERNS',
 ];
 
-final _secretRef = RegExp(r'\bsecrets\s*(\.|\[)');
+/// A `secrets.X` / `secrets['X']` reference, or any `${{ }}` expression that
+/// names `secrets` (`toJSON(secrets)` reads them all).
+final _secretRef = RegExp(r'\bsecrets\s*(\.|\[)|\$\{\{[^}]*\bsecrets\b');
+
+/// Shell tracing: `set -x` (alone or in a flag cluster), `set -o xtrace` and
+/// a shell started with `-x` (`bash -x`, `sh -ex`, `shell: bash -x`).
+final _tracing = RegExp(
+  r'\bset\s+-[a-zA-Z]*x|\bset\s+-o\s+xtrace|\b(?:ba)?sh\s+(?:-[a-zA-Z]+\s+)*-[a-zA-Z]*x|\bBASH_XTRACEFD\b',
+);
 
 String _rawWorkflow() {
   final f = File('${repoRoot()}/$_workflowPath');
@@ -307,7 +315,7 @@ void main() {
               reason: 'secrets reach run scripts through env only:\n$run',
             );
             expect(
-              RegExp(r'set\s+-[a-wyz]*x|set\s+-o\s+xtrace').hasMatch(run),
+              _tracing.hasMatch(run),
               isFalse,
               reason: 'no set -x where secrets are in the environment:\n$run',
             );
@@ -747,4 +755,551 @@ void main() {
       },
     );
   });
+
+  group('detectors', () {
+    for (final (name, text, expected) in [
+      ('secret detector sees a dotted reference', r'${{ secrets.A }}', true),
+      ('secret detector sees an index reference', r"${{ secrets['A'] }}", true),
+      (
+        'secret detector sees toJSON of all secrets',
+        r'${{ toJSON(secrets) }}',
+        true,
+      ),
+      ('secret detector ignores a variable reference', r'${{ vars.A }}', false),
+      (
+        'secret detector ignores the word in prose',
+        'keep secrets out of logs',
+        false,
+      ),
+    ]) {
+      test(name, () => expect(_secretRef.hasMatch(text), expected));
+    }
+
+    for (final (name, text, expected) in [
+      ('tracing detector sees set -x', 'set -x', true),
+      ('tracing detector sees set -ex', 'set -ex', true),
+      ('tracing detector sees set -euxo pipefail', 'set -euxo pipefail', true),
+      ('tracing detector sees set -o xtrace', 'set -o xtrace', true),
+      ('tracing detector sees bash -x', 'bash -x ./run.sh', true),
+      ('tracing detector sees sh -ex', 'sh -ex run.sh', true),
+      ('tracing detector sees a bash -x shell value', 'bash -x {0}', true),
+      ('tracing detector ignores set -eo pipefail', 'set -eo pipefail', false),
+      (
+        'tracing detector ignores the default bash shell value',
+        'bash --noprofile --norc -eo pipefail {0}',
+        false,
+      ),
+      (
+        'tracing detector ignores base64 flags',
+        'openssl rand -base64 32',
+        false,
+      ),
+    ]) {
+      test(name, () => expect(_tracing.hasMatch(text), expected));
+    }
+  });
+
+  group('shell', () {
+    test(
+      'release.yml runs every step in bash with the default error flags and no tracing',
+      () {
+        final wf = _workflow();
+        final defaults = wf['defaults'];
+        expect(defaults, isA<Map>());
+        expect(
+          ((defaults as Map)['run'] as Map)['shell'],
+          'bash',
+          reason: 'shell: bash means bash -eo pipefail, so a failed pipe stops',
+        );
+        for (final job in _jobs(wf).values) {
+          final jd = job['defaults'];
+          if (jd is Map && jd['run'] is Map) {
+            expect((jd['run'] as Map)['shell'], anyOf(isNull, 'bash'));
+          }
+          for (final step in _steps(job)) {
+            expect(
+              step['shell'],
+              anyOf(isNull, 'bash'),
+              reason: 'step ${step['name']} keeps the bash default',
+            );
+          }
+        }
+      },
+    );
+  });
+
+  group('release job steps run against a stub gh', () {
+    // Each test runs the real `run:` text of one release-job step with
+    // `bash -eo pipefail` (what `shell: bash` runs) in a fixture git repo,
+    // with a stub `gh` first on PATH that logs every call and answers the
+    // tag lookup and generate-notes. Nothing reaches the network.
+    const sha = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const moved = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const repoName = 'example-owner/example-repo';
+    const allTags = ['v0.1.0', 'v0.2.0', 'v0.3.0', 'v0.10.0', 'v1.0.0'];
+
+    Map<dynamic, dynamic> job() => _releaseJob(_workflow()).value;
+
+    Map<dynamic, dynamic> stepWhere(bool Function(String run) test) {
+      final found = _steps(job()).where((s) => test(_run(s))).toList();
+      expect(found, hasLength(1), reason: 'exactly one matching step');
+      return found.single;
+    }
+
+    // The step that only checks the tag (no gh release call).
+    bool isTagCheck(String run) =>
+        run.contains('commits/tags') && !run.contains('gh release');
+    bool isCreate(String run) => _createsDraft(run);
+    bool isPublish(String run) => _publishes(run);
+    bool isUpload(String run) => _ghUpload.hasMatch(run);
+    bool isBody(String run) => run.contains('generate-notes');
+
+    const stubGh = r'''#!/bin/bash
+{ for a in "$@"; do printf '[%s]' "$a"; done; printf '\n'; } >> "$STUB_LOG"
+all="$*"
+case "$1" in
+  api)
+    case "$all" in
+      *generate-notes*)
+        printf '%s\n' "$STUB_CHANGES"
+        exit 0
+        ;;
+      *"repos/$GITHUB_REPOSITORY/commits/tags/$TAG"*|*"repos/$GITHUB_REPOSITORY/commits/refs/tags/$TAG"*|*"repos/$GITHUB_REPOSITORY/commits/$TAG"*)
+        [ -z "${STUB_API_FAIL:-}" ] || exit 1
+        printf '%s\n' "$STUB_TAG_SHA"
+        exit 0
+        ;;
+    esac
+    echo "stub gh: unexpected api call: $all" >&2
+    exit 99
+    ;;
+  release)
+    sub=$2
+    shift 2
+    case "$sub" in
+      create)
+        prev=""
+        for a in "$@"; do
+          if [ "$prev" = --notes-file ] && [ ! -f "$a" ]; then
+            echo "stub gh: no notes file $a" >&2
+            exit 1
+          fi
+          prev=$a
+        done
+        ;;
+      upload)
+        shift
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            --repo) shift 2 ;;
+            -*) shift ;;
+            *)
+              if [ ! -f "$1" ]; then
+                echo "stub gh: no such asset file: $1" >&2
+                exit 1
+              fi
+              shift
+              ;;
+          esac
+        done
+        ;;
+      edit) ;;
+      *)
+        echo "stub gh: unexpected release subcommand $sub" >&2
+        exit 99
+        ;;
+    esac
+    exit 0
+    ;;
+esac
+echo "stub gh: unexpected call: $all" >&2
+exit 99
+''';
+
+    // Emulates build.sh's CLI and output names (the names are pinned against
+    // the real script by a test below).
+    const stubBuild = r'''#!/bin/bash
+ver="" out=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --version) ver=$2; shift 2 ;;
+    --out) out=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if ! [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "stub build.sh: bad version $ver" >&2
+  exit 2
+fi
+mkdir -p "$out"
+for f in "Open-Memex-$ver-arm64.dmg" "memex-$ver-macos-arm64.zip" THIRD_PARTY_NOTICES.txt SHA256SUMS.txt; do
+  : > "$out/$f"
+done
+''';
+
+    Future<_StepEnv> setUpEnv() async {
+      final iso = await isolatedEnv();
+      final repo = Directory('${iso.work.path}/repo')..createSync();
+      final bin = Directory('${iso.work.path}/bin')..createSync();
+      final temp = Directory('${iso.work.path}/runner-temp')..createSync();
+      final log = File('${iso.work.path}/gh.log');
+      File('${bin.path}/gh').writeAsStringSync(stubGh);
+      await Process.run('chmod', ['+x', '${bin.path}/gh']);
+      File('${repo.path}/scripts/release/build.sh')
+        ..createSync(recursive: true)
+        ..writeAsStringSync(stubBuild);
+      await Process.run('chmod', [
+        '+x',
+        '${repo.path}/scripts/release/build.sh',
+      ]);
+      await runGit(iso, repo.path, ['init']);
+      await runGit(iso, repo.path, ['commit', '--allow-empty', '-m', 'init']);
+      for (final t in allTags) {
+        await runGit(iso, repo.path, ['tag', t]);
+        File('${repo.path}/release-notes/$t.md')
+          ..createSync(recursive: true)
+          ..writeAsStringSync('NOTES-BODY $t\n');
+      }
+      return _StepEnv(iso, repo.path, bin.path, temp.path, log);
+    }
+
+    Future<_StepResult> runStep(
+      _StepEnv e,
+      Map<dynamic, dynamic> step, {
+      required String tag,
+      String tagSha = sha,
+      bool apiFails = false,
+    }) async {
+      final r = await Process.run(
+        'bash',
+        ['-eo', 'pipefail', '-c', _run(step)],
+        workingDirectory: e.repo,
+        includeParentEnvironment: false,
+        environment: {
+          ...e.iso.env,
+          'PATH': '${e.bin}:${Platform.environment['PATH'] ?? '/usr/bin:/bin'}',
+          'TAG': tag,
+          'GITHUB_SHA': sha,
+          'GITHUB_REPOSITORY': repoName,
+          'RUNNER_TEMP': e.temp,
+          'GH_TOKEN': 'placeholder-token',
+          'STUB_LOG': e.log.path,
+          'STUB_TAG_SHA': tagSha,
+          'STUB_CHANGES': 'STUB-CHANGES',
+          if (apiFails) 'STUB_API_FAIL': '1',
+        },
+      );
+      return _StepResult(
+        r.exitCode,
+        '${r.stdout}',
+        '${r.stderr}',
+        e.log.existsSync() ? e.log.readAsLinesSync() : const [],
+      );
+    }
+
+    test(
+      'the tag check step passes while the tag points at GITHUB_SHA and fails once it has moved',
+      () async {
+        final step = stepWhere(isTagCheck);
+        final e = await setUpEnv();
+        final ok = await runStep(e, step, tag: 'v0.2.0');
+        expect(ok.exitCode, 0, reason: '$ok');
+        expect(
+          ok.calls.where((l) => l.startsWith('[api]') && l.contains('v0.2.0')),
+          hasLength(1),
+          reason: 'it asks the API where the tag points\n$ok',
+        );
+        final bad = await runStep(e, step, tag: 'v0.2.0', tagSha: moved);
+        expect(bad.exitCode, 1, reason: '$bad');
+        expect(bad.stderr, contains('v0.2.0'));
+        expect(bad.stderr, contains(moved));
+        expect(bad.stderr, contains(sha));
+      },
+    );
+
+    test('the tag check step fails when the API call fails', () async {
+      final e = await setUpEnv();
+      final r = await runStep(
+        e,
+        stepWhere(isTagCheck),
+        tag: 'v0.2.0',
+        apiFails: true,
+      );
+      expect(r.exitCode, isNot(0), reason: 'fails closed: $r');
+    });
+
+    test('the tag check step fails when the API answers nothing', () async {
+      final e = await setUpEnv();
+      final r = await runStep(
+        e,
+        stepWhere(isTagCheck),
+        tag: 'v0.2.0',
+        tagSha: '',
+      );
+      expect(r.exitCode, 1, reason: '$r');
+    });
+
+    test(
+      'the tag check step runs after checkout and before check-version and the build',
+      () {
+        final steps = _steps(job());
+        final checkout = _indexWhere(
+          steps,
+          (s) => '${s['uses']}'.startsWith('actions/checkout@'),
+        );
+        final tagCheck = _indexWhere(steps, (s) => isTagCheck(_run(s)));
+        final version = _indexWhere(
+          steps,
+          (s) => _run(s).contains(_checkVersion),
+        );
+        final build = _indexWhere(steps, (s) => _runsBuild(_run(s)));
+        expect(checkout, greaterThanOrEqualTo(0));
+        expect(tagCheck, greaterThan(checkout));
+        expect(tagCheck, lessThan(version));
+        expect(tagCheck, lessThan(build));
+      },
+    );
+
+    test(
+      'the create step does not create the draft when the tag has moved or the lookup fails',
+      () async {
+        final step = stepWhere(isCreate);
+        final e = await setUpEnv();
+        final bad = await runStep(e, step, tag: 'v0.2.0', tagSha: moved);
+        expect(bad.exitCode, 1, reason: '$bad');
+        expect(
+          bad.calls.where((l) => l.startsWith('[release]')),
+          isEmpty,
+          reason: 'no Release is created for a moved tag\n$bad',
+        );
+        final apiFail = await runStep(e, step, tag: 'v0.2.0', apiFails: true);
+        expect(apiFail.exitCode, isNot(0), reason: '$apiFail');
+        expect(apiFail.calls.where((l) => l.startsWith('[release]')), isEmpty);
+      },
+    );
+
+    test(
+      'the publish step does not publish when the tag has moved and publishes the draft when it has not',
+      () async {
+        final step = stepWhere(isPublish);
+        final e = await setUpEnv();
+        final bad = await runStep(e, step, tag: 'v0.2.0', tagSha: moved);
+        expect(bad.exitCode, 1, reason: '$bad');
+        expect(
+          bad.calls.where((l) => l.startsWith('[release]')),
+          isEmpty,
+          reason: 'nothing is published for a moved tag\n$bad',
+        );
+        final apiFail = await runStep(e, step, tag: 'v0.2.0', apiFails: true);
+        expect(apiFail.exitCode, isNot(0), reason: '$apiFail');
+        expect(apiFail.calls.where((l) => l.startsWith('[release]')), isEmpty);
+        final ok = await runStep(e, step, tag: 'v0.2.0');
+        expect(ok.exitCode, 0, reason: '$ok');
+        expect(ok.calls.where((l) => l.startsWith('[release][edit]')), [
+          '[release][edit][v0.2.0][--repo][$repoName][--draft=false]',
+        ], reason: '$ok');
+      },
+    );
+
+    for (final (name, tag, prerelease) in [
+      (
+        'the create step makes a draft titled Open Memex 0.2.0 and marks 0.2.0 as a pre-release',
+        'v0.2.0',
+        true,
+      ),
+      (
+        'the create step makes a draft titled Open Memex 0.10.0 and marks 0.10.0 as a pre-release',
+        'v0.10.0',
+        true,
+      ),
+      (
+        'the create step makes a draft titled Open Memex 1.0.0 and does not mark 1.0.0 as a pre-release',
+        'v1.0.0',
+        false,
+      ),
+    ]) {
+      test(name, () async {
+        final e = await setUpEnv();
+        final body = await runStep(e, stepWhere(isBody), tag: tag);
+        expect(body.exitCode, 0, reason: '$body');
+        final r = await runStep(e, stepWhere(isCreate), tag: tag);
+        expect(r.exitCode, 0, reason: '$r');
+        final creates = r.calls
+            .where((l) => l.startsWith('[release][create]'))
+            .toList();
+        expect(creates, hasLength(1), reason: '$r');
+        final version = tag.substring(1);
+        final line = creates.single;
+        expect(line, contains('[release][create][$tag]'));
+        expect(line, contains('[--repo][$repoName]'));
+        expect(line, contains('[--draft]'));
+        expect(line, contains('[--verify-tag]'));
+        expect(line, contains('[--title][Open Memex $version]'));
+        expect(line, contains('[--notes-file][${e.temp}/release-body.md]'));
+        expect(line.contains('[--prerelease]'), prerelease, reason: line);
+      });
+    }
+
+    for (final (name, tag, previous) in [
+      (
+        'the body step asks generate-notes for changes since v0.1.0 when releasing v0.2.0',
+        'v0.2.0',
+        'v0.1.0',
+      ),
+      (
+        'the body step sorts versions numerically so v0.10.0 follows v0.3.0',
+        'v0.10.0',
+        'v0.3.0',
+      ),
+      (
+        'the body step picks the highest tag below v1.0.0 even when it is a later minor',
+        'v1.0.0',
+        'v0.10.0',
+      ),
+      ('the body step picks the tag just below v0.3.0', 'v0.3.0', 'v0.2.0'),
+      (
+        'the body step omits previous_tag_name for the first release v0.1.0',
+        'v0.1.0',
+        '',
+      ),
+    ]) {
+      test(name, () async {
+        final e = await setUpEnv();
+        final r = await runStep(e, stepWhere(isBody), tag: tag);
+        expect(r.exitCode, 0, reason: '$r');
+        final api = r.calls.where((l) => l.contains('generate-notes')).toList();
+        expect(api, hasLength(1), reason: '$r');
+        expect(api.single, contains('[--method][POST]'));
+        expect(api.single, contains('repos/$repoName/releases/generate-notes'));
+        expect(api.single, contains('[tag_name=$tag]'));
+        if (previous.isEmpty) {
+          expect(api.single, isNot(contains('previous_tag_name')));
+        } else {
+          expect(api.single, contains('[previous_tag_name=$previous]'));
+          expect(
+            RegExp('previous_tag_name').allMatches(api.single),
+            hasLength(1),
+          );
+        }
+      });
+    }
+
+    test(
+      'the body step writes the release notes, then a What changed heading, then the generated changes',
+      () async {
+        final e = await setUpEnv();
+        final r = await runStep(e, stepWhere(isBody), tag: 'v0.2.0');
+        expect(r.exitCode, 0, reason: '$r');
+        final body = File('${e.temp}/release-body.md').readAsStringSync();
+        expect(
+          body,
+          "NOTES-BODY v0.2.0\n\n## What's changed\n\nSTUB-CHANGES\n",
+        );
+      },
+    );
+
+    test('the body step fails when the notes file is missing', () async {
+      final e = await setUpEnv();
+      File('${e.repo}/release-notes/v0.2.0.md').deleteSync();
+      final r = await runStep(e, stepWhere(isBody), tag: 'v0.2.0');
+      expect(r.exitCode, isNot(0), reason: '$r');
+    });
+
+    test(
+      'the upload step names exactly the four files the build step writes to its out directory',
+      () async {
+        final e = await setUpEnv();
+        final build = _steps(job()).firstWhere((s) => _runsBuild(_run(s)));
+        final b = await runStep(e, build, tag: 'v0.2.0');
+        expect(b.exitCode, 0, reason: 'the build step ran its stub\n$b');
+        final r = await runStep(e, stepWhere(isUpload), tag: 'v0.2.0');
+        expect(r.exitCode, 0, reason: 'every uploaded file exists\n$r');
+        final uploads = r.calls
+            .where((l) => l.startsWith('[release][upload]'))
+            .toList();
+        expect(uploads, hasLength(1), reason: '$r');
+        final out = RegExp(
+          r'--out\s+(\S+)',
+        ).firstMatch(_run(build))!.group(1)!.replaceAll('"', '');
+        expect(
+          uploads.single,
+          '[release][upload][v0.2.0][--repo][$repoName]'
+          '[$out/Open-Memex-0.2.0-arm64.dmg]'
+          '[$out/memex-0.2.0-macos-arm64.zip]'
+          '[$out/THIRD_PARTY_NOTICES.txt]'
+          '[$out/SHA256SUMS.txt]',
+        );
+        final built = Directory(
+          '${e.repo}/$out',
+        ).listSync().map((f) => f.path.split('/').last).toSet();
+        expect(built, {
+          'Open-Memex-0.2.0-arm64.dmg',
+          'memex-0.2.0-macos-arm64.zip',
+          'THIRD_PARTY_NOTICES.txt',
+          'SHA256SUMS.txt',
+        });
+      },
+    );
+
+    test('the stub build.sh uses the asset names of the real build.sh', () {
+      final src = File('${repoRoot()}/$_buildScript').readAsStringSync();
+      expect(src, contains(r'DMG_NAME="Open-Memex-$VERSION-arm64.dmg"'));
+      expect(src, contains(r'ZIP_NAME="memex-$VERSION-macos-arm64.zip"'));
+      expect(src, contains('NOTICES_NAME=THIRD_PARTY_NOTICES.txt'));
+      expect(src, contains('SUMS_NAME=SHA256SUMS.txt'));
+      expect(src, contains('--out'), reason: 'build.sh takes --out <dir>');
+    });
+
+    test(
+      'every release job step that calls gh gets GH_TOKEN and every step that reads TAG sees it from the ref name',
+      () {
+        final wf = _workflow();
+        final j = job();
+        for (final step in _steps(j)) {
+          final env = _envOf(wf, j, step);
+          if (RegExp(r'\bgh\s').hasMatch(_run(step))) {
+            expect(
+              env['GH_TOKEN'],
+              contains('github.token'),
+              reason: 'step ${step['name']} calls gh',
+            );
+          }
+          if (_run(step).contains(r'$TAG')) {
+            expect(
+              env['TAG'],
+              contains('github.ref_name'),
+              reason: 'step ${step['name']} reads TAG',
+            );
+          }
+        }
+      },
+    );
+  });
+}
+
+/// A fixture for running one workflow step: a repo, a stub-gh bin directory,
+/// a RUNNER_TEMP and the stub's call log.
+class _StepEnv {
+  _StepEnv(this.iso, this.repo, this.bin, this.temp, this.log);
+
+  final IsolatedEnv iso;
+  final String repo;
+  final String bin;
+  final String temp;
+  final File log;
+}
+
+class _StepResult {
+  _StepResult(this.exitCode, this.stdout, this.stderr, this.calls);
+
+  final int exitCode;
+  final String stdout;
+  final String stderr;
+
+  /// The stub gh's call log, one line per call, each argument in brackets.
+  final List<String> calls;
+
+  @override
+  String toString() =>
+      'StepResult(exit $exitCode)\n--- stdout ---\n$stdout\n--- stderr ---\n$stderr\n--- gh calls ---\n${calls.join('\n')}';
 }
