@@ -861,5 +861,40 @@ void main() {
         expect(tester.takeException(), isNull);
       },
     );
+
+    testWidgets(
+      'a backup running under another spelling of the open vault disables move to trash and re-enables when it ends',
+      (tester) async {
+        final env = await _wi360Pump(tester);
+        // The recents spelling has a trailing slash; the backup records the
+        // folder as opened (no slash).
+        final spelling = '${env.path}/';
+        env.c.read(backupInFlightProvider.notifier).state = {env.path};
+        await _wi360Settle(tester, rounds: 2);
+        await _wi360Open(tester, spelling);
+
+        expect(_inDialog(find.text(_backupCopy(spelling))), findsOneWidget);
+        _expectButtons(
+          tester,
+          confirmEnabled: false,
+          cancelEnabled: true,
+          label: 'move to trash',
+        );
+        await tester.tap(find.byKey(_confirm), warnIfMissed: false);
+        await _wi360Settle(tester);
+        expect(env.guardCalls, isEmpty, reason: 'nothing starts');
+        expect(env.trash.calls, isEmpty);
+        expect(env.current, LocalVaultRef(env.path));
+
+        env.c.read(backupInFlightProvider.notifier).state = const {};
+        await _wi360Settle(tester, rounds: 2);
+        _expectButtons(
+          tester,
+          confirmEnabled: true,
+          cancelEnabled: true,
+          label: 'move to trash',
+        );
+      },
+    );
   });
 }
