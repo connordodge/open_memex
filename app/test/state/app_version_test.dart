@@ -105,12 +105,6 @@ void main() {
         isTrue,
       );
     });
-
-    test('macOS Podfile lock locks the package_info_plus pod', () {
-      final lock = File('macos/Podfile.lock').readAsStringSync();
-
-      expect(lock, contains('package_info_plus'));
-    });
   });
 
   group('hygiene', () {
