@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../memex_cli.dart';
+import 'backup_models.dart';
 import 'token_store.dart';
 import 'vault_ref.dart';
 
@@ -30,6 +31,7 @@ class AppSettings {
     List<VaultRef>? recentRefs,
     VaultRef? lastVaultRef,
     List<SavedServer>? savedServers,
+    Map<String, VaultBackupSettings>? vaultBackups,
   }) : recentRefs = List.unmodifiable(
          recentRefs ??
              [
@@ -40,7 +42,10 @@ class AppSettings {
        lastVaultRef =
            lastVaultRef ??
            (lastVault == null ? null : LocalVaultRef(lastVault)),
-       savedServers = List.unmodifiable(savedServers ?? const <SavedServer>[]);
+       savedServers = List.unmodifiable(savedServers ?? const <SavedServer>[]),
+       vaultBackups = Map.unmodifiable(
+         vaultBackups ?? const <String, VaultBackupSettings>{},
+       );
 
   final String? memexBinaryPath;
 
@@ -53,6 +58,10 @@ class AppSettings {
 
   /// Saved vault servers, in the order they were first saved.
   final List<SavedServer> savedServers;
+
+  /// Per-vault backup settings (D22), keyed by the local vault path as
+  /// opened. Unmodifiable. Absent key = the defaults.
+  final Map<String, VaultBackupSettings> vaultBackups;
 
   /// The local paths in [recentRefs], in order. Hosted entries are left out.
   late final List<String> recentVaults = List.unmodifiable([
@@ -73,6 +82,7 @@ class AppSettings {
     List<VaultRef>? recentRefs,
     VaultRef? lastVaultRef,
     List<SavedServer>? savedServers,
+    Map<String, VaultBackupSettings>? vaultBackups,
   }) => AppSettings(
     memexBinaryPath: memexBinaryPath ?? this.memexBinaryPath,
     recentRefs:
@@ -87,6 +97,7 @@ class AppSettings {
                   ? this.lastVaultRef
                   : LocalVaultRef(lastVault))),
     savedServers: savedServers ?? this.savedServers,
+    vaultBackups: vaultBackups ?? this.vaultBackups,
   );
 }
 
@@ -133,6 +144,9 @@ class SettingsController extends StateNotifier<AppSettings> {
   static const _kLastRef = 'memex.last_vault_ref';
   static const _kServers = 'memex.vault_servers';
 
+  // Per-vault backup settings (D22): a JSON object, vault path -> toJson.
+  static const _kVaultBackups = 'memex.vault_backups';
+
   static const _maxRecents = 8;
 
   /// Loads settings. [tokenStore] keeps the saved servers' access tokens
@@ -175,8 +189,20 @@ class SettingsController extends StateNotifier<AppSettings> {
         recentRefs: refs,
         lastVaultRef: last,
         savedServers: servers,
+        vaultBackups: _decodeVaultBackups(prefs.get(_kVaultBackups)),
       ),
     );
+  }
+
+  /// Saves [settings] for the local vault at [path] (the path as opened) and
+  /// changes no other vault's entry or preference.
+  Future<void> setVaultBackup(String path, VaultBackupSettings settings) async {
+    final updated = {...state.vaultBackups, path: settings};
+    await _prefs.setString(
+      _kVaultBackups,
+      jsonEncode({for (final e in updated.entries) e.key: e.value.toJson()}),
+    );
+    state = state.copyWith(vaultBackups: updated);
   }
 
   Future<void> setMemexBinary(String? path) async {
@@ -346,6 +372,36 @@ class SettingsController extends StateNotifier<AppSettings> {
       SavedServer(id: id, name: name, url: url),
     _ => null,
   };
+
+  /// The stored `memex.vault_backups` value. An absent, wrong-typed or
+  /// malformed value is an empty map; a malformed entry drops only its vault.
+  /// A stored `keep` outside 1-365 is clamped into range (the model only
+  /// asserts it in debug builds).
+  static Map<String, VaultBackupSettings> _decodeVaultBackups(Object? stored) {
+    if (stored is! String) return const {};
+    final decoded = _tryDecode(stored);
+    if (decoded is! Map) return const {};
+    final result = <String, VaultBackupSettings>{};
+    for (final e in decoded.entries) {
+      final key = e.key;
+      final value = e.value;
+      if (key is! String || value is! Map) continue;
+      final json = <String, Object?>{
+        for (final f in value.entries)
+          if (f.key is String) f.key as String: f.value,
+      };
+      final keep = json['keep'];
+      if (keep is int) {
+        json['keep'] = max(backupKeepMin, min(backupKeepMax, keep));
+      }
+      try {
+        result[key] = VaultBackupSettings.fromJson(json);
+      } on FormatException {
+        // Only this vault's entry is dropped.
+      }
+    }
+    return result;
+  }
 
   static Object? _tryDecode(String text) {
     try {
