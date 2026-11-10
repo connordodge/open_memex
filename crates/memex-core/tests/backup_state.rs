@@ -809,6 +809,100 @@ fn destination_key_ignores_a_trailing_slash() {
     );
 }
 
+/// Verify-mode pin (review r1 #1): `memex backup --dest backups` passes a
+/// relative path, and req 10 keys state by the absolute path. Relative
+/// destinations (missing or existing) resolve against the working directory.
+#[test]
+fn destination_key_of_a_relative_destination_is_keyed_under_the_working_directory() {
+    let cwd = fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
+    let unique = format!(
+        "no-such-dir-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let missing = Path::new(&unique).join("Open Memex Backups");
+    assert_eq!(
+        destination_key(&missing).unwrap(),
+        key(&cwd.join(&unique).join("Open Memex Backups")),
+        "a relative missing destination is keyed under the working directory"
+    );
+    assert!(
+        !cwd.join(&unique).exists(),
+        "destination_key creates nothing"
+    );
+
+    assert_eq!(
+        destination_key(Path::new(".")).unwrap(),
+        key(&cwd),
+        "a relative existing destination is its canonical path"
+    );
+    assert!(Path::new(&destination_key(Path::new(&unique)).unwrap()).is_absolute());
+}
+
+/// Verify-mode pin (review r1 #2): a `..` after a missing component cancels
+/// it lexically; a `..` left over once an existing ancestor is reached steps
+/// up from that ancestor's canonical path (so a symlink is resolved first).
+#[test]
+fn destination_key_resolves_dot_and_dot_dot_components_without_creating_anything() {
+    let fx = Fx::new();
+    let root = &fx.root;
+
+    // `..` right after a missing folder cancels it.
+    assert_eq!(
+        destination_key(&root.join("nope/../Backups")).unwrap(),
+        key(&root.join("Backups"))
+    );
+    assert_eq!(
+        destination_key(&root.join("nope/x/../../y")).unwrap(),
+        key(&root.join("y"))
+    );
+    assert_eq!(destination_key(&root.join("nope/..")).unwrap(), key(root));
+
+    // Leftover `..` steps up from the existing ancestor.
+    fx.dest("ex");
+    assert_eq!(
+        destination_key(&root.join("ex/nope/../..")).unwrap(),
+        key(root),
+        "two `..` after one missing name: one cancels it, one leaves the existing folder"
+    );
+    assert_eq!(
+        destination_key(&root.join("ex/nope/../../..")).unwrap(),
+        key(root.parent().unwrap()),
+        "three `..` step up twice from the existing folder"
+    );
+    assert_eq!(
+        destination_key(&root.join("ex/nope/../sibling")).unwrap(),
+        key(&root.join("ex/sibling"))
+    );
+
+    // `..` after a symlink steps up from the link's canonical target.
+    let real = fx.dest("a/real");
+    std::os::unix::fs::symlink(&real, root.join("link")).unwrap();
+    assert_eq!(
+        destination_key(&root.join("link/../nope")).unwrap(),
+        key(&root.join("a/nope")),
+        "link/.. is the parent of the link's target, not of the link"
+    );
+
+    // `.` components are dropped.
+    assert_eq!(
+        destination_key(&root.join("nope/./x")).unwrap(),
+        key(&root.join("nope/x"))
+    );
+    assert_eq!(
+        destination_key(&root.join("ex/./.")).unwrap(),
+        key(&root.join("ex"))
+    );
+
+    for made in ["nope", "x", "y", "Backups", "sibling"] {
+        assert!(!root.join(made).exists(), "{made} was created");
+    }
+    assert!(!root.join("ex/nope").exists() && !root.join("ex/sibling").exists());
+}
+
 /// Verify-mode pin: a destination spelled below a regular file (a typo, or
 /// a file where a folder was) is walked up like a missing one, so the key is
 /// still the canonical existing part plus the remaining names and the start-up
@@ -829,22 +923,45 @@ fn destination_key_below_a_regular_file_is_the_canonical_file_plus_the_remaining
     );
 }
 
-/// Verify-mode pin: an I/O error other than "missing" is reported, not
-/// skipped as if the folder were merely absent.
+/// Lead ruling Q1 (Spec 22a, D9 step 4): a folder on the path that refuses
+/// access (a permission or macOS privacy refusal) is walked up like a missing
+/// one, so the failure is recorded as `backup_destination_unavailable` under
+/// the canonical ancestor plus the remaining components, never `internal`.
 #[test]
-fn destination_key_returns_an_io_error_when_a_folder_on_the_path_cannot_be_searched() {
+fn destination_key_of_a_path_through_an_unsearchable_folder_is_the_canonical_ancestor_plus_the_remaining_names(
+) {
     use std::os::unix::fs::PermissionsExt;
     let fx = Fx::new();
     let locked = fx.dest("locked");
+    fs::create_dir(locked.join("inside")).unwrap();
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
-    let readable = fs::read_dir(&locked).is_ok();
-    let result = destination_key(&locked.join("sub"));
+    let enforced = fs::read_dir(&locked).is_err();
+    let missing = destination_key(&locked.join("sub").join("deeper"));
+    let existing = destination_key(&locked.join("inside"));
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
-    if readable {
-        eprintln!("skipped: directory permissions are not enforced for this user");
-        return;
+    if !enforced {
+        eprintln!("note: directory permissions are not enforced for this user");
     }
-    let err = result.expect_err("a folder that cannot be searched is an error, not a missing path");
+    assert_eq!(
+        missing.expect("an unsearchable folder is walked up, not an error"),
+        key(&locked.join("sub").join("deeper"))
+    );
+    assert_eq!(
+        existing.expect("an existing folder behind a refusal is still keyed"),
+        key(&locked.join("inside"))
+    );
+}
+
+/// Verify-mode pin: only a missing, non-directory or access-refused folder is
+/// walked up. Any other I/O error (here a symlink loop, ELOOP) is returned as
+/// an `internal` error rather than keyed as if the path were merely absent.
+#[test]
+fn destination_key_of_a_symlink_loop_is_an_io_error_not_a_walked_up_key() {
+    let fx = Fx::new();
+    let looped = fx.root.join("loop");
+    std::os::unix::fs::symlink(&looped, &looped).unwrap();
+    let err = destination_key(&looped.join("sub"))
+        .expect_err("a symlink loop is an I/O error, not a missing path");
     assert_eq!(err.code(), "internal", "{err}");
 }
 

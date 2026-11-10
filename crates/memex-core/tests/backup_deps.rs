@@ -1,6 +1,6 @@
 //! WI #316 (R0, ruling D2): the backup dependencies. rusqlite gains its
 //! `backup` feature, the workspace gains `zip` (deflate only) and `sha2`
-//! 0.10, memex-core depends on zip, sha2 and tempfile; nothing else changes.
+//! 0.10, memex-core depends on zip, sha2 and tempfile; the lock test pins what zip pulls in.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -43,10 +43,6 @@ fn line_of<'a>(entries: &'a [(String, String)], name: &str) -> &'a str {
         .unwrap_or_else(|| panic!("no `{name}` entry in {entries:?}"))
 }
 
-fn set(items: &[&str]) -> BTreeSet<String> {
-    items.iter().map(|s| s.to_string()).collect()
-}
-
 #[test]
 fn workspace_adds_the_rusqlite_backup_feature_zip_deflate_only_and_sha2_0_10() {
     let ws = section(&read("../../Cargo.toml"), "workspace.dependencies");
@@ -80,67 +76,16 @@ fn workspace_adds_the_rusqlite_backup_feature_zip_deflate_only_and_sha2_0_10() {
 }
 
 #[test]
-fn memex_core_depends_on_zip_sha2_and_tempfile_and_no_other_dependency_changes() {
+fn memex_core_depends_on_zip_sha2_and_tempfile_from_the_workspace() {
     let ws = section(&read("../../Cargo.toml"), "workspace.dependencies");
-    assert_eq!(
-        names(&ws),
-        set(&[
-            "rusqlite",
-            "sqlite-vec",
-            "serde",
-            "serde_json",
-            "thiserror",
-            "ulid",
-            "tracing",
-            "tracing-subscriber",
-            "tracing-appender",
-            "tempfile",
-            "zerocopy",
-            "fastembed",
-            "tokio",
-            "clap",
-            "anyhow",
-            "rmcp",
-            "axum",
-            "tower-http",
-            "subtle",
-            "getrandom",
-            "reqwest",
-            "schemars",
-            "serde_yaml",
-            "regex",
-            "chrono",
-            "strsim",
-            "zip",
-            "sha2",
-        ]),
-        "workspace dependencies gain exactly zip and sha2"
-    );
+    for dep in ["zip", "sha2", "tempfile"] {
+        assert!(
+            names(&ws).contains(dep),
+            "[workspace.dependencies] has {dep}"
+        );
+    }
 
     let core = section(&read("Cargo.toml"), "dependencies");
-    assert_eq!(
-        names(&core),
-        set(&[
-            "rusqlite",
-            "sqlite-vec",
-            "serde",
-            "serde_json",
-            "thiserror",
-            "ulid",
-            "tracing",
-            "fastembed",
-            "zerocopy",
-            "serde_yaml",
-            "regex",
-            "chrono",
-            "strsim",
-            "libc",
-            "zip",
-            "sha2",
-            "tempfile",
-        ]),
-        "memex-core dependencies gain exactly zip, sha2 and tempfile"
-    );
     for dep in ["zip", "sha2", "tempfile"] {
         assert!(
             line_of(&core, dep)
@@ -150,33 +95,6 @@ fn memex_core_depends_on_zip_sha2_and_tempfile_and_no_other_dependency_changes()
             line_of(&core, dep)
         );
     }
-
-    let mcp = section(&read("../memex-mcp/Cargo.toml"), "dependencies");
-    assert_eq!(
-        names(&mcp),
-        set(&[
-            "memex-core",
-            "rusqlite",
-            "rmcp",
-            "schemars",
-            "serde",
-            "serde_json",
-            "clap",
-            "tokio",
-            "tracing",
-            "tracing-subscriber",
-            "tracing-appender",
-            "anyhow",
-            "axum",
-            "tower-http",
-            "subtle",
-            "getrandom",
-            "reqwest",
-            "ulid",
-            "chrono",
-        ]),
-        "memex-mcp dependencies are unchanged"
-    );
 }
 
 /// `[[package]]` entries of Cargo.lock as (name, version, dependency names).

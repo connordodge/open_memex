@@ -1,7 +1,7 @@
-// WI #321 (A0, D19): the backup seam's contracts. The frozen models and Keys
-// (group 1-3, red until implemented), the stub files (group 4: each filler
-// deletes its stub's test when it replaces the stub), and the harness and
-// fakes (group 5, which every later backup WI builds on).
+// WI #321 (A0, D19): the backup seam's contracts. The frozen models and Keys,
+// and the harness and fakes that every later backup WI builds on. The
+// stub-neutral tests live one file per filler in
+// `backup_seam_stubs_a1..a4_test.dart`; no filler edits this file.
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -14,7 +14,6 @@ import 'package:open_memex_app/src/state/backup_destinations.dart';
 import 'package:open_memex_app/src/state/backup_messages.dart';
 import 'package:open_memex_app/src/state/backup_models.dart';
 import 'package:open_memex_app/src/state/backup_names.dart';
-import 'package:open_memex_app/src/state/backup_settings_state.dart';
 import 'package:open_memex_app/src/state/backup_state_reader.dart';
 import 'package:open_memex_app/src/state/clock.dart';
 import 'package:open_memex_app/src/state/settings.dart';
@@ -22,7 +21,6 @@ import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/vault_access/errors.dart';
 import 'package:open_memex_app/src/vault_access/hosted/backup.dart';
 import 'package:open_memex_app/src/widgets/backups/backup_keys.dart';
-import 'package:open_memex_app/src/widgets/backups/backups_sheet.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../support/backup_fakes.dart';
@@ -173,6 +171,20 @@ void main() {
       );
     });
 
+    test('VaultBackupSettings fromJson keep limits are inclusive', () {
+      // The path that loads persisted settings: the limits are inclusive.
+      for (final keep in [1, 365]) {
+        expect(VaultBackupSettings.fromJson({'keep': keep}).keep, keep);
+      }
+      for (final keep in [0, 366, -1]) {
+        expect(
+          () => VaultBackupSettings.fromJson({'keep': keep}),
+          throwsA(isA<FormatException>()),
+          reason: 'keep $keep',
+        );
+      }
+    });
+
     test('VaultBackupSettings fromJson rejects wrong types and bad keep', () {
       final bad = <Map<String, Object?>>[
         {'enabled': 1},
@@ -306,7 +318,15 @@ void main() {
     test(
       'BackupStatus rejects an out-of-range instant as a FormatException',
       () {
-        for (final ms in [9007199254740991, -9007199254740991]) {
+        for (final ms in [
+          9007199254740991,
+          -9007199254740991,
+          8640000000000001,
+          -8640000000000001,
+          // The int64 extremes: abs() of the minimum overflows to itself.
+          9223372036854775807,
+          -9223372036854775807 - 1,
+        ]) {
           expect(
             () => BackupStatus.fromStateJson({'last_attempt_at': ms}),
             throwsA(isA<FormatException>()),
@@ -320,13 +340,22 @@ void main() {
             throwsA(isA<FormatException>()),
           );
         }
-        // The widest instant DateTime holds still reads.
-        expect(
-          BackupStatus.fromStateJson({
-            'last_attempt_at': 8640000000000000,
-          }).lastAttemptAt,
-          DateTime.fromMillisecondsSinceEpoch(8640000000000000, isUtc: true),
-        );
+        // The widest instants DateTime holds, either side, still read.
+        for (final ms in [8640000000000000, -8640000000000000]) {
+          final expected = DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true);
+          expect(
+            BackupStatus.fromStateJson({'last_attempt_at': ms}).lastAttemptAt,
+            expected,
+          );
+          expect(
+            BackupStatus.fromHostedJson({
+              'enabled': true,
+              'in_progress': false,
+              'last_attempt_at': ms,
+            }).lastAttemptAt,
+            expected,
+          );
+        }
       },
     );
 
@@ -514,6 +543,15 @@ void main() {
         failure(fields: {'schema_version': 9, 'supported_schema_version': 7}),
         failure(fields: {}),
       ]);
+      // Map equality ignores insertion order, so the hash must too.
+      final forward = failure(
+        fields: {'schema_version': 9, 'supported_schema_version': 6},
+      );
+      final backward = failure(
+        fields: {'supported_schema_version': 6, 'schema_version': 9},
+      );
+      expect(forward, backward);
+      expect(forward.hashCode, backward.hashCode);
       expect(RestoreTooOld(), RestoreTooOld());
       expect(RestoreBinaryNotFound(), RestoreBinaryNotFound());
       final all = <RestoreRunResult>[
@@ -800,103 +838,6 @@ void main() {
   });
 
   // ------------------------------------------------------------------
-  // 4. Stub files: each exists with its declared provider or class and its
-  // neutral value. The filler named in each group replaces the stub and
-  // deletes that group (a TEST-CHANGE in its PR).
-  // ------------------------------------------------------------------
-  group('stubs filled by A2 (#323)', () {
-    test(
-      'IoCloudFolderProbe stub returns neutral values and touches nothing',
-      () async {
-        const probe = IoCloudFolderProbe();
-        expect(await probe.home(), '');
-        expect(await probe.isDirectory('/'), isFalse);
-        expect(await probe.listNames('/'), isEmpty);
-        await probe.createDirectory('/no-such-parent/never-created');
-        expect(Directory('/no-such-parent').existsSync(), isFalse);
-        expect(await probe.resolveSymbolicLinks('/'), '');
-      },
-    );
-
-    test('cloudFolderProbeProvider declares an IoCloudFolderProbe stub', () {
-      final container = ProviderContainer();
-      addTearDown(container.dispose);
-      expect(
-        container.read(cloudFolderProbeProvider),
-        isA<IoCloudFolderProbe>(),
-      );
-    });
-
-    test('discoverBackupDestinations stub lists nothing', () async {
-      final probe = FakeCloudFolderProbe()..seedIcloud();
-      expect(await discoverBackupDestinations(probe), isEmpty);
-    });
-
-    test(
-      'vault backup settings stubs read the defaults and save nothing',
-      () async {
-        final container = ProviderContainer();
-        addTearDown(container.dispose);
-        final before = container.read(
-          vaultBackupSettingsProvider('/some vault'),
-        );
-        expect(before.enabled, isFalse);
-        expect(before.destination, isNull);
-        await container.read(saveVaultBackupSettingsProvider)(
-          '/some vault',
-          _settings(),
-        );
-        final after = container.read(
-          vaultBackupSettingsProvider('/some vault'),
-        );
-        expect(after.enabled, isFalse);
-        expect(after.destination, isNull);
-      },
-    );
-  });
-
-  group('stubs filled by A3 (#324)', () {
-    test('LiveBackupController stub reads off and starts nothing', () async {
-      final h = await createBackupContainer();
-      final controller = h.read(backupControllerProvider.notifier);
-      expect(controller, isA<LiveBackupController>());
-      const local = LocalVaultRef('/v');
-      const hosted = HostedVaultRef('s1', 'seed');
-      expect(controller.viewStateOf(local).mode, BackupSheetMode.off);
-      await controller.backUpNow(local);
-      await controller.backUpNow(hosted);
-      controller.openSheet(local);
-      controller.closeSheet(local);
-      expect(h.runner.calls, isEmpty);
-      expect(h.hostedApi.calls, isEmpty);
-      expect(h.read(backupInFlightProvider), isEmpty);
-      expect(h.read(backupControllerProvider), isEmpty);
-    });
-  });
-
-  group('stubs filled by A4 (#325)', () {
-    testWidgets('showBackupsSheet stub completes at once', (tester) async {
-      var completed = false;
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Builder(
-            builder: (context) => TextButton(
-              onPressed: () async {
-                await showBackupsSheet(context, const LocalVaultRef('/v'));
-                completed = true;
-              },
-              child: const Text('open'),
-            ),
-          ),
-        ),
-      );
-      await tester.tap(find.text('open'));
-      await tester.pump();
-      expect(completed, isTrue);
-    });
-  });
-
-  // ------------------------------------------------------------------
   // 5. Harness and fakes
   // ------------------------------------------------------------------
   group('backup harness', () {
@@ -1017,6 +958,93 @@ void main() {
         isTrue,
       );
     });
+
+    testWidgets(
+      'pumpBackupWidget takes extra overrides that win over its own',
+      (tester) async {
+        final extra = Provider<String>((ref) => 'real');
+        late WidgetRef captured;
+        final other = FakeClock(DateTime(2030));
+        await pumpBackupWidget(
+          tester,
+          Consumer(
+            builder: (context, ref, _) {
+              captured = ref;
+              return Text(ref.watch(extra));
+            },
+          ),
+          overrides: [
+            extra.overrideWithValue('overridden'),
+            clockProvider.overrideWithValue(other),
+          ],
+        );
+        expect(find.text('overridden'), findsOneWidget);
+        expect(identical(captured.read(clockProvider), other), isTrue);
+      },
+    );
+
+    testWidgets('pumpBackupWidget can leave no hosted vault open', (
+      tester,
+    ) async {
+      late WidgetRef captured;
+      final h = await pumpBackupWidget(
+        tester,
+        Consumer(
+          builder: (context, ref, _) {
+            captured = ref;
+            return const SizedBox();
+          },
+        ),
+        noHostedApi: true,
+      );
+      expect(captured.read(hostedBackupApiProvider), isNull);
+      expect(h.hostedApi.calls, isEmpty);
+      // Everything else is still wired.
+      expect(identical(captured.read(backupRunnerProvider), h.runner), isTrue);
+    });
+
+    testWidgets('pumpBackupWidget injected controller beats realController', (
+      tester,
+    ) async {
+      final fake = FakeBackupController();
+      late WidgetRef captured;
+      final h = await pumpBackupWidget(
+        tester,
+        Consumer(
+          builder: (context, ref, _) {
+            captured = ref;
+            return const SizedBox();
+          },
+        ),
+        controller: fake,
+        realController: true,
+      );
+      expect(identical(h.controller, fake), isTrue);
+      expect(
+        identical(captured.read(backupControllerProvider.notifier), fake),
+        isTrue,
+      );
+    });
+
+    test(
+      'createBackupContainer takes extra overrides and no hosted api',
+      () async {
+        final extra = Provider<int>((ref) => 1);
+        final h = await createBackupContainer(
+          noHostedApi: true,
+          overrides: [extra.overrideWithValue(2)],
+        );
+        expect(h.read(extra), 2);
+        expect(h.read(hostedBackupApiProvider), isNull);
+        expect(h.hostedApi.calls, isEmpty);
+        // The default still wires the fake.
+        final plain = await createBackupContainer();
+        expect(
+          identical(plain.read(hostedBackupApiProvider), plain.hostedApi),
+          isTrue,
+        );
+      },
+    );
 
     test('backup harness seeds the mock SharedPreferences', () async {
       await createBackupContainer(prefs: {'memex.vault_backups': '{}'});
@@ -1139,6 +1167,29 @@ void main() {
         ifChanged: true,
       );
       expect(seen, ['call 1']);
+    });
+
+    test('FakeBackupRunner awaits an async onCall before it answers', () async {
+      // A3's tests update the fake state file in onCall after an await; the
+      // run must not answer until that has finished.
+      final runner = FakeBackupRunner();
+      var finished = false;
+      runner.onCall = (call) async {
+        await Future<void>.delayed(Duration.zero);
+        await Future<void>.delayed(Duration.zero);
+        finished = true;
+      };
+      await runner.backup(
+        vaultPath: '/v',
+        destination: '/d',
+        keep: 30,
+        ifChanged: true,
+      );
+      expect(finished, isTrue, reason: 'backup answered before onCall ended');
+      finished = false;
+      await runner.restore(from: '/f.memex.zip', to: '/t');
+      expect(finished, isTrue, reason: 'restore answered before onCall ended');
+      expect(runner.inFlight, 0);
     });
   });
 
@@ -1402,5 +1453,62 @@ void main() {
         expect(done, isTrue);
       },
     );
+  });
+  group('backup seam test layout', () {
+    test('seam test file holds no stub-neutral tests', () {
+      final source = File(
+        'test/state/backup_seam_test.dart',
+      ).readAsStringSync();
+      // Needles are split so this test's own source does not match them.
+      final needles = <String>[
+        'stubs filled'
+            ' by',
+        'Unimplemented'
+            'Error',
+        ' stub '
+            'returns',
+        ' stub '
+            'reads',
+        ' stub '
+            'lists',
+        ' stub '
+            'completes',
+        ' stub '
+            'has no result',
+        'declares a'
+            ' null stub',
+      ];
+      for (final needle in needles) {
+        expect(
+          source.contains(needle),
+          isFalse,
+          reason:
+              'stub-neutral tests belong in backup_seam_stubs_aN_test.dart '
+              '(one file per filler), found "$needle"',
+        );
+      }
+    });
+
+    test('seam test file does not import the stub-only support', () {
+      // The filler files own these imports; backup_seam_test.dart must not
+      // grow a dependency a filler would have to delete.
+      final source = File(
+        'test/state/backup_seam_test.dart',
+      ).readAsStringSync();
+      expect(
+        source.contains(
+          'src/state/backup_'
+          'settings_state.dart',
+        ),
+        isFalse,
+      );
+      expect(
+        source.contains(
+          'src/widgets/backups/'
+          'backups_sheet.dart',
+        ),
+        isFalse,
+      );
+    });
   });
 }
