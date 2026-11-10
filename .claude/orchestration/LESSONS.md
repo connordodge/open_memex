@@ -134,3 +134,24 @@ added the lessons below.
   `codesign --verify --deep` said "nested code is modified or invalid", and the bad copy had already
   gone into /Applications. How: `staging-build.sh` verifies the signature and rebuilds from clean
   if it fails (enforced). Check the installed copy too.
+
+Run 20261109-315 (#315 vault backups: 1 ticket split across 3 leads, 13 WIs, 16 PRs; review on, mutation on,
+Rust + Flutter) added the lessons below.
+
+- **The Flutter suite flakes on a google_fonts runtime fetch under load.**
+  Why: #330's first gate failed `vault_open_hosted_contracts_test.dart :: switchToVault of a hosted ref ...` with
+  `Failed to load font with url: https://fonts.gstatic.com/...`, though #330 changed no Dart production code.
+  `app/test/support/font_fetch_hold.dart` exists for this, but that test file doesn't use it.
+  How to apply: re-gate once. If it recurs, a small fix PR adds the hold to that file (or to every file that pumps themed widgets).
+- **Widget MUTATION survivors recur on semantics flags and bool initializers.** (extends run 20261025-156)
+  Why: #341 had 9 of 16 survivors (`button:`, `container:`, `excludeSemantics:`, `scrollable:`, `_nameError`/
+  `_highlight = false`, a focus `&&`). #342 and #337 avoided it by naming those site classes before ready.
+  How to apply: test-author.md verify step 6 now lists them. The orchestrator forwards the classes to sibling
+  widget WIs as soon as one gate shows them.
+- **Seam WIs with many frozen contracts escalate on the coding tier.**
+  Why: A0 #321 (scale-only tricky, Sonnet) took 3 rounds and escalated to Opus. A1 and A2, which filled its stubs, passed in 1 round on Sonnet.
+  How to apply: an interface-first seam WI that freezes models, Keys, a test harness and fakes for 3+ fillers is
+  plain tricky, not scale-only.
+- **Rust MUTATION in memex-mcp costs ~60 s per mutant, about 2× memex-core.**
+  Why: #340's server mutants took 59–62 s each, against 21–23 s for memex-core in #332.
+  How to apply: plan a ~10 min gate for a tricky server WI. Load from parallel verify suites stretches it further.
