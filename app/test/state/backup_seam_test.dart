@@ -810,25 +810,6 @@ void main() {
     );
   });
 
-  group('stubs filled by A3 (#324)', () {
-    test('LiveBackupController stub reads off and starts nothing', () async {
-      final h = await createBackupContainer();
-      final controller = h.read(backupControllerProvider.notifier);
-      expect(controller, isA<LiveBackupController>());
-      const local = LocalVaultRef('/v');
-      const hosted = HostedVaultRef('s1', 'seed');
-      expect(controller.viewStateOf(local).mode, BackupSheetMode.off);
-      await controller.backUpNow(local);
-      await controller.backUpNow(hosted);
-      controller.openSheet(local);
-      controller.closeSheet(local);
-      expect(h.runner.calls, isEmpty);
-      expect(h.hostedApi.calls, isEmpty);
-      expect(h.read(backupInFlightProvider), isEmpty);
-      expect(h.read(backupControllerProvider), isEmpty);
-    });
-  });
-
   group('stubs filled by A4 (#325)', () {
     testWidgets('showBackupsSheet stub completes at once', (tester) async {
       var completed = false;

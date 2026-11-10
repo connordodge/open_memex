@@ -7,6 +7,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'backup_models.dart';
 import 'vault_ref.dart';
 
+/// The due rule (D12, Spec req 23), the Dart port of Rust `state::is_due`:
+/// a check backs up when there is no [lastSuccessAt], when [lastSuccessAt] is
+/// after [now] (the clock went backwards), or when 24 hours (86 400 000 ms)
+/// or more have passed. Compares instants, never calendar fields.
+/// Skeleton (WI #324 red step): A3 fills it.
+bool isBackupDue(DateTime? lastSuccessAt, DateTime now) => false;
+
 /// Backups for the open vault (D23): the automatic schedule, "Back up now",
 /// the hosted status and its polling, and the per-vault view state the sheet
 /// and the sidebar entry show. App-wide (not autoDispose), kept alive by
