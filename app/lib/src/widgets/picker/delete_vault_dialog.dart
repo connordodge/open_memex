@@ -49,7 +49,14 @@ class _DeleteVaultDialogState extends ConsumerState<DeleteVaultDialog> {
   Future<void> _delete() async {
     if (_busy) return;
     setState(() => _busy = true);
-    final result = await ref.read(vaultDeleterProvider).delete(widget.path);
+    final VaultDeleteResult result;
+    try {
+      result = await ref.read(vaultDeleterProvider).delete(widget.path);
+    } catch (_) {
+      // Don't leave the dialog stuck busy (and undismissable) on a throw.
+      if (mounted) setState(() => _busy = false);
+      rethrow;
+    }
     if (!mounted) return;
     switch (result) {
       case VaultDeleted():
