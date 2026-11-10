@@ -122,6 +122,47 @@ void main() {
   });
 
   testWidgets(
+    'a disabled icon button is one leaf semantics node with no child nodes',
+    (tester) async {
+      final handle = tester.ensureSemantics();
+      await _pump(tester, semanticLabel: 'remove server');
+
+      final node = wi349NodeLabelled(
+        tester,
+        find.byKey(_disabled),
+        'remove server',
+      );
+      expect(
+        node.childrenCount,
+        0,
+        reason: 'the glyph adds no node of its own',
+      );
+      expect(node, isSemantics(label: 'remove server', hasTapAction: false));
+      handle.dispose();
+    },
+  );
+
+  testWidgets(
+    'an enabled icon button is one tappable leaf semantics node with no child nodes',
+    (tester) async {
+      final handle = tester.ensureSemantics();
+      await _pump(tester);
+
+      final node = wi349NodeLabelled(tester, find.byKey(_first), 'first');
+      expect(
+        node,
+        isSemantics(label: 'first', isButton: true, hasTapAction: true),
+      );
+      expect(
+        node.childrenCount,
+        0,
+        reason: 'the glyph adds no node of its own',
+      );
+      handle.dispose();
+    },
+  );
+
+  testWidgets(
     'a disabled icon button without a semanticLabel reads its tooltip',
     (tester) async {
       final handle = tester.ensureSemantics();
