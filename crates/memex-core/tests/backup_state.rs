@@ -809,6 +809,59 @@ fn destination_key_ignores_a_trailing_slash() {
     );
 }
 
+/// Verify-mode pin: a destination spelled below a regular file (a typo, or
+/// a file where a folder was) is walked up like a missing one, so the key is
+/// still the canonical existing part plus the remaining names and the start-up
+/// validation can report `backup_destination_unavailable` rather than an
+/// I/O error from the key.
+#[test]
+fn destination_key_below_a_regular_file_is_the_canonical_file_plus_the_remaining_names() {
+    let fx = Fx::new();
+    let file = fx.root.join("notes.txt");
+    fs::write(&file, "x").unwrap();
+    assert_eq!(
+        destination_key(&file.join("sub").join("deeper")).unwrap(),
+        key(&file.join("sub").join("deeper"))
+    );
+    assert_eq!(
+        destination_key(&file.join("sub")).unwrap(),
+        key(&file.join("sub"))
+    );
+}
+
+/// Verify-mode pin: an I/O error other than "missing" is reported, not
+/// skipped as if the folder were merely absent.
+#[test]
+fn destination_key_returns_an_io_error_when_a_folder_on_the_path_cannot_be_searched() {
+    use std::os::unix::fs::PermissionsExt;
+    let fx = Fx::new();
+    let locked = fx.dest("locked");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let readable = fs::read_dir(&locked).is_ok();
+    let result = destination_key(&locked.join("sub"));
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    if readable {
+        eprintln!("skipped: directory permissions are not enforced for this user");
+        return;
+    }
+    let err = result.expect_err("a folder that cannot be searched is an error, not a missing path");
+    assert_eq!(err.code(), "internal", "{err}");
+}
+
+/// Verify-mode pin: a key is JSON text, so a non-UTF-8 destination is an
+/// error (never a lossy key that two different folders could share).
+#[cfg(unix)]
+#[test]
+fn destination_key_of_a_non_utf8_missing_destination_is_an_invalid_path_error() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let fx = Fx::new();
+    let bad = fx.root.join(OsStr::from_bytes(b"caf\xe9"));
+    let err = destination_key(&bad).expect_err("not UTF-8");
+    assert_eq!(err.code(), "internal", "{err}");
+    assert!(matches!(err, MemexError::InvalidPath(_)), "{err:?}");
+}
+
 // ---------------------------------------------------------------------------
 // AC8: is_due and due_cases.json
 // ---------------------------------------------------------------------------
