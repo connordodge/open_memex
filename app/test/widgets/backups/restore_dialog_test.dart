@@ -39,6 +39,12 @@ final _req4Stamp = DateTime.utc(2026, 11, 9, 14, 3, 12);
 /// 41.2 MB, as board R2 draws it.
 const _req4Bytes = 41234567;
 
+/// A req 4 name whose timestamp (2027-01-01 03:30:12 UTC) falls on another
+/// day, month and year in every zone west of UTC-3:30 (the Americas), so a
+/// meta line that shows the UTC date, or drops the year, cannot match there.
+const _lateName = 'memex-20270101T033012Z-01JC8W5Q3M7X9R2T4V6B8N0PZK.memex.zip';
+final _lateStamp = DateTime.utc(2027, 1, 1, 3, 30, 12);
+
 /// A name that does not match requirement 4.
 const _oldCopyName = 'old copy.zip';
 const _oldCopyBytes = 812345;
@@ -240,9 +246,10 @@ OmButton _button(WidgetTester tester, Key key) {
   );
 }
 
-/// The meta line for [bytes] and [stamp]: "41.2 MB · made 9 nov at 07:03",
-/// the date and time in local time (a year after the month is allowed: the
-/// board draws "9 nov 2026").
+/// The exact meta line for [bytes] and [stamp] (lead ruling Q1): "41.2 MB ·
+/// made 9 nov 2026 at 07:03", the year always shown, the date and time of the
+/// stamp in local time. Built here from [DateTime.toLocal], never from the
+/// production formatter.
 RegExp _metaPattern(int bytes, DateTime stamp) {
   final local = stamp.toLocal();
   final hhmm =
@@ -250,7 +257,7 @@ RegExp _metaPattern(int bytes, DateTime stamp) {
       '${local.minute.toString().padLeft(2, '0')}';
   return RegExp(
     '^${RegExp.escape(backupSize(bytes))} · made ${local.day} '
-    '${_months[local.month - 1]}( ${local.year})? at $hhmm\$',
+    '${_months[local.month - 1]} ${local.year} at $hhmm\$',
   );
 }
 
@@ -436,15 +443,17 @@ void main() {
     testWidgets(
       'the meta date is the file name timestamp in local time not the file time',
       (tester) async {
-        final s = await _pumpPicker(tester);
+        final s = await _pumpPicker(tester, fileName: _lateName);
         // A file time far from the name's timestamp.
         File(s.file).setLastModifiedSync(DateTime(2020, 1, 2, 3, 4));
 
         await _openDialog(tester, s);
 
         final meta = _textIn(find.byKey(_restoreMetaKey)).trim();
-        expect(meta, matches(_metaPattern(_req4Bytes, _req4Stamp)));
+        expect(meta, matches(_metaPattern(_req4Bytes, _lateStamp)));
         expect(meta, isNot(contains('2 jan')));
+        // Always an absolute date with its year.
+        expect(meta, matches(RegExp(r' made \d{1,2} [a-z]{3} \d{4} at ')));
       },
     );
 
