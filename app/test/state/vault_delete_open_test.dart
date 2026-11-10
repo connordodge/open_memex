@@ -40,6 +40,9 @@ class _Wi360Editor extends EditorController {
   final List<String> _events;
   Completer<void>? settleHold;
 
+  /// When set, savesSettled throws it after the close.
+  Object? settleError;
+
   @override
   void flushPendingSave() {
     _events.add('flush open=${_r.read(currentVaultProvider).localPath}');
@@ -52,6 +55,8 @@ class _Wi360Editor extends EditorController {
     await super.savesSettled(vault);
     final hold = settleHold;
     if (hold != null) await hold.future;
+    final error = settleError;
+    if (error != null) throw error;
     _events.add('settled ${vault.localPath}');
   }
 }
@@ -409,6 +414,69 @@ void main() {
         );
         expect(rig.cli.callsFor('vault check'), hasLength(1));
         expect(rig.c.read(currentVaultProvider), isNull);
+        expect(await tester.runAsync(rig.snapshot), before);
+      },
+    );
+  });
+
+  group('a throw mid-delete never leaves the vault closed', () {
+    testWidgets(
+      'deleteOpenVault reopens the vault and rethrows when the settle throws',
+      (tester) async {
+        final context = await _wi360Context(tester);
+        final rig = (await tester.runAsync(_wi360Create))!;
+        rig.editor.settleError = StateError('settle blew up');
+        final before = (await tester.runAsync(rig.snapshot))!;
+
+        await tester.runAsync(() async {
+          await expectLater(
+            rig.deleter.deleteOpenVault(context, rig.vault),
+            throwsA(
+              isA<StateError>().having(
+                (e) => e.message,
+                'message',
+                'settle blew up',
+              ),
+            ),
+          );
+        });
+
+        expect(rig.trash.calls, isEmpty, reason: 'nothing moved');
+        expect(rig.c.read(currentVaultProvider), LocalVaultRef(rig.vault));
+        expect(
+          _at(rig.events, 'current null'),
+          lessThan(_at(rig.events, 'current ${rig.vault}')),
+          reason: 'closed, then reopened',
+        );
+        expect(rig.cli.callsFor('vault check'), hasLength(1));
+        expect(await tester.runAsync(rig.snapshot), before);
+      },
+    );
+
+    testWidgets(
+      'deleteOpenVault reopens the vault and rethrows when the Trash call throws',
+      (tester) async {
+        final context = await _wi360Context(tester);
+        final rig = (await tester.runAsync(_wi360Create))!;
+        rig.trash.onTrash = (_) => throw StateError('trash blew up');
+        final before = (await tester.runAsync(rig.snapshot))!;
+
+        await tester.runAsync(() async {
+          await expectLater(
+            rig.deleter.deleteOpenVault(context, rig.vault),
+            throwsA(
+              isA<StateError>().having(
+                (e) => e.message,
+                'message',
+                'trash blew up',
+              ),
+            ),
+          );
+        });
+
+        expect(rig.events, contains('trash ${rig.vault}'));
+        expect(rig.c.read(currentVaultProvider), LocalVaultRef(rig.vault));
+        expect(rig.cli.callsFor('vault check'), hasLength(1));
         expect(await tester.runAsync(rig.snapshot), before);
       },
     );

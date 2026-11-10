@@ -255,4 +255,35 @@ void main() {
       expect(other.done(), isTrue);
     },
   );
+
+  test(
+    'savesSettled wakes every waiter when the controller is disposed and completes at once afterwards',
+    () async {
+      final e = await _wi360Editor();
+      e.ctrl.loadNote(e.db.getNote(_noteA));
+      await e.typeAndSave('typed in alpha');
+      expect(e.updates.gates, hasLength(1), reason: 'the save is in flight');
+      final old = e.ctrl;
+      final w1 = e.watch(e.a);
+      final w2 = e.watch(e.b);
+      final w3 = e.watch(e.a);
+      await pumpEventQueue();
+      expect(w1.done(), isFalse);
+      expect(w3.done(), isFalse);
+      expect(w2.done(), isTrue, reason: 'vault b has nothing in flight');
+
+      e.c.invalidate(editorControllerProvider);
+      await pumpEventQueue();
+      // The held save is never let through: a landing save would write the
+      // state of the disposed controller.
+      e.updates.gates.clear();
+
+      expect(w1.done(), isTrue, reason: 'nothing held back goes once gone');
+      expect(w3.done(), isTrue);
+      var after = false;
+      unawaited(old.savesSettled(e.a).then((_) => after = true));
+      await pumpEventQueue();
+      expect(after, isTrue, reason: 'a disposed controller writes nothing');
+    },
+  );
 }
