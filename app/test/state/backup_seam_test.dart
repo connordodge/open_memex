@@ -1000,8 +1000,9 @@ void main() {
       expect(identical(captured.read(backupRunnerProvider), h.runner), isTrue);
     });
 
-    testWidgets('pumpBackupWidget keeps an injected controller over '
-        'realController', (tester) async {
+    testWidgets('pumpBackupWidget injected controller beats realController', (
+      tester,
+    ) async {
       final fake = FakeBackupController();
       late WidgetRef captured;
       final h = await pumpBackupWidget(
