@@ -1554,7 +1554,9 @@ const SYNC_PRODUCT_NAME: &str = "Synology Cloud Sync";
 /// `Synology Cloud Sync` (case-sensitive) is set aside.
 fn sync_words(line: &str) -> Vec<String> {
     let word = Regex::new(r"(?i)\bsync([a-z]*)").unwrap();
-    let line = line.replace(SYNC_PRODUCT_NAME, "");
+    // Whole-word match: `Synology Cloud Syncing` must still be flagged.
+    let product = Regex::new(&format!(r"\b{}\b", regex::escape(SYNC_PRODUCT_NAME))).unwrap();
+    let line = product.replace_all(line, "");
     word.captures_iter(&line)
         // `async` never matches (no word boundary); `synchron...` is allowed.
         .filter(|c| !c[1].to_lowercase().starts_with("hron"))
@@ -1574,6 +1576,8 @@ fn sync_scan_exempts_only_the_exact_product_name_synology_cloud_sync() {
         "Use synology Cloud Sync.",
         "Use Synology Cloud Sync and then sync the vault.",
         "A synced vault.",
+        "Synology Cloud Syncing a folder.",
+        "Synology Cloud Syncs a folder.",
     ] {
         assert!(!sync_words(bare).is_empty(), "must be flagged: {bare}");
     }
