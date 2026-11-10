@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "backups_not_configured",
+    "message": "backups are not configured on this vault server; start it with --backup-dir"
+  }
+}

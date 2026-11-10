@@ -972,7 +972,7 @@ fn golden_failures_print_one_c1_line_and_exit_1() {
 /// The person subcommands whose rows `memex --help` must keep. Other rows
 /// (`serve`, `help`, and subcommands other Work Items add) are not this
 /// WI's surface.
-const PERSON_COMMANDS: [&str; 20] = [
+const PERSON_COMMANDS: [&str; 22] = [
     "init",
     "add",
     "ls",
@@ -993,6 +993,8 @@ const PERSON_COMMANDS: [&str; 20] = [
     "filing",
     "feedback",
     "guide",
+    "backup",
+    "restore",
 ];
 
 fn golden_dir() -> PathBuf {
@@ -1041,7 +1043,7 @@ fn top_level_help_keeps_every_person_subcommand_row() {
 }
 
 /// Every person subcommand and sub-subcommand, as (args, golden file).
-const HELP_CASES: [(&str, &str); 53] = [
+const HELP_CASES: [(&str, &str); 55] = [
     ("init", "init"),
     ("add", "add"),
     ("ls", "ls"),
@@ -1095,6 +1097,8 @@ const HELP_CASES: [(&str, &str); 53] = [
     ("settings", "settings"),
     ("settings get", "settings_get"),
     ("settings set", "settings_set"),
+    ("backup", "backup"),
+    ("restore", "restore"),
 ];
 
 #[test]

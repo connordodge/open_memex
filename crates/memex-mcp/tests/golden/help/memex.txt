@@ -23,6 +23,8 @@ Commands:
   filing       Print where the blocks of one day are filed
   feedback     Written comments and Corrections
   guide        Read the Vault Guide or return to an earlier text
+  backup       Back up a vault into a folder as one .memex.zip file
+  restore      Make a new vault folder from a backup file
   serve        Run as an MCP server over stdio
   help         Print this message or the help of the given subcommand(s)
 

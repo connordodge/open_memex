@@ -109,6 +109,35 @@ pub enum MemexError {
 
     #[error("feedback invalid: {0}")]
     FeedbackInvalid(String),
+
+    /// The destination is missing, not a folder or not writable (Spec #315
+    /// req 14). The detail names the path.
+    #[error("backup destination unavailable: {0}")]
+    BackupDestinationUnavailable(String),
+
+    /// The destination is the vault folder or inside it (req 15).
+    #[error("backup destination is inside the vault folder: {0}")]
+    BackupDestinationInsideVault(String),
+
+    /// Another process holds the vault's backup lock (req 5a).
+    #[error("a backup of this vault is already running: {0}")]
+    BackupInProgress(String),
+
+    /// An I/O or SQLite failure, or a snapshot that fails `quick_check`.
+    #[error("backup failed: {0}")]
+    BackupFailed(String),
+
+    /// The file is not a backup memex can restore (req 33, 33a).
+    #[error("not a valid backup: {0}")]
+    BackupInvalid(String),
+
+    /// The backup holds a newer schema than this memex supports (req 33).
+    #[error("backup too new: it holds schema V{backup}; this memex supports V{supported}")]
+    BackupTooNew { backup: i64, supported: i64 },
+
+    /// `memex restore --to` exists and is not an empty folder (req 32).
+    #[error("restore target is not empty: {0}")]
+    RestoreTargetNotEmpty(String),
 }
 
 impl MemexError {
@@ -138,6 +167,13 @@ impl MemexError {
             MemexError::GuideRule(_) => "guide_rule",
             MemexError::FeedbackHandled(_) => "feedback_handled",
             MemexError::FeedbackInvalid(_) => "feedback_invalid",
+            MemexError::BackupDestinationUnavailable(_) => "backup_destination_unavailable",
+            MemexError::BackupDestinationInsideVault(_) => "backup_destination_inside_vault",
+            MemexError::BackupInProgress(_) => "backup_in_progress",
+            MemexError::BackupFailed(_) => "backup_failed",
+            MemexError::BackupInvalid(_) => "backup_invalid",
+            MemexError::BackupTooNew { .. } => "backup_too_new",
+            MemexError::RestoreTargetNotEmpty(_) => "restore_target_not_empty",
             MemexError::Io(_)
             | MemexError::Sqlite(_)
             | MemexError::Json(_)
@@ -196,6 +232,10 @@ impl MemexError {
                     ("current", (*current).into()),
                 ]
             }
+            MemexError::BackupTooNew { backup, supported } => vec![
+                ("schema_version", (*backup).into()),
+                ("supported_schema_version", (*supported).into()),
+            ],
             MemexError::NotFound(_)
             | MemexError::InvalidId(_)
             | MemexError::MarkerRule(_)
@@ -223,7 +263,13 @@ impl MemexError {
             | MemexError::TagRemoved(_)
             | MemexError::GuideRule(_)
             | MemexError::FeedbackHandled(_)
-            | MemexError::FeedbackInvalid(_) => Vec::new(),
+            | MemexError::FeedbackInvalid(_)
+            | MemexError::BackupDestinationUnavailable(_)
+            | MemexError::BackupDestinationInsideVault(_)
+            | MemexError::BackupInProgress(_)
+            | MemexError::BackupFailed(_)
+            | MemexError::BackupInvalid(_)
+            | MemexError::RestoreTargetNotEmpty(_) => Vec::new(),
         }
     }
 }
