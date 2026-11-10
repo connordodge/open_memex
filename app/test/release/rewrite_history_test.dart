@@ -1109,6 +1109,27 @@ void main() {
       await _expectRefusal(fx, before, r, what: 'untracked file');
     });
 
+    test('refuses with exit 2 when the source has no v0.1.0 tag', () async {
+      final iso = await isolatedEnv();
+      final fx = await _baseline(iso);
+      await runGit(iso, fx.source, ['tag', '-d', 'v0.1.0']);
+      expect(await _refs(iso, fx.source), isNot(contains('refs/tags/v0.1.0')));
+      final before = await _snapshot(fx);
+      final r = await _rewrite(fx);
+      expect(
+        r.output,
+        contains('refused: --source has no refs/tags/v0.1.0'),
+        reason: 'the message names the missing tag\n$r',
+      );
+      await _expectRefusal(fx, before, r, what: 'no v0.1.0 tag');
+      // An existing empty out stays empty.
+      final empty = Directory('${iso.work.path}/empty-out')..createSync();
+      final again = await _rewrite(fx, out: empty.path);
+      expect(again.exitCode, 2, reason: '$again');
+      expect(empty.listSync(), isEmpty, reason: 'out stays empty\n$again');
+      await _expectUntouched(fx, before, again);
+    });
+
     test(
       'refuses with exit 2 when noreply has an empty or odd local part',
       () async {
