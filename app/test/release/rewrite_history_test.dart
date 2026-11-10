@@ -777,6 +777,47 @@ void main() {
     );
 
     test(
+      'the success output prints the commit count and the kept refs',
+      () async {
+        expectRan();
+        // Source main plus the final commit: counted after it was made,
+        // and on main only (not --all).
+        final srcCount = int.parse(
+          await _git(iso, fx.source, [
+            'rev-list',
+            '--count',
+            'refs/heads/main',
+          ]),
+        );
+        final outCount = int.parse(
+          await _git(iso, fx.out, ['rev-list', '--count', 'refs/heads/main']),
+        );
+        expect(srcCount, greaterThan(5), reason: 'the fixture has history');
+        expect(outCount, srcCount + 1, reason: 'one commit added\n$run');
+        expect(
+          run.stdout,
+          matches(RegExp('^commits: $outCount\$', multiLine: true)),
+          reason: 'commit count line\n$run',
+        );
+        expect(
+          run.stdout,
+          matches(
+            RegExp(
+              r'^refs: refs/heads/main refs/tags/v0\.1\.0$',
+              multiLine: true,
+            ),
+          ),
+          reason: 'kept refs line\n$run',
+        );
+        // The ref list is the real one, not a constant.
+        expect(await _refs(iso, fx.out), {
+          'refs/heads/main',
+          'refs/tags/v0.1.0',
+        });
+      },
+    );
+
+    test(
       'a successful rewrite leaves the source refs remotes working tree and origin unchanged and pushes nothing',
       () async {
         expectRan();
@@ -1156,6 +1197,252 @@ void main() {
     );
 
     test(
+      'a commit that only scrubbed a deny-list string stays in the history and the tag stays on it',
+      () async {
+        final iso = await isolatedEnv();
+        final fx = await _baseline(iso);
+        await runGit(iso, fx.source, ['checkout', '-q', 'main']);
+        // After the replacement both sides of this commit are identical.
+        await _commit(iso, fx.source, {
+          'src/lib.txt': 'see ~/code\n',
+        }, 'scrub home path');
+        await runGit(iso, fx.source, ['tag', '-d', 'v0.1.0']);
+        await runGit(iso, fx.source, ['tag', '-a', 'v0.1.0', '-m', 'release']);
+        await _commit(iso, fx.source, {'after.txt': 'a\n'}, 'after scrub');
+        await runGit(iso, fx.source, [
+          'update-ref',
+          'refs/remotes/origin/main',
+          'main',
+        ]);
+        final srcCount = int.parse(
+          await _git(iso, fx.source, ['rev-list', '--count', 'main']),
+        );
+        final before = await _snapshot(fx);
+
+        final r = await _rewrite(fx);
+        expect(r.exitCode, 0, reason: '$r');
+        final subjects = await _bySubject(iso, fx.out);
+        expect(
+          subjects.keys,
+          containsAll(['scrub home path', 'after scrub', 'second', 'first']),
+          reason: 'the scrub commit is kept\n$subjects',
+        );
+        expect(
+          int.parse(await _git(iso, fx.out, ['rev-list', '--count', 'main'])),
+          srcCount + 1,
+          reason: 'no commit was pruned\n$r',
+        );
+        expect(
+          await _git(iso, fx.out, [
+            'log',
+            '-1',
+            '--format=%s',
+            'refs/tags/v0.1.0^{commit}',
+          ]),
+          'scrub home path',
+          reason: 'the tag was not moved to a parent',
+        );
+        await _expectUntouched(fx, before, r);
+      },
+    );
+
+    test('a lightweight v0.1.0 tag is accepted and kept', () async {
+      final iso = await isolatedEnv();
+      final fx = await _baseline(iso);
+      await runGit(iso, fx.source, ['tag', '-d', 'v0.1.0']);
+      await runGit(iso, fx.source, ['tag', 'v0.1.0', 'main~1']);
+      expect(
+        await _git(iso, fx.source, ['cat-file', '-t', 'refs/tags/v0.1.0']),
+        'commit',
+        reason: 'the fixture tag is lightweight',
+      );
+      final before = await _snapshot(fx);
+      final r = await _rewrite(fx);
+      expect(r.exitCode, 0, reason: '$r');
+      expect(await _refs(iso, fx.out), {'refs/heads/main', 'refs/tags/v0.1.0'});
+      expect(
+        await _git(iso, fx.out, [
+          'log',
+          '-1',
+          '--format=%s',
+          'refs/tags/v0.1.0',
+        ]),
+        'first',
+      );
+      await _expectUntouched(fx, before, r);
+    });
+
+    test(
+      'a failing git filter-repo exits 1 and leaves no ref in out to push',
+      () async {
+        final iso = await isolatedEnv();
+        final fx = await _baseline(iso);
+        // A fake that passes the --version probe and fails a real run.
+        final bin = Directory('${iso.root.path}/fake-bin')..createSync();
+        final fake = File('${bin.path}/git-filter-repo')
+          ..writeAsStringSync(
+            '#!/bin/sh\n'
+            'case "\$1" in --version) echo fake; exit 0 ;; esac\n'
+            'echo "fake filter-repo: boom" >&2\n'
+            'exit 1\n',
+          );
+        await runTool(iso, 'chmod', [
+          '+x',
+          fake.path,
+        ], workingDirectory: iso.work.path);
+        final before = await _snapshot(fx);
+
+        final r = await _rewrite(
+          fx,
+          env: {'PATH': '${bin.path}:${Platform.environment['PATH']}'},
+        );
+        expect(r.exitCode, 1, reason: '$r');
+        expect(r.output, contains('fake filter-repo: boom'), reason: '$r');
+        expect(r.output, contains('do NOT push'), reason: '$r');
+        expect(r.output, isNot(contains('leaks: 0')), reason: '$r');
+        expect(Directory(fx.out).existsSync(), isTrue, reason: 'out is kept');
+        expect(
+          await _refs(iso, fx.out),
+          isEmpty,
+          reason: 'the original history must not be pushable\n$r',
+        );
+        await _expectUntouched(fx, before, r);
+        // beside it: the same fixture rewrites fine with the real tool
+        final ok = await _rewrite(fx, out: '${iso.work.path}/out-ok');
+        expect(ok.exitCode, 0, reason: '$ok');
+      },
+    );
+
+    test(
+      'a failed signature on the final commit exits 1 and leaves no ref in out to push',
+      () async {
+        final iso = await isolatedEnv();
+        final fx = await _baseline(iso);
+        final cfg = iso.env['GIT_CONFIG_GLOBAL']!;
+        for (final kv in [
+          ['gpg.format', 'ssh'],
+          ['user.signingkey', '${iso.root.path}/no-such-key'],
+          ['commit.gpgsign', 'true'],
+        ]) {
+          await runGit(iso, iso.work.path, ['config', '--file', cfg, ...kv]);
+        }
+        final before = await _snapshot(fx);
+
+        final r = await _rewrite(
+          fx,
+          env: {'SSH_AUTH_SOCK': '${iso.root.path}/no-agent.sock'},
+        );
+        expect(r.exitCode, 1, reason: '$r');
+        expect(r.output, contains('do NOT push'), reason: '$r');
+        expect(r.output, isNot(contains('leaks: 0')), reason: '$r');
+        expect(Directory(fx.out).existsSync(), isTrue, reason: 'out is kept');
+        expect(
+          await _refs(iso, fx.out),
+          isEmpty,
+          reason: 'a main that still has the dev files must not be pushable',
+        );
+        await _expectUntouched(fx, before, r);
+      },
+    );
+
+    test(
+      'an interrupted run exits 1 and leaves no ref in out to push',
+      () async {
+        final iso = await isolatedEnv();
+        final fx = await _baseline(iso);
+        // A fake filter-repo that signals it started, then stays busy.
+        final bin = Directory('${iso.root.path}/slow-bin')..createSync();
+        final started = '${iso.root.path}/filter-repo-started';
+        final fake = File('${bin.path}/git-filter-repo')
+          ..writeAsStringSync(
+            '#!/bin/sh\n'
+            'case "\$1" in --version) echo fake; exit 0 ;; esac\n'
+            'touch "$started"\n'
+            'sleep 4\n'
+            'exit 0\n',
+          );
+        await runTool(iso, 'chmod', [
+          '+x',
+          fake.path,
+        ], workingDirectory: iso.work.path);
+        final before = await _snapshot(fx);
+
+        final env = <String, String>{};
+        Platform.environment.forEach((k, v) {
+          if (!k.startsWith('GIT_') && k != 'LEAK_PATTERNS') env[k] = v;
+        });
+        env
+          ..addAll(fx.iso.env)
+          ..['PATH'] = '${bin.path}:${Platform.environment['PATH']}';
+        final proc = await Process.start(
+          '${repoRoot()}/$_script',
+          [
+            '--source',
+            fx.source,
+            '--out',
+            fx.out,
+            '--noreply',
+            _noreply,
+            '--patterns',
+            fx.patterns,
+          ],
+          environment: env,
+          includeParentEnvironment: false,
+          workingDirectory: fx.iso.work.path,
+        );
+        final stdout = proc.stdout
+            .transform(const SystemEncoding().decoder)
+            .join();
+        final stderr = proc.stderr
+            .transform(const SystemEncoding().decoder)
+            .join();
+        final deadline = DateTime.now().add(const Duration(seconds: 90));
+        while (!File(started).existsSync()) {
+          if (DateTime.now().isAfter(deadline)) {
+            proc.kill(ProcessSignal.sigkill);
+            fail('the fake filter-repo never started');
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
+        expect(proc.kill(ProcessSignal.sigterm), isTrue);
+        final code = await proc.exitCode;
+        final out = '${await stdout}\n${await stderr}';
+        expect(code, 1, reason: 'exit after SIGTERM\n$out');
+        expect(out, contains('do NOT push'), reason: out);
+        expect(Directory(fx.out).existsSync(), isTrue, reason: 'out is kept');
+        expect(
+          await _refs(iso, fx.out),
+          isEmpty,
+          reason: 'no ref to push\n$out',
+        );
+        await _expectUntouched(fx, before, ScriptResult(code, out, ''));
+      },
+    );
+
+    test(
+      'refuses with exit 2 when out is inside the common git dir of a linked worktree source',
+      () async {
+        final iso = await isolatedEnv();
+        final base = await _baseline(iso);
+        // A linked worktree on main: its git dir is .git/worktrees/wt, and
+        // out under the main repo's .git is in neither it nor its top.
+        final wt = '${iso.work.path}/wt';
+        await runGit(iso, base.source, ['worktree', 'add', '-q', wt, 'main']);
+        final fx = _Fx(iso, base.origin, wt, base.marker, base.patterns);
+        final before = await _snapshot(fx);
+        final inside = '${base.source}/.git/out';
+        final r = await _rewrite(fx, out: inside);
+        expect(r.exitCode, 2, reason: '$r');
+        expect(r.output, contains('inside'), reason: '$r');
+        expect(Directory(inside).existsSync(), isFalse, reason: '$r');
+        await _expectUntouched(fx, before, r);
+        // beside it: the worktree is a valid source
+        final ok = await _rewrite(fx);
+        expect(ok.exitCode, 0, reason: '$ok');
+      },
+    );
+
+    test(
       'the help flag exits 0 with usage and an unknown flag exits 2',
       () async {
         final iso = await isolatedEnv();
@@ -1188,7 +1475,12 @@ void main() {
         final deep = '$_denyProj/deep';
         final meta = ['', 'opt', 'we*ird', '(p)'].join('/');
         final decoy = ['', 'opt', 'weeeird', 'p'].join('/');
-        final realHome = Directory(iso.home).resolveSymbolicLinksSync();
+        // HOME is a symlink to the temp home, so the path as given and the
+        // resolved one always differ (on any host).
+        final linkHome = '${iso.root.path}/linked-fixture-home';
+        Link(linkHome).createSync(iso.home);
+        final realHome = Directory(linkHome).resolveSymbolicLinksSync();
+        expect(realHome, isNot(linkHome), reason: 'the two HOME forms differ');
         await runGit(iso, fx.source, ['checkout', '-q', 'main']);
         await _commit(iso, fx.source, {
           'paths.txt': [
@@ -1197,7 +1489,7 @@ void main() {
             'meta: $meta/f',
             'decoy: $decoy/f',
             'crlf: $_denyHome/z',
-            'home: ${iso.home}/cfg',
+            'home: $linkHome/cfg',
             'real-home: $realHome/cfg',
             '',
           ].join('\n'),
@@ -1220,7 +1512,11 @@ void main() {
           );
         final before = await _snapshot(fx);
 
-        final r = await _rewrite(fx, patterns: patterns.path);
+        final r = await _rewrite(
+          fx,
+          patterns: patterns.path,
+          env: {'HOME': linkHome},
+        );
         expect(r.exitCode, 0, reason: '$r');
         final kv = _kv(
           await _git(iso, fx.out, ['show', 'refs/heads/main:paths.txt']),
