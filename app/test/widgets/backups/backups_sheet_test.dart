@@ -23,7 +23,9 @@
 //
 // flutter_test draws every font as Ahem (one em per glyph), so content tests
 // use a tall window; the layout tests use the real widths.
+import 'dart:async';
 import 'dart:convert';
+import 'dart:ui' show CheckedState;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -32,7 +34,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:open_memex_app/src/state/backup_controller.dart';
-import 'package:open_memex_app/src/state/backup_destinations.dart';
 import 'package:open_memex_app/src/state/backup_messages.dart';
 import 'package:open_memex_app/src/state/backup_models.dart';
 import 'package:open_memex_app/src/state/backup_settings_state.dart';
@@ -187,6 +188,15 @@ const _guideLinkKey = Key('backups-guide-link');
 const _closeButtonKey = Key('backups-close-button');
 const _launcherKey = Key('325-open-sheet');
 
+/// The Keys of the four provider rows over the harness probe, in the order
+/// A2's discovery lists them: iCloud, Google Drive (connor, work), OneDrive.
+final _discoveredKeys = [
+  backupDestinationKey(BackupProvider.icloud, 0),
+  backupDestinationKey(BackupProvider.googleDrive, 0),
+  backupDestinationKey(BackupProvider.googleDrive, 1),
+  backupDestinationKey(BackupProvider.oneDrive, 0),
+];
+
 // Content tests: tall enough for the whole sheet in Ahem.
 const _tall = Size(1280, 4000);
 
@@ -310,17 +320,18 @@ BackupViewState _binaryNotFoundView() => BackupViewState(
   warning: true,
 );
 
-BackupStatus _hostedStatus({bool inProgress = false}) => BackupStatus(
-  lastAttemptAt: _hostedCreated,
-  lastSuccessAt: _hostedCreated,
-  lastResult: 'created',
-  lastFile: _hostedFile,
-  lastFileCreatedAt: _hostedCreated,
-  lastBytes: _hostedBytes,
-  enabled: true,
-  keep: 30,
-  inProgress: inProgress,
-);
+BackupStatus _hostedStatus({bool inProgress = false, int? keep = 30}) =>
+    BackupStatus(
+      lastAttemptAt: _hostedCreated,
+      lastSuccessAt: _hostedCreated,
+      lastResult: 'created',
+      lastFile: _hostedFile,
+      lastFileCreatedAt: _hostedCreated,
+      lastBytes: _hostedBytes,
+      enabled: true,
+      keep: keep,
+      inProgress: inProgress,
+    );
 
 BackupViewState _hostedSuccessView() => BackupViewState(
   mode: BackupSheetMode.success,
@@ -380,6 +391,11 @@ BackupViewState _hostedTooOldView() => const BackupViewState(
   hosted: true,
 );
 
+/// A hosted vault the controller has not read yet reads as `off` (A0's
+/// contract: "a vault the controller hasn't seen reads as off").
+BackupViewState _hostedUnreadView() =>
+    const BackupViewState(mode: BackupSheetMode.off, hosted: true);
+
 /// Every state the sheet draws, for the layout sweeps.
 List<(String, VaultRef, BackupViewState)> _everyState() => [
   ('off', _local, _offView()),
@@ -398,6 +414,7 @@ List<(String, VaultRef, BackupViewState)> _everyState() => [
   ('hosted not configured', _hosted, _hostedNotConfiguredView()),
   ('hosted unreachable', _hosted, _hostedUnreachableView()),
   ('hosted too old', _hosted, _hostedTooOldView()),
+  ('hosted not read yet', _hosted, _hostedUnreadView()),
 ];
 
 // ------------------------------------------------------------------ harness
@@ -427,6 +444,23 @@ class _Wi325Sheet {
   /// How many times `showBackupsSheet` completed.
   int closed = 0;
 
+  /// While set, every settings save waits on it after being recorded (A2's
+  /// real save is async: preferences, then state), so a test can act while a
+  /// save is in flight.
+  Completer<void>? saveGate;
+
+  /// While set, every settings save throws it (after waiting on the gate).
+  Object? saveError;
+
+  /// Holds every save from here until [releaseSaves].
+  void holdSaves() => saveGate = Completer<void>();
+
+  void releaseSaves() {
+    final gate = saveGate;
+    saveGate = null;
+    gate?.complete();
+  }
+
   FakeBackupController get controller => harness.controller!;
   FakeCloudFolderProbe get probe => harness.probe;
 
@@ -436,14 +470,29 @@ class _Wi325Sheet {
 /// Installs every provider folder (with its `Open Memex Backups` already
 /// there, so a pick resolves to the option's own path) and the chosen
 /// folders.
-void _seedProviders(FakeCloudFolderProbe probe) {
+void _seedProviders(FakeCloudFolderProbe probe, {bool backupFolders = true}) {
   probe
     ..seedIcloud()
     ..seedGoogleDrive('connor@example.com')
     ..seedGoogleDrive('work@example.com')
     ..seedOneDrive('Personal');
+  if (!backupFolders) return;
   for (final d in [_icloudDest, _googleDest, _google2Dest, _oneDriveDest]) {
     probe.addDirectory(d);
+  }
+}
+
+/// A probe whose first answer waits on [gate]: discovery finishes only when
+/// the test lets it.
+class _Wi325GatedProbe extends FakeCloudFolderProbe {
+  _Wi325GatedProbe(this.gate);
+
+  final Completer<void> gate;
+
+  @override
+  Future<String> home() async {
+    await gate.future;
+    return super.home();
   }
 }
 
@@ -458,6 +507,8 @@ Future<_Wi325Sheet> _open(
   BackupViewState? view,
   VaultBackupSettings? stored,
   bool providers = true,
+  bool backupFolders = true,
+  Completer<void>? discoveryGate,
   Size size = _tall,
   double textScale = 1.0,
   Set<String> inFlight = const {},
@@ -470,8 +521,10 @@ Future<_Wi325Sheet> _open(
     addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
   }
 
-  final probe = FakeCloudFolderProbe();
-  if (providers) _seedProviders(probe);
+  final probe = discoveryGate == null
+      ? FakeCloudFolderProbe()
+      : _Wi325GatedProbe(discoveryGate);
+  if (providers) _seedProviders(probe, backupFolders: backupFolders);
   probe.addDirectory(_chosenDest);
   probe.addDirectory(_otherChosenDest);
   final controller = FakeBackupController();
@@ -507,6 +560,10 @@ Future<_Wi325Sheet> _open(
       saveVaultBackupSettingsProvider.overrideWith(
         (ref) => (path, settings) async {
           s.saves.add((path: path, settings: settings));
+          final gate = s.saveGate;
+          if (gate != null) await gate.future;
+          final error = s.saveError;
+          if (error != null) throw error;
           ref
               .read(_wi325SettingsStore.notifier)
               .update((m) => {...m, path: settings});
@@ -739,7 +796,8 @@ Future<void> _tabTo(WidgetTester tester, Key key) async {
 
 /// No paragraph in the sheet is cut: none exceeds its max lines, and none is
 /// laid out shorter than its text needs (a fixed-height box). The designed
-/// ellipses (the destination menu label, the hosted command row) are exempt.
+/// ellipsis of the destination menu label is exempt; the hosted command
+/// wraps like any other text.
 void _expectNothingClipped(WidgetTester tester, String state) {
   expect(tester.takeException(), isNull, reason: '$state: no overflow');
   final menu = find.byKey(_menuKey);
@@ -757,7 +815,7 @@ void _expectNothingClipped(WidgetTester tester, String state) {
           .evaluate()) {
     final p = e.renderObject! as RenderParagraph;
     final text = p.text.toPlainText();
-    if (exempt.contains(p) || text.startsWith('memex serve')) continue;
+    if (exempt.contains(p)) continue;
     expect(p.didExceedMaxLines, isFalse, reason: '$state: "$text" is cut');
     expect(
       p.size.height + 0.5,
@@ -767,23 +825,69 @@ void _expectNothingClipped(WidgetTester tester, String state) {
   }
 }
 
-/// Per-provider index of each provider option, as the Keys count them.
-List<(BackupDestinationOption, Key)> _keyed(
-  List<BackupDestinationOption> options,
-) {
-  final seen = <BackupProvider, int>{};
-  return [
-    for (final o in options)
-      if (o.provider case final p?)
-        (o, backupDestinationKey(p, seen[p] = (seen[p] ?? -1) + 1)),
-  ];
-}
-
 void _expectZeroRuns(_Wi325Sheet s) {
   expect(s.harness.cli.calls, isEmpty, reason: 'no memex CLI call');
   expect(s.harness.runner.calls, isEmpty, reason: 'no backup run');
   expect(s.controller.backUpNowCalls, isEmpty, reason: 'no backUpNow');
 }
+
+/// [at] (a day in November 2026, local time) as the UTC instant the state
+/// carries, so the literal times below hold in any time zone.
+DateTime _localAt(int day, int hour, int minute) =>
+    DateTime(2026, 11, day, hour, minute).toUtc();
+
+/// The RenderParagraph whose whole text is [text].
+RenderParagraph _paragraph(WidgetTester tester, String text) {
+  final f = find.descendant(
+    of: _sheet,
+    matching: find.byWidgetPredicate(
+      (w) => w is RichText && w.text.toPlainText() == text,
+    ),
+  );
+  expect(f, findsOneWidget, reason: '"$text"');
+  return tester.renderObject<RenderParagraph>(f);
+}
+
+/// Whether the radio row at [key] reports itself checked (needs
+/// `tester.ensureSemantics()` and a frame).
+bool _checkedAt(WidgetTester tester, Key key) {
+  final nodes = _semanticsAt(tester, key)
+      .where(
+        (n) =>
+            n.getSemanticsData().flagsCollection.isChecked != CheckedState.none,
+      )
+      .toList();
+  expect(nodes, hasLength(1), reason: 'one checkable node at $key');
+  return nodes.single.getSemanticsData().flagsCollection.isChecked ==
+      CheckedState.isTrue;
+}
+
+/// Exactly the rows in [checked] are checked, of every row [keys].
+void _expectChecked(
+  WidgetTester tester,
+  List<Key> keys, {
+  Set<Key> checked = const {},
+  String? why,
+}) {
+  for (final key in keys) {
+    expect(
+      _checkedAt(tester, key),
+      checked.contains(key),
+      reason: '${why ?? ''} $key',
+    );
+  }
+}
+
+/// The copy the sheet shows when a destination could not be made or used.
+String _unavailableDetail(String destination, BackupProvider? provider) =>
+    backupFailureMessage(
+      code: 'backup_destination_unavailable',
+      automatic: false,
+      failedAt: _now,
+      now: _now,
+      destination: destination,
+      provider: provider,
+    ).detail;
 
 void main() {
   // ================================================================ AC 1
@@ -889,35 +993,101 @@ void main() {
     testWidgets(
       'pressing turn on backups lists the discovered destinations in order with their Keys',
       (tester) async {
+        // The off view state carries no options: every provider row below
+        // comes from the sheet's own discovery over the seeded probe (iCloud,
+        // two Google Drive accounts, OneDrive).
         final s = await _open(tester, view: _offView());
-        final expected = await discoverBackupDestinations(s.probe);
+        expect(_offView().options, isEmpty);
         await _tapKey(tester, backupsToggleKey);
 
         expect(_status(tester), contains(_pickTitle));
         expect(_status(tester), contains(_pickBody));
-        final keyed = _keyed(expected);
+        expect(_discoveredKeys, hasLength(4));
         var lastTop = double.negativeInfinity;
-        for (final (option, key) in keyed) {
+        for (final (key, account) in [
+          (_discoveredKeys[0], 'iCloud Drive'),
+          (_discoveredKeys[1], 'connor@example.com'),
+          (_discoveredKeys[2], 'work@example.com'),
+          (_discoveredKeys[3], 'Personal'),
+          (backupsDestinationChooseKey, 'choose folder'),
+        ]) {
           final row = find.byKey(key);
-          expect(row, findsOneWidget, reason: '${option.label} as $key');
-          expect(_textIn(tester, row), contains(option.label));
+          expect(row, findsOneWidget, reason: '$account as $key');
+          expect(_textIn(tester, row), contains(account), reason: '$key');
           final top = tester.getRect(row).top;
-          expect(top, greaterThan(lastTop), reason: '${option.label} in order');
+          expect(top, greaterThan(lastTop), reason: '$account in order');
           lastTop = top;
         }
-        final choose = find.byKey(backupsDestinationChooseKey);
-        expect(choose, findsOneWidget);
-        expect(tester.getRect(choose).top, greaterThan(lastTop));
+        // No fifth row of any provider.
         expect(
-          _textIn(tester, choose),
+          find.byKey(backupDestinationKey(BackupProvider.googleDrive, 2)),
+          findsNothing,
+        );
+        expect(
+          find.byKey(backupDestinationKey(BackupProvider.icloud, 1)),
+          findsNothing,
+        );
+        expect(
+          find.byKey(backupDestinationKey(BackupProvider.oneDrive, 1)),
+          findsNothing,
+        );
+        // The rows' path lines, relative to each provider's root.
+        for (final (key, line) in [
+          (_discoveredKeys[0], 'iCloud Drive/Open Memex Backups'),
+          (_discoveredKeys[1], 'My Drive/Open Memex Backups'),
+          (_discoveredKeys[2], 'My Drive/Open Memex Backups'),
+          (_discoveredKeys[3], 'OneDrive-Personal/Open Memex Backups'),
+        ]) {
+          expect(_textIn(tester, find.byKey(key)), contains(line));
+        }
+        expect(
+          _textIn(tester, find.byKey(backupsDestinationChooseKey)),
           contains('a nas share, an external disk or any folder'),
         );
-        if (keyed.isNotEmpty) {
-          expect(_sheetText(tester), contains('found on this mac'));
-          expect(_sheetText(tester), contains(_pickNote));
-          expect(_sheetText(tester), isNot(contains(_noProviderSub)));
-        }
+        expect(_sheetText(tester), contains('found on this mac'));
+        expect(_sheetText(tester), contains(_pickNote));
+        expect(_sheetText(tester), isNot(contains(_noProviderSub)));
         _expectZeroRuns(s);
+      },
+    );
+
+    testWidgets(
+      'discovered rows read the provider and the account the way the pack draws them',
+      (tester) async {
+        // A2 hands over bare labels (iCloud Drive, the account, the
+        // OneDrive name); the sheet composes "Google Drive · <account>".
+        await _open(tester, view: _offView());
+        await _tapKey(tester, backupsToggleKey);
+        for (final (key, name) in [
+          (_discoveredKeys[0], 'iCloud Drive'),
+          (_discoveredKeys[1], 'Google Drive · connor@example.com'),
+          (_discoveredKeys[2], 'Google Drive · work@example.com'),
+          (_discoveredKeys[3], 'OneDrive · Personal'),
+        ]) {
+          expect(
+            _textIn(tester, find.byKey(key)),
+            contains(name),
+            reason: name,
+          );
+        }
+      },
+    );
+
+    testWidgets(
+      'providers found after the list opened appear when discovery finishes',
+      (tester) async {
+        final gate = Completer<void>();
+        await _open(tester, view: _offView(), discoveryGate: gate);
+        await _tapKey(tester, backupsToggleKey);
+        // Discovery has not answered: choose folder is the only row.
+        expect(find.byKey(backupsDestinationChooseKey), findsOneWidget);
+        expect(find.byKey(_discoveredKeys[0]), findsNothing);
+        gate.complete();
+        await _frames(tester);
+        for (final key in _discoveredKeys) {
+          expect(find.byKey(key), findsOneWidget, reason: '$key');
+        }
+        expect(_sheetText(tester), contains('found on this mac'));
       },
     );
 
@@ -1042,24 +1212,22 @@ void main() {
     testWidgets(
       'turning on from the off state saves the selected discovered destination',
       (tester) async {
-        final s = await _open(tester, view: _offView());
-        final expected = _keyed(await discoverBackupDestinations(s.probe));
-        await _tapKey(tester, backupsToggleKey);
-        if (expected.isEmpty) {
-          // Stub discovery: choose folder is the only row.
-          s.picker.directories.add(_chosenDest);
-          await _tapKey(tester, backupsDestinationChooseKey);
-        } else {
-          await _tapKey(tester, expected.first.$2);
+        for (final (key, path) in [
+          (_discoveredKeys[0], _icloudDest),
+          (_discoveredKeys[1], _googleDest),
+          (_discoveredKeys[2], _google2Dest),
+          (_discoveredKeys[3], _oneDriveDest),
+        ]) {
+          final s = await _open(tester, view: _offView());
+          await _tapKey(tester, backupsToggleKey);
+          expect(find.byKey(key), findsOneWidget, reason: path);
+          await _tapKey(tester, key);
+          await _tapKey(tester, _turnOnKey);
+          expect(s.saves, hasLength(1), reason: path);
+          expect(s.saves.single.settings.enabled, isTrue, reason: path);
+          expect(s.saves.single.settings.destination, path);
+          _expectZeroRuns(s);
         }
-        await _tapKey(tester, _turnOnKey);
-        expect(s.saves, hasLength(1));
-        expect(s.saves.single.settings.enabled, isTrue);
-        expect(
-          s.saves.single.settings.destination,
-          expected.isEmpty ? _chosenDest : expected.first.$1.path,
-        );
-        _expectZeroRuns(s);
       },
     );
 
@@ -1122,11 +1290,32 @@ void main() {
     testWidgets(
       'the on state shows each destination relative to its provider and a chosen folder in full',
       (tester) async {
-        for (final (dest, shown) in [
-          (_icloudDest, 'iCloud Drive/Open Memex Backups'),
-          (_googleDest, 'My Drive/Open Memex Backups'),
-          (_oneDriveDest, 'OneDrive-Personal/Open Memex Backups'),
-          (_chosenDest, _chosenDest),
+        for (final (dest, shown, label, cloud) in [
+          (
+            _icloudDest,
+            'iCloud Drive/Open Memex Backups',
+            'iCloud Drive',
+            true,
+          ),
+          (
+            _googleDest,
+            'My Drive/Open Memex Backups',
+            'Google Drive · connor@example.com',
+            true,
+          ),
+          (
+            _google2Dest,
+            'My Drive/Open Memex Backups',
+            'Google Drive · work@example.com',
+            true,
+          ),
+          (
+            _oneDriveDest,
+            'OneDrive-Personal/Open Memex Backups',
+            'OneDrive · Personal',
+            true,
+          ),
+          (_chosenDest, _chosenDest, 'memex-backups', false),
         ]) {
           await _open(
             tester,
@@ -1134,7 +1323,90 @@ void main() {
           );
           expect(_sheetText(tester), contains(shown), reason: dest);
           expect(_text('destination'), findsOneWidget, reason: dest);
+          // The destination button reads the provider and account, or a
+          // chosen folder's own name, with a cloud or a folder icon.
+          expect(
+            _textIn(tester, find.byKey(_menuKey)),
+            contains(label),
+            reason: dest,
+          );
+          for (final (icon, expected) in [
+            (LucideIcons.cloud, cloud),
+            (LucideIcons.folder, !cloud),
+          ]) {
+            expect(
+              find.descendant(
+                of: find.byKey(_menuKey),
+                matching: find.byWidgetPredicate(
+                  (w) => w is Icon && w.icon == icon,
+                ),
+              ),
+              expected ? findsOneWidget : findsNothing,
+              reason: '$dest: $icon',
+            );
+          }
         }
+      },
+    );
+
+    testWidgets(
+      'a folder in a provider tree that is not its Open Memex Backups reads as a chosen folder',
+      (tester) async {
+        // The same rule as A3's controller, so the card and the failure copy
+        // describe one destination one way.
+        for (final dest in [
+          '$_googleRoot/memex',
+          '$_googleRoot/Open Memex Backups/old',
+          '$_icloudRoot/Documents/backups',
+          '$_icloudRoot/Open Memex Backups/old',
+          '$_oneDriveRoot/Open Memex Backups/old',
+          '$_oneDriveRoot/Work/Open Memex Backups',
+          '$_home/Library/CloudStorage/GoogleDrive-a@b.com/Shared drives/x',
+        ]) {
+          await _open(
+            tester,
+            view: _successView(_on.copyWith(destination: dest)),
+          );
+          final status = _status(tester);
+          expect(
+            status,
+            contains('${backupSize(_bytes)} · $dest'),
+            reason: dest,
+          );
+          expect(status, isNot(contains('app uploads it')), reason: dest);
+          expect(status, isNot(contains('saved to')), reason: dest);
+          expect(_sheetText(tester), contains(dest), reason: dest);
+          expect(
+            _textIn(tester, find.byKey(_menuKey)),
+            isNot(contains('Drive')),
+            reason: dest,
+          );
+          expect(
+            _textIn(tester, find.byKey(_menuKey)),
+            isNot(contains('OneDrive')),
+            reason: dest,
+          );
+          expect(
+            find.descendant(
+              of: find.byKey(_menuKey),
+              matching: find.byWidgetPredicate(
+                (w) => w is Icon && w.icon == LucideIcons.folder,
+              ),
+            ),
+            findsOneWidget,
+            reason: dest,
+          );
+        }
+        // A trailing slash is still the provider's folder.
+        await _open(
+          tester,
+          view: _successView(_on.copyWith(destination: '$_googleDest/')),
+        );
+        expect(_status(tester), contains(_providerLine('google drive')));
+        expect(
+          _textIn(tester, find.byKey(_menuKey)),
+          contains('Google Drive · connor@example.com'),
+        );
       },
     );
   });
@@ -1701,24 +1973,41 @@ void main() {
     testWidgets(
       'the destination menu lists the discovered destinations and saves a provider at once',
       (tester) async {
+        // The success view state carries no options: the menu's provider
+        // rows come from the sheet's discovery over the seeded probe.
         final s = await _open(tester, view: _successView());
-        final keyed = _keyed(await discoverBackupDestinations(s.probe));
+        expect(_successView().options, isEmpty);
         await _tapKey(tester, _menuKey);
         expect(find.byKey(backupsDestinationChooseKey), findsOneWidget);
-        for (final (option, key) in keyed) {
-          expect(find.byKey(key), findsOneWidget, reason: option.label);
+        var lastTop = double.negativeInfinity;
+        for (final key in [..._discoveredKeys, backupsDestinationChooseKey]) {
+          final row = find.byKey(key);
+          expect(row, findsOneWidget, reason: '$key');
+          final top = tester.getRect(row).top;
+          expect(top, greaterThan(lastTop), reason: '$key in order');
+          lastTop = top;
         }
+        // The current destination (the first Google Drive account) is the
+        // one marked.
+        final marked = find.descendant(
+          of: find.byKey(_discoveredKeys[1]),
+          matching: find.byWidgetPredicate(
+            (w) => w is Icon && w.icon == LucideIcons.check,
+          ),
+        );
+        expect(marked, findsOneWidget);
+
         final others = [
-          for (final (o, k) in keyed)
-            if (o.path != _googleDest) (o, k),
+          (_discoveredKeys[0], _icloudDest),
+          (_discoveredKeys[2], _google2Dest),
+          (_discoveredKeys[3], _oneDriveDest),
         ];
-        for (final (option, key) in others) {
-          if (find.byKey(_menuKey).evaluate().isNotEmpty &&
-              find.byKey(key).evaluate().isEmpty) {
+        for (final (key, path) in others) {
+          if (find.byKey(key).evaluate().isEmpty) {
             await _tapKey(tester, _menuKey);
           }
           await _tap(tester, find.byKey(key));
-          expect(s.saves.last.settings.destination, option.path);
+          expect(s.saves.last.settings.destination, path);
           expect(s.saves.last.settings.enabled, isTrue);
         }
         expect(s.saves, hasLength(others.length));
@@ -1732,9 +2021,37 @@ void main() {
         await _open(tester, view: _successView());
         expect(_sheetText(tester), contains(_req25));
         expect(_sheetText(tester), isNot(contains(_oldFolderNote)));
+        // The full card: file name and the upload line.
+        expect(_status(tester), contains(_file));
+        expect(_status(tester), contains(_providerLine('google drive')));
         await _tapKey(tester, _menuKey);
         expect(_sheetText(tester), contains(_oldFolderNote));
         expect(_sheetText(tester), isNot(contains(_req25)));
+        // B2-9's compact card: the size and where, no file name, no upload
+        // line.
+        final compact = _status(tester);
+        expect(
+          compact,
+          contains(
+            '${backupSize(_bytes)} · Open Memex Backups in google drive',
+          ),
+        );
+        expect(compact, isNot(contains(_file)));
+        expect(compact, isNot(contains('saved to')));
+        expect(compact, isNot(contains('app uploads it')));
+        expect(
+          compact,
+          contains('backed up ${backupWhen(_created, _now)}'),
+          reason: 'the title stays',
+        );
+        // Closing the menu brings the full card back (the open menu covers
+        // the button's lower part: press its top edge).
+        await tester.tapAt(
+          tester.getRect(find.byKey(_menuKey)).topCenter + const Offset(0, 4),
+        );
+        await _frames(tester);
+        expect(_status(tester), contains(_file));
+        expect(_status(tester), contains(_providerLine('google drive')));
       },
     );
 
@@ -2042,6 +2359,7 @@ void main() {
         _hostedNotConfiguredView(),
         _hostedUnreachableView(),
         _hostedTooOldView(),
+        _hostedUnreadView(),
       ]) {
         await _open(tester, vault: _hosted, view: view);
         final why = '${view.mode}';
@@ -2759,5 +3077,819 @@ void main() {
         }
       },
     );
+  });
+
+  // ================================================================ fix round 1
+  // Test gaps of review r1 (findings 1, 7, 8, 9) and the contracts of the
+  // production fixes (findings 2 to 6).
+  group('AC3 verify: the radio list reports the selection', () {
+    final choose = backupsDestinationChooseKey;
+
+    testWidgets(
+      'nothing is checked until a row is chosen and one row at a time',
+      (tester) async {
+        final s = await _open(tester, view: _offView());
+        final handle = tester.ensureSemantics();
+        await _tapKey(tester, backupsToggleKey);
+        await tester.pump();
+        final rows = [..._discoveredKeys, choose];
+        _expectChecked(tester, rows, why: 'on entry');
+
+        await _tapKey(tester, _discoveredKeys[0]);
+        _expectChecked(
+          tester,
+          rows,
+          checked: {_discoveredKeys[0]},
+          why: 'icloud',
+        );
+        await _tapKey(tester, _discoveredKeys[2]);
+        _expectChecked(
+          tester,
+          rows,
+          checked: {_discoveredKeys[2]},
+          why: 'second google account',
+        );
+
+        // choose folder: the picked folder takes the check from the provider.
+        s.picker.directories.add(_chosenDest);
+        await _tapKey(tester, choose);
+        _expectChecked(tester, rows, checked: {choose}, why: 'picked folder');
+        await _tapKey(tester, _discoveredKeys[3]);
+        _expectChecked(
+          tester,
+          rows,
+          checked: {_discoveredKeys[3]},
+          why: 'a provider after a picked folder',
+        );
+
+        // A cancelled picker changes nothing.
+        await _tapKey(tester, choose);
+        _expectChecked(
+          tester,
+          rows,
+          checked: {_discoveredKeys[3]},
+          why: 'cancelled picker',
+        );
+
+        // Cancel and ask again: nothing is checked again.
+        await _tapKey(tester, _cancelKey);
+        await _tapKey(tester, backupsToggleKey);
+        await tester.pump();
+        _expectChecked(tester, rows, why: 'picking again');
+        handle.dispose();
+      },
+    );
+
+    testWidgets('a reported picking state starts with nothing checked', (
+      tester,
+    ) async {
+      await _open(tester, view: _pickingView());
+      final handle = tester.ensureSemantics();
+      await tester.pump();
+      final rows = [..._discoveredKeys, choose];
+      _expectChecked(tester, rows, why: 'on entry');
+      await _tapKey(tester, _discoveredKeys[1]);
+      _expectChecked(
+        tester,
+        rows,
+        checked: {_discoveredKeys[1]},
+        why: 'first google account',
+      );
+      handle.dispose();
+    });
+  });
+
+  group('AC3 and AC9 verify: A2 creates and resolves the picked folder', () {
+    testWidgets(
+      'turning on a provider whose backup folder is missing creates it and saves its path',
+      (tester) async {
+        final s = await _open(tester, view: _offView(), backupFolders: false);
+        await _tapKey(tester, backupsToggleKey);
+        expect(
+          s.probe.createdDirectories,
+          isEmpty,
+          reason: 'picking creates nothing',
+        );
+        await _tapKey(tester, _discoveredKeys[0]);
+        expect(
+          s.probe.createdDirectories,
+          isEmpty,
+          reason: 'selecting creates nothing',
+        );
+        await _tapKey(tester, _turnOnKey);
+        expect(s.probe.createdDirectories, [_icloudDest]);
+        expect(s.saves, hasLength(1));
+        expect(s.saves.single.settings.destination, _icloudDest);
+        expect(s.saves.single.settings.enabled, isTrue);
+        _expectZeroRuns(s);
+      },
+    );
+
+    testWidgets('turning on saves the symlink resolved path of the folder', (
+      tester,
+    ) async {
+      final s = await _open(tester, view: _offView(), backupFolders: false);
+      s.probe
+        ..addDirectory('/Volumes/real/gdrive-backups')
+        ..addSymlink(_googleDest, '/Volumes/real/gdrive-backups');
+      await _tapKey(tester, backupsToggleKey);
+      await _tapKey(tester, _discoveredKeys[1]);
+      await _tapKey(tester, _turnOnKey);
+      expect(
+        s.probe.createdDirectories,
+        isEmpty,
+        reason: 'it was already there',
+      );
+      expect(
+        s.saves.single.settings.destination,
+        '/Volumes/real/gdrive-backups',
+      );
+    });
+
+    testWidgets(
+      'a provider folder that cannot be made saves nothing and says why in the list',
+      (tester) async {
+        final s = await _open(tester, view: _offView(), backupFolders: false);
+        s.probe.denyCreate(_icloudDest);
+        await _tapKey(tester, backupsToggleKey);
+        await _tapKey(tester, _discoveredKeys[0]);
+        await _tapKey(tester, _turnOnKey);
+
+        expect(s.saves, isEmpty);
+        expect(tester.takeException(), isNull);
+        final detail = _unavailableDetail(_icloudDest, BackupProvider.icloud);
+        expect(_status(tester), contains(detail));
+        expect(_cardIcon(LucideIcons.triangleAlert), findsOneWidget);
+        // Still picking, and the button works again.
+        expect(find.byKey(_turnOnKey), findsOneWidget);
+        expect(_button(tester, _turnOnKey).onPressed, isNotNull);
+
+        // Another provider works, and the failure line goes.
+        await _tapKey(tester, _discoveredKeys[3]);
+        await _tapKey(tester, _turnOnKey);
+        expect(s.saves.single.settings.destination, _oneDriveDest);
+        expect(s.probe.createdDirectories, [_oneDriveDest]);
+        expect(_sheetText(tester), isNot(contains(detail)));
+      },
+    );
+
+    testWidgets(
+      'the destination menu creates a missing provider folder and says why when it cannot',
+      (tester) async {
+        final s = await _open(
+          tester,
+          view: _successView(),
+          backupFolders: false,
+        );
+        s.probe.denyCreate(_icloudDest);
+        await _tapKey(tester, _menuKey);
+        await _tap(tester, find.byKey(_discoveredKeys[0]));
+        expect(s.saves, isEmpty);
+        final detail = _unavailableDetail(_icloudDest, BackupProvider.icloud);
+        expect(_sheetText(tester), contains(detail));
+
+        await _tapKey(tester, _menuKey);
+        await _tap(tester, find.byKey(_discoveredKeys[3]));
+        expect(s.probe.createdDirectories, [_oneDriveDest]);
+        expect(s.saves.single.settings.destination, _oneDriveDest);
+        expect(_sheetText(tester), isNot(contains(detail)));
+      },
+    );
+  });
+
+  group('AC3 and AC8 verify: settings saves are awaited and serialised', () {
+    testWidgets(
+      'two quick keep presses step twice while the first save is in flight',
+      (tester) async {
+        final s = await _open(tester, view: _neverView());
+        s.holdSaves();
+        await tester.tap(find.byKey(_keepIncKey));
+        await tester.pump();
+        await tester.tap(find.byKey(_keepIncKey));
+        await tester.pump();
+        // The second save waits for the first to land.
+        expect(s.saves.map((x) => x.settings.keep), [31]);
+        s.releaseSaves();
+        await _frames(tester);
+        expect(s.saves.map((x) => x.settings.keep), [31, 32]);
+        expect(_keepText(tester), '32');
+      },
+    );
+
+    testWidgets('a keep press and a switch press in flight both land', (
+      tester,
+    ) async {
+      final s = await _open(tester, view: _neverView());
+      s.holdSaves();
+      await tester.tap(find.byKey(backupsAutomaticKey));
+      await tester.pump();
+      await tester.tap(find.byKey(_keepDecKey));
+      await tester.pump();
+      expect(s.saves, hasLength(1));
+      s.releaseSaves();
+      await _frames(tester);
+      expect(s.saves, hasLength(2));
+      // The second change was made on top of the first.
+      expect(s.saves.last.settings, _on.copyWith(automatic: false, keep: 29));
+    });
+
+    testWidgets('a failed save does not stop the next one', (tester) async {
+      final s = await _open(tester, view: _neverView());
+      s.saveError = StateError('disk full');
+      await _tapKey(tester, _keepIncKey);
+      expect(tester.takeException(), isA<StateError>());
+      s.saveError = null;
+      await _tapKey(tester, _keepIncKey);
+      expect(tester.takeException(), isNull);
+      expect(s.saves.map((x) => x.settings.keep), [31, 31]);
+      expect(_keepText(tester), '31');
+    });
+
+    testWidgets(
+      'turn on backups keeps the list with its button disabled until the save lands',
+      (tester) async {
+        final s = await _open(tester, view: _offView());
+        await _tapKey(tester, backupsToggleKey);
+        await _tapKey(tester, _discoveredKeys[0]);
+        s.holdSaves();
+        await _tapKey(tester, _turnOnKey);
+
+        // Mid save: still the list, not the off view; no second save.
+        expect(s.saves, hasLength(1));
+        expect(find.byKey(_turnOnKey), findsOneWidget);
+        expect(_button(tester, _turnOnKey).onPressed, isNull);
+        expect(find.byKey(_discoveredKeys[0]), findsOneWidget);
+        expect(_status(tester), contains(_pickTitle));
+        await tester.tap(find.byKey(_turnOnKey), warnIfMissed: false);
+        await _frames(tester);
+        expect(s.saves, hasLength(1));
+
+        s.releaseSaves();
+        await _frames(tester);
+        expect(find.byKey(_turnOnKey), findsNothing);
+        expect(_status(tester), contains(_neverTitle));
+        expect(s.saves, hasLength(1));
+        expect(s.saves.single.settings.destination, _icloudDest);
+      },
+    );
+
+    testWidgets(
+      'a failed turn on shows the destination unavailable detail in the list and can be tried again',
+      (tester) async {
+        final s = await _open(tester, view: _offView());
+        await _tapKey(tester, backupsToggleKey);
+        await _tapKey(tester, _discoveredKeys[0]);
+        s.saveError = Exception('could not create the folder');
+        await _tapKey(tester, _turnOnKey);
+
+        expect(
+          tester.takeException(),
+          isNull,
+          reason: 'handled, not unhandled',
+        );
+        final detail = _unavailableDetail(_icloudDest, BackupProvider.icloud);
+        expect(
+          detail,
+          startsWith("can't write to Open Memex Backups in icloud drive."),
+        );
+        expect(_status(tester), contains(detail));
+        expect(_status(tester), isNot(contains(_pickBody)));
+        expect(_cardIcon(LucideIcons.triangleAlert), findsOneWidget);
+        expect(
+          _rgb((_card(tester).border! as Border).top.color),
+          _rgb(OmColors.danger),
+        );
+        expect(find.byKey(_turnOnKey), findsOneWidget);
+        expect(_button(tester, _turnOnKey).onPressed, isNotNull);
+        expect(find.byKey(_discoveredKeys[0]), findsOneWidget);
+
+        // Try again and it lands: the failure line is gone.
+        s.saveError = null;
+        await _tapKey(tester, _turnOnKey);
+        expect(find.byKey(_turnOnKey), findsNothing);
+        expect(_sheetText(tester), isNot(contains(detail)));
+        expect(_status(tester), contains(_neverTitle));
+      },
+    );
+
+    testWidgets('a failed turn on of a chosen folder names the folder', (
+      tester,
+    ) async {
+      final s = await _open(tester, view: _pickingView());
+      s.picker.directories.add(_chosenDest);
+      await _tapKey(tester, backupsDestinationChooseKey);
+      s.saveError = Exception('read-only volume');
+      await _tapKey(tester, _turnOnKey);
+      expect(tester.takeException(), isNull);
+      final detail = _unavailableDetail(_chosenDest, null);
+      expect(detail, startsWith("can't write to $_chosenDest."));
+      expect(_status(tester), contains(detail));
+
+      // "cancel" forgets the failure.
+      await _tapKey(tester, _cancelKey);
+      expect(_sheetText(tester), isNot(contains(detail)));
+      await _tapKey(tester, backupsToggleKey);
+      expect(_sheetText(tester), isNot(contains(detail)));
+      expect(_status(tester), contains(_pickBody));
+    });
+
+    testWidgets(
+      'a failed destination change from the menu shows why under the settings and clears on the next pick',
+      (tester) async {
+        final s = await _open(tester, view: _successView());
+        s.saveError = Exception('denied');
+        await _tapKey(tester, _menuKey);
+        await _tap(tester, find.byKey(_discoveredKeys[3]));
+
+        expect(tester.takeException(), isNull);
+        final detail = _unavailableDetail(
+          _oneDriveDest,
+          BackupProvider.oneDrive,
+        );
+        expect(_sheetText(tester), contains(detail));
+        // The line is danger-coloured and sits under the settings group, not
+        // in the status card.
+        expect(_status(tester), isNot(contains(detail)));
+        final line = tester.widget<RichText>(_text(detail));
+        expect(line.text.style?.color, OmColors.danger);
+        expect(
+          tester.getRect(_text(detail)).top,
+          greaterThan(tester.getRect(find.byKey(backupsAutomaticKey)).bottom),
+        );
+        // The destination did not change.
+        expect(_sheetText(tester), contains('My Drive/Open Memex Backups'));
+        expect(_sheetText(tester), contains(_req25));
+
+        // The current row saves nothing and clears the line.
+        s.saveError = null;
+        await _tapKey(tester, _menuKey);
+        await _tap(tester, find.byKey(_discoveredKeys[1]));
+        expect(_sheetText(tester), isNot(contains(detail)));
+        expect(s.saves, hasLength(1), reason: 'only the failed one was tried');
+      },
+    );
+
+    testWidgets(
+      'a failed keep automatic or off save is reported, not dropped',
+      (tester) async {
+        for (final (name, act)
+            in <(String, Future<void> Function(WidgetTester))>[
+              ('keep plus', (t) => _tapKey(t, _keepIncKey)),
+              (
+                'keep typed',
+                (t) async {
+                  await t.enterText(find.byKey(backupsKeepKey), '12');
+                  await t.testTextInput.receiveAction(TextInputAction.done);
+                  await _frames(t);
+                },
+              ),
+              ('automatic', (t) => _tapKey(t, backupsAutomaticKey)),
+              ('turn off', (t) => _tapKey(t, backupsToggleKey)),
+            ]) {
+          final s = await _open(tester, view: _neverView());
+          s.saveError = StateError('disk full: $name');
+          await act(tester);
+          final reported = tester.takeException();
+          expect(reported, isNotNull, reason: name);
+          // Submitting a typed value and then leaving the field each try the
+          // save, so a typed keep may report twice.
+          if (name != 'keep typed') {
+            expect(reported, isA<StateError>(), reason: name);
+            expect('$reported', contains(name));
+            expect(s.saves, hasLength(1), reason: name);
+          }
+        }
+      },
+    );
+  });
+
+  group('AC9 verify: Escape after a clicked menu', () {
+    testWidgets(
+      'Escape closes only the menu when a click opened it and the sheet next',
+      (tester) async {
+        final s = await _open(tester, view: _successView());
+        // A tap opens the menu without giving anything focus (the way a
+        // mouse click does).
+        await _tapKey(tester, _menuKey);
+        expect(find.byKey(_discoveredKeys[1]), findsOneWidget);
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await _frames(tester);
+        expect(
+          find.byKey(_discoveredKeys[1]),
+          findsNothing,
+          reason: 'menu closed',
+        );
+        expect(_sheet, findsOneWidget, reason: 'the sheet stays open');
+        expect(s.controller.closeSheetCalls, isEmpty);
+        expect(s.closed, 0);
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await _frames(tester);
+        expect(_sheet, findsNothing);
+        expect(s.controller.closeSheetCalls, [_local]);
+      },
+    );
+  });
+
+  group('AC11 verify: a hosted vault that is not read yet', () {
+    testWidgets(
+      'shows a neutral checking card with back up now disabled and no claims',
+      (tester) async {
+        for (final view in [
+          _hostedUnreadView(),
+          const BackupViewState(
+            mode: BackupSheetMode.pickingDestination,
+            hosted: true,
+          ),
+        ]) {
+          final s = await _open(tester, vault: _hosted, view: view);
+          final handle = tester.ensureSemantics();
+          await tester.pump();
+          final why = '${view.mode}';
+          final status = _status(tester);
+          expect(status, contains('checking backups on nas…'), reason: why);
+          expect(status, contains(_unreachableBody), reason: why);
+          expect(status, isNot(contains(_neverTitle)), reason: why);
+          expect(status, isNot(contains('makes the first one')), reason: why);
+          expect(_cardIcon(LucideIcons.server), findsOneWidget, reason: why);
+          expect(
+            (_card(tester).border! as Border).top.color,
+            OmColors.line2,
+            reason: why,
+          );
+
+          expect(_textIn(tester, find.byKey(backupsNowKey)), _backUpNow);
+          expect(_button(tester, backupsNowKey).onPressed, isNull, reason: why);
+          expect(
+            _labelled(tester, backupsNowKey, _backUpNow),
+            isSemantics(
+              isButton: true,
+              hasEnabledState: true,
+              isEnabled: false,
+            ),
+            reason: why,
+          );
+          await tester.tap(find.byKey(backupsNowKey), warnIfMissed: false);
+          await _frames(tester);
+          expect(s.controller.backUpNowCalls, isEmpty, reason: why);
+
+          // No server claims: no rows, no keep, no note, no retry.
+          final text = _sheetText(tester);
+          for (final claim in [
+            'ON NAS',
+            'backup folder',
+            'set on nas',
+            'latest ',
+            'schedule',
+            'once a day',
+            'to restore a hosted vault',
+            'backed up',
+            'last backup',
+          ]) {
+            expect(text, isNot(contains(claim)), reason: '$why: $claim');
+          }
+          expect(find.byKey(backupsRetryKey), findsNothing, reason: why);
+          handle.dispose();
+        }
+      },
+    );
+
+    testWidgets('becomes the server state once the controller has read it', (
+      tester,
+    ) async {
+      final s = await _open(tester, vault: _hosted, view: _hostedUnreadView());
+      expect(_button(tester, backupsNowKey).onPressed, isNull);
+      s.setView(_hostedNeverView());
+      await _frames(tester);
+      expect(_status(tester), contains(_neverTitle));
+      expect(_button(tester, backupsNowKey).onPressed, isNotNull);
+      expect(_sheetText(tester), contains('set on nas with --backup-dir'));
+      s.setView(_hostedUnreadView());
+      await _frames(tester);
+      expect(_button(tester, backupsNowKey).onPressed, isNull);
+      expect(_sheetText(tester), isNot(contains('set on nas')));
+    });
+
+    testWidgets('the keep row shows the keep the server reports', (
+      tester,
+    ) async {
+      await _open(
+        tester,
+        vault: _hosted,
+        view: BackupViewState(
+          mode: BackupSheetMode.success,
+          hosted: true,
+          status: _hostedStatus(keep: 90),
+        ),
+      );
+      expect(_sheetText(tester), contains('latest 90'));
+      expect(_sheetText(tester), isNot(contains('latest 30')));
+
+      await _open(
+        tester,
+        vault: _hosted,
+        view: BackupViewState(
+          mode: BackupSheetMode.success,
+          hosted: true,
+          status: _hostedStatus(keep: null),
+        ),
+      );
+      expect(_sheetText(tester), contains('latest 30'));
+    });
+  });
+
+  group('AC13 verify: the hosted command wraps', () {
+    testWidgets('the whole command shows at 1.3x text and in a 640 px window', (
+      tester,
+    ) async {
+      for (final (size, scale) in [
+        (_tall, 1.0),
+        (_tall, 1.3),
+        (const Size(640, 4000), 1.0),
+        (const Size(640, 4000), 1.3),
+      ]) {
+        await _open(
+          tester,
+          vault: _hosted,
+          view: _hostedNotConfiguredView(),
+          size: size,
+          textScale: scale,
+        );
+        final why = '${size.width.toInt()} px at ${scale}x';
+        final p = _paragraph(tester, _hostedCommand);
+        expect(p.maxLines, isNull, reason: why);
+        expect(p.overflow, TextOverflow.clip, reason: why);
+        expect(p.didExceedMaxLines, isFalse, reason: why);
+        // Wider than its row in any font: it wraps to more than one line.
+        expect(
+          p.size.height,
+          greaterThan(p.preferredLineHeight * 1.5),
+          reason: '$why: wraps',
+        );
+        _expectNothingClipped(tester, why);
+        // The copy button stays inside the panel.
+        expect(
+          tester.getRect(find.byKey(_copyCommandKey)).right,
+          lessThanOrEqualTo(tester.getRect(_sheet).right),
+          reason: why,
+        );
+      }
+    });
+  });
+
+  group('AC4 AC7 AC10 AC11 verify: the copy as literal text', () {
+    final localCreated = _localAt(9, 14, 3);
+
+    BackupViewState success({
+      DateTime? at,
+      int bytes = 41200000,
+      String? destination,
+    }) => BackupViewState(
+      mode: BackupSheetMode.success,
+      settings: _on.copyWith(destination: destination ?? _googleDest),
+      status: BackupStatus(
+        lastAttemptAt: at ?? localCreated,
+        lastSuccessAt: at ?? localCreated,
+        lastResult: 'created',
+        lastFile: _file,
+        lastFileCreatedAt: at ?? localCreated,
+        lastBytes: bytes,
+      ),
+    );
+
+    testWidgets('success shows the time and the size as written', (
+      tester,
+    ) async {
+      for (final (at, bytes, wording, size) in [
+        (localCreated, 41200000, 'today at 14:03', '41.2 MB'),
+        (_localAt(8, 9, 2), 812345, 'yesterday at 09:02', '812 KB'),
+        (_localAt(3, 8, 15), 1300000000, '3 nov at 08:15', '1.3 GB'),
+        (_localAt(9, 0, 5), 999, 'today at 00:05', '999 B'),
+      ]) {
+        await _open(
+          tester,
+          view: success(at: at, bytes: bytes),
+        );
+        final status = _status(tester);
+        expect(status, contains('backed up $wording'), reason: wording);
+        expect(
+          status,
+          contains('$size · saved to Open Memex Backups'),
+          reason: size,
+        );
+      }
+      await _open(tester, view: success(destination: _chosenDest));
+      expect(_status(tester), contains('41.2 MB · $_chosenDest'));
+      await _open(tester, view: success());
+      expect(
+        _status(tester),
+        contains(
+          '41.2 MB · saved to Open Memex Backups in google drive. the google '
+          "drive app uploads it; open memex can't see when that's done.",
+        ),
+      );
+    });
+
+    BackupViewState failed(
+      String code, {
+      String? raw,
+      bool automatic = true,
+      BackupProvider? provider = BackupProvider.googleDrive,
+      String destination = _googleDest,
+    }) => BackupViewState(
+      mode: BackupSheetMode.error,
+      settings: _on.copyWith(destination: destination),
+      status: BackupStatus(
+        lastAttemptAt: _localAt(9, 9, 0),
+        lastSuccessAt: _localAt(8, 9, 2),
+        lastResult: code,
+        lastError: raw,
+        lastFile: _yesterdayFile,
+        lastFileCreatedAt: _localAt(8, 9, 2),
+        lastBytes: _yesterdayBytes,
+      ),
+      errorCode: code,
+      message: backupFailureMessage(
+        code: code,
+        message: raw,
+        automatic: automatic,
+        failedAt: _localAt(9, 9, 0),
+        now: _now,
+        destination: destination,
+        provider: provider,
+      ),
+      automatic: automatic,
+      failedAt: _localAt(9, 9, 0),
+      warning: true,
+    );
+
+    testWidgets(
+      'the error card shows the message and the last good backup as written',
+      (tester) async {
+        await _open(tester, view: failed('backup_destination_unavailable'));
+        var status = _status(tester);
+        expect(status, contains('the automatic backup failed at 09:00'));
+        expect(
+          status,
+          contains(
+            "can't write to Open Memex Backups in google drive. check that "
+            "it's still there and connected",
+          ),
+        );
+        expect(
+          status,
+          contains(
+            'last good backup: yesterday at 09:02 · 41.0 MB. tries again '
+            'hourly.',
+          ),
+        );
+
+        await _open(
+          tester,
+          view: failed('backup_failed', raw: 'disk full', automatic: false),
+        );
+        status = _status(tester);
+        expect(status, contains('back up now failed at 09:00'));
+        expect(status, contains("the backup couldn't be made: disk full."));
+
+        await _open(
+          tester,
+          view: failed(
+            'backup_destination_unavailable',
+            provider: null,
+            destination: _chosenDest,
+          ),
+        );
+        expect(_status(tester), contains("can't write to $_chosenDest."));
+      },
+    );
+
+    testWidgets('the last good backup line leaves out a size the state lacks', (
+      tester,
+    ) async {
+      final base = failed('backup_failed', raw: 'disk full');
+      await _open(
+        tester,
+        view: BackupViewState(
+          mode: base.mode,
+          settings: base.settings,
+          status: BackupStatus(
+            lastAttemptAt: _localAt(9, 9, 0),
+            lastSuccessAt: _localAt(8, 9, 2),
+            lastResult: 'backup_failed',
+            lastFile: _yesterdayFile,
+            lastFileCreatedAt: _localAt(8, 9, 2),
+          ),
+          errorCode: base.errorCode,
+          message: base.message,
+          warning: true,
+        ),
+      );
+      expect(
+        _status(tester),
+        contains('last good backup: yesterday at 09:02. tries again hourly.'),
+      );
+    });
+
+    testWidgets('the binary states show the message as written', (
+      tester,
+    ) async {
+      await _open(tester, view: _tooOldView());
+      var status = _status(tester);
+      expect(status, contains('this memex is too old to make backups'));
+      expect(status, contains('update memex, then try again.'));
+      await _open(tester, view: _binaryNotFoundView());
+      status = _status(tester);
+      expect(status, contains('memex binary not found'));
+      expect(status, contains('install memex, or locate it, then try again.'));
+    });
+
+    testWidgets('hosted states show the time size and message as written', (
+      tester,
+    ) async {
+      final created = _localAt(9, 3, 0);
+      BackupStatus hostedStatus({bool inProgress = false}) => BackupStatus(
+        lastAttemptAt: created,
+        lastSuccessAt: created,
+        lastResult: 'created',
+        lastFile: _hostedFile,
+        lastFileCreatedAt: created,
+        lastBytes: _hostedBytes,
+        enabled: true,
+        keep: 30,
+        inProgress: inProgress,
+      );
+      await _open(
+        tester,
+        vault: _hosted,
+        view: BackupViewState(
+          mode: BackupSheetMode.success,
+          hosted: true,
+          status: hostedStatus(),
+        ),
+      );
+      var status = _status(tester);
+      expect(status, contains('backed up today at 03:00'));
+      expect(status, contains('18.6 MB · on nas'));
+
+      await _open(
+        tester,
+        vault: _hosted,
+        view: BackupViewState(
+          mode: BackupSheetMode.backingUp,
+          hosted: true,
+          status: hostedStatus(inProgress: true),
+        ),
+      );
+      expect(
+        _status(tester),
+        contains('last backup: today at 03:00 · 18.6 MB.'),
+      );
+
+      await _open(
+        tester,
+        vault: _hosted,
+        view: BackupViewState(
+          mode: BackupSheetMode.error,
+          hosted: true,
+          status: BackupStatus(
+            lastAttemptAt: _localAt(9, 9, 0),
+            lastSuccessAt: _localAt(8, 9, 2),
+            lastResult: 'backup_destination_unavailable',
+            lastFile: _hostedFile,
+            lastFileCreatedAt: _localAt(8, 9, 2),
+            lastBytes: _hostedBytes,
+            enabled: true,
+            keep: 30,
+          ),
+          errorCode: 'backup_destination_unavailable',
+          message: backupFailureMessage(
+            code: 'backup_destination_unavailable',
+            automatic: true,
+            failedAt: _localAt(9, 9, 0),
+            now: _now,
+            serverName: 'nas',
+          ),
+          warning: true,
+        ),
+      );
+      status = _status(tester);
+      expect(status, contains("nas's backup failed at 09:00"));
+      expect(
+        status,
+        contains(
+          "nas can't write to its backup folder. check that the folder given "
+          'to --backup-dir exists on nas and is writable.',
+        ),
+      );
+      expect(
+        status,
+        contains(
+          'last good backup: yesterday at 09:02 · 18.6 MB. nas tries again '
+          'hourly.',
+        ),
+      );
+    });
   });
 }
