@@ -4143,7 +4143,7 @@ fn readme_install_section_states_the_requirements_and_the_first_launch() {
     );
     // The first launch step must name the buttons the vault picker really
     // has (the WI text said "Create new vault…", which no button carries).
-    let picker = read_repo_file("app/lib/src/screens/vault_picker.dart");
+    let picker = read_repo_file("app/lib/src/widgets/picker/vault_picker_body.dart");
     let first_launch = install
         .body
         .lines()
