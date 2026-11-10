@@ -1,9 +1,29 @@
 // WI #349 (Spec #347 req 18, TD7): the shared keyboard dialog button, moved
 // from the restore dialog's `_DialogButton` with an `autofocus` option.
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
 import '../theme/colors.dart';
 import 'atoms.dart';
+
+/// The keys that press a keyboard button ([DialogButton],
+/// `PickerRowIconButton`): Enter, numpad Enter and Space, each once per key
+/// press. A held key's repeats are swallowed here rather than passed on to
+/// the app's default shortcuts, so holding Enter presses the button once.
+const Map<ShortcutActivator, Intent> keyboardButtonShortcuts = {
+  SingleActivator(LogicalKeyboardKey.enter, includeRepeats: false):
+      ActivateIntent(),
+  SingleActivator(LogicalKeyboardKey.numpadEnter, includeRepeats: false):
+      ActivateIntent(),
+  SingleActivator(LogicalKeyboardKey.space, includeRepeats: false):
+      ActivateIntent(),
+  SingleActivator(LogicalKeyboardKey.enter):
+      DoNothingAndStopPropagationIntent(),
+  SingleActivator(LogicalKeyboardKey.numpadEnter):
+      DoNothingAndStopPropagationIntent(),
+  SingleActivator(LogicalKeyboardKey.space):
+      DoNothingAndStopPropagationIntent(),
+};
 
 /// An [OmButton] that works from the keyboard: it takes focus (Tab), Enter
 /// and Space press it, and it reads as a labelled button. A disabled one
@@ -48,6 +68,7 @@ class _DialogButtonState extends State<DialogButton> {
   Widget build(BuildContext context) {
     return FocusableActionDetector(
       autofocus: widget.autofocus,
+      shortcuts: keyboardButtonShortcuts,
       actions: _actions,
       onShowFocusHighlight: (v) => setState(() => _highlight = v),
       child: Semantics(

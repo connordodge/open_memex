@@ -10,6 +10,7 @@ import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import '../../vault_access/hosted/hosted_client.dart';
 import '../atoms.dart';
+import '../dialog_button.dart';
 
 /// "host:port" of a saved server [url] (the port only when the URL
 /// names one), as a hosted recent row's subline shows it.
@@ -96,7 +97,8 @@ TextStyle pickerRowSublineStyle(Color color) =>
     OmType.mono(size: 10.5, color: color, height: 15.75 / 10.5);
 
 /// A 24×24 trailing icon button (radius 5, 12 px `fg2` glyph, no fill).
-/// It works from the keyboard: Tab reaches it, Enter and Space press it, it
+/// It works from the keyboard: Tab reaches it, Enter and Space press it
+/// (once per key press, however long the key is held), it
 /// draws an `accentSoft` radius-5 ring while the focus highlight is on, and
 /// it reads as a button labelled [semanticLabel] (else [tooltip]).
 class PickerRowIconButton extends StatefulWidget {
@@ -139,6 +141,7 @@ class _PickerRowIconButtonState extends State<PickerRowIconButton> {
     return Tooltip(
       message: widget.tooltip,
       child: FocusableActionDetector(
+        shortcuts: keyboardButtonShortcuts,
         actions: _actions,
         onShowFocusHighlight: (v) => setState(() => _highlight = v),
         child: Semantics(
