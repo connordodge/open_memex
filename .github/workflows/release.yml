@@ -1,10 +1,11 @@
 # Release workflow (Spec #367, requirements 24-28).
 #
 # - A push of a v* tag runs the `release` job. It waits for approval on the
-#   `release` environment, then checks the version and notes, builds signed
-#   and notarized artifacts with scripts/release/build.sh, creates a draft
-#   GitHub Release, uploads the four assets and publishes the Release in its
-#   last step.
+#   `release` environment, checks that the tag still points at the pushed
+#   commit (and again before creating and publishing the Release), checks
+#   the version and notes, builds signed and notarized artifacts with
+#   scripts/release/build.sh, creates a draft GitHub Release, uploads the
+#   four assets and publishes the Release in its last step.
 # - A manual run (workflow_dispatch) with a version runs the `dry-run` job:
 #   check-version.sh and build.sh --dry-run only. It reads no secrets and
 #   never signs with a real identity, notarizes or publishes.
@@ -99,6 +100,18 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Check the tag still points at this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The run waited for approval; the tag may have been moved since
+          # it was pushed. Every later step builds and publishes GITHUB_SHA.
+          tagged=$(gh api "repos/$GITHUB_REPOSITORY/commits/tags/$TAG" --jq .sha)
+          if [ "$tagged" != "$GITHUB_SHA" ]; then
+            echo "tag $TAG now points at $tagged, not $GITHUB_SHA, the commit this run built" >&2
+            exit 1
+          fi
+
       - name: Set up Flutter 3.47.5 stable
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
@@ -192,6 +205,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # The draft binds to the tag as it is now, so check it again.
+          tagged=$(gh api "repos/$GITHUB_REPOSITORY/commits/tags/$TAG" --jq .sha)
+          if [ "$tagged" != "$GITHUB_SHA" ]; then
+            echo "tag $TAG now points at $tagged, not $GITHUB_SHA, the commit this run built" >&2
+            exit 1
+          fi
           version=${TAG#v}
           prerelease=""
           case "$version" in
@@ -213,7 +232,13 @@ jobs:
       - name: Publish the Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+        run: |
+          tagged=$(gh api "repos/$GITHUB_REPOSITORY/commits/tags/$TAG" --jq .sha)
+          if [ "$tagged" != "$GITHUB_SHA" ]; then
+            echo "tag $TAG now points at $tagged, not $GITHUB_SHA, the commit this run built" >&2
+            exit 1
+          fi
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
 
       - name: Delete the temporary keychain and key files
         if: always()
