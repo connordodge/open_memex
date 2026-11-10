@@ -91,7 +91,12 @@ class _DeleteVaultDialogState extends ConsumerState<DeleteVaultDialog> {
       case VaultDeleteFailed(:final message):
         setState(() {
           _busy = false;
-          _error = message;
+          // A backup that started during the delete refused it. That line
+          // comes from the backup state, so it goes when the backup ends;
+          // kept here it would stay after the button re-enables.
+          _error = message == vaultBackupRunningMessage(widget.path)
+              ? null
+              : message;
         });
       case VaultDeleteCancelled():
         setState(() => _busy = false);
@@ -107,7 +112,7 @@ class _DeleteVaultDialogState extends ConsumerState<DeleteVaultDialog> {
         ref.watch(currentVaultProvider) == LocalVaultRef(widget.path);
     final openLine = _busy ? _deletingOpen : isOpen;
     // A backup of this vault running refuses the delete until it ends
-    // (Spec #357 Req 32); the dialog re-enables by itself.
+    // (Spec #357 Req 33); the dialog re-enables by itself.
     final backingUp = ref.watch(
       backupInFlightProvider.select((paths) => paths.contains(widget.path)),
     );
