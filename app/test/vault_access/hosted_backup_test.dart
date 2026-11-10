@@ -12,17 +12,21 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
 import 'package:open_memex_app/src/state/backup_models.dart';
 import 'package:open_memex_app/src/state/clock.dart';
+import 'package:open_memex_app/src/state/hosted_identity.dart';
 import 'package:open_memex_app/src/state/hosted_connection_state.dart';
 import 'package:open_memex_app/src/state/vault_open_hosted.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/vault_access/errors.dart';
 import 'package:open_memex_app/src/vault_access/hosted/backup.dart';
 import 'package:open_memex_app/src/vault_access/hosted/hosted_client.dart';
+import 'package:open_memex_app/src/state/settings.dart';
 import 'package:path/path.dart' as p;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../support/api_fixtures.dart';
 import '../support/fake_clock.dart';
 import '../support/fake_vault_server.dart';
+import '../support/token_store_fakes.dart';
 
 const _statusPath = '/vaults/seed/api/v1/backup';
 
@@ -473,12 +477,14 @@ void main() {
       _Env env, {
       VaultRef? current = hosted,
       HostedSession? session,
+      SettingsController? settings,
     }) {
       final c = ProviderContainer(
         overrides: [
           clockProvider.overrideWithValue(env.clock),
           utcOffsetProvider.overrideWithValue(() => Duration.zero),
           currentVaultProvider.overrideWith((_) => current),
+          if (settings != null) settingsProvider.overrideWith((_) => settings),
           hostedSessionProvider.overrideWith(
             (_) => session ?? HostedSession(hosted, env.client()),
           ),
@@ -557,6 +563,143 @@ void main() {
 
       expect(c.read(hostedBackupApiProvider), isNull);
     });
+
+    Future<SettingsController> settingsWithLastVault() async {
+      SharedPreferences.setMockInitialValues({});
+      final settings = await SettingsController.load(
+        tokenStore: FakeTokenStore(),
+      );
+      await settings.rememberRef(hosted);
+      return settings;
+    }
+
+    test(
+      'a vault_not_found on a backup request turns the vault gone flow on',
+      () async {
+        final env = _serving('backup', 'status_never.json');
+        final settings = await settingsWithLastVault();
+        final c = container(env, settings: settings);
+        final api = c.read(hostedBackupApiProvider)!;
+        expect(c.read(hostedVaultGoneProvider(hosted)), isFalse);
+        env.server.removeVault('seed');
+
+        await expectLater(
+          api.status(),
+          throwsA(
+            isA<MemexException>().having(
+              (e) => e.code,
+              'code',
+              'vault_not_found',
+            ),
+          ),
+        );
+        await pumpEventQueue();
+
+        expect(c.read(hostedVaultGoneProvider(hosted)), isTrue);
+        expect(c.read(currentVaultProvider), isNull);
+        expect(settings.state.lastVaultRef, isNull);
+      },
+    );
+
+    test(
+      'a vault_not_found on a backup start turns the vault gone flow on',
+      () async {
+        final env = _serving('backup', 'start_accepted.json');
+        final settings = await settingsWithLastVault();
+        final c = container(env, settings: settings);
+        final api = c.read(hostedBackupApiProvider)!;
+        env.server.removeVault('seed');
+
+        await expectLater(
+          api.start(),
+          throwsA(
+            isA<MemexException>().having(
+              (e) => e.code,
+              'code',
+              'vault_not_found',
+            ),
+          ),
+        );
+        await pumpEventQueue();
+
+        expect(c.read(hostedVaultGoneProvider(hosted)), isTrue);
+      },
+    );
+
+    test(
+      'a backup request that is not vault_not_found leaves the vault open',
+      () async {
+        final env = _env();
+        env.server.route(
+          'GET',
+          _statusPath,
+          status: 404,
+          json: {
+            'error': {'code': 'not_found', 'message': 'no such route'},
+          },
+        );
+        env.server.route(
+          'POST',
+          _statusPath,
+          status: 409,
+          json: {
+            'error': {'code': 'backup_in_progress', 'message': 'running'},
+          },
+        );
+        final settings = await settingsWithLastVault();
+        final c = container(env, settings: settings);
+        final api = c.read(hostedBackupApiProvider)!;
+
+        expect(await api.status(), const HostedBackupServerTooOld());
+        expect(await api.start(), const HostedBackupAlreadyRunning());
+        await pumpEventQueue();
+
+        expect(c.read(hostedVaultGoneProvider(hosted)), isFalse);
+        expect(c.read(currentVaultProvider), hosted);
+        expect(settings.state.lastVaultRef, hosted);
+      },
+    );
+
+    test(
+      'a vault_not_found after another vault opened does not mark the old one gone',
+      () async {
+        final env = _serving('backup', 'status_never.json');
+        final settings = await settingsWithLastVault();
+        final c = container(env, settings: settings);
+        final api = c.read(hostedBackupApiProvider)!;
+        env.server.removeVault('seed');
+        c.read(currentVaultProvider.notifier).state = const LocalVaultRef('/v');
+        await pumpEventQueue();
+
+        await expectLater(api.status(), throwsA(isA<MemexException>()));
+        await pumpEventQueue();
+
+        expect(c.read(hostedVaultGoneProvider(hosted)), isFalse);
+        expect(c.read(currentVaultProvider), const LocalVaultRef('/v'));
+      },
+    );
+
+    test(
+      'a vault_not_found on an api of a closed open does not mark the reopened vault gone',
+      () async {
+        final env = _serving('backup', 'status_never.json');
+        final settings = await settingsWithLastVault();
+        final c = container(env, settings: settings);
+        final stale = c.read(hostedBackupApiProvider)!;
+        env.server.removeVault('seed');
+        c.read(currentVaultProvider.notifier).state = const LocalVaultRef('/v');
+        await pumpEventQueue();
+        c.read(currentVaultProvider.notifier).state = hosted;
+        await pumpEventQueue();
+        expect(c.read(hostedBackupApiProvider), isNot(same(stale)));
+
+        await expectLater(stale.status(), throwsA(isA<MemexException>()));
+        await pumpEventQueue();
+
+        expect(c.read(hostedVaultGoneProvider(hosted)), isFalse);
+        expect(c.read(currentVaultProvider), hosted);
+      },
+    );
 
     test('hostedBackupApiProvider follows the open vault', () async {
       final env = _env();
