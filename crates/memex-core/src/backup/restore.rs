@@ -28,8 +28,10 @@ use zip::ZipArchive;
 use super::{RestoreOutcome, RestoreRequest, FORMAT};
 use crate::error::MemexError;
 use crate::fs_guard::{self, FsInfo};
-use crate::schema::{self, APP_SCHEMA_VERSION};
-use crate::vault::{ensure_sqlite_vec_registered, DB_FILENAME, MANIFEST_FILENAME, OBJECTS_DIR};
+use crate::schema::APP_SCHEMA_VERSION;
+use crate::vault::{
+    ensure_sqlite_vec_registered, VaultManifest, DB_FILENAME, MANIFEST_FILENAME, OBJECTS_DIR,
+};
 use crate::Result;
 
 /// The member that describes the backup; read, never extracted.
@@ -206,13 +208,27 @@ fn validate<R: Read + io::Seek>(archive: &mut ZipArchive<R>) -> Result<Plan> {
             "backup.json names vault {vault_id}, manifest.json names {manifest_vault_id}"
         )));
     }
+    // The restored vault must be one `Vault::open` reads and `memex backup`
+    // backs up: the whole manifest, and a ULID vault_id.
+    let manifest: VaultManifest = serde_json::from_value(manifest)
+        .map_err(|e| invalid(format!("{MANIFEST_FILENAME}: {e}")))?;
+    if ulid::Ulid::from_string(&vault_id).is_err() {
+        return Err(invalid(format!("vault_id {vault_id:?} is not a ULID")));
+    }
     let schema_version = int_field(&backup_json, "schema_version")?;
     let created_at = int_field(&backup_json, "created_at")?;
-    if schema_version > APP_SCHEMA_VERSION {
-        return Err(MemexError::BackupTooNew {
-            backup: schema_version,
-            supported: APP_SCHEMA_VERSION,
-        });
+    if schema_version < 1 {
+        return Err(invalid(format!(
+            "backup.json schema_version {schema_version} is not a memex schema"
+        )));
+    }
+    for version in [schema_version, manifest.schema_version] {
+        if version > APP_SCHEMA_VERSION {
+            return Err(MemexError::BackupTooNew {
+                backup: version,
+                supported: APP_SCHEMA_VERSION,
+            });
+        }
     }
 
     Ok(Plan {
@@ -445,7 +461,14 @@ fn check_snapshot(db: &Path, claimed: i64) -> Result<()> {
     if check != "ok" {
         return Err(invalid(format!("memex.db fails quick_check: {check}")));
     }
-    let version = schema::current_version(&conn)?;
+    // Not `schema::current_version`, which reads a missing table as V0: a
+    // database with no memex schema is not a snapshot.
+    let version = conn
+        .query_row("SELECT MAX(version) FROM schema_version", [], |r| {
+            r.get::<_, Option<i64>>(0)
+        })
+        .map_err(bad)?
+        .ok_or_else(|| invalid("memex.db has no schema version"))?;
     drop(conn);
     remove_read_side_files(db);
     if version > APP_SCHEMA_VERSION {
