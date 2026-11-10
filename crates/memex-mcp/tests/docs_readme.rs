@@ -3957,3 +3957,1367 @@ fn readme_v6_upgrade_section_keeps_the_quit_clients_and_memex_serve_text() {
         );
     }
 }
+
+// ======================================================================
+// WI #377 (Spec #367, req 12, 29-33): the install docs, the release runbook,
+// the v0.2.0 notes, the version bump and the glossary.
+//
+// Helpers carry a `wi377_` prefix so sibling WIs editing this file do not
+// collide. The prose is read by hand; these tests pin the facts and the
+// verbatim lines the WI names, plus the real names the docs must agree with
+// (secrets in release.yml, flags in the scripts, paths in the repo).
+// ======================================================================
+
+const WI377_BUNDLED_MEMEX: &str = "/Applications/Open Memex.app/Contents/MacOS/memex";
+const WI377_RELEASES_URL: &str = "https://github.com/connordodge/open_memex/releases";
+const WI377_DOC_TRIO: [&str; 3] = [
+    "docs/claude-desktop-setup.md",
+    "docs/daily-review.md",
+    "docs/hosted-vault.md",
+];
+
+/// Lower-cased, whitespace-collapsed text with every backtick removed, so a
+/// needle matches however a doc wraps a name in code.
+fn wi377_flat(text: &str) -> String {
+    hosted_flat_lower(&text.replace('`', ""))
+}
+
+/// Whether `needles` occur in `flat` in the given order.
+fn wi377_in_order(flat: &str, needles: &[&str]) -> bool {
+    let mut from = 0;
+    for needle in needles {
+        let needle = needle.to_lowercase();
+        match flat[from..].find(&needle) {
+            Some(i) => from += i + needle.len(),
+            None => return false,
+        }
+    }
+    true
+}
+
+/// The items of the numbered lists in a section body: a line starting
+/// `<n>. ` opens an item and everything up to the next such line belongs to it.
+fn wi377_numbered_items(body: &str) -> Vec<String> {
+    let start = Regex::new(r"^\d+\. ").unwrap();
+    let mut items: Vec<String> = Vec::new();
+    let mut in_fence = false;
+    for line in body.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+        }
+        if !in_fence && start.is_match(line) {
+            items.push(line.to_string());
+        } else if let Some(last) = items.last_mut() {
+            last.push('\n');
+            last.push_str(line);
+        }
+    }
+    items
+}
+
+/// Each step (name, needles) is found in an item at or after the item of the
+/// step before it (`distinct`: strictly after), so the steps run in order.
+fn wi377_assert_steps_in_order(
+    what: &str,
+    items: &[String],
+    steps: &[(&str, &[&str])],
+    distinct: bool,
+) {
+    assert!(
+        !items.is_empty(),
+        "{what} has a numbered list (lines starting `1. `, `2. `, ...)"
+    );
+    let mut from = 0;
+    for (name, needles) in steps {
+        let found = items.iter().enumerate().skip(from).find(|(_, item)| {
+            let flat = wi377_flat(item);
+            needles.iter().all(|n| flat.contains(&n.to_lowercase()))
+        });
+        match found {
+            Some((i, _)) => from = if distinct { i + 1 } else { i },
+            None => panic!(
+                "{what}: no numbered item from #{} on covers the step `{name}` \
+                 (it must mention every one of {needles:?}); items:\n{}",
+                from + 1,
+                items.join("\n---\n")
+            ),
+        }
+    }
+}
+
+fn wi377_install_section() -> HostedSection {
+    hosted_section(&readme(), "the README Install section", r"^install\s*$")
+}
+
+/// Runs a repo script from the repo root with a scratch `HOME` and no
+/// `LEAK_PATTERNS`; returns `(exit code, stdout, stderr)`.
+fn wi377_run_script(
+    rel: &str,
+    args: &[&str],
+    stdin: Option<&str>,
+) -> (Option<i32>, String, String) {
+    let home = std::env::temp_dir().join("wi377-fixture-home");
+    std::fs::create_dir_all(&home).unwrap();
+    let mut child = Command::new(repo_root().join(rel))
+        .args(args)
+        .current_dir(repo_root())
+        .env("HOME", &home)
+        .env_remove("LEAK_PATTERNS")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| panic!("{rel} runs: {e}"));
+    let mut pipe = child.stdin.take().unwrap();
+    if let Some(text) = stdin {
+        pipe.write_all(text.as_bytes()).unwrap();
+    }
+    drop(pipe);
+    let out = child.wait_with_output().unwrap();
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+    )
+}
+
+// ---------- README: status line ----------
+
+#[test]
+fn readme_status_line_says_public_preview_and_drops_prototype() {
+    let readme = readme();
+    assert!(
+        readme
+            .lines()
+            .any(|l| l == "**Status: public preview.** Expect rough edges, and back up your vault."),
+        "README.md has the exact public preview status line"
+    );
+    assert!(
+        !readme.contains("**Status: prototype.**"),
+        "README.md no longer says the status is prototype"
+    );
+}
+
+// ---------- README: the Install section ----------
+
+#[test]
+fn readme_install_section_sits_near_the_top_and_links_the_releases_page_not_latest() {
+    let readme = readme();
+    let install = wi377_install_section();
+    assert_eq!(install.level, 2, "Install is a `##` section");
+    let install_at = readme.find("\n## Install").expect("## Install heading");
+    let works_at = readme
+        .find("\n## What works today")
+        .expect("What works today");
+    assert!(
+        install_at < works_at,
+        "## Install comes before `What works today` (near the top)"
+    );
+    assert!(
+        install.body.contains(WI377_RELEASES_URL),
+        "Install links {WI377_RELEASES_URL}:\n{}",
+        install.body
+    );
+    assert!(
+        !install.body.contains("/releases/latest"),
+        "Install links the Releases page, never /releases/latest"
+    );
+    let flat = wi377_flat(&install.body);
+    for needle in ["dmg", "drag", "applications"] {
+        assert!(
+            flat.contains(needle),
+            "Install says to download the DMG and drag the app to Applications (`{needle}`)"
+        );
+    }
+}
+
+#[test]
+fn readme_install_section_states_the_requirements_and_the_first_launch() {
+    let install = wi377_install_section();
+    assert!(
+        install
+            .body
+            .contains("Apple silicon Mac, macOS 14 or later"),
+        "Install states `Apple silicon Mac, macOS 14 or later`:\n{}",
+        install.body
+    );
+    // The first launch step must name the buttons the vault picker really
+    // has (the WI text said "Create new vault…", which no button carries).
+    let picker = read_repo_file("app/lib/src/widgets/picker/vault_picker_body.dart");
+    let first_launch = install
+        .body
+        .lines()
+        .find(|l| wi377_flat(l).contains("first launch"))
+        .unwrap_or_else(|| panic!("Install has a first launch step:\n{}", install.body));
+    for label in ["create local vault…", "open local vault…"] {
+        assert!(
+            picker.contains(&format!("label: '{label}'")),
+            "the vault picker has a button labelled `{label}`"
+        );
+        assert!(
+            first_launch.contains(&format!("\"{label}\"")),
+            "Install's first launch step names the real button \"{label}\": {first_launch}"
+        );
+    }
+    for stale in ["Create new vault…", "Open existing vault…"] {
+        assert!(
+            !readme().contains(stale),
+            "README.md names no button the picker lacks (`{stale}`)"
+        );
+    }
+}
+
+#[test]
+fn readme_install_section_names_the_bundled_memex_path_and_the_ln_s_command() {
+    let install = wi377_install_section();
+    assert!(
+        install.body.contains("Bundled memex"),
+        "Install uses the GLOSSARY term `Bundled memex`"
+    );
+    assert!(
+        install.body.contains(WI377_BUNDLED_MEMEX),
+        "Install names the Bundled memex path {WI377_BUNDLED_MEMEX}"
+    );
+    let ln = format!("sudo ln -s \"{WI377_BUNDLED_MEMEX}\" /usr/local/bin/memex");
+    assert!(
+        install.body.contains(&ln),
+        "Install shows the terminal setup `{ln}`:\n{}",
+        install.body
+    );
+}
+
+#[test]
+fn readme_install_section_explains_the_upgrade_steps_and_watching_releases() {
+    let install = wi377_install_section();
+    let flat = wi377_flat(&install.body);
+    for needle in [
+        "download the new dmg",
+        "replace the app",
+        "upgrade notes",
+        "back up",
+    ] {
+        assert!(
+            flat.contains(needle),
+            "Install's upgrade steps say `{needle}`:\n{}",
+            install.body
+        );
+    }
+    let watch = Regex::new(r"watch\W+custom\W+releases").unwrap();
+    assert!(
+        watch.is_match(&flat),
+        "Install says how to get notified: Watch → Custom → Releases:\n{}",
+        install.body
+    );
+}
+
+#[test]
+fn readme_install_section_states_the_privacy_line_and_links_license_contributing_and_security() {
+    let install = wi377_install_section();
+    let flat = wi377_flat(&install.body);
+    assert!(
+        flat.contains("makes no network request unless you connect a hosted vault"),
+        "Install says the app makes no network request unless you connect a hosted vault:\n{}",
+        install.body
+    );
+    assert!(
+        install.body.contains("`memex --with-embeddings`")
+            && flat.contains("downloads its embedding model once"),
+        "Install says `memex --with-embeddings` downloads its embedding model once"
+    );
+    for file in ["LICENSE", "CONTRIBUTING.md", "SECURITY.md"] {
+        assert!(
+            install.body.contains(&format!("]({file})")),
+            "Install links {file} as `]({file})`"
+        );
+        assert!(
+            repo_root().join(file).is_file(),
+            "{file} exists, so the link works"
+        );
+    }
+}
+
+#[test]
+fn readme_install_section_keeps_every_memex_command_real() {
+    // The README must show at least one `memex <subcommand>` and every one
+    // must be real; the Install section has to exist for the check to mean
+    // anything about the new text.
+    let install = wi377_install_section();
+    assert!(
+        install.body.contains("Open Memex"),
+        "the Install section exists and is about the app"
+    );
+    assert_commands_are_real("README.md", &readme());
+    // The new text itself: every `memex <subcommand>` it shows is real, and
+    // every `--flag` it shows is a flag some `memex` command really takes.
+    let top = subcommands_of(&[]);
+    for (sub, _) in memex_invocations(&install.body) {
+        assert!(
+            top.contains(&sub),
+            "the Install section shows `memex {sub}`, which is not a subcommand: {top:?}"
+        );
+    }
+    let mut help = String::new();
+    for args in std::iter::once(Vec::new()).chain(top.iter().map(|s| vec![s.as_str()])) {
+        let out = Command::new(env!("CARGO_BIN_EXE_memex"))
+            .args(&args)
+            .arg("--help")
+            .output()
+            .expect("run memex --help");
+        help.push_str(&String::from_utf8_lossy(&out.stdout));
+    }
+    let flag = Regex::new(r"--[a-z][a-z-]+").unwrap();
+    let mut flags = 0;
+    for snippet in code_snippets(&install.body) {
+        for m in flag.find_iter(&snippet) {
+            flags += 1;
+            assert!(
+                help.contains(m.as_str()),
+                "the Install section shows `{}`, which no memex command takes",
+                m.as_str()
+            );
+        }
+    }
+    assert!(
+        flags >= 1,
+        "the Install section shows `memex --with-embeddings`, so a flag to check"
+    );
+}
+
+// ---------- README: binary lookup and Build from source ----------
+
+#[test]
+fn readme_binary_sentence_lists_the_lookup_order_and_drops_the_cargo_only_claim() {
+    let readme = readme();
+    assert!(
+        !readme.contains("finds the `memex` binary at `~/.cargo/bin/memex` automatically"),
+        "the old cargo-only sentence is gone"
+    );
+    let order = [
+        "picked path",
+        "Bundled memex",
+        "~/.cargo/bin",
+        "/usr/local/bin",
+        "/opt/homebrew/bin",
+    ];
+    let line = readme
+        .lines()
+        .find(|l| wi377_in_order(&wi377_flat(l), &order));
+    assert!(
+        line.is_some(),
+        "one README line gives the lookup order {order:?} (the picked path if it exists, \
+         then the Bundled memex, then the three directories)"
+    );
+    assert!(
+        wi377_flat(line.unwrap()).contains("if it exists"),
+        "the picked path counts only if it exists: {}",
+        line.unwrap()
+    );
+}
+
+#[test]
+fn readme_quick_start_is_now_build_from_source_and_keeps_the_cargo_and_flutter_steps() {
+    let readme = readme();
+    assert!(
+        !readme.contains("## Quick start"),
+        "README.md has no `## Quick start` heading"
+    );
+    assert!(
+        !readme.contains("#quick-start"),
+        "nothing links the old #quick-start anchor"
+    );
+    let build = hosted_section(&readme, "Build from source", r"^build from source\s*$");
+    assert_eq!(build.level, 2, "Build from source is a `##` section");
+    for needle in [
+        "cargo install --path crates/memex-mcp --locked",
+        "memex init",
+        "flutter run -d macos",
+        "flutter build macos",
+    ] {
+        assert!(
+            build.body.contains(needle),
+            "Build from source keeps `{needle}`:\n{}",
+            build.body
+        );
+    }
+}
+
+// ---------- README: V5 and V6 upgrade sections ----------
+
+#[test]
+fn readme_v5_and_v6_sections_add_the_dmg_route_after_the_backup_step_and_keep_the_cargo_route() {
+    let readme = readme();
+    for (what, title_re) in [
+        ("V5", r"upgrading to schema v5"),
+        ("V6", r"upgrading to schema v6"),
+    ] {
+        let section = hosted_section(&readme, what, title_re).body;
+        let backup_at = section
+            .find("`memex backup")
+            .unwrap_or_else(|| panic!("{what} runs `memex backup`:\n{section}"));
+        let after_backup = wi377_flat(&section[backup_at..]);
+        for needle in ["dmg", "install the new app", "includes memex"] {
+            assert!(
+                after_backup.contains(needle),
+                "{what}: after the backup step the section says `{needle}` \
+                 (the DMG route: install the new app; it includes memex):\n{section}"
+            );
+        }
+        let cargo_at = section.find("cargo install").expect("the cargo route");
+        assert!(
+            backup_at < cargo_at,
+            "{what}: `memex backup` still comes before the first `cargo install`"
+        );
+    }
+}
+
+// ---------- the three docs: client configs, shell snippets, cargo install ----------
+
+/// Every `command` string in the ```json blocks of `md` (any nesting).
+fn wi377_json_commands(md: &str) -> Vec<String> {
+    fn walk(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::Object(map) => {
+                for (k, v) in map {
+                    if k == "command" {
+                        if let Some(s) = v.as_str() {
+                            out.push(s.to_string());
+                        }
+                    }
+                    walk(v, out);
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|v| walk(v, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for (lang, body) in hosted_fenced_blocks(md) {
+        if lang != "json" {
+            continue;
+        }
+        if let Ok(parsed) = serde_json::from_str::<Value>(&body) {
+            walk(&parsed, &mut out);
+        }
+    }
+    out
+}
+
+#[test]
+fn client_configs_in_the_three_docs_run_the_bundled_memex_at_the_applications_path() {
+    let help = Command::new(env!("CARGO_BIN_EXE_memex"))
+        .args(["serve", "--help"])
+        .output()
+        .expect("memex serve --help runs");
+    let help = String::from_utf8_lossy(&help.stdout).to_string();
+    for rel in WI377_DOC_TRIO {
+        let doc = read_repo_file(rel);
+        let commands = wi377_json_commands(&doc);
+        assert!(
+            !commands.is_empty(),
+            "{rel} shows a JSON client config with a `command`"
+        );
+        for command in &commands {
+            assert_eq!(
+                command, WI377_BUNDLED_MEMEX,
+                "{rel}: every JSON client config runs the Bundled memex"
+            );
+        }
+        for stale in ["/.cargo/bin/memex\"", "/.cargo/bin/memex serve"] {
+            assert!(
+                !doc.contains(stale),
+                "{rel} no longer points a client at the cargo path (`{stale}`)"
+            );
+        }
+        // The configs' serve flags are real ones.
+        for (lang, body) in hosted_fenced_blocks(&doc) {
+            if lang != "json" {
+                continue;
+            }
+            let Ok(parsed) = serde_json::from_str::<Value>(&body) else {
+                continue;
+            };
+            let servers = parsed.get("mcpServers").and_then(Value::as_object);
+            for entry in servers.into_iter().flat_map(|m| m.values()) {
+                let args = entry["args"].as_array().cloned().unwrap_or_default();
+                assert_eq!(args.first().and_then(Value::as_str), Some("serve"));
+                for flag in args.iter().filter_map(Value::as_str) {
+                    if flag.starts_with("--") {
+                        assert!(
+                            help.contains(flag),
+                            "{rel}: `memex serve --help` lists `{flag}`"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn claude_code_add_commands_run_the_quoted_bundled_memex() {
+    // The path has a space, so the shell needs it quoted.
+    let doc = read_repo_file("docs/daily-review.md");
+    let line = doc
+        .lines()
+        .find(|l| l.contains("claude mcp add") && l.contains("serve --vault"))
+        .expect("daily-review.md shows `claude mcp add ... serve --vault`");
+    assert!(
+        line.contains(&format!("-- \"{WI377_BUNDLED_MEMEX}\" serve --vault")),
+        "the Claude Code command runs the quoted Bundled memex path: {line}"
+    );
+    for rel in WI377_DOC_TRIO {
+        for line in read_repo_file(rel)
+            .lines()
+            .filter(|l| l.contains("claude mcp add") && l.contains("-- "))
+        {
+            assert!(
+                line.contains(&format!("\"{WI377_BUNDLED_MEMEX}\"")),
+                "{rel}: a `claude mcp add ... -- <command>` line runs the quoted Bundled memex: {line}"
+            );
+        }
+    }
+}
+
+#[test]
+fn shell_snippets_keep_bare_memex_and_each_doc_points_at_the_readme_ln_s_step() {
+    for rel in WI377_DOC_TRIO {
+        let doc = read_repo_file(rel);
+        assert_commands_are_real(rel, &doc);
+        assert!(
+            doc.lines()
+                .any(|l| l.contains("ln -s") && l.contains("README.md")),
+            "{rel} has a line that points at the README's `ln -s` step \
+             (it names `ln -s` and links README.md)"
+        );
+    }
+}
+
+#[test]
+fn claude_desktop_setup_install_step_leads_with_the_app_and_keeps_cargo_install_from_source() {
+    let doc = read_repo_file("docs/claude-desktop-setup.md");
+    let install = hosted_section(&doc, "step 1", r"^1\. install").body;
+    let bundled_at = install
+        .find(WI377_BUNDLED_MEMEX)
+        .unwrap_or_else(|| panic!("step 1 names the Bundled memex path:\n{install}"));
+    let cargo_at = install
+        .find("cargo install")
+        .unwrap_or_else(|| panic!("step 1 keeps the cargo route:\n{install}"));
+    assert!(
+        bundled_at < cargo_at,
+        "step 1 offers the app (Bundled memex) before `cargo install`"
+    );
+}
+
+/// The paragraph that holds byte `idx` and the one before it, lower-cased.
+fn wi377_paragraph_context(md: &str, idx: usize) -> String {
+    let mut paras: Vec<(usize, &str)> = Vec::new();
+    let mut pos = 0;
+    for p in md.split("\n\n") {
+        paras.push((pos, p));
+        pos += p.len() + 2;
+    }
+    let at = paras
+        .iter()
+        .rposition(|(start, _)| *start <= idx)
+        .expect("a paragraph holds the index");
+    paras[at.saturating_sub(1)..=at]
+        .iter()
+        .map(|(_, p)| *p)
+        .collect::<Vec<_>>()
+        .join("\n\n")
+        .to_lowercase()
+}
+
+#[test]
+fn cargo_install_in_the_three_docs_is_framed_as_the_from_source_alternative() {
+    let mut seen = 0;
+    for rel in WI377_DOC_TRIO {
+        let doc = read_repo_file(rel);
+        for (idx, _) in doc.match_indices("cargo install") {
+            seen += 1;
+            let context = wi377_paragraph_context(&doc, idx);
+            assert!(
+                context.contains("from source"),
+                "{rel}: `cargo install` at byte {idx} sits in a paragraph (or right after one) \
+                 that says `from source`:\n{context}"
+            );
+        }
+    }
+    assert!(seen >= 3, "the three docs still mention `cargo install`");
+}
+
+#[test]
+fn hosted_vault_doc_mentions_the_standalone_memex_zip_by_its_release_name() {
+    let doc = hosted_vault_doc();
+    assert!(
+        doc.contains("memex-<ver>-macos-arm64.zip"),
+        "hosted-vault.md mentions the standalone `memex-<ver>-macos-arm64.zip`"
+    );
+    let build = read_repo_file("scripts/release/build.sh");
+    assert!(
+        build.contains("memex-$VERSION-macos-arm64.zip"),
+        "build.sh really names the zip memex-<version>-macos-arm64.zip"
+    );
+}
+
+// ---------- docs/releasing.md ----------
+
+const WI377_RELEASING: &str = "docs/releasing.md";
+
+fn wi377_releasing() -> String {
+    read_repo_file(WI377_RELEASING)
+}
+
+fn wi377_releasing_section(what: &str, title_re: &str) -> HostedSection {
+    hosted_section(&wi377_releasing(), what, title_re)
+}
+
+#[test]
+fn releasing_doc_cutover_steps_run_in_order_from_preconditions_to_fresh_clones() {
+    let section = wi377_releasing_section("the one-time cutover", r"^one-time cutover");
+    let items = wi377_numbered_items(&section.body);
+    assert!(
+        items.len() >= 8,
+        "the cutover has at least 8 numbered steps, got {}",
+        items.len()
+    );
+    let steps: [(&str, &[&str]); 8] = [
+        ("1 preconditions", &["merged", "open", "pull", "main"]),
+        (
+            "2 the private deny-list",
+            &[
+                "~/.claude/orchestration/open_memex/leak-patterns.txt",
+                "login",
+                "public",
+            ],
+        ),
+        (
+            "3 rewrite-history.sh",
+            &[
+                "scripts/public-cutover/rewrite-history.sh",
+                "--source",
+                "--out",
+                "--noreply",
+                "--patterns",
+            ],
+        ),
+        (
+            "4 review the summary and the design exports",
+            &["summary", "design/", "png", ".sketch"],
+        ),
+        (
+            "5 rename the old repo, create the public one",
+            &["gh repo rename open_memex-archive", "empty", "public"],
+        ),
+        ("6 push main and v0.1.0", &["push", "main", "v0.1.0"]),
+        (
+            "7 repository settings",
+            &[
+                "vulnerability reporting",
+                "ruleset",
+                "v*",
+                "only",
+                "release",
+                "required reviewer",
+                "secrets",
+                "variable",
+                "email privacy",
+            ],
+        ),
+        (
+            "8 fresh clones",
+            &["fresh clone", "user.email", "noreply", "companion"],
+        ),
+    ];
+    wi377_assert_steps_in_order("the cutover list", &items, &steps, true);
+}
+
+#[test]
+fn releasing_doc_explains_the_deny_list_and_why_the_bare_login_is_not_in_it() {
+    let doc = wi377_releasing();
+    let flat = wi377_flat(&doc);
+    assert!(
+        doc.contains("~/.claude/orchestration/open_memex/leak-patterns.txt"),
+        "the runbook names the private deny-list file"
+    );
+    for needle in ["email", "home", "path", "one per line"] {
+        assert!(
+            flat.contains(needle),
+            "the deny-list step says what to list (`{needle}`)"
+        );
+    }
+    assert!(
+        flat.contains("bare") && flat.contains("login") && flat.contains("noreply"),
+        "the runbook says the bare GitHub login is not listed: it is public in every repo \
+         URL and in the noreply address"
+    );
+    assert!(
+        flat.contains("empty") && (flat.contains("refuses") || flat.contains("exit 2")),
+        "the runbook says an empty deny-list makes the scripts refuse"
+    );
+}
+
+#[test]
+fn releasing_doc_says_fresh_clones_only_and_never_set_url_on_an_old_clone() {
+    let doc = wi377_releasing();
+    let flat = wi377_flat(&doc);
+    assert!(
+        flat.contains("fresh clone"),
+        "the runbook demands fresh clones"
+    );
+    let mentions: Vec<&str> = doc.lines().filter(|l| l.contains("set-url")).collect();
+    assert!(
+        !mentions.is_empty(),
+        "the runbook names `git remote set-url` to forbid it"
+    );
+    for line in mentions {
+        let flat = wi377_flat(line);
+        assert!(
+            flat.contains("never") || flat.contains("do not") || flat.contains("don't"),
+            "every mention of set-url forbids it: {line}"
+        );
+    }
+    assert!(
+        flat.contains("worktree") && flat.contains("pre-rewrite"),
+        "the runbook says old clones and worktrees hold pre-rewrite branches"
+    );
+}
+
+#[test]
+fn releasing_doc_every_release_steps_run_bump_notes_merge_tag_approve_check() {
+    let section = wi377_releasing_section("every release", r"^every release");
+    let items = wi377_numbered_items(&section.body);
+    let steps: [(&str, &[&str]); 6] = [
+        (
+            "bump versions",
+            &["app/pubspec.yaml", "cargo.toml", "cargo.lock"],
+        ),
+        ("write the notes", &["release-notes/v<ver>.md"]),
+        ("merge", &["merge"]),
+        ("push the tag", &["push", "v<ver>"]),
+        ("approve the environment", &["approve", "environment"]),
+        ("check the Release", &["check", "release"]),
+    ];
+    wi377_assert_steps_in_order("the every-release list", &items, &steps, false);
+}
+
+#[test]
+fn releasing_doc_recovery_deletes_the_draft_and_the_tag_fixes_and_retags() {
+    let section = wi377_releasing_section("recovery", r"^recovery");
+    let flat = wi377_flat(&section.body);
+    assert!(
+        wi377_in_order(&flat, &["delete", "draft", "tag"]),
+        "recovery deletes the draft and the tag: {}",
+        section.body
+    );
+    // The numbered steps run in order: delete the Release and the tag, check
+    // the tag is gone, fix the cause, and only then re-tag.
+    let items = wi377_numbered_items(&section.body);
+    let steps: [(&str, &[&str]); 4] = [
+        (
+            "delete the Release and its tag",
+            &["delete", "release", "tag"],
+        ),
+        (
+            "the tag is gone everywhere",
+            &["git push origin --delete", "git tag -d"],
+        ),
+        ("fix the cause on main", &["fix", "main", "pr"]),
+        ("re-tag", &["re-tag", "push"]),
+    ];
+    wi377_assert_steps_in_order("the recovery list", &items, &steps, true);
+    assert!(
+        section
+            .body
+            .contains("gh release delete v<ver> --cleanup-tag"),
+        "recovery names the one-command delete"
+    );
+    // `--cleanup-tag` is a real `gh release delete` flag (checked when gh is
+    // installed on this machine; CI images without it skip only this check).
+    if let Ok(out) = Command::new("gh")
+        .args(["release", "delete", "--help"])
+        .output()
+    {
+        if out.status.success() {
+            assert!(
+                String::from_utf8_lossy(&out.stdout).contains("--cleanup-tag"),
+                "gh release delete takes --cleanup-tag"
+            );
+        }
+    }
+}
+
+#[test]
+fn releasing_doc_names_every_secret_and_variable_the_release_workflow_reads() {
+    let workflow = read_repo_file(".github/workflows/release.yml");
+    let used = Regex::new(r"\b(?:secrets|vars)\.([A-Z][A-Z0-9_]+)").unwrap();
+    let names: BTreeSet<String> = used
+        .captures_iter(&workflow)
+        .map(|c| c[1].to_string())
+        .filter(|n| n != "GITHUB_TOKEN")
+        .collect();
+    for expected in [
+        "MACOS_CERT_P12_BASE64",
+        "MACOS_CERT_PASSWORD",
+        "NOTARY_KEY_P8_BASE64",
+        "NOTARY_KEY_ID",
+        "NOTARY_ISSUER_ID",
+        "LEAK_PATTERNS",
+        "MACOS_SIGN_IDENTITY",
+    ] {
+        assert!(
+            names.contains(expected),
+            "release.yml reads {expected} (the runbook must list it): {names:?}"
+        );
+    }
+    let doc = wi377_releasing();
+    for name in &names {
+        assert!(
+            doc.contains(name.as_str()),
+            "docs/releasing.md names `{name}`, which release.yml reads"
+        );
+    }
+    assert!(
+        wi377_flat(&doc).contains("environment secret"),
+        "the runbook says these are environment secrets of the `release` environment"
+    );
+}
+
+#[test]
+fn releasing_doc_names_only_scripts_and_flags_that_exist() {
+    let doc = wi377_releasing();
+    let path = Regex::new(r"scripts/[A-Za-z0-9_./-]+\.sh").unwrap();
+    let mut seen = BTreeSet::new();
+    for m in path.find_iter(&doc) {
+        seen.insert(m.as_str().to_string());
+        assert!(
+            repo_root().join(m.as_str()).is_file(),
+            "docs/releasing.md names {}, which does not exist",
+            m.as_str()
+        );
+    }
+    assert!(
+        seen.contains("scripts/public-cutover/rewrite-history.sh"),
+        "the runbook runs rewrite-history.sh: {seen:?}"
+    );
+    let rewrite = read_repo_file("scripts/public-cutover/rewrite-history.sh");
+    for flag in ["--source", "--out", "--noreply", "--patterns"] {
+        assert!(rewrite.contains(flag), "rewrite-history.sh takes {flag}");
+        assert!(doc.contains(flag), "the runbook passes {flag}");
+    }
+    assert!(
+        doc.contains("leak-check.sh"),
+        "the runbook names the Leak check script"
+    );
+    // Every `--flag` on a line that names a script is a flag that script has.
+    let flag = Regex::new(r"--[a-z][a-z-]+").unwrap();
+    let mut checked = BTreeSet::new();
+    let code_lines: Vec<String> = code_snippets(&doc)
+        .iter()
+        .flat_map(|snippet| {
+            snippet
+                .replace("\\\n", " ")
+                .lines()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    for line in code_lines.iter().map(String::as_str) {
+        for script in path.find_iter(line) {
+            let source = read_repo_file(script.as_str());
+            for f in flag.find_iter(line) {
+                checked.insert((script.as_str().to_string(), f.as_str().to_string()));
+                assert!(
+                    source.contains(f.as_str()),
+                    "the runbook passes {} to {}, which does not take it: {line}",
+                    f.as_str(),
+                    script.as_str()
+                );
+            }
+        }
+    }
+    for expected in [
+        ("scripts/leak-check.sh", "--artifact"),
+        ("scripts/leak-check.sh", "--patterns"),
+        ("scripts/public-cutover/rewrite-history.sh", "--noreply"),
+    ] {
+        assert!(
+            checked.contains(&(expected.0.to_string(), expected.1.to_string())),
+            "the runbook shows {} with {}: {checked:?}",
+            expected.0,
+            expected.1
+        );
+    }
+    // The leak-check command the runbook gives for a `.sketch` file must work
+    // as written: it needs `--patterns` (without it the script exits 2).
+    let line = doc
+        .lines()
+        .find(|l| l.contains("--artifact"))
+        .expect("the runbook gives a leak-check --artifact command");
+    assert!(
+        line.contains("--patterns ~/.claude/orchestration/open_memex/leak-patterns.txt"),
+        "the --artifact command carries --patterns: {line}"
+    );
+}
+
+#[test]
+fn releasing_doc_design_review_commands_work_on_a_bare_mirror_and_the_scan_is_no_substitute() {
+    let doc = wi377_releasing();
+    let section = wi377_releasing_section("the one-time cutover", r"^one-time cutover");
+    let items = wi377_numbered_items(&section.body);
+    let step4 = items
+        .iter()
+        .find(|i| i.starts_with("4. "))
+        .expect("cutover step 4");
+    let flat = wi377_flat(step4);
+    // The scan is not offered as a substitute for looking.
+    assert!(
+        !flat.contains("or scan them"),
+        "step 4 never offers a scan instead of opening the exports: {step4}"
+    );
+    for needle in [
+        "open every png",
+        "yourself",
+        "never replaces looking",
+        "deny-list",
+        "its own path",
+        "stop and do not push",
+    ] {
+        assert!(
+            flat.contains(needle),
+            "step 4 says `{needle}` about the design exports:\n{step4}"
+        );
+    }
+    // The two commands step 4 gives must work on a bare mirror like the one
+    // rewrite-history.sh writes: build one with a design/ folder in it.
+    let tmp = tempfile::tempdir().unwrap();
+    let work = tmp.path().join("work");
+    let bare = tmp.path().join("mirror.git");
+    let scratch = tmp.path().join("scratch");
+    std::fs::create_dir_all(work.join("design")).unwrap();
+    std::fs::create_dir_all(&scratch).unwrap();
+    std::fs::write(work.join("design/board.png"), b"png-bytes").unwrap();
+    std::fs::write(work.join("design/kit.sketch"), b"sketch-bytes").unwrap();
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args([
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.com",
+            ])
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultBranch=main",
+            ])
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    git(&work, &["init", "-q"]);
+    git(&work, &["add", "-A"]);
+    git(&work, &["commit", "-q", "-m", "fixture"]);
+    git(
+        tmp.path(),
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            work.to_str().unwrap(),
+            bare.to_str().unwrap(),
+        ],
+    );
+    let code = Regex::new(r"`(git --git-dir <out> [^`]+)`").unwrap();
+    let commands: Vec<String> = code
+        .captures_iter(step4)
+        .map(|c| c[1].to_string())
+        .collect();
+    assert_eq!(
+        commands.len(),
+        2,
+        "step 4 gives a list command and an extract command: {commands:?}\n{step4}"
+    );
+    assert!(
+        doc.contains("<scratch-dir>") && doc.contains("<out>"),
+        "the placeholders are shown"
+    );
+    let run = |cmd: &str| {
+        let cmd = cmd
+            .replace("<out>", bare.to_str().unwrap())
+            .replace("<scratch-dir>", scratch.to_str().unwrap());
+        let out = Command::new("sh")
+            .current_dir(tmp.path())
+            .args(["-c", &cmd])
+            .output()
+            .expect("run sh");
+        assert!(
+            out.status.success(),
+            "step 4 command `{cmd}` fails on a bare mirror: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let listed = run(&commands[0]);
+    assert!(
+        listed.contains("design/board.png") && listed.contains("design/kit.sketch"),
+        "the ls-tree command lists the design files: {listed}"
+    );
+    run(&commands[1]);
+    assert_eq!(
+        std::fs::read(scratch.join("design/board.png")).unwrap(),
+        b"png-bytes",
+        "the archive command extracts the design files into the scratch folder"
+    );
+    assert!(scratch.join("design/kit.sketch").is_file());
+}
+
+#[test]
+fn releasing_doc_checksum_step_ignores_the_assets_that_were_not_downloaded() {
+    let section = wi377_releasing_section("every release", r"^every release");
+    let items = wi377_numbered_items(&section.body);
+    let check = items
+        .iter()
+        .find(|i| i.starts_with("6. "))
+        .expect("every-release step 6, the Release check");
+    assert!(
+        check.contains("shasum -a 256 -c --ignore-missing SHA256SUMS.txt"),
+        "the DMG-only checksum check passes on a good Release: {check}"
+    );
+    // The reason holds: with only some assets downloaded, `-c` alone fails
+    // and `--ignore-missing` passes. Run both on a fixture sums file that
+    // lists a file that is not there.
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("a.dmg"), b"dmg").unwrap();
+    std::fs::write(tmp.path().join("b.zip"), b"zip").unwrap();
+    let sums = Command::new("shasum")
+        .current_dir(tmp.path())
+        .args(["-a", "256", "a.dmg", "b.zip"])
+        .output()
+        .expect("run shasum");
+    std::fs::write(tmp.path().join("SHA256SUMS.txt"), &sums.stdout).unwrap();
+    std::fs::remove_file(tmp.path().join("b.zip")).unwrap();
+    let strict = Command::new("shasum")
+        .current_dir(tmp.path())
+        .args(["-a", "256", "-c", "SHA256SUMS.txt"])
+        .output()
+        .unwrap();
+    assert!(!strict.status.success(), "plain -c fails on a missing file");
+    let relaxed = Command::new("shasum")
+        .current_dir(tmp.path())
+        .args(["-a", "256", "-c", "--ignore-missing", "SHA256SUMS.txt"])
+        .output()
+        .unwrap();
+    assert!(
+        relaxed.status.success(),
+        "--ignore-missing passes with only the DMG: {}",
+        String::from_utf8_lossy(&relaxed.stderr)
+    );
+}
+
+#[test]
+fn releasing_doc_has_no_real_username_home_path_or_personal_email() {
+    let doc = wi377_releasing();
+    assert!(
+        non_placeholder_home_paths(&doc).is_empty(),
+        "docs/releasing.md has a /Users/<name>/ path: {:?}",
+        non_placeholder_home_paths(&doc)
+    );
+    let email = Regex::new(r"([A-Za-z0-9._%+-]+)@([A-Za-z0-9.-]+\.[A-Za-z]{2,})").unwrap();
+    for c in email.captures_iter(&doc) {
+        let (local, domain) = (&c[1], c[2].to_lowercase());
+        let placeholder = domain.starts_with("example.")
+            || domain.ends_with(".invalid")
+            || local.contains("YOUR_USERNAME")
+            || local.contains("login");
+        assert!(
+            placeholder,
+            "docs/releasing.md shows an email that is not a placeholder: {}",
+            &c[0]
+        );
+    }
+}
+
+// ---------- the Leak check over every doc this WI writes ----------
+
+#[test]
+fn leak_check_text_mode_passes_every_doc_this_wi_writes_and_flags_a_planted_home_path() {
+    // Positive control first: the script really flags a home path (built at
+    // run time so this file holds no literal one).
+    let planted = format!("see /{}/{}/notes\n", "Users", "stranger");
+    let (code, stdout, _) = wi377_run_script(
+        "scripts/leak-check.sh",
+        &["--allow-empty-patterns", "--text", "-"],
+        Some(&planted),
+    );
+    assert_eq!(code, Some(1), "a planted home path is a leak: {stdout}");
+    assert!(
+        stdout
+            .lines()
+            .any(|l| l.starts_with("LEAK ") && !l.starts_with("LEAK WARN")),
+        "the leak is reported on a LEAK line: {stdout}"
+    );
+    for rel in [
+        "README.md",
+        "docs/claude-desktop-setup.md",
+        "docs/daily-review.md",
+        "docs/hosted-vault.md",
+        "docs/releasing.md",
+        "release-notes/v0.2.0.md",
+        "release-notes/README.md",
+        "GLOSSARY.md",
+    ] {
+        let abs = repo_root().join(rel);
+        let (code, stdout, stderr) = wi377_run_script(
+            "scripts/leak-check.sh",
+            &["--allow-empty-patterns", "--text", abs.to_str().unwrap()],
+            None,
+        );
+        assert_eq!(
+            code,
+            Some(0),
+            "leak-check.sh --text {rel} exits 0:\n{stdout}\n{stderr}"
+        );
+        assert!(
+            !stdout.lines().any(|l| l.starts_with("LEAK ")),
+            "no LEAK line for {rel}: {stdout}"
+        );
+    }
+}
+
+// ---------- release notes ----------
+
+/// The body of the `## <title>` section, without its heading line.
+fn wi377_section_text(md: &str, title: &str) -> String {
+    let section = hosted_sections(md)
+        .into_iter()
+        .find(|s| s.level == 2 && s.title == title)
+        .unwrap_or_else(|| panic!("a `## {title}` section"));
+    section.body.lines().skip(1).collect::<Vec<_>>().join("\n")
+}
+
+#[test]
+fn release_notes_v0_2_0_has_the_three_sections_with_the_exact_upgrade_and_requirements_lines() {
+    let notes = read_repo_file("release-notes/v0.2.0.md");
+    let titles: Vec<String> = hosted_sections(&notes)
+        .into_iter()
+        .filter(|s| s.level == 2)
+        .map(|s| s.title)
+        .collect();
+    assert_eq!(
+        titles,
+        ["Highlights", "Upgrade", "Requirements"],
+        "the notes have exactly these `##` sections, in this order"
+    );
+    assert_eq!(
+        wi377_section_text(&notes, "Upgrade").trim(),
+        "No vault changes. Vaults made by earlier builds at schema V6 open as they are."
+    );
+    assert_eq!(
+        wi377_section_text(&notes, "Requirements").trim(),
+        "Apple silicon Mac, macOS 14 or later."
+    );
+    let highlights = wi377_flat(&wi377_section_text(&notes, "Highlights"));
+    for needle in [
+        "first public release",
+        "bundled memex",
+        "mcp server",
+        "readme",
+        "signed and notarized",
+        "dmg",
+        "memex zip",
+        "sha256sums.txt",
+        "mit licence",
+        "fonts are bundled",
+        "never fetches fonts at runtime",
+        "what's new since v0.1.0",
+        ".memex.zip",
+        "back up now",
+        "memex restore",
+        "moves its folder to the trash",
+        "its backups are kept",
+        "closes it first",
+        "\"manage\" button in the vaults header",
+        "opens the vault picker over your open vault",
+        "folder icon for a local vault",
+        "server icon for a hosted one",
+        "show in finder",
+        "remove from recents",
+        "work from the keyboard",
+    ] {
+        assert!(
+            highlights.contains(needle),
+            "Highlights says `{needle}`: {highlights}"
+        );
+    }
+    let acceptance = read_repo_file("docs/daily-acceptance.md");
+    assert!(
+        acceptance.contains("open local vault") && !acceptance.contains("Open existing vault"),
+        "daily-acceptance.md names the real picker button"
+    );
+}
+
+#[test]
+fn release_notes_readme_shows_the_three_sections_and_the_schema_line() {
+    let readme = read_repo_file("release-notes/README.md");
+    for heading in ["## Highlights", "## Upgrade", "## Requirements"] {
+        assert!(
+            readme.lines().any(|l| l.trim() == heading),
+            "release-notes/README.md shows the `{heading}` section"
+        );
+    }
+    let schema_line = "This release migrates vaults to schema V<n> the first time it opens them. \
+Back up first (the vault's Backups sheet → Back up now, or memex backup); \
+older versions can't open a migrated vault.";
+    assert!(
+        readme.contains(schema_line),
+        "release-notes/README.md carries the schema template line verbatim"
+    );
+}
+
+#[test]
+fn check_version_script_accepts_the_v0_2_0_tag_on_this_branch() {
+    let (code, stdout, stderr) =
+        wi377_run_script("scripts/release/check-version.sh", &["v0.2.0"], None);
+    assert_eq!(
+        code,
+        Some(0),
+        "check-version.sh v0.2.0 passes on this branch:\n{stdout}\n{stderr}"
+    );
+    let (code, _, stderr) = wi377_run_script("scripts/release/check-version.sh", &["v0.2.1"], None);
+    assert_eq!(
+        code,
+        Some(1),
+        "a tag with no matching versions fails: {stderr}"
+    );
+}
+
+// ---------- version 0.2.0 ----------
+
+#[test]
+fn versions_are_0_2_0_in_the_app_the_workspace_and_the_lockfile() {
+    let pubspec = read_repo_file("app/pubspec.yaml");
+    assert!(
+        pubspec.lines().any(|l| l == "version: 0.2.0+2"),
+        "app/pubspec.yaml has the top-level line `version: 0.2.0+2`"
+    );
+    let cargo = read_repo_file("Cargo.toml");
+    let table = cargo
+        .split("[workspace.package]")
+        .nth(1)
+        .expect("a [workspace.package] table")
+        .split("\n[")
+        .next()
+        .unwrap()
+        .to_string();
+    assert!(
+        table.lines().any(|l| l.trim() == "version = \"0.2.0\""),
+        "[workspace.package] has version = \"0.2.0\":\n{table}"
+    );
+    // Cargo.lock: every package without a `source` is a workspace crate.
+    let lock = read_repo_file("Cargo.lock");
+    let mut workspace_crates = Vec::new();
+    for block in lock.split("[[package]]").skip(1) {
+        if block.lines().any(|l| l.starts_with("source = ")) {
+            continue;
+        }
+        let field = |key: &str| {
+            block
+                .lines()
+                .find_map(|l| l.strip_prefix(&format!("{key} = \"")))
+                .map(|v| v.trim_end_matches('"').to_string())
+                .unwrap_or_default()
+        };
+        workspace_crates.push((field("name"), field("version")));
+    }
+    for name in ["memex-core", "memex-mcp"] {
+        assert!(
+            workspace_crates.iter().any(|(n, _)| n == name),
+            "Cargo.lock lists the workspace crate {name}: {workspace_crates:?}"
+        );
+    }
+    for (name, version) in &workspace_crates {
+        assert_eq!(
+            version, "0.2.0",
+            "Cargo.lock has {name} at 0.2.0 (regenerated, not hand-edited)"
+        );
+    }
+}
+
+// ---------- GLOSSARY.md ----------
+
+#[test]
+fn glossary_ends_with_the_releases_section_holding_the_three_entries_verbatim() {
+    let glossary = read_repo_file("GLOSSARY.md");
+    let headings: Vec<&str> = glossary.lines().filter(|l| l.starts_with("## ")).collect();
+    assert_eq!(
+        headings.last().copied(),
+        Some("## Releases (#356)"),
+        "the last `##` section of GLOSSARY.md is `## Releases (#356)`"
+    );
+    let body = glossary
+        .split("\n## Releases (#356)\n")
+        .nth(1)
+        .expect("the Releases (#356) section");
+    let expected = "\
+**Release**:
+A published version of Open Memex on the public repo's GitHub Releases: the DMG, the standalone `memex` zip, their SHA-256 sums and the release notes, all for one `v<version>` tag.
+_Avoid_: staging build (a local build for Connor), download, distribution
+
+**Bundled memex**:
+The `memex` binary shipped inside `Open Memex.app` (`Contents/MacOS/memex`), always the same version as the app around it.
+_Avoid_: embedded CLI, helper, sidecar
+
+**Leak check**:
+The check that fails when a file, diff or build artifact contains a home directory path, a personal email address or another private identifier that must not go public.
+_Avoid_: secret scan (secrets are only one kind of leak), audit";
+    assert_eq!(
+        body.trim(),
+        expected,
+        "the section holds exactly the three entries, verbatim"
+    );
+    assert_eq!(
+        glossary.matches("## Releases (#356)").count(),
+        1,
+        "the section appears once"
+    );
+}
+
+#[test]
+fn releasing_doc_lists_the_four_release_assets_release_yml_uploads() {
+    let workflow = read_repo_file(".github/workflows/release.yml");
+    let upload = workflow
+        .split("gh release upload")
+        .nth(1)
+        .expect("release.yml uploads the assets");
+    let upload = upload.split("- name:").next().unwrap();
+    let asset = Regex::new(r#"dist/([A-Za-z0-9_$.\-]+)"#).unwrap();
+    let assets: Vec<String> = asset
+        .captures_iter(upload)
+        .map(|c| c[1].replace("$version", "<ver>"))
+        .collect();
+    assert_eq!(
+        assets.len(),
+        4,
+        "release.yml uploads four assets: {assets:?}"
+    );
+    let doc = wi377_releasing();
+    for name in &assets {
+        assert!(
+            doc.contains(name.as_str()),
+            "docs/releasing.md names the uploaded asset `{name}`"
+        );
+    }
+    assert!(
+        doc.contains("--cleanup-tag"),
+        "recovery deletes the tag with gh release delete --cleanup-tag"
+    );
+}

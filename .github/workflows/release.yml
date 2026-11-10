@@ -1,0 +1,250 @@
+# Release workflow (Spec #367, requirements 24-28).
+#
+# - A push of a v* tag runs the `release` job. It waits for approval on the
+#   `release` environment, checks that the tag still points at the pushed
+#   commit (and again before creating and publishing the Release), checks
+#   the version and notes, builds signed and notarized artifacts with
+#   scripts/release/build.sh, creates a draft GitHub Release, uploads the
+#   four assets and publishes the Release in its last step.
+# - A manual run (workflow_dispatch) with a version runs the `dry-run` job:
+#   check-version.sh and build.sh --dry-run only. It reads no secrets and
+#   never signs with a real identity, notarizes or publishes.
+#
+# Only the `release` job reads secrets, and only it has contents: write.
+# Secrets reach run scripts through env: only; no script turns on tracing.
+# Dependencies are locked: flutter pub get --enforce-lockfile here, and
+# build.sh runs cargo build --locked.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to dry-run, as x.y.z (no leading v)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  dry-run:
+    name: Dry run
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-15
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Flutter 3.47.5 stable
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: "3.47.5"
+          channel: stable
+
+      - name: Set up Rust 1.95.0
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+
+      - name: Print toolchain versions
+        run: |
+          xcodebuild -version
+          flutter --version
+          rustc --version
+          cargo --version
+
+      - name: Check version and release notes
+        run: scripts/release/check-version.sh "v$VERSION"
+
+      - name: Install app dependencies
+        working-directory: app
+        run: flutter pub get --enforce-lockfile
+
+      - name: Build (dry run)
+        run: scripts/release/build.sh --dry-run --version "$VERSION" --out dist
+
+  release:
+    name: Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-15
+    timeout-minutes: 120
+    environment: release
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # All tags, to find the previous release for the changelog.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check the tag still points at this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The run waited for approval; the tag may have been moved since
+          # it was pushed. Every later step builds and publishes GITHUB_SHA.
+          tagged=$(gh api "repos/$GITHUB_REPOSITORY/commits/tags/$TAG" --jq .sha)
+          if [ "$tagged" != "$GITHUB_SHA" ]; then
+            echo "tag $TAG now points at $tagged, not $GITHUB_SHA, the commit this run built" >&2
+            exit 1
+          fi
+
+      - name: Set up Flutter 3.47.5 stable
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: "3.47.5"
+          channel: stable
+
+      - name: Set up Rust 1.95.0
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+
+      - name: Print toolchain versions
+        run: |
+          xcodebuild -version
+          flutter --version
+          rustc --version
+          cargo --version
+
+      - name: Check version and release notes
+        run: scripts/release/check-version.sh "$TAG"
+
+      - name: Install app dependencies
+        working-directory: app
+        run: flutter pub get --enforce-lockfile
+
+      - name: Import the signing certificate into a temporary keychain
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          umask 077
+          keychain="$RUNNER_TEMP/release-signing.keychain-db"
+          p12="$RUNNER_TEMP/release-signing.p12"
+          keychain_password=$(openssl rand -base64 32)
+          printf '%s' "$MACOS_CERT_P12_BASE64" | base64 --decode > "$p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$p12" -k "$keychain" -f pkcs12 -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm -f "$p12"
+
+      - name: Decode the notary API key
+        env:
+          NOTARY_KEY_P8_BASE64: ${{ secrets.NOTARY_KEY_P8_BASE64 }}
+        run: |
+          umask 077
+          printf '%s' "$NOTARY_KEY_P8_BASE64" | base64 --decode > "$RUNNER_TEMP/notary-key.p8"
+
+      - name: Build, sign and notarize
+        env:
+          MACOS_SIGN_IDENTITY: ${{ vars.MACOS_SIGN_IDENTITY }}
+          NOTARY_KEY_P8_PATH: ${{ runner.temp }}/notary-key.p8
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          LEAK_PATTERNS: ${{ secrets.LEAK_PATTERNS }}
+        run: scripts/release/build.sh --version "${TAG#v}" --out dist
+
+      - name: Write the release body
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The previous release is the highest v* tag below this one by
+          # version sort; generate-notes picks its own when there is none.
+          previous=""
+          seen=0
+          for t in $(git tag --list 'v*' --sort=-v:refname); do
+            if [ "$seen" = 1 ]; then
+              previous=$t
+              break
+            fi
+            if [ "$t" = "$TAG" ]; then
+              seen=1
+            fi
+          done
+          if [ -n "$previous" ]; then
+            changes=$(gh api --method POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$TAG" -f previous_tag_name="$previous" --jq .body)
+          else
+            changes=$(gh api --method POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$TAG" --jq .body)
+          fi
+          {
+            cat "release-notes/v${TAG#v}.md"
+            echo
+            echo "## What's changed"
+            echo
+            printf '%s\n' "$changes"
+          } > "$RUNNER_TEMP/release-body.md"
+
+      - name: Create the draft Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The draft binds to the tag as it is now, so check it again.
+          tagged=$(gh api "repos/$GITHUB_REPOSITORY/commits/tags/$TAG" --jq .sha)
+          if [ "$tagged" != "$GITHUB_SHA" ]; then
+            echo "tag $TAG now points at $tagged, not $GITHUB_SHA, the commit this run built" >&2
+            exit 1
+          fi
+          version=${TAG#v}
+          prerelease=""
+          case "$version" in
+            0.*) prerelease="--prerelease" ;;
+          esac
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag --title "Open Memex $version" --notes-file "$RUNNER_TEMP/release-body.md" $prerelease
+
+      - name: Upload the assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=${TAG#v}
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" \
+            "dist/Open-Memex-$version-arm64.dmg" \
+            "dist/memex-$version-macos-arm64.zip" \
+            dist/THIRD_PARTY_NOTICES.txt \
+            dist/SHA256SUMS.txt
+
+      - name: Publish the Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tagged=$(gh api "repos/$GITHUB_REPOSITORY/commits/tags/$TAG" --jq .sha)
+          if [ "$tagged" != "$GITHUB_SHA" ]; then
+            echo "tag $TAG now points at $tagged, not $GITHUB_SHA, the commit this run built" >&2
+            exit 1
+          fi
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+
+      - name: Delete the temporary keychain and key files
+        if: always()
+        run: |
+          keychain="$RUNNER_TEMP/release-signing.keychain-db"
+          if [ -f "$keychain" ]; then
+            security delete-keychain "$keychain"
+          fi
+          rm -f "$RUNNER_TEMP/notary-key.p8" "$RUNNER_TEMP/release-signing.p12"
