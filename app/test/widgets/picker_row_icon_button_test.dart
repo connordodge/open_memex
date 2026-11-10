@@ -97,6 +97,38 @@ void main() {
       });
     }
 
+    for (final (name, key) in [
+      (
+        'a held Enter on a focused PickerRowIconButton calls onPressed once',
+        LogicalKeyboardKey.enter,
+      ),
+      (
+        'a held numpad Enter on a focused PickerRowIconButton calls onPressed once',
+        LogicalKeyboardKey.numpadEnter,
+      ),
+      (
+        'a held Space on a focused PickerRowIconButton calls onPressed once',
+        LogicalKeyboardKey.space,
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final (a, b) = await _pumpPair(tester);
+        await wi349TabTo(tester, find.byKey(_bKey));
+
+        await wi349HoldKey(tester, key);
+
+        expect(
+          b.count,
+          1,
+          reason: 'a held key presses once, not once per key repeat',
+        );
+        expect(a.count, 0);
+
+        await wi349HoldKey(tester, key, repeats: 0);
+        expect(b.count, 2, reason: 'a second key press presses again');
+      });
+    }
+
     testWidgets(
       'a mouse click on a PickerRowIconButton calls onPressed once and draws no ring',
       (tester) async {

@@ -138,3 +138,21 @@ Future<MouseCursor?> wi349CursorOver(WidgetTester tester, Finder target) async {
     await tester.pump();
   }
 }
+
+/// Holds [key] down like a real keyboard: a key-down, [repeats] key-repeat
+/// events, then a key-up. A button that presses on every repeat is pressed
+/// [repeats] + 1 times; one that presses once per key press, once.
+Future<void> wi349HoldKey(
+  WidgetTester tester,
+  LogicalKeyboardKey key, {
+  int repeats = 3,
+}) async {
+  await tester.sendKeyDownEvent(key);
+  await tester.pump();
+  for (var i = 0; i < repeats; i++) {
+    await tester.sendKeyRepeatEvent(key);
+    await tester.pump();
+  }
+  await tester.sendKeyUpEvent(key);
+  await tester.pump();
+}
