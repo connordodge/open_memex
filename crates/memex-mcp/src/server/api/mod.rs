@@ -4,6 +4,7 @@
 
 use axum::Router;
 
+pub mod backup;
 pub mod canvas;
 pub mod daily;
 pub mod feedback;
@@ -24,4 +25,5 @@ pub fn router() -> Router {
         .merge(revision::router())
         .merge(feedback::router())
         .merge(tags::router())
+        .merge(backup::router())
 }
