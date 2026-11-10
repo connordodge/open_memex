@@ -9,6 +9,7 @@
 // (`design/315-vault-backups/packs/327.md`); the design wins over the WI.
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' show Tristate;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -131,6 +132,7 @@ Future<_Picker> _pumpPicker(
   String fileName = _req4Name,
   int bytes = _req4Bytes,
   double textScale = 1.0,
+  Size surfaceSize = const Size(1280, 1100),
   FakeBackupRunner? runner,
   FakeFilePicker? nativePicker,
   VaultOpenOutcome Function(VaultRef)? openOutcome,
@@ -152,7 +154,7 @@ Future<_Picker> _pumpPicker(
     tester,
     const VaultPickerScreen(),
     runner: runner,
-    surfaceSize: const Size(1280, 1100),
+    surfaceSize: surfaceSize,
     overrides: [
       vaultOpenControllerProvider.overrideWith(
         (ref) => opener ??= _RecordingOpener(ref, openOutcome),
@@ -260,6 +262,36 @@ Color _nameBorder(WidgetTester tester) {
   );
   return ((box.decoration! as BoxDecoration).border! as Border).top.color;
 }
+
+/// The decoration of the vault-name field's box.
+BoxDecoration _nameDecoration(WidgetTester tester) {
+  final box = tester.widget<Container>(
+    find
+        .ancestor(
+          of: find.byKey(restoreNameKey),
+          matching: find.byType(Container),
+        )
+        .first,
+  );
+  return box.decoration! as BoxDecoration;
+}
+
+/// The focus ring [key]'s button draws over itself, or null when it draws
+/// none.
+Border? _buttonRing(WidgetTester tester, Key key) {
+  final boxes = find
+      .descendant(of: find.byKey(key), matching: find.byType(DecoratedBox))
+      .evaluate()
+      .map((e) => e.widget as DecoratedBox)
+      .where((b) => b.position == DecorationPosition.foreground)
+      .toList();
+  expect(boxes, hasLength(1), reason: '$key draws one foreground decoration');
+  return (boxes.single.decoration as BoxDecoration).border as Border?;
+}
+
+/// The semantics node of [key]'s widget.
+SemanticsNode _node(WidgetTester tester, Key key) =>
+    tester.getSemantics(find.byKey(key));
 
 /// Whether the focus is inside the vault-name field.
 bool _nameHasFocus() {
@@ -1693,6 +1725,215 @@ void main() {
 
         expect(s.restoreCalls, hasLength(1));
         expect(s.opened, [LocalVaultRef(p.join(parent, 'memex'))]);
+      },
+    );
+  });
+
+  // ========================================= gate mutants: states and semantics
+  group('the name field, the buttons and the error as a person sees them', () {
+    testWidgets('a fresh dialog shows the name field focused and in no error', (
+      tester,
+    ) async {
+      final s = await _pumpPicker(tester);
+      await _openDialog(tester, s);
+
+      final d = _nameDecoration(tester);
+      expect((d.border! as Border).top.color, OmColors.accentSoft);
+      expect(d.boxShadow, hasLength(1));
+      expect(d.boxShadow!.single.color, OmColors.accentGlow);
+      expect(_nameHasFocus(), isTrue);
+      expect(find.byKey(restoreErrorKey), findsNothing);
+    });
+
+    testWidgets(
+      'an empty name marks the name field with the danger border and ring and focuses it',
+      (tester) async {
+        final s = await _pumpPicker(tester);
+        await _openDialog(tester, s);
+        await _chooseParent(tester, s, s.parent('parent'));
+        await _enterName(tester, '   ');
+        await _tabTo(tester, restoreSubmitKey);
+        expect(_nameHasFocus(), isFalse);
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await _frames(tester);
+
+        expect(_error(), "vault name can't be empty.");
+        expect(s.restoreCalls, isEmpty);
+        final d = _nameDecoration(tester);
+        expect((d.border! as Border).top.color, OmColors.danger);
+        expect(d.boxShadow!.single.color, OmColors.danger.withAlpha(51));
+        expect(_nameHasFocus(), isTrue);
+      },
+    );
+
+    testWidgets('the name field shows no focus style once focus has left it', (
+      tester,
+    ) async {
+      final s = await _pumpPicker(tester);
+      await _openDialog(tester, s);
+      expect(_nameHasFocus(), isTrue);
+
+      await _tabTo(tester, restoreFolderKey);
+
+      expect(_nameHasFocus(), isFalse);
+      final d = _nameDecoration(tester);
+      expect((d.border! as Border).top.color, OmColors.line2);
+      expect(d.boxShadow, isEmpty);
+    });
+
+    testWidgets(
+      'while restoring a focused name field shows no focus style and is read only',
+      (tester) async {
+        final s = await _pumpPicker(tester);
+        await _openDialog(tester, s);
+        await _chooseParent(tester, s, s.parent('parent'));
+        final hold = s.runner.holdRuns();
+        await tester.showKeyboard(
+          find.descendant(
+            of: find.byKey(restoreNameKey),
+            matching: find.byType(EditableText),
+            matchRoot: true,
+          ),
+        );
+
+        await tester.testTextInput.receiveAction(TextInputAction.done);
+        await _frames(tester);
+
+        expect(s.restoreCalls, hasLength(1));
+        expect(_button(tester, restoreSubmitKey).onPressed, isNull);
+        // Return unfocuses the field; a click puts the focus back into the
+        // read only field while the run is held.
+        await tester.tap(find.byKey(restoreNameKey), warnIfMissed: false);
+        await _frames(tester);
+        expect(_nameHasFocus(), isTrue, reason: 'the field has the focus');
+        expect(
+          tester.widget<TextField>(find.byKey(restoreNameKey)).readOnly,
+          isTrue,
+        );
+        final d = _nameDecoration(tester);
+        expect((d.border! as Border).top.color, OmColors.line2);
+        expect(d.boxShadow, isEmpty);
+
+        hold.complete();
+        await _frames(tester);
+      },
+    );
+
+    testWidgets('no button draws a focus ring until focus reaches it', (
+      tester,
+    ) async {
+      final s = await _pumpPicker(tester);
+      await _openDialog(tester, s);
+      await _chooseParent(tester, s, s.parent('parent'));
+      final buttons = [restoreFolderKey, _restoreCancelKey, restoreSubmitKey];
+
+      for (final k in buttons) {
+        expect(_buttonRing(tester, k), isNull, reason: '$k is not focused');
+      }
+
+      await _tabTo(tester, restoreSubmitKey);
+      final ring = _buttonRing(tester, restoreSubmitKey);
+      expect(ring, isNotNull);
+      expect(ring!.top.color, OmColors.accentSoft);
+      expect(_buttonRing(tester, restoreFolderKey), isNull);
+      expect(_buttonRing(tester, _restoreCancelKey), isNull);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.pump();
+      expect(_buttonRing(tester, restoreSubmitKey), isNull);
+    });
+
+    testWidgets(
+      'each dialog button is one labelled button node with exactly its own label',
+      (tester) async {
+        final handle = tester.ensureSemantics();
+        final s = await _pumpPicker(tester);
+        await _openDialog(tester, s);
+        await _chooseParent(tester, s, s.parent('parent'));
+
+        for (final (key, label) in [
+          (restoreFolderKey, 'choose…'),
+          (_restoreCancelKey, 'cancel'),
+          (restoreSubmitKey, 'restore'),
+        ]) {
+          final nodes = _semanticsAt(tester, key);
+          expect(nodes, hasLength(1), reason: '$key is one semantics node');
+          final d = nodes.single.getSemanticsData();
+          expect(d.flagsCollection.isButton, isTrue, reason: '$key a button');
+          expect(d.flagsCollection.isEnabled, Tristate.isTrue);
+          expect(d.hasAction(SemanticsAction.tap), isTrue);
+          expect(d.label, label, reason: '$key reads as its label once');
+        }
+
+        s.runner.holdRuns();
+        await _tap(tester, find.byKey(restoreSubmitKey));
+        final busyNodes = _semanticsAt(tester, restoreSubmitKey);
+        expect(busyNodes, hasLength(1));
+        final busy = busyNodes.single.getSemanticsData();
+        expect(busy.label, 'restoring…');
+        expect(busy.flagsCollection.isButton, isTrue);
+        expect(busy.flagsCollection.isEnabled, Tristate.isFalse);
+        expect(busy.hasAction(SemanticsAction.tap), isFalse);
+        handle.dispose();
+      },
+    );
+
+    testWidgets(
+      'the error is its own live region node carrying exactly the error text',
+      (tester) async {
+        final handle = tester.ensureSemantics();
+        final s = await _pumpPicker(tester);
+        await _openDialog(tester, s);
+        await _chooseParent(tester, s, s.parent('parent'));
+        s.runner.scriptRestore(
+          const RestoreFailure(code: 'backup_invalid', message: 'bad'),
+        );
+        await _tap(tester, find.byKey(restoreSubmitKey));
+
+        final n = _node(tester, restoreErrorKey);
+        expect(n.getSemanticsData().flagsCollection.isLiveRegion, isTrue);
+        expect(n.label, _error(), reason: 'nothing else is read with it');
+        handle.dispose();
+      },
+    );
+
+    testWidgets(
+      'in a short window at 1.3x text the dialog scrolls instead of overflowing and restore can be reached',
+      (tester) async {
+        final s = await _pumpPicker(
+          tester,
+          textScale: 1.3,
+          surfaceSize: const Size(700, 380),
+        );
+        await _openDialog(tester, s);
+        await _chooseParent(tester, s, s.parent('parent'));
+        s.runner.scriptRestore(
+          const RestoreFailure(
+            code: 'backup_too_new',
+            message: 'too new',
+            fields: {'schema_version': 7, 'supported_schema_version': 6},
+          ),
+        );
+        await _tap(tester, find.byKey(restoreSubmitKey));
+        expect(find.byKey(restoreErrorKey), findsOneWidget);
+        expect(tester.takeException(), isNull, reason: 'no overflow');
+
+        final scrollable = tester.state<ScrollableState>(
+          find
+              .descendant(
+                of: find.byKey(restoreDialogKey),
+                matching: find.byType(Scrollable),
+              )
+              .first,
+        );
+        expect(scrollable.position.maxScrollExtent, greaterThan(0));
+        await tester.ensureVisible(find.byKey(restoreSubmitKey));
+        await tester.pump();
+        final box = tester.getRect(find.byKey(restoreSubmitKey));
+        expect(box.top, greaterThanOrEqualTo(0));
+        expect(box.bottom, lessThanOrEqualTo(380));
+        expect(tester.takeException(), isNull);
       },
     );
   });
