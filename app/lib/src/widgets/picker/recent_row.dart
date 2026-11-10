@@ -14,6 +14,8 @@ import '../../state/vault_ref.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import '../atoms.dart';
+import '../vault_color.dart';
+import '../vault_menu.dart';
 import 'delete_vault_dialog.dart';
 import 'server_row.dart';
 
@@ -27,9 +29,15 @@ import 'server_row.dart';
 /// memex binary" and do not open. [onOpen] opens [entry] (a tap, or a
 /// hosted row's "retry").
 ///
-/// A local row whose folder is a vault also has a delete button
-/// (`recent-row-delete-<index>`) before its ×; it opens the delete-vault
-/// dialog, and the row re-checks its folder when the dialog closes.
+/// A local row whose folder is a vault also has a show in Finder button
+/// (`recent-row-finder-<index>`) and a delete button
+/// (`recent-row-delete-<index>`) before its ×; delete opens the
+/// delete-vault dialog, and the row re-checks its folder when the dialog
+/// closes. The type icon is drawn in `vaultColorFor` of the folder name, or
+/// of `<vault> · <server>` for a hosted row, unless a state icon wins.
+///
+/// A row that is not opening is wrapped in a [VaultMenuRegion] (no
+/// `manage…`), so a secondary click opens its vault menu.
 class RecentRow extends ConsumerStatefulWidget {
   const RecentRow({
     super.key,
@@ -38,6 +46,7 @@ class RecentRow extends ConsumerStatefulWidget {
     required this.opening,
     required this.binaryMissing,
     required this.onOpen,
+    this.open = false,
   });
 
   final int index;
@@ -45,6 +54,13 @@ class RecentRow extends ConsumerStatefulWidget {
   final bool opening;
   final bool binaryMissing;
   final VoidCallback onOpen;
+
+  /// Whether [entry] is the open vault (#362's modal): an `OPEN` tag
+  /// (`recent-row-open-tag-<index>`), no × and no "remove from recents".
+  /// A tap on an open row always calls [onOpen] (Spec #357 Req 8: it only
+  /// closes the modal), even when its folder, binary or server would stop a
+  /// closed row from opening.
+  final bool open;
 
   @override
   ConsumerState<RecentRow> createState() => _RecentRowState();
@@ -62,24 +78,75 @@ class _RecentRowState extends ConsumerState<RecentRow> {
     final recorded = ref.watch(recentRowOutcomeProvider(entry));
     final isOpening = opening || recorded is RecentRowOpening;
     final key = Key('recent-row-$index');
-    return switch (entry) {
-      LocalVaultRef(:final path) =>
-        isOpening
-            ? _OpeningRow(key: key, name: p.basename(path), subline: path)
-            : _localRow(ref, key, path),
-      final HostedVaultRef hosted => _hostedRow(
-        context,
-        ref,
-        key,
-        hosted,
-        isOpening,
-        recorded,
+    if (isOpening) {
+      return switch (entry) {
+        LocalVaultRef(:final path) => _OpeningRow(
+          key: key,
+          name: p.basename(path),
+          subline: path,
+        ),
+        final HostedVaultRef hosted => _hostedRow(
+          context,
+          ref,
+          key,
+          hosted,
+          isOpening,
+          recorded,
+        ),
+      };
+    }
+    return NotificationListener<VaultDeleteDialogClosed>(
+      onNotification: (_) {
+        if (mounted) setState(() {});
+        return true;
+      },
+      child: VaultMenuRegion(
+        vault: entry,
+        isOpen: widget.open,
+        child: switch (entry) {
+          LocalVaultRef(:final path) => _localRow(ref, key, path),
+          final HostedVaultRef hosted => _hostedRow(
+            context,
+            ref,
+            key,
+            hosted,
+            isOpening,
+            recorded,
+          ),
+        },
       ),
-    };
+    );
   }
+
+  /// The `OPEN` tag (`recent-row-open-tag-<index>`, pack 361): 18 high,
+  /// accent mono 10 on `successBg` with an `accentLine` border.
+  Widget? get _openTag => widget.open
+      ? Container(
+          key: Key('recent-row-open-tag-$index'),
+          height: 18,
+          padding: const EdgeInsets.symmetric(horizontal: 6),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: OmColors.successBg,
+            border: Border.all(color: OmColors.accentLine),
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: Text(
+            'OPEN',
+            style: OmType.mono(
+              size: 10,
+              weight: FontWeight.w500,
+              color: OmColors.accent,
+              height: 1.6,
+              letterSpacing: 0.8,
+            ),
+          ),
+        )
+      : null;
 
   Widget _localRow(WidgetRef ref, Key key, String path) {
     final exists = VaultDb.isVault(path);
+    final name = p.basename(path);
     final IconData icon;
     final Color iconColor;
     if (!exists) {
@@ -87,15 +154,17 @@ class _RecentRowState extends ConsumerState<RecentRow> {
       iconColor = OmColors.danger;
     } else {
       icon = LucideIcons.folder;
-      iconColor = binaryMissing ? OmColors.fg3 : OmColors.fg2;
+      iconColor = binaryMissing ? OmColors.fg3 : vaultColorFor(name);
     }
     return PickerRowShell(
       key: key,
-      onTap: exists && !binaryMissing ? onOpen : null,
+      onTap: widget.open || (exists && !binaryMissing) ? onOpen : null,
+      border: widget.open ? OmColors.accentLine30 : null,
       child: _RowBody(
         icon: Icon(icon, size: 14, color: iconColor),
-        name: p.basename(path),
+        name: name,
         nameColor: exists && !binaryMissing ? OmColors.fg0 : OmColors.fg2,
+        tag: _openTag,
         subline: Text(
           path,
           style: pickerRowSublineStyle(OmColors.fg2),
@@ -108,12 +177,21 @@ class _RecentRowState extends ConsumerState<RecentRow> {
               'needs the memex binary',
               style: OmType.mono(size: 10.5, color: OmColors.fg2),
             ),
+          if (exists) _finderButton(path),
           if (exists) _deleteButton(path),
-          _removeButton(ref),
+          if (!widget.open) _removeButton(ref),
         ],
       ),
     );
   }
+
+  Widget _finderButton(String path) => PickerRowIconButton(
+    key: Key('recent-row-finder-$index'),
+    icon: LucideIcons.folderSearch,
+    tooltip: 'show in Finder',
+    semanticLabel: 'show ${p.basename(path)} in Finder',
+    onPressed: () => showVaultInFinder(context, ref, path),
+  );
 
   Widget _deleteButton(String path) => PickerRowIconButton(
     key: Key('recent-row-delete-$index'),
@@ -201,12 +279,19 @@ class _RecentRowState extends ConsumerState<RecentRow> {
 
     return PickerRowShell(
       key: key,
-      onTap: view.opens ? onOpen : null,
-      border: view.border,
+      onTap: widget.open || view.opens ? onOpen : null,
+      border: widget.open ? OmColors.accentLine30 : view.border,
       child: _RowBody(
-        icon: Icon(view.icon, size: 14, color: view.iconColor),
+        icon: Icon(
+          view.icon,
+          size: 14,
+          color:
+              view.iconColor ??
+              vaultColorFor(hostedVaultLabel(hosted.vaultName, serverName)),
+        ),
         name: hosted.vaultName,
         nameColor: OmColors.fg0,
+        tag: _openTag,
         subline: Row(
           children: [
             StatusDot(state: view.dot),
@@ -221,7 +306,8 @@ class _RecentRowState extends ConsumerState<RecentRow> {
             ),
           ],
         ),
-        trailing: [?action, _removeButton(ref)],
+        // The open hosted vault has no buttons (pack 361 A4).
+        trailing: widget.open ? const [] : [?action, _removeButton(ref)],
       ),
     );
   }
@@ -234,10 +320,7 @@ class _RecentRowState extends ConsumerState<RecentRow> {
   );
 
   /// Drops [entry] from the recents and its recorded outcome.
-  void _forget(WidgetRef ref) {
-    ref.read(recentRowOutcomeProvider(entry).notifier).state = null;
-    ref.read(settingsProvider.notifier).forgetRef(entry);
-  }
+  void _forget(WidgetRef ref) => forgetRecentVault(ref, entry);
 }
 
 enum _HostedAction { none, retry, updateToken, removeFromRecents }
@@ -257,7 +340,9 @@ class _HostedView {
   });
 
   final IconData icon;
-  final Color iconColor;
+
+  /// The state icon's colour; null draws the vault colour.
+  final Color? iconColor;
   final StatusDotState dot;
   final String text;
   final Color textColor;
@@ -336,9 +421,10 @@ class _HostedView {
     required String subline,
     required String Function() incompatible,
   }) => switch (status) {
+    // The plain server icon is drawn in the vault colour (null here).
     null || HostedConnectionStatus.connected => _HostedView(
       icon: LucideIcons.server,
-      iconColor: OmColors.fg2,
+      iconColor: null,
       dot: statusDotFor(status),
       text: subline,
       textColor: OmColors.fg2,
@@ -366,6 +452,7 @@ class _RowBody extends StatelessWidget {
     required this.name,
     required this.nameColor,
     required this.subline,
+    this.tag,
     this.trailing = const [],
   });
 
@@ -373,10 +460,20 @@ class _RowBody extends StatelessWidget {
   final String name;
   final Color nameColor;
   final Widget subline;
+
+  /// Shown 8 after the name, centred on it (the `OPEN` tag).
+  final Widget? tag;
   final List<Widget> trailing;
 
   @override
   Widget build(BuildContext context) {
+    final nameText = Text(
+      name,
+      style: pickerRowNameStyle(nameColor),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+    );
+    final tag = this.tag;
     return Row(
       children: [
         icon,
@@ -386,12 +483,16 @@ class _RowBody extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(
-                name,
-                style: pickerRowNameStyle(nameColor),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
+              if (tag == null)
+                nameText
+              else
+                Row(
+                  children: [
+                    Flexible(child: nameText),
+                    const SizedBox(width: 8),
+                    tag,
+                  ],
+                ),
               subline,
             ],
           ),
