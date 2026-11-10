@@ -322,6 +322,24 @@ void main() {
       });
     }
 
+    testWidgets(
+      'a button activate intent on the focused MANAGE opens the modal once',
+      (tester) async {
+        await wi362PumpLocal(tester, openNote: false);
+        await _focusManage(tester);
+
+        final context = tester.element(
+          find.descendant(of: wi363Manage, matching: find.text('MANAGE')),
+        );
+        Actions.invoke(context, const ButtonActivateIntent());
+        Actions.invoke(context, const ButtonActivateIntent());
+        await wi362Settle(tester);
+
+        expect(wi362Modal, findsOneWidget, reason: 'one modal');
+        _expectPressed(tester);
+      },
+    );
+
     testWidgets('a held Enter on MANAGE opens one modal', (tester) async {
       await wi362PumpLocal(tester, openNote: false);
       await _focusManage(tester);
@@ -418,6 +436,35 @@ void main() {
         expect(wi362Modal, findsNothing);
         expect(wi363Manage, findsOneWidget);
         _expectIdle(tester, why: 'after the switch closed the modal');
+      },
+    );
+  });
+
+  group('VAULTS header height', () {
+    testWidgets(
+      'the VAULTS header is 40.5 high and the pills start where it ends',
+      (tester) async {
+        await wi362PumpLocal(tester, openNote: false);
+
+        final header = tester.getRect(wi363Header('VAULTS'));
+        // 11.25 + the 22 high button + 7.25: the pack's "41 high" (a 40.5
+        // layout), so MANAGE's height costs the header nothing.
+        expect(
+          header.height,
+          moreOrLessEquals(40.5),
+          reason: 'the 41 high pack',
+        );
+        expect(
+          tester.getRect(wi363PillBox('memex')).top,
+          moreOrLessEquals(header.bottom),
+          reason: 'the pills sit right under the header',
+        );
+        // A 22 high button and the eyebrow share one centre line.
+        expect(
+          tester.getCenter(find.text('VAULTS')).dy,
+          moreOrLessEquals(tester.getCenter(wi363Manage).dy, epsilon: 0.5),
+          reason: 'eyebrow and MANAGE are centred together',
+        );
       },
     );
   });

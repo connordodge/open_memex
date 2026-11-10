@@ -316,6 +316,29 @@ void main() {
     );
 
     testWidgets(
+      'a pill returns to its normal style when a window resize closes its menu',
+      (tester) async {
+        await wi362PumpLocal(tester, openNote: false);
+        const name = 'work-notes';
+        await wi363SecondaryClick(tester, wi363PillLabel(name));
+        expect(wi363PillStyle(tester, name).fill, OmColors.surface3);
+        expect(wi363MenuShown(tester), isNotEmpty);
+
+        // The anchor closes its menu (after the frame that saw the new
+        // size): the pill restyles with nothing thrown.
+        tester.view.physicalSize = const Size(1180, 760);
+        addTearDown(tester.view.resetPhysicalSize);
+        await wi362Settle(tester);
+
+        expect(tester.takeException(), isNull);
+        expect(wi363MenuShown(tester), isEmpty, reason: 'the resize closed it');
+        final style = wi363PillStyle(tester, name);
+        expect(style.fill, isNull, reason: 'closed: no fill');
+        expect(style.border, OmColors.line1, reason: 'closed: line1');
+      },
+    );
+
+    testWidgets(
       'a hosted pill draws surface3 and line3 while its menu is open and its normal style after an item is chosen',
       (tester) async {
         final env = await wi362PumpLocal(tester, openNote: false);
