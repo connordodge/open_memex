@@ -926,6 +926,71 @@ async fn a_backup_lock_held_outside_the_server_records_nothing_and_the_next_chec
     assert_eq!(s.last_attempt_at, T0 + HOUR);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_scheduled_vault_is_claimed_while_it_waits_for_the_runner_and_skipped_if_backed_up_meanwhile(
+) {
+    let env = Env::start(&["alpha", "bravo"]).await;
+    let gate = env.hooks.hold("alpha");
+    let r = env.post("alpha").await;
+    assert_eq!(r.status, 202, "{}", r.body);
+    env.wait_entered("alpha", 1).await;
+
+    // alpha holds the one runner: bravo is claimed and waits for it.
+    env.clock.set(T0 + MINUTE);
+    let service = env.service.clone();
+    let checks = tokio::spawn(async move { service.run_due_checks().await });
+    let started = Instant::now();
+    loop {
+        let v = env.get("bravo").await.json();
+        if v["in_progress"] == json!(true) {
+            break;
+        }
+        assert!(
+            started.elapsed() < WAIT,
+            "bravo was never claimed while it waited for the runner: {v}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let r = env.post("bravo").await;
+    assert_eq!(r.status, 409, "{}", r.body);
+    assert_eq!(r.c1_code(), "backup_in_progress");
+
+    // Something else backs bravo up and changes it while it waits: when the
+    // runner frees up, the due check is re-made and finds it not due.
+    let dest = env.dest("bravo");
+    fs::create_dir(&dest).unwrap();
+    let vault = env.vault("bravo");
+    let outside_clock = SetClock(AtomicI64::new(T0 + MINUTE));
+    let plain = |file: File| -> io::Result<Box<dyn ArchiveSink>> { Ok(Box::new(file)) };
+    core_backup::backup_with(
+        &BackupRequest {
+            vault: &vault,
+            destination: &dest,
+            keep: 30,
+            if_changed: false,
+            source: BackupSource::Local,
+        },
+        &core_backup::BackupSeams {
+            clock: &outside_clock,
+            probe: &memex_core::fs_guard::probe,
+            wrap_archive: &plain,
+        },
+    )
+    .expect("a backup of bravo while it waits");
+    let outside = env.recorded("bravo");
+    touch(&vault, "changed while waiting");
+
+    gate.open();
+    tokio::time::timeout(WAIT, checks)
+        .await
+        .expect("run_due_checks resolved")
+        .expect("no panic");
+    assert_eq!(env.hooks.count("bravo"), 0, "the scheduler wrote nothing");
+    assert_eq!(env.zips("bravo").len(), 1, "only the outside backup");
+    assert_eq!(env.recorded("bravo"), outside);
+    assert_eq!(env.wait_idle("bravo").await["in_progress"], json!(false));
+}
+
 // ---------------------------------------------------------------------------
 // AC 5: a missing --backup-dir
 // ---------------------------------------------------------------------------

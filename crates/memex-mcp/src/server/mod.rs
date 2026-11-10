@@ -384,3 +384,13 @@ async fn shutdown_signal() {
         () = term => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::BACKUP_CHECK_EVERY;
+
+    #[test]
+    fn the_backup_due_check_runs_every_hour() {
+        assert_eq!(BACKUP_CHECK_EVERY.as_secs(), 3600);
+    }
+}

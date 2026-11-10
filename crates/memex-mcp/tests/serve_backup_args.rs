@@ -310,6 +310,30 @@ fn a_backup_dir_inside_the_root_other_than_a_top_level_dot_folder_fails_start_up
     }
 }
 
+#[test]
+fn the_reserved_dot_folders_are_refused_whatever_their_case() {
+    let r = Root::new();
+    let root = r.root.clone();
+    let busy = StdTcpListener::bind("127.0.0.1:0").unwrap();
+    let listen = busy.local_addr().unwrap().to_string();
+    for name in [".MEMEX", ".Memex", ".INCOMING", ".Incoming"] {
+        let dir = root.join(name);
+        let out = serve(&[
+            "--root",
+            s(&root),
+            "--listen",
+            &listen,
+            "--backup-dir",
+            s(&dir),
+        ])
+        .run_within(LIMIT);
+        assert_eq!(out.code, Some(1), "{name}: exit 1\n{}", out.describe());
+        let (code, message) = c1(&out);
+        assert_eq!(code, "invalid_argument", "{name}\n{}", out.describe());
+        assert!(message.contains("--backup-dir"), "{name}: {message}");
+    }
+}
+
 // ---------- AC 10 + AC 8: accepted folders, through a real backup ----------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
