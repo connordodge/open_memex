@@ -372,9 +372,41 @@ class EditorController extends StateNotifier<EditorStateValue> {
     };
   }
 
-  /// Completes once every save of [vault] in flight (and every save held
-  /// back behind one) has landed.
-  Future<void> savesSettled(VaultRef vault) => Future<void>.value();
+  /// Completes once nothing more of the editor writes into [vault]: every
+  /// save of [vault] in flight has landed (or failed), and so has every save
+  /// of it held back behind one (the flushed save of [flushPendingSave]).
+  /// Completes at once when there is none. Saves of another vault don't
+  /// hold it. The open-vault delete awaits it after the close, before the
+  /// Trash call (Spec #357 Req 28.4).
+  Future<void> savesSettled(VaultRef vault) {
+    if (!mounted || !_writesInto(vault)) return Future<void>.value();
+    final waiter = Completer<void>();
+    _settleWaiters.add((vault: vault, done: waiter));
+    return waiter.future;
+  }
+
+  /// The [savesSettled] calls still waiting, with their vault.
+  final List<({VaultRef vault, Completer<void> done})> _settleWaiters = [];
+
+  /// True while a save of [vault] is in flight or held back behind one.
+  bool _writesInto(VaultRef vault) =>
+      _inFlight.keys.any((k) => k.$1 == vault) ||
+      _deferredSaves.keys.any((k) => k.$1 == vault);
+
+  /// Completes every [savesSettled] call whose vault has nothing left to
+  /// write; with [all], every one (the controller is gone, so nothing held
+  /// back will go).
+  void _wakeSettleWaiters({bool all = false}) {
+    if (_settleWaiters.isEmpty) return;
+    final done = [
+      for (final w in _settleWaiters)
+        if (all || !_writesInto(w.vault)) w,
+    ];
+    for (final w in done) {
+      _settleWaiters.remove(w);
+      w.done.complete();
+    }
+  }
 
   void _scheduleSave() {
     _debounce?.cancel();
@@ -943,6 +975,12 @@ class EditorController extends StateNotifier<EditorStateValue> {
   /// now when the server's status reads connected (the next recovery
   /// retries otherwise).
   void _settled(VaultRef? vault, String id, int sendSeq) {
+    _applySettled(vault, id, sendSeq);
+    // After a held-back save went, so its vault still counts as written.
+    _wakeSettleWaiters();
+  }
+
+  void _applySettled(VaultRef? vault, String id, int sendSeq) {
     final key = (vault, id);
     final pending = _inFlight[key];
     if (pending != null && pending.remove(sendSeq) && pending.isEmpty) {
@@ -1502,6 +1540,8 @@ class EditorController extends StateNotifier<EditorStateValue> {
   void dispose() {
     _debounce?.cancel();
     _serverSub?.close();
+    // Nothing held back goes once the controller is gone.
+    _wakeSettleWaiters(all: true);
     super.dispose();
   }
 }

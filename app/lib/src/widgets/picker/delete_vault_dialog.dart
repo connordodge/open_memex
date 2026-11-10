@@ -5,7 +5,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:path/path.dart' as p;
 
+import '../../state/backup_controller.dart';
 import '../../state/vault_delete.dart';
+import '../../state/vault_state.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import '../atoms.dart';
@@ -13,11 +15,14 @@ import '../dialog_button.dart';
 
 /// Asks before moving the local vault at [path] to the Trash (Spec #347
 /// req 7–16) and runs the delete flow (`vaultDeleterProvider`) on
-/// "move to trash". Completes when the dialog closes.
+/// "move to trash". When [path] is the open local vault it closes the vault
+/// first (Spec #357 Req 27-31). Completes when the dialog closes.
 Future<void> confirmDeleteVault(
   BuildContext context, {
   required String path,
 }) async {
+  // On the root navigator (the default), above `_Router`: the dialog
+  // outlives the workspace that opened it when the open vault closes.
   await showDialog<void>(
     context: context,
     builder: (_) => DeleteVaultDialog(path: path),
@@ -32,6 +37,12 @@ Future<void> confirmDeleteVault(
 /// While the move runs both buttons are disabled and the dialog can't be
 /// dismissed. It closes when the vault is deleted; a failure leaves it open
 /// with the flow's message under the body, and "move to trash" tries again.
+///
+/// For the open local vault a line under the body says it closes first
+/// (`delete-vault-open-line`), and "move to trash" runs
+/// `VaultDeleter.deleteOpenVault` (close, settle, Trash, reopen on a
+/// failure). While a backup of the vault runs, "move to trash" is disabled
+/// with the backup line, until the backup ends.
 class DeleteVaultDialog extends ConsumerStatefulWidget {
   const DeleteVaultDialog({super.key, required this.path});
 
@@ -46,12 +57,26 @@ class _DeleteVaultDialogState extends ConsumerState<DeleteVaultDialog> {
   bool _busy = false;
   String? _error;
 
+  /// Whether the delete running now started on the open vault. Decided at
+  /// the press: the vault closes during it, and the dialog keeps the open
+  /// vault's layout until the result (board S3, busy).
+  bool _deletingOpen = false;
+
   Future<void> _delete() async {
     if (_busy) return;
-    setState(() => _busy = true);
+    final open = ref.read(currentVaultProvider) == LocalVaultRef(widget.path);
+    setState(() {
+      _busy = true;
+      _deletingOpen = open;
+    });
+    final deleter = ref.read(vaultDeleterProvider);
     final VaultDeleteResult result;
     try {
-      result = await ref.read(vaultDeleterProvider).delete(widget.path);
+      // The open vault's delete runs from this dialog's context: closing
+      // the vault unmounts whatever opened the dialog.
+      result = open
+          ? await deleter.deleteOpenVault(context, widget.path)
+          : await deleter.delete(widget.path);
     } catch (_) {
       // Don't leave the dialog stuck busy (and undismissable) on a throw.
       if (mounted) setState(() => _busy = false);
@@ -74,7 +99,18 @@ class _DeleteVaultDialogState extends ConsumerState<DeleteVaultDialog> {
   @override
   Widget build(BuildContext context) {
     final name = p.basename(widget.path);
-    final error = _error;
+    final isOpen =
+        ref.watch(currentVaultProvider) == LocalVaultRef(widget.path);
+    final openLine = _busy ? _deletingOpen : isOpen;
+    // A backup of this vault running refuses the delete until it ends
+    // (Spec #357 Req 32); the dialog re-enables by itself.
+    final backingUp = ref.watch(
+      backupInFlightProvider.select((paths) => paths.contains(widget.path)),
+    );
+    final error = backingUp
+        ? 'a backup of $name is running. try again when it finishes. '
+              'nothing was deleted.'
+        : _error;
     return PopScope(
       canPop: !_busy,
       child: Dialog(
@@ -122,6 +158,10 @@ class _DeleteVaultDialogState extends ConsumerState<DeleteVaultDialog> {
                   height: 20.93 / 13.5,
                 ),
               ),
+              if (openLine) ...[
+                const SizedBox(height: 12),
+                _OpenLine(name: name),
+              ],
               if (error != null) ...[
                 const SizedBox(height: 12),
                 _ErrorLine(message: error),
@@ -147,7 +187,7 @@ class _DeleteVaultDialogState extends ConsumerState<DeleteVaultDialog> {
                       kind: OmButtonKind.danger,
                       icon: _busy ? LucideIcons.loader2 : null,
                       label: _busy ? 'moving to trash…' : 'move to trash',
-                      onPressed: _busy ? null : _delete,
+                      onPressed: _busy || backingUp ? null : _delete,
                     ),
                   ],
                 ),
@@ -156,6 +196,39 @@ class _DeleteVaultDialogState extends ConsumerState<DeleteVaultDialog> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// The open-vault line (`delete-vault-open-line`, board S3): an `fg2` info
+/// icon, then "[name] is open, so open memex will close it first.".
+class _OpenLine extends StatelessWidget {
+  const _OpenLine({required this.name});
+
+  final String name;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      key: const Key('delete-vault-open-line'),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.only(top: 3),
+          child: Icon(LucideIcons.info, size: 14, color: OmColors.fg2),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            '$name is open, so open memex will close it first.',
+            style: OmType.sans(
+              size: 13.5,
+              color: OmColors.fg1,
+              height: 20.93 / 13.5,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

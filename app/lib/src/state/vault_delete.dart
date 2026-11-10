@@ -3,7 +3,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 
 import '../db.dart';
+import 'editor_controller.dart';
 import 'settings.dart';
+import 'ui_state_store.dart';
+import 'vault_open_controller.dart';
 import 'vault_open_hosted.dart';
 import 'vault_ref.dart';
 import 'vault_trash.dart';
@@ -74,15 +77,45 @@ class VaultDeleter {
     return const VaultDeleted();
   }
 
-  /// Deletes the open local vault at [path] (Spec #357 Req 28-30): asks the
-  /// leave guard once, flushes the editor's pending save, closes the vault,
-  /// waits for its in-flight saves and UI state writes, then runs [delete].
-  /// On a failed delete the vault reopens. Completes
-  /// [VaultDeleteCancelled] when the guard says stay.
+  /// Deletes the open local vault at [path] (Spec #357 Req 28-30), in this
+  /// order: asks [leaveVaultGuardProvider] once with [context] (stay
+  /// completes [VaultDeleteCancelled] and changes nothing); flushes the
+  /// editor's pending save; closes the vault
+  /// ([VaultOpenController.closeForDelete]); waits for the editor's saves
+  /// of the vault and its UI state writes, so nothing writes into the
+  /// folder after it moves; then runs [delete]. On a [VaultDeleteFailed]
+  /// the vault reopens ([VaultOpenController.reopenAfterFailedDelete]) and
+  /// the failure is the result, whether or not the reopen worked.
+  ///
+  /// [context] must stay mounted while the guard runs: pass the delete
+  /// dialog's own, since closing the vault unmounts whatever opened it.
   Future<VaultDeleteResult> deleteOpenVault(
     BuildContext context,
     String path,
-  ) async => const VaultDeleteCancelled();
+  ) async {
+    if (!await _ref.read(leaveVaultGuardProvider)(context)) {
+      return const VaultDeleteCancelled();
+    }
+    final vault = LocalVaultRef(path);
+    final editor = _ref.read(editorControllerProvider.notifier);
+    final opener = _ref.read(vaultOpenControllerProvider);
+    editor.flushPendingSave();
+    await opener.closeForDelete();
+    final VaultDeleteResult result;
+    try {
+      await editor.savesSettled(vault);
+      await UiStateStore(vaultPath: path).flush();
+      result = await delete(path);
+    } catch (_) {
+      // Never leave the vault closed on a throw: reopen it, then report.
+      await opener.reopenAfterFailedDelete(vault);
+      rethrow;
+    }
+    if (result is VaultDeleteFailed) {
+      await opener.reopenAfterFailedDelete(vault);
+    }
+    return result;
+  }
 }
 
 final vaultDeleterProvider = Provider<VaultDeleter>((ref) => VaultDeleter(ref));

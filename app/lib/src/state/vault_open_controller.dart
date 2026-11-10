@@ -77,12 +77,15 @@ class VaultOpenController {
   /// through `memex vault check`, as a vault pill does (no folder shape
   /// check), a hosted one through the hosted open path (#96). Completes with
   /// that open's outcome. Launch writes no settings: the last vault and the
-  /// recents order stay as they were.
+  /// recents order stay as they were. While the last vault is closed for
+  /// its delete ([closeForDelete]) it completes [NoVaultToReopen].
   Future<VaultOpenOutcome> launchReopen() async {
     final current = _ref.read(currentVaultProvider);
     if (current != null) return VaultOpened(current);
     final last = _ref.read(settingsProvider).lastVaultRef;
-    if (last == null) return const NoVaultToReopen();
+    if (last == null || last == _closedForDelete) {
+      return const NoVaultToReopen();
+    }
     return _openVault(last, checkFolder: false, remember: false);
   }
 
@@ -212,20 +215,48 @@ class VaultOpenController {
 
   /// Opens [vault] from a picker row: asks [leaveVaultGuardProvider] once;
   /// on stay completes [VaultOpenCancelled] and changes nothing, otherwise
-  /// behaves exactly like [openVault].
+  /// behaves exactly like [openVault] (the folder shape check, `memex vault
+  /// check`, then remembered in the recents and as the last vault).
   Future<VaultOpenOutcome> openVaultGuarded(
     BuildContext context,
     VaultRef vault,
-  ) async => const NoVaultToReopen();
+  ) async {
+    if (!await _ref.read(leaveVaultGuardProvider)(context)) {
+      return const VaultOpenCancelled();
+    }
+    return openVault(vault);
+  }
 
-  /// Closes the open vault before it is deleted: clears the current vault
-  /// and the selected note, leaving the last vault and the recents alone.
-  Future<void> closeForDelete() async {}
+  /// The vault [closeForDelete] closed, until it reopens or another local
+  /// vault opens. [launchReopen] leaves it closed: the delete keeps the last
+  /// vault set until the Trash call succeeds, and the picker that shows
+  /// meanwhile must not reopen the vault being deleted.
+  VaultRef? _closedForDelete;
 
-  /// Reopens [vault] after its delete failed, the way a pill switch does,
-  /// without the guard.
-  Future<VaultOpenOutcome> reopenAfterFailedDelete(VaultRef vault) async =>
-      const NoVaultToReopen();
+  /// Closes the open vault before it is deleted (Spec #357 Req 28.3): clears
+  /// the current vault and the selected note, which disposes the vault's
+  /// database handle and its revision poller. Leaves the last vault and the
+  /// recents alone (they change only once the delete succeeds) and asks no
+  /// guard (the delete already asked it).
+  Future<void> closeForDelete() async {
+    _closedForDelete = _ref.read(currentVaultProvider);
+    _ref.read(currentVaultProvider.notifier).state = null;
+    _ref.read(selectedNoteIdProvider.notifier).state = null;
+    // Rebuild the database provider now, so the old handle closes before
+    // the caller goes on (it would otherwise close on the next frame).
+    _ref.read(vaultDbProvider);
+  }
+
+  /// Reopens [vault] after its delete failed (Spec #357 Req 30), the way a
+  /// pill switch does: `memex vault check` without the folder shape check
+  /// (the failed re-check may be why the delete failed), and without the
+  /// guard. Writes no settings: the last vault and the recents were never
+  /// changed. Completes with the open's outcome; on a failure no vault is
+  /// open.
+  Future<VaultOpenOutcome> reopenAfterFailedDelete(VaultRef vault) {
+    _closedForDelete = null;
+    return _openVault(vault, checkFolder: false, remember: false);
+  }
 
   /// The saved server [serverId]'s access token was replaced: see
   /// [hostedServerTokenChanged].
@@ -243,6 +274,7 @@ class VaultOpenController {
   }) async {
     // A hosted open still running must not replace this vault later.
     supersedeHostedOpens(_ref);
+    _closedForDelete = null;
     if (remember) {
       await _ref.read(settingsProvider.notifier).rememberVault(vault.path);
     }
