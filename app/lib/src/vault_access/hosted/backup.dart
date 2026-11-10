@@ -20,21 +20,59 @@ final class HostedBackupOk extends HostedBackupResult {
   const HostedBackupOk(this.status);
 
   final BackupStatus status;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is HostedBackupOk && other.status == status;
+
+  @override
+  int get hashCode => Object.hash(HostedBackupOk, status);
+
+  @override
+  String toString() => 'HostedBackupOk($status)';
 }
 
 /// `404 not_found` (no route): the vault server predates backups.
 final class HostedBackupServerTooOld extends HostedBackupResult {
   const HostedBackupServerTooOld();
+
+  @override
+  bool operator ==(Object other) => other is HostedBackupServerTooOld;
+
+  @override
+  int get hashCode => (HostedBackupServerTooOld).hashCode;
+
+  @override
+  String toString() => 'HostedBackupServerTooOld()';
 }
 
 /// `POST` 409 `backup_in_progress`: the vault is backing up already.
 final class HostedBackupAlreadyRunning extends HostedBackupResult {
   const HostedBackupAlreadyRunning();
+
+  @override
+  bool operator ==(Object other) => other is HostedBackupAlreadyRunning;
+
+  @override
+  int get hashCode => (HostedBackupAlreadyRunning).hashCode;
+
+  @override
+  String toString() => 'HostedBackupAlreadyRunning()';
 }
 
 /// `POST` 409 `backups_not_configured`: the server has no `--backup-dir`.
 final class HostedBackupNotConfigured extends HostedBackupResult {
   const HostedBackupNotConfigured();
+
+  @override
+  bool operator ==(Object other) => other is HostedBackupNotConfigured;
+
+  @override
+  int get hashCode => (HostedBackupNotConfigured).hashCode;
+
+  @override
+  String toString() => 'HostedBackupNotConfigured()';
 }
 
 /// The backup routes of one hosted vault. Fakes implement it

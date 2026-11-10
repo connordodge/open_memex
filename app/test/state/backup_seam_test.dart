@@ -104,6 +104,10 @@ void _expectValueSemantics(Object a, Object b, List<Object> others) {
   }
 }
 
+/// A message whose three parts all derive from [text].
+BackupMessage _msg(String text) =>
+    BackupMessage(title: 't-$text', detail: 'd-$text', short: 's-$text');
+
 void main() {
   // ------------------------------------------------------------------
   // 1. Models
@@ -298,6 +302,33 @@ void main() {
         );
       }
     });
+
+    test(
+      'BackupStatus rejects an out-of-range instant as a FormatException',
+      () {
+        for (final ms in [9007199254740991, -9007199254740991]) {
+          expect(
+            () => BackupStatus.fromStateJson({'last_attempt_at': ms}),
+            throwsA(isA<FormatException>()),
+          );
+          expect(
+            () => BackupStatus.fromHostedJson({
+              'enabled': true,
+              'in_progress': false,
+              'last_attempt_at': ms,
+            }),
+            throwsA(isA<FormatException>()),
+          );
+        }
+        // The widest instant DateTime holds still reads.
+        expect(
+          BackupStatus.fromStateJson({
+            'last_attempt_at': 8640000000000000,
+          }).lastAttemptAt,
+          DateTime.fromMillisecondsSinceEpoch(8640000000000000, isUtc: true),
+        );
+      },
+    );
 
     test('BackupStatus reads and writes the hosted GET body', () {
       final s = BackupStatus.fromHostedJson(_hostedJson());
@@ -525,6 +556,46 @@ void main() {
     });
   });
 
+  group('hosted results and parsed names', () {
+    test('HostedBackupResult variants compare by value', () {
+      HostedBackupOk ok(bool inProgress) =>
+          HostedBackupOk(BackupStatus(inProgress: inProgress));
+      _expectValueSemantics(ok(true), ok(true), [ok(false)]);
+      final singletons = <HostedBackupResult>[
+        const HostedBackupServerTooOld(),
+        const HostedBackupAlreadyRunning(),
+        const HostedBackupNotConfigured(),
+        ok(true),
+      ];
+      for (var i = 0; i < singletons.length; i++) {
+        for (var j = 0; j < singletons.length; j++) {
+          expect(singletons[i] == singletons[j], i == j, reason: '$i vs $j');
+        }
+      }
+      expect(
+        const HostedBackupAlreadyRunning().hashCode,
+        const HostedBackupAlreadyRunning().hashCode,
+      );
+    });
+
+    test('ParsedBackupName equals and hashCode distinguish every field', () {
+      ParsedBackupName n({
+        String label = 'Notes',
+        DateTime? timestamp,
+        String vaultId = '01JC8W5Q3M7X9R2T4V6B8N0PZK',
+      }) => ParsedBackupName(
+        label: label,
+        timestamp: timestamp ?? _t0,
+        vaultId: vaultId,
+      );
+      _expectValueSemantics(n(), n(), [
+        n(label: 'Work'),
+        n(timestamp: _t1),
+        n(vaultId: '01JC8W5Q3M7X9R2T4V6B8N0PZZ'),
+      ]);
+    });
+  });
+
   group('BackupMessage', () {
     test('BackupMessage equals and hashCode distinguish every field', () {
       BackupMessage m({
@@ -579,7 +650,7 @@ void main() {
         BackupViewState(
           mode: BackupSheetMode.error,
           errorCode: 'backup_failed',
-          message: 'm',
+          message: _msg('m'),
           warning: true,
         ),
         BackupViewState(mode: BackupSheetMode.memexTooOld),
@@ -615,6 +686,9 @@ void main() {
         BackupStatus? status,
         String? errorCode = 'backup_failed',
         String? message = 'm',
+        bool automatic = false,
+        DateTime? failedAt,
+        DateTime? startedAt,
         List<BackupDestinationOption> options = const [],
         bool warning = false,
       }) => BackupViewState(
@@ -623,7 +697,10 @@ void main() {
         settings: settings ?? _settings(),
         status: status ?? _created(),
         errorCode: errorCode,
-        message: message,
+        message: message == null ? null : _msg(message),
+        automatic: automatic,
+        failedAt: failedAt,
+        startedAt: startedAt,
         options: [...options],
         warning: warning,
       );
@@ -635,6 +712,9 @@ void main() {
         view(options: [option], status: _failedAfterSuccess()),
         view(options: [option], errorCode: 'internal'),
         view(options: [option], message: 'n'),
+        view(options: [option], automatic: true),
+        view(options: [option], failedAt: _t1),
+        view(options: [option], startedAt: _t1),
         view(),
         view(options: [option], warning: true),
       ]);
