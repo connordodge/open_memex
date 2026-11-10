@@ -103,8 +103,9 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
   /// This sheet's `backUpNow` call is still running.
   bool _pending = false;
 
-  /// "turn on backups" is saving: the list stays, its button disabled, until
-  /// the save lands.
+  /// "turn on backups" is resolving and saving: the list stays, with
+  /// "turn on backups" and "cancel" disabled, until the save lands, so a
+  /// cancel can't be overtaken by the save.
   bool _turningOn = false;
 
   /// Why the last destination save failed (`backup_destination_unavailable`
@@ -282,8 +283,8 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
   }
 
   /// Makes and resolves [option]'s folder ([picked] for "choose folder…"),
-  /// then saves it with backups on. The list stays, its button disabled,
-  /// until the save lands; a folder that can't be used, or a save that
+  /// then saves it with backups on. The list stays, "turn on backups" and
+  /// "cancel" disabled, until the save lands; a folder that can't be used, or a save that
   /// fails, keeps it with why in its card.
   Future<void> _turnOnBackups(
     BackupDestinationOption option, {
@@ -736,7 +737,7 @@ class _BackupsSheetState extends ConsumerState<_BackupsSheet> {
               key: _cancelKey,
               kind: OmButtonKind.ghost,
               label: _cancel,
-              onPressed: _cancelPicking,
+              onPressed: _turningOn ? null : _cancelPicking,
             ),
             const SizedBox(width: 8),
             _SheetButton(key: _turnOnKey, label: _turnOn, onPressed: turnOn),
