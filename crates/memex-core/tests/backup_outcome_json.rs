@@ -170,3 +170,42 @@ fn restore_to_json_has_exactly_the_requirement_34_keys() {
     );
     assert!(got["created_at"].is_i64(), "created_at is a number: {got}");
 }
+
+/// Verify-mode pin: the printed line is JSON text, so a path that is not
+/// UTF-8 is printed lossily (U+FFFD for the bad byte) rather than failing the
+/// command after its effects happened.
+#[cfg(unix)]
+#[test]
+fn to_json_prints_a_non_utf8_path_lossily() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let bad = PathBuf::from(OsStr::from_bytes(b"/backups/caf\xe9.memex.zip"));
+    let want = "/backups/caf\u{fffd}.memex.zip";
+
+    let created = BackupOutcome::Created {
+        vault_id: "01JCB7Q4M8V2X5N9R3T6W0YZAE".into(),
+        file: bad.clone(),
+        bytes: 1,
+        fingerprint: "ab".into(),
+        removed: vec![bad.clone()],
+    }
+    .to_json();
+    assert_eq!(created["file"], want);
+    assert_eq!(created["removed"], json!([want]));
+
+    let unchanged = BackupOutcome::Unchanged {
+        vault_id: "01JCB7Q4M8V2X5N9R3T6W0YZAE".into(),
+        fingerprint: "ab".into(),
+        last_file: Some(bad.clone()),
+    }
+    .to_json();
+    assert_eq!(unchanged["last_file"], want);
+
+    let restored = RestoreOutcome {
+        vault_id: "01JCB7Q4M8V2X5N9R3T6W0YZAE".into(),
+        path: bad,
+        created_at: 1,
+    }
+    .to_json();
+    assert_eq!(restored["path"], want);
+}

@@ -387,3 +387,57 @@ fn write_json_line_reports_other_write_errors() {
     let err = write_json_line(&mut FullDisk, &json!({"a": 1})).expect_err("not BrokenPipe");
     assert!(format!("{err:#}").contains("no space left"), "{err:#}");
 }
+
+/// A stdout that accepts the line and records what happened to it.
+#[derive(Default)]
+struct Recording {
+    written: Vec<u8>,
+    flushed_len: Vec<usize>,
+    flush_error: Option<io::ErrorKind>,
+}
+
+impl Write for Recording {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.written.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.flushed_len.push(self.written.len());
+        match self.flush_error {
+            Some(kind) => Err(io::Error::from(kind)),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Verify-mode pin (the doc says "after every effect"): the line is flushed
+/// once, after it was written, so a piped stdout sees it before the process
+/// exits.
+#[test]
+fn write_json_line_flushes_once_after_the_line_is_written() {
+    let mut out = Recording::default();
+    write_json_line(&mut out, &json!({"a": 1})).unwrap();
+    assert_eq!(out.written, b"{\"a\":1}\n");
+    assert_eq!(out.flushed_len, vec![out.written.len()]);
+}
+
+#[test]
+fn write_json_line_treats_a_closed_pipe_on_flush_as_success_and_other_flush_errors_as_failure() {
+    let mut closed = Recording {
+        flush_error: Some(io::ErrorKind::BrokenPipe),
+        ..Recording::default()
+    };
+    write_json_line(&mut closed, &json!({"a": 1})).expect("BrokenPipe on flush is not a failure");
+    assert_eq!(closed.written, b"{\"a\":1}\n");
+
+    let mut broken = Recording {
+        flush_error: Some(io::ErrorKind::PermissionDenied),
+        ..Recording::default()
+    };
+    let err =
+        write_json_line(&mut broken, &json!({"a": 1})).expect_err("a flush error is reported");
+    assert!(
+        format!("{err:#}").to_lowercase().contains("permission"),
+        "{err:#}"
+    );
+}
