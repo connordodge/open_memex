@@ -48,10 +48,17 @@ fn variant_name(e: &MemexError) -> &'static str {
         MemexError::GuideRule(_) => "GuideRule",
         MemexError::FeedbackHandled(_) => "FeedbackHandled",
         MemexError::FeedbackInvalid(_) => "FeedbackInvalid",
+        MemexError::BackupDestinationUnavailable(_) => "BackupDestinationUnavailable",
+        MemexError::BackupDestinationInsideVault(_) => "BackupDestinationInsideVault",
+        MemexError::BackupInProgress(_) => "BackupInProgress",
+        MemexError::BackupFailed(_) => "BackupFailed",
+        MemexError::BackupInvalid(_) => "BackupInvalid",
+        MemexError::BackupTooNew { .. } => "BackupTooNew",
+        MemexError::RestoreTargetNotEmpty(_) => "RestoreTargetNotEmpty",
     }
 }
 
-const VARIANT_COUNT: usize = 34;
+const VARIANT_COUNT: usize = 41;
 
 /// The variants listed in the C1 table, with their code and extra fields.
 fn c1_samples() -> Vec<(MemexError, &'static str, Value)> {
@@ -162,7 +169,56 @@ fn c1_samples() -> Vec<(MemexError, &'static str, Value)> {
     ]
     .into_iter()
     .chain(v6_samples())
+    .chain(backup_samples())
     .collect()
+}
+
+/// The seven variants Spec #315 adds for backups (ruling D3). Only
+/// `backup_too_new` carries rule fields: the backup's `schema_version` and
+/// this memex's `supported_schema_version`.
+fn backup_samples() -> Vec<(MemexError, &'static str, Value)> {
+    vec![
+        (
+            MemexError::BackupDestinationUnavailable(
+                "/Volumes/backups/memex does not exist".into(),
+            ),
+            "backup_destination_unavailable",
+            json!({}),
+        ),
+        (
+            MemexError::BackupDestinationInsideVault("/Users/person/notes/backups".into()),
+            "backup_destination_inside_vault",
+            json!({}),
+        ),
+        (
+            MemexError::BackupInProgress("/Users/person/notes".into()),
+            "backup_in_progress",
+            json!({}),
+        ),
+        (
+            MemexError::BackupFailed("quick_check failed on the snapshot".into()),
+            "backup_failed",
+            json!({}),
+        ),
+        (
+            MemexError::BackupInvalid("backup.json is missing".into()),
+            "backup_invalid",
+            json!({}),
+        ),
+        (
+            MemexError::BackupTooNew {
+                backup: 7,
+                supported: 6,
+            },
+            "backup_too_new",
+            json!({"schema_version": 7, "supported_schema_version": 6}),
+        ),
+        (
+            MemexError::RestoreTargetNotEmpty("/Users/person/notes restored".into()),
+            "restore_target_not_empty",
+            json!({}),
+        ),
+    ]
 }
 
 /// The five variants schema V6 adds for #234 and #233 (ruling D6): message
@@ -470,5 +526,120 @@ fn v6_error_variants_serialize_with_their_exact_codes() {
         let msg = error_object(&got)["message"].as_str().unwrap();
         assert!(msg.contains(&detail), "{}: {msg}", variant_name(&e));
         assert!(!msg.contains('\n'), "{}: {msg:?}", variant_name(&e));
+    }
+}
+
+#[test]
+fn backup_error_variants_serialize_with_their_exact_codes() {
+    let samples = backup_samples();
+    assert_eq!(samples.len(), 7);
+    let mut codes = BTreeSet::new();
+    for (e, code, extras) in samples {
+        assert_eq!(e.code(), code, "{}", variant_name(&e));
+        assert!(codes.insert(code), "duplicate code {code}");
+        let got = e.to_error_json();
+        let obj = error_object(&got);
+        assert_eq!(obj["code"], json!(code), "{}: {got}", variant_name(&e));
+        assert_eq!(obj["message"], json!(e.to_string()), "{}", variant_name(&e));
+        assert_eq!(
+            obj.len(),
+            2 + extras.as_object().unwrap().len(),
+            "{}: exactly code, message and the listed fields: {got}",
+            variant_name(&e)
+        );
+        for (k, v) in extras.as_object().unwrap() {
+            assert_eq!(&obj[k], v, "{}: field {k}: {got}", variant_name(&e));
+        }
+        let msg = obj["message"].as_str().unwrap();
+        assert!(!msg.contains('\n'), "{}: {msg:?}", variant_name(&e));
+    }
+}
+
+#[test]
+fn backup_message_variants_keep_their_detail_in_the_message() {
+    for (e, _, _) in backup_samples() {
+        let detail = match &e {
+            MemexError::BackupDestinationUnavailable(s)
+            | MemexError::BackupDestinationInsideVault(s)
+            | MemexError::BackupInProgress(s)
+            | MemexError::BackupFailed(s)
+            | MemexError::BackupInvalid(s)
+            | MemexError::RestoreTargetNotEmpty(s) => s.clone(),
+            MemexError::BackupTooNew { .. } => continue,
+            other => panic!("not a backup variant: {}", variant_name(other)),
+        };
+        assert_ne!(e.code(), "internal", "{}", variant_name(&e));
+        let got = e.to_error_json();
+        let msg = error_object(&got)["message"].as_str().unwrap();
+        assert!(msg.contains(&detail), "{}: {msg}", variant_name(&e));
+    }
+}
+
+/// `app/test/fixtures/backup/cli/errors/backup_too_new.json`, the C1 line
+/// the app reads `schema_version` and `supported_schema_version` from
+/// (`MemexException.fields`), never the message.
+fn backup_too_new_fixture() -> Value {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../app/test/fixtures/backup/cli/errors/backup_too_new.json");
+    let raw =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    serde_json::from_str(&raw).expect("backup_too_new.json is JSON")
+}
+
+#[test]
+fn backup_too_new_json_carries_both_schema_versions_and_matches_the_shared_fixture() {
+    let e = MemexError::BackupTooNew {
+        backup: 7,
+        supported: 6,
+    };
+    assert_eq!(e.to_error_json(), backup_too_new_fixture());
+
+    // Built from run-time values: the fields follow the variant, not the fixture.
+    let backup = i64::from(std::hint::black_box(12u8));
+    let supported = memex_core::schema::APP_SCHEMA_VERSION;
+    let e = MemexError::BackupTooNew { backup, supported };
+    let got = e.to_error_json();
+    let obj = error_object(&got);
+    assert_eq!(obj["code"], json!("backup_too_new"));
+    assert_eq!(obj["schema_version"].as_i64(), Some(backup), "{got}");
+    assert_eq!(
+        obj["supported_schema_version"].as_i64(),
+        Some(supported),
+        "{got}"
+    );
+    let msg = obj["message"].as_str().unwrap();
+    assert!(
+        msg.contains("V12") && msg.contains(&format!("V{supported}")),
+        "{msg}"
+    );
+}
+
+#[test]
+fn schema_unsupported_stays_internal_and_backups_not_configured_is_not_a_memex_error() {
+    let e = MemexError::SchemaUnsupported { db: 9, app: 6 };
+    assert_eq!(e.code(), "internal");
+    let all: Vec<&str> = c1_samples()
+        .iter()
+        .map(|(e, _, _)| e.code())
+        .chain(internal_samples().iter().map(|e| e.code()))
+        .collect();
+    assert!(
+        !all.contains(&"backups_not_configured"),
+        "backups_not_configured is server-only (ApiError::new): {all:?}"
+    );
+    for code in [
+        "backup_destination_unavailable",
+        "backup_destination_inside_vault",
+        "backup_in_progress",
+        "backup_failed",
+        "backup_invalid",
+        "backup_too_new",
+        "restore_target_not_empty",
+    ] {
+        assert_eq!(
+            all.iter().filter(|c| **c == code).count(),
+            1,
+            "exactly one variant maps to {code}: {all:?}"
+        );
     }
 }

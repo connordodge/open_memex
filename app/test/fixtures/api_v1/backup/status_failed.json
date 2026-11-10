@@ -1,0 +1,12 @@
+{
+  "enabled": true,
+  "keep": 30,
+  "in_progress": false,
+  "last_attempt_at": 1794218400000,
+  "last_success_at": 1794128400000,
+  "last_result": "backup_destination_unavailable",
+  "last_error": "backup destination unavailable: /srv/memex/.backups/seed is not writable",
+  "last_file": "seed-20261108T090000Z-01M5DK9Z8CWPQGFA893JX9VRZF.memex.zip",
+  "last_file_created_at": 1794128400000,
+  "last_bytes": 52210
+}

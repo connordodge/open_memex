@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "backup_too_new",
+    "message": "backup too new: it holds schema V7; this memex supports V6",
+    "schema_version": 7,
+    "supported_schema_version": 6
+  }
+}

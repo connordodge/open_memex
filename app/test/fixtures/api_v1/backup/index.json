@@ -1,0 +1,8 @@
+[
+  {"method": "GET", "path": "/vaults/seed/api/v1/backup", "response": "status_never.json", "status": 200},
+  {"method": "POST", "path": "/vaults/seed/api/v1/backup", "response": "start_accepted.json", "status": 202},
+  {"method": "GET", "path": "/vaults/seed/api/v1/backup", "response": "status_created.json", "status": 200, "dart_only": true},
+  {"method": "GET", "path": "/vaults/seed/api/v1/backup", "response": "status_failed.json", "status": 200, "dart_only": true},
+  {"method": "GET", "path": "/vaults/seed/api/v1/backup", "response": "status_in_progress.json", "status": 200, "dart_only": true},
+  {"method": "POST", "path": "/vaults/seed/api/v1/backup", "response": "start_in_progress.json", "status": 409, "dart_only": true}
+]

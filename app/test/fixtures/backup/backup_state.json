@@ -1,0 +1,55 @@
+{
+  "format": 1,
+  "destinations": {
+    "/Users/person/Library/CloudStorage/GoogleDrive-person@example.com/My Drive/Open Memex Backups": {
+      "last_attempt_at": 1794214800000,
+      "last_success_at": 1794214800000,
+      "last_result": "created",
+      "last_error": null,
+      "last_file": "notes-20261109T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.memex.zip",
+      "last_file_created_at": 1794214800000,
+      "last_bytes": 48213,
+      "last_fingerprint": "406effb1e9c59672c66a598c2b21e331b23b16c54024e96d6df3e7c173549791"
+    },
+    "/Users/person/Library/CloudStorage/OneDrive-Personal/Open Memex Backups": {
+      "last_attempt_at": 1794214800000,
+      "last_success_at": 1794214800000,
+      "last_result": "unchanged",
+      "last_error": null,
+      "last_file": "notes-20261108T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.memex.zip",
+      "last_file_created_at": 1794128400000,
+      "last_bytes": 47990,
+      "last_fingerprint": "aaa8d3c8d74ad3e8f6b1772aa9c7e0eaa528cb42fc93599ce2f125b00d4c424c"
+    },
+    "/Users/person/Library/Mobile Documents/com~apple~CloudDocs/Open Memex Backups": {
+      "last_attempt_at": 1794218400000,
+      "last_success_at": 1794128400000,
+      "last_result": "backup_failed",
+      "last_error": "backup failed: quick_check failed on the snapshot",
+      "last_file": "notes-20261108T090000Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.memex.zip",
+      "last_file_created_at": 1794128400000,
+      "last_bytes": 47990,
+      "last_fingerprint": "e0aa81dd500c530a70b5511fc95959ae1e19dc19a01034e223bfc5ed78e3bdef"
+    },
+    "/Volumes/backups/memex": {
+      "last_attempt_at": 1794214800000,
+      "last_success_at": null,
+      "last_result": "backup_destination_unavailable",
+      "last_error": "backup destination unavailable: /Volumes/backups/memex is not writable",
+      "last_file": null,
+      "last_file_created_at": null,
+      "last_bytes": null,
+      "last_fingerprint": null
+    },
+    "/Volumes/old-disk/Open Memex Backups": {
+      "last_attempt_at": 1780387200000,
+      "last_success_at": 1780300800000,
+      "last_result": "backup_destination_unavailable",
+      "last_error": "backup destination unavailable: /Volumes/old-disk/Open Memex Backups does not exist",
+      "last_file": "notes-20260601T080000Z-01JCB7Q4M8V2X5N9R3T6W0YZAE.memex.zip",
+      "last_file_created_at": 1780300800000,
+      "last_bytes": 30112,
+      "last_fingerprint": "4a85141335ea88e1921d480435429b0f22195e2af33214a94d790ad8e245d192"
+    }
+  }
+}

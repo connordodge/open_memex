@@ -1,6 +1,7 @@
 //! Open Memex core library.
 
 pub mod app_reads;
+pub mod backup;
 pub mod canvas;
 pub mod chunker;
 pub mod embedder;
