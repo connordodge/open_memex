@@ -707,5 +707,38 @@ void main() {
         await wi362Settle(tester);
       },
     );
+
+    testWidgets(
+      'with a hosted vault open no local pill is the open or active one',
+      (tester) async {
+        final env = await wi362PumpLocal(tester, openNote: false);
+        await pumpWhile(
+          tester,
+          () => env.h.controller.openVault(seedHostedRef),
+        );
+        await wi362Settle(tester);
+        expect(env.current, seedHostedRef);
+        expect(wi363PillLabel('memex'), findsOneWidget);
+        expect(wi363PillLabel('work-notes'), findsOneWidget);
+
+        for (final name in ['memex', 'work-notes']) {
+          expect(
+            wi363PillStyle(tester, name).fill,
+            isNot(OmColors.surface4),
+            reason: '$name is not the active pill',
+          );
+          // Not open: the menu is the other-local one, with remove.
+          await wi363SecondaryClick(tester, wi363PillLabel(name));
+          expect(wi363MenuShown(tester), [
+            _finder,
+            _remove,
+            _delete,
+            _manage,
+          ], reason: name);
+          await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+          await wi362Settle(tester);
+        }
+      },
+    );
   });
 }
