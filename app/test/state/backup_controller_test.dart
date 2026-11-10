@@ -2384,6 +2384,41 @@ void main() {
       expect(RegExp(r'\bTimer(\.periodic)?\(').hasMatch(source), isFalse);
     });
 
+    // Holds while A1's message functions are constant stubs, when the `card
+    // arguments` group above skips: the controller's two card builders pass
+    // the provider (local) and the saved server name (hosted).
+    test('every failure card the controller builds passes its where', () {
+      final source = File(
+        'lib/src/state/backup_controller.dart',
+      ).readAsStringSync();
+      final calls = <String>[];
+      for (final m in RegExp(r'backupFailureMessage\(').allMatches(source)) {
+        var depth = 1;
+        var end = m.end;
+        while (depth > 0) {
+          final c = source[end++];
+          if (c == '(') depth++;
+          if (c == ')') depth--;
+        }
+        calls.add(source.substring(m.end, end - 1));
+      }
+      expect(calls, hasLength(2));
+      expect(
+        calls.where((c) => c.contains('provider: _providerOf(destination)')),
+        hasLength(1),
+        reason: 'the local card names the destination folder\'s provider',
+      );
+      expect(
+        calls.where(
+          (c) => c.contains(
+            'serverName: _ref.read(hostedServerNameProvider(vault.serverId))',
+          ),
+        ),
+        hasLength(1),
+        reason: 'the hosted card names the saved server',
+      );
+    });
+
     test('workspace.dart never watches the backup controller', () {
       final source = File('lib/src/screens/workspace.dart').readAsStringSync();
       expect(source.contains('backupControllerProvider'), isFalse);
