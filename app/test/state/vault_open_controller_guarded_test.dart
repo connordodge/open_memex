@@ -21,6 +21,7 @@ import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../support/fake_memex_cli.dart';
+import '../support/token_store_fakes.dart';
 import '../support/vault_folders.dart';
 
 /// One app state: prefs with [recents] (most recent first, the first is the
@@ -61,7 +62,7 @@ Future<_Wi360App> _wi360Pump({
   bool realDb = false,
 }) async {
   SharedPreferences.setMockInitialValues({'memex.binary_path': 'fake-memex'});
-  final settings = await SettingsController.load();
+  final settings = await loadSettingsKeepingPickedBinary();
   for (final path in recents.reversed) {
     await settings.rememberVault(path);
   }

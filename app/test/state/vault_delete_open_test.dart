@@ -28,6 +28,7 @@ import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../support/fake_memex_cli.dart';
+import '../support/token_store_fakes.dart';
 import '../support/fake_vault_trash.dart';
 import '../support/vault_folders.dart';
 
@@ -116,7 +117,7 @@ Future<_Wi360Rig> _wi360Create({MemexResult? check}) async {
   final vault = createVaultFolder('om360_open_').path;
   final other = createVaultFolder('om360_other_').path;
   SharedPreferences.setMockInitialValues({'memex.binary_path': 'fake-memex'});
-  final settings = await SettingsController.load();
+  final settings = await loadSettingsKeepingPickedBinary();
   await settings.rememberVault(other);
   await settings.rememberVault(vault);
   final events = <String>[];
