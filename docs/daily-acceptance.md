@@ -34,7 +34,7 @@ echo "$VAULT"
    printf 'Jump arc still feels floaty at high speed.\n\nSlept better, in bed by 22:00.\n' \
      | memex add --vault "$VAULT" --title 2026-09-06 --role daily
    ```
-2. Launch the app and choose `Open existing vault…`, then pick the path printed by `echo "$VAULT"`.
+2. Launch the app and choose `open local vault…`, then pick the path printed by `echo "$VAULT"`.
 3. **Expected**: the app opens on a `Today` tab showing an empty daily note with a date header (no editable title) and the cursor ready in the body. Nothing is written to the vault until you type.
 4. In the sidebar, the `Days` mode is selected. **Expected**: the list shows a `Today` row, then 2026-09-06 and 2026-09-05 grouped by month, each with a grey dot (`Unreviewed`).
 5. Open 2026-09-05. **Expected**: the header carries a grey `Unreviewed` chip, and the body is exactly the three blocks you wrote.

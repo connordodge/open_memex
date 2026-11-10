@@ -5138,12 +5138,26 @@ fn release_notes_v0_2_0_has_the_three_sections_with_the_exact_upgrade_and_requir
         "mit licence",
         "fonts are bundled",
         "never fetches fonts at runtime",
+        "what's new since v0.1.0",
+        ".memex.zip",
+        "back up now",
+        "memex restore",
+        "moves its folder to the trash",
+        "its backups are kept",
+        "show in finder",
+        "remove from recents",
+        "work from the keyboard",
     ] {
         assert!(
             highlights.contains(needle),
             "Highlights says `{needle}`: {highlights}"
         );
     }
+    let acceptance = read_repo_file("docs/daily-acceptance.md");
+    assert!(
+        acceptance.contains("open local vault") && !acceptance.contains("Open existing vault"),
+        "daily-acceptance.md names the real picker button"
+    );
 }
 
 #[test]
