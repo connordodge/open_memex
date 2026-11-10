@@ -576,4 +576,36 @@ void main() {
       expect(seen, [true, false, true]);
     });
   });
+
+  group('a 200 body that is not a status', () {
+    test(
+      'a wrong typed field rethrows a memex exception naming the operation',
+      () async {
+        final env = _env();
+        env.server.route('GET', _statusPath, json: {'enabled': 'yes'});
+        env.server.route('POST', _statusPath, status: 202, json: {'keep': 'x'});
+
+        await expectLater(
+          env.api().status(),
+          throwsA(
+            isA<MemexException>().having(
+              (e) => e.message,
+              'message',
+              startsWith('backup status failed: '),
+            ),
+          ),
+        );
+        await expectLater(
+          env.api().start(),
+          throwsA(
+            isA<MemexException>().having(
+              (e) => e.message,
+              'message',
+              startsWith('backup start failed: '),
+            ),
+          ),
+        );
+      },
+    );
+  });
 }
