@@ -264,13 +264,15 @@ fi
 CODE_CHANGED=0
 for f in $CHANGED; do
   if is_dart_code "$f"; then CODE_CHANGED=1; break; fi
+  # run 20261110-356 (#367): release/leak/cutover scripts and workflows are code too (tested from app/test via Process.run)
+  case "$f" in scripts/*|.github/workflows/*) CODE_CHANGED=1; break ;; esac
   if is_rs_src "$f" && [ "$(rs_part "$BASE_SHA" "$f" code)" != "$(rs_part WORK "$f" code)" ]; then CODE_CHANGED=1; break; fi
 done
 
 # ---- AC MAP ------------------------------------------------------------------------------------
 section "AC MAP"
 ac_map() {
-  if [ $CODE_CHANGED = 0 ]; then echo "AC MAP SKIP: no code change (app/lib .dart or non-test crates/*/src .rs)"; return 0; fi
+  if [ $CODE_CHANGED = 0 ]; then echo "AC MAP SKIP: no code change (app/lib .dart, non-test crates/*/src .rs, scripts/, .github/workflows/)"; return 0; fi
   if [ -z "$WI" ]; then
     # Work Item PRs (feat/<ticket>-<wi>-…) must link their WI; other PRs (bug fixes, chores) have no ACs to map.
     case "$HEAD_REF" in feat/*) echo "AC MAP FAIL: branch $HEAD_REF looks like a Work Item PR but the body has no 'Closes #N' / 'Part of #N' line"; return 1 ;; esac

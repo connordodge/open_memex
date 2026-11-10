@@ -69,8 +69,11 @@ mid-run) added the lessons below.
   still needs its event wait. `pending_saves_test.dart:1025` hit `Directory not empty` in #296's
   gate and #289's verify. #311 fixed that one by flushing before delete. Each new temp-vault test
   repeats the race, so a shared `tempVault` helper that flushes before deleting is still due.
-- **`app/pubspec.lock` is gitignored in this repo,** so plugin adds change only pubspec.yaml.
-  `GeneratedPluginRegistrant.swift` is gitignored too.
+- **`app/pubspec.lock` and `app/macos/Podfile.lock` are tracked** (since #379, run 20261110-356 D7, for locked
+  release builds); a plugin or crate add commits its lockfile. `GeneratedPluginRegistrant.swift` stays gitignored.
+  Plugins resolve through SwiftPM, so a local `flutter build macos` rewrites Runner.xcscheme/project.pbxproj and adds
+  `xcshareddata/swiftpm/`: revert those, never commit them. `scripts/release/build.sh` builds in a copied tree, so the
+  checkout stays clean.
 
 Run 20261025-156 (#156 inline live preview: 1 ticket, 14 WIs across 3 leads, 16 PRs; review off,
 mutation on, Flutter only) added the lessons below.
@@ -143,11 +146,19 @@ Rust + Flutter) added the lessons below.
   `Failed to load font with url: https://fonts.gstatic.com/...`, though #330 changed no Dart production code.
   `app/test/support/font_fetch_hold.dart` exists for this, but that test file doesn't use it.
   How to apply: re-gate once. If it recurs, a small fix PR adds the hold to that file (or to every file that pumps themed widgets).
+  Update (#382, run 20261110-356): fonts are now bundled and never fetched. `holdFontFetches()` also hands google_fonts an
+  empty asset manifest, so tests keep the fallback font their widths were tuned to. Every new widget test that lays out
+  text calls it at the top of `main()`; only `theme/font_setup_test.dart` uses the real bundle.
 - **Widget MUTATION survivors recur on semantics flags and bool initializers.** (extends run 20261025-156)
   Why: #341 had 9 of 16 survivors (`button:`, `container:`, `excludeSemantics:`, `scrollable:`, `_nameError`/
   `_highlight = false`, a focus `&&`). #342 and #337 avoided it by naming those site classes before ready.
   How to apply: test-author.md verify step 6 now lists them. The orchestrator forwards the classes to sibling
   widget WIs as soon as one gate shows them.
+  Still recurring (runs 20261110-347 #352, 20261110-355 #368 and #380): `excludeSemantics:` again, plus MouseRegion
+  `onEnter`/`onExit` and `_hover && enabled`. #368 failed its gate 11/16. A "some changed test uses matchesSemantics"
+  merge-check rule was tried in the retro and dropped, because every one of those PRs already had such a test. The
+  pin has to be per site: a leaf-node assertion (`childrenCount == 0` plus label) for each `excludeSemantics:`, and a
+  mouse-in and mouse-out `TestGesture` for each hover callback (test-author.md verify step 6).
 - **Seam WIs with many frozen contracts escalate on the coding tier.**
   Why: A0 #321 (scale-only tricky, Sonnet) took 3 rounds and escalated to Opus. A1 and A2, which filled its stubs, passed in 1 round on Sonnet.
   How to apply: an interface-first seam WI that freezes models, Keys, a test harness and fakes for 3+ fillers is
@@ -170,3 +181,23 @@ method channel) added the lessons below.
   put the NSError domain/code → result mapping in Dart, tested over a mock `MethodChannel`.
   How: Swift replies with `{domain, code}` and the message only; real native behavior is a MANUAL
   row, and the gate's NATIVE NOTE reminds that the app must be built by hand before release.
+
+Runs 20261110-355 (#357 vault management: 4 WIs) and 20261110-356 (#367 public release prep: 9 WIs across 2 leads)
+ran concurrently in one orchestrator session, with review and mutation on, and added the lessons below.
+
+- **Scripts and workflows are gated code.** (enforced: merge-check counts `scripts/**` and `.github/workflows/**`
+  in CODE_CHANGED)
+  Why: #367's leak-check, history rewrite, release build and workflow PRs touched no app/lib or crates/src. Without the
+  change they skipped AC MAP and RED ON MAIN.
+  How: test scripts from `app/test/release/` via `Process.run`, with exact exit codes, fake tool binaries on PATH and
+  an isolated git config. Mutation doesn't cover `.sh`, so name the key branches under `## Hand mutants`.
+- **A test default that reads the real filesystem makes tests host-dependent.**
+  Why: D8 (#378) made `SettingsController.load()` skip a missing picked path and autodiscover `~/.cargo/bin/memex`.
+  24 existing tests, plus 4 new ones on #357 branches, seeded `fake-memex`. They passed on Connor's Mac and would get
+  null elsewhere.
+  How: tests that seed a binary load through `loadSettingsKeepingPickedBinary` (test/support/token_store_fakes.dart).
+  A WI that adds a real-FS lookup ships its seam helper and switches every existing caller.
+- **Real-filesystem widget tests can hang under load.**
+  Why: #388's first gate timed out (10 min) on `vault_picker_modal_fixes_test` alias rows, which use real temp-dir
+  symlinks. That suite took 713 s against ~200 s; the file passes in 8 s alone, and the re-gate passed.
+  How: a TimeoutException in a real-FS widget test during a slow suite is contention; re-gate before routing a REVIEW.
