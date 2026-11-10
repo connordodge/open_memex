@@ -12,10 +12,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/screens/vault_picker.dart';
 import 'package:open_memex_app/src/state/app_exit.dart';
 import 'package:open_memex_app/src/state/unsent_hosted_text.dart';
-import 'package:open_memex_app/src/widgets/atoms.dart';
 
 import '../support/app_exit_fakes.dart';
 import '../support/app_harness.dart';
+import '../support/font_fetch_hold.dart';
+import '../support/wi363_sidebar.dart';
 
 const _confirm = Key('leave-confirm');
 const _cancel = Key('leave-confirm-cancel');
@@ -32,16 +33,9 @@ final _unsent = UnsentHostedText(
   ],
 );
 
-/// The vaults header action ("+ new", drawn upper case): switch vault.
-Finder _switchVaultAction() => find.descendant(
-  of: find.ancestor(
-    of: find.text('VAULTS'),
-    matching: find.byType(PanelHeader),
-  ),
-  matching: find.text('+ NEW'),
-);
-
 void main() {
+  holdFontFetches();
+
   group('window channel windowShouldClose (AC6)', () {
     testWidgets(
       'windowShouldClose with no unsent text replies true at once with no dialog',
@@ -196,7 +190,7 @@ void main() {
         expect(exit.attachCount, 1);
         expect(exit.isAttached, isTrue);
 
-        await tester.tap(_switchVaultAction());
+        wi363LeaveVault(tester);
         await pumpFrames(tester);
         await tester.runAsync(() => Future<void>.delayed(Duration.zero));
         await pumpFrames(tester);

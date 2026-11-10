@@ -16,6 +16,7 @@ import 'package:path/path.dart' as p;
 
 import '../support/app_harness.dart';
 import '../support/fake_vault_server.dart';
+import '../support/font_fetch_hold.dart';
 import '../support/hosted_harness.dart';
 import '../support/vault_folders.dart';
 
@@ -58,6 +59,8 @@ Future<HostedHarness> _wi96PumpOpen(
 }
 
 void main() {
+  holdFontFetches();
+
   group('hosted pill contracts (AC9, pack 96)', () {
     testWidgets(
       'a hosted pill for an incompatible server shows the token rejected dot and copy',
@@ -170,10 +173,14 @@ void main() {
               matching: find.byType(Row),
             )
             .first;
-        final omDot = tester.widget<OmDot>(
-          find.descendant(of: localRow, matching: find.byType(OmDot)),
+        // #363: the local pill leads with a folder icon in its colour.
+        final folder = tester.widget<Icon>(
+          find.descendant(
+            of: localRow,
+            matching: find.byIcon(LucideIcons.folder),
+          ),
         );
-        expect(omDot.color, _wi96Bucket(localName));
+        expect(folder.color, _wi96Bucket(localName));
       },
     );
 

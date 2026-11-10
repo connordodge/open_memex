@@ -27,8 +27,10 @@ import '../support/app_harness.dart';
 import '../support/fake_clock.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
+import '../support/font_fetch_hold.dart';
 import '../support/poll_fakes.dart';
 import '../support/vault_folders.dart';
+import '../support/wi363_sidebar.dart';
 
 const _confirm = Key('leave-confirm');
 const _cancel = Key('leave-confirm-cancel');
@@ -52,15 +54,6 @@ UnsentHostedText _manyNotes(int n) => UnsentHostedText(
     for (var i = 0; i < n; i++)
       UnsentHostedNote(title: 'note $i', since: _at(10, i)),
   ],
-);
-
-/// The vaults header action ("+ new", drawn upper case): switch vault.
-Finder _switchVaultAction() => find.descendant(
-  of: find.ancestor(
-    of: find.text('VAULTS'),
-    matching: find.byType(PanelHeader),
-  ),
-  matching: find.text('+ NEW'),
 );
 
 /// The sidebar pill for the vault folder at [path].
@@ -151,7 +144,7 @@ Future<void> _leave(
     case _Via.pill:
       await tester.tap(_pill(other));
     case _Via.switchVault:
-      await tester.tap(_switchVaultAction());
+      wi363LeaveVault(tester);
   }
   await _settle(tester);
 }
@@ -187,6 +180,8 @@ Future<(LiveRobot, String)> _liveWithTypedText(
 }
 
 void main() {
+  holdFontFetches();
+
   group('no unsent hosted text (AC1)', () {
     testWidgets(
       'with no unsent hosted text the close seam answers true with no dialog',
