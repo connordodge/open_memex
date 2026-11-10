@@ -372,6 +372,68 @@ class EditorController extends StateNotifier<EditorStateValue> {
     };
   }
 
+  /// Completes once nothing more of the editor writes into [vault]: every
+  /// save of [vault] in flight has landed (or failed), and so has every save
+  /// of it held back behind one (the flushed save of [flushPendingSave]),
+  /// every virtual Today create in it and every save of a note the person
+  /// left. Completes at once when there is none. Saves of another vault don't
+  /// hold it. The open-vault delete awaits it after the close, before the
+  /// Trash call (Spec #357 Req 28.4).
+  Future<void> savesSettled(VaultRef vault) {
+    if (!mounted || !_writesInto(vault)) return Future<void>.value();
+    final waiter = Completer<void>();
+    _settleWaiters.add((vault: vault, done: waiter));
+    return waiter.future;
+  }
+
+  /// The [savesSettled] calls still waiting, with their vault.
+  final List<({VaultRef vault, Completer<void> done})> _settleWaiters = [];
+
+  /// True while a save of [vault] is in flight or held back behind one, or
+  /// a write [_counted] holds runs into it.
+  bool _writesInto(VaultRef vault) =>
+      _inFlight.keys.any((k) => k.$1 == vault) ||
+      _deferredSaves.keys.any((k) => k.$1 == vault) ||
+      _otherWrites.containsKey(vault);
+
+  /// The writes running into each vault that [_inFlight] does not hold
+  /// (virtual Today creates and saves of a note the person left), by count.
+  final Map<VaultRef?, int> _otherWrites = {};
+
+  /// Runs [write] into the open vault, counted in [_otherWrites] until it
+  /// ends, so [savesSettled] waits for it. [write] starts at once, before
+  /// this first awaits.
+  Future<void> _counted(Future<void> Function() write) async {
+    final vault = _ref.read(currentVaultProvider);
+    _otherWrites[vault] = (_otherWrites[vault] ?? 0) + 1;
+    try {
+      await write();
+    } finally {
+      final left = _otherWrites[vault]! - 1;
+      if (left == 0) {
+        _otherWrites.remove(vault);
+      } else {
+        _otherWrites[vault] = left;
+      }
+      _wakeSettleWaiters();
+    }
+  }
+
+  /// Completes every [savesSettled] call whose vault has nothing left to
+  /// write; with [all], every one (the controller is gone, so nothing held
+  /// back will go).
+  void _wakeSettleWaiters({bool all = false}) {
+    if (_settleWaiters.isEmpty) return;
+    final done = [
+      for (final w in _settleWaiters)
+        if (all || !_writesInto(w.vault)) w,
+    ];
+    for (final w in done) {
+      _settleWaiters.remove(w);
+      w.done.complete();
+    }
+  }
+
   void _scheduleSave() {
     _debounce?.cancel();
     _debounce = _ref.read(clockProvider).after(saveDebounce, () {
@@ -939,6 +1001,12 @@ class EditorController extends StateNotifier<EditorStateValue> {
   /// now when the server's status reads connected (the next recovery
   /// retries otherwise).
   void _settled(VaultRef? vault, String id, int sendSeq) {
+    _applySettled(vault, id, sendSeq);
+    // After a held-back save went, so its vault still counts as written.
+    _wakeSettleWaiters();
+  }
+
+  void _applySettled(VaultRef? vault, String id, int sendSeq) {
     final key = (vault, id);
     final pending = _inFlight[key];
     if (pending != null && pending.remove(sendSeq) && pending.isEmpty) {
@@ -1191,7 +1259,10 @@ class EditorController extends StateNotifier<EditorStateValue> {
   /// the server answers. A retry that answers `daily_note_exists` for a
   /// note ending with the text of an earlier add that timed out after it
   /// was sent resolves as that add too.
-  Future<void> _createDaily(String date) async {
+  Future<void> _createDaily(String date) => _counted(() => _sendDaily(date));
+
+  /// [_createDaily]'s write.
+  Future<void> _sendDaily(String date) async {
     final draft = _drafts[date];
     final access = _ref.read(vaultAccessProvider);
     if (draft == null || access == null || !access.canWrite) return;
@@ -1410,6 +1481,18 @@ class EditorController extends StateNotifier<EditorStateValue> {
     String content, {
     required String title,
     required String appended,
+  }) => _counted(
+    () =>
+        _sendElsewhere(id, version, content, title: title, appended: appended),
+  );
+
+  /// [_saveElsewhere]'s write.
+  Future<void> _sendElsewhere(
+    String id,
+    int version,
+    String content, {
+    required String title,
+    required String appended,
   }) async {
     final access = _ref.read(vaultAccessProvider);
     if (access == null) return;
@@ -1498,6 +1581,8 @@ class EditorController extends StateNotifier<EditorStateValue> {
   void dispose() {
     _debounce?.cancel();
     _serverSub?.close();
+    // Nothing held back goes once the controller is gone.
+    _wakeSettleWaiters(all: true);
     super.dispose();
   }
 }
