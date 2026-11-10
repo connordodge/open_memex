@@ -396,8 +396,22 @@ fn label_for_replaces_each_character_and_cuts_to_64_characters() {
     // Cut by characters: 63 ASCII then a 4-byte character then more.
     let folder = format!("{}📚tail", "e".repeat(63));
     assert_eq!(names::label_for(&folder), format!("{}-", "e".repeat(63)));
+    // Non-ASCII characters whose low byte is a label byte ('A', 'C', 'd', 'z',
+    // '0', '_' ...) are still replaced: `c as u8` alone would keep them.
+    assert_eq!(names::label_for("Łódź"), "--d-");
+    assert_eq!(names::label_for("\u{0141}\u{0143}"), "--");
+    assert_eq!(names::label_for("\u{0130}\u{017A}\u{0230}\u{015F}"), "----");
+    assert_eq!(names::label_for("\u{0141}ab\u{0143}"), "-ab-");
     // Every label_for result is a label the parser accepts.
-    for folder in ["My Notes", "Notes 📚", "Café", &"é".repeat(70), "x"] {
+    for folder in [
+        "My Notes",
+        "Notes 📚",
+        "Café",
+        &"é".repeat(70),
+        "x",
+        "Łódź",
+        "\u{0141}\u{0143}\u{0130}\u{017A}",
+    ] {
         let label = names::label_for(folder);
         let name = names::file_name(&label, 1_794_214_800_000, VAULT_ID);
         assert_eq!(
