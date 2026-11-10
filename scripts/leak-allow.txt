@@ -1,7 +1,8 @@
 # Allow-list for scripts/leak-check.sh (the Leak check).
 #
 # One entry per line. Blank lines and lines starting with # are ignored, and
-# surrounding spaces are trimmed. There are two kinds of entry:
+# surrounding spaces are trimmed (spaces inside an entry are kept). There are
+# two kinds of entry:
 #
 #   <name>          A placeholder user name. It exempts rule (c) only: a
 #                   home-directory path (under Users or home) whose user name
@@ -20,6 +21,7 @@ tester
 person
 me
 a
+a b
 t
 jane
 connor
