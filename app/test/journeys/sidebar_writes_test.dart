@@ -18,11 +18,13 @@ import 'package:open_memex_app/src/state/vault_access_state.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/vault_access/errors.dart';
 import 'package:open_memex_app/src/vault_access/local/local_vault_access.dart';
+import 'package:open_memex_app/src/widgets/atoms.dart';
 import 'package:open_memex_app/src/widgets/sidebar.dart';
 
 import '../support/app_harness.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_db.dart';
+import '../support/font_fetch_hold.dart';
 import '../support/note_cli_fakes.dart';
 import '../support/vault_scoped_reads.dart';
 
@@ -158,11 +160,18 @@ Future<void> _newNote(WidgetTester tester) async {
   await pumpFrames(tester);
 }
 
-/// The canvases header "+ new" (the second "+ NEW" in the sidebar; the
-/// first is the vaults header).
-Finder get _newCanvasButton => find
-    .descendant(of: find.byType(Sidebar), matching: find.text('+ NEW'))
-    .at(1);
+/// The canvases header "+ new" (drawn upper case; the vaults header shows
+/// MANAGE since #363).
+Finder get _newCanvasButton => find.descendant(
+  of: find.ancestor(
+    of: find.descendant(
+      of: find.byType(Sidebar),
+      matching: find.text('CANVASES'),
+    ),
+    matching: find.byType(PanelHeader),
+  ),
+  matching: find.text('+ NEW'),
+);
 
 /// Taps the canvases "+ new", enters [title] and confirms.
 Future<void> _newCanvas(WidgetTester tester, String title) async {
@@ -185,6 +194,8 @@ Finder _textStarting(String prefix) => find.byWidgetPredicate(
 );
 
 void main() {
+  holdFontFetches();
+
   group('new note through VaultAccess (AC6)', () {
     testWidgets(
       'new note adds an Untitled note through VaultAccess bumps the vault revision once and opens its tab',

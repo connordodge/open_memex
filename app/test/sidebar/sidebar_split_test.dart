@@ -23,11 +23,13 @@ import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/theme/app_theme.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/vault_access/vault_scoped.dart';
+import 'package:open_memex_app/src/widgets/atoms.dart';
 import 'package:open_memex_app/src/widgets/sidebar.dart';
 import 'package:open_memex_app/src/widgets/sidebar/canvases_rail.dart';
 import 'package:open_memex_app/src/widgets/sidebar/notes_pane.dart';
 import 'package:open_memex_app/src/widgets/sidebar/topics_pane.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../support/font_fetch_hold.dart';
 import '../support/token_store_fakes.dart';
 
 // ---------------------------------------------------------------------------
@@ -223,6 +225,8 @@ Finder _in(Finder parent, Finder child) =>
     find.descendant(of: parent, matching: child);
 
 void main() {
+  holdFontFetches();
+
   // -------------------------------------------------------------------------
   // AC 8: NotesPane renders the list (notes-rail / note-list-item-<id>) and
   // its empty state.
@@ -466,8 +470,17 @@ void main() {
       (tester) async {
         final h = await _pump(tester, build: sidebar);
 
-        // Header order: vaults "+ new", then canvases "+ new" (uppercased).
-        await tester.tap(find.text('+ NEW').at(1));
+        // The canvases header "+ new" (uppercased); the vaults header
+        // shows MANAGE since #363.
+        await tester.tap(
+          find.descendant(
+            of: find.ancestor(
+              of: find.text('CANVASES'),
+              matching: find.byType(PanelHeader),
+            ),
+            matching: find.text('+ NEW'),
+          ),
+        );
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 300));
         expect(find.byKey(const Key('new-canvas-confirm')), findsOneWidget);

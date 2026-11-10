@@ -1,7 +1,8 @@
 // WI #96 (H2, D19, Req 47, 49, board A10, pack 96): the sidebar vault
 // pills. A hosted recent renders "<vault> · <server>" with the server icon
 // in the vault colour and a trailing #69 StatusDot fed by
-// `hostedConnectionStatusProvider`; a local pill keeps its leading dot.
+// `hostedConnectionStatusProvider`; a local pill leads with its folder icon
+// (#363).
 // Tapping a hosted pill (after `leaveVaultGuardProvider`) runs the hosted
 // open path; a failed open keeps the current vault and shows the
 // `pill-open-failed-snackbar` with the row's copy and action. A refused
@@ -29,6 +30,7 @@ import 'package:path/path.dart' as p;
 import '../support/app_harness.dart';
 import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_server.dart';
+import '../support/font_fetch_hold.dart';
 import '../support/hosted_harness.dart';
 import '../support/vault_folders.dart';
 
@@ -124,6 +126,8 @@ Future<(HostedHarness, HostedServerFixture, List<int>)> _pumpOpen(
 }
 
 void main() {
+  holdFontFetches();
+
   group('refused local pill taps (AC1, lead update on #117)', () {
     /// The workspace on a local vault, with a second local vault in the
     /// recents whose `memex vault check` answers [check].
@@ -263,7 +267,7 @@ void main() {
 
   group('hosted pills (AC9, board A10)', () {
     testWidgets(
-      'each hosted recent renders vault and server with the server icon and a trailing status dot while a local pill keeps its leading dot',
+      'each hosted recent renders vault and server with the server icon and a trailing status dot while a local pill leads with its folder icon',
       (tester) async {
         final local = createVaultFolder('om96_localpill_');
         final (h, studio, _) = await _pumpOpen(
@@ -324,7 +328,8 @@ void main() {
           );
         }
 
-        // The local pill: leading vault-colour dot, no status dot, no icon.
+        // The local pill (#363): leading folder icon, no dot, no status dot,
+        // no server icon.
         final localText = find.descendant(
           of: find.byType(Sidebar),
           matching: find.text(p.basename(local.path)),
@@ -333,14 +338,18 @@ void main() {
         final localRow = find
             .ancestor(of: localText, matching: find.byType(Row))
             .first;
-        final omDot = find.descendant(
+        final folder = find.descendant(
           of: localRow,
-          matching: find.byType(OmDot),
+          matching: find.byIcon(LucideIcons.folder),
         );
-        expect(omDot, findsOneWidget);
+        expect(folder, findsOneWidget);
         expect(
-          tester.getTopRight(omDot).dx,
+          tester.getTopRight(folder).dx,
           lessThan(tester.getTopLeft(localText).dx),
+        );
+        expect(
+          find.descendant(of: localRow, matching: find.byType(OmDot)),
+          findsNothing,
         );
         expect(
           find.descendant(of: localRow, matching: find.byType(StatusDot)),
