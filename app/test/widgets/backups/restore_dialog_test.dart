@@ -1371,30 +1371,33 @@ void main() {
     );
 
     final answers = <(String, RestoreRunResult?)>[
-      ('succeeds', null),
-      ('fails', const RestoreFailure(code: 'backup_invalid', message: 'bad')),
+      (
+        'a run that succeeds after the screen is gone ends quietly and opens nothing',
+        null,
+      ),
+      (
+        'a run that fails after the screen is gone ends quietly and opens nothing',
+        const RestoreFailure(code: 'backup_invalid', message: 'bad'),
+      ),
     ];
-    for (final (what, answer) in answers) {
-      testWidgets(
-        'a run that $what after the screen is gone ends quietly and opens nothing',
-        (tester) async {
-          final s = await _pumpPicker(tester);
-          await _openDialog(tester, s);
-          await _chooseParent(tester, s, s.parent('parent'));
-          if (answer != null) s.runner.scriptRestore(answer);
-          final hold = s.runner.holdRuns();
-          await _tap(tester, find.byKey(restoreSubmitKey));
-          expect(s.restoreCalls, hasLength(1));
-          await tester.pumpWidget(const SizedBox());
+    for (final (name, answer) in answers) {
+      testWidgets(name, (tester) async {
+        final s = await _pumpPicker(tester);
+        await _openDialog(tester, s);
+        await _chooseParent(tester, s, s.parent('parent'));
+        if (answer != null) s.runner.scriptRestore(answer);
+        final hold = s.runner.holdRuns();
+        await _tap(tester, find.byKey(restoreSubmitKey));
+        expect(s.restoreCalls, hasLength(1));
+        await tester.pumpWidget(const SizedBox());
 
-          hold.complete();
-          await _frames(tester);
+        hold.complete();
+        await _frames(tester);
 
-          expect(tester.takeException(), isNull);
-          expect(s.restoreCalls, hasLength(1));
-          expect(s.opened, isEmpty);
-        },
-      );
+        expect(tester.takeException(), isNull);
+        expect(s.restoreCalls, hasLength(1));
+        expect(s.opened, isEmpty);
+      });
     }
 
     testWidgets(
