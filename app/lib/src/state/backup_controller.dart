@@ -11,10 +11,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../cli/backup_cli.dart';
 import '../vault_access/errors.dart';
 import '../vault_access/hosted/backup.dart';
+import 'backup_messages.dart';
 import 'backup_models.dart';
 import 'backup_settings_state.dart';
 import 'backup_state_reader.dart';
 import 'clock.dart';
+import 'hosted_identity.dart';
 import 'vault_state.dart';
 
 /// 24 hours, the D12 due interval.
@@ -30,6 +32,31 @@ bool isBackupDue(DateTime? lastSuccessAt, DateTime now) {
   final at = now.millisecondsSinceEpoch;
   if (last > at) return true;
   return at - last >= _dueAfterMs;
+}
+
+// The provider folders `discoverBackupDestinations` offers (Spec req 20):
+// `<provider folder>/Open Memex Backups`.
+final _iCloudFolder = RegExp(
+  r'/Library/Mobile Documents/com~apple~CloudDocs/Open Memex Backups$',
+);
+final _googleDriveFolder = RegExp(
+  r'/Library/CloudStorage/GoogleDrive-[^/]+/My Drive/Open Memex Backups$',
+);
+final _oneDriveFolder = RegExp(
+  r'/Library/CloudStorage/OneDrive-[^/]+/Open Memex Backups$',
+);
+
+/// The provider whose backup folder [destination] is, or null for a folder
+/// chosen with "Choose folder…" (the card's `<where>` and `<provider>`).
+BackupProvider? _providerOf(String destination) {
+  var path = destination;
+  while (path.length > 1 && path.endsWith('/')) {
+    path = path.substring(0, path.length - 1);
+  }
+  if (_iCloudFolder.hasMatch(path)) return BackupProvider.icloud;
+  if (_googleDriveFolder.hasMatch(path)) return BackupProvider.googleDrive;
+  if (_oneDriveFolder.hasMatch(path)) return BackupProvider.oneDrive;
+  return null;
 }
 
 /// Backups for the open vault (D23): the automatic schedule, "Back up now",
@@ -80,15 +107,30 @@ class _RunFailure {
     required this.destination,
     required this.result,
     required this.at,
+    required this.automatic,
     required this.warn,
   });
 
   final String destination;
   final BackupRunResult result;
+
+  /// When the run ended (the card's `<failedAt>`).
   final DateTime at;
+
+  /// The run was the scheduled one (false: "Back up now").
+  final bool automatic;
 
   /// An automatic run failed since the last success: the entry warns.
   final bool warn;
+}
+
+/// A "Back up now" answered `backup_in_progress`.
+class _BusyPress {
+  const _BusyPress(this.destination, this.at, this.message);
+
+  final String destination;
+  final DateTime at;
+  final String? message;
 }
 
 /// What the controller knows of one hosted vault's backups.
@@ -104,6 +146,17 @@ class _HostedEntry {
 
   /// The last `POST` answered 409 `backup_in_progress`; the next `GET` says.
   bool alreadyRunning = false;
+
+  /// When this controller's `POST` started the running backup.
+  DateTime? postedAt;
+
+  /// This controller's `POST` started a backup whose result no answer has
+  /// shown yet.
+  bool pressed = false;
+
+  /// `lastAttemptAt` of the result that backup left: a failure with this
+  /// attempt time came from "Back up now", not the server's schedule.
+  DateTime? manualAttemptAt;
 
   BackupStatus? get status => switch (last) {
     HostedBackupOk(:final status) => status,
@@ -140,9 +193,12 @@ class LiveBackupController extends BackupController {
   final Map<String, _StateEntry> _states = {};
   final Map<String, _RunFailure> _failures = {};
 
-  /// A "Back up now" answered `backup_in_progress` for this destination: the
-  /// sheet says so until the next state read.
-  final Map<String, String> _busyPress = {};
+  /// When the run this controller started for a path began.
+  final Map<String, DateTime> _startedAt = {};
+
+  /// A "Back up now" answered `backup_in_progress`: the sheet says so until
+  /// the next state read.
+  final Map<String, _BusyPress> _busyPress = {};
 
   final Map<HostedVaultRef, _HostedEntry> _hosted = {};
   final Set<VaultRef> _sheets = {};
@@ -258,6 +314,7 @@ class LiveBackupController extends BackupController {
     final busy = _inFlight.state;
     if (busy.contains(path)) return;
     final runner = _ref.read(backupRunnerProvider);
+    _startedAt[path] = _clock.now();
     _inFlight.state = {...busy, path};
     try {
       BackupRunResult result;
@@ -276,6 +333,7 @@ class LiveBackupController extends BackupController {
       if (!mounted) return;
       _record(path, destination, result, automatic: automatic);
     } finally {
+      _startedAt.remove(path);
       _inFlight.state = {..._inFlight.state}..remove(path);
     }
   }
@@ -289,9 +347,11 @@ class LiveBackupController extends BackupController {
     switch (result) {
       case BackupCreated() || BackupUnchanged():
         _failures.remove(path);
-      case BackupFailure(code: 'backup_in_progress'):
+      case BackupFailure(code: 'backup_in_progress', :final message):
         // Not a failure: no warning, state untouched, the next tick decides.
-        if (!automatic) _busyPress[path] = destination;
+        if (!automatic) {
+          _busyPress[path] = _BusyPress(destination, _clock.now(), message);
+        }
       case BackupFailure() || BackupTooOld() || BackupBinaryNotFound():
         final previous = _failures[path];
         final warned =
@@ -302,6 +362,7 @@ class LiveBackupController extends BackupController {
           destination: destination,
           result: result,
           at: _clock.now(),
+          automatic: automatic,
           warn: automatic || warned,
         );
     }
@@ -370,11 +431,12 @@ class LiveBackupController extends BackupController {
     final api = _apiFor(vault);
     if (api == null) return;
     entry.posting = true;
+    entry.postedAt = _clock.now();
     _publish(vault);
     try {
       final result = await api.start();
       if (!mounted) return;
-      _applyHosted(entry, result);
+      _applyHosted(entry, result, posted: true);
     } on VaultUnreachableException {
       if (!mounted) return;
       entry.unreachable = true;
@@ -382,6 +444,7 @@ class LiveBackupController extends BackupController {
       if (!mounted) return;
     } finally {
       entry.posting = false;
+      if (!entry.pressed) entry.postedAt = null;
     }
     _publish(vault);
     _schedulePoll(vault);
@@ -392,14 +455,36 @@ class LiveBackupController extends BackupController {
     return _ref.read(hostedBackupApiProvider);
   }
 
-  void _applyHosted(_HostedEntry entry, HostedBackupResult result) {
+  void _applyHosted(
+    _HostedEntry entry,
+    HostedBackupResult result, {
+    bool posted = false,
+  }) {
     entry.unreachable = false;
     if (result is HostedBackupAlreadyRunning) {
+      // Someone else's backup, not this controller's press.
       entry.alreadyRunning = true;
       return;
     }
     entry.last = result;
     entry.alreadyRunning = false;
+    if (result is! HostedBackupOk) {
+      entry
+        ..pressed = false
+        ..postedAt = null;
+      return;
+    }
+    if (posted) {
+      entry.pressed = true;
+      return;
+    }
+    if (!result.status.inProgress) {
+      // The pressed backup has ended: its result carries this attempt time.
+      if (entry.pressed) entry.manualAttemptAt = result.status.lastAttemptAt;
+      entry
+        ..pressed = false
+        ..postedAt = null;
+    }
   }
 
   /// The 2 s poll: one `GET` 2 s after the last answer while a sheet is open
@@ -482,40 +567,95 @@ class LiveBackupController extends BackupController {
     final failure = stored?.destination == destination ? stored : null;
     final warning =
         (failure?.warn ?? false) || (status?.lastAttemptFailed ?? false);
+    final now = _clock.now();
     BackupViewState view(
       BackupSheetMode mode, {
       String? errorCode,
-      String? message,
+      BackupMessage? message,
+      bool automatic = false,
+      DateTime? failedAt,
+      DateTime? startedAt,
     }) => BackupViewState(
       mode: mode,
       settings: settings,
       status: status,
       errorCode: errorCode,
       message: message,
+      automatic: automatic,
+      failedAt: failedAt,
+      startedAt: startedAt,
       warning: warning,
     );
-    if (_inFlight.state.contains(path)) return view(BackupSheetMode.backingUp);
-    if (_busyPress[path] == destination) {
-      return view(BackupSheetMode.error, errorCode: 'backup_in_progress');
+    BackupViewState failed(
+      String code,
+      String? raw, {
+      required bool automatic,
+      required DateTime failedAt,
+    }) => view(
+      BackupSheetMode.error,
+      errorCode: code,
+      automatic: automatic,
+      failedAt: failedAt,
+      message: backupFailureMessage(
+        code: code,
+        message: raw,
+        automatic: automatic,
+        failedAt: failedAt,
+        now: now,
+        destination: destination,
+        provider: _providerOf(destination),
+      ),
+    );
+    if (_inFlight.state.contains(path)) {
+      return view(BackupSheetMode.backingUp, startedAt: _startedAt[path]);
     }
-    switch (failure?.result) {
-      case BackupTooOld():
-        return view(BackupSheetMode.memexTooOld);
-      case BackupBinaryNotFound():
-        return view(BackupSheetMode.binaryNotFound);
-      case BackupFailure(:final code, :final message):
-        return view(BackupSheetMode.error, errorCode: code, message: message);
-      case BackupCreated() || BackupUnchanged() || null:
-        break;
+    final busy = _busyPress[path];
+    if (busy != null && busy.destination == destination) {
+      return failed(
+        'backup_in_progress',
+        busy.message,
+        automatic: false,
+        failedAt: busy.at,
+      );
+    }
+    if (failure != null) {
+      switch (failure.result) {
+        case BackupTooOld():
+          return view(
+            BackupSheetMode.memexTooOld,
+            message: backupTooOldMessage(),
+            automatic: failure.automatic,
+            failedAt: failure.at,
+          );
+        case BackupBinaryNotFound():
+          return view(
+            BackupSheetMode.binaryNotFound,
+            message: backupBinaryNotFoundMessage(),
+            automatic: failure.automatic,
+            failedAt: failure.at,
+          );
+        case BackupFailure(:final code, :final message):
+          return failed(
+            code,
+            message,
+            automatic: failure.automatic,
+            failedAt: failure.at,
+          );
+        case BackupCreated() || BackupUnchanged():
+          break;
+      }
     }
     if (status == null || status.lastResult == null) {
       return view(BackupSheetMode.neverBackedUp);
     }
     if (status.lastAttemptFailed) {
-      return view(
-        BackupSheetMode.error,
-        errorCode: status.lastResult,
-        message: status.lastError,
+      // Recorded by a run this controller did not start (a scheduled
+      // `memex backup`, or an earlier session).
+      return failed(
+        status.lastResult!,
+        status.lastError,
+        automatic: true,
+        failedAt: status.lastAttemptAt ?? now,
       );
     }
     return view(BackupSheetMode.success);
@@ -528,13 +668,12 @@ class LiveBackupController extends BackupController {
     final status = entry.status;
     final enabled = status?.enabled ?? false;
     final warning = enabled && (status?.lastAttemptFailed ?? false);
-    BackupViewState view(BackupSheetMode mode, {String? errorCode}) =>
+    BackupViewState view(BackupSheetMode mode, {DateTime? startedAt}) =>
         BackupViewState(
           mode: mode,
           hosted: true,
           status: status,
-          errorCode: errorCode,
-          message: errorCode == null ? null : status?.lastError,
+          startedAt: startedAt,
           warning: warning,
         );
     if (last is HostedBackupServerTooOld) {
@@ -543,7 +682,9 @@ class LiveBackupController extends BackupController {
     if (last is HostedBackupNotConfigured || (last != null && !enabled)) {
       return view(BackupSheetMode.hostedNotConfigured);
     }
-    if (entry.running) return view(BackupSheetMode.backingUp);
+    if (entry.running) {
+      return view(BackupSheetMode.backingUp, startedAt: entry.postedAt);
+    }
     if (status == null) {
       return view(
         entry.unreachable
@@ -553,7 +694,31 @@ class LiveBackupController extends BackupController {
     }
     if (status.lastResult == null) return view(BackupSheetMode.neverBackedUp);
     if (status.lastAttemptFailed) {
-      return view(BackupSheetMode.error, errorCode: status.lastResult);
+      final code = status.lastResult!;
+      final attempted = status.lastAttemptAt;
+      final now = _clock.now();
+      // A failure left by this controller's "Back up now" carries the
+      // attempt time the pressed backup ended with; any other is the
+      // server's schedule.
+      final automatic = attempted == null || attempted != entry.manualAttemptAt;
+      final failedAt = attempted ?? now;
+      return BackupViewState(
+        mode: BackupSheetMode.error,
+        hosted: true,
+        status: status,
+        errorCode: code,
+        automatic: automatic,
+        failedAt: failedAt,
+        message: backupFailureMessage(
+          code: code,
+          message: status.lastError,
+          automatic: automatic,
+          failedAt: failedAt,
+          now: now,
+          serverName: _ref.read(hostedServerNameProvider(vault.serverId)),
+        ),
+        warning: warning,
+      );
     }
     return view(BackupSheetMode.success);
   }
