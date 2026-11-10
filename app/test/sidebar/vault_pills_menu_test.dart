@@ -661,4 +661,51 @@ void main() {
       },
     );
   });
+
+  group('the open pill in another spelling (ruling F1)', () {
+    testWidgets(
+      'a recents entry naming the open vault with a trailing slash is the open and active pill and the only active one',
+      (tester) async {
+        // Recents [work-notes, seed, <memex>/] while <memex> is open: the
+        // only memex pill is spelled with a trailing slash.
+        final env = await wi362PumpLocal(
+          tester,
+          openNote: false,
+          recentsOrder: const ['other', 'hosted'],
+          aliases: (open) => [LocalVaultRef('$open/')],
+        );
+        expect(env.settings.recentRefs, [
+          LocalVaultRef(env.otherPath!),
+          seedHostedRef,
+          LocalVaultRef('${env.openPath!}/'),
+        ]);
+        expect(env.current, LocalVaultRef(env.openPath!));
+        expect(wi363PillLabel('memex'), findsOneWidget);
+
+        // Active: the open pill draws surface4, and no other pill does.
+        expect(wi363PillStyle(tester, 'memex').fill, OmColors.surface4);
+        final activePills = wi363InSidebar(
+          find.byWidgetPredicate(
+            (w) =>
+                w is DecoratedBox &&
+                w.decoration is BoxDecoration &&
+                (w.decoration as BoxDecoration).borderRadius ==
+                    BorderRadius.circular(999) &&
+                (w.decoration as BoxDecoration).color == OmColors.surface4,
+          ),
+        );
+        expect(activePills, findsOneWidget, reason: 'one active pill');
+        expect(
+          wi363PillStyle(tester, 'work-notes').fill,
+          isNot(OmColors.surface4),
+        );
+
+        // Open: its menu is the open local one (no remove from recents).
+        await wi363SecondaryClick(tester, wi363PillLabel('memex'));
+        expect(wi363MenuShown(tester), [_finder, _delete, _manage]);
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await wi362Settle(tester);
+      },
+    );
+  });
 }

@@ -16,6 +16,7 @@ import '../state/tabs_state.dart';
 import '../state/vault_access_state.dart';
 import '../state/vault_open_controller.dart';
 import '../state/vault_open_hosted.dart';
+import '../state/vault_paths.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
@@ -471,18 +472,7 @@ class _VaultPillsRow extends ConsumerWidget {
         children: [
           for (final r in settings.recentRefs)
             if (r case LocalVaultRef(:final path))
-              // Keyed by vault so an open menu stays with its own vault when
-              // a switch reorders the recents.
-              _PillMenu(
-                key: ValueKey<VaultRef>(r),
-                vault: r,
-                isOpen: path == currentVault,
-                builder: (menuOpen) => _VaultPill(
-                  path: path,
-                  active: path == currentVault,
-                  menuOpen: menuOpen,
-                ),
-              )
+              _localPill(r, path)
             else if (r case HostedVaultRef(:final serverId))
               for (final s in settings.savedServers)
                 if (s.id == serverId)
@@ -499,6 +489,23 @@ class _VaultPillsRow extends ConsumerWidget {
                   ),
         ],
       ),
+    );
+  }
+
+  /// The pill for the local recent [r] at [path]. It is the open (and
+  /// active) pill when [path] names the open vault's folder in any spelling
+  /// ([isSameVaultFolder]): recents keep a vault's path as it was opened.
+  Widget _localPill(LocalVaultRef r, String path) {
+    final open = currentVault;
+    final isOpen = open != null && isSameVaultFolder(path, open);
+    // Keyed by vault so an open menu stays with its own vault when a switch
+    // reorders the recents.
+    return _PillMenu(
+      key: ValueKey<VaultRef>(r),
+      vault: r,
+      isOpen: isOpen,
+      builder: (menuOpen) =>
+          _VaultPill(path: path, active: isOpen, menuOpen: menuOpen),
     );
   }
 }
