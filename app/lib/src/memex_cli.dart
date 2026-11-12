@@ -10,9 +10,16 @@ class MemexCli {
 
   final String binaryPath;
 
-  /// Find a `memex` binary. Order: [picked] if it exists, the Bundled memex
-  /// beside the executable, then `~/.cargo/bin`, `/usr/local/bin` and
+  /// Find a `memex` binary. Order: the Bundled memex beside the executable,
+  /// then [picked] if it exists, then `~/.cargo/bin`, `/usr/local/bin` and
   /// `/opt/homebrew/bin`. A missing or empty [picked] is skipped.
+  ///
+  /// The Bundled memex always matches the app's schema, so it wins over a
+  /// picked path: a path picked once ("locate memex binary…") outlives the
+  /// binary it named, and an older picked memex refuses every write on a
+  /// vault the newer app has migrated ("schema version unsupported"; v0.3.0,
+  /// Learn Spelling failed). [picked] still applies to a build with no
+  /// Bundled memex, such as a `flutter run` dev build.
   /// Seams (production defaults): [executablePath]
   /// (`Platform.resolvedExecutable`), [exists] (`File(path).existsSync()`),
   /// [home] (`$HOME`) and [picked] (a user-picked path).
@@ -26,8 +33,8 @@ class MemexCli {
     final homeDir = home ?? Platform.environment['HOME'];
     final exe = executablePath ?? Platform.resolvedExecutable;
     final candidates = <String>[
-      if (picked != null && picked.isNotEmpty) picked,
       p.join(p.dirname(exe), 'memex'),
+      if (picked != null && picked.isNotEmpty) picked,
       if (homeDir != null) p.join(homeDir, '.cargo', 'bin', 'memex'),
       '/usr/local/bin/memex',
       '/opt/homebrew/bin/memex',

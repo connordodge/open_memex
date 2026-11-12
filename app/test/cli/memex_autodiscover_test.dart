@@ -70,15 +70,42 @@ void main() {
       expect(asked, isNot(contains('')));
     });
 
-    test('a picked path that exists is returned as given', () {
+    test('the Bundled memex wins over a picked path that exists', () {
+      // A picked path outlives the binary it named; the Bundled memex always
+      // matches the app's schema (v0.3.0: a stale picked memex refused every
+      // write on the migrated vault).
       expect(
         MemexCli.autodiscover(
           executablePath: _exe,
-          exists: {'/fake/picked/memex', _bundled}.contains,
+          exists: {'/fake/picked/memex', _bundled, _cargo}.contains,
+          home: _home,
+          picked: '/fake/picked/memex',
+        ),
+        _bundled,
+      );
+    });
+
+    test('without a Bundled memex a picked path that exists wins over cargo', () {
+      expect(
+        MemexCli.autodiscover(
+          executablePath: _exe,
+          exists: {'/fake/picked/memex', _cargo, _usrLocal}.contains,
           home: _home,
           picked: '/fake/picked/memex',
         ),
         '/fake/picked/memex',
+      );
+    });
+
+    test('a picked path that does not exist falls through to cargo', () {
+      expect(
+        MemexCli.autodiscover(
+          executablePath: _exe,
+          exists: {_cargo}.contains,
+          home: _home,
+          picked: '/fake/picked/memex',
+        ),
+        _cargo,
       );
     });
 
