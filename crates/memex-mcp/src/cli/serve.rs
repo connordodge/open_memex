@@ -11,19 +11,23 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{ArgGroup, Args};
+use memex_core::agents::presence::HEARTBEAT_MS;
 use memex_core::backup::{KEEP_DEFAULT, KEEP_MAX};
 use memex_core::{SystemClock, Vault};
-use rmcp::transport::stdio;
-use rmcp::ServiceExt;
+use rmcp::transport::IntoTransport;
+use rmcp::{RoleServer, ServiceExt};
 use tracing_subscriber::EnvFilter;
 
 use super::{CodedError, InvalidArgument};
+use crate::presence::StdioSessions;
 use crate::server;
 use crate::server::backup::BackupConfig;
 use crate::server::bridge::{self, BridgeOptions};
+use crate::server::request_clock::SharedClock;
 use crate::server::token::TOKEN_ENV;
 use crate::state::{build_default_embedder, AppState};
 use crate::tools;
@@ -146,8 +150,8 @@ async fn serve_remote(url: String) -> Result<()> {
 
 /// The process's stdin as an `AsyncRead`, read on a plain thread.
 /// `tokio::io::stdin()` reads on the blocking pool, and a read that never
-/// returns would hold up runtime shutdown when the bridge exits on a 401
-/// while the client keeps stdin open.
+/// returns would hold up runtime shutdown when the bridge exits on a 401, or
+/// the stdio server on a shutdown signal, while the client keeps stdin open.
 fn stdin_reader() -> tokio::io::DuplexStream {
     use std::io::Read;
     use tokio::io::AsyncWriteExt;
@@ -197,12 +201,94 @@ async fn serve_stdio(vault_path: PathBuf, with_embeddings: bool, log_level: Stri
         None
     };
     let state = Arc::new(AppState::new(vault, absolute, embedder));
-    let memex = tools::Memex::new(state);
+    crate::backfill::spawn_stdio(&state);
+    // stdin is read on a plain thread rather than tokio's blocking pool, so
+    // the process can still exit on a shutdown signal while the client
+    // keeps stdin open.
+    serve_stdio_until(
+        state,
+        with_embeddings,
+        Arc::new(SystemClock),
+        Duration::from_millis(HEARTBEAT_MS as u64),
+        (stdin_reader(), tokio::io::stdout()),
+        server::shutdown_signal(),
+    )
+    .await
+}
 
-    let service = memex.serve(stdio()).await.context("start MCP service")?;
-    service
-        .waiting()
+/// The stdio MCP server for `state`'s vault over any `transport`, with stdio
+/// agent presence (#445): `with_embeddings` is recorded in the presence
+/// record, `clock` stamps it and `heartbeat` is the interval between its
+/// rewrites. Returns when the transport closes or the service ends.
+pub async fn serve_stdio_on<T, E, A>(
+    state: Arc<AppState>,
+    with_embeddings: bool,
+    clock: SharedClock,
+    heartbeat: Duration,
+    transport: T,
+) -> Result<()>
+where
+    T: IntoTransport<RoleServer, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    serve_stdio_until(
+        state,
+        with_embeddings,
+        clock,
+        heartbeat,
+        transport,
+        std::future::pending(),
+    )
+    .await
+}
+
+/// [`serve_stdio_on`] that also ends when `shutdown` resolves (SIGINT or
+/// SIGTERM for the CLI): the service is cancelled, then the heartbeat is
+/// stopped and the record deleted exactly as at stdin EOF (req 1).
+pub async fn serve_stdio_until<T, E, A, S>(
+    state: Arc<AppState>,
+    with_embeddings: bool,
+    clock: SharedClock,
+    heartbeat: Duration,
+    transport: T,
+    shutdown: S,
+) -> Result<()>
+where
+    T: IntoTransport<RoleServer, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+    S: std::future::Future<Output = ()>,
+{
+    let sessions = Arc::new(StdioSessions::new(
+        &state.vault_path,
+        clock,
+        with_embeddings,
+    ));
+    sessions.sweep();
+    let service = tools::Memex::new(state)
+        .with_sessions(sessions.clone())
+        .serve(transport)
         .await
-        .context("MCP service exited unexpectedly")?;
+        .context("start MCP service")?;
+    if let Some(info) = service.peer().peer_info() {
+        sessions.begin(info);
+    }
+    let beat = tokio::spawn(sessions.clone().run_heartbeat(heartbeat));
+    let stop = service.cancellation_token();
+    let waiting = service.waiting();
+    tokio::pin!(waiting);
+    let ended = tokio::select! {
+        ended = &mut waiting => ended,
+        () = shutdown => {
+            tracing::info!("shutdown signal, stopping memex-mcp");
+            stop.cancel();
+            waiting.await
+        }
+    };
+    // Stop the heartbeat and wait for it before deleting the record, so a
+    // late heartbeat can't recreate it (req 1).
+    beat.abort();
+    let _ = beat.await;
+    sessions.end();
+    ended.context("MCP service exited unexpectedly")?;
     Ok(())
 }

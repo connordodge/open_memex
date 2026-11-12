@@ -6,6 +6,7 @@
 // falls inside a surrogate pair. Transclusions come from `parseTransclusions`
 // in `segments.dart` (import it; never copy its regex).
 
+import 'dart:math' show min;
 import 'dart:typed_data';
 
 import 'segments.dart' show parseTransclusions;
@@ -257,6 +258,130 @@ List<InlineToken> tokenizeInline(String text, {int? before}) {
     lineStart = newline + 1;
   }
   out.sort((a, b) => a.start.compareTo(b.start));
+  return out;
+}
+
+/// The scheme a bare URL starts with.
+final RegExp _bareUrlSchemeRe = RegExp(
+  r'https?://|mailto:',
+  caseSensitive: false,
+);
+
+/// An image `![alt](url)` on one line: the tokenizer gives images no token,
+/// so [bareUrlRanges] finds the url (group 1) itself, to leave it out (or to
+/// report it with `includeImageUrls`).
+final RegExp _imageUrlRe = RegExp(r'!\[[^\[\]\n]*\]\(([^\s()]+)\)');
+
+/// Sentence punctuation that never ends a bare URL.
+const String _urlTrailing = '.,;:!?';
+
+/// Whether [unit] is whitespace, the same set as a regex `\s`.
+bool _isSpaceUnit(int unit) =>
+    (unit >= 0x09 && unit <= 0x0d) ||
+    unit == 0x20 ||
+    unit == 0xa0 ||
+    unit == 0x1680 ||
+    (unit >= 0x2000 && unit <= 0x200a) ||
+    unit == 0x2028 ||
+    unit == 0x2029 ||
+    unit == 0x202f ||
+    unit == 0x205f ||
+    unit == 0x3000 ||
+    unit == 0xfeff;
+
+/// The bare `http://`, `https://` and `mailto:` URLs in [text] (WI #435,
+/// Spec #392 requirement 2; ruling D23), in order.
+///
+/// A URL runs to the next whitespace, but never into a link: it stops where a
+/// following `[text](url)` link or image starts, and a URL used as link text
+/// stops at the `]`. Trailing `.`, `,`, `;`, `:`, `!` and `?` are dropped
+/// (repeatedly), and so is a `)` that has no `(` to match inside the URL. The
+/// `(url)` part of a `[text](url)` link (or of an image link) is never
+/// reported as a bare URL: [tokenizeInline] finds the link and the caller
+/// skips its url, so nothing is counted twice. The tokenizer gives an image
+/// no token, so with [includeImageUrls] the `(url)` of each `![alt](url)`
+/// image (any scheme, or a relative path) is reported too, in order among the
+/// bare URLs; this is the one place that shape is matched. A URL cut down to
+/// its scheme is not reported. The cost is linear in the length of [text].
+List<InlineRange> bareUrlRanges(String text, {bool includeImageUrls = false}) {
+  final links = tokenizeInline(text).whereType<LinkToken>().toList()
+    ..sort((a, b) => a.span.start.compareTo(b.span.start));
+  final images = _imageUrlRe.allMatches(text).toList();
+  final imageUrls = [
+    for (final image in images)
+      InlineRange(image.end - 1 - image.group(1)!.length, image.end - 1),
+  ];
+  final linkUrls = [for (final link in links) link.urlRange, ...imageUrls]
+    ..sort((a, b) => a.start.compareTo(b.start));
+  final out = <InlineRange>[if (includeImageUrls) ...imageUrls];
+  // `start` only grows, so each list is walked with one moving index.
+  var nextLink = 0;
+  var nextImage = 0;
+  var nextUrl = 0;
+  var pos = 0;
+  while (true) {
+    final match = _bareUrlSchemeRe.allMatches(text, pos).firstOrNull;
+    if (match == null) break;
+    final start = match.start;
+    final schemeEnd = match.end;
+    while (nextUrl < linkUrls.length && linkUrls[nextUrl].end <= start) {
+      nextUrl++;
+    }
+    if (nextUrl < linkUrls.length && linkUrls[nextUrl].start <= start) {
+      // Rescan after the link url: a bare URL may follow it directly.
+      pos = linkUrls[nextUrl].end;
+      continue;
+    }
+    while (nextLink < links.length && links[nextLink].span.start <= start) {
+      nextLink++;
+    }
+    while (nextImage < images.length && images[nextImage].start <= start) {
+      nextImage++;
+    }
+    var limit = text.length;
+    if (nextLink > 0) {
+      final label = links[nextLink - 1].textRange;
+      if (label.start <= start && start < label.end) {
+        limit = min(limit, label.end);
+      }
+    }
+    if (nextLink < links.length) {
+      limit = min(limit, links[nextLink].span.start);
+    }
+    if (nextImage < images.length) {
+      limit = min(limit, images[nextImage].start);
+    }
+    // Extend by hand to the next whitespace or the limit.
+    var end = schemeEnd;
+    while (end < limit && !_isSpaceUnit(text.codeUnitAt(end))) {
+      end++;
+    }
+    if (end == schemeEnd) {
+      pos = schemeEnd;
+      continue;
+    }
+    pos = end;
+    var open = 0;
+    var close = 0;
+    for (var i = start; i < end; i++) {
+      final unit = text.codeUnitAt(i);
+      if (unit == _openParen) open++;
+      if (unit == _closeParen) close++;
+    }
+    while (end > schemeEnd) {
+      final unit = text.codeUnitAt(end - 1);
+      if (_urlTrailing.codeUnits.contains(unit)) {
+        end--;
+      } else if (unit == _closeParen && close > open) {
+        close--;
+        end--;
+      } else {
+        break;
+      }
+    }
+    if (end > schemeEnd) out.add(InlineRange(start, end));
+  }
+  if (includeImageUrls) out.sort((a, b) => a.start.compareTo(b.start));
   return out;
 }
 

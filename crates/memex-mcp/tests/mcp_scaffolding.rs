@@ -106,7 +106,20 @@ async fn assert_indexed_from_stored_content(state: &AppState, note_id: &str) {
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
-    let expected_chunks: Vec<(i64, String)> = memex_core::chunker::chunk(&stored)
+    // Only the person section is chunked (WI #418, Spec #391 req 1).
+    let frontmatter: String = conn
+        .query_row(
+            "SELECT frontmatter FROM notes WHERE id = ?",
+            [note_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let person = if memex_core::daily::is_daily(&serde_json::from_str(&frontmatter).unwrap()) {
+        memex_core::daily::split_body(&stored).person
+    } else {
+        memex_core::tags::person_section(&stored).to_string()
+    };
+    let expected_chunks: Vec<(i64, String)> = memex_core::chunker::chunk(&person)
         .into_iter()
         .map(|c| (c.ord, c.content))
         .collect();

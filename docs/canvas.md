@@ -142,13 +142,20 @@ When `memex serve` is running, AI agents can:
   and target are both placed).
 - **`create_canvas(title)`** — make a new empty canvas.
 - **`add_to_canvas(canvas_id, note_id, x?, y?)`** — place a note.
-  Idempotent on `(canvas_id, note_id)`.
+  Idempotent on `(canvas_id, note_id)`. Returns the placement and
+  `added`: `false` when the note was already placed and the existing
+  placement came back.
 - **`remove_from_canvas(canvas_id, note_id)`** — remove a placement.
+  Returns `removed`: `false` when the note wasn't placed.
 - **`move_node(canvas_id, note_id, x, y, z_order?)`** — reposition.
+  Returns the placement and `changed`: `false` when `x`, `y` and the
+  given `z_order` equal the current ones.
 - **`delete_canvas(canvas_id, expected_version)`** — cascade-delete
   placements; notes and links untouched.
 - **`update_link(link_id, kind?, label?, clear_label?)`** — same path
-  as the canvas edge inspector. Returns the updated link.
+  as the canvas edge inspector. Returns the updated link and `changed`:
+  `false` when every given value equals the current one, and then
+  nothing is saved.
 
 Combined, these let an agent assemble a canvas from a query
 (e.g. "every note that contradicts X"), refine it spatially, and edit

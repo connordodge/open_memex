@@ -1339,15 +1339,55 @@ void main() {
           'NotePoller',
           'notePollerProvider',
           'noteUpdatedAtReaderProvider',
-          'noteUpdatedAt',
           'notePollInterval',
           'note_poller_state.dart',
           'poll_reads.dart',
         ]) {
           if (src.contains(symbol)) offenders.add('${f.path}: $symbol');
         }
+        if (_declaresOrCallsPollerNoteUpdatedAt(src)) {
+          offenders.add('${f.path}: noteUpdatedAt(');
+        }
       }
       expect(offenders, isEmpty);
     });
+
+    test(
+      'the poller-gone guard tells the removed noteUpdatedAt method from a field of that name',
+      () {
+        // The removed `PollReads.noteUpdatedAt(String noteId)` was a method
+        // (a declaration or a call). `Echo.noteUpdatedAt` (#424) is a field,
+        // read as a member and passed as a named argument, in any file.
+        for (final offending in const [
+          'int? noteUpdatedAt(String noteId) {',
+          'final t = reads.noteUpdatedAt(id);',
+          'noteUpdatedAt (id);',
+        ]) {
+          expect(
+            _declaresOrCallsPollerNoteUpdatedAt(offending),
+            isTrue,
+            reason: offending,
+          );
+        }
+        for (final fine in const [
+          'final int noteUpdatedAt;',
+          'required this.noteUpdatedAt,',
+          'noteUpdatedAt: _required<int>(json, "note_updated_at"),',
+          'Text(rel(echo.noteUpdatedAt));',
+          'other.noteUpdatedAt == noteUpdatedAt;',
+        ]) {
+          expect(
+            _declaresOrCallsPollerNoteUpdatedAt(fine),
+            isFalse,
+            reason: fine,
+          );
+        }
+      },
+    );
   });
 }
+
+/// Whether [src] declares or calls a `noteUpdatedAt(...)` method: the shape
+/// of the removed per-note poller read. A field of that name does not match.
+bool _declaresOrCallsPollerNoteUpdatedAt(String src) =>
+    RegExp(r'(?<![A-Za-z0-9_$])noteUpdatedAt\s*\(').hasMatch(src);

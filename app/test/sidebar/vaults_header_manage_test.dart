@@ -65,6 +65,9 @@ Future<void> _focusManage(WidgetTester tester) async {
   expect(node.skipTraversal, isFalse, reason: 'MANAGE is in the Tab order');
   node.requestFocus();
   await tester.pump();
+  // The ring is set in a post-frame callback: it needs its own frame (the
+  // old footer's always-running pulse used to supply it by accident).
+  await tester.pump();
   expect(wi349FocusIn(wi363Manage), isTrue, reason: 'MANAGE has the focus');
 }
 

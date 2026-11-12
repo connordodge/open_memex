@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "vault_not_found",
+    "message": "no vault named nope"
+  }
+}

@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../editor/fuzzy_score.dart';
+import '../../editor/markdown_preview_text.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 
@@ -52,6 +53,20 @@ List<TopicChoice> matchTopics(
   return [for (final s in scored) s.$2];
 }
 
+/// The most grapheme clusters of a block's preview a dialog line shows.
+const _previewLimit = 48;
+
+/// The preview of the block whose markdown is [markdown], quoted as a dialog
+/// line shows it: `markdownPreviewText` cut to its first 48 grapheme clusters,
+/// trailing whitespace trimmed, then `…`; a preview of 48 or fewer is whole.
+String _quotedPreview(String markdown) {
+  final preview = markdownPreviewText(markdown);
+  final clusters = preview.characters;
+  if (clusters.length <= _previewLimit) return '“$preview”';
+  final cut = clusters.take(_previewLimit).toString().trimRight();
+  return '“$cut…”';
+}
+
 String? _whyOf(String text) {
   final why = text.trim();
   return why.isEmpty ? null : why;
@@ -65,6 +80,9 @@ String? _whyOf(String text) {
 /// source topic note of a move) is not offered. Resolves null on Cancel and
 /// Esc.
 ///
+/// A line under the title quotes the block ([blockText], its markdown) and,
+/// when [fromTopicTitle] is set (a move), the topic it is in.
+///
 /// Arrow keys move the highlight over the matches (clamped), Enter chooses the
 /// highlighted match (the `Create` row when nothing matches) and, once a
 /// target is chosen, confirms.
@@ -73,11 +91,16 @@ Future<TopicPickResult?> showTopicPickDialog(
   required String title,
   required String confirmLabel,
   required Future<List<TopicChoice>> Function() loadTopics,
+  required String blockText,
+  String? fromTopicTitle,
   String? excludeId,
 }) => showDialog<TopicPickResult>(
   context: context,
   builder: (_) => _PickDialog(
     title: title,
+    line: fromTopicTitle == null
+        ? _quotedPreview(blockText)
+        : '${_quotedPreview(blockText)} from $fromTopicTitle',
     confirmLabel: confirmLabel,
     loadTopics: loadTopics,
     excludeId: excludeId,
@@ -85,14 +108,22 @@ Future<TopicPickResult?> showTopicPickDialog(
   ),
 );
 
-/// `Remove`: asks for an optional `Why?` (Key `filed-why-field`). Resolves
-/// the trimmed text (null when blank) wrapped in a record, or null on Cancel
-/// and Esc.
-Future<({String? why})?> showRemoveBlockDialog(BuildContext context) async {
+/// `Remove from <topicTitle>`: says the block ([blockText], its markdown)
+/// stays in the day, and asks for an optional `Why?` (Key `filed-why-field`).
+/// Resolves the trimmed text (null when blank) wrapped in a record, or null on
+/// Cancel and Esc.
+Future<({String? why})?> showRemoveBlockDialog(
+  BuildContext context, {
+  required String topicTitle,
+  required String blockText,
+}) async {
   final result = await showDialog<TopicPickResult>(
     context: context,
     builder: (_) => _PickDialog(
-      title: 'Remove from this topic',
+      title: 'Remove from $topicTitle',
+      line:
+          '${_quotedPreview(blockText)} stays in the day; only this block is '
+          'taken out of $topicTitle.',
       confirmLabel: 'Remove',
       loadTopics: () async => const [],
       withTopic: false,
@@ -104,6 +135,7 @@ Future<({String? why})?> showRemoveBlockDialog(BuildContext context) async {
 class _PickDialog extends StatefulWidget {
   const _PickDialog({
     required this.title,
+    required this.line,
     required this.confirmLabel,
     required this.loadTopics,
     required this.withTopic,
@@ -111,6 +143,9 @@ class _PickDialog extends StatefulWidget {
   });
 
   final String title;
+
+  /// The line under the title.
+  final String line;
   final String confirmLabel;
   final Future<List<TopicChoice>> Function() loadTopics;
   final String? excludeId;
@@ -256,7 +291,14 @@ class _PickDialogState extends State<_PickDialog> {
       skipTraversal: true,
       onKeyEvent: _onKey,
       child: AlertDialog(
-        title: Text(widget.title),
+        // A long topic title wraps at the content width instead of widening
+        // the dialog.
+        title: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 360),
+          child: Text(widget.title),
+        ),
+        // 6 px under the title (the default is 16), 16 px above the fields.
+        contentPadding: const EdgeInsets.fromLTRB(24, 6, 24, 24),
         content: SizedBox(
           width: 360,
           child: SingleChildScrollView(
@@ -264,6 +306,16 @@ class _PickDialogState extends State<_PickDialog> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                Text(
+                  widget.line,
+                  key: const Key('filed-dialog-line'),
+                  style: OmType.sans(
+                    size: 12,
+                    color: OmColors.fg2,
+                    height: 1.5,
+                  ),
+                ),
+                const SizedBox(height: 16),
                 if (widget.withTopic) ...[
                   TextField(
                     key: const Key('filed-topic-field'),

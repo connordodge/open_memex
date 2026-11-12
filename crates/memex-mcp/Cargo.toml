@@ -34,6 +34,7 @@ subtle = { workspace = true }
 getrandom = { workspace = true }
 reqwest = { workspace = true }
 ulid = { workspace = true }
+sha2 = { workspace = true }
 chrono = { workspace = true }
 
 [dev-dependencies]
@@ -42,3 +43,8 @@ regex = { workspace = true }
 reqwest = { workspace = true }
 # start_paused: the hourly backup check is tested on a paused clock.
 tokio = { workspace = true, features = ["test-util"] }
+# #403: the K0 model-cache fixture (memex-core/tests/hf_cache_fixture) reads
+# fastembed's model info, so its file list is never hand-made.
+fastembed = { workspace = true }
+# oneshot: drive the vault server router in memory on a paused clock (#446).
+tower = { workspace = true }

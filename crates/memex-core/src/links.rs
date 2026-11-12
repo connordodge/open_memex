@@ -372,6 +372,18 @@ pub fn update_link_as(
     patch: UpdateLink,
     caller: Caller,
 ) -> Result<Link> {
+    update_link_changed(vault, link_id, patch, caller).map(|(link, _)| link)
+}
+
+/// [`update_link_as`], also returning whether the link changed: false when
+/// the resolved kind and label equal the current ones, and then the source
+/// note is not saved.
+pub fn update_link_changed(
+    vault: &mut Vault,
+    link_id: &str,
+    patch: UpdateLink,
+    caller: Caller,
+) -> Result<(Link, bool)> {
     let current = get_link(vault, link_id)?;
 
     // Resolve target kind + label, then determine whether anything needs to change.
@@ -383,7 +395,7 @@ pub fn update_link_as(
     };
     let label_changed = new_label != current.label;
     if !kind_changed && !label_changed {
-        return Ok(current);
+        return Ok((current, false));
     }
 
     if kind_changed && matches!(current.source, LinkSource::Frontmatter) {
@@ -463,7 +475,7 @@ pub fn update_link_as(
             row_to_link,
         )
         .map_err(MemexError::from)?;
-    Ok(new_link)
+    Ok((new_link, true))
 }
 
 fn render_wikilink_token(

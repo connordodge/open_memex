@@ -1031,8 +1031,9 @@ fn remove_excerpt_block_splits_a_joined_excerpt() {
             "vault_id": vault_id,
             "topic_note_id": topic,
             "version": after["version"],
+            "removed": true,
         }),
-        "exactly vault_id, topic_note_id and the topic's new version"
+        "exactly vault_id, topic_note_id, the topic's new version and removed"
     );
     assert!(
         after["version"].as_i64() > before["version"].as_i64(),

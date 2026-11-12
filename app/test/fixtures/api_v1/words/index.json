@@ -1,0 +1,12 @@
+[
+  {"method": "GET", "path": "/vaults/seed/api/v1/words", "response": "words_ls.json", "status": 200},
+  {"method": "POST", "path": "/vaults/seed/api/v1/words", "response": "words_add.json", "status": 200, "request": "words_add.request.json", "headers": {"Content-Type": "application/json"}},
+  {"method": "POST", "path": "/vaults/seed/api/v1/words", "response": "words_add_repeat.json", "status": 200, "request": "words_add.request.json", "headers": {"Content-Type": "application/json"}},
+  {"method": "POST", "path": "/vaults/seed/api/v1/words", "response": "words_add_non_ascii.json", "status": 200, "request": "words_add_non_ascii.request.json", "headers": {"Content-Type": "application/json"}},
+  {"method": "POST", "path": "/vaults/seed/api/v1/words", "response": "words_add_too_long.json", "status": 400, "request": "words_add_too_long.request.json", "headers": {"Content-Type": "application/json"}},
+  {"method": "GET", "path": "/vaults/seed/api/v1/words", "response": "words_ls_after_adds.json", "status": 200},
+  {"method": "DELETE", "path": "/vaults/seed/api/v1/words/%C3%A9mile", "response": "words_rm_non_ascii.json", "status": 200},
+  {"method": "DELETE", "path": "/vaults/seed/api/v1/words/memex", "response": "words_rm.json", "status": 200},
+  {"method": "DELETE", "path": "/vaults/seed/api/v1/words/memex", "response": "words_rm_gone.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/words", "response": "words_ls.json", "status": 200}
+]

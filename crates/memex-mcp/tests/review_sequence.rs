@@ -362,7 +362,7 @@ fn run_review_sequence(server: &mut Server, daily_id: &str, vault_id_out: &mut S
     );
     assert_eq!(
         keys(&first),
-        set(&["vault_id", "topic_note_id", "version"]),
+        set(&["vault_id", "topic_note_id", "version", "filed_block_ids"]),
         "{first}"
     );
     assert_eq!(str_of(&first, "topic_note_id"), player_loop, "{first}");

@@ -1,0 +1,8 @@
+Learn a word, so spell check accepts it in this vault
+
+Usage: memex words add --vault <VAULT> --word <WORD>
+
+Options:
+      --vault <VAULT>  Vault directory
+      --word <WORD>    Word (trimmed; no whitespace, at most 64 characters)
+  -h, --help           Print help

@@ -11,6 +11,7 @@ import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../support/fake_memex_cli.dart';
+import '../support/fake_vault_db.dart' show fixtureSchemaVersion;
 import '../support/vault_folders.dart';
 import '../support/token_store_fakes.dart';
 
@@ -162,7 +163,7 @@ void main() {
       final c = _withVault(LocalVaultRef(dir.path));
       final db = c.read(vaultDbProvider);
       expect(db, isNotNull);
-      expect(db!.schemaVersion(), 6);
+      expect(db!.schemaVersion(), fixtureSchemaVersion);
       expect(c.read(vaultV5ReadyProvider), isTrue);
       expect(c.read(vaultV6ReadyProvider), isTrue);
     });

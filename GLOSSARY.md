@@ -127,11 +127,27 @@ A vault the app opens by directory path on the same machine.
 The one shared secret every client presents to a vault server.
 _Avoid_: API key, password
 
+## Agents (#390)
+
+**Agent presence**:
+The expiring record that says an MCP client is connected to a vault right now, one per `memex serve` session, bridge or HTTP client.
+_Avoid_: session, connection
+
+**Agent activity log**:
+The `agent_activity` table of one-line summaries of agent writes, shown in the sidebar footer and the Agents sheet. It is not the per-note Activity tab, which shows `agent_changes`.
+_Avoid_: activity feed, audit log
+
 ## Vault management (#355)
 
 **Vault picker**:
 The one place that lists the person's vaults and offers opening, creating, restoring and deleting them: full screen when no vault is open, and over the workspace when opened from the sidebar's VAULTS header.
 _Avoid_: vault manager, vault switcher, vaults screen
+
+## Echoes (#391)
+
+**Echo**:
+A passage of the person's own writing in another note that is semantically close to the open note and not linked to it, shown in the echoes tab.
+_Avoid_: suggestion, recommendation, related note
 
 ## Backups (#315)
 
@@ -145,11 +161,23 @@ The folder a vault's backups are written into: a folder in iCloud Drive, Google 
 **Restore**:
 Making a new vault folder from a backup. A restore never changes a vault that already exists, and the new vault keeps the backed-up vault's id.
 
+## Spelling (#392)
+
+**Learned word**:
+A word the person taught the app with `Learn Spelling`, stored in the vault's learned words and never flagged as misspelled in that vault.
+_Avoid_: dictionary word, custom word
+
 ## Markdown tables (#192)
 
 **Table**:
 A GitHub-flavoured markdown pipe table in a note body: a header line, a delimiter line (such as `|---|:-:|`) and zero or more body lines. Live preview shows it as one table row of the editor: a grid, or its raw lines while revealed.
 _Avoid_: grid (for the markdown), spreadsheet
+
+## Agents sheet (#394)
+
+**Semantic recall**:
+Meaning-based matching over a vault's embedded passages, used by echoes and hybrid search. An agent's searches use it when the memex serving that agent runs with `--with-embeddings`. In the app, echoes use it on a local vault once the model is downloaded, and on a hosted vault when the vault server runs with `--with-embeddings`.
+_Avoid_: AI search, smart search
 
 ## Navigation (#230)
 

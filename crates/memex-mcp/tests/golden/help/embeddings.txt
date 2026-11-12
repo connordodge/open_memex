@@ -1,0 +1,10 @@
+Embedding coverage and model cache status
+
+Usage: memex embeddings <COMMAND>
+
+Commands:
+  status  Print embedding coverage and model cache status as JSON
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help

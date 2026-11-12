@@ -1,0 +1,5 @@
+[
+  {"method": "GET", "path": "/vaults/seed/api/v1/tools", "response": "tools.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/tools", "response": "unauthorized.json", "status": 401, "headers": {"Authorization": "Bearer wrong-token-not-the-server-token"}},
+  {"method": "GET", "path": "/vaults/nope/api/v1/tools", "response": "vault_not_found.json", "status": 404}
+]

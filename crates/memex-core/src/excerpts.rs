@@ -68,6 +68,30 @@ pub fn add_excerpt(
     )
 }
 
+/// [`add_excerpt`], also returning the ids of the blocks this call filed, in
+/// ord order: a block the topic already held for that day is left out, and a
+/// repeated id is listed once. Empty when the call filed nothing (the topic
+/// keeps its version).
+pub fn add_excerpt_filed(
+    vault: &mut Vault,
+    topic_note_id: &NoteId,
+    date: &str,
+    block_ids: &[String],
+    caller: Caller,
+    embedder: Option<&dyn Embedder>,
+) -> Result<(Note, Vec<String>)> {
+    add_excerpt_inner(
+        vault,
+        topic_note_id,
+        date,
+        block_ids,
+        caller,
+        embedder,
+        None,
+        &mut |_| {},
+    )
+}
+
 /// [`add_excerpt`] for the person's "File in…", carrying the optional `Why?`
 /// note: `note` is stored as the `text` of each Correction the call records
 /// (WI #250; [`add_excerpt`] behaves like `note: None`).
@@ -90,6 +114,7 @@ pub fn add_excerpt_noted(
         note,
         &mut |_| {},
     )
+    .map(|(topic, _)| topic)
 }
 
 /// [`add_excerpt`] with a test seam: `before_write` runs once per attempt,
@@ -118,9 +143,11 @@ pub fn add_excerpt_with_hook(
         None,
         before_write,
     )
+    .map(|(topic, _)| topic)
 }
 
-/// [`add_excerpt`]: the writes, then the Correction.
+/// [`add_excerpt`]: the writes, then the Correction. Also returns the ids of
+/// the blocks it filed.
 #[allow(clippy::too_many_arguments)]
 fn add_excerpt_inner(
     vault: &mut Vault,
@@ -131,7 +158,7 @@ fn add_excerpt_inner(
     embedder: Option<&dyn Embedder>,
     note: Option<&str>,
     before_write: &mut dyn FnMut(&mut Vault),
-) -> Result<Note> {
+) -> Result<(Note, Vec<String>)> {
     let filed = file_blocks(
         vault,
         topic_note_id,
@@ -151,7 +178,8 @@ fn add_excerpt_inner(
             note,
         )?;
     }
-    Ok(filed.topic)
+    let ids = filed.blocks.into_iter().map(|block| block.id).collect();
+    Ok((filed.topic, ids))
 }
 
 /// What [`file_blocks`] did.
@@ -252,6 +280,29 @@ pub fn remove_excerpt(
     )
 }
 
+/// [`remove_excerpt`], also returning how many blocks it unfiled: the stored
+/// blocks of the day between the token's endpoints by ord, or its endpoints
+/// when the day or one of them is gone. A call that succeeds always unfiles
+/// at least one block; nothing to remove is `NotFound`.
+pub fn remove_excerpt_counted(
+    vault: &mut Vault,
+    topic_note_id: &NoteId,
+    date: &str,
+    block_ids: &[String],
+    caller: Caller,
+    embedder: Option<&dyn Embedder>,
+) -> Result<(Note, usize)> {
+    remove_excerpt_inner(
+        vault,
+        topic_note_id,
+        date,
+        block_ids,
+        caller,
+        embedder,
+        &mut |_| {},
+    )
+}
+
 /// [`remove_excerpt`] with the same test seam as [`add_excerpt_with_hook`].
 ///
 /// A token matches only with both endpoints equal: a single id never
@@ -267,6 +318,29 @@ pub fn remove_excerpt_with_hook(
     embedder: Option<&dyn Embedder>,
     before_write: &mut dyn FnMut(&mut Vault),
 ) -> Result<Note> {
+    remove_excerpt_inner(
+        vault,
+        topic_note_id,
+        date,
+        block_ids,
+        caller,
+        embedder,
+        before_write,
+    )
+    .map(|(topic, _)| topic)
+}
+
+/// [`remove_excerpt`]: the writes, then the Correction. Also returns how many
+/// blocks it unfiled ([`remove_excerpt_counted`]).
+fn remove_excerpt_inner(
+    vault: &mut Vault,
+    topic_note_id: &NoteId,
+    date: &str,
+    block_ids: &[String],
+    caller: Caller,
+    embedder: Option<&dyn Embedder>,
+    before_write: &mut dyn FnMut(&mut Vault),
+) -> Result<(Note, usize)> {
     let ids = requested_ids(block_ids)?;
     let day_date = daily::parse_iso_date(date)?;
     let from = ids[0];
@@ -274,6 +348,9 @@ pub fn remove_excerpt_with_hook(
     let removed = (caller == Caller::Person)
         .then(|| removed_excerpt(vault, topic_note_id, day_date, from, to))
         .transpose()?;
+    // Read before the write, so a failed read never reports an error for a
+    // removal that committed.
+    let removed_count = covered_ids(vault, day_date, from, to)?.1.len();
 
     let topic = write_topic(
         vault,
@@ -308,7 +385,7 @@ pub fn remove_excerpt_with_hook(
             None,
         )?;
     }
-    Ok(topic)
+    Ok((topic, removed_count))
 }
 
 /// What a person's [`remove_excerpt`] is about to remove, read before the write.
@@ -327,6 +404,22 @@ fn removed_excerpt(
     to: Option<&str>,
 ) -> Result<RemovedExcerpt> {
     let title = topic_note(vault, topic_note_id)?.title;
+    let (blocks, covered) = covered_ids(vault, day_date, from, to)?;
+    Ok(RemovedExcerpt {
+        title,
+        blocks: covered.iter().map(|id| blocks.excerpt_block(id)).collect(),
+    })
+}
+
+/// The day's stored blocks, and the ids between the endpoints `from` and `to`
+/// by ord, or just the endpoints when the day is gone or one of them no longer
+/// resolves.
+fn covered_ids(
+    vault: &Vault,
+    day_date: NaiveDate,
+    from: &str,
+    to: Option<&str>,
+) -> Result<(DayBlocks, Vec<String>)> {
     let blocks = match daily_note_for_date(vault, day_date)? {
         Some(day) => DayBlocks::load(vault, &day)?,
         None => DayBlocks::from_blocks(&[]),
@@ -337,10 +430,7 @@ fn removed_excerpt(
             .map(str::to_string)
             .collect()
     });
-    Ok(RemovedExcerpt {
-        title,
-        blocks: covered.iter().map(|id| blocks.excerpt_block(id)).collect(),
-    })
+    Ok((blocks, covered))
 }
 
 /// The two topic notes as stored after [`move_block`].

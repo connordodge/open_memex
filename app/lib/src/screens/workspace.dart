@@ -12,6 +12,7 @@ import '../state/vault_access_state.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
+import '../widgets/agents_sheet/agents_sheet.dart' show AgentsWindowMenuAttach;
 import '../widgets/atoms.dart';
 import '../vault_access/errors.dart';
 import '../widgets/canvas_view.dart';
@@ -51,6 +52,7 @@ class Workspace extends ConsumerWidget {
                             !rightOpen,
                   ),
                 ),
+                const AgentsWindowMenuAttach(), // Window ▸ Agents… (#407, D24)
               ],
             ),
           ),

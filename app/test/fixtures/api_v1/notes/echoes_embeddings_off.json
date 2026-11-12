@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "embeddings_off",
+    "message": "embeddings are off on this vault server (start it with --with-embeddings)"
+  }
+}

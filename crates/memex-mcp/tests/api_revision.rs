@@ -1,19 +1,22 @@
 //! WI #94 (R4): the hosted vault revision (D9, lead ruling on the busy
-//! placeholder).
+//! placeholder), and WI #419 (Spec #391 requirement 9, ruling D4): the value
+//! ignores vector-only writes.
 //!
 //! `GET /vaults/{name}/api/v1/revision` answers 200
-//! `{"revision": "<open_id>-<total_changes>-<data_version>"}`, read on the
-//! vault's one server connection:
+//! `{"revision": "<open_id>-<n>"}`, read on the vault's one server
+//! connection:
 //!
 //! - `open_id` is the registry entry's ULID, new for every open, so a
 //!   reopened vault (or a restarted server) never repeats a value;
-//! - `total_changes()` moves with the server connection's own commits;
-//! - `PRAGMA data_version` moves with commits by other connections (the CLI,
-//!   a stdio `memex serve`).
+//! - `n` is `content_revision.n` (schema V7, #415). Its triggers move it with
+//!   every committed row write by any connection (the server's own, the CLI,
+//!   a stdio `memex serve`) except writes to `chunk_vec` (vec0) and its
+//!   shadow tables, so a vector-only write (`embed_missing`, the backfill,
+//!   an orphan delete) leaves the revision as it was (D4).
 //!
 //! The route `try_lock`s the vault and never waits: while the vault is busy
 //! it answers the last value it computed for this `open_id`, or
-//! `<open_id>-0-0` when it has computed none yet.
+//! `<open_id>-0` when it has computed none yet.
 //!
 //! Most tests serve the app API with their own [`Registry`], so they can
 //! reach the registry entry's `AppState` (the connection app-API and `/mcp`
@@ -37,7 +40,7 @@ use axum::middleware::from_fn_with_state;
 use axum::routing::get as get_route;
 use axum::{Extension, Router};
 use memex_core::notes::{self, CreateNote};
-use memex_core::{SystemClock, Vault};
+use memex_core::{schema, SystemClock, Vault};
 use memex_mcp::server::registry::{Registry, VaultEntry};
 use memex_mcp::server::request_clock::{BaseClock, SharedClock};
 use memex_mcp::server::{api, vaults};
@@ -51,7 +54,8 @@ use api_fixtures::{
     FixtureResponse, SEED_VAULT_NAME,
 };
 use server::{
-    assert_wrong_method_is_c1_405, get, make_vault, raw_request, Reply, TestServer, TEST_TOKEN,
+    assert_wrong_method_is_c1_405, client, get, make_vault, post_json, raw_request, Reply,
+    TestServer, TEST_TOKEN,
 };
 
 /// How long a revision read may take while the vault is busy (AC 4).
@@ -165,17 +169,65 @@ fn revision_of(reply: &Reply) -> String {
     revision
 }
 
-/// `<ULID>-<int>-<int>` split into its three parts.
-fn parts(revision: &str) -> (String, u64, u64) {
-    let re = Regex::new(r"^([0-7][0-9A-HJKMNP-TV-Z]{25})-(\d+)-(\d+)$").unwrap();
-    let c = re.captures(revision).unwrap_or_else(|| {
-        panic!("revision {revision:?} is <open_id>-<total_changes>-<data_version>")
-    });
-    (
-        c[1].to_string(),
-        c[2].parse().unwrap(),
-        c[3].parse().unwrap(),
+/// `<ULID>-<int>` split into its two parts (D4: `<open_id>-<n>`).
+fn parts(revision: &str) -> (String, u64) {
+    let re = Regex::new(r"^([0-7][0-9A-HJKMNP-TV-Z]{25})-(\d+)$").unwrap();
+    let c = re
+        .captures(revision)
+        .unwrap_or_else(|| panic!("revision {revision:?} is <open_id>-<content_revision.n>"));
+    (c[1].to_string(), c[2].parse().unwrap())
+}
+
+/// `content_revision.n`, read on the entry's server connection.
+async fn content_revision_n(entry: &VaultEntry) -> u64 {
+    let vault = entry.state.vault.lock().await;
+    let n: i64 = vault
+        .connection_ref()
+        .query_row("SELECT n FROM content_revision WHERE id = 1", [], |r| {
+            r.get(0)
+        })
+        .expect("content_revision has its row");
+    n as u64
+}
+
+/// A second connection on the served vault, in this process (so `vec0` is
+/// registered for it), standing in for a writer other than the server
+/// connection: a stdio `memex serve`, the backfill's own connection.
+fn other_connection(root: &Path, name: &str) -> Vault {
+    Vault::open(vault_dir(root, name)).expect("open a second connection")
+}
+
+/// One `chunk_vec` row (vec0, dimension 4) for `chunk_id`.
+fn insert_vector(vault: &Vault, chunk_id: &str, embedding: &str) {
+    vault
+        .connection_ref()
+        .execute(
+            "INSERT INTO chunk_vec (chunk_id, embedding) VALUES (?1, ?2)",
+            [chunk_id, embedding],
+        )
+        .unwrap_or_else(|e| panic!("insert chunk_vec {chunk_id}: {e}"));
+}
+
+/// Deletes the `chunk_vec` row of `chunk_id` (an orphan delete).
+fn delete_vector(vault: &Vault, chunk_id: &str) {
+    let gone = vault
+        .connection_ref()
+        .execute("DELETE FROM chunk_vec WHERE chunk_id = ?1", [chunk_id])
+        .unwrap_or_else(|e| panic!("delete chunk_vec {chunk_id}: {e}"));
+    assert_eq!(gone, 1, "fixture: {chunk_id} had a vector");
+}
+
+/// `PATCH /vaults/<name>/api/v1/notes/<id>` with `body`, as read.
+async fn patch_json(url: &str, body: &Value) -> Reply {
+    Reply::read(
+        client()
+            .patch(url)
+            .json(body)
+            .send()
+            .await
+            .expect("send PATCH"),
     )
+    .await
 }
 
 fn create_note_in(vault: &mut Vault, title: &str) -> notes::NoteId {
@@ -287,38 +339,42 @@ async fn revision_is_200_with_a_non_empty_string_and_stable_without_writes() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn revision_is_the_registry_open_id_then_total_changes_then_data_version() {
+async fn revision_is_the_registry_open_id_then_content_revision_n() {
     let root = tempfile::tempdir().unwrap();
     make_vault(root.path(), VAULT);
     let srv = Wi94Server::start(root.path()).await;
 
-    let revision = srv.revision(VAULT).await;
     let entry = srv.entry(VAULT).await;
-    let (open_id, total_changes, data_version) = parts(&revision);
-    assert_eq!(open_id, entry.open_id.to_string(), "prefix is the open_id");
-
-    // Read the same two numbers on the same server connection.
-    let (tc, dv): (u64, u64) = {
-        let vault = entry.state.vault.lock().await;
-        let conn = vault.connection_ref();
-        let tc: i64 = conn
-            .query_row("SELECT total_changes()", [], |r| r.get(0))
-            .unwrap();
-        let dv: i64 = conn
-            .query_row("PRAGMA data_version", [], |r| r.get(0))
-            .unwrap();
-        (tc as u64, dv as u64)
-    };
+    let fresh = srv.revision(VAULT).await;
     assert_eq!(
-        (total_changes, data_version),
-        (tc, dv),
-        "{revision} is <open_id>-<total_changes()>-<PRAGMA data_version> \
-         of the server connection"
+        fresh,
+        format!("{}-{}", entry.open_id, content_revision_n(&entry).await),
+        "a fresh vault: <open_id>-<content_revision.n>"
     );
-    assert_ne!(
+
+    // Two writes on the server connection, one by another connection: each
+    // value is the counter as it stands, read on the server connection.
+    for i in 0..2 {
+        write_on_server_connection(&entry, &format!("format {i}")).await;
+        let revision = srv.revision(VAULT).await;
+        let (open_id, n) = parts(&revision);
+        assert_eq!(open_id, entry.open_id.to_string(), "prefix is the open_id");
+        assert_eq!(
+            n,
+            content_revision_n(&entry).await,
+            "{revision} is <open_id>-<content_revision.n> after write {i}"
+        );
+        assert_ne!(n, 0, "a note write moved the counter");
+    }
+    {
+        let mut other = other_connection(root.path(), VAULT);
+        create_note_in(&mut other, "format by another connection");
+    }
+    let revision = srv.revision(VAULT).await;
+    assert_eq!(
         revision,
-        format!("{open_id}-0-0"),
-        "a computed value is never the busy placeholder"
+        format!("{}-{}", entry.open_id, content_revision_n(&entry).await),
+        "another connection's commit shows in n"
     );
 }
 
@@ -378,6 +434,183 @@ async fn a_write_on_the_server_connection_changes_the_next_revision() {
     for r in [&r1, &r2, &r3] {
         assert_eq!(parts(r).0, entry.open_id.to_string(), "the same open: {r}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// WI #419 AC 1: a vector-only write leaves it unchanged (D4)
+// ---------------------------------------------------------------------------
+
+/// `embed_missing` makes the vec0 table on first use: that alone is a
+/// vector-only write.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn creating_chunk_vec_leaves_the_revision_unchanged() {
+    let root = tempfile::tempdir().unwrap();
+    make_vault(root.path(), VAULT);
+    let srv = Wi94Server::start(root.path()).await;
+    let entry = srv.entry(VAULT).await;
+    write_on_server_connection(&entry, "has content").await;
+
+    let before = srv.revision(VAULT).await;
+    let other = other_connection(root.path(), VAULT);
+    schema::ensure_vector_table(other.connection_ref(), 4).expect("create chunk_vec");
+    assert_eq!(
+        srv.revision(VAULT).await,
+        before,
+        "creating chunk_vec (another connection) leaves it unchanged"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_chunk_vec_insert_leaves_the_revision_unchanged() {
+    let root = tempfile::tempdir().unwrap();
+    make_vault(root.path(), VAULT);
+    let srv = Wi94Server::start(root.path()).await;
+    let entry = srv.entry(VAULT).await;
+    write_on_server_connection(&entry, "has content").await;
+    let other = other_connection(root.path(), VAULT);
+    schema::ensure_vector_table(other.connection_ref(), 4).expect("create chunk_vec");
+
+    let before = srv.revision(VAULT).await;
+    let n_before = content_revision_n(&entry).await;
+
+    // A chunk_vec insert by another connection (the backfill's own).
+    insert_vector(&other, "C-419-A", "[1,0,0,0]");
+    insert_vector(&other, "C-419-B", "[0,1,0,0]");
+    assert_eq!(
+        srv.revision(VAULT).await,
+        before,
+        "a chunk_vec insert by another connection leaves it unchanged"
+    );
+
+    // A chunk_vec insert on the server connection itself.
+    {
+        let vault = entry.state.vault.lock().await;
+        insert_vector(&vault, "C-419-C", "[0,0,1,0]");
+    }
+    assert_eq!(
+        srv.revision(VAULT).await,
+        before,
+        "a chunk_vec insert on the server connection leaves it unchanged"
+    );
+
+    // Orphan deletes, by either connection.
+    delete_vector(&other, "C-419-A");
+    {
+        let vault = entry.state.vault.lock().await;
+        delete_vector(&vault, "C-419-B");
+    }
+    assert_eq!(
+        srv.revision(VAULT).await,
+        before,
+        "chunk_vec orphan deletes leave it unchanged"
+    );
+    assert_eq!(
+        content_revision_n(&entry).await,
+        n_before,
+        "no vector-only write moved content_revision.n"
+    );
+    drop(other);
+
+    // Control: the route still follows content writes.
+    write_on_server_connection(&entry, "a content write").await;
+    let after = srv.revision(VAULT).await;
+    assert_ne!(after, before, "a note write after them changes it");
+    assert_eq!(
+        after,
+        format!("{}-{}", entry.open_id, content_revision_n(&entry).await)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// WI #419 AC 2: a note save through the API changes it
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_note_save_through_the_api_changes_the_revision() {
+    let root = tempfile::tempdir().unwrap();
+    make_vault(root.path(), VAULT);
+    let srv = Wi94Server::start(root.path()).await;
+    let notes_url = srv.url(&format!("/vaults/{VAULT}/api/v1/notes"));
+
+    let r0 = srv.revision(VAULT).await;
+    let added = post_json(
+        &notes_url,
+        &serde_json::json!({"title": "Saved", "content_md": "first body\n"}),
+        None,
+    )
+    .await;
+    assert_eq!(added.status, 201, "POST /notes: {:?}", added.body);
+    let note_id = added.json()["note_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("POST /notes gives a note_id: {:?}", added.body))
+        .to_string();
+    let entry = srv.entry(VAULT).await;
+    let r1 = srv.revision(VAULT).await;
+    assert_ne!(r1, r0, "a note add through the API changes it");
+    assert_eq!(
+        r1,
+        format!("{}-{}", entry.open_id, content_revision_n(&entry).await),
+        "<open_id>-<content_revision.n> after the add"
+    );
+
+    let note = get(&format!("{notes_url}/{note_id}"), None).await;
+    assert_eq!(note.status, 200, "GET /notes/{note_id}: {:?}", note.body);
+    let version = note.json()["version"]
+        .as_i64()
+        .unwrap_or_else(|| panic!("the note has a version: {:?}", note.body));
+
+    let saved = patch_json(
+        &format!("{notes_url}/{note_id}"),
+        &serde_json::json!({"expected_version": version, "content_md": "second body\n"}),
+    )
+    .await;
+    assert_eq!(
+        saved.status, 200,
+        "PATCH /notes/{note_id}: {:?}",
+        saved.body
+    );
+    let r2 = srv.revision(VAULT).await;
+    assert!(
+        r2 != r1 && r2 != r0,
+        "a note save changes it: {r0} {r1} {r2}"
+    );
+    assert_eq!(
+        r2,
+        format!("{}-{}", entry.open_id, content_revision_n(&entry).await),
+        "<open_id>-<content_revision.n> after the save"
+    );
+    assert_eq!(srv.revision(VAULT).await, r2, "stable again with no write");
+}
+
+/// D4's write table: a learned word moves `n`; learning it again
+/// (`ON CONFLICT DO NOTHING`) does not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_learned_word_changes_the_revision_and_learning_it_again_does_not() {
+    let root = tempfile::tempdir().unwrap();
+    make_vault(root.path(), VAULT);
+    let srv = Wi94Server::start(root.path()).await;
+    let words_url = srv.url(&format!("/vaults/{VAULT}/api/v1/words"));
+
+    let r0 = srv.revision(VAULT).await;
+    let first = post_json(&words_url, &serde_json::json!({"word": "Zettel"}), None).await;
+    assert_eq!(first.status, 200, "POST /words: {:?}", first.body);
+    assert_eq!(first.json()["changed"], true, "{:?}", first.body);
+    let r1 = srv.revision(VAULT).await;
+    assert_ne!(r1, r0, "a new learned word changes it");
+    let entry = srv.entry(VAULT).await;
+    assert_eq!(
+        r1,
+        format!("{}-{}", entry.open_id, content_revision_n(&entry).await)
+    );
+
+    let again = post_json(&words_url, &serde_json::json!({"word": "zettel"}), None).await;
+    assert_eq!(again.status, 200, "POST /words again: {:?}", again.body);
+    assert_eq!(again.json()["changed"], false, "{:?}", again.body);
+    assert_eq!(
+        srv.revision(VAULT).await,
+        r1,
+        "a repeated word writes no row and leaves it unchanged"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -463,16 +696,18 @@ async fn a_busy_vault_answers_within_a_second_with_the_last_value_it_returned() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_vault_busy_before_its_first_revision_answers_the_open_id_zero_zero_placeholder() {
+async fn a_vault_busy_before_its_first_revision_answers_the_open_id_zero_placeholder() {
     let root = tempfile::tempdir().unwrap();
     make_vault(root.path(), VAULT);
     let srv = Wi94Server::start(root.path()).await;
 
-    // Opened by another route; no revision computed yet for this open.
+    // Opened by another route; no revision computed yet for this open. A
+    // note write moves the counter, so the real value can't be `-0`.
     let info = get(&srv.url(&format!("/vaults/{VAULT}/api/v1/info")), None).await;
     assert_eq!(info.status, 200, "{:?}", info.body);
     let entry = srv.entry(VAULT).await;
-    let placeholder = format!("{}-0-0", entry.open_id);
+    write_on_server_connection(&entry, "before the first revision").await;
+    let placeholder = format!("{}-0", entry.open_id);
 
     let busy = entry.state.vault.clone().lock_owned().await;
     for i in 0..2 {
@@ -493,6 +728,11 @@ async fn a_vault_busy_before_its_first_revision_answers_the_open_id_zero_zero_pl
     assert_ne!(
         real, placeholder,
         "the first real value is not the placeholder"
+    );
+    assert_eq!(
+        real,
+        format!("{}-{}", entry.open_id, content_revision_n(&entry).await),
+        "after release: <open_id>-<content_revision.n>"
     );
     assert_eq!(srv.revision(VAULT).await, real, "then stable");
 }
@@ -524,7 +764,7 @@ async fn a_reopened_vault_busy_before_its_first_revision_never_answers_the_old_o
     assert_ne!(answer, old, "never the previous open's cached value");
     assert_eq!(
         answer,
-        format!("{}-0-0", entry.open_id),
+        format!("{}-0", entry.open_id),
         "the cache is keyed by open_id"
     );
 }
@@ -588,9 +828,9 @@ async fn a_vault_restored_from_the_same_files_never_repeats_a_revision() {
     assert_ne!(again, first, "the restored vault is a fresh open");
     assert_ne!(parts(&again).0, first_open.to_string());
     assert_eq!(
-        (parts(&again).1, parts(&again).2),
-        (parts(&first).1, parts(&first).2),
-        "same files, same counters: only the open_id tells them apart"
+        parts(&again).1,
+        parts(&first).1,
+        "same files, same counter: only the open_id tells them apart"
     );
 }
 
@@ -705,7 +945,7 @@ fn revision_fixture_rows_match_the_server_over_the_seed_vault() {
         .expect("the response file is JSON");
     let revision = stored["revision"].as_str().unwrap_or_default();
     assert!(
-        Regex::new(r"^<id:1>-\d+-\d+$").unwrap().is_match(revision),
+        Regex::new(r"^<id:1>-\d+$").unwrap().is_match(revision),
         "the stored revision is normalized (open_id as <id:1>): {stored}"
     );
     assert!(

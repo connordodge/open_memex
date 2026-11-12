@@ -13,6 +13,7 @@
 //   `Create "<name>"` row).
 import 'dart:convert';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
@@ -362,10 +363,26 @@ Future<F260> pumpF260(
 
 // ---------- driving ----------
 
+/// Taps the widget with [key].
+///
+/// TEST-CHANGE (a), Spec #393 / WI #398: a fix button is hidden, and ignores
+/// pointer taps, until its row is hovered or focused. So a mouse first
+/// hovers the centre of [key] (revealing its row), then the tap lands there.
+/// For any other widget the hover changes nothing. The mouse is a device of
+/// its own, so it never collides with a mouse the test holds.
 Future<void> f260Tap(WidgetTester tester, Key key) async {
   final f = find.byKey(key);
   expect(f, findsOneWidget, reason: '$key');
+  final mouse = TestGesture(
+    dispatcher: tester.sendEventToBinding,
+    pointer: 0x7fff0260,
+    device: 0x7fff0260,
+    kind: PointerDeviceKind.mouse,
+  );
+  await mouse.addPointer(location: tester.getCenter(f));
+  await tester.pump();
   await tester.tap(f);
+  await mouse.removePointer();
   await pumpFrames(tester);
 }
 

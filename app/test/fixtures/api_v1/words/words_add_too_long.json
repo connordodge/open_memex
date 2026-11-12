@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "word_invalid",
+    "message": "word invalid: a learned word must be 1 to 64 characters with no whitespace, got \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\""
+  }
+}

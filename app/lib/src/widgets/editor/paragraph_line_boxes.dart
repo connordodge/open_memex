@@ -15,7 +15,8 @@ const int _newline = 0x0A;
 ///
 /// Line boxes come from the paragraph's own text span laid out again as the
 /// paragraph lays it out (strut, text scaler, constraints), reading each
-/// line's max-height selection boxes. The caret's x and [offsetAt] come from
+/// line's max-height selection boxes; each line's baseline from its line
+/// metrics (WI #437). The caret's x and [offsetAt] come from
 /// the paragraph itself. Offsets past the paragraph's text are clamped to
 /// its end. The paragraph holds only `TextSpan`s (TD4): a placeholder
 /// (`WidgetSpan`) is not measured.
@@ -91,6 +92,7 @@ class RenderParagraphLineBoxes implements LineBoxSource {
   /// Every line of [painter]'s laid-out [text], top to bottom.
   static List<LineBox> _linesOf(TextPainter painter, String text) {
     final lines = <LineBox>[];
+    final metrics = painter.computeLineMetrics();
     var start = 0;
     while (true) {
       final end = _lineEnd(painter, text, start);
@@ -120,6 +122,13 @@ class RenderParagraphLineBoxes implements LineBoxSource {
                     TextPosition(offset: start),
                     Rect.zero,
                   ),
+          baseline: measuredBaseline(
+            painter,
+            metrics,
+            lines.length,
+            top,
+            lines.lastOrNull,
+          ),
         ),
       );
       if (end >= text.length) break;

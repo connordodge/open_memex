@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../cli/footer_cli.dart';
@@ -168,11 +170,14 @@ Future<void> rebaseEditorOnVersionIn(
   content: content,
 );
 
+/// [keepTyped], when given, is applied to text typed during the read before
+/// the editor keeps it ([flushThenWrite]'s `carryOver`).
 Future<void> _rebaseEditorOnVersion(
   T Function<T>(ProviderListenable<T> provider) read, {
   required Note fallback,
   required int version,
   required String content,
+  String Function(String typed)? keepTyped,
 }) async {
   final editor = read(editorControllerProvider.notifier);
   final before = read(editorControllerProvider).contentMd;
@@ -184,7 +189,184 @@ Future<void> _rebaseEditorOnVersion(
   final now = read(editorControllerProvider);
   editor.loadNote(_atVersion(stored, version));
   editor.onTitleChanged(now.title);
-  editor.onContentChanged(now.contentMd == before ? content : now.contentMd);
+  editor.onContentChanged(
+    now.contentMd == before
+        ? content
+        : (keepTyped?.call(now.contentMd) ?? now.contentMd),
+  );
+}
+
+/// What a write shows when the edit waiting on the save debounce could not be
+/// stored before it (Spec #391 req 31, ruling D19).
+const saveFirstFailedMessage = 'Could not save your changes first.';
+
+/// [flushThenWrite] could not store the edit waiting on the save debounce, so
+/// it wrote nothing. Its message is [saveFirstFailedMessage]; [saveError] is
+/// the editor's save error when it shows one (the guide restore shows that
+/// instead, an echo link shows the fixed message).
+class SaveFirstFailedException extends MemexException {
+  SaveFirstFailedException({this.saveError}) : super(saveFirstFailedMessage);
+
+  /// The editor's `errorMessage` when the flush failed, or null.
+  final String? saveError;
+}
+
+/// Ruling D19, the one flush-then-write: stores the edit waiting on the save
+/// debounce (`flushPendingSaveAndWait`), runs [write] (which returns the
+/// version it gave [note]), then reads the stored note and rebases the editor
+/// on it with [rebaseEditorOnVersionIn]: the stored text when the editor still
+/// holds what was flushed, else the newer editor text. A failed flush runs no
+/// [write] and throws [SaveFirstFailedException]. A stored note that cannot be
+/// read after the write leaves the editor as it is.
+///
+/// [carryOver], when given, decides what the editor keeps when it no longer
+/// holds what was flushed (text typed while [write] or the read after it
+/// ran): from that typed text, the flushed text and the stored text it returns
+/// the text to keep, so newer typing does not drop what the write changed (an
+/// echo link, ruling D54). Without it the typed text is kept as it is (the
+/// guide restore).
+///
+/// [waitForSaves]: a save of the editor that is still in flight, or a flushed
+/// save that waits behind one, is not a failed flush: the helper waits for
+/// the editor's saves to land (`savesSettled`) and flushes again, a few times
+/// at most, and fails only when the editor shows a save error or conflict or
+/// still holds unsaved text after that. Without it any of these fails at once
+/// (the guide restore, which asks the person to retry).
+///
+/// [holdSaves]: from the flush until the rebase, the editor holds its
+/// debounced saves (`EditorController.holdSaves`), so text typed while
+/// [write] runs is not saved on the version [write] replaces (a version
+/// conflict); it saves after the rebase, on the version [write] stored. The
+/// helper then bumps `vaultRevisionProvider` exactly once when [write]
+/// succeeded or a save landed during the hold (the flushed edit), so the
+/// write and the edit saved before it reach the revision's watchers as one
+/// change, and nothing when neither happened. Without it the editor's saves
+/// bump as they land and the caller bumps for [write].
+///
+/// Calls on one [container] run one at a time, in call order: a call starts
+/// its flush only once every earlier call has finished, failed or not. Two at
+/// once would each take what was flushed before either wrote, so the later
+/// one would mistake the earlier one's rebase for newer typing and put back
+/// text without its own write.
+Future<void> flushThenWrite(
+  ProviderContainer container, {
+  required Note note,
+  required Future<int> Function() write,
+  FlushThenWriteCarryOver? carryOver,
+  bool waitForSaves = false,
+  bool holdSaves = false,
+}) {
+  Future<void> start() => _flushThenWrite(
+    container,
+    note: note,
+    write: write,
+    carryOver: carryOver,
+    waitForSaves: waitForSaves,
+    holdSaves: holdSaves,
+  );
+  final previous = _flushThenWriteTail[container];
+  final run = previous == null ? start() : previous.then((_) => start());
+  // The queue's tail never fails: a failed call still lets the next one run.
+  final tail = run.then<void>((_) {}, onError: (Object _) {});
+  _flushThenWriteTail[container] = tail;
+  unawaited(
+    tail.then((_) {
+      if (identical(_flushThenWriteTail[container], tail)) {
+        _flushThenWriteTail[container] = null;
+      }
+    }),
+  );
+  return run;
+}
+
+/// The last [flushThenWrite] still running on each container, if any.
+final _flushThenWriteTail = Expando<Future<void>>('flushThenWrite');
+
+/// What [flushThenWrite] keeps in the editor once it no longer holds the
+/// `flushed` text: made from the `typed` text it holds instead and the
+/// `stored` text the write left.
+typedef FlushThenWriteCarryOver =
+    String Function({
+      required String typed,
+      required String flushed,
+      required String stored,
+    });
+
+/// How many times [flushThenWrite] with `waitForSaves` waits for the
+/// editor's saves to land before it gives up on the flush.
+const _flushWaits = 3;
+
+Future<void> _flushThenWrite(
+  ProviderContainer container, {
+  required Note note,
+  required Future<int> Function() write,
+  FlushThenWriteCarryOver? carryOver,
+  required bool waitForSaves,
+  required bool holdSaves,
+}) async {
+  final editor = container.read(editorControllerProvider.notifier);
+  if (holdSaves) editor.holdSaves();
+  var wrote = false;
+  try {
+    if (!await _flush(container, editor, waitForSaves: waitForSaves)) {
+      throw SaveFirstFailedException(
+        saveError: container.read(editorControllerProvider).errorMessage,
+      );
+    }
+    final flushed = container.read(editorControllerProvider).contentMd;
+    final version = await write();
+    wrote = true;
+    final stored = await container
+        .read(vaultAccessProvider)
+        ?.notes
+        .getNote(note.id);
+    if (stored == null) return;
+    final carry = carryOver;
+    final keepTyped = carry == null
+        ? null
+        : (String typed) =>
+              carry(typed: typed, flushed: flushed, stored: stored.contentMd);
+    final now = container.read(editorControllerProvider).contentMd;
+    await _rebaseEditorOnVersion(
+      container.read,
+      fallback: note,
+      version: version,
+      content: now == flushed
+          ? stored.contentMd
+          : (keepTyped?.call(now) ?? now),
+      keepTyped: keepTyped,
+    );
+  } finally {
+    if (holdSaves) {
+      final saved = editor.releaseSaves();
+      if (wrote || saved) {
+        container.read(vaultRevisionProvider.notifier).state++;
+      }
+    }
+  }
+}
+
+/// [flushThenWrite]'s flush: true once the editor holds nothing unsaved.
+/// With [waitForSaves], a save in flight (or a flushed save waiting behind
+/// one) is waited for and the flush made again, at most [_flushWaits] times;
+/// a save error or conflict fails at once.
+Future<bool> _flush(
+  ProviderContainer container,
+  EditorController editor, {
+  required bool waitForSaves,
+}) async {
+  for (var waits = 0; ; waits++) {
+    if (await editor.flushPendingSaveAndWait()) return true;
+    final status = container.read(editorControllerProvider).status;
+    final vault = container.read(currentVaultProvider);
+    if (!waitForSaves ||
+        waits == _flushWaits ||
+        vault == null ||
+        (status != SaveStatus.saving && status != SaveStatus.dirty)) {
+      return false;
+    }
+    await editor.savesSettled(vault);
+  }
 }
 
 /// After a write to [note] through [access] has already succeeded (its new

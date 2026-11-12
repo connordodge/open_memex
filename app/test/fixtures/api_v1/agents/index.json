@@ -1,0 +1,4 @@
+[
+  {"method": "GET", "path": "/vaults/seed/api/v1/agents", "response": "agents.json", "status": 200},
+  {"method": "GET", "path": "/vaults/empty/api/v1/agents", "response": "agents_empty.json", "status": 200}
+]

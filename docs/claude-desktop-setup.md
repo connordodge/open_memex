@@ -70,6 +70,8 @@ You can also have Claude create notes once we've wired things up.
 
 This section points Claude Desktop at a local vault. For a hosted vault on a vault server (a NAS, a Linux box or an always-on Mac), use the `--remote` config in [Hosted vault](hosted-vault.md) instead.
 
+The Agents sheet (⇧⌘A, also Window ▸ Agents…, or `OPEN ↗` in the sidebar) is the quickest way to get these setup snippets filled in for this vault.
+
 Open your Claude Desktop config:
 
 - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`

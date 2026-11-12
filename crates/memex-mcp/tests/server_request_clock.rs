@@ -1189,7 +1189,7 @@ fn rewired_tools() -> Vec<(&'static str, &'static str, Value)> {
         ),
         (
             "update_smart_folder",
-            "Rename a Smart Folder, move it under parent_id, or move it to the top level with to_root: true. A folder the user pinned cannot be renamed or moved (pinned_rule). Returns the folder.",
+            "Rename a Smart Folder, move it under parent_id, or move it to the top level with to_root: true. A folder the user pinned cannot be renamed or moved (pinned_rule). Returns the folder and changed (false when neither its name nor its parent changed).",
             schema(
                 r#"{"$schema": "https://json-schema.org/draft/2020-12/schema", "properties": {"id": {"description": "The folder id.", "type": "string"}, "name": {"default": null, "description": "New name.", "type": ["string", "null"]}, "parent_id": {"default": null, "description": "New parent folder id.", "type": ["string", "null"]}, "to_root": {"default": null, "description": "Move the folder to the top level. Default false.", "type": ["boolean", "null"]}}, "required": ["id"], "title": "UpdateSmartFolderParams", "type": "object"}"#,
             ),

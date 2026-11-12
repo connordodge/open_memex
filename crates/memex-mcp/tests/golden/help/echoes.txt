@@ -1,0 +1,10 @@
+Find passages in other, unlinked notes that are close to a note
+
+Usage: memex echoes [OPTIONS] --vault <VAULT> --note-id <NOTE_ID>
+
+Options:
+      --vault <VAULT>      Vault directory
+      --note-id <NOTE_ID>  Note id (ULID)
+      --limit <LIMIT>      Most echoes to print, 1 to 20 [default: 8]
+      --allow-download     Download the embedding model (about 130 MB) into the vault if it is not cached
+  -h, --help               Print help

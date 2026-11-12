@@ -21,6 +21,8 @@ import 'footer_chip_row.dart';
 import 'line_boxes.dart';
 import 'live_preview_controller.dart';
 import 'segment_view.dart';
+import 'spell_check_host.dart';
+import 'spell_issue_scope.dart';
 import 'text_segment.dart';
 
 /// One segment of the note: an editable text run, an excerpt card or the
@@ -141,6 +143,9 @@ class SegmentedBody extends ConsumerStatefulWidget {
 
 class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
   final _kindChips = KindChipHost();
+
+  /// This note editor's spelling issues, per row field (WI #434).
+  final _spellIssues = SpellIssueRegistry();
   FocusNode? _ownPrimary;
   List<_Seg> _segs = const [];
   late bool _isDaily;
@@ -514,82 +519,95 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
     if (identical(row, _kindChips.target)) _kindChips.clear();
   }
 
+  /// The page under this note's spell checks (WI #436).
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => SpellCheckHost(
+    noteId: widget.note.id,
+    registry: _spellIssues,
+    child: _page(context),
+  );
+
+  Widget _page(BuildContext context) {
     final texts = _segs.whereType<_TextSeg>().toList();
     final single = texts.length == 1;
     final error = _error;
-    return EditorPage(
-      header: widget.header,
-      body: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          if (error != null)
-            InlineError(
-              message: error,
-              onDismiss: () => setState(() => _error = null),
-            ),
-          if (widget.errorMessage case final saveError?)
-            InlineError(
-              message: saveError,
-              onDismiss: () => widget.onDismissError?.call(),
-            ),
-          for (var i = 0; i < _segs.length; i++)
-            switch (_segs[i]) {
-              final _TextSeg t => KeyedSubtree(
-                key: ValueKey('text-segment-$i'),
-                child: SegmentView(
-                  key: ObjectKey(t.ctrl),
-                  index: i,
-                  controller: t.ctrl,
-                  focusNode: t.focus,
-                  revealGate: t.gate,
-                  minLines: single ? 12 : (identical(t, texts.last) ? 4 : 1),
-                  hintText: single
-                      ? 'type [[ to link a note · write markdown…'
-                      : null,
-                  onChanged: _onTextChanged,
-                  onRowRemoved: _onRowRemoved,
-                  fieldBuilder: (context, row) => TextSegmentField(
-                    controller: row.controller,
-                    focusNode: row.focusNode,
-                    kindChips: _kindChips,
-                    hintText: row.hintText,
-                    // Tight glyph boxes (design A); the row paints the
-                    // selection itself, as one block (EditorRow).
-                    selectionHeightStyle: ui.BoxHeightStyle.tight,
-                    paintsSelection: false,
-                    onMoveUp: row.first
-                        ? () => _neighbour(t, forward: false)
+    return SpellIssueScope(
+      registry: _spellIssues,
+      child: EditorPage(
+        header: widget.header,
+        body: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (error != null)
+              InlineError(
+                message: error,
+                onDismiss: () => setState(() => _error = null),
+              ),
+            if (widget.errorMessage case final saveError?)
+              InlineError(
+                message: saveError,
+                onDismiss: () => widget.onDismissError?.call(),
+              ),
+            for (var i = 0; i < _segs.length; i++)
+              switch (_segs[i]) {
+                final _TextSeg t => KeyedSubtree(
+                  key: ValueKey('text-segment-$i'),
+                  child: SegmentView(
+                    key: ObjectKey(t.ctrl),
+                    index: i,
+                    controller: t.ctrl,
+                    focusNode: t.focus,
+                    revealGate: t.gate,
+                    minLines: single ? 12 : (identical(t, texts.last) ? 4 : 1),
+                    hintText: single
+                        ? 'type [[ to link a note · write markdown…'
                         : null,
-                    onMoveDown: row.last
-                        ? () => _neighbour(t, forward: true)
-                        : null,
-                    dailyNoteId: _isSavedDaily ? widget.note.id : null,
-                    onTopicLinked: _onTopicLinked,
-                    onCreateError: _onCreateError,
+                    onChanged: _onTextChanged,
+                    onRowRemoved: _onRowRemoved,
+                    fieldBuilder: (context, row) => SpellCheckField(
+                      controller: row.controller,
+                      child: TextSegmentField(
+                        controller: row.controller,
+                        focusNode: row.focusNode,
+                        kindChips: _kindChips,
+                        hintText: row.hintText,
+                        // Tight glyph boxes (design A); the row paints the
+                        // selection itself, as one block (EditorRow).
+                        selectionHeightStyle: ui.BoxHeightStyle.tight,
+                        paintsSelection: false,
+                        onMoveUp: row.first
+                            ? () => _neighbour(t, forward: false)
+                            : null,
+                        onMoveDown: row.last
+                            ? () => _neighbour(t, forward: true)
+                            : null,
+                        dailyNoteId: _isSavedDaily ? widget.note.id : null,
+                        onTopicLinked: _onTopicLinked,
+                        onCreateError: _onCreateError,
+                      ),
+                    ),
+                    builder: (context, rows, boxes) =>
+                        _primaryKeyed(i == 0, t, rows, boxes),
                   ),
-                  builder: (context, rows, boxes) =>
-                      _primaryKeyed(i == 0, t, rows, boxes),
                 ),
+                final _CardSeg c => ExcerptCard(
+                  index: i,
+                  segment: c.segment,
+                  onRemove: _removing ? null : () => _remove(c),
+                ),
+                _FooterSeg() => const SizedBox.shrink(),
+              },
+            // Keyed per note: its writes, error and removed tags stay with it.
+            if (!_isGuide)
+              FooterChipBar(
+                key: ValueKey(widget.note.id),
+                note: widget.note,
+                onFocusEditor: _focusLastText,
               ),
-              final _CardSeg c => ExcerptCard(
-                index: i,
-                segment: c.segment,
-                onRemove: _removing ? null : () => _remove(c),
-              ),
-              _FooterSeg() => const SizedBox.shrink(),
-            },
-          // Keyed per note: its writes, error and removed tags stay with it.
-          if (!_isGuide)
-            FooterChipBar(
-              key: ValueKey(widget.note.id),
-              note: widget.note,
-              onFocusEditor: _focusLastText,
-            ),
-        ],
+          ],
+        ),
+        overlays: [KindChipLayer(host: _kindChips)],
       ),
-      overlays: [KindChipLayer(host: _kindChips)],
     );
   }
 

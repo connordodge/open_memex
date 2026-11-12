@@ -1,0 +1,6 @@
+Print the MCP tools and prompts this memex serves, as JSON
+
+Usage: memex tools
+
+Options:
+  -h, --help  Print help

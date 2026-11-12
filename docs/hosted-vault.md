@@ -251,6 +251,8 @@ Notes:
 
 Every client needs the server URL, the vault name and the access token. Replace `192.168.1.20` with your vault server's address, `home` with your vault's name, and the token with yours.
 
+The Agents sheet (⇧⌘A, also Window ▸ Agents…, or `OPEN ↗` in the sidebar) is the quickest way to get these setup snippets filled in for this vault.
+
 **The app.** Choose "connect to a vault server…", then paste the server URL (`http://192.168.1.20:7878`) and the access token. You can create a vault from the app after you connect, or pick one the server already has.
 
 **Claude Desktop, Raycast and other stdio clients** run `memex serve --remote <server-url>/vaults/<name>/mcp` as a bridge, with `MEMEX_ACCESS_TOKEN` in the client's `env`. The bridge sends your machine's current UTC offset with every request. It exits, so the client shows an error, if the token is missing, the server cannot be reached, the server answers 401, or the vault does not exist.

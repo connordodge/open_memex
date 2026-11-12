@@ -5,7 +5,7 @@
 //! block they came from. Search expands daily-note hits by overlapping these
 //! ranges with block ranges, so the offsets must be bytes, not chars.
 
-use memex_core::chunker::{chunk, Chunk};
+use memex_core::chunker::{chunk, split_blocks, Chunk};
 
 /// `n` filler words that no test queries for.
 fn filler(n: usize) -> String {
@@ -335,4 +335,219 @@ fn chunk_range_starts_at_the_first_block_and_ends_at_the_last_block() {
     let end = input.find("block.  ").unwrap() + "block.".len();
     assert_eq!((chunks[0].start_byte, chunks[0].end_byte), (start, end));
     assert_eq!(chunks[0].content, "Alpha block.\n\nBeta block.");
+}
+
+// ---------------------------------------------------------------------------
+// WI #418 (Spec #391 req 2, L6): transclusion-only blocks and the public
+// block splitter. A blank-line block made only of C4 transclusion tokens
+// (`![[YYYY-MM-DD#^id]]`, `![[YYYY-MM-DD#^a..^b]]`) and whitespace ends the
+// current chunk and is in no chunk. `split_blocks` is the chunker's own
+// splitter: `(offset, text)` per trimmed block, offsets in its input.
+// ---------------------------------------------------------------------------
+
+/// `(content, start_byte, end_byte)` of each chunk, in order.
+fn spans(chunks: &[Chunk]) -> Vec<(String, usize, usize)> {
+    chunks
+        .iter()
+        .map(|c| (c.content.clone(), c.start_byte, c.end_byte))
+        .collect()
+}
+
+/// The span of the first occurrence of `text` in `input`.
+fn span_of(input: &str, text: &str) -> (String, usize, usize) {
+    let start = input
+        .find(text)
+        .unwrap_or_else(|| panic!("{text:?} not in {input:?}"));
+    (text.to_string(), start, start + text.len())
+}
+
+/// Asserts every `(offset, text)` pair points at `text` in `input`.
+fn assert_blocks_point_into(input: &str, blocks: &[(usize, &str)]) {
+    for (offset, text) in blocks {
+        assert_eq!(
+            input.get(*offset..*offset + text.len()),
+            Some(*text),
+            "block {text:?} at offset {offset} must be that slice of its input"
+        );
+    }
+}
+
+#[test]
+fn a_transclusion_only_block_is_in_no_chunk_and_the_text_after_it_starts_a_new_chunk() {
+    let input = "Alpha para one.\n\nAlpha para two.\n\n![[2026-09-05#^b7k2m9]]\n\nOmega para.";
+    let chunks = chunk(input);
+    assert_eq!(
+        spans(&chunks),
+        vec![
+            span_of(input, "Alpha para one.\n\nAlpha para two."),
+            span_of(input, "Omega para."),
+        ],
+        "the token block ends the first chunk and is in neither"
+    );
+    let ords: Vec<i64> = chunks.iter().map(|c| c.ord).collect();
+    assert_eq!(ords, vec![0, 1], "ords stay consecutive");
+    for c in &chunks {
+        assert!(!c.content.contains("![["), "chunk {} holds a token", c.ord);
+    }
+}
+
+#[test]
+fn the_token_count_restarts_after_a_transclusion_only_block_ends_a_chunk() {
+    // Three blocks of equal size around a token block. If the running count
+    // survived the flush, the third block would look like an overflow and
+    // split off a third chunk; with the count restarted, blocks two and
+    // three pack together and their token_count is the sum of theirs.
+    let (a, b, c) = (filler(100), filler(100), filler(100));
+    let input = format!("{a}\n\n![[2026-09-05#^b7k2m9]]\n\n{b}\n\n{c}\n");
+    let chunks = chunk(&input);
+    assert_eq!(
+        spans(&chunks),
+        vec![
+            span_of(&input, &a),
+            span_of(&input, &format!("{}\n\n{c}", &b)),
+        ]
+    );
+    assert!(chunks[0].token_count > 0);
+    assert_eq!(
+        chunks[1].token_count,
+        2 * chunks[0].token_count,
+        "the second chunk counts only its own two blocks"
+    );
+}
+
+#[test]
+fn a_block_of_several_tokens_and_whitespace_is_transclusion_only() {
+    let input = "Before 🎉.\n\n  ![[2026-09-05#^b7k2m9]]  ![[2026-09-05#^c3d4e5..^f6g7h8]]\n\t![[2026-09-06#^zz9]]![[2026-09-06#^a1]] \n\nAfter.";
+    assert_eq!(
+        spans(&chunk(input)),
+        vec![span_of(input, "Before 🎉."), span_of(input, "After.")],
+        "tokens, ranges, tabs, spaces and newlines alone make a transclusion-only block"
+    );
+}
+
+#[test]
+fn transclusion_only_blocks_first_and_last_leave_only_the_middle_chunk() {
+    let input = "![[2026-09-05#^b7k2m9]]\n\nZoë 😀 middle text.\n\n![[2026-09-05#^c3d4e5]]\n";
+    assert_eq!(
+        spans(&chunk(input)),
+        vec![span_of(input, "Zoë 😀 middle text.")]
+    );
+}
+
+#[test]
+fn a_note_made_only_of_transclusion_blocks_has_no_chunks() {
+    let input = "![[2026-09-05#^b7k2m9]]\n\n  ![[2026-09-06#^c3d4e5..^f6g7h8]]  \n";
+    let chunks = chunk(input);
+    assert!(
+        chunks.is_empty(),
+        "no chunk for a body of transclusion-only blocks: {:?}",
+        spans(&chunks)
+    );
+}
+
+#[test]
+fn a_block_mixing_a_token_with_text_stays_in_its_chunk() {
+    // Guards the other arm: only a block of tokens and whitespace is dropped.
+    let input = "Loop notes. ![[2026-09-05#^b7k2m9]]\n\n![[2026-09-05#^c3d4e5]] trailing words\n\n[[Plain Link]]\n\n![alt](image.png)\n\n![[2026-09-05#^bad-id!]]";
+    let chunks = chunk(input);
+    assert_eq!(
+        spans(&chunks),
+        vec![(input.to_string(), 0, input.len())],
+        "every block has more than tokens and whitespace, so all pack into one chunk"
+    );
+}
+
+#[test]
+fn split_blocks_returns_each_blank_line_block_with_its_byte_offset_in_its_input() {
+    let input = "  Café ☕ alpha.\n\nBeta line one\nline two  \n\n\n\n\tZoë 😀 gamma";
+    let blocks = split_blocks(input);
+    assert_eq!(
+        blocks,
+        vec![
+            (2, "Café ☕ alpha."),
+            (input.find("Beta").unwrap(), "Beta line one\nline two"),
+            (input.find("Zoë").unwrap(), "Zoë 😀 gamma"),
+        ],
+        "trimmed blocks at UTF-8 byte offsets"
+    );
+    assert_blocks_point_into(input, &blocks);
+}
+
+#[test]
+fn split_blocks_leaves_transclusion_only_blocks_out() {
+    let input = "Intro.\n\n![[2026-09-05#^b7k2m9]]\n\n  ![[2026-09-05#^c3d4e5..^f6g7h8]] \n ![[2026-09-06#^a1]]\t\n\nSee ![[2026-09-05#^b7k2m9]] inline.\n\nOutro.";
+    let blocks = split_blocks(input);
+    assert_eq!(
+        blocks,
+        vec![
+            (0, "Intro."),
+            (
+                input.find("See ").unwrap(),
+                "See ![[2026-09-05#^b7k2m9]] inline."
+            ),
+            (input.find("Outro.").unwrap(), "Outro."),
+        ]
+    );
+    assert_blocks_point_into(input, &blocks);
+}
+
+#[test]
+fn split_blocks_of_blank_input_is_empty() {
+    assert!(split_blocks("").is_empty());
+    assert!(split_blocks("  \n\n \t \n\n").is_empty());
+}
+
+#[test]
+fn split_blocks_of_a_chunk_points_back_into_the_chunked_input() {
+    // V2 (#421) splits a stored chunk's text with this splitter and adds the
+    // chunk's start_byte, so a block's offset in the body is
+    // chunk.start_byte + its offset in the chunk.
+    let input =
+        "\n\n  Alpha block.\n\nBeta block 🎉.\n\n\n![[2026-09-05#^b7k2m9]]\n\nGamma ☕.\n\nDelta.";
+    let whole = split_blocks(input);
+    assert_eq!(
+        whole.iter().map(|b| b.1).collect::<Vec<_>>(),
+        vec!["Alpha block.", "Beta block 🎉.", "Gamma ☕.", "Delta."],
+        "precondition: four prose blocks"
+    );
+    let chunks = chunk(input);
+    assert_eq!(chunks.len(), 2, "the token block splits the note in two");
+    let mut rebuilt: Vec<(usize, &str)> = Vec::new();
+    for c in &chunks {
+        assert_eq!(
+            &input[c.start_byte..c.end_byte],
+            c.content,
+            "chunk {} is its slice",
+            c.ord
+        );
+        for (offset, text) in split_blocks(&c.content) {
+            let abs = c.start_byte + offset;
+            assert_eq!(input.get(abs..abs + text.len()), Some(text));
+            rebuilt.push((abs, &input[abs..abs + text.len()]));
+        }
+    }
+    assert_eq!(
+        rebuilt, whole,
+        "chunk blocks are exactly the input's blocks"
+    );
+}
+
+#[test]
+fn a_block_with_text_between_two_tokens_or_before_the_first_is_not_transclusion_only() {
+    // Text between tokens, before the first token and after the last all keep
+    // a block in its chunk.
+    for block in [
+        "![[2026-09-05#^b7k2m9]] and ![[2026-09-05#^c3d4e5]]",
+        "see ![[2026-09-05#^b7k2m9]]",
+        "![[2026-09-05#^b7k2m9]] see",
+    ] {
+        let input = format!("Before.\n\n{block}\n\nAfter.");
+        let chunks = chunk(&input);
+        assert_eq!(
+            spans(&chunks),
+            vec![(input.clone(), 0, input.len())],
+            "{block:?} stays in the chunk"
+        );
+        assert_eq!(split_blocks(&input).len(), 3, "{block:?} stays a block");
+    }
 }

@@ -11,10 +11,13 @@ use axum::http::StatusCode;
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use memex_core::app_reads::notes as reads;
+use memex_core::echoes::echoes;
 use memex_core::{Clock, NoteId};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::backfill::VaultLease;
+use crate::cli::echoes::validate_limit;
 use crate::cli::{InvalidArgument, Role};
 use crate::ops::{links as link_ops, notes as note_ops};
 use crate::server::error::{ApiError, ApiJson, ApiPath, ApiQuery};
@@ -31,6 +34,7 @@ pub fn router() -> Router {
         )
         .route("/notes/{note_id}/links/out", get(links_out))
         .route("/notes/{note_id}/links/in", get(links_in))
+        .route("/notes/{note_id}/echoes", get(note_echoes))
         .route("/titles", get(all_titles))
         .route("/titles/lookup", post(titles_lookup))
         .route("/link-kinds", get(link_kinds))
@@ -100,6 +104,44 @@ async fn links_out(
     })
     .await?;
     Ok(Json(json!({ "links": links })))
+}
+
+/// The `others_cap` of the route's echoes read: the server's background
+/// backfill embeds the other notes (Spec #391 req 11.1).
+const ECHOES_OTHERS_CAP: usize = 0;
+
+/// `GET /notes/{note_id}/echoes?limit=N` (Spec #391 req 19): `memex
+/// echoes`' JSON, `{echoes, reason, pending}`, with `limit` 1 to 20.
+///
+/// Without an embedder (`--with-embeddings` off) it is `embeddings_off`; a
+/// missing note is the core's `not_found`. `echoes()` runs on a blocking
+/// thread through a [`VaultLease`], so the vault lock is held only for each
+/// lease call and never across inference.
+async fn note_echoes(
+    ServedVault(entry): ServedVault,
+    ApiPath(path): ApiPath<NotePath>,
+    ApiQuery(q): ApiQuery<LimitQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let Some(embedder) = entry.state.embedder.clone() else {
+        return Err(ApiError::new(
+            "embeddings_off",
+            "embeddings are off on this vault server (start it with --with-embeddings)",
+        ));
+    };
+    let limit = validate_limit(q.limit)?;
+    let vault = entry.state.vault.clone();
+    let out = tokio::task::spawn_blocking(move || {
+        echoes(
+            &mut VaultLease::new(vault),
+            &*embedder,
+            &path.note_id,
+            limit,
+            ECHOES_OTHERS_CAP,
+        )
+    })
+    .await
+    .map_err(|e| ApiError::from(anyhow::anyhow!("vault task failed: {e}")))??;
+    Ok(Json(serde_json::to_value(out)?))
 }
 
 /// `?kind=` of the incoming-links read.

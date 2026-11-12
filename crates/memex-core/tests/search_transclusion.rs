@@ -18,6 +18,7 @@ use std::collections::BTreeSet;
 
 use memex_core::chunker;
 use memex_core::embedder::{Embedder, FakeEmbedder};
+use memex_core::excerpts::add_excerpt;
 use memex_core::indexer;
 use memex_core::notes::{
     create_note_as, get_note, update_note_as, CreateNote, Note, NoteId, RenameOptions, UpdateNote,
@@ -827,10 +828,12 @@ fn chunk_with_one_null_byte_bound_never_expands() {
 fn topic_chunks_hold_the_token_text_not_the_transcluded_block_text() {
     let (_d, mut vault) = fresh_vault();
     fixture_day(&mut vault);
+    // The token shares a block with prose: a transclusion-only block is in
+    // no chunk (WI #418, Spec #391 req 2).
     let topic = create_topic(
         &mut vault,
         "Player Loop",
-        "Loop notes.\n\n![[2026-09-05#^b7k2m9]]\n",
+        "Loop notes. ![[2026-09-05#^b7k2m9]]\n",
     );
 
     let rows = chunk_rows(&vault, &topic.id);
@@ -1204,7 +1207,7 @@ fn expanded_hit_points_at_the_topic_chunk_holding_the_token() {
         &mut vault,
         "Player Loop",
         &format!(
-            "Opening thoughts. {}\n\nMore notes here.\n\n![[2026-09-05#^b7k2m9]]\n",
+            "Opening thoughts. {}\n\nMore notes here. ![[2026-09-05#^b7k2m9]]\n",
             filler(300)
         ),
     );
@@ -1231,6 +1234,141 @@ fn expanded_hit_points_at_the_topic_chunk_holding_the_token() {
         "{:?}",
         expanded.snippet
     );
+}
+
+/// Asserts the token of `topic` sits in no stored chunk of it and returns
+/// the chunks' ids by ord. Spec #391 req 2: a transclusion-only block is in
+/// no chunk, so the D25 expansion cannot find a chunk holding the token.
+fn chunk_ids_with_the_token_in_none(vault: &Vault, topic: &Note) -> Vec<String> {
+    let body = get_note(vault, &topic.id).unwrap().content_md;
+    let at = body.find("![[2026-09-05#^b7k2m9]]").expect("token in body") as i64;
+    for (ord, _, start, end) in chunk_rows(vault, &topic.id) {
+        let (s, e) = (start.unwrap(), end.unwrap());
+        assert!(
+            !(s <= at && at < e),
+            "precondition: chunk {ord} {s}..{e} must not hold the token at {at}"
+        );
+    }
+    let mut stmt = vault
+        .connection_ref()
+        .prepare("SELECT id FROM chunks WHERE note_id = ? ORDER BY ord")
+        .unwrap();
+    let ids = stmt
+        .query_map([topic.id.as_str()], |r| r.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    ids
+}
+
+/// The one expanded hit of `fts("jump")`, after checking the hit order.
+fn the_expanded_jump_hit(vault: &Vault, topic: &Note) -> SearchHit {
+    let hits = fts(vault, "jump", 10);
+    assert_eq!(
+        summary(&hits),
+        vec![direct(DAY), via("Player Loop", DAY)],
+        "{hits:?}"
+    );
+    assert_eq!(hits[1].note_id, topic.id.as_str());
+    hits[1].clone()
+}
+
+fn assert_snippet_is_the_transcluded_text(hit: &SearchHit) {
+    assert!(
+        hit.snippet.contains("Fixed the jump arc."),
+        "the snippet is the transcluded text: {:?}",
+        hit.snippet
+    );
+    assert!(
+        !hit.snippet.contains("![["),
+        "never the raw token: {:?}",
+        hit.snippet
+    );
+}
+
+#[test]
+fn an_excerpt_in_its_own_block_expands_to_the_nearest_chunk_before_it_with_the_transcluded_text() {
+    // The layout `add_excerpt` writes: `## <date>`, a blank line, the token
+    // as its own block, at the end of a multi-chunk topic.
+    let (_d, mut vault) = fresh_vault();
+    fixture_day(&mut vault);
+    let topic = create_topic(
+        &mut vault,
+        "Player Loop",
+        &format!(
+            "Opening thoughts. {}\n\nMiddle section. {}\n",
+            filler(300),
+            filler(300)
+        ),
+    );
+    add_excerpt(
+        &mut vault,
+        &topic.id,
+        DAY,
+        &["b7k2m9".to_string()],
+        Caller::Person,
+        None,
+    )
+    .unwrap();
+    let ids = chunk_ids_with_the_token_in_none(&vault, &topic);
+    assert!(ids.len() >= 2, "precondition: a multi-chunk topic: {ids:?}");
+
+    let hit = the_expanded_jump_hit(&vault, &topic);
+    let last = ids.len() - 1;
+    assert_eq!(hit.ord, last as i64, "the nearest chunk before the token");
+    assert_eq!(hit.chunk_id, ids[last]);
+    assert_snippet_is_the_transcluded_text(&hit);
+}
+
+#[test]
+fn an_excerpt_before_all_chunks_expands_to_the_nearest_chunk_after_it_with_the_transcluded_text() {
+    let (_d, mut vault) = fresh_vault();
+    fixture_day(&mut vault);
+    let topic = create_topic(
+        &mut vault,
+        "Player Loop",
+        &format!(
+            "![[2026-09-05#^b7k2m9]]\n\nAfter the excerpt. {}\n\nFurther on. {}\n",
+            filler(300),
+            filler(300)
+        ),
+    );
+    let ids = chunk_ids_with_the_token_in_none(&vault, &topic);
+    assert!(ids.len() >= 2, "precondition: a multi-chunk topic: {ids:?}");
+
+    let hit = the_expanded_jump_hit(&vault, &topic);
+    assert_eq!(
+        hit.ord, 0,
+        "the nearest chunk after the token, not a later one"
+    );
+    assert_eq!(hit.chunk_id, ids[0]);
+    assert_snippet_is_the_transcluded_text(&hit);
+}
+
+#[test]
+fn an_excerpt_between_two_chunks_expands_to_the_chunk_before_it_even_when_the_one_after_is_nearer()
+{
+    let (_d, mut vault) = fresh_vault();
+    fixture_day(&mut vault);
+    let topic = create_topic(
+        &mut vault,
+        "Player Loop",
+        &format!(
+            "Before the excerpt. {}\n\n![[2026-09-05#^b7k2m9]]\n\nAfter the excerpt. {}\n",
+            filler(300),
+            filler(300)
+        ),
+    );
+    let ids = chunk_ids_with_the_token_in_none(&vault, &topic);
+    assert_eq!(ids.len(), 2, "precondition: one chunk each side: {ids:?}");
+
+    let hit = the_expanded_jump_hit(&vault, &topic);
+    assert_eq!(
+        hit.ord, 0,
+        "the chunk before the token wins over the nearer one after"
+    );
+    assert_eq!(hit.chunk_id, ids[0]);
+    assert_snippet_is_the_transcluded_text(&hit);
 }
 
 #[test]

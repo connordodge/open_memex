@@ -35,6 +35,9 @@ pub enum MemexError {
     #[error("embedder inference failed: {0}")]
     EmbedderInfer(String),
 
+    #[error("embedding model not downloaded")]
+    ModelNotDownloaded,
+
     #[error("title conflicts with existing note {existing_id}: {attempted_title}")]
     TitleConflict {
         existing_id: String,
@@ -90,6 +93,9 @@ pub enum MemexError {
 
     #[error("setting invalid: {0}")]
     SettingInvalid(String),
+
+    #[error("word invalid: {0}")]
+    WordInvalid(String),
 
     /// The detail names the path and the filesystem type (req 30).
     #[error("vault folder is on a network filesystem: {0}")]
@@ -161,6 +167,9 @@ impl MemexError {
             MemexError::InvalidDate(_) => "invalid_date",
             MemexError::BlockNotFound(_) => "block_not_found",
             MemexError::SettingInvalid(_) => "setting_invalid",
+            MemexError::WordInvalid(_) => "word_invalid",
+            MemexError::ModelNotDownloaded => "model_not_downloaded",
+            MemexError::EmbedderInit(_) | MemexError::EmbedderInfer(_) => "embedder_unavailable",
             MemexError::NetworkFilesystem(_) => "network_filesystem",
             MemexError::UnknownTag(_) => "unknown_tag",
             MemexError::TagRemoved(_) => "tag_removed",
@@ -180,8 +189,6 @@ impl MemexError {
             | MemexError::ManifestInvalid(_)
             | MemexError::SchemaUnsupported { .. }
             | MemexError::InvalidPath(_)
-            | MemexError::EmbedderInit(_)
-            | MemexError::EmbedderInfer(_)
             | MemexError::TitleInvalid(_)
             | MemexError::TooManyDedupCollisions { .. }
             | MemexError::InvalidLinkKind(_)
@@ -255,6 +262,8 @@ impl MemexError {
             | MemexError::InvalidPath(_)
             | MemexError::EmbedderInit(_)
             | MemexError::EmbedderInfer(_)
+            | MemexError::ModelNotDownloaded
+            | MemexError::WordInvalid(_)
             | MemexError::TitleInvalid(_)
             | MemexError::TooManyDedupCollisions { .. }
             | MemexError::InvalidLinkKind(_)

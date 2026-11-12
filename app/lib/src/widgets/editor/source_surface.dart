@@ -4,7 +4,11 @@ import 'package:flutter/services.dart';
 import '../../editor/editor_rows.dart';
 import '../../editor/list_indent.dart';
 import '../../editor/row_edits.dart';
+import '../../state/spell_check_controller.dart';
 import '../inline_error.dart';
+import 'spell_check_host.dart';
+import 'spell_issue_scope.dart';
+import 'spell_squiggles.dart';
 import 'text_segment.dart';
 
 /// The plain markdown editing surface (Key `editor-source-surface`): a
@@ -23,6 +27,8 @@ class SourceSurface extends StatefulWidget {
     this.bodyFocusNode,
     this.dailyNoteId,
     this.onTopicLinked,
+    this.noteId,
+    this.noteRole,
   });
   final TextEditingController bodyCtrl;
   final ValueChanged<String> onContentChanged;
@@ -46,12 +52,20 @@ class SourceSurface extends StatefulWidget {
   /// added.
   final void Function(int version)? onTopicLinked;
 
+  /// The note being edited and its role (WI #436): its body is spell
+  /// checked, the Note footer excluded. Null: no spell checking.
+  final String? noteId;
+  final String? noteRole;
+
   @override
   State<SourceSurface> createState() => _SourceSurfaceState();
 }
 
 class _SourceSurfaceState extends State<SourceSurface> {
   final _kindChips = KindChipHost();
+
+  /// This note editor's spelling issues, per row field (WI #434).
+  final _spellIssues = SpellIssueRegistry();
 
   /// The CLI message of a failed autocomplete create in a daily note.
   String? _createError;
@@ -142,46 +156,68 @@ class _SourceSurfaceState extends State<SourceSurface> {
     return KeyEventResult.handled;
   }
 
+  /// The page under this note's spell checks (WI #436).
   @override
   Widget build(BuildContext context) {
-    return EditorPage(
-      key: const Key('editor-source-surface'),
-      header: widget.header,
-      errorMessage: widget.errorMessage,
-      body: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          if (_createError case final message?)
-            InlineError(
-              message: message,
-              onDismiss: () => setState(() => _createError = null),
-            ),
-          KeyedSubtree(
-            key: const Key('editor-body'),
-            // List continuation (R31, D15): an ancestor of the field's own
-            // node, so the `[[` popover sees Enter first.
-            child: Focus(
-              canRequestFocus: false,
-              skipTraversal: true,
-              onKeyEvent: _onKey,
-              child: TextSegmentField(
-                controller: widget.bodyCtrl,
-                focusNode: widget.bodyFocusNode,
-                onChanged: widget.onContentChanged,
-                kindChips: _kindChips,
-                minLines: 12,
-                hintText: 'type [[ to link a note · write markdown…',
-                dailyNoteId: widget.dailyNoteId,
-                onTopicLinked: widget.onTopicLinked,
-                onCreateError: (message) {
-                  if (mounted) setState(() => _createError = message);
-                },
+    final noteId = widget.noteId;
+    if (noteId == null) return _page(context);
+    return SpellCheckHost(
+      noteId: noteId,
+      registry: _spellIssues,
+      footerStartOf: (text) => spellFooterStart(text, role: widget.noteRole),
+      child: _page(context),
+    );
+  }
+
+  Widget _page(BuildContext context) {
+    return SpellIssueScope(
+      registry: _spellIssues,
+      child: EditorPage(
+        key: const Key('editor-source-surface'),
+        header: widget.header,
+        errorMessage: widget.errorMessage,
+        body: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (_createError case final message?)
+              InlineError(
+                message: message,
+                onDismiss: () => setState(() => _createError = null),
+              ),
+            KeyedSubtree(
+              key: const Key('editor-body'),
+              // List continuation (R31, D15): an ancestor of the field's own
+              // node, so the `[[` popover sees Enter first.
+              child: Focus(
+                canRequestFocus: false,
+                skipTraversal: true,
+                onKeyEvent: _onKey,
+                child: SpellCheckField(
+                  controller: widget.bodyCtrl,
+                  // Spelling squiggles and hint (WI #437).
+                  child: SpellSquiggles(
+                    controller: widget.bodyCtrl,
+                    child: TextSegmentField(
+                      controller: widget.bodyCtrl,
+                      focusNode: widget.bodyFocusNode,
+                      onChanged: widget.onContentChanged,
+                      kindChips: _kindChips,
+                      minLines: 12,
+                      hintText: 'type [[ to link a note · write markdown…',
+                      dailyNoteId: widget.dailyNoteId,
+                      onTopicLinked: widget.onTopicLinked,
+                      onCreateError: (message) {
+                        if (mounted) setState(() => _createError = message);
+                      },
+                    ),
+                  ),
+                ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
+        overlays: [KindChipLayer(host: _kindChips)],
       ),
-      overlays: [KindChipLayer(host: _kindChips)],
     );
   }
 }

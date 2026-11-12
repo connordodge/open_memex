@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::embedder::Embedder;
 use crate::link_extractor::{parse_transclusions, TransclusionToken};
 use crate::links::{daily_note_id_for_title, LinkKind};
-use crate::transclusion::resolve_span;
+use crate::transclusion::{render, resolve_span};
 use crate::Result;
 
 const RRF_K: f32 = 60.0;
@@ -142,7 +142,8 @@ pub fn search(conn: &Connection, opts: SearchOptions<'_>) -> Result<SearchResult
 
 /// A topic note found through a transclusion of a daily-note hit's blocks.
 /// `chunk_id`, `ord` and `snippet` are the topic's own chunk that holds the
-/// covering `![[…]]` token.
+/// covering `![[…]]` token; for a topic with no chunks they are `""`, 0 and
+/// the token's transcluded text (D36).
 struct Expansion {
     note_id: String,
     note_title: String,
@@ -271,19 +272,29 @@ fn transcluding_topics(
         if !passes_filters(conn, &note_id, filters) {
             continue;
         }
-        // The topic chunk holding the token, else its first chunk (a topic
-        // whose chunks have no stored range yet).
-        let chunk: Option<(String, i64, String)> = conn
+        // The topic chunk holding the token, else the nearest chunk before
+        // it, else the nearest after it, else its first chunk (a topic whose
+        // chunks have no stored range yet). A token in a transclusion-only
+        // block is in no chunk (Spec #391 req 2), so its hit points at the
+        // nearest chunk and shows the transcluded text as its snippet. A
+        // topic with no chunks still expands, with `chunk_id ""`, ord 0 and
+        // the transcluded text as its snippet (D36).
+        let chunk: Option<(String, i64, String, bool)> = conn
             .query_row(
-                "SELECT id, ord, content FROM chunks WHERE note_id = ?1
-                  ORDER BY (start_byte <= ?2 AND ?2 < end_byte) DESC, ord
+                "SELECT id, ord, content, start_byte IS NULL OR end_byte IS NULL
+                         OR (start_byte <= ?2 AND ?2 < end_byte)
+                   FROM chunks WHERE note_id = ?1
+                  ORDER BY (start_byte <= ?2 AND ?2 < end_byte) DESC,
+                           (start_byte <= ?2) DESC, abs(start_byte - ?2), ord
                   LIMIT 1",
                 params![note_id, token.start as i64],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .optional()?;
-        let Some((chunk_id, ord, content)) = chunk else {
-            continue;
+        let (chunk_id, ord, content) = match chunk {
+            Some((id, ord, content, true)) => (id, ord, content),
+            Some((id, ord, _, false)) => (id, ord, render(conn, &token)?.text),
+            None => (String::new(), 0, render(conn, &token)?.text),
         };
         out.push(Expansion {
             note_id,

@@ -1,0 +1,236 @@
+{
+  "prompts": [
+    {
+      "name": "capture",
+      "summary": "Saves each message to today's daily note, files it and says where it went."
+    },
+    {
+      "name": "review_daily_notes",
+      "summary": "Reviews each unreviewed daily note: files blocks, links topics, marks the day reviewed."
+    }
+  ],
+  "tools": [
+    {
+      "group": "daily",
+      "name": "add_excerpt",
+      "summary": "Files blocks of a daily note into a topic note as an excerpt.",
+      "writes": true
+    },
+    {
+      "group": "tags",
+      "name": "add_footer_topic",
+      "summary": "Adds a topic note chip to a note's Note footer.",
+      "writes": true
+    },
+    {
+      "group": "notes",
+      "name": "add_link",
+      "summary": "Adds a wikilink from one note to another, as a reference or a named kind.",
+      "writes": true
+    },
+    {
+      "group": "canvas",
+      "name": "add_to_canvas",
+      "summary": "Places a note on a canvas at a position.",
+      "writes": true
+    },
+    {
+      "group": "folders",
+      "name": "add_to_smart_folder",
+      "summary": "Puts a topic note in a Smart Folder.",
+      "writes": true
+    },
+    {
+      "group": "daily",
+      "name": "append_to_daily_note",
+      "summary": "Adds text verbatim to the end of a daily note, creating the day if needed.",
+      "writes": true
+    },
+    {
+      "group": "canvas",
+      "name": "create_canvas",
+      "summary": "Creates a new, empty canvas with a unique title.",
+      "writes": true
+    },
+    {
+      "group": "notes",
+      "name": "create_note",
+      "summary": "Creates a new note, tagged agent-authored and inbox for you to review.",
+      "writes": true
+    },
+    {
+      "group": "folders",
+      "name": "create_smart_folder",
+      "summary": "Creates a Smart Folder at the top level or inside another folder.",
+      "writes": true
+    },
+    {
+      "group": "canvas",
+      "name": "delete_canvas",
+      "summary": "Deletes a canvas; the notes on it are untouched.",
+      "writes": true
+    },
+    {
+      "group": "folders",
+      "name": "delete_smart_folder",
+      "summary": "Deletes a Smart Folder; its subfolders move up and no note is deleted.",
+      "writes": true
+    },
+    {
+      "group": "canvas",
+      "name": "get_canvas",
+      "summary": "Reads a canvas with its placed notes, their positions and the links between them.",
+      "writes": false
+    },
+    {
+      "group": "daily",
+      "name": "get_daily_note_changes",
+      "summary": "Shows the blocks added, changed or removed in a daily note since its last review.",
+      "writes": false
+    },
+    {
+      "group": "daily",
+      "name": "get_day_filing",
+      "summary": "Shows which topic notes hold each block of a daily note, and which blocks are unfiled.",
+      "writes": false
+    },
+    {
+      "group": "notes",
+      "name": "get_note",
+      "summary": "Reads one note in full, optionally with its outgoing links and backlinks.",
+      "writes": false
+    },
+    {
+      "group": "feedback",
+      "name": "get_vault_guide",
+      "summary": "Reads the Vault Guide, the framework and decisions the agent files by.",
+      "writes": false
+    },
+    {
+      "group": "feedback",
+      "name": "get_vault_settings",
+      "summary": "Reads the vault settings agents work within, such as folder depth and link kinds.",
+      "writes": false
+    },
+    {
+      "group": "canvas",
+      "name": "list_canvases",
+      "summary": "Lists every canvas, most recently updated first.",
+      "writes": false
+    },
+    {
+      "group": "feedback",
+      "name": "list_open_feedback",
+      "summary": "Lists your open comments and corrections on the agent's filing, oldest first.",
+      "writes": false
+    },
+    {
+      "group": "folders",
+      "name": "list_smart_folders",
+      "summary": "Lists every Smart Folder with its topic notes, plus the notes in no folder.",
+      "writes": false
+    },
+    {
+      "group": "tags",
+      "name": "list_tags",
+      "summary": "Lists the tags you have written in notes, with how many notes carry each.",
+      "writes": false
+    },
+    {
+      "group": "daily",
+      "name": "list_unreviewed_days",
+      "summary": "Lists the daily notes still waiting for a review, oldest first.",
+      "writes": false
+    },
+    {
+      "group": "daily",
+      "name": "mark_day_reviewed",
+      "summary": "Marks a daily note reviewed and records what the review changed.",
+      "writes": true
+    },
+    {
+      "group": "canvas",
+      "name": "move_node",
+      "summary": "Moves a note to a new position on its canvas.",
+      "writes": true
+    },
+    {
+      "group": "notes",
+      "name": "neighbors",
+      "summary": "Lists the notes linked to a note, up to a few hops away in either direction.",
+      "writes": false
+    },
+    {
+      "group": "feedback",
+      "name": "record_feedback",
+      "summary": "Saves feedback you gave in chat about the filing, already marked handled.",
+      "writes": true
+    },
+    {
+      "group": "daily",
+      "name": "remove_excerpt",
+      "summary": "Takes one excerpt of a day back out of a topic note.",
+      "writes": true
+    },
+    {
+      "group": "daily",
+      "name": "remove_excerpt_block",
+      "summary": "Takes a single block of a day out of a topic note, splitting the excerpt around it.",
+      "writes": true
+    },
+    {
+      "group": "canvas",
+      "name": "remove_from_canvas",
+      "summary": "Takes a note off a canvas; the note itself is untouched.",
+      "writes": true
+    },
+    {
+      "group": "folders",
+      "name": "remove_from_smart_folder",
+      "summary": "Takes a topic note out of a Smart Folder.",
+      "writes": true
+    },
+    {
+      "group": "feedback",
+      "name": "resolve_feedback",
+      "summary": "Marks one piece of open feedback handled, with a one-line reply.",
+      "writes": true
+    },
+    {
+      "group": "notes",
+      "name": "search",
+      "summary": "Finds notes by keyword or meaning and returns the best-matching passages.",
+      "writes": false
+    },
+    {
+      "group": "tags",
+      "name": "tag_note",
+      "summary": "Applies one of your tags to a note and adds it to the Note footer.",
+      "writes": true
+    },
+    {
+      "group": "tags",
+      "name": "untag_note",
+      "summary": "Removes a tag an agent applied to a note, along with its Note footer line.",
+      "writes": true
+    },
+    {
+      "group": "notes",
+      "name": "update_link",
+      "summary": "Changes the kind or label of an existing wikilink.",
+      "writes": true
+    },
+    {
+      "group": "folders",
+      "name": "update_smart_folder",
+      "summary": "Renames a Smart Folder or moves it to a new parent.",
+      "writes": true
+    },
+    {
+      "group": "feedback",
+      "name": "update_vault_guide",
+      "summary": "Rewrites the Vault Guide and notes what changed.",
+      "writes": true
+    }
+  ]
+}

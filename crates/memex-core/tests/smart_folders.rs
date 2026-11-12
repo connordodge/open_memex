@@ -1676,3 +1676,72 @@ fn link_kinds_list_built_ins_first_then_used_kinds_once() {
     expected.extend(["alpha-kind", "zeta-kind"]);
     assert_eq!(vault_settings::link_kinds(&v).unwrap(), expected);
 }
+
+/// WI #449: `update_folder_changed` is true iff the name or the parent
+/// changed; a pin change alone is not a change.
+#[test]
+fn update_folder_changed_is_true_iff_the_name_or_parent_changes() {
+    for caller in CALLERS {
+        let (_d, mut v) = fresh();
+        let a = mk(&mut v, "Alpha", None, caller).id;
+        let b = mk(&mut v, "Beta", None, caller).id;
+        let c = clock();
+
+        let (_, empty) =
+            sf::update_folder_changed(&mut v, &a, FolderUpdate::default(), caller, &c).unwrap();
+        assert!(!empty, "{caller:?}: an empty update");
+
+        let (_, same_name) =
+            sf::update_folder_changed(&mut v, &a, rename("Alpha"), caller, &c).unwrap();
+        assert!(!same_name, "{caller:?}: the same name");
+
+        let to_root = FolderUpdate {
+            parent: Some(NewParent::Root),
+            ..Default::default()
+        };
+        let (_, same_root) =
+            sf::update_folder_changed(&mut v, &a, to_root.clone(), caller, &c).unwrap();
+        assert!(!same_root, "{caller:?}: root to root");
+
+        let (_, name_only) =
+            sf::update_folder_changed(&mut v, &a, rename("Alpha2"), caller, &c).unwrap();
+        assert!(name_only, "{caller:?}: only the name changes");
+
+        let (moved, parent_only) =
+            sf::update_folder_changed(&mut v, &a, move_under(&b), caller, &c).unwrap();
+        assert!(parent_only, "{caller:?}: only the parent changes");
+        assert_eq!(moved.parent_id.as_deref(), Some(b.as_str()));
+
+        let (_, same_parent) =
+            sf::update_folder_changed(&mut v, &a, move_under(&b), caller, &c).unwrap();
+        assert!(!same_parent, "{caller:?}: the same parent folder");
+
+        let both = FolderUpdate {
+            name: Some("Alpha3".into()),
+            ..to_root
+        };
+        let (both, both_changed) = sf::update_folder_changed(&mut v, &a, both, caller, &c).unwrap();
+        assert!(both_changed, "{caller:?}: name and parent change");
+        assert_eq!(both.name, "Alpha3");
+        assert_eq!(both.parent_id, None);
+    }
+}
+
+#[test]
+fn update_folder_changed_is_false_for_a_pin_change_alone() {
+    let (_d, mut v) = fresh();
+    let a = person(&mut v, "Alpha", None);
+    let (folder, changed) = sf::update_folder_changed(
+        &mut v,
+        &a,
+        FolderUpdate {
+            pinned: Some(false),
+            ..Default::default()
+        },
+        Caller::Person,
+        &clock(),
+    )
+    .unwrap();
+    assert!(!changed);
+    assert!(!folder.pinned);
+}

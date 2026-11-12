@@ -12,6 +12,8 @@ use serde_json::{json, Value};
 
 pub mod append;
 pub mod backup;
+pub mod echoes;
+pub mod embeddings;
 pub mod excerpt;
 pub mod feedback;
 pub mod filing;
@@ -24,7 +26,9 @@ pub mod rm;
 pub mod serve;
 pub mod settings;
 pub mod tag;
+pub mod tools;
 pub mod vault;
+pub mod words;
 
 /// A note role (`role` frontmatter key): `--role` on `memex add` and the
 /// `role` parameter of MCP `create_note`.

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -40,8 +41,19 @@ class MemexCli {
   /// Run `memex <args>`, writing [stdinBody] to stdin when given. Public for
   /// CLI wrapper extensions (`lib/src/cli/<area>_cli.dart`) and test fakes;
   /// every wrapper in this class goes through it.
-  Future<MemexResult> run(List<String> args, {String? stdinBody}) async {
+  ///
+  /// With a [timeout], a process still running when it passes is killed
+  /// (and reaped) and the call throws [MemexCliTimeout]. Without one it
+  /// waits for the process however long it runs.
+  Future<MemexResult> run(
+    List<String> args, {
+    String? stdinBody,
+    Duration? timeout,
+  }) async {
     final proc = await Process.start(binaryPath, args, runInShell: false);
+    if (timeout != null) {
+      return _runWithTimeout(proc, args, stdinBody, timeout);
+    }
     if (stdinBody != null) {
       proc.stdin.write(stdinBody);
       await proc.stdin.flush();
@@ -59,6 +71,88 @@ class MemexCli {
       stderr: stderrBuf.toString(),
     );
   }
+
+  /// [run] with a [timeout]: everything after the start (the stdin write,
+  /// the exit, the output) must finish before [timeout] passes. Otherwise
+  /// the process is SIGKILLed and reaped, its output streams are dropped (a
+  /// grandchild holding a pipe can't hold the call), and it throws
+  /// [MemexCliTimeout].
+  Future<MemexResult> _runWithTimeout(
+    Process proc,
+    List<String> args,
+    String? stdinBody,
+    Duration timeout,
+  ) async {
+    // A killed child closes its stdin pipe; a write still pending then
+    // fails on `done`, which nobody else awaits.
+    unawaited(proc.stdin.done.then<void>((_) {}, onError: (Object _) {}));
+    final stdoutBuf = StringBuffer();
+    final stderrBuf = StringBuffer();
+    final outDone = Completer<void>();
+    final errDone = Completer<void>();
+    final subs = [
+      _collect(proc.stdout, stdoutBuf, outDone),
+      _collect(proc.stderr, stderrBuf, errDone),
+    ];
+    final outputs = Future.wait([outDone.future, errDone.future]);
+    // Listened to now, so an output error that lands before [finish] awaits
+    // it (or after the kill) is not an uncaught one.
+    unawaited(outputs.then<void>((_) {}, onError: (Object _) {}));
+    Future<MemexResult> finish() async {
+      // A child that closes its stdin or exits early fails the write with
+      // EPIPE. The run then still waits (inside [timeout]) for its exit and
+      // output, so a failed write never skips the kill.
+      if (stdinBody != null) {
+        try {
+          proc.stdin.write(stdinBody);
+          await proc.stdin.flush();
+        } on IOException {
+          // Fall through to the close, the exit and the output.
+        }
+      }
+      try {
+        await proc.stdin.close();
+      } on IOException {
+        // As above.
+      }
+      final code = await proc.exitCode;
+      await outputs;
+      return MemexResult(
+        exitCode: code,
+        stdout: stdoutBuf.toString(),
+        stderr: stderrBuf.toString(),
+      );
+    }
+
+    try {
+      return await finish().timeout(timeout);
+    } on TimeoutException {
+      proc.kill(ProcessSignal.sigkill);
+      await proc.exitCode;
+      for (final sub in subs) {
+        unawaited(sub.cancel());
+      }
+      throw MemexCliTimeout(args, timeout);
+    }
+  }
+
+  /// Decodes [stream] into [buf]; [done] completes at its end or first error.
+  static StreamSubscription<String> _collect(
+    Stream<List<int>> stream,
+    StringBuffer buf,
+    Completer<void> done,
+  ) => stream
+      .transform(utf8.decoder)
+      .listen(
+        buf.write,
+        onError: (Object e, StackTrace st) {
+          if (!done.isCompleted) done.completeError(e, st);
+        },
+        onDone: () {
+          if (!done.isCompleted) done.complete();
+        },
+        cancelOnError: true,
+      );
 
   Future<void> initVault(String vaultPath) async {
     final r = await run(['init', vaultPath]);
@@ -606,6 +700,19 @@ TagRmResult? parseTagRmResult(Map<String, Object?> json) {
     }
   }
   return null;
+}
+
+/// [MemexCli.run] killed `memex <args>` after [timeout] passed (Spec #391
+/// req 21). Its `toString` names the args and the timeout.
+class MemexCliTimeout implements Exception {
+  const MemexCliTimeout(this.args, this.timeout);
+
+  final List<String> args;
+  final Duration timeout;
+
+  @override
+  String toString() =>
+      'MemexCliTimeout: memex ${args.join(' ')} still ran after $timeout';
 }
 
 class MemexException implements Exception {

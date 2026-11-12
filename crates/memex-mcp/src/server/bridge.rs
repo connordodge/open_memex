@@ -12,9 +12,17 @@
 //! POST builds its headers afresh, so `X-Memex-UTC-Offset` follows the
 //! machine's offset across daylight saving and time-zone moves (D6).
 //!
+//! Each run makes one ULID session id, sent as `X-Memex-Agent-Session` on
+//! every request; once the client's `initialize` names its `clientInfo`,
+//! `X-Memex-Agent-Client: <name>/<version>` goes with every request too.
+//! After that `initialize`, and while the input is open, the bridge `ping`s
+//! the vault every [`Heartbeat::interval`] to keep its agent presence alive
+//! (#390 req 2a). Ping replies and failures never reach the output.
+//!
 //! Nothing here logs, and no message names the token.
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use reqwest::header::{HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
@@ -23,6 +31,10 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
+use tokio::time::{Instant, MissedTickBehavior};
+use ulid::Ulid;
+
+use memex_core::agents::presence::HEARTBEAT_MS;
 
 use super::registry::validate_vault_name;
 use super::request_clock::SharedClock;
@@ -31,6 +43,17 @@ use crate::cli::{CodedError, InvalidArgument};
 
 /// The header carrying this machine's current UTC offset (D5).
 const OFFSET_HEADER: &str = "x-memex-utc-offset";
+
+/// The header carrying this bridge run's ULID session id (#390 P3).
+const SESSION_HEADER: &str = "x-memex-agent-session";
+
+/// The header carrying the client's `<name>/<version>` (#390 P3).
+const CLIENT_HEADER: &str = "x-memex-agent-client";
+
+/// The prefix of every heartbeat `ping` id. Ping ids are JSON strings the
+/// bridge makes itself, and their replies are consumed by the heartbeat, so
+/// a client's id never meets one on the output.
+const PING_ID_PREFIX: &str = "memex-bridge-ping-";
 
 /// What an MCP streamable-HTTP client accepts on a POST.
 const MCP_ACCEPT: &str = "application/json, text/event-stream";
@@ -56,6 +79,24 @@ pub struct BridgeOptions {
     /// The clock whose current UTC offset each request's
     /// `X-Memex-UTC-Offset` carries, read again for every request.
     pub clock: SharedClock,
+}
+
+/// How often the bridge pings the vault server to keep its agent presence
+/// alive (#390 req 2a). Kept apart from [`BridgeOptions`] so that struct's
+/// existing literals keep compiling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Heartbeat {
+    /// The time between two `ping` requests.
+    pub interval: Duration,
+}
+
+impl Default for Heartbeat {
+    /// One `ping` every `HEARTBEAT_MS` (5 s).
+    fn default() -> Self {
+        Self {
+            interval: Duration::from_millis(HEARTBEAT_MS as u64),
+        }
+    }
 }
 
 /// Where the bridge sends its requests, from a checked `--remote` URL.
@@ -112,23 +153,53 @@ fn target(raw: &str) -> Result<Target, String> {
     })
 }
 
-/// The HTTP side of the bridge: one client, the target, the token header
-/// and the clock.
+/// The HTTP side of the bridge: one client, the target, the token header,
+/// the clock and the agent identity headers.
 struct Upstream {
     http: reqwest::Client,
     target: Target,
     authorization: HeaderValue,
     clock: SharedClock,
+    /// This run's ULID, the `X-Memex-Agent-Session` value.
+    session: HeaderValue,
+    /// The `X-Memex-Agent-Client` value from the client's latest
+    /// `initialize`; none before it, or when it names no valid one.
+    client: RwLock<Option<HeaderValue>>,
 }
 
 impl Upstream {
-    /// `builder` with `Authorization` and this instant's
-    /// `X-Memex-UTC-Offset`, read from the clock now.
+    /// `builder` with `Authorization`, this instant's `X-Memex-UTC-Offset`,
+    /// read from the clock now, and the agent identity headers.
     fn headers(&self, builder: RequestBuilder) -> RequestBuilder {
         let offset = format_utc_offset(self.clock.utc_offset_at(self.clock.now_ms()));
-        builder
+        let builder = builder
             .header(AUTHORIZATION, self.authorization.clone())
             .header(OFFSET_HEADER, offset)
+            .header(SESSION_HEADER, self.session.clone());
+        let client = self
+            .client
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        match client {
+            Some(client) => builder.header(CLIENT_HEADER, client),
+            None => builder,
+        }
+    }
+
+    /// Records the client identity of `message` when it is (or a batch
+    /// holding) an `initialize` request. True when it is one.
+    fn note_initialize(&self, message: &Value) -> bool {
+        let init = match message {
+            Value::Array(batch) => batch.iter().find(|m| is_initialize(m)),
+            m => Some(m).filter(|m| is_initialize(m)),
+        };
+        let Some(init) = init else {
+            return false;
+        };
+        let client = client_header(&init["params"]["clientInfo"]);
+        *self.client.write().unwrap_or_else(|e| e.into_inner()) = client;
+        true
     }
 
     /// The startup preflight: `GET /vaults/<name>/api/v1/info`.
@@ -180,6 +251,19 @@ impl Upstream {
             .await
     }
 
+    /// One heartbeat: POSTs a `ping` with the bridge-private id `id` and
+    /// reads its reply, which goes nowhere. Every failure is ignored.
+    async fn ping(&self, id: u64) {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "method": "ping",
+            "id": format!("{PING_ID_PREFIX}{id}"),
+        });
+        if let Ok(resp) = self.post(body.to_string()).await {
+            let _ = resp.bytes().await;
+        }
+    }
+
     fn unreachable(&self) -> anyhow::Error {
         CodedError::new(
             "server_unreachable",
@@ -211,6 +295,20 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
+    run_with(options, Heartbeat::default(), input, output).await
+}
+
+/// [`run`] with the heartbeat `heartbeat` instead of the default one.
+pub async fn run_with<R, W>(
+    options: BridgeOptions,
+    heartbeat: Heartbeat,
+    input: R,
+    output: W,
+) -> anyhow::Result<()>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
+{
     let target = target(&options.url).map_err(InvalidArgument)?;
     let mut authorization = HeaderValue::try_from(format!("Bearer {}", options.token))
         .map_err(|_| InvalidArgument("MEMEX_ACCESS_TOKEN is not a valid header value".into()))?;
@@ -224,6 +322,8 @@ where
         target,
         authorization,
         clock: options.clock,
+        session: HeaderValue::try_from(Ulid::new().to_string())?,
+        client: RwLock::new(None),
     });
     upstream.preflight().await?;
 
@@ -232,6 +332,7 @@ where
     let (fatal_tx, mut fatal_rx) = mpsc::channel::<anyhow::Error>(1);
     let mut tasks = JoinSet::new();
     let mut lines = BufReader::new(input).lines();
+    let mut pinger: Option<tokio::task::JoinHandle<()>> = None;
 
     let ended = loop {
         tokio::select! {
@@ -243,18 +344,37 @@ where
                     if line.trim().is_empty() {
                         continue;
                     }
+                    // Read the client's identity before forwarding, so the
+                    // `initialize` and every line behind it carry it.
+                    let message = serde_json::from_str::<Value>(&line).ok();
+                    let initialize = message
+                        .as_ref()
+                        .is_some_and(|m| upstream.note_initialize(m));
                     tasks.spawn(forward(
                         upstream.clone(),
                         line,
+                        message,
                         out_tx.clone(),
                         fatal_tx.clone(),
                     ));
+                    if initialize && pinger.is_none() {
+                        pinger = Some(tokio::spawn(heartbeat_loop(
+                            upstream.clone(),
+                            heartbeat.interval,
+                        )));
+                    }
                 }
                 Ok(None) => break Ok(()),
                 Err(e) => break Err(anyhow::Error::new(e).context("read MCP input")),
             },
         }
     };
+
+    // Input ended (or the bridge is stopping): no further ping.
+    if let Some(pinger) = pinger {
+        pinger.abort();
+        let _ = pinger.await;
+    }
 
     if let Err(err) = ended {
         // A 401 or a broken input: stop now, with what is already written.
@@ -277,6 +397,47 @@ where
     }
 }
 
+/// Pings the vault every `interval`, the first one `interval` from now,
+/// until aborted. Each ping runs on its own, so a slow one never delays
+/// the next; one still unanswered after `interval` is dropped.
+async fn heartbeat_loop(upstream: Arc<Upstream>, interval: Duration) {
+    let mut ticks = tokio::time::interval_at(Instant::now() + interval, interval);
+    ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let next_id = AtomicU64::new(1);
+    let mut pings = JoinSet::new();
+    loop {
+        tokio::select! {
+            Some(_) = pings.join_next(), if !pings.is_empty() => {}
+            _ = ticks.tick() => {
+                let upstream = upstream.clone();
+                let id = next_id.fetch_add(1, Ordering::Relaxed);
+                pings.spawn(async move {
+                    let _ = tokio::time::timeout(interval, upstream.ping(id)).await;
+                });
+            }
+        }
+    }
+}
+
+/// An `initialize` request.
+fn is_initialize(message: &Value) -> bool {
+    message.get("method").and_then(Value::as_str) == Some("initialize")
+        && message.get("id").is_some()
+}
+
+/// The `X-Memex-Agent-Client` value for `client_info`: `<name>/<version>`
+/// when both are strings and the result is visible ASCII (`0x20..=0x7E`);
+/// otherwise none, and the server names the client from its User-Agent.
+fn client_header(client_info: &Value) -> Option<HeaderValue> {
+    let name = client_info.get("name")?.as_str()?;
+    let version = client_info.get("version")?.as_str()?;
+    let value = format!("{name}/{version}");
+    if !value.bytes().all(|b| (0x20..=0x7e).contains(&b)) {
+        return None;
+    }
+    HeaderValue::from_str(&value).ok()
+}
+
 /// Writes each line to `output`, flushed, until every sender is gone.
 async fn write_lines<W>(
     mut output: W,
@@ -293,16 +454,18 @@ where
     output.flush().await
 }
 
-/// Forwards one client line and writes the reply's messages to `out`. A 401
+/// Forwards one client line (`message` is it parsed, none when it is not
+/// JSON) and writes the reply's messages to `out`. A 401
 /// goes to `fatal`; an unreachable server or an answer that is no reply
 /// becomes a JSON-RPC error for each request `id` in the line.
 async fn forward(
     upstream: Arc<Upstream>,
     line: String,
+    message: Option<Value>,
     out: mpsc::UnboundedSender<String>,
     fatal: mpsc::Sender<anyhow::Error>,
 ) {
-    let Ok(message) = serde_json::from_str::<Value>(&line) else {
+    let Some(message) = message else {
         let _ = out.send(rpc_error(
             &Value::Null,
             PARSE_ERROR,

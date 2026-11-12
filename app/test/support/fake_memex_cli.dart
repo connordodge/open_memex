@@ -9,6 +9,7 @@ class FakeCliCall {
     required this.args,
     required this.stdinBody,
     required this.subcommand,
+    this.timeout,
   });
 
   /// The full argument list passed to `run`.
@@ -22,6 +23,9 @@ class FakeCliCall {
   /// handler matched.
   final String subcommand;
 
+  /// The `timeout` passed to `run` (null when none).
+  final Duration? timeout;
+
   /// The value after `--<name>` in [args], or null when the flag is absent.
   String? flag(String name) {
     final i = args.indexOf('--$name');
@@ -33,7 +37,8 @@ class FakeCliCall {
   bool hasFlag(String name) => args.contains('--$name');
 
   @override
-  String toString() => 'FakeCliCall($args, stdin: $stdinBody)';
+  String toString() =>
+      'FakeCliCall($args, stdin: $stdinBody, timeout: $timeout)';
 }
 
 typedef FakeCliHandler = FutureOr<MemexResult> Function(FakeCliCall call);
@@ -91,8 +96,19 @@ class FakeMemexCli extends MemexCli {
   static MemexResult failure(String stderr, {int exitCode = 1}) =>
       MemexResult(exitCode: exitCode, stdout: '', stderr: stderr);
 
+  /// A handler for a run that outlived its timeout: throws
+  /// [MemexCliTimeout] with the call's args and timeout (zero when the call
+  /// passed none), as the real `run` does after killing the process.
+  /// `cli.on('echoes', FakeMemexCli.timedOut)`.
+  static Never timedOut(FakeCliCall call) =>
+      throw MemexCliTimeout(call.args, call.timeout ?? Duration.zero);
+
   @override
-  Future<MemexResult> run(List<String> args, {String? stdinBody}) async {
+  Future<MemexResult> run(
+    List<String> args, {
+    String? stdinBody,
+    Duration? timeout,
+  }) async {
     final words = <String>[];
     for (final a in args) {
       if (a.startsWith('-')) break;
@@ -110,6 +126,7 @@ class FakeMemexCli extends MemexCli {
       args: List.unmodifiable(args),
       stdinBody: stdinBody,
       subcommand: matched ?? words.join(' '),
+      timeout: timeout,
     );
     calls.add(call);
     if (matched == null) {

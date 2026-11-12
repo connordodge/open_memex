@@ -171,12 +171,16 @@ enum Commands {
     Footer(cli::footer::FooterArgs),
     /// Add, remove or list tags.
     Tag(cli::tag::TagArgs),
+    /// Learn, forget or list learned words.
+    Words(cli::words::WordsArgs),
     /// Smart Folder operations.
     Folder(cli::folder::FolderArgs),
     /// Read or change vault settings.
     Settings(cli::settings::SettingsArgs),
     /// Print where the blocks of one day are filed.
     Filing(cli::filing::FilingArgs),
+    /// Find passages in other, unlinked notes that are close to a note.
+    Echoes(cli::echoes::EchoesArgs),
     /// Written comments and Corrections.
     Feedback(cli::feedback::FeedbackArgs),
     /// Read the Vault Guide or return to an earlier text.
@@ -185,6 +189,10 @@ enum Commands {
     Backup(cli::backup::BackupArgs),
     /// Make a new vault folder from a backup file.
     Restore(cli::restore::RestoreArgs),
+    /// Print the MCP tools and prompts this memex serves, as JSON.
+    Tools,
+    /// Embedding coverage and model cache status.
+    Embeddings(cli::embeddings::EmbeddingsArgs),
     /// Run as an MCP server over stdio, as the vault server over HTTP, or as
     /// a stdio bridge to a hosted vault.
     Serve(cli::serve::ServeArgs),
@@ -348,13 +356,17 @@ async fn dispatch(command: Commands) -> Result<()> {
         Commands::Excerpt(args) => cli::excerpt::run(args),
         Commands::Footer(args) => cli::footer::run(args),
         Commands::Tag(args) => cli::tag::run(args),
+        Commands::Words(args) => cli::words::run(args),
         Commands::Folder(args) => cli::folder::run(args),
         Commands::Settings(args) => cli::settings::run(args),
         Commands::Filing(args) => cli::filing::run(args),
+        Commands::Echoes(args) => cli::echoes::run(args),
         Commands::Feedback(args) => cli::feedback::run(args),
         Commands::Guide(args) => cli::guide::run(args),
         Commands::Backup(args) => cli::backup::run(args),
         Commands::Restore(args) => cli::restore::run(args),
+        Commands::Tools => cli::tools::run(),
+        Commands::Embeddings(args) => cli::embeddings::run(args),
         Commands::Serve(args) => cli::serve::run(args).await,
     }
 }

@@ -189,7 +189,7 @@ void main() {
         final h = await pumpWorkspace(tester, db: db, cli: cli);
 
         expect(cli.callsFor('settings get'), hasLength(1));
-        expect(db.schemaVersionForTest, requiredVaultSchemaVersion);
+        expect(db.schemaVersionForTest, fixtureSchemaVersion);
         expect(h.read(vaultRevisionProvider), 1);
         expect(db.hasTables(v5Tables), isTrue);
         _expectNoBanner();

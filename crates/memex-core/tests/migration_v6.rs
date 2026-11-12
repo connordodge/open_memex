@@ -440,8 +440,8 @@ fn migrated_v5_fixture() -> (tempfile::TempDir, Connection) {
     schema::apply(&mut conn).expect("V5 -> V6 migration succeeds");
     assert_eq!(
         schema::current_version(&conn).unwrap(),
-        6,
-        "schema::apply did not advance the V5 fixture to V6"
+        schema::APP_SCHEMA_VERSION,
+        "schema::apply did not advance the V5 fixture to the current version"
     );
     (dir, conn)
 }
@@ -465,8 +465,8 @@ fn opened_v5_vault() -> (tempfile::TempDir, Vault) {
     let vault = Vault::open(dir.path()).expect("open V5 vault migrates it");
     assert_eq!(
         schema::current_version(vault.connection_ref()).unwrap(),
-        6,
-        "Vault::open did not advance the V5 fixture to V6"
+        schema::APP_SCHEMA_VERSION,
+        "Vault::open did not advance the V5 fixture to the current version"
     );
     (dir, vault)
 }
@@ -511,6 +511,37 @@ fn table_rows(conn: &Connection, table: &str) -> Vec<String> {
     out
 }
 
+/// [`table_rows`] without the columns named in `exclude`.
+fn table_rows_except(conn: &Connection, table: &str, exclude: &[&str]) -> Vec<String> {
+    let names: Vec<String> = {
+        let stmt = conn.prepare(&format!("SELECT * FROM \"{table}\"")).unwrap();
+        stmt.column_names().iter().map(|n| n.to_string()).collect()
+    };
+    for e in exclude {
+        assert!(
+            names.iter().any(|n| n == e),
+            "{table} has a column {e} to exclude"
+        );
+    }
+    let cols: Vec<String> = names
+        .iter()
+        .filter(|n| !exclude.contains(&n.as_str()))
+        .map(|n| format!("\"{n}\""))
+        .collect();
+    let mut stmt = conn
+        .prepare(&format!("SELECT {} FROM \"{table}\"", cols.join(", ")))
+        .unwrap();
+    let n = stmt.column_count();
+    let mut rows = stmt.query([]).unwrap();
+    let mut out = Vec::new();
+    while let Some(r) = rows.next().unwrap() {
+        let cells: Vec<String> = (0..n).map(|i| cell(r.get_ref(i).unwrap())).collect();
+        out.push(cells.join(" | "));
+    }
+    out.sort();
+    out
+}
+
 fn schema_snapshot(conn: &Connection) -> Vec<String> {
     strings(
         conn,
@@ -519,12 +550,14 @@ fn schema_snapshot(conn: &Connection) -> Vec<String> {
     )
 }
 
-/// The schema plus every row of every table (FTS shadow tables included).
+/// The schema plus every row of every table (FTS shadow tables included),
+/// except the V7 `content_revision` counter, which every write moves.
 fn full_snapshot(conn: &Connection) -> Vec<String> {
     let mut out = schema_snapshot(conn);
     let tables = strings(
         conn,
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite%'
+           AND name <> 'content_revision'
          ORDER BY name",
     );
     for t in tables {
@@ -747,8 +780,8 @@ fn key(c: &str, desc: bool) -> (String, bool) {
 // ---- AC 1: version, columns, tables, indexes --------------------------------------------------
 
 #[test]
-fn app_schema_version_is_6() {
-    assert_eq!(schema::APP_SCHEMA_VERSION, 6);
+fn app_schema_version_is_7() {
+    assert_eq!(schema::APP_SCHEMA_VERSION, 7);
 }
 
 #[test]
@@ -762,16 +795,20 @@ fn v6_apply_advances_v5_database_to_version_6() {
         &conn,
         "SELECT CAST(version AS TEXT) FROM schema_version ORDER BY version",
     );
-    assert_eq!(versions, ["1", "2", "3", "4", "5", "6"]);
+    assert_eq!(versions, ["1", "2", "3", "4", "5", "6", "7"]);
 }
 
 #[test]
 fn v6_vault_open_rewrites_v5_manifest_to_6() {
     let (dir, vault) = opened_v5_vault();
-    assert_eq!(vault.schema_version(), 6);
+    assert_eq!(vault.schema_version(), schema::APP_SCHEMA_VERSION);
     let on_disk: serde_json::Value =
         serde_json::from_slice(&std::fs::read(dir.path().join("manifest.json")).unwrap()).unwrap();
-    assert_eq!(on_disk["schema_version"].as_i64(), Some(6), "{on_disk}");
+    assert_eq!(
+        on_disk["schema_version"].as_i64(),
+        Some(schema::APP_SCHEMA_VERSION),
+        "{on_disk}"
+    );
     assert_eq!(
         on_disk["vault_id"].as_str(),
         Some("01J9V6MANIFEST000000000000"),
@@ -1126,7 +1163,10 @@ fn v6_migration_leaves_notes_reviews_blocks_and_chunks_byte_identical() {
 
     let mut conn = open(&db_path);
     schema::apply(&mut conn).expect("V5 -> V6 migration succeeds");
-    assert_eq!(schema::current_version(&conn).unwrap(), 6);
+    assert_eq!(
+        schema::current_version(&conn).unwrap(),
+        schema::APP_SCHEMA_VERSION
+    );
 
     assert_eq!(untouchable_snapshot(&conn), before);
 
@@ -1155,10 +1195,71 @@ fn v6_migration_leaves_notes_reviews_blocks_and_chunks_byte_identical() {
 fn v6_vault_open_leaves_note_bodies_and_review_state_unchanged() {
     // An identical V5 fixture, snapshotted before any migration.
     let dir = tempfile::tempdir().unwrap();
-    let before = untouchable_snapshot(&open(&make_v5_db(dir.path())));
+    // `Vault::open` also drains the V7 rechunk queue (WI #418, ruling D3),
+    // which mints new chunk ids (and their FTS rows), re-derives every
+    // note's links from its body and rewrites the two index-flag columns of
+    // `notes`. So chunks, FTS rows and links are left out of the comparison
+    // (the V5 fixture's one hand-made link is not in any body, so it is
+    // replaced by what the bodies hold, checked below) and `notes` is
+    // compared in every column but the two flags.
+    let skip = ["notes", "chunks", "chunk_fts", "links"];
+    let kept = |snapshot: Vec<String>| -> Vec<String> {
+        let mut out = Vec::new();
+        let mut keep = true;
+        for line in snapshot {
+            if let Some(t) = line.strip_prefix("== ") {
+                keep = !skip.contains(&t);
+            }
+            if keep {
+                out.push(line);
+            }
+        }
+        out
+    };
+    let snapshot = |conn: &Connection| -> Vec<String> {
+        let mut out = kept(untouchable_snapshot(conn));
+        out.push("== notes without index flags".to_string());
+        out.extend(table_rows_except(
+            conn,
+            "notes",
+            &["has_open_questions", "frontmatter_parse_error"],
+        ));
+        out
+    };
+    let before = snapshot(&open(&make_v5_db(dir.path())));
 
     let (_vdir, vault) = opened_v5_vault();
-    assert_eq!(untouchable_snapshot(vault.connection_ref()), before);
+    assert_eq!(snapshot(vault.connection_ref()), before);
+    // Links are re-derived from the unchanged bodies: (from, to, text, kind).
+    let mut stmt = vault
+        .connection_ref()
+        .prepare(
+            "SELECT from_note_id, to_note_id, link_text, link_kind FROM links
+             ORDER BY from_note_id, position",
+        )
+        .unwrap();
+    let links: Vec<(String, Option<String>, String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        links,
+        vec![
+            (
+                N_DAILY.to_string(),
+                Some(N_TOPIC.to_string()),
+                "Games".to_string(),
+                "about".to_string()
+            ),
+            (
+                N_PLAIN.to_string(),
+                None,
+                "Other #notatag".to_string(),
+                "references".to_string()
+            ),
+        ]
+    );
     let state = memex_core::daily::review_state(vault.connection_ref(), N_DAILY).unwrap();
     assert_eq!(state, memex_core::daily::ReviewState::Reviewed);
 }
@@ -1400,11 +1501,15 @@ fn v6_rerun_after_a_lost_version_row_changes_nothing() {
     let (_dir, mut conn) = migrated_v5_fixture();
     let before = full_snapshot(&conn);
 
-    conn.execute("DELETE FROM schema_version WHERE version = 6", [])
+    // Every later version row goes too, or V6 would not run again (V7, #415).
+    conn.execute("DELETE FROM schema_version WHERE version >= 6", [])
         .unwrap();
     schema::apply(&mut conn).expect("re-running V6 over V6 tables succeeds");
 
-    assert_eq!(schema::current_version(&conn).unwrap(), 6);
+    assert_eq!(
+        schema::current_version(&conn).unwrap(),
+        schema::APP_SCHEMA_VERSION
+    );
     assert_eq!(full_snapshot(&conn), before);
 }
 

@@ -9,6 +9,7 @@ import '../../editor/segment_selection.dart';
 import 'segment_pointer_layer.dart';
 import 'segment_undo.dart';
 import 'segment_view.dart';
+import 'spelling_menu.dart';
 
 /// Clipboard, IME and undo operations over one text segment's editor rows
 /// (D8, Spec R27, R29, R30).
@@ -218,6 +219,14 @@ class _SegmentSelectionOpsState extends State<SegmentSelectionOps> {
   }
 
   void _showMenu(Offset at) {
+    // A right click on a flagged range of a rendered grid (a caret): the
+    // spelling menu instead (WI #438).
+    final field = _view.selection.isCollapsed ? _field() : null;
+    final issue = field == null ? null : spellingIssueAtSelection(field);
+    if (field != null && issue != null) {
+      unawaited(showSpellingMenu(field, issue: issue, anchor: at));
+      return;
+    }
     ContextMenuButtonItem item(
       ContextMenuButtonType type,
       void Function() run,

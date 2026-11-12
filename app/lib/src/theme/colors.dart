@@ -74,4 +74,11 @@ class OmColors {
 
   /// The vault menu's shadow (black at 55%).
   static const menuShadow = Color(0x8C000000);
+
+  // Agents sheet (pack #406).
+  /// OmCopyButton's Copied fill: opaque #1C2D29.
+  static const copiedBg = Color(0xFF1C2D29);
+
+  /// The Tools tab's WRITES tag fill: opaque #222431.
+  static const writesTagBg = Color(0xFF222431);
 }

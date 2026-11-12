@@ -1,7 +1,11 @@
+mod activity_log;
+pub mod activity_summary;
+pub mod backfill;
 pub mod caller_tz;
 pub mod cli;
 pub mod md_links;
 pub mod ops;
+pub mod presence;
 pub mod prompts;
 pub mod server;
 pub mod state;

@@ -6,7 +6,7 @@ use std::io::ErrorKind;
 
 use memex_core::footer::{self, ChipOrigin};
 use memex_core::tags as core_tags;
-use memex_core::{MemexError, NoteId};
+use memex_core::{notes, MemexError, NoteId};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router};
 use schemars::JsonSchema;
@@ -157,7 +157,8 @@ impl Memex {
     #[tool(description = "Add a chip for a topic note (`role: topic`) to a \
         note's Note footer. A chip already there writes nothing. Returns \
         vault_id, note_id, topic_note_id, origin (the chip's stored origin: \
-        `excerpt`, or `person` when the person added it) and version. Fails \
+        `excerpt`, or `person` when the person added it), version and changed \
+        (false when the chip was already there). Fails \
         with guide_rule (the note is the Vault Guide), role_rule (the target \
         isn't a topic note), invalid_argument (the note and the target are \
         the same note), not_found or invalid_id.")]
@@ -175,6 +176,9 @@ impl Memex {
             Err(e) => return error(&e),
         };
         let mut vault = self.state.vault.lock().await;
+        // An agent's chip never upgrades a stored one, so the call wrote
+        // exactly when the note's version moved.
+        let before = notes::get_note(&vault, &id).ok().map(|note| note.version);
         // D18: the schema has no agent chip origin, so an agent's chip is
         // `excerpt`.
         let write = match footer::set_chip(
@@ -193,6 +197,7 @@ impl Memex {
             "topic_note_id": topic.as_str(),
             "origin": write.origin.map(ChipOrigin::as_str),
             "version": write.note.version,
+            "changed": before != Some(write.note.version),
         })
         .to_string()
     }

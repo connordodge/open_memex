@@ -6,6 +6,7 @@
 //! path the vault guard then resolves the vault (or answers 404
 //! `vault_not_found`) before any handler runs.
 
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -32,6 +33,7 @@ pub mod bridge;
 pub mod error;
 pub mod log;
 pub mod mcp;
+pub mod presence;
 pub mod registry;
 pub mod request_clock;
 pub mod token;
@@ -146,19 +148,27 @@ pub fn router(config: ServerConfig) -> Router {
 /// The service never starts the hourly schedule itself: [`run`] does, and
 /// only with `--backup-dir`.
 pub fn app(config: ServerConfig) -> (Router, Arc<BackupService>) {
+    let (router, service, _) = app_parts(config);
+    (router, service)
+}
+
+/// [`app`], plus the [`Registry`] of the vaults it serves.
+fn app_parts(config: ServerConfig) -> (Router, Arc<BackupService>, Arc<Registry>) {
     let embedder = match (&config.embedder, config.with_embeddings) {
         (Some(embedder), _) => Some(embedder.clone()),
         (None, true) => Some(crate::state::build_embedder_in(&config.root)),
         (None, false) => None,
     };
     let registry = Arc::new(Registry::new(config.root.clone(), embedder));
+    crate::backfill::spawn_server(registry.clone());
     let service = Arc::new(BackupService::new(
         config.backups.clone(),
         config.backup_archive_hook.clone(),
         registry.clone(),
         config.clock(),
     ));
-    (routes(&config, registry, service.clone()), service)
+    let router = routes(&config, registry.clone(), service.clone());
+    (router, service, registry)
 }
 
 fn routes(config: &ServerConfig, registry: Arc<Registry>, service: Arc<BackupService>) -> Router {
@@ -168,7 +178,7 @@ fn routes(config: &ServerConfig, registry: Arc<Registry>, service: Arc<BackupSer
         .route("/api/v1/vaults", get(vaults::list).post(vaults::create))
         .route("/vaults/{name}/api/v1/info", get(vaults::info))
         .nest("/vaults/{name}/api/v1", api::router())
-        .nest("/vaults/{name}/mcp", mcp::router())
+        .nest("/vaults/{name}/mcp", mcp::router(config.clock()))
         .fallback(not_found)
         // Every route, nest, merge and fallback goes above this line: axum
         // applies `method_not_allowed_fallback` only to the routes already
@@ -313,16 +323,24 @@ pub async fn run_with_probe(
         );
         config = config.with_backups(backups);
     }
-    let (router, service) = app(config);
+    let clock = config.clock();
+    let (router, service, registry) = app_parts(config);
+    // The hourly presence sweep of every served vault (#390 req 6).
+    presence::spawn_presence_sweeps(registry, clock, presence::SWEEP_EVERY);
     if scheduled {
         // The hourly due check (D16). The task is dropped at shutdown, and a
         // running backup's thread is never waited for (req 29).
         spawn_backup_checks(service);
     }
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("serve")?;
+    // Peer addresses key plain HTTP agent presence (#390); every reader of
+    // `ConnectInfo` treats it as optional.
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("serve")?;
     tracing::info!("vault server stopped");
     Ok(())
 }
@@ -374,8 +392,9 @@ fn vault_root(root: &Path, probe: &dyn Fn(&Path) -> std::io::Result<FsInfo>) -> 
     }
 }
 
-/// Resolves on SIGINT (Ctrl-C) or SIGTERM.
-async fn shutdown_signal() {
+/// Resolves on SIGINT (Ctrl-C) or SIGTERM. Shared by the HTTP server and
+/// the stdio server (`cli::serve`).
+pub(crate) async fn shutdown_signal() {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;
     };

@@ -143,7 +143,6 @@ String _personSection(Note note) => switch (note.role) {
 
 /// How long before [now] the time [unixMs] was, as the meta rail shows it
 /// ("just now", "5 minutes ago", "1 hour ago", "3 days ago").
-@visibleForTesting
 String formatUpdatedAgo(int unixMs, {required DateTime now}) {
   final delta = now.millisecondsSinceEpoch - unixMs;
   if (delta < 60 * 1000) return 'just now';
@@ -153,6 +152,43 @@ String formatUpdatedAgo(int unixMs, {required DateTime now}) {
   if (h < 24) return '$h hour${h == 1 ? '' : 's'} ago';
   final d = h ~/ 24;
   return '$d day${d == 1 ? '' : 's'} ago';
+}
+
+/// How many days before [now]'s local date the daily note of ISO date [day]
+/// (`YYYY-MM-DD`) is, as an echo row shows it (Spec #391 req 26): `today`,
+/// `yesterday`, `N days ago` (2-13), `N weeks ago` (14-59, d ~/ 7),
+/// `N months ago` (60-364, d ~/ 30), `N years ago` (d ~/ 365). Counted in
+/// calendar days, so the time of day and DST changes never move it.
+String formatDayAgo(String day, {required DateTime now}) {
+  final parsed = DateTime.parse(day);
+  // UTC dates are whole days apart whatever the local zone's DST changes.
+  final today = DateTime.utc(now.year, now.month, now.day);
+  final then = DateTime.utc(parsed.year, parsed.month, parsed.day);
+  final d = today.difference(then).inDays;
+  if (d <= 0) return 'today';
+  if (d == 1) return 'yesterday';
+  if (d < 14) return '$d days ago';
+  return _longAgo(d);
+}
+
+/// How long before [now] the time [unixMs] was, on [formatUpdatedAgo]'s
+/// scale up to 13 days, then `N weeks ago` (14-59 days, d ~/ 7),
+/// `N months ago` (60-364, d ~/ 30) and `N years ago` (d ~/ 365): the
+/// relative age of a non-daily echo (Spec #391 req 26).
+String formatRelativeAgo(int unixMs, {required DateTime now}) {
+  final d =
+      (now.millisecondsSinceEpoch - unixMs) ~/ Duration.millisecondsPerDay;
+  if (d < 14) return formatUpdatedAgo(unixMs, now: now);
+  return _longAgo(d);
+}
+
+/// [days] (14 or more) in whole weeks under 60, 30-day months under 365,
+/// and 365-day years from then on.
+String _longAgo(int days) {
+  String unit(int n, String name) => '$n $name${n == 1 ? '' : 's'} ago';
+  if (days < 60) return unit(days ~/ 7, 'week');
+  if (days < 365) return unit(days ~/ 30, 'month');
+  return unit(days ~/ 365, 'year');
 }
 
 /// The number of whitespace-separated words in [s].

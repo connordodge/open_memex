@@ -171,7 +171,7 @@ Each `memex tag` command prints one line of JSON. `memex ls` prints one note per
 - **`memex tag ls`** lists every tag with its note count, system tags included and marked. With `--note-id` it lists one note's tags and their origin: `body` (written in the text), `agent` or `person`.
 - **`memex add --tags`** gives a new note tags. They're yours (not the agent's), and they show in the footer.
 
-`memex footer add` takes a topic note id for any note's footer; `--daily-note-id` still works as another name for `--note-id`.
+`memex footer add` takes a topic note id for any note's footer; `--daily-note-id` still works as another name for `--note-id`. The agent's `add_footer_topic` does the same and returns `changed`: `false` when the chip was already there, and then nothing is written.
 
 A hosted vault has the same actions through the server. The app uses them for the × and for Tags mode.
 

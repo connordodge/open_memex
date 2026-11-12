@@ -14,6 +14,7 @@ import 'marker_column.dart';
 import 'segment_pointer_layer.dart'
     show NewlineMarkLine, newlineMarkWidth, newlineMarks;
 import 'segment_view.dart';
+import 'spell_squiggles.dart';
 import 'table_grid.dart';
 import 'text_segment.dart';
 
@@ -72,7 +73,8 @@ List<ItemGeometry?> rowGeometries(List<RowSpec> rows) {
 ///
 /// The field sits under Key `editor-row-<segment>-<index>` (D10). The row
 /// paints its part of the segment selection as one block behind the field,
-/// focused or not ([_RowSelection]).
+/// focused or not ([_RowSelection]), and its spelling squiggles and hint
+/// over it ([SpellSquiggles], WI #437).
 class EditorRow extends StatelessWidget {
   const EditorRow({
     super.key,
@@ -120,13 +122,19 @@ class EditorRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final host = context.findAncestorStateOfType<SegmentViewState>();
     Widget keyedField(Widget child) => KeyedSubtree(
       key: ValueKey('editor-row-$segment-$index'),
       child: _RowSelection(
         controller: controller,
         index: index,
-        host: context.findAncestorStateOfType<SegmentViewState>(),
-        child: child,
+        host: host,
+        child: SpellSquiggles(
+          controller: controller,
+          host: host,
+          index: index,
+          child: child,
+        ),
       ),
     );
     final keyed = keyedField(field);

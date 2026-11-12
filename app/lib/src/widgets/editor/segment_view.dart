@@ -594,6 +594,34 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   RowSpec? rowSpec(int index) =>
       index >= 0 && index < _rows.length ? _rows[index].spec : null;
 
+  /// The row whose field edits [row] (WI #436, spell checking): its line
+  /// from the row's start (an item row's block marker included), where the
+  /// field's text starts in it, and whether the row starts the segment.
+  /// Null when [row] is no row field of this segment.
+  ({String line, int textStart, bool atSegmentStart})? rowLineOf(
+    TextEditingController row,
+  ) {
+    for (final r in _rows) {
+      if (!identical(r.controller, row)) continue;
+      final spec = r.spec;
+      return (
+        line: _text.substring(spec.start, spec.textEnd),
+        textStart: spec.textStart - spec.start,
+        atSegmentStart: spec.start == 0,
+      );
+    }
+    return null;
+  }
+
+  /// Where [row]'s field text starts in the segment text (WI #438), or
+  /// null when [row] is no row field of this segment.
+  int? rowTextStartOf(TextEditingController row) {
+    for (final r in _rows) {
+      if (identical(r.controller, row)) return r.spec.textStart;
+    }
+    return null;
+  }
+
   @override
   int? get focusedRow {
     final i = _rows.indexWhere((row) => row.focusNode.hasFocus);
@@ -743,6 +771,7 @@ class _RowsLineBoxes implements LineBoxSource {
           ),
           top: line.top + row.shift.dy,
           bottom: line.bottom + row.shift.dy,
+          baseline: line.baseline + row.shift.dy,
         ),
   ];
 

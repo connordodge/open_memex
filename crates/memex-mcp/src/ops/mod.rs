@@ -23,6 +23,7 @@ pub mod notes;
 pub mod prompt;
 pub mod settings;
 pub mod tags;
+pub mod words;
 
 pub use memex_core::embedder::Embedder;
 pub use memex_core::Clock;

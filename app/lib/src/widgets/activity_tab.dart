@@ -7,11 +7,9 @@ import '../db/activity_reads.dart';
 import '../db/feedback_reads.dart';
 import '../memex_cli.dart';
 import '../state/activity_state.dart';
-import '../state/editor_controller.dart' show editorControllerProvider;
 import '../state/feedback_state.dart';
 import '../state/note_state.dart';
 import '../state/topic_actions.dart';
-import '../state/vault_access_state.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
@@ -99,7 +97,7 @@ String? _revisionOf(List<GuideRevisionRow> revisions, String agentChangeId) {
 
 final _activitySubtitleStyle = OmType.mono(
   size: 10.5,
-  color: OmColors.fg3,
+  color: OmColors.fg2,
   height: 1.6,
 );
 
@@ -135,7 +133,7 @@ class _ActivityEntry extends StatelessWidget {
             style: OmType.mono(size: 11, color: OmColors.agent),
           ),
           const SizedBox(height: 2),
-          Text(entry.day, style: OmType.mono(size: 10.5, color: OmColors.fg3)),
+          Text(entry.day, style: OmType.mono(size: 10.5, color: OmColors.fg2)),
           const SizedBox(height: 6),
           for (final bullet in entry.bullets)
             Padding(
@@ -188,29 +186,22 @@ Future<void> _restore(
     await guardVaultWrite(context, () async {
       // An edit still waiting on the save debounce is stored first, so the
       // restore keeps it as a revision (the dialog promises the current text
-      // is kept). A failed save stops the restore: nothing is replaced.
-      final editor = container.read(editorControllerProvider.notifier);
-      if (!await editor.flushPendingSaveAndWait()) {
-        final message = container.read(editorControllerProvider).errorMessage;
-        throw MemexException(message ?? 'Could not save your changes first.');
+      // is kept). A failed save stops the restore: nothing is replaced, and
+      // the editor's save error shows when it has one.
+      try {
+        await flushThenWrite(
+          container,
+          note: guide,
+          // FeedbackActions bumps the vault revision once.
+          write: () async =>
+              (await container
+                      .read(feedbackActionsProvider)
+                      .restoreGuide(revisionId))
+                  .version,
+        );
+      } on SaveFirstFailedException catch (e) {
+        throw MemexException(e.saveError ?? e.message);
       }
-      final flushed = container.read(editorControllerProvider).contentMd;
-      // FeedbackActions bumps the vault revision once.
-      final result = await container
-          .read(feedbackActionsProvider)
-          .restoreGuide(revisionId);
-      final restored = await container
-          .read(vaultAccessProvider)
-          ?.notes
-          .getNote(guide.id);
-      if (restored == null) return;
-      final now = container.read(editorControllerProvider).contentMd;
-      await rebaseEditorOnVersionIn(
-        container,
-        fallback: guide,
-        version: result.version,
-        content: now == flushed ? restored.contentMd : now,
-      );
     });
   } on Exception catch (e) {
     messenger?.showSnackBar(

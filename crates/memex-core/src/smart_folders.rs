@@ -238,6 +238,18 @@ pub fn update_folder(
     caller: Caller,
     clock: &dyn Clock,
 ) -> Result<SmartFolder> {
+    update_folder_changed(vault, id, update, caller, clock).map(|(folder, _)| folder)
+}
+
+/// [`update_folder`], also returning whether the folder's name or parent
+/// changed (a case-only rename counts). A pin change alone is not a change.
+pub fn update_folder_changed(
+    vault: &mut Vault,
+    id: &str,
+    update: FolderUpdate,
+    caller: Caller,
+    clock: &dyn Clock,
+) -> Result<(SmartFolder, bool)> {
     let conn = vault.conn();
     let current = load(conn, id)?;
     let renames = update.name.is_some();
@@ -296,7 +308,8 @@ pub fn update_folder(
         }
     }
     tx.commit()?;
-    read_folder(vault.conn(), id)
+    let changed = name != current.name || parent_id != current.parent_id;
+    Ok((read_folder(vault.conn(), id)?, changed))
 }
 
 /// Deletes a folder: re-parents its children to its parent, drops its
@@ -373,6 +386,20 @@ pub fn add_member(
     caller: Caller,
     embedder: Option<&dyn Embedder>,
 ) -> Result<Membership> {
+    add_member_added(vault, folder_id, note_id, pinned, caller, embedder)
+        .map(|(membership, _)| membership)
+}
+
+/// [`add_member`], also returning whether the note was added: false when it
+/// was already a member (its row may still be updated, e.g. a person's pin).
+pub fn add_member_added(
+    vault: &mut Vault,
+    folder_id: &str,
+    note_id: &str,
+    pinned: Option<bool>,
+    caller: Caller,
+    embedder: Option<&dyn Embedder>,
+) -> Result<(Membership, bool)> {
     load(vault.conn(), folder_id)?;
     let note = notes::get_note(vault, &NoteId::parse(note_id)?)?;
     if notes::is_guide(&note.frontmatter) {
@@ -443,12 +470,13 @@ pub fn add_member(
          ON CONFLICT(smart_folder_id, note_id) DO UPDATE SET pinned = excluded.pinned",
         params![folder_id, note_id, pinned],
     )?;
-    Ok(Membership {
+    let membership = Membership {
         smart_folder_id: folder_id.to_string(),
         note_id: note_id.to_string(),
         pinned,
         role_set,
-    })
+    };
+    Ok((membership, existing.is_none()))
 }
 
 /// Removes a topic note from a folder. A note that is not a member is
@@ -462,9 +490,28 @@ pub fn remove_member(
     note_id: &str,
     caller: Caller,
 ) -> Result<()> {
+    if remove_member_removed(vault, folder_id, note_id, caller)? {
+        return Ok(());
+    }
+    let folder = load(vault.conn(), folder_id)?;
+    Err(MemexError::NotFound(format!(
+        "note {note_id} is not in Smart Folder \"{}\"",
+        folder.name
+    )))
+}
+
+/// [`remove_member`], answering `false` instead of `not_found` for a note that
+/// is not a member (nothing is written). An unknown folder is still
+/// `not_found`, and the pin rules apply to a membership that exists.
+pub fn remove_member_removed(
+    vault: &mut Vault,
+    folder_id: &str,
+    note_id: &str,
+    caller: Caller,
+) -> Result<bool> {
     let conn = vault.conn();
     let folder = load(conn, folder_id)?;
-    let (pinned, title): (bool, String) = conn
+    let member: Option<(bool, String)> = conn
         .query_row(
             "SELECT m.pinned, n.title
              FROM smart_folder_members m JOIN notes n ON n.id = m.note_id
@@ -472,13 +519,10 @@ pub fn remove_member(
             params![folder_id, note_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
-        .optional()?
-        .ok_or_else(|| {
-            MemexError::NotFound(format!(
-                "note {note_id} is not in Smart Folder \"{}\"",
-                folder.name
-            ))
-        })?;
+        .optional()?;
+    let Some((pinned, title)) = member else {
+        return Ok(false);
+    };
     if caller == Caller::Agent {
         if folder.pinned {
             return Err(pinned_folder(&folder));
@@ -496,7 +540,7 @@ pub fn remove_member(
         feedback::record_membership_removed(&tx, note_id, &title, folder_id, &folder.name)?;
     }
     tx.commit()?;
-    Ok(())
+    Ok(true)
 }
 
 // ---------- internals ----------

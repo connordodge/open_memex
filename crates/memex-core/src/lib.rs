@@ -1,9 +1,11 @@
 //! Open Memex core library.
 
+pub mod agents;
 pub mod app_reads;
 pub mod backup;
 pub mod canvas;
 pub mod chunker;
+pub mod echoes;
 pub mod embedder;
 pub mod error;
 pub mod fs_guard;
@@ -17,6 +19,7 @@ pub mod schema;
 pub mod search;
 pub mod tags;
 pub mod vault;
+pub mod words;
 
 // Registered up front (architect ruling D5); each feature fills its own file.
 pub mod blocks;
@@ -30,6 +33,7 @@ pub mod review;
 pub mod smart_folders;
 pub mod transclusion;
 pub mod vault_settings;
+pub mod vectors;
 
 pub use caller::Caller;
 pub use canvas::{

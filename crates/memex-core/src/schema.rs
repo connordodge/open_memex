@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::error::MemexError;
 use crate::Result;
 
-pub const APP_SCHEMA_VERSION: i64 = 6;
+pub const APP_SCHEMA_VERSION: i64 = 7;
 
 pub const MAX_DEDUP_COLLISIONS: i64 = 1000;
 
@@ -300,6 +300,41 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_guide
     WHERE CASE WHEN json_valid(frontmatter) THEN json_extract(frontmatter, '$.role') END = 'guide';
 "#;
 
+/// V7 (ruling D2): agent activity (#390), learned words (#392) and the
+/// single-row `content_revision` counter (#391) that the revision triggers
+/// move. Add-only and `IF NOT EXISTS` throughout, with an `OR IGNORE` seed,
+/// so a re-run never resets the counter.
+const V7: &str = r#"
+CREATE TABLE IF NOT EXISTS agent_activity (
+    id           TEXT PRIMARY KEY,
+    session_id   TEXT NOT NULL,
+    client_name  TEXT NOT NULL,
+    tool         TEXT NOT NULL,
+    summary      TEXT NOT NULL,
+    note_id      TEXT NULL,
+    created_at   INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_activity_created
+    ON agent_activity(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS learned_words (
+    word_key    TEXT PRIMARY KEY,
+    word        TEXT NOT NULL,
+    created_at  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS content_revision (
+    id  INTEGER PRIMARY KEY CHECK (id = 1),
+    n   INTEGER NOT NULL
+);
+
+INSERT OR IGNORE INTO content_revision(id, n) VALUES (1, 0);
+"#;
+
+/// The revision triggers on each triggered table: (name suffix, event).
+const REVISION_TRIGGERS: [(&str, &str); 3] = [("ai", "INSERT"), ("au", "UPDATE"), ("ad", "DELETE")];
+
 /// Columns V6 adds to existing tables: (table, column, declaration).
 const V6_COLUMNS: [(&str, &str, &str); 2] = [
     (
@@ -371,7 +406,74 @@ pub fn apply(conn: &mut Connection) -> Result<()> {
         }
         tx.commit()?;
     }
+
+    // v7: agent activity, learned words, the revision counter and its
+    // triggers, and the one-time rechunk queue, in one transaction. The
+    // version row goes in before the triggers exist, so a fresh vault's
+    // counter still reads 0 at commit.
+    {
+        let tx = conn.transaction()?;
+        if current_version(&tx)? < 7 {
+            apply_v7(&tx)?;
+            tx.execute("INSERT INTO schema_version(version) VALUES (7)", [])?;
+            ensure_revision_triggers(&tx)?;
+        }
+        tx.commit()?;
+    }
     Ok(())
+}
+
+fn apply_v7(conn: &Connection) -> Result<()> {
+    conn.execute_batch(V7)?;
+    // The rechunk queue (D2, D3): every note once. A note already queued
+    // keeps its row and its stamp.
+    conn.execute(
+        "INSERT OR IGNORE INTO pending_index(note_id, enqueued_at) SELECT id, ?1 FROM notes",
+        [crate::vault::now_unix_ms()],
+    )?;
+    Ok(())
+}
+
+/// Puts `content_revision_<t>_{ai,au,ad}` on every table in `sqlite_master`
+/// except `content_revision`, SQLite's own `sqlite_*` tables, virtual tables
+/// and the shadow tables of `chunk_fts` and `chunk_vec`, so each row a write
+/// inserts, updates or deletes in any other table moves `content_revision.n`
+/// by one. `IF NOT EXISTS`: a re-run adds no duplicate trigger.
+pub(crate) fn ensure_revision_triggers(conn: &Connection) -> Result<()> {
+    let tables: Vec<(String, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT name, COALESCE(sql, '') FROM sqlite_master WHERE type = 'table' ORDER BY name",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    for (table, sql) in tables {
+        if is_revision_exempt(&table, &sql) {
+            continue;
+        }
+        for (suffix, event) in REVISION_TRIGGERS {
+            conn.execute_batch(&format!(
+                "CREATE TRIGGER IF NOT EXISTS content_revision_{table}_{suffix} \
+                 AFTER {event} ON {table}\n\
+                 BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;"
+            ))?;
+        }
+    }
+    Ok(())
+}
+
+/// Whether `table`, given its `sqlite_master.sql`, carries no revision trigger.
+fn is_revision_exempt(table: &str, sql: &str) -> bool {
+    let is_virtual = sql
+        .split_whitespace()
+        .take(3)
+        .map(str::to_ascii_uppercase)
+        .eq(["CREATE", "VIRTUAL", "TABLE"]);
+    table == "content_revision"
+        || table.starts_with("sqlite_")
+        || table.starts_with("chunk_fts_")
+        || table.starts_with("chunk_vec_")
+        || is_virtual
 }
 
 fn apply_v5(conn: &Connection) -> Result<()> {

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../theme/colors.dart';
 import '../theme/typography.dart';
@@ -232,6 +233,12 @@ class OmButton extends StatefulWidget {
     this.kbd,
     this.tooltip,
     this.dense = false,
+    this.focusable = false,
+    this.hoverBackground,
+    this.iconSize,
+    this.focusNode,
+    this.semanticLabel,
+    this.toggled,
   });
   final VoidCallback? onPressed;
   final OmButtonKind kind;
@@ -246,6 +253,33 @@ class OmButton extends StatefulWidget {
   final String? kbd;
   final String? tooltip;
 
+  /// Opt-in keyboard focus (Spec #393 req 8, D9): a focus stop that Enter
+  /// and Space press once per key press, announced as a button labelled
+  /// [semanticLabel], else [label], else [tooltip]. Keyboard focus draws a 2 px ring
+  /// inside the box and the focus fill (req 10, D29) without changing the
+  /// size. A disabled one stays a focus stop and ignores every press (LR3).
+  final bool focusable;
+
+  /// The hover background, and the focus fill of a [focusable] button
+  /// (D29); null keeps the kind's colours.
+  final Color? hoverBackground;
+
+  /// The icon size; null keeps 12 px (dense) or 14 px.
+  final double? iconSize;
+
+  /// The focus node of a [focusable] button, so a caller can move focus to
+  /// this button with `requestFocus()`. The caller owns it and disposes it.
+  /// Null gives the button a node of its own; ignored unless [focusable].
+  final FocusNode? focusNode;
+
+  /// The announced label of a [focusable] button when it should differ from
+  /// the visible text; null announces [label] or, without one, [tooltip].
+  final String? semanticLabel;
+
+  /// Announces a [focusable] button as a toggle that is on (true) or off
+  /// (false); null announces a plain button.
+  final bool? toggled;
+
   @override
   State<OmButton> createState() => _OmButtonState();
 }
@@ -253,40 +287,118 @@ class OmButton extends StatefulWidget {
 class _OmButtonState extends State<OmButton> {
   bool _hover = false;
 
+  /// Whether the [Focus] of a focusable button has the focus.
+  bool _focused = false;
+
+  @override
+  void didUpdateWidget(OmButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // The Focus leaves the tree with `focusable`, without a focus change.
+    if (!widget.focusable && _focused) _setFocused(false);
+  }
+
+  @override
+  void dispose() {
+    FocusManager.instance.removeHighlightModeListener(_onHighlightMode);
+    super.dispose();
+  }
+
+  void _setFocused(bool focused) {
+    // The ring follows the highlight mode only while focused.
+    if (focused) {
+      FocusManager.instance.addHighlightModeListener(_onHighlightMode);
+    } else {
+      FocusManager.instance.removeHighlightModeListener(_onHighlightMode);
+    }
+    _focused = focused;
+  }
+
+  void _onHighlightMode(FocusHighlightMode _) => setState(() {});
+
+  /// Enter and Space press a focused focusable button on key down only;
+  /// their repeats and key ups are swallowed too, so a held key presses
+  /// once and never reaches an ancestor. A disabled button swallows them.
+  /// With Shift, Control, Alt or Meta held they pass on unhandled, as
+  /// with keyboardButtonShortcuts.
+  KeyEventResult _onKey(FocusNode _, KeyEvent event) {
+    final key = event.logicalKey;
+    if (key != LogicalKeyboardKey.enter &&
+        key != LogicalKeyboardKey.numpadEnter &&
+        key != LogicalKeyboardKey.space) {
+      return KeyEventResult.ignored;
+    }
+    final keyboard = HardwareKeyboard.instance;
+    if (keyboard.isShiftPressed ||
+        keyboard.isControlPressed ||
+        keyboard.isAltPressed ||
+        keyboard.isMetaPressed) {
+      return KeyEventResult.ignored;
+    }
+    if (event is KeyDownEvent) widget.onPressed?.call();
+    return KeyEventResult.handled;
+  }
+
   @override
   Widget build(BuildContext context) {
-    final (bg, fg, border, hoverBg) = switch (widget.kind) {
+    // (rest, foreground, border, hover, focus fill, focus ring) per kind.
+    // D29: ghost and secondary focus to surface4; primary, agent and danger
+    // keep their hover colour; the ring is accent, accentFg on primary.
+    final (bg, fg, border, hoverBg, focusBg, ringColor) = switch (widget.kind) {
       OmButtonKind.primary => (
         OmColors.accent,
         OmColors.accentFg,
         Colors.transparent,
         const Color(0xFF94FFC1),
+        const Color(0xFF94FFC1),
+        OmColors.accentFg,
       ),
       OmButtonKind.secondary => (
         OmColors.surface3,
         OmColors.fg0,
         OmColors.line2,
         OmColors.surface4,
+        OmColors.surface4,
+        OmColors.accent,
       ),
       OmButtonKind.ghost => (
         Colors.transparent,
         OmColors.fg1,
         Colors.transparent,
         OmColors.surface3,
+        OmColors.surface4,
+        OmColors.accent,
       ),
       OmButtonKind.agent => (
         OmColors.agentBg,
         OmColors.agent,
         OmColors.agent.withAlpha(70),
         OmColors.agentBg,
+        OmColors.agentBg,
+        OmColors.accent,
       ),
       OmButtonKind.danger => (
         OmColors.dangerBg,
         OmColors.danger,
         OmColors.danger.withAlpha(69),
         OmColors.dangerBg,
+        OmColors.dangerBg,
+        OmColors.accent,
       ),
     };
+    // Keyboard focus only (CSS :focus-visible): no ring after a click, and
+    // none while the focus highlight is off.
+    final ring =
+        widget.focusable &&
+        _focused &&
+        FocusManager.instance.highlightMode == FocusHighlightMode.traditional;
+    final Color fill;
+    if (ring) {
+      fill = widget.hoverBackground ?? focusBg;
+    } else if (_hover) {
+      fill = widget.hoverBackground ?? hoverBg;
+    } else {
+      fill = bg;
+    }
 
     // Small buttons (opt-in, board A12): 12 px label and icon, padding 10.
     final small = widget.dense;
@@ -299,7 +411,11 @@ class _OmButtonState extends State<OmButton> {
         mainAxisSize: MainAxisSize.min,
         children: [
           if (widget.icon != null)
-            Icon(widget.icon, size: small ? 12 : 14, color: fg),
+            Icon(
+              widget.icon,
+              size: widget.iconSize ?? (small ? 12 : 14),
+              color: fg,
+            ),
           if (widget.icon != null && hasLabel) const SizedBox(width: 7),
           if (hasLabel)
             Flexible(
@@ -342,20 +458,55 @@ class _OmButtonState extends State<OmButton> {
             ),
             alignment: Alignment.center,
             decoration: BoxDecoration(
-              color: _hover ? hoverBg : bg,
+              color: fill,
               border: Border.all(color: border, width: 1),
               borderRadius: BorderRadius.circular(6),
             ),
+            // The 2 px ring is drawn inside the box, so the size never
+            // changes. Null without the ring keeps the default tree as is.
+            foregroundDecoration: ring
+                ? BoxDecoration(
+                    border: Border.all(
+                      color: ringColor,
+                      width: 2,
+                      strokeAlign: BorderSide.strokeAlignInside,
+                    ),
+                    borderRadius: BorderRadius.circular(6),
+                  )
+                : null,
             child: child,
           ),
         ),
       ),
     );
 
-    if (widget.tooltip != null) {
-      return Tooltip(message: widget.tooltip!, child: core);
-    }
-    return core;
+    final tipped = widget.tooltip == null
+        ? core
+        : Tooltip(message: widget.tooltip!, child: core);
+    if (!widget.focusable) return tipped;
+
+    // One button node labelled `semanticLabel ?? label ?? tooltip`; the
+    // child semantics (the text, the tooltip, the tap detector) are
+    // excluded so the label is not doubled. The Focus adds no node of its
+    // own.
+    return Focus(
+      focusNode: widget.focusNode,
+      includeSemantics: false,
+      onFocusChange: (f) => setState(() => _setFocused(f)),
+      onKeyEvent: _onKey,
+      child: Semantics(
+        container: true,
+        button: true,
+        enabled: !disabled,
+        focusable: true,
+        focused: _focused,
+        toggled: widget.toggled,
+        label: widget.semanticLabel ?? widget.label ?? widget.tooltip,
+        onTap: widget.onPressed,
+        excludeSemantics: true,
+        child: tipped,
+      ),
+    );
   }
 }
 

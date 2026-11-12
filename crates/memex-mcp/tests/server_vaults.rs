@@ -382,7 +382,7 @@ async fn an_invalid_name_vault_folder_is_logged_once_not_per_request() {
 
 #[tokio::test]
 async fn create_returns_201_and_makes_a_vault_that_opens_at_schema_5() {
-    assert_eq!(APP_SCHEMA_VERSION, 6);
+    assert_eq!(APP_SCHEMA_VERSION, 7);
     let srv = TestServer::start().await;
     let r = create(&srv, "work").await;
     assert_eq!(r.status, 201, "{}", r.body);
@@ -1099,7 +1099,7 @@ fn with_embeddings_startup_fails_before_binding_when_the_model_cannot_load() {
     let err: Value = serde_json::from_str(lines[0]).expect("C1 JSON on stderr");
     assert_eq!(
         err["error"]["code"],
-        json!("internal"),
+        json!("embedder_unavailable"),
         "{}",
         done.describe()
     );
@@ -1113,5 +1113,359 @@ fn with_embeddings_startup_fails_before_binding_when_the_model_cannot_load() {
     assert!(
         std::net::TcpListener::bind(&listen).is_ok(),
         "{listen} was left free"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// WI #416 (Spec #391 req 18, ruling D7): the statuses of the new C1 codes,
+// the CLI's C1 line for an embedder failure, and the MCP error shape an
+// embedder failure keeps.
+// ---------------------------------------------------------------------------
+
+/// An embedder whose every batch fails with `EmbedderInfer(cause)`.
+struct Wi416FailingEmbedder {
+    cause: String,
+}
+
+impl memex_core::embedder::Embedder for Wi416FailingEmbedder {
+    fn model_version(&self) -> &str {
+        "wi416-failing"
+    }
+
+    fn dimension(&self) -> usize {
+        8
+    }
+
+    fn embed_batch(&self, _texts: &[String]) -> memex_core::Result<Vec<Vec<f32>>> {
+        Err(memex_core::error::MemexError::EmbedderInfer(
+            self.cause.clone(),
+        ))
+    }
+}
+
+/// The vault server in-process over a temp root holding the vault `v`,
+/// sharing a [`Wi416FailingEmbedder`] failing with `cause`.
+struct Wi416Server {
+    _root: tempfile::TempDir,
+    addr: SocketAddr,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Wi416Server {
+    async fn start(cause: &str) -> Self {
+        let root = tempfile::tempdir().unwrap();
+        make_vault(root.path(), "v");
+        let embedder = Arc::new(Wi416FailingEmbedder {
+            cause: cause.to_string(),
+        });
+        let config = memex_mcp::server::ServerConfig::new(root.path(), server::TEST_TOKEN)
+            .with_embeddings(true)
+            .with_embedder(embedder);
+        let app = memex_mcp::server::router(config);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve");
+        });
+        Self {
+            _root: root,
+            addr,
+            task,
+        }
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("http://{}{path}", self.addr)
+    }
+}
+
+impl Drop for Wi416Server {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// `err` answered by the vault server: its status and C1 body.
+async fn wi416_answer(err: memex_mcp::server::error::ApiError) -> (u16, Value) {
+    let resp = axum::response::IntoResponse::into_response(err);
+    let status = resp.status().as_u16();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body = serde_json::from_slice(&bytes)
+        .unwrap_or_else(|e| panic!("ApiError body is JSON ({e}): {bytes:?}"));
+    (status, body)
+}
+
+fn wi416_status(code: &str) -> u16 {
+    memex_mcp::server::error::status_for_code(code).as_u16()
+}
+
+#[tokio::test]
+async fn model_not_downloaded_is_answered_with_409_and_its_message() {
+    use memex_core::error::MemexError;
+    assert_eq!(wi416_status("model_not_downloaded"), 409);
+    let expected = json!({"error": {
+        "code": "model_not_downloaded",
+        "message": "embedding model not downloaded"
+    }});
+    let (status, body) = wi416_answer(MemexError::ModelNotDownloaded.into()).await;
+    assert_eq!((status, &body), (409, &expected), "{body}");
+    // Under `.context(…)` it keeps its code and status.
+    let wrapped = anyhow::Error::new(MemexError::ModelNotDownloaded).context("enable embeddings");
+    let (status, body) = wi416_answer(wrapped.into()).await;
+    assert_eq!(status, 409, "{body}");
+    assert_eq!(
+        body["error"]["code"],
+        json!("model_not_downloaded"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn embedder_errors_are_answered_with_503_embedder_unavailable_and_keep_their_cause() {
+    use memex_core::error::MemexError;
+    assert_eq!(wi416_status("embedder_unavailable"), 503);
+    let n = std::hint::black_box(416u16);
+    for e in [
+        MemexError::EmbedderInit(format!("hub refused connection {n}")),
+        MemexError::EmbedderInfer(format!("tensor shape [1, {n}]")),
+    ] {
+        let message = e.to_string();
+        let (status, body) = wi416_answer(e.into()).await;
+        assert_eq!(status, 503, "{body}");
+        assert_eq!(
+            body,
+            json!({"error": {"code": "embedder_unavailable", "message": message}})
+        );
+        assert!(message.contains(&n.to_string()), "the cause: {message}");
+    }
+
+    // End to end: a hosted write that reindexes with a failing embedder.
+    let cause = format!("onnx session gone {n}");
+    let srv = Wi416Server::start(&cause).await;
+    let bearer = format!("Bearer {}", server::TEST_TOKEN);
+    let resp = post_json(
+        &srv.url("/vaults/v/api/v1/notes"),
+        &json!({ "content_md": "Echoes of a hosted write" }),
+        Some(&bearer),
+    )
+    .await;
+    assert_eq!(resp.status, 503, "{}", resp.body);
+    assert_eq!(resp.c1_code(), "embedder_unavailable", "{}", resp.body);
+    let message = resp.json()["error"]["message"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(message.contains(&cause), "the cause stays: {message}");
+}
+
+#[tokio::test]
+async fn word_invalid_is_answered_with_400_and_its_message() {
+    use memex_core::error::MemexError;
+    assert_eq!(wi416_status("word_invalid"), 400);
+    let detail = format!("`echo {}` is not one word", std::hint::black_box(2u8));
+    let e = MemexError::WordInvalid(detail.clone());
+    let message = e.to_string();
+    let (status, body) = wi416_answer(e.into()).await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(
+        body,
+        json!({"error": {"code": "word_invalid", "message": message}})
+    );
+    assert!(message.contains(&detail), "{message}");
+}
+
+#[tokio::test]
+async fn embeddings_off_is_answered_with_409() {
+    use memex_mcp::server::error::ApiError;
+    assert_eq!(wi416_status("embeddings_off"), 409);
+    let (status, body) = wi416_answer(ApiError::new(
+        "embeddings_off",
+        "this vault server runs without --with-embeddings",
+    ))
+    .await;
+    assert_eq!(status, 409, "{body}");
+    assert_eq!(body["error"]["code"], json!("embeddings_off"), "{body}");
+    // Exact matches only: neighbours of the new codes stay unlisted.
+    for code in [
+        "embeddings_offline",
+        "Embeddings_off",
+        "model_not_downloaded ",
+        "embedder",
+        "word",
+    ] {
+        assert_eq!(wi416_status(code), 500, "{code:?}");
+    }
+}
+
+/// `memex <args…>` with `stdin` as its input, the token and log variables
+/// removed, and `env` set on the child only. Killed (and the test failed)
+/// if it still runs after `limit`, a hang guard.
+fn wi416_run_memex(
+    args: &[&str],
+    stdin: &str,
+    env: &[(&str, &str)],
+    limit: std::time::Duration,
+) -> (Option<i32>, String, String) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let scratch = tempfile::tempdir().unwrap();
+    let out = scratch.path().join("stdout");
+    let err = scratch.path().join("stderr");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_memex"));
+    cmd.args(args)
+        .env_remove(TOKEN_ENV)
+        .env_remove("RUST_LOG")
+        .env_remove("HF_HOME")
+        .stdin(Stdio::piped())
+        .stdout(std::fs::File::create(&out).unwrap())
+        .stderr(std::fs::File::create(&err).unwrap());
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.spawn().expect("spawn memex");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if started.elapsed() > limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "memex {args:?} still running after {limit:?}; stderr={}",
+                std::fs::read_to_string(&err).unwrap_or_default()
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    (
+        status.code(),
+        std::fs::read_to_string(out).unwrap_or_default(),
+        std::fs::read_to_string(err).unwrap_or_default(),
+    )
+}
+
+#[test]
+fn cli_add_with_embeddings_and_a_dead_model_hub_prints_one_embedder_unavailable_line() {
+    let root = tempfile::tempdir().unwrap();
+    make_vault(root.path(), "v");
+    let vault = root.path().join("v");
+    // Nothing listens there: the model download is refused at once, with no
+    // network needed. The model cache is the temp vault's `.memex/models`.
+    let hub = format!("http://127.0.0.1:{}", free_port());
+    let (code, stdout, stderr) = wi416_run_memex(
+        &[
+            "add",
+            "--vault",
+            vault.to_str().unwrap(),
+            "--with-embeddings",
+        ],
+        "Echoes of a dead hub\n",
+        &[("HF_ENDPOINT", &hub)],
+        std::time::Duration::from_secs(120),
+    );
+    let describe = format!("exit={code:?}\nstdout={stdout}\nstderr={stderr}");
+    assert_ne!(code, Some(0), "{describe}");
+    let lines: Vec<&str> = stderr.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(lines.len(), 1, "one C1 line: {describe}");
+    let err: Value = serde_json::from_str(lines[0]).expect("C1 JSON on stderr");
+    assert_eq!(
+        err["error"]["code"],
+        json!("embedder_unavailable"),
+        "{describe}"
+    );
+    let message = err["error"]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("embedder"), "{describe}");
+    assert!(
+        vault.join(".memex").join("models").is_dir(),
+        "the model cache is the vault's own: {describe}"
+    );
+}
+
+#[tokio::test]
+async fn mcp_tool_call_hitting_an_embedder_error_keeps_its_mcp_error_shape() {
+    let cause = format!("onnx session gone {}", std::hint::black_box(416u16));
+    let srv = Wi416Server::start(&cause).await;
+    let msg = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "search",
+            "arguments": { "query": "echoes", "mode": "vector" }
+        }
+    });
+    let resp = client()
+        .post(srv.url("/vaults/v/mcp"))
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("authorization", format!("Bearer {}", server::TEST_TOKEN))
+        .body(msg.to_string())
+        .send()
+        .await
+        .expect("send MCP POST");
+    let reply = Reply::read(resp).await;
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    let v = reply.json();
+    assert!(v.get("error").is_none(), "a JSON-RPC result: {v}");
+    let text = v["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a text content: {v}"));
+    let payload: Value = serde_json::from_str(text).expect("tool text is JSON");
+    // As before WI #416: not a rule error, so the code is the tool's op and
+    // the message is the error's text (never `embedder_unavailable`).
+    let expected_message = memex_core::error::MemexError::EmbedderInfer(cause).to_string();
+    assert_eq!(
+        payload,
+        json!({"error": {"code": "search", "message": expected_message}}),
+        "{text}"
+    );
+}
+
+/// Ruling Q1 (accepted wire change): a C1-style tool returns
+/// `to_error_json()` directly, so an embedder failure during its reindex
+/// answers `embedder_unavailable` (it was `internal` before WI #416).
+#[tokio::test]
+async fn append_to_daily_note_with_a_failing_embedder_reports_embedder_unavailable() {
+    let cause = format!("onnx session gone {}", std::hint::black_box(416u16));
+    let srv = Wi416Server::start(&cause).await;
+    let msg = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "append_to_daily_note",
+            "arguments": { "text": "echoes of the day" }
+        }
+    });
+    let resp = client()
+        .post(srv.url("/vaults/v/mcp"))
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("authorization", format!("Bearer {}", server::TEST_TOKEN))
+        .body(msg.to_string())
+        .send()
+        .await
+        .expect("send MCP POST");
+    let reply = Reply::read(resp).await;
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    let v = reply.json();
+    let text = v["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a text content: {v}"));
+    let payload: Value = serde_json::from_str(text).expect("tool text is JSON");
+    let expected_message = memex_core::error::MemexError::EmbedderInfer(cause).to_string();
+    assert_eq!(
+        payload,
+        json!({"error": {"code": "embedder_unavailable", "message": expected_message}}),
+        "{text}"
     );
 }
