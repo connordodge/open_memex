@@ -34,11 +34,15 @@
 #   5 sign       memex, then every nested framework and dylib, then the app
 #                (hardened runtime, timestamp, Release.entitlements for the
 #                app); codesign --verify --deep --strict
-#   6 notarize   (signed mode) notarize and staple the app
-#   7 dmg        Open-Memex-<ver>-arm64.dmg (signed mode: sign, notarize,
-#                staple)
+#   6 dmg        Open-Memex-<ver>-arm64.dmg holding the signed app (signed
+#                mode: sign the DMG)
+#   7 notarize   (signed mode) notarize the DMG and staple it. This is the
+#                only notarization: Apple notarizes the app and memex inside
+#                it too, by their code signatures, and the zip's memex is the
+#                app's signed memex. The app inside is not stapled itself, so
+#                Gatekeeper fetches its ticket online on first launch.
 #   8 zip        memex-<ver>-macos-arm64.zip with memex, LICENSE and the
-#                notices (signed mode: notarize)
+#                notices
 #   9 leak check scripts/leak-check.sh --artifact over the app, memex, the
 #                DMG and the zip; prints `leaks: 0` when clean
 #  10 checksums  move the artifacts into <out> and write SHA256SUMS.txt
@@ -361,18 +365,8 @@ codesign --force --sign "$IDENTITY" --options runtime "$TIMESTAMP" \
   --entitlements "$ENTITLEMENTS" "$APP" || fail "could not sign the app"
 codesign --verify --deep --strict --verbose=2 "$APP" || fail "codesign --verify failed for the app"
 
-# 6. notarize ---------------------------------------------------------------
-step 6 notarize
-if [ "$DRY_RUN" = 1 ]; then
-  echo "build: dry run: not notarized"
-else
-  ditto -c -k --keepParent "$APP" "$WORK/Open-Memex-app.zip" || fail "could not zip the app"
-  notarize "$WORK/Open-Memex-app.zip"
-  xcrun stapler staple "$APP" || fail "could not staple the app"
-fi
-
-# 7. dmg --------------------------------------------------------------------
-step 7 dmg
+# 6. dmg --------------------------------------------------------------------
+step 6 dmg
 mkdir "$WORK/dmg" || fail
 ditto "$APP" "$WORK/dmg/$APP_NAME" || fail "could not stage the app"
 ln -s /Applications "$WORK/dmg/Applications" || fail
@@ -381,6 +375,17 @@ hdiutil create -volname "$VOLUME" -srcfolder "$WORK/dmg" -fs HFS+ \
 [ -f "$DMG" ] || fail "the DMG was not created"
 if [ "$DRY_RUN" = 0 ]; then
   codesign --force --sign "$IDENTITY" --timestamp "$DMG" || fail "could not sign the DMG"
+fi
+
+# 7. notarize ---------------------------------------------------------------
+# One submission: the DMG. Apple notarizes the signed code inside it (the app,
+# its frameworks and memex) by code signature, so the zip's memex, a copy of
+# the app's, is covered too. Each submission can wait a long time in Apple's
+# queue (v0.3.0: about 20 minutes each), so there is only one.
+step 7 notarize
+if [ "$DRY_RUN" = 1 ]; then
+  echo "build: dry run: not notarized"
+else
   notarize "$DMG"
   xcrun stapler staple "$DMG" || fail "could not staple the DMG"
 fi
@@ -392,9 +397,6 @@ cp "$APP/Contents/MacOS/memex" "$WORK/zip/memex" || fail "could not stage memex"
 cp "$ROOT/LICENSE" "$WORK/zip/LICENSE" || fail "could not stage LICENSE"
 cp "$NOTICES" "$WORK/zip/$NOTICES_NAME" || fail "could not stage the notices"
 ditto -c -k --norsrc --noextattr "$WORK/zip" "$ZIP" || fail "could not make the zip"
-if [ "$DRY_RUN" = 0 ]; then
-  notarize "$ZIP"
-fi
 
 # 9. leak check -------------------------------------------------------------
 step 9 "leak check"
