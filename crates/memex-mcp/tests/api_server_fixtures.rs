@@ -75,6 +75,20 @@ fn response_json(dir: &Path, file: &str) -> Value {
     .unwrap_or_else(|e| panic!("{} is not JSON: {e}", path.display()))
 }
 
+/// WI #415: the vault info fixtures are reblessed at schema V7; every other
+/// domain fixture stays byte-identical.
+#[test]
+fn vault_info_fixtures_carry_schema_version_7() {
+    let dir = api_v1_dir().join("server");
+    for file in ["vault_info.json", "vault_info_created.json"] {
+        assert_eq!(
+            response_json(&dir, file)["schema_version"],
+            Value::from(7),
+            "{file}"
+        );
+    }
+}
+
 #[test]
 fn server_fixture_rows_cover_info_and_the_vault_routes_and_match_the_server() {
     let dir = api_v1_dir().join("server");

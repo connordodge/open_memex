@@ -384,19 +384,37 @@ fn memex_backup(vault: &Path, dest: &Path) -> (Value, PathBuf) {
     (out, file)
 }
 
-/// The source vault pinned at V5: V6's tables, index and columns dropped
-/// and its version row deleted, manifest at 5.
+/// The source vault pinned at V5: V7's triggers and tables (#415), then
+/// V6's tables, index and columns dropped and their version rows deleted,
+/// manifest at 5.
 fn pin_at_v5(vault: &Path) {
     let conn = Connection::open(vault.join("memex.db")).unwrap();
     conn.pragma_update(None, "journal_mode", "DELETE").unwrap();
+    let triggers: Vec<String> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger'
+                 AND name LIKE 'content~_revision~_%' ESCAPE '~'",
+            )
+            .unwrap();
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
+        rows.map(|r| r.unwrap()).collect()
+    };
+    for name in triggers {
+        conn.execute_batch(&format!("DROP TRIGGER \"{name}\";"))
+            .unwrap();
+    }
     conn.execute_batch(
-        "DROP INDEX idx_notes_guide;
+        "DROP TABLE IF EXISTS agent_activity;
+         DROP TABLE IF EXISTS learned_words;
+         DROP TABLE IF EXISTS content_revision;
+         DROP INDEX idx_notes_guide;
          DROP TABLE vault_guide_revisions;
          DROP TABLE feedback;
          DROP TABLE tag_corrections;
          ALTER TABLE tags DROP COLUMN first_line;
          ALTER TABLE tags DROP COLUMN origin;
-         DELETE FROM schema_version WHERE version = 6;",
+         DELETE FROM schema_version WHERE version >= 6;",
     )
     .unwrap();
     assert_eq!(schema::current_version(&conn).unwrap(), 5, "fixture: V5");

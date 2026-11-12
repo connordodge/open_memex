@@ -25,7 +25,7 @@ pub fn status_for_code(code: &str) -> StatusCode {
         "version_conflict" | "title_conflict" | "daily_note_exists" | "name_conflict"
         | "vault_exists" => StatusCode::CONFLICT,
         "invalid_argument" | "invalid_vault_name" | "invalid_utc_offset" | "invalid_id"
-        | "invalid_date" | "setting_invalid" => StatusCode::BAD_REQUEST,
+        | "invalid_date" | "setting_invalid" | "word_invalid" => StatusCode::BAD_REQUEST,
         "marker_rule"
         | "role_rule"
         | "pinned_rule"
@@ -44,6 +44,8 @@ pub fn status_for_code(code: &str) -> StatusCode {
         "method_not_allowed" => StatusCode::METHOD_NOT_ALLOWED,
         "network_filesystem" => StatusCode::CONFLICT,
         "backup_in_progress" | "backups_not_configured" => StatusCode::CONFLICT,
+        "model_not_downloaded" | "embeddings_off" => StatusCode::CONFLICT,
+        "embedder_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }

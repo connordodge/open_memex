@@ -1,7 +1,7 @@
 name: open_memex_app
 description: "Open Memex — local-first AI-native notes."
 publish_to: 'none'
-version: 0.2.0+2
+version: 0.3.0+3
 
 environment:
   sdk: ^3.11.1

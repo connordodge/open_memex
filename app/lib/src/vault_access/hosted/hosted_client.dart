@@ -38,6 +38,17 @@ class ServerProbe {
 /// (req 50).
 const _requestTimeout = Duration(seconds: 10);
 
+/// A request that passed its own `timeout` to [HostedClient.vaultRequest] and
+/// got no response in time (#425). Unlike [VaultUnreachableException] it does
+/// not record `unreachable`: a slow run is not an outage. The request was
+/// aborted; it may have reached the server.
+class HostedRequestTimeout implements Exception {
+  const HostedRequestTimeout();
+
+  @override
+  String toString() => 'HostedRequestTimeout';
+}
+
 /// macOS errno values of socket failures that happen before the request is
 /// written, so the server cannot have committed anything: ECONNREFUSED (61),
 /// EAI_NONAME from a failed host lookup (8), ENETUNREACH (51) and
@@ -92,7 +103,9 @@ class HostedClient {
     body: body,
   );
 
-  /// A vault route: `<server url>/vaults/<vaultName>/api/v1<path>`.
+  /// A vault route: `<server url>/vaults/<vaultName>/api/v1<path>`. [timeout]
+  /// replaces the 10 s default for this request; when it fires the request
+  /// is aborted and [HostedRequestTimeout] is thrown (#425).
   Future<Map<String, Object?>> vaultRequest(
     String method,
     String vaultName,
@@ -100,11 +113,13 @@ class HostedClient {
     required String operation,
     Map<String, String>? query,
     Object? body,
+    Duration? timeout,
   }) => _request(
     method,
     _uri('/vaults/${Uri.encodeComponent(vaultName)}/api/v1$path', query),
     operation: operation,
     body: body,
+    timeout: timeout,
   );
 
   /// `GET /api/v1/info`: the app's only `api_version` check. Never throws.
@@ -152,8 +167,9 @@ class HostedClient {
     Uri uri, {
     required String operation,
     required Object? body,
+    Duration? timeout,
   }) async {
-    final response = await _exchange(method, uri, body);
+    final response = await _exchange(method, uri, body, timeout: timeout);
     final decoded = _decodeJson(response);
     final error = _c1ErrorOf(decoded);
     if (response.statusCode == HttpStatus.unauthorized) {
@@ -179,8 +195,15 @@ class HostedClient {
 
   /// Sends one request and reads the whole response, or throws
   /// [VaultUnreachableException] after recording `unreachable`. Once the
-  /// 10 s timeout fires, a late response or failure is ignored.
-  Future<http.Response> _exchange(String method, Uri uri, Object? body) {
+  /// timeout fires, a late response or failure is ignored. Without a caller
+  /// [timeout] it is 10 s and records `unreachable`; with one, it throws
+  /// [HostedRequestTimeout] and records nothing.
+  Future<http.Response> _exchange(
+    String method,
+    Uri uri,
+    Object? body, {
+    Duration? timeout,
+  }) {
     final abort = Completer<void>();
     final request = http.AbortableRequest(
       method,
@@ -207,22 +230,29 @@ class HostedClient {
       );
     }
 
-    final timeout = _ref.read(clockProvider).after(_requestTimeout, () {
-      if (outcome.isCompleted) return;
-      unreachable(mayHaveCommitted: true);
-      abort.complete();
-    });
+    final timer = _ref.read(clockProvider).after(
+      timeout ?? _requestTimeout,
+      () {
+        if (outcome.isCompleted) return;
+        if (timeout == null) {
+          unreachable(mayHaveCommitted: true);
+        } else {
+          outcome.completeError(const HostedRequestTimeout());
+        }
+        abort.complete();
+      },
+    );
 
     unawaited(() async {
       try {
         final streamed = await _http.send(request);
         final response = await http.Response.fromStream(streamed);
         if (outcome.isCompleted) return;
-        timeout.cancel();
+        timer.cancel();
         outcome.complete(response);
       } catch (e) {
         if (outcome.isCompleted) return;
-        timeout.cancel();
+        timer.cancel();
         unreachable(mayHaveCommitted: !_failedBeforeSending(e));
       }
     }());

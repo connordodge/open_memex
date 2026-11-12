@@ -32,6 +32,8 @@ class AppSettings {
     VaultRef? lastVaultRef,
     List<SavedServer>? savedServers,
     Map<String, VaultBackupSettings>? vaultBackups,
+    this.checkSpelling = true,
+    this.checkGrammar = true,
   }) : recentRefs = List.unmodifiable(
          recentRefs ??
              [
@@ -63,6 +65,13 @@ class AppSettings {
   /// opened. Unmodifiable. Absent key = the defaults.
   final Map<String, VaultBackupSettings> vaultBackups;
 
+  /// Spelling is checked while typing (Spec #392 req 19).
+  final bool checkSpelling;
+
+  /// Grammar is checked with spelling. The stored value; it takes effect
+  /// only while [checkSpelling] is on (see `spellCheckFlagsProvider`).
+  final bool checkGrammar;
+
   /// The local paths in [recentRefs], in order. Hosted entries are left out.
   late final List<String> recentVaults = List.unmodifiable([
     for (final r in recentRefs)
@@ -83,6 +92,8 @@ class AppSettings {
     VaultRef? lastVaultRef,
     List<SavedServer>? savedServers,
     Map<String, VaultBackupSettings>? vaultBackups,
+    bool? checkSpelling,
+    bool? checkGrammar,
   }) => AppSettings(
     memexBinaryPath: memexBinaryPath ?? this.memexBinaryPath,
     recentRefs:
@@ -98,6 +109,8 @@ class AppSettings {
                   : LocalVaultRef(lastVault))),
     savedServers: savedServers ?? this.savedServers,
     vaultBackups: vaultBackups ?? this.vaultBackups,
+    checkSpelling: checkSpelling ?? this.checkSpelling,
+    checkGrammar: checkGrammar ?? this.checkGrammar,
   );
 }
 
@@ -146,6 +159,10 @@ class SettingsController extends StateNotifier<AppSettings> {
 
   // Per-vault backup settings (D22): a JSON object, vault path -> toJson.
   static const _kVaultBackups = 'memex.vault_backups';
+
+  // App-wide spelling flags (Spec #392 req 19). Absent = on.
+  static const _kCheckSpelling = 'memex.check_spelling';
+  static const _kCheckGrammar = 'memex.check_grammar';
 
   static const _maxRecents = 8;
 
@@ -202,9 +219,15 @@ class SettingsController extends StateNotifier<AppSettings> {
         lastVaultRef: last,
         savedServers: servers,
         vaultBackups: _decodeVaultBackups(prefs.get(_kVaultBackups)),
+        checkSpelling: _boolOrOn(prefs.get(_kCheckSpelling)),
+        checkGrammar: _boolOrOn(prefs.get(_kCheckGrammar)),
       ),
     );
   }
+
+  /// A stored flag: anything but a stored `false` (absent, or a value of
+  /// the wrong type) reads as on.
+  static bool _boolOrOn(Object? stored) => stored != false;
 
   /// Saves [settings] for the local vault at [path] (the path as opened) and
   /// changes no other vault's entry or preference.
@@ -227,6 +250,18 @@ class SettingsController extends StateNotifier<AppSettings> {
       jsonEncode({for (final e in updated.entries) e.key: e.value.toJson()}),
     );
     state = state.copyWith(vaultBackups: updated);
+  }
+
+  /// Turns spelling checking on or off and persists it.
+  Future<void> setCheckSpelling(bool value) async {
+    await _prefs.setBool(_kCheckSpelling, value);
+    state = state.copyWith(checkSpelling: value);
+  }
+
+  /// Turns grammar checking on or off and persists it.
+  Future<void> setCheckGrammar(bool value) async {
+    await _prefs.setBool(_kCheckGrammar, value);
+    state = state.copyWith(checkGrammar: value);
   }
 
   Future<void> setMemexBinary(String? path) async {
@@ -435,6 +470,19 @@ class SettingsController extends StateNotifier<AppSettings> {
     }
   }
 }
+
+/// The effective spelling flags (Spec #392 req 19): grammar is checked only
+/// while spelling is.
+final spellCheckFlagsProvider = Provider<({bool spelling, bool grammar})>(
+  (ref) => ref.watch(
+    settingsProvider.select(
+      (s) => (
+        spelling: s.checkSpelling,
+        grammar: s.checkSpelling && s.checkGrammar,
+      ),
+    ),
+  ),
+);
 
 final settingsProvider = StateNotifierProvider<SettingsController, AppSettings>(
   (_) => throw UnimplementedError('overridden in main()'),

@@ -99,6 +99,17 @@ Tags (where each tag came from, and the tags you removed) and feedback on review
 
 A vault may hold one note with `role: guide` (the Vault Guide). If it already has two or more, the V6 migration stops and leaves the vault at V5 unchanged. Keep one: copy what you need out of the others, delete them with the previous `memex`, then open the vault again.
 
+## Upgrading to schema V7
+
+Echoes, the agent activity list and learned spelling words need schema V7. The first time the new `memex` binary opens a vault, it migrates that vault to V7 in place: it adds the new tables and a change counter the app watches, and it queues every note to be chunked again. It changes no note body. A V6 `memex` refuses to open a V7 vault with `SchemaUnsupported`, so there is no going back except from a backup. Before you upgrade:
+
+1. Quit the app, every MCP client (Claude Desktop, Raycast and any other) and any `memex serve` you started yourself, then back up the vault with `memex backup --vault <path> --dest <folder>` (the folder must already exist). Do it before anything opens the vault with the new `memex`: the backup reads a consistent copy and never migrates the vault. Keep the file: it is your way back (see [`docs/backups.md`](docs/backups.md) to restore it).
+2. Install the new app and the new `memex` CLI together. Either download the new DMG and install the new app, which includes the bundled memex (see [Install](#install)), or build from source (`cargo install --path crates/memex-mcp --locked --force`, then rebuild the app). A V6 `memex` left anywhere on your machine fails on the vault with `SchemaUnsupported`.
+3. Point Claude Desktop, and every other MCP client, at the bundled memex (`/Applications/Open Memex.app/Contents/MacOS/memex`, see [`docs/claude-desktop-setup.md`](docs/claude-desktop-setup.md)) rather than an older `memex` on your `PATH`, then reopen it so it starts the new `memex serve`.
+4. Try the upgrade on a scratch vault first (a copy of your vault, or `memex init` a new one), not on your only copy.
+
+The first open after the upgrade rechunks every note, so it takes longer than usual on a large vault. The old vectors no longer match the new chunks; the embedding backfill rebuilds them in the background, and semantic search fills back in as it runs.
+
 ## Architecture
 
 ```

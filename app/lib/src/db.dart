@@ -214,15 +214,28 @@ class VaultDb {
     return (row.first['v'] as num?)?.toInt() ?? 0;
   }
 
-  /// The local vault revision (D9, Req 22): `<handle instance id>-<data_version>`,
-  /// where data_version is this handle's `PRAGMA data_version`. It changes
-  /// after another connection (the CLI) commits a write, stays the same while
-  /// nothing is written, and differs between two handles (the value resets
-  /// when the handle is reopened, so the instance id keeps it unique).
+  /// The local vault revision (D9, Req 22; D4): `<handle instance id>-<n>`,
+  /// where n is `content_revision.n` (V7), which a trigger on every content
+  /// table moves on each committed write by any connection. Vector-only
+  /// writes (`chunk_vec` and its shadow tables) never move it. It stays the
+  /// same while nothing is written and differs between two handles (the
+  /// instance id keeps it unique per handle).
   ///
-  /// A single `PRAGMA` read outside any transaction: nothing here opens a
-  /// read transaction or holds one across an await.
+  /// On a vault without `content_revision` (pre-V7) it falls back to
+  /// `<handle instance id>-<data_version>`, this handle's `PRAGMA
+  /// data_version`, which changes after another connection (the CLI)
+  /// commits a write. The table is probed on every call, never caching a
+  /// negative (like [hasTables]): the CLI may migrate the vault to V7 while
+  /// this handle is open.
+  ///
+  /// Plain reads outside any transaction: nothing here opens a read
+  /// transaction or holds one across an await.
   String dataVersion() {
+    if (hasTables(const ['content_revision'])) {
+      final row = db.select('SELECT n FROM content_revision WHERE id = 1');
+      final n = (row.first['n'] as num).toInt();
+      return '$_handleInstanceId-$n';
+    }
     final row = db.select('PRAGMA data_version');
     final version = (row.first.values.first as num).toInt();
     return '$_handleInstanceId-$version';

@@ -12,9 +12,14 @@ class InlineError extends StatelessWidget {
     super.key,
     required this.message,
     required this.onDismiss,
+    this.onRetry,
   });
   final String message;
   final VoidCallback onDismiss;
+
+  /// When given, a `Retry` button (Key `inline-error-retry`) sits between
+  /// the message and the dismiss button (Spec #394 req 14).
+  final VoidCallback? onRetry;
 
   @override
   Widget build(BuildContext context) {
@@ -34,6 +39,18 @@ class InlineError extends StatelessWidget {
               style: OmType.mono(size: 11, color: OmColors.danger),
             ),
           ),
+          if (onRetry != null) ...[
+            OmButton(
+              key: const Key('inline-error-retry'),
+              kind: OmButtonKind.ghost,
+              dense: true,
+              size: 22,
+              label: 'Retry',
+              focusable: true,
+              onPressed: onRetry,
+            ),
+            const SizedBox(width: 2),
+          ],
           OmButton(
             key: const Key('inline-error-dismiss'),
             kind: OmButtonKind.ghost,

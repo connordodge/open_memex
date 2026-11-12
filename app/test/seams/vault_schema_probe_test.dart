@@ -68,9 +68,9 @@ void main() {
       addTearDown(db.close);
       expect(db.schemaVersion(), 4);
       db.migrateToV5();
-      expect(db.schemaVersion(), requiredVaultSchemaVersion);
-      db.addSchemaVersion(requiredVaultSchemaVersion + 1);
-      expect(db.schemaVersion(), requiredVaultSchemaVersion + 1);
+      expect(db.schemaVersion(), fixtureSchemaVersion);
+      db.addSchemaVersion(fixtureSchemaVersion + 1);
+      expect(db.schemaVersion(), fixtureSchemaVersion + 1);
     });
 
     test('schemaVersion is 0 without a schema_version table', () {

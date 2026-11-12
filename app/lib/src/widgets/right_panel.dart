@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../db.dart';
+import '../state/right_panel_tab.dart';
 import '../state/tabs_state.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
@@ -11,13 +12,10 @@ import '../vault_access/vault_async_view.dart';
 import '../vault_access/vault_scoped.dart';
 import 'activity_tab.dart';
 import 'atoms.dart';
+import 'echoes_tab.dart';
 import 'panel_placeholder_tab.dart';
 
-enum RightPanelTab { connections, echoes, activity }
-
-final rightPanelTabProvider = StateProvider<RightPanelTab>(
-  (_) => RightPanelTab.connections,
-);
+export '../state/right_panel_tab.dart';
 
 class RightPanel extends ConsumerWidget {
   const RightPanel({super.key, required this.onClose});
@@ -65,26 +63,42 @@ class _TabRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 8),
       child: Row(
         children: [
-          _TabButton(
-            label: 'connections',
-            icon: LucideIcons.workflow,
-            active: active == RightPanelTab.connections,
-            onTap: () => onChange(RightPanelTab.connections),
+          // At a large text scale the three chips would overflow the 340 px
+          // panel (Spec #391 req 35): they shrink together to fit, and keep
+          // their natural size whenever they fit.
+          Expanded(
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _TabButton(
+                      label: 'connections',
+                      icon: LucideIcons.workflow,
+                      active: active == RightPanelTab.connections,
+                      onTap: () => onChange(RightPanelTab.connections),
+                    ),
+                    _TabButton(
+                      label: 'echoes',
+                      icon: LucideIcons.history,
+                      active: active == RightPanelTab.echoes,
+                      onTap: () => onChange(RightPanelTab.echoes),
+                    ),
+                    _TabButton(
+                      label: 'activity',
+                      icon: LucideIcons.activity,
+                      active: active == RightPanelTab.activity,
+                      onTap: () => onChange(RightPanelTab.activity),
+                      tone: ChipTone.agent,
+                    ),
+                  ],
+                ),
+              ),
+            ),
           ),
-          _TabButton(
-            label: 'echoes',
-            icon: LucideIcons.history,
-            active: active == RightPanelTab.echoes,
-            onTap: () => onChange(RightPanelTab.echoes),
-          ),
-          _TabButton(
-            label: 'activity',
-            icon: LucideIcons.activity,
-            active: active == RightPanelTab.activity,
-            onTap: () => onChange(RightPanelTab.activity),
-            tone: ChipTone.agent,
-          ),
-          const Spacer(),
           MouseRegion(
             cursor: SystemMouseCursors.click,
             child: GestureDetector(
@@ -154,13 +168,7 @@ class _TabBody extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     return switch (tab) {
       RightPanelTab.connections => const _ConnectionsTab(),
-      RightPanelTab.echoes => const PanelPlaceholderTab(
-        eyebrow: 'echoes · forgotten threads',
-        subtitle:
-            'past notes the indexer thinks you\'d want now. all from your own writing — never an outside source.',
-        empty:
-            'nothing surfaced yet.\nsemantic recall lights this up once embeddings are populated.',
-      ),
+      RightPanelTab.echoes => const EchoesTab(),
       RightPanelTab.activity => const ActivityTab(),
     };
   }
@@ -354,9 +362,8 @@ class _BacklinkKindGroup extends ConsumerWidget {
             title: e.fromTitle,
             resolvedTitle: e.fromTitle,
             label: e.label,
-            onTap: () => ref
-                .read(tabsProvider.notifier)
-                .follow(NoteTab(e.fromNoteId)),
+            onTap: () =>
+                ref.read(tabsProvider.notifier).follow(NoteTab(e.fromNoteId)),
           ),
       ],
     );

@@ -25,6 +25,7 @@ fn variant_name(e: &MemexError) -> &'static str {
         MemexError::InvalidPath(_) => "InvalidPath",
         MemexError::EmbedderInit(_) => "EmbedderInit",
         MemexError::EmbedderInfer(_) => "EmbedderInfer",
+        MemexError::ModelNotDownloaded => "ModelNotDownloaded",
         MemexError::TitleConflict { .. } => "TitleConflict",
         MemexError::TitleInvalid(_) => "TitleInvalid",
         MemexError::TooManyDedupCollisions { .. } => "TooManyDedupCollisions",
@@ -42,6 +43,7 @@ fn variant_name(e: &MemexError) -> &'static str {
         MemexError::InvalidDate(_) => "InvalidDate",
         MemexError::BlockNotFound(_) => "BlockNotFound",
         MemexError::SettingInvalid(_) => "SettingInvalid",
+        MemexError::WordInvalid(_) => "WordInvalid",
         MemexError::NetworkFilesystem(_) => "NetworkFilesystem",
         MemexError::UnknownTag(_) => "UnknownTag",
         MemexError::TagRemoved(_) => "TagRemoved",
@@ -58,7 +60,7 @@ fn variant_name(e: &MemexError) -> &'static str {
     }
 }
 
-const VARIANT_COUNT: usize = 41;
+const VARIANT_COUNT: usize = 43;
 
 /// The variants listed in the C1 table, with their code and extra fields.
 fn c1_samples() -> Vec<(MemexError, &'static str, Value)> {
@@ -170,6 +172,7 @@ fn c1_samples() -> Vec<(MemexError, &'static str, Value)> {
     .into_iter()
     .chain(v6_samples())
     .chain(backup_samples())
+    .chain(e0_samples())
     .collect()
 }
 
@@ -253,6 +256,33 @@ fn v6_samples() -> Vec<(MemexError, &'static str, Value)> {
     ]
 }
 
+/// The codes Spec #391 adds (WI #416, ruling D7): message only, no rule
+/// fields. The embedder variants left `internal` for `embedder_unavailable`.
+fn e0_samples() -> Vec<(MemexError, &'static str, Value)> {
+    vec![
+        (
+            MemexError::ModelNotDownloaded,
+            "model_not_downloaded",
+            json!({}),
+        ),
+        (
+            MemexError::EmbedderInit("Failed to retrieve onnx/model.onnx".into()),
+            "embedder_unavailable",
+            json!({}),
+        ),
+        (
+            MemexError::EmbedderInfer("tensor shape [1, 7] != [1, 384]".into()),
+            "embedder_unavailable",
+            json!({}),
+        ),
+        (
+            MemexError::WordInvalid("`two words` is not one word".into()),
+            "word_invalid",
+            json!({}),
+        ),
+    ]
+}
+
 /// Pre-existing variants that are not in the C1 table: they map to `internal`.
 fn internal_samples() -> Vec<MemexError> {
     vec![
@@ -262,8 +292,6 @@ fn internal_samples() -> Vec<MemexError> {
         MemexError::ManifestInvalid("missing vault_id".into()),
         MemexError::SchemaUnsupported { db: 9, app: 4 },
         MemexError::InvalidPath("../escape".into()),
-        MemexError::EmbedderInit("model missing".into()),
-        MemexError::EmbedderInfer("tensor shape".into()),
         MemexError::TitleInvalid("title cannot be empty".into()),
         MemexError::TooManyDedupCollisions { count: 1000 },
         MemexError::InvalidLinkKind("9bad".into()),
@@ -642,4 +670,114 @@ fn schema_unsupported_stays_internal_and_backups_not_configured_is_not_a_memex_e
             "exactly one variant maps to {code}: {all:?}"
         );
     }
+}
+
+// ======================================================================
+// WI #416 (Spec #391 req 18, ruling D7): model_not_downloaded,
+// embedder_unavailable and word_invalid. Their HTTP statuses are pinned in
+// memex-mcp's tests/server_vaults.rs (memex-core can't see the server).
+// ======================================================================
+
+#[test]
+fn e0_variants_are_counted_and_each_new_code_belongs_to_exactly_its_variants() {
+    assert_eq!(VARIANT_COUNT, 43);
+    let samples = e0_samples();
+    assert_eq!(samples.len(), 4);
+    for (e, code, _) in &samples {
+        assert_eq!(e.code(), *code, "{}", variant_name(e));
+    }
+    let all: Vec<(&str, &str)> = c1_samples()
+        .iter()
+        .map(|(e, _, _)| (variant_name(e), e.code()))
+        .chain(
+            internal_samples()
+                .iter()
+                .map(|e| (variant_name(e), e.code())),
+        )
+        .collect();
+    for (code, variants) in [
+        ("model_not_downloaded", vec!["ModelNotDownloaded"]),
+        (
+            "embedder_unavailable",
+            vec!["EmbedderInit", "EmbedderInfer"],
+        ),
+        ("word_invalid", vec!["WordInvalid"]),
+    ] {
+        let got: Vec<&str> = all
+            .iter()
+            .filter(|(_, c)| *c == code)
+            .map(|(v, _)| *v)
+            .collect();
+        assert_eq!(got, variants, "the variants with code {code}: {all:?}");
+    }
+    for name in [
+        "EmbedderInit",
+        "EmbedderInfer",
+        "ModelNotDownloaded",
+        "WordInvalid",
+    ] {
+        assert!(
+            !internal_samples().iter().any(|e| variant_name(e) == name),
+            "{name} is no longer internal"
+        );
+    }
+}
+
+#[test]
+fn model_not_downloaded_has_its_code_and_exact_message() {
+    let e = MemexError::ModelNotDownloaded;
+    assert_eq!(e.code(), "model_not_downloaded");
+    assert_eq!(e.to_string(), "embedding model not downloaded");
+    assert_eq!(
+        e.to_error_json(),
+        json!({"error": {
+            "code": "model_not_downloaded",
+            "message": "embedding model not downloaded"
+        }})
+    );
+}
+
+#[test]
+fn embedder_init_and_infer_are_embedder_unavailable_and_keep_their_cause() {
+    // Built from run-time values: the cause follows the error, not a literal.
+    let n = std::hint::black_box(7u8);
+    let init_cause = format!("hub refused connection {n}");
+    let infer_cause = format!("tensor shape [1, {n}] != [1, 384]");
+    for (e, cause) in [
+        (MemexError::EmbedderInit(init_cause.clone()), &init_cause),
+        (MemexError::EmbedderInfer(infer_cause.clone()), &infer_cause),
+    ] {
+        assert_eq!(e.code(), "embedder_unavailable", "{}", variant_name(&e));
+        let got = e.to_error_json();
+        assert_eq!(
+            got,
+            json!({"error": {"code": "embedder_unavailable", "message": e.to_string()}}),
+            "{}",
+            variant_name(&e)
+        );
+        let msg = error_object(&got)["message"].as_str().unwrap();
+        assert!(msg.contains(cause.as_str()), "{}: {msg}", variant_name(&e));
+        assert!(!msg.contains('\n'), "{}: {msg:?}", variant_name(&e));
+    }
+    // The two stay told apart by their message.
+    assert_ne!(
+        MemexError::EmbedderInit("x".into()).to_string(),
+        MemexError::EmbedderInfer("x".into()).to_string()
+    );
+}
+
+#[test]
+fn word_invalid_has_code_word_invalid_and_keeps_its_message() {
+    let word = format!("echo-{}", std::hint::black_box(3u8));
+    let detail = format!("`{word} two` is not one word");
+    let e = MemexError::WordInvalid(detail.clone());
+    assert_eq!(e.code(), "word_invalid");
+    let got = e.to_error_json();
+    assert_eq!(
+        got,
+        json!({"error": {"code": "word_invalid", "message": e.to_string()}})
+    );
+    let msg = error_object(&got)["message"].as_str().unwrap();
+    assert!(msg.contains(&detail), "{msg}");
+    assert!(!msg.contains('\n'), "{msg:?}");
 }

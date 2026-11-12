@@ -243,13 +243,17 @@ async fn mcp_update_smart_folder_renames_reparents_and_moves_to_root() {
     let a = create_folder_ok(&m, "Games", None).await;
     let b = create_folder_ok(&m, "Design", None).await;
 
+    // The folder's keys plus WI #449's additive `changed`.
+    let mut update_keys = set(&FOLDER_KEYS);
+    update_keys.insert("changed".to_string());
+
     let got = update_folder(&m, json!({ "id": b, "name": "Game Design" })).await;
-    assert_eq!(keys(&got), set(&FOLDER_KEYS), "{got}");
+    assert_eq!(keys(&got), update_keys, "{got}");
     assert_eq!(got["name"], json!("Game Design"));
     assert_eq!(got["pinned"], json!(false), "agent edits never pin");
 
     let got = update_folder(&m, json!({ "id": b, "parent_id": a })).await;
-    assert_eq!(keys(&got), set(&FOLDER_KEYS), "{got}");
+    assert_eq!(keys(&got), update_keys, "{got}");
     assert_eq!(got["parent_id"], json!(a));
     assert_eq!(got["depth"], json!(2));
     assert_eq!(got["name"], json!("Game Design"));
@@ -309,12 +313,15 @@ async fn mcp_add_and_remove_membership_return_their_shapes() {
             "note_id": n,
             "pinned": false,
             "role_set": false,
+            "added": true,
         })
     );
     assert_eq!(membership(&state, &f, &n).await, Some(false));
 
-    // Idempotent.
-    assert_eq!(add(&m, &f, &n).await, got);
+    // Idempotent: the same membership, and WI #449's `added` says so.
+    let mut again = got.clone();
+    again["added"] = json!(false);
+    assert_eq!(add(&m, &f, &n).await, again);
 
     let got = remove(&m, &f, &n).await;
     assert_eq!(

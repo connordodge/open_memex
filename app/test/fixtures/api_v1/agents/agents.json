@@ -1,0 +1,59 @@
+{
+  "agents": [
+    {
+      "client_name": "Claude Desktop",
+      "client_version": "0.14.2",
+      "embeddings": false,
+      "expires_at": 1762855213000,
+      "last_request_at": 1762855197000,
+      "last_seen_at": 1762855198000,
+      "last_tool_at": 1762855197000,
+      "session_id": "01JCSTD1000000000000000001",
+      "started_at": 1762854600000,
+      "transport": "stdio"
+    },
+    {
+      "client_name": "claude-code",
+      "client_version": null,
+      "embeddings": true,
+      "expires_at": 1762855140000,
+      "last_request_at": 1762855080000,
+      "last_seen_at": 1762855080000,
+      "last_tool_at": null,
+      "session_id": "01JCHTTP000000000000000002",
+      "started_at": 1762848000000,
+      "transport": "http"
+    }
+  ],
+  "available": true,
+  "recent": [
+    {
+      "client_name": "Claude Desktop",
+      "created_at": 1762855197000,
+      "id": "01JCACT0000000000000000001",
+      "note_id": "01M5DQAYZ3WP7H0NXZZV9M2315",
+      "session_id": "01JCSTD1000000000000000001",
+      "summary": "filed 4 blocks → Rest & Recharge",
+      "tool": "add_excerpt"
+    },
+    {
+      "client_name": "claude-code",
+      "created_at": 1762855190000,
+      "id": "01JCACT0000000000000000003",
+      "note_id": "01M5DQAYZ3WP7H0NXZZV9M2315",
+      "session_id": "01JCHTTP000000000000000002",
+      "summary": "tagged Player loop #core",
+      "tool": "tag_note"
+    },
+    {
+      "client_name": "Claude Desktop",
+      "created_at": 1762855190000,
+      "id": "01JCACT0000000000000000002",
+      "note_id": null,
+      "session_id": "01JCSTD1000000000000000001",
+      "summary": "marked 2026-11-09 reviewed",
+      "tool": "mark_day_reviewed"
+    }
+  ],
+  "server_now": 1762855200000
+}

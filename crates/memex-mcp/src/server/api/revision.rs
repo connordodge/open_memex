@@ -1,16 +1,19 @@
-//! `/vaults/{name}/api/v1/revision` (#94, D9): the hosted vault revision.
+//! `/vaults/{name}/api/v1/revision` (#94, D9; #419, D4): the hosted vault
+//! revision.
 //!
-//! The value is `<open_id>-<total_changes>-<data_version>`, read on the
-//! served vault's one connection:
+//! The value is `<open_id>-<content_revision.n>`, read on the served vault's
+//! one connection:
 //!
 //! - `open_id` is the registry entry's ULID, new for every open, so a
 //!   reopened vault or a restarted server never repeats a value;
-//! - `total_changes()` moves with the server connection's own commits;
-//! - `PRAGMA data_version` moves with commits by other connections.
+//! - `content_revision.n` is the vault's content counter (#415), moved by a
+//!   trigger on every content table by any connection's commits. Vector-only
+//!   writes (`chunk_vec`, a virtual table without triggers) never move it, so
+//!   an embedding backfill does not make clients reload.
 //!
 //! The route never waits on a busy vault: it `try_lock`s the vault and,
 //! while another task holds it, answers the last value it computed for this
-//! `open_id`, or `<open_id>-0-0` when it has computed none yet. The cache is
+//! `open_id`, or `<open_id>-0` when it has computed none yet. The cache is
 //! keyed by `open_id` and lives here (D8: `VaultEntry` gains no field).
 
 use std::collections::HashMap;
@@ -59,7 +62,7 @@ async fn revision(
     let Ok(guard) = entry.state.vault.clone().try_lock_owned() else {
         let revision = last
             .get(entry.open_id)
-            .unwrap_or_else(|| format!("{}-0-0", entry.open_id));
+            .unwrap_or_else(|| format!("{}-0", entry.open_id));
         return Ok(Json(json!({ "revision": revision })));
     };
     // The owned guard moves into the blocking task: none is held across an
@@ -67,13 +70,12 @@ async fn revision(
     // recorded in the order they were read.
     let revision = tokio::task::spawn_blocking(move || -> Result<String, ApiError> {
         let conn = guard.connection_ref();
-        let total_changes: i64 = conn
-            .query_row("SELECT total_changes()", [], |r| r.get(0))
+        let n: i64 = conn
+            .query_row("SELECT n FROM content_revision WHERE id = 1", [], |r| {
+                r.get(0)
+            })
             .map_err(anyhow::Error::from)?;
-        let data_version: i64 = conn
-            .query_row("PRAGMA data_version", [], |r| r.get(0))
-            .map_err(anyhow::Error::from)?;
-        let revision = format!("{}-{total_changes}-{data_version}", entry.open_id);
+        let revision = format!("{}-{n}", entry.open_id);
         last.set(&entry, revision.clone());
         drop(guard);
         Ok(revision)

@@ -7,12 +7,14 @@ import 'package:path_provider/path_provider.dart';
 
 import 'src/screens/vault_picker.dart';
 import 'src/screens/workspace.dart';
+import 'src/state/agents_sheet/agents_menu_enablement.dart';
 import 'src/state/app_exit.dart';
 import 'src/state/app_support_dir.dart';
 import 'src/state/app_version.dart';
 import 'src/state/hosted_identity.dart';
 import 'src/state/picker_actions.dart';
 import 'src/state/settings.dart';
+import 'src/state/spelling_menu_sync.dart';
 import 'src/state/vault_open_controller.dart';
 import 'src/state/vault_open_hosted.dart';
 import 'src/state/vault_state.dart';
@@ -112,6 +114,8 @@ class _OpenMemexAppState extends ConsumerState<OpenMemexApp> {
       (_, title) => ref.read(windowTitleProvider).setTitle(title),
       fireImmediately: true,
     );
+    ref.read(spellingMenuSyncProvider); // Spelling menu and tags (#392, D24).
+    ref.read(agentsMenuEnablementProvider); // Window ▸ Agents… (#408, D24).
   }
 
   @override

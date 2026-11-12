@@ -11,6 +11,7 @@ import '../tag_autocomplete.dart';
 import '../wikilink_autocomplete.dart';
 import 'line_boxes.dart';
 import 'live_preview_controller.dart';
+import 'spelling_menu.dart' show spellingAwareContextMenu;
 
 // Shared editing pieces of the note editor (WI #27): the scrolling editor
 // page, one editable markdown field with wikilink autocomplete, and the inline
@@ -360,6 +361,8 @@ class _TextSegmentFieldState extends State<TextSegmentField> {
               hintText: widget.hintText,
               hintStyle: OmType.mono(size: _bodySize, color: OmColors.fg3),
             ),
+            // A right click on a flagged range opens SpellingMenu (WI #438).
+            contextMenuBuilder: spellingAwareContextMenu,
             // No onChanged: the controller listener reports typed AND
             // spliced changes.
           ),

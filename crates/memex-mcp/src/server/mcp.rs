@@ -11,6 +11,10 @@
 //! JSON-RPC body (`with_json_response(true)`, never SSE), and accepts any
 //! `Host` (`disable_allowed_hosts()`): the bearer token layer (D7) is the
 //! guard, and the server sends no CORS headers.
+//!
+//! Each service also keeps its vault's agent presence ([`HttpSessions`],
+//! #390): built with the service, so it lives as long as the vault stays
+//! open, and a vault's expired presence records are swept then.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError, Weak};
@@ -24,8 +28,12 @@ use rmcp::transport::streamable_http_server::session::never::NeverSessionManager
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use ulid::Ulid;
 
+use memex_core::SystemClock;
+
 use super::error;
+use super::presence::{HttpSessions, WRITE_WINDOW};
 use super::registry::{ServedVault, VaultEntry};
+use super::request_clock::SharedClock;
 use super::BODY_LIMIT;
 use crate::tools::Memex;
 
@@ -33,20 +41,34 @@ use crate::tools::Memex;
 type McpService = StreamableHttpService<Memex, NeverSessionManager>;
 
 /// The MCP routes, nested under `/vaults/{name}/mcp`. POST only: any other
-/// method is the server's 405 `method_not_allowed`.
-pub fn router() -> Router {
+/// method is the server's 405 `method_not_allowed`. Agent presence is
+/// stamped by `clock`, the server's base clock.
+pub fn router(clock: SharedClock) -> Router {
     Router::new()
         .route("/", post(handle))
-        .with_state(Arc::new(Services::default()))
+        .with_state(Arc::new(Services::new(clock)))
 }
 
 /// The cached services, by the `open_id` of the vault each serves.
-#[derive(Default)]
 struct Services {
     by_open_id: Mutex<HashMap<Ulid, (Weak<VaultEntry>, McpService)>>,
+    clock: SharedClock,
+}
+
+impl Default for Services {
+    fn default() -> Self {
+        Self::new(Arc::new(SystemClock))
+    }
 }
 
 impl Services {
+    fn new(clock: SharedClock) -> Self {
+        Self {
+            by_open_id: Mutex::new(HashMap::new()),
+            clock,
+        }
+    }
+
     /// The service for `entry`, built on first use. Services whose vault
     /// entry is gone (evicted and no longer in use) are dropped here, so a
     /// closed vault's connection is not kept open by its old service.
@@ -57,22 +79,31 @@ impl Services {
             .unwrap_or_else(PoisonError::into_inner);
         map.retain(|_, (vault, _)| vault.strong_count() > 0);
         map.entry(entry.open_id)
-            .or_insert_with(|| (Arc::downgrade(entry), service_for(entry)))
+            .or_insert_with(|| (Arc::downgrade(entry), service_for(entry, &self.clock)))
             .1
             .clone()
     }
 }
 
 /// A stateless, JSON-response, any-Host MCP service over `entry`'s
-/// `AppState` (the same connection and mutex the app API uses).
-fn service_for(entry: &VaultEntry) -> McpService {
+/// `AppState` (the same connection and mutex the app API uses), with a new
+/// [`HttpSessions`] for the vault. The vault's expired presence records are
+/// swept here, when it is first served.
+fn service_for(entry: &VaultEntry, clock: &SharedClock) -> McpService {
     let state = Arc::new(entry.state.clone());
+    let sessions = Arc::new(HttpSessions::new(
+        &entry.state.vault_path,
+        clock.clone(),
+        entry.state.embedder.is_some(),
+        WRITE_WINDOW,
+    ));
+    sessions.sweep();
     let config = StreamableHttpServerConfig::default()
         .with_stateful_mode(false)
         .with_json_response(true)
         .disable_allowed_hosts();
     StreamableHttpService::new(
-        move || Ok(Memex::new(state.clone())),
+        move || Ok(Memex::new(state.clone()).with_sessions(sessions.clone())),
         Arc::new(NeverSessionManager::default()),
         config,
     )

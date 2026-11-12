@@ -26,10 +26,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db/daily_reads.dart';
 import 'package:open_memex_app/src/db/graph_reads.dart';
 import 'package:open_memex_app/src/db/topics_reads.dart';
-import 'package:open_memex_app/src/state/vault_state.dart'
-    show requiredVaultSchemaVersion;
-
 import '../support/api_fixtures.dart';
+import '../support/fake_vault_db.dart' show fixtureSchemaVersion;
 
 /// The shared row text, also parsed by the Rust test.
 String _sharedIndexJson() => File(parityIndexJsonPath).readAsStringSync();
@@ -130,7 +128,7 @@ void main() {
       () {
         final db = seededFakeVaultDb();
         addTearDown(db.close);
-        expect(db.schemaVersionForTest, requiredVaultSchemaVersion);
+        expect(db.schemaVersionForTest, fixtureSchemaVersion);
 
         final counts = _insertCounts(_seedSql());
         final notes = counts['notes'] ?? 0;

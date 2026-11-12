@@ -543,6 +543,63 @@ fn update_link_as_with_no_effective_change_does_not_save() {
     }
 }
 
+/// WI #449: `update_link_changed` reports whether the link was rewritten.
+#[test]
+fn update_link_changed_is_false_when_every_value_equals_the_current_one() {
+    let content = "Hello [[Target~extends|x]] world.";
+    for caller in CALLERS {
+        let (_d, mut v, src) = link_fixture(content);
+        let link_id = first_link_id(&v, &src);
+        let patches = [
+            UpdateLink::default(),
+            UpdateLink {
+                new_kind: Some(LinkKind::new("extends").unwrap()),
+                new_label: Some(Some("x".into())),
+            },
+        ];
+        for patch in patches {
+            let (link, changed) =
+                links::update_link_changed(&mut v, &link_id, patch.clone(), caller).unwrap();
+            assert!(!changed, "{caller:?} {patch:?}");
+            assert_eq!(link.id, link_id);
+            assert_eq!(version_of(&v, &src), 1, "{caller:?}: nothing saved");
+            assert_eq!(body_of(&v, &src), content);
+        }
+    }
+}
+
+#[test]
+fn update_link_changed_is_true_when_the_kind_or_label_really_changes() {
+    let content = "Hello [[Target~extends|x]] world.";
+    let patches = [
+        UpdateLink {
+            new_kind: Some(LinkKind::new("contradicts").unwrap()),
+            new_label: None,
+        },
+        UpdateLink {
+            new_kind: None,
+            new_label: Some(Some("y".into())),
+        },
+        UpdateLink {
+            new_kind: None,
+            new_label: Some(None),
+        },
+    ];
+    for caller in CALLERS {
+        for patch in &patches {
+            let (_d, mut v, src) = link_fixture(content);
+            let link_id = first_link_id(&v, &src);
+            let (link, changed) =
+                links::update_link_changed(&mut v, &link_id, patch.clone(), caller).unwrap();
+            assert!(changed, "{caller:?} {patch:?}");
+            assert_ne!(body_of(&v, &src), content, "{caller:?} {patch:?}");
+            assert_eq!(version_of(&v, &src), 2, "{caller:?} {patch:?}");
+            let expected_kind = patch.new_kind.as_ref().map_or("extends", |k| k.as_str());
+            assert_eq!(link.link_kind.as_str(), expected_kind);
+        }
+    }
+}
+
 #[test]
 fn update_link_as_rejects_a_frontmatter_kind_change_like_update_link() {
     let content = "---\nextends:\n  - [[Target]]\n---\n# Source\n";

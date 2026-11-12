@@ -23,6 +23,7 @@ import '../theme/colors.dart';
 import '../theme/typography.dart';
 import '../vault_access/errors.dart';
 import '../vault_access/vault_async_view.dart';
+import 'agents/agent_footer.dart';
 import 'atoms.dart';
 import 'backups/backup_entry.dart';
 import 'dialog_button.dart' show keyboardButtonShortcuts;
@@ -104,7 +105,7 @@ class Sidebar extends ConsumerWidget {
             },
           ),
           const OmHairline(),
-          const _AgentFooter(),
+          const AgentFooter(),
         ],
       ),
     );
@@ -753,45 +754,4 @@ SnackBarAction? _hostedFailureAction(
     ),
     _ => null,
   };
-}
-
-class _AgentFooter extends StatelessWidget {
-  const _AgentFooter();
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              const Eyebrow('agents · live'),
-              const SizedBox(width: 8),
-              const OmDot(color: OmColors.agent, size: 5, pulse: true),
-              const Spacer(),
-              Text(
-                'OPEN API ↗',
-                style: OmType.mono(
-                  size: 10.5,
-                  color: OmColors.fg2,
-                  letterSpacing: 0.8,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'no agents connected',
-            style: OmType.mono(size: 10.5, color: OmColors.fg3, height: 1.6),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            'wire memex serve into Claude Desktop\nto see live activity here',
-            style: OmType.mono(size: 10.5, color: OmColors.fg3, height: 1.6),
-          ),
-        ],
-      ),
-    );
-  }
 }

@@ -73,6 +73,16 @@ fn in_vault<T: Serialize>(op: &str, vault_id: &str, result: T) -> String {
         .unwrap_or_else(|e| err_payload(&format!("{op}.serialize"), &e.to_string()))
 }
 
+/// A core result and the MCP-only field saying what the call did (Spec #390
+/// req 8). The CLI and `/api/v1` serialize `result` alone.
+#[derive(Serialize)]
+struct WithOutcome<T: Serialize> {
+    #[serde(flatten)]
+    result: T,
+    #[serde(flatten)]
+    outcome: serde_json::Value,
+}
+
 // Every tool acts as `Caller::Agent`: pinned folders and memberships are the
 // person's and stay out of an agent's reach (D17).
 #[tool_router(router = folders_router, vis = "pub(crate)")]
@@ -141,7 +151,8 @@ impl Memex {
         name = "update_smart_folder",
         description = "Rename a Smart Folder, move it under parent_id, or \
         move it to the top level with to_root: true. A folder the user pinned \
-        cannot be renamed or moved (pinned_rule). Returns the folder."
+        cannot be renamed or moved (pinned_rule). Returns the folder and \
+        changed (false when neither its name nor its parent changed)."
     )]
     async fn update_smart_folder_tool(
         &self,
@@ -179,8 +190,15 @@ impl Memex {
             pinned: None,
         };
         let mut vault = self.state.vault.lock().await;
-        match sf::update_folder(&mut vault, &id, update, Caller::Agent, clock) {
-            Ok(folder) => in_vault("update_smart_folder", vault.vault_id(), folder),
+        match sf::update_folder_changed(&mut vault, &id, update, Caller::Agent, clock) {
+            Ok((folder, changed)) => in_vault(
+                "update_smart_folder",
+                vault.vault_id(),
+                WithOutcome {
+                    result: folder,
+                    outcome: serde_json::json!({ "changed": changed }),
+                },
+            ),
             Err(e) => err_from("update_smart_folder", &e),
         }
     }
@@ -203,7 +221,9 @@ impl Memex {
 
     #[tool(description = "Add a topic note (role: topic) to a Smart Folder. A \
         note may be in several folders. Adding it again changes nothing; daily \
-        and role-less notes are refused (role_rule).")]
+        and role-less notes are refused (role_rule). Returns vault_id, \
+        smart_folder_id, note_id, pinned, role_set and added (false when the \
+        note was already a member).")]
     pub async fn add_to_smart_folder(&self, params: Parameters<AddToSmartFolderParams>) -> String {
         let AddToSmartFolderParams {
             topic_note_id,
@@ -211,7 +231,7 @@ impl Memex {
         } = params.0;
         let embedder = self.state.embedder.clone();
         let mut vault = self.state.vault.lock().await;
-        match sf::add_member(
+        match sf::add_member_added(
             &mut vault,
             &smart_folder_id,
             &topic_note_id,
@@ -219,14 +239,23 @@ impl Memex {
             Caller::Agent,
             embedder.as_deref(),
         ) {
-            Ok(membership) => in_vault("add_to_smart_folder", vault.vault_id(), membership),
+            Ok((membership, added)) => in_vault(
+                "add_to_smart_folder",
+                vault.vault_id(),
+                WithOutcome {
+                    result: membership,
+                    outcome: serde_json::json!({ "added": added }),
+                },
+            ),
             Err(e) => err_from("add_to_smart_folder", &e),
         }
     }
 
     #[tool(description = "Remove a topic note from a Smart Folder. Memberships \
         of a pinned folder, and pinned memberships, cannot be removed \
-        (pinned_rule).")]
+        (pinned_rule). Returns vault_id, smart_folder_id, note_id and removed \
+        (false when the note wasn't a member: nothing is written). An unknown \
+        folder is not found.")]
     pub async fn remove_from_smart_folder(
         &self,
         params: Parameters<RemoveFromSmartFolderParams>,
@@ -236,14 +265,15 @@ impl Memex {
             smart_folder_id,
         } = params.0;
         let mut vault = self.state.vault.lock().await;
-        match sf::remove_member(&mut vault, &smart_folder_id, &topic_note_id, Caller::Agent) {
-            Ok(()) => in_vault(
+        match sf::remove_member_removed(&mut vault, &smart_folder_id, &topic_note_id, Caller::Agent)
+        {
+            Ok(removed) => in_vault(
                 "remove_from_smart_folder",
                 vault.vault_id(),
                 serde_json::json!({
                     "smart_folder_id": smart_folder_id,
                     "note_id": topic_note_id,
-                    "removed": true,
+                    "removed": removed,
                 }),
             ),
             Err(e) => err_from("remove_from_smart_folder", &e),

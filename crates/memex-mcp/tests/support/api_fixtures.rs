@@ -579,8 +579,10 @@ const TABLE_ORDER: &[&str] = &[
     "notes_dedup_log",
 ];
 
-/// Tables whose rows `vault_schema_v5.sql` already carries.
-const SCHEMA_DATA_TABLES: &[&str] = &["schema_version", "vault_settings"];
+/// Tables whose rows `vault_schema_v5.sql` already carries. Since V7 (#415)
+/// that includes the `content_revision` counter: its `(1, 0)` row is in the
+/// schema fixture, and the seed's own writes move it as the seed loads.
+const SCHEMA_DATA_TABLES: &[&str] = &["schema_version", "vault_settings", "content_revision"];
 
 /// The seed's data rows as SQL: one `INSERT INTO <table>` per line, rows in
 /// rowid order, no DDL and nothing from the search-index tables.

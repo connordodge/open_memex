@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../cli/settings_cli.dart';
 import '../memex_cli.dart';
+import '../state/learned_words_seam.dart';
+import '../state/learned_words_state.dart';
 import '../state/vault_access_state.dart';
 import '../state/vault_state.dart';
 import '../vault_access/errors.dart';
@@ -21,6 +23,13 @@ const maxSmartFolderDepth = 5;
 /// `vault-settings-save`) an integer from 1 to 5 with `memex settings set`.
 /// Anything else is not sent. A CLI failure keeps the dialog open with the
 /// message in a dismissible inline error; a save closes it.
+///
+/// Below it, `Learned words` (Spec #392 req 17) lists the vault's learned
+/// words as written, sorted by `word_key`, each with a remove button (Key
+/// `learned-word-remove-<word_key>`), or `no learned words yet.` with none.
+/// Remove acts at once, not on Save, through `learnedWordsActionsProvider`:
+/// success drops the row, a failure keeps it and shows its message in the
+/// same inline error. A press while that word's removal runs is ignored.
 Future<void> showVaultSettingsDialog(BuildContext context) => showDialog<void>(
   context: context,
   builder: (_) => const _VaultSettingsDialog(),
@@ -99,12 +108,74 @@ class _VaultSettingsDialogState extends ConsumerState<_VaultSettingsDialog> {
     Navigator.of(context).pop();
   }
 
+  /// The `word_key`s whose removal is running.
+  final _removing = <String>{};
+
+  Future<void> _removeWord(String word) async {
+    final key = learnedWordKey(word);
+    if (!_removing.add(key)) return;
+    setState(() => _error = null);
+    final actions = ref.read(learnedWordsActionsProvider);
+    final removed = await actions.unlearn(word);
+    final message = removed
+        ? null
+        : (actions is LearnedWordsState ? actions.lastErrorMessage : null) ??
+              'Could not remove "$word".';
+    _removing.remove(key);
+    if (!mounted) return;
+    setState(() {
+      if (message != null) _error = message;
+    });
+  }
+
+  Widget _learnedWords(List<LearnedWord> words) {
+    if (words.isEmpty) {
+      return Text(
+        'no learned words yet.',
+        style: OmType.sans(size: 12, color: OmColors.fg2),
+      );
+    }
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxHeight: 240),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            for (final w in words)
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      w.word,
+                      overflow: TextOverflow.ellipsis,
+                      style: OmType.mono(size: 13, color: OmColors.fg0),
+                    ),
+                  ),
+                  IconButton(
+                    key: Key('learned-word-remove-${learnedWordKey(w.word)}'),
+                    tooltip: 'Remove "${w.word}"',
+                    iconSize: 16,
+                    visualDensity: VisualDensity.compact,
+                    color: OmColors.fg2,
+                    onPressed: () => _removeWord(w.word),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final error = _error;
     return AlertDialog(
       key: const Key('vault-settings-dialog'),
       title: const Text('Vault settings'),
+      scrollable: true,
       content: SizedBox(
         width: 320,
         child: Column(
@@ -140,6 +211,13 @@ class _VaultSettingsDialogState extends ConsumerState<_VaultSettingsDialog> {
               ),
               onSubmitted: (_) => _save(),
             ),
+            const SizedBox(height: 20),
+            Text(
+              'Learned words',
+              style: OmType.sans(size: 13, color: OmColors.fg0),
+            ),
+            const SizedBox(height: 8),
+            _learnedWords(ref.watch(learnedWordsProvider)),
           ],
         ),
       ),

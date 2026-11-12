@@ -1022,8 +1022,9 @@ fn missing_vault(f: &Fx) -> String {
 }
 
 #[test]
-fn add_tags_index_the_note_with_its_footer_lines() {
-    // The reindex runs after the tags, so a search finds the footer text.
+fn add_tags_index_the_note_without_its_footer_lines() {
+    // The reindex runs after the tags and chunks only the person section,
+    // so the footer tag lines are in no chunk (WI #418, Spec #391 req 1).
     let f = Fx::new();
     let note = f.add("Alpha", "Alpha body.\n", &["--tags", "x,y"]);
     let chunks: String = f
@@ -1034,8 +1035,9 @@ fn add_tags_index_the_note_with_its_footer_lines() {
             |r| r.get(0),
         )
         .unwrap();
-    assert!(chunks.contains("#x"), "{chunks}");
-    assert!(chunks.contains("#y"), "{chunks}");
+    assert!(!chunks.contains("#x"), "{chunks}");
+    assert!(!chunks.contains("#y"), "{chunks}");
+    assert!(!chunks.contains("memex:topics"), "{chunks}");
     assert!(chunks.contains("Alpha body."), "{chunks}");
 }
 

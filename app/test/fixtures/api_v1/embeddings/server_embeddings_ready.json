@@ -1,0 +1,7 @@
+{
+  "chunks": 10,
+  "embedded": 3,
+  "model_bytes": 154,
+  "model_cached": true,
+  "server_embeddings": true
+}

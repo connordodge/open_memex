@@ -7,7 +7,7 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::Memex;
 
@@ -48,6 +48,24 @@ impl<'a> ExcerptWritten<'a> {
             version: topic.version,
         }
     }
+
+    /// The MCP result: these keys plus `outcome`'s (Spec #390 req 8), which
+    /// say what the write did. The CLI line stays [`ExcerptWritten`] alone.
+    pub(crate) fn with(self, outcome: Value) -> ExcerptResult<'a> {
+        ExcerptResult {
+            written: self,
+            outcome,
+        }
+    }
+}
+
+/// An MCP excerpt tool's result: [`ExcerptWritten`] and one more field.
+#[derive(Serialize)]
+pub(crate) struct ExcerptResult<'a> {
+    #[serde(flatten)]
+    written: ExcerptWritten<'a>,
+    #[serde(flatten)]
+    outcome: Value,
 }
 
 /// The C1 error object. This area's tools report every failure this way,
@@ -62,6 +80,8 @@ fn no_block_ids() -> String {
         .to_string()
 }
 
+/// An excerpt write, answering the topic note as stored and the result's
+/// outcome field.
 type ExcerptOp = fn(
     &mut Vault,
     &NoteId,
@@ -69,7 +89,33 @@ type ExcerptOp = fn(
     &[String],
     Caller,
     Option<&dyn memex_core::embedder::Embedder>,
-) -> memex_core::Result<Note>;
+) -> memex_core::Result<(Note, Value)>;
+
+/// [`excerpts::add_excerpt_filed`], its ids as `filed_block_ids`.
+fn add_excerpt_op(
+    vault: &mut Vault,
+    topic: &NoteId,
+    date: &str,
+    block_ids: &[String],
+    caller: Caller,
+    embedder: Option<&dyn memex_core::embedder::Embedder>,
+) -> memex_core::Result<(Note, Value)> {
+    excerpts::add_excerpt_filed(vault, topic, date, block_ids, caller, embedder)
+        .map(|(note, filed)| (note, json!({ "filed_block_ids": filed })))
+}
+
+/// [`excerpts::remove_excerpt_counted`], its count as `removed_count`.
+fn remove_excerpt_op(
+    vault: &mut Vault,
+    topic: &NoteId,
+    date: &str,
+    block_ids: &[String],
+    caller: Caller,
+    embedder: Option<&dyn memex_core::embedder::Embedder>,
+) -> memex_core::Result<(Note, Value)> {
+    excerpts::remove_excerpt_counted(vault, topic, date, block_ids, caller, embedder)
+        .map(|(note, count)| (note, json!({ "removed_count": count })))
+}
 
 // Both tools act as `Caller::Agent`. The topic note goes through the
 // marker-guarded save path; the daily note's footer through the internal
@@ -82,7 +128,10 @@ impl Memex {
         (created when absent), plus a chip for the topic in that day's Note \
         footer. Blocks the topic already holds are skipped. Never hand-write \
         transclusion or footer syntax; use this tool. Returns vault_id, \
-        topic_note_id and version (the topic note's new version). Fails with \
+        topic_note_id, version (the topic note's new version) and \
+        filed_block_ids (the blocks this call filed, in day order; empty when \
+        the topic already held them all, though the day's chip for the topic \
+        is still added when it is missing). Fails with \
         role_rule (target not a topic note), not_found (unknown topic or no \
         daily note that day), block_not_found, invalid_date, invalid_id, \
         invalid_argument (empty block_ids) or version_conflict.")]
@@ -92,7 +141,7 @@ impl Memex {
             date,
             block_ids,
         } = params.0;
-        self.excerpt_write(excerpts::add_excerpt, &topic_note_id, &date, &block_ids)
+        self.excerpt_write(add_excerpt_op, &topic_note_id, &date, &block_ids)
             .await
     }
 
@@ -101,8 +150,11 @@ impl Memex {
         (one id for a single block, [from, to] for a range), the `## <date>` \
         heading when nothing else is under it, and the topic's chip in that \
         day's Note footer once no excerpt of the day remains (a chip the \
-        user added stays). Returns vault_id, topic_note_id and version (the \
-        topic note's new version). Fails with role_rule, not_found (unknown \
+        user added stays). Returns vault_id, topic_note_id, version (the \
+        topic note's new version) and removed_count (the blocks it unfiled: \
+        every block of the day between the endpoints, or the endpoints \
+        themselves, 1 or 2, when the daily note or an endpoint no longer \
+        exists). Fails with role_rule, not_found (unknown \
         topic or no such transclusion), invalid_date, invalid_id, \
         invalid_argument (empty block_ids) or version_conflict.")]
     pub async fn remove_excerpt(&self, params: Parameters<RemoveExcerptParams>) -> String {
@@ -111,13 +163,13 @@ impl Memex {
             date,
             block_ids,
         } = params.0;
-        self.excerpt_write(excerpts::remove_excerpt, &topic_note_id, &date, &block_ids)
+        self.excerpt_write(remove_excerpt_op, &topic_note_id, &date, &block_ids)
             .await
     }
 }
 
 impl Memex {
-    /// Runs `op` as the agent and answers with [`ExcerptWritten`] or C1.
+    /// Runs `op` as the agent and answers with [`ExcerptResult`] or C1.
     async fn excerpt_write(
         &self,
         op: ExcerptOp,
@@ -141,10 +193,11 @@ impl Memex {
             Caller::Agent,
             self.state.embedder_ref(),
         ) {
-            Ok(note) => note,
+            Ok(written) => written,
             Err(e) => return error(&e),
         };
-        serde_json::to_string(&ExcerptWritten::new(&vault, &written))
+        let (written, outcome) = written;
+        serde_json::to_string(&ExcerptWritten::new(&vault, &written).with(outcome))
             .unwrap_or_else(|e| error(&MemexError::Json(e)))
     }
 }

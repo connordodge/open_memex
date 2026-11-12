@@ -253,7 +253,8 @@ impl Memex {
         The `## <date>` heading goes when nothing else is under it, and the \
         topic's chip in that day's Note footer once no excerpt of the day \
         remains (a chip the user added stays). Records no Correction. Returns \
-        vault_id, topic_note_id and version (the topic note's new version). \
+        vault_id, topic_note_id, version (the topic note's new version) and \
+        removed (always true: a block no excerpt covers is not_found). \
         Fails with role_rule (target not a topic note), not_found (unknown \
         topic, no daily note that day, or no excerpt covers the block), \
         block_not_found (not a block of that day), invalid_date, invalid_id or \
@@ -280,7 +281,9 @@ impl Memex {
             Ok(note) => note,
             Err(e) => return c1_error(&e),
         };
-        serde_json::to_string(&ExcerptWritten::new(&vault, &written))
-            .unwrap_or_else(|e| c1_error(&MemexError::Json(e)))
+        serde_json::to_string(
+            &ExcerptWritten::new(&vault, &written).with(json!({ "removed": true })),
+        )
+        .unwrap_or_else(|e| c1_error(&MemexError::Json(e)))
     }
 }

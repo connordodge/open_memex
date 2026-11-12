@@ -8,8 +8,8 @@
 use std::str::FromStr;
 
 use chrono::{DateTime, FixedOffset, Local, Offset, TimeZone};
-use rusqlite::params;
 use rusqlite::types::ToSql;
+use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
@@ -442,11 +442,25 @@ pub fn add_to_canvas_with_clock(
     y: f64,
     clock: &dyn Clock,
 ) -> Result<CanvasNode> {
+    add_to_canvas_added(vault, canvas_id, note_id, x, y, clock).map(|(node, _)| node)
+}
+
+/// [`add_to_canvas_with_clock`], also returning whether the note was placed:
+/// false when it returned the existing placement (nothing is written).
+pub fn add_to_canvas_added(
+    vault: &mut Vault,
+    canvas_id: &CanvasId,
+    note_id: &str,
+    x: f64,
+    y: f64,
+    clock: &dyn Clock,
+) -> Result<(CanvasNode, bool)> {
     require_canvas_exists(vault, canvas_id)?;
     require_note_exists(vault, note_id)?;
 
     let now = clock.now_ms();
 
+    let added;
     {
         let tx = vault.conn_mut().transaction()?;
         // Idempotent: if a placement already exists, return it unchanged.
@@ -463,7 +477,8 @@ pub fn add_to_canvas_with_clock(
                 other => Err(other),
             })?;
 
-        if existing.is_none() {
+        added = existing.is_none();
+        if added {
             tx.execute(
                 "INSERT INTO canvas_nodes (canvas_id, note_id, x, y, z_order, placed_at)
                  VALUES (?, ?, ?, ?, 0, ?)",
@@ -477,7 +492,7 @@ pub fn add_to_canvas_with_clock(
         tx.commit()?;
     }
 
-    read_canvas_node(vault, canvas_id, note_id)
+    Ok((read_canvas_node(vault, canvas_id, note_id)?, added))
 }
 
 pub fn remove_from_canvas(
@@ -494,6 +509,17 @@ pub fn remove_from_canvas_with_clock(
     note_id: &str,
     clock: &dyn Clock,
 ) -> Result<()> {
+    remove_from_canvas_removed(vault, canvas_id, note_id, clock).map(|_| ())
+}
+
+/// [`remove_from_canvas_with_clock`], also returning whether a placement was
+/// removed: false when the note wasn't placed (nothing is written).
+pub fn remove_from_canvas_removed(
+    vault: &mut Vault,
+    canvas_id: &CanvasId,
+    note_id: &str,
+    clock: &dyn Clock,
+) -> Result<bool> {
     let now = clock.now_ms();
     let tx = vault.conn_mut().transaction()?;
     let n = tx.execute(
@@ -507,7 +533,7 @@ pub fn remove_from_canvas_with_clock(
         )?;
     }
     tx.commit()?;
-    Ok(())
+    Ok(n > 0)
 }
 
 pub fn move_node(
@@ -530,8 +556,38 @@ pub fn move_node_with_clock(
     z_order: Option<i64>,
     clock: &dyn Clock,
 ) -> Result<CanvasNode> {
+    move_node_changed(vault, canvas_id, note_id, x, y, z_order, clock).map(|(node, _)| node)
+}
+
+/// [`move_node_with_clock`], also returning whether the placement changed:
+/// false when `x`, `y` and `z_order` (when given) equal the stored ones. The
+/// write is the same either way.
+pub fn move_node_changed(
+    vault: &mut Vault,
+    canvas_id: &CanvasId,
+    note_id: &str,
+    x: f64,
+    y: f64,
+    z_order: Option<i64>,
+    clock: &dyn Clock,
+) -> Result<(CanvasNode, bool)> {
     let now = clock.now_ms();
-    let tx = vault.conn_mut().transaction()?;
+    // Immediate: the read below comes before the write, and a deferred
+    // transaction upgrading from a read fails at once with SQLITE_BUSY when
+    // another connection committed in between, instead of waiting out the
+    // busy timeout.
+    let tx = vault
+        .conn_mut()
+        .transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let stored: Option<(f64, f64, i64)> = tx
+        .query_row(
+            "SELECT x, y, z_order FROM canvas_nodes WHERE canvas_id = ? AND note_id = ?",
+            params![canvas_id.as_str(), note_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let changed =
+        stored.is_some_and(|(sx, sy, sz)| sx != x || sy != y || z_order.is_some_and(|z| z != sz));
     let n = match z_order {
         Some(z) => tx.execute(
             "UPDATE canvas_nodes SET x = ?, y = ?, z_order = ?
@@ -557,7 +613,7 @@ pub fn move_node_with_clock(
         params![now, canvas_id.as_str()],
     )?;
     tx.commit()?;
-    read_canvas_node(vault, canvas_id, note_id)
+    Ok((read_canvas_node(vault, canvas_id, note_id)?, changed))
 }
 
 pub fn move_nodes_batch(

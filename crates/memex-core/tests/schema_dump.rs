@@ -2,13 +2,18 @@
 //!
 //! Builds a fresh vault in a temp dir and dumps its schema as plain SQL that the
 //! app's `FakeVaultDb` loads into an in-memory `sqlite3` database. The dump holds
-//! `sqlite_master.sql` for tables (first) and indexes (second), each group sorted
-//! by name, followed by the `schema_version` rows and the `vault_settings` rows.
-//! FTS5 virtual tables and their shadow tables (`chunk_fts*`), `chunk_vec` and
+//! `sqlite_master.sql` for tables (first), indexes (second) and triggers
+//! (third), each group sorted by name, followed by the `schema_version` rows,
+//! the `vault_settings` rows and, last, the `content_revision` row. FTS5
+//! virtual tables and their shadow tables (`chunk_fts*`), `chunk_vec` and
 //! `sqlite_*` internals are excluded so the dump loads without extensions.
 //!
-//! The file keeps its `vault_schema_v5.sql` name, but since schema V6 (WI #237)
-//! it holds the V6 schema of a fresh vault.
+//! The `content_revision` row comes last so the triggers (V7, WI #415), which
+//! fire on the rows above it while the dump loads, find no counter row yet:
+//! a loaded dump holds `(1, 0)`, as a fresh vault does.
+//!
+//! The file keeps its `vault_schema_v5.sql` name, but since schema V7 (WI #415)
+//! it holds the V7 schema of a fresh vault.
 //!
 //! The committed file must equal the dump byte for byte. Regenerate it with:
 //!
@@ -43,7 +48,7 @@ fn dump_schema(conn: &Connection) -> String {
     let mut stmt = conn
         .prepare(
             "SELECT sql FROM sqlite_master
-             WHERE type IN ('table', 'index')
+             WHERE type IN ('table', 'index', 'trigger')
                AND sql IS NOT NULL
                AND sql NOT LIKE 'CREATE VIRTUAL TABLE%'
                AND name NOT LIKE 'sqlite~_%' ESCAPE '~'
@@ -51,7 +56,7 @@ fn dump_schema(conn: &Connection) -> String {
                AND name NOT LIKE 'chunk~_vec%' ESCAPE '~'
                AND tbl_name NOT LIKE 'chunk~_fts%' ESCAPE '~'
                AND tbl_name NOT LIKE 'chunk~_vec%' ESCAPE '~'
-             ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END, name",
+             ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 ELSE 2 END, name",
         )
         .unwrap();
     let ddl: Vec<String> = stmt
@@ -93,17 +98,31 @@ fn dump_schema(conn: &Connection) -> String {
             sql_quote(&v)
         ));
     }
+
+    let mut stmt = conn
+        .prepare("SELECT id, n FROM content_revision ORDER BY id")
+        .unwrap();
+    let revisions: Vec<(i64, i64)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    for (id, n) in revisions {
+        out.push_str(&format!(
+            "INSERT INTO content_revision(id, n) VALUES ({id}, {n});\n"
+        ));
+    }
     out
 }
 
-/// Dump of a brand-new vault, which must be at schema V6.
+/// Dump of a brand-new vault, which must be at schema V7.
 fn fresh_v5_vault_dump() -> String {
     let dir = tempfile::tempdir().unwrap();
     let vault = Vault::create(dir.path().join("vault")).expect("create fresh vault");
     assert_eq!(
         vault.schema_version(),
-        6,
-        "a fresh vault must be at schema V6 for the app fixture"
+        7,
+        "a fresh vault must be at schema V7 for the app fixture"
     );
     dump_schema(vault.connection_ref())
 }
@@ -234,7 +253,7 @@ fn committed_app_fixture_excludes_fts_and_vec_and_ends_with_seed_rows() {
         .lines()
         .filter(|l| !l.trim().is_empty())
         .rev()
-        .take(7)
+        .take(9)
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
@@ -248,7 +267,9 @@ fn committed_app_fixture_excludes_fts_and_vec_and_ends_with_seed_rows() {
             "INSERT INTO schema_version(version) VALUES (4);",
             "INSERT INTO schema_version(version) VALUES (5);",
             "INSERT INTO schema_version(version) VALUES (6);",
+            "INSERT INTO schema_version(version) VALUES (7);",
             "INSERT INTO vault_settings(key, value) VALUES ('smart_folder_max_depth', '2');",
+            "INSERT INTO content_revision(id, n) VALUES (1, 0);",
         ]
     );
     assert!(fixture.ends_with('\n'));
@@ -286,6 +307,9 @@ fn committed_app_fixture_loads_into_a_plain_sqlite_database() {
         "tag_corrections",
         "feedback",
         "vault_guide_revisions",
+        "agent_activity",
+        "learned_words",
+        "content_revision",
     ] {
         assert!(
             tables.iter().any(|x| x == t),
@@ -295,7 +319,7 @@ fn committed_app_fixture_loads_into_a_plain_sqlite_database() {
     let max: i64 = conn
         .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(max, 6);
+    assert_eq!(max, 7);
     let depth: String = conn
         .query_row(
             "SELECT value FROM vault_settings WHERE key = 'smart_folder_max_depth'",
@@ -340,4 +364,133 @@ fn committed_app_fixture_loads_into_a_plain_sqlite_database() {
         "{chunk_cols:?}"
     );
     assert!(chunk_cols.iter().any(|c| c == "end_byte"), "{chunk_cols:?}");
+}
+
+/// Every regular, non-exempt table of `conn` (requirement 8 of Spec #391)
+/// paired with the names of the triggers on it.
+fn triggers_per_table(conn: &Connection) -> Vec<(String, Vec<String>)> {
+    let tables: Vec<String> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table'
+                   AND sql NOT LIKE 'CREATE VIRTUAL TABLE%'
+                   AND name <> 'content_revision'
+                   AND name NOT LIKE 'sqlite~_%' ESCAPE '~'
+                   AND name NOT LIKE 'chunk~_fts~_%' ESCAPE '~'
+                   AND name NOT LIKE 'chunk~_vec~_%' ESCAPE '~'
+                 ORDER BY name",
+            )
+            .unwrap();
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
+        rows.map(|r| r.unwrap()).collect()
+    };
+    tables
+        .into_iter()
+        .map(|t| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?1
+                     ORDER BY name",
+                )
+                .unwrap();
+            let names: Vec<String> = stmt
+                .query_map([&t], |r| r.get::<_, String>(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
+            (t, names)
+        })
+        .collect()
+}
+
+#[test]
+fn schema_dump_holds_triggers_after_indexes_and_the_content_revision_row_last() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = Vault::create(dir.path().join("vault")).expect("create fresh vault");
+    let dump = dump_schema(vault.connection_ref());
+
+    let last_index = dump.rfind("CREATE INDEX").expect("the dump has indexes");
+    let first_trigger = dump
+        .find("CREATE TRIGGER")
+        .expect("the dump holds the content_revision triggers");
+    let last_trigger = dump.rfind("CREATE TRIGGER").unwrap();
+    let first_insert = dump.find("INSERT INTO").unwrap();
+    assert!(
+        last_index < first_trigger && last_trigger < first_insert,
+        "tables, then indexes, then triggers, then rows"
+    );
+    for trigger in [
+        "CREATE TRIGGER content_revision_notes_ai",
+        "CREATE TRIGGER content_revision_notes_au",
+        "CREATE TRIGGER content_revision_notes_ad",
+        "CREATE TRIGGER content_revision_schema_version_ai",
+        "CREATE TRIGGER content_revision_learned_words_ai",
+        "CREATE TRIGGER content_revision_agent_activity_ai",
+    ] {
+        assert!(dump.contains(trigger), "dump lacks {trigger:?}");
+    }
+    assert!(
+        dump.ends_with("INSERT INTO content_revision(id, n) VALUES (1, 0);\n"),
+        "the content_revision row is the dump's last line"
+    );
+    // The counter row is dumped with the value the vault holds.
+    vault
+        .connection_ref()
+        .execute(
+            "INSERT INTO vault_settings(key, value) VALUES ('k', 'v')",
+            [],
+        )
+        .unwrap();
+    let moved = dump_schema(vault.connection_ref());
+    assert!(
+        moved.ends_with("INSERT INTO content_revision(id, n) VALUES (1, 1);\n"),
+        "{}",
+        moved.lines().last().unwrap_or_default()
+    );
+}
+
+#[test]
+fn committed_app_fixture_loads_with_three_triggers_per_table_and_content_revision_1_0() {
+    let fixture = committed_fixture();
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(&fixture)
+        .expect("fixture loads as-is (tables, indexes, triggers, rows)");
+
+    let per_table = triggers_per_table(&conn);
+    assert!(per_table.iter().any(|(t, _)| t == "schema_version"));
+    for (t, names) in &per_table {
+        assert_eq!(
+            names,
+            &[
+                format!("content_revision_{t}_ad"),
+                format!("content_revision_{t}_ai"),
+                format!("content_revision_{t}_au"),
+            ],
+            "{t} carries exactly its three revision triggers in the fixture"
+        );
+    }
+    let on_counter: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'content_revision'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(on_counter, 0, "content_revision carries no trigger");
+
+    // Loading the fixture leaves the counter at (1, 0), and the triggers
+    // work in a plain SQLite: one row in moves it by one.
+    let row = |c: &Connection| -> (i64, i64) {
+        c.query_row("SELECT id, n FROM content_revision", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap()
+    };
+    assert_eq!(row(&conn), (1, 0));
+    conn.execute(
+        "INSERT INTO learned_words(word_key, word, created_at) VALUES ('memex', 'Memex', 1)",
+        [],
+    )
+    .unwrap();
+    assert_eq!(row(&conn), (1, 1));
 }

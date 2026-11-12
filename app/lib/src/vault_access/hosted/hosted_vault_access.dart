@@ -3,6 +3,7 @@ import 'package:http/http.dart' as http;
 
 import '../../memex_cli.dart';
 import '../vault_access.dart';
+import 'agents.dart';
 import 'canvas.dart';
 import 'daily.dart';
 import 'feedback.dart';
@@ -12,6 +13,7 @@ import 'notes.dart';
 import 'revision.dart';
 import 'tags.dart';
 import 'topics.dart';
+import 'words.dart';
 
 /// The HTTP client every hosted vault request goes through (D17): a real
 /// client, closed when the provider is disposed. Tests override it with a
@@ -42,12 +44,15 @@ class HostedVaultAccess implements VaultAccess {
   HostedVaultAccess._(_ComposedClient client, this.vaultName)
     : _client = client,
       notes = HostedNotesAccess(client: client, vaultName: vaultName),
+      agents = HostedAgentsAccess(client: client, vaultName: vaultName),
       daily = HostedDailyAccess(client: client, vaultName: vaultName),
       feedback = HostedFeedbackAccess(client: client, vaultName: vaultName),
       topics = HostedTopicsAccess(client: client, vaultName: vaultName),
+      echoes = HostedEchoesAccess(client: client, vaultName: vaultName),
       canvas = HostedCanvasAccess(client: client, vaultName: vaultName),
       graph = HostedGraphAccess(client: client, vaultName: vaultName),
       tags = HostedTagsAccess(client: client, vaultName: vaultName),
+      words = HostedWordsAccess(client: client, vaultName: vaultName),
       _revision = HostedRevision(client, vaultName);
 
   final _ComposedClient _client;
@@ -59,6 +64,9 @@ class HostedVaultAccess implements VaultAccess {
   final HostedNotesAccess notes;
 
   @override
+  final HostedAgentsAccess agents;
+
+  @override
   final HostedDailyAccess daily;
 
   @override
@@ -68,6 +76,9 @@ class HostedVaultAccess implements VaultAccess {
   final HostedTopicsAccess topics;
 
   @override
+  final HostedEchoesAccess echoes;
+
+  @override
   final HostedCanvasAccess canvas;
 
   @override
@@ -75,6 +86,9 @@ class HostedVaultAccess implements VaultAccess {
 
   @override
   final HostedTagsAccess tags;
+
+  @override
+  final HostedWordsAccess words;
 
   final HostedRevision _revision;
 
@@ -145,6 +159,7 @@ class _ComposedClient implements HostedClient {
     required String operation,
     Map<String, String>? query,
     Object? body,
+    Duration? timeout,
   }) => _guard(
     () => _inner.vaultRequest(
       method,
@@ -153,6 +168,7 @@ class _ComposedClient implements HostedClient {
       operation: operation,
       query: query,
       body: body,
+      timeout: timeout,
     ),
     operation,
   );

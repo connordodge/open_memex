@@ -8,6 +8,12 @@
 //! whole blocks spans from its first block's first byte to its last block's
 //! last byte, and its content is exactly that slice. Sentence sub-chunks of a
 //! long block all carry the range of the (trimmed) block they came from.
+//!
+//! A blank-line block made only of transclusion tokens (`![[…]]`, CONTRACTS
+//! C4) and whitespace is in no chunk, and it ends the chunk before it (Spec
+//! #391 req 2).
+
+use crate::link_extractor;
 
 const TARGET_TOKENS: usize = 380;
 const MAX_TOKENS: usize = 600;
@@ -27,12 +33,20 @@ pub fn chunk(content_md: &str) -> Vec<Chunk> {
     if content_md.trim().is_empty() {
         return Vec::new();
     }
-    let blocks = split_into_blocks(content_md);
     let mut chunks: Vec<Chunk> = Vec::new();
     let mut current: Vec<&str> = Vec::new();
     let mut current_tokens: usize = 0;
 
-    for block in blocks {
+    for (_, block, transclusion_only) in blocks(content_md) {
+        // A transclusion-only block ends the current chunk and joins none.
+        if transclusion_only {
+            if !current.is_empty() {
+                push_chunk(&mut chunks, content_md, &current, current_tokens);
+                current.clear();
+                current_tokens = 0;
+            }
+            continue;
+        }
         let bt = approx_tokens(block);
         // Single block bigger than MAX_TOKENS: split it on sentences.
         if bt > MAX_TOKENS {
@@ -64,6 +78,45 @@ pub fn chunk(content_md: &str) -> Vec<Chunk> {
         push_chunk(&mut chunks, content_md, &current, current_tokens);
     }
     chunks
+}
+
+/// The blank-line blocks of `input`, each trimmed, as `(offset, text)` with
+/// `offset` the UTF-8 byte offset of `text` in `input`. Transclusion-only
+/// blocks are left out (Spec #391 req 2). The chunker's own splitter.
+pub fn split_blocks(input: &str) -> Vec<(usize, &str)> {
+    blocks(input)
+        .filter(|(_, _, transclusion_only)| !transclusion_only)
+        .map(|(offset, text, _)| (offset, text))
+        .collect()
+}
+
+/// The non-empty trimmed blank-line blocks of `input` as
+/// `(offset, text, transclusion_only)`, `offset` being the UTF-8 byte offset
+/// of `text` in `input`. The one splitter behind [`chunk`] and
+/// [`split_blocks`].
+fn blocks(input: &str) -> impl Iterator<Item = (usize, &str, bool)> {
+    input
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+        .map(move |b| (byte_range(input, b).0, b, is_transclusion_only(b)))
+}
+
+/// Whether `block` holds at least one transclusion token and nothing but
+/// whitespace outside its tokens.
+fn is_transclusion_only(block: &str) -> bool {
+    let tokens = link_extractor::parse_transclusions(block);
+    if tokens.is_empty() {
+        return false;
+    }
+    let mut at = 0;
+    for t in &tokens {
+        if !block[at..t.start].trim().is_empty() {
+            return false;
+        }
+        at = t.end;
+    }
+    block[at..].trim().is_empty()
 }
 
 /// Pushes one chunk made of whole `blocks` (non-empty subslices of `input`,
@@ -101,18 +154,11 @@ fn push_chunk_owned(
 }
 
 /// The `[start, end)` UTF-8 byte range of `sub` within `parent`. `sub` must
-/// be a subslice of `parent` (every block is: `split_into_blocks` only splits
-/// and trims), so both ends lie on char boundaries.
+/// be a subslice of `parent` (every block is: [`blocks`] only splits and
+/// trims), so both ends lie on char boundaries.
 fn byte_range(parent: &str, sub: &str) -> (usize, usize) {
     let start = sub.as_ptr() as usize - parent.as_ptr() as usize;
     (start, start + sub.len())
-}
-
-fn split_into_blocks(s: &str) -> Vec<&str> {
-    s.split("\n\n")
-        .map(str::trim)
-        .filter(|b| !b.is_empty())
-        .collect()
 }
 
 fn split_long_block(s: &str) -> Vec<String> {

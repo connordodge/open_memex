@@ -40,12 +40,18 @@ pub fn build_default_embedder(vault_path: &Path) -> Arc<dyn Embedder> {
     build_embedder_in(vault_path)
 }
 
+/// The model cache directory for a vault root: `<root>/.memex/models`.
+/// It only computes the path; nothing is created.
+pub fn model_cache_dir(root: &Path) -> PathBuf {
+    root.join(".memex").join("models")
+}
+
 /// Build a FastEmbedder backed by BGE-small-en-v1.5 whose model cache is
 /// `<root>/.memex/models` (created here). Nothing is downloaded until the
 /// first embed. The vault server builds one for its whole vault root and
 /// shares it between every served vault.
 pub fn build_embedder_in(root: &Path) -> Arc<dyn Embedder> {
-    let cache_dir = root.join(".memex").join("models");
+    let cache_dir = model_cache_dir(root);
     std::fs::create_dir_all(&cache_dir).ok();
     Arc::new(FastEmbedder::bge_small_en_v15(Some(cache_dir)))
 }

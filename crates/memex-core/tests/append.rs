@@ -297,7 +297,9 @@ fn append_reindexes_the_daily_note_from_its_stored_content() {
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap();
-    let expected: Vec<(i64, String)> = memex_core::chunker::chunk(&out.note.content_md)
+    // Only the person section is chunked (WI #418, Spec #391 req 1).
+    let person = memex_core::daily::split_body(&out.note.content_md).person;
+    let expected: Vec<(i64, String)> = memex_core::chunker::chunk(&person)
         .into_iter()
         .map(|c| (c.ord, c.content))
         .collect();

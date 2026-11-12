@@ -229,6 +229,12 @@ async fn c2_shape(state: &AppState, topic: &str) -> Value {
     })
 }
 
+/// `shape` plus the tool's additive WI #449 result field `key`.
+fn with_field(mut shape: Value, key: &str, value: Value) -> Value {
+    shape[key] = value;
+    shape
+}
+
 /// Asserts the C1 object: only `error`, holding exactly `code` and `message`.
 fn assert_c1(v: &Value, code: &str) {
     assert_eq!(keys(v), set(&["error"]), "only `error`: {v}");
@@ -258,7 +264,15 @@ async fn mcp_add_excerpt_as_the_agent_writes_the_footer_and_returns_the_c2_shape
 
     let resp = add_excerpt(&f.memex, &f.topic, DAY, &["b7k2m9", "c3d4e5"]).await;
 
-    assert_eq!(resp, c2_shape(&f.state, &f.topic).await, "{resp}");
+    assert_eq!(
+        resp,
+        with_field(
+            c2_shape(&f.state, &f.topic).await,
+            "filed_block_ids",
+            json!(["b7k2m9", "c3d4e5"])
+        ),
+        "{resp}"
+    );
     assert_eq!(
         resp["version"],
         json!(v0 + 1),
@@ -294,7 +308,15 @@ async fn mcp_remove_excerpt_as_the_agent_returns_the_c2_shape_and_clears_the_chi
 
     let resp = remove_excerpt(&f.memex, &f.topic, DAY, &["b7k2m9"]).await;
 
-    assert_eq!(resp, c2_shape(&f.state, &f.topic).await, "{resp}");
+    assert_eq!(
+        resp,
+        with_field(
+            c2_shape(&f.state, &f.topic).await,
+            "removed_count",
+            json!(1)
+        ),
+        "{resp}"
+    );
     assert_eq!(resp["version"], json!(added_version + 1));
     let (topic_body, _) = note_row(&f.state, &f.topic).await;
     assert!(!topic_body.contains("![["), "{topic_body}");
@@ -322,7 +344,15 @@ async fn mcp_remove_excerpt_keeps_a_person_chip() {
 
     let resp = remove_excerpt(&f.memex, &f.topic, DAY, &["b7k2m9"]).await;
 
-    assert_eq!(resp, c2_shape(&f.state, &f.topic).await, "{resp}");
+    assert_eq!(
+        resp,
+        with_field(
+            c2_shape(&f.state, &f.topic).await,
+            "removed_count",
+            json!(1)
+        ),
+        "{resp}"
+    );
     assert_eq!(
         chip_rows(&f.state, &f.day).await,
         [chip(&f.topic, "person")]

@@ -913,7 +913,10 @@ async fn add_footer_topic_adds_a_chip_with_origin_excerpt_on_a_plain_note() {
 
     let v = add_footer_topic(&m, &id, &target).await;
 
-    assert_output_fields(&v, &["note_id", "topic_note_id", "origin", "version"]);
+    assert_output_fields(
+        &v,
+        &["note_id", "topic_note_id", "origin", "version", "changed"],
+    );
     assert_eq!(v["note_id"], json!(id));
     assert_eq!(v["topic_note_id"], json!(target));
     assert_eq!(v["origin"], json!("excerpt"));
@@ -1368,7 +1371,7 @@ async fn create_note_returns_the_version_after_its_footer_write_so_a_save_at_it_
 }
 
 #[tokio::test]
-async fn create_note_indexes_the_body_with_its_footer_text() {
+async fn create_note_indexes_the_body_without_its_footer_text() {
     let (_dir, state, m) = fresh();
 
     let (id, _) = tool_create_note(
@@ -1380,9 +1383,14 @@ async fn create_note_indexes_the_body_with_its_footer_text() {
     let (_, _, body) = stored(&state, &id).await;
     assert_eq!(footer_lines(&body), ["#zebra"], "{body:?}");
     let indexed = chunk_text(&state, &id).await;
+    // Only the person section is chunked (WI #418, Spec #391 req 1).
     assert!(
-        indexed.contains("#zebra"),
-        "the index holds what's stored: {indexed:?}"
+        !indexed.contains("#zebra"),
+        "footer tag lines are in no chunk: {indexed:?}"
+    );
+    assert!(
+        indexed.contains("Text."),
+        "the body is indexed: {indexed:?}"
     );
 }
 

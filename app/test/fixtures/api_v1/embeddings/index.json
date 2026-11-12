@@ -1,0 +1,7 @@
+[
+  {"method": "GET", "path": "/vaults/seed/api/v1/embeddings", "response": "server_embeddings_on.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/embeddings", "response": "server_embeddings_off.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/embeddings", "response": "server_embeddings_ready.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/embeddings", "response": "unauthorized.json", "status": 401, "headers": {"Authorization": "Bearer wrong-token-not-the-server-token"}},
+  {"method": "GET", "path": "/vaults/nope/api/v1/embeddings", "response": "vault_not_found.json", "status": 404}
+]

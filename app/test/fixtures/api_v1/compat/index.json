@@ -1,4 +1,11 @@
 [
   {"method": "GET", "path": "/api/v1/info", "response": "info_unknown_key.json", "status": 200, "dart_only": true},
-  {"method": "GET", "path": "/vaults/seed/api/v1/backup", "response": "backup_not_found.json", "status": 404, "dart_only": true}
+  {"method": "GET", "path": "/vaults/seed/api/v1/backup", "response": "backup_not_found.json", "status": 404, "dart_only": true},
+  {"method": "GET", "path": "/vaults/seed/api/v1/agents", "response": "agents_not_found.json", "status": 404, "dart_only": true},
+  {"method": "GET", "path": "/vaults/seed/api/v1/notes/01M5DQAYZ3WP7H0NXZZV9M2315/echoes?limit=8", "response": "echoes_not_found.json", "status": 404, "dart_only": true},
+  {"method": "GET", "path": "/vaults/seed/api/v1/words", "response": "words_not_found.json", "status": 404, "dart_only": true},
+  {"method": "POST", "path": "/vaults/seed/api/v1/words", "response": "words_not_found.json", "status": 404, "dart_only": true},
+  {"method": "DELETE", "path": "/vaults/seed/api/v1/words/serendipity", "response": "words_not_found.json", "status": 404, "dart_only": true},
+  {"method": "GET", "path": "/vaults/seed/api/v1/tools", "response": "tools_not_found.json", "status": 404, "dart_only": true},
+  {"method": "GET", "path": "/vaults/seed/api/v1/embeddings", "response": "embeddings_not_found.json", "status": 404, "dart_only": true}
 ]

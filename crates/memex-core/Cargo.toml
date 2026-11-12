@@ -24,6 +24,10 @@ libc = "0.2.186"
 zip = { workspace = true }
 sha2 = { workspace = true }
 tempfile = { workspace = true }
+# #417: FastEmbedder::is_cached looks the model up with hf-hub's own offline
+# cache lookup (the crate fastembed downloads through), so it can't drift
+# from the layout fastembed reads. No features: no HTTP client.
+hf-hub = { version = "0.5", default-features = false }
 
 [dev-dependencies]
 tempfile = { workspace = true }

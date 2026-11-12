@@ -2269,6 +2269,45 @@ fn normalize_volatile_leaves_seed_block_ids_untouched_in_both_forms() {
     assert_eq!(normalize_volatile(&v), v);
 }
 
+/// WI #415: the seed dump skips `content_revision` (the schema fixture owns
+/// its row), so a seed built on a V7 vault loads on `vault_schema_v5.sql`
+/// without a key conflict and holds no counter row of its own.
+#[test]
+fn seed_dump_skips_content_revision_and_the_seed_loads_on_the_v7_schema() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api = fake_api_dir_with_stale_seed(tmp.path());
+    let scratch = tmp.path().join("scratch");
+    let out = run_seed_builder(&api, &scratch, false);
+    let built = fs::read_to_string(out.join("seed_vault.sql")).unwrap();
+
+    assert!(
+        !built.contains("content_revision"),
+        "the seed dump must not carry the content_revision row"
+    );
+    assert!(
+        seed_summary(&built).get("content_revision").is_none(),
+        "content_revision is not a seed table"
+    );
+
+    // The schema fixture holds the counter; the seed's rows move it through
+    // the fixture's triggers as they load.
+    let conn = api_fixtures::seed_connection(&built);
+    let rows: Vec<(i64, i64)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, n FROM content_revision ORDER BY id")
+            .expect("the V7 schema fixture has content_revision");
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        rows.map(|r| r.unwrap()).collect()
+    };
+    assert_eq!(rows.len(), 1, "one counter row: {rows:?}");
+    assert_eq!(rows[0].0, 1);
+    assert_eq!(
+        rows[0].1,
+        insert_counts(&built).values().sum::<i64>(),
+        "each seed row moved the counter by one"
+    );
+}
+
 #[test]
 fn committed_seed_matches_a_fresh_build_by_seed_summary() {
     let tmp = tempfile::tempdir().unwrap();

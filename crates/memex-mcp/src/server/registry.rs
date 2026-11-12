@@ -88,6 +88,9 @@ struct Inner {
     create_lock: tokio::sync::Mutex<()>,
     /// Folders already logged as not served, so each is logged once.
     logged: Mutex<HashSet<String>>,
+    /// Notified after each fresh open, once the entry is in the map, for
+    /// the embedding backfill (#422).
+    opened: tokio::sync::Notify,
 }
 
 /// A vault opened (or being opened) under one name.
@@ -134,6 +137,7 @@ impl Registry {
                 vaults: Mutex::new(HashMap::new()),
                 create_lock: tokio::sync::Mutex::new(()),
                 logged: Mutex::new(HashSet::new()),
+                opened: tokio::sync::Notify::new(),
             }),
         }
     }
@@ -174,6 +178,7 @@ impl Registry {
                 slot = self.inner.slot(&key);
             }
         }
+        let fresh = !slot.initialized();
         let inner = self.inner.clone();
         let opened = slot
             .get_or_try_init(|| async move {
@@ -192,13 +197,37 @@ impl Registry {
             })
             .await;
         match opened {
-            Ok(opened) => Ok(opened.entry.clone()),
+            Ok(opened) => {
+                if fresh {
+                    self.inner.opened.notify_one();
+                }
+                Ok(opened.entry.clone())
+            }
             Err(OpenFailed::Gone) => {
                 self.inner.evict(&key, Some(&slot));
                 Err(vault_not_found(name))
             }
             Err(OpenFailed::Error(e)) => Err(e),
         }
+    }
+
+    /// The embedder every vault this registry opens shares.
+    pub(crate) fn embedder(&self) -> Option<Arc<dyn Embedder>> {
+        self.inner.embedder.clone()
+    }
+
+    /// Every vault open now, in no particular order.
+    pub(crate) fn open_entries(&self) -> Vec<Arc<VaultEntry>> {
+        lock(&self.inner.vaults)
+            .values()
+            .filter_map(|slot| slot.get().map(|opened| opened.entry.clone()))
+            .collect()
+    }
+
+    /// Resolves after a vault opens, or at once when one opened since the
+    /// last call returned. Meant for one waiter (the backfill task).
+    pub(crate) async fn opened(&self) {
+        self.inner.opened.notified().await;
     }
 
     /// Every served vault, sorted by lower-cased name.

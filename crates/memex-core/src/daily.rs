@@ -70,14 +70,23 @@ fn footer_tag_name(line: &str) -> Option<&str> {
 /// each in order; blank lines and further marker lines are dropped, and any
 /// other line is stray text moved to the end of the person section (Q1).
 pub fn split_body(body: &str) -> DailyBody {
+    match daily_marker_start(body) {
+        Some(start) => split_at_marker(body, start),
+        None => whole_body_is_person(body),
+    }
+}
+
+/// The byte offset of the first marker line of a daily note body, fenced or
+/// not, if any: where [`split_body`] splits.
+pub(crate) fn daily_marker_start(body: &str) -> Option<usize> {
     let mut start = 0;
     for line in body.split_inclusive('\n') {
         if trim_line_end(line.strip_suffix('\n').unwrap_or(line)) == TOPICS_MARKER {
-            return split_at_marker(body, start);
+            return Some(start);
         }
         start += line.len();
     }
-    whole_body_is_person(body)
+    None
 }
 
 /// Splits a non-daily note body into the person section and the Note footer

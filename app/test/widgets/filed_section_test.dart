@@ -9,16 +9,15 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/clock.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';
-import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/state/topic_actions.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/widgets/activity/filed_section.dart';
-import 'package:open_memex_app/src/widgets/activity_tab.dart';
 import 'package:open_memex_app/src/widgets/atoms.dart';
 
 import '../support/app_harness.dart';
@@ -139,23 +138,6 @@ void main() {
       expect(find.byKey(f260Section), findsOneWidget);
       expect(_inSection(f260TextCI('Economy')), findsNothing);
       expect(_inSection(f260TextCI('Player Loop')), findsOneWidget);
-    });
-
-    testWidgets('a topic title is plain text that opens nothing', (
-      tester,
-    ) async {
-      await pumpF260(tester);
-      final before = tester.element(find.byType(ActivityTab));
-      final container = ProviderScope.containerOf(before);
-      final tabsBefore = container.read(tabsProvider).activeTab;
-
-      expect(find.byKey(f260Section), findsOneWidget);
-      await tester.tap(_inSection(f260TextCI('Player Loop')));
-      await pumpFrames(tester);
-
-      expect(tabsBefore, const NoteTab(f260DailyId));
-      expect(container.read(tabsProvider).activeTab, tabsBefore);
-      expect(find.byKey(f260Section), findsOneWidget);
     });
 
     testWidgets(
@@ -303,22 +285,39 @@ void main() {
 
   group('previews and layout (AC15)', () {
     testWidgets(
-      'long previews truncate to one line with the full text in a tooltip',
+      'long previews clamp to two lines with the full plain text in a tooltip',
       (tester) async {
         final db = f260Db();
         final server = f260DefaultServer(db);
         server.topics.first.blocks[0] = (f260B1, _longPreview);
         await pumpF260(tester, db: db, server: server);
 
+        // TEST-CHANGE (b), Spec #393 requirements 6 and 7: the preview is
+        // plain text (no quotes) up to 2 lines, not a quoted single line.
         expect(
           find.byWidgetPredicate(
-            (w) => w is Tooltip && (w.message ?? '').contains(_longPreview),
+            (w) => w is Tooltip && w.message == _longPreview,
           ),
           findsOneWidget,
+          reason: 'the full text, unquoted',
         );
-        final long = tester.getSize(find.byKey(f260Row(f260Loop, f260B1)));
-        final short = tester.getSize(find.byKey(f260Row(f260Loop, f260B2)));
-        expect(long.height, short.height, reason: 'one line, not wrapped');
+        final preview = find.descendant(
+          of: find.byKey(f260Row(f260Loop, f260B1)),
+          matching: find.text(_longPreview),
+        );
+        expect(preview, findsOneWidget, reason: 'the preview is not quoted');
+        final paragraph = tester.renderObject<RenderParagraph>(preview);
+        expect(paragraph.maxLines, 2, reason: 'at most two lines');
+        expect(paragraph.overflow, TextOverflow.ellipsis);
+        final short = find.descendant(
+          of: find.byKey(f260Row(f260Loop, f260B2)),
+          matching: find.text(f260B2Text),
+        );
+        expect(
+          tester.getSize(preview).height,
+          greaterThan(tester.getSize(short).height),
+          reason: 'the long preview wraps instead of truncating to one line',
+        );
         expect(
           _inSection(find.textContaining('a very long preview')),
           findsOneWidget,

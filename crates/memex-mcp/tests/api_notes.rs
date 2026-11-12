@@ -345,7 +345,26 @@ const ROUTES: &[(&str, &str)] = &[
     ("DELETE", "/notes/{id}"),
     ("POST", "/links"),
     ("PATCH", "/links/{id}"),
+    ("GET", "/notes/{id}/echoes"),
 ];
+
+/// Routes whose rows may be `dart_only` in the "every notes row runs in
+/// Rust" check. The echoes rows (WI #423) need a server with an embedder
+/// over a pre-embedded seed; `api_echoes.rs` replays every one of them (200,
+/// 404, 409, 400) against servers with and without embeddings.
+const RUST_ONLY_EXEMPT_ROUTES: &[&str] = &["/notes/{id}/echoes"];
+
+/// Routes whose rows are not replayed with the token on the plain seed. The
+/// echoes rows (WI #423) need an embedder and vectors the plain seed lacks;
+/// they keep the no-token 401 check, and `api_echoes.rs` replays them with
+/// the token.
+const PLAIN_SEED_REPLAY_EXEMPT_ROUTES: &[&str] = &["/notes/{id}/echoes"];
+
+/// The route template of `row` (its path template without the query).
+fn route_of(row: &FixtureRow) -> String {
+    let (_, t) = template(row);
+    t.split('?').next().unwrap().to_string()
+}
 
 #[test]
 fn notes_fixture_rows_cover_every_route_and_match_the_server_on_the_seed() {
@@ -373,7 +392,9 @@ fn notes_fixture_rows_cover_every_route_and_match_the_server_on_the_seed() {
         rows.iter().map(|r| (template(r).1, r.status)).collect();
     assert!(statuses.contains(&("/notes/{id}".to_string(), 404)));
     assert!(
-        rows.iter().all(|r| !r.dart_only),
+        rows.iter()
+            .filter(|r| !RUST_ONLY_EXEMPT_ROUTES.contains(&route_of(r).as_str()))
+            .all(|r| !r.dart_only),
         "every notes row runs in Rust"
     );
 
@@ -540,7 +561,8 @@ async fn every_notes_route_answers_401_unauthorized_without_a_bearer_token() {
             row.path
         );
         // Only reads are replayed with the token: the route exists.
-        if row.method == "GET" {
+        if row.method == "GET" && !PLAIN_SEED_REPLAY_EXEMPT_ROUTES.contains(&route_of(row).as_str())
+        {
             let reply = Reply::read(send(true).send().await.unwrap()).await;
             assert_eq!(
                 reply.status, row.status,
@@ -1259,7 +1281,7 @@ async fn every_notes_route_answers_c1_405_for_a_method_it_does_not_serve() {
         .iter()
         .map(|(p, served)| (p.as_str(), served.as_slice()))
         .collect();
-    assert_eq!(routes.len(), 9, "the nine notes paths");
+    assert_eq!(routes.len(), 10, "the ten notes paths");
     server::assert_wrong_method_is_c1_405(&env.srv, &routes).await;
 }
 

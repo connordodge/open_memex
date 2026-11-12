@@ -137,19 +137,48 @@ fn db_schema_version(db: &[u8]) -> i64 {
     schema::current_version(&conn).unwrap()
 }
 
-/// The source snapshot pinned at V5: V6's tables, index and columns are
-/// dropped and its version row deleted, so the first open has V6 to apply.
+/// SQL that removes what V7 adds (#415): every `content_revision_*`
+/// trigger first, so no write ever runs without the counter, then the V7
+/// tables.
+fn drop_v7_sql(db: &[u8]) -> String {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("read me.db");
+    fs::write(&path, db).unwrap();
+    let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger'
+             AND name LIKE 'content~_revision~_%' ESCAPE '~' ORDER BY name",
+        )
+        .unwrap();
+    let mut sql: String = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(|name| format!("DROP TRIGGER \"{}\";\n", name.unwrap()))
+        .collect();
+    sql.push_str(
+        "DROP TABLE IF EXISTS agent_activity;
+         DROP TABLE IF EXISTS learned_words;
+         DROP TABLE IF EXISTS content_revision;\n",
+    );
+    sql
+}
+
+/// The source snapshot pinned at V5: V7's triggers and tables and V6's
+/// tables, index and columns are dropped and their version rows deleted, so
+/// the first open has V6 and V7 to apply.
 fn v5_db(db: &[u8]) -> Vec<u8> {
-    let out = with_sql(
-        db,
-        "DROP INDEX idx_notes_guide;
+    let sql = format!(
+        "{}DROP INDEX idx_notes_guide;
          DROP TABLE vault_guide_revisions;
          DROP TABLE feedback;
          DROP TABLE tag_corrections;
          ALTER TABLE tags DROP COLUMN first_line;
          ALTER TABLE tags DROP COLUMN origin;
-         DELETE FROM schema_version WHERE version = 6;",
+         DELETE FROM schema_version WHERE version >= 6;",
+        drop_v7_sql(db)
     );
+    let out = with_sql(db, &sql);
     assert_eq!(db_schema_version(&out), 5, "fixture: the V5 snapshot");
     out
 }

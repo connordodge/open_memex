@@ -4,34 +4,94 @@
 //! Vector embeddings are written if a non-None [`crate::embedder::Embedder`]
 //! is provided; otherwise indexing is FTS-only.
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use ulid::Ulid;
 
-use crate::chunker;
+use crate::chunker::{self, Chunk};
+use crate::daily;
 use crate::embedder::Embedder;
 use crate::link_extractor;
 use crate::links;
+use crate::notes;
 use crate::schema;
+use crate::tags;
 use crate::Result;
 
 /// Reindex a single note: delete existing chunks/fts/vec rows for it, then
 /// rewrite from the latest content. Optionally embed if `embedder` is provided.
+///
+/// Only the note's person section is chunked (Spec #391 req 1): for a
+/// `role: daily` note (by its stored frontmatter) the body up to its first
+/// marker line, for any other note [`tags::person_section`]. Chunk ranges
+/// stay byte offsets into the full `content_md`. The `chunk_vec` rows of the
+/// old chunks are deleted whenever `chunk_vec` exists, with or without an
+/// embedder (req 4).
 pub fn reindex_note(
     conn: &mut Connection,
     note_id: &str,
     content_md: &str,
     embedder: Option<&dyn Embedder>,
 ) -> Result<usize> {
-    let chunks = chunker::chunk(content_md);
-    let extracted = link_extractor::extract(content_md);
+    let chunks = person_chunks(conn, note_id, content_md)?;
 
-    let model_version = embedder.map(|e| e.model_version().to_string());
-    let dim = embedder.map(|e| e.dimension());
-    if let Some(d) = dim {
-        schema::ensure_vector_table(conn, d)?;
+    if let Some(e) = embedder {
+        schema::ensure_vector_table(conn, e.dimension())?;
     }
 
     let tx = conn.transaction()?;
+    let written = write_index(&tx, note_id, content_md, &chunks, embedder)?;
+    tx.commit()?;
+    Ok(written)
+}
+
+/// The chunks of `content_md`'s person section, with ranges into the full
+/// `content_md`. The note's role comes from its stored frontmatter; a note
+/// missing from `notes` is not daily.
+fn person_chunks(conn: &Connection, note_id: &str, content_md: &str) -> Result<Vec<Chunk>> {
+    let frontmatter: Option<String> = conn
+        .query_row(
+            "SELECT frontmatter FROM notes WHERE id = ?",
+            params![note_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let is_daily = frontmatter.is_some_and(|f| daily::is_daily(&notes::lenient_frontmatter(&f)));
+    let (base, section) = if is_daily {
+        // The daily person section runs from after any leading frontmatter
+        // block to the first marker line. Ranges stay offsets into the full
+        // body, so chunk and block ranges share a base (D25).
+        let (_, start) = link_extractor::split_frontmatter(content_md);
+        let end =
+            daily::daily_marker_start(&content_md[start..]).map_or(content_md.len(), |e| start + e);
+        (start, &content_md[start..end])
+    } else {
+        // `person_section` returns a subslice of `content_md`.
+        let section = tags::person_section(content_md);
+        (
+            section.as_ptr() as usize - content_md.as_ptr() as usize,
+            section,
+        )
+    };
+    let mut chunks = chunker::chunk(section);
+    for c in &mut chunks {
+        c.start_byte += base;
+        c.end_byte += base;
+    }
+    Ok(chunks)
+}
+
+/// Rewrites a note's index rows (flags, links, chunks, FTS and vectors) from
+/// `content_md` and `chunks` inside the caller's transaction, and removes its
+/// `pending_index` row. Returns the number of chunks written.
+fn write_index(
+    tx: &Connection,
+    note_id: &str,
+    content_md: &str,
+    chunks: &[Chunk],
+    embedder: Option<&dyn Embedder>,
+) -> Result<usize> {
+    let extracted = link_extractor::extract(content_md);
+    let model_version = embedder.map(|e| e.model_version().to_string());
 
     // Update per-note flags + replace outgoing links.
     tx.execute(
@@ -49,11 +109,12 @@ pub fn reindex_note(
         .into_iter()
         .chain(extracted.frontmatter)
         .collect();
-    links::replace_links_for_note(&tx, note_id, &pending)?;
+    links::replace_links_for_note(tx, note_id, &pending)?;
 
     // Drop existing chunk rows for this note. Cascading FK on `chunks` does
-    // not extend to virtual tables, so we delete from chunk_fts (and chunk_vec)
-    // explicitly via the chunk ids we're about to remove.
+    // not extend to virtual tables, so we delete from chunk_fts (and from
+    // chunk_vec whenever it exists) explicitly via the chunk ids we're about
+    // to remove.
     let old_chunk_ids: Vec<String> = {
         let mut stmt = tx.prepare("SELECT id FROM chunks WHERE note_id = ?")?;
         let mut rows = stmt.query(params![note_id])?;
@@ -63,34 +124,24 @@ pub fn reindex_note(
         }
         out
     };
+    let has_vectors = !old_chunk_ids.is_empty() && has_chunk_vec(tx)?;
     for cid in &old_chunk_ids {
         tx.execute("DELETE FROM chunk_fts WHERE chunk_id = ?", params![cid])?;
-        if dim.is_some() {
-            // chunk_vec may not exist if we previously indexed FTS-only; ignore the
-            // not-found error.
-            let _ = tx.execute("DELETE FROM chunk_vec WHERE chunk_id = ?", params![cid]);
+        if has_vectors {
+            tx.execute("DELETE FROM chunk_vec WHERE chunk_id = ?", params![cid])?;
         }
     }
     tx.execute("DELETE FROM chunks WHERE note_id = ?", params![note_id])?;
 
-    if chunks.is_empty() {
-        tx.execute(
-            "DELETE FROM pending_index WHERE note_id = ?",
-            params![note_id],
-        )?;
-        tx.commit()?;
-        return Ok(0);
-    }
-
     // Compute embeddings up front (outside the SQL loop) if requested.
-    let embeddings: Option<Vec<Vec<f32>>> = if let Some(e) = embedder {
-        let texts: Vec<String> = chunks.iter().map(|c| c.content.clone()).collect();
-        Some(e.embed_batch(&texts)?)
-    } else {
-        None
+    let embeddings: Option<Vec<Vec<f32>>> = match embedder {
+        Some(e) if !chunks.is_empty() => {
+            let texts: Vec<String> = chunks.iter().map(|c| c.content.clone()).collect();
+            Some(e.embed_batch(&texts)?)
+        }
+        _ => None,
     };
 
-    let n_written = chunks.len();
     for (idx, c) in chunks.iter().enumerate() {
         let chunk_id = Ulid::new().to_string();
         tx.execute(
@@ -126,9 +177,88 @@ pub fn reindex_note(
         "DELETE FROM pending_index WHERE note_id = ?",
         params![note_id],
     )?;
-    tx.commit()?;
-    let _ = n_written; // suppress dead_code if embedding path skipped
     Ok(chunks.len())
+}
+
+/// Whether the vault's `chunk_vec` table exists (it is made lazily, once an
+/// embedding model is known).
+fn has_chunk_vec(conn: &Connection) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'chunk_vec'",
+            [],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
+/// Reindexes every note queued in `pending_index` from its stored body,
+/// without an embedder, one note per IMMEDIATE transaction (ruling D3).
+///
+/// A note no longer queued when its turn comes (another drain or a save
+/// reindexed it) is skipped. When one note fails, its transaction rolls
+/// back, its row stays queued for the next drain, a warning names it, and
+/// the drain moves on (D38). Never fails: an open is not refused over the
+/// rechunk.
+pub(crate) fn drain_pending_index(conn: &mut Connection) {
+    let queued = match queued_note_ids(conn) {
+        Ok(ids) => ids,
+        Err(e) => {
+            tracing::warn!(error = %e, "rechunk drain: could not read pending_index");
+            return;
+        }
+    };
+    for note_id in queued {
+        if let Err(e) = drain_one(conn, &note_id) {
+            tracing::warn!(
+                note_id = %note_id,
+                error = %e,
+                "rechunk drain: reindex failed; the note stays queued for the next open"
+            );
+        }
+    }
+}
+
+/// The queued note ids, oldest first.
+fn queued_note_ids(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt =
+        conn.prepare("SELECT note_id FROM pending_index ORDER BY enqueued_at, note_id")?;
+    let ids = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ids)
+}
+
+/// Reindexes one queued note in its own IMMEDIATE transaction. Its body and
+/// queue row are read inside that transaction, so a concurrent save is never
+/// overwritten with an older body.
+fn drain_one(conn: &mut Connection, note_id: &str) -> Result<()> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let body: Option<String> = tx
+        .query_row(
+            "SELECT n.content_md FROM pending_index p JOIN notes n ON n.id = p.note_id
+              WHERE p.note_id = ?",
+            params![note_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match body {
+        Some(body) => {
+            let chunks = person_chunks(&tx, note_id, &body)?;
+            write_index(&tx, note_id, &body, &chunks, None)?;
+        }
+        // Not queued any more, or queued for a note that no longer exists.
+        None => {
+            tx.execute(
+                "DELETE FROM pending_index
+                  WHERE note_id = ? AND note_id NOT IN (SELECT id FROM notes)",
+                params![note_id],
+            )?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 /// Hide chunks for a deleted note from the FTS/vec mirrors as well.
@@ -152,7 +282,7 @@ pub fn purge_note_indexes(conn: &mut Connection, note_id: &str) -> Result<()> {
     Ok(())
 }
 
-fn floats_le_bytes(v: &[f32]) -> Vec<u8> {
+pub(crate) fn floats_le_bytes(v: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(v.len() * 4);
     for f in v {
         out.extend_from_slice(&f.to_le_bytes());

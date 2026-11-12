@@ -8,7 +8,7 @@ use ulid::Ulid;
 
 use crate::error::MemexError;
 use crate::fs_guard::{self, FsInfo};
-use crate::{schema, Result};
+use crate::{indexer, schema, Result};
 
 pub(crate) const MANIFEST_FILENAME: &str = "manifest.json";
 pub(crate) const DB_FILENAME: &str = "memex.db";
@@ -135,7 +135,10 @@ impl Vault {
         let mut conn = Connection::open(&db_path)?;
         configure_connection(&mut conn)?;
         schema::apply(&mut conn)?;
-        // Refresh manifest schema_version if migrations advanced.
+        // Refresh manifest schema_version if migrations advanced. This runs
+        // before the drain, so a drain stopped partway never leaves an older
+        // schema_version over a migrated DB (older clients refuse the vault
+        // by the manifest alone).
         let current = schema::current_version(&conn)?;
         let manifest = if current != manifest.schema_version {
             let updated = VaultManifest {
@@ -147,6 +150,10 @@ impl Vault {
         } else {
             manifest
         };
+        // The one-time rechunk (D3): reindex every queued note by person
+        // section, one note per transaction. A note that fails stays queued
+        // for the next open (D38).
+        indexer::drain_pending_index(&mut conn);
 
         Ok(Self {
             root,

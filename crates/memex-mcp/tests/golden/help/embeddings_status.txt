@@ -1,0 +1,7 @@
+Print embedding coverage and model cache status as JSON
+
+Usage: memex embeddings status --vault <VAULT>
+
+Options:
+      --vault <VAULT>  Vault directory
+  -h, --help           Print help

@@ -6,8 +6,9 @@
 //!
 //! The V4 fixture is built inline (same pattern as `migration_v4.rs`) and pinned
 //! at `schema_version` 4 so V5 has work to do on the next `schema::apply()`.
-//! `schema::apply()` runs every later step too (V6, WI #237), so version pins
-//! after an apply are `schema::APP_SCHEMA_VERSION`; `migration_v6.rs` covers V6.
+//! `schema::apply()` runs every later step too (V6, WI #237; V7, WI #415), so
+//! version pins after an apply are `schema::APP_SCHEMA_VERSION`;
+//! `migration_v6.rs` and `migration_v7.rs` cover V6 and V7.
 
 use memex_core::schema;
 use memex_core::Vault;
@@ -508,8 +509,8 @@ fn assert_columns(conn: &Connection, table: &str, expected: &[ColSpec]) {
 // ---- AC 1: version ----------------------------------------------------------------------------
 
 #[test]
-fn app_schema_version_is_6() {
-    assert_eq!(schema::APP_SCHEMA_VERSION, 6);
+fn app_schema_version_is_7() {
+    assert_eq!(schema::APP_SCHEMA_VERSION, 7);
 }
 
 #[test]
@@ -519,12 +520,12 @@ fn v5_apply_advances_v4_database_to_version_5() {
     schema::apply(&mut conn).expect("V4 -> V5 migration succeeds");
 
     let max: i64 = count(&conn, "SELECT MAX(version) FROM schema_version");
-    assert_eq!(max, 6);
+    assert_eq!(max, schema::APP_SCHEMA_VERSION);
     let versions = strings(
         &conn,
         "SELECT CAST(version AS TEXT) FROM schema_version ORDER BY version",
     );
-    assert_eq!(versions, ["1", "2", "3", "4", "5", "6"]);
+    assert_eq!(versions, ["1", "2", "3", "4", "5", "6", "7"]);
 }
 
 #[test]
@@ -541,12 +542,19 @@ fn v5_vault_open_rewrites_v4_manifest_to_5() {
     std::fs::create_dir_all(dir.path().join("objects")).unwrap();
 
     let vault = Vault::open(dir.path()).expect("open V4 vault advances to V5");
-    assert_eq!(vault.schema_version(), 6);
-    assert_eq!(schema::current_version(vault.connection_ref()).unwrap(), 6);
+    assert_eq!(vault.schema_version(), schema::APP_SCHEMA_VERSION);
+    assert_eq!(
+        schema::current_version(vault.connection_ref()).unwrap(),
+        schema::APP_SCHEMA_VERSION
+    );
 
     let on_disk: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
-    assert_eq!(on_disk["schema_version"].as_i64(), Some(6), "{on_disk}");
+    assert_eq!(
+        on_disk["schema_version"].as_i64(),
+        Some(schema::APP_SCHEMA_VERSION),
+        "{on_disk}"
+    );
     assert_eq!(on_disk["vault_id"].as_str(), Some(vault_id), "{on_disk}");
     assert_eq!(on_disk["created_at"].as_i64(), Some(1_000), "{on_disk}");
 }

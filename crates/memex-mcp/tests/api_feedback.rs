@@ -2081,6 +2081,24 @@ async fn hosted_writes_reindex_with_the_shared_embedder() {
     )
     .await;
 
+    // The server's background backfill (#422) shares this embedder and runs
+    // an `embed_batch` of its own once the first request opens the vault.
+    // Let it finish first, so each count below is the request's own batch.
+    let warm_up = srv.call("GET", "/info", None, None).await;
+    assert!(warm_up.status < 300, "warm-up: {}", warm_up.body);
+    let started = std::time::Instant::now();
+    loop {
+        let counts = memex_core::vectors::embedding_counts(&db(&srv.vault())).unwrap();
+        if counts.chunks > 0 && counts.embedded == counts.chunks {
+            break;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "the backfill did not embed the seed vault: {counts:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
     srv.expect_a_batch(
         &batches,
         "excerpt add",

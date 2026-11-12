@@ -1,9 +1,12 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderAbstractViewport;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../db.dart';
+import '../state/echo_scroll_target.dart';
 import '../state/editor_controller.dart';
 import '../state/pending_saves.dart';
 import '../state/tabs_state.dart'
@@ -14,12 +17,15 @@ import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
 import '../vault_access/vault_scoped.dart';
+import 'agents_sheet/agents_sheet.dart' show AgentsStatusBarButton;
 import 'atoms.dart';
+import 'editor/echo_arrival_highlight.dart';
 import 'editor/editor_toolbar.dart';
 import 'editor/note_header.dart';
 import 'editor/note_menu.dart';
 import 'editor/segmented_body.dart';
 import 'editor/source_surface.dart';
+import 'editor/spelling_learn_error.dart';
 import 'editor/text_segment.dart' show EditorScrollScope;
 
 /// The note editor host: wires the selected note and [EditorController] into
@@ -111,6 +117,9 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
 
   @override
   void dispose() {
+    // The arrival highlight listens to [_scroll] and follows a row of this
+    // editor: it goes first.
+    _clearEchoHighlight();
     _scroll.dispose();
     _titleCtrl.dispose();
     _bodyCtrl.dispose();
@@ -143,7 +152,14 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
       );
     }
     if (resolved || note == null || _outgoing) return;
+    // An echo's target wins over the restore, which is still taken so it
+    // can't reach a later arrival; it also keeps a daily note's caret put.
+    final echo = ref.read(echoScrollTargetProvider.notifier).take(note.id);
     final restore = _tabs?.takeScrollRestore(note.id);
+    if (echo != null) {
+      _landAtEcho(note, echo.startByte);
+      return;
+    }
     _jumpAfterLayout(restore ?? 0.0);
     if (restore == null && note.role == 'daily') {
       _bodyCtrl.selection = TextSelection.collapsed(
@@ -164,6 +180,7 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
   /// one note), so it jumps from here.
   void _onTabs(TabsState? previous, TabsState next) {
     if (previous?.arrivals == next.arrivals) return;
+    _clearEchoHighlight();
     final tab = next.activeTab;
     if ((tab is CanvasTab ? tab.zoomedNoteId : null) != _zoomedNote) {
       _outgoing = true;
@@ -175,7 +192,152 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
     _jumpSeq++;
     if (noteId == null || noteId != _hydratedFor) return;
     setState(() => _view = _BodyView.segmented);
-    _jumpAfterLayout(_tabs?.takeScrollRestore(noteId) ?? 0.0);
+    final echo = ref.read(echoScrollTargetProvider.notifier).take(noteId);
+    final restore = _tabs?.takeScrollRestore(noteId);
+    // The note as it is stored now: [_hydratedNote] is the copy from when
+    // this note was hydrated, and an edit saved since changed its text.
+    final current = currentVaultData(
+      ref.read(editorNoteAsyncProvider),
+      ref.read(currentVaultProvider),
+    )?.value;
+    final note = current?.id == noteId ? current : _hydratedNote;
+    if (echo != null && note != null) {
+      _landAtEcho(note, echo.startByte);
+      return;
+    }
+    _jumpAfterLayout(restore ?? 0.0);
+  }
+
+  /// The arrival highlight showing, if any.
+  OverlayEntry? _echoHighlight;
+
+  void _clearEchoHighlight() {
+    final entry = _echoHighlight;
+    _echoHighlight = null;
+    if (entry != null && entry.mounted) entry.remove();
+  }
+
+  /// An arrival with an echo's target (Spec #391 req 27): after [note]'s
+  /// layout, scrolls the passage at [startByte] to a third of the viewport
+  /// and highlights it, or opens at the top without a usable offset. The
+  /// landing offset is recorded on the entry, so Back then Forward returns
+  /// to the passage.
+  void _landAtEcho(Note note, int? startByte) {
+    final arrival = locateEchoArrival(
+      note.contentMd,
+      startByte,
+      role: note.role,
+    );
+    if (arrival == null) {
+      _jumpAfterLayout(0.0);
+      return;
+    }
+    final jump = ++_jumpSeq;
+    var tries = 0;
+    void land(Duration _) {
+      if (!mounted || jump != _jumpSeq) return;
+      final found = _echoRow(note, arrival);
+      if (found == null && ++tries < 8) {
+        WidgetsBinding.instance
+          ..addPostFrameCallback(land)
+          ..scheduleFrame();
+        return;
+      }
+      final viewport = found == null
+          ? null
+          : RenderAbstractViewport.maybeOf(found.row);
+      if (found == null || viewport == null || !_scroll.hasClients) {
+        _jumpAfterLayout(0.0);
+        return;
+      }
+      final rects = echoArrivalRects(found.row, arrival, column: found.column);
+      final position = _scroll.position;
+      final reveal = viewport
+          .getOffsetToReveal(found.row, 0.0, rect: rects.anchor)
+          .offset;
+      final to = math.min(
+        reveal,
+        reveal - (position.viewportDimension / 3 - rects.anchor.height / 2),
+      );
+      _scroll.jumpTo(
+        to.clamp(position.minScrollExtent, position.maxScrollExtent),
+      );
+      _reportsHeld = false;
+      _tabs?.recordScrollOffset(note.id, _scroll.offset);
+      _clearEchoHighlight();
+      final overlay = Overlay.maybeOf(context, rootOverlay: true);
+      if (overlay == null) return;
+      final clip = switch (viewport) {
+        final RenderBox box => box,
+        _ => null,
+      };
+      late final OverlayEntry entry;
+      entry = OverlayEntry(
+        builder: (_) => EchoArrivalHighlight(
+          target: found.row,
+          band: rects.band,
+          clip: clip,
+          repaint: _scroll,
+          onDone: () {
+            if (identical(_echoHighlight, entry)) _echoHighlight = null;
+            if (entry.mounted) entry.remove();
+          },
+        ),
+      );
+      _echoHighlight = entry;
+      overlay.insert(entry);
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback(land);
+  }
+
+  /// The laid-out widget holding [arrival] in this editor's segmented body
+  /// showing [note]'s stored text, and its text segment; null until then.
+  ({RenderBox row, RenderBox? column})? _echoRow(
+    Note note,
+    EchoArrival arrival,
+  ) {
+    Element? body;
+    void findBody(Element e) {
+      if (body != null) return;
+      final w = e.widget;
+      if (w is SegmentedBody && w.note.id == note.id) {
+        body = e;
+      } else {
+        e.visitChildren(findBody);
+      }
+    }
+
+    context.visitChildElements(findBody);
+    final host = body;
+    if (host == null ||
+        (host.widget as SegmentedBody).content != note.contentMd) {
+      return null;
+    }
+    final keys = {
+      arrival.key,
+      ?arrival.fallbackKey,
+      ValueKey('text-segment-${arrival.segment}'),
+    };
+    final found = <Key, Element>{};
+    void visit(Element e) {
+      final key = e.widget.key;
+      if (key != null && keys.contains(key)) found.putIfAbsent(key, () => e);
+      e.visitChildren(visit);
+    }
+
+    host.visitChildren(visit);
+    RenderBox? laidOut(Key? key) {
+      final box = key == null ? null : found[key]?.findRenderObject();
+      return box is RenderBox && box.attached && box.hasSize ? box : null;
+    }
+
+    final row = laidOut(arrival.key) ?? laidOut(arrival.fallbackKey);
+    if (row == null) return null;
+    return (
+      row: row,
+      column: laidOut(ValueKey('text-segment-${arrival.segment}')),
+    );
   }
 
   /// Jumps to [offset], clamped, after the next frame: that frame lays out what
@@ -260,6 +422,7 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
           ),
           const OmHairline(),
           if (note != null) NoteDeleteError(noteId: note.id),
+          if (note != null) SpellingLearnError(noteId: note.id),
           Expanded(
             child: note == null
                 ? _EmptyEditor()
@@ -267,6 +430,8 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
                 ? SourceSurface(
                     bodyCtrl: _bodyCtrl,
                     bodyFocusNode: _bodyFocus,
+                    noteId: note.id,
+                    noteRole: note.role,
                     onContentChanged: controller.onContentChanged,
                     errorMessage: editor.errorMessage,
                     header: header,
@@ -341,10 +506,7 @@ class _StatusBar extends StatelessWidget {
           const SizedBox(width: 10),
           Text('md', style: OmType.mono(size: 10.5, color: OmColors.fg3)),
           const Spacer(),
-          Text(
-            'agents API · ⌘;',
-            style: OmType.mono(size: 10.5, color: OmColors.fg2),
-          ),
+          const AgentsStatusBarButton(key: Key('status-bar-agents')),
         ],
       ),
     );

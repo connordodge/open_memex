@@ -36,6 +36,8 @@ The rules below are enforced by the MCP server for every call, so a weakly promp
 
 The tools a review uses, in the order a review uses them: `get_vault_guide`, `list_open_feedback`, `resolve_feedback`, `list_unreviewed_days`, `get_daily_note_changes`, `search`, `get_note`, `create_note` (with `role: topic`), `add_excerpt`, `add_link`, `get_vault_settings`, `list_smart_folders`, `create_smart_folder`, `add_to_smart_folder`, `list_tags`, `tag_note`, `mark_day_reviewed`.
 
+A write tool that can succeed without changing anything says so in its result: `add_excerpt` returns `filed_block_ids` (the blocks it filed; empty when the topic already held them all, though the day's chip for the topic is still added when it is missing), `remove_excerpt` returns `removed_count` (the blocks it unfiled: every block of the day between the token's endpoints, or the endpoints themselves when the daily note or an endpoint no longer exists), `remove_excerpt_block` returns `removed`, `add_footer_topic` and `update_smart_folder` return `changed`, `add_to_smart_folder` returns `added` and `remove_from_smart_folder` returns `removed` (`false` for a note that wasn't in the Smart Folder). `remove_excerpt` and `remove_excerpt_block` never succeed without writing: nothing to remove is `not_found`.
+
 The full list of tools is in the [README](../README.md).
 
 ### Activity: Feedback, Corrections and the Vault Guide

@@ -3,8 +3,8 @@
 
 use memex_core::canvas::{
     add_to_canvas, add_to_canvas_with_clock, create_canvas, create_canvas_with_clock,
-    delete_canvas, get_canvas, list_canvases, move_node, move_nodes_batch, remove_from_canvas,
-    rename_canvas, Clock,
+    delete_canvas, get_canvas, list_canvases, move_node, move_node_changed, move_nodes_batch,
+    remove_from_canvas, remove_from_canvas_removed, rename_canvas, Clock,
 };
 use memex_core::notes::{create_note, delete_note, CreateNote};
 use memex_core::{CanvasId, MemexError, Vault};
@@ -185,6 +185,69 @@ fn move_node_updates_position_and_bumps_updated_at() {
     assert_eq!(moved.y, -10.25);
 }
 
+/// WI #449: `move_node_changed` reads the stored placement before it writes.
+/// It takes the write lock first (Immediate), so a write another connection
+/// holds is waited out under the busy timeout. A deferred transaction would
+/// hold a read snapshot when it upgrades, and SQLite fails that upgrade at
+/// once with SQLITE_BUSY without running the busy handler.
+#[test]
+fn move_node_changed_waits_out_a_write_another_connection_holds() {
+    let (dir, mut vault) = new_vault();
+    let c = create_canvas(&mut vault, "Board").unwrap();
+    let n = add_note(&mut vault, "Note A");
+    add_to_canvas_with_clock(&mut vault, &c.id, &n, 1.0, 2.0, &FixedClock::new(1_000)).unwrap();
+
+    let db = dir.path().join("memex.db");
+    let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        let other = rusqlite::Connection::open(db).unwrap();
+        other.execute_batch("BEGIN IMMEDIATE").unwrap();
+        locked_tx.send(()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        other.execute_batch("COMMIT").unwrap();
+    });
+    locked_rx.recv().unwrap();
+
+    let (node, changed) = move_node_changed(
+        &mut vault,
+        &c.id,
+        &n,
+        5.0,
+        6.0,
+        None,
+        &FixedClock::new(2_000),
+    )
+    .expect("the move waits for the other writer instead of failing with SQLITE_BUSY");
+    holder.join().unwrap();
+
+    assert!(changed);
+    assert_eq!((node.x, node.y), (5.0, 6.0));
+}
+
+#[test]
+fn move_node_changed_reports_whether_the_stored_placement_differs() {
+    let (_dir, mut vault) = new_vault();
+    let clock = FixedClock::new(1_000);
+    let c = create_canvas_with_clock(&mut vault, "Board", &clock).unwrap();
+    let n = add_note(&mut vault, "Note A");
+    add_to_canvas_with_clock(&mut vault, &c.id, &n, 1.0, 2.0, &clock).unwrap();
+
+    let same = move_node_changed(&mut vault, &c.id, &n, 1.0, 2.0, None, &clock).unwrap();
+    assert!(!same.1, "same x and y, no z_order");
+    let same_z = move_node_changed(&mut vault, &c.id, &n, 1.0, 2.0, Some(0), &clock).unwrap();
+    assert!(!same_z.1, "same x, y and the stored z_order");
+    let moved_x = move_node_changed(&mut vault, &c.id, &n, 3.0, 2.0, None, &clock).unwrap();
+    assert!(moved_x.1, "x differs");
+    let moved_y = move_node_changed(&mut vault, &c.id, &n, 3.0, 4.0, None, &clock).unwrap();
+    assert!(moved_y.1, "y differs");
+    let moved_z = move_node_changed(&mut vault, &c.id, &n, 3.0, 4.0, Some(7), &clock).unwrap();
+    assert!(moved_z.1, "z_order differs");
+    assert_eq!(moved_z.0.z_order, 7);
+    let missing = add_note(&mut vault, "Floating");
+    let err = move_node_changed(&mut vault, &c.id, &missing, 0.0, 0.0, None, &clock).unwrap_err();
+    assert!(matches!(err, MemexError::NotFound(_)));
+}
+
 #[test]
 fn move_node_errors_on_missing_placement() {
     let (_dir, mut vault) = new_vault();
@@ -234,7 +297,9 @@ fn remove_from_canvas_removes_placement_only() {
     // Note still exists.
     let note_count: i64 = vault
         .connection_ref()
-        .query_row("SELECT COUNT(*) FROM notes WHERE id = ?", [&n], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM notes WHERE id = ?", [&n], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(note_count, 1);
     // Placement is gone.
@@ -247,6 +312,39 @@ fn remove_from_canvas_is_a_noop_for_missing_placement() {
     let (_dir, mut vault) = new_vault();
     let c = create_canvas(&mut vault, "Board").unwrap();
     remove_from_canvas(&mut vault, &c.id, "no-such-note").unwrap();
+}
+
+/// WI #449: `remove_from_canvas_removed` answers whether a placement was
+/// deleted: true for a real removal, false (and nothing written) when the
+/// note isn't placed.
+#[test]
+fn remove_from_canvas_removed_reports_whether_a_placement_was_deleted() {
+    let (_dir, mut vault) = new_vault();
+    let clock = FixedClock::new(1_000);
+    let c = create_canvas_with_clock(&mut vault, "Board", &clock).unwrap();
+    let n = add_note(&mut vault, "Note A");
+    add_to_canvas_with_clock(&mut vault, &c.id, &n, 0.0, 0.0, &clock).unwrap();
+    let before = get_canvas(&vault, &c.id).unwrap().canvas;
+
+    let later = FixedClock::new(2_000);
+    assert!(remove_from_canvas_removed(&mut vault, &c.id, &n, &later).unwrap());
+    let after_real = get_canvas(&vault, &c.id).unwrap().canvas;
+    assert!(
+        after_real.version > before.version,
+        "a removal bumps the version"
+    );
+
+    assert!(
+        !remove_from_canvas_removed(&mut vault, &c.id, &n, &FixedClock::new(3_000)).unwrap(),
+        "second removal finds nothing"
+    );
+    assert!(!remove_from_canvas_removed(&mut vault, &c.id, "no-such-note", &later).unwrap());
+    let after_noop = get_canvas(&vault, &c.id).unwrap().canvas;
+    assert_eq!(
+        after_noop.version, after_real.version,
+        "a no-op writes nothing"
+    );
+    assert_eq!(after_noop.updated_at, after_real.updated_at);
 }
 
 // ---------- rename_canvas ----------
@@ -300,7 +398,9 @@ fn delete_canvas_cascades_canvas_nodes_only() {
     // Note still there.
     let note_count: i64 = vault
         .connection_ref()
-        .query_row("SELECT COUNT(*) FROM notes WHERE id = ?", [&n], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM notes WHERE id = ?", [&n], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(note_count, 1);
     // canvas_nodes for the deleted canvas are gone.
@@ -350,7 +450,11 @@ fn get_canvas_returns_edges_only_between_placed_nodes() {
 
     let detail = get_canvas(&vault, &c.id).unwrap();
     assert_eq!(detail.nodes.len(), 2);
-    assert_eq!(detail.edges.len(), 1, "only A->B is rendered; A->Gamma is off-canvas");
+    assert_eq!(
+        detail.edges.len(),
+        1,
+        "only A->B is rendered; A->Gamma is off-canvas"
+    );
     assert_eq!(detail.edges[0].from_note_id, a);
     assert_eq!(detail.edges[0].to_note_id, b);
 }
@@ -361,11 +465,7 @@ fn get_canvas_returns_multiple_edges_between_same_pair() {
     let c = create_canvas(&mut vault, "Board").unwrap();
     let b = add_note(&mut vault, "Beta");
     // Two wikilinks between the same pair with different kinds.
-    let a = add_note_with_body(
-        &mut vault,
-        "Alpha",
-        "[[Beta~extends]]\n[[Beta~references]]",
-    );
+    let a = add_note_with_body(&mut vault, "Alpha", "[[Beta~extends]]\n[[Beta~references]]");
     add_to_canvas(&mut vault, &c.id, &a, 0.0, 0.0).unwrap();
     add_to_canvas(&mut vault, &c.id, &b, 0.0, 0.0).unwrap();
 
@@ -411,7 +511,10 @@ fn deleting_note_cascades_canvas_node_placement() {
     delete_note(&mut vault, &NoteId::parse(&n).unwrap()).unwrap();
 
     let detail = get_canvas(&vault, &c.id).unwrap();
-    assert!(detail.nodes.is_empty(), "placement cascaded with note delete");
+    assert!(
+        detail.nodes.is_empty(),
+        "placement cascaded with note delete"
+    );
 }
 
 // Helper for tests that need a note with body content (so the indexer runs).

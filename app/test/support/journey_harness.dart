@@ -10,6 +10,9 @@
 // - time: a FakeClock (2 s / 30 s polls, 10 s timeouts);
 // - the `memex` binary: FakeMemexCli (or none), picked by the configured
 //   binary path when [pumpJourneyApp] gets `clis`;
+// - the Claude Desktop config file (WI #411): a FakeClaudeConfigReader that
+//   answers `missing`, so no journey that opens the Agents sheet's Connect
+//   tab reads the developer's real claude_desktop_config.json;
 // - app focus, app exit and the native window title.
 // No rollout flag exists: hosted vaults are on.
 import 'dart:async';
@@ -19,6 +22,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/main.dart';
+import 'package:open_memex_app/src/state/agents_sheet/connect_tab_state.dart';
 import 'package:open_memex_app/src/state/app_exit.dart';
 import 'package:open_memex_app/src/state/app_focus.dart';
 import 'package:open_memex_app/src/state/app_support_dir.dart';
@@ -37,6 +41,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_exit_fakes.dart';
 import 'app_harness.dart';
+import 'claude_config_reader_fakes.dart';
 import 'fake_clock.dart';
 import 'fake_memex_cli.dart';
 import 'fake_vault_db.dart';
@@ -212,6 +217,9 @@ Future<JourneyApp> pumpJourneyApp(
       windowTitleProvider.overrideWithValue(title),
       appExitHostProvider.overrideWithValue(exitHost),
       appFocusProvider.overrideWith(() => FakeAppFocus()),
+      claudeConfigReaderProvider.overrideWithValue(
+        FakeClaudeConfigReader.missing(),
+      ),
       // The app root's own seam wiring, as main() spreads it.
       ...appRootOverrides,
       ...overrides,

@@ -1,5 +1,5 @@
 import 'dart:math' as math;
-import 'dart:ui' as ui show BoxHeightStyle;
+import 'dart:ui' as ui show BoxHeightStyle, LineMetrics;
 
 import 'package:flutter/foundation.dart' show immutable;
 import 'package:flutter/rendering.dart';
@@ -42,7 +42,12 @@ abstract interface class LineBoxSource {
 /// One laid-out line of a [LineBoxSource].
 @immutable
 class LineBox {
-  const LineBox({required this.range, required this.top, required this.bottom});
+  const LineBox({
+    required this.range,
+    required this.top,
+    required this.bottom,
+    double? baseline,
+  }) : baseline = baseline ?? bottom;
 
   /// The offsets of the line's characters, without its line break.
   final TextRange range;
@@ -52,6 +57,28 @@ class LineBox {
 
   /// The line box's bottom.
   final double bottom;
+
+  /// The line's alphabetic baseline, in the same coordinates as [top] and
+  /// [bottom] (WI #437, ruling D23). Defaults to [bottom] when the source
+  /// does not measure it.
+  final double baseline;
+}
+
+/// The baseline of line [index] of a laid-out painter whose line metrics are
+/// [metrics], the line's box starting at [top]; [previous] is the line above,
+/// if any. A line without metrics (an empty field's, or an empty last line)
+/// sits as far below its top as the line above does, or at the painter's
+/// first baseline.
+double measuredBaseline(
+  TextPainter painter,
+  List<ui.LineMetrics> metrics,
+  int index,
+  double top,
+  LineBox? previous,
+) {
+  if (index < metrics.length) return metrics[index].baseline;
+  if (previous != null) return top + previous.baseline - previous.top;
+  return top + painter.computeDistanceToActualBaseline(TextBaseline.alphabetic);
 }
 
 /// The line of [lines] (a [LineBoxSource.lines] list) holding [offset]: the
@@ -89,7 +116,8 @@ const int _newline = 0x0A;
 /// editable lays it out (strut, text scaler, width), reading each line's
 /// max-height selection boxes. Not from `LineMetrics`: under a forced strut
 /// they report a run's ascent and descent, not the height the line lays out
-/// at. The caret's x and [offsetAt] come from the editable itself. Offsets
+/// at. Each line's baseline does come from its line metrics (WI #437).
+/// The caret's x and [offsetAt] come from the editable itself. Offsets
 /// past the editable's text (typed, not laid out yet) are clamped to its
 /// end.
 class RenderEditableLineBoxes implements LineBoxSource {
@@ -175,6 +203,7 @@ class RenderEditableLineBoxes implements LineBoxSource {
   /// Every line of [painter]'s laid-out [text], top to bottom.
   List<LineBox> _linesOf(TextPainter painter, String text) {
     final lines = <LineBox>[];
+    final metrics = painter.computeLineMetrics();
     var start = 0;
     while (true) {
       final end = _lineEnd(painter, text, start);
@@ -205,6 +234,13 @@ class RenderEditableLineBoxes implements LineBoxSource {
                     TextPosition(offset: start),
                     Rect.zero,
                   ),
+          baseline: measuredBaseline(
+            painter,
+            metrics,
+            lines.length,
+            top,
+            lines.lastOrNull,
+          ),
         ),
       );
       if (end >= text.length) break;
@@ -217,6 +253,7 @@ class RenderEditableLineBoxes implements LineBoxSource {
           range: line.range,
           top: line.top + shift,
           bottom: line.bottom + shift,
+          baseline: line.baseline + shift,
         ),
     ];
   }

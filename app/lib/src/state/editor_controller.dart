@@ -126,6 +126,17 @@ class EditorController extends StateNotifier<EditorStateValue> {
   Timer? _debounce;
   String? _activeNoteId;
 
+  /// The [holdSaves] holds not yet released.
+  int _saveHolds = 0;
+
+  /// A debounced save came due while a hold was on: it goes with the next
+  /// flush, or through the debounce again once the last hold is released.
+  bool _heldSaveDue = false;
+
+  /// A save landed while a hold was on: its `vaultRevisionProvider` bump is
+  /// left to the caller of the last [releaseSaves].
+  bool _heldRevisionBump = false;
+
   /// The id of the note the editor currently holds, or null when none.
   String? get activeNoteId => _activeNoteId;
 
@@ -205,8 +216,8 @@ class EditorController extends StateNotifier<EditorStateValue> {
 
   void loadNote(Note? note) {
     final previous = _activeNoteId;
-    final pending = _debounce?.isActive == true;
-    _debounce?.cancel();
+    final pending = _debounce?.isActive == true || _heldSaveDue;
+    _cancelDebounce();
     _loadSeq++;
     _mergeBase = null;
     _resolvedNoteId = null;
@@ -338,16 +349,15 @@ class EditorController extends StateNotifier<EditorStateValue> {
     return true;
   }
 
-  /// Saves now when a save debounce is pending (cancelling it); otherwise
-  /// does nothing. Synchronous: the save captures the editor's state before
+  /// Saves now when a save debounce is pending (cancelling it) or a save is
+  /// held ([holdSaves]); otherwise does nothing. Synchronous: the save captures the editor's state before
   /// it first awaits, so a caller may switch notes right after (D14, B3
   /// Cmd+click). On any vault, while an earlier save of the note typed in
   /// the same editor load is in flight, the flushed save waits for it and
   /// goes on the version it stored, never beside it.
   void flushPendingSave() {
-    final pending = _debounce;
-    if (pending == null || !pending.isActive) return;
-    pending.cancel();
+    if (!_savePending) return;
+    _cancelDebounce();
     unawaited(_save(leaving: true));
   }
 
@@ -358,9 +368,8 @@ class EditorController extends StateNotifier<EditorStateValue> {
   /// or waits, a save is in flight, or an earlier save failed or conflicted
   /// (the editor keeps the text and shows the failure).
   Future<bool> flushPendingSaveAndWait() async {
-    final pending = _debounce;
-    if (pending != null && pending.isActive) {
-      pending.cancel();
+    if (_savePending) {
+      _cancelDebounce();
       await _save(leaving: true);
     }
     return switch (state.status) {
@@ -434,9 +443,64 @@ class EditorController extends StateNotifier<EditorStateValue> {
     }
   }
 
-  void _scheduleSave() {
+  /// Holds the editor's debounced saves, and the `vaultRevisionProvider`
+  /// bump of every save that lands, until [releaseSaves]: for a write to the
+  /// open note that runs beside the editor (an echo link, #429), so a save
+  /// typed during it is not sent on the version the write replaces (a
+  /// version conflict), and the write and the saves around it reach the
+  /// revision's watchers as one bump. A flush ([flushPendingSave],
+  /// [flushPendingSaveAndWait], a note switch) still sends at once, a held
+  /// save among them. Each call needs one [releaseSaves].
+  void holdSaves() => _saveHolds++;
+
+  /// Ends one [holdSaves] hold. Once none is left, a save that came due
+  /// during the holds goes through the save debounce again, and the result
+  /// is true when a save landed during them: its revision bump was not made,
+  /// so the caller makes it (one bump, also for its own write). While
+  /// another hold is on, the result is false and the bump stays held.
+  bool releaseSaves() {
+    if (_saveHolds == 0) return false;
+    _saveHolds--;
+    if (_saveHolds > 0) return false;
+    if (_heldSaveDue) {
+      _heldSaveDue = false;
+      if (mounted &&
+          _debounce?.isActive != true &&
+          state.status == SaveStatus.dirty) {
+        _scheduleSave();
+      }
+    }
+    final bump = _heldRevisionBump;
+    _heldRevisionBump = false;
+    return bump;
+  }
+
+  /// True when a debounced save is waiting: on its timer or held.
+  bool get _savePending => _debounce?.isActive == true || _heldSaveDue;
+
+  /// Cancels the debounced save waiting, on its timer or held.
+  void _cancelDebounce() {
     _debounce?.cancel();
+    _heldSaveDue = false;
+  }
+
+  /// Bumps `vaultRevisionProvider` after a save landed, or leaves the bump
+  /// to [releaseSaves] while a hold is on.
+  void _bumpRevision() {
+    if (_saveHolds > 0) {
+      _heldRevisionBump = true;
+      return;
+    }
+    _ref.read(vaultRevisionProvider.notifier).state++;
+  }
+
+  void _scheduleSave() {
+    _cancelDebounce();
     _debounce = _ref.read(clockProvider).after(saveDebounce, () {
+      if (_saveHolds > 0) {
+        _heldSaveDue = true;
+        return;
+      }
       unawaited(_save());
     });
   }
@@ -476,7 +540,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
           state = state.copyWith(status: SaveStatus.dirty, clearError: true);
           return;
         }
-        _debounce?.cancel();
+        _cancelDebounce();
         if (_waitsForOlderWrite(hosted, id)) {
           // An older write of the note is still in flight: the retry goes
           // once its outcome is applied.
@@ -490,7 +554,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
     if ((hosted != null || leaving) && _waitsForOwnSave(vault, id, _loadSeq)) {
       // An earlier save of this text is still in flight: this save goes
       // once it lands, on the version it stored, never beside it.
-      _debounce?.cancel();
+      _cancelDebounce();
       _deferredSaves[(vault, id)] = _DeferredSave(
         access: access,
         loadSeq: _loadSeq,
@@ -641,7 +705,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
         );
         if (_debounce?.isActive != true) _scheduleSave();
       }
-      _ref.read(vaultRevisionProvider.notifier).state++;
+      _bumpRevision();
     } on MemexException catch (e) {
       if (hosted != null && _couldNotReach(e)) {
         return _queueFailedSave(
@@ -930,7 +994,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
           if (_debounce?.isActive != true) _scheduleSave();
         }
       }
-      _ref.read(vaultRevisionProvider.notifier).state++;
+      _bumpRevision();
     } on Object catch (e) {
       if (_couldNotReach(e)) {
         // Still queued (a held save waits for the server again, with its
@@ -982,7 +1046,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
       return;
     }
     // The retry sends the open note's latest text: no second save.
-    if (id == _activeNoteId && _virtualDate == null) _debounce?.cancel();
+    if (id == _activeNoteId && _virtualDate == null) _cancelDebounce();
     unawaited(_retry(vault, access, q));
   }
 
@@ -1049,7 +1113,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
         _ref.read(currentVaultProvider) == vault;
     if (open) {
       if (state.status == SaveStatus.clean) return;
-      _debounce?.cancel();
+      _cancelDebounce();
       unawaited(_save());
       return;
     }
@@ -1461,7 +1525,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
     _ref
         .read(tabsProvider.notifier)
         .resolveVirtualToday(date: date, noteId: id);
-    _ref.read(vaultRevisionProvider.notifier).state++;
+    _bumpRevision();
   }
 
   /// Saves [content] to note [id] through `VaultAccess.notes` after the
@@ -1574,7 +1638,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
     } finally {
       if (hosted != null) _settled(hosted, id, sendSeq);
     }
-    _ref.read(vaultRevisionProvider.notifier).state++;
+    _bumpRevision();
   }
 
   @override

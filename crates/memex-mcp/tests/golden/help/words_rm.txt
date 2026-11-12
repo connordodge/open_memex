@@ -1,0 +1,8 @@
+Forget a learned word, in any capitalisation
+
+Usage: memex words rm --vault <VAULT> --word <WORD>
+
+Options:
+      --vault <VAULT>  Vault directory
+      --word <WORD>    Word (trimmed; no whitespace, at most 64 characters)
+  -h, --help           Print help

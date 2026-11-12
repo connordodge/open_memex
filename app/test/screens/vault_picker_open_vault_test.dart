@@ -626,8 +626,10 @@ void main() {
       final backups = glossary.indexOf('## Backups (#315)');
       expect(entryAt, greaterThan(at), reason: 'the entry is in the section');
       expect(backups, greaterThan(entryAt), reason: 'before Backups');
-      // Nothing but the entry between the section heading and Backups.
-      final between = glossary.substring(at + section.length, backups).trim();
+      // Nothing but the entry between the section heading and the next
+      // section (#391's Echoes sits between it and Backups, D25).
+      final next = glossary.indexOf('\n## ', at + section.length);
+      final between = glossary.substring(at + section.length, next).trim();
       expect(between, entry);
     },
   );

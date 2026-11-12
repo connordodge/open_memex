@@ -13,20 +13,26 @@ use memex_core::review as core_review;
 use memex_core::search::{self, SearchFilters, SearchMode, SearchOptions};
 use memex_core::tags as core_tags;
 use memex_core::{Caller, CanvasId, Clock, MemexError, SystemClock};
+use rmcp::handler::server::prompt::PromptContext;
 use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
-    GetPromptRequestParams, GetPromptResult, ListPromptsResult, PaginatedRequestParams,
+    CallToolRequestParams, CallToolResult, GetPromptRequestParams, GetPromptResult, Implementation,
+    InitializeRequestParams, InitializeResult, ListPromptsResult, ListToolsResult,
+    PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::RequestContext;
-use rmcp::{prompt_handler, tool, tool_handler, tool_router, RoleServer, ServerHandler};
+use rmcp::{tool, tool_router, ErrorData, RoleServer, ServerHandler};
 use rusqlite::params;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::activity_log;
 use crate::cli::Role;
 use crate::md_links;
+use crate::presence::{AgentSessions, RequestKind};
 use crate::server::request_clock::RequestClock;
 use crate::state::AppState;
 
@@ -35,6 +41,7 @@ pub mod daily;
 pub mod excerpts;
 pub mod feedback;
 pub mod folders;
+pub mod meta;
 pub mod review;
 pub mod settings;
 pub mod tags;
@@ -44,13 +51,28 @@ pub struct Memex {
     pub state: Arc<AppState>,
     tool_router: ToolRouter<Self>,
     prompt_router: PromptRouter<Self>,
+    /// The session seam every request is reported to (#445); `None` for
+    /// `Memex::new` alone, attached with `with_sessions`.
+    pub(crate) sessions: Option<Arc<dyn AgentSessions>>,
 }
 
 impl Memex {
     pub fn new(state: Arc<AppState>) -> Self {
+        let (tool_router, prompt_router) = Self::routers();
         Self {
             state,
-            tool_router: Self::tool_router()
+            tool_router,
+            prompt_router,
+            sessions: None,
+        }
+    }
+
+    /// The composed tool router (every area's `#[tool_router]`) and prompt
+    /// router: the one list of registrations that `Memex::new` serves and
+    /// `memex tools` reads (ruling D12).
+    pub fn routers() -> (ToolRouter<Self>, PromptRouter<Self>) {
+        (
+            Self::tool_router()
                 + Self::daily_router()
                 + Self::excerpts_router()
                 + Self::folders_router()
@@ -58,8 +80,8 @@ impl Memex {
                 + Self::settings_router()
                 + Self::feedback_router()
                 + Self::tags_router(),
-            prompt_router: Self::prompt_router(),
-        }
+            Self::prompt_router(),
+        )
     }
 }
 
@@ -381,7 +403,9 @@ impl Memex {
     /// Hybrid search (FTS + vector) over the user's notes. Returns ranked chunks.
     #[tool(description = "Search the user's notes by keyword or meaning. \
         Returns ranked chunks with snippets. Each result has a stable note_id \
-        and chunk_id so you can call get_note for full context.")]
+        and chunk_id so you can call get_note for full context. chunk_id is \
+        \"\" on a hit expanded from a daily note to a topic note that has no \
+        chunks of its own.")]
     pub async fn search(&self, params: Parameters<SearchParams>) -> String {
         let SearchParams { query, k, mode, tags, note_id } = params.0;
         let k = k.unwrap_or(10).clamp(1, 50);
@@ -900,10 +924,13 @@ impl Memex {
     }
 
     /// Place a note on a canvas (idempotent).
-    #[tool(description = "Place a note on a canvas at the given (x, y) coordinates. \
+    #[tool(
+        description = "Place a note on a canvas at the given (x, y) coordinates. \
         Idempotent on (canvas_id, note_id): if the note is already placed, returns \
         the existing placement and position is unchanged. Defaults to (0, 0) when \
-        x/y are omitted.")]
+        x/y are omitted. Returns the placement and added (false when it is the \
+        existing one)."
+    )]
     pub async fn add_to_canvas(&self, params: Parameters<AddToCanvasParams>) -> String {
         let AddToCanvasParams {
             canvas_id,
@@ -919,16 +946,24 @@ impl Memex {
             return err_from("add_to_canvas.invalid_note", &e);
         }
         let mut vault = self.state.vault.lock().await;
-        let node = match canvas::add_to_canvas(
+        let (node, added) = match canvas::add_to_canvas_added(
             &mut vault,
             &cid,
             &note_id,
             x.unwrap_or(0.0),
             y.unwrap_or(0.0),
+            &SystemClock,
         ) {
             Ok(n) => n,
             Err(e) => return err_from("add_to_canvas", &e),
         };
+        /// The placement and `added` (Spec #390 req 8).
+        #[derive(Serialize)]
+        struct Placed {
+            #[serde(flatten)]
+            env: AddToCanvasEnvelope,
+            added: bool,
+        }
         let env = AddToCanvasEnvelope {
             vault_id: vault.vault_id().to_string(),
             canvas_id: node.canvas_id.to_string(),
@@ -939,14 +974,15 @@ impl Memex {
             z_order: node.z_order,
             placed_at: node.placed_at,
         };
-        serde_json::to_string(&env)
+        serde_json::to_string(&Placed { env, added })
             .unwrap_or_else(|e| err_payload("add_to_canvas.serialize", &e.to_string()))
     }
 
     /// Remove a note's placement from a canvas. No-op if not placed.
     #[tool(description = "Remove a note's placement from a canvas. The note and \
         every wikilink in it are untouched — only the placement record is removed. \
-        Idempotent: calling on an unplaced note is a no-op.")]
+        Idempotent: calling on an unplaced note is a no-op. Returns vault_id, \
+        canvas_id, note_id and removed (false when the note wasn't placed).")]
     pub async fn remove_from_canvas(
         &self,
         params: Parameters<RemoveFromCanvasParams>,
@@ -957,22 +993,32 @@ impl Memex {
             Err(e) => return err_from("remove_from_canvas.invalid_canvas", &e),
         };
         let mut vault = self.state.vault.lock().await;
-        if let Err(e) = canvas::remove_from_canvas(&mut vault, &cid, &note_id) {
-            return err_from("remove_from_canvas", &e);
+        let removed =
+            match canvas::remove_from_canvas_removed(&mut vault, &cid, &note_id, &SystemClock) {
+                Ok(removed) => removed,
+                Err(e) => return err_from("remove_from_canvas", &e),
+            };
+        /// The envelope and `removed` (Spec #390 req 8).
+        #[derive(Serialize)]
+        struct Removed {
+            #[serde(flatten)]
+            env: RemoveFromCanvasEnvelope,
+            removed: bool,
         }
         let env = RemoveFromCanvasEnvelope {
             vault_id: vault.vault_id().to_string(),
             canvas_id,
             note_id,
         };
-        serde_json::to_string(&env)
+        serde_json::to_string(&Removed { env, removed })
             .unwrap_or_else(|e| err_payload("remove_from_canvas.serialize", &e.to_string()))
     }
 
     /// Move a placed node on the canvas.
     #[tool(description = "Move a placed node to new (x, y) coordinates on its \
         canvas. Optionally updates z_order. Errors if the note is not placed on \
-        this canvas.")]
+        this canvas. Returns the placement and changed (false when x, y and the \
+        given z_order equal the current ones).")]
     pub async fn move_node(&self, params: Parameters<MoveNodeParams>) -> String {
         let MoveNodeParams {
             canvas_id,
@@ -986,10 +1032,25 @@ impl Memex {
             Err(e) => return err_from("move_node.invalid_canvas", &e),
         };
         let mut vault = self.state.vault.lock().await;
-        let node = match canvas::move_node(&mut vault, &cid, &note_id, x, y, z_order) {
+        let (node, changed) = match canvas::move_node_changed(
+            &mut vault,
+            &cid,
+            &note_id,
+            x,
+            y,
+            z_order,
+            &SystemClock,
+        ) {
             Ok(n) => n,
             Err(e) => return err_from("move_node", &e),
         };
+        /// The placement and `changed` (Spec #390 req 8).
+        #[derive(Serialize)]
+        struct Moved {
+            #[serde(flatten)]
+            env: AddToCanvasEnvelope,
+            changed: bool,
+        }
         let env = AddToCanvasEnvelope {
             vault_id: vault.vault_id().to_string(),
             canvas_id: node.canvas_id.to_string(),
@@ -1000,7 +1061,7 @@ impl Memex {
             z_order: node.z_order,
             placed_at: node.placed_at,
         };
-        serde_json::to_string(&env)
+        serde_json::to_string(&Moved { env, changed })
             .unwrap_or_else(|e| err_payload("move_node.serialize", &e.to_string()))
     }
 
@@ -1026,10 +1087,13 @@ impl Memex {
     }
 
     /// Update the `kind` and/or `label` of an existing wikilink in place.
-    #[tool(description = "Edit a single wikilink's kind and/or label in place. Pass \
+    #[tool(
+        description = "Edit a single wikilink's kind and/or label in place. Pass \
         `clear_label=true` to remove the label. Frontmatter links accept label \
         changes only — changing the kind of a frontmatter-bound wikilink returns \
-        an error in v1.")]
+        an error in v1. Returns the link and changed (false when every given \
+        value equals the current one: nothing is written)."
+    )]
     pub async fn update_link(&self, params: Parameters<UpdateLinkParams>) -> String {
         let UpdateLinkParams {
             link_id,
@@ -1060,7 +1124,7 @@ impl Memex {
                 return err_from("update_link", &e);
             }
         }
-        let link = match core_links::update_link_as(
+        let (link, changed) = match core_links::update_link_changed(
             &mut vault,
             &link_id,
             core_links::UpdateLink {
@@ -1072,6 +1136,13 @@ impl Memex {
             Ok(l) => l,
             Err(e) => return err_from("update_link", &e),
         };
+        /// The link and `changed` (Spec #390 req 8).
+        #[derive(Serialize)]
+        struct Updated {
+            #[serde(flatten)]
+            env: UpdateLinkEnvelope,
+            changed: bool,
+        }
         let env = UpdateLinkEnvelope {
             vault_id: vault.vault_id().to_string(),
             link_id: link.id,
@@ -1082,16 +1153,131 @@ impl Memex {
             source: link.source.as_str().to_string(),
             position: link.position,
         };
-        serde_json::to_string(&env)
+        serde_json::to_string(&Updated { env, changed })
             .unwrap_or_else(|e| err_payload("update_link.serialize", &e.to_string()))
     }
 }
 
-// Tools and prompts (D18): `#[tool_handler]` sees the sibling
-// `#[prompt_handler]` and advertises both capabilities in `get_info`.
-#[tool_handler(router = self.tool_router)]
-#[prompt_handler(router = self.prompt_router)]
-impl ServerHandler for Memex {}
+impl Memex {
+    /// Tells the session seam, if any, about a request that is not a tool
+    /// call, before it runs.
+    fn report_other(&self, ctx: &RequestContext<RoleServer>) {
+        if let Some(sessions) = &self.sessions {
+            sessions.on_request(ctx, RequestKind::Other);
+        }
+    }
+}
+
+// Tools and prompts (D18), written out from what `#[tool_handler]` and
+// `#[prompt_handler]` generated, so each request is reported to the session
+// seam (#445) before it runs. `get_info`, `tools/list` and the prompts are
+// unchanged.
+impl ServerHandler for Memex {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_prompts()
+                .build(),
+        )
+        .with_server_info(Implementation::from_build_env())
+    }
+
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, ErrorData> {
+        self.report_other(&context);
+        if context.peer.peer_info().is_none() {
+            context.peer.set_peer_info(request);
+        }
+        Ok(self.get_info())
+    }
+
+    async fn ping(&self, context: RequestContext<RoleServer>) -> Result<(), ErrorData> {
+        self.report_other(&context);
+        Ok(())
+    }
+
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let session = self
+            .sessions
+            .as_ref()
+            .and_then(|s| s.on_request(&context, RequestKind::ToolCall));
+        // The activity log hook (#451): only a write with a session is logged.
+        let Some(session) = session.filter(|_| meta::is_write(&request.name)) else {
+            let tcc = ToolCallContext::new(self, request, context);
+            return self.tool_router.call(tcc).await;
+        };
+        let tool = request.name.to_string();
+        let params = activity_log::params_of(&request);
+        let clock = call_clock(&context);
+        let pre = {
+            let vault = self.state.vault.lock().await;
+            activity_log::pre_snapshot(vault.connection_ref(), &tool, &params)
+        };
+        let tcc = ToolCallContext::new(self, request, context);
+        let result = self.tool_router.call(tcc).await;
+        if let Ok(done) = &result {
+            let vault = self.state.vault.lock().await;
+            activity_log::record(
+                vault.connection_ref(),
+                &session,
+                &tool,
+                &params,
+                &pre,
+                done,
+                clock.now_ms(),
+            );
+        }
+        result
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, ErrorData> {
+        self.report_other(&context);
+        Ok(ListToolsResult {
+            tools: self.tool_router.list_all(),
+            meta: None,
+            next_cursor: None,
+        })
+    }
+
+    fn get_tool(&self, name: &str) -> Option<Tool> {
+        self.tool_router.get(name).cloned()
+    }
+
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, ErrorData> {
+        self.report_other(&context);
+        Ok(ListPromptsResult {
+            prompts: self.prompt_router.list_all(),
+            meta: None,
+            next_cursor: None,
+        })
+    }
+
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResult, ErrorData> {
+        self.report_other(&context);
+        let prompt_context = PromptContext::new(self, request.name, request.arguments, context);
+        self.prompt_router.get_prompt(prompt_context).await
+    }
+}
 
 fn group_links_by_kind(
     links: &[core_links::Link],
