@@ -47,3 +47,6 @@ app/macos/Frameworks/
 CLAUDE.md
 AGENTS.md
 ai_specs
+
+# Per-machine Claude Code settings
+.claude/settings.local.json
