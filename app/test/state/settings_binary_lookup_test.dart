@@ -39,10 +39,25 @@ Future<SettingsController> _load(
 void main() {
   group('binary lookup order', () {
     test(
-      'a picked path that exists wins over the Bundled memex and cargo',
+      'the Bundled memex wins over a picked path that exists',
       () async {
+        // A picked path outlives the binary it named, and the Bundled memex
+        // always matches the app's schema (v0.3.0: a stale picked memex
+        // refused every write on the migrated vault).
         final settings = await _load(
           {_picked, _bundled, _cargo},
+          prefs: {_kBinary: _picked},
+        );
+
+        expect(settings.state.memexBinaryPath, _bundled);
+      },
+    );
+
+    test(
+      'without a Bundled memex a picked path that exists wins over cargo',
+      () async {
+        final settings = await _load(
+          {_picked, _cargo},
           prefs: {_kBinary: _picked},
         );
 
@@ -67,10 +82,10 @@ void main() {
     });
 
     test('a dead picked path works again when the file comes back', () async {
-      await _load({_bundled}, prefs: {_kBinary: _picked});
+      await _load({_cargo}, prefs: {_kBinary: _picked});
 
-      // Same preferences, the picked file exists now.
-      final again = await _loadAgain({_picked, _bundled});
+      // Same preferences, the picked file exists now (no Bundled memex).
+      final again = await _loadAgain({_picked, _cargo});
 
       expect(again.state.memexBinaryPath, _picked);
     });
@@ -124,11 +139,12 @@ void main() {
     test(
       'setMemexBinary then a reload uses that path when it exists',
       () async {
-        final settings = await _load({_bundled, _picked});
+        // A build with no Bundled memex (a dev build).
+        final settings = await _load({_cargo, _picked});
         await settings.setMemexBinary(_picked);
         expect(settings.state.memexBinaryPath, _picked);
 
-        final again = await _loadAgain({_bundled, _picked});
+        final again = await _loadAgain({_cargo, _picked});
         expect(again.state.memexBinaryPath, _picked);
       },
     );
