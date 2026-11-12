@@ -1,0 +1,67 @@
+# Test workflow: the Rust and Flutter suites on every PR to main and every push to main.
+#
+# Public repos get Actions minutes free, macOS runners included. This runs the same
+# suites the local merge check runs, on the PR's merge commit. It reads no secrets and
+# has read-only contents permission. Formatting, clippy and analyze baselines stay in
+# the local merge check, which ratchets them.
+name: Test
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  rust:
+    name: Rust suite
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust 1.95.0
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+
+      - name: cargo test
+        run: cargo test --workspace --locked
+
+  flutter:
+    name: Flutter suite
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Flutter 3.47.5 stable
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: "3.47.5"
+          channel: stable
+
+      - name: Install app dependencies
+        working-directory: app
+        run: flutter pub get --enforce-lockfile
+
+      - name: flutter test
+        working-directory: app
+        run: flutter test
