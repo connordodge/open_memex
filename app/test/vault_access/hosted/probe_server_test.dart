@@ -55,7 +55,7 @@ void main() {
     final env = _probeEnv();
     final probe = await env.client().probeServer();
     expect(probe.kind, ServerProbeKind.connected);
-    expect(probe.serverVersion, '0.3.0');
+    expect(probe.serverVersion, '0.3.1');
     expect(env.status, HostedConnectionStatus.connected);
     final request = env.server.requests.single;
     expect(request.method, 'GET');

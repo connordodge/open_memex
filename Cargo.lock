@@ -1917,7 +1917,7 @@ checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
 name = "memex-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "fastembed",
@@ -1941,7 +1941,7 @@ dependencies = [
 
 [[package]]
 name = "memex-mcp"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "axum",
