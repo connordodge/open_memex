@@ -1655,7 +1655,7 @@ void main() {
     );
 
     test(
-      'signed mode signs notarizes and staples in order and writes SHA256SUMS last',
+      'signed mode signs the app then signs notarizes and staples only the DMG and writes SHA256SUMS last',
       () async {
         expect(r.exitCode, 0, reason: '$r');
         final why = _callList(calls);
@@ -1663,25 +1663,6 @@ void main() {
         _expectInsideOut(calls);
         final appSigned = signings.lastWhere((s) => s.kind == 'app').index;
 
-        final dittoAt = _indexWhere(
-          calls,
-          (c) =>
-              c.tool == 'ditto' &&
-              c.args.contains('-c') &&
-              c.args.contains('-k') &&
-              c.args.contains('--keepParent') &&
-              c.args.any((a) => _kind(a) == 'app'),
-        );
-        expect(dittoAt, greaterThan(appSigned), reason: why);
-        final appZip = calls[dittoAt].args.last;
-        final submitApp = _indexWhere(
-          calls,
-          (c) => _isSubmit(c) && _submitPath(c) == appZip,
-        );
-        final stapleApp = _indexWhere(
-          calls,
-          (c) => _isStaple(c) && _kind(c.args.last) == 'app',
-        );
         final create = _indexWhere(calls, _isHdiCreate);
         final signDmg = _indexWhere(
           calls,
@@ -1695,20 +1676,7 @@ void main() {
           calls,
           (c) => _isStaple(c) && c.args.last.endsWith(_dmgName),
         );
-        final submitZip = _indexWhere(
-          calls,
-          (c) => _isSubmit(c) && (_submitPath(c) ?? '').endsWith(_zipName),
-        );
-        final order = [
-          dittoAt,
-          submitApp,
-          stapleApp,
-          create,
-          signDmg,
-          submitDmg,
-          stapleDmg,
-          submitZip,
-        ];
+        final order = [appSigned, create, signDmg, submitDmg, stapleDmg];
         for (var i = 1; i < order.length; i++) {
           expect(
             order[i],
@@ -1716,6 +1684,14 @@ void main() {
             reason: 'order $order\n$why',
           );
         }
+        // One notarization: the DMG. Apple notarizes the app and memex inside
+        // it by code signature, so neither the app nor the zip is submitted.
+        expect(calls.where(_isSubmit), hasLength(1), reason: why);
+        expect(
+          calls.where((c) => _isStaple(c) && _kind(c.args.last) == 'app'),
+          isEmpty,
+          reason: why,
+        );
         // A bare binary cannot be stapled: nothing staples the zip or memex.
         expect(
           calls.where(
@@ -1745,15 +1721,9 @@ void main() {
     );
 
     test(
-      'signed mode ships the app with the files it had when it was signed and stapled',
+      'signed mode ships the app with the files it had when it was signed',
       () async {
         expect(r.exitCode, 0, reason: '$r');
-        // Stapling adds a ticket to the bundle but does not break its seal.
-        final vol = await _openDmg(fx, '${fx.out}/$_dmgName');
-        expect(
-          File('$vol/$_appName/Contents/CodeResources').readAsStringSync(),
-          contains(_stapleMarker),
-        );
         await _expectAppSealed(fx);
       },
     );
@@ -1801,7 +1771,8 @@ void main() {
     test('signed mode notarizes with the API key from the environment', () {
       expect(r.exitCode, 0, reason: '$r');
       final submits = calls.where(_isSubmit).toList();
-      expect(submits, hasLength(3), reason: _callList(calls));
+      expect(submits, hasLength(1), reason: _callList(calls));
+      expect(_submitPath(submits.single), endsWith(_dmgName));
       for (final c in submits) {
         expect(c.args, contains('--wait'), reason: '$c');
         expect(_optValue(c, '--key'), fx.p8, reason: '$c');
@@ -1811,7 +1782,7 @@ void main() {
     });
 
     test(
-      'signed mode staples the app before building the DMG and sums the stapled DMG',
+      'signed mode staples only the DMG and sums the stapled DMG',
       () async {
         expect(r.exitCode, 0, reason: '$r');
         final dmg = '${fx.out}/$_dmgName';
@@ -1819,11 +1790,11 @@ void main() {
         final vol = await _openDmg(fx, dmg);
         final ticket = File('$vol/$_appName/Contents/CodeResources');
         expect(
-          ticket.existsSync(),
-          isTrue,
-          reason: 'the DMG app is not stapled',
+          ticket.existsSync() &&
+              ticket.readAsStringSync().contains(_stapleMarker),
+          isFalse,
+          reason: 'the app inside the DMG is stapled, but only the DMG is notarized',
         );
-        expect(ticket.readAsStringSync(), contains(_stapleMarker));
         final zip = '${fx.out}/$_zipName';
         final entries = await _zipEntries(zip);
         final memex = entries.firstWhere((e) => e.split('/').last == 'memex');
@@ -1838,8 +1809,8 @@ void main() {
   group('notarization failures', () {
     // (test name, the fake submit exit status for an Invalid result)
     final cases = <(String, String)>[
-      ('a failing notarytool fails step 6 and prints its log', '1'),
-      ('a rejected notarization that exits 0 still fails step 6', '0'),
+      ('a failing notarytool fails step 7 and prints its log', '1'),
+      ('a rejected notarization that exits 0 still fails step 7', '0'),
     ];
     for (final (name, exit) in cases) {
       test(name, () async {
@@ -1855,7 +1826,7 @@ void main() {
         );
         final calls = _calls(fx);
         expect(r.exitCode, 1, reason: '$r');
-        expect(_failed(r), [6], reason: '$r');
+        expect(_failed(r), [7], reason: '$r');
         expect(r.output, contains(_notaryLogMarker), reason: '$r');
         expect(
           calls.where(
@@ -1867,8 +1838,12 @@ void main() {
           isNotEmpty,
           reason: _callList(calls),
         );
-        expect(_steps(r), isNot(contains(7)), reason: '$r');
-        expect(calls.where(_isHdiCreate), isEmpty, reason: _callList(calls));
+        expect(_steps(r), isNot(contains(8)), reason: '$r');
+        expect(
+          calls.where((c) => c.tool == 'ditto' && c.args.contains('-c')),
+          isEmpty,
+          reason: 'no zip after a failed notarization\n${_callList(calls)}',
+        );
         expect(File('${fx.out}/$_sums').existsSync(), isFalse);
       });
     }
@@ -2138,9 +2113,9 @@ void main() {
         'codesign',
       ),
       (
-        'a failing hdiutil fails step 7 and makes no zip',
+        'a failing hdiutil fails step 6 and makes no zip',
         {'FAKE_HDIUTIL_FAIL': '1'},
-        7,
+        6,
         'ditto-zip',
       ),
     ];
@@ -2187,10 +2162,9 @@ void main() {
       expect(Directory(fx.out).listSync(), isEmpty);
     });
 
-    // The Nth notarization submit is rejected: 2 is the DMG, 3 the zip.
+    // The Nth notarization submit is rejected: there is one, the DMG.
     final notaryCases = <(String, String, int)>[
-      ('a rejected DMG notarization fails step 7 and writes nothing', '2', 7),
-      ('a rejected zip notarization fails step 8 and writes nothing', '3', 8),
+      ('a rejected DMG notarization fails step 7 and writes nothing', '1', 7),
     ];
     for (final (name, at, step) in notaryCases) {
       test(name, () async {
@@ -2340,25 +2314,18 @@ void main() {
         0,
       ),
       (
-        'a failing stapler for the app fails step 6 and builds no DMG',
-        {'FAKE_STAPLER_FAIL': '1'},
-        6,
-        1,
-        1,
-      ),
-      (
-        'a failing codesign of the DMG fails step 7 and notarizes no DMG',
+        'a failing codesign of the DMG fails step 6 and notarizes nothing',
         {'FAKE_CODESIGN_SIGN_FAIL': '.dmg'},
-        7,
-        1,
-        1,
+        6,
+        0,
+        0,
       ),
       (
         'a failing stapler for the DMG fails step 7 and makes no zip',
-        {'FAKE_STAPLER_FAIL': '2'},
+        {'FAKE_STAPLER_FAIL': '1'},
         7,
-        2,
-        2,
+        1,
+        1,
       ),
     ];
     for (final (name, env, step, submits, staples) in cases) {
@@ -2386,7 +2353,7 @@ void main() {
           expect(kinds.last, 'app', reason: why);
           expect(calls.where(_isVerify), isEmpty, reason: why);
         }
-        if (step < 7) {
+        if (step < 6) {
           expect(calls.where(_isHdiCreate), isEmpty, reason: why);
         } else {
           expect(calls.where(_isHdiCreate), isNotEmpty, reason: why);
