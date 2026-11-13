@@ -69,3 +69,33 @@ String appendToPerson(String person, String text) {
   }
   return '$padded$text\n';
 }
+
+/// The outcome of [mergeNonDaily].
+sealed class NonDailyMergeResult {
+  const NonDailyMergeResult();
+}
+
+/// The person's and the server's changes touch different lines: [text] is
+/// the merged body, holding both, with the server's footer.
+final class NonDailyMerged extends NonDailyMergeResult {
+  const NonDailyMerged(this.text);
+
+  final String text;
+}
+
+/// A line was changed on both sides (or both sides inserted different text
+/// into the same gap of the base): nothing merges.
+final class NonDailyOverlap extends NonDailyMergeResult {
+  const NonDailyOverlap();
+}
+
+/// Three-way line merge of a non-daily note's person section after a save
+/// conflict (Spec #7 Req 34a, D20). [base] is the body at the editor's base
+/// version, [local] the editor's body and [server] the refetched body. Only
+/// the person section ([splitNoteBody]) merges; the footer always comes from
+/// [server].
+NonDailyMergeResult mergeNonDaily({
+  required String base,
+  required String local,
+  required String server,
+}) => const NonDailyMerged('');
