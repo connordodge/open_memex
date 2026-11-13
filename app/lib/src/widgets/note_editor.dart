@@ -356,6 +356,20 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
     });
   }
 
+  /// In Source, the field follows text the editor took from elsewhere while
+  /// it showed [prev]'s (a merged save, a server change, Spec #7 Req 34a),
+  /// with the selection kept on its line, so the next keystroke builds on
+  /// it. Typing in the field already matches [next].
+  void _followSource(EditorStateValue? prev, EditorStateValue next) {
+    if (!_sourceMode || prev == null) return;
+    final shown = _bodyCtrl.text;
+    if (next.contentMd == shown || prev.contentMd != shown) return;
+    _bodyCtrl.value = TextEditingValue(
+      text: next.contentMd,
+      selection: carrySelection(_bodyCtrl.selection, shown, next.contentMd),
+    );
+  }
+
   /// Switches the body between the segmented view and Source. Source starts
   /// from the editor's current markdown; coming back re-splits it.
   void _toggleSource() {
@@ -379,6 +393,7 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
     final vaultPath = ref.watch(currentVaultProvider).localPath;
 
     if (ref.exists(tabsProvider)) ref.listen<TabsState>(tabsProvider, _onTabs);
+    ref.listen<EditorStateValue>(editorControllerProvider, _followSource);
     ref.listen<AsyncValue<VaultScoped<Note?>>>(
       editorNoteAsyncProvider,
       (_, curr) => _hydrate(

@@ -890,12 +890,17 @@ void main() {
         final w = await _wired();
         w.open(_otherId);
         w.open(_planId);
-        _foreignBump(w, _planId, 4);
+        // TEST-CHANGE (#16, Req 34a): the server changed the line the person
+        // edits (an overlap), so the conflict is held, not merged.
+        w.db.db.execute(
+          'UPDATE notes SET content_md = ?, version = 4 WHERE id = ?',
+          ['their text', _planId],
+        );
 
         await _typeAndLeave(w, 'my edit');
 
         expect(w.updates, hasLength(1));
-        expect(w.db.getNote(_planId)!.contentMd, 'old');
+        expect(w.db.getNote(_planId)!.contentMd, 'their text');
         expect(
           w.c.read(editorControllerProvider).contentMd,
           'other body',

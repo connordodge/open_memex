@@ -54,17 +54,27 @@ class _DeferredSave {
     required this.rawTitle,
     required this.title,
     required this.baseVersion,
+    required this.baseText,
+    required this.baseTitle,
   });
 
   final VaultAccess access;
   final int loadSeq;
-  final String text;
+
+  /// Moves onto the merged body when the earlier save merged (Req 34a).
+  String text;
   final String rawTitle;
   final String? title;
 
   /// Moves onto the version the earlier save stored when it landed on this
-  /// base without a merge.
+  /// base (after a daily merge it stays).
   int baseVersion;
+
+  /// The note's body at [baseVersion] (null when not known): moves with it.
+  String? baseText;
+
+  /// The note's title at [baseVersion] (null when not known): moves with it.
+  String? baseTitle;
 }
 
 /// The save debounce: a save runs this long after the last edit (D14: on
@@ -74,6 +84,10 @@ const saveDebounce = Duration(milliseconds: 500);
 /// The inline error after a save and its merged retry both hit a
 /// `version_conflict` (Req 60); the next debounce tick merges again.
 const couldNotSaveMessage = "Couldn't save";
+
+/// A non-daily conflict whose changes meet on a line (Req 34a): the
+/// conflict state's message.
+const _overlapMessage = 'update failed: version conflict';
 
 /// Editor controller — owns the debounced save state for the open note.
 /// Every read and write goes through `vaultAccessProvider` (D13); a read
@@ -85,6 +99,16 @@ const couldNotSaveMessage = "Couldn't save";
 /// and retries once with the refetched version. When the retry conflicts
 /// too, the local text stays, the error reads [couldNotSaveMessage] and the
 /// next debounce tick (re-armed here) merges and saves again.
+///
+/// Any other note's save (not the Vault Guide) that hits a
+/// `version_conflict` refetches the note and merges with [mergeNonDaily]
+/// (Spec #7 Req 34a, D20): the base text (the body at the version the save
+/// was based on), the local text and the server's. Changes on different
+/// lines save merged once, on the refetched version, as the daily merge
+/// does (a merged save that conflicts too merges again on the next tick);
+/// a line changed on both sides saves nothing and shows the conflict. A
+/// conflict whose server body already equals the local text (and title)
+/// counts as saved, on the server's version.
 ///
 /// For the virtual Today note (a [VirtualTodayTab], #22) the first edit
 /// creates the daily note through [createDailyNote] instead of saving:
@@ -189,13 +213,47 @@ class EditorController extends StateNotifier<EditorStateValue> {
   /// the note shows (the failed text and title on its base version, with
   /// the failure's status and message), and the failed save's send number.
   /// An entry goes once a later save of the note succeeds.
-  final Map<(VaultRef?, String), ({EditorStateValue shown, int sendSeq})>
+  final Map<
+    (VaultRef?, String),
+    ({EditorStateValue shown, int sendSeq, String? baseText})
+  >
   _heldLocal = {};
 
-  /// Set (to the base version) after a daily note's save and its merged
-  /// retry both conflicted, or text was typed during a merged save: the next
-  /// save goes straight to the merge. Null when the next save is plain.
+  /// Set (to the base version) after a save and its merged retry both
+  /// conflicted, or text was typed during a merged save: the next save goes
+  /// straight to the merge. Null when the next save is plain.
   int? _mergeBase;
+
+  /// The open note's body at a version: set with the editor's base version
+  /// (`lastSavedVersion`) by every load, rebase and saved or merged save. A
+  /// non-daily save's conflict merges against it (Spec #7 Req 34a, D20).
+  /// Its title, when known, decides whether a merged save may send the
+  /// editor's title ([_nonDailyMerge]).
+  ({String noteId, int version, String text, String? title})? _base;
+
+  /// Records [text] (and [title], null when not known) as note [id]'s body
+  /// at [version] (see [_base]); clears it when the version or text is null.
+  void _setBase(String id, int? version, String? text, [String? title]) {
+    _base = version == null || text == null
+        ? null
+        : (noteId: id, version: version, text: text, title: title);
+  }
+
+  /// Note [id]'s title at [version] when [_base] holds it, otherwise null.
+  String? _baseTitleOf(String id, int version) {
+    final base = _base;
+    return base != null && base.noteId == id && base.version == version
+        ? base.title
+        : null;
+  }
+
+  /// Note [id]'s body at [version] when [_base] holds it, otherwise null.
+  String? _baseTextOf(String id, int version) {
+    final base = _base;
+    return base != null && base.noteId == id && base.version == version
+        ? base.text
+        : null;
+  }
 
   /// The date of the open virtual Today note; null when a real note (or
   /// none) is open.
@@ -214,12 +272,18 @@ class EditorController extends StateNotifier<EditorStateValue> {
     return true;
   }
 
+  /// The open note's text was put on a version it was not read at (a
+  /// rebase whose read missed that version): a save's conflict on it has no
+  /// base to merge against (Req 34a) and shows the conflict state.
+  void forgetMergeBase() => _base = null;
+
   void loadNote(Note? note) {
     final previous = _activeNoteId;
     final pending = _debounce?.isActive == true || _heldSaveDue;
     _cancelDebounce();
     _loadSeq++;
     _mergeBase = null;
+    _base = null;
     _resolvedNoteId = null;
     final leaving = _virtualDate;
     _virtualDate = null;
@@ -272,6 +336,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
       final held = _heldLocal[heldKey];
       if (held != null) {
         state = held.shown;
+        _setBase(note.id, held.shown.lastSavedVersion, held.baseText);
         return;
       }
     }
@@ -281,6 +346,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
       status: SaveStatus.clean,
       lastSavedVersion: note.version,
     );
+    _setBase(note.id, note.version, note.contentMd, note.title);
   }
 
   void onTitleChanged(String value) {
@@ -345,6 +411,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
         contentMd: note.contentMd,
         lastSavedVersion: note.version,
       );
+      _setBase(noteId, note.version, note.contentMd, note.title);
     }
     return true;
   }
@@ -562,6 +629,8 @@ class EditorController extends StateNotifier<EditorStateValue> {
         rawTitle: rawTitle,
         title: title,
         baseVersion: version,
+        baseText: _baseTextOf(id, version),
+        baseTitle: _baseTitleOf(id, version),
       );
       return;
     }
@@ -574,15 +643,21 @@ class EditorController extends StateNotifier<EditorStateValue> {
       rawTitle: rawTitle,
       title: title,
       version: version,
+      baseText: _baseTextOf(id, version),
+      baseTitle: _baseTitleOf(id, version),
       merging: _mergeBase != null,
     );
   }
 
   /// Sends [local] (titled [rawTitle], sending [title]) as note [id]'s
-  /// save in [vault] on [version] through [access], typed in editor load
-  /// [seq]; [merging] goes straight to the daily merge. The outcome reaches
-  /// the editor only while it shows note [id]. A daily note's
-  /// `version_conflict` merges after the note was left too. On a hosted
+  /// save in [vault] on [version] (whose body is [baseText], null when not
+  /// known) through [access], typed in editor load [seq]; [merging] goes
+  /// straight to the merge. The outcome reaches the editor only while it
+  /// shows note [id]. A `version_conflict` merges (a daily note's through
+  /// [_mergeAndSave], any other but the Vault Guide's through
+  /// [mergeNonDaily] against [baseText]) after the note was left too; a
+  /// non-daily one whose server body (and title) is [local] counts as
+  /// saved. On a hosted
   /// vault any other `version_conflict` of a save the editor no longer
   /// shows in load [seq] is queued as a held conflict ([_queueFailedSave]);
   /// on a local vault any failure of such a save is held for the note
@@ -596,6 +671,8 @@ class EditorController extends StateNotifier<EditorStateValue> {
     required String rawTitle,
     required String? title,
     required int version,
+    required String? baseText,
+    required String? baseTitle,
     required bool merging,
   }) async {
     final hosted = vault is HostedVaultRef ? vault : null;
@@ -618,14 +695,68 @@ class EditorController extends StateNotifier<EditorStateValue> {
           );
           saved = (result: result, body: local);
         } on MemexException catch (e) {
-          // Only a daily note merges (Req 60), also after it was left;
-          // other conflicts surface.
+          // A conflict merges (Req 60, Req 34a), also after the note was
+          // left; other failures surface.
           if (e.kind != MemexErrorKind.versionConflict) rethrow;
           // The conflict refetch: the stored note's role decides, and it is
           // the merge's server side.
-          refetched = await access.notes.getNote(id);
-          if (refetched?.role != 'daily') rethrow;
-          merging = true;
+          final server = refetched = await access.notes.getNote(id);
+          // The Vault Guide never merges: its conflicts surface as before.
+          if (server == null || server.role == 'guide') rethrow;
+          if (server.role == 'daily') {
+            merging = true;
+          } else if (server.contentMd == local &&
+              (title == null || server.title == title)) {
+            // The server already holds this text: saved, on its version,
+            // with no merge.
+            saved = (
+              result: NoteUpdateResult(
+                noteId: id,
+                version: server.version,
+                updatedAt: server.updatedAt,
+              ),
+              body: local,
+            );
+          } else {
+            final body = _nonDailyMerge(
+              server,
+              baseText,
+              local,
+              title,
+              baseTitle,
+            );
+            // A line changed on both sides: the conflict stands.
+            if (body == null) rethrow;
+            merging = true;
+            saved = await _saveMerged(access, server, title, body);
+          }
+        }
+      } else {
+        // Straight to the merge: a merged save conflicted, or text was
+        // typed during one.
+        final server = refetched = await access.notes.getNote(id);
+        if (server == null) {
+          throw MemexException('update failed: note $id not found');
+        }
+        if (server.role != 'daily') {
+          final body = _nonDailyMerge(
+            server,
+            baseText,
+            local,
+            title,
+            baseTitle,
+          );
+          if (body == null) {
+            // Nothing merges: a plain conflict, which the next tick does
+            // not retry.
+            merging = false;
+            throw MemexException(
+              _overlapMessage,
+              kind: MemexErrorKind.versionConflict,
+              code: 'version_conflict',
+            );
+          }
+          saved = await _saveMerged(access, server, title, body);
         }
       }
       saved ??= await _mergeAndSave(
@@ -636,9 +767,29 @@ class EditorController extends StateNotifier<EditorStateValue> {
         title: title,
         server: refetched,
       );
+      final mergedNonDaily = merging && refetched?.role != 'daily';
+      // The title the save left on the server (null when not known).
+      final storedTitle = title ?? (merging ? refetched?.title : baseTitle);
       final deferred = _deferredSaves[(vault, id)];
-      if (deferred != null && !merging && deferred.baseVersion == version) {
-        deferred.baseVersion = saved.result.version;
+      if (deferred != null && deferred.baseVersion == version) {
+        // A non-daily merge stored the merged body: the held-back text
+        // moves onto it, unless it changed a line the merge touched (its
+        // send then meets the conflict).
+        final moved = mergedNonDaily
+            ? _carryTyped(local, deferred.text, saved.body)
+            : null;
+        if (!merging) {
+          deferred
+            ..baseVersion = saved.result.version
+            ..baseText = local
+            ..baseTitle = storedTitle;
+        } else if (moved != null) {
+          deferred
+            ..text = moved
+            ..baseVersion = saved.result.version
+            ..baseText = saved.body
+            ..baseTitle = storedTitle;
+        }
       }
       // An older failed save of the note held its text: this later one
       // saved newer text.
@@ -669,11 +820,34 @@ class EditorController extends StateNotifier<EditorStateValue> {
           errorMessage: later.heldMessage,
           clearError: later.heldMessage == null,
         );
-      } else if (merging && state.contentMd != local) {
-        // Typed during the merged save: the new text lacks the merged
+        _setBase(id, later.save.baseVersion, later.baseText);
+      } else if (merging && state.contentMd != local && !mergedNonDaily) {
+        // Typed during the daily merged save: the new text lacks the merged
         // blocks, so the next save merges again from the same base.
         _mergeBase = version;
         state = state.copyWith(status: SaveStatus.dirty);
+      } else if (merging && state.contentMd != local) {
+        // Typed during the non-daily merged save: the new text moves onto
+        // the merged body (its base is the text this save sent) and saves
+        // next, on the merged version. Merging it again against the old
+        // base would meet the person's own saved change as an overlap.
+        final moved = _carryTyped(local, state.contentMd, saved.body);
+        if (moved == null) {
+          // The typing changed a line the server's changes touch: the
+          // conflict stands, on the old base.
+          state = state.copyWith(
+            status: SaveStatus.conflict,
+            errorMessage: _overlapMessage,
+          );
+        } else {
+          state = state.copyWith(
+            contentMd: moved,
+            status: SaveStatus.dirty,
+            lastSavedVersion: saved.result.version,
+          );
+          _setBase(id, saved.result.version, saved.body, storedTitle);
+          if (_debounce?.isActive != true) _scheduleSave();
+        }
       } else if (merging ||
           (state.contentMd == local && state.title == rawTitle)) {
         state = state.copyWith(
@@ -682,6 +856,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
           lastSavedVersion: saved.result.version,
           clearError: true,
         );
+        _setBase(id, saved.result.version, saved.body, storedTitle);
       } else if (_loadSeq != seq &&
           state.status == SaveStatus.clean &&
           state.lastSavedVersion == version) {
@@ -693,16 +868,19 @@ class EditorController extends StateNotifier<EditorStateValue> {
           lastSavedVersion: saved.result.version,
           clearError: true,
         );
+        _setBase(id, saved.result.version, local, storedTitle);
       } else if (state.status != SaveStatus.saving) {
         // Edited while this save was in flight (also after opening the
         // note again): the newer text stays unsaved, on the version this
         // save stored when it was based on the same one, and saves next.
+        final rebased = state.lastSavedVersion == version;
         state = state.copyWith(
           status: SaveStatus.dirty,
-          lastSavedVersion: state.lastSavedVersion == version
-              ? saved.result.version
-              : null,
+          lastSavedVersion: rebased ? saved.result.version : null,
         );
+        if (rebased) {
+          _setBase(id, saved.result.version, local, storedTitle);
+        }
         if (_debounce?.isActive != true) _scheduleSave();
       }
       _bumpRevision();
@@ -718,6 +896,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
           version,
           sendSeq,
           e,
+          baseText: baseText,
         );
       }
       final conflict = e.kind == MemexErrorKind.versionConflict;
@@ -737,6 +916,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
           sendSeq,
           e,
           held: true,
+          baseText: baseText,
         );
       }
       if (hosted == null && !_showsLoad(id, seq)) {
@@ -747,6 +927,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
           text: local,
           rawTitle: rawTitle,
           baseVersion: version,
+          baseText: baseText,
           status: conflict ? SaveStatus.conflict : SaveStatus.error,
           message: merging && conflict ? couldNotSaveMessage : e.message,
         );
@@ -754,7 +935,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
       if (_activeNoteId != id) return;
       if (merging && conflict) {
         // The merged retry conflicted too: keep the local text and merge
-        // again on the next debounce tick.
+        // again (from the same base) on the next debounce tick.
         _mergeBase = version;
         state = state.copyWith(
           status: SaveStatus.conflict,
@@ -779,6 +960,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
           version,
           sendSeq,
           e,
+          baseText: baseText,
         );
       }
       if (hosted == null && !_showsLoad(id, seq)) {
@@ -789,6 +971,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
           text: local,
           rawTitle: rawTitle,
           baseVersion: version,
+          baseText: baseText,
           status: SaveStatus.error,
           message: e.toString(),
         );
@@ -808,8 +991,10 @@ class EditorController extends StateNotifier<EditorStateValue> {
       _activeNoteId == id && _virtualDate == null && _loadSeq == seq;
 
   /// A local save of note [id] in [vault] (send [sendSeq]) failed after the
-  /// person left the note or opened it again: hold [text] (titled [rawTitle], on [baseVersion]) with the failure's
-  /// [status] and [message], so opening the note shows them ([loadNote]).
+  /// person left the note or opened it again: hold [text] (titled
+  /// [rawTitle], on [baseVersion], whose body is [baseText]) with the
+  /// failure's [status] and [message], so opening the note shows them
+  /// ([loadNote]).
   /// A save superseded by a later write of the note (sent, or waiting in
   /// [_deferredSaves]) holds nothing: that write's text is newer and its
   /// outcome decides. When the note was opened again and not edited since,
@@ -821,6 +1006,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
     required String text,
     required String rawTitle,
     required int baseVersion,
+    required String? baseText,
     required SaveStatus status,
     required String message,
   }) {
@@ -834,7 +1020,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
       errorMessage: message,
       lastSavedVersion: baseVersion,
     );
-    _heldLocal[key] = (shown: shown, sendSeq: sendSeq);
+    _heldLocal[key] = (shown: shown, sendSeq: sendSeq, baseText: baseText);
     if (_activeNoteId == id &&
         _virtualDate == null &&
         _ref.read(currentVaultProvider) == vault &&
@@ -842,6 +1028,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
         state.lastSavedVersion == baseVersion) {
       _mergeBase = null;
       state = shown;
+      _setBase(id, baseVersion, baseText);
     }
   }
 
@@ -857,7 +1044,8 @@ class EditorController extends StateNotifier<EditorStateValue> {
   /// connected again the queued save retries now. With [held] (a
   /// `version_conflict` after the note was left) the entry is held with
   /// [error]'s conflict instead (see [QueuedSave.heldStatus]): it retries on
-  /// the next edit of the note, not on its own.
+  /// the next edit of the note, not on its own. [baseText] is the note's
+  /// body at [baseVersion] (see [QueuedSave.baseText]).
   void _queueFailedSave(
     HostedVaultRef vault,
     String id,
@@ -869,6 +1057,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
     int sendSeq,
     Object error, {
     bool held = false,
+    required String? baseText,
   }) {
     // A later write of this note was sent after this one: its text is
     // newer, and its outcome decides (saved, or queued itself). This older
@@ -891,6 +1080,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
           : sendTitle,
       text: open ? state.contentMd : local,
       baseVersion: baseVersion,
+      baseText: baseText,
       now: _ref.read(clockProvider).now(),
       serverName: _serverNameOf(error, vault),
     );
@@ -913,7 +1103,9 @@ class EditorController extends StateNotifier<EditorStateValue> {
   /// latest text on its base version). Success removes it from the queue,
   /// bumps the vault revision and, when the note is open, sets the editor's
   /// saved version. A `version_conflict` whose server body equals the text
-  /// counts as saved (L17); a daily note merges (Req 60); any other conflict
+  /// counts as saved (L17); a daily note merges (Req 60); any other note but
+  /// the Vault Guide merges against the queued base text when its changes
+  /// and the server's are on different lines (Req 34a); any other conflict
   /// or error holds the save and, when open, shows today's conflict or
   /// error state. Couldn't-reach keeps it queued for the next recovery.
   Future<void> _retry(
@@ -936,6 +1128,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
     }
     try {
       var merged = false;
+      var mergedNonDaily = false;
       var body = sent;
       int version;
       try {
@@ -965,32 +1158,89 @@ class EditorController extends StateNotifier<EditorStateValue> {
           body = saved.body;
           merged = true;
         } else {
-          rethrow;
+          final text = server == null
+              ? null
+              : _nonDailyMerge(
+                  server,
+                  queued.baseText,
+                  sent,
+                  queued.sendTitle,
+                  null,
+                );
+          // A line changed on both sides (or the Vault Guide): the
+          // conflict is held.
+          if (server == null || text == null) rethrow;
+          final saved = await _saveMerged(
+            access,
+            server,
+            queued.sendTitle,
+            text,
+          );
+          version = saved.result.version;
+          body = saved.body;
+          merged = true;
+          mergedNonDaily = true;
         }
       }
       final latest = _queue.entryFor(vault, id);
-      final typed = latest != null && latest.save.text != sent;
+      var typed = latest != null && latest.save.text != sent;
+      // After a non-daily merge the newest text (the open editor's, which
+      // may be newer than the queue's) moves onto the merged body; null
+      // when it changed a line the merge touched.
+      String? moved;
+      var overlap = false;
+      if (mergedNonDaily) {
+        final now = isOpen() ? state.contentMd : latest?.save.text;
+        if (now != null && now != sent) {
+          typed = true;
+          moved = _carryTyped(sent, now, body);
+          overlap = moved == null;
+        }
+      }
       if (!typed) {
         _queue.remove(vault, id);
       } else if (!merged) {
         // Typed during the retry: the newer text stays queued on the
-        // version just saved. (After a merge it stays on the old base, so
-        // its save merges again.)
-        _queue.rebase(vault, id, version);
+        // version just saved.
+        _queue.rebase(vault, id, version, baseText: sent);
+      } else if (moved != null) {
+        _queue
+          ..updateText(vault, id, moved)
+          ..rebase(vault, id, version, baseText: body);
+      } else if (overlap) {
+        // The conflict is held, on the old base.
+        _queue.hold(vault, id, SaveStatus.conflict, _overlapMessage);
       }
+      // (After a daily merge the newer text stays on the old base, so its
+      // save merges again.)
       if (isOpen()) {
-        if (!typed) {
+        if (moved != null) {
+          state = state.copyWith(
+            contentMd: moved,
+            status: SaveStatus.dirty,
+            lastSavedVersion: version,
+          );
+          _setBase(id, version, body, queued.sendTitle);
+          if (_debounce?.isActive != true) _scheduleSave();
+        } else if (overlap) {
+          state = state.copyWith(
+            status: SaveStatus.conflict,
+            errorMessage: _overlapMessage,
+          );
+        } else if (!typed) {
           state = state.copyWith(
             contentMd: merged ? body : null,
             status: SaveStatus.clean,
             lastSavedVersion: version,
             clearError: true,
           );
+          _setBase(id, version, body, queued.sendTitle);
         } else {
           state = state.copyWith(
             status: SaveStatus.dirty,
             lastSavedVersion: merged ? null : version,
           );
+          if (!merged) _setBase(id, version, sent, queued.sendTitle);
           if (_debounce?.isActive != true) _scheduleSave();
         }
       }
@@ -1137,6 +1387,8 @@ class EditorController extends StateNotifier<EditorStateValue> {
         rawTitle: d.rawTitle,
         title: d.title,
         version: d.baseVersion,
+        baseText: d.baseText,
+        baseTitle: d.baseTitle,
         merging: false,
       ),
     );
@@ -1178,6 +1430,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
       errorMessage: queued.heldMessage,
       lastSavedVersion: queued.save.baseVersion,
     );
+    _setBase(queued.save.noteId, queued.save.baseVersion, queued.baseText);
   }
 
   PendingSaveQueue get _queue => _ref.read(pendingSaveQueueProvider.notifier);
@@ -1232,7 +1485,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
     }
     final later = (_queuedBy[(vault, id)] ?? 0) > sendSeq;
     if (later && !merged && entry.save.baseVersion == baseVersion) {
-      _queue.rebase(vault, id, savedVersion);
+      _queue.rebase(vault, id, savedVersion, baseText: sent);
     }
     return true;
   }
@@ -1264,6 +1517,64 @@ class EditorController extends StateNotifier<EditorStateValue> {
       error is VaultUnreachableException
       ? error.serverName
       : _ref.read(hostedServerNameProvider(vault.serverId));
+
+  /// Spec #7 Req 34a: the body that saves non-daily note [server]'s
+  /// conflicted [local] text, merged with [mergeNonDaily] against
+  /// [baseText] (the body [local] was based on). Null when nothing merges:
+  /// a line changed on both sides, the base text is not known, [server]
+  /// is the Vault Guide (never merged), or the save's [title] (null: not
+  /// sent) differs from the server's while the server's differs from
+  /// [baseTitle] (the title at the base version, null when not known).
+  String? _nonDailyMerge(
+    Note server,
+    String? baseText,
+    String local,
+    String? title,
+    String? baseTitle,
+  ) {
+    if (baseText == null || server.role == 'guide') return null;
+    // The merged save sends [title]: when the server's title is neither it
+    // nor the base's, it was renamed elsewhere (or the base title is not
+    // known), and sending [title] would undo that rename.
+    if (title != null && server.title != title && server.title != baseTitle) {
+      return null;
+    }
+    return switch (mergeNonDaily(
+      base: baseText,
+      local: local,
+      server: server.contentMd,
+    )) {
+      NonDailyMerged(:final text) => text,
+      NonDailyOverlap() => null,
+    };
+  }
+
+  /// Text [typed], edited from [sent] while [sent]'s non-daily merged save
+  /// stored [merged], moved onto [merged] ([mergeNonDaily] with [sent] as
+  /// the base). Null when the typing changed a line the server's changes
+  /// touch.
+  String? _carryTyped(String sent, String typed, String merged) =>
+      switch (mergeNonDaily(base: sent, local: typed, server: merged)) {
+        NonDailyMerged(:final text) => text,
+        NonDailyOverlap() => null,
+      };
+
+  /// Saves merged [body] (sending [title]) to [server]'s note on the
+  /// refetched version.
+  Future<({NoteUpdateResult result, String body})> _saveMerged(
+    VaultAccess access,
+    Note server,
+    String? title,
+    String body,
+  ) async {
+    final result = await access.notes.updateNote(
+      noteId: server.id,
+      expectedVersion: server.version,
+      title: title,
+      contentMd: body,
+    );
+    return (result: result, body: body);
+  }
 
   /// Req 60: refetches daily note [noteId] ([server] when the caller just
   /// did) and its blocks through [access], and saves [local]'s person text,
@@ -1510,6 +1821,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
         status: save ? SaveStatus.dirty : SaveStatus.clean,
         lastSavedVersion: stored.version,
       );
+      _setBase(id, stored.version, stored.contentMd, stored.title);
       if (save) unawaited(_save());
     } else if (save) {
       unawaited(
@@ -1600,8 +1912,10 @@ class EditorController extends StateNotifier<EditorStateValue> {
           _activeNoteId == id &&
           _virtualDate == null) {
         // Opened since, with a queued save: the editor keeps its base.
-        final base = _queue.entryFor(hosted, id)!.save.baseVersion;
+        final entry = _queue.entryFor(hosted, id)!;
+        final base = entry.save.baseVersion;
         state = state.copyWith(lastSavedVersion: base);
+        _setBase(id, base, entry.baseText);
       }
     } on Exception catch (e) {
       if (hosted != null &&

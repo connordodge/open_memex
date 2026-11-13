@@ -189,6 +189,25 @@ int _count(String haystack, String needle) =>
 String _canonicalDaily(String body) =>
     assembleDailyBody(splitDailyBody(body).person, splitDailyBody(body).chips);
 
+/// WI #16: the body the non-daily note "Plan" holds in [_wi16Vault].
+const _wi16Base = 'Alpha\nBravo\nCharlie\n';
+
+/// WI #16: "Plan" (a topic note holding [_wi16Base], version 3) and "Other"
+/// (`other body`, version 7).
+FakeVaultDb _wi16Vault() => FakeVaultDb.v5()
+  ..seedNote(
+    id: _planId,
+    title: 'Plan',
+    content: _wi16Base,
+    role: 'topic',
+    version: 3,
+  )
+  ..seedNote(id: _otherId, title: 'Other', content: 'other body', version: 7);
+
+/// WI #16: the `getNote` reads of [id] among [reads].
+int _wi16Refetches(List<String> reads, String id) =>
+    reads.where((r) => r == 'getNote:$id').length;
+
 void _expectNoErrorState(_H h) {
   expect(h.state.status, isNot(SaveStatus.error));
   expect(h.state.status, isNot(SaveStatus.conflict));
@@ -3162,6 +3181,222 @@ void main() {
         expect(h.state.status, SaveStatus.conflict);
         expect(h.stored(_planId).contentMd, 'their text');
         expect(h.queued(_planId)!.text, 'new text 2');
+      },
+    );
+  });
+
+  group('non-daily conflict merge on a hosted vault (WI 16, Req 34a)', () {
+    test(
+      'a hosted queued retry of a non-daily note that conflicts refetches once and saves the merged text once on the refetched version',
+      () async {
+        final h = await _hosted(_wi16Vault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        await h.typeAndSave('Alpha mine\nBravo\nCharlie\n');
+        expect(h.queued(_planId), isNotNull);
+        _foreignWrite(h.db, _planId, 'Alpha\nBravo\nCharlie theirs\n', 4);
+        final readsBefore = h.notes.reads.length;
+        final before = h.revision;
+
+        await h.serverAnswers();
+
+        const merged = 'Alpha mine\nBravo\nCharlie theirs\n';
+        expect(h.notes.updatesOf(_planId), [
+          'updateNote:$_planId@3',
+          'updateNote:$_planId@3',
+          'updateNote:$_planId@4',
+        ]);
+        expect(
+          _wi16Refetches(h.notes.reads.sublist(readsBefore), _planId),
+          1,
+          reason: 'one conflict is exactly one refetch',
+        );
+        expect(h.notes.updateBodies.last, merged);
+        expect(h.stored(_planId).contentMd, merged);
+        expect(h.stored(_planId).version, 5);
+        expect(h.queue, isEmpty);
+        expect(h.state.contentMd, merged);
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 5);
+        expect(h.state.errorMessage, isNull);
+        expect(h.revision, before + 1);
+
+        await h.fireDebounce();
+        expect(h.notes.updatesOf(_planId), hasLength(3));
+      },
+    );
+
+    test(
+      'a hosted non-daily save that conflicts merges changes on different lines like a local one',
+      () async {
+        final h = await _hosted(_wi16Vault());
+        h.ctrl.loadNote(h.stored(_planId));
+        _foreignWrite(h.db, _planId, 'Alpha theirs\nBravo\nCharlie\n', 4);
+
+        await h.typeAndSave('Alpha\nBravo\nCharlie mine\n');
+
+        const merged = 'Alpha theirs\nBravo\nCharlie mine\n';
+        expect(h.notes.updatesOf(_planId), [
+          'updateNote:$_planId@3',
+          'updateNote:$_planId@4',
+        ]);
+        expect(h.stored(_planId).contentMd, merged);
+        expect(h.state.contentMd, merged);
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 5);
+        expect(h.queue, isEmpty);
+      },
+    );
+
+    test(
+      'a hosted queued retry where both sides changed the same line makes no save and holds the conflict',
+      () async {
+        final h = await _hosted(_wi16Vault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        await h.typeAndSave('Alpha\nBravo mine\nCharlie\n');
+        _foreignWrite(h.db, _planId, 'Alpha\nBravo theirs\nCharlie\n', 4);
+
+        await h.serverAnswers();
+
+        expect(h.notes.updatesOf(_planId), hasLength(2));
+        expect(h.stored(_planId).contentMd, 'Alpha\nBravo theirs\nCharlie\n');
+        expect(h.state.contentMd, 'Alpha\nBravo mine\nCharlie\n');
+        expect(h.state.status, SaveStatus.conflict);
+        expect(h.state.errorMessage, isNotNull);
+        expect(h.queued(_planId)!.text, 'Alpha\nBravo mine\nCharlie\n');
+      },
+    );
+
+    test(
+      'a hosted queued retry merges against the queued base after the person opened another note',
+      () async {
+        final h = await _hosted(_wi16Vault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        await h.typeAndSave('Alpha mine\nBravo\nCharlie\n');
+        h.ctrl.loadNote(h.stored(_otherId));
+        _foreignWrite(h.db, _planId, 'Alpha\nBravo\nCharlie theirs\n', 4);
+
+        await h.serverAnswers();
+
+        expect(
+          h.stored(_planId).contentMd,
+          'Alpha mine\nBravo\nCharlie theirs\n',
+        );
+        expect(h.stored(_planId).version, 5);
+        expect(h.queue, isEmpty);
+        // The open note is untouched.
+        expect(h.state.contentMd, 'other body');
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 7);
+      },
+    );
+
+    test(
+      'a hosted retry that saved while the person typed moves the queued base text onto the saved text',
+      () async {
+        final h = await _hosted(_wi16Vault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        await h.typeAndSave('Alpha mine\nBravo\nCharlie\n');
+        // The retry waits on the server while the person types on.
+        final slow = Completer<void>();
+        h.notes.writeGate = slow;
+        await h.serverAnswers();
+        h.ctrl.onContentChanged('Alpha mine\nBravo\nCharlie\nDelta mine\n');
+        h.notes.writeGate = null;
+        slow.complete();
+        await pumpEventQueue();
+        expect(h.stored(_planId).contentMd, 'Alpha mine\nBravo\nCharlie\n');
+        expect(h.stored(_planId).version, 4);
+        expect(h.queued(_planId)!.baseVersion, 4);
+        // The agent takes the first line back before the next save.
+        _foreignWrite(h.db, _planId, _wi16Base, 5);
+
+        await h.fireDebounce();
+
+        // Against the version 4 text the agent changed line 1 and the
+        // person added line 4; the older base would keep the first line.
+        const merged = 'Alpha\nBravo\nCharlie\nDelta mine\n';
+        expect(h.notes.updatesOf(_planId).last, 'updateNote:$_planId@5');
+        expect(h.stored(_planId).contentMd, merged);
+        expect(h.state.contentMd, merged);
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.queue, isEmpty);
+      },
+    );
+  });
+  group('the queued base text (WI 16, Req 34a)', () {
+    const vault = HostedVaultRef(hostedServerId, 'wi16');
+    final now = DateTime(2026, 10, 3, 9);
+
+    PendingSaveQueue queued({String? baseText}) {
+      final q = PendingSaveQueue();
+      addTearDown(q.dispose);
+      q.put(
+        vault: vault,
+        noteId: 'n1',
+        title: 'T',
+        text: 'typed',
+        baseVersion: 3,
+        baseText: baseText,
+        now: now,
+        serverName: 'host',
+      );
+      return q;
+    }
+
+    test('a queued save holds the base text it was put with', () {
+      expect(queued(baseText: 'base').entryFor(vault, 'n1')!.baseText, 'base');
+      expect(queued().entryFor(vault, 'n1')!.baseText, isNull);
+    });
+
+    test(
+      'putting a queued note again replaces its base text, also with none',
+      () {
+        final q = queued(baseText: 'base');
+        void putAgain(String? baseText) => q.put(
+          vault: vault,
+          noteId: 'n1',
+          title: 'T',
+          text: 'typed more',
+          baseVersion: 4,
+          baseText: baseText,
+          now: now,
+          serverName: 'host',
+        );
+
+        putAgain('newer base');
+        expect(q.entryFor(vault, 'n1')!.baseText, 'newer base');
+        expect(q.entryFor(vault, 'n1')!.save.baseVersion, 4);
+
+        putAgain(null);
+        expect(q.entryFor(vault, 'n1')!.baseText, isNull);
+      },
+    );
+
+    test('rebasing a queued save moves its base text with its version', () {
+      final q = queued(baseText: 'base');
+
+      q.rebase(vault, 'n1', 5, baseText: 'saved text');
+
+      expect(q.entryFor(vault, 'n1')!.save.baseVersion, 5);
+      expect(q.entryFor(vault, 'n1')!.baseText, 'saved text');
+    });
+
+    test(
+      'editing the queued text, holding and releasing it keep its base text',
+      () {
+        final q = queued(baseText: 'base');
+
+        q.updateText(vault, 'n1', 'typed again');
+        expect(q.entryFor(vault, 'n1')!.baseText, 'base');
+        q.hold(vault, 'n1', SaveStatus.conflict, 'version conflict');
+        expect(q.entryFor(vault, 'n1')!.baseText, 'base');
+        q.release(vault, 'n1');
+        expect(q.entryFor(vault, 'n1')!.baseText, 'base');
+        expect(q.entryFor(vault, 'n1')!.save.text, 'typed again');
       },
     );
   });
