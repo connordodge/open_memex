@@ -422,7 +422,7 @@ void main() {
       'hosted schemaVersion reads schema_version from the vault info route',
       () async {
         final env = _env();
-        expect(await env.graph.schemaVersion(), 7);
+        expect(await env.graph.schemaVersion(), 8);
         expect(env.server.requests, hasLength(1));
         expect(env.last.method, 'GET');
         expect(env.last.url.path, '$_wi85Base/info');

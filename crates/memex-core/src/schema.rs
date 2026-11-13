@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::error::MemexError;
 use crate::Result;
 
-pub const APP_SCHEMA_VERSION: i64 = 7;
+pub const APP_SCHEMA_VERSION: i64 = 8;
 
 pub const MAX_DEDUP_COLLISIONS: i64 = 1000;
 
@@ -332,6 +332,31 @@ CREATE TABLE IF NOT EXISTS content_revision (
 INSERT OR IGNORE INTO content_revision(id, n) VALUES (1, 0);
 "#;
 
+/// V8 (Spec #7, ruling D1): agent-edit revisions. `note_revisions` holds a
+/// note's previous person section for each agent edit, newest first by
+/// `idx_note_revisions_note`; like `vault_guide_revisions`, a revision goes
+/// with its note and outlives its `agent_changes` entry. `IF NOT EXISTS`
+/// throughout, so the V8 step can re-run over V8 tables.
+const V8: &str = r#"
+CREATE TABLE IF NOT EXISTS note_revisions (
+    id                TEXT PRIMARY KEY,
+    note_id           TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    previous_md       TEXT NOT NULL,
+    previous_version  INTEGER NOT NULL,
+    new_version       INTEGER NOT NULL,
+    agent_change_id   TEXT NULL REFERENCES agent_changes(id) ON DELETE SET NULL,
+    created_at        INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_note_revisions_note
+    ON note_revisions(note_id, created_at DESC);
+"#;
+
+/// Columns V8 adds to existing tables: (table, column, declaration). Every
+/// existing note reads `agent_read_only = 0` (Spec #7 Req 3).
+const V8_COLUMNS: [(&str, &str, &str); 1] =
+    [("notes", "agent_read_only", "INTEGER NOT NULL DEFAULT 0")];
+
 /// The revision triggers on each triggered table: (name suffix, event).
 const REVISION_TRIGGERS: [(&str, &str); 3] = [("ai", "INSERT"), ("au", "UPDATE"), ("ad", "DELETE")];
 
@@ -420,6 +445,36 @@ pub fn apply(conn: &mut Connection) -> Result<()> {
         }
         tx.commit()?;
     }
+
+    // v8: Agent read-only (`notes.agent_read_only`) and agent-edit
+    // revisions (`note_revisions`), in one transaction, with the revision
+    // triggers put on the new table. The step writes no content, so it
+    // moves no `content_revision.n`, as at V7: the version row's insert
+    // fires the `schema_version` trigger, so n is read before the step and
+    // written back after it (`content_revision` has no trigger of its own).
+    {
+        let tx = conn.transaction()?;
+        if current_version(&tx)? < 8 {
+            let n: i64 = tx.query_row("SELECT n FROM content_revision WHERE id = 1", [], |r| {
+                r.get(0)
+            })?;
+            apply_v8(&tx)?;
+            tx.execute("INSERT INTO schema_version(version) VALUES (8)", [])?;
+            ensure_revision_triggers(&tx)?;
+            tx.execute("UPDATE content_revision SET n = ?1 WHERE id = 1", [n])?;
+        }
+        tx.commit()?;
+    }
+    Ok(())
+}
+
+fn apply_v8(conn: &Connection) -> Result<()> {
+    for (table, column, decl) in V8_COLUMNS {
+        if !has_column(conn, table, column)? {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl};"))?;
+        }
+    }
+    conn.execute_batch(V8)?;
     Ok(())
 }
 

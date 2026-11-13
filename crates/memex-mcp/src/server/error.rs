@@ -25,7 +25,9 @@ pub fn status_for_code(code: &str) -> StatusCode {
         "version_conflict" | "title_conflict" | "daily_note_exists" | "name_conflict"
         | "vault_exists" => StatusCode::CONFLICT,
         "invalid_argument" | "invalid_vault_name" | "invalid_utc_offset" | "invalid_id"
-        | "invalid_date" | "setting_invalid" | "word_invalid" => StatusCode::BAD_REQUEST,
+        | "invalid_date" | "setting_invalid" | "word_invalid" | "edit_invalid" => {
+            StatusCode::BAD_REQUEST
+        }
         "marker_rule"
         | "role_rule"
         | "pinned_rule"
@@ -38,7 +40,11 @@ pub fn status_for_code(code: &str) -> StatusCode {
         | "tag_removed"
         | "guide_rule"
         | "feedback_handled"
-        | "feedback_invalid" => StatusCode::UNPROCESSABLE_ENTITY,
+        | "feedback_invalid"
+        | "read_only_rule"
+        | "excerpt_rule"
+        | "edit_not_found"
+        | "edit_ambiguous" => StatusCode::UNPROCESSABLE_ENTITY,
         "unauthorized" => StatusCode::UNAUTHORIZED,
         "payload_too_large" => StatusCode::PAYLOAD_TOO_LARGE,
         "method_not_allowed" => StatusCode::METHOD_NOT_ALLOWED,
