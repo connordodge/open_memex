@@ -829,6 +829,86 @@ pub(crate) fn write_note_footer_internal(
     get_note(vault, id)
 }
 
+/// How [`write_person_section_internal`] treats the note's body tags (Spec #7
+/// Req 21, 27; ruling D8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TagMode {
+    /// A person write (Restore): the body tags are re-derived in full, as on
+    /// a person save (`tags::reconcile_body_tags`).
+    Derive,
+    /// An agent edit: only body tags whose `#name` the new person section no
+    /// longer yields are dropped (`tags::drop_unwritten_body_tags`).
+    RemovalsOnly,
+}
+
+/// What [`write_person_section_internal`] stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PersonWrite {
+    pub version: i64,
+    pub content_md: String,
+}
+
+/// The write of a note's person section for `note_edits` (Spec #7, ruling
+/// D7), inside the caller's transaction, which runs the checks and keeps the
+/// revision. Stores the person section of `person_md`
+/// (`daily::split_note_body`, so typed footer lines are not kept) with the
+/// Note footer rendered from the note's rows below it, after the body tags
+/// are written per `tag_mode`. The title, frontmatter and role stay; the
+/// version goes up by one and `updated_at` becomes `now`. An unknown note is
+/// `NotFound`, a daily note `RoleRule` and the Vault Guide `GuideRule`, and
+/// none writes anything. The caller reindexes after commit (D8).
+pub(crate) fn write_person_section_internal(
+    tx: &rusqlite::Transaction<'_>,
+    id: &NoteId,
+    person_md: &str,
+    tag_mode: TagMode,
+    now: i64,
+) -> Result<PersonWrite> {
+    let row: Option<(i64, String)> = tx
+        .query_row(
+            "SELECT version, frontmatter FROM notes WHERE id = ?",
+            params![id.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })?;
+    let (version, frontmatter) =
+        row.ok_or_else(|| MemexError::NotFound(format!("note {}", id.as_str())))?;
+    let frontmatter = lenient_frontmatter(&frontmatter);
+    if daily::is_daily(&frontmatter) {
+        return Err(MemexError::RoleRule(format!(
+            "note {id} is a daily note: its body is written by update_note_as"
+        )));
+    }
+    if is_guide(&frontmatter) {
+        return Err(MemexError::GuideRule(format!(
+            "note {id} is the Vault Guide (role: guide), written by guide::update"
+        )));
+    }
+    let person = daily::split_note_body(person_md).person;
+    // Tag rows first: the footer below renders from them.
+    match tag_mode {
+        TagMode::Derive => tags::reconcile_body_tags(tx, id.as_str(), &person, false, now)?,
+        TagMode::RemovalsOnly => {
+            let written = tags::extract(tags::person_section(&person));
+            tags::drop_unwritten_body_tags(tx, id.as_str(), &written)?;
+        }
+    }
+    let content_md = daily::sync_note_footer(tx, id.as_str(), &person)?;
+    let version = version + 1;
+    tx.execute(
+        "UPDATE notes SET content_md = ?, version = ?, updated_at = ? WHERE id = ?",
+        params![content_md, version, now, id.as_str()],
+    )?;
+    Ok(PersonWrite {
+        version,
+        content_md,
+    })
+}
+
 fn validate_title(t: &str) -> Result<()> {
     let trimmed = t.trim();
     if trimmed.is_empty() {

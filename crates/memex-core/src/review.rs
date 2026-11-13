@@ -324,7 +324,7 @@ fn validate_entries(conn: &Connection, daily_id: &str, changes: &[ChangeEntry]) 
 }
 
 /// The per-entry rules of [`validate_change_entries`]; returns the notes named.
-fn check_entry_rules(changes: &[ChangeEntry]) -> Result<HashSet<&str>> {
+pub(crate) fn check_entry_rules(changes: &[ChangeEntry]) -> Result<HashSet<&str>> {
     let invalid = |rule: String| Err(MemexError::ChangeEntriesInvalid(rule));
     let mut seen = HashSet::new();
     for entry in changes {

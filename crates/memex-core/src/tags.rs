@@ -341,15 +341,8 @@ pub(crate) fn reconcile_body_tags(
     } else {
         extract(person_section(&daily::split_note_body(body).person))
     };
+    drop_unwritten_body_tags(conn, note_id, &written)?;
     let stored = stored_rows(conn, note_id)?;
-    for (name, (origin, _)) in &stored {
-        if origin == "body" && !written.iter().any(|tag| &tag.name == name) {
-            conn.execute(
-                "DELETE FROM tags WHERE note_id = ? AND tag = ?",
-                params![note_id, name],
-            )?;
-        }
-    }
     for tag in &written {
         let matches = stored.get(&tag.name).is_some_and(|(origin, line)| {
             origin == "body" && line.as_deref() == Some(tag.first_line.as_str())
@@ -363,6 +356,27 @@ pub(crate) fn reconcile_body_tags(
             )?;
         }
         lift_block(conn, note_id, &tag.name, now)?;
+    }
+    Ok(())
+}
+
+/// Deletes the `body` rows of `note_id` whose name is not among `written`,
+/// the tags its person section now yields; `agent` and `person` rows stay.
+/// Nothing is inserted and no block or Correction row changes. The removal
+/// half of [`reconcile_body_tags`], and all an agent's `note_edits` body edit
+/// does to tags (Spec #7 Req 21, ruling D8).
+pub(crate) fn drop_unwritten_body_tags(
+    conn: &Connection,
+    note_id: &str,
+    written: &[ExtractedTag],
+) -> Result<()> {
+    for (name, (origin, _)) in &stored_rows(conn, note_id)? {
+        if origin == "body" && !written.iter().any(|tag| &tag.name == name) {
+            conn.execute(
+                "DELETE FROM tags WHERE note_id = ? AND tag = ?",
+                params![note_id, name],
+            )?;
+        }
     }
     Ok(())
 }
