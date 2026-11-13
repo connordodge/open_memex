@@ -40,6 +40,14 @@ class VaultDb {
   /// Columns schema V6 adds to `tags`.
   static const v6TagColumns = <String>['origin', 'first_line'];
 
+  /// Tables added by schema V8 (agent-edit revisions). The revisions read
+  /// returns empty while it is missing.
+  static const v8TableNames = <String>['note_revisions'];
+
+  /// Columns schema V8 adds to `notes` (Agent read-only). The note read
+  /// reports `agentReadOnly: false` while it is missing.
+  static const v8NoteColumns = <String>['agent_read_only'];
+
   final Database db;
 
   static VaultDb open(String vaultPath) {
@@ -115,6 +123,11 @@ class VaultDb {
       footerTags: footerTags,
     );
   }
+
+  /// The note's agent-edit revisions (`note_revisions`, V8), newest first
+  /// (D16, D21). Empty when the table is missing (probed on every call) or
+  /// the note has none.
+  List<NoteRevision> noteRevisions(String noteId) => const [];
 
   /// All notes' (id, title) pairs. Used for the wikilink autocomplete and
   /// the kind-chip "More…" picker.
@@ -419,6 +432,7 @@ class Note {
     required this.updatedAt,
     required this.tags,
     this.footerTags = const [],
+    this.agentReadOnly = false,
   });
   final String id;
   final String title;
@@ -432,6 +446,11 @@ class Note {
   /// The tags the Note footer shows: origin other than `body`, not a system
   /// tag, ordered by tag. Empty below schema V6 (#249, TD6).
   final List<String> footerTags;
+
+  /// Whether the person made this note Agent read-only (`notes.agent_read_only`,
+  /// V8; the hosted note read's `agent_read_only`). False below V8 and when
+  /// the field is missing (D16).
+  final bool agentReadOnly;
 
   /// [tags] without the system tags (`isSystemTag`, D17).
   List<String> get visibleTags =>
@@ -450,6 +469,24 @@ class Note {
     final role = decoded['role'];
     return role is String ? role : null;
   }
+}
+
+/// One agent-edit revision of a note (`note_revisions`, V8), as `memex
+/// revisions list` and `GET …/notes/{note_id}/revisions` list it (D14, D21).
+class NoteRevision {
+  const NoteRevision({
+    required this.id,
+    required this.agentChangeId,
+    required this.createdAt,
+  });
+  final String id;
+
+  /// The `agent_changes` entry the revision belongs to; null once that entry
+  /// is gone.
+  final String? agentChangeId;
+
+  /// Unix ms.
+  final int createdAt;
 }
 
 class NoteTitle {

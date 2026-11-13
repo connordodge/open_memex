@@ -1,4 +1,5 @@
 import '../../cli/note_cli.dart';
+import '../../cli/note_edits_cli.dart';
 import '../../db.dart';
 import '../../memex_cli.dart';
 import '../notes_access.dart';
@@ -44,7 +45,25 @@ class LocalNotesAccess implements NotesAccess {
   Future<List<String>> distinctLinkKinds() async =>
       db?.distinctLinkKinds() ?? const [];
 
+  @override
+  Future<List<NoteRevision>> noteRevisions(String noteId) async => const [];
+
   // ---------- writes ----------
+
+  @override
+  Future<AgentReadOnlyResult> setAgentReadOnly(String noteId, bool on) async =>
+      const AgentReadOnlyResult(vaultId: '', noteId: '', agentReadOnly: false);
+
+  @override
+  Future<NoteRevisionRestoreResult> restoreNoteRevision({
+    required String noteId,
+    required String revisionId,
+  }) async => const NoteRevisionRestoreResult(
+    vaultId: '',
+    noteId: '',
+    version: 0,
+    contentMd: '',
+  );
 
   @override
   Future<String> addNote({
