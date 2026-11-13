@@ -83,9 +83,16 @@ void main() {
       v4.schemaVersion(),
     );
     expect(v4.schemaVersion(), 4);
+    // The fixture is newer than requiredVaultSchemaVersion + 1 since V8, so
+    // the access reads the vault's own MAX(version).
+    expect(v5.schemaVersion(), fixtureSchemaVersion);
     expect(
       await LocalVaultAccess(vaultPath: _vault, db: v5).schemaVersion(),
-      requiredVaultSchemaVersion + 1,
+      v5.schemaVersion(),
+    );
+    expect(
+      await LocalVaultAccess(vaultPath: _vault, db: v5).schemaVersion(),
+      greaterThan(requiredVaultSchemaVersion),
     );
   });
 

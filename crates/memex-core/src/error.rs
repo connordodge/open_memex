@@ -144,6 +144,23 @@ pub enum MemexError {
     /// `memex restore --to` exists and is not an empty folder (req 32).
     #[error("restore target is not empty: {0}")]
     RestoreTargetNotEmpty(String),
+
+    /// An agent write to an Agent read-only note (Spec #7 Req 9). The text
+    /// is the whole message.
+    #[error("{0}")]
+    ReadOnlyRule(String),
+
+    #[error("excerpt rule: {0}")]
+    ExcerptRule(String),
+
+    #[error("edit not found: {message}")]
+    EditNotFound { index: usize, message: String },
+
+    #[error("edit ambiguous: {message}")]
+    EditAmbiguous { index: usize, message: String },
+
+    #[error("edit invalid: {0}")]
+    EditInvalid(String),
 }
 
 impl MemexError {
@@ -192,7 +209,13 @@ impl MemexError {
             | MemexError::TitleInvalid(_)
             | MemexError::TooManyDedupCollisions { .. }
             | MemexError::InvalidLinkKind(_)
-            | MemexError::Yaml(_) => "internal",
+            | MemexError::Yaml(_)
+            // Skeleton (WI #8): codes not assigned yet.
+            | MemexError::ReadOnlyRule(_)
+            | MemexError::ExcerptRule(_)
+            | MemexError::EditNotFound { .. }
+            | MemexError::EditAmbiguous { .. }
+            | MemexError::EditInvalid(_) => "internal",
         }
     }
 
@@ -278,7 +301,13 @@ impl MemexError {
             | MemexError::BackupInProgress(_)
             | MemexError::BackupFailed(_)
             | MemexError::BackupInvalid(_)
-            | MemexError::RestoreTargetNotEmpty(_) => Vec::new(),
+            | MemexError::RestoreTargetNotEmpty(_)
+            // Skeleton (WI #8): rule fields not assigned yet.
+            | MemexError::ReadOnlyRule(_)
+            | MemexError::ExcerptRule(_)
+            | MemexError::EditNotFound { .. }
+            | MemexError::EditAmbiguous { .. }
+            | MemexError::EditInvalid(_) => Vec::new(),
         }
     }
 }

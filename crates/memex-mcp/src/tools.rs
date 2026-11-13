@@ -1356,3 +1356,71 @@ fn err_payload(code: &str, message: &str) -> String {
     }))
     .unwrap_or_else(|_| "{\"error\":{\"code\":\"unknown\",\"message\":\"serialize failed\"}}".into())
 }
+
+/// WI #8 (Spec #7 ruling D2): the four V8 rule codes are on `err_from`'s
+/// rule list, so a tool answers them with their C1 object, never its `op`
+/// code. Nothing raises `excerpt_rule`, `edit_not_found` or
+/// `edit_ambiguous` yet, so the list is pinned here.
+#[cfg(test)]
+mod w8_err_from_tests {
+    use super::err_from;
+    use memex_core::MemexError;
+    use serde_json::{json, Value};
+
+    fn answer(op: &str, e: &MemexError) -> Value {
+        serde_json::from_str(&err_from(op, e)).expect("err_from returns JSON")
+    }
+
+    #[test]
+    fn err_from_answers_the_four_v8_rule_codes_with_their_c1_object() {
+        let n = std::hint::black_box(3usize);
+        let cases = [
+            (
+                MemexError::ReadOnlyRule(
+                    "\"Pricing notes\" is read-only for agents; the person can change this in the app"
+                        .into(),
+                ),
+                "read_only_rule",
+            ),
+            (
+                MemexError::ExcerptRule(format!("the edit drops {n} transclusions")),
+                "excerpt_rule",
+            ),
+            (
+                MemexError::EditNotFound {
+                    index: n,
+                    message: format!("edit {n}: old_text is not in the note"),
+                },
+                "edit_not_found",
+            ),
+            (
+                MemexError::EditAmbiguous {
+                    index: n,
+                    message: format!("edit {n}: old_text appears twice"),
+                },
+                "edit_ambiguous",
+            ),
+        ];
+        for (e, code) in cases {
+            let got = answer("edit_note", &e);
+            assert_eq!(got, e.to_error_json(), "{code}: the C1 object");
+            assert_eq!(got["error"]["code"], json!(code), "{got}");
+        }
+        let got = answer(
+            "edit_note",
+            &MemexError::EditAmbiguous {
+                index: 0,
+                message: "edit 0: old_text appears twice".into(),
+            },
+        );
+        assert_eq!(got["error"]["index"], json!(0), "{got}");
+    }
+
+    #[test]
+    fn err_from_still_answers_a_non_rule_error_with_its_op_code() {
+        let got = answer("add_link.update", &MemexError::NotFound("note X".into()));
+        assert_eq!(got["error"]["code"], json!("add_link.update"), "{got}");
+        let got = answer("add_link.update", &MemexError::MarkerRule("daily".into()));
+        assert_eq!(got["error"]["code"], json!("marker_rule"), "{got}");
+    }
+}

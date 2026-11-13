@@ -364,6 +364,16 @@ pub fn check_agent_write(
     Ok(())
 }
 
+/// The Agent read-only guard (Spec #7 Req 5, ruling D3). Skeleton (WI #8):
+/// not implemented yet.
+pub fn check_agent_read_only(
+    _conn: &rusqlite::Connection,
+    _caller: Caller,
+    _note_id: &NoteId,
+) -> Result<()> {
+    Ok(())
+}
+
 /// The Vault Guide's fixed fields (#233 R28), for every caller: its title and
 /// its role cannot change, and no other note can take `role: guide`. Passing
 /// the current title or a frontmatter that keeps the role is not a change.

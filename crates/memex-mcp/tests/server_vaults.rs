@@ -382,7 +382,7 @@ async fn an_invalid_name_vault_folder_is_logged_once_not_per_request() {
 
 #[tokio::test]
 async fn create_returns_201_and_makes_a_vault_that_opens_at_schema_5() {
-    assert_eq!(APP_SCHEMA_VERSION, 7);
+    assert_eq!(APP_SCHEMA_VERSION, 8);
     let srv = TestServer::start().await;
     let r = create(&srv, "work").await;
     assert_eq!(r.status, 201, "{}", r.body);
