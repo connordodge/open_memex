@@ -200,6 +200,11 @@ impl MemexError {
             MemexError::BackupInvalid(_) => "backup_invalid",
             MemexError::BackupTooNew { .. } => "backup_too_new",
             MemexError::RestoreTargetNotEmpty(_) => "restore_target_not_empty",
+            MemexError::ReadOnlyRule(_) => "read_only_rule",
+            MemexError::ExcerptRule(_) => "excerpt_rule",
+            MemexError::EditNotFound { .. } => "edit_not_found",
+            MemexError::EditAmbiguous { .. } => "edit_ambiguous",
+            MemexError::EditInvalid(_) => "edit_invalid",
             MemexError::Io(_)
             | MemexError::Sqlite(_)
             | MemexError::Json(_)
@@ -209,13 +214,7 @@ impl MemexError {
             | MemexError::TitleInvalid(_)
             | MemexError::TooManyDedupCollisions { .. }
             | MemexError::InvalidLinkKind(_)
-            | MemexError::Yaml(_)
-            // Skeleton (WI #8): codes not assigned yet.
-            | MemexError::ReadOnlyRule(_)
-            | MemexError::ExcerptRule(_)
-            | MemexError::EditNotFound { .. }
-            | MemexError::EditAmbiguous { .. }
-            | MemexError::EditInvalid(_) => "internal",
+            | MemexError::Yaml(_) => "internal",
         }
     }
 
@@ -262,6 +261,9 @@ impl MemexError {
                     ("current", (*current).into()),
                 ]
             }
+            MemexError::EditNotFound { index, .. } | MemexError::EditAmbiguous { index, .. } => {
+                vec![("index", (*index).into())]
+            }
             MemexError::BackupTooNew { backup, supported } => vec![
                 ("schema_version", (*backup).into()),
                 ("supported_schema_version", (*supported).into()),
@@ -302,11 +304,8 @@ impl MemexError {
             | MemexError::BackupFailed(_)
             | MemexError::BackupInvalid(_)
             | MemexError::RestoreTargetNotEmpty(_)
-            // Skeleton (WI #8): rule fields not assigned yet.
             | MemexError::ReadOnlyRule(_)
             | MemexError::ExcerptRule(_)
-            | MemexError::EditNotFound { .. }
-            | MemexError::EditAmbiguous { .. }
             | MemexError::EditInvalid(_) => Vec::new(),
         }
     }

@@ -364,14 +364,36 @@ pub fn check_agent_write(
     Ok(())
 }
 
-/// The Agent read-only guard (Spec #7 Req 5, ruling D3). Skeleton (WI #8):
-/// not implemented yet.
+/// The Agent read-only guard (Spec #7 Req 5, ruling D3): an agent may not
+/// write a note whose `agent_read_only` flag is set, and gets `ReadOnlyRule`
+/// naming the note's title (Req 9). Person writes always pass (Req 2). A
+/// missing note passes too, so callers keep their own `NotFound`. Agent
+/// write paths call this check rather than copy its query.
 pub fn check_agent_read_only(
-    _conn: &rusqlite::Connection,
-    _caller: Caller,
-    _note_id: &NoteId,
+    conn: &rusqlite::Connection,
+    caller: Caller,
+    note_id: &NoteId,
 ) -> Result<()> {
-    Ok(())
+    if caller != Caller::Agent {
+        return Ok(());
+    }
+    let row: Option<(i64, String)> = conn
+        .query_row(
+            "SELECT agent_read_only, title FROM notes WHERE id = ?",
+            params![note_id.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })?;
+    match row {
+        Some((flag, title)) if flag != 0 => Err(MemexError::ReadOnlyRule(format!(
+            "\"{title}\" is read-only for agents; the person can change this in the app"
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// The Vault Guide's fixed fields (#233 R28), for every caller: its title and
@@ -420,6 +442,12 @@ fn check_guide_fields(
 /// save scans. Daily notes rewritten by the rename pass are re-synced the same
 /// way and also get a new `version`; other linkers get their footer
 /// re-rendered. Callers reindex from the returned note (D8).
+///
+/// An agent save runs the marker and guide guard (`check_agent_write`) and
+/// then the read-only guard (`check_agent_read_only`), both before the
+/// version check, so a stale version never hides a rule error. A new agent
+/// rule must also be added to `note_edits` (R2), which bypasses this
+/// function (ruling D7).
 pub fn update_note_as(
     vault: &mut Vault,
     id: &NoteId,
@@ -449,6 +477,7 @@ pub fn update_note_as(
         &lenient_frontmatter(&current_fm),
         patch.frontmatter.as_ref(),
     )?;
+    check_agent_read_only(vault.connection_ref(), caller, id)?;
     check_guide_fields(&current_title, &lenient_frontmatter(&current_fm), &patch)?;
     if current_version != expected_version {
         return Err(MemexError::VersionConflict {

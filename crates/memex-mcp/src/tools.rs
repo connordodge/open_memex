@@ -1339,6 +1339,10 @@ fn err_from(op: &str, e: &MemexError) -> String {
             | MemexError::BlockNotFound(_)
             | MemexError::SettingInvalid(_)
             | MemexError::GuideRule(_)
+            | MemexError::ReadOnlyRule(_)
+            | MemexError::ExcerptRule(_)
+            | MemexError::EditNotFound { .. }
+            | MemexError::EditAmbiguous { .. }
     );
     if is_rule {
         e.to_error_json().to_string()
