@@ -298,3 +298,31 @@ List<_Hunk> _hunks(List<String> base, List<String> side) {
   close();
   return hunks;
 }
+
+/// Where [offset] of [before] lands in [after], a text the server rewrote
+/// (a merged save, Spec #7 Req 34a): on a line both texts share it keeps
+/// its line and column, so the caret stays on the person's line when lines
+/// above it were added, removed or lengthened. In a changed run of lines it
+/// keeps its distance from the run's start, clamped to the new run.
+int carryOffset(String before, String after, int offset) {
+  final from = _linesOf(before);
+  var oldAt = 0;
+  var newAt = 0;
+  var line = 0;
+  for (final hunk in _hunks(from, _linesOf(after))) {
+    final same = _lengthOf(from.sublist(line, hunk.start));
+    if (offset < oldAt + same) return newAt + offset - oldAt;
+    oldAt += same;
+    newAt += same;
+    final removed = _lengthOf(from.sublist(hunk.start, hunk.end));
+    final added = _lengthOf(hunk.lines);
+    if (offset < oldAt + removed) return newAt + min(offset - oldAt, added);
+    oldAt += removed;
+    newAt += added;
+    line = hunk.end;
+  }
+  return min(newAt + max(offset - oldAt, 0), after.length);
+}
+
+int _lengthOf(List<String> lines) =>
+    lines.fold(0, (sum, line) => sum + line.length);

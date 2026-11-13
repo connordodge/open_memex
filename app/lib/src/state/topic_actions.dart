@@ -181,13 +181,16 @@ Future<void> _rebaseEditorOnVersion(
 }) async {
   final editor = read(editorControllerProvider.notifier);
   final before = read(editorControllerProvider).contentMd;
-  final stored =
-      await read(vaultAccessProvider)?.notes.getNote(fallback.id) ?? fallback;
+  final fetched = await read(vaultAccessProvider)?.notes.getNote(fallback.id);
+  final stored = fetched ?? fallback;
   // The user may have opened another note while the read was in flight:
   // loading the first note back would clobber the editor.
   if (editor.activeNoteId != fallback.id) return;
   final now = read(editorControllerProvider);
+  // The text is the merge base (Req 34a) only when it was read at
+  // [version]: a later write, or the fallback, leaves the base unknown.
   editor.loadNote(_atVersion(stored, version));
+  if (fetched?.version != version) editor.forgetMergeBase();
   editor.onTitleChanged(now.title);
   editor.onContentChanged(
     now.contentMd == before
@@ -398,6 +401,9 @@ Future<void> rebaseEditorAfterWrite(
   // The user may have opened another note while the read was in flight.
   if (editor.activeNoteId != note.id) return;
   final now = container.read(editorControllerProvider);
+  // The text is the merge base (Req 34a) only when it was read at
+  // [version]: a later write, or no read, leaves the base unknown.
+  final baseKnown = stored?.version == version;
   if (now.status == SaveStatus.clean) {
     editor.loadNote(
       stored != null
@@ -409,9 +415,11 @@ Future<void> rebaseEditorAfterWrite(
               contentMd: now.contentMd,
             ),
     );
+    if (!baseKnown) editor.forgetMergeBase();
     return;
   }
   editor.loadNote(_atVersion(stored ?? note, version));
+  if (!baseKnown) editor.forgetMergeBase();
   editor.onTitleChanged(now.title);
   editor.onContentChanged(now.contentMd);
 }
