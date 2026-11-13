@@ -3327,4 +3327,77 @@ void main() {
       },
     );
   });
+  group('the queued base text (WI 16, Req 34a)', () {
+    const vault = HostedVaultRef(hostedServerId, 'wi16');
+    final now = DateTime(2026, 10, 3, 9);
+
+    PendingSaveQueue queued({String? baseText}) {
+      final q = PendingSaveQueue();
+      addTearDown(q.dispose);
+      q.put(
+        vault: vault,
+        noteId: 'n1',
+        title: 'T',
+        text: 'typed',
+        baseVersion: 3,
+        baseText: baseText,
+        now: now,
+        serverName: 'host',
+      );
+      return q;
+    }
+
+    test('a queued save holds the base text it was put with', () {
+      expect(queued(baseText: 'base').entryFor(vault, 'n1')!.baseText, 'base');
+      expect(queued().entryFor(vault, 'n1')!.baseText, isNull);
+    });
+
+    test(
+      'putting a queued note again replaces its base text, also with none',
+      () {
+        final q = queued(baseText: 'base');
+        void putAgain(String? baseText) => q.put(
+          vault: vault,
+          noteId: 'n1',
+          title: 'T',
+          text: 'typed more',
+          baseVersion: 4,
+          baseText: baseText,
+          now: now,
+          serverName: 'host',
+        );
+
+        putAgain('newer base');
+        expect(q.entryFor(vault, 'n1')!.baseText, 'newer base');
+        expect(q.entryFor(vault, 'n1')!.save.baseVersion, 4);
+
+        putAgain(null);
+        expect(q.entryFor(vault, 'n1')!.baseText, isNull);
+      },
+    );
+
+    test('rebasing a queued save moves its base text with its version', () {
+      final q = queued(baseText: 'base');
+
+      q.rebase(vault, 'n1', 5, baseText: 'saved text');
+
+      expect(q.entryFor(vault, 'n1')!.save.baseVersion, 5);
+      expect(q.entryFor(vault, 'n1')!.baseText, 'saved text');
+    });
+
+    test(
+      'editing the queued text, holding and releasing it keep its base text',
+      () {
+        final q = queued(baseText: 'base');
+
+        q.updateText(vault, 'n1', 'typed again');
+        expect(q.entryFor(vault, 'n1')!.baseText, 'base');
+        q.hold(vault, 'n1', SaveStatus.conflict, 'version conflict');
+        expect(q.entryFor(vault, 'n1')!.baseText, 'base');
+        q.release(vault, 'n1');
+        expect(q.entryFor(vault, 'n1')!.baseText, 'base');
+        expect(q.entryFor(vault, 'n1')!.save.text, 'typed again');
+      },
+    );
+  });
 }

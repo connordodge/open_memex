@@ -415,4 +415,89 @@ void main() {
       },
     );
   });
+  group('verify round contracts', () {
+    test(
+      'a merged person text without a final newline gets one before the server footer',
+      () {
+        expect(
+          _merged(
+            'Alpha\nBravo\n',
+            'Alpha\nBravo mine',
+            'Alpha\nBravo\n$_footer',
+          ),
+          'Alpha\nBravo mine\n$_footer',
+        );
+      },
+    );
+
+    test('a merged text without a final newline and no footer gets none', () {
+      expect(
+        _merged('Alpha\nBravo\n', 'Alpha\nBravo mine', 'Alpha\nBravo\n'),
+        'Alpha\nBravo mine',
+      );
+    });
+
+    test('an empty merged person text keeps the server footer as it is', () {
+      expect(_merged('Alpha\n', '', 'Alpha\n$_footer'), _footer);
+    });
+
+    test('a topics marker inside a line of text is not the footer', () {
+      const inline = 'Mention <!-- memex:topics --> inline\n';
+      expect(
+        _merged(
+          'Alpha\n$inline$_footer',
+          'Alpha mine\n$inline$_footer',
+          'Alpha\n$inline$_footerMore',
+        ),
+        'Alpha mine\n$inline$_footerMore',
+      );
+    });
+
+    for (final (name, local, server) in [
+      (
+        'a change of two lines and a deletion of the second of them on the other side return an overlap',
+        'A\nD\n',
+        'A\nB\nD\n',
+      ),
+      (
+        'a change of two lines and a deletion of the first of them on the other side return an overlap',
+        'A\nD\n',
+        'A\nC\nD\n',
+      ),
+    ]) {
+      test(name, () {
+        _expectOverlap('A\nB\nC\nD\n', local, server);
+        _expectOverlap('A\nB\nC\nD\n', server, local);
+      });
+    }
+
+    for (final (name, base, local, server, merged) in [
+      (
+        'a deletion of one of two equal lines merges with an insertion at the end',
+        'X\nX\n',
+        'X\n',
+        'X\nX\nZ\n',
+        'X\nZ\n',
+      ),
+      (
+        'edits around equal lines merge',
+        '-\nAlpha\n-\nBravo\n-\n',
+        '-\nAlpha mine\n-\nBravo\n-\n',
+        '-\nAlpha\n-\nBravo theirs\n-\n',
+        '-\nAlpha mine\n-\nBravo theirs\n-\n',
+      ),
+      (
+        'blank line deletions on both sides of a text edit merge',
+        'Alpha\n\n\nBravo\n',
+        'Alpha\n\nBravo\n',
+        'Alpha\n\n\nBravo theirs\n',
+        'Alpha\n\nBravo theirs\n',
+      ),
+    ]) {
+      test(name, () {
+        expect(_merged(base, local, server), merged);
+        expect(_merged(base, server, local), merged);
+      });
+    }
+  });
 }
