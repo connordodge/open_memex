@@ -325,17 +325,17 @@ fn golden_get_prints_the_note_object_with_and_without_links() {
     );
     assert!(!b.is_empty());
     let out = f.ok(&["get", "--vault", f.v(), "--note-id", &a], None);
-    assert_eq!(out, "{\"content_md\":\"Alpha links [[Beta]] and [[Beta~extends|more]].\\n<!-- memex:topics -->\\n#games\\n\",\"created_at\":<MS>,\"frontmatter\":{},\"note_id\":\"<A>\",\"tags\":[\"games\"],\"title\":\"Alpha\",\"updated_at\":<MS>,\"version\":2}\n");
+    assert_eq!(out, "{\"agent_read_only\":false,\"content_md\":\"Alpha links [[Beta]] and [[Beta~extends|more]].\\n<!-- memex:topics -->\\n#games\\n\",\"created_at\":<MS>,\"frontmatter\":{},\"note_id\":\"<A>\",\"tags\":[\"games\"],\"title\":\"Alpha\",\"updated_at\":<MS>,\"version\":2}\n");
     let out = f.ok(
         &["get", "--vault", f.v(), "--note-id", &a, "--include-links"],
         None,
     );
-    assert_eq!(out, "{\"backlinks\":{},\"content_md\":\"Alpha links [[Beta]] and [[Beta~extends|more]].\\n<!-- memex:topics -->\\n#games\\n\",\"created_at\":<MS>,\"frontmatter\":{},\"links\":{\"extends\":[{\"from_note_id\":\"<A>\",\"label\":\"more\",\"link_id\":\"<ULID>\",\"link_text\":\"Beta\",\"position\":25,\"source\":\"inline_body\",\"to_note_id\":\"<B>\"}],\"references\":[{\"from_note_id\":\"<A>\",\"label\":null,\"link_id\":\"<ULID>\",\"link_text\":\"Beta\",\"position\":12,\"source\":\"inline_body\",\"to_note_id\":\"<B>\"}]},\"note_id\":\"<A>\",\"tags\":[\"games\"],\"title\":\"Alpha\",\"updated_at\":<MS>,\"version\":2}\n");
+    assert_eq!(out, "{\"agent_read_only\":false,\"backlinks\":{},\"content_md\":\"Alpha links [[Beta]] and [[Beta~extends|more]].\\n<!-- memex:topics -->\\n#games\\n\",\"created_at\":<MS>,\"frontmatter\":{},\"links\":{\"extends\":[{\"from_note_id\":\"<A>\",\"label\":\"more\",\"link_id\":\"<ULID>\",\"link_text\":\"Beta\",\"position\":25,\"source\":\"inline_body\",\"to_note_id\":\"<B>\"}],\"references\":[{\"from_note_id\":\"<A>\",\"label\":null,\"link_id\":\"<ULID>\",\"link_text\":\"Beta\",\"position\":12,\"source\":\"inline_body\",\"to_note_id\":\"<B>\"}]},\"note_id\":\"<A>\",\"tags\":[\"games\"],\"title\":\"Alpha\",\"updated_at\":<MS>,\"version\":2}\n");
     let out = f.ok(
         &["get", "--vault", f.v(), "--note-id", &b, "--include-links"],
         None,
     );
-    assert_eq!(out, "{\"backlinks\":{\"extends\":[{\"from_note_id\":\"<A>\",\"label\":\"more\",\"link_id\":\"<ULID>\",\"link_text\":\"Beta\",\"position\":25,\"source\":\"inline_body\",\"to_note_id\":\"<B>\"}],\"references\":[{\"from_note_id\":\"<A>\",\"label\":null,\"link_id\":\"<ULID>\",\"link_text\":\"Beta\",\"position\":12,\"source\":\"inline_body\",\"to_note_id\":\"<B>\"}]},\"content_md\":\"Beta body.\\n\",\"created_at\":<MS>,\"frontmatter\":{},\"links\":{},\"note_id\":\"<B>\",\"tags\":[],\"title\":\"Beta\",\"updated_at\":<MS>,\"version\":1}\n");
+    assert_eq!(out, "{\"agent_read_only\":false,\"backlinks\":{\"extends\":[{\"from_note_id\":\"<A>\",\"label\":\"more\",\"link_id\":\"<ULID>\",\"link_text\":\"Beta\",\"position\":25,\"source\":\"inline_body\",\"to_note_id\":\"<B>\"}],\"references\":[{\"from_note_id\":\"<A>\",\"label\":null,\"link_id\":\"<ULID>\",\"link_text\":\"Beta\",\"position\":12,\"source\":\"inline_body\",\"to_note_id\":\"<B>\"}]},\"content_md\":\"Beta body.\\n\",\"created_at\":<MS>,\"frontmatter\":{},\"links\":{},\"note_id\":\"<B>\",\"tags\":[],\"title\":\"Beta\",\"updated_at\":<MS>,\"version\":1}\n");
 }
 
 #[test]
@@ -347,7 +347,7 @@ fn golden_get_prints_review_fields_for_a_daily_note() {
         "Fixed the jump arc.\n",
     );
     let out = f.ok(&["get", "--vault", f.v(), "--note-id", &d], None);
-    assert_eq!(out, "{\"content_md\":\"Fixed the jump arc.\\n<!-- memex:topics -->\\n\",\"created_at\":<MS>,\"frontmatter\":{\"role\":\"daily\"},\"latest_change\":null,\"note_id\":\"<D>\",\"review\":{\"content_version\":1,\"reviewed_at\":null,\"reviewed_content_version\":null,\"state\":\"Unreviewed\"},\"tags\":[],\"title\":\"2026-09-05\",\"updated_at\":<MS>,\"version\":1}\n");
+    assert_eq!(out, "{\"agent_read_only\":false,\"content_md\":\"Fixed the jump arc.\\n<!-- memex:topics -->\\n\",\"created_at\":<MS>,\"frontmatter\":{\"role\":\"daily\"},\"latest_change\":null,\"note_id\":\"<D>\",\"review\":{\"content_version\":1,\"reviewed_at\":null,\"reviewed_content_version\":null,\"state\":\"Unreviewed\"},\"tags\":[],\"title\":\"2026-09-05\",\"updated_at\":<MS>,\"version\":1}\n");
 }
 
 #[test]

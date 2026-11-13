@@ -907,6 +907,30 @@ pub fn delete_note_checked(
     Ok(())
 }
 
+/// The person-only Agent read-only setter (Spec #7 Req 4, 7, 7a; ruling D5):
+/// sets (`on`) or clears the note's `agent_read_only` flag and returns
+/// whether it changed. An unknown note is `NotFound`; setting it on a daily
+/// note or on the Vault Guide is `RoleRule`, clearing is always allowed. It
+/// writes only the flag (`version` and `updated_at` stay), and the value the
+/// note already has writes nothing. The sole writer of the column.
+pub fn set_agent_read_only(vault: &mut Vault, id: &NoteId, on: bool) -> Result<bool> {
+    // WI #9 skeleton: no behavior yet.
+    let _ = (vault, id, on);
+    Ok(false)
+}
+
+/// The note-read fields of the Agent read-only flag (Spec #7 Req 8, ruling
+/// D6): `{"agent_read_only": bool}`, merged into `get_note`, `memex get` and
+/// the app API note read beside the review and transclusion fields.
+pub fn note_agent_fields(
+    vault: &Vault,
+    note: &Note,
+) -> Result<serde_json::Map<String, serde_json::Value>> {
+    // WI #9 skeleton: no behavior yet.
+    let _ = (vault, note);
+    Ok(serde_json::Map::new())
+}
+
 fn row_to_note(r: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
     let id_s: String = r.get(0)?;
     let title: String = r.get(1)?;

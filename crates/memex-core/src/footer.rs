@@ -136,6 +136,21 @@ pub fn set_chip(
     })
 }
 
+/// The agent's `add_footer_topic` (Spec #7 Req 5, ruling D4): refuses with
+/// `ReadOnlyRule` when the note `daily_note_id` is Agent read-only, the
+/// chip-already-there answer included, and otherwise is [`set_chip`] with
+/// `ChipOrigin::Excerpt`.
+pub fn agent_set_chip(
+    vault: &mut Vault,
+    daily_note_id: &NoteId,
+    topic_note_id: &NoteId,
+    embedder: Option<&dyn Embedder>,
+) -> Result<FooterWrite> {
+    // WI #9 skeleton: `FooterWrite` has no neutral value.
+    let _ = (vault, daily_note_id, topic_note_id, embedder);
+    unimplemented!("WI #9: footer::agent_set_chip")
+}
+
 /// Removes the chip `topic_note_id` from the note `daily_note_id` as `mode`
 /// allows, re-renders the footer and reindexes the note with `embedder`. On
 /// a non-daily note, removing the last footer item removes the marker too.
