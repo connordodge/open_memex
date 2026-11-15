@@ -358,7 +358,8 @@ fn stored_person(tx: &Transaction<'_>, id: &NoteId, new_person: String) -> Resul
     }
     if daily::note_marker_start(&body) != Some(person.len()) {
         return Err(MemexError::EditInvalid(
-            "the new person section leaves a code fence open above the Note footer; close it"
+            "the new person section leaves a code fence open above the Note footer; \
+             close the code fence"
                 .into(),
         ));
     }
