@@ -5699,6 +5699,129 @@ fn readme_lists_the_read_only_and_revisions_commands_with_real_flags() {
     assert_commands_are_real("README.md", &readme);
 }
 
+/// The `--flag` names in the `--help` of `memex <args>`.
+fn wi17_help_flags(args: &[&str]) -> BTreeSet<String> {
+    let out = Command::new(env!("CARGO_BIN_EXE_memex"))
+        .args(args)
+        .arg("--help")
+        .output()
+        .expect("run memex --help");
+    assert!(out.status.success(), "memex {args:?} --help failed");
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    Regex::new(r"--[a-z][a-z-]*")
+        .unwrap()
+        .find_iter(&text)
+        .map(|m| m.as_str().to_string())
+        .collect()
+}
+
+#[test]
+fn readme_person_command_flags_are_flags_the_real_subcommands_accept() {
+    let readme = readme();
+    let span = Regex::new(r"`memex (read-only|revisions) ([a-z|]+)([^`]*)`").unwrap();
+    let flag = Regex::new(r"--[a-z][a-z-]*").unwrap();
+    let mut shown: BTreeSet<(String, String, String)> = BTreeSet::new();
+    for c in span.captures_iter(&readme) {
+        for action in c[2].split('|') {
+            let accepted = wi17_help_flags(&[&c[1], action]);
+            for f in flag.find_iter(&c[3]) {
+                assert!(
+                    accepted.contains(f.as_str()),
+                    "README shows `memex {} {action} {}`, which `memex {} {action} --help` does \
+                     not list: {accepted:?}",
+                    &c[1],
+                    f.as_str(),
+                    &c[1]
+                );
+                shown.insert((c[1].to_string(), action.to_string(), f.as_str().to_string()));
+            }
+        }
+    }
+    // The README shows the flags it promises for each action.
+    for (group, action, f) in [
+        ("read-only", "set", "--note-id"),
+        ("read-only", "clear", "--note-id"),
+        ("revisions", "list", "--note-id"),
+        ("revisions", "restore", "--revision-id"),
+    ] {
+        assert!(
+            shown.contains(&(group.to_string(), action.to_string(), f.to_string())),
+            "README shows `memex {group} {action} {f}`: {shown:?}"
+        );
+    }
+}
+
+#[test]
+fn docs_name_edit_note_only_as_a_tool_the_server_really_serves() {
+    let (tools, _) = served_names();
+    assert!(
+        tools.contains("edit_note"),
+        "the server serves `edit_note`: {tools:?}"
+    );
+    for doc in [
+        "README.md",
+        "docs/daily-review.md",
+        "docs/tags.md",
+        "docs/claude-desktop-setup.md",
+        "GLOSSARY.md",
+    ] {
+        let text = read_repo_file(doc);
+        // Every backticked `edit_…` token is a served tool, except the two error codes.
+        for c in Regex::new(r"`(edit_[a-z_]+)`")
+            .unwrap()
+            .captures_iter(&text)
+        {
+            if &c[1] == "edit_invalid" || &c[1] == "edit_ambiguous" {
+                continue;
+            }
+            assert!(
+                tools.contains(&c[1]),
+                "{doc} names `{}`, which the server does not expose: {tools:?}",
+                &c[1]
+            );
+        }
+    }
+    assert!(
+        readme().contains("`edit_note`"),
+        "the README names `edit_note`"
+    );
+}
+
+#[test]
+fn readme_invariant_line_says_edit_note_is_the_only_prose_editor_and_link_and_excerpt_tools_write_only_link_and_transclusion_text(
+) {
+    let readme = readme();
+    let lines: Vec<&str> = readme
+        .lines()
+        .filter(|l| l.contains("`append_to_daily_note`") && l.contains("daily note body"))
+        .collect();
+    assert_eq!(lines.len(), 1, "one invariant line: {lines:?}");
+    let line = lines[0];
+    wi17_assert_sentence(
+        "edit_note is the only tool that edits the text you wrote",
+        line,
+        &[r"`edit_note`", r"only tool", r"text you wrote"],
+    );
+    wi17_assert_sentence(
+        "link and excerpt tools write only link and transclusion text and respect Agent read-only",
+        line,
+        &[
+            r"`add_link`",
+            r"`update_link`",
+            r"`add_excerpt`",
+            r"`remove_excerpt`",
+            r"`remove_excerpt_block`",
+            r"only link and transclusion text",
+            r"Agent read-only",
+        ],
+    );
+    assert!(
+        !line.contains("only through `edit_note`"),
+        "the invariant no longer claims edit_note and update_vault_guide are the only text \
+         writers: {line}"
+    );
+}
+
 // ---------- README: the old rule is gone (AC 3) ----------
 
 #[test]
@@ -5755,22 +5878,30 @@ fn review_guide_agent_limits_list_edit_note_with_its_refusals_and_kept_transclus
     let doc = daily_review();
     let section = wi243_section(&doc, "### What the agent can and cannot do");
     let item = wi17_item_with(&section, "`edit_note`");
-    for needle in [
-        "daily note",
-        "Vault Guide",
-        "Agent read-only",
-        "transclusion",
-    ] {
-        assert!(
-            item.contains(needle),
-            "the `edit_note` item names {needle}: {item}"
-        );
-    }
-    assert!(
-        Regex::new(r"(?i)\b(cannot|can.t|never|not|refuses?)\b")
-            .unwrap()
-            .is_match(&item),
-        "the `edit_note` item states limits: {item}"
+    wi17_assert_sentence(
+        "edit_note refuses daily notes, the Vault Guide and Agent read-only notes",
+        &item,
+        &[
+            r"\brefuses\b",
+            r"daily notes",
+            r"the Vault Guide",
+            r"Agent read-only",
+        ],
+    );
+    wi17_assert_sentence(
+        "edit_note never changes the title, the frontmatter or the Note footer",
+        &item,
+        &[
+            r"\bnever changes\b",
+            r"title",
+            r"frontmatter",
+            r"Note footer",
+        ],
+    );
+    wi17_assert_sentence(
+        "edit_note keeps every transclusion",
+        &item,
+        &[r"\bkeeps every transclusion\b"],
     );
     // The other limits stay.
     assert!(
@@ -5948,6 +6079,30 @@ fn hosted_vault_doc_notes_that_the_shared_token_means_agent_read_only_stops_mcp_
     assert!(
         doc.contains("#26"),
         "the D24 note points at the follow-up, #26"
+    );
+    // The note names the one supported shell agent, Claude Code, as a token holder.
+    wi17_assert_sentence(
+        "D24 names Claude Code as a token holder that Agent read-only does not bind",
+        &doc,
+        &[
+            r"Agent read-only",
+            r"Claude Code",
+            r"shell",
+            r"holds the token",
+            r"does not bind",
+            r"#claude-code",
+        ],
+    );
+    // The Claude Code section carries the same warning where the token is exported.
+    let section = wi243_section(&doc, "### Claude Code");
+    wi17_assert_sentence(
+        "the Claude Code section says Agent read-only does not bind it on a hosted vault",
+        &section,
+        &[
+            r"Claude Code",
+            r"holds the access token",
+            r"Agent read-only does not bind it",
+        ],
     );
 }
 
