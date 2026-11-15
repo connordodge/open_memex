@@ -163,6 +163,6 @@ tail -f ~/Documents/MyMemex/.memex/mcp.log.*
 - Single-vault per Claude Desktop config entry. To switch vaults, edit the config and restart.
 - A live editing UI (Flutter macOS app) is shipped — see the main README. The Flutter app and Claude Desktop can be pointed at the same vault simultaneously; SQLite WAL handles concurrent access.
 - This guide uses a local vault: a folder on this Mac's own disk. To use one vault from several devices, run a vault server and connect to the hosted vault; see [Hosted vault](hosted-vault.md).
-- There are no MCP tools to edit, rename or delete an existing note, by design. Claude can create notes, link them, append to daily notes and file excerpts; editing and deleting are yours, through the app or the CLI (`memex update`, `memex rm`).
+- Claude can edit the text of an existing note with `edit_note`, except daily notes, the Vault Guide and notes you made Agent read-only; renaming and deleting a note are still yours, through the app or the CLI (`memex update`, `memex rm`). Claude can also create notes, link them, append to daily notes and file excerpts.
 - `tag_note`, `untag_note` and `add_footer_topic` write footer text only, including on daily notes, and never your own text; `tag_note` accepts only tags you have already written in your notes (`list_tags`).
 - Schema is versioned (currently V5); upgrades run forward migrations when a newer `memex` opens a vault, and older binaries refuse a newer vault. Don't manually edit `memex.db`.

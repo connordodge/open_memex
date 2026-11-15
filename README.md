@@ -51,6 +51,8 @@ Open Memex is released under the [MIT license](LICENSE). To contribute, see [CON
   - `memex prompt review` / `memex prompt capture` — print the agent prompt texts
   - `memex rm --vault <path> --note-id <id> --expected-version <v>` — delete a note (people only; there is no MCP delete tool)
   - `memex excerpt rm` — remove one excerpt from a topic note; `memex footer add --vault <path> --note-id <id> --topic-note-id <id>` — add a topic to a note's Note footer
+  - `memex read-only set|clear --vault <path> --note-id <id>` — set or clear Agent read-only on one note (people only; see [Agent note edits](#agent-note-edits))
+  - `memex revisions list --vault <path> --note-id <id>` — list a note's saved revisions; `memex revisions restore --vault <path> --revision-id <id>` — restore one (people only)
   - `memex tag add|rm --vault <path> --note-id <id> --tag <name>` — add or remove a tag in a note's footer; `memex tag ls --vault <path> [--note-id <id>]` — list every tag, or one note's tags and their origins; `memex ls --vault <path> --tag <name>` — list only the notes with that tag
   - `memex folder ls|new|update|rm|add|remove` — manage Smart Folders and their members; `memex settings get|set --key smart_folder_max_depth` — read or change a vault setting
   - `memex canvas …` — canvas operations (see [`docs/canvas.md`](docs/canvas.md))
@@ -76,8 +78,44 @@ Open Memex is released under the [MIT license](LICENSE). To contribute, see [CON
   - capture and excerpts: `append_to_daily_note`, `add_excerpt`, `remove_excerpt`
   - Smart Folders and settings: `list_smart_folders`, `create_smart_folder`, `update_smart_folder`, `delete_smart_folder`, `add_to_smart_folder`, `remove_from_smart_folder`, `get_vault_settings`
   - tags and footer topics: `list_tags`, `tag_note`, `untag_note`, `add_footer_topic`
-- None of the tools renames, edits or deletes an existing note, with one exception: `update_vault_guide` rewrites the Vault Guide, the one note the agent may rewrite. The only write into a daily note body is `append_to_daily_note`; `tag_note`, `untag_note` and `add_footer_topic` write Note footer text only, never the person's own text.
+- `edit_note` is the only tool that edits the text you wrote in an existing note (see [Agent note edits](#agent-note-edits)); `update_vault_guide` rewrites the Vault Guide. `add_link`, `update_link`, `add_excerpt`, `remove_excerpt` and `remove_excerpt_block` write only link and transclusion text, and they also respect Agent read-only. No tool renames or deletes a note. The only write into a daily note body is `append_to_daily_note`; `tag_note`, `untag_note` and `add_footer_topic` write Note footer text only, never the person's own text.
 - 2 MCP prompts: `review_daily_notes` and `capture` (the same texts print with `memex prompt review` and `memex prompt capture`)
+
+## Agent note edits
+
+An agent can edit the text of an existing note with the `edit_note` tool, and you can undo any of its edits.
+
+- `edit_note(note_id, bullets, edits | content_md, expected_version?)` has two forms.
+- Form A, `edits`: a list of `old_text` and `new_text` pairs, where each `old_text` must match exactly once in the note body above the footer, and a match is case- and byte-exact.
+- Form A is all-or-nothing: if any `old_text` matches zero times or more than once, nothing is changed.
+- In Form A, `expected_version` is optional.
+- Form B, `content_md`: it replaces the whole body above the footer.
+- In Form B, `content_md` needs `expected_version`, which is required.
+- `bullets` are 1 to 3 lines of at most 200 characters each, and they say what the edit did.
+- The bullets are shown in the note's Activity tab.
+- It changes the body only, never the title, the frontmatter or the footer.
+- It keeps every transclusion (`![[…]]`) in the note; an edit that would drop or change one fails with `excerpt_rule`.
+- Filing changes only through `add_excerpt`, `remove_excerpt` and `remove_excerpt_block`.
+- It refuses daily notes (`marker_rule`), the Vault Guide (`guide_rule`) and notes that are Agent read-only (`read_only_rule`).
+- On a note with a footer, an edit that leaves a code fence open above the footer fails with `edit_invalid`.
+- Overlapping occurrences of an `old_text` count as separate matches, so `aa` in `aaa` is `edit_ambiguous`.
+- Tags: an agent edit drops a body tag whose `#name` text it removed, except `inbox` and `agent-authored`. It never adds a tag; a `#name` it writes becomes a tag at your next save. See [`docs/tags.md`](docs/tags.md).
+
+**Agent read-only** is a flag on one note that makes it read-only to agents.
+
+- Agent read-only is a per-note flag that only you can set or clear.
+- You set Agent read-only in the note's ⋯ menu (Read-only for agents) or with `memex read-only set --vault <path> --note-id <id>`, and `memex read-only clear` removes it.
+- It does not apply to daily notes or the Vault Guide.
+- Agents can still read, search and link to a note that has it.
+- On a hosted vault, Agent read-only stops MCP agents but not a holder of the server token who also has shell access; see [`docs/hosted-vault.md`](docs/hosted-vault.md).
+
+**Revisions and Restore**
+
+- Each agent edit keeps the text it replaced as a revision.
+- The newest 20 revisions per note are kept.
+- Restore, in the note's Activity tab or with `memex revisions restore`, returns the note to that text and keeps the replaced text as a new revision.
+- Your own saves make no revisions.
+- `memex revisions list` shows a note's revisions with their ids.
 
 ## Upgrading to schema V5
 
@@ -217,7 +255,7 @@ cd app && flutter analyze && flutter test
 - In-editor wikilink rendering + click-to-navigate (today the right-panel Connections tab handles navigation; styled `TextSpan` + tap routing on `EditableText` is the v2 work)
 - Plugin system
 - Encryption at rest
-- MCP tools that rename, edit or delete existing notes (people do those through the app or `memex update` and `memex rm`; by design agents only create notes, append to daily notes, file excerpts, rewrite the Vault Guide with `update_vault_guide` (the one note an agent may edit), and write footer text with `tag_note`, `untag_note` and `add_footer_topic`, including on daily notes, never the person's own text)
+- MCP tools that rename or delete existing notes (people do those through the app or `memex update` and `memex rm`; by design agents only create notes, append to daily notes, file excerpts, edit note text with `edit_note`, rewrite the Vault Guide with `update_vault_guide`, and write footer text with `tag_note`, `untag_note` and `add_footer_topic`, including on daily notes, never the person's own text)
 - Transclusion of whole notes (`![[Title]]`); only blocks of daily notes can be transcluded, as excerpts
 
 ## License

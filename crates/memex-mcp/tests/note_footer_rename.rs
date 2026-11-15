@@ -369,7 +369,7 @@ fn readme_invariant_is_its_own_line_apart_from_the_count_line() {
     let counted = Regex::new(r"\d+ MCP tools").unwrap();
     let invariant: Vec<&str> = readme
         .lines()
-        .filter(|l| l.contains("renames, edits or deletes"))
+        .filter(|l| l.contains("`append_to_daily_note`") && l.contains("daily note body"))
         .collect();
     assert_eq!(invariant.len(), 1, "one invariant line: {invariant:?}");
     assert!(

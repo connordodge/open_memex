@@ -2318,16 +2318,19 @@ fn readme_invariant_line_names_the_vault_guide_exception_and_the_three_footer_wr
     );
     let line = lines[0];
     assert!(line.starts_with("- "), "it stays one bullet line: {line}");
-    // The Vault Guide is the one note the agent may rewrite.
+    // `update_vault_guide` rewrites the Vault Guide. WI #17 (Spec #7): it is no longer "the one
+    // note the agent may rewrite", because `edit_note` edits other notes' text.
     assert!(
         line.contains("Vault Guide") && line.contains("`update_vault_guide`"),
         "the invariant names the Vault Guide and `update_vault_guide`: {line}"
     );
     assert!(
-        Regex::new(r"(?i)\b(one|only)\b[^.]{0,40}\bnote\b[^.]{0,60}\b(rewrit\w*|edit\w*)")
-            .unwrap()
-            .is_match(line),
-        "the Vault Guide is the one note the agent may rewrite: {line}"
+        line.contains("rewrit"),
+        "the invariant says `update_vault_guide` rewrites the Vault Guide: {line}"
+    );
+    assert!(
+        line.contains("`edit_note`"),
+        "the invariant names `edit_note`, the tool that edits other notes' text: {line}"
     );
     // The footer writers, by name, and what they write.
     for tool in ["tag_note", "untag_note", "add_footer_topic"] {
@@ -2388,23 +2391,24 @@ fn review_guide_tool_order_starts_with_the_vault_guide_and_open_feedback_and_pla
 }
 
 #[test]
-fn review_guide_agent_limits_name_the_vault_guide_as_the_one_note_the_agent_rewrites() {
+fn review_guide_agent_limits_say_update_vault_guide_rewrites_the_vault_guide() {
+    // WI #17 (Spec #7): the Guide is no longer "the one note the agent may rewrite", because
+    // `edit_note` edits other notes' text; `update_vault_guide` is still how the agent rewrites
+    // the Guide. The `edit_note` item may name `update_vault_guide` too, so this finds a line
+    // rather than counting them.
     let doc = daily_review();
     let section = wi243_section(&doc, "### What the agent can and cannot do");
     let lines = wi243_lines_with(&section, "`update_vault_guide`");
-    assert_eq!(
-        lines.len(),
-        1,
-        "one statement in 'What the agent can and cannot do' names `update_vault_guide`:\n{section}"
-    );
-    let line = lines[0];
-    assert!(line.contains("Vault Guide"), "{line}");
     assert!(
-        Regex::new(r"(?i)\b(one|only)\b[^.]{0,40}\bnote\b")
-            .unwrap()
-            .is_match(line)
-            && Regex::new(r"(?i)\brewrit\w*\b").unwrap().is_match(line),
-        "it says the Vault Guide is the one note the agent may rewrite: {line}"
+        lines.iter().any(|l| {
+            l.contains("Vault Guide") && Regex::new(r"(?i)\brewrit\w*\b").unwrap().is_match(l)
+        }),
+        "a statement in 'What the agent can and cannot do' says `update_vault_guide` rewrites the \
+         Vault Guide:\n{section}"
+    );
+    assert!(
+        !section.contains("the one note the agent may rewrite"),
+        "the old rule is gone:\n{section}"
     );
     // The other limits stay: no rename, delete or merge of notes.
     assert!(
@@ -5322,4 +5326,831 @@ fn releasing_doc_lists_the_four_release_assets_release_yml_uploads() {
         doc.contains("--cleanup-tag"),
         "recovery deletes the tag with gh release delete --cleanup-tag"
     );
+}
+
+// ======================================================================
+// WI #17 (D): the docs for agent note edits (Spec #7, Req 39; D22, D24,
+// D25, D26).
+//
+// `edit_note`, Agent read-only, agent-edit Restore and the 20-revision
+// limit replace the old rule "no tool edits an existing note". These tests
+// pin the statements that can be checked mechanically; the prose around
+// them is reviewed by hand. Each fact is pinned against one sentence (or one
+// list item), so the wording can vary but a fact cannot go missing or be
+// split across sentences. Helpers carry a `wi17_` prefix so sibling WIs
+// editing this file do not collide.
+// ======================================================================
+
+const WI17_README_HEADING: &str = "## Agent note edits";
+
+/// The README `## Agent note edits` section: it must exist exactly once.
+fn wi17_readme_section() -> String {
+    let readme = readme();
+    let count = readme
+        .lines()
+        .filter(|l| l.trim_end() == WI17_README_HEADING)
+        .count();
+    assert_eq!(
+        count, 1,
+        "README.md has exactly one `{WI17_README_HEADING}` section"
+    );
+    wi17_h2_section(&readme, WI17_README_HEADING)
+}
+
+/// The text from the `## ` heading line that starts with `heading` to the
+/// next `## ` line.
+fn wi17_h2_section(md: &str, heading: &str) -> String {
+    let mut out = String::new();
+    let mut inside = false;
+    for line in md.lines() {
+        if line.starts_with("## ") {
+            if inside {
+                break;
+            }
+            inside = line.starts_with(heading);
+        }
+        if inside {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    assert!(inside, "no `## ` heading starting with {heading:?}");
+    out
+}
+
+/// The sentences of a markdown text: a paragraph (wrapped lines joined) or a
+/// list item is one block, and a block splits at `. `. Headings, table rows
+/// and code fences are blocks of their own.
+fn wi17_units(text: &str) -> Vec<String> {
+    let numbered = Regex::new(r"^\d+\. ").unwrap();
+    let mut blocks: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        let own_block = line.starts_with('#') || line.starts_with('|') || line.starts_with("```");
+        let item = line.starts_with("- ") || line.starts_with("* ") || numbered.is_match(line);
+        if (line.is_empty() || own_block || item) && !current.is_empty() {
+            blocks.push(std::mem::take(&mut current));
+        }
+        if line.is_empty() {
+            continue;
+        }
+        let body = line
+            .strip_prefix("- ")
+            .or_else(|| line.strip_prefix("* "))
+            .unwrap_or(line);
+        if own_block {
+            blocks.push(body.to_string());
+            continue;
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(body);
+    }
+    if !current.is_empty() {
+        blocks.push(current);
+    }
+    blocks
+        .iter()
+        .flat_map(|b| b.split(". "))
+        .map(|s| s.trim().trim_end_matches('.').to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Asserts that one sentence of `text` matches every regex of `all`
+/// (case-insensitive).
+fn wi17_assert_sentence(what: &str, text: &str, all: &[&str]) {
+    let units = wi17_units(text);
+    let patterns: Vec<Regex> = all
+        .iter()
+        .map(|p| Regex::new(&format!("(?i){p}")).unwrap())
+        .collect();
+    assert!(
+        units.iter().any(|u| patterns.iter().all(|r| r.is_match(u))),
+        "{what}: no one sentence matches all of {all:?}; the sentences are:\n{}",
+        units.join("\n")
+    );
+}
+
+/// The list item (a line starting `- `, with its wrapped or indented
+/// continuation lines up to the next line starting `- `) that contains
+/// `needle`.
+fn wi17_item_with(section: &str, needle: &str) -> String {
+    let lines: Vec<&str> = section.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| l.contains(needle))
+        .unwrap_or_else(|| panic!("no line contains {needle}:\n{section}"));
+    let mut start = at;
+    while start > 0 && !lines[start].trim_start().starts_with("- ") {
+        start -= 1;
+    }
+    let mut end = at + 1;
+    while end < lines.len()
+        && !lines[end].trim_start().starts_with("- ")
+        && !lines[end].trim().is_empty()
+    {
+        end += 1;
+    }
+    lines[start..end].join(" ")
+}
+
+// ---------- README: what edit_note does (AC 1) ----------
+
+#[test]
+fn readme_agent_note_edits_section_describes_form_a_edits_and_form_b_content_md() {
+    let section = wi17_readme_section();
+    assert!(
+        section.contains("`edit_note`"),
+        "the section names `edit_note`:\n{section}"
+    );
+    wi17_assert_sentence(
+        "Form A",
+        &section,
+        &[
+            r"`edits`",
+            r"`old_text`",
+            r"exactly once",
+            r"note body|body of the note|above the footer",
+        ],
+    );
+    assert!(
+        section.contains("case- and byte-exact"),
+        "Form A says a match is case- and byte-exact:\n{section}"
+    );
+    wi17_assert_sentence("Form A all-or-nothing", &section, &[r"all-or-nothing"]);
+    wi17_assert_sentence(
+        "Form A's version",
+        &section,
+        &[r"`expected_version`", r"optional"],
+    );
+    wi17_assert_sentence(
+        "Form B",
+        &section,
+        &[
+            r"`content_md`",
+            r"replaces the whole body",
+            r"above the footer",
+        ],
+    );
+    wi17_assert_sentence(
+        "Form B's version",
+        &section,
+        &[r"`content_md`", r"`expected_version`", r"required"],
+    );
+}
+
+#[test]
+fn readme_agent_note_edits_section_says_bullets_are_one_to_three_lines_of_at_most_200_characters_shown_in_the_activity_tab(
+) {
+    let section = wi17_readme_section();
+    wi17_assert_sentence(
+        "bullets",
+        &section,
+        &[r"bullets", r"1 to 3", r"200 characters"],
+    );
+    wi17_assert_sentence(
+        "bullets in the Activity tab",
+        &section,
+        &[r"bullets", r"Activity tab"],
+    );
+}
+
+#[test]
+fn readme_agent_note_edits_section_says_edit_note_changes_the_body_only_and_keeps_transclusions_and_the_footer(
+) {
+    let section = wi17_readme_section();
+    wi17_assert_sentence(
+        "body only",
+        &section,
+        &[
+            r"`edit_note`|\bit\b",
+            r"body only",
+            r"never",
+            r"title",
+            r"frontmatter",
+            r"footer",
+        ],
+    );
+    wi17_assert_sentence(
+        "transclusions kept",
+        &section,
+        &[r"transclusion", r"\bkeeps?\b", r"`excerpt_rule`"],
+    );
+    wi17_assert_sentence(
+        "filing goes through the excerpt tools",
+        &section,
+        &[
+            r"filing",
+            r"`add_excerpt`",
+            r"`remove_excerpt`",
+            r"`remove_excerpt_block`",
+        ],
+    );
+}
+
+#[test]
+fn readme_agent_note_edits_section_names_the_notes_edit_note_refuses_with_their_error_codes() {
+    let section = wi17_readme_section();
+    wi17_assert_sentence(
+        "refused notes",
+        &section,
+        &[
+            r"refuses",
+            r"daily notes",
+            r"`marker_rule`",
+            r"Vault Guide",
+            r"`guide_rule`",
+            r"Agent read-only",
+            r"`read_only_rule`",
+        ],
+    );
+}
+
+#[test]
+fn readme_agent_note_edits_section_says_an_open_code_fence_is_edit_invalid_and_overlapping_matches_are_edit_ambiguous(
+) {
+    let section = wi17_readme_section();
+    wi17_assert_sentence(
+        "D25 code fence",
+        &section,
+        &[r"code fence", r"`edit_invalid`", r"footer"],
+    );
+    wi17_assert_sentence(
+        "D25 overlapping matches",
+        &section,
+        &[
+            r"overlapping",
+            r"separate matches",
+            r"`aa`",
+            r"`aaa`",
+            r"`edit_ambiguous`",
+        ],
+    );
+}
+
+// ---------- README: Agent read-only, Restore and revisions (AC 2) ----------
+
+#[test]
+fn readme_agent_note_edits_section_describes_agent_read_only_that_only_the_person_sets() {
+    let section = wi17_readme_section();
+    wi17_assert_sentence(
+        "what Agent read-only is",
+        &section,
+        &[
+            r"Agent read-only",
+            r"flag",
+            r"only (you|the person)",
+            r"\bset",
+        ],
+    );
+    wi17_assert_sentence(
+        "where the person sets it",
+        &section,
+        &[r"Agent read-only", r"⋯", r"`memex read-only set", r"clear"],
+    );
+    wi17_assert_sentence(
+        "what an agent can still do",
+        &section,
+        &[r"agents?", r"still", r"read", r"search", r"link"],
+    );
+}
+
+#[test]
+fn readme_agent_note_edits_section_says_agent_read_only_does_not_apply_to_daily_notes_or_the_vault_guide(
+) {
+    let section = wi17_readme_section();
+    wi17_assert_sentence(
+        "the Agent read-only flag does not apply to daily notes or the Vault Guide",
+        &section,
+        &[r"does not apply", r"daily notes", r"Vault Guide"],
+    );
+}
+
+#[test]
+fn readme_agent_note_edits_section_describes_revisions_restore_and_the_newest_20_kept() {
+    let section = wi17_readme_section();
+    wi17_assert_sentence(
+        "an agent edit keeps a revision",
+        &section,
+        &[r"agent edit", r"revision", r"replaced"],
+    );
+    wi17_assert_sentence(
+        "the revision limit",
+        &section,
+        &[r"newest 20", r"revisions?", r"per note"],
+    );
+    wi17_assert_sentence(
+        "Restore",
+        &section,
+        &[
+            r"Restore",
+            r"Activity tab",
+            r"`memex revisions restore`",
+            r"new revision",
+        ],
+    );
+    wi17_assert_sentence(
+        "person saves make no revisions",
+        &section,
+        &[
+            r"\bsaves?\b",
+            r"\bno revisions?\b|never (makes?|keeps?|creates?) (a )?revisions?",
+        ],
+    );
+}
+
+// ---------- README: the person commands (AC 2, AC 4) ----------
+
+#[test]
+fn readme_lists_the_read_only_and_revisions_commands_with_real_flags() {
+    let readme = readme();
+    let read_only: Vec<&str> = readme
+        .lines()
+        .filter(|l| l.contains("memex read-only"))
+        .collect();
+    assert!(
+        read_only.iter().any(|l| {
+            l.contains("set")
+                && l.contains("clear")
+                && l.contains("--vault")
+                && l.contains("--note-id")
+        }),
+        "a README line shows `memex read-only set|clear --vault … --note-id …`: {read_only:?}"
+    );
+    let revisions: Vec<&str> = readme
+        .lines()
+        .filter(|l| l.contains("memex revisions"))
+        .collect();
+    assert!(
+        revisions.iter().any(|l| {
+            l.contains("list")
+                && l.contains("restore")
+                && l.contains("--vault")
+                && l.contains("--note-id")
+                && l.contains("--revision-id")
+        }),
+        "a README line shows `memex revisions list|restore` with `--note-id` and `--revision-id`: \
+         {revisions:?}"
+    );
+    // Both commands exist (the check also covers every other command shown).
+    assert_commands_are_real("README.md", &readme);
+}
+
+/// The `--flag` names in the `--help` of `memex <args>`.
+fn wi17_help_flags(args: &[&str]) -> BTreeSet<String> {
+    let out = Command::new(env!("CARGO_BIN_EXE_memex"))
+        .args(args)
+        .arg("--help")
+        .output()
+        .expect("run memex --help");
+    assert!(out.status.success(), "memex {args:?} --help failed");
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    Regex::new(r"--[a-z][a-z-]*")
+        .unwrap()
+        .find_iter(&text)
+        .map(|m| m.as_str().to_string())
+        .collect()
+}
+
+#[test]
+fn readme_person_command_flags_are_flags_the_real_subcommands_accept() {
+    let readme = readme();
+    let span = Regex::new(r"`memex (read-only|revisions) ([a-z|]+)([^`]*)`").unwrap();
+    let flag = Regex::new(r"--[a-z][a-z-]*").unwrap();
+    let mut shown: BTreeSet<(String, String, String)> = BTreeSet::new();
+    for c in span.captures_iter(&readme) {
+        for action in c[2].split('|') {
+            let accepted = wi17_help_flags(&[&c[1], action]);
+            for f in flag.find_iter(&c[3]) {
+                assert!(
+                    accepted.contains(f.as_str()),
+                    "README shows `memex {} {action} {}`, which `memex {} {action} --help` does \
+                     not list: {accepted:?}",
+                    &c[1],
+                    f.as_str(),
+                    &c[1]
+                );
+                shown.insert((c[1].to_string(), action.to_string(), f.as_str().to_string()));
+            }
+        }
+    }
+    // The README shows the flags it promises for each action.
+    for (group, action, f) in [
+        ("read-only", "set", "--note-id"),
+        ("read-only", "clear", "--note-id"),
+        ("revisions", "list", "--note-id"),
+        ("revisions", "restore", "--revision-id"),
+    ] {
+        assert!(
+            shown.contains(&(group.to_string(), action.to_string(), f.to_string())),
+            "README shows `memex {group} {action} {f}`: {shown:?}"
+        );
+    }
+}
+
+#[test]
+fn docs_name_edit_note_only_as_a_tool_the_server_really_serves() {
+    let (tools, _) = served_names();
+    assert!(
+        tools.contains("edit_note"),
+        "the server serves `edit_note`: {tools:?}"
+    );
+    let edit_token = Regex::new(r"`(edit_[a-z_]+)`").unwrap();
+    for doc in [
+        "README.md",
+        "docs/daily-review.md",
+        "docs/tags.md",
+        "docs/claude-desktop-setup.md",
+        "GLOSSARY.md",
+    ] {
+        let text = read_repo_file(doc);
+        // Every backticked `edit_…` token is a served tool, except the two error codes.
+        for c in edit_token.captures_iter(&text) {
+            if &c[1] == "edit_invalid" || &c[1] == "edit_ambiguous" {
+                continue;
+            }
+            assert!(
+                tools.contains(&c[1]),
+                "{doc} names `{}`, which the server does not expose: {tools:?}",
+                &c[1]
+            );
+        }
+    }
+    assert!(
+        readme().contains("`edit_note`"),
+        "the README names `edit_note`"
+    );
+}
+
+#[test]
+fn readme_invariant_line_says_edit_note_is_the_only_prose_editor_and_link_and_excerpt_tools_write_only_link_and_transclusion_text(
+) {
+    let readme = readme();
+    let lines: Vec<&str> = readme
+        .lines()
+        .filter(|l| l.contains("`append_to_daily_note`") && l.contains("daily note body"))
+        .collect();
+    assert_eq!(lines.len(), 1, "one invariant line: {lines:?}");
+    let line = lines[0];
+    wi17_assert_sentence(
+        "edit_note is the only tool that edits the text you wrote",
+        line,
+        &[r"`edit_note`", r"only tool", r"text you wrote"],
+    );
+    wi17_assert_sentence(
+        "link and excerpt tools write only link and transclusion text and respect Agent read-only",
+        line,
+        &[
+            r"`add_link`",
+            r"`update_link`",
+            r"`add_excerpt`",
+            r"`remove_excerpt`",
+            r"`remove_excerpt_block`",
+            r"only link and transclusion text",
+            r"Agent read-only",
+        ],
+    );
+    assert!(
+        !line.contains("only through `edit_note`"),
+        "the invariant no longer claims edit_note and update_vault_guide are the only text \
+         writers: {line}"
+    );
+}
+
+// ---------- README: the old rule is gone (AC 3) ----------
+
+#[test]
+fn readme_no_longer_says_no_tool_edits_a_note_and_names_edit_note_on_the_invariant_and_by_design_lines(
+) {
+    let readme = readme();
+    for stale in [
+        "None of the tools renames, edits or deletes an existing note",
+        "the one note the agent may rewrite",
+        "the one note an agent may edit",
+    ] {
+        assert!(
+            !readme.contains(stale),
+            "README.md still states the old rule: `{stale}`"
+        );
+    }
+    let invariant: Vec<&str> = readme
+        .lines()
+        .filter(|l| l.contains("`append_to_daily_note`") && l.contains("daily note body"))
+        .collect();
+    assert_eq!(invariant.len(), 1, "one invariant line: {invariant:?}");
+    assert!(
+        invariant[0].contains("`edit_note`"),
+        "the invariant line says what `edit_note` may change: {}",
+        invariant[0]
+    );
+    let by_design = wi243_lines_with(&readme, "by design agents only");
+    assert_eq!(by_design.len(), 1, "one 'by design' line: {by_design:?}");
+    assert!(
+        by_design[0].contains("`edit_note`"),
+        "the 'by design' line says agents edit note text with `edit_note`: {}",
+        by_design[0]
+    );
+}
+
+#[test]
+fn readme_out_of_scope_list_drops_note_editing_tools_but_keeps_rename_and_delete() {
+    let readme = readme();
+    assert!(
+        !readme.contains("MCP tools that rename, edit or delete existing notes"),
+        "the out-of-scope list no longer lists note-editing MCP tools"
+    );
+    let deferred = wi17_h2_section(&readme, "## What's deferred");
+    assert!(
+        deferred.contains("MCP tools that rename or delete existing notes"),
+        "renaming and deleting stay out of scope:\n{deferred}"
+    );
+}
+
+// ---------- docs/daily-review.md (AC 4, AC 5) ----------
+
+#[test]
+fn review_guide_agent_limits_list_edit_note_with_its_refusals_and_kept_transclusions() {
+    let doc = daily_review();
+    let section = wi243_section(&doc, "### What the agent can and cannot do");
+    let item = wi17_item_with(&section, "`edit_note`");
+    wi17_assert_sentence(
+        "edit_note refuses daily notes, the Vault Guide and Agent read-only notes",
+        &item,
+        &[
+            r"\brefuses\b",
+            r"daily notes",
+            r"the Vault Guide",
+            r"Agent read-only",
+        ],
+    );
+    wi17_assert_sentence(
+        "edit_note never changes the title, the frontmatter or the Note footer",
+        &item,
+        &[
+            r"\bnever changes\b",
+            r"title",
+            r"frontmatter",
+            r"Note footer",
+        ],
+    );
+    wi17_assert_sentence(
+        "edit_note keeps every transclusion",
+        &item,
+        &[r"\bkeeps every transclusion\b"],
+    );
+    // The other limits stay.
+    assert!(
+        section.contains("It cannot rename, delete or merge notes"),
+        "the rename/delete/merge limit stays:\n{section}"
+    );
+}
+
+#[test]
+fn review_guide_who_is_calling_section_names_the_person_commands_and_the_shell_list_gains_them() {
+    let doc = daily_review();
+    let section = wi243_section(&doc, "## 6. Who is calling");
+    for command in ["memex read-only", "memex revisions"] {
+        assert!(
+            section.contains(command),
+            "'Who is calling' mentions `{command}`:\n{section}"
+        );
+    }
+    wi17_assert_sentence(
+        "who sets Agent read-only",
+        &section,
+        &[r"Agent read-only", r"\byou\b|\bperson\b"],
+    );
+    let list = wi243_lines_with(&doc, "do not give an agent shell access");
+    assert_eq!(list.len(), 1, "one no-shell-access paragraph: {list:?}");
+    for sub in ["`read-only`", "`revisions`"] {
+        assert!(
+            list[0].contains(sub),
+            "the no-shell-access list names {sub}: {}",
+            list[0]
+        );
+    }
+}
+
+// ---------- docs/tags.md (AC 6; D26) ----------
+
+#[test]
+fn tags_doc_says_an_agent_edit_drops_a_tag_whose_text_it_removed_except_the_system_tags() {
+    let doc = read_repo_file("docs/tags.md");
+    wi17_assert_sentence(
+        "removals only, with the D26 exception",
+        &doc,
+        &[
+            r"agent edit",
+            r"\bdrops\b",
+            r"removed",
+            r"`inbox`",
+            r"`agent-authored`",
+            r"\bexcept\b",
+        ],
+    );
+}
+
+#[test]
+fn tags_doc_says_an_agent_edit_never_adds_a_tag_until_your_next_save() {
+    let doc = read_repo_file("docs/tags.md");
+    wi17_assert_sentence(
+        "an agent edit adds no tag",
+        &doc,
+        &[r"never adds a tag", r"next save"],
+    );
+}
+
+// ---------- GLOSSARY.md (AC 7) ----------
+
+const WI17_GLOSSARY_HEADING: &str = "## Agent note edits (#1)";
+const WI17_AGENT_READ_ONLY_ENTRY: &str = "**Agent read-only**:\nA flag the person sets on one note that makes it read-only to agents: agents can still read, search and link to the note, but cannot change it. Only the person can set or clear it.\n_Avoid_: locked, protected, pinned (Pinned is the Smart Folder flag)";
+
+#[test]
+fn glossary_has_one_agent_note_edits_section_holding_the_agent_read_only_entry_verbatim() {
+    let glossary = read_repo_file("GLOSSARY.md");
+    assert_eq!(
+        glossary
+            .lines()
+            .filter(|l| l.trim_end() == WI17_GLOSSARY_HEADING)
+            .count(),
+        1,
+        "GLOSSARY.md has exactly one `{WI17_GLOSSARY_HEADING}` heading"
+    );
+    let section = wi17_h2_section(&glossary, WI17_GLOSSARY_HEADING);
+    assert!(
+        section.contains(WI17_AGENT_READ_ONLY_ENTRY),
+        "the section holds the Agent read-only entry verbatim:\n{WI17_AGENT_READ_ONLY_ENTRY}\n\
+         --- section was ---\n{section}"
+    );
+    assert_eq!(
+        glossary.matches("**Agent read-only**").count(),
+        1,
+        "exactly one Agent read-only entry in GLOSSARY.md"
+    );
+    // The section sits before `## Agents sheet (#394)` (that one stays directly before
+    // Navigation) and so before `## Releases (#356)` (which stays last).
+    let headings: Vec<&str> = glossary.lines().filter(|l| l.starts_with("## ")).collect();
+    let at = |h: &str| headings.iter().position(|x| x.trim_end() == h);
+    let mine = at(WI17_GLOSSARY_HEADING).expect("the section");
+    assert!(
+        mine > at("## Terminology").expect("Terminology")
+            && mine < at("## Agents sheet (#394)").expect("Agents sheet"),
+        "the section sits after Terminology and before the Agents sheet section: {headings:?}"
+    );
+}
+
+#[test]
+fn glossary_topic_note_capture_and_vault_guide_entries_do_not_say_the_guide_is_the_only_note_an_agent_may_rewrite(
+) {
+    let glossary = read_repo_file("GLOSSARY.md");
+    let entry = |term: &str| -> String {
+        let head = format!("**{term}**:");
+        let at = glossary
+            .find(&head)
+            .unwrap_or_else(|| panic!("GLOSSARY.md has the {head} entry"));
+        glossary[at..]
+            .split("\n\n")
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    };
+    let old_rule = Regex::new(
+        r"(?i)\b(only|one)\b[^.\n]{0,40}\bnote\b[^.\n]{0,40}\b(agent|agents)\b[^.\n]{0,20}\b(rewrit\w*|edit\w*)\b",
+    )
+    .unwrap();
+    for term in ["Topic note", "Capture", "Vault Guide"] {
+        let text = entry(term);
+        assert!(
+            !old_rule.is_match(&text),
+            "the {term} entry still says only one note may be rewritten by an agent: {text}"
+        );
+    }
+    // Their definitions stay.
+    assert!(entry("Capture").contains("append-only"));
+    assert!(entry("Vault Guide").contains("The agent reads it before every Review and Capture."));
+    assert!(entry("Topic note").contains("accumulates excerpts across days"));
+}
+
+// ---------- docs/claude-desktop-setup.md and docs/hosted-vault.md ----------
+
+#[test]
+fn setup_guide_limits_say_agents_edit_note_text_with_edit_note_and_renaming_and_deleting_stay_yours(
+) {
+    let doc = wi243_desktop_setup();
+    assert!(
+        !doc.contains("There are no MCP tools to edit, rename or delete an existing note"),
+        "the setup guide no longer says no MCP tool edits a note"
+    );
+    let section = wi243_section(&doc, "## Notes / known limits");
+    let lines = wi243_lines_with(&section, "`edit_note`");
+    assert_eq!(
+        lines.len(),
+        1,
+        "one statement in 'Notes / known limits' names `edit_note`:\n{section}"
+    );
+    let line = lines[0].to_lowercase();
+    assert!(
+        line.contains("renam") && line.contains("delet") && line.contains("yours"),
+        "it says renaming and deleting are still yours: {}",
+        lines[0]
+    );
+}
+
+#[test]
+fn hosted_vault_doc_notes_that_the_shared_token_means_agent_read_only_stops_mcp_agents_not_a_token_holder(
+) {
+    let doc = hosted_vault_doc();
+    wi17_assert_sentence(
+        "D24",
+        &doc,
+        &[
+            r"Agent read-only",
+            r"token",
+            r"`/mcp`",
+            r"`/api/v1`",
+            r"shell",
+        ],
+    );
+    assert!(
+        doc.contains("#26"),
+        "the D24 note points at the follow-up, #26"
+    );
+    // The note names the one supported shell agent, Claude Code, as a token holder.
+    wi17_assert_sentence(
+        "D24 names Claude Code as a token holder that Agent read-only does not bind",
+        &doc,
+        &[
+            r"Agent read-only",
+            r"Claude Code",
+            r"shell",
+            r"holds the token",
+            r"does not bind",
+            r"#claude-code",
+        ],
+    );
+    // The Claude Code section carries the same warning where the token is exported.
+    let section = wi243_section(&doc, "### Claude Code");
+    wi17_assert_sentence(
+        "the Claude Code section says Agent read-only does not bind it on a hosted vault",
+        &section,
+        &[
+            r"Claude Code",
+            r"holds the access token",
+            r"Agent read-only does not bind it",
+        ],
+    );
+}
+
+// ---------- terms (AC 9) ----------
+
+#[test]
+fn docs_spell_agent_read_only_one_way_and_never_call_it_locked_protected_or_pinned() {
+    let spelling = Regex::new(r"(?i)agent read-only").unwrap();
+    let wrong_word = Regex::new(r"(?i)\b(lock\w*|protect\w*|pinned|pin)\b").unwrap();
+    let mut docs_mentioning: Vec<&str> = Vec::new();
+    for doc in [
+        "README.md",
+        "docs/daily-review.md",
+        "docs/tags.md",
+        "docs/hosted-vault.md",
+        "docs/claude-desktop-setup.md",
+        "GLOSSARY.md",
+    ] {
+        let text = read_repo_file(doc);
+        let mut mentioned = false;
+        for unit in wi17_units(&text) {
+            if unit.starts_with("_Avoid_") || !spelling.is_match(&unit) {
+                continue;
+            }
+            mentioned = true;
+            for m in spelling.find_iter(&unit) {
+                assert_eq!(
+                    m.as_str(),
+                    "Agent read-only",
+                    "{doc} spells the glossary term: {unit}"
+                );
+            }
+            assert!(
+                !wrong_word.is_match(&unit),
+                "{doc} calls Agent read-only locked, protected or pinned: {unit}"
+            );
+        }
+        if mentioned {
+            docs_mentioning.push(doc);
+        }
+    }
+    for doc in [
+        "README.md",
+        "docs/daily-review.md",
+        "docs/hosted-vault.md",
+        "GLOSSARY.md",
+    ] {
+        assert!(
+            docs_mentioning.contains(&doc),
+            "{doc} names Agent read-only: {docs_mentioning:?}"
+        );
+    }
 }

@@ -41,7 +41,7 @@ const _localDocs =
 
 final _badges = <Override>[
   liveTabBadgeProvider.overrideWith((ref) => '2 connected'),
-  toolsTabBadgeProvider.overrideWith((ref) => '37 tools'),
+  toolsTabBadgeProvider.overrideWith((ref) => '38 tools'),
   recallTabDotProvider.overrideWith((ref) => true),
 ];
 
@@ -421,7 +421,7 @@ void main() {
         final tabLabels = {
           'agents-tab-live': 'Live 2 connected',
           'agents-tab-connect': 'Connect',
-          'agents-tab-tools': 'Tools 37 tools',
+          'agents-tab-tools': 'Tools 38 tools',
           'agents-tab-recall': 'Semantic recall',
         };
         for (final MapEntry(:key, :value) in tabLabels.entries) {
