@@ -451,13 +451,18 @@ void main() {
       'fromOpen with a failed save still fails with the save-first message at once and does not wait',
       () async {
         final env = await _wi429Launch(_wi429Topic);
-        env.cli.on(
-          'update',
-          (_) => FakeMemexCli.error(
+        // TEST-CHANGE (#16, Req 34a): the server changed the line the
+        // person typed on (an overlap), so the conflict is not merged.
+        env.cli.on('update', (call) {
+          env.db.db.execute(
+            'UPDATE notes SET content_md = ?, version = version + 1 WHERE id = ?',
+            ['Changed on the server.', call.flag('note-id')],
+          );
+          return FakeMemexCli.error(
             'version_conflict',
             'note changed on the server',
-          ),
-        );
+          );
+        });
         env.type(_wi429Typed);
 
         final outcome = await _wi429Outcome(

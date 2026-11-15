@@ -235,3 +235,69 @@ fn app_read_get_note_returns_footer_tags_beside_tags() {
         "`tags` keeps every row"
     );
 }
+
+// ---------------------------------------------------------------------------
+// WI #9 (Spec #7 Req 8, ruling D6): `agent_read_only` on `GET /notes/{note_id}`
+// ---------------------------------------------------------------------------
+
+#[test]
+fn app_read_get_note_reports_agent_read_only_true_for_a_flagged_note_and_false_otherwise() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut vault = Vault::create(dir.path().join("vault")).unwrap();
+    let mut create = |title: &str, fm: Option<Value>| {
+        memex_core::notes::create_note_as(
+            &mut vault,
+            CreateNote {
+                title: Some(title.into()),
+                content_md: "Body.\n".into(),
+                frontmatter: fm,
+            },
+            Caller::Person,
+        )
+        .unwrap()
+        .id
+    };
+    let flagged = create("Pricing notes", None);
+    let open_note = create("Roadmap", None);
+    let daily = create("2026-11-13", Some(serde_json::json!({ "role": "daily" })));
+    assert!(memex_core::notes::set_agent_read_only(&mut vault, &flagged, true).unwrap());
+
+    let read = |vault: &Vault, id: &NoteId| {
+        serde_json::to_value(memex_core::app_reads::notes::get_note(vault, id).unwrap()).unwrap()
+    };
+    assert_eq!(read(&vault, &flagged)["agent_read_only"], Value::Bool(true));
+    assert_eq!(
+        read(&vault, &open_note)["agent_read_only"],
+        Value::Bool(false)
+    );
+    assert_eq!(
+        read(&vault, &daily)["agent_read_only"],
+        Value::Bool(false),
+        "a daily note reads false, beside its review fields"
+    );
+    assert!(
+        read(&vault, &daily).get("review").is_some(),
+        "review fields kept"
+    );
+    assert_eq!(
+        read(&vault, &flagged)["title"],
+        "Pricing notes",
+        "today's keys kept"
+    );
+
+    // A note whose frontmatter is not JSON (the app read's own case) still
+    // reports the flag.
+    vault
+        .connection_ref()
+        .execute(
+            "UPDATE notes SET frontmatter = '{\"role\": \"topic\"' WHERE id = ?",
+            [flagged.as_str()],
+        )
+        .unwrap();
+    assert_eq!(read(&vault, &flagged)["agent_read_only"], Value::Bool(true));
+    assert!(memex_core::notes::set_agent_read_only(&mut vault, &flagged, false).unwrap());
+    assert_eq!(
+        read(&vault, &flagged)["agent_read_only"],
+        Value::Bool(false)
+    );
+}

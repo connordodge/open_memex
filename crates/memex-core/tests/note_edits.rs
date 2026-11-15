@@ -1735,6 +1735,96 @@ fn a_body_tag_whose_text_the_edit_removed_is_dropped() {
 }
 
 #[test]
+fn an_agent_edit_removing_the_inbox_text_keeps_the_inbox_tag() {
+    let (_dir, mut v) = fresh();
+    let n = note(
+        &mut v,
+        "Triage",
+        "Triage #inbox and #pricing.\nAlso #launch.\nEnd.\n",
+    );
+    let body = |name: &str| (name.to_string(), "body".to_string());
+    assert_eq!(
+        tag_rows(&v, &n.id),
+        vec![body("inbox"), body("launch"), body("pricing")]
+    );
+
+    edit(
+        &mut v,
+        form_a(
+            &n.id,
+            vec![
+                pair("Triage #inbox and #pricing.", "Triage and pricing."),
+                pair("Also #launch.", "Also launch."),
+            ],
+            None,
+        ),
+    )
+    .unwrap();
+
+    assert_eq!(
+        current(&v, &n.id).content_md,
+        "Triage and pricing.\nAlso launch.\nEnd.\n"
+    );
+    assert_eq!(
+        tag_rows(&v, &n.id),
+        vec![body("inbox")],
+        "the ordinary tags go in the same edit, the system tag stays"
+    );
+}
+
+#[test]
+fn an_agent_edit_removing_the_agent_authored_text_keeps_that_tag() {
+    let (_dir, mut v) = fresh();
+    let n = note(
+        &mut v,
+        "Drafted",
+        "Drafted #agent-authored with #pricing.\nEnd.\n",
+    );
+    let body = |name: &str| (name.to_string(), "body".to_string());
+    assert_eq!(
+        tag_rows(&v, &n.id),
+        vec![body("agent-authored"), body("pricing")]
+    );
+
+    edit(
+        &mut v,
+        form_a(
+            &n.id,
+            vec![pair(
+                "Drafted #agent-authored with #pricing.",
+                "Drafted with pricing.",
+            )],
+            None,
+        ),
+    )
+    .unwrap();
+
+    assert_eq!(tag_rows(&v, &n.id), vec![body("agent-authored")]);
+}
+
+#[test]
+fn a_form_b_rewrite_without_the_system_tag_text_keeps_the_system_tag() {
+    let (_dir, mut v) = fresh();
+    let n = note(
+        &mut v,
+        "Triage",
+        "Triage #inbox #agent-authored #pricing.\n",
+    );
+    let body = |name: &str| (name.to_string(), "body".to_string());
+    assert_eq!(
+        tag_rows(&v, &n.id),
+        vec![body("agent-authored"), body("inbox"), body("pricing")]
+    );
+
+    edit(&mut v, form_b(&n.id, "Nothing tagged.\n", Some(n.version))).unwrap();
+
+    assert_eq!(
+        tag_rows(&v, &n.id),
+        vec![body("agent-authored"), body("inbox")]
+    );
+}
+
+#[test]
 fn a_name_the_edit_adds_is_not_a_tag() {
     let (_dir, mut v) = fresh();
     note(&mut v, "Roadmap", "The #roadmap lives here.\n");

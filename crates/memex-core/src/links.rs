@@ -377,7 +377,9 @@ pub fn update_link_as(
 
 /// [`update_link_as`], also returning whether the link changed: false when
 /// the resolved kind and label equal the current ones, and then the source
-/// note is not saved.
+/// note is not saved. An agent's edit of a link from a note flagged
+/// read-only for agents is `ReadOnlyRule`, the nothing-to-change answer
+/// included (Spec #7 Req 5).
 pub fn update_link_changed(
     vault: &mut Vault,
     link_id: &str,
@@ -385,6 +387,11 @@ pub fn update_link_changed(
     caller: Caller,
 ) -> Result<(Link, bool)> {
     let current = get_link(vault, link_id)?;
+    crate::notes::check_agent_read_only(
+        vault.connection_ref(),
+        caller,
+        &crate::notes::NoteId::parse(&current.from_note_id)?,
+    )?;
 
     // Resolve target kind + label, then determine whether anything needs to change.
     let new_kind = patch.new_kind.unwrap_or_else(|| current.link_kind.clone());

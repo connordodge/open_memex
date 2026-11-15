@@ -162,35 +162,40 @@ void main() {
   });
 
   group('saves that do not merge', () {
-    testWidgets('a topic note conflict is reported as it is and never merged', (
-      tester,
-    ) async {
-      final (r, _) = await _launch(tester);
-      await _openTopic(r);
-      await r.type('${_topicBody}One.\n');
-      await r.fireDebounce();
-      expect(r.updates.single.stdinBody, '${_topicBody}One.\n');
+    // TEST-CHANGE (#16, Req 34a): a topic note conflict now merges disjoint
+    // changes, so the server write adds a different line where the person
+    // adds one (an overlap) for the conflict to be reported.
+    testWidgets(
+      'a topic note conflict that changed the same lines on both sides is reported as it is and never merged',
+      (tester) async {
+        final (r, _) = await _launch(tester);
+        await _openTopic(r);
+        await r.type('${_topicBody}One.\n');
+        await r.fireDebounce();
+        expect(r.updates.single.stdinBody, '${_topicBody}One.\n');
 
-      await r.type('${_topicBody}One.\nTwo.\n');
-      await r.fireDebounce();
-      expect(r.updates, hasLength(2));
-      expect(r.updates[1].stdinBody, '${_topicBody}One.\nTwo.\n');
+        await r.type('${_topicBody}One.\nTwo.\n');
+        await r.fireDebounce();
+        expect(r.updates, hasLength(2));
+        expect(r.updates[1].stdinBody, '${_topicBody}One.\nTwo.\n');
 
-      // A server write makes the next save stale.
-      r.db.db.execute('UPDATE notes SET version = version + 1 WHERE id = ?', [
-        _topicId,
-      ]);
-      await r.type('${_topicBody}One.\nTwo.\nThree.\n');
-      await r.fireDebounce();
+        // A server write makes the next save stale.
+        r.db.db.execute(
+          'UPDATE notes SET content_md = ?, version = version + 1 WHERE id = ?',
+          ['${_topicBody}One.\nTwo.\nServer.\n', _topicId],
+        );
+        await r.type('${_topicBody}One.\nTwo.\nThree.\n');
+        await r.fireDebounce();
 
-      expect(r.updates, hasLength(3));
-      expect(r.updates[2].stdinBody, '${_topicBody}One.\nTwo.\nThree.\n');
-      expect(r.editor.status, SaveStatus.conflict);
-      expect(r.editor.errorMessage, contains('version conflict'));
-      expect(r.saveIndicatorShows('conflict'), isTrue);
-      expect(find.textContaining("Couldn't save"), findsNothing);
-      expect(r.bodyText, '${_topicBody}One.\nTwo.\nThree.\n');
-    });
+        expect(r.updates, hasLength(3));
+        expect(r.updates[2].stdinBody, '${_topicBody}One.\nTwo.\nThree.\n');
+        expect(r.editor.status, SaveStatus.conflict);
+        expect(r.editor.errorMessage, contains('version conflict'));
+        expect(r.saveIndicatorShows('conflict'), isTrue);
+        expect(find.textContaining("Couldn't save"), findsNothing);
+        expect(r.bodyText, '${_topicBody}One.\nTwo.\nThree.\n');
+      },
+    );
 
     testWidgets(
       'a save that succeeds after an overlapping save conflicted on a topic note ends synced without an error',
@@ -211,6 +216,12 @@ void main() {
         await r.fireDebounce();
         expect(pending, hasLength(2));
 
+        // TEST-CHANGE (#16, Req 34a): the server added a different line
+        // where the person did (an overlap), so the conflict is not merged.
+        r.db.db.execute(
+          'UPDATE notes SET content_md = ?, version = 2 WHERE id = ?',
+          ['${_topicBody}Server.\n', _topicId],
+        );
         pending[0].complete(
           FakeMemexCli.error(
             'version_conflict',

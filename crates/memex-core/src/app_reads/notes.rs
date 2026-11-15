@@ -190,6 +190,7 @@ pub fn get_note(vault: &Vault, id: &NoteId) -> Result<NoteDetail> {
     let footer_tags = tags::footer_tags_for_note(vault, &note.id).unwrap_or_default();
     let mut fields = review::note_review_fields(vault, &note)?;
     fields.extend(excerpts::note_transclusion_fields(vault, &note)?);
+    fields.extend(crate::notes::note_agent_fields(vault, &note)?);
     Ok(NoteDetail {
         note_id: note.id.to_string(),
         title: note.title,

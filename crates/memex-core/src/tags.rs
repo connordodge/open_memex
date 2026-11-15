@@ -12,6 +12,7 @@ use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::blocks::{is_heading, is_list_item};
+use crate::caller::Caller;
 use crate::daily::{self, TOPICS_MARKER};
 use crate::embedder::Embedder;
 use crate::error::MemexError;
@@ -341,7 +342,7 @@ pub(crate) fn reconcile_body_tags(
     } else {
         extract(person_section(&daily::split_note_body(body).person))
     };
-    drop_unwritten_body_tags(conn, note_id, &written)?;
+    drop_unwritten_body_tags(conn, note_id, &written, false)?;
     let stored = stored_rows(conn, note_id)?;
     for tag in &written {
         let matches = stored.get(&tag.name).is_some_and(|(origin, line)| {
@@ -362,16 +363,23 @@ pub(crate) fn reconcile_body_tags(
 
 /// Deletes the `body` rows of `note_id` whose name is not among `written`,
 /// the tags its person section now yields; `agent` and `person` rows stay.
-/// Nothing is inserted and no block or Correction row changes. The removal
-/// half of [`reconcile_body_tags`], and all an agent's `note_edits` body edit
-/// does to tags (Spec #7 Req 21, ruling D8).
+/// With `keep_system`, a `body` row of a system tag ([`is_system_tag`]) stays
+/// too. Nothing is inserted and no block or Correction row changes. The
+/// removal half of [`reconcile_body_tags`] (`keep_system` false), and all an
+/// agent's `note_edits` body edit does to tags (`keep_system` true, so an
+/// agent edit never takes a note out of the inbox; Spec #7 Req 21, rulings
+/// D8, D26).
 pub(crate) fn drop_unwritten_body_tags(
     conn: &Connection,
     note_id: &str,
     written: &[ExtractedTag],
+    keep_system: bool,
 ) -> Result<()> {
     for (name, (origin, _)) in &stored_rows(conn, note_id)? {
-        if origin == "body" && !written.iter().any(|tag| &tag.name == name) {
+        if origin == "body"
+            && !(keep_system && is_system_tag(name))
+            && !written.iter().any(|tag| &tag.name == name)
+        {
             conn.execute(
                 "DELETE FROM tags WHERE note_id = ? AND tag = ?",
                 params![note_id, name],
@@ -466,16 +474,19 @@ fn version_after_row_write(
     Ok(footer::rerender_footer(vault, &note.id, embedder)?.version)
 }
 
-/// Adds the row `name` with `origin` and its footer line. A person adding the
-/// tag lifts its block (R35).
+/// Adds the row `name` with `origin` and its footer line, in the
+/// `caller`'s write transaction (`notes::begin_write_as`: an agent's rechecks
+/// the read-only flag under the write lock). A person adding the tag lifts
+/// its block (R35).
 fn insert_row(
     vault: &mut Vault,
     note: &Note,
     name: &str,
     origin: TagOrigin,
+    caller: Caller,
     embedder: Option<&dyn Embedder>,
 ) -> Result<TagWrite> {
-    let tx = vault.conn_mut().transaction()?;
+    let tx = notes::begin_write_as(vault.conn_mut(), caller, &note.id)?;
     tx.execute(
         "INSERT INTO tags (note_id, tag, origin) VALUES (?, ?, ?)",
         params![note.id.as_str(), name, origin.as_str()],
@@ -490,16 +501,18 @@ fn insert_row(
     })
 }
 
-/// Deletes the row `name` and re-renders the footer. With `record`, the
-/// Correction goes in with the delete, or neither happens (TD2).
+/// Deletes the row `name` and re-renders the footer, in the `caller`'s
+/// write transaction (see [`insert_row`]). With `record`, the Correction goes
+/// in with the delete, or neither happens (TD2).
 fn delete_row(
     vault: &mut Vault,
     note: &Note,
     name: &str,
     record: bool,
+    caller: Caller,
     embedder: Option<&dyn Embedder>,
 ) -> Result<TagRemoval> {
-    let tx = vault.conn_mut().transaction()?;
+    let tx = notes::begin_write_as(vault.conn_mut(), caller, &note.id)?;
     tx.execute(
         "DELETE FROM tags WHERE note_id = ? AND tag = ?",
         params![note.id.as_str(), name],
@@ -550,13 +563,14 @@ pub fn apply_tag(
     }
     let name = normalize_name(bare_name(tag))
         .ok_or_else(|| invalid_argument(format!("{tag:?} is not a valid tag name")))?;
-    insert_row(vault, &note, &name, origin, embedder)
+    insert_row(vault, &note, &name, origin, Caller::Person, embedder)
 }
 
 /// The agent's `tag_note` (R38): applies a vocabulary tag, agent-origin.
 ///
-/// Checks in order: `NotFound`, `GuideRule`, then a tag the note already has
-/// succeeds with no write whatever its name, then `UnknownTag` (not in the
+/// Checks in order: `NotFound`, `GuideRule`, `ReadOnlyRule` (a note flagged
+/// read-only for agents, Spec #7 Req 5: no write, whatever the tag), then a
+/// tag the note already has succeeds with no write whatever its name, then `UnknownTag` (not in the
 /// [`vocabulary`], including a name outside the grammar) and `TagRemoved` (an
 /// open block on this note and tag, R35).
 pub fn agent_tag_note(
@@ -566,6 +580,7 @@ pub fn agent_tag_note(
     embedder: Option<&dyn Embedder>,
 ) -> Result<TagWrite> {
     let note = tag_host(vault, note_id)?;
+    notes::check_agent_read_only(vault.connection_ref(), Caller::Agent, note_id)?;
     if stored_tag(vault.connection_ref(), note_id.as_str(), tag)?.is_some() {
         return Ok(TagWrite {
             changed: false,
@@ -591,13 +606,22 @@ pub fn agent_tag_note(
             "the person removed #{name} from note {note_id}: don't apply it again"
         )));
     }
-    insert_row(vault, &note, &name, TagOrigin::Agent, embedder)
+    insert_row(
+        vault,
+        &note,
+        &name,
+        TagOrigin::Agent,
+        Caller::Agent,
+        embedder,
+    )
 }
 
 /// The agent's `untag_note` (R38): removes an agent-origin non-system tag and
 /// records no Correction, so no block follows. Any other origin or a system
-/// tag is `Io(InvalidInput)`, a guide `GuideRule`, an unknown note `NotFound`;
-/// a tag the note doesn't have returns `removed: false`.
+/// tag is `Io(InvalidInput)`, a guide `GuideRule`, an unknown note `NotFound`,
+/// a note flagged read-only for agents `ReadOnlyRule` (checked after the
+/// guide, before anything else); a tag the note doesn't have returns
+/// `removed: false`.
 pub fn agent_untag_note(
     vault: &mut Vault,
     note_id: &NoteId,
@@ -605,6 +629,7 @@ pub fn agent_untag_note(
     embedder: Option<&dyn Embedder>,
 ) -> Result<TagRemoval> {
     let note = tag_host(vault, note_id)?;
+    notes::check_agent_read_only(vault.connection_ref(), Caller::Agent, note_id)?;
     let Some((name, origin)) = stored_tag(vault.connection_ref(), note_id.as_str(), tag)? else {
         return Ok(TagRemoval {
             removed: false,
@@ -617,7 +642,7 @@ pub fn agent_untag_note(
             "#{name} wasn't applied by an agent, so untag_note can't remove it"
         )));
     }
-    delete_row(vault, &note, &name, false, embedder)
+    delete_row(vault, &note, &name, false, Caller::Agent, embedder)
 }
 
 /// `memex tag add` (R35, R53): a body-less person-origin tag, with its footer
@@ -660,7 +685,7 @@ pub fn person_remove_tag(
         )));
     }
     let record = origin == TagOrigin::Agent && !is_system_tag(&name);
-    delete_row(vault, &note, &name, record, embedder)
+    delete_row(vault, &note, &name, record, Caller::Person, embedder)
 }
 
 /// One tag name across the vault.

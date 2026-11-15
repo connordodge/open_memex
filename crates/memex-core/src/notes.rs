@@ -448,9 +448,8 @@ fn check_guide_fields(
 /// version check, so a stale version never hides a rule error. The read-only
 /// guard runs again inside the save transaction, which an agent save opens
 /// as Immediate, so a flag set by another process in between still refuses
-/// the write. A new agent
-/// rule must also be added to `note_edits` (R2), which bypasses this
-/// function (ruling D7).
+/// the write. A new agent rule must also be added to `note_edits` (R2),
+/// which bypasses this function (ruling D7).
 pub fn update_note_as(
     vault: &mut Vault,
     id: &NoteId,
@@ -851,7 +850,8 @@ pub(crate) enum TagMode {
     /// a person save (`tags::reconcile_body_tags`).
     Derive,
     /// An agent edit: only body tags whose `#name` the new person section no
-    /// longer yields are dropped (`tags::drop_unwritten_body_tags`).
+    /// longer yields are dropped (`tags::drop_unwritten_body_tags`), and never
+    /// a system tag (`inbox`, `agent-authored`; ruling D26).
     RemovalsOnly,
 }
 
@@ -908,7 +908,7 @@ pub(crate) fn write_person_section_internal(
         TagMode::Derive => tags::reconcile_body_tags(tx, id.as_str(), &person, false, now)?,
         TagMode::RemovalsOnly => {
             let written = tags::extract(tags::person_section(&person));
-            tags::drop_unwritten_body_tags(tx, id.as_str(), &written)?;
+            tags::drop_unwritten_body_tags(tx, id.as_str(), &written, true)?;
         }
     }
     let content_md = daily::sync_note_footer(tx, id.as_str(), &person)?;
@@ -999,6 +999,86 @@ pub fn delete_note_checked(
         crate::footer::rerender_footer(vault, &NoteId(host_id), embedder)?;
     }
     Ok(())
+}
+
+/// The person-only Agent read-only setter (Spec #7 Req 4, 7, 7a; ruling D5):
+/// sets (`on`) or clears the note's `agent_read_only` flag and returns
+/// whether it changed. An unknown note is `NotFound`; setting it on a daily
+/// note or on the Vault Guide is `RoleRule`, clearing is always allowed. It
+/// writes only the flag (`version` and `updated_at` stay), and the value the
+/// note already has writes nothing. The sole writer of the column.
+pub fn set_agent_read_only(vault: &mut Vault, id: &NoteId, on: bool) -> Result<bool> {
+    let conn = vault.connection_ref();
+    let frontmatter: Option<String> = conn
+        .query_row(
+            "SELECT frontmatter FROM notes WHERE id = ?",
+            params![id.as_str()],
+            |r| r.get(0),
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })?;
+    let Some(frontmatter) = frontmatter else {
+        return Err(MemexError::NotFound(format!("note {}", id.as_str())));
+    };
+    if on {
+        // Read leniently: a frontmatter that is not JSON carries no role.
+        let fm: serde_json::Value =
+            serde_json::from_str(&frontmatter).unwrap_or(serde_json::Value::Null);
+        if daily::is_daily(&fm) {
+            return Err(MemexError::RoleRule(
+                "a daily note cannot be read-only for agents".into(),
+            ));
+        }
+        if is_guide(&fm) {
+            return Err(MemexError::RoleRule(
+                "the Vault Guide cannot be read-only for agents".into(),
+            ));
+        }
+    }
+    let value = i64::from(on);
+    let rows = conn.execute(
+        "UPDATE notes SET agent_read_only = ?1 WHERE id = ?2 AND agent_read_only != ?1",
+        params![value, id.as_str()],
+    )?;
+    Ok(rows == 1)
+}
+
+/// The note-read fields of the Agent read-only flag (Spec #7 Req 8, ruling
+/// D6): `{"agent_read_only": bool}`, merged into `get_note`, `memex get` and
+/// the app API note read beside the review and transclusion fields.
+pub fn note_agent_fields(
+    vault: &Vault,
+    note: &Note,
+) -> Result<serde_json::Map<String, serde_json::Value>> {
+    let flag: i64 = vault.connection_ref().query_row(
+        "SELECT agent_read_only FROM notes WHERE id = ?",
+        params![note.id.as_str()],
+        |r| r.get(0),
+    )?;
+    let mut fields = serde_json::Map::new();
+    fields.insert("agent_read_only".into(), serde_json::Value::Bool(flag != 0));
+    Ok(fields)
+}
+
+/// Opens the write transaction for a `caller`'s write to the note `id` that
+/// does not save through [`update_note_as`] (Spec #7 Req 5). An agent's is
+/// Immediate and runs [`check_agent_read_only`] again under the write lock,
+/// as `update_note_as` does, so a flag another process set after the early
+/// check still refuses the write. A person's is a plain deferred one.
+pub(crate) fn begin_write_as<'c>(
+    conn: &'c mut rusqlite::Connection,
+    caller: Caller,
+    id: &NoteId,
+) -> Result<rusqlite::Transaction<'c>> {
+    if caller != Caller::Agent {
+        return Ok(conn.transaction()?);
+    }
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    check_agent_read_only(&tx, caller, id)?;
+    Ok(tx)
 }
 
 fn row_to_note(r: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
