@@ -49,6 +49,9 @@ const PLAYER_LOOP: &str = "01M5DQAYZ3WP7H0NXZZV9M2315";
 /// A plain note (`{}` frontmatter), body `Maybe the map folds like paper?\n`.
 const LOOSE: &str = "01M5DQAYZ4RYSGA8T0YEEF8QRS";
 const LOOSE_TEXT: &str = "Maybe the map folds like paper?\n";
+/// [`LOOSE`] carries the tag `idea`, and every person-section write (restores
+/// included) renders the Note footer from the note's tag rows.
+const LOOSE_FOOTER: &str = "<!-- memex:topics -->\n#idea\n";
 /// A daily note.
 const DAY_18: &str = "01M5DQAYZ4TAPTHDWE5PNWE4W5";
 /// A valid ULID nothing in the seed has.
@@ -538,14 +541,18 @@ async fn post_restore_route_answers_like_memex_revisions_restore() {
     );
     let (version, _, content_md) = stored(&env.server_vault(), LOOSE);
     assert_eq!(version, before.0 + 1);
-    assert_eq!(content_md, LOOSE_TEXT, "the seed text is back");
+    assert_eq!(
+        content_md,
+        format!("{LOOSE_TEXT}{LOOSE_FOOTER}"),
+        "the seed text is back, under the footer its tag rows render"
+    );
     assert_eq!(
         reply.json(),
         json!({
             "vault_id": seed_vault_id(),
             "note_id": LOOSE,
             "version": version,
-            "content_md": LOOSE_TEXT,
+            "content_md": format!("{LOOSE_TEXT}{LOOSE_FOOTER}"),
         })
     );
     // The replaced text is kept: restoring the new revision brings it back.
@@ -559,7 +566,12 @@ async fn post_restore_route_answers_like_memex_revisions_restore() {
         )
         .await;
     assert_eq!(back.status, 200, "{}", back.body);
-    assert_eq!(back.json()["content_md"], json!(THIRD), "{}", back.body);
+    assert_eq!(
+        back.json()["content_md"],
+        json!(format!("{THIRD}{LOOSE_FOOTER}")),
+        "{}",
+        back.body
+    );
 }
 
 /// D11: the path's `note_id` is passed to Restore; a revision of another note
@@ -635,7 +647,10 @@ async fn post_restore_works_on_an_agent_read_only_note() {
         .await;
 
     assert_eq!(reply.status, 200, "{}", reply.body);
-    assert_eq!(reply.json()["content_md"], json!(LOOSE_TEXT));
+    assert_eq!(
+        reply.json()["content_md"],
+        json!(format!("{LOOSE_TEXT}{LOOSE_FOOTER}"))
+    );
     assert_eq!(flag(&env.server_vault(), LOOSE), 1, "the flag stays");
 }
 
