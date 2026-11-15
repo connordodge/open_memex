@@ -169,7 +169,11 @@ fn memex_tools_writes_and_group_ids_are_the_meta_contract() {
         set(&meta::write_tools()),
         "writes is true for exactly meta::write_tools()"
     );
-    assert_eq!(writes.len(), 24, "#390 requirement 8 has 24 write tools");
+    assert_eq!(
+        writes.len(),
+        25,
+        "#390 requirement 8's 24 write tools and Spec #7's edit_note"
+    );
     assert_eq!(
         writes.len() + reads,
         tools.len(),
@@ -190,6 +194,30 @@ fn memex_tools_writes_and_group_ids_are_the_meta_contract() {
         set(&["notes", "daily", "folders", "tags", "feedback", "canvas"]),
         "group ids are exactly Spec #394 requirement 34's"
     );
+}
+
+// ---------- Spec #7 requirement 38: edit_note ----------
+
+/// The Tools tab summary Spec #7 requirement 38 fixes for `edit_note`.
+const EDIT_NOTE_SUMMARY: &str = "Edits a note's text by exact find-and-replace or a full \
+                                 rewrite, unless it is read-only for agents.";
+
+#[test]
+fn memex_tools_lists_edit_note_in_notes_as_a_write_tool_with_its_summary() {
+    let out = tools_json();
+    let tools = out["tools"].as_array().expect("tools array");
+    let rows: Vec<&Value> = tools.iter().filter(|t| t["name"] == "edit_note").collect();
+    assert_eq!(rows.len(), 1, "edit_note is listed once: {out}");
+    assert_eq!(
+        *rows[0],
+        json!({
+            "name": "edit_note",
+            "summary": EDIT_NOTE_SUMMARY,
+            "group": "notes",
+            "writes": true,
+        })
+    );
+    assert_eq!(tools.len(), 38, "the catalog has 38 tools");
 }
 
 #[test]

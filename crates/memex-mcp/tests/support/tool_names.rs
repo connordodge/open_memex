@@ -56,8 +56,12 @@ pub const FEEDBACK_TOOLS: &[&str] = &[
     "update_vault_guide",
 ];
 
+/// The note edit tools (#11 fills this block; owner Spec #7).
+pub const EDIT_TOOLS: &[&str] = &["edit_note"];
+
 /// How many tools the server exposes: the sum of every block.
-pub const TOOL_COUNT: usize = EXISTING_TOOLS.len() + TAG_TOOLS.len() + FEEDBACK_TOOLS.len();
+pub const TOOL_COUNT: usize =
+    EXISTING_TOOLS.len() + TAG_TOOLS.len() + FEEDBACK_TOOLS.len() + EDIT_TOOLS.len();
 
 /// Every tool name of every block, sorted by name.
 pub fn all_tool_names() -> Vec<&'static str> {
@@ -65,6 +69,7 @@ pub fn all_tool_names() -> Vec<&'static str> {
         .iter()
         .chain(TAG_TOOLS)
         .chain(FEEDBACK_TOOLS)
+        .chain(EDIT_TOOLS)
         .copied()
         .collect();
     names.sort_unstable();

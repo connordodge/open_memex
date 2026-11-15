@@ -33,9 +33,11 @@ pub struct Summary {
     pub note_id: Option<String>,
 }
 
-/// The write tools this builder summarizes (Spec #390 req 8).
-pub const WRITE_TOOLS: [&str; 24] = [
+/// The write tools this builder summarizes (Spec #390 req 8, and Spec #7 req
+/// 29 for `edit_note`).
+pub const WRITE_TOOLS: [&str; 25] = [
     "create_note",
+    "edit_note",
     "add_excerpt",
     "remove_excerpt",
     "remove_excerpt_block",
@@ -120,6 +122,11 @@ impl Cx<'_> {
                     _ => "created",
                 };
                 (format!("{verb} {}", title_of(&title)), owned(r("note_id")))
+            }
+            "edit_note" => {
+                self.wrote("changed")?;
+                let note = self.note(p("note_id"));
+                (format!("edited {}", title_of(&note)), owned(p("note_id")))
             }
             "add_excerpt" => {
                 let n = len_of(self.result, "filed_block_ids");

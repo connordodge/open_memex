@@ -194,6 +194,32 @@ async fn get_tools_returns_200_and_the_memex_tools_output() {
     assert_eq!(fresh.json(), body);
 }
 
+// ---------- Spec #7 requirement 38: edit_note ----------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn get_tools_lists_edit_note_in_notes_as_a_write_tool_with_its_summary() {
+    let env = Env::start().await;
+
+    let reply = env.get_with_token(TOOLS_PATH).await;
+
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    let body = reply.json();
+    let tools = body["tools"].as_array().expect("tools array");
+    let rows: Vec<&Value> = tools.iter().filter(|t| t["name"] == "edit_note").collect();
+    assert_eq!(rows.len(), 1, "edit_note is listed once: {body}");
+    assert_eq!(
+        *rows[0],
+        json!({
+            "name": "edit_note",
+            "summary": "Edits a note's text by exact find-and-replace or a full \
+                        rewrite, unless it is read-only for agents.",
+            "group": "notes",
+            "writes": true,
+        })
+    );
+    assert_eq!(tools.len(), 38, "the catalog has 38 tools");
+}
+
 // ---------- AC 5: token and vault ----------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

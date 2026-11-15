@@ -94,7 +94,7 @@ const fn write(name: &'static str, group: Group, summary: &'static str) -> ToolM
 }
 
 /// Every tool row, by group, in the Spec #394 requirement 34 order within each.
-static TOOLS: [ToolMeta; 37] = [
+static TOOLS: [ToolMeta; 38] = [
     // Notes and search
     read(
         "search",
@@ -115,6 +115,11 @@ static TOOLS: [ToolMeta; 37] = [
         "create_note",
         Group::Notes,
         "Creates a new note, tagged agent-authored and inbox for you to review.",
+    ),
+    write(
+        "edit_note",
+        Group::Notes,
+        "Edits a note's text by exact find-and-replace or a full rewrite, unless it is read-only for agents.",
     ),
     write(
         "add_link",

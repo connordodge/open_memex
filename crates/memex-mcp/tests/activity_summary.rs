@@ -9,9 +9,10 @@ use std::collections::{BTreeSet, HashMap};
 use memex_mcp::activity_summary::{summarize, PreSnapshot, Summary, TitleLookup, WRITE_TOOLS};
 use serde_json::{json, Value};
 
-/// The 24 write tools of Spec #390 req 8, written out here so the builder's
-/// own list is checked against the Spec and not against itself.
-const EXPECTED_WRITE_TOOLS: [&str; 24] = [
+/// The 24 write tools of Spec #390 req 8 and Spec #7's `edit_note` (req 29),
+/// written out here so the builder's own list is checked against the Specs
+/// and not against itself.
+const EXPECTED_WRITE_TOOLS: [&str; 25] = [
     "create_note",
     "add_excerpt",
     "remove_excerpt",
@@ -36,6 +37,7 @@ const EXPECTED_WRITE_TOOLS: [&str; 24] = [
     "update_vault_guide",
     "record_feedback",
     "resolve_feedback",
+    "edit_note",
 ];
 
 // ---------- fixtures ----------
@@ -147,7 +149,7 @@ impl Case {
     }
 }
 
-/// The representative successful call of each of the 24 write tools.
+/// The representative successful call of each of the 25 write tools.
 fn base(tool: &str) -> Case {
     match tool {
         "create_note" => Case::new(
@@ -309,6 +311,13 @@ fn base(tool: &str) -> Case {
                    "changes": [{"note_id": "NOTE1", "bullets": ["SENTINEL_BULLET"]}]}),
             feedback_row("SENTINEL_FEEDBACK_TEXT", "SENTINEL_REPLY_TEXT", "handled"),
         ),
+        "edit_note" => Case::new(
+            tool,
+            json!({"note_id": "NOTE1", "bullets": ["SENTINEL_BULLET"],
+                   "edits": [{"old_text": "SENTINEL_OLD_TEXT", "new_text": "SENTINEL_NEW_TEXT"}]}),
+            json!({"vault_id": "V1", "note_id": "NOTE1", "version": 4,
+                   "content_md": "SENTINEL_BODY_TEXT", "changed": true}),
+        ),
         other => panic!("no base case for {other}"),
     }
 }
@@ -403,11 +412,12 @@ fn ascii_title(n: usize) -> String {
 // ---------- the 24 formats (req 10), with note_id (req 9) ----------
 
 #[test]
-fn write_tools_list_is_the_24_tools_of_req_8() {
+fn write_tools_list_is_the_24_tools_of_req_8_and_edit_note() {
     let got: BTreeSet<&str> = WRITE_TOOLS.iter().copied().collect();
     let want: BTreeSet<&str> = EXPECTED_WRITE_TOOLS.iter().copied().collect();
-    assert_eq!(want.len(), 24, "the expected list has no duplicate");
-    assert_eq!(got, want, "WRITE_TOOLS names exactly the 24 write tools");
+    assert_eq!(want.len(), 25, "the expected list has no duplicate");
+    assert_eq!(got, want, "WRITE_TOOLS names exactly the 25 write tools");
+    assert_eq!(WRITE_TOOLS.len(), 25, "WRITE_TOOLS has no duplicate");
 }
 
 #[test]
@@ -743,8 +753,30 @@ fn resolve_feedback_reads_resolved_feedback_with_no_note_id() {
 }
 
 #[test]
+fn edit_note_reads_edited_note_title_with_the_note_id() {
+    assert_summary(&base("edit_note"), "edited Note Beta", Some("NOTE1"));
+}
+
+#[test]
+fn edit_note_form_b_reads_the_same_edited_line() {
+    let case = base("edit_note")
+        .drop_params("edits")
+        .set_params("content_md", json!("SENTINEL_BODY_TEXT"))
+        .set_params("expected_version", json!(3));
+    assert_summary(&case, "edited Note Beta", Some("NOTE1"));
+}
+
+#[test]
+fn edit_note_takes_the_title_from_the_lookup_of_its_note_id_param() {
+    let case = base("edit_note")
+        .set_params("note_id", json!("TOPIC1"))
+        .set_result("note_id", json!("TOPIC1"));
+    assert_summary(&case, "edited Topic Alpha", Some("TOPIC1"));
+}
+
+#[test]
 fn note_id_follows_the_ruling_for_every_write_tool() {
-    let want: [(&str, Option<&str>); 24] = [
+    let want: [(&str, Option<&str>); 25] = [
         ("create_note", Some("N_NEW")),
         ("add_excerpt", Some("TOPIC1")),
         ("remove_excerpt", Some("TOPIC1")),
@@ -769,6 +801,7 @@ fn note_id_follows_the_ruling_for_every_write_tool() {
         ("update_vault_guide", None),
         ("record_feedback", None),
         ("resolve_feedback", None),
+        ("edit_note", Some("NOTE1")),
     ];
     for (tool, note_id) in want {
         let got = base(tool).summary();
@@ -995,6 +1028,11 @@ fn slots() -> Vec<Slot> {
             build: |t| set_canvas(base("remove_from_canvas"), "C1", t),
             template: "removed Note Beta from {}",
         },
+        Slot {
+            label: "edit_note note",
+            build: |t| set_note(base("edit_note"), "NOTE1", t),
+            template: "edited {}",
+        },
     ]
 }
 
@@ -1202,6 +1240,10 @@ fn a_summary_never_contains_block_note_body_or_feedback_text() {
         base("resolve_feedback"),
         base("update_vault_guide"),
         base("mark_day_reviewed"),
+        base("edit_note"),
+        base("edit_note")
+            .drop_params("edits")
+            .set_params("content_md", json!("SENTINEL_BODY_TEXT")),
     ];
     for case in cases {
         let got = case.summary();
@@ -1228,7 +1270,7 @@ fn feedback_summaries_are_fixed_text_whatever_the_feedback_says() {
 
 #[test]
 fn each_wrote_nothing_signal_gives_none() {
-    let signals: [(&str, &str, Value); 14] = [
+    let signals: [(&str, &str, Value); 15] = [
         ("add_excerpt", "filed_block_ids", json!([])),
         ("remove_excerpt", "removed_count", json!(0)),
         ("remove_excerpt_block", "removed", json!(false)),
@@ -1243,6 +1285,7 @@ fn each_wrote_nothing_signal_gives_none() {
         ("add_to_canvas", "added", json!(false)),
         ("move_node", "changed", json!(false)),
         ("remove_from_canvas", "removed", json!(false)),
+        ("edit_note", "changed", json!(false)),
     ];
     for (tool, key, value) in signals {
         // The same call with the signal not set is logged.
@@ -1302,6 +1345,7 @@ fn a_missing_signal_field_means_the_call_wrote() {
         ("add_to_canvas", "added"),
         ("move_node", "changed"),
         ("remove_from_canvas", "removed"),
+        ("edit_note", "changed"),
     ] {
         assert!(base(tool).run().is_some(), "{tool}: baseline logs");
         let case = base(tool).drop_result(key);

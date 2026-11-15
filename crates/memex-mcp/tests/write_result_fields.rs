@@ -14,6 +14,7 @@
 //! | `add_to_canvas` | `added` | false when it returned the existing placement |
 //! | `move_node` | `changed` | false when the placement didn't change |
 //! | `remove_from_canvas` | `removed` | false when the note wasn't placed |
+//! | `edit_note` | `changed` | false for a no-op edit (Spec #7 Req 17, WI #11) |
 //!
 //! Every field is additive: the tool's existing result keys stay. Every call
 //! goes through an rmcp client over an in-process duplex, so it passes the
@@ -1147,6 +1148,44 @@ async fn remove_from_canvas_returns_removed_true_then_removed_false() {
 }
 
 // ======================================================================
+// WI #11 (Spec #7 Req 17, 18, 29): edit_note returns `changed`.
+// ======================================================================
+
+impl World {
+    async fn edit_note(&self, id: &str, old_text: &str, new_text: &str) -> Value {
+        self.call(
+            "edit_note",
+            json!({
+                "note_id": id,
+                "bullets": ["Updated the status line"],
+                "edits": [{ "old_text": old_text, "new_text": new_text }],
+            }),
+        )
+        .await
+    }
+}
+
+#[tokio::test]
+async fn edit_note_returns_changed_true_when_it_writes_and_false_for_a_no_op() {
+    let w = world().await;
+    let note = w
+        .person_note("Project Status", "Status: draft.\n", None)
+        .await;
+    let version = w.version(&note).await;
+
+    let first = w.edit_note(&note, "draft", "shipped").await;
+    assert_eq!(first["changed"], json!(true), "{first}");
+    assert_eq!(first["version"], json!(version + 1), "{first}");
+    assert_eq!(w.version(&note).await, version + 1);
+
+    let again = w.edit_note(&note, "shipped", "shipped").await;
+    assert_eq!(again["changed"], json!(false), "a no-op: {again}");
+    assert_eq!(again["version"], json!(version + 1), "{again}");
+    assert_eq!(again["note_id"], json!(note), "{again}");
+    assert_eq!(w.version(&note).await, version + 1, "nothing is written");
+}
+
+// ======================================================================
 // AC 9: every existing result key stays; the new field sits beside them.
 // ======================================================================
 
@@ -1165,6 +1204,9 @@ async fn every_new_field_sits_beside_the_tools_existing_result_keys() {
         .await;
     let canvas = w.canvas("Board").await;
     let placed = w.agent_note("Note A", "# Note A\n", None).await;
+    let edited = w
+        .person_note("Project Status", "Status: draft.\n", None)
+        .await;
 
     const EXCERPT: [&str; 3] = ["vault_id", "topic_note_id", "version"];
     const NODE: [&str; 8] = [
@@ -1270,6 +1312,12 @@ async fn every_new_field_sits_beside_the_tools_existing_result_keys() {
             vec!["vault_id", "canvas_id", "note_id"],
             "removed",
         ),
+        (
+            "edit_note",
+            w.edit_note(&edited, "draft", "shipped").await,
+            vec!["vault_id", "note_id", "version", "content_md"],
+            "changed",
+        ),
     ];
     for (tool, got, existing, field) in results {
         let mut want = set(&existing);
@@ -1314,6 +1362,7 @@ async fn each_new_result_field_is_named_in_its_tool_description() {
         ("add_to_canvas", "added"),
         ("move_node", "changed"),
         ("remove_from_canvas", "removed"),
+        ("edit_note", "changed"),
     ];
     for (tool, field) in fields {
         let description = tools

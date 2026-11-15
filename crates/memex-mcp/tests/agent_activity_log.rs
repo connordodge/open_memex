@@ -918,6 +918,51 @@ async fn canvas_tools_wrote_nothing_signals_add_zero_rows() {
 }
 
 // ======================================================================
+// WI #11 (Spec #7 Req 17, 29): edit_note logs `edited <title>`; a no-op and
+// a refused edit log nothing.
+// ======================================================================
+
+#[tokio::test]
+async fn edit_note_logs_one_edited_title_row_and_a_no_op_logs_none() {
+    let (w, fx) = world(Some(FixedSession::some())).await;
+    let edit = |old: &str, new: &str| {
+        json!({
+            "note_id": fx.topic,
+            "bullets": ["Reworded the topic"],
+            "edits": [{ "old_text": old, "new_text": new }],
+        })
+    };
+
+    let (v, row) = w
+        .one_row("edit_note", edit("About the loop.", "About the game loop."))
+        .await;
+    assert_eq!(v["changed"], json!(true), "{v}");
+    assert_eq!(row.tool, "edit_note");
+    assert_eq!(row.summary, format!("edited {TOPIC}"));
+    assert_eq!(row.note_id.as_deref(), Some(fx.topic.as_str()));
+    assert_eq!(row.session_id, SESSION);
+    assert_eq!(row.client_name, CLIENT);
+    assert_is_ulid(&row.id);
+
+    let v = w
+        .no_row(
+            "edit_note",
+            edit("About the game loop.", "About the game loop."),
+        )
+        .await;
+    assert_eq!(v["changed"], json!(false), "a no-op: {v}");
+
+    // A refused edit (an Agent read-only note) logs nothing either.
+    w.sql(&format!(
+        "UPDATE notes SET agent_read_only = 1 WHERE id = '{}'",
+        fx.topic
+    ))
+    .await;
+    let v = w.no_row("edit_note", edit("About", "Around")).await;
+    assert_eq!(v["error"]["code"], json!("read_only_rule"), "{v}");
+}
+
+// ======================================================================
 // AC 4: an {"error": …} result and the read tools add zero rows.
 // ======================================================================
 
@@ -1038,6 +1083,15 @@ async fn every_write_tool_in_meta_write_tools_logs_exactly_one_row_with_its_summ
         |v| ("created Plain Note", Some(str_of(v, "note_id").to_string()))
     );
     let plain = str_of(&plain, "note_id").to_string();
+    step!(
+        "edit_note",
+        json!({
+            "note_id": plain,
+            "bullets": ["Reworded the body"],
+            "edits": [{ "old_text": "Body.", "new_text": "Body, reworded." }],
+        }),
+        |_v| ("edited Plain Note", Some(plain.clone()))
+    );
 
     let excerpt = |ids: &[&str]| json!({ "topic_note_id": topic, "date": DAY, "block_ids": ids });
     step!("add_excerpt", excerpt(&[B7, C3, F6]), |_v| (

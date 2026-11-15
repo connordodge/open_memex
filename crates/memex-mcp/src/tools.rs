@@ -38,6 +38,7 @@ use crate::state::AppState;
 
 // One `#[tool_router]` per area (architect ruling D7), composed in `Memex::new`.
 pub mod daily;
+pub mod edits;
 pub mod excerpts;
 pub mod feedback;
 pub mod folders;
@@ -74,6 +75,7 @@ impl Memex {
         (
             Self::tool_router()
                 + Self::daily_router()
+                + Self::edits_router()
                 + Self::excerpts_router()
                 + Self::folders_router()
                 + Self::review_router()
