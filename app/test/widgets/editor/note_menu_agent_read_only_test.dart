@@ -88,11 +88,13 @@ Future<AgentEditsHarness> _wi14Pump(
   required FakeVaultDb db,
   required String noteId,
   bool overrideGate = false,
+  bool memexConfigured = true,
 }) async {
   final h = await pumpAgentEdits(
     tester,
     NoteEditor(rightPanelOpen: false, onToggleRightPanel: () {}),
     db: db,
+    memexConfigured: memexConfigured,
     noteId: noteId,
     surfaceSize: const Size(1200, 800),
     overrides: [
@@ -675,6 +677,125 @@ void main() {
         await _wi14Select(h, _wi14Topic);
         await pumpFrames(tester);
         expect(find.byKey(_wi14InlineError), findsNothing);
+      },
+    );
+  });
+
+  group('a toggle that cannot reach a CLI (AC6, review r1)', () {
+    testWidgets(
+      'with no memex CLI the toggle makes no call and shows the CLI message inline',
+      (tester) async {
+        final h = await _wi14Pump(
+          tester,
+          db: _wi14Vault(),
+          noteId: _wi14Plain,
+          memexConfigured: false,
+        );
+        await _wi14OpenMenu(tester);
+
+        await _wi14Choose(tester);
+        await pumpFrames(tester);
+
+        expect(tester.takeException(), isNull);
+        expect(h.notes.setAgentReadOnlyCalls, isEmpty);
+        expect(h.bumps, 0);
+        expect(h.read(noteDeleteErrorProvider), (
+          noteId: _wi14Plain,
+          message: 'The memex CLI is not available.',
+        ));
+        expect(
+          find.descendant(
+            of: find.byKey(_wi14InlineError),
+            matching: find.text('The memex CLI is not available.'),
+          ),
+          findsOneWidget,
+        );
+        expect(h.db.agentReadOnlyForTest(_wi14Plain), isFalse);
+        expect(_wi14Icon, findsNothing);
+        await _wi14OpenMenu(tester);
+        expect(_wi14Checked(tester), CheckedState.isFalse);
+      },
+    );
+
+    testWidgets(
+      'a StateError from the write shows its message inline and does not escape',
+      (tester) async {
+        final h = await _wi14Pump(tester, db: _wi14Vault(), noteId: _wi14Plain);
+        h.notes.setAgentReadOnlyError = StateError('The memex CLI is gone.');
+        await _wi14OpenMenu(tester);
+
+        await _wi14Choose(tester);
+        await pumpFrames(tester);
+
+        expect(tester.takeException(), isNull);
+        expect(h.notes.setAgentReadOnlyCalls, [(noteId: _wi14Plain, on: true)]);
+        expect(h.bumps, 0);
+        expect(h.read(noteDeleteErrorProvider), (
+          noteId: _wi14Plain,
+          message: 'The memex CLI is gone.',
+        ));
+        expect(
+          find.descendant(
+            of: find.byKey(_wi14InlineError),
+            matching: find.text('The memex CLI is gone.'),
+          ),
+          findsOneWidget,
+        );
+        expect(h.db.agentReadOnlyForTest(_wi14Plain), isFalse);
+        expect(_wi14Icon, findsNothing);
+      },
+    );
+
+    testWidgets(
+      'a CLI timeout shows its description inline and does not escape',
+      (tester) async {
+        const timeout = MemexCliTimeout(
+          ['note', 'read-only'],
+          Duration(seconds: 30),
+        );
+        final h = await _wi14Pump(tester, db: _wi14Vault(), noteId: _wi14Plain);
+        h.notes.setAgentReadOnlyError = timeout;
+        await _wi14OpenMenu(tester);
+
+        await _wi14Choose(tester);
+        await pumpFrames(tester);
+
+        expect(tester.takeException(), isNull);
+        expect(h.notes.setAgentReadOnlyCalls, [(noteId: _wi14Plain, on: true)]);
+        expect(h.bumps, 0);
+        expect(h.read(noteDeleteErrorProvider), (
+          noteId: _wi14Plain,
+          message: timeout.toString(),
+        ));
+        expect(
+          find.descendant(
+            of: find.byKey(_wi14InlineError),
+            matching: find.text(timeout.toString()),
+          ),
+          findsOneWidget,
+        );
+        expect(h.db.agentReadOnlyForTest(_wi14Plain), isFalse);
+      },
+    );
+
+    testWidgets(
+      'after a failed toggle with a non-MemexException the busy guard is released',
+      (tester) async {
+        final h = await _wi14Pump(tester, db: _wi14Vault(), noteId: _wi14Plain);
+        h.notes.setAgentReadOnlyError = StateError('The memex CLI is gone.');
+        await _wi14OpenMenu(tester);
+        await _wi14Choose(tester);
+        await pumpFrames(tester);
+
+        h.notes.setAgentReadOnlyError = null;
+        await _wi14OpenMenu(tester);
+        await _wi14Choose(tester);
+        await pumpFrames(tester);
+
+        expect(h.notes.setAgentReadOnlyCalls, hasLength(2));
+        expect(h.bumps, 1);
+        expect(h.db.agentReadOnlyForTest(_wi14Plain), isTrue);
+        expect(h.read(noteDeleteErrorProvider), isNull);
       },
     );
   });
