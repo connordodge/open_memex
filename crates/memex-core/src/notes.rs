@@ -448,9 +448,8 @@ fn check_guide_fields(
 /// version check, so a stale version never hides a rule error. The read-only
 /// guard runs again inside the save transaction, which an agent save opens
 /// as Immediate, so a flag set by another process in between still refuses
-/// the write. A new agent
-/// rule must also be added to `note_edits` (R2), which bypasses this
-/// function (ruling D7).
+/// the write. A new agent rule must also be added to `note_edits` (R2),
+/// which bypasses this function (ruling D7).
 pub fn update_note_as(
     vault: &mut Vault,
     id: &NoteId,

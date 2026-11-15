@@ -619,3 +619,68 @@ fn update_link_as_agent_on_a_flagged_source_is_read_only_rule_and_person_succeed
     assert_eq!(after.version, before.version + 1);
     assert_eq!(after.links[0].1, "extends");
 }
+
+// ---------- the in-transaction recheck (review r1, finding 3) ----------
+
+/// Another process (the app's `memex`, say) holds the write lock and sets the
+/// flag while the agent's save has already passed its early check: the agent
+/// save must wait for the lock, see the flag under it and refuse, writing
+/// nothing. A deferred save transaction would either commit the write (no
+/// recheck) or fail with a busy-snapshot error (recheck on a stale read), so
+/// this pins both the recheck and the Immediate transaction.
+#[test]
+fn update_note_as_agent_refuses_when_the_flag_is_set_by_another_connection_after_the_early_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut v = Vault::create(dir.path()).unwrap();
+    let note = create(&mut v, "Pricing notes", "Tiers and plans.\n", None);
+    ensure_flag_column(&v);
+    let before = snapshot(&v, &note.id);
+    assert_eq!(before.agent_read_only, 0, "fixture: not flagged yet");
+
+    // The other process takes the write lock and sets the flag, uncommitted.
+    let other = rusqlite::Connection::open(dir.path().join("memex.db")).unwrap();
+    other.execute_batch("BEGIN IMMEDIATE").unwrap();
+    other
+        .execute(
+            "UPDATE notes SET agent_read_only = 1 WHERE id = ?1",
+            [note.id.as_str()],
+        )
+        .unwrap();
+
+    // The agent's save reads flag 0 (the flag is not committed), then waits
+    // for the write lock.
+    let id = note.id.clone();
+    let version = before.version;
+    let agent = std::thread::spawn(move || {
+        let result = update_note_as(
+            &mut v,
+            &id,
+            version,
+            body_patch("Rewritten by an agent.\n"),
+            RenameOptions::default(),
+            Caller::Agent,
+        );
+        (v, result)
+    });
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    assert!(
+        !agent.is_finished(),
+        "the agent save waits for the other connection's write lock"
+    );
+    other.execute_batch("COMMIT").unwrap();
+
+    let (v, result) = agent.join().unwrap();
+    assert_read_only_rule(result, "Pricing notes", "agent save racing the flag");
+    let after = snapshot(&v, &note.id);
+    assert_eq!(after.agent_read_only, 1, "the person's flag is committed");
+    assert_eq!(
+        Snapshot {
+            agent_read_only: 0,
+            // The person's flag write moved the revision counter once.
+            content_revision: after.content_revision - 1,
+            ..after
+        },
+        before,
+        "version, body, updated_at and everything else unchanged"
+    );
+}
