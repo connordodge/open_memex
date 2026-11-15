@@ -1345,6 +1345,152 @@ fn an_edit_whose_result_is_byte_identical_is_a_no_op() {
     }
 }
 
+/// Review r1: on a note with a Note footer the stored person section always
+/// ends with `\n`, so an edit that only drops the final newline stores the
+/// current body again. It is a no-op, not a do-nothing revision (Req 17).
+#[test]
+fn dropping_only_the_final_newline_on_a_footered_note_is_a_no_op() {
+    let (_dir, mut v) = fresh();
+    let n = note_with_footer(&mut v);
+    assert_eq!(person_of(&n.content_md), "Plan text.\nSecond line.\n");
+
+    let cases = vec![
+        (
+            "form B without the final newline",
+            form_b(&n.id, "Plan text.\nSecond line.", Some(n.version)),
+        ),
+        (
+            "form A that removes the final newline",
+            form_a(&n.id, vec![pair("Second line.\n", "Second line.")], None),
+        ),
+    ];
+    for (case, input) in cases {
+        let before = snapshot(&v);
+        let out = edit(&mut v, input).unwrap_or_else(|e| panic!("{case}: {e:?}"));
+        assert!(!out.changed, "{case}");
+        assert_eq!(out.version, n.version, "{case}");
+        assert_eq!(out.content_md, n.content_md, "{case}");
+        assert_eq!(snapshot(&v), before, "{case}: a no-op writes nothing");
+        assert_eq!(current(&v, &n.id).content_md, n.content_md, "{case}");
+    }
+}
+
+/// Without footer rows the body is the person section as given, so dropping
+/// the final newline is a real change there.
+#[test]
+fn dropping_the_final_newline_on_a_note_without_a_footer_is_a_change() {
+    let (_dir, mut v) = fresh();
+    let bare = note(&mut v, "Bare", "Bare text.\n");
+
+    let out = edit(&mut v, form_b(&bare.id, "Bare text.", Some(bare.version))).unwrap();
+
+    assert_written(&v, &bare, &out, "Bare text.");
+}
+
+/// An empty person section on a footered note stores the footer alone, and
+/// repeating the edit is a no-op: no newline is invented for empty text.
+#[test]
+fn an_empty_person_section_on_a_footered_note_stores_the_footer_alone() {
+    let (_dir, mut v) = fresh();
+    let n = note_with_footer(&mut v);
+    let footer = footer_of(&n.content_md).to_string();
+
+    let out = edit(&mut v, form_b(&n.id, "", Some(n.version))).unwrap();
+    assert_written(&v, &n, &out, &footer);
+
+    let again = edit(&mut v, form_b(&n.id, "", Some(out.version))).unwrap();
+    assert!(!again.changed);
+    assert_eq!(again.version, out.version);
+}
+
+// ---------------------------------------------------------------------------
+// Review r1: an open code fence must not hide the Note footer (Req 14)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_open_code_fence_on_a_footered_note_is_edit_invalid_and_writes_nothing() {
+    let (_dir, mut v) = fresh();
+    let n = note_with_footer(&mut v);
+
+    let cases = vec![
+        (
+            "form B, fence line last",
+            form_b(&n.id, "Plan for work.\n```\n", Some(n.version)),
+        ),
+        (
+            "form B, fence line without a final newline",
+            form_b(&n.id, "Plan for work.\n```", Some(n.version)),
+        ),
+        (
+            "form B, fence with code after it",
+            form_b(&n.id, "Plan.\n```rust\nlet x = 1;\n", Some(n.version)),
+        ),
+        (
+            "form A, a pair that opens a fence",
+            form_a(&n.id, vec![pair("Second line.", "```\nSecond line.")], None),
+        ),
+    ];
+    for (case, input) in cases {
+        let err = refused(&mut v, input, "edit_invalid");
+        assert!(
+            err.to_string().contains("close the code fence"),
+            "{case}: {err}"
+        );
+    }
+
+    // The footer is still found, so footer text still cannot be matched.
+    assert_eq!(
+        footer_of(&current(&v, &n.id).content_md),
+        footer_of(&n.content_md)
+    );
+    refused(
+        &mut v,
+        form_a(
+            &n.id,
+            vec![pair("[[Pricing~about]]", "[[Other~about]]")],
+            None,
+        ),
+        "edit_not_found",
+    );
+}
+
+#[test]
+fn a_closed_code_fence_on_a_footered_note_is_accepted() {
+    let (_dir, mut v) = fresh();
+    let n = note_with_footer(&mut v);
+    let footer = footer_of(&n.content_md).to_string();
+
+    let out = edit(
+        &mut v,
+        form_b(&n.id, "Plan.\n```\ncode\n```\n", Some(n.version)),
+    )
+    .unwrap();
+
+    assert_written(&v, &n, &out, &format!("Plan.\n```\ncode\n```\n{footer}"));
+    assert_eq!(
+        daily::note_marker_start(&out.content_md),
+        Some("Plan.\n```\ncode\n```\n".len())
+    );
+}
+
+#[test]
+fn an_open_code_fence_on_a_note_without_a_footer_is_accepted() {
+    let (_dir, mut v) = fresh();
+    let bare = note(&mut v, "Bare", "Bare text.\n");
+
+    let out = edit(
+        &mut v,
+        form_b(
+            &bare.id,
+            "Bare text.\n```\nunfinished\n",
+            Some(bare.version),
+        ),
+    )
+    .unwrap();
+
+    assert_written(&v, &bare, &out, "Bare text.\n```\nunfinished\n");
+}
+
 // ---------------------------------------------------------------------------
 // AC 16 and 17: transclusion tokens
 // ---------------------------------------------------------------------------
