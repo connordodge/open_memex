@@ -128,6 +128,22 @@ final vaultV6ReadyProvider = Provider<bool>((ref) {
       db.hasColumns('tags', VaultDb.v6TagColumns);
 });
 
+/// True when the open local vault has the V8 `notes.agent_read_only` column
+/// and the `note_revisions` table (D16, D17). Re-probed like
+/// [vaultV6ReadyProvider] on every vault revision and when the open call
+/// completes, never caching a pre-migration `false`. False with no database,
+/// so always false for a hosted vault: a hosted vault's gate is its `/info`
+/// `schema_version` (`agentEditsAvailableProvider`).
+final vaultV8ReadyProvider = Provider<bool>((ref) {
+  if (ref.watch(currentVaultProvider) is HostedVaultRef) return false;
+  ref.watch(vaultRevisionProvider);
+  ref.watch(vaultOpenProvider);
+  final db = ref.watch(vaultDbProvider);
+  if (db == null) return false;
+  return db.hasColumns('notes', VaultDb.v8NoteColumns) &&
+      db.hasTables(VaultDb.v8TableNames);
+});
+
 /// The currently selected note id (or null).
 final selectedNoteIdProvider = StateProvider<String?>((_) => null);
 

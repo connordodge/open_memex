@@ -756,6 +756,62 @@ fn restore_commits_in_one_transaction() {
     }
 }
 
+/// Holds the write lock from a second connection for a while and returns the
+/// thread to join. Returns once the lock is held.
+fn hold_the_write_lock(v: &Vault) -> std::thread::JoinHandle<()> {
+    let db = v.root().join("memex.db");
+    let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        let other = rusqlite::Connection::open(db).unwrap();
+        other.execute_batch("BEGIN IMMEDIATE").unwrap();
+        locked_tx.send(()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        other.execute_batch("COMMIT").unwrap();
+    });
+    locked_rx.recv().unwrap();
+    holder
+}
+
+/// Review r1 (ruling D7): `edit_note` takes the write lock before it reads
+/// the note, so a write another connection holds is waited out under the busy
+/// timeout. A deferred transaction would hold a read snapshot when it
+/// upgrades, and SQLite fails that upgrade at once with SQLITE_BUSY.
+#[test]
+fn edit_note_waits_out_a_write_another_connection_holds() {
+    let (_dir, mut v) = fresh();
+    let n = note(&mut v, "Plan", "First text.\n");
+    let holder = hold_the_write_lock(&v);
+
+    let out = note_edits::edit_note(
+        &mut v,
+        form_b(&n.id, "Second text.\n", n.version, "Rewrote the note"),
+        DAY,
+        &FakeClock::at(T0),
+        None,
+    )
+    .expect("the edit waits for the other writer instead of failing with SQLITE_BUSY");
+    holder.join().unwrap();
+
+    assert!(out.changed);
+    assert_eq!(current(&v, &n.id).content_md, "Second text.\n");
+}
+
+/// Same for `restore`, which also takes the lock first (ruling D7).
+#[test]
+fn restore_waits_out_a_write_another_connection_holds() {
+    let (_dir, mut v) = fresh();
+    let n = note(&mut v, "Plan", "First text.\n");
+    rewrite(&mut v, &n.id, "Second text.\n");
+    let rev = revision_at(&v, &n.id, 0).id.clone();
+    let holder = hold_the_write_lock(&v);
+
+    restore_at(&mut v, &rev, Some(&n.id), T0)
+        .expect("the restore waits for the other writer instead of failing with SQLITE_BUSY");
+    holder.join().unwrap();
+
+    assert_eq!(current(&v, &n.id).content_md, "First text.\n");
+}
+
 #[test]
 fn restore_reindexes_the_restored_text() {
     let (_dir, mut v) = fresh();
@@ -849,6 +905,56 @@ fn restore_re_derives_body_tags_and_keeps_footer_and_title() {
         ],
         "a person write re-derives every body tag"
     );
+}
+
+#[test]
+fn restore_treats_a_removed_system_tag_text_as_a_person_save_does() {
+    let (_dir, mut v) = fresh();
+    let body = |name: &str| (name.to_string(), "body".to_string());
+
+    // Two notes in the same state: an inbox body row whose text an agent
+    // edit removed (the agent edit keeps the row).
+    let n = note(&mut v, "Triage", "Triage #inbox and #pricing.\n");
+    let twin = note(&mut v, "Triage twin", "Triage #inbox and #pricing.\n");
+    for id in [&n.id, &twin.id] {
+        rewrite(&mut v, id, "Done #pricing.\n");
+        assert_eq!(
+            tag_rows(&v, id),
+            vec![body("inbox"), body("pricing")],
+            "the agent edit keeps the inbox row"
+        );
+    }
+
+    // A person save of text without #inbox drops the row.
+    let saved = current(&v, &twin.id);
+    update_note(
+        &mut v,
+        &twin.id,
+        saved.version,
+        UpdateNote {
+            content_md: Some("Done again #pricing.\n".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(tag_rows(&v, &twin.id), vec![body("pricing")]);
+
+    // Restore to text without #inbox is a person write: the same result.
+    rewrite(&mut v, &n.id, "Done again #pricing.\n");
+    let rev = revision_at(&v, &n.id, 1);
+    assert_eq!(rev.previous_md, "Done #pricing.\n");
+    restore_at(&mut v, &rev.id, Some(&n.id), T0).unwrap();
+    assert_eq!(
+        tag_rows(&v, &n.id),
+        vec![body("pricing")],
+        "Restore drops the system body row like a person save"
+    );
+
+    // Restore to text that has #inbox derives the row again.
+    let older = revision_at(&v, &n.id, 0);
+    assert_eq!(older.previous_md, "Triage #inbox and #pricing.\n");
+    restore_at(&mut v, &older.id, Some(&n.id), T0).unwrap();
+    assert_eq!(tag_rows(&v, &n.id), vec![body("inbox"), body("pricing")]);
 }
 
 #[test]

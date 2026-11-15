@@ -1,4 +1,5 @@
 import '../cli/note_cli.dart';
+import '../cli/note_edits_cli.dart';
 import '../db.dart';
 import '../memex_cli.dart';
 
@@ -36,6 +37,11 @@ abstract interface class NotesAccess {
   /// `VaultDb.distinctLinkKinds`: every link kind, sorted.
   Future<List<String>> distinctLinkKinds();
 
+  /// The note's agent-edit revisions, newest first (D14, D16). Local:
+  /// `VaultDb.noteRevisions` (empty below V8). Hosted:
+  /// `GET …/notes/{note_id}/revisions`.
+  Future<List<NoteRevision>> noteRevisions(String noteId);
+
   // ---------- writes ----------
 
   /// `memex add` (`MemexCli.addNote`): the new note's id.
@@ -68,6 +74,19 @@ abstract interface class NotesAccess {
     required String toNoteId,
     String kind = 'references',
     String? label,
+  });
+
+  /// Sets ([on]) or clears the note's Agent read-only flag (D14, D16): local
+  /// `memex read-only set|clear --note-id`, hosted
+  /// `PUT …/notes/{note_id}/agent-read-only {agent_read_only}`. One call.
+  Future<AgentReadOnlyResult> setAgentReadOnly(String noteId, bool on);
+
+  /// Restores agent-edit revision [revisionId] of note [noteId] (D14, D16):
+  /// local `memex revisions restore --revision-id`, hosted
+  /// `POST …/notes/{note_id}/revisions/{revision_id}/restore`. One call.
+  Future<NoteRevisionRestoreResult> restoreNoteRevision({
+    required String noteId,
+    required String revisionId,
   });
 
   /// `memex update-link` (`MemexCli.updateLink`).

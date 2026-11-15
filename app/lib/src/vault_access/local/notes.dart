@@ -1,4 +1,5 @@
 import '../../cli/note_cli.dart';
+import '../../cli/note_edits_cli.dart';
 import '../../db.dart';
 import '../../memex_cli.dart';
 import '../notes_access.dart';
@@ -44,7 +45,38 @@ class LocalNotesAccess implements NotesAccess {
   Future<List<String>> distinctLinkKinds() async =>
       db?.distinctLinkKinds() ?? const [];
 
+  @override
+  Future<List<NoteRevision>> noteRevisions(String noteId) async =>
+      db?.noteRevisions(noteId) ?? const [];
+
   // ---------- writes ----------
+
+  @override
+  Future<AgentReadOnlyResult> setAgentReadOnly(String noteId, bool on) async =>
+      _cli.setAgentReadOnly(vaultPath: vaultPath, noteId: noteId, on: on);
+
+  /// `memex revisions restore` takes only the revision id and restores
+  /// whichever note owns it. So, as the hosted route does (D11), a revision
+  /// [db] shows belongs to a note other than [noteId] fails with `not_found`
+  /// and runs nothing. A revision [db] does not know is left to the CLI.
+  @override
+  Future<NoteRevisionRestoreResult> restoreNoteRevision({
+    required String noteId,
+    required String revisionId,
+  }) async {
+    final cli = _cli;
+    final owner = db?.noteRevisionNoteId(revisionId);
+    if (owner != null && owner != noteId) {
+      throw MemexException(
+        'revisions restore failed: revision not found: $revisionId',
+        code: 'not_found',
+      );
+    }
+    return cli.restoreNoteRevision(
+      vaultPath: vaultPath,
+      revisionId: revisionId,
+    );
+  }
 
   @override
   Future<String> addNote({

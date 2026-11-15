@@ -850,7 +850,8 @@ pub(crate) enum TagMode {
     /// a person save (`tags::reconcile_body_tags`).
     Derive,
     /// An agent edit: only body tags whose `#name` the new person section no
-    /// longer yields are dropped (`tags::drop_unwritten_body_tags`).
+    /// longer yields are dropped (`tags::drop_unwritten_body_tags`), and never
+    /// a system tag (`inbox`, `agent-authored`; ruling D26).
     RemovalsOnly,
 }
 
@@ -907,7 +908,7 @@ pub(crate) fn write_person_section_internal(
         TagMode::Derive => tags::reconcile_body_tags(tx, id.as_str(), &person, false, now)?,
         TagMode::RemovalsOnly => {
             let written = tags::extract(tags::person_section(&person));
-            tags::drop_unwritten_body_tags(tx, id.as_str(), &written)?;
+            tags::drop_unwritten_body_tags(tx, id.as_str(), &written, true)?;
         }
     }
     let content_md = daily::sync_note_footer(tx, id.as_str(), &person)?;
@@ -1060,6 +1061,24 @@ pub fn note_agent_fields(
     let mut fields = serde_json::Map::new();
     fields.insert("agent_read_only".into(), serde_json::Value::Bool(flag != 0));
     Ok(fields)
+}
+
+/// Opens the write transaction for a `caller`'s write to the note `id` that
+/// does not save through [`update_note_as`] (Spec #7 Req 5). An agent's is
+/// Immediate and runs [`check_agent_read_only`] again under the write lock,
+/// as `update_note_as` does, so a flag another process set after the early
+/// check still refuses the write. A person's is a plain deferred one.
+pub(crate) fn begin_write_as<'c>(
+    conn: &'c mut rusqlite::Connection,
+    caller: Caller,
+    id: &NoteId,
+) -> Result<rusqlite::Transaction<'c>> {
+    if caller != Caller::Agent {
+        return Ok(conn.transaction()?);
+    }
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    check_agent_read_only(&tx, caller, id)?;
+    Ok(tx)
 }
 
 fn row_to_note(r: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {

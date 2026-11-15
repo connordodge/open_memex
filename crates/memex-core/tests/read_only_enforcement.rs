@@ -905,6 +905,70 @@ fn agent_link_edits_on_a_flagged_source_are_read_only_rule() {
     assert_eq!(snapshot(&vault, &source.id), before);
 }
 
+/// Spec #7 Req 5 / AC 2 in core: an agent's update_link that has nothing to
+/// change (no new kind or label, or ones equal to the current) is
+/// `ReadOnlyRule` on a flagged source, not the "unchanged" answer; the person
+/// and an unflagged source still get it.
+#[test]
+fn agent_update_link_with_nothing_to_change_on_a_flagged_source_is_read_only_rule() {
+    let (_dir, mut vault) = fresh_vault();
+    create(&mut vault, "Roadmap", "Q1.\n", None);
+    let source = create(
+        &mut vault,
+        "Pricing notes",
+        "See [[Roadmap~extends]].\n",
+        None,
+    );
+    let link_id: String = vault
+        .connection_ref()
+        .query_row(
+            "SELECT id FROM links WHERE from_note_id = ?",
+            [source.id.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let nothing = || UpdateLink {
+        new_kind: None,
+        new_label: None,
+    };
+    let same_kind = || UpdateLink {
+        new_kind: Some(LinkKind::new("extends").unwrap()),
+        new_label: None,
+    };
+
+    // Unflagged: the unchanged answer, nothing written.
+    let before = snapshot(&vault, &source.id);
+    for patch in [nothing(), same_kind()] {
+        let (link, changed) =
+            links::update_link_changed(&mut vault, &link_id, patch, Caller::Agent)
+                .expect("an agent's no-op on an unflagged source");
+        assert!(!changed);
+        assert_eq!(link.link_kind, LinkKind::new("extends").unwrap());
+    }
+    assert_eq!(snapshot(&vault, &source.id), before);
+
+    set_flag(&vault, &source.id, true);
+    let before = snapshot(&vault, &source.id);
+    let revision = content_revision(&vault);
+    for (what, patch) in [("no fields", nothing()), ("the same kind", same_kind())] {
+        assert_read_only_rule(
+            links::update_link_changed(&mut vault, &link_id, patch, Caller::Agent),
+            "Pricing notes",
+            what,
+        );
+        assert_eq!(snapshot(&vault, &source.id), before, "{what}");
+        assert_eq!(content_revision(&vault), revision, "{what}");
+    }
+
+    // The person's no-op on the flagged source is the unchanged answer.
+    let (link, changed) =
+        links::update_link_changed(&mut vault, &link_id, nothing(), Caller::Person)
+            .expect("the person's no-op on a flagged source");
+    assert!(!changed);
+    assert_eq!(link.link_kind, LinkKind::new("extends").unwrap());
+    assert_eq!(snapshot(&vault, &source.id), before);
+}
+
 #[test]
 fn agent_link_from_an_unflagged_note_to_a_flagged_note_succeeds() {
     let (_dir, mut vault) = fresh_vault();
@@ -1054,4 +1118,139 @@ fn canvas_writes_work_on_a_flagged_note() {
         before,
         "the note itself is untouched"
     );
+}
+
+// ---------- the in-transaction recheck (review r1, finding 3) ----------
+
+/// Runs `op` (an agent write that passes its early flag check) on a thread
+/// while another connection (the app's `memex`, say) holds the write lock and
+/// has set `id`'s flag, uncommitted; commits the flag once `op` is waiting
+/// for the lock. Returns the vault and `op`'s result. An agent write that
+/// opens a deferred transaction, or does not recheck under the lock, lands
+/// anyway (or fails on a stale snapshot) instead of being `ReadOnlyRule`.
+fn agent_write_racing_the_flag<T: Send + 'static>(
+    dir: &std::path::Path,
+    vault: Vault,
+    id: &NoteId,
+    op: impl FnOnce(&mut Vault) -> Result<T, MemexError> + Send + 'static,
+) -> (Vault, Result<T, MemexError>) {
+    let other = rusqlite::Connection::open(dir.join("memex.db")).unwrap();
+    other.execute_batch("BEGIN IMMEDIATE").unwrap();
+    other
+        .execute(
+            "UPDATE notes SET agent_read_only = 1 WHERE id = ?1",
+            [id.as_str()],
+        )
+        .unwrap();
+    let agent = std::thread::spawn(move || {
+        let mut vault = vault;
+        let result = op(&mut vault);
+        (vault, result)
+    });
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    assert!(
+        !agent.is_finished(),
+        "the agent write waits for the other connection's write lock"
+    );
+    other.execute_batch("COMMIT").unwrap();
+    agent.join().unwrap()
+}
+
+/// `after` is `before` plus the person's flag write alone.
+fn assert_only_the_flag_moved(vault: &Vault, id: &NoteId, before: Snapshot, revision: i64) {
+    let after = snapshot(vault, id);
+    assert_eq!(after.agent_read_only, 1, "the person's flag is committed");
+    assert_eq!(
+        content_revision(vault),
+        revision + 1,
+        "only the flag write moved the revision counter"
+    );
+    assert_eq!(
+        Snapshot {
+            agent_read_only: 0,
+            ..after
+        },
+        before,
+        "no row, footer, version or updated_at written by the agent"
+    );
+}
+
+#[test]
+fn agent_tag_note_refuses_when_the_flag_is_set_by_another_connection_after_the_early_check() {
+    let TagWorld {
+        _dir, vault, note, ..
+    } = tag_world();
+    let before = snapshot(&vault, &note);
+    let revision = content_revision(&vault);
+    let id = note.clone();
+    let (vault, result) = agent_write_racing_the_flag(_dir.path(), vault, &note, move |v| {
+        tags::agent_tag_note(v, &id, "games", None)
+    });
+    assert_read_only_rule(result, "Pricing notes", "tag_note racing the flag");
+    assert_only_the_flag_moved(&vault, &note, before, revision);
+}
+
+#[test]
+fn agent_untag_note_refuses_when_the_flag_is_set_by_another_connection_after_the_early_check() {
+    let TagWorld {
+        _dir,
+        mut vault,
+        note,
+        ..
+    } = tag_world();
+    tags::agent_tag_note(&mut vault, &note, "games", None).expect("an agent tag to remove");
+    let before = snapshot(&vault, &note);
+    assert!(before.tags.contains(&("games".into(), "agent".into())));
+    let revision = content_revision(&vault);
+    let id = note.clone();
+    let (vault, result) = agent_write_racing_the_flag(_dir.path(), vault, &note, move |v| {
+        tags::agent_untag_note(v, &id, "games", None)
+    });
+    assert_read_only_rule(result, "Pricing notes", "untag_note racing the flag");
+    assert_only_the_flag_moved(&vault, &note, before, revision);
+}
+
+#[test]
+fn agent_set_chip_refuses_when_the_flag_is_set_by_another_connection_after_the_early_check() {
+    let ChipWorld {
+        _dir,
+        vault,
+        host,
+        loop_topic,
+        ..
+    } = chip_world();
+    let before = snapshot(&vault, &host);
+    let revision = content_revision(&vault);
+    let id = host.clone();
+    let topic_id = loop_topic.clone();
+    let (vault, result) = agent_write_racing_the_flag(_dir.path(), vault, &host, move |v| {
+        footer::agent_set_chip(v, &id, &topic_id, None)
+    });
+    assert_read_only_rule(result, "Pricing notes", "add_footer_topic racing the flag");
+    assert_only_the_flag_moved(&vault, &host, before, revision);
+    assert_eq!(chip_origin(&vault, &host, &loop_topic), None, "no chip row");
+}
+
+/// The recheck is the agent's alone: with the same lock held, a person's chip
+/// write on a note flagged in between still lands (Req 2), after the wait.
+#[test]
+fn person_set_chip_still_writes_when_the_flag_is_set_by_another_connection_in_between() {
+    let ChipWorld {
+        _dir,
+        vault,
+        host,
+        loop_topic,
+        ..
+    } = chip_world();
+    let id = host.clone();
+    let topic_id = loop_topic.clone();
+    let (vault, result) = agent_write_racing_the_flag(_dir.path(), vault, &host, move |v| {
+        footer::set_chip(v, &id, &topic_id, ChipOrigin::Person, None)
+    });
+    result.expect("a person's chip write on a flagged note");
+    assert_eq!(
+        chip_origin(&vault, &host, &loop_topic).as_deref(),
+        Some("person")
+    );
+    assert_eq!(snapshot(&vault, &host).agent_read_only, 1);
 }
