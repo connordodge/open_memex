@@ -584,9 +584,28 @@ fn untouchable_snapshot(conn: &Connection) -> Vec<String> {
         "links",
     ] {
         out.push(format!("== {t}"));
-        out.extend(table_rows(conn, t));
+        out.extend(table_rows_except(conn, t, &later_columns(conn, t)));
     }
     out
+}
+
+/// The columns a schema later than V6 adds to `table` and that `conn`
+/// already has: V8's `notes.agent_read_only` (WI #8) is new on every note.
+fn later_columns(conn: &Connection, table: &str) -> Vec<&'static str> {
+    let has = |column: &str| -> bool {
+        conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+            [table, column],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+            > 0
+    };
+    [("notes", "agent_read_only")]
+        .into_iter()
+        .filter(|(t, c)| *t == table && has(c))
+        .map(|(_, c)| c)
+        .collect()
 }
 
 /// One `tags` row: (note_id, tag, origin, first_line).
@@ -780,8 +799,8 @@ fn key(c: &str, desc: bool) -> (String, bool) {
 // ---- AC 1: version, columns, tables, indexes --------------------------------------------------
 
 #[test]
-fn app_schema_version_is_7() {
-    assert_eq!(schema::APP_SCHEMA_VERSION, 7);
+fn app_schema_version_is_8() {
+    assert_eq!(schema::APP_SCHEMA_VERSION, 8);
 }
 
 #[test]
@@ -795,7 +814,7 @@ fn v6_apply_advances_v5_database_to_version_6() {
         &conn,
         "SELECT CAST(version AS TEXT) FROM schema_version ORDER BY version",
     );
-    assert_eq!(versions, ["1", "2", "3", "4", "5", "6", "7"]);
+    assert_eq!(versions, ["1", "2", "3", "4", "5", "6", "7", "8"]);
 }
 
 #[test]
@@ -1219,11 +1238,9 @@ fn v6_vault_open_leaves_note_bodies_and_review_state_unchanged() {
     let snapshot = |conn: &Connection| -> Vec<String> {
         let mut out = kept(untouchable_snapshot(conn));
         out.push("== notes without index flags".to_string());
-        out.extend(table_rows_except(
-            conn,
-            "notes",
-            &["has_open_questions", "frontmatter_parse_error"],
-        ));
+        let mut flags = vec!["has_open_questions", "frontmatter_parse_error"];
+        flags.extend(later_columns(conn, "notes"));
+        out.extend(table_rows_except(conn, "notes", &flags));
         out
     };
     let before = snapshot(&open(&make_v5_db(dir.path())));

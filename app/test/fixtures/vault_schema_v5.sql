@@ -126,6 +126,16 @@ CREATE TABLE links (
     UNIQUE (from_note_id, position)
 );
 
+CREATE TABLE note_revisions (
+    id                TEXT PRIMARY KEY,
+    note_id           TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    previous_md       TEXT NOT NULL,
+    previous_version  INTEGER NOT NULL,
+    new_version       INTEGER NOT NULL,
+    agent_change_id   TEXT NULL REFERENCES agent_changes(id) ON DELETE SET NULL,
+    created_at        INTEGER NOT NULL
+);
+
 CREATE TABLE notes (
     id           TEXT PRIMARY KEY,
     title        TEXT NOT NULL,
@@ -135,7 +145,7 @@ CREATE TABLE notes (
     created_at   INTEGER NOT NULL,
     updated_at   INTEGER NOT NULL,
     crdt_state   BLOB
-, has_open_questions INTEGER NOT NULL DEFAULT 0, frontmatter_parse_error INTEGER NOT NULL DEFAULT 0);
+, has_open_questions INTEGER NOT NULL DEFAULT 0, frontmatter_parse_error INTEGER NOT NULL DEFAULT 0, agent_read_only INTEGER NOT NULL DEFAULT 0);
 
 CREATE TABLE notes_dedup_log (
     note_id      TEXT PRIMARY KEY,
@@ -226,6 +236,9 @@ CREATE INDEX idx_links_from ON links(from_note_id);
 CREATE INDEX idx_links_kind ON links(link_kind, to_note_id);
 
 CREATE INDEX idx_links_to   ON links(to_note_id);
+
+CREATE INDEX idx_note_revisions_note
+    ON note_revisions(note_id, created_at DESC);
 
 CREATE UNIQUE INDEX idx_notes_daily_title ON notes(title)
     WHERE CASE WHEN json_valid(frontmatter) THEN json_extract(frontmatter, '$.role') END = 'daily';
@@ -358,6 +371,15 @@ BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
 CREATE TRIGGER content_revision_links_au AFTER UPDATE ON links
 BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
 
+CREATE TRIGGER content_revision_note_revisions_ad AFTER DELETE ON note_revisions
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_note_revisions_ai AFTER INSERT ON note_revisions
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_note_revisions_au AFTER UPDATE ON note_revisions
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
 CREATE TRIGGER content_revision_notes_ad AFTER DELETE ON notes
 BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
 
@@ -455,5 +477,6 @@ INSERT INTO schema_version(version) VALUES (4);
 INSERT INTO schema_version(version) VALUES (5);
 INSERT INTO schema_version(version) VALUES (6);
 INSERT INTO schema_version(version) VALUES (7);
+INSERT INTO schema_version(version) VALUES (8);
 INSERT INTO vault_settings(key, value) VALUES ('smart_folder_max_depth', '2');
 INSERT INTO content_revision(id, n) VALUES (1, 0);

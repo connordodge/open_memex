@@ -65,6 +65,10 @@ const V6_REGULAR_TABLES: [&str; 20] = [
 /// The tables V7 adds.
 const V7_TABLES: [&str; 3] = ["agent_activity", "learned_words", "content_revision"];
 
+/// The tables later versions add, so V6 -> latest also makes them: V8's
+/// `note_revisions` (WI #8).
+const LATER_TABLES: [&str; 1] = ["note_revisions"];
+
 /// The three revision triggers of each triggered table: (suffix, event).
 const TRIGGER_KINDS: [(&str, &str); 3] = [("ai", "INSERT"), ("au", "UPDATE"), ("ad", "DELETE")];
 
@@ -419,8 +423,8 @@ fn migrated_v6_fixture() -> (tempfile::TempDir, Connection) {
     schema::apply(&mut conn).expect("V6 -> V7 migration succeeds");
     assert_eq!(
         schema::current_version(&conn).unwrap(),
-        7,
-        "schema::apply did not advance the V6 fixture to V7"
+        schema::APP_SCHEMA_VERSION,
+        "schema::apply did not advance the V6 fixture to the current version"
     );
     (dir, conn)
 }
@@ -431,7 +435,10 @@ fn migrated_v6_fixture_with_chunk_vec() -> (tempfile::TempDir, Connection) {
     let db_path = make_v6_db_with_chunk_vec(dir.path());
     let mut conn = open(&db_path);
     schema::apply(&mut conn).expect("V6 (with chunk_vec) -> V7 migration succeeds");
-    assert_eq!(schema::current_version(&conn).unwrap(), 7);
+    assert_eq!(
+        schema::current_version(&conn).unwrap(),
+        schema::APP_SCHEMA_VERSION
+    );
     (dir, conn)
 }
 
@@ -508,6 +515,27 @@ fn cell(v: ValueRef<'_>) -> String {
 /// Every row of `table`, each rendered value by value, sorted.
 fn table_rows(conn: &Connection, table: &str) -> Vec<String> {
     let mut stmt = conn.prepare(&format!("SELECT * FROM \"{table}\"")).unwrap();
+    let n = stmt.column_count();
+    let mut rows = stmt.query([]).unwrap();
+    let mut out = Vec::new();
+    while let Some(r) = rows.next().unwrap() {
+        let cells: Vec<String> = (0..n).map(|i| cell(r.get_ref(i).unwrap())).collect();
+        out.push(cells.join(" | "));
+    }
+    out.sort();
+    out
+}
+
+/// [`table_rows`] of `notes` without the column V8 adds
+/// (`agent_read_only`, WI #8).
+fn notes_rows_without_v8_columns(conn: &Connection) -> Vec<String> {
+    let cols: Vec<String> = strings(
+        conn,
+        "SELECT name FROM pragma_table_info('notes') WHERE name <> 'agent_read_only' ORDER BY cid",
+    );
+    let mut stmt = conn
+        .prepare(&format!("SELECT {} FROM notes", cols.join(", ")))
+        .unwrap();
     let n = stmt.column_count();
     let mut rows = stmt.query([]).unwrap();
     let mut out = Vec::new();
@@ -674,21 +702,24 @@ fn now_ms() -> i64 {
 // ---- AC 1: a fresh vault at V7 ----------------------------------------------------------------
 
 #[test]
-fn app_schema_version_is_7() {
-    assert_eq!(schema::APP_SCHEMA_VERSION, 7);
+fn app_schema_version_is_8() {
+    assert_eq!(schema::APP_SCHEMA_VERSION, 8);
 }
 
 #[test]
 fn fresh_vault_opens_at_v7_with_the_v7_tables_and_index() {
     let (dir, vault) = fresh_vault();
     let conn = vault.connection_ref();
-    assert_eq!(vault.schema_version(), 7);
-    assert_eq!(schema::current_version(conn).unwrap(), 7);
+    assert_eq!(vault.schema_version(), schema::APP_SCHEMA_VERSION);
+    assert_eq!(
+        schema::current_version(conn).unwrap(),
+        schema::APP_SCHEMA_VERSION
+    );
     let versions = strings(
         conn,
         "SELECT CAST(version AS TEXT) FROM schema_version ORDER BY version",
     );
-    assert_eq!(versions, ["1", "2", "3", "4", "5", "6", "7"]);
+    assert_eq!(versions, ["1", "2", "3", "4", "5", "6", "7", "8"]);
     for t in V7_TABLES {
         assert_eq!(
             count(
@@ -703,14 +734,18 @@ fn fresh_vault_opens_at_v7_with_the_v7_tables_and_index() {
     }
     drop(vault);
 
-    // Reopened, it is still V7 and the manifest says so.
+    // Reopened, it is still at the current version and the manifest says so.
     let vault = Vault::open(dir.path().join("vault")).expect("reopen the fresh vault");
-    assert_eq!(vault.schema_version(), 7);
+    assert_eq!(vault.schema_version(), schema::APP_SCHEMA_VERSION);
     let manifest: serde_json::Value = serde_json::from_slice(
         &std::fs::read(dir.path().join("vault").join("manifest.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(manifest["schema_version"].as_i64(), Some(7), "{manifest}");
+    assert_eq!(
+        manifest["schema_version"].as_i64(),
+        Some(schema::APP_SCHEMA_VERSION),
+        "{manifest}"
+    );
 }
 
 #[test]
@@ -847,29 +882,45 @@ fn v6_fixture_migrates_to_v7_and_keeps_every_row_of_every_v6_table() {
 
     let mut conn = open(&db_path);
     schema::apply(&mut conn).expect("V6 -> V7 migration succeeds");
-    assert_eq!(schema::current_version(&conn).unwrap(), 7);
+    assert_eq!(
+        schema::current_version(&conn).unwrap(),
+        schema::APP_SCHEMA_VERSION
+    );
 
     let after = all_rows(&conn);
     for (table, rows) in &before {
         match table.as_str() {
             // V7 adds its version row and the rechunk queue; both checked below.
             "schema_version" | "pending_index" => {}
+            // V8 (WI #8) adds `agent_read_only = 0` to every note; every
+            // other column is unchanged.
+            "notes" => {
+                assert_eq!(&notes_rows_without_v8_columns(&conn), rows, "notes rows")
+            }
             _ => assert_eq!(&after[table], rows, "{table} rows unchanged by V7"),
         }
     }
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM notes WHERE agent_read_only <> 0"
+        ),
+        0
+    );
     let versions = strings(
         &conn,
         "SELECT CAST(version AS TEXT) FROM schema_version ORDER BY version",
     );
-    assert_eq!(versions, ["1", "2", "3", "4", "5", "6", "7"]);
+    assert_eq!(versions, ["1", "2", "3", "4", "5", "6", "7", "8"]);
     // The row the queue already held is kept as it was.
     assert_eq!(pending(&conn).get(N_QUEUED), Some(&QUEUED_AT));
-    // Only V7's own tables are new.
+    // Only V7's own tables (and the later versions' ones) are new.
     let new_tables: BTreeSet<&String> = after.keys().filter(|t| !before.contains_key(*t)).collect();
     assert_eq!(
         new_tables,
         V7_TABLES
             .iter()
+            .chain(LATER_TABLES.iter())
             .map(|t| t.to_string())
             .collect::<BTreeSet<_>>()
             .iter()
@@ -882,11 +933,18 @@ fn v6_fixture_migrates_to_v7_and_keeps_every_row_of_every_v6_table() {
 #[test]
 fn v6_vault_open_migrates_to_v7_and_rewrites_the_manifest() {
     let (dir, vault) = opened_v6_vault();
-    assert_eq!(vault.schema_version(), 7);
-    assert_eq!(schema::current_version(vault.connection_ref()).unwrap(), 7);
+    assert_eq!(vault.schema_version(), schema::APP_SCHEMA_VERSION);
+    assert_eq!(
+        schema::current_version(vault.connection_ref()).unwrap(),
+        schema::APP_SCHEMA_VERSION
+    );
     let on_disk: serde_json::Value =
         serde_json::from_slice(&std::fs::read(dir.path().join("manifest.json")).unwrap()).unwrap();
-    assert_eq!(on_disk["schema_version"].as_i64(), Some(7), "{on_disk}");
+    assert_eq!(
+        on_disk["schema_version"].as_i64(),
+        Some(schema::APP_SCHEMA_VERSION),
+        "{on_disk}"
+    );
     assert_eq!(
         on_disk["vault_id"].as_str(),
         Some("01J9V7MANIFEST000000000000")
@@ -1009,11 +1067,13 @@ fn v6_fixture_with_chunk_vec_gets_three_triggers_on_every_regular_table_and_none
         }
     }
 
-    // Exactly the V6 regular tables, schema_version included, and V7's two
-    // new content tables carry triggers: 22 tables, 66 triggers.
+    // Exactly the V6 regular tables, schema_version included, V7's two new
+    // content tables and V8's note_revisions carry triggers: 23 tables, 69
+    // triggers.
     let mut expected: BTreeSet<String> = V6_REGULAR_TABLES.iter().map(|t| t.to_string()).collect();
     expected.insert("agent_activity".into());
     expected.insert("learned_words".into());
+    expected.extend(LATER_TABLES.iter().map(|t| t.to_string()));
     assert_eq!(triggers.keys().cloned().collect::<BTreeSet<_>>(), expected);
     assert!(triggers.contains_key("schema_version"));
     assert_eq!(
@@ -1021,7 +1081,7 @@ fn v6_fixture_with_chunk_vec_gets_three_triggers_on_every_regular_table_and_none
             &conn,
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger'"
         ),
-        66
+        69
     );
 }
 
@@ -1033,6 +1093,7 @@ fn fresh_vault_triggers_every_regular_table_and_no_exempt_one() {
     let mut expected: BTreeSet<String> = V6_REGULAR_TABLES.iter().map(|t| t.to_string()).collect();
     expected.insert("agent_activity".into());
     expected.insert("learned_words".into());
+    expected.extend(LATER_TABLES.iter().map(|t| t.to_string()));
     assert_eq!(triggers.keys().cloned().collect::<BTreeSet<_>>(), expected);
     for (t, names) in &triggers {
         assert_eq!(names, &expected_trigger_names(t), "{t}");
@@ -1331,7 +1392,11 @@ fn v6_to_v7_queues_every_note_in_pending_index() {
 #[test]
 fn a_fresh_vault_queues_no_note() {
     let (_dir, vault) = fresh_vault();
-    assert_eq!(vault.schema_version(), 7, "the fresh vault ran V7");
+    assert_eq!(
+        vault.schema_version(),
+        schema::APP_SCHEMA_VERSION,
+        "the fresh vault ran V7 and every later version"
+    );
     assert!(pending(vault.connection_ref()).is_empty());
 
     // V7's queue step is one-time: a note written after V7 is not queued by
@@ -1340,7 +1405,10 @@ fn a_fresh_vault_queues_no_note() {
     let db_path = dir.path().join("bare.db");
     let mut conn = open(&db_path);
     schema::apply(&mut conn).expect("a bare database reaches V7");
-    assert_eq!(schema::current_version(&conn).unwrap(), 7);
+    assert_eq!(
+        schema::current_version(&conn).unwrap(),
+        schema::APP_SCHEMA_VERSION
+    );
     assert!(
         pending(&conn).is_empty(),
         "a bare fresh database queues no note"
@@ -1515,7 +1583,9 @@ fn rerunning_v7_after_a_lost_version_row_keeps_n_and_adds_no_trigger() {
     let triggers = triggers_by_table(&conn);
     let queue = pending(&conn);
 
-    conn.execute("DELETE FROM schema_version WHERE version = 7", [])
+    // V8's row goes too, or MAX(version) would still read 8 (WI #8); the
+    // re-run then runs V7 and V8 again.
+    conn.execute("DELETE FROM schema_version WHERE version >= 7", [])
         .unwrap();
     let n = revision(&conn);
     assert!(n > 1, "the counter has moved before the re-run: {n}");
@@ -1523,12 +1593,16 @@ fn rerunning_v7_after_a_lost_version_row_keeps_n_and_adds_no_trigger() {
 
     schema::apply(&mut conn).expect("re-running V7 over V7 tables succeeds");
 
-    assert_eq!(schema::current_version(&conn).unwrap(), 7);
+    assert_eq!(
+        schema::current_version(&conn).unwrap(),
+        schema::APP_SCHEMA_VERSION
+    );
     assert_eq!(triggers_by_table(&conn), triggers);
     assert_eq!(
         revision(&conn),
         n + 1,
-        "the counter row is never reset: the re-run only adds the version row's own bump"
+        "the counter row is never reset: the re-run only adds the version 7 row's own bump \
+         (the V8 step moves no n)"
     );
     assert_eq!(revision_rows(&conn).len(), 1);
     assert_eq!(pending(&conn), queue, "queued rows keep their stamps");

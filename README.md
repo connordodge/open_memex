@@ -110,6 +110,15 @@ Echoes, the agent activity list and learned spelling words need schema V7. The f
 
 The first open after the upgrade rechunks every note, so it takes longer than usual on a large vault. The old vectors no longer match the new chunks; the embedding backfill rebuilds them in the background, and semantic search fills back in as it runs.
 
+## Upgrading to schema V8
+
+Agent edits (`edit_note`, with a Restore button for each one) and Agent read-only notes need schema V8. The first time the new `memex` binary opens a vault, it migrates that vault to V8 in place: it adds the Agent read-only flag to every note and a table for the revisions agent edits keep. It changes no note body and queues nothing to be chunked again. Every existing note starts with Agent read-only off, so agents can edit it until you turn it on. A V7 `memex` refuses to open a V8 vault with `SchemaUnsupported`, so there is no going back except from a backup. Before you upgrade:
+
+1. Quit the app, every MCP client (Claude Desktop, Raycast and any other) and any `memex serve` you started yourself, then back up the vault with `memex backup --vault <path> --dest <folder>` (the folder must already exist). Do it before anything opens the vault with the new `memex`: the backup reads a consistent copy and never migrates the vault. Keep the file: it is your way back (see [`docs/backups.md`](docs/backups.md) to restore it).
+2. Install the new app and the new `memex` CLI together. Either download the new DMG and install the new app, which includes the bundled memex (see [Install](#install)), or build both from source (see [Build from source](#build-from-source)). A V7 `memex` left anywhere on your machine fails on the vault with `SchemaUnsupported`. A hosted vault's `memex serve` must be the new one too.
+3. Point Claude Desktop, and every other MCP client, at the bundled memex (`/Applications/Open Memex.app/Contents/MacOS/memex`, see [`docs/claude-desktop-setup.md`](docs/claude-desktop-setup.md)) rather than an older `memex` on your `PATH`, then reopen it so it starts the new `memex serve`.
+4. Try the upgrade on a scratch vault first (a copy of your vault, or `memex init` a new one), not on your only copy.
+
 ## Architecture
 
 ```

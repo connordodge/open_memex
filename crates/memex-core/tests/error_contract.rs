@@ -57,10 +57,15 @@ fn variant_name(e: &MemexError) -> &'static str {
         MemexError::BackupInvalid(_) => "BackupInvalid",
         MemexError::BackupTooNew { .. } => "BackupTooNew",
         MemexError::RestoreTargetNotEmpty(_) => "RestoreTargetNotEmpty",
+        MemexError::ReadOnlyRule(_) => "ReadOnlyRule",
+        MemexError::ExcerptRule(_) => "ExcerptRule",
+        MemexError::EditNotFound { .. } => "EditNotFound",
+        MemexError::EditAmbiguous { .. } => "EditAmbiguous",
+        MemexError::EditInvalid(_) => "EditInvalid",
     }
 }
 
-const VARIANT_COUNT: usize = 43;
+const VARIANT_COUNT: usize = 48;
 
 /// The variants listed in the C1 table, with their code and extra fields.
 fn c1_samples() -> Vec<(MemexError, &'static str, Value)> {
@@ -173,6 +178,7 @@ fn c1_samples() -> Vec<(MemexError, &'static str, Value)> {
     .chain(v6_samples())
     .chain(backup_samples())
     .chain(e0_samples())
+    .chain(v8_samples())
     .collect()
 }
 
@@ -278,6 +284,47 @@ fn e0_samples() -> Vec<(MemexError, &'static str, Value)> {
         (
             MemexError::WordInvalid("`two words` is not one word".into()),
             "word_invalid",
+            json!({}),
+        ),
+    ]
+}
+
+/// The five variants Spec #7 adds (WI #8, ruling D2). `edit_not_found` and
+/// `edit_ambiguous` carry the rule field `index`; the others are message only.
+fn v8_samples() -> Vec<(MemexError, &'static str, Value)> {
+    vec![
+        (
+            MemexError::ReadOnlyRule(
+                "\"Pricing notes\" is read-only for agents; the person can change this in the app"
+                    .into(),
+            ),
+            "read_only_rule",
+            json!({}),
+        ),
+        (
+            MemexError::ExcerptRule("the edit drops ![[2026-11-02#^b1]]".into()),
+            "excerpt_rule",
+            json!({}),
+        ),
+        (
+            MemexError::EditNotFound {
+                index: 2,
+                message: "edit 2: old_text is not in the note".into(),
+            },
+            "edit_not_found",
+            json!({"index": 2}),
+        ),
+        (
+            MemexError::EditAmbiguous {
+                index: 0,
+                message: "edit 0: old_text appears 3 times".into(),
+            },
+            "edit_ambiguous",
+            json!({"index": 0}),
+        ),
+        (
+            MemexError::EditInvalid("give edits or content_md, not both".into()),
+            "edit_invalid",
             json!({}),
         ),
     ]
@@ -680,7 +727,8 @@ fn schema_unsupported_stays_internal_and_backups_not_configured_is_not_a_memex_e
 
 #[test]
 fn e0_variants_are_counted_and_each_new_code_belongs_to_exactly_its_variants() {
-    assert_eq!(VARIANT_COUNT, 43);
+    // 43 after E0; Spec #7 (WI #8) adds five more.
+    assert_eq!(VARIANT_COUNT, 48);
     let samples = e0_samples();
     assert_eq!(samples.len(), 4);
     for (e, code, _) in &samples {
@@ -780,4 +828,211 @@ fn word_invalid_has_code_word_invalid_and_keeps_its_message() {
     let msg = error_object(&got)["message"].as_str().unwrap();
     assert!(msg.contains(&detail), "{msg}");
     assert!(!msg.contains('\n'), "{msg:?}");
+}
+
+// ======================================================================
+// WI #8 (Spec #7 Req 9, ruling D2): read_only_rule, excerpt_rule,
+// edit_not_found, edit_ambiguous and edit_invalid. Their HTTP statuses and
+// the MCP rule list are pinned in memex-mcp (tests/v8_error_codes.rs and
+// the test module at the end of src/tools.rs).
+// ======================================================================
+
+/// Every (variant, code) pair the contract held before Spec #7, frozen here
+/// so the V8 change can't move one.
+const PRE_V8_CODES: [(&str, &str); 43] = [
+    ("Io", "internal"),
+    ("Sqlite", "internal"),
+    ("Json", "internal"),
+    ("InvalidId", "invalid_id"),
+    ("NotFound", "not_found"),
+    ("VersionConflict", "version_conflict"),
+    ("ManifestInvalid", "internal"),
+    ("SchemaUnsupported", "internal"),
+    ("InvalidPath", "internal"),
+    ("EmbedderInit", "embedder_unavailable"),
+    ("EmbedderInfer", "embedder_unavailable"),
+    ("ModelNotDownloaded", "model_not_downloaded"),
+    ("TitleConflict", "title_conflict"),
+    ("TitleInvalid", "internal"),
+    ("TooManyDedupCollisions", "internal"),
+    ("InvalidLinkKind", "internal"),
+    ("Yaml", "internal"),
+    ("DailyNoteExists", "daily_note_exists"),
+    ("MarkerRule", "marker_rule"),
+    ("RoleRule", "role_rule"),
+    ("PinnedRule", "pinned_rule"),
+    ("DepthExceeded", "depth_exceeded"),
+    ("ChangeEntriesInvalid", "change_entries_invalid"),
+    ("ReviewStale", "review_stale"),
+    ("NameConflict", "name_conflict"),
+    ("FolderCycle", "folder_cycle"),
+    ("InvalidDate", "invalid_date"),
+    ("BlockNotFound", "block_not_found"),
+    ("SettingInvalid", "setting_invalid"),
+    ("WordInvalid", "word_invalid"),
+    ("NetworkFilesystem", "network_filesystem"),
+    ("UnknownTag", "unknown_tag"),
+    ("TagRemoved", "tag_removed"),
+    ("GuideRule", "guide_rule"),
+    ("FeedbackHandled", "feedback_handled"),
+    ("FeedbackInvalid", "feedback_invalid"),
+    (
+        "BackupDestinationUnavailable",
+        "backup_destination_unavailable",
+    ),
+    (
+        "BackupDestinationInsideVault",
+        "backup_destination_inside_vault",
+    ),
+    ("BackupInProgress", "backup_in_progress"),
+    ("BackupFailed", "backup_failed"),
+    ("BackupInvalid", "backup_invalid"),
+    ("BackupTooNew", "backup_too_new"),
+    ("RestoreTargetNotEmpty", "restore_target_not_empty"),
+];
+
+/// The five codes Spec #7 adds, by variant.
+const V8_CODES: [(&str, &str); 5] = [
+    ("ReadOnlyRule", "read_only_rule"),
+    ("ExcerptRule", "excerpt_rule"),
+    ("EditNotFound", "edit_not_found"),
+    ("EditAmbiguous", "edit_ambiguous"),
+    ("EditInvalid", "edit_invalid"),
+];
+
+/// (variant, code) of every sample, C1 and internal.
+fn every_code() -> Vec<(&'static str, &'static str)> {
+    c1_samples()
+        .iter()
+        .map(|(e, _, _)| (variant_name(e), e.code()))
+        .chain(
+            internal_samples()
+                .iter()
+                .map(|e| (variant_name(e), e.code())),
+        )
+        .collect()
+}
+
+#[test]
+fn read_only_rule_serializes_with_code_read_only_rule_and_exactly_the_given_message() {
+    let text = "\"Pricing notes\" is read-only for agents; the person can change this in the app";
+    let e = MemexError::ReadOnlyRule(text.into());
+    assert_eq!(e.code(), "read_only_rule");
+    assert_eq!(e.to_string(), text, "the Display is the text itself");
+    assert_eq!(
+        e.to_error_json(),
+        json!({"error": {"code": "read_only_rule", "message": text}})
+    );
+
+    // Built from run-time values: the message follows the variant's text.
+    let title = format!("Launch plan {}", std::hint::black_box(8u8));
+    let text =
+        format!("\"{title}\" is read-only for agents; the person can change this in the app");
+    let got = MemexError::ReadOnlyRule(text.clone()).to_error_json();
+    let obj = error_object(&got);
+    assert_eq!(obj["code"], json!("read_only_rule"), "{got}");
+    assert_eq!(obj["message"], json!(text), "{got}");
+    assert_eq!(obj.len(), 2, "code and message only: {got}");
+}
+
+#[test]
+fn v8_error_variants_serialize_as_excerpt_rule_edit_not_found_edit_ambiguous_and_edit_invalid() {
+    // Built from run-time values: the index and the detail follow the error.
+    let n = std::hint::black_box(7usize);
+    let excerpt = format!("the edit drops {n} transclusions");
+    let missing = format!("edit {n}: old_text is not in the note");
+    let ambiguous = format!("edit {}: old_text appears twice", n + 1);
+    let invalid = format!("edits must hold 1 to {n} pairs");
+    let cases: Vec<(MemexError, &str, Value, &String)> = vec![
+        (
+            MemexError::ExcerptRule(excerpt.clone()),
+            "excerpt_rule",
+            json!({}),
+            &excerpt,
+        ),
+        (
+            MemexError::EditNotFound {
+                index: n,
+                message: missing.clone(),
+            },
+            "edit_not_found",
+            json!({"index": 7}),
+            &missing,
+        ),
+        (
+            MemexError::EditAmbiguous {
+                index: n + 1,
+                message: ambiguous.clone(),
+            },
+            "edit_ambiguous",
+            json!({"index": 8}),
+            &ambiguous,
+        ),
+        (
+            MemexError::EditInvalid(invalid.clone()),
+            "edit_invalid",
+            json!({}),
+            &invalid,
+        ),
+    ];
+    for (e, code, extras, detail) in cases {
+        assert_eq!(e.code(), code, "{}", variant_name(&e));
+        let got = e.to_error_json();
+        let obj = error_object(&got);
+        let mut expected = serde_json::Map::new();
+        expected.insert("code".into(), json!(code));
+        expected.insert("message".into(), json!(e.to_string()));
+        for (k, v) in extras.as_object().unwrap() {
+            expected.insert(k.clone(), v.clone());
+        }
+        assert_eq!(obj, &expected, "{}: {got}", variant_name(&e));
+        let msg = obj["message"].as_str().unwrap();
+        assert!(msg.contains(detail.as_str()), "{}: {msg}", variant_name(&e));
+        assert!(!msg.contains('\n'), "{}: {msg:?}", variant_name(&e));
+    }
+    // The index is a JSON number, never a string, and 0 is kept.
+    let got = MemexError::EditAmbiguous {
+        index: 0,
+        message: "edit 0: old_text appears twice".into(),
+    }
+    .to_error_json();
+    let obj = error_object(&got);
+    assert_eq!(obj["index"].as_u64(), Some(0), "{got}");
+    assert_eq!(obj["code"], json!("edit_ambiguous"), "{got}");
+}
+
+#[test]
+fn error_contract_lists_the_five_v8_codes_and_every_existing_code_keeps_its_value() {
+    assert_eq!(VARIANT_COUNT, PRE_V8_CODES.len() + V8_CODES.len());
+    let samples = v8_samples();
+    assert_eq!(samples.len(), 5);
+    let got: BTreeSet<(&str, &str)> = samples
+        .iter()
+        .map(|(e, _, _)| (variant_name(e), e.code()))
+        .collect();
+    assert_eq!(got, V8_CODES.into_iter().collect::<BTreeSet<_>>());
+
+    let all = every_code();
+    assert_eq!(all.len(), VARIANT_COUNT);
+    for (variant, code) in PRE_V8_CODES.into_iter().chain(V8_CODES) {
+        assert!(
+            all.contains(&(variant, code)),
+            "{variant} has code {code}: {all:?}"
+        );
+    }
+    // Each new code belongs to exactly its one variant, and none is internal.
+    for (variant, code) in V8_CODES {
+        let owners: Vec<&str> = all
+            .iter()
+            .filter(|(_, c)| *c == code)
+            .map(|(v, _)| *v)
+            .collect();
+        assert_eq!(owners, [variant], "the variants with code {code}");
+        assert!(
+            !internal_samples()
+                .iter()
+                .any(|e| variant_name(e) == variant),
+            "{variant} is not internal"
+        );
+    }
 }

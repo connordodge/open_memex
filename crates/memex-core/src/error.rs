@@ -144,6 +144,23 @@ pub enum MemexError {
     /// `memex restore --to` exists and is not an empty folder (req 32).
     #[error("restore target is not empty: {0}")]
     RestoreTargetNotEmpty(String),
+
+    /// An agent write to an Agent read-only note (Spec #7 Req 9). The text
+    /// is the whole message.
+    #[error("{0}")]
+    ReadOnlyRule(String),
+
+    #[error("excerpt rule: {0}")]
+    ExcerptRule(String),
+
+    #[error("edit not found: {message}")]
+    EditNotFound { index: usize, message: String },
+
+    #[error("edit ambiguous: {message}")]
+    EditAmbiguous { index: usize, message: String },
+
+    #[error("edit invalid: {0}")]
+    EditInvalid(String),
 }
 
 impl MemexError {
@@ -183,6 +200,11 @@ impl MemexError {
             MemexError::BackupInvalid(_) => "backup_invalid",
             MemexError::BackupTooNew { .. } => "backup_too_new",
             MemexError::RestoreTargetNotEmpty(_) => "restore_target_not_empty",
+            MemexError::ReadOnlyRule(_) => "read_only_rule",
+            MemexError::ExcerptRule(_) => "excerpt_rule",
+            MemexError::EditNotFound { .. } => "edit_not_found",
+            MemexError::EditAmbiguous { .. } => "edit_ambiguous",
+            MemexError::EditInvalid(_) => "edit_invalid",
             MemexError::Io(_)
             | MemexError::Sqlite(_)
             | MemexError::Json(_)
@@ -239,6 +261,9 @@ impl MemexError {
                     ("current", (*current).into()),
                 ]
             }
+            MemexError::EditNotFound { index, .. } | MemexError::EditAmbiguous { index, .. } => {
+                vec![("index", (*index).into())]
+            }
             MemexError::BackupTooNew { backup, supported } => vec![
                 ("schema_version", (*backup).into()),
                 ("supported_schema_version", (*supported).into()),
@@ -278,7 +303,10 @@ impl MemexError {
             | MemexError::BackupInProgress(_)
             | MemexError::BackupFailed(_)
             | MemexError::BackupInvalid(_)
-            | MemexError::RestoreTargetNotEmpty(_) => Vec::new(),
+            | MemexError::RestoreTargetNotEmpty(_)
+            | MemexError::ReadOnlyRule(_)
+            | MemexError::ExcerptRule(_)
+            | MemexError::EditInvalid(_) => Vec::new(),
         }
     }
 }

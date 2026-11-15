@@ -7,6 +7,8 @@ import 'package:sqlite3/sqlite3.dart';
 import '../support/fake_vault_db.dart';
 
 void main() {
+  _wi8FixtureTests();
+
   group('FakeVaultDb (AC1)', () {
     test(
       'FakeVaultDb loads the V5 fixture in memory and listNotes returns a seeded note',
@@ -172,7 +174,7 @@ void main() {
         final db = FakeVaultDb();
         addTearDown(db.close);
 
-        expect(db.schemaVersionForTest, 7);
+        expect(db.schemaVersionForTest, fixtureSchemaVersion);
         expect(db.hasTables(v7Tables), isTrue);
         expect(_wi415RevisionRows(db.db), [(1, 0)]);
         expect(db.contentRevisionForTest, 0);
@@ -266,7 +268,7 @@ void main() {
 
         db.migrateToV6();
 
-        expect(db.schemaVersionForTest, 7);
+        expect(db.schemaVersionForTest, fixtureSchemaVersion);
         expect(db.hasTables(v7Tables), isTrue);
         expect(_wi415TriggersByTable(db.db), want);
         expect(_wi415RevisionRows(db.db), [(1, 0)]);
@@ -279,7 +281,7 @@ void main() {
         db.migrateToV6();
         expect(_wi415TriggersByTable(db.db), want);
         expect(_wi415RevisionRows(db.db), [(1, 1)]);
-        expect(db.schemaVersionForTest, 7);
+        expect(db.schemaVersionForTest, fixtureSchemaVersion);
       },
     );
 
@@ -302,7 +304,7 @@ void main() {
 
         db.migrateToV5();
 
-        expect(db.schemaVersionForTest, 7);
+        expect(db.schemaVersionForTest, fixtureSchemaVersion);
         // `tags` is rebuilt with the V6 columns; it keeps its triggers too.
         expect(
           _wi415TriggersByTable(db.db)['tags'],
@@ -330,12 +332,146 @@ void main() {
         expect(db.listNotes().single.title, 'Kept');
 
         db.migrateToV6();
-        expect(db.schemaVersionForTest, 7);
+        expect(db.schemaVersionForTest, fixtureSchemaVersion);
         expect(db.contentRevisionForTest, 0);
       },
     );
   });
 }
+
+/// WI 8 (Spec 7): the re-blessed fixture is a fresh V8 vault, and the
+/// downgraded fakes carry nothing of V8.
+void _wi8FixtureTests() {
+  group('FakeVaultDb at V8 (WI 8)', () {
+    test(
+      'FakeVaultDb loads the V8 fixture with notes agent_read_only and an empty note_revisions',
+      () {
+        final db = FakeVaultDb();
+        addTearDown(db.close);
+
+        expect(db.schemaVersionForTest, 8);
+        expect(fixtureSchemaVersion, 8);
+        expect(db.hasTables(const ['note_revisions']), isTrue);
+        expect(_wi8Columns(db.db, 'notes'), contains('agent_read_only'));
+        expect(_wi8Columns(db.db, 'note_revisions'), [
+          'id',
+          'note_id',
+          'previous_md',
+          'previous_version',
+          'new_version',
+          'agent_change_id',
+          'created_at',
+        ]);
+        expect(db.db.select('SELECT * FROM note_revisions'), isEmpty);
+        expect(_wi415RevisionRows(db.db), [(1, 0)]);
+
+        // A seeded note reads agent_read_only 0, and the new table moves n.
+        db.seedNote(id: '01J9Z8Y7X6W5V4T3S2R1Q0P008', title: 'Pricing notes');
+        final flag = db.db.select(
+          'SELECT agent_read_only FROM notes WHERE id = ?',
+          ['01J9Z8Y7X6W5V4T3S2R1Q0P008'],
+        );
+        expect(flag.single['agent_read_only'], 0);
+        final before = db.contentRevisionForTest!;
+        db.db.execute(
+          'INSERT INTO note_revisions (id, note_id, previous_md, '
+          'previous_version, new_version, agent_change_id, created_at) '
+          "VALUES ('NR-1', '01J9Z8Y7X6W5V4T3S2R1Q0P008', 'Old.', 1, 2, NULL, 1)",
+        );
+        expect(db.contentRevisionForTest, before + 1);
+      },
+    );
+
+    test('FakeVaultDb.v6Only and v5Only carry no V8 table or column', () {
+      for (final db in [FakeVaultDb.v6Only(), FakeVaultDb.v5Only()]) {
+        addTearDown(db.close);
+        expect(db.hasTables(v8Tables), isFalse);
+        expect(_wi8Columns(db.db, 'notes'), isNot(contains('agent_read_only')));
+        expect(db.schemaVersionForTest, lessThan(7));
+      }
+      // The full fixture has both, so the downgrade is what removed them.
+      final full = FakeVaultDb();
+      addTearDown(full.close);
+      expect(full.hasTables(v8Tables), isTrue);
+      expect(_wi8Columns(full.db, 'notes'), containsAll(v8NoteColumns));
+    });
+
+    test(
+      'migrateToV6 gives a downgraded vault the V8 notes column as the real V8 step does, keeping its rows',
+      () {
+        final starts = <String, FakeVaultDb Function()>{
+          'v6Only': FakeVaultDb.v6Only,
+          'v5Only': FakeVaultDb.v5Only,
+          'v4': FakeVaultDb.v4,
+        };
+        for (final entry in starts.entries) {
+          final db = entry.value();
+          addTearDown(db.close);
+          final what = entry.key;
+          expect(
+            _wi8Columns(db.db, 'notes'),
+            isNot(contains('agent_read_only')),
+            reason: '$what before the migration',
+          );
+          db.seedNote(id: '01J9Z8Y7X6W5V4T3S2R1Q0P018', title: 'Pricing notes');
+
+          db.migrateToV6();
+
+          expect(db.schemaVersionForTest, 8, reason: what);
+          expect(db.hasTables(v8Tables), isTrue, reason: what);
+          expect(
+            _wi8Columns(db.db, 'notes'),
+            containsAll(v8NoteColumns),
+            reason: what,
+          );
+          // The column is declared as the fixture (and real V8) has it: the
+          // existing row reads 0 and a new note defaults to 0.
+          db.seedNote(id: '01J9Z8Y7X6W5V4T3S2R1Q0P019', title: 'Other notes');
+          final flags = db.db.select(
+            'SELECT id, agent_read_only FROM notes ORDER BY id',
+          );
+          expect(flags.map((r) => r['agent_read_only']).toList(), [
+            0,
+            0,
+          ], reason: what);
+          final decl = db.db.select(
+            "SELECT type, \"notnull\" AS nn, dflt_value FROM "
+            "pragma_table_info('notes') WHERE name = 'agent_read_only'",
+          );
+          expect(decl.single['type'], 'INTEGER', reason: what);
+          expect(decl.single['nn'], 1, reason: what);
+          expect(decl.single['dflt_value'], '0', reason: what);
+
+          // A second migration changes nothing and does not fail.
+          final n = db.contentRevisionForTest;
+          db.migrateToV6();
+          expect(db.contentRevisionForTest, n, reason: what);
+          expect(
+            _wi8Columns(db.db, 'notes').where((c) => c == 'agent_read_only'),
+            hasLength(1),
+            reason: what,
+          );
+        }
+      },
+    );
+
+    test('migrateToV6 without tag columns still adds the V8 notes column', () {
+      final db = FakeVaultDb.v5Only();
+      addTearDown(db.close);
+
+      db.migrateToV6(tagColumns: false);
+
+      expect(db.schemaVersionForTest, 8);
+      expect(_wi8Columns(db.db, 'notes'), containsAll(v8NoteColumns));
+    });
+  });
+}
+
+/// The column names of [table] in [db], in order.
+List<String> _wi8Columns(Database db, String table) => db
+    .select('SELECT name FROM pragma_table_info(?) ORDER BY cid', [table])
+    .map((r) => r['name'] as String)
+    .toList();
 
 /// Every trigger of [db], by the table it is on.
 Map<String, Set<String>> _wi415TriggersByTable(Database db) {

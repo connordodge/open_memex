@@ -12,8 +12,8 @@
 //! fire on the rows above it while the dump loads, find no counter row yet:
 //! a loaded dump holds `(1, 0)`, as a fresh vault does.
 //!
-//! The file keeps its `vault_schema_v5.sql` name, but since schema V7 (WI #415)
-//! it holds the V7 schema of a fresh vault.
+//! The file keeps its `vault_schema_v5.sql` name, but it holds the current
+//! schema of a fresh vault: V7 since WI #415, V8 since WI #8 (Spec #7).
 //!
 //! The committed file must equal the dump byte for byte. Regenerate it with:
 //!
@@ -115,14 +115,14 @@ fn dump_schema(conn: &Connection) -> String {
     out
 }
 
-/// Dump of a brand-new vault, which must be at schema V7.
+/// Dump of a brand-new vault, which must be at schema V8.
 fn fresh_v5_vault_dump() -> String {
     let dir = tempfile::tempdir().unwrap();
     let vault = Vault::create(dir.path().join("vault")).expect("create fresh vault");
     assert_eq!(
         vault.schema_version(),
-        7,
-        "a fresh vault must be at schema V7 for the app fixture"
+        8,
+        "a fresh vault must be at schema V8 for the app fixture"
     );
     dump_schema(vault.connection_ref())
 }
@@ -253,7 +253,7 @@ fn committed_app_fixture_excludes_fts_and_vec_and_ends_with_seed_rows() {
         .lines()
         .filter(|l| !l.trim().is_empty())
         .rev()
-        .take(9)
+        .take(10)
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
@@ -268,6 +268,7 @@ fn committed_app_fixture_excludes_fts_and_vec_and_ends_with_seed_rows() {
             "INSERT INTO schema_version(version) VALUES (5);",
             "INSERT INTO schema_version(version) VALUES (6);",
             "INSERT INTO schema_version(version) VALUES (7);",
+            "INSERT INTO schema_version(version) VALUES (8);",
             "INSERT INTO vault_settings(key, value) VALUES ('smart_folder_max_depth', '2');",
             "INSERT INTO content_revision(id, n) VALUES (1, 0);",
         ]
@@ -310,6 +311,7 @@ fn committed_app_fixture_loads_into_a_plain_sqlite_database() {
         "agent_activity",
         "learned_words",
         "content_revision",
+        "note_revisions",
     ] {
         assert!(
             tables.iter().any(|x| x == t),
@@ -319,7 +321,19 @@ fn committed_app_fixture_loads_into_a_plain_sqlite_database() {
     let max: i64 = conn
         .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(max, 7);
+    assert_eq!(max, 8);
+    // V8 (WI #8): the app reads `notes.agent_read_only` from the fixture.
+    let read_only: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('notes') WHERE name = 'agent_read_only'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        read_only, 1,
+        "the fixture's notes table has agent_read_only"
+    );
     let depth: String = conn
         .query_row(
             "SELECT value FROM vault_settings WHERE key = 'smart_folder_max_depth'",
