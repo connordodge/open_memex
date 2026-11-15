@@ -277,6 +277,15 @@ class EditorController extends StateNotifier<EditorStateValue> {
   /// base to merge against (Req 34a) and shows the conflict state.
   void forgetMergeBase() => _base = null;
 
+  /// The editor text that a non-daily merged save (Spec #7 Req 34a) put in
+  /// the editor: the merged body, or the person's typing moved onto it. Null
+  /// once the editor takes text from anywhere else (a load, a server change,
+  /// typing). The host carries the caret onto the person's line only when the
+  /// editor shows this text; any other text from outside (a polled write, a
+  /// daily merge) keeps the caret's offsets, clamped.
+  String? get mergedText => _mergedText;
+  String? _mergedText;
+
   void loadNote(Note? note) {
     final previous = _activeNoteId;
     final pending = _debounce?.isActive == true || _heldSaveDue;
@@ -284,6 +293,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
     _loadSeq++;
     _mergeBase = null;
     _base = null;
+    _mergedText = null;
     _resolvedNoteId = null;
     final leaving = _virtualDate;
     _virtualDate = null;
@@ -369,6 +379,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
   void onContentChanged(String value) {
     if (_activeNoteId == null) return;
     if (value == state.contentMd) return; // no-op (programmatic re-hydration)
+    _mergedText = null;
     state = state.copyWith(
       contentMd: value,
       status: SaveStatus.dirty,
@@ -412,6 +423,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
       return false;
     }
     if (state.status == SaveStatus.clean) {
+      _mergedText = null;
       state = state.copyWith(
         contentMd: note.contentMd,
         lastSavedVersion: note.version,
@@ -846,6 +858,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
             errorMessage: _overlapMessage,
           );
         } else {
+          _mergedText = moved;
           state = state.copyWith(
             contentMd: moved,
             status: SaveStatus.dirty,
@@ -856,6 +869,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
         }
       } else if (merging ||
           (state.contentMd == local && state.title == rawTitle)) {
+        if (mergedNonDaily) _mergedText = saved.body;
         state = state.copyWith(
           contentMd: merging ? saved.body : null,
           status: SaveStatus.clean,
@@ -1248,6 +1262,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
       // save merges again.)
       if (isOpen()) {
         if (moved != null) {
+          _mergedText = moved;
           state = state.copyWith(
             contentMd: moved,
             status: SaveStatus.dirty,
@@ -1261,6 +1276,7 @@ class EditorController extends StateNotifier<EditorStateValue> {
             errorMessage: _overlapMessage,
           );
         } else if (!typed) {
+          if (mergedNonDaily) _mergedText = body;
           state = state.copyWith(
             contentMd: merged ? body : null,
             status: SaveStatus.clean,

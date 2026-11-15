@@ -358,15 +358,23 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
 
   /// In Source, the field follows text the editor took from elsewhere while
   /// it showed [prev]'s (a merged save, a server change, Spec #7 Req 34a),
-  /// with the selection kept on its line, so the next keystroke builds on
-  /// it. Typing in the field already matches [next].
+  /// so the next keystroke builds on it. A merged save's text keeps the
+  /// selection on its line; any other keeps its offsets, clamped. Typing in
+  /// the field already matches [next].
   void _followSource(EditorStateValue? prev, EditorStateValue next) {
     if (!_sourceMode || prev == null) return;
     final shown = _bodyCtrl.text;
     if (next.contentMd == shown || prev.contentMd != shown) return;
     _bodyCtrl.value = TextEditingValue(
       text: next.contentMd,
-      selection: carrySelection(_bodyCtrl.selection, shown, next.contentMd),
+      selection: keepSelection(
+        _bodyCtrl.selection,
+        shown,
+        next.contentMd,
+        carry:
+            next.contentMd ==
+            ref.read(editorControllerProvider.notifier).mergedText,
+      ),
     );
   }
 
@@ -476,6 +484,7 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
                       errorMessage: editor.errorMessage,
                       onDismissError: controller.dismissError,
                       header: header,
+                      carryCaret: editor.contentMd == controller.mergedText,
                     ),
                   ),
           ),
