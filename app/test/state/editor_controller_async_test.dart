@@ -175,18 +175,21 @@ void _wi16ForeignWrite(FakeVaultDb db, String id, String body, int version) {
 /// `version_conflict` unless `expected-version` is the stored version),
 /// calling [before] with the 1-based call number first, so a test can make
 /// another writer land between the conflict refetch and the merged save;
-/// [holdFirst] keeps the first call in flight until it completes.
+/// [holdFirst] keeps the first call in flight until it completes, and
+/// [holdSecond] the second (the merged save of a conflict on the first).
 void _wi16VersionedUpdates(
   FakeMemexCli cli,
   FakeVaultDb db, {
   void Function(int call)? before,
   Future<void>? holdFirst,
+  Future<void>? holdSecond,
 }) {
   var calls = 0;
   cli.on('update', (call) async {
     calls++;
     before?.call(calls);
     if (calls == 1 && holdFirst != null) await holdFirst;
+    if (calls == 2 && holdSecond != null) await holdSecond;
     final id = call.flag('note-id')!;
     final expected = int.parse(call.flag('expected-version')!);
     final current =
@@ -1081,6 +1084,365 @@ void main() {
         expect(e.stored(_topicId).contentMd, merged);
         expect(e.state.contentMd, merged);
         expect(e.state.status, SaveStatus.clean);
+      },
+    );
+
+    // ---- fix round 1: typing during a merged save (review finding 1) ----
+
+    for (final (name, typed, expected) in [
+      (
+        'text typed on the line the person just saved during a non-daily merged save moves onto the merged body and saves next',
+        'Alpha mine more\nBravo\nCharlie\n',
+        'Alpha mine more\nBravo\nCharlie theirs\n',
+      ),
+      (
+        'text typed on another line during a non-daily merged save moves onto the merged body and saves next',
+        'Alpha mine\nBravo mine\nCharlie\n',
+        'Alpha mine\nBravo mine\nCharlie theirs\n',
+      ),
+    ]) {
+      test(name, () async {
+        final db = _wi16Vault();
+        final cli = FakeMemexCli();
+        final hold = Completer<void>();
+        _wi16VersionedUpdates(cli, db, holdSecond: hold.future);
+        final e = await _editor(db, cli: cli);
+        e.ctrl.loadNote(e.stored(_topicId));
+        _wi16ForeignWrite(db, _topicId, 'Alpha\nBravo\nCharlie theirs\n', 4);
+        final readsBefore = e.notes.reads.length;
+        e.ctrl.onContentChanged('Alpha mine\nBravo\nCharlie\n');
+        await e.fireDebounce();
+        // The merged save is in flight; the person types on.
+        expect(e.notes.writes, [
+          'updateNote:$_topicId@3',
+          'updateNote:$_topicId@4',
+        ]);
+        e.ctrl.onContentChanged(typed);
+
+        hold.complete();
+        await pumpEventQueue();
+
+        // The merged body is stored; the editor holds the typed text on top
+        // of it, unsaved, on the version the merged save stored.
+        expect(
+          e.stored(_topicId).contentMd,
+          'Alpha mine\nBravo\nCharlie theirs\n',
+        );
+        expect(e.stored(_topicId).version, 5);
+        expect(e.state.contentMd, expected);
+        expect(e.state.status, SaveStatus.dirty);
+        expect(e.state.lastSavedVersion, 5);
+        expect(e.state.errorMessage, isNull);
+
+        await e.fireDebounce();
+
+        expect(e.notes.writes, hasLength(3));
+        expect(e.notes.writes.last, 'updateNote:$_topicId@5');
+        expect(e.notes.updateBodies.last, expected);
+        expect(e.stored(_topicId).contentMd, expected);
+        expect(e.stored(_topicId).version, 6);
+        expect(e.state.contentMd, expected);
+        expect(e.state.status, SaveStatus.clean);
+        expect(e.state.lastSavedVersion, 6);
+        expect(e.state.errorMessage, isNull);
+        expect(
+          _wi16Refetches(e.notes.reads.sublist(readsBefore), _topicId),
+          1,
+          reason: 'the carried text saves without another conflict',
+        );
+      });
+    }
+
+    test(
+      'text typed during a non-daily merged save on a line the server changed keeps the conflict and the typed text',
+      () async {
+        final db = _wi16Vault();
+        final cli = FakeMemexCli();
+        final hold = Completer<void>();
+        _wi16VersionedUpdates(cli, db, holdSecond: hold.future);
+        final e = await _editor(db, cli: cli);
+        e.ctrl.loadNote(e.stored(_topicId));
+        _wi16ForeignWrite(db, _topicId, 'Alpha\nBravo\nCharlie theirs\n', 4);
+        e.ctrl.onContentChanged('Alpha mine\nBravo\nCharlie\n');
+        await e.fireDebounce();
+        const typed = 'Alpha mine\nBravo\nCharlie mine\n';
+        e.ctrl.onContentChanged(typed);
+
+        hold.complete();
+        await pumpEventQueue();
+
+        expect(
+          e.stored(_topicId).contentMd,
+          'Alpha mine\nBravo\nCharlie theirs\n',
+        );
+        expect(e.state.contentMd, typed);
+        expect(e.state.status, SaveStatus.conflict);
+        expect(e.state.errorMessage, contains('version conflict'));
+        expect(e.state.lastSavedVersion, 3);
+
+        // Later ticks never save the typed text over the server's line.
+        await e.fireDebounce();
+        await e.fireDebounce();
+        expect(e.notes.writes.where((w) => w.endsWith('@5')), isEmpty);
+        expect(
+          e.stored(_topicId).contentMd,
+          'Alpha mine\nBravo\nCharlie theirs\n',
+        );
+        expect(e.state.contentMd, typed);
+        expect(e.state.status, SaveStatus.conflict);
+      },
+    );
+
+    test(
+      'a save held back behind a non-daily merged save when the person leaves moves onto the merged body and saves once',
+      () async {
+        final db = _wi16Vault();
+        final cli = FakeMemexCli();
+        final hold = Completer<void>();
+        _wi16VersionedUpdates(cli, db, holdSecond: hold.future);
+        final e = await _editor(db, cli: cli);
+        e.ctrl.loadNote(e.stored(_topicId));
+        _wi16ForeignWrite(db, _topicId, 'Alpha\nBravo\nCharlie theirs\n', 4);
+        e.ctrl.onContentChanged('Alpha mine\nBravo\nCharlie\n');
+        await e.fireDebounce();
+        // The person types on and leaves while the merged save is in flight:
+        // that text waits for it.
+        e.ctrl.onContentChanged('Alpha mine more\nBravo\nCharlie\n');
+        e.ctrl.flushPendingSave();
+        e.ctrl.loadNote(e.stored(_otherId));
+
+        hold.complete();
+        await pumpEventQueue();
+
+        const expected = 'Alpha mine more\nBravo\nCharlie theirs\n';
+        expect(e.notes.writes, [
+          'updateNote:$_topicId@3',
+          'updateNote:$_topicId@4',
+          'updateNote:$_topicId@5',
+        ]);
+        expect(e.stored(_topicId).contentMd, expected);
+        expect(e.stored(_topicId).version, 6);
+        expect(e.state.contentMd, 'other body');
+        expect(e.state.status, SaveStatus.clean);
+      },
+    );
+
+    test(
+      'a save held back behind a non-daily merged save that changed a line the server changed is held as a conflict and not saved',
+      () async {
+        final db = _wi16Vault();
+        final cli = FakeMemexCli();
+        final hold = Completer<void>();
+        _wi16VersionedUpdates(cli, db, holdSecond: hold.future);
+        final e = await _editor(db, cli: cli);
+        e.ctrl.loadNote(e.stored(_topicId));
+        _wi16ForeignWrite(db, _topicId, 'Alpha\nBravo\nCharlie theirs\n', 4);
+        e.ctrl.onContentChanged('Alpha mine\nBravo\nCharlie\n');
+        await e.fireDebounce();
+        const typed = 'Alpha mine\nBravo\nCharlie mine\n';
+        e.ctrl.onContentChanged(typed);
+        e.ctrl.flushPendingSave();
+        e.ctrl.loadNote(e.stored(_otherId));
+
+        hold.complete();
+        await pumpEventQueue();
+
+        const merged = 'Alpha mine\nBravo\nCharlie theirs\n';
+        expect(e.stored(_topicId).contentMd, merged);
+        expect(e.stored(_topicId).version, 5);
+        expect(e.notes.writes.where((w) => w.endsWith('@5')), isEmpty);
+        // Opening the note again shows the held text with its conflict.
+        e.ctrl.loadNote(e.stored(_topicId));
+        expect(e.state.contentMd, typed);
+        expect(e.state.status, SaveStatus.conflict);
+      },
+    );
+
+    // ---- fix round 1: a title changed elsewhere (review finding 2) ----
+
+    test(
+      'a non-daily conflict where the server renamed the note and changed another line makes no merged save and shows the conflict',
+      () async {
+        final db = _wi16Vault();
+        final e = await _editor(db);
+        e.ctrl.loadNote(e.stored(_topicId));
+        db.db.execute('UPDATE notes SET title = ? WHERE id = ?', [
+          'Renamed elsewhere',
+          _topicId,
+        ]);
+        _wi16ForeignWrite(db, _topicId, 'Alpha\nBravo\nCharlie theirs\n', 4);
+
+        e.ctrl.onContentChanged('Alpha mine\nBravo\nCharlie\n');
+        await e.fireDebounce();
+
+        expect(e.notes.writes, ['updateNote:$_topicId@3']);
+        expect(e.stored(_topicId).title, 'Renamed elsewhere');
+        expect(e.stored(_topicId).contentMd, 'Alpha\nBravo\nCharlie theirs\n');
+        expect(e.state.contentMd, 'Alpha mine\nBravo\nCharlie\n');
+        expect(e.state.status, SaveStatus.conflict);
+        expect(e.state.errorMessage, contains('version conflict'));
+        await e.fireDebounce();
+        expect(e.notes.writes, hasLength(1));
+      },
+    );
+
+    test(
+      'a non-daily merged save sends the title the person changed when the server kept the title it had',
+      () async {
+        final db = _wi16Vault();
+        final e = await _editor(db);
+        e.ctrl.loadNote(e.stored(_topicId));
+        e.ctrl.onTitleChanged('Renamed');
+        _wi16ForeignWrite(db, _topicId, 'Alpha\nBravo\nCharlie theirs\n', 4);
+
+        e.ctrl.onContentChanged('Alpha mine\nBravo\nCharlie\n');
+        await e.fireDebounce();
+
+        expect(e.notes.writes, [
+          'updateNote:$_topicId@3',
+          'updateNote:$_topicId@4',
+        ]);
+        expect(e.cli.callsFor('update').last.flag('title'), 'Renamed');
+        expect(
+          e.stored(_topicId).contentMd,
+          'Alpha mine\nBravo\nCharlie theirs\n',
+        );
+        expect(e.state.status, SaveStatus.clean);
+        expect(e.state.lastSavedVersion, 5);
+      },
+    );
+
+    test(
+      'a non-daily merged save goes ahead when the server renamed the note to the title the person is saving',
+      () async {
+        final db = _wi16Vault();
+        final e = await _editor(db);
+        e.ctrl.loadNote(e.stored(_topicId));
+        e.ctrl.onTitleChanged('Same name');
+        db.db.execute('UPDATE notes SET title = ? WHERE id = ?', [
+          'Same name',
+          _topicId,
+        ]);
+        _wi16ForeignWrite(db, _topicId, 'Alpha\nBravo\nCharlie theirs\n', 4);
+
+        e.ctrl.onContentChanged('Alpha mine\nBravo\nCharlie\n');
+        await e.fireDebounce();
+
+        expect(e.notes.writes, [
+          'updateNote:$_topicId@3',
+          'updateNote:$_topicId@4',
+        ]);
+        expect(e.cli.callsFor('update').last.flag('title'), 'Same name');
+        expect(e.stored(_topicId).title, 'Same name');
+        expect(e.state.status, SaveStatus.clean);
+      },
+    );
+
+    test(
+      'a non-daily merged save with a blank title sends no title and keeps the title the server holds',
+      () async {
+        final db = _wi16Vault();
+        final e = await _editor(db);
+        e.ctrl.loadNote(e.stored(_topicId));
+        e.ctrl.onTitleChanged('');
+        db.db.execute('UPDATE notes SET title = ? WHERE id = ?', [
+          'Renamed elsewhere',
+          _topicId,
+        ]);
+        _wi16ForeignWrite(db, _topicId, 'Alpha\nBravo\nCharlie theirs\n', 4);
+
+        e.ctrl.onContentChanged('Alpha mine\nBravo\nCharlie\n');
+        await e.fireDebounce();
+
+        expect(e.notes.writes, [
+          'updateNote:$_topicId@3',
+          'updateNote:$_topicId@4',
+        ]);
+        expect(e.cli.callsFor('update').last.flag('title'), isNull);
+        expect(e.stored(_topicId).title, 'Renamed elsewhere');
+        expect(
+          e.stored(_topicId).contentMd,
+          'Alpha mine\nBravo\nCharlie theirs\n',
+        );
+        expect(e.state.status, SaveStatus.clean);
+      },
+    );
+
+    test(
+      'a non-daily conflict whose server text equals the local text with a blank title counts as saved with no extra save',
+      () async {
+        final db = _wi16Vault();
+        final e = await _editor(db);
+        e.ctrl.loadNote(e.stored(_topicId));
+        e.ctrl.onTitleChanged('');
+        _wi16ForeignWrite(db, _topicId, 'Alpha mine\nBravo\nCharlie\n', 4);
+
+        e.ctrl.onContentChanged('Alpha mine\nBravo\nCharlie\n');
+        await e.fireDebounce();
+
+        expect(e.notes.writes, ['updateNote:$_topicId@3']);
+        expect(e.state.status, SaveStatus.clean);
+        expect(e.state.lastSavedVersion, 4);
+      },
+    );
+
+    test(
+      'a merge after a save that renamed the note compares the server title with the renamed base title',
+      () async {
+        final db = _wi16Vault();
+        final e = await _editor(db);
+        e.ctrl.loadNote(e.stored(_topicId));
+        e.ctrl.onTitleChanged('Renamed');
+        e.ctrl.onContentChanged('Alpha\nBravo\nCharlie mine\n');
+        await e.fireDebounce();
+        expect(e.cli.callsFor('update').single.flag('title'), 'Renamed');
+        expect(e.state.lastSavedVersion, 4);
+        // The fake CLI keeps titles out of its write, so the server holds
+        // Plain again, as if another writer had put it back, and edits
+        // line 1.
+        db.db.execute('UPDATE notes SET title = ? WHERE id = ?', [
+          'Plain',
+          _topicId,
+        ]);
+        _wi16ForeignWrite(
+          db,
+          _topicId,
+          'Alpha theirs\nBravo\nCharlie mine\n',
+          5,
+        );
+
+        e.ctrl.onContentChanged('Alpha\nBravo mine\nCharlie mine\n');
+        await e.fireDebounce();
+
+        // The title the save left was Renamed, not Plain: the server
+        // changed it, so nothing merges.
+        expect(e.notes.writes, [
+          'updateNote:$_topicId@3',
+          'updateNote:$_topicId@4',
+        ]);
+        expect(e.state.status, SaveStatus.conflict);
+        expect(e.stored(_topicId).title, 'Plain');
+      },
+    );
+
+    // ---- fix round 1: an unknown base (review finding 4) ----
+
+    test(
+      'a non-daily conflict after the merge base was forgotten makes no merged save and shows the conflict',
+      () async {
+        final db = _wi16Vault();
+        final e = await _editor(db);
+        e.ctrl.loadNote(e.stored(_topicId));
+        e.ctrl.forgetMergeBase();
+        _wi16ForeignWrite(db, _topicId, 'Alpha\nBravo\nCharlie theirs\n', 4);
+
+        e.ctrl.onContentChanged('Alpha mine\nBravo\nCharlie\n');
+        await e.fireDebounce();
+
+        expect(e.notes.writes, ['updateNote:$_topicId@3']);
+        expect(e.state.status, SaveStatus.conflict);
+        expect(e.state.contentMd, 'Alpha mine\nBravo\nCharlie\n');
+        expect(e.stored(_topicId).contentMd, 'Alpha\nBravo\nCharlie theirs\n');
       },
     );
   });

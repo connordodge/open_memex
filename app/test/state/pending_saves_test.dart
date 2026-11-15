@@ -194,12 +194,12 @@ const _wi16Base = 'Alpha\nBravo\nCharlie\n';
 
 /// WI #16: "Plan" (a topic note holding [_wi16Base], version 3) and "Other"
 /// (`other body`, version 7).
-FakeVaultDb _wi16Vault() => FakeVaultDb.v5()
+FakeVaultDb _wi16Vault({String role = 'topic'}) => FakeVaultDb.v5()
   ..seedNote(
     id: _planId,
     title: 'Plan',
     content: _wi16Base,
-    role: 'topic',
+    role: role,
     version: 3,
   )
   ..seedNote(id: _otherId, title: 'Other', content: 'other body', version: 7);
@@ -3324,6 +3324,239 @@ void main() {
         expect(h.state.contentMd, merged);
         expect(h.state.status, SaveStatus.clean);
         expect(h.queue, isEmpty);
+      },
+    );
+
+    // ---- fix round 1 ----
+
+    test(
+      'a hosted queued retry of the Vault Guide with changes on different lines makes no merged save and holds the conflict',
+      () async {
+        final h = await _hosted(_wi16Vault(role: 'guide'));
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        await h.typeAndSave('Alpha mine\nBravo\nCharlie\n');
+        _foreignWrite(h.db, _planId, 'Alpha\nBravo\nCharlie theirs\n', 4);
+
+        await h.serverAnswers();
+
+        expect(h.notes.updatesOf(_planId), [
+          'updateNote:$_planId@3',
+          'updateNote:$_planId@3',
+        ]);
+        expect(h.stored(_planId).contentMd, 'Alpha\nBravo\nCharlie theirs\n');
+        expect(h.stored(_planId).version, 4);
+        expect(h.state.contentMd, 'Alpha mine\nBravo\nCharlie\n');
+        expect(h.state.status, SaveStatus.conflict);
+        expect(h.queued(_planId)!.text, 'Alpha mine\nBravo\nCharlie\n');
+      },
+    );
+
+    test(
+      'a hosted queued retry where the server renamed the note and changed another line makes no merged save and holds the conflict',
+      () async {
+        final h = await _hosted(_wi16Vault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        await h.typeAndSave('Alpha mine\nBravo\nCharlie\n');
+        h.db.db.execute('UPDATE notes SET title = ? WHERE id = ?', [
+          'Renamed elsewhere',
+          _planId,
+        ]);
+        _foreignWrite(h.db, _planId, 'Alpha\nBravo\nCharlie theirs\n', 4);
+
+        await h.serverAnswers();
+
+        expect(h.notes.updatesOf(_planId), hasLength(2));
+        expect(h.stored(_planId).title, 'Renamed elsewhere');
+        expect(h.stored(_planId).contentMd, 'Alpha\nBravo\nCharlie theirs\n');
+        expect(h.state.contentMd, 'Alpha mine\nBravo\nCharlie\n');
+        expect(h.state.status, SaveStatus.conflict);
+        expect(h.queued(_planId)!.text, 'Alpha mine\nBravo\nCharlie\n');
+      },
+    );
+
+    for (final (name, typed, expected, debounceFires) in [
+      (
+        'text typed on the line the retry just saved during a hosted merged retry moves onto the merged body and saves next',
+        'Alpha mine more\nBravo\nCharlie\n',
+        'Alpha mine more\nBravo\nCharlie theirs\n',
+        false,
+      ),
+      (
+        'text typed on another line during a hosted merged retry moves onto the merged body and saves next',
+        'Alpha mine\nBravo mine\nCharlie\n',
+        'Alpha mine\nBravo mine\nCharlie theirs\n',
+        false,
+      ),
+      (
+        'text typed during a hosted merged retry whose debounce fired before it landed moves onto the merged body and saves next',
+        'Alpha mine more\nBravo\nCharlie\n',
+        'Alpha mine more\nBravo\nCharlie theirs\n',
+        true,
+      ),
+    ]) {
+      test(name, () async {
+        final h = await _hosted(_wi16Vault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        await h.typeAndSave('Alpha mine\nBravo\nCharlie\n');
+        _foreignWrite(h.db, _planId, 'Alpha\nBravo\nCharlie theirs\n', 4);
+        // The retry waits at its first write, then at the merged write.
+        final first = Completer<void>();
+        h.notes.writeGate = first;
+        await h.serverAnswers();
+        final second = Completer<void>();
+        h.notes.writeGate = second;
+        first.complete();
+        await pumpEventQueue();
+        expect(h.notes.updatesOf(_planId), hasLength(3));
+        h.ctrl.onContentChanged(typed);
+        if (debounceFires) await h.fireDebounce();
+
+        h.notes.writeGate = null;
+        second.complete();
+        await pumpEventQueue();
+
+        expect(
+          h.stored(_planId).contentMd,
+          'Alpha mine\nBravo\nCharlie theirs\n',
+        );
+        expect(h.stored(_planId).version, 5);
+        expect(h.state.contentMd, expected);
+        expect(h.state.status, SaveStatus.dirty);
+        expect(h.state.lastSavedVersion, 5);
+        expect(h.queued(_planId)!.baseVersion, 5);
+
+        await h.fireDebounce();
+
+        expect(h.notes.updatesOf(_planId), hasLength(4));
+        expect(h.notes.updatesOf(_planId).last, 'updateNote:$_planId@5');
+        expect(h.notes.updateBodies.last, expected);
+        expect(h.stored(_planId).contentMd, expected);
+        expect(h.stored(_planId).version, 6);
+        expect(h.state.contentMd, expected);
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 6);
+        expect(h.queue, isEmpty);
+      });
+    }
+
+    test(
+      'text typed during a hosted merged retry on a line the server changed holds the conflict and is not saved',
+      () async {
+        final h = await _hosted(_wi16Vault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        await h.typeAndSave('Alpha mine\nBravo\nCharlie\n');
+        _foreignWrite(h.db, _planId, 'Alpha\nBravo\nCharlie theirs\n', 4);
+        final first = Completer<void>();
+        h.notes.writeGate = first;
+        await h.serverAnswers();
+        final second = Completer<void>();
+        h.notes.writeGate = second;
+        first.complete();
+        await pumpEventQueue();
+        const typed = 'Alpha mine\nBravo\nCharlie mine\n';
+        h.ctrl.onContentChanged(typed);
+
+        h.notes.writeGate = null;
+        second.complete();
+        await pumpEventQueue();
+
+        const merged = 'Alpha mine\nBravo\nCharlie theirs\n';
+        expect(h.stored(_planId).contentMd, merged);
+        expect(h.stored(_planId).version, 5);
+        expect(h.state.contentMd, typed);
+        expect(h.state.status, SaveStatus.conflict);
+        expect(h.state.errorMessage, contains('version conflict'));
+        final entry = h.c
+            .read(pendingSaveQueueProvider)
+            .singleWhere((q) => q.save.noteId == _planId);
+        expect(entry.heldStatus, SaveStatus.conflict);
+
+        await h.fireDebounce();
+        expect(
+          h.notes.updatesOf(_planId).where((u) => u.endsWith('@5')),
+          isEmpty,
+        );
+        expect(h.stored(_planId).contentMd, merged);
+      },
+    );
+
+    test(
+      'a hosted save held back behind a merged save moves onto the merged body and saves once',
+      () async {
+        final h = await _hosted(_wi16Vault());
+        h.ctrl.loadNote(h.stored(_planId));
+        _foreignWrite(h.db, _planId, 'Alpha\nBravo\nCharlie theirs\n', 4);
+        // The save waits at its first write, then at the merged write.
+        final first = Completer<void>();
+        h.notes.writeGate = first;
+        await h.typeAndSave('Alpha mine\nBravo\nCharlie\n');
+        final second = Completer<void>();
+        h.notes.writeGate = second;
+        first.complete();
+        await pumpEventQueue();
+        expect(h.notes.updatesOf(_planId), hasLength(2));
+        // More typing while the merged save is in flight waits for it.
+        await h.typeAndSave('Alpha mine more\nBravo\nCharlie\n');
+        expect(h.notes.updatesOf(_planId), hasLength(2));
+
+        h.notes.writeGate = null;
+        second.complete();
+        await pumpEventQueue();
+
+        const expected = 'Alpha mine more\nBravo\nCharlie theirs\n';
+        expect(h.notes.updatesOf(_planId), [
+          'updateNote:$_planId@3',
+          'updateNote:$_planId@4',
+          'updateNote:$_planId@5',
+        ]);
+        expect(h.stored(_planId).contentMd, expected);
+        expect(h.stored(_planId).version, 6);
+        expect(h.state.contentMd, expected);
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.queue, isEmpty);
+      },
+    );
+
+    test(
+      'text queued during a hosted merged retry after the person left the note moves onto the merged body in the queue',
+      () async {
+        final h = await _hosted(_wi16Vault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        await h.typeAndSave('Alpha mine\nBravo\nCharlie\n');
+        _foreignWrite(h.db, _planId, 'Alpha\nBravo\nCharlie theirs\n', 4);
+        final first = Completer<void>();
+        h.notes.writeGate = first;
+        await h.serverAnswers();
+        final second = Completer<void>();
+        h.notes.writeGate = second;
+        first.complete();
+        await pumpEventQueue();
+        // The person types on, the debounce queues the text, and they leave.
+        h.ctrl.onContentChanged('Alpha mine more\nBravo\nCharlie\n');
+        await h.fireDebounce();
+        h.ctrl.loadNote(h.stored(_otherId));
+
+        h.notes.writeGate = null;
+        second.complete();
+        await pumpEventQueue();
+
+        expect(
+          h.stored(_planId).contentMd,
+          'Alpha mine\nBravo\nCharlie theirs\n',
+        );
+        expect(
+          h.queued(_planId)!.text,
+          'Alpha mine more\nBravo\nCharlie theirs\n',
+        );
+        expect(h.queued(_planId)!.baseVersion, 5);
+        // The open note is untouched.
+        expect(h.state.contentMd, 'other body');
+        expect(h.state.status, SaveStatus.clean);
       },
     );
   });

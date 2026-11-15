@@ -500,4 +500,177 @@ void main() {
       });
     }
   });
+
+  // Review finding 5: after a merged save or a polled server write the caret
+  // stays on the person's line.
+  group('carryOffset keeps a caret on its line', () {
+    for (final (name, before, after, offset, expected) in [
+      (
+        'a text that did not change keeps the offset',
+        'Alpha\nBravo\n',
+        'Alpha\nBravo\n',
+        8,
+        8,
+      ),
+      (
+        'a line added above the caret moves it down by that line',
+        'Alpha\nBravo\n',
+        'Zero\nAlpha\nBravo\n',
+        8,
+        13,
+      ),
+      (
+        'a line removed above the caret moves it up by that line',
+        'Zero\nAlpha\nBravo\n',
+        'Alpha\nBravo\n',
+        13,
+        8,
+      ),
+      (
+        'a line lengthened above the caret moves it by the added length',
+        'Alpha\nBravo\n',
+        'Alpha more\nBravo\n',
+        8,
+        13,
+      ),
+      (
+        'a line shortened above the caret moves it by the removed length',
+        'Alpha more\nBravo\n',
+        'Alpha\nBravo\n',
+        13,
+        8,
+      ),
+      (
+        'a change below the caret leaves it where it was',
+        'Alpha\nBravo\nCharlie\n',
+        'Alpha\nBravo\nCharlie theirs\n',
+        3,
+        3,
+      ),
+      (
+        'a change two lines below the caret leaves its column',
+        'Alpha\nBravo\nCharlie\nDelta\n',
+        'Alpha\nBravo\nCharlie\nDelta theirs\n',
+        9,
+        9,
+      ),
+      (
+        'a caret at the end of its line stays at the end of that line',
+        'Alpha\nBravo\n',
+        'Zero\nAlpha\nBravo\n',
+        11,
+        16,
+      ),
+      (
+        'a caret at the start of a line stays at the start of that line when a line is inserted before it',
+        'Alpha\nBravo\n',
+        'Alpha\nNew\nBravo\n',
+        6,
+        10,
+      ),
+      (
+        'a caret at the end of the line before an inserted line stays on that line',
+        'Alpha\nBravo\n',
+        'Alpha\nNew\nBravo\n',
+        5,
+        5,
+      ),
+      (
+        'a caret at the end of the text moves to the end of the new text',
+        'Alpha\nBravo\n',
+        'Zero\nAlpha\nBravo\n',
+        12,
+        17,
+      ),
+      (
+        'a caret inside a changed line keeps its distance from the start of that line',
+        'Alpha\nBravo\nCharlie\n',
+        'Alpha\nBravo theirs\nCharlie\n',
+        9,
+        9,
+      ),
+      (
+        'a caret at the end of a changed line stays within that line',
+        'Alpha\nBravo\nCharlie\n',
+        'Alpha\nBravo theirs\nCharlie\n',
+        11,
+        11,
+      ),
+      (
+        'a caret in a changed line that got shorter stops at the end of the new line',
+        'Alpha\nBravo theirs\nCharlie\n',
+        'Alpha\nBravo\nCharlie\n',
+        16,
+        12,
+      ),
+      (
+        'a caret in a changed line that got longer keeps its offset in the line',
+        'Alpha\nBravo\nCharlie\n',
+        'Alpha\nBravo theirs\nCharlie\n',
+        7,
+        7,
+      ),
+      (
+        'a caret in a deleted line goes to the start of the next line',
+        'Alpha\nBravo\nCharlie\n',
+        'Alpha\nCharlie\n',
+        8,
+        6,
+      ),
+      (
+        'a caret in a deleted last line goes to the end of the new text',
+        'Alpha\nBravo\n',
+        'Alpha\n',
+        8,
+        6,
+      ),
+      (
+        'a caret on an unchanged line between two changes carries both changes',
+        'A\nB\nC\nD\nE\n',
+        'AA\nB\nC\nD\nEE\n',
+        5,
+        6,
+      ),
+      (
+        'a caret in the last change after an earlier one carries both',
+        'A\nB\nC\nD\nE\n',
+        'AA\nB\nC\nD\nEE\n',
+        9,
+        10,
+      ),
+      (
+        'a caret in the first change before a later one is not moved by it',
+        'A\nB\nC\nD\nE\n',
+        'AA\nB\nC\nD\nEE\n',
+        1,
+        1,
+      ),
+      (
+        'a caret in an empty text goes to the end of the new text',
+        '',
+        'Alpha\n',
+        0,
+        6,
+      ),
+      ('a text emptied puts the caret at the start', 'Alpha\n', '', 3, 0),
+      (
+        'a last line without a newline keeps the caret in it',
+        'Alpha\nBravo',
+        'Zero\nAlpha\nBravo',
+        8,
+        13,
+      ),
+      (
+        'a caret past the end of the old text lands at the end of the new text',
+        'Alpha\n',
+        'Zero\nAlpha\n',
+        20,
+        11,
+      ),
+    ]) {
+      test(name, () {
+        expect(carryOffset(before, after, offset), expected);
+      });
+    }
+  });
 }
