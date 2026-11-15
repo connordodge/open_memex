@@ -1,4 +1,5 @@
 {
+  "agent_read_only": false,
   "content_md": "Its frontmatter is not JSON, so every reader treats it as role-less.\n",
   "created_at": 1760000540000,
   "footer_tags": [],
