@@ -16,7 +16,7 @@ use crate::Result;
 
 const SEED_TITLE: &str = "Vault Guide";
 const SEED_BODY: &str = "## Framework\n\n## Decisions\n";
-const RESTORE_BULLET: &str = "Restored an earlier version";
+pub(crate) const RESTORE_BULLET: &str = "Restored an earlier version";
 /// Create attempts of one first read before it returns the last error.
 const CREATE_ATTEMPTS: u32 = 5;
 

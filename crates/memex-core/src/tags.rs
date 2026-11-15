@@ -342,15 +342,8 @@ pub(crate) fn reconcile_body_tags(
     } else {
         extract(person_section(&daily::split_note_body(body).person))
     };
+    drop_unwritten_body_tags(conn, note_id, &written, false)?;
     let stored = stored_rows(conn, note_id)?;
-    for (name, (origin, _)) in &stored {
-        if origin == "body" && !written.iter().any(|tag| &tag.name == name) {
-            conn.execute(
-                "DELETE FROM tags WHERE note_id = ? AND tag = ?",
-                params![note_id, name],
-            )?;
-        }
-    }
     for tag in &written {
         let matches = stored.get(&tag.name).is_some_and(|(origin, line)| {
             origin == "body" && line.as_deref() == Some(tag.first_line.as_str())
@@ -364,6 +357,34 @@ pub(crate) fn reconcile_body_tags(
             )?;
         }
         lift_block(conn, note_id, &tag.name, now)?;
+    }
+    Ok(())
+}
+
+/// Deletes the `body` rows of `note_id` whose name is not among `written`,
+/// the tags its person section now yields; `agent` and `person` rows stay.
+/// With `keep_system`, a `body` row of a system tag ([`is_system_tag`]) stays
+/// too. Nothing is inserted and no block or Correction row changes. The
+/// removal half of [`reconcile_body_tags`] (`keep_system` false), and all an
+/// agent's `note_edits` body edit does to tags (`keep_system` true, so an
+/// agent edit never takes a note out of the inbox; Spec #7 Req 21, rulings
+/// D8, D26).
+pub(crate) fn drop_unwritten_body_tags(
+    conn: &Connection,
+    note_id: &str,
+    written: &[ExtractedTag],
+    keep_system: bool,
+) -> Result<()> {
+    for (name, (origin, _)) in &stored_rows(conn, note_id)? {
+        if origin == "body"
+            && !(keep_system && is_system_tag(name))
+            && !written.iter().any(|tag| &tag.name == name)
+        {
+            conn.execute(
+                "DELETE FROM tags WHERE note_id = ? AND tag = ?",
+                params![note_id, name],
+            )?;
+        }
     }
     Ok(())
 }
