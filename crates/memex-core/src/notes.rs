@@ -850,7 +850,8 @@ pub(crate) enum TagMode {
     /// a person save (`tags::reconcile_body_tags`).
     Derive,
     /// An agent edit: only body tags whose `#name` the new person section no
-    /// longer yields are dropped (`tags::drop_unwritten_body_tags`).
+    /// longer yields are dropped (`tags::drop_unwritten_body_tags`), and never
+    /// a system tag (`inbox`, `agent-authored`; ruling D26).
     RemovalsOnly,
 }
 
@@ -907,7 +908,7 @@ pub(crate) fn write_person_section_internal(
         TagMode::Derive => tags::reconcile_body_tags(tx, id.as_str(), &person, false, now)?,
         TagMode::RemovalsOnly => {
             let written = tags::extract(tags::person_section(&person));
-            tags::drop_unwritten_body_tags(tx, id.as_str(), &written)?;
+            tags::drop_unwritten_body_tags(tx, id.as_str(), &written, true)?;
         }
     }
     let content_md = daily::sync_note_footer(tx, id.as_str(), &person)?;
