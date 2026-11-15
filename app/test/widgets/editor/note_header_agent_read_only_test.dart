@@ -289,6 +289,37 @@ void main() {
     );
 
     testWidgets(
+      'the tooltip adds no second semantics announcement of Read-only for agents',
+      (tester) async {
+        await _wi14PumpEditor(tester, db: _wi14Vault(), noteId: _wi14Flagged);
+        expect(_wi14Icon, findsOneWidget);
+
+        // The leaf carries the label; the Tooltip's own semantics are off, so
+        // no node anywhere in the tree reports the message as a tooltip.
+        final tooltips = <String>[];
+        void walk(SemanticsNode node) {
+          final data = node.getSemanticsData();
+          if (data.tooltip.isNotEmpty) tooltips.add(data.tooltip);
+          node.visitChildren((c) {
+            walk(c);
+            return true;
+          });
+        }
+
+        var root = tester.getSemantics(_wi14Icon);
+        while (root.parent != null) {
+          root = root.parent!;
+        }
+        walk(root);
+        expect(
+          tooltips.where((t) => t.contains(_wi14Label)),
+          isEmpty,
+          reason: 'D19: one leaf announces it, not the tooltip as well',
+        );
+      },
+    );
+
+    testWidgets(
       'the title field keeps its own semantics apart from the icon leaf',
       (tester) async {
         await _wi14PumpEditor(tester, db: _wi14Vault(), noteId: _wi14Flagged);

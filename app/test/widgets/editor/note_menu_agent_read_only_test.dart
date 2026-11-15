@@ -15,11 +15,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:open_memex_app/src/cli/note_edits_cli.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
 import 'package:open_memex_app/src/state/note_edits_state.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
+import 'package:open_memex_app/src/vault_access/errors.dart';
 import 'package:open_memex_app/src/widgets/agent_edits_keys.dart';
 import 'package:open_memex_app/src/widgets/editor/note_menu.dart';
 import 'package:open_memex_app/src/widgets/note_editor.dart';
@@ -673,6 +675,144 @@ void main() {
         await _wi14Select(h, _wi14Topic);
         await pumpFrames(tester);
         expect(find.byKey(_wi14InlineError), findsNothing);
+      },
+    );
+  });
+
+  group('the error slot and the guard (AC6, verify)', () {
+    testWidgets(
+      'a later successful toggle of the same note clears its earlier toggle error',
+      (tester) async {
+        const message = 'read-only set failed: database is locked';
+        final h = await _wi14Pump(tester, db: _wi14Vault(), noteId: _wi14Plain);
+        h.notes.setAgentReadOnlyError = MemexException(message);
+        await _wi14OpenMenu(tester);
+        await _wi14Choose(tester);
+        await pumpFrames(tester);
+        expect(find.byKey(_wi14InlineError), findsOneWidget);
+
+        h.notes.setAgentReadOnlyError = null;
+        await _wi14OpenMenu(tester);
+        await _wi14Choose(tester);
+        await pumpFrames(tester);
+
+        expect(h.notes.setAgentReadOnlyCalls, hasLength(2));
+        expect(h.bumps, 1);
+        expect(h.read(noteDeleteErrorProvider), isNull);
+        expect(find.byKey(_wi14InlineError), findsNothing);
+        expect(h.db.agentReadOnlyForTest(_wi14Plain), isTrue);
+      },
+    );
+
+    testWidgets(
+      'a successful toggle of another note leaves the earlier toggle error of the first note',
+      (tester) async {
+        const message = 'read-only set failed: database is locked';
+        final h = await _wi14Pump(tester, db: _wi14Vault(), noteId: _wi14Plain);
+        h.notes.setAgentReadOnlyError = MemexException(message);
+        await _wi14OpenMenu(tester);
+        await _wi14Choose(tester);
+        await pumpFrames(tester);
+        expect(h.read(noteDeleteErrorProvider), (
+          noteId: _wi14Plain,
+          message: message,
+        ));
+
+        h.notes.setAgentReadOnlyError = null;
+        await _wi14Select(h, _wi14Topic);
+        await pumpFrames(tester);
+        await _wi14OpenMenu(tester);
+        await _wi14Choose(tester);
+        await pumpFrames(tester);
+
+        expect(h.notes.setAgentReadOnlyCalls.last, (
+          noteId: _wi14Topic,
+          on: true,
+        ));
+        expect(h.db.agentReadOnlyForTest(_wi14Topic), isTrue);
+        expect(h.read(noteDeleteErrorProvider), (
+          noteId: _wi14Plain,
+          message: message,
+        ));
+      },
+    );
+
+    testWidgets(
+      'an unreachable vault server shows the snackbar and sets no inline error',
+      (tester) async {
+        final h = await _wi14Pump(tester, db: _wi14Vault(), noteId: _wi14Plain);
+        h.notes.setAgentReadOnlyError = const VaultUnreachableException(
+          serverName: 'nas',
+          mayHaveCommitted: false,
+        );
+        await _wi14OpenMenu(tester);
+
+        await _wi14Choose(tester);
+        await pumpFrames(tester);
+
+        expect(h.notes.setAgentReadOnlyCalls, [(noteId: _wi14Plain, on: true)]);
+        expect(find.text("couldn't reach nas. try again."), findsOneWidget);
+        expect(h.read(noteDeleteErrorProvider), isNull);
+        expect(find.byKey(_wi14InlineError), findsNothing);
+        expect(h.bumps, 0);
+        expect(h.db.agentReadOnlyForTest(_wi14Plain), isFalse);
+        expect(_wi14Icon, findsNothing);
+      },
+    );
+
+    testWidgets(
+      'an unreachable vault server keeps the note own earlier toggle error',
+      (tester) async {
+        const message = 'read-only set failed: database is locked';
+        final h = await _wi14Pump(tester, db: _wi14Vault(), noteId: _wi14Plain);
+        h.notes.setAgentReadOnlyError = MemexException(message);
+        await _wi14OpenMenu(tester);
+        await _wi14Choose(tester);
+        await pumpFrames(tester);
+
+        h.notes.setAgentReadOnlyError = const VaultUnreachableException(
+          serverName: 'nas',
+          mayHaveCommitted: true,
+        );
+        await _wi14OpenMenu(tester);
+        await _wi14Choose(tester);
+        await pumpFrames(tester);
+
+        expect(
+          find.text("couldn't confirm with nas — check before trying again"),
+          findsOneWidget,
+        );
+        expect(h.read(noteDeleteErrorProvider), (
+          noteId: _wi14Plain,
+          message: message,
+        ));
+        expect(h.bumps, 0);
+      },
+    );
+  });
+
+  group('the leading icon (AC1, verify)', () {
+    testWidgets(
+      'the leading icon is the empty square at size 14 when unflagged and the checked square when flagged',
+      (tester) async {
+        final db = _wi14Vault();
+        final h = await _wi14Pump(tester, db: db, noteId: _wi14Plain);
+        await _wi14OpenMenu(tester);
+        Finder inItem(IconData d) =>
+            find.descendant(of: _wi14Item, matching: find.byIcon(d));
+        expect(inItem(LucideIcons.square), findsOneWidget);
+        expect(inItem(LucideIcons.squareCheck), findsNothing);
+        expect(tester.widget<Icon>(inItem(LucideIcons.square)).size, 14);
+        await _wi14CloseMenu(tester);
+
+        db.setAgentReadOnlyForTest(_wi14Plain, true);
+        h.container.read(vaultRevisionProvider.notifier).state++;
+        await pumpFrames(tester);
+        await _wi14OpenMenu(tester);
+
+        expect(inItem(LucideIcons.squareCheck), findsOneWidget);
+        expect(inItem(LucideIcons.square), findsNothing);
+        expect(tester.widget<Icon>(inItem(LucideIcons.squareCheck)).size, 14);
       },
     );
   });
