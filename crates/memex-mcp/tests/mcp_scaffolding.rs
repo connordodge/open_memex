@@ -303,12 +303,15 @@ async fn get_note_merges_empty_stub_fields_and_keeps_todays_keys() {
         "updated_at",
         "tags",
         "agent_tags",
+        // WI #9 (D6): the Agent read-only flag, on every note.
+        "agent_read_only",
     ]);
     expected.extend(review_fields.keys().cloned());
     expected.extend(transclusion_fields.keys().cloned());
 
     let got = parse(&memex.get_note(params(json!({ "note_id": id }))).await);
     assert_eq!(keys(&got), expected, "{got}");
+    assert_eq!(got["agent_read_only"], json!(false), "{got}");
 
     let got = parse(
         &memex

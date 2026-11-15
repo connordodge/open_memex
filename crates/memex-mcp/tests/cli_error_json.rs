@@ -580,6 +580,8 @@ fn get_merges_empty_stub_fields_and_keeps_todays_keys() {
         "created_at",
         "updated_at",
         "tags",
+        // WI #9 (D6): the Agent read-only flag, on every note.
+        "agent_read_only",
     ];
     let mut expected = set(&base);
     expected.extend(review_fields.keys().cloned());
@@ -592,6 +594,44 @@ fn get_merges_empty_stub_fields_and_keeps_todays_keys() {
         keys(&get_json(&vault, &id, &["--include-links"])),
         expected_links
     );
+}
+
+// ---------- WI #9 (Spec #7 Req 8, D6): `memex get` reports Agent read-only ----------
+
+#[test]
+fn get_reports_agent_read_only_true_for_a_flagged_note_and_false_otherwise() {
+    let (_dir, vault) = init_vault();
+    let flagged = add_note(&vault, "Pricing notes", "Tiers.\n");
+    let open_note = add_note(&vault, "Roadmap", "Q1.\n");
+    {
+        let mut v = Vault::open(&vault).unwrap();
+        assert!(
+            notes::set_agent_read_only(&mut v, &NoteId::parse(&flagged).unwrap(), true).unwrap()
+        );
+    }
+    for extra in [&[][..], &["--include-links"][..]] {
+        let got = get_json(&vault, &flagged, extra);
+        assert_eq!(
+            got["agent_read_only"],
+            Value::Bool(true),
+            "{extra:?}: {got}"
+        );
+        assert_eq!(got["version"], 1, "the toggle kept the version: {got}");
+        let got = get_json(&vault, &open_note, extra);
+        assert_eq!(
+            got["agent_read_only"],
+            Value::Bool(false),
+            "{extra:?}: {got}"
+        );
+    }
+    {
+        let mut v = Vault::open(&vault).unwrap();
+        assert!(
+            notes::set_agent_read_only(&mut v, &NoteId::parse(&flagged).unwrap(), false).unwrap()
+        );
+    }
+    let got = get_json(&vault, &flagged, &[]);
+    assert_eq!(got["agent_read_only"], Value::Bool(false), "{got}");
 }
 
 // ---------- AC 11: CLI writes reindex from the stored content (D8) ----------

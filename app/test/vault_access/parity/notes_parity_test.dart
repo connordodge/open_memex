@@ -180,6 +180,9 @@ void main() {
         'tags': local.tags,
         // WI #242: the hosted read's field; this note has no footer tag.
         'footer_tags': const <String>[],
+        // WI #9 (Spec #7 Req 8): the note read's Agent read-only flag; no
+        // seed note is flagged.
+        'agent_read_only': false,
       });
     },
   );

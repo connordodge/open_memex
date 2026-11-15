@@ -1,0 +1,8 @@
+List the note's agent-edit revisions, newest first
+
+Usage: memex revisions list --vault <VAULT> --note-id <NOTE_ID>
+
+Options:
+      --vault <VAULT>      Vault directory
+      --note-id <NOTE_ID>  Note id (ULID)
+  -h, --help               Print help

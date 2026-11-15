@@ -185,6 +185,10 @@ enum Commands {
     Feedback(cli::feedback::FeedbackArgs),
     /// Read the Vault Guide or return to an earlier text.
     Guide(cli::guide::GuideArgs),
+    /// Make a note read-only for agents, or let agents edit it again.
+    ReadOnly(cli::read_only::ReadOnlyArgs),
+    /// List or restore the earlier texts agent edits kept of a note.
+    Revisions(cli::revisions::RevisionsArgs),
     /// Back up a vault into a folder as one .memex.zip file.
     Backup(cli::backup::BackupArgs),
     /// Make a new vault folder from a backup file.
@@ -363,6 +367,8 @@ async fn dispatch(command: Commands) -> Result<()> {
         Commands::Echoes(args) => cli::echoes::run(args),
         Commands::Feedback(args) => cli::feedback::run(args),
         Commands::Guide(args) => cli::guide::run(args),
+        Commands::ReadOnly(args) => cli::read_only::run(args),
+        Commands::Revisions(args) => cli::revisions::run(args),
         Commands::Backup(args) => cli::backup::run(args),
         Commands::Restore(args) => cli::restore::run(args),
         Commands::Tools => cli::tools::run(),

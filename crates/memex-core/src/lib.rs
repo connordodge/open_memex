@@ -14,6 +14,7 @@ pub mod guide;
 pub mod indexer;
 pub mod link_extractor;
 pub mod links;
+pub mod note_edits;
 pub mod notes;
 pub mod schema;
 pub mod search;
