@@ -1,0 +1,11 @@
+Make a note read-only for agents, or let agents edit it again
+
+Usage: memex read-only <COMMAND>
+
+Commands:
+  set    Make the note read-only for agents
+  clear  Let agents edit the note again
+  help   Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help
