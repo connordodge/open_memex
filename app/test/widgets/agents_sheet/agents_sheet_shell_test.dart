@@ -61,7 +61,7 @@ Finder _inSheet(Finder f) =>
 /// Badges on every chip: the widest tab row.
 final _allBadges = <Override>[
   liveTabBadgeProvider.overrideWith((ref) => '2 connected'),
-  toolsTabBadgeProvider.overrideWith((ref) => '37 tools'),
+  toolsTabBadgeProvider.overrideWith((ref) => '38 tools'),
   recallTabDotProvider.overrideWith((ref) => true),
 ];
 
@@ -685,7 +685,7 @@ void main() {
         await pumpAgentsSheet(tester, overrides: _allBadges);
 
         expect(_chipText(tester, 'agents-tab-live'), 'Live 2 connected');
-        expect(_chipText(tester, 'agents-tab-tools'), 'Tools 37 tools');
+        expect(_chipText(tester, 'agents-tab-tools'), 'Tools 38 tools');
         expect(_chipText(tester, 'agents-tab-connect'), 'Connect');
         expect(_chipText(tester, 'agents-tab-recall'), 'Semantic recall');
 
@@ -712,7 +712,7 @@ void main() {
           OmColors.fg0.toARGB32(),
         );
         expect(
-          _spanColor(tester, _key('agents-tab-tools'), '37 tools')?.toARGB32(),
+          _spanColor(tester, _key('agents-tab-tools'), '38 tools')?.toARGB32(),
           OmColors.fg2.toARGB32(),
         );
       },
@@ -1368,7 +1368,7 @@ void main() {
             exempt: {'Studio · local vault'},
           );
           expect(_chipText(tester, 'agents-tab-live'), 'Live 2 connected');
-          expect(_chipText(tester, 'agents-tab-tools'), 'Tools 37 tools');
+          expect(_chipText(tester, 'agents-tab-tools'), 'Tools 38 tools');
           await tester.pumpWidget(const SizedBox());
         }
       },
