@@ -893,12 +893,13 @@ fn write_topic(
     before_write: &mut dyn FnMut(&mut Vault),
     mut edit: impl FnMut(&str) -> Result<Option<String>>,
 ) -> Result<Note> {
-    // Agent read-only (Spec #7 Req 5, ruling D4): checked once, before the
-    // nothing-to-write answer below and before the caller's chip write, so
-    // an agent write into a flagged topic writes neither note.
-    notes::check_agent_read_only(vault.connection_ref(), caller, topic_note_id)?;
     let mut attempt = 1;
     loop {
+        // Agent read-only (Spec #7 Req 5, ruling D4): checked on every
+        // attempt, before the nothing-to-write answer below and before the
+        // caller's chip write, so an agent write into a flagged topic writes
+        // neither note.
+        notes::check_agent_read_only(vault.connection_ref(), caller, topic_note_id)?;
         let current = topic_note(vault, topic_note_id)?;
         // `edit` sees only the person section; the Note footer is put back
         // after it (D14), and the save re-renders it from rows.

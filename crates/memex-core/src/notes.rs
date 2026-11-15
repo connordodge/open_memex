@@ -982,6 +982,24 @@ pub fn note_agent_fields(
     Ok(fields)
 }
 
+/// Opens the write transaction for a `caller`'s write to the note `id` that
+/// does not save through [`update_note_as`] (Spec #7 Req 5). An agent's is
+/// Immediate and runs [`check_agent_read_only`] again under the write lock,
+/// as `update_note_as` does, so a flag another process set after the early
+/// check still refuses the write. A person's is a plain deferred one.
+pub(crate) fn begin_write_as<'c>(
+    conn: &'c mut rusqlite::Connection,
+    caller: Caller,
+    id: &NoteId,
+) -> Result<rusqlite::Transaction<'c>> {
+    if caller != Caller::Agent {
+        return Ok(conn.transaction()?);
+    }
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    check_agent_read_only(&tx, caller, id)?;
+    Ok(tx)
+}
+
 fn row_to_note(r: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
     let id_s: String = r.get(0)?;
     let title: String = r.get(1)?;

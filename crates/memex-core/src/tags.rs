@@ -453,16 +453,19 @@ fn version_after_row_write(
     Ok(footer::rerender_footer(vault, &note.id, embedder)?.version)
 }
 
-/// Adds the row `name` with `origin` and its footer line. A person adding the
-/// tag lifts its block (R35).
+/// Adds the row `name` with `origin` and its footer line, in the
+/// `caller`'s write transaction (`notes::begin_write_as`: an agent's rechecks
+/// the read-only flag under the write lock). A person adding the tag lifts
+/// its block (R35).
 fn insert_row(
     vault: &mut Vault,
     note: &Note,
     name: &str,
     origin: TagOrigin,
+    caller: Caller,
     embedder: Option<&dyn Embedder>,
 ) -> Result<TagWrite> {
-    let tx = vault.conn_mut().transaction()?;
+    let tx = notes::begin_write_as(vault.conn_mut(), caller, &note.id)?;
     tx.execute(
         "INSERT INTO tags (note_id, tag, origin) VALUES (?, ?, ?)",
         params![note.id.as_str(), name, origin.as_str()],
@@ -477,16 +480,18 @@ fn insert_row(
     })
 }
 
-/// Deletes the row `name` and re-renders the footer. With `record`, the
-/// Correction goes in with the delete, or neither happens (TD2).
+/// Deletes the row `name` and re-renders the footer, in the `caller`'s
+/// write transaction (see [`insert_row`]). With `record`, the Correction goes
+/// in with the delete, or neither happens (TD2).
 fn delete_row(
     vault: &mut Vault,
     note: &Note,
     name: &str,
     record: bool,
+    caller: Caller,
     embedder: Option<&dyn Embedder>,
 ) -> Result<TagRemoval> {
-    let tx = vault.conn_mut().transaction()?;
+    let tx = notes::begin_write_as(vault.conn_mut(), caller, &note.id)?;
     tx.execute(
         "DELETE FROM tags WHERE note_id = ? AND tag = ?",
         params![note.id.as_str(), name],
@@ -537,7 +542,7 @@ pub fn apply_tag(
     }
     let name = normalize_name(bare_name(tag))
         .ok_or_else(|| invalid_argument(format!("{tag:?} is not a valid tag name")))?;
-    insert_row(vault, &note, &name, origin, embedder)
+    insert_row(vault, &note, &name, origin, Caller::Person, embedder)
 }
 
 /// The agent's `tag_note` (R38): applies a vocabulary tag, agent-origin.
@@ -580,7 +585,14 @@ pub fn agent_tag_note(
             "the person removed #{name} from note {note_id}: don't apply it again"
         )));
     }
-    insert_row(vault, &note, &name, TagOrigin::Agent, embedder)
+    insert_row(
+        vault,
+        &note,
+        &name,
+        TagOrigin::Agent,
+        Caller::Agent,
+        embedder,
+    )
 }
 
 /// The agent's `untag_note` (R38): removes an agent-origin non-system tag and
@@ -609,7 +621,7 @@ pub fn agent_untag_note(
             "#{name} wasn't applied by an agent, so untag_note can't remove it"
         )));
     }
-    delete_row(vault, &note, &name, false, embedder)
+    delete_row(vault, &note, &name, false, Caller::Agent, embedder)
 }
 
 /// `memex tag add` (R35, R53): a body-less person-origin tag, with its footer
@@ -652,7 +664,7 @@ pub fn person_remove_tag(
         )));
     }
     let record = origin == TagOrigin::Agent && !is_system_tag(&name);
-    delete_row(vault, &note, &name, record, embedder)
+    delete_row(vault, &note, &name, record, Caller::Person, embedder)
 }
 
 /// One tag name across the vault.
