@@ -96,8 +96,12 @@ enum Form<'a> {
 ///    (`EditNotFound` / `EditAmbiguous` naming its index), then no two matched
 ///    ranges overlap (`EditInvalid` naming both);
 /// 6. the same transclusion tokens as a multiset (`ExcerptRule`);
-/// 7. a person section byte-identical to the current one is a no-op:
-///    `changed: false`, no version bump, no revision, no `agent_changes` row.
+/// 7. on a note with a Note footer, a person section that leaves a code
+///    fence open, so the footer marker below it would not count, is
+///    `EditInvalid` (Req 14);
+/// 8. a person section byte-identical to the current one as it would be
+///    stored (a footered one ends with `\n`) is a no-op: `changed: false`,
+///    no version bump, no revision, no `agent_changes` row.
 ///
 /// A write stores the new person section with the Note footer rebuilt from
 /// its rows, drops only the body tags whose text went (D8), and commits the
@@ -141,6 +145,7 @@ pub fn edit_note(
     };
     let new_person = daily::split_note_body(&new_person).person;
     check_transclusions(person, &new_person)?;
+    let new_person = stored_person(&tx, id, new_person)?;
     if new_person == person {
         return Ok(EditOutcome {
             note_id: id.clone(),
@@ -333,6 +338,31 @@ fn not_found(id: &NoteId) -> MemexError {
 /// marker, or the whole body without one (as `excerpts::write_topic`).
 fn person_section(body: &str) -> &str {
     &body[..daily::note_marker_start(body).unwrap_or(body.len())]
+}
+
+/// `new_person` as `write_person_section_internal` would store it. With a
+/// Note footer rendered below it, `daily::assemble` ends it with `\n`, so an
+/// edit that only drops the final newline stores the current text (Req 17).
+/// A footer marker that would land inside a code fence `new_person` leaves
+/// open no longer ends the person section, and later edits could then match
+/// footer text: that is `EditInvalid` (Req 14).
+fn stored_person(tx: &Transaction<'_>, id: &NoteId, new_person: String) -> Result<String> {
+    let body = daily::sync_note_footer(tx, id.as_str(), &new_person)?;
+    if body == new_person {
+        // No footer rows: the body is the person section as given.
+        return Ok(new_person);
+    }
+    let mut person = new_person;
+    if !person.is_empty() && !person.ends_with('\n') {
+        person.push('\n');
+    }
+    if daily::note_marker_start(&body) != Some(person.len()) {
+        return Err(MemexError::EditInvalid(
+            "the new person section leaves a code fence open above the Note footer; close it"
+                .into(),
+        ));
+    }
+    Ok(person)
 }
 
 /// Applies the Form A `pairs` to `person` together (Req 12). Every pair is
