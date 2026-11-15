@@ -28,7 +28,9 @@
 //   `LocalVaultAccess` whose notes domain is a [FakeAgentEditsNotesAccess].
 //   Returns an [AgentEditsHarness] that counts `vaultRevisionProvider` bumps.
 //   The calling test file calls `holdFontFetches()` at the top of `main()`
-//   (it registers `setUpAll`/`tearDownAll`, so it cannot run inside a test).
+//   (it registers `setUpAll`/`tearDownAll`, so it cannot run inside a test);
+//   the pump throws a [StateError] when that hold is not in place, so a file
+//   that forgot it fails instead of laying out in the bundled fonts.
 import 'dart:async';
 import 'dart:convert';
 
@@ -48,6 +50,7 @@ import 'app_harness.dart' show pumpFrames;
 import 'fake_clock.dart';
 import 'fake_memex_cli.dart';
 import 'fake_vault_db.dart';
+import 'font_fetch_hold.dart' show fontFetchesHeld;
 
 /// The local vault folder [pumpAgentEdits] opens (never created on disk).
 const agentEditsVaultPath = '/vaults/My Vault';
@@ -177,6 +180,15 @@ extension AgentEditsVaultSeeds on FakeVaultDb {
     };
   }
 
+  /// The note that owns revision [revisionId]; null when there is none.
+  String? _revisionNoteId(String revisionId) {
+    if (!_hasRevisionsTable) return null;
+    final rows = db.select('SELECT note_id FROM note_revisions WHERE id = ?', [
+      revisionId,
+    ]);
+    return rows.isEmpty ? null : rows.first['note_id'] as String;
+  }
+
   bool _noteExists(String? noteId) =>
       noteId != null &&
       db.select('SELECT 1 FROM notes WHERE id = ?', [noteId]).isNotEmpty;
@@ -302,6 +314,13 @@ class FakeAgentEditsNotesAccess extends LocalNotesAccess {
     final e = setAgentReadOnlyError;
     if (e != null) throw e;
     final stored = fakeDb;
+    // Like the CLI (and `onAgentEdits`): a note that is not there is not_found.
+    if (stored != null && !stored._noteExists(noteId)) {
+      throw MemexException(
+        'read-only ${on ? 'set' : 'clear'} failed: note not found: $noteId',
+        code: 'not_found',
+      );
+    }
     if (stored != null && stored.agentReadOnlyForTest(noteId) != null) {
       stored.setAgentReadOnlyForTest(noteId, on);
     }
@@ -322,8 +341,13 @@ class FakeAgentEditsNotesAccess extends LocalNotesAccess {
     if (hold != null) await hold.future;
     final e = restoreNoteRevisionError;
     if (e != null) throw e;
-    final out = fakeDb?._restoreRevision(revisionId);
-    if (out == null || out['note_id'] != noteId) {
+    // Like the hosted route (D11): a revision of another note is not_found
+    // and nothing is written.
+    final stored = fakeDb;
+    final out = stored != null && stored._revisionNoteId(revisionId) == noteId
+        ? stored._restoreRevision(revisionId)
+        : null;
+    if (out == null) {
       throw MemexException(
         'revisions restore failed: revision not found: $revisionId',
         code: 'not_found',
@@ -389,6 +413,12 @@ Future<AgentEditsHarness> pumpAgentEdits(
   Size surfaceSize = const Size(800, 600),
   List<Override> overrides = const [],
 }) async {
+  if (!fontFetchesHeld) {
+    throw StateError(
+      'pumpAgentEdits needs holdFontFetches() at the top of main(): without '
+      'it the layout picks up the bundled fonts, not the test font.',
+    );
+  }
   final fakeDb = db ?? FakeVaultDb.v5();
   final fakeCli = memexConfigured ? (cli ?? FakeMemexCli()) : null;
   final fakeNotes =

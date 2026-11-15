@@ -245,6 +245,23 @@ void main() {
       final access = LocalNotesAccess(vaultPath: agentEditsVaultPath);
       expect(await access.noteRevisions(_wi13Plain), isEmpty);
     });
+
+    test(
+      'noteRevisionNoteId names the owner of a revision and probes the table on every call',
+      () {
+        final db = _wi13Seeded(agentEditsV7Vault());
+        addTearDown(db.close);
+        expect(db.noteRevisionNoteId('rev-owned'), isNull, reason: 'V7');
+
+        db.migrateAgentEditsToV8();
+        expect(db.noteRevisionNoteId('rev-owned'), isNull, reason: 'unknown');
+        db.seedNoteRevision(id: 'rev-owned', noteId: _wi13Plain);
+        db.seedNoteRevision(id: 'rev-other', noteId: _wi13Other);
+        expect(db.noteRevisionNoteId('rev-owned'), _wi13Plain);
+        expect(db.noteRevisionNoteId('rev-other'), _wi13Other);
+        expect(db.noteRevisionNoteId('rev-unknown'), isNull);
+      },
+    );
   });
 
   group('writes through AgentEditsCli', () {
@@ -317,6 +334,94 @@ void main() {
         expect(out.noteId, _wi13Plain);
         expect(out.version, 2);
         expect(out.contentMd, 'Books I mean to read.');
+      },
+    );
+
+    test(
+      'local restoreNoteRevision of a revision owned by another note fails not_found and runs no CLI call',
+      () async {
+        final db = _wi13Seeded(FakeVaultDb.v5())
+          ..seedNoteRevision(
+            id: 'rev-of-other',
+            noteId: _wi13Other,
+            previousMd: 'Red.',
+          );
+        addTearDown(db.close);
+        final cli = FakeMemexCli()..onAgentEdits(db);
+        final access = _wi13Access(db, cli: cli);
+
+        final e = await _wi13Outcome(
+          access.restoreNoteRevision(
+            noteId: _wi13Plain,
+            revisionId: 'rev-of-other',
+          ),
+        );
+        expect(e, isA<MemexException>());
+        e as MemexException;
+        expect(e.code, 'not_found');
+        expect(e.message, contains('rev-of-other'));
+        expect(cli.calls, isEmpty, reason: 'the CLI would restore note Other');
+        expect(db.getNote(_wi13Other)!.contentMd, 'Green.');
+        expect(db.getNote(_wi13Other)!.version, 1);
+        expect(db.getNote(_wi13Plain)!.contentMd, 'Books.');
+
+        // The owner may restore it: one call.
+        final ok = await access.restoreNoteRevision(
+          noteId: _wi13Other,
+          revisionId: 'rev-of-other',
+        );
+        expect(cli.calls, hasLength(1));
+        expect(ok.noteId, _wi13Other);
+        expect(db.getNote(_wi13Other)!.contentMd, 'Red.');
+      },
+    );
+
+    test(
+      'local restoreNoteRevision leaves a revision the database does not know to the CLI and re-probes after migration',
+      () async {
+        // V7: no note_revisions table, so the database knows no revision.
+        final v7 = _wi13Seeded(agentEditsV7Vault());
+        addTearDown(v7.close);
+        final cli = FakeMemexCli()
+          ..on(
+            'revisions restore',
+            (_) => FakeMemexCli.error('not_found', 'revision not found'),
+          );
+        final access = _wi13Access(v7, cli: cli);
+        var e = await _wi13Outcome(
+          access.restoreNoteRevision(noteId: _wi13Plain, revisionId: 'rev-x'),
+        );
+        expect((e as MemexException).message, contains('revision not found'));
+        expect(cli.calls, hasLength(1), reason: 'V7: the CLI decides');
+
+        // The CLI migrates the vault while the handle stays open; a revision
+        // of another note is then caught by the next call.
+        v7.migrateAgentEditsToV8();
+        v7.seedNoteRevision(id: 'rev-of-other', noteId: _wi13Other);
+        e = await _wi13Outcome(
+          access.restoreNoteRevision(
+            noteId: _wi13Plain,
+            revisionId: 'rev-of-other',
+          ),
+        );
+        expect((e as MemexException).code, 'not_found');
+        expect(e.message, contains('rev-of-other'));
+        expect(cli.calls, hasLength(1), reason: 'guarded, no second CLI call');
+
+        // No database handle at all: the CLI decides.
+        final noDb = FakeMemexCli()
+          ..on(
+            'revisions restore',
+            (_) => FakeMemexCli.error('not_found', 'revision not found'),
+          );
+        e = await _wi13Outcome(
+          LocalNotesAccess(
+            vaultPath: agentEditsVaultPath,
+            cli: noDb,
+          ).restoreNoteRevision(noteId: _wi13Plain, revisionId: 'gone'),
+        );
+        expect((e as MemexException).message, contains('revision not found'));
+        expect(noDb.calls, hasLength(1), reason: 'no db: the CLI decides');
       },
     );
 

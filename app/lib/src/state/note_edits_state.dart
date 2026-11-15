@@ -8,7 +8,8 @@
 //   `vaultV8ReadyProvider`. Re-evaluated on every `vaultRevisionProvider`
 //   bump. False with no vault, while the first reading loads and after a
 //   reading fails (fail closed), and never latched: the next bump reads
-//   again. A reload after a bump keeps the previous good reading.
+//   again. A reload after a bump keeps the previous good reading of the
+//   same vault; a reading of the previous vault never stands after a switch.
 // - [noteRevisionsProvider] (`FutureProvider.family`, by note id): the
 //   note's agent-edit revisions, newest first, stamped with the vault they
 //   were read for. Empty, with no route called, while
@@ -25,10 +26,14 @@
 //     failed flush throws `SaveFirstFailedException` and restores nothing.
 //
 // The D19 Keys live in `widgets/agent_edits_keys.dart`.
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../db.dart';
+import '../memex_cli.dart';
 import '../vault_access/vault_scoped.dart';
+import 'clock.dart';
 import 'topic_actions.dart';
 import 'vault_access_state.dart';
 import 'vault_state.dart';
@@ -37,25 +42,79 @@ import 'vault_state.dart';
 const _agentEditsSchemaVersion = 8;
 
 /// The hosted vault's `GET …/info` `schema_version`, read once per
-/// `vaultRevisionProvider` bump through `vaultAccessProvider`. Null with no
-/// vault access.
-final _hostedSchemaVersionProvider = FutureProvider<int?>((ref) async {
-  ref.watch(vaultRevisionProvider);
-  final access = ref.watch(vaultAccessProvider);
-  if (access == null) return null;
-  return access.schemaVersion();
-});
+/// `vaultRevisionProvider` bump through `vaultAccessProvider`, stamped with
+/// the vault it was read for. Null with no vault access.
+///
+/// A failed reading is read again on [clockProvider] after [_retryDelay]
+/// (2 s, doubling to at most 30 s, reset by a good reading or a vault
+/// switch), so one failure does not keep the gate shut on an idle vault
+/// (D17: never latched). A bump or a rebuild cancels the pending retry.
+final _hostedSchemaVersionProvider =
+    AsyncNotifierProvider<_HostedSchemaVersion, VaultScoped<int?>>(
+      _HostedSchemaVersion.new,
+    );
+
+const _firstRetryDelay = Duration(seconds: 2);
+const _maxRetryDelay = Duration(seconds: 30);
+
+/// The wait before retry number [failures] (1-based) of a failed reading.
+Duration _retryDelay(int failures) {
+  var delay = _firstRetryDelay;
+  for (var i = 1; i < failures && delay < _maxRetryDelay; i++) {
+    delay *= 2;
+  }
+  return delay < _maxRetryDelay ? delay : _maxRetryDelay;
+}
+
+class _HostedSchemaVersion extends AsyncNotifier<VaultScoped<int?>> {
+  /// Failed readings in a row of [_failedVault].
+  int _failures = 0;
+  VaultRef? _failedVault;
+
+  /// Counts builds, so a reading superseded by a rebuild schedules nothing.
+  int _build = 0;
+  Timer? _retry;
+
+  @override
+  Future<VaultScoped<int?>> build() async {
+    final build = ++_build;
+    ref.onDispose(() {
+      _retry?.cancel();
+      _retry = null;
+    });
+    ref.watch(vaultRevisionProvider);
+    final vault = ref.watch(currentVaultProvider);
+    final access = ref.watch(vaultAccessProvider);
+    if (vault != _failedVault) _failures = 0;
+    if (access == null) return VaultScoped(vault, null);
+    try {
+      final version = await access.schemaVersion();
+      if (build == _build) _failures = 0;
+      return VaultScoped(vault, version);
+    } catch (_) {
+      if (build == _build) {
+        _failedVault = vault;
+        _failures++;
+        _retry = ref
+            .read(clockProvider)
+            .after(_retryDelay(_failures), ref.invalidateSelf);
+      }
+      rethrow;
+    }
+  }
+}
 
 /// See the file comment (D17). While a reading after a bump loads, the
-/// previous good reading stands (so the controls do not blink on every
-/// save); the first reading and any failed one read false.
+/// previous good reading of the same vault stands (so the controls do not
+/// blink on every save); the first reading, any failed one and a reading
+/// left over from the previous vault after a switch read false.
 final agentEditsAvailableProvider = Provider<bool>((ref) {
   final vault = ref.watch(currentVaultProvider);
   if (vault == null) return false;
   if (vault is! HostedVaultRef) return ref.watch(vaultV8ReadyProvider);
   final reading = ref.watch(_hostedSchemaVersionProvider);
   if (reading.hasError) return false;
-  final version = reading.valueOrNull;
+  final version = currentVaultData(reading, vault)?.value;
   return version != null && version >= _agentEditsSchemaVersion;
 });
 
@@ -102,7 +161,8 @@ class NoteEditsActions {
   /// Restores agent-edit revision [revisionId] of [note] through
   /// [flushThenWrite] (no `holdSaves`), then bumps once when the restore call
   /// succeeded. A failed flush throws [SaveFirstFailedException] and makes no
-  /// restore call.
+  /// restore call. A restore that reports another note throws a
+  /// [MemexException] (null code) and never rebases the editor on it.
   Future<void> restoreNoteRevision({
     required Note note,
     required String revisionId,
@@ -120,6 +180,13 @@ class NoteEditsActions {
             revisionId: revisionId,
           );
           restored = true;
+          // The version of another note is never this note's new base.
+          if (result.noteId != note.id) {
+            throw MemexException(
+              'revisions restore failed: revision $revisionId restored note '
+              '${result.noteId}, not ${note.id}',
+            );
+          }
           return result.version;
         },
       );

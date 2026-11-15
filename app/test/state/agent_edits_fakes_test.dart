@@ -19,7 +19,7 @@ import 'package:path/path.dart' as p;
 
 import '../support/agent_edits_fakes.dart';
 import '../support/fake_vault_db.dart';
-import '../support/font_fetch_hold.dart';
+import '../support/font_fetch_hold.dart' show fontFetchesHeld, holdFontFetches;
 
 const _wi13Note = '01JAGENTEDITSFAKES00000013';
 
@@ -66,7 +66,7 @@ void main() {
         db: db,
         noteId: _wi13Note,
       );
-      expect(HttpOverrides.current, isNotNull, reason: 'font fetches held');
+      expect(fontFetchesHeld, isTrue, reason: 'font fetches held');
       expect(
         h.read(currentVaultProvider),
         const LocalVaultRef(agentEditsVaultPath),
@@ -133,6 +133,23 @@ void main() {
       expect(notes.setAgentReadOnlyCalls, hasLength(2));
       expect(db.agentReadOnlyForTest(_wi13Note), isTrue);
 
+      // A note that is not there is not_found, like the CLI, never a success.
+      notes.setAgentReadOnlyError = null;
+      for (final on in [true, false]) {
+        final gone = await _wi13Outcome(
+          notes.setAgentReadOnly('01JNOSUCHNOTE000000000013', on),
+        );
+        expect(gone, isA<MemexException>(), reason: 'on: $on');
+        expect((gone as MemexException).code, 'not_found');
+        expect(
+          gone.message,
+          'read-only ${on ? 'set' : 'clear'} failed: note not found: '
+          '01JNOSUCHNOTE000000000013',
+        );
+      }
+      expect(notes.setAgentReadOnlyCalls, hasLength(4), reason: 'recorded');
+      expect(db.agentReadOnlyForTest(_wi13Note), isTrue, reason: 'untouched');
+
       // noteRevisions: the SQLite read, a settable result, a settable error.
       expect(
         [for (final r in await notes.noteRevisions(_wi13Note)) r.id],
@@ -171,6 +188,27 @@ void main() {
         notes.restoreNoteRevision(noteId: _wi13Note, revisionId: 'gone'),
       );
       expect((missing as MemexException).code, 'not_found');
+
+      // A revision of another note is not_found too, and writes nothing.
+      db
+        ..seedNote(
+          id: '01JOTHERNOTE0000000000013',
+          title: 'Status',
+          content: 'Green.',
+        )
+        ..seedNoteRevision(
+          id: 'rev-other',
+          noteId: '01JOTHERNOTE0000000000013',
+          previousMd: 'Red.',
+        );
+      final foreign = await _wi13Outcome(
+        notes.restoreNoteRevision(noteId: _wi13Note, revisionId: 'rev-other'),
+      );
+      expect((foreign as MemexException).code, 'not_found');
+      expect(db.getNote('01JOTHERNOTE0000000000013')!.contentMd, 'Green.');
+      expect(db.getNote('01JOTHERNOTE0000000000013')!.version, 1);
+      expect(db.getNote(_wi13Note)!.contentMd, 'Earlier pricing.');
+
       notes.restoreNoteRevisionError = StateError('no cli');
       expect(
         await _wi13Outcome(
@@ -178,7 +216,7 @@ void main() {
         ),
         isA<StateError>(),
       );
-      expect(notes.restoreNoteRevisionCalls, hasLength(3));
+      expect(notes.restoreNoteRevisionCalls, hasLength(4));
     },
   );
 

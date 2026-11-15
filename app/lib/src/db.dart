@@ -153,6 +153,17 @@ class VaultDb {
         .toList();
   }
 
+  /// The id of the note that owns agent-edit revision [revisionId], or null
+  /// when the vault has no such revision or no `note_revisions` table
+  /// (probed on every call).
+  String? noteRevisionNoteId(String revisionId) {
+    if (!hasTables(v8TableNames)) return null;
+    final rows = db.select('SELECT note_id FROM note_revisions WHERE id = ?', [
+      revisionId,
+    ]);
+    return rows.isEmpty ? null : rows.first['note_id'] as String;
+  }
+
   /// All notes' (id, title) pairs. Used for the wikilink autocomplete and
   /// the kind-chip "More…" picker.
   List<NoteTitle> allTitles({int limit = 1000}) {
