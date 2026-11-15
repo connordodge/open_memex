@@ -290,6 +290,8 @@ void main() {
         expect(e.state.lastSavedVersion, 5);
         expect(e.state.errorMessage, isNull);
         expect(e.revision, before + 1);
+        // A daily merge is not a non-daily one: the caret keeps its offset.
+        expect(e.ctrl.mergedText, isNull);
       },
     );
 
@@ -563,6 +565,8 @@ void main() {
         expect(e.state.lastSavedVersion, 5);
         expect(e.state.errorMessage, isNull);
         expect(e.revision, before + 1);
+
+        expect(e.ctrl.mergedText, merged);
 
         // Saved: the next tick sends nothing more.
         await e.fireDebounce();
@@ -1167,6 +1171,7 @@ void main() {
         expect(e.state.status, SaveStatus.dirty);
         expect(e.state.lastSavedVersion, 5);
         expect(e.state.errorMessage, isNull);
+        expect(e.ctrl.mergedText, expected);
 
         await e.fireDebounce();
 
@@ -1477,6 +1482,76 @@ void main() {
         expect(e.state.status, SaveStatus.conflict);
         expect(e.state.contentMd, 'Alpha mine\nBravo\nCharlie\n');
         expect(e.stored(_topicId).contentMd, 'Alpha\nBravo\nCharlie theirs\n');
+      },
+    );
+
+    // ---- fix round 3: mergedText, the text the caret follows (Req 34a) ----
+
+    /// A non-daily merged save: the editor holds the merged body.
+    Future<_Ed> mergedEditor() async {
+      final db = _wi16Vault();
+      final e = await _editor(db);
+      e.ctrl.loadNote(e.stored(_topicId));
+      _wi16ForeignWrite(db, _topicId, 'Alpha\nBravo\nCharlie theirs\n', 4);
+      e.ctrl.onContentChanged('Alpha mine\nBravo\nCharlie\n');
+      await e.fireDebounce();
+      expect(e.ctrl.mergedText, 'Alpha mine\nBravo\nCharlie theirs\n');
+      return e;
+    }
+
+    test(
+      'mergedText is null on a freshly loaded note and a plain save',
+      () async {
+        final e = await _editor(_wi16Vault());
+        expect(e.ctrl.mergedText, isNull);
+        e.ctrl.loadNote(e.stored(_topicId));
+        expect(e.ctrl.mergedText, isNull);
+
+        e.ctrl.onContentChanged('Alpha mine\nBravo\nCharlie\n');
+        await e.fireDebounce();
+
+        expect(e.state.status, SaveStatus.clean);
+        expect(e.ctrl.mergedText, isNull);
+      },
+    );
+
+    test('typing after a non-daily merged save clears mergedText', () async {
+      final e = await mergedEditor();
+
+      e.ctrl.onContentChanged('Alpha mine\nBravo\nCharlie theirs\nmore\n');
+
+      expect(e.ctrl.mergedText, isNull);
+    });
+
+    test(
+      'a foreign change applied to a clean editor after a non-daily merged save clears mergedText',
+      () async {
+        final e = await mergedEditor();
+        _wi16ForeignWrite(
+          e.db,
+          _topicId,
+          'Zero\nAlpha mine\nBravo\nCharlie theirs\n',
+          6,
+        );
+
+        final changed = await e.ctrl.serverChanged(_topicId);
+
+        expect(changed, isTrue);
+        expect(e.state.contentMd, 'Zero\nAlpha mine\nBravo\nCharlie theirs\n');
+        expect(e.ctrl.mergedText, isNull);
+      },
+    );
+
+    test(
+      'loading a note after a non-daily merged save clears mergedText',
+      () async {
+        final e = await mergedEditor();
+
+        e.ctrl.loadNote(e.stored(_otherId));
+        expect(e.ctrl.mergedText, isNull);
+
+        e.ctrl.loadNote(e.stored(_topicId));
+        expect(e.ctrl.mergedText, isNull);
       },
     );
   });

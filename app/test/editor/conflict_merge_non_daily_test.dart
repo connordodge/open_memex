@@ -661,6 +661,27 @@ void main() {
         13,
       ),
       (
+        'a caret at the end of an open last line stays on it when the server adds its newline',
+        'Alpha\nBravo',
+        'Alpha\nBravo\n',
+        11,
+        11,
+      ),
+      (
+        'a caret at the end of an open last line stays within it when the server lengthens the line',
+        'Alpha\nBravo',
+        'Alpha\nBravo theirs\n',
+        11,
+        11,
+      ),
+      (
+        'a caret at the end of a text that ends in a newline goes to the end of the new text when the last line changes',
+        'Alpha\nBravo\n',
+        'Alpha\nBravo theirs\n',
+        12,
+        19,
+      ),
+      (
         'a caret past the end of the old text lands at the end of the new text',
         'Alpha\n',
         'Zero\nAlpha\n',

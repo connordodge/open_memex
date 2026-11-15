@@ -3220,6 +3220,8 @@ void main() {
         expect(h.state.lastSavedVersion, 5);
         expect(h.state.errorMessage, isNull);
         expect(h.revision, before + 1);
+        // The host carries the caret onto its line only for this text.
+        expect(h.ctrl.mergedText, merged);
 
         await h.fireDebounce();
         expect(h.notes.updatesOf(_planId), hasLength(3));
@@ -3245,6 +3247,7 @@ void main() {
         expect(h.state.status, SaveStatus.clean);
         expect(h.state.lastSavedVersion, 5);
         expect(h.queue, isEmpty);
+        expect(h.ctrl.mergedText, merged);
       },
     );
 
@@ -3427,6 +3430,8 @@ void main() {
         expect(h.state.status, SaveStatus.dirty);
         expect(h.state.lastSavedVersion, 5);
         expect(h.queued(_planId)!.baseVersion, 5);
+        // The typing moved onto the merged body: the caret follows its line.
+        expect(h.ctrl.mergedText, expected);
 
         await h.fireDebounce();
 
