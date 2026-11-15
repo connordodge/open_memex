@@ -12,6 +12,7 @@ use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::blocks::{is_heading, is_list_item};
+use crate::caller::Caller;
 use crate::daily::{self, TOPICS_MARKER};
 use crate::embedder::Embedder;
 use crate::error::MemexError;
@@ -541,8 +542,9 @@ pub fn apply_tag(
 
 /// The agent's `tag_note` (R38): applies a vocabulary tag, agent-origin.
 ///
-/// Checks in order: `NotFound`, `GuideRule`, then a tag the note already has
-/// succeeds with no write whatever its name, then `UnknownTag` (not in the
+/// Checks in order: `NotFound`, `GuideRule`, `ReadOnlyRule` (a note flagged
+/// read-only for agents, Spec #7 Req 5: no write, whatever the tag), then a
+/// tag the note already has succeeds with no write whatever its name, then `UnknownTag` (not in the
 /// [`vocabulary`], including a name outside the grammar) and `TagRemoved` (an
 /// open block on this note and tag, R35).
 pub fn agent_tag_note(
@@ -552,6 +554,7 @@ pub fn agent_tag_note(
     embedder: Option<&dyn Embedder>,
 ) -> Result<TagWrite> {
     let note = tag_host(vault, note_id)?;
+    notes::check_agent_read_only(vault.connection_ref(), Caller::Agent, note_id)?;
     if stored_tag(vault.connection_ref(), note_id.as_str(), tag)?.is_some() {
         return Ok(TagWrite {
             changed: false,
@@ -582,8 +585,10 @@ pub fn agent_tag_note(
 
 /// The agent's `untag_note` (R38): removes an agent-origin non-system tag and
 /// records no Correction, so no block follows. Any other origin or a system
-/// tag is `Io(InvalidInput)`, a guide `GuideRule`, an unknown note `NotFound`;
-/// a tag the note doesn't have returns `removed: false`.
+/// tag is `Io(InvalidInput)`, a guide `GuideRule`, an unknown note `NotFound`,
+/// a note flagged read-only for agents `ReadOnlyRule` (checked after the
+/// guide, before anything else); a tag the note doesn't have returns
+/// `removed: false`.
 pub fn agent_untag_note(
     vault: &mut Vault,
     note_id: &NoteId,
@@ -591,6 +596,7 @@ pub fn agent_untag_note(
     embedder: Option<&dyn Embedder>,
 ) -> Result<TagRemoval> {
     let note = tag_host(vault, note_id)?;
+    notes::check_agent_read_only(vault.connection_ref(), Caller::Agent, note_id)?;
     let Some((name, origin)) = stored_tag(vault.connection_ref(), note_id.as_str(), tag)? else {
         return Ok(TagRemoval {
             removed: false,

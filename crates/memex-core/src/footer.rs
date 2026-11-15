@@ -12,6 +12,7 @@
 
 use rusqlite::{params, OptionalExtension};
 
+use crate::caller::Caller;
 use crate::daily;
 use crate::embedder::Embedder;
 use crate::error::MemexError;
@@ -146,9 +147,14 @@ pub fn agent_set_chip(
     topic_note_id: &NoteId,
     embedder: Option<&dyn Embedder>,
 ) -> Result<FooterWrite> {
-    // WI #9 skeleton: `FooterWrite` has no neutral value.
-    let _ = (vault, daily_note_id, topic_note_id, embedder);
-    unimplemented!("WI #9: footer::agent_set_chip")
+    notes::check_agent_read_only(vault.connection_ref(), Caller::Agent, daily_note_id)?;
+    set_chip(
+        vault,
+        daily_note_id,
+        topic_note_id,
+        ChipOrigin::Excerpt,
+        embedder,
+    )
 }
 
 /// Removes the chip `topic_note_id` from the note `daily_note_id` as `mode`

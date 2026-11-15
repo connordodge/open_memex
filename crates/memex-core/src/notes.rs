@@ -914,9 +914,42 @@ pub fn delete_note_checked(
 /// writes only the flag (`version` and `updated_at` stay), and the value the
 /// note already has writes nothing. The sole writer of the column.
 pub fn set_agent_read_only(vault: &mut Vault, id: &NoteId, on: bool) -> Result<bool> {
-    // WI #9 skeleton: no behavior yet.
-    let _ = (vault, id, on);
-    Ok(false)
+    let conn = vault.connection_ref();
+    let frontmatter: Option<String> = conn
+        .query_row(
+            "SELECT frontmatter FROM notes WHERE id = ?",
+            params![id.as_str()],
+            |r| r.get(0),
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })?;
+    let Some(frontmatter) = frontmatter else {
+        return Err(MemexError::NotFound(format!("note {}", id.as_str())));
+    };
+    if on {
+        // Read leniently: a frontmatter that is not JSON carries no role.
+        let fm: serde_json::Value =
+            serde_json::from_str(&frontmatter).unwrap_or(serde_json::Value::Null);
+        if daily::is_daily(&fm) {
+            return Err(MemexError::RoleRule(
+                "a daily note cannot be read-only for agents".into(),
+            ));
+        }
+        if is_guide(&fm) {
+            return Err(MemexError::RoleRule(
+                "the Vault Guide cannot be read-only for agents".into(),
+            ));
+        }
+    }
+    let value = i64::from(on);
+    let rows = conn.execute(
+        "UPDATE notes SET agent_read_only = ?1 WHERE id = ?2 AND agent_read_only != ?1",
+        params![value, id.as_str()],
+    )?;
+    Ok(rows == 1)
 }
 
 /// The note-read fields of the Agent read-only flag (Spec #7 Req 8, ruling
@@ -926,9 +959,14 @@ pub fn note_agent_fields(
     vault: &Vault,
     note: &Note,
 ) -> Result<serde_json::Map<String, serde_json::Value>> {
-    // WI #9 skeleton: no behavior yet.
-    let _ = (vault, note);
-    Ok(serde_json::Map::new())
+    let flag: i64 = vault.connection_ref().query_row(
+        "SELECT agent_read_only FROM notes WHERE id = ?",
+        params![note.id.as_str()],
+        |r| r.get(0),
+    )?;
+    let mut fields = serde_json::Map::new();
+    fields.insert("agent_read_only".into(), serde_json::Value::Bool(flag != 0));
+    Ok(fields)
 }
 
 fn row_to_note(r: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
