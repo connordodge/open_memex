@@ -303,9 +303,13 @@ List<_Hunk> _hunks(List<String> base, List<String> side) {
 /// (a merged save, Spec #7 Req 34a): on a line both texts share it keeps
 /// its line and column, so the caret stays on the person's line when lines
 /// above it were added, removed or lengthened. In a changed run of lines it
-/// keeps its distance from the run's start, clamped to the new run.
+/// keeps its distance from the run's start, clamped to the new run. A caret
+/// at the end of a last line with no newline is in that line, so it stays
+/// on it when the server gave the line a newline.
 int carryOffset(String before, String after, int offset) {
   final from = _linesOf(before);
+  final inOpenLastLine =
+      offset == before.length && before.isNotEmpty && !before.endsWith('\n');
   var oldAt = 0;
   var newAt = 0;
   var line = 0;
@@ -316,7 +320,10 @@ int carryOffset(String before, String after, int offset) {
     newAt += same;
     final removed = _lengthOf(from.sublist(hunk.start, hunk.end));
     final added = _lengthOf(hunk.lines);
-    if (offset < oldAt + removed) return newAt + min(offset - oldAt, added);
+    if (offset < oldAt + removed ||
+        (inOpenLastLine && removed > 0 && offset == oldAt + removed)) {
+      return newAt + min(offset - oldAt, added);
+    }
     oldAt += removed;
     newAt += added;
     line = hunk.end;
