@@ -56,8 +56,9 @@ impl Memex {
         match exactly once, case- and byte-exact, in the note body above the \
         footer as it was before the call, else edit_not_found or \
         edit_ambiguous naming its `index`; overlapping occurrences count as \
-        separate matches, so \"aa\" in \"aaa\" is edit_ambiguous. The edits \
-        apply all or nothing; expected_version is optional. Form B, \
+        separate matches, so \"aa\" in \"aaa\" is edit_ambiguous. Two edits \
+        whose matched text overlaps fail with edit_invalid: combine them into \
+        one edit. The edits apply all or nothing; expected_version is optional. Form B, \
         `content_md`: the whole new body above the footer; it requires \
         expected_version. A stale expected_version fails with \
         version_conflict: read the note again. On a note with a footer, an \
