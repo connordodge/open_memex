@@ -68,8 +68,8 @@ Open Memex is released under the [MIT license](LICENSE). To contribute, see [CON
 - Hybrid search: FTS5 (BM25) + optional vector (cosine) fused via Reciprocal Rank Fusion
 - Local embeddings via `fastembed-rs` (`BGE-small-en-v1.5`, 384-dim) — opt-in with `--with-embeddings`
 - **Wikilinks**: `[[Title]]`, `[[Title~kind]]`, `[[Title|alias]]`, `[[Title~kind|alias]]`. Two-tier kind vocabulary — four built-ins (`references`, `extends`, `contradicts`, `example-of`) get curated section headings + frontmatter shortcuts; user-defined kebab-case kinds are first-class for storage and `neighbors()` queries. See [`docs/wikilinks.md`](docs/wikilinks.md).
-- 37 MCP tools:
-  - search and links: `search`, `get_note` (with `include_backlinks`), `create_note` (with `role`), `neighbors`, `add_link`, `update_link`
+- 38 MCP tools:
+  - search and links: `search`, `get_note` (with `include_backlinks`), `create_note` (with `role`), `edit_note`, `neighbors`, `add_link`, `update_link`
   - canvases (see [`docs/canvas.md`](docs/canvas.md)): `list_canvases`, `get_canvas`, `create_canvas`, `add_to_canvas`, `remove_from_canvas`, `move_node`, `delete_canvas`
   - review: `list_unreviewed_days`, `get_daily_note_changes`, `mark_day_reviewed`
   - Feedback and the Vault Guide: `get_vault_guide`, `update_vault_guide`, `list_open_feedback`, `resolve_feedback`, `record_feedback`, `get_day_filing`, `remove_excerpt_block`

@@ -77,6 +77,12 @@
       "writes": true
     },
     {
+      "group": "notes",
+      "name": "edit_note",
+      "summary": "Edits a note's text by exact find-and-replace or a full rewrite, unless it is read-only for agents.",
+      "writes": true
+    },
+    {
       "group": "canvas",
       "name": "get_canvas",
       "summary": "Reads a canvas with its placed notes, their positions and the links between them.",
