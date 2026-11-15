@@ -114,6 +114,21 @@ fn stored(vault: &Vault, id: &NoteId) -> Stored {
         .unwrap()
 }
 
+/// Pins `updated_at` to a value no wall clock reads, so a setter that bumps it
+/// (to "now", even within the millisecond the note was made) changes it.
+const SENTINEL_UPDATED_AT: i64 = 1;
+
+fn pin_updated_at(vault: &Vault, id: &NoteId) {
+    let n = vault
+        .connection_ref()
+        .execute(
+            "UPDATE notes SET updated_at = ?1 WHERE id = ?2",
+            rusqlite::params![SENTINEL_UPDATED_AT, id.as_str()],
+        )
+        .unwrap();
+    assert_eq!(n, 1);
+}
+
 fn guide_id(vault: &mut Vault) -> NoteId {
     let doc = memex_core::guide::get_or_create(vault, &SystemClock, None)
         .expect("the Vault Guide is created on first read");
@@ -145,7 +160,9 @@ fn set_agent_read_only_on_a_plain_or_topic_note_sets_the_flag_and_keeps_version_
         Some(json!({ "role": "topic" })),
     );
     for (what, note) in [("plain", &plain), ("topic", &topic_note)] {
+        pin_updated_at(&vault, &note.id);
         let before = stored(&vault, &note.id);
+        assert_eq!(before.updated_at, SENTINEL_UPDATED_AT, "fixture");
         let revision = content_revision(&vault);
         assert_eq!(flag(&vault, &note.id), 0, "{what}: every note starts off");
 
@@ -171,6 +188,7 @@ fn set_agent_read_only_false_on_a_flagged_note_clears_it_and_keeps_version() {
     let (_dir, mut vault) = fresh_vault();
     let note = create(&mut vault, "Pricing notes", "Tiers.\n", None);
     assert!(set_agent_read_only(&mut vault, &note.id, true).unwrap());
+    pin_updated_at(&vault, &note.id);
     let before = stored(&vault, &note.id);
     let revision = content_revision(&vault);
 
@@ -198,6 +216,7 @@ fn set_agent_read_only_with_the_value_the_note_already_has_writes_nothing() {
 
     // Set, then set again.
     assert!(set_agent_read_only(&mut vault, &note.id, true).unwrap());
+    pin_updated_at(&vault, &note.id);
     let before = stored(&vault, &note.id);
     let revision = content_revision(&vault);
     for round in 0..2 {
@@ -286,6 +305,49 @@ fn set_agent_read_only_on_an_unknown_note_is_not_found() {
             Err(e @ MemexError::NotFound(_)) => assert_eq!(e.code(), "not_found"),
             other => panic!("on={on}: expected NotFound, got {other:?}"),
         }
+    }
+}
+
+/// A note whose stored frontmatter is not JSON (a hand-edited file the
+/// indexer could not parse) has no role, so the person can still flag it: the
+/// role read is lenient, never a JSON error.
+#[test]
+fn set_agent_read_only_on_a_note_with_frontmatter_that_is_not_json_sets_the_flag() {
+    let (_dir, mut vault) = fresh_vault();
+    for (what, broken) in [
+        ("plain text", "role: topic\nnot json"),
+        ("truncated daily role", "{\"role\": \"daily\""),
+    ] {
+        let note = create(&mut vault, what, "Body.\n", None);
+        let n = vault
+            .connection_ref()
+            .execute(
+                "UPDATE notes SET frontmatter = ?1 WHERE id = ?2",
+                rusqlite::params![broken, note.id.as_str()],
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        pin_updated_at(&vault, &note.id);
+        let before = stored(&vault, &note.id);
+        assert_eq!(before.frontmatter, broken, "{what}: fixture");
+        let revision = content_revision(&vault);
+
+        let changed = set_agent_read_only(&mut vault, &note.id, true)
+            .unwrap_or_else(|e| panic!("{what}: set must not fail on the frontmatter: {e}"));
+        assert!(changed, "{what}");
+        assert_eq!(flag(&vault, &note.id), 1, "{what}");
+        assert_eq!(
+            stored(&vault, &note.id),
+            before,
+            "{what}: nothing else moved"
+        );
+        assert_eq!(content_revision(&vault), revision + 1, "{what}");
+
+        assert!(
+            set_agent_read_only(&mut vault, &note.id, false).expect("clear"),
+            "{what}"
+        );
+        assert_eq!(flag(&vault, &note.id), 0, "{what}");
     }
 }
 
