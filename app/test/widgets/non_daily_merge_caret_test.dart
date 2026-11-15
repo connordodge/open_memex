@@ -7,7 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';
 import 'package:open_memex_app/src/widgets/editor/segmented_body.dart'
-    show carrySelection;
+    show carrySelection, keepSelection;
 
 import '../robots/segmented_editor_robot.dart';
 import '../support/app_harness.dart';
@@ -74,6 +74,52 @@ void main() {
     }
   });
 
+  group('keepSelection', () {
+    test('with carry it carries both ends onto their lines', () {
+      final kept = keepSelection(
+        const TextSelection(baseOffset: 1, extentOffset: 8),
+        'Alpha\nBravo\n',
+        'Zero\nAlpha\nBravo\n',
+        carry: true,
+      );
+      expect(kept.baseOffset, 6);
+      expect(kept.extentOffset, 13);
+    });
+
+    test('without carry it keeps both offsets', () {
+      final kept = keepSelection(
+        const TextSelection(baseOffset: 8, extentOffset: 1),
+        'Alpha\nBravo\n',
+        'Zero\nAlpha\nBravo\n',
+        carry: false,
+      );
+      expect(kept.baseOffset, 8);
+      expect(kept.extentOffset, 1);
+    });
+
+    test('without carry an end past the new text is clamped to its length', () {
+      final kept = keepSelection(
+        const TextSelection(baseOffset: 2, extentOffset: 40),
+        'Alpha\nBravo\n',
+        'Zero\n',
+        carry: false,
+      );
+      expect(kept.baseOffset, 2);
+      expect(kept.extentOffset, 5);
+    });
+
+    test('without carry an invalid selection is clamped to the start', () {
+      final kept = keepSelection(
+        const TextSelection.collapsed(offset: -1),
+        'Alpha\n',
+        'Zero\nAlpha\n',
+        carry: false,
+      );
+      expect(kept.baseOffset, 0);
+      expect(kept.extentOffset, 0);
+    });
+  });
+
   group('live preview', () {
     testWidgets(
       'a merged save keeps the caret on the person line when the server added a line above it',
@@ -100,7 +146,7 @@ void main() {
     );
 
     testWidgets(
-      'a polled server change to a clean note keeps the caret on its line when a line was added above it',
+      'a polled server change to a clean note keeps the clamped caret offset, not the line carry',
       (tester) async {
         final vault = seedSegmentedVault(topicBody: _base);
         final r = await launchSegmented(tester, vault: vault);
@@ -115,7 +161,40 @@ void main() {
 
         expect(changed, isTrue);
         expect(r.segmentText(0), 'Zero\n$_base');
-        expect(r.segmentSelection(0).baseOffset, 'Zero\nAlpha\nBra'.length);
+        // Req 34a: only a merged save carries the caret onto its line; a
+        // polled write keeps the offset it had (clamped), as on main.
+        expect(r.segmentSelection(0).baseOffset, 'Alpha\nBra'.length);
+      },
+    );
+  });
+
+  group('live preview after a merged save', () {
+    testWidgets(
+      'a polled server change after a merged save keeps the clamped caret offset, not the line carry',
+      (tester) async {
+        final vault = seedSegmentedVault(topicBody: _base);
+        final r = await launchSegmented(tester, vault: vault);
+        await r.open(fixtureTopicId);
+        _serverWrites(r.h, 'Zero\n$_base', 5);
+        await r.typeInSegment(0, 'Alpha\nBravo\nCharlie mine\n');
+        const caret = 'Alpha\nBravo\nCharlie mine'.length;
+        await r.focusSegment(0, offset: caret);
+        await r.waitForSave();
+        const merged = 'Zero\nAlpha\nBravo\nCharlie mine\n';
+        expect(r.segmentText(0), merged);
+        expect(r.segmentSelection(0).baseOffset, caret + 'Zero\n'.length);
+        final version = r.h.db.getNote(fixtureTopicId)!.version;
+
+        _serverWrites(r.h, 'One\n$merged', version + 1);
+        final changed = await r.h
+            .read(editorControllerProvider.notifier)
+            .serverChanged(fixtureTopicId);
+        await pumpFrames(tester);
+
+        expect(changed, isTrue);
+        expect(r.segmentText(0), 'One\n$merged');
+        // The merged text no longer is the editor's text: the offset stays.
+        expect(r.segmentSelection(0).baseOffset, caret + 'Zero\n'.length);
       },
     );
   });
@@ -172,7 +251,7 @@ void main() {
     );
 
     testWidgets(
-      'a polled server change to a clean note shows in the Source field with the caret on its line',
+      'a polled server change to a clean note shows in the Source field and keeps the clamped caret offset',
       (tester) async {
         final s = await pumpSpellingEditor(tester, body: _base, source: true);
         final controller = tester
@@ -191,7 +270,7 @@ void main() {
 
         final shown = tester.widget<EditableText>(s.sourceField).controller;
         expect(shown.text, 'Zero\n$_base');
-        expect(shown.selection.baseOffset, 'Zero\nAlpha\nBra'.length);
+        expect(shown.selection.baseOffset, 'Alpha\nBra'.length);
       },
     );
 
