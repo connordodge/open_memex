@@ -73,7 +73,7 @@ pub(super) fn invalid_tag_name(tags: &[String]) -> Option<String> {
 }
 
 // Every rule is core's: the guide check (D10) comes first in `agent_tag_note`,
-// `agent_untag_note` and `set_chip`. Every failure is a C1 object, never the
+// `agent_untag_note` and `agent_set_chip`. Every failure is a C1 object, never the
 // `op.sub` codes of the older tools.
 #[tool_router(router = tags_router, vis = "pub(crate)")]
 impl Memex {
@@ -180,14 +180,9 @@ impl Memex {
         // exactly when the note's version moved.
         let before = notes::get_note(&vault, &id).ok().map(|note| note.version);
         // D18: the schema has no agent chip origin, so an agent's chip is
-        // `excerpt`.
-        let write = match footer::set_chip(
-            &mut vault,
-            &id,
-            &topic,
-            ChipOrigin::Excerpt,
-            self.state.embedder_ref(),
-        ) {
+        // `excerpt`; `agent_set_chip` refuses a note read-only for agents.
+        let write = match footer::agent_set_chip(&mut vault, &id, &topic, self.state.embedder_ref())
+        {
             Ok(write) => write,
             Err(e) => return error(&e),
         };

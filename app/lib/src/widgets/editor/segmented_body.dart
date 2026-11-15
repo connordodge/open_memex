@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../cli/excerpt_cli.dart';
 import '../../db.dart';
+import '../../editor/conflict_merge.dart' show carryOffset;
 import '../../editor/segments.dart';
 import '../../memex_cli.dart';
 import '../../state/tabs_state.dart' show VirtualTodayTab;
@@ -24,6 +25,40 @@ import 'segment_view.dart';
 import 'spell_check_host.dart';
 import 'spell_issue_scope.dart';
 import 'text_segment.dart';
+
+/// [selection] of [before] carried into [after], the text a non-daily merged
+/// save put in the editor (Spec #7 Req 34a): both ends keep their line when
+/// it is unchanged ([carryOffset]), so the caret stays on the person's line.
+/// An invalid selection is clamped to `0..after.length`.
+TextSelection carrySelection(
+  TextSelection selection,
+  String before,
+  String after,
+) {
+  int carry(int offset) => offset < 0 || offset > before.length
+      ? offset.clamp(0, after.length)
+      : carryOffset(before, after, offset);
+  return selection.copyWith(
+    baseOffset: carry(selection.baseOffset),
+    extentOffset: carry(selection.extentOffset),
+  );
+}
+
+/// [selection] of [before] kept on [after], a text the editor took from
+/// outside: carried onto its lines ([carrySelection]) when [after] is a
+/// merged save's text ([carry]), otherwise both ends keep their offsets,
+/// clamped to `0..after.length` (a polled write, Spec #7 Req 34a).
+TextSelection keepSelection(
+  TextSelection selection,
+  String before,
+  String after, {
+  required bool carry,
+}) => carry
+    ? carrySelection(selection, before, after)
+    : selection.copyWith(
+        baseOffset: selection.baseOffset.clamp(0, after.length),
+        extentOffset: selection.extentOffset.clamp(0, after.length),
+      );
 
 /// One segment of the note: an editable text run, an excerpt card or the
 /// footer's text, which keeps that text out of the editable text and draws
@@ -117,6 +152,7 @@ class SegmentedBody extends ConsumerStatefulWidget {
     this.errorMessage,
     this.primaryFocusNode,
     this.onDismissError,
+    this.carryCaret = false,
   });
 
   /// The note shown (its id and role).
@@ -136,6 +172,12 @@ class SegmentedBody extends ConsumerStatefulWidget {
 
   /// Dismisses the save [errorMessage] (shown as an inline error).
   final VoidCallback? onDismissError;
+
+  /// True when [content] is the text a non-daily merged save put in the
+  /// editor (Spec #7 Req 34a): a server write then carries the caret onto
+  /// the person's line ([carrySelection]). Any other server write keeps the
+  /// selection's offsets, clamped.
+  final bool carryCaret;
 
   @override
   ConsumerState<SegmentedBody> createState() => _SegmentedBodyState();
@@ -192,7 +234,12 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
           old.savedVersion != null;
       _isDaily = isDaily;
       _isGuide = isGuide;
-      _resplit(content, keepCaret: serverWrite, rebuild: kindChanged);
+      _resplit(
+        content,
+        keepCaret: serverWrite,
+        carry: widget.carryCaret,
+        rebuild: kindChanged,
+      );
     } else if (widget.savedVersion != old.savedVersion) {
       _resplit(_joined, keepCaret: true);
     }
@@ -220,10 +267,16 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
   /// shape (same kinds, same cards) the text controllers are kept and only
   /// their text is replaced; otherwise new segments are built and focus moves
   /// to the text segment holding the caret's position. A replaced text puts
-  /// the caret at its end, or keeps the selection (both ends, clamped to the
-  /// new text) with [keepCaret]. [rebuild] builds new segments whatever the
+  /// the caret at its end, or keeps the selection with [keepCaret]: each end
+  /// on its line with [carry] (a merged save, [carrySelection]), otherwise
+  /// clamped to the new text. [rebuild] builds new segments whatever the
   /// shape: the note became another kind of note.
-  void _resplit(String text, {bool keepCaret = false, bool rebuild = false}) {
+  void _resplit(
+    String text, {
+    bool keepCaret = false,
+    bool carry = false,
+    bool rebuild = false,
+  }) {
     final next = split(text, isDaily: _isDaily, noteFooter: !_isGuide);
     _withFooter = !_isDaily || splitDailyBody(text).person != text;
     if (!rebuild && _sameShape(next)) {
@@ -237,7 +290,12 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
           seg.ctrl.value = TextEditingValue(
             text: n.text,
             selection: keepCaret
-                ? _clampSelection(seg.ctrl.selection, n.text.length)
+                ? keepSelection(
+                    seg.ctrl.selection,
+                    seg.ctrl.text,
+                    n.text,
+                    carry: carry,
+                  )
                 : TextSelection.collapsed(offset: n.text.length),
           );
         }
@@ -281,13 +339,6 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
     }
     _joined = _joinOf(_segs);
   }
-
-  /// [selection] with both ends clamped to `0..length`.
-  static TextSelection _clampSelection(TextSelection selection, int length) =>
-      selection.copyWith(
-        baseOffset: selection.baseOffset.clamp(0, length),
-        extentOffset: selection.extentOffset.clamp(0, length),
-      );
 
   /// The daily person field's [rows] with the capture gutter beside them
   /// (WI #28), measuring the rows' line [boxes].

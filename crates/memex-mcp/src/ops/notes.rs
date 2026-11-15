@@ -221,6 +221,7 @@ pub fn get(
     let tag_list = tags::tags_for_note(vault, note.id.as_str()).unwrap_or_default();
     let mut fields = review::note_review_fields(vault, &note)?;
     fields.extend(excerpts::note_transclusion_fields(vault, &note)?);
+    fields.extend(memex_core::notes::note_agent_fields(vault, &note)?);
     let (links, backlinks) = if input.include_links {
         let outgoing = core_links::links_out_for_note(vault, note.id.as_str()).unwrap_or_default();
         let incoming =

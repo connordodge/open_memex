@@ -195,6 +195,10 @@ class FakeVaultDb extends VaultDb {
     for (final stmt in _fixtureStatements()) {
       db.execute(_idempotent(stmt));
     }
+    // The V8 step's `ALTER TABLE ... ADD COLUMN`: the replay above skips the
+    // existing `notes` table, so a downgraded vault would reach schema 8
+    // without the column.
+    _addMissingNotesColumns();
     if (tagColumns) {
       _upgradeTagsTable();
       // A rebuilt `tags` lost its revision triggers with the old table.
@@ -220,6 +224,35 @@ class FakeVaultDb extends VaultDb {
         'CREATE TRIGGER IF NOT EXISTS ',
       )
       .replaceFirst(RegExp(r'^INSERT INTO '), 'INSERT OR IGNORE INTO ');
+
+  /// Adds each [v8NoteColumns] entry `notes` lacks, declared as the fixture
+  /// declares it (type, `NOT NULL`, default), so existing rows read the
+  /// default. A no-op when the column exists.
+  void _addMissingNotesColumns() {
+    final have = _columns(db, 'notes');
+    final missing = v8NoteColumns.where((c) => !have.contains(c)).toList();
+    if (missing.isEmpty) return;
+    final scratch = sqlite3.openInMemory();
+    try {
+      scratch.execute(_fixtureSql());
+      for (final c in missing) {
+        final row = scratch.select(
+          'SELECT type, "notnull" AS nn, dflt_value '
+          "FROM pragma_table_info('notes') WHERE name = ?",
+          [c],
+        ).first;
+        final notNull = (row['nn'] as num) != 0 ? ' NOT NULL' : '';
+        final dflt = row['dflt_value'];
+        final defaultClause = dflt == null ? '' : ' DEFAULT $dflt';
+        db.execute(
+          'ALTER TABLE notes ADD COLUMN $c ${row['type']}$notNull'
+          '$defaultClause',
+        );
+      }
+    } finally {
+      scratch.dispose();
+    }
+  }
 
   /// Rebuilds `tags` with the fixture's declaration when it lacks a fixture
   /// column, copying every `(note_id, tag)` row.

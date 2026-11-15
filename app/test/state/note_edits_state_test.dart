@@ -121,9 +121,10 @@ _Wi13Local _wi13LocalEnv({FakeVaultDb? db, bool seed = true}) {
 // ----------------------------------------------------------------- hosted
 
 class _Wi13Hosted {
-  _Wi13Hosted(this.c, this.server);
+  _Wi13Hosted(this.c, this.server, this.clock);
   final ProviderContainer c;
   final FakeVaultServer server;
+  final FakeClock clock;
 
   int bumps = 0;
 
@@ -158,10 +159,11 @@ class _Wi13Hosted {
 /// is what `/info` reports.
 _Wi13Hosted _wi13HostedEnv({int? schemaVersion}) {
   final server = FakeVaultServer();
+  final clock = FakeClock();
   late final HostedClient client;
   final c = ProviderContainer(
     overrides: [
-      clockProvider.overrideWithValue(FakeClock()),
+      clockProvider.overrideWithValue(clock),
       utcOffsetProvider.overrideWithValue(() => Duration.zero),
       currentVaultProvider.overrideWith((_) => _wi13HostedRef),
       vaultAccessProvider.overrideWith(
@@ -171,10 +173,92 @@ _Wi13Hosted _wi13HostedEnv({int? schemaVersion}) {
   );
   client = server.connect(c);
   addTearDown(c.dispose);
-  final env = _Wi13Hosted(c, server);
+  final env = _Wi13Hosted(c, server, clock);
   if (schemaVersion != null) env.info(schemaVersion);
   c.listen<int>(vaultRevisionProvider, (_, _) => env.bumps++);
   return env;
+}
+
+/// Two hosted vaults (`seed` and `old`) on one FakeVaultServer; the current
+/// vault starts as `seed` and [switchTo] moves it. Each vault answers `/info`
+/// as set by [info] or [infoFails].
+class _Wi13TwoVaults {
+  _Wi13TwoVaults._(this.c, this.server, this.clock);
+
+  factory _Wi13TwoVaults() {
+    final server = FakeVaultServer();
+    final clock = FakeClock();
+    late final HostedClient client;
+    final c = ProviderContainer(
+      overrides: [
+        clockProvider.overrideWithValue(clock),
+        utcOffsetProvider.overrideWithValue(() => Duration.zero),
+        currentVaultProvider.overrideWith((_) => _wi13HostedRef),
+        vaultAccessProvider.overrideWith((ref) {
+          final vault = ref.watch(currentVaultProvider);
+          if (vault is! HostedVaultRef) return null;
+          return HostedVaultAccess(client: client, vaultName: vault.vaultName);
+        }),
+      ],
+    );
+    client = server.connect(c);
+    addTearDown(c.dispose);
+    return _Wi13TwoVaults._(c, server, clock);
+  }
+
+  final ProviderContainer c;
+  final FakeVaultServer server;
+  final FakeClock clock;
+
+  void info(String vault, int schemaVersion) => server.route(
+    'GET',
+    '/vaults/$vault/api/v1/info',
+    json: {
+      'server_version': '0.4.0',
+      'api_version': 1,
+      'schema_version': schemaVersion,
+    },
+  );
+
+  void infoFails(String vault) => server.route(
+    'GET',
+    '/vaults/$vault/api/v1/info',
+    status: 500,
+    json: {
+      'error': {'code': 'internal', 'message': 'disk on fire'},
+    },
+  );
+
+  void revisions(String vault, List<String> ids) => server.route(
+    'GET',
+    '/vaults/$vault/api/v1/notes/$_wi13Note/revisions',
+    json: {
+      'vault_id': '01HV0000000000000000000013',
+      'revisions': [
+        for (final id in ids)
+          {'id': id, 'agent_change_id': 'chg-$id', 'created_at': 5},
+      ],
+    },
+  );
+
+  void switchTo(String vault) => c.read(currentVaultProvider.notifier).state =
+      HostedVaultRef(fakeServerId, vault);
+
+  List<String> get paths => [for (final r in server.requests) r.url.path];
+
+  int infoReads(String vault) =>
+      paths.where((p) => p == '/vaults/$vault/api/v1/info').length;
+
+  /// Requests to any vault's revisions route.
+  List<String> get revisionPaths => [
+    for (final p in paths)
+      if (p.endsWith('/revisions')) p,
+  ];
+
+  Future<void> tick(Duration by) async {
+    clock.advance(by);
+    await pumpEventQueue();
+  }
 }
 
 /// Subscribes to [provider] (kept until the container is disposed), lets
@@ -315,59 +399,79 @@ void main() {
     test(
       'agentEditsAvailableProvider never lets the previous vault reading stand while the next vault loads',
       () async {
-        final server = FakeVaultServer();
-        late final HostedClient client;
-        final c = ProviderContainer(
-          overrides: [
-            clockProvider.overrideWithValue(FakeClock()),
-            utcOffsetProvider.overrideWithValue(() => Duration.zero),
-            currentVaultProvider.overrideWith((_) => _wi13HostedRef),
-            vaultAccessProvider.overrideWith((ref) {
-              final vault = ref.watch(currentVaultProvider);
-              if (vault is! HostedVaultRef) return null;
-              return HostedVaultAccess(
-                client: client,
-                vaultName: vault.vaultName,
-              );
-            }),
-          ],
+        final env = _Wi13TwoVaults();
+        env.info(_wi13HostedVault, 8);
+        env.info('old', 7);
+        env.revisions(_wi13HostedVault, ['rev-seed']);
+        final sub = env.c.listen<bool>(agentEditsAvailableProvider, (_, _) {});
+        final revs = env.c.listen<AsyncValue<VaultScoped<List<NoteRevision>>>>(
+          noteRevisionsProvider(_wi13Note),
+          (_, _) {},
         );
-        client = server.connect(c);
-        addTearDown(c.dispose);
-        void info(String vault, int schemaVersion) => server.route(
-          'GET',
-          '/vaults/$vault/api/v1/info',
-          json: {
-            'server_version': '0.4.0',
-            'api_version': 1,
-            'schema_version': schemaVersion,
-          },
-        );
-        info(_wi13HostedVault, 8);
-        info('old', 7);
-        final sub = c.listen<bool>(agentEditsAvailableProvider, (_, _) {});
         await pumpEventQueue();
         expect(sub.read(), isTrue, reason: 'V8 vault');
-
-        server.hold();
-        c.read(currentVaultProvider.notifier).state = const HostedVaultRef(
-          fakeServerId,
-          'old',
+        expect(
+          [for (final r in revs.read().value!.value) r.id],
+          ['rev-seed'],
+          reason: 'the V8 vault lists its revisions',
         );
+        expect(env.revisionPaths, hasLength(1));
+
+        env.server.hold();
+        env.switchTo('old');
         await pumpEventQueue();
         expect(
           sub.read(),
           isFalse,
           reason: 'the V8 vault reading must not stand for the V7 vault',
         );
-        server.release();
+        expect(
+          revs.read().value!.value,
+          isEmpty,
+          reason: 'no revisions of the V8 vault under the V7 vault',
+        );
+        expect(
+          revs.read().value!.vault,
+          const HostedVaultRef(fakeServerId, 'old'),
+        );
+        env.server.release();
         await pumpEventQueue();
         expect(sub.read(), isFalse, reason: 'V7 vault');
+        expect(revs.read().value!.value, isEmpty);
 
-        // Its revisions route was never called (Req 36).
-        expect([
-          for (final r in server.requests) r.url.path,
-        ], isNot(contains(predicate<String>((p) => p.endsWith('/revisions')))));
+        // The V7 vault never saw its revisions route (Req 36), and the
+        // earlier vault's route was not called again.
+        expect(env.revisionPaths, [
+          '/vaults/$_wi13HostedVault/api/v1/notes/$_wi13Note/revisions',
+        ]);
+      },
+    );
+
+    test(
+      'noteRevisionsProvider calls no route and lists nothing while the first hosted info reading is held',
+      () async {
+        final env = _Wi13TwoVaults();
+        env.info(_wi13HostedVault, 8);
+        env.revisions(_wi13HostedVault, ['rev-seed']);
+        env.server.hold();
+        final sub = env.c.listen<bool>(agentEditsAvailableProvider, (_, _) {});
+        final revs = env.c.listen<AsyncValue<VaultScoped<List<NoteRevision>>>>(
+          noteRevisionsProvider(_wi13Note),
+          (_, _) {},
+        );
+        await pumpEventQueue();
+        expect(sub.read(), isFalse, reason: 'the info read is held');
+        expect(revs.read().value!.value, isEmpty);
+        expect(env.revisionPaths, isEmpty, reason: 'gate closed: no route');
+
+        env.server.release();
+        await pumpEventQueue();
+        expect(sub.read(), isTrue);
+        expect(
+          [for (final r in revs.read().value!.value) r.id],
+          ['rev-seed'],
+          reason: 'the gate opening re-reads the revisions',
+        );
       },
     );
 
@@ -404,6 +508,188 @@ void main() {
     });
   });
 
+  group('D17 gate: a failed hosted reading is read again', () {
+    Future<void> tick(_Wi13Hosted env, Duration by) async {
+      env.clock.advance(by);
+      await pumpEventQueue();
+    }
+
+    test(
+      'agentEditsAvailableProvider turns true again after a failed hosted info read with no vault revision bump',
+      () async {
+        final env = _wi13HostedEnv();
+        env.infoFails();
+        final sub = env.c.listen<bool>(agentEditsAvailableProvider, (_, _) {});
+        await pumpEventQueue();
+        expect(sub.read(), isFalse, reason: 'first read failed');
+        expect(env.infoReads, 1);
+        expect(env.clock.pendingTimers, 1, reason: 'a retry is waiting');
+
+        // The link recovers; nothing bumps the vault revision.
+        env.info(8);
+        await tick(env, const Duration(seconds: 2));
+        expect(sub.read(), isTrue);
+        expect(env.infoReads, 2);
+        expect(env.bumps, 0);
+        expect(env.clock.pendingTimers, 0, reason: 'a good reading is final');
+        await tick(env, const Duration(minutes: 5));
+        expect(env.infoReads, 2, reason: 'no more reads without a bump');
+      },
+    );
+
+    test(
+      'a failed hosted info read is retried after 2 4 8 16 then every 30 seconds',
+      () async {
+        final env = _wi13HostedEnv();
+        env.infoFails();
+        final sub = env.c.listen<bool>(agentEditsAvailableProvider, (_, _) {});
+        await pumpEventQueue();
+        var reads = 1;
+        expect(env.infoReads, reads);
+        for (final wait in [2, 4, 8, 16, 30, 30, 30]) {
+          await tick(env, Duration(seconds: wait, milliseconds: -1));
+          expect(env.infoReads, reads, reason: 'not before ${wait}s');
+          await tick(env, const Duration(milliseconds: 1));
+          reads++;
+          expect(env.infoReads, reads, reason: 'at ${wait}s');
+          expect(sub.read(), isFalse, reason: 'still failing at ${wait}s');
+        }
+        expect(env.clock.pendingTimers, 1, reason: 'it keeps trying');
+        expect(env.bumps, 0);
+      },
+    );
+
+    test(
+      'a vault revision bump cancels the pending hosted info retry',
+      () async {
+        // A bump that reads well leaves nothing waiting.
+        final good = _wi13HostedEnv();
+        good.infoFails();
+        final goodSub = good.c.listen<bool>(
+          agentEditsAvailableProvider,
+          (_, _) {},
+        );
+        await pumpEventQueue();
+        expect(good.clock.pendingTimers, 1);
+        good.info(8);
+        good.bump();
+        await pumpEventQueue();
+        expect(goodSub.read(), isTrue);
+        expect(good.infoReads, 2);
+        expect(good.clock.pendingTimers, 0, reason: 'the old retry is gone');
+        await tick(good, const Duration(minutes: 5));
+        expect(good.infoReads, 2, reason: 'one read per bump, not two');
+
+        // A bump that fails again waits on its own retry only.
+        final env = _wi13HostedEnv();
+        env.infoFails();
+        final sub = env.c.listen<bool>(agentEditsAvailableProvider, (_, _) {});
+        await pumpEventQueue();
+        env.bump();
+        await pumpEventQueue();
+        expect(env.infoReads, 2);
+        expect(env.clock.pendingTimers, 1, reason: 'one retry, not two');
+        env.info(8);
+        await tick(env, const Duration(seconds: 2));
+        expect(env.infoReads, 2, reason: 'the first retry was cancelled');
+        expect(sub.read(), isFalse);
+        await tick(env, const Duration(seconds: 2));
+        expect(env.infoReads, 3);
+        expect(sub.read(), isTrue);
+      },
+    );
+
+    test('a good hosted info reading resets the retry backoff', () async {
+      final env = _wi13HostedEnv();
+      env.infoFails();
+      final sub = env.c.listen<bool>(agentEditsAvailableProvider, (_, _) {});
+      await pumpEventQueue();
+      await tick(env, const Duration(seconds: 2)); // read 2, fails again
+      expect(env.infoReads, 2);
+      env.info(8);
+      await tick(env, const Duration(seconds: 4)); // read 3, good
+      expect(env.infoReads, 3);
+      expect(sub.read(), isTrue);
+
+      // A new failure starts again at 2 seconds, not 8.
+      env.infoFails();
+      env.bump();
+      await pumpEventQueue();
+      expect(env.infoReads, 4);
+      expect(sub.read(), isFalse);
+      env.info(8);
+      await tick(env, const Duration(seconds: 2));
+      expect(env.infoReads, 5);
+      expect(sub.read(), isTrue);
+    });
+
+    test(
+      'a failed info read superseded by a newer one schedules no retry',
+      () async {
+        final env = _wi13HostedEnv();
+        env.infoFails();
+        env.server.hold();
+        final sub = env.c.listen<bool>(agentEditsAvailableProvider, (_, _) {});
+        await pumpEventQueue();
+        env.bump();
+        await pumpEventQueue();
+        expect(env.infoReads, 2, reason: 'both reads are in flight');
+
+        env.server.release();
+        await pumpEventQueue();
+        expect(sub.read(), isFalse);
+        expect(
+          env.clock.pendingTimers,
+          1,
+          reason: 'only the newest reading waits to retry',
+        );
+        env.info(8);
+        await tick(env, const Duration(seconds: 4));
+        expect(env.infoReads, 3, reason: 'the newest reading backs off once');
+        expect(sub.read(), isTrue);
+      },
+    );
+
+    test(
+      'a vault switch resets the hosted info retry backoff and drops the old retry',
+      () async {
+        final env = _Wi13TwoVaults();
+        env.infoFails(_wi13HostedVault);
+        env.infoFails('old');
+        final sub = env.c.listen<bool>(agentEditsAvailableProvider, (_, _) {});
+        await pumpEventQueue();
+        await env.tick(const Duration(seconds: 2)); // seed: read 2, fails
+        expect(env.infoReads(_wi13HostedVault), 2);
+
+        env.switchTo('old');
+        await pumpEventQueue();
+        expect(env.infoReads('old'), 1);
+        expect(env.clock.pendingTimers, 1, reason: 'the seed retry is gone');
+
+        // Its first failure waits 2 seconds, not the 8 the seed vault was at.
+        env.info('old', 8);
+        await env.tick(const Duration(seconds: 2));
+        expect(env.infoReads('old'), 2);
+        expect(sub.read(), isTrue);
+        expect(
+          env.infoReads(_wi13HostedVault),
+          2,
+          reason: 'the seed vault is not read again',
+        );
+      },
+    );
+
+    test('a disposed container leaves no info retry pending', () async {
+      final env = _wi13HostedEnv();
+      env.infoFails();
+      env.c.listen<bool>(agentEditsAvailableProvider, (_, _) {});
+      await pumpEventQueue();
+      expect(env.clock.pendingTimers, 1);
+      env.c.dispose();
+      expect(env.clock.pendingTimers, 0);
+    });
+  });
+
   group('vaultV8ReadyProvider', () {
     test(
       'vaultV8ReadyProvider needs both the agent_read_only column and note_revisions',
@@ -423,8 +709,10 @@ void main() {
         final col = _wi13LocalEnv(db: columnOnly);
         expect(await _wi13Settled(col.c, vaultV8ReadyProvider), isFalse);
 
-        // Table only.
-        final tableOnly = agentEditsV7Vault()..migrateToV6();
+        // Table only: a full V8 vault (the fake's V5 fixture already is one)
+        // with just the column removed.
+        final tableOnly = FakeVaultDb.v5();
+        tableOnly.db.execute('ALTER TABLE notes DROP COLUMN agent_read_only');
         expect(tableOnly.hasTables(const ['note_revisions']), isTrue);
         expect(
           tableOnly.hasColumns('notes', const ['agent_read_only']),
@@ -743,6 +1031,81 @@ void main() {
         // flushThenWrite rebases the editor on the restored note.
         expect(env.state.contentMd, _wi13Previous);
         expect(env.state.lastSavedVersion, _wi13Start + 1);
+      },
+    );
+
+    test(
+      'a restore result naming another note throws and bumps once and never rebases the editor on it',
+      () async {
+        final env = _wi13LocalEnv();
+        // The database does not know this revision, so the CLI answers, and
+        // it names a different note.
+        env.cli.on(
+          'revisions restore',
+          (_) => FakeMemexCli.ok(
+            jsonEncode({
+              'vault_id': agentEditsVaultId,
+              'note_id': '01JSOMEOTHERNOTE0000000013',
+              'version': 99,
+              'content_md': 'Some other note text.',
+            }),
+          ),
+        );
+        env.editor.loadNote(env.stored);
+        env.startCounting();
+
+        final e = await _wi13Outcome(
+          env.actions.restoreNoteRevision(
+            note: env.stored,
+            revisionId: 'rev-x',
+          ),
+        );
+        expect(e, isA<MemexException>());
+        e as MemexException;
+        expect(e.code, isNull);
+        expect(e.message, contains('01JSOMEOTHERNOTE0000000013'));
+        expect(e.message, contains(_wi13Note));
+        expect(env.cli.callsFor('revisions restore'), hasLength(1));
+        expect(env.bumps, 1, reason: 'the vault changed: its watchers re-read');
+        expect(env.state.lastSavedVersion, _wi13Start, reason: 'not rebased');
+        expect(env.state.contentMd, _wi13Body);
+      },
+    );
+
+    test(
+      'a restore of a revision owned by another note fails not_found with no CLI call and no bump',
+      () async {
+        final env = _wi13LocalEnv();
+        env.db
+          ..seedNote(
+            id: '01JSOMEOTHERNOTE0000000013',
+            title: 'Status',
+            content: 'Green.',
+          )
+          ..seedNoteRevision(
+            id: 'rev-of-other',
+            noteId: '01JSOMEOTHERNOTE0000000013',
+            previousMd: 'Red.',
+          );
+        env.editor.loadNote(env.stored);
+        env.startCounting();
+
+        final e = await _wi13Outcome(
+          env.actions.restoreNoteRevision(
+            note: env.stored,
+            revisionId: 'rev-of-other',
+          ),
+        );
+        expect(e, isA<MemexException>());
+        expect((e as MemexException).code, 'not_found');
+        expect(env.cli.callsFor('revisions restore'), isEmpty);
+        expect(env.bumps, 0);
+        expect(
+          env.db.getNote('01JSOMEOTHERNOTE0000000013')!.contentMd,
+          'Green.',
+        );
+        expect(env.state.lastSavedVersion, _wi13Start);
+        expect(env.stored.contentMd, _wi13Body);
       },
     );
 

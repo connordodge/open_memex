@@ -12,6 +12,7 @@
 
 use rusqlite::{params, OptionalExtension};
 
+use crate::caller::Caller;
 use crate::daily;
 use crate::embedder::Embedder;
 use crate::error::MemexError;
@@ -94,6 +95,27 @@ pub fn set_chip(
     origin: ChipOrigin,
     embedder: Option<&dyn Embedder>,
 ) -> Result<FooterWrite> {
+    set_chip_as(
+        vault,
+        daily_note_id,
+        topic_note_id,
+        origin,
+        Caller::Person,
+        embedder,
+    )
+}
+
+/// [`set_chip`], with the chip row written in the `caller`'s write
+/// transaction (`notes::begin_write_as`: an agent's rechecks the read-only
+/// flag of `daily_note_id` under the write lock).
+fn set_chip_as(
+    vault: &mut Vault,
+    daily_note_id: &NoteId,
+    topic_note_id: &NoteId,
+    origin: ChipOrigin,
+    caller: Caller,
+    embedder: Option<&dyn Embedder>,
+) -> Result<FooterWrite> {
     let daily = footer_host(vault, daily_note_id)?;
     let topic = notes::get_note(vault, topic_note_id)?;
     if topic.frontmatter.get("role").and_then(|r| r.as_str()) != Some(TOPIC_ROLE) {
@@ -118,7 +140,8 @@ pub fn set_chip(
     }
     // An upsert updates an existing row in place, so an upgrade keeps its
     // rowid and with it the chip's position in the footer.
-    vault.connection_ref().execute(
+    let tx = notes::begin_write_as(vault.conn_mut(), caller, daily_note_id)?;
+    tx.execute(
         "INSERT INTO footer_chips (daily_note_id, topic_note_id, origin, created_at)
          VALUES (?, ?, ?, ?)
          ON CONFLICT (daily_note_id, topic_note_id) DO UPDATE SET origin = excluded.origin",
@@ -129,11 +152,33 @@ pub fn set_chip(
             now_unix_ms(),
         ],
     )?;
+    tx.commit()?;
     let note = rerender_footer(vault, daily_note_id, embedder)?;
     Ok(FooterWrite {
         origin: Some(effective),
         note,
     })
+}
+
+/// The agent's `add_footer_topic` (Spec #7 Req 5, ruling D4): refuses with
+/// `ReadOnlyRule` when the note `daily_note_id` is Agent read-only, the
+/// chip-already-there answer included, and otherwise is [`set_chip`] with
+/// `ChipOrigin::Excerpt`, the flag checked again under the chip write's lock.
+pub fn agent_set_chip(
+    vault: &mut Vault,
+    daily_note_id: &NoteId,
+    topic_note_id: &NoteId,
+    embedder: Option<&dyn Embedder>,
+) -> Result<FooterWrite> {
+    notes::check_agent_read_only(vault.connection_ref(), Caller::Agent, daily_note_id)?;
+    set_chip_as(
+        vault,
+        daily_note_id,
+        topic_note_id,
+        ChipOrigin::Excerpt,
+        Caller::Agent,
+        embedder,
+    )
 }
 
 /// Removes the chip `topic_note_id` from the note `daily_note_id` as `mode`

@@ -445,9 +445,11 @@ fn check_guide_fields(
 ///
 /// An agent save runs the marker and guide guard (`check_agent_write`) and
 /// then the read-only guard (`check_agent_read_only`), both before the
-/// version check, so a stale version never hides a rule error. A new agent
-/// rule must also be added to `note_edits` (R2), which bypasses this
-/// function (ruling D7).
+/// version check, so a stale version never hides a rule error. The read-only
+/// guard runs again inside the save transaction, which an agent save opens
+/// as Immediate, so a flag set by another process in between still refuses
+/// the write. A new agent rule must also be added to `note_edits` (R2),
+/// which bypasses this function (ruling D7).
 pub fn update_note_as(
     vault: &mut Vault,
     id: &NoteId,
@@ -528,7 +530,18 @@ pub fn update_note_as(
     let mut linker_rewrites: Vec<(String, String)> = Vec::new();
 
     {
-        let tx = vault.conn_mut().transaction()?;
+        // An agent save takes the write lock up front and re-reads the flag
+        // under it, so a person's toggle committed by another process after
+        // the early check still refuses the write (Req 5).
+        let tx = if caller == Caller::Agent {
+            let tx = vault
+                .conn_mut()
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            check_agent_read_only(&tx, caller, id)?;
+            tx
+        } else {
+            vault.conn_mut().transaction()?
+        };
 
         // Tag rows first: the footer below renders from them.
         if derives_tags {
@@ -829,6 +842,87 @@ pub(crate) fn write_note_footer_internal(
     get_note(vault, id)
 }
 
+/// How [`write_person_section_internal`] treats the note's body tags (Spec #7
+/// Req 21, 27; ruling D8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TagMode {
+    /// A person write (Restore): the body tags are re-derived in full, as on
+    /// a person save (`tags::reconcile_body_tags`).
+    Derive,
+    /// An agent edit: only body tags whose `#name` the new person section no
+    /// longer yields are dropped (`tags::drop_unwritten_body_tags`), and never
+    /// a system tag (`inbox`, `agent-authored`; ruling D26).
+    RemovalsOnly,
+}
+
+/// What [`write_person_section_internal`] stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PersonWrite {
+    pub version: i64,
+    pub content_md: String,
+}
+
+/// The write of a note's person section for `note_edits` (Spec #7, ruling
+/// D7), inside the caller's transaction, which runs the checks and keeps the
+/// revision. Stores the person section of `person_md`
+/// (`daily::split_note_body`, so typed footer lines are not kept) with the
+/// Note footer rendered from the note's rows below it, after the body tags
+/// are written per `tag_mode`. The title, frontmatter and role stay; the
+/// version goes up by one and `updated_at` becomes `now`. An unknown note is
+/// `NotFound`, a daily note `RoleRule` and the Vault Guide `GuideRule`, and
+/// none writes anything. The caller reindexes after commit (D8).
+pub(crate) fn write_person_section_internal(
+    tx: &rusqlite::Transaction<'_>,
+    id: &NoteId,
+    person_md: &str,
+    tag_mode: TagMode,
+    now: i64,
+) -> Result<PersonWrite> {
+    let row: Option<(i64, String)> = tx
+        .query_row(
+            "SELECT version, frontmatter FROM notes WHERE id = ?",
+            params![id.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })?;
+    let (version, frontmatter) =
+        row.ok_or_else(|| MemexError::NotFound(format!("note {}", id.as_str())))?;
+    let frontmatter = lenient_frontmatter(&frontmatter);
+    if daily::is_daily(&frontmatter) {
+        return Err(MemexError::RoleRule(format!(
+            "note {id} is a daily note: its body is written by update_note_as"
+        )));
+    }
+    if is_guide(&frontmatter) {
+        return Err(MemexError::GuideRule(format!(
+            "note {id} is the Vault Guide (role: guide), written by guide::update"
+        )));
+    }
+    let person = daily::split_note_body(person_md).person;
+    // Tag rows first: the footer below renders from them.
+    match tag_mode {
+        TagMode::Derive => tags::reconcile_body_tags(tx, id.as_str(), &person, false, now)?,
+        TagMode::RemovalsOnly => {
+            let written = tags::extract(tags::person_section(&person));
+            tags::drop_unwritten_body_tags(tx, id.as_str(), &written, true)?;
+        }
+    }
+    let content_md = daily::sync_note_footer(tx, id.as_str(), &person)?;
+    let version = version + 1;
+    tx.execute(
+        "UPDATE notes SET content_md = ?, version = ?, updated_at = ? WHERE id = ?",
+        params![content_md, version, now, id.as_str()],
+    )?;
+    Ok(PersonWrite {
+        version,
+        content_md,
+    })
+}
+
 fn validate_title(t: &str) -> Result<()> {
     let trimmed = t.trim();
     if trimmed.is_empty() {
@@ -905,6 +999,86 @@ pub fn delete_note_checked(
         crate::footer::rerender_footer(vault, &NoteId(host_id), embedder)?;
     }
     Ok(())
+}
+
+/// The person-only Agent read-only setter (Spec #7 Req 4, 7, 7a; ruling D5):
+/// sets (`on`) or clears the note's `agent_read_only` flag and returns
+/// whether it changed. An unknown note is `NotFound`; setting it on a daily
+/// note or on the Vault Guide is `RoleRule`, clearing is always allowed. It
+/// writes only the flag (`version` and `updated_at` stay), and the value the
+/// note already has writes nothing. The sole writer of the column.
+pub fn set_agent_read_only(vault: &mut Vault, id: &NoteId, on: bool) -> Result<bool> {
+    let conn = vault.connection_ref();
+    let frontmatter: Option<String> = conn
+        .query_row(
+            "SELECT frontmatter FROM notes WHERE id = ?",
+            params![id.as_str()],
+            |r| r.get(0),
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })?;
+    let Some(frontmatter) = frontmatter else {
+        return Err(MemexError::NotFound(format!("note {}", id.as_str())));
+    };
+    if on {
+        // Read leniently: a frontmatter that is not JSON carries no role.
+        let fm: serde_json::Value =
+            serde_json::from_str(&frontmatter).unwrap_or(serde_json::Value::Null);
+        if daily::is_daily(&fm) {
+            return Err(MemexError::RoleRule(
+                "a daily note cannot be read-only for agents".into(),
+            ));
+        }
+        if is_guide(&fm) {
+            return Err(MemexError::RoleRule(
+                "the Vault Guide cannot be read-only for agents".into(),
+            ));
+        }
+    }
+    let value = i64::from(on);
+    let rows = conn.execute(
+        "UPDATE notes SET agent_read_only = ?1 WHERE id = ?2 AND agent_read_only != ?1",
+        params![value, id.as_str()],
+    )?;
+    Ok(rows == 1)
+}
+
+/// The note-read fields of the Agent read-only flag (Spec #7 Req 8, ruling
+/// D6): `{"agent_read_only": bool}`, merged into `get_note`, `memex get` and
+/// the app API note read beside the review and transclusion fields.
+pub fn note_agent_fields(
+    vault: &Vault,
+    note: &Note,
+) -> Result<serde_json::Map<String, serde_json::Value>> {
+    let flag: i64 = vault.connection_ref().query_row(
+        "SELECT agent_read_only FROM notes WHERE id = ?",
+        params![note.id.as_str()],
+        |r| r.get(0),
+    )?;
+    let mut fields = serde_json::Map::new();
+    fields.insert("agent_read_only".into(), serde_json::Value::Bool(flag != 0));
+    Ok(fields)
+}
+
+/// Opens the write transaction for a `caller`'s write to the note `id` that
+/// does not save through [`update_note_as`] (Spec #7 Req 5). An agent's is
+/// Immediate and runs [`check_agent_read_only`] again under the write lock,
+/// as `update_note_as` does, so a flag another process set after the early
+/// check still refuses the write. A person's is a plain deferred one.
+pub(crate) fn begin_write_as<'c>(
+    conn: &'c mut rusqlite::Connection,
+    caller: Caller,
+    id: &NoteId,
+) -> Result<rusqlite::Transaction<'c>> {
+    if caller != Caller::Agent {
+        return Ok(conn.transaction()?);
+    }
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    check_agent_read_only(&tx, caller, id)?;
+    Ok(tx)
 }
 
 fn row_to_note(r: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
