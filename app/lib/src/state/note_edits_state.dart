@@ -8,7 +8,8 @@
 //   `vaultV8ReadyProvider`. Re-evaluated on every `vaultRevisionProvider`
 //   bump. False with no vault, while the first reading loads and after a
 //   reading fails (fail closed), and never latched: the next bump reads
-//   again. A reload after a bump keeps the previous good reading.
+//   again. A reload after a bump keeps the previous good reading of the
+//   same vault; a reading of the previous vault never stands after a switch.
 // - [noteRevisionsProvider] (`FutureProvider.family`, by note id): the
 //   note's agent-edit revisions, newest first, stamped with the vault they
 //   were read for. Empty, with no route called, while
@@ -37,25 +38,29 @@ import 'vault_state.dart';
 const _agentEditsSchemaVersion = 8;
 
 /// The hosted vault's `GET …/info` `schema_version`, read once per
-/// `vaultRevisionProvider` bump through `vaultAccessProvider`. Null with no
-/// vault access.
-final _hostedSchemaVersionProvider = FutureProvider<int?>((ref) async {
+/// `vaultRevisionProvider` bump through `vaultAccessProvider`, stamped with
+/// the vault it was read for. Null with no vault access.
+final _hostedSchemaVersionProvider = FutureProvider<VaultScoped<int?>>((
+  ref,
+) async {
   ref.watch(vaultRevisionProvider);
+  final vault = ref.watch(currentVaultProvider);
   final access = ref.watch(vaultAccessProvider);
-  if (access == null) return null;
-  return access.schemaVersion();
+  if (access == null) return VaultScoped(vault, null);
+  return VaultScoped(vault, await access.schemaVersion());
 });
 
 /// See the file comment (D17). While a reading after a bump loads, the
-/// previous good reading stands (so the controls do not blink on every
-/// save); the first reading and any failed one read false.
+/// previous good reading of the same vault stands (so the controls do not
+/// blink on every save); the first reading, any failed one and a reading
+/// left over from the previous vault after a switch read false.
 final agentEditsAvailableProvider = Provider<bool>((ref) {
   final vault = ref.watch(currentVaultProvider);
   if (vault == null) return false;
   if (vault is! HostedVaultRef) return ref.watch(vaultV8ReadyProvider);
   final reading = ref.watch(_hostedSchemaVersionProvider);
   if (reading.hasError) return false;
-  final version = reading.valueOrNull;
+  final version = currentVaultData(reading, vault)?.value;
   return version != null && version >= _agentEditsSchemaVersion;
 });
 

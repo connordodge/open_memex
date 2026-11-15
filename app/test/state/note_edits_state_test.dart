@@ -290,6 +290,88 @@ void main() {
     );
 
     test(
+      'agentEditsAvailableProvider keeps the previous good hosted reading while a reload after a bump loads',
+      () async {
+        final env = _wi13HostedEnv(schemaVersion: 8);
+        final sub = env.c.listen<bool>(agentEditsAvailableProvider, (_, _) {});
+        await pumpEventQueue();
+        expect(sub.read(), isTrue);
+
+        // The next reading is slow: the controls do not blink meanwhile.
+        env.server.hold();
+        env.bump();
+        await pumpEventQueue();
+        expect(sub.read(), isTrue, reason: 'reload keeps the previous reading');
+        expect(env.infoReads, 2, reason: 'the reload was requested');
+
+        // The reload's own answer then wins, here a downgraded server.
+        env.info(7);
+        env.server.release();
+        await pumpEventQueue();
+        expect(sub.read(), isFalse);
+      },
+    );
+
+    test(
+      'agentEditsAvailableProvider never lets the previous vault reading stand while the next vault loads',
+      () async {
+        final server = FakeVaultServer();
+        late final HostedClient client;
+        final c = ProviderContainer(
+          overrides: [
+            clockProvider.overrideWithValue(FakeClock()),
+            utcOffsetProvider.overrideWithValue(() => Duration.zero),
+            currentVaultProvider.overrideWith((_) => _wi13HostedRef),
+            vaultAccessProvider.overrideWith((ref) {
+              final vault = ref.watch(currentVaultProvider);
+              if (vault is! HostedVaultRef) return null;
+              return HostedVaultAccess(
+                client: client,
+                vaultName: vault.vaultName,
+              );
+            }),
+          ],
+        );
+        client = server.connect(c);
+        addTearDown(c.dispose);
+        void info(String vault, int schemaVersion) => server.route(
+          'GET',
+          '/vaults/$vault/api/v1/info',
+          json: {
+            'server_version': '0.4.0',
+            'api_version': 1,
+            'schema_version': schemaVersion,
+          },
+        );
+        info(_wi13HostedVault, 8);
+        info('old', 7);
+        final sub = c.listen<bool>(agentEditsAvailableProvider, (_, _) {});
+        await pumpEventQueue();
+        expect(sub.read(), isTrue, reason: 'V8 vault');
+
+        server.hold();
+        c.read(currentVaultProvider.notifier).state = const HostedVaultRef(
+          fakeServerId,
+          'old',
+        );
+        await pumpEventQueue();
+        expect(
+          sub.read(),
+          isFalse,
+          reason: 'the V8 vault reading must not stand for the V7 vault',
+        );
+        server.release();
+        await pumpEventQueue();
+        expect(sub.read(), isFalse, reason: 'V7 vault');
+
+        // Its revisions route was never called (Req 36).
+        expect([
+          for (final r in server.requests) r.url.path,
+        ], isNot(contains(predicate<String>((p) => p.endsWith('/revisions')))));
+      },
+    );
+
+    test(
       'agentEditsAvailableProvider is true for a local vault at V8 and re-evaluates after a vault revision bump',
       () async {
         final v8 = _wi13LocalEnv();
@@ -526,7 +608,8 @@ void main() {
       final e = await _wi13Outcome(
         c.read(noteEditsActionsProvider).setAgentReadOnly(_wi13Note, true),
       );
-      expect(e, isNotNull);
+      expect(e, isA<StateError>());
+      expect((e as StateError).message, 'No vault is open.');
       expect(bumps, 0);
     });
 
@@ -662,6 +745,95 @@ void main() {
         expect(env.state.lastSavedVersion, _wi13Start + 1);
       },
     );
+
+    test('a restore whose call fails bumps nothing and rethrows', () async {
+      final env = _wi13LocalEnv();
+      env.db.seedNoteRevision(id: 'rev-1', noteId: _wi13Note);
+      env.cli.on(
+        'revisions restore',
+        (_) => FakeMemexCli.error('not_found', 'no such revision'),
+      );
+      env.editor.loadNote(env.stored);
+      env.startCounting();
+      final e = await _wi13Outcome(
+        env.actions.restoreNoteRevision(note: env.stored, revisionId: 'rev-1'),
+      );
+      expect(e, isA<MemexException>());
+      expect((e as MemexException).code, 'not_found');
+      expect(env.cli.callsFor('revisions restore'), hasLength(1));
+      expect(env.bumps, 0);
+    });
+
+    test(
+      'a restore stored by the server still bumps once when the read back fails',
+      () async {
+        final env = _wi13HostedEnv(schemaVersion: 8);
+        env.server.route(
+          'POST',
+          '$_wi13HostedBase/notes/$_wi13Note/revisions/rev-1/restore',
+          json: {
+            'vault_id': '01HV0000000000000000000013',
+            'note_id': _wi13Note,
+            'version': 4,
+            'content_md': _wi13Previous,
+          },
+        );
+        // No GET note route: the read back after the restore fails.
+        final note = Note(
+          id: _wi13Note,
+          title: _wi13Title,
+          contentMd: _wi13Body,
+          frontmatter: '',
+          version: _wi13Start,
+          createdAt: 1,
+          updatedAt: 1,
+          tags: const [],
+        );
+        env.c.read(editorControllerProvider.notifier).loadNote(note);
+        final e = await _wi13Outcome(
+          env.c
+              .read(noteEditsActionsProvider)
+              .restoreNoteRevision(note: note, revisionId: 'rev-1'),
+        );
+        expect(e, isNotNull, reason: 'the read back failed');
+        expect(
+          env.server.requests.where((r) => r.method == 'POST'),
+          hasLength(1),
+        );
+        expect(env.bumps, 1, reason: 'the restore itself was stored');
+      },
+    );
+
+    test('a restore with no vault open throws and bumps nothing', () async {
+      final c = ProviderContainer(
+        overrides: [
+          clockProvider.overrideWithValue(FakeClock()),
+          vaultDbProvider.overrideWithValue(null),
+          memexCliProvider.overrideWithValue(null),
+        ],
+      );
+      addTearDown(c.dispose);
+      var bumps = 0;
+      c.listen<int>(vaultRevisionProvider, (_, _) => bumps++);
+      final note = Note(
+        id: _wi13Note,
+        title: _wi13Title,
+        contentMd: _wi13Body,
+        frontmatter: '',
+        version: _wi13Start,
+        createdAt: 1,
+        updatedAt: 1,
+        tags: const [],
+      );
+      final e = await _wi13Outcome(
+        c
+            .read(noteEditsActionsProvider)
+            .restoreNoteRevision(note: note, revisionId: 'rev-1'),
+      );
+      expect(e, isA<StateError>());
+      expect((e as StateError).message, 'No vault is open.');
+      expect(bumps, 0);
+    });
 
     test('a restore whose flush fails restores nothing', () async {
       final env = _wi13LocalEnv();
