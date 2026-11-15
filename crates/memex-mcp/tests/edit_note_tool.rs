@@ -293,6 +293,8 @@ async fn edit_note_is_listed_with_its_parameters_and_its_rules_in_the_descriptio
         "close the fence",
         "overlapping occurrences",
         "\"aa\" in \"aaa\" is edit_ambiguous",
+        // Ruling D26: an agent edit never drops a system tag.
+        "Removing a #name text drops that body tag, except inbox and agent-authored.",
     ] {
         assert!(
             description.contains(needle),
@@ -798,6 +800,57 @@ async fn a_successful_edit_adds_no_tag_and_changes_no_review_state() {
         "no tag added (no inbox, no agent-authored) and none removed"
     );
     assert_eq!(reviews_after, reviews_before, "no review state changed");
+}
+
+/// Ruling D26: an agent edit that removes the `#inbox` text of a body-origin
+/// `inbox` row keeps the row (the note stays in the person's inbox), while an
+/// ordinary body tag whose text it removed is dropped (Req 21).
+#[tokio::test]
+async fn an_agent_edit_removing_the_inbox_text_keeps_the_inbox_tag() {
+    let mut id = String::new();
+    let w = world(|v| {
+        id = person_note(
+            v,
+            "Triage",
+            "Triage #inbox and #pricing.\nEnd.\n",
+            json!({}),
+        )
+        .id
+        .to_string();
+    })
+    .await;
+    let rows = |w: &World| -> Vec<(String, String)> {
+        tags_and_reviews(&w.db())
+            .0
+            .into_iter()
+            .filter(|(n, _, _)| *n == id)
+            .map(|(_, t, o)| (t, o))
+            .collect()
+    };
+    let body = |t: &str| (t.to_string(), "body".to_string());
+    assert_eq!(
+        rows(&w),
+        vec![body("inbox"), body("pricing")],
+        "fixture: both tags are body rows"
+    );
+
+    let r = w
+        .form_a(
+            &id,
+            &[("Triage #inbox and #pricing.", "Triage done.")],
+            None,
+        )
+        .await;
+    assert_eq!(r["changed"], json!(true), "{r}");
+    assert!(
+        !str_of(&r, "content_md").contains('#'),
+        "the stored body has no #name text left: {r}"
+    );
+    assert_eq!(
+        rows(&w),
+        vec![body("inbox")],
+        "the inbox row stays; the pricing row is dropped"
+    );
 }
 
 // ======================================================================
