@@ -67,7 +67,8 @@ impl Memex {
         3, each one line of plain markdown, at most 200 characters; they show \
         in the note's Activity tab, dated today. Invalid bullets fail with \
         change_entries_invalid. An edit adds no tag and changes no review \
-        state. A failure writes nothing. Returns vault_id, note_id, version, \
+        state. Removing a #name text drops that body tag, except inbox and \
+        agent-authored. A failure writes nothing. Returns vault_id, note_id, version, \
         content_md (the stored body, footer included) and changed (false when \
         the body was already that text and nothing was written).")]
     async fn edit_note(
