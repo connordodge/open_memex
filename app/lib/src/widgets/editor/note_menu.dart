@@ -161,6 +161,10 @@ class _AgentReadOnlyItem extends ConsumerWidget {
 /// the menu closes when the item is chosen.
 final _agentReadOnlyBusyProvider = Provider<Set<String>>((_) => <String>{});
 
+/// The toggle's inline error when the vault can't be written (no `memex`
+/// CLI): the app's existing copy for that case (smart folders, topics).
+const _noCliMessage = 'The memex CLI is not available.';
+
 /// Sets [note]'s Agent read-only flag to the opposite of its stored value
 /// through [NoteEditsActions.setAgentReadOnly], inside `guardVaultWrite`.
 /// While one toggle of [note] is in flight, another starts nothing. No
@@ -169,6 +173,11 @@ final _agentReadOnlyBusyProvider = Provider<Set<String>>((_) => <String>{});
 /// [noteDeleteErrorProvider], which shows the CLI or server message (Req 33);
 /// a later successful toggle of [note] clears that message. An unreachable
 /// vault server shows the guard's snackbar instead.
+///
+/// With no vault open or no `memex` CLI (`VaultAccess.canWrite` false) it
+/// makes no call and shows [_noCliMessage]. Any other failure (a
+/// [StateError], a [MemexCliTimeout]) shows its message in the same slot
+/// rather than escaping as an uncaught async error.
 Future<void> _toggleAgentReadOnly(
   BuildContext context,
   ProviderContainer container,
@@ -179,6 +188,11 @@ Future<void> _toggleAgentReadOnly(
   try {
     if (!context.mounted) return;
     final errors = container.read(noteDeleteErrorProvider.notifier);
+    final access = container.read(vaultAccessProvider);
+    if (access == null || !access.canWrite) {
+      errors.state = (noteId: note.id, message: _noCliMessage);
+      return;
+    }
     final bool? done;
     try {
       done = await guardVaultWrite(context, () async {
@@ -189,6 +203,12 @@ Future<void> _toggleAgentReadOnly(
       });
     } on MemexException catch (e) {
       errors.state = (noteId: note.id, message: e.message);
+      return;
+    } on StateError catch (e) {
+      errors.state = (noteId: note.id, message: e.message);
+      return;
+    } on Exception catch (e) {
+      errors.state = (noteId: note.id, message: e.toString());
       return;
     }
     if (done == null) return;
