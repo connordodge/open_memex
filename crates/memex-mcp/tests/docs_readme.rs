@@ -5758,6 +5758,7 @@ fn docs_name_edit_note_only_as_a_tool_the_server_really_serves() {
         tools.contains("edit_note"),
         "the server serves `edit_note`: {tools:?}"
     );
+    let edit_token = Regex::new(r"`(edit_[a-z_]+)`").unwrap();
     for doc in [
         "README.md",
         "docs/daily-review.md",
@@ -5767,10 +5768,7 @@ fn docs_name_edit_note_only_as_a_tool_the_server_really_serves() {
     ] {
         let text = read_repo_file(doc);
         // Every backticked `edit_…` token is a served tool, except the two error codes.
-        for c in Regex::new(r"`(edit_[a-z_]+)`")
-            .unwrap()
-            .captures_iter(&text)
-        {
+        for c in edit_token.captures_iter(&text) {
             if &c[1] == "edit_invalid" || &c[1] == "edit_ambiguous" {
                 continue;
             }
