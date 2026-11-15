@@ -709,8 +709,10 @@ void main() {
         final col = _wi13LocalEnv(db: columnOnly);
         expect(await _wi13Settled(col.c, vaultV8ReadyProvider), isFalse);
 
-        // Table only.
-        final tableOnly = agentEditsV7Vault()..migrateToV6();
+        // Table only: a full V8 vault (the fake's V5 fixture already is one)
+        // with just the column removed.
+        final tableOnly = FakeVaultDb.v5();
+        tableOnly.db.execute('ALTER TABLE notes DROP COLUMN agent_read_only');
         expect(tableOnly.hasTables(const ['note_revisions']), isTrue);
         expect(
           tableOnly.hasColumns('notes', const ['agent_read_only']),
