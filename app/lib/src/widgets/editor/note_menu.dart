@@ -8,12 +8,14 @@ import '../../graph/graph_scope.dart';
 import '../../memex_cli.dart';
 import '../../state/editor_controller.dart';
 import '../../state/graph_state.dart';
+import '../../state/note_edits_state.dart';
 import '../../state/tabs_state.dart';
 import '../../state/vault_access_state.dart';
 import '../../state/vault_state.dart';
 import '../../vault_access/errors.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
+import '../agent_edits_keys.dart';
 import '../atoms.dart';
 
 /// The editor toolbar's ellipsis button (Key `note-menu-button`). It opens
@@ -119,13 +121,106 @@ class NoteMenu extends StatelessWidget {
             },
             child: const Text('Open graph'),
           ),
+        // Spec #7 Req 7 and 31: the flag can't be set on a daily note or the
+        // Vault Guide. The unsaved virtual Today note is a `role: daily` note.
+        if (note.role != 'daily' && note.role != 'guide')
+          _AgentReadOnlyItem(note: note, hostContext: hostContext),
       ],
     );
   }
 }
 
-/// The inline error left by a failed note delete: the id of the note it
-/// belongs to and the CLI message. Null when there is none.
+/// The checkable `Read-only for agents` item (Key
+/// [noteMenuAgentReadOnlyKey], Spec #7 Req 31), shown only while
+/// [agentEditsAvailableProvider] is true (D17). Its check is [note]'s stored
+/// flag, the re-read note the editor shows (D18).
+class _AgentReadOnlyItem extends ConsumerWidget {
+  const _AgentReadOnlyItem({required this.note, required this.hostContext});
+  final Note note;
+  final BuildContext hostContext;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (!ref.watch(agentEditsAvailableProvider)) return const SizedBox.shrink();
+    final on = note.agentReadOnly;
+    final container = ProviderScope.containerOf(context, listen: false);
+    return MenuItemButton(
+      key: noteMenuAgentReadOnlyKey,
+      leadingIcon: Icon(
+        on ? LucideIcons.squareCheck : LucideIcons.square,
+        size: 14,
+      ),
+      onPressed: () => _toggleAgentReadOnly(hostContext, container, note),
+      child: Semantics(checked: on, child: const Text('Read-only for agents')),
+    );
+  }
+}
+
+/// The note ids whose Agent read-only toggle is in flight: the busy guard
+/// of [_toggleAgentReadOnly]. It lives in the container, not the menu, since
+/// the menu closes when the item is chosen.
+final _agentReadOnlyBusyProvider = Provider<Set<String>>((_) => <String>{});
+
+/// The toggle's inline error when the vault can't be written (no `memex`
+/// CLI): the app's existing copy for that case (smart folders, topics).
+const _noCliMessage = 'The memex CLI is not available.';
+
+/// Sets [note]'s Agent read-only flag to the opposite of its stored value
+/// through [NoteEditsActions.setAgentReadOnly], inside `guardVaultWrite`.
+/// While one toggle of [note] is in flight, another starts nothing. No
+/// optimistic state: the check and the title icon change when the bump's
+/// re-read note does (D18). On failure nothing changes except
+/// [noteDeleteErrorProvider], which shows the CLI or server message (Req 33);
+/// a later successful toggle of [note] clears that message. An unreachable
+/// vault server shows the guard's snackbar instead.
+///
+/// With no vault open or no `memex` CLI (`VaultAccess.canWrite` false) it
+/// makes no call and shows [_noCliMessage]. Any other failure (a
+/// [StateError], a [MemexCliTimeout]) shows its message in the same slot
+/// rather than escaping as an uncaught async error.
+Future<void> _toggleAgentReadOnly(
+  BuildContext context,
+  ProviderContainer container,
+  Note note,
+) async {
+  final busy = container.read(_agentReadOnlyBusyProvider);
+  if (!busy.add(note.id)) return;
+  try {
+    if (!context.mounted) return;
+    final errors = container.read(noteDeleteErrorProvider.notifier);
+    final access = container.read(vaultAccessProvider);
+    if (access == null || !access.canWrite) {
+      errors.state = (noteId: note.id, message: _noCliMessage);
+      return;
+    }
+    final bool? done;
+    try {
+      done = await guardVaultWrite(context, () async {
+        await container
+            .read(noteEditsActionsProvider)
+            .setAgentReadOnly(note.id, !note.agentReadOnly);
+        return true;
+      });
+    } on MemexException catch (e) {
+      errors.state = (noteId: note.id, message: e.message);
+      return;
+    } on StateError catch (e) {
+      errors.state = (noteId: note.id, message: e.message);
+      return;
+    } on Exception catch (e) {
+      errors.state = (noteId: note.id, message: e.toString());
+      return;
+    }
+    if (done == null) return;
+    if (errors.state?.noteId == note.id) errors.state = null;
+  } finally {
+    busy.remove(note.id);
+  }
+}
+
+/// The inline error left by a failed note delete or Agent read-only toggle:
+/// the id of the note it belongs to and the CLI message. Null when there is
+/// none.
 final noteDeleteErrorProvider =
     StateProvider<({String noteId, String message})?>((_) => null);
 

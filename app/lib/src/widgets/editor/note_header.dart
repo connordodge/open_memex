@@ -1,16 +1,23 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../db.dart';
 import '../../editor/segments.dart';
+import '../../state/note_edits_state.dart';
 import '../../state/tabs_state.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
+import '../agent_edits_keys.dart';
 import 'daily_date_header.dart';
 import 'review_chip.dart';
 
 /// The top of an open note (Key `note-header`): the meta rail, the
 /// [DailyDateHeader] slot, the title field (Key `editor-title`) and the
 /// [ReviewChip] slot.
+///
+/// While [note] is Agent read-only and [agentEditsAvailableProvider] is
+/// true, the title row ends in the [_AgentReadOnlyIcon] (Spec #7 Req 32).
 ///
 /// A `role: daily` note's [DailyDateHeader] replaces the title field: its
 /// title is not editable (Req 49). The unsaved virtual Today note has no
@@ -19,7 +26,7 @@ import 'review_chip.dart';
 /// While the note's hosted save waits for the vault server (#102) the meta
 /// rail shows only [pendingLabel] (Key `pending-save-label`, board A11
 /// state 1), also for the virtual Today note.
-class NoteHeader extends StatelessWidget {
+class NoteHeader extends ConsumerWidget {
   const NoteHeader({
     super.key,
     required this.note,
@@ -35,9 +42,11 @@ class NoteHeader extends StatelessWidget {
   final String? pendingLabel;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     // The unsaved virtual Today note was never updated or reviewed.
     final saved = VirtualTodayTab.dateOf(note.id) == null;
+    final agentReadOnly =
+        ref.watch(agentEditsAvailableProvider) && note.agentReadOnly;
     return Column(
       key: const Key('note-header'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -59,23 +68,63 @@ class NoteHeader extends StatelessWidget {
             ),
           )
         else if (note.role != 'daily')
-          TextField(
-            key: const Key('editor-title'),
-            controller: titleCtrl,
-            style: OmType.h1Serif(),
-            cursorColor: OmColors.accent,
-            decoration: InputDecoration(
-              hintText: 'Untitled',
-              hintStyle: OmType.serif(
-                size: 36,
-                color: OmColors.fg3,
-                weight: FontWeight.w500,
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  key: const Key('editor-title'),
+                  controller: titleCtrl,
+                  style: OmType.h1Serif(),
+                  cursorColor: OmColors.accent,
+                  decoration: InputDecoration(
+                    hintText: 'Untitled',
+                    hintStyle: OmType.serif(
+                      size: 36,
+                      color: OmColors.fg3,
+                      weight: FontWeight.w500,
+                    ),
+                  ),
+                  onChanged: onTitleChanged,
+                ),
               ),
-            ),
-            onChanged: onTitleChanged,
+              if (agentReadOnly)
+                const Padding(
+                  padding: EdgeInsets.only(left: 8),
+                  child: _AgentReadOnlyIcon(),
+                ),
+            ],
           ),
         if (saved) ReviewChip(note: note),
       ],
+    );
+  }
+}
+
+/// The bot-off icon beside the title of an Agent read-only note (Spec #7
+/// Req 32, D19): the tooltip and one semantics leaf `Read-only for agents`,
+/// Key [agentReadOnlyIconKey] on the SizedBox inside the Tooltip. It has no
+/// gesture: the note menu item is the one control.
+class _AgentReadOnlyIcon extends StatelessWidget {
+  const _AgentReadOnlyIcon();
+
+  static const _label = 'Read-only for agents';
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: _label,
+      excludeFromSemantics: true,
+      child: Semantics(
+        container: true,
+        label: _label,
+        excludeSemantics: true,
+        child: SizedBox(
+          key: agentReadOnlyIconKey,
+          width: 20,
+          height: 20,
+          child: Icon(LucideIcons.botOff, size: 18, color: OmColors.fg2),
+        ),
+      ),
     );
   }
 }
