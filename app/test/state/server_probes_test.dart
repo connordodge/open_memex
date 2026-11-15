@@ -223,7 +223,7 @@ void main() {
         await _drain();
         expect(env.status(wi97Nas.id), HostedConnectionStatus.connected);
         expect(env.result(wi97Nas.id)!.kind, ServerProbeKind.connected);
-        expect(env.result(wi97Nas.id)!.serverVersion, '0.3.1');
+        expect(env.result(wi97Nas.id)!.serverVersion, '0.4.0');
       },
     );
 
