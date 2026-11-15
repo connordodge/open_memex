@@ -908,6 +908,56 @@ fn restore_re_derives_body_tags_and_keeps_footer_and_title() {
 }
 
 #[test]
+fn restore_treats_a_removed_system_tag_text_as_a_person_save_does() {
+    let (_dir, mut v) = fresh();
+    let body = |name: &str| (name.to_string(), "body".to_string());
+
+    // Two notes in the same state: an inbox body row whose text an agent
+    // edit removed (the agent edit keeps the row).
+    let n = note(&mut v, "Triage", "Triage #inbox and #pricing.\n");
+    let twin = note(&mut v, "Triage twin", "Triage #inbox and #pricing.\n");
+    for id in [&n.id, &twin.id] {
+        rewrite(&mut v, id, "Done #pricing.\n");
+        assert_eq!(
+            tag_rows(&v, id),
+            vec![body("inbox"), body("pricing")],
+            "the agent edit keeps the inbox row"
+        );
+    }
+
+    // A person save of text without #inbox drops the row.
+    let saved = current(&v, &twin.id);
+    update_note(
+        &mut v,
+        &twin.id,
+        saved.version,
+        UpdateNote {
+            content_md: Some("Done again #pricing.\n".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(tag_rows(&v, &twin.id), vec![body("pricing")]);
+
+    // Restore to text without #inbox is a person write: the same result.
+    rewrite(&mut v, &n.id, "Done again #pricing.\n");
+    let rev = revision_at(&v, &n.id, 1);
+    assert_eq!(rev.previous_md, "Done #pricing.\n");
+    restore_at(&mut v, &rev.id, Some(&n.id), T0).unwrap();
+    assert_eq!(
+        tag_rows(&v, &n.id),
+        vec![body("pricing")],
+        "Restore drops the system body row like a person save"
+    );
+
+    // Restore to text that has #inbox derives the row again.
+    let older = revision_at(&v, &n.id, 0);
+    assert_eq!(older.previous_md, "Triage #inbox and #pricing.\n");
+    restore_at(&mut v, &older.id, Some(&n.id), T0).unwrap();
+    assert_eq!(tag_rows(&v, &n.id), vec![body("inbox"), body("pricing")]);
+}
+
+#[test]
 fn restore_rebuilds_the_footer_from_the_current_rows() {
     let (_dir, mut v) = fresh();
     let pricing = topic(&mut v, "Pricing");
