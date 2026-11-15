@@ -823,6 +823,27 @@ fn an_old_text_with_two_or_more_matches_is_edit_ambiguous_with_its_index() {
 }
 
 #[test]
+fn occurrences_that_overlap_each_other_count_as_separate_matches() {
+    let (_dir, mut v) = fresh();
+    let n = note(&mut v, "Overlaps", "aaa and ééé and abab\n");
+    let before = snapshot(&v);
+
+    for (old_text, what) in [("aa", "ascii"), ("éé", "multi-byte")] {
+        let err = refused(
+            &mut v,
+            form_a(&n.id, vec![pair(old_text, "x")], None),
+            "edit_ambiguous",
+        );
+        assert_eq!(edit_index(&err), 0, "{what}");
+        assert_eq!(snapshot(&v), before, "{what}: nothing written");
+    }
+
+    // One occurrence that merely repeats a prefix of itself is still one match.
+    let out = edit(&mut v, form_a(&n.id, vec![pair("abab", "x")], None)).unwrap();
+    assert_eq!(out.content_md, "aaa and ééé and x\n");
+}
+
+#[test]
 fn the_first_failing_pair_in_index_order_answers() {
     let (_dir, mut v) = fresh();
     let n = note(&mut v, "Pairs", "one two two three\n");
