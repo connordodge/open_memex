@@ -30,6 +30,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use memex_core::daily::{today_with_clock, TOPICS_MARKER};
+use memex_core::embedder::{Embedder, FakeEmbedder};
 use memex_core::footer::{self, ChipOrigin};
 use memex_core::guide;
 use memex_core::{SystemClock, Vault};
@@ -44,8 +45,8 @@ use tokio::task::JoinHandle;
 
 use feedback_mcp::{
     activity, assert_c1, count, fixture_day, keys, open_db, person_note, reviewed, set, str_of,
-    vault_with, FixedClock, Hosted, Stdio, BOUNDARY_MS, BOUNDARY_UTC_DATE, BOUNDARY_WEST_DATE, DAY,
-    T0, UNKNOWN_ID, UTC, WEST,
+    vault_with, FixedClock, Hosted, Stdio, B7, BOUNDARY_MS, BOUNDARY_UTC_DATE, BOUNDARY_WEST_DATE,
+    DAY, T0, UNKNOWN_ID, UTC, WEST,
 };
 
 const TOOL: &str = "edit_note";
@@ -76,9 +77,14 @@ impl Drop for World {
 
 /// A temp vault seeded by `setup` (closed), then served over a duplex.
 async fn world(setup: impl FnOnce(&mut Vault)) -> World {
+    world_with(setup, None).await
+}
+
+/// [`world`] with the server's embedder (`memex serve --with-embeddings`).
+async fn world_with(setup: impl FnOnce(&mut Vault), embedder: Option<Arc<dyn Embedder>>) -> World {
     let (dir, path) = vault_with(setup);
     let vault = Vault::open(&path).unwrap();
-    let state = Arc::new(AppState::new(vault, path.clone().into(), None));
+    let state = Arc::new(AppState::new(vault, path.clone().into(), embedder));
     let memex = Memex::new(state.clone());
     let (server_io, client_io) = tokio::io::duplex(1 << 20);
     let server = tokio::spawn(async move {
@@ -757,9 +763,16 @@ async fn a_successful_edit_adds_no_tag_and_changes_no_review_state() {
     let w = world(|v| {
         let day = fixture_day(v);
         reviewed(v, DAY, &day);
-        person = person_note(v, "Work Log", "Status: draft. #work\n", json!({}))
-            .id
-            .to_string();
+        // The person note files a block of the reviewed day, so the day's
+        // review state is tied to the note the agent edits.
+        person = person_note(
+            v,
+            "Work Log",
+            &format!("Status: draft. #work\n\n![[{DAY}#^{B7}]]\n"),
+            json!({ "role": "topic" }),
+        )
+        .id
+        .to_string();
     })
     .await;
     // An agent-created note carries `inbox` and `agent-authored`.
@@ -786,6 +799,12 @@ async fn a_successful_edit_adds_no_tag_and_changes_no_review_state() {
         "fixture: the person note has #work: {tags_before:?}"
     );
     assert!(!reviews_before.is_empty(), "fixture: a reviewed day");
+    let filing_before = w.ok("get_day_filing", json!({ "date": DAY })).await;
+    let unreviewed_before = w.ok("list_unreviewed_days", json!({})).await;
+    assert!(
+        filing_before.to_string().contains(&person),
+        "fixture: the reviewed day's filing names the edited note: {filing_before}"
+    );
 
     let p = w.form_a(&person, &[("draft", "shipped")], None).await;
     assert_eq!(p["changed"], json!(true), "{p}");
@@ -800,6 +819,16 @@ async fn a_successful_edit_adds_no_tag_and_changes_no_review_state() {
         "no tag added (no inbox, no agent-authored) and none removed"
     );
     assert_eq!(reviews_after, reviews_before, "no review state changed");
+    assert_eq!(
+        w.ok("get_day_filing", json!({ "date": DAY })).await,
+        filing_before,
+        "the reviewed day's filing is unchanged"
+    );
+    assert_eq!(
+        w.ok("list_unreviewed_days", json!({})).await,
+        unreviewed_before,
+        "no day became unreviewed"
+    );
 }
 
 /// Ruling D26: an agent edit that removes the `#inbox` text of a body-origin
@@ -850,6 +879,43 @@ async fn an_agent_edit_removing_the_inbox_text_keeps_the_inbox_tag() {
         rows(&w),
         vec![body("inbox")],
         "the inbox row stays; the pricing row is dropped"
+    );
+}
+
+/// Req 22: the edited note is reindexed with the server's embedder, as every
+/// save path does, so an edit never drops it out of semantic search.
+#[tokio::test]
+async fn edit_note_reindexes_the_edited_note_with_the_servers_embedder() {
+    let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new(8));
+    let version = embedder.model_version().to_string();
+    let mut id = String::new();
+    let w = world_with(|v| id = status_note(v), Some(embedder)).await;
+    let versions = |w: &World| -> Vec<Option<String>> {
+        let db = w.db();
+        let mut stmt = db
+            .prepare("SELECT embed_model_version FROM chunks WHERE note_id = ? ORDER BY ord")
+            .unwrap();
+        let out = stmt
+            .query_map([&id], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        out
+    };
+    assert!(
+        versions(&w).iter().all(Option::is_none),
+        "fixture: the note was indexed without embeddings: {:?}",
+        versions(&w)
+    );
+
+    let r = w.form_a(&id, &[("draft", "shipped")], None).await;
+    assert_eq!(r["changed"], json!(true), "{r}");
+
+    let after = versions(&w);
+    assert!(!after.is_empty(), "the edited note has chunks");
+    assert!(
+        after.iter().all(|v| v.as_deref() == Some(&version)),
+        "every chunk of the edited note is embedded with the server's model: {after:?}"
     );
 }
 
