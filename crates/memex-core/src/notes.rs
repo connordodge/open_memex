@@ -445,7 +445,10 @@ fn check_guide_fields(
 ///
 /// An agent save runs the marker and guide guard (`check_agent_write`) and
 /// then the read-only guard (`check_agent_read_only`), both before the
-/// version check, so a stale version never hides a rule error. A new agent
+/// version check, so a stale version never hides a rule error. The read-only
+/// guard runs again inside the save transaction, which an agent save opens
+/// as Immediate, so a flag set by another process in between still refuses
+/// the write. A new agent
 /// rule must also be added to `note_edits` (R2), which bypasses this
 /// function (ruling D7).
 pub fn update_note_as(
@@ -528,7 +531,18 @@ pub fn update_note_as(
     let mut linker_rewrites: Vec<(String, String)> = Vec::new();
 
     {
-        let tx = vault.conn_mut().transaction()?;
+        // An agent save takes the write lock up front and re-reads the flag
+        // under it, so a person's toggle committed by another process after
+        // the early check still refuses the write (Req 5).
+        let tx = if caller == Caller::Agent {
+            let tx = vault
+                .conn_mut()
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            check_agent_read_only(&tx, caller, id)?;
+            tx
+        } else {
+            vault.conn_mut().transaction()?
+        };
 
         // Tag rows first: the footer below renders from them.
         if derives_tags {
