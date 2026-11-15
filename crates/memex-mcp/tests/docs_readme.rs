@@ -5619,6 +5619,17 @@ fn readme_agent_note_edits_section_describes_agent_read_only_that_only_the_perso
 }
 
 #[test]
+fn readme_agent_note_edits_section_says_agent_read_only_does_not_apply_to_daily_notes_or_the_vault_guide(
+) {
+    let section = wi17_readme_section();
+    wi17_assert_sentence(
+        "the Agent read-only flag does not apply to daily notes or the Vault Guide",
+        &section,
+        &[r"does not apply", r"daily notes", r"Vault Guide"],
+    );
+}
+
+#[test]
 fn readme_agent_note_edits_section_describes_revisions_restore_and_the_newest_20_kept() {
     let section = wi17_readme_section();
     wi17_assert_sentence(
