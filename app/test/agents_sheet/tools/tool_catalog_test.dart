@@ -69,6 +69,20 @@ void main() {
       ]);
     });
 
+    test('the T1 wire fixture lists edit_note in notes as a write tool', () {
+      final catalog = ToolCatalog.fromJson(_wire());
+      final rows = catalog.tools.where((t) => t.name == 'edit_note').toList();
+      expect(rows, hasLength(1));
+      expect(rows.single.group, 'notes');
+      expect(rows.single.writes, isTrue);
+      expect(
+        rows.single.summary,
+        'Edits the text of a note, by exact find-and-replace or a full '
+        'rewrite, unless it is read-only for agents.',
+      );
+      expect(catalog.tools, hasLength(38));
+    });
+
     test('keeps the order the binary returned and does not sort', () {
       final catalog = ToolCatalog.fromJson({
         'tools': [

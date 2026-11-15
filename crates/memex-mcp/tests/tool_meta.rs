@@ -3,8 +3,9 @@
 //!
 //! - The registered set always comes from the composed routers
 //!   (`Memex::routers()`, rmcp `list_all()`), never a hand-copied list.
-//! - The 24 write tools and each group's members are hand-listed here: they
-//!   are the contract (#390 requirement 8, #394 requirement 34).
+//! - The 25 write tools and each group's members are hand-listed here: they
+//!   are the contract (#390 requirement 8, #394 requirement 34, and Spec #7
+//!   requirement 38 for `edit_note`).
 //! - `Memex::new` serves exactly what `Memex::routers()` registers (D12),
 //!   checked over an in-process MCP connection.
 
@@ -27,6 +28,7 @@ const GROUPS: [(&str, &str, &[&str]); 6] = [
             "get_note",
             "neighbors",
             "create_note",
+            "edit_note",
             "add_link",
             "update_link",
         ],
@@ -89,9 +91,11 @@ const GROUPS: [(&str, &str, &[&str]); 6] = [
     ),
 ];
 
-/// #390 requirement 8: exactly these 24 tools write.
-const WRITE_TOOLS: [&str; 24] = [
+/// #390 requirement 8 and Spec #7 requirement 38: exactly these 25 tools
+/// write.
+const WRITE_TOOLS: [&str; 25] = [
     "create_note",
+    "edit_note",
     "add_excerpt",
     "remove_excerpt",
     "remove_excerpt_block",
@@ -346,9 +350,9 @@ fn tool_summaries_are_not_cut_from_the_mcp_description() {
 // ---------- AC 4: write_tools() and is_write ----------
 
 #[test]
-fn write_tools_equals_exactly_the_24_write_names() {
+fn write_tools_equals_exactly_the_25_write_names() {
     let writes = meta::write_tools();
-    assert_eq!(writes.len(), 24, "no duplicates, no extras: {writes:?}");
+    assert_eq!(writes.len(), 25, "no duplicates, no extras: {writes:?}");
     assert_eq!(set(writes.iter().copied()), set(WRITE_TOOLS));
 }
 
@@ -368,9 +372,9 @@ fn is_write_is_true_for_each_write_tool_and_false_for_every_other_registered_too
             true_count += 1;
         }
     }
-    assert_eq!(true_count, 24, "registered write tools");
+    assert_eq!(true_count, 25, "registered write tools");
     let write_rows = meta::tools().iter().filter(|r| r.writes).count();
-    assert_eq!(write_rows, 24, "rows with writes = true");
+    assert_eq!(write_rows, 25, "rows with writes = true");
 }
 
 #[test]
@@ -455,9 +459,32 @@ async fn memex_new_serves_exactly_the_tools_and_prompts_routers_registers() {
         router_prompts, served_prompts,
         "routers() prompts vs Memex::new"
     );
-    // The registered set is unchanged from main: the 37 Spec tools, 2 prompts.
+    // The registered set: the 37 tools before Spec #7, `edit_note`, 2 prompts.
     let spec_tools = set(GROUPS.iter().flat_map(|(_, _, m)| m.iter().copied()));
-    assert_eq!(spec_tools.len(), 37);
+    assert_eq!(spec_tools.len(), 38);
     assert_eq!(served_tools, spec_tools, "served tools");
     assert_eq!(served_prompts, set(PROMPTS), "served prompts");
+}
+
+// ---------- Spec #7 requirement 38: the edit_note row ----------
+
+#[test]
+fn edit_note_row_is_a_notes_write_tool_with_the_spec_summary() {
+    let row = *meta::tool("edit_note").expect("edit_note has a meta row");
+    assert_eq!(
+        row,
+        meta::ToolMeta {
+            name: "edit_note",
+            summary: "Edits the text of a note, by exact find-and-replace or a full rewrite, \
+                      unless it is read-only for agents.",
+            group: Group::Notes,
+            writes: true,
+        }
+    );
+    assert!(meta::is_write("edit_note"), "edit_note writes");
+    assert_eq!(meta::tools().len(), 38, "the catalog has 38 tools");
+    assert!(
+        registered_tools().iter().any(|name| name == "edit_note"),
+        "Memex::routers() registers edit_note"
+    );
 }
