@@ -3,9 +3,11 @@
 // text with that revision (the current text is kept as a version) and the
 // open editor rebases onto the new version without a conflict banner (D23).
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';
+import 'package:open_memex_app/src/state/note_edits_state.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 
@@ -38,12 +40,14 @@ Finder get _anyRestore => find.byWidgetPredicate(
 Future<GuideEnv> _openGuideActivity(
   WidgetTester tester, {
   AccessDoubles? doubles,
+  List<Override> extraOverrides = const [],
 }) async {
   final db = guideDb()..seedGuideActivity();
   final env = await launchGuideWorkspace(
     tester,
     db: db,
     doubles: doubles,
+    extraOverrides: extraOverrides,
     topicsMode: false,
   );
   await openNoteTab(tester, env.h, guideNoteId);
@@ -155,6 +159,33 @@ void main() {
       expect(find.byKey(const Key('activity-entry-ac-day')), findsOneWidget);
       expect(_anyRestore, findsNothing);
     });
+  });
+
+  group('Restore does not follow the agent edits gate (WI 15 AC10)', () {
+    testWidgets(
+      'a guide Activity entry keeps its Restore and its write while agentEditsAvailableProvider is false',
+      (tester) async {
+        // A hosted v0.3.x server (schema 7) reads false; the guide's Restore
+        // predates agent edits and must not be hidden by that gate.
+        final env = await _openGuideActivity(
+          tester,
+          extraOverrides: [
+            agentEditsAvailableProvider.overrideWithValue(false),
+          ],
+        );
+        expect(env.h.read(agentEditsAvailableProvider), isFalse);
+
+        expect(_restore('ac-1'), findsOneWidget);
+        expect(_restore('ac-2'), findsNothing);
+
+        await _restoreAndConfirm(tester);
+
+        final calls = env.feedback.callsTo('restoreGuide');
+        expect(calls, hasLength(1));
+        expect(calls.single.args, {'revisionId': 'rev-1'});
+        expect(env.cli.callsFor('guide restore'), hasLength(1));
+      },
+    );
   });
 
   group('the confirm dialog (AC7)', () {
