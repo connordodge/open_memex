@@ -59,6 +59,7 @@ class QueuedSave {
     this.heldStatus,
     this.heldMessage,
     this.baseText,
+    this.baseTitle,
   });
 
   final HostedVaultRef vault;
@@ -68,6 +69,11 @@ class QueuedSave {
   /// meets a `version_conflict` merges against it (Spec #7 Req 34a, D20).
   /// Null when not known (a virtual Today create, a daily note's save).
   final String? baseText;
+
+  /// The note's title at [PendingSave.baseVersion], null when not known. A
+  /// merged retry may send [sendTitle] only when the server's title is
+  /// [sendTitle] or this one (a rename elsewhere is never undone).
+  final String? baseTitle;
 
   /// The title the retry sends (null: unchanged).
   final String? sendTitle;
@@ -86,6 +92,7 @@ class QueuedSave {
     SaveStatus? heldStatus,
     String? heldMessage,
     (String?,)? baseText,
+    (String?,)? baseTitle,
   }) => QueuedSave(
     vault: vault,
     save: save ?? this.save,
@@ -93,6 +100,7 @@ class QueuedSave {
     heldStatus: clearHeld ? null : (heldStatus ?? this.heldStatus),
     heldMessage: clearHeld ? null : (heldMessage ?? this.heldMessage),
     baseText: baseText == null ? this.baseText : baseText.$1,
+    baseTitle: baseTitle == null ? this.baseTitle : baseTitle.$1,
   );
 }
 
@@ -116,8 +124,9 @@ class PendingSaveQueue extends StateNotifier<List<QueuedSave>> {
   ];
 
   /// Queues [text] for [noteId] in [vault], or, when it is already queued,
-  /// replaces its text, title, base version and [baseText] (the body at
-  /// [baseVersion], see [QueuedSave.baseText]) and keeps its place and
+  /// replaces its text, title, base version, [baseText] and [baseTitle]
+  /// (the body and title at [baseVersion], see [QueuedSave.baseText] and
+  /// [QueuedSave.baseTitle]) and keeps its place and
   /// since-time (the first failure's). A held entry waits for the server
   /// again.
   void put({
@@ -130,6 +139,7 @@ class PendingSaveQueue extends StateNotifier<List<QueuedSave>> {
     required String serverName,
     String? sendTitle,
     String? baseText,
+    String? baseTitle,
   }) {
     final existing = entryFor(vault, noteId);
     if (existing != null) {
@@ -144,6 +154,7 @@ class PendingSaveQueue extends StateNotifier<List<QueuedSave>> {
           sendTitle: sendTitle,
           clearHeld: true,
           baseText: (baseText,),
+          baseTitle: (baseTitle,),
         ),
       );
       return;
@@ -154,6 +165,7 @@ class PendingSaveQueue extends StateNotifier<List<QueuedSave>> {
         vault: vault,
         sendTitle: sendTitle,
         baseText: baseText,
+        baseTitle: baseTitle,
         save: PendingSave(
           noteId: noteId,
           title: title,
@@ -192,13 +204,16 @@ class PendingSaveQueue extends StateNotifier<List<QueuedSave>> {
   }
 
   /// A retry of [noteId] saved its text at [version] (the body [baseText]
-  /// it stored there), but the text changed while it was in flight: the
-  /// newer text stays queued on [version], with [baseText] as its base text.
+  /// and title [baseTitle] it stored there, null when the title is not
+  /// known), but the text changed while it was in flight: the newer text
+  /// stays queued on [version], with [baseText] and [baseTitle] as its
+  /// base.
   void rebase(
     VaultRef vault,
     String noteId,
     int version, {
     required String baseText,
+    String? baseTitle,
   }) {
     final q = entryFor(vault, noteId);
     if (q == null) return;
@@ -207,6 +222,7 @@ class PendingSaveQueue extends StateNotifier<List<QueuedSave>> {
       q._copyWith(
         save: q.save._copyWith(baseVersion: version),
         baseText: (baseText,),
+        baseTitle: (baseTitle,),
       ),
     );
   }
