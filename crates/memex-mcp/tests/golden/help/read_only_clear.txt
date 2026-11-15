@@ -1,0 +1,8 @@
+Let agents edit the note again
+
+Usage: memex read-only clear --vault <VAULT> --note-id <NOTE_ID>
+
+Options:
+      --vault <VAULT>      Vault directory
+      --note-id <NOTE_ID>  Note id (ULID)
+  -h, --help               Print help
