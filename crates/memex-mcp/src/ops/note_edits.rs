@@ -11,8 +11,10 @@
 //!
 //! These are person writes (`Caller::Person`).
 
+use memex_core::daily;
 use memex_core::embedder::Embedder;
-use memex_core::note_edits::NoteRevision;
+use memex_core::note_edits::{self, NoteRevision};
+use memex_core::notes::{self, NoteId};
 use memex_core::{Clock, Vault};
 use serde::Serialize;
 
@@ -44,9 +46,14 @@ pub fn set_agent_read_only(
     clock: &dyn Clock,
     embedder: Option<&dyn Embedder>,
 ) -> anyhow::Result<AgentReadOnlyOutput> {
-    // WI #12 skeleton: no behavior yet.
-    let _ = (vault, input, clock, embedder);
-    Ok(AgentReadOnlyOutput::default())
+    let _ = (clock, embedder);
+    let id = NoteId::parse(&input.note_id)?;
+    notes::set_agent_read_only(vault, &id, input.agent_read_only)?;
+    Ok(AgentReadOnlyOutput {
+        vault_id: vault.vault_id().to_string(),
+        note_id: id.as_str().to_string(),
+        agent_read_only: input.agent_read_only,
+    })
 }
 
 /// The input of [`note_revisions`].
@@ -72,9 +79,13 @@ pub fn note_revisions(
     clock: &dyn Clock,
     embedder: Option<&dyn Embedder>,
 ) -> anyhow::Result<NoteRevisionsOutput> {
-    // WI #12 skeleton: no behavior yet.
-    let _ = (vault, input, clock, embedder);
-    Ok(NoteRevisionsOutput::default())
+    let _ = (clock, embedder);
+    let id = NoteId::parse(&input.note_id)?;
+    let revisions = note_edits::revisions(vault, &id)?;
+    Ok(NoteRevisionsOutput {
+        vault_id: vault.vault_id().to_string(),
+        revisions,
+    })
 }
 
 /// The input of [`restore_note_revision`].
@@ -107,7 +118,20 @@ pub fn restore_note_revision(
     clock: &dyn Clock,
     embedder: Option<&dyn Embedder>,
 ) -> anyhow::Result<RestoreNoteRevisionOutput> {
-    // WI #12 skeleton: no behavior yet.
-    let _ = (vault, input, clock, embedder);
-    Ok(RestoreNoteRevisionOutput::default())
+    let note_id = input.note_id.as_deref().map(NoteId::parse).transpose()?;
+    let day = daily::today_with_clock(clock).to_string();
+    let out = note_edits::restore(
+        vault,
+        &input.revision_id,
+        note_id.as_ref(),
+        &day,
+        clock,
+        embedder,
+    )?;
+    Ok(RestoreNoteRevisionOutput {
+        vault_id: vault.vault_id().to_string(),
+        note_id: out.note_id.as_str().to_string(),
+        version: out.version,
+        content_md: out.content_md,
+    })
 }

@@ -35,4 +35,5 @@ pub fn router() -> Router {
         .merge(backup::router())
         .merge(tools::router())
         .merge(embeddings::router())
+        .merge(note_edits::router())
 }
