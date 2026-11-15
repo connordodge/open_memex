@@ -395,6 +395,15 @@ fn revisions_list_of_an_unknown_note_is_not_found() {
     assert_c1_failure(&list(&f, NO_SUCH_ID), "not_found");
 }
 
+/// A note id that is not a ULID fails like the other `--note-id` commands.
+#[test]
+fn revisions_list_with_a_malformed_note_id_is_invalid_id() {
+    let f = fresh();
+    f.note("Plan", FIRST);
+
+    assert_c1_failure(&list(&f, "not-a-ulid"), "invalid_id");
+}
+
 // ---------- AC 7: revisions restore ----------
 
 #[test]
@@ -669,6 +678,34 @@ fn ops_restore_note_revision_with_another_notes_id_is_not_found_and_writes_nothi
             "version": version,
             "content_md": FIRST,
         })
+    );
+}
+
+/// The path's `note_id` must be a ULID: a malformed one is `invalid_id` and
+/// writes nothing, before any revision is looked up.
+#[test]
+fn ops_restore_note_revision_with_a_malformed_note_id_is_invalid_id_and_writes_nothing() {
+    let f = fresh();
+    let owner = f.note("Plan", FIRST);
+    f.agent_rewrite(&owner, SECOND, T0);
+    let revision = f.newest(&owner).id;
+    let before = (f.stored(&owner), f.revision_count(), f.change_count());
+    let mut vault = f.open();
+
+    assert_eq!(
+        code_of(ops_restore(
+            &mut vault,
+            &revision,
+            Some("not-a-ulid"),
+            &StoppedClock(T0 + 5_000)
+        )),
+        "invalid_id"
+    );
+    assert_eq!(code_of(ops_list(&mut vault, "not-a-ulid")), "invalid_id");
+    assert_eq!(
+        (f.stored(&owner), f.revision_count(), f.change_count()),
+        before,
+        "nothing written"
     );
 }
 

@@ -457,6 +457,48 @@ async fn put_agent_read_only_with_a_missing_or_non_bool_field_is_invalid_argumen
     }
 }
 
+/// A `{note_id}` that is not a ULID is the CLI's `invalid_id` on every route,
+/// and writes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn malformed_note_ids_in_the_note_edit_paths_are_invalid_id_like_the_cli() {
+    let env = Env::start_with(edits_world).await;
+    let revision = first_revision(&env.server_vault());
+    let before = (
+        stored(&env.server_vault(), LOOSE),
+        flag(&env.server_vault(), LOOSE),
+        count(&env.server_vault(), "note_revisions"),
+    );
+
+    let reply = env.put_flag("not-a-ulid", true).await;
+    assert_same_failure(&reply, "invalid_id", &env.cli_flag("set", "not-a-ulid"));
+
+    let reply = env.call("GET", "/notes/not-a-ulid/revisions", None).await;
+    assert_same_failure(
+        &reply,
+        "invalid_id",
+        &env.cli(&["revisions", "list"], &["--note-id", "not-a-ulid"]),
+    );
+
+    let reply = env
+        .call(
+            "POST",
+            &format!("/notes/not-a-ulid/revisions/{revision}/restore"),
+            None,
+        )
+        .await;
+    assert_status_for_code(&reply, "invalid_id");
+
+    assert_eq!(
+        (
+            stored(&env.server_vault(), LOOSE),
+            flag(&env.server_vault(), LOOSE),
+            count(&env.server_vault(), "note_revisions")
+        ),
+        before,
+        "nothing written"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // AC 9: GET /notes/{note_id}/revisions
 // ---------------------------------------------------------------------------
