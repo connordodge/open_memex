@@ -89,8 +89,11 @@ class VaultDb {
   }
 
   Note? getNote(String id) {
+    // Probed on every read, like the V6 columns: missing below V8 (D16).
+    final hasFlag = hasColumns('notes', v8NoteColumns);
     final rows = db.select(
-      'SELECT id, title, content_md, frontmatter, version, created_at, updated_at FROM notes WHERE id = ?',
+      'SELECT id, title, content_md, frontmatter, version, created_at, '
+      'updated_at${hasFlag ? ', agent_read_only' : ''} FROM notes WHERE id = ?',
       [id],
     );
     if (rows.isEmpty) return null;
@@ -121,13 +124,34 @@ class VaultDb {
       updatedAt: (r['updated_at'] as num).toInt(),
       tags: tags,
       footerTags: footerTags,
+      agentReadOnly: hasFlag && (r['agent_read_only'] as num? ?? 0) != 0,
     );
   }
 
   /// The note's agent-edit revisions (`note_revisions`, V8), newest first
   /// (D16, D21). Empty when the table is missing (probed on every call) or
   /// the note has none.
-  List<NoteRevision> noteRevisions(String noteId) => const [];
+  ///
+  /// Newest first is the edit order (`new_version DESC`, as core and `memex
+  /// revisions list` order them), not `created_at`, which a wall-clock jump
+  /// back can put out of order.
+  List<NoteRevision> noteRevisions(String noteId) {
+    if (!hasTables(v8TableNames)) return const [];
+    return db
+        .select(
+          'SELECT id, agent_change_id, created_at FROM note_revisions '
+          'WHERE note_id = ? ORDER BY new_version DESC, created_at DESC, id DESC',
+          [noteId],
+        )
+        .map(
+          (r) => NoteRevision(
+            id: r['id'] as String,
+            agentChangeId: r['agent_change_id'] as String?,
+            createdAt: (r['created_at'] as num).toInt(),
+          ),
+        )
+        .toList();
+  }
 
   /// All notes' (id, title) pairs. Used for the wikilink autocomplete and
   /// the kind-chip "More…" picker.

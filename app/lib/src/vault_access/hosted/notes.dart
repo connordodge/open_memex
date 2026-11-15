@@ -93,6 +93,8 @@ class HostedNotesAccess implements NotesAccess {
       tags: (json['tags'] as List).cast<String>(),
       // Absent on a server older than #242: read as no footer tags.
       footerTags: ((json['footer_tags'] as List?) ?? const []).cast<String>(),
+      // Absent on a server older than V8 (v0.3.x): not Agent read-only.
+      agentReadOnly: (json['agent_read_only'] as bool?) ?? false,
     );
   }
 
@@ -162,23 +164,44 @@ class HostedNotesAccess implements NotesAccess {
   }
 
   @override
-  Future<List<NoteRevision>> noteRevisions(String noteId) async => const [];
+  Future<List<NoteRevision>> noteRevisions(String noteId) async =>
+      AgentEditsWire.revisions(
+        'revisions list',
+        await _call(
+          'GET',
+          '${_note(noteId)}/revisions',
+          operation: 'revisions list',
+        ),
+      );
 
   // ---------- writes ----------
 
   @override
-  Future<AgentReadOnlyResult> setAgentReadOnly(String noteId, bool on) async =>
-      const AgentReadOnlyResult(vaultId: '', noteId: '', agentReadOnly: false);
+  Future<AgentReadOnlyResult> setAgentReadOnly(String noteId, bool on) async {
+    final operation = on ? 'read-only set' : 'read-only clear';
+    return AgentEditsWire.readOnly(
+      operation,
+      await _call(
+        'PUT',
+        '${_note(noteId)}/agent-read-only',
+        operation: operation,
+        body: {'agent_read_only': on},
+      ),
+    );
+  }
 
+  /// No body: the route names the note and the revision.
   @override
   Future<NoteRevisionRestoreResult> restoreNoteRevision({
     required String noteId,
     required String revisionId,
-  }) async => const NoteRevisionRestoreResult(
-    vaultId: '',
-    noteId: '',
-    version: 0,
-    contentMd: '',
+  }) async => AgentEditsWire.restore(
+    'revisions restore',
+    await _call(
+      'POST',
+      '${_note(noteId)}/revisions/${Uri.encodeComponent(revisionId)}/restore',
+      operation: 'revisions restore',
+    ),
   );
 
   @override

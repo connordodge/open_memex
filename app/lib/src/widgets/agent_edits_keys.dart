@@ -11,7 +11,7 @@ const agentReadOnlyIconKey = Key('agent-read-only-icon');
 
 /// The Restore button of the agent-edit Activity entry [agentChangeId]:
 /// `note-restore-<agentChangeId>`.
-Key noteRestoreKey(String agentChangeId) => const Key('');
+Key noteRestoreKey(String agentChangeId) => Key('note-restore-$agentChangeId');
 
 /// The Restore confirm dialog's confirm button.
 const noteRestoreConfirmKey = Key('note-restore-confirm');

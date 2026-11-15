@@ -46,24 +46,23 @@ class LocalNotesAccess implements NotesAccess {
       db?.distinctLinkKinds() ?? const [];
 
   @override
-  Future<List<NoteRevision>> noteRevisions(String noteId) async => const [];
+  Future<List<NoteRevision>> noteRevisions(String noteId) async =>
+      db?.noteRevisions(noteId) ?? const [];
 
   // ---------- writes ----------
 
   @override
   Future<AgentReadOnlyResult> setAgentReadOnly(String noteId, bool on) async =>
-      const AgentReadOnlyResult(vaultId: '', noteId: '', agentReadOnly: false);
+      _cli.setAgentReadOnly(vaultPath: vaultPath, noteId: noteId, on: on);
 
+  /// `memex revisions restore` takes only the revision id; [noteId] is for
+  /// the hosted route.
   @override
   Future<NoteRevisionRestoreResult> restoreNoteRevision({
     required String noteId,
     required String revisionId,
-  }) async => const NoteRevisionRestoreResult(
-    vaultId: '',
-    noteId: '',
-    version: 0,
-    contentMd: '',
-  );
+  }) async =>
+      _cli.restoreNoteRevision(vaultPath: vaultPath, revisionId: revisionId);
 
   @override
   Future<String> addNote({
