@@ -287,6 +287,12 @@ async fn edit_note_is_listed_with_its_parameters_and_its_rules_in_the_descriptio
         "bullets",
         "1 to 3",
         "200",
+        // Ruling D25: an unclosed code fence above the footer, and
+        // overlapping occurrences.
+        "leaves a code fence open above the footer is edit_invalid",
+        "close the fence",
+        "overlapping occurrences",
+        "\"aa\" in \"aaa\" is edit_ambiguous",
     ] {
         assert!(
             description.contains(needle),

@@ -334,7 +334,7 @@ void main() {
         expect(_key('tool-row-edit_note'), findsOneWidget);
         expect(
           _w<Text>(tester, _key('tool-summary-edit_note')).data,
-          'Edits the text of a note, by exact find-and-replace or a full '
+          "Edits a note's text by exact find-and-replace or a full "
           'rewrite, unless it is read-only for agents.',
         );
         expect(_inRow('edit_note', find.text('WRITES')), findsOneWidget);

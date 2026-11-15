@@ -199,7 +199,7 @@ fn memex_tools_writes_and_group_ids_are_the_meta_contract() {
 // ---------- Spec #7 requirement 38: edit_note ----------
 
 /// The Tools tab summary Spec #7 requirement 38 fixes for `edit_note`.
-const EDIT_NOTE_SUMMARY: &str = "Edits the text of a note, by exact find-and-replace or a full \
+const EDIT_NOTE_SUMMARY: &str = "Edits a note's text by exact find-and-replace or a full \
                                  rewrite, unless it is read-only for agents.";
 
 #[test]

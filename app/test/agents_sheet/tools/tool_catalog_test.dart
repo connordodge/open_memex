@@ -77,7 +77,7 @@ void main() {
       expect(rows.single.writes, isTrue);
       expect(
         rows.single.summary,
-        'Edits the text of a note, by exact find-and-replace or a full '
+        "Edits a note's text by exact find-and-replace or a full "
         'rewrite, unless it is read-only for agents.',
       );
       expect(catalog.tools, hasLength(38));

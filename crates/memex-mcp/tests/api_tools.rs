@@ -211,7 +211,7 @@ async fn get_tools_lists_edit_note_in_notes_as_a_write_tool_with_its_summary() {
         *rows[0],
         json!({
             "name": "edit_note",
-            "summary": "Edits the text of a note, by exact find-and-replace or a full \
+            "summary": "Edits a note's text by exact find-and-replace or a full \
                         rewrite, unless it is read-only for agents.",
             "group": "notes",
             "writes": true,

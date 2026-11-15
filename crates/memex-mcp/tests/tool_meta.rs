@@ -475,7 +475,7 @@ fn edit_note_row_is_a_notes_write_tool_with_the_spec_summary() {
         row,
         meta::ToolMeta {
             name: "edit_note",
-            summary: "Edits the text of a note, by exact find-and-replace or a full rewrite, \
+            summary: "Edits a note's text by exact find-and-replace or a full rewrite, \
                       unless it is read-only for agents.",
             group: Group::Notes,
             writes: true,
