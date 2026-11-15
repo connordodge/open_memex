@@ -21,6 +21,7 @@ import 'package:open_memex_app/src/state/note_edits_state.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/widgets/activity_tab.dart';
 import 'package:open_memex_app/src/widgets/agent_edits_keys.dart';
+import 'package:open_memex_app/src/widgets/atoms.dart';
 import 'package:open_memex_app/src/widgets/note_editor.dart';
 import 'package:open_memex_app/src/widgets/right_panel.dart';
 
@@ -698,6 +699,14 @@ void _wi15AgentEditRestoreTests() {
         expect(_wi15Restore('ac-e1'), findsOneWidget, reason: 'gate open');
 
         env.h.container.read(_wi15Gate.notifier).state = false;
+        // The first frame after the flip, before the revisions re-read ends:
+        // the previous list must not keep its buttons on screen.
+        await tester.pump();
+        expect(
+          _wi15AnyNoteRestore,
+          findsNothing,
+          reason: 'no stale buttons while the revisions re-read',
+        );
         await pumpFrames(tester);
 
         expect(_wi15AnyNoteRestore, findsNothing);
@@ -1061,8 +1070,11 @@ void _wi15AgentEditRestoreTests() {
         final button = _wi15Restore('ac-e1');
         expect(button, findsOneWidget);
 
-        await tester.tap(button);
-        await tester.tap(button);
+        // Both presses reach the handler before any frame: a tap would be
+        // absorbed by the dialog's route, so call the button's handler twice.
+        final press = tester.widget<OmButton>(button).onPressed!;
+        press();
+        press();
         await tester.pump();
         await pumpFrames(tester);
 
@@ -1107,6 +1119,32 @@ void _wi15AgentEditRestoreTests() {
           findsOneWidget,
           reason: 'the button works again once the restore finished',
         );
+      },
+    );
+  });
+
+  group('WI 15 agent-edit Restore of an entry with two revisions', () {
+    testWidgets(
+      'an agent-edit entry whose change produced two revisions restores the newest one',
+      (tester) async {
+        final db = _wi15Db()
+          ..seedNoteRevision(
+            id: 'rev-e1-later',
+            noteId: _wi15Plain,
+            agentChangeId: 'ac-e1',
+            previousMd: 'later previous text',
+            previousVersion: 4,
+            newVersion: 5,
+            createdAt: _wi15Ms(2, 11),
+          );
+        final env = await _wi15Open(tester, db: db);
+
+        expect(_wi15Restore('ac-e1'), findsOneWidget, reason: 'one per entry');
+        await _wi15RestoreAndConfirm(tester);
+
+        expect(env.notes.restoreNoteRevisionCalls, [
+          (noteId: _wi15Plain, revisionId: 'rev-e1-later'),
+        ]);
       },
     );
   });
