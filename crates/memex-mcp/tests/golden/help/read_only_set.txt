@@ -1,0 +1,8 @@
+Make the note read-only for agents
+
+Usage: memex read-only set --vault <VAULT> --note-id <NOTE_ID>
+
+Options:
+      --vault <VAULT>      Vault directory
+      --note-id <NOTE_ID>  Note id (ULID)
+  -h, --help               Print help

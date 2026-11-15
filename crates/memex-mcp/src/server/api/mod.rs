@@ -11,6 +11,7 @@ pub mod daily;
 pub mod embeddings;
 pub mod feedback;
 pub mod graph;
+pub mod note_edits;
 pub mod notes;
 pub mod revision;
 pub mod tags;
@@ -34,4 +35,5 @@ pub fn router() -> Router {
         .merge(backup::router())
         .merge(tools::router())
         .merge(embeddings::router())
+        .merge(note_edits::router())
 }

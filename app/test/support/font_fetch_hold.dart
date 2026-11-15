@@ -36,6 +36,14 @@ void holdFontFetches() {
   });
 }
 
+/// Whether [holdFontFetches] is in place right now: its HTTP override and its
+/// empty asset manifest are both installed. A widget test harness checks this
+/// before it pumps, because `flutter_test` always installs some
+/// `HttpOverrides`, so only this tells a file that forgot the call apart.
+bool get fontFetchesHeld =>
+    HttpOverrides.current is _HeldFontHttpOverrides &&
+    assetManifest is _EmptyAssetManifest;
+
 /// An asset manifest that lists nothing, so google_fonts finds no bundled font.
 class _EmptyAssetManifest implements AssetManifest {
   @override

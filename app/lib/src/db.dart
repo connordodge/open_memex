@@ -40,6 +40,14 @@ class VaultDb {
   /// Columns schema V6 adds to `tags`.
   static const v6TagColumns = <String>['origin', 'first_line'];
 
+  /// Tables added by schema V8 (agent-edit revisions). The revisions read
+  /// returns empty while it is missing.
+  static const v8TableNames = <String>['note_revisions'];
+
+  /// Columns schema V8 adds to `notes` (Agent read-only). The note read
+  /// reports `agentReadOnly: false` while it is missing.
+  static const v8NoteColumns = <String>['agent_read_only'];
+
   final Database db;
 
   static VaultDb open(String vaultPath) {
@@ -81,8 +89,11 @@ class VaultDb {
   }
 
   Note? getNote(String id) {
+    // Probed on every read, like the V6 columns: missing below V8 (D16).
+    final hasFlag = hasColumns('notes', v8NoteColumns);
     final rows = db.select(
-      'SELECT id, title, content_md, frontmatter, version, created_at, updated_at FROM notes WHERE id = ?',
+      'SELECT id, title, content_md, frontmatter, version, created_at, '
+      'updated_at${hasFlag ? ', agent_read_only' : ''} FROM notes WHERE id = ?',
       [id],
     );
     if (rows.isEmpty) return null;
@@ -113,7 +124,44 @@ class VaultDb {
       updatedAt: (r['updated_at'] as num).toInt(),
       tags: tags,
       footerTags: footerTags,
+      agentReadOnly: hasFlag && (r['agent_read_only'] as num? ?? 0) != 0,
     );
+  }
+
+  /// The note's agent-edit revisions (`note_revisions`, V8), newest first
+  /// (D16, D21). Empty when the table is missing (probed on every call) or
+  /// the note has none.
+  ///
+  /// Newest first is the edit order (`new_version DESC`, as core and `memex
+  /// revisions list` order them), not `created_at`, which a wall-clock jump
+  /// back can put out of order.
+  List<NoteRevision> noteRevisions(String noteId) {
+    if (!hasTables(v8TableNames)) return const [];
+    return db
+        .select(
+          'SELECT id, agent_change_id, created_at FROM note_revisions '
+          'WHERE note_id = ? ORDER BY new_version DESC, created_at DESC, id DESC',
+          [noteId],
+        )
+        .map(
+          (r) => NoteRevision(
+            id: r['id'] as String,
+            agentChangeId: r['agent_change_id'] as String?,
+            createdAt: (r['created_at'] as num).toInt(),
+          ),
+        )
+        .toList();
+  }
+
+  /// The id of the note that owns agent-edit revision [revisionId], or null
+  /// when the vault has no such revision or no `note_revisions` table
+  /// (probed on every call).
+  String? noteRevisionNoteId(String revisionId) {
+    if (!hasTables(v8TableNames)) return null;
+    final rows = db.select('SELECT note_id FROM note_revisions WHERE id = ?', [
+      revisionId,
+    ]);
+    return rows.isEmpty ? null : rows.first['note_id'] as String;
   }
 
   /// All notes' (id, title) pairs. Used for the wikilink autocomplete and
@@ -419,6 +467,7 @@ class Note {
     required this.updatedAt,
     required this.tags,
     this.footerTags = const [],
+    this.agentReadOnly = false,
   });
   final String id;
   final String title;
@@ -432,6 +481,11 @@ class Note {
   /// The tags the Note footer shows: origin other than `body`, not a system
   /// tag, ordered by tag. Empty below schema V6 (#249, TD6).
   final List<String> footerTags;
+
+  /// Whether the person made this note Agent read-only (`notes.agent_read_only`,
+  /// V8; the hosted note read's `agent_read_only`). False below V8 and when
+  /// the field is missing (D16).
+  final bool agentReadOnly;
 
   /// [tags] without the system tags (`isSystemTag`, D17).
   List<String> get visibleTags =>
@@ -450,6 +504,24 @@ class Note {
     final role = decoded['role'];
     return role is String ? role : null;
   }
+}
+
+/// One agent-edit revision of a note (`note_revisions`, V8), as `memex
+/// revisions list` and `GET …/notes/{note_id}/revisions` list it (D14, D21).
+class NoteRevision {
+  const NoteRevision({
+    required this.id,
+    required this.agentChangeId,
+    required this.createdAt,
+  });
+  final String id;
+
+  /// The `agent_changes` entry the revision belongs to; null once that entry
+  /// is gone.
+  final String? agentChangeId;
+
+  /// Unix ms.
+  final int createdAt;
 }
 
 class NoteTitle {

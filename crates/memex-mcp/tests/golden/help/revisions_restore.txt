@@ -1,0 +1,8 @@
+Return a note to the text an agent edit replaced, keeping the replaced one
+
+Usage: memex revisions restore --vault <VAULT> --revision-id <REVISION_ID>
+
+Options:
+      --vault <VAULT>              Vault directory
+      --revision-id <REVISION_ID>  The revision to return to
+  -h, --help                       Print help
