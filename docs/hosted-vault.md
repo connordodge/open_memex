@@ -216,7 +216,7 @@ The vault server needs one access token, and every client sends it. The server r
 
 To rotate the token, stop the vault server, delete `<root>/.memex/access-token`, and start it again. It generates a new one. Then update every client (the app, the Claude Desktop and Raycast configs, `$MEMEX_ACCESS_TOKEN` for Claude Code), because the old token stops working at once. If you set `MEMEX_ACCESS_TOKEN` yourself, change the value in the service definition and restart.
 
-On a hosted vault one bearer token is shared by `/mcp` (the agents' endpoint) and `/api/v1` (the app's and the command line's endpoint), so Agent read-only stops agents that connect over MCP, but not a holder of the server token who also has shell access and can call `/api/v1` to clear it. Keep the token away from anything an agent can run a shell in. A separate token for agents is tracked in #26.
+On a hosted vault one bearer token is shared by `/mcp` (the agents' endpoint) and `/api/v1` (the app's endpoint), so Agent read-only stops agents that connect over MCP, but not a holder of the server token who also has shell access and can call `/api/v1` to clear it. That includes an agent you connect from Claude Code (see [Claude Code](#claude-code)) or any other client that runs a shell: it holds the token, so Agent read-only does not bind it until a separate token for agents lands. Keep the token away from anything an agent can run a shell in. That separate token is tracked in #26.
 
 ## Move a local vault onto the server
 
@@ -303,6 +303,8 @@ claude mcp add --transport http memex-home http://192.168.1.20:7878/vaults/home/
 ```
 
 Set `X-Memex-UTC-Offset` to your own offset from UTC, as `+HH:MM` or `-HH:MM`. Claude Code sends this header exactly as written, so it is a fixed offset: when daylight saving time changes, update the header (run `claude mcp remove memex-home` and add it again). The bridge that Claude Desktop and Raycast use sends the current offset automatically, so they need no such update. Without the header the vault server falls back to its own time zone (see [Time zone](#time-zone)).
+
+Claude Code runs a shell and holds the access token, so on a hosted vault Agent read-only does not bind it (see [The access token and rotating it](#the-access-token-and-rotating-it)).
 
 ## Troubleshooting
 

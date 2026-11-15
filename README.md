@@ -78,7 +78,7 @@ Open Memex is released under the [MIT license](LICENSE). To contribute, see [CON
   - capture and excerpts: `append_to_daily_note`, `add_excerpt`, `remove_excerpt`
   - Smart Folders and settings: `list_smart_folders`, `create_smart_folder`, `update_smart_folder`, `delete_smart_folder`, `add_to_smart_folder`, `remove_from_smart_folder`, `get_vault_settings`
   - tags and footer topics: `list_tags`, `tag_note`, `untag_note`, `add_footer_topic`
-- An agent changes an existing note's text only through `edit_note` (see [Agent note edits](#agent-note-edits)) and `update_vault_guide`, which rewrites the Vault Guide. No tool renames or deletes a note. The only write into a daily note body is `append_to_daily_note`; `tag_note`, `untag_note` and `add_footer_topic` write Note footer text only, never the person's own text.
+- `edit_note` is the only tool that edits the text you wrote in an existing note (see [Agent note edits](#agent-note-edits)); `update_vault_guide` rewrites the Vault Guide. `add_link`, `update_link`, `add_excerpt`, `remove_excerpt` and `remove_excerpt_block` write only link and transclusion text, and they also respect Agent read-only. No tool renames or deletes a note. The only write into a daily note body is `append_to_daily_note`; `tag_note`, `untag_note` and `add_footer_topic` write Note footer text only, never the person's own text.
 - 2 MCP prompts: `review_daily_notes` and `capture` (the same texts print with `memex prompt review` and `memex prompt capture`)
 
 ## Agent note edits
