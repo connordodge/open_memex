@@ -3559,7 +3559,223 @@ void main() {
         expect(h.state.status, SaveStatus.clean);
       },
     );
+
+    // ---- fix round 2: the base title of a queued save ----
+
+    test(
+      'a hosted queued retry where the person renamed the note offline and the agent changed another line merges and sends the new title',
+      () async {
+        final h = await _hosted(_wi16Vault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        await h.typeAndSave('Alpha mine\nBravo\nCharlie\n');
+        h.ctrl.onTitleChanged('Plan Q3');
+        await h.fireDebounce();
+        expect(h.queued(_planId)!.title, 'Plan Q3');
+        _foreignWrite(h.db, _planId, 'Alpha\nBravo\nCharlie theirs\n', 4);
+
+        await h.serverAnswers();
+
+        const merged = 'Alpha mine\nBravo\nCharlie theirs\n';
+        expect(h.notes.updatesOf(_planId).last, 'updateNote:$_planId@4');
+        expect(h.notes.updateTitles.last, 'Plan Q3');
+        expect(h.notes.updateBodies.last, merged);
+        expect(h.stored(_planId).contentMd, merged);
+        expect(h.stored(_planId).version, 5);
+        expect(h.queue, isEmpty);
+        expect(h.state.contentMd, merged);
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.errorMessage, isNull);
+      },
+    );
+
+    test(
+      'a hosted queued retry of a renamed note merges after the person left the note and came back',
+      () async {
+        final h = await _hosted(_wi16Vault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        h.ctrl.onTitleChanged('Plan Q3');
+        await h.typeAndSave('Alpha mine\nBravo\nCharlie\n');
+        h.ctrl.loadNote(h.stored(_otherId));
+        h.ctrl.loadNote(h.stored(_planId));
+        expect(h.state.title, 'Plan Q3');
+        _foreignWrite(h.db, _planId, 'Alpha\nBravo\nCharlie theirs\n', 4);
+        h.ctrl.onContentChanged('Alpha mine\nBravo mine\nCharlie\n');
+        await h.serverAnswers();
+        await h.fireDebounce();
+
+        const merged = 'Alpha mine\nBravo mine\nCharlie theirs\n';
+        expect(h.stored(_planId).contentMd, merged);
+        expect(h.notes.updateTitles.last, 'Plan Q3');
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.queue, isEmpty);
+      },
+    );
+
+    test(
+      'a hosted retry that saved a renamed note while the person typed and renamed again keeps the saved title as the queued base title',
+      () async {
+        final h = await _hosted(_wi16Vault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.serverDown();
+        await h.typeAndSave('Alpha mine\nBravo\nCharlie\n');
+        h.ctrl.onTitleChanged('Plan Q3');
+        await h.fireDebounce();
+        final slow = Completer<void>();
+        h.notes.writeGate = slow;
+        await h.serverAnswers();
+        // The person types and renames again while the retry is in flight.
+        h.ctrl
+          ..onTitleChanged('Plan Q4')
+          ..onContentChanged('Alpha mine\nBravo mine\nCharlie\n');
+        h.notes.writeGate = null;
+        slow.complete();
+        await pumpEventQueue();
+        expect(h.stored(_planId).version, 4);
+        expect(h.queued(_planId)!.baseVersion, 4);
+        // The fake CLI keeps titles out of its write: the server holds the
+        // title the retry sent, as a real one would.
+        h.db.db.execute('UPDATE notes SET title = ? WHERE id = ?', [
+          'Plan Q3',
+          _planId,
+        ]);
+        _foreignWrite(h.db, _planId, 'Alpha mine\nBravo\nCharlie theirs\n', 5);
+
+        await h.fireDebounce();
+
+        // The server's title (Plan Q3) is the one the retry stored, so the
+        // second rename is the person's alone and the save merges.
+        const merged = 'Alpha mine\nBravo mine\nCharlie theirs\n';
+        expect(h.notes.updatesOf(_planId).last, 'updateNote:$_planId@5');
+        expect(h.notes.updateTitles.last, 'Plan Q4');
+        expect(h.stored(_planId).contentMd, merged);
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.queue, isEmpty);
+      },
+    );
+
+    test(
+      'a hosted save that renamed the note moves the base title so the next merge compares with the renamed title',
+      () async {
+        final h = await _hosted(_wi16Vault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.ctrl.onTitleChanged('Plan Q3');
+        await h.typeAndSave('Alpha mine\nBravo\nCharlie\n');
+        expect(h.state.lastSavedVersion, 4);
+        // The server holds the renamed title (as the save left it) and the
+        // agent edits the last line.
+        h.db.db.execute('UPDATE notes SET title = ? WHERE id = ?', [
+          'Plan Q3',
+          _planId,
+        ]);
+        _foreignWrite(h.db, _planId, 'Alpha mine\nBravo\nCharlie theirs\n', 5);
+
+        h.ctrl
+          ..onTitleChanged('Plan Q4')
+          ..onContentChanged('Alpha mine\nBravo mine\nCharlie\n');
+        await h.fireDebounce();
+
+        const merged = 'Alpha mine\nBravo mine\nCharlie theirs\n';
+        expect(h.notes.updateTitles.last, 'Plan Q4');
+        expect(h.stored(_planId).contentMd, merged);
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.state.lastSavedVersion, 6);
+      },
+    );
+
+    test(
+      'a hosted save that lands while a later queued edit of the note waits moves the queued base title onto the title it stored',
+      () async {
+        final h = await _hosted(_wi16Vault());
+        h.ctrl.loadNote(h.stored(_planId));
+        h.ctrl.onTitleChanged('Plan Q3');
+        final first = Completer<void>();
+        h.notes.writeGate = first;
+        await h.typeAndSave('Alpha mine\nBravo\nCharlie\n');
+        h.ctrl.loadNote(h.stored(_otherId));
+        h.ctrl.loadNote(h.stored(_planId));
+        h.notes
+          ..onOutcome = null
+          ..writeGate = null;
+        // The newer save, with another rename, can't reach the server and
+        // queues on version 3.
+        h.serverDown();
+        h.ctrl.onTitleChanged('Plan Q4');
+        await h.typeAndSave('Alpha mine\nBravo mine\nCharlie\n');
+        expect(h.queued(_planId)!.baseVersion, 3);
+        // Its retry, sent once the first save lands, waits at a gate.
+        final second = Completer<void>();
+        h.notes
+          ..writeError = null
+          ..writeGate = second;
+
+        first.complete();
+        await pumpEventQueue();
+        expect(h.stored(_planId).version, 4);
+        expect(h.queued(_planId)!.baseVersion, 4);
+        // The fake CLI keeps titles out of its write, so the server's title
+        // is set as a real one would hold it; the agent edits the last line.
+        h.db.db.execute('UPDATE notes SET title = ? WHERE id = ?', [
+          'Plan Q3',
+          _planId,
+        ]);
+        _foreignWrite(h.db, _planId, 'Alpha mine\nBravo\nCharlie theirs\n', 5);
+        h.notes.writeGate = null;
+        second.complete();
+        await pumpEventQueue();
+
+        // The queued save's base title is the one the first save stored.
+        const merged = 'Alpha mine\nBravo mine\nCharlie theirs\n';
+        expect(h.notes.updatesOf(_planId).last, 'updateNote:$_planId@5');
+        expect(h.notes.updateTitles.last, 'Plan Q4');
+        expect(h.stored(_planId).contentMd, merged);
+        expect(h.state.status, SaveStatus.clean);
+        expect(h.queue, isEmpty);
+      },
+    );
+
+    test(
+      'a queued save holds the base title it was put with and a rebase moves it',
+      () {
+        const vault = HostedVaultRef(hostedServerId, 'wi16');
+        final q = PendingSaveQueue();
+        addTearDown(q.dispose);
+        void put(String? baseTitle) => q.put(
+          vault: vault,
+          noteId: 'n1',
+          title: 'T2',
+          text: 'typed',
+          baseVersion: 3,
+          baseTitle: baseTitle,
+          now: DateTime(2026, 10, 3, 9),
+          serverName: 'host',
+        );
+
+        put('T1');
+        expect(q.entryFor(vault, 'n1')!.baseTitle, 'T1');
+        q.updateText(vault, 'n1', 'typed again');
+        q.hold(vault, 'n1', SaveStatus.conflict, 'version conflict');
+        q.release(vault, 'n1');
+        expect(q.entryFor(vault, 'n1')!.baseTitle, 'T1');
+
+        q.rebase(vault, 'n1', 5, baseText: 'saved', baseTitle: 'T2');
+        expect(q.entryFor(vault, 'n1')!.baseTitle, 'T2');
+        expect(q.entryFor(vault, 'n1')!.save.baseVersion, 5);
+
+        q.rebase(vault, 'n1', 6, baseText: 'saved 2');
+        expect(
+          q.entryFor(vault, 'n1')!.baseTitle,
+          isNull,
+          reason: 'a rebase that does not know the title records none',
+        );
+
+        put(null);
+        expect(q.entryFor(vault, 'n1')!.baseTitle, isNull);
+      },
+    );
   });
+
   group('the queued base text (WI 16, Req 34a)', () {
     const vault = HostedVaultRef(hostedServerId, 'wi16');
     final now = DateTime(2026, 10, 3, 9);

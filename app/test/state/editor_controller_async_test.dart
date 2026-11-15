@@ -1015,6 +1015,40 @@ void main() {
     );
 
     test(
+      'a merge after a held conflict of a renamed note was opened again compares the server title with the base title of the held save',
+      () async {
+        final db = _wi16Vault();
+        final e = await _editor(db);
+        e.ctrl.loadNote(e.stored(_topicId));
+        _wi16ForeignWrite(db, _topicId, 'Alpha\nBravo\nCharlie theirs\n', 4);
+        e.ctrl.onTitleChanged('Renamed');
+        e.ctrl.onContentChanged('Alpha\nBravo\nCharlie mine\n');
+        e.ctrl.flushPendingSave();
+        e.ctrl.loadNote(e.stored(_otherId));
+        await pumpEventQueue();
+        // Both sides changed the last line: the conflict is held.
+        expect(e.notes.writes, ['updateNote:$_topicId@3']);
+        _wi16ForeignWrite(db, _topicId, 'Alpha theirs\nBravo\nCharlie\n', 5);
+
+        e.ctrl.loadNote(e.stored(_topicId));
+        expect(e.state.status, SaveStatus.conflict);
+        expect(e.state.title, 'Renamed');
+        e.ctrl.onContentChanged('Alpha\nBravo mine\nCharlie mine\n');
+        await e.fireDebounce();
+
+        // The server still holds the title the held save was based on, so
+        // the rename is the person's alone and the save merges.
+        const merged = 'Alpha theirs\nBravo mine\nCharlie mine\n';
+        expect(e.notes.writes.last, 'updateNote:$_topicId@5');
+        expect(e.cli.callsFor('update').last.flag('title'), 'Renamed');
+        expect(e.stored(_topicId).contentMd, merged);
+        expect(e.state.contentMd, merged);
+        expect(e.state.status, SaveStatus.clean);
+        expect(e.state.lastSavedVersion, 6);
+      },
+    );
+
+    test(
       'a merge after text was typed during a save that stored the earlier text uses that text as its base',
       () async {
         final db = _wi16Vault();
