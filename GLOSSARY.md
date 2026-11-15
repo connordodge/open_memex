@@ -173,6 +173,12 @@ _Avoid_: dictionary word, custom word
 A GitHub-flavoured markdown pipe table in a note body: a header line, a delimiter line (such as `|---|:-:|`) and zero or more body lines. Live preview shows it as one table row of the editor: a grid, or its raw lines while revealed.
 _Avoid_: grid (for the markdown), spreadsheet
 
+## Agent note edits (#1)
+
+**Agent read-only**:
+A flag the person sets on one note that makes it read-only to agents: agents can still read, search and link to the note, but cannot change it. Only the person can set or clear it.
+_Avoid_: locked, protected, pinned (Pinned is the Smart Folder flag)
+
 ## Agents sheet (#394)
 
 **Semantic recall**:

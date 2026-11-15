@@ -63,6 +63,7 @@ Other things to know:
 - A tag inside an excerpt you've filed into a topic note doesn't tag that topic note. It still looks like a tag there, and clicking it works.
 - The [Vault Guide](#the-vault-guide) is never scanned.
 - A note an agent writes with `create_note` isn't scanned for `#name`, so an agent can't add to your tags by writing one. The next time you save that note yourself, it is scanned.
+- An agent edit (`edit_note`) drops a body tag whose `#name` text it removed, except `inbox` and `agent-authored`, which stay even when their text is removed. An agent edit never adds a tag: a `#name` it writes is not a tag until your next save.
 - Writing `#x` on a note that already has `x` in its footer (see [The Note footer](#the-note-footer)) leaves one tag. It's now a tag in your text: its footer entry goes, and if you had removed an agent's `x` from that note earlier, that no longer blocks the agent (see [Removing a tag](#removing-a-tag)). Deleting the text later removes the tag.
 
 ## The `#` type-ahead

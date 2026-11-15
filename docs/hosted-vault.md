@@ -216,6 +216,8 @@ The vault server needs one access token, and every client sends it. The server r
 
 To rotate the token, stop the vault server, delete `<root>/.memex/access-token`, and start it again. It generates a new one. Then update every client (the app, the Claude Desktop and Raycast configs, `$MEMEX_ACCESS_TOKEN` for Claude Code), because the old token stops working at once. If you set `MEMEX_ACCESS_TOKEN` yourself, change the value in the service definition and restart.
 
+On a hosted vault one bearer token is shared by `/mcp` (the agents' endpoint) and `/api/v1` (the app's and the command line's endpoint), so Agent read-only stops agents that connect over MCP, but not a holder of the server token who also has shell access and can call `/api/v1` to clear it. Keep the token away from anything an agent can run a shell in. A separate token for agents is tracked in #26.
+
 ## Move a local vault onto the server
 
 To bring a vault you already use onto the vault server, copy it in whole. The server must never see a half-copied vault, so copy it somewhere it ignores, then rename it into place.
