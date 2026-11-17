@@ -1,4 +1,4 @@
-import 'dart:ui' show AppExitResponse;
+import 'dart:ui' show AppExitResponse, AppExitType;
 
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart' show AppLifecycleListener, VoidCallback;
@@ -221,4 +221,30 @@ class PlatformWindowTitle implements WindowTitle {
 /// The window title seam.
 final windowTitleProvider = Provider<WindowTitle>(
   (_) => const PlatformWindowTitle(),
+);
+
+/// Whether the app's exit is already confirmed (D3): a relaunch marks it
+/// after its own quit guard, so the app root's quit handler lets the exit
+/// through without asking again (req 23).
+class ExitConfirmation {
+  /// Whether [confirm] was called.
+  bool get confirmed => false;
+
+  /// Marks the exit as confirmed.
+  void confirm() {}
+}
+
+/// The app's [ExitConfirmation] (one per provider container).
+final appExitConfirmationProvider = Provider<ExitConfirmation>(
+  (_) => ExitConfirmation(),
+);
+
+/// Exits the process the way the platform does (D3).
+typedef AppProcessExit = Future<AppExitResponse> Function(AppExitType type);
+
+/// The process-exit seam. The default is
+/// `ServicesBinding.instance.exitApplication(type)`; tests override it.
+final appProcessExitProvider = Provider<AppProcessExit>(
+  (_) =>
+      (_) async => AppExitResponse.cancel,
 );
