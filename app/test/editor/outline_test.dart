@@ -258,6 +258,24 @@ void main() {
     });
   });
 
+  group('OutlineEntry text form', () {
+    test('toString names every field', () {
+      const e = OutlineEntry(
+        level: 2,
+        depth: 1,
+        text: 'Seed swap',
+        segment: 3,
+        local: 17,
+      );
+      final s = e.toString();
+      expect(s, contains('2'));
+      expect(s, contains('1'));
+      expect(s, contains('Seed swap'));
+      expect(s, contains('3'));
+      expect(s, contains('17'));
+    });
+  });
+
   group('outlineText', () {
     const cases = <(String, String, String)>[
       ('strips bold with stars', '**bold** word', 'bold word'),
@@ -300,6 +318,20 @@ void main() {
         '**Big** and _small_ and [[A|b]] and `c` and ~~d~~',
         'Big and small and b and c and d',
       ),
+      ('strips bold italic to its content', '***both*** word', 'both word'),
+      (
+        'maps a wikilink inside bold to its alias',
+        '**bold [[A|alias]] end**',
+        'bold alias end',
+      ),
+      ('strips italic nested inside bold', '**a *b* c**', 'a b c'),
+      (
+        'strips bold inside a link text',
+        '[**bold** link](https://e.com)',
+        'bold link',
+      ),
+      ('keeps a tag inside bold', '**plan #garden**', 'plan #garden'),
+      ('keeps text after a nested token', '**a _b_** tail', 'a b tail'),
     ];
     for (final (name, input, expected) in cases) {
       test('outlineText $name', () {
