@@ -202,6 +202,36 @@ void main() {
     },
   );
 
+  // Fix round 4 (r4 #2): the launch owns the check this time and the menu
+  // check joins during the launch's own stamp write. The launch answers from
+  // its check's result, not from the joiner's Checking.
+  test(
+    'a launch owning the check answers true when a manual check joins its stamp write',
+    () async {
+      final fakes = _HeldStampFakes();
+      final rig = ControllerRig(fakes: fakes);
+      fakes.fetcher.items = [newerItem()];
+      fakes.lastCheck.writeGate = Completer<void>();
+
+      final launch = rig.controller.launch();
+      await pumpEventQueue();
+      expect(fakes.lastCheck.writes, hasLength(1), reason: 'setup: writing');
+      expect(rig.state, isA<UpdateAvailable>());
+
+      final menu = rig.controller.check(manual: true);
+      await pumpEventQueue();
+      expect(rig.state, isA<UpdateChecking>(), reason: 'the menu has joined');
+
+      fakes.lastCheck.writeGate!.complete();
+      expect(await launch, isTrue);
+      await menu;
+
+      expect(rig.state, isA<UpdateAvailable>());
+      expect(fakes.fetcher.fetchCount, 1);
+      expect(fakes.lastCheck.writes, hasLength(1));
+    },
+  );
+
   test('a check after a held stamp write finished fetches again', () async {
     final held = await _holdInStampWrite(offer: true);
     final rig = held.rig;
