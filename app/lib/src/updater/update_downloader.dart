@@ -90,8 +90,19 @@ class HttpUpdateDownloader implements UpdateDownloader {
 
   /// Creates [directory] when missing and sets its mode to 0700, also when
   /// it already existed.
+  ///
+  /// Refuses (as [UpdateErrorCause.downloadFailed]) a [directory] directly
+  /// under the shared `/tmp`, and a [directory] that is a symbolic link,
+  /// whose target another user could swap between the check and the write.
   Future<void> _prepareDirectory() async {
+    if (_isSharedTemp(p.dirname(p.normalize(p.absolute(directory))))) {
+      throw const UpdateFailure(UpdateErrorCause.downloadFailed);
+    }
     await Directory(directory).create(recursive: true);
+    final type = await FileSystemEntity.type(directory, followLinks: false);
+    if (type != FileSystemEntityType.directory) {
+      throw const UpdateFailure(UpdateErrorCause.downloadFailed);
+    }
     final chmod = await Process.run('/bin/chmod', ['700', directory]);
     if (chmod.exitCode != 0) {
       throw const UpdateFailure(UpdateErrorCause.downloadFailed);
@@ -137,7 +148,49 @@ UpdateDownloader defaultUpdateDownloader(Ref ref) => HttpUpdateDownloader(
 
 /// The production update download directory behind
 /// `updateDownloadDirProvider`: `<Directory.systemTemp>/open-memex-update`
-/// (the per-user temp directory, never `/tmp`). Computing it does not touch
-/// the file system.
-String defaultUpdateDownloadDir(Ref ref) =>
-    p.join(Directory.systemTemp.path, updateDownloadDirName);
+/// (the per-user temp directory, never `/tmp`; see [updateDownloadDirFor]).
+/// Computing it does not touch the file system; it runs `getconf` only when
+/// the system temp directory is `/tmp`.
+String defaultUpdateDownloadDir(Ref ref) => updateDownloadDirFor(
+  Directory.systemTemp.path,
+  userTempDir: _darwinUserTempDir,
+);
+
+/// The update download directory for the system temp directory [systemTemp]:
+/// `<systemTemp>/open-memex-update`, unless [systemTemp] is the shared `/tmp`
+/// (TMPDIR unset). Then it is `<userTempDir()>/open-memex-update`, the
+/// per-user temp directory, when [userTempDir] gives one; otherwise it stays
+/// under `/tmp`, which the downloader refuses.
+String updateDownloadDirFor(
+  String systemTemp, {
+  required String? Function() userTempDir,
+}) {
+  if (_isSharedTemp(systemTemp)) {
+    final user = userTempDir();
+    if (user != null && user.isNotEmpty && !_isSharedTemp(user)) {
+      return p.join(p.normalize(user), updateDownloadDirName);
+    }
+  }
+  return p.join(systemTemp, updateDownloadDirName);
+}
+
+/// Whether [path] is the shared, world-writable `/tmp` (or its macOS target
+/// `/private/tmp`).
+bool _isSharedTemp(String path) {
+  final normal = p.normalize(path);
+  return normal == '/tmp' || normal == '/private/tmp';
+}
+
+/// The per-user temp directory from `getconf DARWIN_USER_TEMP_DIR`; null
+/// when it can't be read.
+String? _darwinUserTempDir() {
+  try {
+    final result = Process.runSync('/usr/bin/getconf', [
+      'DARWIN_USER_TEMP_DIR',
+    ]);
+    if (result.exitCode != 0) return null;
+    return (result.stdout as String).trim();
+  } on ProcessException {
+    return null;
+  }
+}

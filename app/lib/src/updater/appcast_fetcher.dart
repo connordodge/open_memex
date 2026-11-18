@@ -20,15 +20,26 @@ const _appcastUrlDefine = String.fromEnvironment('SELF_UPDATE_APPCAST_URL');
 
 /// The Appcast URL for the `SELF_UPDATE_APPCAST_URL` define value [define]:
 /// [define] when it is non-empty, otherwise [permanentAppcastUrl] (D18).
-Uri appcastUrlFor(String define) =>
-    Uri.parse(define.isEmpty ? permanentAppcastUrl : define);
+///
+/// A [define] that is not a URI gives the empty URI, which the fetcher
+/// refuses as [UpdateErrorCause.feedUnreadable] instead of throwing here.
+Uri appcastUrlFor(String define) => define.isEmpty
+    ? Uri.parse(permanentAppcastUrl)
+    : Uri.tryParse(define) ?? Uri();
+
+/// Whether [url] is one the HTTP client can GET: an http or https URL with a
+/// host.
+bool _fetchable(Uri url) =>
+    (url.isScheme('http') || url.isScheme('https')) && url.host.isNotEmpty;
 
 /// The [AppcastFetcher] over HTTP: GETs [url] with a client from
 /// [clientFactory] and parses the body with `parseAppcast`.
 ///
 /// Each fetch takes a new client from [clientFactory] and closes it when the
 /// fetch ends. A fetch that has no full answer within [timeout] fails with
-/// [UpdateErrorCause.offline].
+/// [UpdateErrorCause.offline]. A [url] that is not http or https with a host
+/// (only reachable through the D18 override) fails with
+/// [UpdateErrorCause.feedUnreadable] before any request.
 class HttpAppcastFetcher implements AppcastFetcher {
   HttpAppcastFetcher({
     required this.clientFactory,
@@ -45,6 +56,9 @@ class HttpAppcastFetcher implements AppcastFetcher {
 
   @override
   Future<List<AppcastItem>> fetch() async {
+    if (!_fetchable(url)) {
+      throw const UpdateFailure(UpdateErrorCause.feedUnreadable);
+    }
     final client = clientFactory();
     try {
       final http.Response response;
@@ -56,6 +70,9 @@ class HttpAppcastFetcher implements AppcastFetcher {
         throw const UpdateFailure(UpdateErrorCause.offline);
       } on TimeoutException {
         throw const UpdateFailure(UpdateErrorCause.offline);
+      } on ArgumentError {
+        // A URL the HTTP client refuses to open; never a raw error (D1).
+        throw const UpdateFailure(UpdateErrorCause.feedUnreadable);
       }
       final status = response.statusCode;
       if (status == 404) {

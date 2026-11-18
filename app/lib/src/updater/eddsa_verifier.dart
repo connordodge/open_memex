@@ -24,7 +24,8 @@ const _signatureLength = 64;
 /// key ([UpdateErrorCause.noPublicKey]), no signature
 /// ([UpdateErrorCause.noSignature]), a signature that is not base64 of 64
 /// bytes or does not verify ([UpdateErrorCause.badSignature]). A file that
-/// can't be read fails with [UpdateErrorCause.downloadFailed]. Every refusal
+/// can't be read, or a check whose isolate fails, fails with
+/// [UpdateErrorCause.downloadFailed] (the bytes were never checked). Every refusal
 /// deletes the file first (req 20); a pass leaves it unchanged.
 class IsolateEdDsaVerifier implements EdDsaVerifier {
   IsolateEdDsaVerifier({required this.publicKey});
@@ -51,7 +52,12 @@ class IsolateEdDsaVerifier implements EdDsaVerifier {
     if (edSignature.trim().isEmpty) return UpdateErrorCause.noSignature;
     final signature = _decode(edSignature, _signatureLength);
     if (signature == null) return UpdateErrorCause.badSignature;
-    return Isolate.run(() => _verifyFile(dmgPath, key, signature));
+    try {
+      return await Isolate.run(() => _verifyFile(dmgPath, key, signature));
+    } on Object {
+      // The check never ran to the end, so the bytes were never checked.
+      return UpdateErrorCause.downloadFailed;
+    }
   }
 }
 
