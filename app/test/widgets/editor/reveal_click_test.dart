@@ -689,6 +689,27 @@ void main() {
     );
 
     testWidgets(
+      'a double click on the right half of the last glyph of a bold word the first click revealed selects that word not the closing marker',
+      (tester) async {
+        const text = 'see **bold** here\nnext line';
+        final (:b, tabs: _) = await _wi65Pump(tester, text);
+        final word = text.indexOf('bold');
+        // `bold|`: the right half of `d`. The press-time offset is the word
+        // end, which the row's field resolves to as well, so the first
+        // click keeps the field's upstream affinity and the second click
+        // selects the word before the caret, not the marker after it.
+        final end = word + 4;
+
+        await _wi65Clicks(tester, [_wi65RightHalf(b, end - 1)]);
+
+        expect(_wi65Range(b.selection()), (word, end));
+        await _wi65Settle(tester);
+        expect(_wi65Range(b.selection()), (word, end));
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
       'a second click over another word within kDoubleTapSlop selects the first click word',
       (tester) async {
         const text = 'intro\n## Hi world\nnext line';
