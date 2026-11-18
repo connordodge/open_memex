@@ -1,3 +1,4 @@
+import '../cli/search_cli.dart';
 import '../memex_cli.dart';
 
 /// Vault search for the Command palette's Passages group (Spec #59 req 39):
@@ -45,15 +46,22 @@ class SearchHit {
     required this.noteUpdatedAt,
   });
 
-  /// Parses one req 34 hit object. A missing required key, or a value of
-  /// the wrong type, throws [FormatException].
-  // TODO(#74): skeleton only.
-  factory SearchHit.fromJson(Map<String, Object?> json) => const SearchHit(
-    noteId: '',
-    noteTitle: '',
-    chunkId: '',
-    snippet: '',
-    noteUpdatedAt: 0,
+  /// Parses one req 34 hit object: `note_id`, `note_title`, `note_role`
+  /// (null, `daily` or `topic`), `day` (null or `YYYY-MM-DD`), `chunk_id`,
+  /// `snippet`, `start_byte` (int or null), `via` (null or `YYYY-MM-DD`) and
+  /// `note_updated_at` (ms epoch). A nullable key may be absent. A missing
+  /// or null required key, or a value of the wrong type, throws
+  /// [FormatException].
+  factory SearchHit.fromJson(Map<String, Object?> json) => SearchHit(
+    noteId: _required<String>(json, 'note_id'),
+    noteTitle: _required<String>(json, 'note_title'),
+    noteRole: _optional<String>(json, 'note_role'),
+    day: _optional<String>(json, 'day'),
+    chunkId: _required<String>(json, 'chunk_id'),
+    snippet: _required<String>(json, 'snippet'),
+    startByte: _optional<int>(json, 'start_byte'),
+    via: _optional<String>(json, 'via'),
+    noteUpdatedAt: _required<int>(json, 'note_updated_at'),
   );
 
   final String noteId;
@@ -79,7 +87,65 @@ class SearchHit {
 
   /// The note's `updated_at`, ms epoch.
   final int noteUpdatedAt;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SearchHit &&
+      other.noteId == noteId &&
+      other.noteTitle == noteTitle &&
+      other.noteRole == noteRole &&
+      other.day == day &&
+      other.chunkId == chunkId &&
+      other.snippet == snippet &&
+      other.startByte == startByte &&
+      other.via == via &&
+      other.noteUpdatedAt == noteUpdatedAt;
+
+  @override
+  int get hashCode => Object.hash(
+    noteId,
+    noteTitle,
+    noteRole,
+    day,
+    chunkId,
+    snippet,
+    startByte,
+    via,
+    noteUpdatedAt,
+  );
+
+  @override
+  String toString() =>
+      'SearchHit($noteId, $noteTitle, role: $noteRole, day: $day, '
+      'chunk: $chunkId, startByte: $startByte, via: $via, '
+      'updatedAt: $noteUpdatedAt)';
 }
+
+/// [json]'s [key] as a [T]; a missing, null or other-typed value throws
+/// [FormatException].
+T _required<T extends Object>(Map<String, Object?> json, String key) {
+  final value = json[key];
+  if (value is T) return value;
+  throw FormatException('search hit: "$key" is not a $T: $value');
+}
+
+/// [json]'s [key] as a [T], or null when it is absent or null; any other
+/// type throws [FormatException].
+T? _optional<T extends Object>(Map<String, Object?> json, String key) {
+  final value = json[key];
+  if (value == null || value is T) return value as T?;
+  throw FormatException('search hit: "$key" is not a $T or null: $value');
+}
+
+/// The [Semantic] for req 34's `semantic` string; any other string is
+/// [Semantic.unknown].
+Semantic semanticFromWire(String wire) => switch (wire) {
+  'on' => Semantic.on,
+  'model_not_downloaded' => Semantic.modelNotDownloaded,
+  'embeddings_off' => Semantic.embeddingsOff,
+  'unavailable' => Semantic.unavailable,
+  _ => Semantic.unknown,
+};
 
 /// What a search answers (req 39). Value equality.
 sealed class SearchResult {
@@ -97,6 +163,29 @@ class SearchReady extends SearchResult {
   final List<SearchHit> hits;
   final Semantic semantic;
   final bool truncated;
+
+  @override
+  bool operator ==(Object other) {
+    if (other is! SearchReady ||
+        other.semantic != semantic ||
+        other.truncated != truncated ||
+        other.hits.length != hits.length) {
+      return false;
+    }
+    for (var i = 0; i < hits.length; i++) {
+      if (other.hits[i] != hits[i]) return false;
+    }
+    return true;
+  }
+
+  @override
+  int get hashCode =>
+      Object.hash(SearchReady, Object.hashAll(hits), semantic, truncated);
+
+  @override
+  String toString() =>
+      'SearchReady(${hits.length} hits, semantic: ${semantic.name}, '
+      'truncated: $truncated)';
 }
 
 /// Search can't run on this vault right now, for [reason].
@@ -104,6 +193,16 @@ class SearchUnavailable extends SearchResult {
   const SearchUnavailable(this.reason);
 
   final SearchUnavailableReason reason;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SearchUnavailable && other.reason == reason;
+
+  @override
+  int get hashCode => Object.hash(SearchUnavailable, reason);
+
+  @override
+  String toString() => 'SearchUnavailable($reason)';
 }
 
 /// Why search is unavailable (req 39). Value equality.
@@ -114,16 +213,77 @@ sealed class SearchUnavailableReason {
 /// A local vault with no `memex` CLI configured.
 class SearchNoCli extends SearchUnavailableReason {
   const SearchNoCli();
+
+  @override
+  bool operator ==(Object other) => other is SearchNoCli;
+
+  @override
+  int get hashCode => (SearchNoCli).hashCode;
+
+  @override
+  String toString() => 'SearchNoCli()';
 }
 
 /// The local `memex` predates `memex search` (exit 2, non-JSON stderr).
 class MemexOutdated extends SearchUnavailableReason {
   const MemexOutdated();
+
+  @override
+  bool operator ==(Object other) => other is MemexOutdated;
+
+  @override
+  int get hashCode => (MemexOutdated).hashCode;
+
+  @override
+  String toString() => 'MemexOutdated()';
 }
 
 /// The vault server predates the search route (404 no route).
 class ServerOutdated extends SearchUnavailableReason {
   const ServerOutdated();
+
+  @override
+  bool operator ==(Object other) => other is ServerOutdated;
+
+  @override
+  int get hashCode => (ServerOutdated).hashCode;
+
+  @override
+  String toString() => 'ServerOutdated()';
+}
+
+/// The search answer `{"query":…,"semantic":…,"hits":[…],"truncated":…}`
+/// (req 34: the CLI's stdout and the route's 200 body alike) as a
+/// [SearchReady]. `query` is not read. Anything that is not such an answer
+/// throws [MemexException] (never [FormatException]).
+SearchReady searchReadyFromJson(Object? decoded) {
+  if (decoded is! Map<String, Object?>) {
+    throw MemexException('search failed: the answer is not a JSON object');
+  }
+  final semantic = decoded['semantic'];
+  final rows = decoded['hits'];
+  final truncated = decoded['truncated'];
+  if (semantic is! String || rows is! List<Object?> || truncated is! bool) {
+    throw MemexException(
+      'search failed: the answer has no semantic, hits list or truncated flag',
+    );
+  }
+  try {
+    return SearchReady(
+      [
+        for (final row in rows)
+          SearchHit.fromJson(
+            row is Map<String, Object?>
+                ? row
+                : throw const FormatException('search hit: not an object'),
+          ),
+      ],
+      semantic: semanticFromWire(semantic),
+      truncated: truncated,
+    );
+  } on FormatException catch (e) {
+    throw MemexException('search failed: ${e.message}');
+  }
 }
 
 /// [SearchAccess] for a local vault: runs `memex search` through [cli]. A
@@ -136,11 +296,17 @@ class LocalSearchAccess implements SearchAccess {
   /// The `memex` CLI; null when none is configured.
   final MemexCli? cli;
 
-  // TODO(#74): skeleton only.
   @override
   Future<SearchResult> search(
     String query, {
     bool allowDownload = false,
-  }) async =>
-      const SearchReady([], semantic: Semantic.unknown, truncated: false);
+  }) async {
+    final cli = this.cli;
+    if (cli == null) return const SearchUnavailable(SearchNoCli());
+    return cli.search(
+      vaultPath: vaultPath,
+      query: query,
+      allowDownload: allowDownload,
+    );
+  }
 }

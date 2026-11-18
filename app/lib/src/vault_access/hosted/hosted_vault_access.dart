@@ -191,8 +191,7 @@ class _ComposedClient implements HostedClient {
 }
 
 /// The hosted [SearchAccess] until #75: a vault server's search route is not
-/// wired yet.
-// TODO(#74): skeleton only.
+/// wired yet, so every search answers [ServerOutdated].
 class _ServerOutdatedSearch implements SearchAccess {
   const _ServerOutdatedSearch();
 
@@ -200,6 +199,5 @@ class _ServerOutdatedSearch implements SearchAccess {
   Future<SearchResult> search(
     String query, {
     bool allowDownload = false,
-  }) async =>
-      const SearchReady([], semantic: Semantic.unknown, truncated: false);
+  }) async => const SearchUnavailable(ServerOutdated());
 }
