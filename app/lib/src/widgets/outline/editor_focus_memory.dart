@@ -5,6 +5,8 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../state/editor_controller.dart';
+import '../../state/note_reveal.dart';
+import '../../state/outline_section.dart';
 import '../editor/segment_view.dart';
 import '../editor/source_surface.dart';
 import '../editor/text_segment.dart' show EditorScrollScope;
@@ -23,10 +25,13 @@ const _bodyKey = Key('editor-body');
 /// `OutlineKeys` attaches it); focus elsewhere (the sidebar, the Outline)
 /// leaves the memory as it is. The editor showing another note forgets it.
 class EditorFocusMemory {
-  EditorFocusMemory._(this._activeNoteId);
+  EditorFocusMemory._(this._activeNoteId, this._reveals);
 
   /// The note the editor shows now.
   final String? Function() _activeNoteId;
+
+  /// The reveals (Outline jumps) still to land on the editor page.
+  final _Reveals _reveals;
 
   int _attached = 0;
   FocusNode? _field;
@@ -84,7 +89,7 @@ class EditorFocusMemory {
   bool restore() {
     final node = remembered ?? _bodyNode();
     if (node == null) return false;
-    _focusInPlace(node);
+    _focusInPlace(node, _reveals);
     return true;
   }
 
@@ -146,16 +151,20 @@ class EditorFocusMemory {
   /// single line field selecting all (macOS) and the caret being scrolled
   /// into view. Focus may pass on (a segment node hands it to a row); this
   /// holds the editor page and the field's selection until two frames end.
-  static void _focusInPlace(FocusNode node) {
+  ///
+  /// The hold stands aside for a reveal still to land ([reveals], an
+  /// Outline jump made just before): it holds the page where that reveal
+  /// lands it, not where it was when focus moved.
+  static void _focusInPlace(FocusNode node, _Reveals reveals) {
     final context = node.context;
     final scroll = context
         ?.getInheritedWidgetOfExactType<EditorScrollScope>()
         ?.controller;
-    final held = [
+    final held = <ScrollPosition, double>{
       if (scroll != null)
         for (final p in scroll.positions)
-          if (p.hasPixels) (position: p, pixels: p.pixels),
-    ];
+          if (p.hasPixels) p: p.pixels,
+    };
     final editable = context == null ? null : _editableOf(context);
     final controller =
         editable != null && identical(editable.widget.focusNode, node)
@@ -163,15 +172,43 @@ class EditorFocusMemory {
         : null;
     final selection = controller?.selection;
     var done = false;
+    var landing = reveals.due();
+    var holding = false;
+
+    // The reveal seam lands only from a frame's end, in one jump; the caret
+    // reveal animates, moving the page from a frame's start. A page move at
+    // a frame's end while a reveal is due is that reveal landing: hold the
+    // page there from now on.
+    final listeners = <ScrollPosition, VoidCallback>{
+      for (final position in held.keys)
+        position: () {
+          if (holding || !position.hasPixels) return;
+          if (SchedulerBinding.instance.schedulerPhase !=
+              SchedulerPhase.postFrameCallbacks) {
+            return;
+          }
+          if (!landing && !reveals.due()) return;
+          held[position] = position.pixels;
+        },
+    };
+    listeners.forEach((position, listener) => position.addListener(listener));
 
     void hold(Duration _) {
-      for (final (:position, :pixels) in held) {
-        if (!position.hasPixels) continue;
+      if (reveals.pending()) {
+        // The seam lands it at the end of a coming frame: the page is the
+        // reveal's to move until then.
+        landing = true;
+        return;
+      }
+      holding = true;
+      held.forEach((position, pixels) {
+        if (!position.hasPixels) return;
         if (position.pixels != pixels || position.isScrollingNotifier.value) {
           // Also cancels a caret reveal animation that has not moved yet.
           position.jumpTo(pixels);
         }
-      }
+      });
+      holding = false;
     }
 
     void onFocus() {
@@ -197,6 +234,9 @@ class EditorFocusMemory {
             done = true;
             FocusManager.instance.removeListener(onFocus);
             hold(d);
+            listeners.forEach(
+              (position, listener) => position.removeListener(listener),
+            );
           })
           ..ensureVisualUpdate();
       })
@@ -204,11 +244,31 @@ class EditorFocusMemory {
   }
 }
 
+/// What [EditorFocusMemory] reads of the reveals of the note shown:
+/// [pending], a request waits on the reveal seam (`noteRevealProvider`);
+/// [due], that, or the last Outline jump (`outlineSectionHubProvider`) has
+/// not been seen to land.
+typedef _Reveals = ({bool Function() pending, bool Function() due});
+
 /// The app's [EditorFocusMemory]. It forgets the field when the editor
 /// shows another note.
 final editorFocusMemoryProvider = Provider<EditorFocusMemory>((ref) {
   String? active() => ref.read(editorControllerProvider.notifier).activeNoteId;
-  final memory = EditorFocusMemory._(active);
+  bool pending() {
+    final noteId = active();
+    final request = ref.read(noteRevealProvider)?.request;
+    return noteId != null && request != null && request.noteId == noteId;
+  }
+
+  bool due() {
+    if (pending()) return true;
+    // Taken off the seam but not seen to land (its row still being built).
+    final hub = ref.read(outlineSectionHubProvider);
+    final jump = hub.jump;
+    return jump != null && jump.noteId == active() && !hub.jumpLanded;
+  }
+
+  final memory = EditorFocusMemory._(active, (pending: pending, due: due));
   var shown = active();
   ref.listen<EditorStateValue>(editorControllerProvider, (_, _) {
     final now = active();
