@@ -372,7 +372,13 @@ void main() {
           'Update ready',
         );
         expect(find.byKey(const Key('update-modal-relaunch')), findsOneWidget);
-        expect(controller.calls, isEmpty, reason: 'opening calls no action');
+        // The app root's own first-frame launch() is not an action the tap
+        // caused (#39 wires it), so it is left out of the call list.
+        expect(
+          controller.calls.where((call) => call != 'launch'),
+          isEmpty,
+          reason: 'opening calls no action',
+        );
       });
     }
 

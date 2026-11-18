@@ -106,11 +106,17 @@ class UpdaterRobot {
   /// Expects exactly one update modal, showing the title [title].
   void expectModal(String title) {
     expect(modal, findsOneWidget, reason: 'one update modal shows');
+    final titleFinder = inModal(this.title);
     expect(
-      inModal(find.text(title)),
+      titleFinder,
       findsOneWidget,
-      reason: 'the update modal shows "$title"',
+      reason: 'the update modal has one update-modal-title',
     );
+    final widget = tester.widget(titleFinder);
+    final shown = widget is Text
+        ? (widget.data ?? widget.textSpan?.toPlainText())
+        : null;
+    expect(shown, title, reason: 'the update modal title reads "$title"');
   }
 
   /// Expects no update modal.
