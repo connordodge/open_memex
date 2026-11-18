@@ -549,7 +549,7 @@ class PanelHeader extends StatelessWidget {
               '· $count',
               style: OmType.mono(
                 size: 10.5,
-                color: OmColors.fg3,
+                color: OmColors.fg2,
                 letterSpacing: 0.8,
               ),
             ),

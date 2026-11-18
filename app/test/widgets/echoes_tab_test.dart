@@ -2096,7 +2096,10 @@ void main() {
     });
 
     for (final (name, scale, shrinks) in [
-      ('the tab chips keep their natural size at 0.5 text scale', 0.5, false),
+      // WI #68: four chips (outline added) no longer fit the 340 px panel at
+      // 0.5 under the 1 em wide test font; the real-font fit at 1.0 is pinned
+      // in outline_tab_test.dart. The natural-size case moves to 0.45.
+      ('the tab chips keep their natural size at 0.45 text scale', 0.45, false),
       ('the tab chips shrink together to fit at 1.5x text scale', 0.75, true),
     ]) {
       testWidgets(name, (tester) async {
