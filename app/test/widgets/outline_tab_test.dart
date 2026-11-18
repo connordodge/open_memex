@@ -31,6 +31,8 @@ import 'package:open_memex_app/src/editor/outline.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';
 import 'package:open_memex_app/src/state/outline_state.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart' show VirtualTodayTab;
+import 'package:open_memex_app/src/state/today_state.dart'
+    show virtualTodayNote;
 import 'package:open_memex_app/src/state/vault_access_state.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/theme/app_theme.dart';
@@ -856,6 +858,45 @@ void main() {
     );
   });
 
+  group('tooltip on short rows', () {
+    testWidgets(
+      'hovering an entry that fits on one line shows no tooltip with its text',
+      (tester) async {
+        await _wi68PumpList(tester, entries: _wi68Entries());
+        const short = 'Beds and layout';
+        expect(_wi68Expected[3].$3, short, reason: 'fixture: row 3');
+        final row = tester.getRect(_wi68Row(3));
+        expect(
+          find.ancestor(of: _wi68Row(3), matching: find.byType(Tooltip)),
+          findsNothing,
+          reason: 'a row that does not ellipsize carries no Tooltip',
+        );
+        expect(
+          find.descendant(of: _wi68Row(3), matching: find.byType(Tooltip)),
+          findsNothing,
+        );
+
+        final mouse = await _wi68Mouse(tester);
+        await mouse.moveTo(row.center);
+        await tester.pump();
+        await tester.pump(const Duration(seconds: 1));
+
+        expect(
+          _wi68ParagraphRects(tester, short).where((r) => r.top >= row.bottom),
+          isEmpty,
+          reason: 'no duplicate of the one-line text below the row',
+        );
+        expect(
+          _wi68ParagraphRects(tester, short),
+          hasLength(1),
+          reason: 'the row text only',
+        );
+
+        await _wi68MouseAway(tester, mouse);
+      },
+    );
+  });
+
   // ------------------------------------------------------------- states
   group('row states', () {
     testWidgets(
@@ -1431,12 +1472,126 @@ void main() {
           findsNothing,
           reason: 'the editor still holds the garden note',
         );
+        // Neither empty-state copy flashes while the editor has not loaded
+        // the new note: the header stays, the tab is just not decided yet.
+        expect(find.text(_wi68NoNote), findsNothing);
+        expect(find.text(_wi68NoHeadings), findsNothing);
+        expect(find.text(_wi68Eyebrow), findsOneWidget);
+        expect(_wi68KeycapFinder, findsOneWidget);
 
         p.load(_wi68OtherId);
         await pumpFrames(tester);
         expect(_wi68In(_wi68Row(0), 'Shed repairs'), findsOneWidget);
         expect(_wi68In(_wi68Row(1), 'Roof felt'), findsOneWidget);
         expect(_wi68Row(2), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'on a hosted vault a switch to a note the editor has not loaded yet shows the shared loading state and no empty copy',
+      (tester) async {
+        final p = await _wi68PumpPanel(
+          tester,
+          vault: const HostedVaultRef('srv', 'a'),
+        );
+        expect(find.text('Garden planning 2026'), findsOneWidget);
+
+        p.select(_wi68OtherId);
+        await pumpFrames(tester);
+
+        expect(find.byKey(vaultAsyncLoadingKey), findsOneWidget);
+        expect(find.text(_wi68NoNote), findsNothing);
+        expect(find.text(_wi68NoHeadings), findsNothing);
+        expect(find.text('Garden planning 2026'), findsNothing);
+
+        p.load(_wi68OtherId);
+        await pumpFrames(tester);
+        expect(find.byKey(vaultAsyncLoadingKey), findsNothing);
+        expect(_wi68In(_wi68Row(0), 'Shed repairs'), findsOneWidget);
+      },
+    );
+
+    for (final (name, hosted) in <(String, bool)>[
+      (
+        'the first edit of a virtual Today note keeps its entries while it becomes the real daily note on a local vault',
+        false,
+      ),
+      (
+        'the first edit of a virtual Today note keeps its entries while it becomes the real daily note on a hosted vault',
+        true,
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        const today = VirtualTodayTab('2026-11-18');
+        final p = await _wi68PumpPanel(
+          tester,
+          noteId: today.id,
+          load: false,
+          vault: hosted
+              ? const HostedVaultRef('srv', 'a')
+              : const LocalVaultRef('/tmp/om-68-vault'),
+        );
+        p.editor.loadNote(virtualTodayNote('2026-11-18'));
+        await pumpFrames(tester);
+        expect(find.text(_wi68NoHeadings), findsOneWidget);
+
+        p.editor.type('## Compost bins\n');
+        await pumpFrames(tester);
+        expect(_wi68In(_wi68Row(0), 'Compost bins'), findsOneWidget);
+
+        // The create resolves: the editor holds the real id and the note
+        // read for it is still in flight.
+        p.gate.close();
+        p.db.seedNote(
+          id: 'n68-daily',
+          title: '2026-11-18',
+          content: '## Compost bins\n',
+          role: 'daily',
+        );
+        p.editor.loadNote(p.db.getNote('n68-daily'));
+        p.select('n68-daily');
+        await tester.pump();
+
+        expect(
+          find.byKey(vaultAsyncLoadingKey),
+          findsNothing,
+          reason: 'no spinner while the read is in flight',
+        );
+        expect(_wi68In(_wi68Row(0), 'Compost bins'), findsOneWidget);
+        expect(find.text(_wi68NoHeadings), findsNothing);
+        expect(p.roles.last, 'daily', reason: 'the role of the daily note');
+
+        p.gate.open();
+        await pumpFrames(tester);
+        expect(_wi68In(_wi68Row(0), 'Compost bins'), findsOneWidget);
+        expect(find.byKey(vaultAsyncLoadingKey), findsNothing);
+      });
+    }
+
+    testWidgets(
+      'a dirty editor keeps its own entries when the server changed the note',
+      (tester) async {
+        final p = await _wi68PumpPanel(tester);
+        p.editor.type('$_wi68Garden## Compost bins\n');
+        await pumpFrames(tester);
+        expect(_wi68In(_wi68Row(16), 'Compost bins'), findsOneWidget);
+
+        final changed = _wi68Garden.replaceFirst('## Budget', '## Spending');
+        p.db.db.execute(
+          'UPDATE notes SET content_md = ?, version = 2 WHERE id = ?',
+          [changed, _wi68NoteId],
+        );
+        final foreign = await p.editor.serverChanged(_wi68NoteId);
+        await pumpFrames(tester);
+
+        expect(foreign, isTrue, reason: 'fixture: a foreign change');
+        expect(
+          _wi68In(_wi68Row(16), 'Compost bins'),
+          findsOneWidget,
+          reason: 'the editor text, not the stored body, is outlined',
+        );
+        expect(_wi68In(_wi68Row(15), 'Budget'), findsOneWidget);
+        expect(find.text('Spending'), findsNothing);
       },
     );
 

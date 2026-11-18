@@ -23,6 +23,8 @@ import '../support/font_fetch_hold.dart';
 
 /// The topic note body: one text segment with two headings.
 const _wi68wBody = '# Player loop\nIntro line\n## Jump arc\nOutro line\n';
+const _wi68wOtherId = 'topic-other';
+const _wi68wOtherBody = '# Other heading\n## Side quest\nA line.\n';
 const _wi68wCanvas = 'cv-68-board';
 const _wi68wNoNote = 'open a note to see its outline.';
 
@@ -33,12 +35,19 @@ Finder _wi68wRowText(int i, String text) =>
 
 /// The workspace on the segmented vault, the topic note's body set to
 /// [_wi68wBody], a canvas holding the topic note, and the topic note open.
-Future<SegmentedEditorRobot> _wi68wLaunch(WidgetTester tester) async {
+Future<SegmentedEditorRobot> _wi68wLaunch(
+  WidgetTester tester, {
+  String openId = fixtureTopicId,
+}) async {
   final vault = seedSegmentedVault(topicBody: _wi68wBody);
+  vault.db.db.execute('UPDATE notes SET content_md = ? WHERE id = ?', [
+    _wi68wOtherBody,
+    _wi68wOtherId,
+  ]);
   vault.db.seedCanvas(_wi68wCanvas, 'Loop board', updatedAt: 400);
   vault.db.seedCanvasNode(_wi68wCanvas, fixtureTopicId, x: 40, y: 40);
   final r = await launchSegmented(tester, vault: vault);
-  await r.open(fixtureTopicId);
+  await r.open(openId);
   return r;
 }
 
@@ -99,8 +108,12 @@ void main() {
   testWidgets('a canvas zoomed into a note shows that note entries', (
     tester,
   ) async {
-    final r = await _wi68wLaunch(tester);
+    // Another note is open first, so its entries must give way to the zoomed
+    // note's.
+    final r = await _wi68wLaunch(tester, openId: _wi68wOtherId);
     await _wi68wShowOutline(tester);
+    expect(_wi68wRowText(0, 'Other heading'), findsOneWidget);
+    expect(_wi68wRowText(1, 'Side quest'), findsOneWidget);
 
     r.h
         .read(tabsProvider.notifier)
@@ -112,8 +125,30 @@ void main() {
       const CanvasTab(_wi68wCanvas, zoomedNoteId: fixtureTopicId),
     );
     _wi68wExpectTopicEntries();
+    expect(find.text('Other heading'), findsNothing);
+    expect(find.text('Side quest'), findsNothing);
     expect(find.text(_wi68wNoNote), findsNothing);
   });
+
+  testWidgets(
+    'zooming a canvas into a note replaces the no note Outline copy with its entries',
+    (tester) async {
+      final r = await _wi68wLaunch(tester);
+      await _wi68wShowOutline(tester);
+      final tabs = r.h.read(tabsProvider.notifier);
+      tabs.navigate(const CanvasTab(_wi68wCanvas));
+      await pumpFrames(tester, frames: 10);
+      expect(find.text(_wi68wNoNote), findsOneWidget, reason: 'unzoomed');
+
+      tabs.navigate(
+        const CanvasTab(_wi68wCanvas, zoomedNoteId: fixtureTopicId),
+      );
+      await pumpFrames(tester, frames: 10);
+
+      _wi68wExpectTopicEntries();
+      expect(find.text(_wi68wNoNote), findsNothing);
+    },
+  );
 
   for (final (name, leave) in <(String, void Function(TabsNotifier))>[
     (
