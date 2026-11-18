@@ -150,15 +150,26 @@ void main() {
     },
   );
 
-  test(
-    'relaunch whose helper fails enters Error and never confirms or exits',
-    () async {
-      final rig = ControllerRig();
-      final ready = await driveToReady(rig);
-      rig.fakes.helper.failure = const UpdateFailure(
+  for (final (name, failure) in const [
+    (
+      'relaunch whose helper fails enters Error and never confirms or exits',
+      UpdateFailure(
+        UpdateErrorCause.failureRecorded,
+        reason: "the install helper couldn't be started",
+      ),
+    ),
+    (
+      'relaunch whose helper fails with a folder not writable keeps the folder',
+      UpdateFailure(
         UpdateErrorCause.folderNotWritable,
         folder: '/Applications',
-      );
+      ),
+    ),
+  ]) {
+    test(name, () async {
+      final rig = ControllerRig();
+      final ready = await driveToReady(rig);
+      rig.fakes.helper.failure = failure;
 
       final outcome = await rig.controller.relaunch(
         confirmQuit: () async => true,
@@ -168,7 +179,9 @@ void main() {
       expect(
         rig.state,
         isA<UpdateError>()
-            .having((e) => e.cause, 'cause', UpdateErrorCause.folderNotWritable)
+            .having((e) => e.cause, 'cause', failure.cause)
+            .having((e) => e.reason, 'reason', failure.reason)
+            .having((e) => e.folder, 'folder', failure.folder)
             .having((e) => e.item, 'item', same(ready.item)),
       );
       expect(rig.fakes.helper.starts, hasLength(1));
@@ -177,8 +190,8 @@ void main() {
         isFalse,
       );
       expect(rig.fakes.exit.calls, isEmpty);
-    },
-  );
+    });
+  }
 
   test('relaunch outside Ready is ignored and calls nothing', () async {
     final rig = ControllerRig();

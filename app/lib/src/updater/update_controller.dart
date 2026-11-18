@@ -33,8 +33,9 @@ const _checkInterval = Duration(hours: 24);
 /// modal and version labels render from (TD3, D2). It survives the modal
 /// closing.
 class UpdateController extends Notifier<UpdateState> {
-  /// The check in flight, so a check started meanwhile joins it.
-  Future<void>? _checking;
+  /// The check in flight, so a check started meanwhile joins it. It
+  /// completes with the check's result state.
+  Future<UpdateState>? _checking;
 
   /// The launch's leftover-directory delete while it runs, so a download
   /// started meanwhile waits for it instead of writing into a directory
@@ -105,7 +106,20 @@ class UpdateController extends Notifier<UpdateState> {
     if (!manual && !await _checkDue()) return;
     // An install may have started while the stamp was read.
     if (_installBusy) return;
-    await (_checking ??= _runCheck().whenComplete(() => _checking = null));
+    final inFlight = _checking;
+    if (inFlight != null) {
+      // The launch may have shown a recorded failure over this check, which
+      // makes it drop its result, or the check may already have settled and
+      // be writing its stamp. Joining re-enters Checking and applies the
+      // check's result once it completes, so the result is adopted either
+      // way and the state never stays Checking.
+      if (state is! UpdateChecking) state = const UpdateChecking();
+      final result = await inFlight;
+      // A check started after this one finished owns Checking now.
+      if (_checking == null && state is UpdateChecking) state = result;
+      return;
+    }
+    await (_checking = _runCheck().whenComplete(() => _checking = null));
   }
 
   /// Whether the last check was never stamped, or stamped at least
@@ -118,29 +132,36 @@ class UpdateController extends Notifier<UpdateState> {
   }
 
   /// Fetches and parses the Appcast, then offers the newest item the
-  /// version decision picks (req 9). A fetched and parsed Appcast stamps
-  /// the last check; a failed fetch does not.
+  /// version decision picks (req 9), and completes with that result state.
+  /// A fetched and parsed Appcast stamps the last check; a failed fetch
+  /// does not.
   ///
   /// If the state left Checking while the fetch ran (the launch showed a
-  /// recorded failure), the result is dropped so it can't overwrite that.
-  Future<void> _runCheck() async {
+  /// recorded failure), the result is not applied, so it can't overwrite
+  /// that, unless a later [check] joined this one and re-entered Checking.
+  Future<UpdateState> _runCheck() async {
     state = const UpdateChecking();
     final List<AppcastItem> items;
     try {
       items = await ref.read(appcastFetcherProvider).fetch();
     } on UpdateFailure catch (failure) {
-      if (state is UpdateChecking) state = _error(failure);
-      return;
+      final error = _error(failure);
+      if (state is UpdateChecking) state = error;
+      return error;
     }
-    if (state is! UpdateChecking) return;
     final offered = decideUpdate(
       items,
       installedVersion: ref.read(appVersionProvider),
       installedBuild: ref.read(appBuildNumberProvider),
       runningMacos: ref.read(runningMacosVersionProvider),
     );
-    state = offered == null ? const UpdateUpToDate() : UpdateAvailable(offered);
+    final UpdateState result = offered == null
+        ? const UpdateUpToDate()
+        : UpdateAvailable(offered);
+    if (state is! UpdateChecking) return result;
+    state = result;
     await ref.read(lastCheckStoreProvider).write(ref.read(clockProvider).now());
+    return result;
   }
 
   /// Downloads and verifies the offered update. Outside Available it does
