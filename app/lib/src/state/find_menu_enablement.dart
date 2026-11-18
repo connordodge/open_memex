@@ -77,19 +77,27 @@ final _noteEditorShowingProvider = Provider<bool>((ref) {
 /// sends its value once when attached (after a hot restart the native items
 /// may still be enabled). A native error is logged and swallowed: the items
 /// keep their last state and later changes still send.
+///
+/// A `find` call dispatches only while that value is true here in Dart, so a
+/// stale or failed native flag never lets Find act under a modal route or
+/// with no note editor showing (D13); the native flag is defence in depth.
 final findMenuEnablementProvider = Provider<void>((ref) {
   final host = ref.watch(windowMenuHostProvider);
   final modal = ref.watch(findMenuModalObserverProvider).modalShowing;
 
-  void onFind(FindMenuAction action) =>
-      ref.read(findMenuActionsProvider.notifier).dispatch(action);
+  var editorShowing = false;
+  var enabled = false;
+  void onFind(FindMenuAction action) {
+    if (!enabled) return;
+    ref.read(findMenuActionsProvider.notifier).dispatch(action);
+  }
+
   appWindowRouter.setFindHandler(onFind);
   ref.onDispose(() => appWindowRouter.clearFindHandler(onFind));
 
-  var editorShowing = false;
   bool? sent;
   void update() {
-    final enabled = editorShowing && !modal.value;
+    enabled = editorShowing && !modal.value;
     if (enabled == sent) return;
     sent = enabled;
     unawaited(_send(host, enabled));
