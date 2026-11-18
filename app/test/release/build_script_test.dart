@@ -2046,11 +2046,30 @@ void main() {
         // only the character check refuses it.
         () => '${mintEdKeyBase64()}-_\n',
       ),
-      for (final n in [16, 31, 33, 64, 95, 97])
-        (
-          'signed mode with a SPARKLE_ED_KEY_PATH key of $n bytes exits 2 before STEP 1',
-          () => '${base64Encode(List.filled(n, 7))}\n',
-        ),
+      (
+        'signed mode with a SPARKLE_ED_KEY_PATH key of 16 bytes exits 2 before STEP 1',
+        () => '${base64Encode(List.filled(16, 7))}\n',
+      ),
+      (
+        'signed mode with a SPARKLE_ED_KEY_PATH key of 31 bytes exits 2 before STEP 1',
+        () => '${base64Encode(List.filled(31, 7))}\n',
+      ),
+      (
+        'signed mode with a SPARKLE_ED_KEY_PATH key of 33 bytes exits 2 before STEP 1',
+        () => '${base64Encode(List.filled(33, 7))}\n',
+      ),
+      (
+        'signed mode with a SPARKLE_ED_KEY_PATH key of 64 bytes exits 2 before STEP 1',
+        () => '${base64Encode(List.filled(64, 7))}\n',
+      ),
+      (
+        'signed mode with a SPARKLE_ED_KEY_PATH key of 95 bytes exits 2 before STEP 1',
+        () => '${base64Encode(List.filled(95, 7))}\n',
+      ),
+      (
+        'signed mode with a SPARKLE_ED_KEY_PATH key of 97 bytes exits 2 before STEP 1',
+        () => '${base64Encode(List.filled(97, 7))}\n',
+      ),
     ];
     for (final (name, text) in badKeyText) {
       test(name, () async {
