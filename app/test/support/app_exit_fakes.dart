@@ -1,5 +1,6 @@
 // WI #103 (D20): test doubles for the app-exit seam and the window title
-// seam, plus helpers that play the native side of the window channel.
+// seam, plus helpers that play the native side of the window channel. WI #81
+// (Spec #61 F5) adds [sendFind], the native Edit ▸ Find items.
 import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/services.dart';
@@ -96,6 +97,10 @@ class RecordingWindowTitle implements WindowTitle {
 class NativeCallReply {
   bool replied = false;
   Object? decoded;
+
+  /// The raw reply bytes, null for an empty reply (a MissingPluginException,
+  /// FlutterMethodNotImplemented natively). Only [sendFind] fills it.
+  ByteData? raw;
 }
 
 /// Play the native window delegate: send `windowShouldClose` on
@@ -108,6 +113,29 @@ NativeCallReply sendWindowShouldClose(WidgetTester tester) {
     codec.encodeMethodCall(const MethodCall('windowShouldClose')),
     (data) {
       reply.replied = true;
+      reply.decoded = data == null ? null : codec.decodeEnvelope(data);
+    },
+  );
+  return reply;
+}
+
+/// Play the native Edit ▸ Find menu: send `find` with [action] (`show`,
+/// `next`, `previous` or `useSelection`; anything else for the unknown
+/// paths) on [appWindowChannel], as MainFlutterWindow.swift does for Find…
+/// (⌘F), Find Next (⌘G), Find Previous (⇧⌘G) and Use Selection for Find
+/// (⌘E). Tests trigger those keys this way, never with key events (Spec #61
+/// "Triggering ⌘F in tests"). [NativeCallReply.decoded] stays null for a
+/// handled call; an empty reply (no Dart handler) leaves
+/// [NativeCallReply.raw] null.
+NativeCallReply sendFind(WidgetTester tester, Object? action) {
+  const codec = StandardMethodCodec();
+  final reply = NativeCallReply();
+  tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+    appWindowChannel.name,
+    codec.encodeMethodCall(MethodCall('find', action)),
+    (data) {
+      reply.replied = true;
+      reply.raw = data;
       reply.decoded = data == null ? null : codec.decodeEnvelope(data);
     },
   );
