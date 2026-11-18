@@ -1402,3 +1402,112 @@ fn a_non_text_role_in_the_frontmatter_is_no_role_and_not_an_error() {
     assert_eq!(h.note_role, None);
     assert_eq!(h.day, None);
 }
+
+// ---------------------------------------------------------------- one read snapshot
+
+/// What the authorizer hook does the first time the lease body prepares a
+/// read of `notes.updated_at` (`enrich`, after the search): another
+/// connection deletes every note, as another process could mid-search.
+struct DeleteMidSearch {
+    db: PathBuf,
+    fired: AtomicUsize,
+    delete_error: Mutex<Option<String>>,
+}
+
+const SQLITE_READ: std::os::raw::c_int = 20;
+const SQLITE_OK: std::os::raw::c_int = 0;
+
+unsafe extern "C" fn delete_notes_on_first_updated_at_read(
+    user: *mut std::os::raw::c_void,
+    action: std::os::raw::c_int,
+    table: *const std::os::raw::c_char,
+    column: *const std::os::raw::c_char,
+    _db: *const std::os::raw::c_char,
+    _trigger: *const std::os::raw::c_char,
+) -> std::os::raw::c_int {
+    if action != SQLITE_READ || table.is_null() || column.is_null() {
+        return SQLITE_OK;
+    }
+    let table = unsafe { std::ffi::CStr::from_ptr(table) };
+    let column = unsafe { std::ffi::CStr::from_ptr(column) };
+    if table.to_bytes() != b"notes" || column.to_bytes() != b"updated_at" {
+        return SQLITE_OK;
+    }
+    let hook = unsafe { &*(user as *const DeleteMidSearch) };
+    if hook.fired.fetch_add(1, Ordering::SeqCst) > 0 {
+        return SQLITE_OK;
+    }
+    let outcome = Connection::open(&hook.db).and_then(|other| {
+        other.busy_timeout(Duration::from_secs(5))?;
+        other.execute("DELETE FROM notes", [])
+    });
+    if let Err(e) = outcome {
+        *hook.delete_error.lock().unwrap() = Some(e.to_string());
+    }
+    SQLITE_OK
+}
+
+/// A lease over one connection with the delete hook installed.
+struct HookLease<'a> {
+    conn: &'a mut Connection,
+    hook: &'a DeleteMidSearch,
+}
+
+impl ConnLease for HookLease<'_> {
+    fn lease<R>(&mut self, f: impl FnOnce(&mut Connection) -> Result<R>) -> Result<R> {
+        // SAFETY: `hook` outlives the connection's use of the authorizer,
+        // which is removed before this returns.
+        unsafe {
+            rusqlite::ffi::sqlite3_set_authorizer(
+                self.conn.handle(),
+                Some(delete_notes_on_first_updated_at_read),
+                self.hook as *const DeleteMidSearch as *mut std::os::raw::c_void,
+            );
+        }
+        let out = f(self.conn);
+        unsafe {
+            rusqlite::ffi::sqlite3_set_authorizer(self.conn.handle(), None, std::ptr::null_mut());
+        }
+        out
+    }
+}
+
+#[test]
+fn a_note_deleted_by_another_connection_mid_search_is_still_answered_from_one_snapshot() {
+    let mut fx = new_vault();
+    quasar_notes(&mut fx, 3);
+    let want = search_keys(&fx.fts("quasar", 8));
+    assert_eq!(want.len(), 3, "precondition: three keyword matches");
+    let Fx { _dir, db, vault } = fx;
+    drop(vault);
+    let mut conn = Connection::open(&db).unwrap();
+    conn.busy_timeout(Duration::from_secs(5)).unwrap();
+    let hook = DeleteMidSearch {
+        db: db.clone(),
+        fired: AtomicUsize::new(0),
+        delete_error: Mutex::new(None),
+    };
+    let mut lease = HookLease {
+        conn: &mut conn,
+        hook: &hook,
+    };
+
+    let got = note_search(&mut lease, "quasar", 8, SearchEmbedder::Off, 0)
+        .expect("a note deleted mid-search never fails the search");
+
+    assert!(
+        hook.fired.load(Ordering::SeqCst) > 0,
+        "the hook ran: enrichment read notes.updated_at"
+    );
+    assert_eq!(*hook.delete_error.lock().unwrap(), None, "the delete ran");
+    let left: i64 = Connection::open(&db)
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(left, 0, "the other connection committed its delete");
+    assert_eq!(
+        keys(&got.hits),
+        want,
+        "every hit is whole: the search and its enrichment read one snapshot"
+    );
+}
