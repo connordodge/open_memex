@@ -105,6 +105,8 @@ fn compat_index_rows_for_the_new_routes_name_the_five_fixture_files_with_status_
             ("DELETE", "words_not_found.json", 404, true),
             ("GET", "tools_not_found.json", 404, true),
             ("GET", "embeddings_not_found.json", 404, true),
+            // WI #73: its body is proven in api_search.rs.
+            ("GET", "search_not_found.json", 404, true),
         ]
     );
     for name in FILES {

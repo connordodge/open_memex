@@ -1,0 +1,8 @@
+[
+  {"method": "GET", "path": "/vaults/seed/api/v1/search?q=prices&limit=8", "response": "search_embeddings_off.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/search?q=prices&limit=8", "response": "search_on.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/search?q=prices&limit=8", "response": "search_unavailable.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/search?q=prices&limit=1", "response": "search_truncated.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/search?limit=8", "response": "search_empty.json", "status": 200},
+  {"method": "GET", "path": "/vaults/seed/api/v1/search?q=prices&limit=0", "response": "search_limit_invalid.json", "status": 400}
+]
