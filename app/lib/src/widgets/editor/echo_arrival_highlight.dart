@@ -100,6 +100,18 @@ EchoArrival? locateEchoArrival(
   return null;
 }
 
+/// The editor widget holding UTF-16 offset [local] of segment [segment] of
+/// `split(contentMd)` for a note of [role], as [locateEchoArrival] gives it.
+/// The segment offset is taken as given: a daily person segment's stray text
+/// past its prefix shared with the body is found too. Null when [segment] is
+/// no text segment or card, or [local] lies outside its text.
+EchoArrival? locateInSegment(
+  String contentMd,
+  int segment,
+  int local, {
+  String? role,
+}) => null;
+
 EchoArrival? _inText(String text, int segment, int offset) {
   final rows = splitRows(text, atSegmentStart: true);
   for (var r = 0; r < rows.length; r++) {
