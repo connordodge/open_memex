@@ -83,6 +83,25 @@ void main() {
       expect(_sig(outlineEntries(body)), [(2, 0, 'Kept')]);
     });
 
+    test('a heading of bare marker characters keeps them as its text', () {
+      // An unpaired run of emphasis or strike markers is literal text, so
+      // the heading has text after its marker and is an entry.
+      expect(_sig(outlineEntries('# ****\n## ~~~~\n### ``\n')), [
+        (1, 0, '****'),
+        (2, 1, '~~~~'),
+        (3, 2, '``'),
+      ]);
+    });
+
+    test('a heading whose only content is a blank code span is dropped', () {
+      // The empty check runs on the plain text, so a code span of spaces
+      // leaves nothing to show and takes no part in the depth rule.
+      expect(_sig(outlineEntries('# A\n## `  `\n### B\n')), [
+        (1, 0, 'A'),
+        (3, 1, 'B'),
+      ]);
+    });
+
     test('an empty heading does not take part in the depth rule', () {
       expect(_sig(outlineEntries('# A\n## \n### B\n')), [
         (1, 0, 'A'),
@@ -258,6 +277,22 @@ void main() {
     });
   });
 
+  group('OutlineEntry text form', () {
+    test('toString names every field', () {
+      const e = OutlineEntry(
+        level: 2,
+        depth: 1,
+        text: 'Seed swap',
+        segment: 3,
+        local: 17,
+      );
+      expect(
+        e.toString(),
+        'OutlineEntry(level 2, depth 1, "Seed swap", segment 3, local 17)',
+      );
+    });
+  });
+
   group('outlineText', () {
     const cases = <(String, String, String)>[
       ('strips bold with stars', '**bold** word', 'bold word'),
@@ -299,6 +334,42 @@ void main() {
         'handles several rules in one heading',
         '**Big** and _small_ and [[A|b]] and `c` and ~~d~~',
         'Big and small and b and c and d',
+      ),
+      ('strips bold italic to its content', '***both*** word', 'both word'),
+      (
+        'maps a wikilink inside bold to its alias',
+        '**bold [[A|alias]] end**',
+        'bold alias end',
+      ),
+      ('strips italic nested inside bold', '**a *b* c**', 'a b c'),
+      (
+        'strips bold inside a link text',
+        '[**bold** link](https://e.com)',
+        'bold link',
+      ),
+      ('keeps a tag inside bold', '**plan #garden**', 'plan #garden'),
+      ('keeps text after a nested token', '**a _b_** tail', 'a b tail'),
+      ('strips a code span nested in bold', '**a `b` c**', 'a b c'),
+      ('strips a code span nested in a link text', '[a `b`](u)', 'a b'),
+      ('strips strike nested in bold', '**a ~~b~~ c**', 'a b c'),
+      ('strips bold nested in strike', '~~**x**~~ y', 'x y'),
+      ('maps a link nested in bold to its text', '**[a](u)**', 'a'),
+      (
+        'renders an overlapping bold and link by the link tokens',
+        '**a [b** c](u)',
+        '**a b** c',
+      ),
+      ('keeps the backslash of an escape', r'a \* b', r'a \* b'),
+      ('keeps an escaped tag marker as written', r'\#notatag', r'\#notatag'),
+      (
+        'keeps an inline transclusion as written',
+        'see ![[2026-09-05#^b7k2m9]] now',
+        'see ![[2026-09-05#^b7k2m9]] now',
+      ),
+      (
+        'keeps an inline range transclusion as written',
+        'see ![[2026-09-05#^b7k2m9..^c3d4e5]] now',
+        'see ![[2026-09-05#^b7k2m9..^c3d4e5]] now',
       ),
     ];
     for (final (name, input, expected) in cases) {
