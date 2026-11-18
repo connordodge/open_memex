@@ -5190,15 +5190,15 @@ older versions can't open a migrated vault.";
 }
 
 #[test]
-fn check_version_script_accepts_the_v0_4_0_tag_on_this_branch() {
+fn check_version_script_accepts_the_v0_5_0_tag_on_this_branch() {
     let (code, stdout, stderr) =
-        wi377_run_script("scripts/release/check-version.sh", &["v0.4.0"], None);
+        wi377_run_script("scripts/release/check-version.sh", &["v0.5.0"], None);
     assert_eq!(
         code,
         Some(0),
-        "check-version.sh v0.4.0 passes on this branch:\n{stdout}\n{stderr}"
+        "check-version.sh v0.5.0 passes on this branch:\n{stdout}\n{stderr}"
     );
-    let (code, _, stderr) = wi377_run_script("scripts/release/check-version.sh", &["v0.4.1"], None);
+    let (code, _, stderr) = wi377_run_script("scripts/release/check-version.sh", &["v0.5.1"], None);
     assert_eq!(
         code,
         Some(1),
@@ -5206,14 +5206,14 @@ fn check_version_script_accepts_the_v0_4_0_tag_on_this_branch() {
     );
 }
 
-// ---------- version 0.4.0 ----------
+// ---------- version 0.5.0 ----------
 
 #[test]
-fn versions_are_0_4_0_in_the_app_the_workspace_and_the_lockfile() {
+fn versions_are_0_5_0_in_the_app_the_workspace_and_the_lockfile() {
     let pubspec = read_repo_file("app/pubspec.yaml");
     assert!(
-        pubspec.lines().any(|l| l == "version: 0.4.0+5"),
-        "app/pubspec.yaml has the top-level line `version: 0.4.0+5`"
+        pubspec.lines().any(|l| l == "version: 0.5.0+6"),
+        "app/pubspec.yaml has the top-level line `version: 0.5.0+6`"
     );
     let cargo = read_repo_file("Cargo.toml");
     let table = cargo
@@ -5225,8 +5225,8 @@ fn versions_are_0_4_0_in_the_app_the_workspace_and_the_lockfile() {
         .unwrap()
         .to_string();
     assert!(
-        table.lines().any(|l| l.trim() == "version = \"0.4.0\""),
-        "[workspace.package] has version = \"0.4.0\":\n{table}"
+        table.lines().any(|l| l.trim() == "version = \"0.5.0\""),
+        "[workspace.package] has version = \"0.5.0\":\n{table}"
     );
     // Cargo.lock: every package without a `source` is a workspace crate.
     let lock = read_repo_file("Cargo.lock");
@@ -5252,8 +5252,8 @@ fn versions_are_0_4_0_in_the_app_the_workspace_and_the_lockfile() {
     }
     for (name, version) in &workspace_crates {
         assert_eq!(
-            version, "0.4.0",
-            "Cargo.lock has {name} at 0.4.0 (regenerated, not hand-edited)"
+            version, "0.5.0",
+            "Cargo.lock has {name} at 0.5.0 (regenerated, not hand-edited)"
         );
     }
 }
