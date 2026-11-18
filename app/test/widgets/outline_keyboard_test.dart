@@ -923,6 +923,133 @@ void main() {
     );
   });
 
+  // ------------------------------------------------------- Esc after Enter
+  // Enter starts a jump that lands from a frame's end; Esc's focus restore
+  // holds the editor page for two frames. The hold must not put back the
+  // pre-jump offset (review r3, finding 2).
+  group('Esc right after Enter', () {
+    for (final (name, gap, remembered) in <(String, int, bool)>[
+      (
+        'Enter then Esc in the same frame keeps the jump with a remembered body field',
+        0,
+        true,
+      ),
+      (
+        'Enter then Esc one frame later keeps the jump with a remembered body field',
+        1,
+        true,
+      ),
+      (
+        'Enter then Esc two frames later keeps the jump with a remembered body field',
+        2,
+        true,
+      ),
+      (
+        'Enter then Esc three frames later keeps the jump with a remembered body field',
+        3,
+        true,
+      ),
+      (
+        'Enter then Esc in the same frame keeps the jump with no remembered field',
+        0,
+        false,
+      ),
+      (
+        'Enter then Esc one frame later keeps the jump with no remembered field',
+        1,
+        false,
+      ),
+      (
+        'Enter then Esc two frames later keeps the jump with no remembered field',
+        2,
+        false,
+      ),
+      (
+        'Enter then Esc three frames later keeps the jump with no remembered field',
+        3,
+        false,
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final h = await pumpWi70(tester);
+        if (remembered) {
+          await focusSegmentAt(tester, find.byKey(editorBodyKey), offset: 20);
+          await pumpFrames(tester);
+          await h.scrollTo(0);
+          await pumpFrames(tester);
+        }
+        await _wi70FocusOutline(tester, 0);
+        await wi70Press(tester, _down, times: 9);
+        final entry = wi70Entries(h)[9];
+        final before = h.pixels();
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter, platform: 'macos');
+        for (var i = 0; i < gap; i++) {
+          await tester.pump();
+        }
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape, platform: 'macos');
+        await pumpFrames(tester, frames: 10);
+
+        expect(h.pixels(), isNot(before), reason: 'the jump moved the page');
+        expect(
+          wi70FromTop(h, entry),
+          closeTo(16, _wi70Px),
+          reason: 'the heading stays 16 px below the body top',
+        );
+        expect(wi70FocusInOutline(), isFalse, reason: 'focus is in the editor');
+        expect(wi70FocusedRows(tester), isEmpty, reason: 'the ring is gone');
+        expect(wi70CurrentRows(tester), [
+          9,
+        ], reason: 'the jumped row is current');
+      }, variant: macOnly);
+    }
+
+    testWidgets(
+      'once the jump has landed and settled Esc does not move the page',
+      (tester) async {
+        final h = await pumpWi70(tester);
+        await _wi70FocusOutline(tester, 0);
+        await wi70Press(tester, _down, times: 9);
+        final entry = wi70Entries(h)[9];
+        await wi70Press(tester, LogicalKeyboardKey.enter);
+        await pumpFrames(tester, frames: 10);
+        expect(wi70FromTop(h, entry), closeTo(16, _wi70Px), reason: 'landed');
+        final pixels = h.pixels();
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape, platform: 'macos');
+        await pumpFrames(tester, frames: 10);
+
+        expect(h.pixels(), pixels, reason: 'the page does not move');
+        expect(wi70FromTop(h, entry), closeTo(16, _wi70Px));
+        expect(wi70FocusInOutline(), isFalse);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'Enter then Esc in the same frame keeps the jump in Source mode',
+      (tester) async {
+        final h = await pumpWi70(tester);
+        await h.toggleSource();
+        expect(h.sourceSurface, findsOneWidget, reason: 'fixture: Source mode');
+        await _wi70FocusOutline(tester, 0);
+        await wi70Press(tester, _down, times: 9);
+        final before = h.pixels();
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter, platform: 'macos');
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape, platform: 'macos');
+        await pumpFrames(tester, frames: 10);
+
+        expect(h.pixels(), isNot(before), reason: 'the jump moved the page');
+        expect(wi70FocusInOutline(), isFalse, reason: 'focus is in the editor');
+        expect(wi70CurrentRows(tester), [
+          9,
+        ], reason: 'the jumped row is current');
+      },
+      variant: macOnly,
+    );
+  });
+
   // ------------------------------------------------------------- ring
   group('focus ring and current marks', () {
     testWidgets(
