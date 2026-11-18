@@ -12,6 +12,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/screens/vault_picker.dart';
@@ -315,6 +316,53 @@ void main() {
       robot.expectNoModal();
       expect(fakes.fetcher.fetchCount, 0);
     });
+
+    testWidgets(
+      'an unknown method on the updater channel is not implemented and runs no check',
+      (tester) async {
+        final fakes = UpdaterFakes()..fetcher.hold = Completer<void>();
+        final robot = await _pumpHost(tester, fakes: fakes);
+        ByteData? reply = ByteData(0);
+        var replied = false;
+
+        tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+          'open_memex/updater',
+          const StandardMethodCodec().encodeMethodCall(
+            const MethodCall('somethingElse'),
+          ),
+          (data) {
+            replied = true;
+            reply = data;
+          },
+        );
+        await robot.settle();
+
+        expect(replied, isTrue);
+        expect(reply, isNull, reason: 'MissingPluginException: not handled');
+        robot.expectNoModal();
+        expect(fakes.fetcher.fetchCount, 0);
+      },
+    );
+
+    testWidgets(
+      'a menu event with no navigator mounted is ignored and runs no check',
+      (tester) async {
+        final fakes = UpdaterFakes()..fetcher.hold = Completer<void>();
+        final container = updaterContainer(fakes: fakes);
+        await tester.pumpWidget(const SizedBox.shrink());
+        final host = UpdaterMenuHost(
+          navigatorKey: GlobalKey<NavigatorState>(),
+          read: container.read,
+        )..attach();
+        addTearDown(host.detach);
+
+        wi39SendCheckForUpdatesFromMenu(tester);
+        await tester.pump();
+
+        expect(fakes.fetcher.fetchCount, 0, reason: 'no navigator: no-op');
+        expect(find.byType(Dialog), findsNothing);
+      },
+    );
   });
 
   group('app root', () {
