@@ -12,19 +12,25 @@
 // vault's FakeMemexCli and the dialogs the existing actions show. Rows are
 // read from the `PaletteRow` widgets the shell builds (#76's Keys).
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/main.dart' show appRootOverrides;
 import 'package:open_memex_app/src/graph/graph_scope.dart';
 import 'package:open_memex_app/src/screens/workspace.dart';
+import 'package:open_memex_app/src/db.dart' show Note;
 import 'package:open_memex_app/src/state/command_palette_state.dart';
 import 'package:open_memex_app/src/state/settings.dart';
 import 'package:open_memex_app/src/state/sidebar_mode_state.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/state/ui_state_store.dart';
+import 'package:open_memex_app/src/state/vault_access_state.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
+import 'package:open_memex_app/src/vault_access/local/local_vault_access.dart';
 import 'package:open_memex_app/src/vault_access/search_access.dart';
 import 'package:open_memex_app/src/widgets/agents_sheet/agents_sheet.dart';
 import 'package:open_memex_app/src/widgets/backups/backups_sheet.dart';
@@ -45,6 +51,7 @@ import '../../support/fake_memex_cli.dart';
 import '../../support/fake_vault_db.dart';
 import '../../support/font_fetch_hold.dart';
 import '../../support/palette_pump.dart';
+import '../../support/search_fakes.dart';
 import '../../support/segment_editing_finder.dart';
 import '../../support/token_store_fakes.dart';
 
@@ -170,6 +177,7 @@ Future<PaletteHarness> _host(
   FakeMemexCli? cli,
   bool memexConfigured = true,
   bool seed = true,
+  Widget? body,
   List<Override> overrides = const [],
 }) async {
   final settings = await _settings();
@@ -185,7 +193,7 @@ Future<PaletteHarness> _host(
     child: Builder(
       builder: (context) {
         _wi77HostContext = context;
-        return const SizedBox.expand();
+        return body ?? const SizedBox.expand();
       },
     ),
     overrides: [
@@ -213,6 +221,7 @@ Future<PaletteHarness> _workspace(
   WidgetTester tester, {
   FakeVaultDb? db,
   Widget Function(Widget workspace)? wrap,
+  _SlowNotes Function(FakeVaultDb db, FakeMemexCli cli)? slowNotes,
   List<Override> overrides = const [],
 }) async {
   final settings = await _settings();
@@ -224,13 +233,29 @@ Future<PaletteHarness> _workspace(
     updatedAt: paletteHoursAgo(3),
   );
   const workspace = Workspace();
+  final cli = _writingCli(fakeDb);
+  final notes = slowNotes?.call(fakeDb, cli);
   final h = await pumpPaletteHost(
     tester,
     textScale: 0.5,
     db: fakeDb,
-    cli: _writingCli(fakeDb),
+    cli: cli,
     child: wrap == null ? workspace : wrap(workspace),
-    overrides: [settings, ...paletteShellOverrides, ...overrides],
+    overrides: [
+      settings,
+      ...paletteShellOverrides,
+      if (notes != null)
+        vaultAccessProvider.overrideWith(
+          (ref) => LocalVaultAccess(
+            vaultPath: paletteVaultPath,
+            db: fakeDb,
+            cli: cli,
+            notes: notes,
+            search: FakeSearchAccess(vaultPath: paletteVaultPath, cli: cli),
+          ),
+        ),
+      ...overrides,
+    ],
   );
   await pumpFrames(tester);
   return h;
@@ -304,6 +329,57 @@ List<bool> _currentAtChange<T>(
   addTearDown(sub.close);
   return log;
 }
+
+/// A notes access whose read of [_editorNoteId] answers only once [release] runs
+/// (a hosted vault's network read).
+class _SlowNotes extends LocalNotesAccess {
+  _SlowNotes({required super.db, required super.cli})
+    : super(vaultPath: paletteVaultPath);
+
+  final _gate = Completer<void>();
+
+  void release() {
+    if (!_gate.isCompleted) _gate.complete();
+  }
+
+  @override
+  Future<Note?> getNote(String id) async {
+    if (id == _editorNoteId) await _gate.future;
+    return super.getNote(id);
+  }
+}
+
+/// A modal other than the palette, with a focused field: the update modal or
+/// the leave-confirm dialog.
+const _modalField = Key('wi77-modal-field');
+
+void _showOtherModal(BuildContext context) => unawaited(
+  showDialog<void>(
+    context: context,
+    builder: (_) => const AlertDialog(
+      content: TextField(key: _modalField, autofocus: true),
+    ),
+  ),
+);
+
+bool _modalFieldFocused(WidgetTester tester) => tester
+    .widget<EditableText>(
+      find.descendant(
+        of: find.byKey(_modalField),
+        matching: find.byType(EditableText),
+      ),
+    )
+    .focusNode
+    .hasFocus;
+
+/// The focused editor field in the Workspace's editor, if any.
+Finder get _focusedEditorField => find.descendant(
+  of: find.byType(NoteEditor),
+  matching: find.byWidgetPredicate(
+    (w) => w is EditableText && w.focusNode.hasFocus,
+    description: 'the focused editor field',
+  ),
+);
 
 /// The Passages seam as #78 fills it, emitting what a test asks.
 class _Wi77Passages extends PalettePassagesNotifier {
@@ -1067,17 +1143,28 @@ void main() {
       expect(_selected(), [ids.last]);
       final card = tester.getRect(_palette);
       final row = tester.getRect(_row(ids.last));
-      expect(row.top, greaterThanOrEqualTo(card.top));
+      expect(row.top, greaterThanOrEqualTo(card.top + 52 - 0.5));
       // Above the 34 px list-only hint footer.
       expect(row.bottom, lessThanOrEqualTo(card.bottom - 34));
 
-      for (var i = 0; i < ids.length - 1; i++) {
+      // Up again to a middle row that scrolled out above the viewport: the
+      // list scrolls back to it, not only to the first row.
+      for (var i = ids.length - 1; i > 3; i--) {
+        await _key(tester, LogicalKeyboardKey.arrowUp);
+        await pumpFrames(tester);
+        final r = tester.getRect(_row(ids[i - 1]));
+        expect(r.top, greaterThanOrEqualTo(card.top + 52 - 0.5), reason: '$i');
+        expect(r.bottom, lessThanOrEqualTo(card.bottom - 34 + 0.5));
+      }
+      expect(_selected(), [ids[3]]);
+
+      for (var i = 0; i < 3; i++) {
         await _key(tester, LogicalKeyboardKey.arrowUp);
       }
       await pumpFrames(tester);
       expect(_selected(), [ids.first]);
       final first = tester.getRect(_row(ids.first));
-      expect(first.top, greaterThanOrEqualTo(card.top));
+      expect(first.top, greaterThanOrEqualTo(card.top + 52 - 0.5));
       expect(first.bottom, lessThanOrEqualTo(card.bottom - 34));
     });
   });
@@ -1606,6 +1693,218 @@ void main() {
         expect(tester.takeException(), isNull);
       },
     );
+  });
+
+  group('a modal over the palette', () {
+    testWidgets(
+      'Cmd+K is not handled while a modal covers the showing palette',
+      (tester) async {
+        final h = await _workspace(tester);
+        final editor = await _focusEditor(tester, h);
+        expect(await _cmdK(tester), isTrue);
+        expect(_palette, findsOneWidget);
+
+        _showOtherModal(h.context);
+        await pumpFrames(tester);
+        expect(find.byKey(_modalField), findsOneWidget);
+        expect(_modalFieldFocused(tester), isTrue);
+
+        expect(await _cmdK(tester), isFalse);
+        expect(_palette, findsOneWidget, reason: 'the palette stays');
+        expect(find.byKey(_modalField), findsOneWidget);
+        expect(
+          _modalFieldFocused(tester),
+          isTrue,
+          reason: 'the modal keeps it',
+        );
+        expect(FocusManager.instance.primaryFocus, isNot(same(editor)));
+
+        // Once the modal closes, Cmd+K closes the palette again.
+        h.navigatorKey.currentState!.pop();
+        await pumpFrames(tester, frames: 8);
+        expect(find.byKey(_modalField), findsNothing);
+        expect(await _cmdK(tester), isTrue);
+        expect(_palette, findsNothing);
+        expect(FocusManager.instance.primaryFocus, same(editor));
+      },
+    );
+
+    testWidgets(
+      'closing a palette that a modal covers leaves the focus in the modal and the Command bar at rest',
+      (tester) async {
+        const field = Key('wi77-host-field');
+        final hostFocus = FocusNode();
+        addTearDown(hostFocus.dispose);
+        final h = await _host(
+          tester,
+          body: TextField(key: field, focusNode: hostFocus, autofocus: true),
+        );
+        await pumpFrames(tester);
+        expect(hostFocus.hasFocus, isTrue);
+        await _open(tester);
+        expect(h.read(commandPaletteOpenProvider), isTrue);
+        _showOtherModal(_wi77HostContext);
+        await pumpFrames(tester);
+        expect(_modalFieldFocused(tester), isTrue);
+
+        closeCommandPalette(h.container);
+        await pumpFrames(tester);
+
+        expect(_palette, findsNothing, reason: 'removed under the modal');
+        expect(find.byKey(_modalField), findsOneWidget);
+        expect(
+          _modalFieldFocused(tester),
+          isTrue,
+          reason: 'the modal keeps it',
+        );
+        expect(hostFocus.hasFocus, isFalse, reason: 'not restored under it');
+        expect(
+          h.read(commandPaletteOpenProvider),
+          isFalse,
+          reason: 'the Command bar returns to rest',
+        );
+
+        // A later open and close does not leave the bar latched open.
+        h.navigatorKey.currentState!.pop();
+        await pumpFrames(tester, frames: 8);
+        await _open(tester);
+        expect(h.read(commandPaletteOpenProvider), isTrue);
+        await _key(tester, LogicalKeyboardKey.escape);
+        await pumpFrames(tester, frames: 8);
+        expect(_palette, findsNothing);
+        expect(h.read(commandPaletteOpenProvider), isFalse);
+        expect(hostFocus.hasFocus, isTrue, reason: 'a current close restores');
+      },
+    );
+
+    testWidgets('a vault change while a modal covers the palette closes it', (
+      tester,
+    ) async {
+      final h = await _host(tester);
+      await _open(tester);
+      _showOtherModal(_wi77HostContext);
+      await pumpFrames(tester);
+      expect(_modalFieldFocused(tester), isTrue);
+
+      h.read(currentVaultProvider.notifier).state = const LocalVaultRef(
+        '/vaults/Other Vault',
+      );
+      await pumpFrames(tester);
+      // Riverpod's debug assert 'Only one task can be scheduled at a time'
+      // fires when the removed route unmounts in the frame the vault's
+      // providers refresh (debug builds only, nothing of the palette's).
+      tester.takeException();
+
+      expect(_palette, findsNothing, reason: 'closed under the modal');
+      expect(find.byKey(_modalField), findsOneWidget);
+      expect(_modalFieldFocused(tester), isTrue);
+      expect(h.read(commandPaletteOpenProvider), isFalse);
+    });
+  });
+
+  group('the editor focus after a choice', () {
+    /// Chooses [_editorNoteId] from the palette while its read is held.
+    Future<(PaletteHarness, _SlowNotes)> choose(WidgetTester tester) async {
+      late _SlowNotes notes;
+      final h = await _workspace(
+        tester,
+        slowNotes: (db, cli) => notes = _SlowNotes(db: db, cli: cli),
+      );
+      _unfocus();
+      expect(await _cmdK(tester), isTrue);
+      await _type(tester, 'editor note');
+      expect(_selected(), [_note(_editorNoteId)]);
+      await _key(tester, LogicalKeyboardKey.enter);
+      await pumpFrames(tester, frames: 8);
+      expect(_palette, findsNothing);
+      expect(h.read(tabsProvider).activeTab, const NoteTab(_editorNoteId));
+      return (h, notes);
+    }
+
+    testWidgets(
+      'a note that loads after many frames still gets the keyboard focus',
+      (tester) async {
+        final (_, notes) = await choose(tester);
+        expect(_focusedEditorField, findsNothing, reason: 'still loading');
+
+        // Far more frames than the old 40 frame wait.
+        await pumpFrames(tester, frames: 120);
+        expect(_focusedEditorField, findsNothing);
+        notes.release();
+        await pumpFrames(tester, frames: 12);
+
+        expect(_focusedEditorField, findsOneWidget);
+        expect(
+          find.descendant(
+            of: find.byType(NoteEditor),
+            matching: find.text('First line of the editor note'),
+          ),
+          findsWidgets,
+        );
+      },
+    );
+
+    testWidgets(
+      'a note that loads later than the wait does not take the focus',
+      (tester) async {
+        final (h, notes) = await choose(tester);
+        await pumpFrames(tester, frames: 8);
+
+        h.clock.advance(const Duration(seconds: 11));
+        notes.release();
+        await pumpFrames(tester, frames: 12);
+
+        expect(
+          find.descendant(
+            of: find.byType(NoteEditor),
+            matching: find.text('First line of the editor note'),
+          ),
+          findsWidgets,
+          reason: 'the note still loads',
+        );
+        expect(_focusedEditorField, findsNothing);
+      },
+    );
+
+    testWidgets(
+      'a note that loads after the active tab moved on does not take the focus',
+      (tester) async {
+        final (h, notes) = await choose(tester);
+
+        h.read(tabsProvider.notifier).navigate(NoteTab(PaletteSeeds.backlog));
+        await pumpFrames(tester, frames: 4);
+        notes.release();
+        await pumpFrames(tester, frames: 12);
+
+        expect(h.read(tabsProvider).activeTab, NoteTab(PaletteSeeds.backlog));
+        expect(_focusedEditorField, findsNothing);
+      },
+    );
+  });
+
+  group('the palette card', () {
+    for (final (name, target) in <(String, Finder Function())>[
+      ('the hint footer', () => find.text('close')),
+      ('a group header', () => find.text('COMMANDS · 12')),
+    ]) {
+      testWidgets('a mouse click on $name keeps the keyboard in the palette', (
+        tester,
+      ) async {
+        await _host(tester);
+        await _open(tester);
+
+        await tester.tap(target(), kind: PointerDeviceKind.mouse);
+        await pumpFrames(tester);
+
+        expect(_palette, findsOneWidget);
+        expect(_field(tester).focusNode.hasFocus, isTrue);
+        await _key(tester, LogicalKeyboardKey.arrowDown);
+        expect(_selected(), [_cmd(PaletteCommand.newCanvas)]);
+        await _key(tester, LogicalKeyboardKey.escape);
+        await pumpFrames(tester, frames: 8);
+        expect(_palette, findsNothing);
+      });
+    }
   });
 
   group('shell contracts', () {
