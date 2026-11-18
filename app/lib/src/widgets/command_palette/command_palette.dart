@@ -92,12 +92,17 @@ Future<void> showCommandPalette(BuildContext context) async {
   // A fresh session even when the last palette is still being torn down
   // (lead ruling W2: the notifier has no open()).
   container.invalidate(paletteProvider);
-  final route = _PaletteRoute(
+  late final _PaletteRoute route;
+  route = _PaletteRoute(
     // The palette is built under the root navigator, outside the caller's
     // subtree: hand it the caller's container (D13, TD7; ruling W1).
     pageBuilder: (_, _, _) => UncontrolledProviderScope(
       container: container,
-      child: const _CommandPalette(),
+      child: ValueListenableBuilder<bool>(
+        valueListenable: route.cleared,
+        builder: (_, cleared, _) =>
+            cleared ? const SizedBox.shrink() : const _CommandPalette(),
+      ),
     ),
   );
   route.onPopped = () => session.closed(route);
@@ -201,9 +206,37 @@ class _PaletteSession {
       // it in place. It plays no fade, and the focus stays with the modal
       // on top.
       closed(route, restoreFocus: false);
-      if (route.isActive) route.navigator?.removeRoute(route);
-      _faded(route);
+      _removeCovered(route);
     }
+  }
+
+  /// Removes the covered [route] in steps, a frame apart: the card's
+  /// widgets go first, under the route's provider scope, then the route,
+  /// and the Command bar rests once it has gone.
+  ///
+  /// The scope takes its share of every provider task scheduled while it is
+  /// mounted, and drops it only when it builds. Removing the route with the
+  /// card in it, in a frame where a task is pending (a vault change and the
+  /// vault opening it starts, or the writes [closed] just made), leaves the
+  /// scope inactive with a task it never ran, and the card's auto-dispose on
+  /// unmount then trips Riverpod's debug assert 'Only one task can be
+  /// scheduled at a time'. With the card gone first, its unmount runs while
+  /// the scope is still active, and the route's own unmount schedules no
+  /// task.
+  void _removeCovered(_PaletteRoute route) {
+    final binding = WidgetsBinding.instance;
+    void afterFrame(VoidCallback step) {
+      binding.addPostFrameCallback((_) => step());
+      binding.ensureVisualUpdate();
+    }
+
+    // Already gone (the app is torn down with it): nothing to remove.
+    if (!route.isActive) return _faded(route);
+    route.cleared.value = true;
+    afterFrame(() {
+      if (route.isActive) route.navigator?.removeRoute(route);
+      afterFrame(() => _faded(route));
+    });
   }
 
   /// A row was chosen: closes the palette, then runs [action] with the
@@ -249,6 +282,16 @@ class _PaletteRoute extends RawDialogRoute<void> {
       );
 
   VoidCallback? onPopped;
+
+  /// Set when a covered palette is removed: the route then builds no card,
+  /// only its provider scope (see [_PaletteSession._removeCovered]).
+  final cleared = ValueNotifier<bool>(false);
+
+  @override
+  void dispose() {
+    cleared.dispose();
+    super.dispose();
+  }
 
   @override
   Duration get reverseTransitionDuration => _fadeOut;
