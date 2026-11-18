@@ -20,6 +20,10 @@ import 'src/state/vault_open_hosted.dart';
 import 'src/state/vault_state.dart';
 import 'src/theme/app_theme.dart';
 import 'src/theme/font_setup.dart';
+import 'src/updater/update_controller.dart';
+import 'src/updater/update_modal.dart';
+import 'src/updater/update_seams.dart';
+import 'src/updater/updater_menu_host.dart';
 import 'src/widgets/hosted/hosted_bindings.dart';
 import 'src/widgets/hosted/leave_confirm_dialog.dart';
 
@@ -30,7 +34,8 @@ Future<void> main() async {
   // Hosted vaults keep their UI state here (Req 35, D19).
   final appSupport = await getApplicationSupportDirectory();
   // The app's own version for the picker and sidebar labels (never the
-  // build number).
+  // build number), and the build number for the update decision's
+  // tie-break (D16).
   final info = await PackageInfo.fromPlatform();
   runApp(
     ProviderScope(
@@ -38,6 +43,7 @@ Future<void> main() async {
         settingsProvider.overrideWith((_) => settings),
         appSupportDirProvider.overrideWithValue(appSupport.path),
         appVersionProvider.overrideWithValue(info.version),
+        appBuildNumberProvider.overrideWithValue(info.buildNumber),
         ...appRootOverrides,
       ],
       child: const OpenMemexApp(),
@@ -103,11 +109,20 @@ class _OpenMemexAppState extends ConsumerState<OpenMemexApp> {
   /// follows once the window is gone must not ask again.
   bool _closeAllowed = false;
 
+  /// Open Memex ▸ Check for Updates…, attached once for the app's life so it
+  /// works from the vault picker and from an open vault (req 13).
+  late final UpdaterMenuHost _updaterMenu;
+
   @override
   void initState() {
     super.initState();
     _exitHost = ref.read(appExitHostProvider)
       ..attach(onWindowClose: _onWindowClose, onQuit: _onQuit);
+    _updaterMenu = UpdaterMenuHost(navigatorKey: _navigatorKey, read: ref.read)
+      ..attach();
+    // The launch sequence runs after the first frame, once the navigator
+    // the modal opens over exists (D8).
+    WidgetsBinding.instance.addPostFrameCallback((_) => _launchUpdater());
     // The native window title follows the open vault (L21).
     ref.listenManual<String>(
       windowTitleTextProvider,
@@ -120,8 +135,21 @@ class _OpenMemexAppState extends ConsumerState<OpenMemexApp> {
 
   @override
   void dispose() {
+    _updaterMenu.detach();
     _exitHost.detach();
     super.dispose();
+  }
+
+  /// Runs the update controller's launch sequence once and opens the update
+  /// modal only when it asks to (D8). With updates disabled it touches no
+  /// updater port (D7).
+  Future<void> _launchUpdater() async {
+    if (!mounted) return;
+    final open = await ref.read(updateControllerProvider.notifier).launch();
+    if (!open || !mounted) return;
+    final navigator = _navigatorKey.currentContext;
+    if (navigator == null || !navigator.mounted) return;
+    await openUpdateModal(navigator, ref.read);
   }
 
   Future<bool> _onWindowClose() async {
@@ -134,8 +162,12 @@ class _OpenMemexAppState extends ConsumerState<OpenMemexApp> {
     return allowed;
   }
 
+  /// A quit asks the leave confirm, unless a window close was allowed or a
+  /// relaunch already confirmed the exit (D3, req 23).
   Future<AppExitResponse> _onQuit() async {
-    if (_closeAllowed) return AppExitResponse.exit;
+    if (_closeAllowed || ref.read(appExitConfirmationProvider).confirmed) {
+      return AppExitResponse.exit;
+    }
     final allowed = await confirmLeave(
       _navigatorKey.currentContext!,
       LeaveAction.quit,
