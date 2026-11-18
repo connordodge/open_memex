@@ -12,6 +12,8 @@
 //
 // The tabs are a real TabsNotifier over an in-memory UiStateStore, driven
 // through its public commands.
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -19,6 +21,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/main.dart' show appNavigatorKeyProvider;
 import 'package:open_memex_app/src/graph/graph_scope.dart';
 import 'package:open_memex_app/src/state/app_exit.dart';
+import 'package:open_memex_app/src/state/find_in_note_state.dart';
 import 'package:open_memex_app/src/state/find_menu_enablement.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/state/ui_state_store.dart';
@@ -105,6 +108,40 @@ _Wi81Rig _wi81Attached() {
   final r = _Wi81Rig()..openVault();
   r.attach();
   return r;
+}
+
+/// Plays a native `find` call with [action] on the window channel, as
+/// MainFlutterWindow.swift sends it, and pumps once.
+Future<void> _wi81SendFind(WidgetTester tester, String action) async {
+  var replied = false;
+  tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+    appWindowChannel.name,
+    const StandardMethodCodec().encodeMethodCall(MethodCall('find', action)),
+    (_) => replied = true,
+  );
+  await tester.pump();
+  expect(replied, isTrue, reason: 'find $action got a reply');
+}
+
+/// A host whose native side refuses `setFindMenuEnabled(false)`: the call is
+/// recorded, then throws, so native keeps the items enabled.
+class _Wi81RefusingFalseHost extends FakeWindowMenuHost {
+  @override
+  Future<void> setFindMenuEnabled(bool enabled) async {
+    await super.setFindMenuEnabled(enabled);
+    if (!enabled) {
+      throw PlatformException(code: 'menu_failed', message: 'refused');
+    }
+  }
+}
+
+/// A host whose native call never completes.
+class _Wi81HangHost extends FakeWindowMenuHost {
+  @override
+  Future<void> setFindMenuEnabled(bool enabled) {
+    findEnabledCalls.add(enabled);
+    return Completer<void>().future;
+  }
 }
 
 /// One frame plus a moment of fake time: Riverpod can flush provider
@@ -511,6 +548,47 @@ void main() {
     );
 
     testWidgets(
+      'a popup menu and a bottom sheet over the workspace each disable Find and closing them enables it again',
+      (tester) async {
+        final r = _wi81Attached();
+        r.tabs.openOrFocus(_wi81Note('alpha'));
+        final nav = await _wi81PumpNavigator(tester, r);
+        await _wi81Flush(tester);
+        expect(r.menu.findEnabledCalls, [false, true]);
+
+        showMenu<void>(
+          context: nav.currentContext!,
+          position: RelativeRect.fill,
+          items: const [PopupMenuItem<void>(child: Text('item-81'))],
+        );
+        await _wi81Flush(tester);
+        expect(find.text('item-81'), findsOneWidget);
+        expect(r.menu.findEnabledCalls, [false, true, false]);
+        nav.currentState!.pop();
+        await tester.pumpAndSettle();
+        expect(r.menu.findEnabledCalls, [false, true, false, true]);
+
+        showModalBottomSheet<void>(
+          context: nav.currentContext!,
+          builder: (_) => const SizedBox(key: Key('sheet-81'), height: 80),
+        );
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('sheet-81')), findsOneWidget);
+        expect(r.menu.findEnabledCalls, [false, true, false, true, false]);
+        nav.currentState!.pop();
+        await tester.pumpAndSettle();
+        expect(r.menu.findEnabledCalls, [
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+        ]);
+      },
+    );
+
+    testWidgets(
       'in the running app a dialog over the workspace disables Find and closing it enables Find again',
       (tester) async {
         final menu = FakeWindowMenuHost();
@@ -537,6 +615,138 @@ void main() {
         nav.currentState!.pop();
         await pumpFrames(tester);
         expect(menu.findEnabledCalls.skip(before), [false, true]);
+      },
+    );
+  });
+
+  group('the find route is gated on the Dart-side value (D13)', () {
+    testWidgets(
+      'find dispatches only while a note editor is showing and not while there is no vault or a graph tab shows',
+      (tester) async {
+        final r = _Wi81Rig();
+        r.tabs.openOrFocus(_wi81Note('alpha'));
+        r.attach();
+        await _wi81Flush(tester);
+        FindMenuDispatch? seen() => r.container.read(findMenuActionsProvider);
+
+        await _wi81SendFind(tester, 'show');
+        expect(seen(), isNull, reason: 'a note tab but no vault open');
+
+        r.openVault();
+        await _wi81Flush(tester);
+        await _wi81SendFind(tester, 'show');
+        expect(seen(), const FindMenuDispatch(FindMenuAction.show, 1));
+
+        r.tabs.openOrFocus(_wi81Graph());
+        await _wi81Flush(tester);
+        await _wi81SendFind(tester, 'next');
+        expect(
+          seen(),
+          const FindMenuDispatch(FindMenuAction.show, 1),
+          reason: 'a graph tab has no editor: nothing is dispatched',
+        );
+
+        r.tabs.openOrFocus(_wi81Canvas());
+        await _wi81Flush(tester);
+        await _wi81SendFind(tester, 'next');
+        expect(seen(), const FindMenuDispatch(FindMenuAction.show, 1));
+
+        r.tabs.navigate(_wi81Canvas(zoomedInto: 'bravo'));
+        await _wi81Flush(tester);
+        await _wi81SendFind(tester, 'previous');
+        expect(
+          seen(),
+          const FindMenuDispatch(FindMenuAction.previous, 2),
+          reason: 'a canvas zoomed into a note is an editor again',
+        );
+
+        r.closeVault();
+        await _wi81Flush(tester);
+        await _wi81SendFind(tester, 'useSelection');
+        expect(seen(), const FindMenuDispatch(FindMenuAction.previous, 2));
+      },
+    );
+
+    testWidgets(
+      'with a dialog open and the native call failing on setFindMenuEnabled false find dispatches nothing and dispatches again once the dialog closes',
+      (tester) async {
+        final host = _Wi81RefusingFalseHost();
+        final oldDebugPrint = debugPrint;
+        debugPrint = (String? message, {int? wrapWidth}) {};
+        try {
+          final r = _Wi81Rig(
+            overrides: [windowMenuHostProvider.overrideWithValue(host)],
+          )..openVault();
+          r.attach();
+          r.tabs.openOrFocus(_wi81Note('alpha'));
+          final nav = await _wi81PumpNavigator(tester, r);
+          await _wi81Flush(tester);
+          expect(host.findEnabledCalls, [false, true]);
+
+          await _wi81SendFind(tester, 'show');
+          expect(
+            r.container.read(findMenuActionsProvider),
+            const FindMenuDispatch(FindMenuAction.show, 1),
+            reason: 'no modal: dispatched',
+          );
+
+          showDialog<void>(
+            context: nav.currentContext!,
+            builder: (_) => const SizedBox(key: Key('dialog-81')),
+          );
+          await _wi81Flush(tester);
+          expect(host.findEnabledCalls, [
+            false,
+            true,
+            false,
+          ], reason: 'false was sent and refused: native still has Find on');
+
+          for (final action in ['show', 'next', 'previous', 'useSelection']) {
+            await _wi81SendFind(tester, action);
+          }
+          expect(
+            r.container.read(findMenuActionsProvider),
+            const FindMenuDispatch(FindMenuAction.show, 1),
+            reason: 'under the dialog nothing is dispatched',
+          );
+          expect(tester.takeException(), isNull);
+
+          nav.currentState!.pop();
+          await _wi81Flush(tester);
+          await _wi81SendFind(tester, 'next');
+          expect(
+            r.container.read(findMenuActionsProvider),
+            const FindMenuDispatch(FindMenuAction.next, 2),
+            reason: 'the dialog is gone: Find acts again',
+          );
+        } finally {
+          debugPrint = oldDebugPrint;
+        }
+      },
+    );
+
+    testWidgets(
+      'a find call while the native flag is still on a stale true under a dialog dispatches nothing',
+      (tester) async {
+        // The send is unawaited: the native side may still hold true when
+        // find arrives. Here the native call never completes.
+        final r = _Wi81Rig(
+          overrides: [
+            windowMenuHostProvider.overrideWithValue(_Wi81HangHost()),
+          ],
+        )..openVault();
+        r.attach();
+        r.tabs.openOrFocus(_wi81Note('alpha'));
+        final nav = await _wi81PumpNavigator(tester, r);
+        await _wi81Flush(tester);
+
+        showDialog<void>(
+          context: nav.currentContext!,
+          builder: (_) => const SizedBox(key: Key('dialog-81')),
+        );
+        await _wi81Flush(tester);
+        await _wi81SendFind(tester, 'show');
+        expect(r.container.read(findMenuActionsProvider), isNull);
       },
     );
   });
@@ -593,46 +803,47 @@ void main() {
         final oldDebugPrint = debugPrint;
         debugPrint = (String? message, {int? wrapWidth}) =>
             logs.add(message ?? '');
-        // Restored in the body: the framework's invariant check runs before
-        // addTearDown callbacks.
-        void restore() => debugPrint = oldDebugPrint;
+        // Restored in a finally: the framework's invariant check runs before
+        // addTearDown callbacks, and a failed expect must not leak the stub.
+        try {
+          final messenger = tester.binding.defaultBinaryMessenger;
+          messenger.setMockMethodCallHandler(appWindowChannel, (call) async {
+            throw PlatformException(code: 'menu_failed', message: 'nope');
+          });
+          addTearDown(
+            () => messenger.setMockMethodCallHandler(appWindowChannel, null),
+          );
 
-        final messenger = tester.binding.defaultBinaryMessenger;
-        messenger.setMockMethodCallHandler(appWindowChannel, (call) async {
-          throw PlatformException(code: 'menu_failed', message: 'nope');
-        });
-        addTearDown(
-          () => messenger.setMockMethodCallHandler(appWindowChannel, null),
-        );
-
-        final c = ProviderContainer(
-          overrides: [
-            tabsProvider.overrideWith(
-              (ref) => TabsNotifier(
-                store: _Wi81MemoryStore(),
-                onPersistedSelection: (_) {},
+          final c = ProviderContainer(
+            overrides: [
+              tabsProvider.overrideWith(
+                (ref) => TabsNotifier(
+                  store: _Wi81MemoryStore(),
+                  onPersistedSelection: (_) {},
+                ),
               ),
-            ),
-          ],
-        );
-        addTearDown(c.dispose);
-        c.read(currentVaultProvider.notifier).state = LocalVaultRef(
-          '/vaults/My Vault 81',
-        );
-        c.read(findMenuEnablementProvider);
-        await _wi81Flush(tester);
-        final findLogs = logs.where((l) => l.contains('setFindMenuEnabled'));
-        expect(findLogs, hasLength(1));
-        expect(findLogs.single, contains('setFindMenuEnabled(false)'));
-        expect(findLogs.single, contains('menu_failed'));
+            ],
+          );
+          addTearDown(c.dispose);
+          c.read(currentVaultProvider.notifier).state = LocalVaultRef(
+            '/vaults/My Vault 81',
+          );
+          c.read(findMenuEnablementProvider);
+          await _wi81Flush(tester);
+          final findLogs = logs.where((l) => l.contains('setFindMenuEnabled'));
+          expect(findLogs, hasLength(1));
+          expect(findLogs.single, contains('setFindMenuEnabled(false)'));
+          expect(findLogs.single, contains('menu_failed'));
 
-        c.read(tabsProvider.notifier).openOrFocus(_wi81Note('alpha'));
-        await _wi81Flush(tester);
-        final after = logs.where((l) => l.contains('setFindMenuEnabled'));
-        expect(after, hasLength(2));
-        expect(after.last, contains('setFindMenuEnabled(true)'));
-        restore();
-        expect(tester.takeException(), isNull);
+          c.read(tabsProvider.notifier).openOrFocus(_wi81Note('alpha'));
+          await _wi81Flush(tester);
+          final after = logs.where((l) => l.contains('setFindMenuEnabled'));
+          expect(after, hasLength(2));
+          expect(after.last, contains('setFindMenuEnabled(true)'));
+          expect(tester.takeException(), isNull);
+        } finally {
+          debugPrint = oldDebugPrint;
+        }
       },
     );
   });

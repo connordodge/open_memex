@@ -17,6 +17,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/app_exit.dart';
 import 'package:open_memex_app/src/state/find_in_note_state.dart';
 import 'package:open_memex_app/src/state/find_menu_enablement.dart';
+import 'package:open_memex_app/src/state/tabs_state.dart';
+import 'package:open_memex_app/src/state/ui_state_store.dart';
+import 'package:open_memex_app/src/state/vault_state.dart';
 
 import '../support/app_exit_fakes.dart';
 import '../support/app_harness.dart';
@@ -53,6 +56,29 @@ Future<_Wi81Reply> _wi81Send(
   await tester.pump();
   expect(reply.replied, isTrue, reason: '$method got a reply');
   return reply;
+}
+
+/// A UiStateStore that never touches disk.
+class _Wi81RouteStore extends UiStateStore {
+  _Wi81RouteStore() : super(vaultPath: '/nonexistent/find-route');
+
+  UiState _last = UiState(
+    tabs: const [],
+    activeTabIndex: 0,
+    canvasViewports: const {},
+  );
+
+  @override
+  UiState read() => _last;
+
+  @override
+  Future<void> write(UiState state) {
+    _last = state;
+    return Future<void>.value();
+  }
+
+  @override
+  Future<void> flush() => Future<void>.value();
 }
 
 /// A find handler that records every action it is given.
@@ -242,12 +268,24 @@ void main() {
     testWidgets(
       'reading findMenuEnablementProvider routes each find call to one findMenuActionsProvider dispatch',
       (tester) async {
+        // Find dispatches only while a note editor is showing (a vault is
+        // open on a NoteTab, no modal over it), so open both first.
         final c = ProviderContainer(
           overrides: [
             windowMenuHostProvider.overrideWithValue(FakeWindowMenuHost()),
+            tabsProvider.overrideWith(
+              (ref) => TabsNotifier(
+                store: _Wi81RouteStore(),
+                onPersistedSelection: (_) {},
+              ),
+            ),
           ],
         );
         addTearDown(c.dispose);
+        c.read(currentVaultProvider.notifier).state = LocalVaultRef(
+          '/vaults/My Vault 81',
+        );
+        c.read(tabsProvider.notifier).openOrFocus(NoteTab('note-81-route'));
         c.read(findMenuEnablementProvider);
         final seen = <FindMenuDispatch?>[];
         c.listen<FindMenuDispatch?>(

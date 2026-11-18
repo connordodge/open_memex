@@ -241,16 +241,22 @@ void _expectBadArguments(String elseBody, String why) {
 }
 
 /// The top-level `if <cond> { <body> }` statements of [body], in order.
-List<({String cond, String body, int start})> _ifs(String body) {
-  final out = <({String cond, String body, int start})>[];
+List<({String cond, String body, int start, int end})> _ifs(String body) {
+  final out = <({String cond, String body, int start, int end})>[];
   var from = 0;
   while (true) {
     final m = RegExp(r'\bif\s+([^{]*?)\s*\{').firstMatch(body.substring(from));
     if (m == null) return out;
     final open = from + m.end - 1;
     final inner = _bracketBody(body, open);
-    out.add((cond: m.group(1)!.trim(), body: inner, start: from + m.start));
-    from = open + inner.length + 2;
+    final end = open + inner.length + 2;
+    out.add((
+      cond: m.group(1)!.trim(),
+      body: inner,
+      start: from + m.start,
+      end: end,
+    ));
+    from = end;
   }
 }
 
@@ -583,6 +589,137 @@ void main() {
       );
       expect(body, isNot(matches(RegExp(r'return\s+true\b'))));
       expect(body, isNot(contains('!findMenuEnabled')));
+    },
+  );
+
+  test(
+    'validateMenuItem has exactly the Agents then Find and Replace then find action branches and every other item asks super',
+    () {
+      final src = _swift();
+      final action = _findAction(src);
+      final body = _funcBody(
+        src,
+        RegExp(
+          r'override\s+func\s+validateMenuItem\(\s*_\s+menuItem\s*:\s*NSMenuItem\s*\)\s*->\s*Bool',
+        ),
+      );
+      final ifs = _ifs(body);
+      expect(
+        ifs.map((i) => i.cond).toList(),
+        [
+          matches(
+            RegExp(
+              r'^menuItem\.action\s*==\s*#selector\(\s*openAgents\(_:\)\s*\)$',
+            ),
+          ),
+          matches(RegExp(r'^menuItem\.identifier\b.*==.*"find-replace"\)?$')),
+          matches(
+            RegExp(
+              r'^menuItem\.action\s*==\s*#selector\(\s*(?:self\.)?' +
+                  action.name +
+                  r'\(_:\)\s*\)$',
+            ),
+          ),
+        ],
+        reason:
+            'a stray branch that greys or ties another item (Minimize, Zoom) '
+            'to a flag would add or change a branch:\n$body',
+      );
+      expect(
+        ifs[0].body.trim(),
+        matches(RegExp(r'^return\s+(?:self\.)?agentsMenuEnabled$')),
+        reason: 'the Agents item is its own flag',
+      );
+      expect(
+        body.substring(0, ifs.first.start).trim(),
+        isEmpty,
+        reason: 'nothing runs before the first branch',
+      );
+      for (var i = 0; i + 1 < ifs.length; i++) {
+        expect(
+          body.substring(ifs[i].end, ifs[i + 1].start).trim(),
+          isEmpty,
+          reason: 'nothing runs between branches ${i + 1} and ${i + 2}',
+        );
+      }
+      expect(
+        body.substring(ifs.last.end).trim(),
+        'return super.validateMenuItem(menuItem)',
+        reason: 'every other item is validated as before',
+      );
+      expect(
+        _count(body, RegExp(r'\breturn\b')),
+        4,
+        reason: 'three branch returns and the super return',
+      );
+    },
+  );
+
+  test(
+    'the main-queue closure in awakeFromNib attaches the Find items in the installed main menu',
+    () {
+      final src = _swift();
+      final awake = _funcBody(
+        src,
+        RegExp(r'override\s+func\s+awakeFromNib\(\s*\)'),
+      );
+      expect(
+        _count(awake, 'DispatchQueue.main.async'),
+        1,
+        reason: 'one deferred attach',
+      );
+      final at = awake.indexOf('DispatchQueue.main.async');
+      final open = awake.indexOf('{', at);
+      final closure = _bracketBody(
+        awake,
+        open,
+      ).replaceAll(RegExp(r'\s+'), ' ').trim();
+      expect(
+        closure,
+        matches(
+          RegExp(
+            r'^\[weak self\] in guard let self = self, let (\w+) = '
+            r'NSApp\.mainMenu else \{ return \} '
+            r'(?:self\.)?attachFindItems\(in: \1\)$',
+          ),
+        ),
+        reason:
+            'the closure takes NSApp.mainMenu (returning when it is not '
+            'installed) and attaches the items in it, and nothing else',
+      );
+    },
+  );
+
+  test(
+    'attachFindItems targets every item whose identifier is in the lookup and recurses into each submenu',
+    () {
+      final src = _swift();
+      final map = _findMap(src);
+      final action = _findAction(src);
+      final decl = RegExp(
+        r'func\s+attachFindItems\(\s*in\s+(\w+)\s*:\s*NSMenu\s*\)',
+      );
+      final m = decl.firstMatch(src);
+      expect(m, isNotNull, reason: '$_swiftPath declares attachFindItems(in:)');
+      final menu = m!.group(1)!;
+      final body = _funcBody(src, decl).replaceAll(RegExp(r'\s+'), ' ').trim();
+      final lookup =
+          '(?:Self\\.|MainFlutterWindow\\.|self\\.)?${map.name}\\[\\2\\]';
+      final pattern =
+          '^for (\\w+) in $menu\\.items \\{ '
+          'if let (\\w+) = \\1\\.identifier\\?\\.rawValue, $lookup != nil \\{ '
+          '\\1\\.target = self '
+          '\\1\\.action = #selector\\((?:self\\.)?${action.name}\\(_:\\)\\) \\} '
+          'if let (\\w+) = \\1\\.submenu \\{ '
+          'attachFindItems\\(in: \\3\\) \\} \\}\$';
+      expect(
+        body,
+        matches(RegExp(pattern)),
+        reason:
+            'each item whose identifier is != nil in the lookup is targeted '
+            'at the window with the find action, and the walk recurses into '
+            'item.submenu (the Find items sit two submenus deep):\n$body',
+      );
     },
   );
 }
