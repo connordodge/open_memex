@@ -14,6 +14,7 @@ pub mod graph;
 pub mod note_edits;
 pub mod notes;
 pub mod revision;
+pub mod search;
 pub mod tags;
 pub mod tools;
 pub mod topics;
@@ -36,4 +37,5 @@ pub fn router() -> Router {
         .merge(tools::router())
         .merge(embeddings::router())
         .merge(note_edits::router())
+        .merge(search::router())
 }
