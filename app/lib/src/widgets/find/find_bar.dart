@@ -50,6 +50,15 @@ const double _magnifierMinBox = 240;
 /// The ghost buttons' side.
 const double _buttonSize = 24;
 
+/// The row's fixed width beside a counter: both insets, the four gaps, the
+/// counter's two margins and the three buttons (110 px, as F1's
+/// `findCounterForm` assumes).
+const double _fixedWidth =
+    2 * _inset + 4 * _gap + 2 * _counterMargin + 3 * _buttonSize;
+
+/// The field's floor while the counter shows (Req 33).
+const double _fieldFloor = 96;
+
 /// The Find bar: a `Positioned` box 10 px below the body top and 12 px from
 /// its right edge, `findBoxWidth(bodyWidth)` wide and 38 px tall, shown only
 /// while `findInNoteProvider.open` is true. It must be a direct child of the
@@ -158,7 +167,8 @@ class _FindBarOverlayState extends ConsumerState<FindBarOverlay> {
   /// Pastes the clipboard's plain text over the selection with its line
   /// breaks as spaces. The single-line field would drop them (its newline
   /// formatter runs before any of ours), joining `two\nlines` into
-  /// `twolines`.
+  /// `twolines`. Both the Cmd+V shortcut ([PasteTextIntent]) and the
+  /// context menu's Paste item ([_contextMenu]) come here.
   Future<void> _paste() async {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     final text = data?.text;
@@ -180,6 +190,28 @@ class _FindBarOverlayState extends ConsumerState<FindBarOverlay> {
       ),
     );
     _notifier.setQuery(query);
+  }
+
+  /// The field's default context menu with its Paste item routed through
+  /// [_paste], so a right-click Paste maps line breaks to spaces as Cmd+V
+  /// does.
+  Widget _contextMenu(BuildContext context, EditableTextState editable) {
+    final items = [
+      for (final item in editable.contextMenuButtonItems)
+        if (item.type == ContextMenuButtonType.paste)
+          item.copyWith(
+            onPressed: () {
+              editable.hideToolbar();
+              _paste();
+            },
+          )
+        else
+          item,
+    ];
+    return AdaptiveTextSelectionToolbar.buttonItems(
+      anchors: editable.contextMenuAnchors,
+      buttonItems: items,
+    );
   }
 
   @override
@@ -209,17 +241,36 @@ class _FindBarOverlayState extends ConsumerState<FindBarOverlay> {
       return width;
     }
 
-    final form = findCounterForm(
-      boxWidth: boxWidth,
-      shortTextWidth: measure(
+    final shortWidth = measure(
+      findCounterText(
+        current: s.current,
+        total: total,
+        query: s.query,
+        form: FindCounterForm.short,
+      ),
+    );
+    var form = findCounterForm(boxWidth: boxWidth, shortTextWidth: shortWidth);
+    // Req 33 for the full form too: a full counter wide enough to push the
+    // field under its floor (`1,000 of 10,000` in a 300 px box) falls back
+    // to the short form, and that to hidden when it does not fit either.
+    if (form == FindCounterForm.full) {
+      final fullWidth = measure(
         findCounterText(
           current: s.current,
           total: total,
           query: s.query,
-          form: FindCounterForm.short,
+          form: FindCounterForm.full,
         ),
-      ),
-    );
+      );
+      if (boxWidth - _fixedWidth - max(_fullCounterMin, fullWidth) <
+          _fieldFloor) {
+        form =
+            boxWidth - _fixedWidth - max(_shortCounterMin, shortWidth) <
+                _fieldFloor
+            ? FindCounterForm.hidden
+            : FindCounterForm.short;
+      }
+    }
     final counterText = findCounterText(
       current: s.current,
       total: total,
@@ -356,6 +407,7 @@ class _FindBarOverlayState extends ConsumerState<FindBarOverlay> {
       cursorColor: OmColors.accent,
       cursorWidth: 2,
       cursorHeight: 14,
+      contextMenuBuilder: _contextMenu,
       decoration: InputDecoration.collapsed(
         hintText: 'Find in note',
         hintStyle: OmType.mono(size: 12, height: 15 / 12, color: OmColors.fg2),
