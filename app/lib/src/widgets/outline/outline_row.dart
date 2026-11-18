@@ -45,6 +45,9 @@ class OutlineRow extends StatefulWidget {
   final bool focused;
   final void Function(OutlineEntry entry)? onActivate;
 
+  /// A row's height at [scaler]: one line of text plus the vertical padding.
+  static double heightFor(TextScaler scaler) => scaler.scale(18) + 2 * _padY;
+
   @override
   State<OutlineRow> createState() => _OutlineRowState();
 }
@@ -58,7 +61,7 @@ class _OutlineRowState extends State<OutlineRow> {
     final current = widget.current;
     final scaler = MediaQuery.textScalerOf(context);
     final tagWidth = scaler.scale(22).roundToDouble();
-    final height = scaler.scale(18) + 2 * _padY;
+    final height = OutlineRow.heightFor(scaler);
     final indent = _indent * entry.depth;
     final textStyle = OmType.mono(
       size: 12,

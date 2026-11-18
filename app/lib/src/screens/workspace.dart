@@ -19,6 +19,7 @@ import '../widgets/canvas_view.dart';
 import '../widgets/graph/graph_view.dart';
 import '../widgets/hosted/not_loaded_state.dart';
 import '../widgets/note_editor.dart';
+import '../widgets/outline/outline_keys.dart';
 import '../widgets/right_panel.dart';
 import '../widgets/sidebar.dart';
 import '../widgets/vault_schema_banner.dart';
@@ -42,6 +43,7 @@ class Workspace extends ConsumerWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                const OutlineKeys(),
                 const VaultSchemaBanner(),
                 const _HistoryKeys(child: _WorkspaceTabBar()),
                 Expanded(
