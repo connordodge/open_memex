@@ -105,7 +105,15 @@ class UpdateController extends Notifier<UpdateState> {
     if (!manual && !await _checkDue()) return;
     // An install may have started while the stamp was read.
     if (_installBusy) return;
-    await (_checking ??= _runCheck().whenComplete(() => _checking = null));
+    final inFlight = _checking;
+    if (inFlight != null) {
+      // The launch may have shown a recorded failure over this check, which
+      // makes it drop its result; joining it re-enters Checking so the
+      // result is adopted instead.
+      if (state is! UpdateChecking) state = const UpdateChecking();
+      return inFlight;
+    }
+    await (_checking = _runCheck().whenComplete(() => _checking = null));
   }
 
   /// Whether the last check was never stamped, or stamped at least
@@ -122,7 +130,8 @@ class UpdateController extends Notifier<UpdateState> {
   /// the last check; a failed fetch does not.
   ///
   /// If the state left Checking while the fetch ran (the launch showed a
-  /// recorded failure), the result is dropped so it can't overwrite that.
+  /// recorded failure), the result is dropped so it can't overwrite that,
+  /// unless a later [check] joined this one and re-entered Checking.
   Future<void> _runCheck() async {
     state = const UpdateChecking();
     final List<AppcastItem> items;
