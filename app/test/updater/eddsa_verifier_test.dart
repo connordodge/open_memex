@@ -182,7 +182,9 @@ void main() {
       final path = _wi33WriteDmg(_wi33DmgBytes());
 
       await expectLater(
-        _wi33Verifier(key.publicKeyBase64).verify(dmgPath: path, edSignature: ''),
+        _wi33Verifier(
+          key.publicKeyBase64,
+        ).verify(dmgPath: path, edSignature: ''),
         _wi33FailsWith(UpdateErrorCause.noSignature),
       );
       expect(File(path).existsSync(), isFalse);
@@ -368,6 +370,132 @@ void main() {
         ).verify(dmgPath: path, edSignature: await key.sign(const [1, 2, 3])),
         throwsA(isA<UpdateFailure>()),
       );
+    },
+  );
+
+  test(
+    'a file that does not exist fails with the download-failed cause',
+    () async {
+      final key = await _Wi33Key.mint();
+      final path = p.join(_wi33TempDir().path, 'missing.dmg');
+
+      await expectLater(
+        _wi33Verifier(
+          key.publicKeyBase64,
+        ).verify(dmgPath: path, edSignature: await key.sign(const [1, 2, 3])),
+        _wi33FailsWith(UpdateErrorCause.downloadFailed),
+      );
+    },
+  );
+
+  test(
+    'a file that cannot be read fails with the download-failed cause and is deleted',
+    () async {
+      final key = await _Wi33Key.mint();
+      final bytes = _wi33DmgBytes();
+      final path = _wi33WriteDmg(bytes);
+      final signature = await key.sign(bytes);
+      expect(Process.runSync('chmod', ['000', path]).exitCode, 0);
+      addTearDown(() => Process.runSync('chmod', ['644', path]));
+      // Root reads any file; the refusal below needs a real read error.
+      var readable = true;
+      try {
+        File(path).readAsBytesSync();
+      } on FileSystemException {
+        readable = false;
+      }
+      if (readable) {
+        markTestSkipped('the test runs as a user that can read mode 000');
+        return;
+      }
+
+      await expectLater(
+        _wi33Verifier(
+          key.publicKeyBase64,
+        ).verify(dmgPath: path, edSignature: signature),
+        _wi33FailsWith(UpdateErrorCause.downloadFailed),
+      );
+      expect(File(path).existsSync(), isFalse);
+    },
+  );
+
+  test(
+    'the public key is checked before the signature and the signature before the file',
+    () async {
+      final key = await _Wi33Key.mint();
+      final bytes = _wi33DmgBytes();
+      final signature = await key.sign(bytes);
+      final cases = [
+        // (public key, signature, expected cause)
+        ('', '', UpdateErrorCause.noPublicKey),
+        ('', 'not valid base64 !!!', UpdateErrorCause.noPublicKey),
+        ('   ', signature, UpdateErrorCause.noPublicKey),
+        ('not a key !!!', '', UpdateErrorCause.noPublicKey),
+        (key.publicKeyBase64, '', UpdateErrorCause.noSignature),
+        (key.publicKeyBase64, '  \n\t ', UpdateErrorCause.noSignature),
+      ];
+      for (final (publicKey, edSignature, cause) in cases) {
+        final path = _wi33WriteDmg(bytes);
+
+        await expectLater(
+          _wi33Verifier(
+            publicKey,
+          ).verify(dmgPath: path, edSignature: edSignature),
+          _wi33FailsWith(cause),
+          reason: 'key "$publicKey" signature "$edSignature"',
+        );
+        expect(File(path).existsSync(), isFalse);
+      }
+    },
+  );
+
+  test(
+    'a public key and a signature padded with whitespace are trimmed before they are decoded',
+    () async {
+      final key = await _Wi33Key.mint();
+      final bytes = _wi33DmgBytes();
+      final path = _wi33WriteDmg(bytes);
+      final signature = await key.sign(bytes);
+
+      await _wi33Verifier(
+        '  ${key.publicKeyBase64}\n',
+      ).verify(dmgPath: path, edSignature: '\t$signature \n');
+
+      expect(File(path).readAsBytesSync(), bytes);
+
+      // Trimming does not make a wrong signature pass.
+      final other = await _Wi33Key.mint();
+      await expectLater(
+        _wi33Verifier(
+          ' ${key.publicKeyBase64} ',
+        ).verify(dmgPath: path, edSignature: ' ${await other.sign(bytes)}\n'),
+        _wi33FailsWith(UpdateErrorCause.badSignature),
+      );
+      expect(File(path).existsSync(), isFalse);
+    },
+  );
+
+  test(
+    'a 32-byte key and a 64-byte signature that are not valid Ed25519 values fail with the bad-signature cause and the file is deleted',
+    () async {
+      final bytes = _wi33DmgBytes();
+      final cases = {
+        'all 0xff': (List<int>.filled(32, 0xff), List<int>.filled(64, 0xff)),
+        'all zero': (List<int>.filled(32, 0), List<int>.filled(64, 0)),
+      };
+      for (final entry in cases.entries) {
+        final (publicKey, signature) = entry.value;
+        final path = _wi33WriteDmg(bytes);
+
+        await expectLater(
+          _wi33Verifier(
+            base64.encode(publicKey),
+          ).verify(dmgPath: path, edSignature: base64.encode(signature)),
+          _wi33FailsWith(UpdateErrorCause.badSignature),
+          reason: entry.key,
+        );
+        expect(File(path).existsSync(), isFalse, reason: entry.key);
+      }
     },
   );
 }

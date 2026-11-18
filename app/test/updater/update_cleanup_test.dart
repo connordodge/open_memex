@@ -91,4 +91,35 @@ void main() {
       expect(clients, isEmpty);
     },
   );
+
+  test(
+    'a directory the cleanup cannot fully delete is not an error for the cleanup',
+    () async {
+      final root = _wi33CleanRoot();
+      final dir = p.join(root, 'open-memex-update');
+      final locked = p.join(dir, 'locked');
+      Directory(locked).createSync(recursive: true);
+      File(p.join(locked, 'part')).writeAsStringSync('x');
+      // A folder whose contents can't be removed.
+      expect(Process.runSync('chmod', ['500', locked]).exitCode, 0);
+      addTearDown(() => Process.runSync('chmod', ['700', locked]));
+      var deletable = true;
+      try {
+        File(p.join(locked, 'probe')).writeAsStringSync('x');
+      } on FileSystemException {
+        deletable = false;
+      }
+      if (deletable) {
+        markTestSkipped('the test runs as a user that can write mode 500');
+        return;
+      }
+      final clients = <int>[];
+
+      // Completes without throwing, so a launch is never blocked.
+      await _wi33CleanDownloader(dir, clients).deleteLeftovers();
+
+      expect(File(p.join(locked, 'part')).existsSync(), isTrue);
+      expect(clients, isEmpty);
+    },
+  );
 }

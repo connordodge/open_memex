@@ -427,4 +427,189 @@ void main() {
       expect(net.clients.map((c) => c.closed), [true, true]);
     },
   );
+
+  test('every 2xx download response is accepted and written', () async {
+    for (final status in [200, 201, 206, 299]) {
+      final dir = p.join(_wi33Root(), 'open-memex-update');
+      final net = _Wi33DlHttp(_wi33Chunks(_wi33TenBytes(), status: status));
+
+      final path = await _wi33Downloader(net, dir).download(_wi33Item());
+
+      expect(
+        File(path).readAsBytesSync(),
+        hasLength(10),
+        reason: 'HTTP $status',
+      );
+    }
+  });
+
+  test(
+    'a download creates a missing parent of the update download directory',
+    () async {
+      final dir = p.join(_wi33Root(), 'missing', 'parent', 'open-memex-update');
+      final net = _Wi33DlHttp(_wi33Chunks(_wi33TenBytes(), contentLength: 10));
+
+      final path = await _wi33Downloader(net, dir).download(_wi33Item());
+
+      expect(File(path).readAsBytesSync(), hasLength(10));
+      expect(_wi33Mode(dir), _wi33Mode0700);
+    },
+  );
+
+  test(
+    'a body longer than its Content-Length fails with the download-failed cause and leaves no partial file',
+    () async {
+      final dir = p.join(_wi33Root(), 'open-memex-update');
+      final net = _Wi33DlHttp(_wi33Chunks(_wi33TenBytes(), contentLength: 8));
+
+      await expectLater(
+        _wi33Downloader(net, dir).download(_wi33Item(length: 8)),
+        _wi33FailsWith(UpdateErrorCause.downloadFailed),
+      );
+      expect(_wi33NoFiles(dir), isTrue);
+    },
+  );
+
+  test(
+    'the production downloader waits 60 seconds without a byte before it gives up',
+    () {
+      final net = _Wi33DlHttp(_wi33Chunks(const []));
+      final downloader = _wi33Downloader(net, 'unused');
+
+      expect(
+        (downloader as HttpUpdateDownloader).idleTimeout,
+        const Duration(seconds: 60),
+      );
+    },
+  );
+
+  test(
+    'a response that never starts fails with the download-failed cause after the idle timeout and leaves no partial file',
+    () async {
+      final dir = p.join(_wi33Root(), 'open-memex-update');
+      final clients = <_Wi33DlClosingClient>[];
+      final downloader = HttpUpdateDownloader(
+        clientFactory: () {
+          final client = _Wi33DlClosingClient(
+            MockClient.streaming(
+              (_, _) => Completer<http.StreamedResponse>().future,
+            ),
+          );
+          clients.add(client);
+          return client;
+        },
+        directory: dir,
+        idleTimeout: const Duration(milliseconds: 50),
+      );
+
+      await expectLater(
+        downloader.download(_wi33Item()),
+        _wi33FailsWith(UpdateErrorCause.downloadFailed),
+      );
+      expect(_wi33NoFiles(dir), isTrue);
+      expect(clients.single.closed, isTrue);
+    },
+  );
+
+  test(
+    'a download that stalls after some bytes fails with the download-failed cause after the idle timeout and leaves no partial file',
+    () async {
+      final dir = p.join(_wi33Root(), 'open-memex-update');
+      final body = StreamController<List<int>>();
+      addTearDown(body.close);
+      final net = _Wi33DlHttp(
+        (_) => http.StreamedResponse(body.stream, 200, contentLength: 10),
+      );
+      final downloader = HttpUpdateDownloader(
+        clientFactory: net.call,
+        directory: dir,
+        idleTimeout: const Duration(milliseconds: 100),
+      );
+      final progress = <double?>[];
+
+      final result = downloader.download(_wi33Item(), onProgress: progress.add);
+      // The body never ends: the first chunk arrives, then nothing.
+      body.add([1, 2, 3]);
+
+      await expectLater(
+        result,
+        _wi33FailsWith(UpdateErrorCause.downloadFailed),
+      );
+      expect(progress, [0.3]);
+      expect(_wi33NoFiles(dir), isTrue);
+      expect(net.clients.single.closed, isTrue);
+    },
+  );
+
+  test(
+    'the idle timeout restarts on every chunk and does not limit the whole download',
+    () async {
+      final dir = p.join(_wi33Root(), 'open-memex-update');
+      final body = StreamController<List<int>>();
+      addTearDown(body.close);
+      final net = _Wi33DlHttp(
+        (_) => http.StreamedResponse(body.stream, 200, contentLength: 6),
+      );
+      final downloader = HttpUpdateDownloader(
+        clientFactory: net.call,
+        directory: dir,
+        idleTimeout: const Duration(milliseconds: 400),
+      );
+
+      final result = downloader.download(_wi33Item());
+      // Six chunks 100 ms apart: 600 ms in all, more than the idle timeout,
+      // but no gap reaches it.
+      for (var i = 1; i <= 6; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        body.add([i]);
+      }
+      await body.close();
+
+      final path = await result;
+      expect(File(path).readAsBytesSync(), [1, 2, 3, 4, 5, 6]);
+    },
+  );
+
+  test(
+    'an enclosure URL the HTTP client refuses fails with the download-failed cause and leaves no partial file',
+    () async {
+      final urls = <String>[
+        'ftp://example.com/Open-Memex.dmg',
+        'Open-Memex.dmg',
+        'http://[::bad/Open-Memex.dmg',
+      ];
+      for (final url in urls) {
+        final dir = p.join(_wi33Root(), 'open-memex-update');
+        final container = ProviderContainer(
+          overrides: [updateDownloadDirProvider.overrideWithValue(dir)],
+        );
+        addTearDown(container.dispose);
+
+        // The production client (no network: it refuses before connecting).
+        await expectLater(
+          container
+              .read(updateDownloaderProvider)
+              .download(testAppcastItem(url: url)),
+          _wi33FailsWith(UpdateErrorCause.downloadFailed),
+          reason: url,
+        );
+        expect(_wi33NoFiles(dir), isTrue, reason: url);
+      }
+    },
+  );
+
+  test(
+    'an ArgumentError from the client fails with the download-failed cause and leaves no partial file',
+    () async {
+      final dir = p.join(_wi33Root(), 'open-memex-update');
+      final net = _Wi33DlHttp((_) => throw ArgumentError('Unsupported scheme'));
+
+      await expectLater(
+        _wi33Downloader(net, dir).download(_wi33Item()),
+        _wi33FailsWith(UpdateErrorCause.downloadFailed),
+      );
+      expect(_wi33NoFiles(dir), isTrue);
+      expect(net.clients.single.closed, isTrue);
+    },
+  );
 }

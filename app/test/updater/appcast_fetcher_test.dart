@@ -265,6 +265,102 @@ void main() {
     },
   );
 
+  testWidgets(
+    'the production fetcher gives a fetch 30 seconds to answer before it fails offline',
+    (tester) async {
+      final client = _Wi33Http((_) => Completer<http.Response>().future);
+      Object? error;
+      var done = false;
+      final fetcher = _wi33Fetcher(client);
+      expect(fetcher, isA<HttpAppcastFetcher>());
+      expect(
+        (fetcher as HttpAppcastFetcher).timeout,
+        const Duration(seconds: 30),
+      );
+      expect(fetcher.url.toString(), _wi33Permanent);
+      unawaited(
+        fetcher.fetch().then(
+          (_) => done = true,
+          onError: (Object e) {
+            error = e;
+            done = true;
+          },
+        ),
+      );
+
+      await tester.pump(const Duration(seconds: 29));
+      expect(done, isFalse, reason: 'still waiting at 29 seconds');
+
+      await tester.pump(const Duration(seconds: 2));
+      expect(done, isTrue, reason: 'gave up after 30 seconds');
+      expect(
+        error,
+        isA<UpdateFailure>().having(
+          (f) => f.cause,
+          'cause',
+          UpdateErrorCause.offline,
+        ),
+      );
+      expect(client.clients.single.closed, isTrue);
+    },
+  );
+
+  testWidgets('a fetch uses the timeout it was built with', (tester) async {
+    final net = _Wi33Http((_) => Completer<http.Response>().future);
+    Object? error;
+    var done = false;
+    unawaited(
+      HttpAppcastFetcher(
+        clientFactory: net.call,
+        url: appcastUrlFor(''),
+        timeout: const Duration(seconds: 5),
+      ).fetch().then(
+        (_) => done = true,
+        onError: (Object e) {
+          error = e;
+          done = true;
+        },
+      ),
+    );
+
+    await tester.pump(const Duration(seconds: 4));
+    expect(done, isFalse);
+    await tester.pump(const Duration(seconds: 2));
+    expect(done, isTrue);
+    expect(
+      error,
+      isA<UpdateFailure>().having(
+        (f) => f.cause,
+        'cause',
+        UpdateErrorCause.offline,
+      ),
+    );
+  });
+
+  test(
+    'a body that is not valid UTF-8 fails with the feed-unreadable cause',
+    () async {
+      final valid = utf8.encode(updaterFixture('appcast_valid.xml'));
+      final bodies = {
+        'lone continuation byte': [...valid, 0x80],
+        'truncated multibyte sequence': [...valid, 0xe2, 0x82],
+        'invalid bytes only': [0xff, 0xfe, 0xfd],
+      };
+      for (final entry in bodies.entries) {
+        final net = _Wi33Http(
+          (_) async => http.Response.bytes(entry.value, 200),
+        );
+
+        await expectLater(
+          _wi33Fetcher(net).fetch(),
+          _wi33FailsWith(UpdateErrorCause.feedUnreadable),
+          reason: entry.key,
+        );
+        expect(net.clients.single.closed, isTrue, reason: entry.key);
+      }
+    },
+  );
+
   test('HTTP 404 fails with the no-Appcast cause', () async {
     final net = _Wi33Http(_wi33Answer('Not Found', status: 404));
 
