@@ -84,6 +84,22 @@ Future<void> _wi70FocusOutline(WidgetTester tester, int i) async {
       : _wi70Body(tester).selection,
 );
 
+/// The Source surface's EditableText.
+EditableText _wi70SourceField(WidgetTester tester) =>
+    tester.widget<EditableText>(
+      find.descendant(
+        of: find.descendant(
+          of: find.byKey(const Key('editor-source-surface')),
+          matching: find.byKey(editorBodyKey),
+        ),
+        matching: find.byType(EditableText),
+      ),
+    );
+
+/// The Outline list's focus node (debug label outline-list).
+FocusNode _wi70ListFocusNode() => FocusManager.instance.rootScope.descendants
+    .singleWhere((n) => n.debugLabel == 'outline-list');
+
 void main() {
   holdFontFetches();
 
@@ -729,6 +745,127 @@ void main() {
           isTrue,
           reason: 'Esc from an entry does not close the find bar (D13)',
         );
+      },
+      variant: macOnly,
+    );
+  });
+
+  // ------------------------------------------------- Source mode, ring reset
+  group('Esc in Source mode and the ring after focus loss', () {
+    testWidgets(
+      'Esc returns focus to the Source field with its selection unchanged and the page where it was',
+      (tester) async {
+        final h = await pumpWi70(tester);
+        await h.toggleSource();
+        expect(h.sourceSurface, findsOneWidget, reason: 'fixture: Source mode');
+        final field = _wi70SourceField(tester);
+        await tester.showKeyboard(find.byWidget(field));
+        await tester.pump();
+        field.controller.selection = const TextSelection(
+          baseOffset: 10,
+          extentOffset: 20,
+        );
+        await tester.pump();
+        // The focus starts a caret-reveal scroll toward the note end (the
+        // selection was still there): let it finish, then return to the top,
+        // where the selection is.
+        await pumpFrames(tester);
+        await h.scrollTo(0);
+        await pumpFrames(tester);
+        final node = FocusManager.instance.primaryFocus;
+        expect(node, same(field.focusNode), reason: 'fixture: Source focused');
+        await _wi70FocusOutline(tester, 0);
+        await wi70Press(tester, _down);
+        final pixels = h.pixels();
+
+        await wi70Press(tester, LogicalKeyboardKey.escape);
+
+        expect(
+          FocusManager.instance.primaryFocus,
+          same(node),
+          reason: 'the Source field has focus again',
+        );
+        expect(wi70FocusInOutline(), isFalse);
+        expect(
+          _wi70SourceField(tester).controller.selection,
+          const TextSelection(baseOffset: 10, extentOffset: 20),
+        );
+        expect(h.pixels(), pixels, reason: 'the page does not move');
+        expect(h.sourceSurface, findsOneWidget, reason: 'still in Source');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'Esc returns focus to the Source field when the title and then the Source field had focus',
+      (tester) async {
+        final h = await pumpWi70(tester);
+        await h.toggleSource();
+        expect(h.sourceSurface, findsOneWidget, reason: 'fixture: Source mode');
+        await tester.showKeyboard(find.byKey(const Key('editor-title')));
+        await tester.pump();
+        final field = _wi70SourceField(tester);
+        await tester.showKeyboard(find.byWidget(field));
+        await tester.pump();
+        await pumpFrames(tester);
+        final node = FocusManager.instance.primaryFocus;
+        expect(node, same(field.focusNode), reason: 'fixture: Source focused');
+        // Focus leaves the editor for the sidebar before the Outline.
+        await wi70FocusSidebar(tester);
+        await _wi70FocusOutline(tester, 0);
+
+        await wi70Press(tester, LogicalKeyboardKey.escape);
+
+        expect(
+          FocusManager.instance.primaryFocus,
+          same(node),
+          reason: 'the Source field, focused after the title',
+        );
+        expect(
+          wi70FocusWithin(tester, find.byKey(const Key('editor-title'))),
+          isFalse,
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'Esc with no editor field focused since the note opened in Source mode focuses the Source field',
+      (tester) async {
+        final h = await pumpWi70(tester);
+        await h.toggleSource();
+        wi70Unfocus();
+        await tester.pump();
+        await _wi70FocusOutline(tester, 0);
+
+        await wi70Press(tester, LogicalKeyboardKey.escape);
+
+        expect(
+          FocusManager.instance.primaryFocus,
+          same(_wi70SourceField(tester).focusNode),
+          reason: 'the Source field is the body in Source mode',
+        );
+        expect(wi70FocusInOutline(), isFalse);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'after Esc focusing the Outline list again puts the ring on the current row not the row left at Esc',
+      (tester) async {
+        final h = await pumpWi70(tester);
+        await wi70PutCurrent(h, 10);
+        await _wi70FocusOutline(tester, 10);
+        await wi70Press(tester, _up, times: 3);
+        wi70ExpectOutlineFocus(tester, 7, reason: 'moved up');
+        await wi70Press(tester, LogicalKeyboardKey.escape);
+        expect(wi70FocusedRows(tester), isEmpty, reason: 'the ring is gone');
+
+        // Not through Cmd+Shift+O, which picks the current row itself.
+        _wi70ListFocusNode().requestFocus();
+        await pumpFrames(tester);
+
+        wi70ExpectOutlineFocus(tester, 10, reason: 'focused again');
       },
       variant: macOnly,
     );
