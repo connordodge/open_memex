@@ -22,14 +22,14 @@ FindSource _body(int segment, String text) =>
 void main() {
   group('useSelection line breaks (Req 14)', () {
     for (final (name, text, query) in [
-      ('a CRLF', 'bread\r\none', 'bread one'),
-      ('a lone CR', 'bread\rone', 'bread one'),
-      ('a lone LF', 'bread\none', 'bread one'),
-      ('two LFs', 'bread\n\none', 'bread  one'),
-      ('a CRLF then an LF', 'a\r\n\nb', 'a  b'),
-      ('an LF then a CR', 'a\n\rb', 'a  b'),
+      ('useSelection turns a CRLF into spaces', 'bread\r\none', 'bread one'),
+      ('useSelection turns a lone CR into spaces', 'bread\rone', 'bread one'),
+      ('useSelection turns a lone LF into spaces', 'bread\none', 'bread one'),
+      ('useSelection turns two LFs into spaces', 'bread\n\none', 'bread  one'),
+      ('useSelection turns a CRLF then an LF into spaces', 'a\r\n\nb', 'a  b'),
+      ('useSelection turns an LF then a CR into spaces', 'a\n\rb', 'a  b'),
     ]) {
-      test('useSelection turns $name into spaces', () {
+      test(name, () {
         final c = _container();
         _find(c).useSelection(text);
         expect(_state(c).query, query);
