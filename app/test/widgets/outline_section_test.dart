@@ -350,7 +350,10 @@ void main() {
 
       // Typing in Source still reports none.
       await tester.enterText(
-        find.descendant(of: h.sourceSurface, matching: find.byKey(editorBodyKey)),
+        find.descendant(
+          of: h.sourceSurface,
+          matching: find.byKey(editorBodyKey),
+        ),
         '## Source heading\n${h.editor.contentMd}',
       );
       await pumpFrames(tester);
@@ -468,6 +471,44 @@ void main() {
       },
     );
 
+    testWidgets(
+      'a scroll notification from a nested viewport does not start a pass and the page scroll notification does',
+      (tester) async {
+        final h = await pumpNoteReveal(tester);
+        await _wi69Watch(h);
+        await pumpFrames(tester);
+        final start = SectionTracker.debugPasses;
+        final position = h.position();
+        ScrollEndNotification nudge(BuildContext context) =>
+            ScrollEndNotification(
+              metrics: position.copyWith(),
+              context: context,
+            );
+
+        // From inside the page viewport: it crossed a viewport, depth 1.
+        final inner = tester.element(
+          find
+              .descendant(
+                of: h.scrollable(),
+                matching: find.byType(EditableText),
+              )
+              .first,
+        );
+        final notification = nudge(inner)..dispatch(inner);
+        expect(notification.depth, 1, reason: 'came through the viewport');
+        await tester.pump();
+        await tester.pump();
+        expect(SectionTracker.debugPasses, start, reason: 'nested: ignored');
+
+        // From the page scrollable itself: depth 0, one pass.
+        final scrollable = tester.element(h.scrollable());
+        final own = nudge(scrollable)..dispatch(scrollable);
+        expect(own.depth, 0);
+        await tester.pump();
+        expect(SectionTracker.debugPasses, start + 1, reason: 'the page');
+      },
+    );
+
     testWidgets('while watched the tracker computes at most once per frame', (
       tester,
     ) async {
@@ -498,5 +539,107 @@ void main() {
       expect(SectionTracker.debugPasses - start, 2, reason: 'two frames');
       expect(sub.read(), _wi69Expected(h));
     });
+  });
+
+  group('a jump stays current while the page sits where it landed', () {
+    // Lead ruling Q1 (Spec #58 R22): the jumped-to entry is current while
+    // the page sits exactly where the jump put it, a clamped landing
+    // included (the last heading never reaches the mark there). A scroll
+    // the jump did not cause, a text change, an arrival or a note change
+    // drops it: the normal rule decides again.
+    Future<({NoteRevealHarness h, ProviderSubscription<OutlineEntry?> sub})>
+    clamped(WidgetTester tester) async {
+      final h = await pumpNoteReveal(tester);
+      final sub = await _wi69Watch(h);
+      final end = _wi69Entry(h, 'Near the end');
+      final wrapped = _wi69Entry(h, 'Wrapped');
+      _wi69Jump(tester, h, end);
+      await pumpFrames(tester);
+      expect(h.pixels(), h.position().maxScrollExtent, reason: 'clamped');
+      expect(_wi69FromTop(h, end.local), greaterThan(_wi69Inset + 1));
+      expect(sub.read(), end, reason: 'the jumped-to entry is current');
+      expect(_wi69Expected(h), wrapped, reason: 'the normal rule says Wrapped');
+      return (h: h, sub: sub);
+    }
+
+    testWidgets(
+      'a clamped jump keeps its entry current until the page is scrolled by one pixel and then the normal rule decides',
+      (tester) async {
+        final (:h, :sub) = await clamped(tester);
+        final end = _wi69Entry(h, 'Near the end');
+        final max = h.position().maxScrollExtent;
+
+        // Still current after more frames, with nothing moving.
+        await pumpFrames(tester);
+        await pumpFrames(tester);
+        expect(sub.read(), end, reason: 'stays while the page does not move');
+
+        // A person scrolls up by one pixel: the normal rule.
+        await h.scrollTo(max - 1);
+        await tester.pump();
+        expect(sub.read(), _wi69Expected(h));
+        expect(sub.read(), _wi69Entry(h, 'Wrapped'), reason: 'normal rule');
+
+        // Back to the exact end: the pin does not come back.
+        await h.scrollTo(max);
+        await tester.pump();
+        expect(sub.read(), _wi69Entry(h, 'Wrapped'), reason: 'pin is gone');
+      },
+    );
+
+    testWidgets('a clamped jump is dropped by a text change', (tester) async {
+      final (:h, :sub) = await clamped(tester);
+      final max = h.position().maxScrollExtent;
+
+      // Text typed near the top: the page stays at its end, the pin is
+      // gone and the normal rule decides.
+      final segment = editorBodySegment(tester);
+      segment.replaceText(
+        segment.text.replaceFirst('line 10\n', 'line 10 typed\n'),
+      );
+      await pumpFrames(tester);
+      await pumpFrames(tester);
+      expect(h.pixels(), max, reason: 'the page did not move');
+      expect(sub.read(), _wi69Expected(h));
+      expect(sub.read(), _wi69Entry(h, 'Wrapped'), reason: 'pin dropped');
+    });
+
+    testWidgets(
+      'a clamped jump is dropped by an arrival that returns to the same note',
+      (tester) async {
+        final (:h, :sub) = await clamped(tester);
+        final arrivals = h.tabState.arrivals;
+        // Away and back before a frame shows the other note: the editor
+        // never saw another note, but the tabs arrived twice.
+        h.tabs.navigate(const NoteTab(revealOtherId));
+        h.tabs.back();
+        await pumpFrames(tester);
+        await pumpFrames(tester);
+        expect(h.tabState.arrivals, greaterThan(arrivals), reason: 'arrived');
+        expect(h.body().note.id, revealLongId);
+        expect(sub.read(), _wi69Expected(h), reason: 'the normal rule');
+        expect(sub.read(), isNot(_wi69Entry(h, 'Near the end')));
+      },
+    );
+
+    testWidgets(
+      'a scroll before a jump has landed drops it so a later scroll back onto the target does not pin it',
+      (tester) async {
+        final h = await pumpNoteReveal(tester);
+        final sub = await _wi69Watch(h);
+        final end = _wi69Entry(h, 'Near the end');
+        final wrapped = _wi69Entry(h, 'Wrapped');
+
+        // The request is made and a person scrolls before any frame lands
+        // it (a scroll outside a frame's end).
+        _wi69Jump(tester, h, end);
+        h.position().jumpTo(1200);
+        await pumpFrames(tester);
+        // The seam still lands it, at the end of the note.
+        expect(h.pixels(), h.position().maxScrollExtent);
+        expect(sub.read(), _wi69Expected(h));
+        expect(sub.read(), wrapped, reason: 'no pin: the jump was dropped');
+      },
+    );
   });
 }
