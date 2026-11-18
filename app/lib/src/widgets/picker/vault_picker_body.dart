@@ -16,6 +16,7 @@ import '../../state/vault_paths.dart';
 import '../../state/vault_state.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
+import '../../updater/update_modal.dart';
 import '../atoms.dart';
 import '../backups/backup_keys.dart';
 import '../backups/restore_dialog.dart';
@@ -477,8 +478,12 @@ class _BrandRow extends ConsumerWidget {
         ),
         const Spacer(),
         if (version.isNotEmpty)
-          Text(
-            'v$version',
+          UpdateVersionLabel(
+            textKey: const Key('picker-version-label'),
+            version: version,
+            // The logo's height, under the title's line: the Ready label's
+            // click target grows it without growing the row.
+            hitHeight: 22,
             style: OmType.mono(
               size: 11,
               color: OmColors.fg3,
