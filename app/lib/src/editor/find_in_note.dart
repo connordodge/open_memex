@@ -10,7 +10,6 @@
 
 import 'dart:math' show max, min;
 
-import 'conflict_merge.dart' show carryOffset;
 import 'markdown_inline.dart' show InlineToken, tokenizeInline;
 
 /// A half-open UTF-16 range `[start, end)` in one source's text.
@@ -289,14 +288,24 @@ int stepIndex(int current, int total, {required bool forward}) =>
 
 /// The current match after a text change (Reqs 37-38): [before] and [after]
 /// are the sources around the change, [oldMatches] / [newMatches] their
-/// matches and [oldCurrent] the index into [oldMatches].
+/// matches (from `findMatches`) and [oldCurrent] the index into
+/// [oldMatches].
 ///
-/// The same match keeps current when it survives (its start carried through
-/// the edit of its source's text with `carryOffset`, `conflict_merge.dart`).
-/// Otherwise it is the first match at or after the old match's carried
-/// position, wrapping to the first match. Null when [newMatches] is empty,
-/// and when [oldCurrent] is null (no current match to carry: the caller
-/// takes one from the caret).
+/// The sources are read as one text in document order, so a segment added
+/// or removed by the change (renumbering the later `split()` indices) moves
+/// no match. The old current match's start is carried through the change
+/// of that text, code unit by code unit: before the changed run it stays,
+/// after it it shifts by the change in length, and inside it it keeps its
+/// distance from the run's start, clamped to the new run. The changed run
+/// is the text between the longest common prefix and, after it, the longest
+/// common suffix, so an insertion that repeats the text next to it is read
+/// as after the earlier text.
+///
+/// The current match is then the first match at or after the carried
+/// start: the same match when it survives, otherwise the first match after
+/// its old position, wrapping to the first match. Null when [newMatches] is
+/// empty, and when [oldCurrent] is null (no current match to carry: the
+/// caller takes one from the caret).
 int? carryCurrent({
   required List<FindSource> before,
   required List<FindMatch> oldMatches,
@@ -305,34 +314,62 @@ int? carryCurrent({
   required List<FindMatch> newMatches,
 }) {
   if (oldCurrent == null || newMatches.isEmpty) return null;
-  final old = oldMatches[oldCurrent];
-  final was = _sourceOf(before, old);
-  final now = _sourceOf(after, old);
-  final carried = was == null || now == null
-      ? old.start
-      : carryOffset(was.text, now.text, old.start);
-  final same = newMatches.indexWhere(
-    (m) =>
-        m.segment == old.segment &&
-        m.kind == old.kind &&
-        m.start == carried &&
-        m.end - m.start == old.end - old.start,
+  final was = _Flat(before);
+  final now = _Flat(after);
+  final carried = _carryThrough(
+    was.text,
+    now.text,
+    was.startOf(oldMatches[oldCurrent]),
   );
-  if (same >= 0) return same;
-  final next = newMatches.indexWhere(
-    (m) => _atOrAfter(m, old.segment, carried),
-  );
+  final next = newMatches.indexWhere((m) => now.startOf(m) >= carried);
   return next < 0 ? 0 : next;
 }
 
-/// The source in [sources] that [match] lies in, or null when it is gone.
-FindSource? _sourceOf(List<FindSource> sources, FindMatch match) {
-  for (final source in sources) {
-    if (source.segment == match.segment && source.kind == match.kind) {
-      return source;
+/// Sources as one text in document order (the order of `findMatches`):
+/// each source's text followed by a separator.
+final class _Flat {
+  _Flat(List<FindSource> sources) {
+    final ordered = [...sources]
+      ..sort((a, b) => a.segment.compareTo(b.segment));
+    final buffer = StringBuffer();
+    for (final source in ordered) {
+      _starts[(source.segment, source.kind)] = buffer.length;
+      buffer
+        ..write(source.text)
+        ..writeCharCode(0);
     }
+    text = buffer.toString();
   }
-  return null;
+
+  late final String text;
+  final _starts = <(int, FindSourceKind), int>{};
+
+  /// Where [match] starts in [text]; its source must be in these sources.
+  int startOf(FindMatch match) =>
+      _starts[(match.segment, match.kind)]! + match.start;
+}
+
+/// Where [offset] of [before] lands in [after]: unchanged before the
+/// changed run, shifted by the change in length after it, and inside it
+/// at its distance from the run's start, clamped to the new run.
+int _carryThrough(String before, String after, int offset) {
+  final shorter = min(before.length, after.length);
+  var prefix = 0;
+  while (prefix < shorter &&
+      before.codeUnitAt(prefix) == after.codeUnitAt(prefix)) {
+    prefix++;
+  }
+  if (offset < prefix) return offset;
+  var suffix = 0;
+  while (suffix < shorter - prefix &&
+      before.codeUnitAt(before.length - 1 - suffix) ==
+          after.codeUnitAt(after.length - 1 - suffix)) {
+    suffix++;
+  }
+  if (offset >= before.length - suffix) {
+    return offset + after.length - before.length;
+  }
+  return prefix + min(offset - prefix, after.length - suffix - prefix);
 }
 
 /// The current match after toggling Source mode (Req 39): [from] are the
