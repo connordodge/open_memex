@@ -20,3 +20,9 @@ int fuzzyScore(String hay, String needle) {
   if (i < needle.length) return 0;
   return 100 + bonus - hay.length;
 }
+
+/// The indices in [hay] that [fuzzyScore] matched [needle] at, taking the
+/// same branch: a prefix gives `0..n-1`, a substring the first occurrence's
+/// indices, otherwise the greedy left-to-right subsequence. An empty needle
+/// or no match gives `[]`. Both are compared as given: the caller lowercases.
+List<int> fuzzyMatchPositions(String hay, String needle) => const [];
