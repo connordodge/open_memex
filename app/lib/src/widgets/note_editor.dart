@@ -91,6 +91,15 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
   /// cancels it while it still waits for its row.
   int _revealSeq = 0;
 
+  /// The reveal request on the note shown that still waits for its row, by
+  /// its [_revealSeq], or null.
+  int? _revealWaiting;
+
+  /// The [_jumpSeq] of an arrival landing that gave up while a later request
+  /// on the note shown still waited: that request owes the arrival's jump to
+  /// the top if it gives up too.
+  int? _topOwedAt;
+
   /// The note this State was built to zoom into, null on a note tab. An
   /// `AnimatedSwitcher` keeps the old zoomed editor alive through a zoom
   /// change, and it sees the new selection too. A note tab's editor stays until
@@ -280,7 +289,9 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
   /// An arrival cancels any jump still due when it starts. A request on the
   /// note shown cancels one only when it lands, so one that gives up leaves an
   /// arrival landing that is still retrying to finish (and to release the
-  /// held scroll reports).
+  /// held scroll reports). An arrival landing that gives up while a later
+  /// request on the note shown still waits leaves that request to land; if it
+  /// gives up too, it opens the note at the top for the arrival.
   void _reveal(
     Note note,
     NoteRevealRequest request, {
@@ -318,6 +329,9 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
     }
     final jump = arrival ? ++_jumpSeq : _jumpSeq;
     final mine = arrival ? null : ++_revealSeq;
+    // Requests on the note shown made after this arrival have higher numbers.
+    final revealsBefore = _revealSeq;
+    if (mine != null) _revealWaiting = mine;
     var tries = 0;
     void land(Duration _) {
       if (!mounted || jump != _jumpSeq) return;
@@ -333,7 +347,20 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
           ? null
           : RenderAbstractViewport.maybeOf(shown.row);
       if (shown == null || viewport == null || !_scroll.hasClients) {
-        if (arrival) _jumpAfterLayout(0.0);
+        if (mine != null) {
+          if (_revealWaiting == mine) _revealWaiting = null;
+          if (_topOwedAt == jump) {
+            _topOwedAt = null;
+            _jumpAfterLayout(0.0);
+          }
+        } else if ((_revealWaiting ?? 0) > revealsBefore) {
+          // A request made after this arrival still waits for its row: it
+          // lands, or jumps to the top for this arrival if it gives up.
+          _topOwedAt = jump;
+          _reportsHeld = false;
+        } else {
+          _jumpAfterLayout(0.0);
+        }
         return;
       }
       final rects = echoArrivalRects(shown.row, found, column: shown.column);
@@ -349,7 +376,10 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
         height: anchor.height,
       );
       // Landing now: any jump still due (an arrival's) is cancelled.
-      if (!arrival) _jumpSeq++;
+      if (mine != null) {
+        _jumpSeq++;
+        if (_revealWaiting == mine) _revealWaiting = null;
+      }
       // Held across the jump: the landing records its offset once, below.
       _reportsHeld = true;
       if (to != null) {
