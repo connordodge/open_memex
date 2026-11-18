@@ -490,3 +490,36 @@ fn sanitize_match(q: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// WI #71 mutation follow-up. `search` and `note_search` both return on a
+    /// blank query before they call `search_with_query_vec`, so its own
+    /// blank-query return is reachable only here. It answers no hits, not
+    /// truncated, and the kNN query did not run, whatever the mode or vector.
+    #[test]
+    fn blank_query_answers_no_hits_not_truncated_and_no_knn_run() {
+        // A blank query returns before the connection is touched.
+        let conn = Connection::open_in_memory().unwrap();
+        let q_vec = [0.5_f32, 0.25, 0.125, 0.0625];
+        for query in ["", " ", "   ", "\t", "\n \t "] {
+            for mode in [SearchMode::Hybrid, SearchMode::Fts, SearchMode::Vector] {
+                for vec in [None, Some(&q_vec[..])] {
+                    let opts = SearchOptions {
+                        query,
+                        k: 8,
+                        mode,
+                        filters: SearchFilters::default(),
+                        embedder: None,
+                    };
+                    let (found, ran) = search_with_query_vec(&conn, &opts, vec).unwrap();
+                    assert!(found.hits.is_empty(), "{query:?} {mode:?}: no hits");
+                    assert!(!found.truncated, "{query:?} {mode:?}: not truncated");
+                    assert!(!ran, "{query:?} {mode:?}: the kNN query did not run");
+                }
+            }
+        }
+    }
+}
