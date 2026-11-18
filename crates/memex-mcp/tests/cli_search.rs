@@ -743,6 +743,15 @@ fn model_repo_dir(vault: &Path) -> PathBuf {
     fx::repo_dir(&model_cache_dir(vault))
 }
 
+/// Whether every file the model needs is in `cache`, read off the folder.
+/// Unlike `FastEmbedder::is_cached` it ignores `HF_HOME` in the test
+/// process, so it answers the same wherever the suite runs.
+fn model_files_present(cache: &Path) -> bool {
+    fx::required_files()
+        .iter()
+        .all(|f| fx::snapshot_file(cache, f).exists())
+}
+
 // ---------------------------------------------------------------- fixture sanity
 
 #[test]
@@ -834,7 +843,7 @@ fn without_a_cached_model_and_without_allow_download_it_answers_keyword_hits_as_
     let mut fx_vault = keyword_vault();
     let before = fx_vault.vx.counts();
     let path = fx_vault.vx.close();
-    assert!(!FastEmbedder::is_cached(&model_cache_dir(&path)));
+    assert!(!model_files_present(&model_cache_dir(&path)));
     let hub = fx::Tripwire::start();
 
     let out = run_search(&path, "jump", &[], &hub.url);
@@ -883,10 +892,7 @@ fn allow_download_fetches_the_model_from_the_hub_into_the_vault_models_folder_an
             "{f} is in <vault>/.memex/models"
         );
     }
-    assert!(
-        FastEmbedder::is_cached(&cache),
-        "the model now reads cached"
-    );
+    assert!(model_files_present(&cache), "the model is now cached");
 
     fx_vault.vx.reopen();
     assert_eq!(
@@ -929,6 +935,58 @@ fn allow_download_with_an_unreachable_hub_answers_keyword_hits_as_unavailable_an
 }
 
 #[test]
+fn a_run_without_allow_download_after_a_failed_download_stays_offline_and_answers_model_not_downloaded(
+) {
+    // Req 35: without --allow-download there is no download and no hub
+    // contact. A failed --allow-download run leaves the models folder behind;
+    // that folder alone must not count as a cached model.
+    let mut fx_vault = keyword_vault();
+    let path = fx_vault.vx.close();
+    let failed = fx::Tripwire::start();
+    let first = ok_json(&run_search(
+        &path,
+        "jump",
+        &["--allow-download"],
+        &failed.url,
+    ));
+    assert_eq!(first["semantic"], json!("unavailable"), "{first}");
+    assert!(failed.hits() > 0, "--allow-download tried HF_ENDPOINT");
+    assert!(
+        model_cache_dir(&path).exists(),
+        "the failed run left the models folder behind"
+    );
+    assert!(!model_files_present(&model_cache_dir(&path)));
+
+    let offline = fx::Tripwire::start();
+    let got = ok_json(&run_search(&path, "jump", &[], &offline.url));
+    assert_eq!(got["semantic"], json!("model_not_downloaded"), "{got}");
+    assert_eq!(got["hits"], core_keyword(&path, "jump", 8)["hits"]);
+    assert_eq!(offline.hits(), 0, "no download without --allow-download");
+}
+
+#[test]
+fn a_partly_cached_model_without_allow_download_answers_model_not_downloaded_and_contacts_no_hub() {
+    // One file short of a full cache is not a cached model.
+    let mut fx_vault = keyword_vault();
+    let path = fx_vault.vx.close();
+    let cache = model_cache_dir(&path);
+    let mut files = fx::required_files();
+    let missing = files.pop().unwrap();
+    fx::write_snapshot_files(&cache, fx::COMMIT, &files);
+    fx::write_ref(&cache, fx::COMMIT);
+    assert!(!fx::snapshot_file(&cache, &missing).exists());
+    let hub = fx::Tripwire::start();
+
+    let got = ok_json(&run_search(&path, "jump", &[], &hub.url));
+    assert_eq!(got["semantic"], json!("model_not_downloaded"), "{got}");
+    assert_eq!(hub.hits(), 0, "no download without --allow-download");
+    assert!(
+        !fx::snapshot_file(&cache, &missing).exists(),
+        "the missing file was not fetched"
+    );
+}
+
+#[test]
 fn a_cached_model_that_cannot_load_answers_keyword_hits_as_unavailable_and_exits_0() {
     // Spec #59 requirement 35: an embedder that fails to load is keyword
     // only, never a C1 failure (echoes answers embedder_unavailable here).
@@ -936,10 +994,7 @@ fn a_cached_model_that_cannot_load_answers_keyword_hits_as_unavailable_and_exits
     let path = fx_vault.vx.close();
     let cache = model_cache_dir(&path);
     fx::write_complete(&cache);
-    assert!(
-        FastEmbedder::is_cached(&cache),
-        "the broken model reads cached"
-    );
+    assert!(model_files_present(&cache), "the broken model is cached");
     let hub = fx::Tripwire::start();
 
     let got = ok_json(&run_search(&path, "jump", &[], &hub.url));
@@ -1001,17 +1056,88 @@ fn limit_1_and_limit_20_are_accepted_and_cap_the_hits() {
 
 // ---------------------------------------------------------------- AC 7
 
+/// Asserts a blank-query answer: no hits, not truncated, the query echoed
+/// as given, and `semantic` as given.
+fn assert_blank_answer(got: &Value, q: &str, semantic: &str) {
+    assert_eq!(got["hits"], json!([]), "{q:?}: {got}");
+    assert_eq!(got["truncated"], json!(false), "{q:?}: {got}");
+    assert_eq!(got["query"], json!(q), "the query is echoed as given");
+    assert_eq!(got["semantic"], json!(semantic), "{q:?}: {got}");
+}
+
 #[test]
 fn an_empty_query_answers_no_hits_and_exits_0() {
+    // No cached model and no --allow-download: model_not_downloaded, and
+    // nothing contacts the hub.
     let mut fx_vault = keyword_vault();
     let path = fx_vault.vx.close();
     let hub = fx::Tripwire::start();
     for q in ["", "   "] {
         let got = ok_json(&run_search(&path, q, &[], &hub.url));
-        assert_eq!(got["hits"], json!([]), "{q:?}: {got}");
-        assert_eq!(got["truncated"], json!(false), "{q:?}: {got}");
-        assert_eq!(got["query"], json!(q), "the query is echoed as given");
+        assert_blank_answer(&got, q, "model_not_downloaded");
     }
+    assert_eq!(hub.hits(), 0, "nothing contacted HF_ENDPOINT");
+    assert!(!model_repo_dir(&path).exists(), "no model was downloaded");
+}
+
+#[test]
+fn a_blank_query_with_allow_download_fetches_the_model_and_answers_on() {
+    // `on` means the model loaded, so a blank query still fetches it.
+    let mut fx_vault = keyword_vault();
+    let path = fx_vault.vx.close();
+    let hub = FakeHub::start();
+    for q in ["", "   "] {
+        let got = ok_json(&run_search(&path, q, &["--allow-download"], &hub.url));
+        assert_blank_answer(&got, q, "on");
+    }
+    assert!(
+        model_files_present(&model_cache_dir(&path)),
+        "the model is in <vault>/.memex/models"
+    );
+    for f in fx::required_files() {
+        assert!(
+            hub.requests().iter().any(|r| r.ends_with(&format!("/{f}"))),
+            "{f} was fetched from HF_ENDPOINT"
+        );
+    }
+}
+
+#[test]
+fn a_blank_query_with_allow_download_and_an_unreachable_hub_answers_unavailable_and_exits_0() {
+    let mut fx_vault = keyword_vault();
+    let path = fx_vault.vx.close();
+    let hub = fx::Tripwire::start();
+    for q in ["", "   "] {
+        let got = ok_json(&run_search(&path, q, &["--allow-download"], &hub.url));
+        assert_blank_answer(&got, q, "unavailable");
+    }
+    assert!(hub.hits() > 0, "--allow-download tried HF_ENDPOINT");
+}
+
+#[test]
+fn a_blank_query_with_a_cached_model_that_cannot_load_answers_unavailable() {
+    let mut fx_vault = keyword_vault();
+    let path = fx_vault.vx.close();
+    fx::write_complete(&model_cache_dir(&path));
+    let hub = fx::Tripwire::start();
+    for q in ["", "   "] {
+        let got = ok_json(&run_search(&path, q, &[], &hub.url));
+        assert_blank_answer(&got, q, "unavailable");
+    }
+    assert_eq!(hub.hits(), 0, "a cached model loads with no network access");
+}
+
+#[test]
+fn a_blank_query_with_a_cached_model_answers_on_with_no_network_access() {
+    let mut fx_vault = keyword_vault();
+    let path = fx_vault.vx.close();
+    write_cached_stand_in(&model_cache_dir(&path));
+    let hub = fx::Tripwire::start();
+    for q in ["", "   "] {
+        let got = ok_json(&run_search(&path, q, &[], &hub.url));
+        assert_blank_answer(&got, q, "on");
+    }
+    assert_eq!(hub.hits(), 0, "a cached model loads with no network access");
 }
 
 // ---------------------------------------------------------------- AC 8
@@ -1023,8 +1149,11 @@ fn a_vault_path_that_does_not_exist_exits_1_with_c1_json_on_stderr() {
     let hub = fx::Tripwire::start();
 
     let (code, message) = c1_error(&run_search(&missing, "jump", &[], &hub.url));
-    assert!(!code.is_empty(), "a C1 code");
-    assert!(!message.is_empty(), "a C1 message");
+    assert_eq!(code, "internal", "{message}");
+    assert!(
+        message.contains("no manifest") && message.contains("no-such-vault"),
+        "the message names the missing manifest and the path: {message}"
+    );
 }
 
 #[test]
@@ -1033,12 +1162,13 @@ fn allow_download_with_a_missing_vault_path_creates_nothing_and_contacts_no_hub(
     let missing = dir.path().join("no-such-vault");
     let hub = fx::Tripwire::start();
 
-    c1_error(&run_search(
+    let (code, message) = c1_error(&run_search(
         &missing,
         "jump",
         &["--allow-download"],
         &hub.url,
     ));
+    assert_eq!(code, "internal", "{message}");
     assert!(
         !missing.exists(),
         "no folder is made at a missing vault path"
