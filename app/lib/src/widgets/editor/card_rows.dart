@@ -5,6 +5,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../editor/editor_rows.dart';
+import '../../editor/find_in_note.dart';
 import '../../editor/markdown_inline.dart';
 import '../../editor/markdown_lines.dart';
 import '../../editor/markdown_table.dart' show splitTableLine;
@@ -13,7 +14,10 @@ import '../../editor/tag_grammar.dart' show fencedRowLines, normalizeTagName;
 import '../../state/tags_browse_state.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
+import '../find/find_highlights.dart';
+import '../find/find_keys.dart';
 import 'editor_row.dart';
+import 'excerpt_card.dart';
 import 'line_boxes.dart';
 import 'live_preview_controller.dart';
 import 'live_preview_decorations.dart';
@@ -52,10 +56,24 @@ import 'table_grid.dart';
 ///   included, adds no listener, gesture detector or mouse region (D14).
 /// - Otherwise display only: no caret, focus, toggling or link clicks.
 class CardRows extends StatelessWidget {
-  const CardRows({super.key, required this.text});
+  const CardRows({
+    super.key,
+    required this.text,
+    this.segment,
+    this.active = true,
+  });
 
   /// The card's rendered excerpt text (`RenderedExcerpt.text`).
   final String text;
+
+  /// The card's `split()` index, for its rows' find highlights (#61 F3,
+  /// Key `find-highlights-card-<segment>-<r>`); null: the enclosing
+  /// `ExcerptCard`'s index.
+  final int? segment;
+
+  /// Whether the card belongs to the active editor (#61 F3, F6 wires it):
+  /// its find highlights paint only while true.
+  final bool active;
 
   /// The card's base text style, as built (pack #172: `fg1`).
   static TextStyle _baseStyle() =>
@@ -78,6 +96,8 @@ class CardRows extends StatelessWidget {
     final fenced = fencedRowLines(text, specs);
     final scaler = MediaQuery.textScalerOf(context);
     final base = _baseStyle();
+    final seg =
+        segment ?? context.findAncestorWidgetOfExactType<ExcerptCard>()?.index;
     bool blank(RowSpec spec) =>
         spec.kind == RowKind.prose && spec.textLength == 0;
     // The rows between the leading and the trailing empty prose rows.
@@ -94,7 +114,7 @@ class CardRows extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         for (var r = first; r <= last; r++)
-          _row(r, specs[r], geometries[r], fenced[r], base, scaler),
+          _row(r, specs[r], geometries[r], fenced[r], base, scaler, seg),
       ],
     );
   }
@@ -106,6 +126,7 @@ class CardRows extends StatelessWidget {
     List<bool> fenced,
     TextStyle base,
     TextScaler scaler,
+    int? seg,
   ) {
     final rowText = text.substring(spec.textStart, spec.textEnd);
     final quote = spec.kind == RowKind.quote;
@@ -123,19 +144,29 @@ class CardRows extends StatelessWidget {
     if (spec.kind == RowKind.table) {
       return KeyedSubtree(
         key: ValueKey('card-row-$r'),
-        child: tagged(
-          (links) => TableGrid(
+        child: tagged((links) {
+          final grid = TableGrid(
             key: ValueKey('card-table-$r'),
             text: rowText,
             style: style,
             links: links,
             headerBand: OmColors.surface4,
             fenced: fenced,
-          ),
-        ),
+          );
+          // Its cells' find highlights (#61 F3, D8).
+          return seg == null
+              ? grid
+              : FindGridScope(
+                  segment: seg,
+                  textStart: spec.textStart,
+                  active: active,
+                  cardRow: r,
+                  child: grid,
+                );
+        }),
       );
     }
-    final rich = tagged(
+    final plain = tagged(
       (links) => _RowText(
         key: ValueKey('card-row-text-$r'),
         child: RichText(
@@ -159,6 +190,23 @@ class CardRows extends StatelessWidget {
         ),
       ),
     );
+    // The row's find highlights, under its text (#61 F3).
+    final rich = seg == null
+        ? plain
+        : FindParagraphHighlights(
+            layerKey: findCardHighlightsKey(seg, r),
+            ranges: (state) => active
+                ? findPaintRanges(
+                    state,
+                    segment: seg,
+                    kind: FindSourceKind.card,
+                    start: spec.textStart,
+                    end: spec.textEnd,
+                  )
+                : const [],
+            layout: rowText,
+            child: plain,
+          );
     final Widget row = switch (spec.kind) {
       RowKind.prose => rich,
       RowKind.code => Padding(
