@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -19,12 +20,22 @@ String defaultResolvedExecutable(Ref ref) => Platform.resolvedExecutable;
 
 /// The production writability probe behind `folderWritableProvider`: creates
 /// and deletes a file in the folder; false when either fails (D6).
+///
+/// The probe file has a random name and is created exclusively (`O_EXCL`), so
+/// it never opens, truncates or follows an entry that is already there, such
+/// as a symlink planted by another account in a shared folder.
 FolderWritable defaultFolderWritable(Ref ref) => _probeWritable;
 
+final Random _probeNames = Random.secure();
+
 Future<bool> _probeWritable(String folder) async {
-  final probe = File('$folder/.open-memex-write-probe-$pid');
+  final suffix = List.generate(
+    16,
+    (_) => _probeNames.nextInt(256).toRadixString(16).padLeft(2, '0'),
+  ).join();
+  final probe = File('$folder/.open-memex-write-probe-$suffix');
   try {
-    await probe.writeAsString('', flush: true);
+    await probe.create(exclusive: true);
     await probe.delete();
     return true;
   } on FileSystemException {
