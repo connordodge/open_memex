@@ -293,6 +293,28 @@ void main() {
     },
   );
 
+  testWidgets(
+    'the sidebar command bar node is a button leaf found by its key',
+    (tester) async {
+      final semantics = tester.ensureSemantics();
+      await _workspace(tester);
+
+      final data = tester.getSemantics(_bar);
+      expect(
+        data,
+        matchesSemantics(
+          label: 'Command bar: search, ask, run. Command K.',
+          isButton: true,
+          isFocusable: true,
+          hasTapAction: true,
+          hasFocusAction: true,
+        ),
+      );
+      expect(data.childrenCount, 0, reason: 'a leaf node: no child nodes');
+      semantics.dispose();
+    },
+  );
+
   testWidgets('the command bar label is drawn in fg2 at rest', (tester) async {
     await _workspace(tester);
 
