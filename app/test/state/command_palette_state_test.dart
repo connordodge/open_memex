@@ -111,6 +111,7 @@ class _Wi76Rig {
 _Wi76Rig _rig({
   List<CommandItem> commands = const [],
   List<NoteItem> titles = const [],
+  _Wi76FakePassages Function() makePassages = _Wi76FakePassages.new,
 }) {
   final rig = _Wi76Rig(commands: commands, titles: titles);
   final container = ProviderContainer(
@@ -129,7 +130,7 @@ _Wi76Rig _rig({
           return rig.titlesFor(q);
         };
       }),
-      palettePassagesProvider.overrideWith(_Wi76FakePassages.new),
+      palettePassagesProvider.overrideWith(makePassages),
       palettePreviewProvider.overrideWith(_Wi76FakePreview.new),
       paletteCommandChooserProvider.overrideWith(
         (ref) =>
@@ -191,6 +192,15 @@ final _threeCommands = [
   _cmd(PaletteCommand.newCanvas),
   _cmd(PaletteCommand.openToday),
 ];
+
+/// A Passages source that answers during `setQuery` itself.
+class _Wi76AnsweringPassages extends _Wi76FakePassages {
+  @override
+  void setQuery(String query) {
+    super.setQuery(query);
+    emit(PassagesShown(rows: [_passage('p1')], semantic: Semantic.on));
+  }
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -1000,5 +1010,146 @@ void main() {
       expect(cmd.matched, [10]);
       expect(cmd.label, title);
     });
+  });
+
+  group('verify contracts', () {
+    test('hover on the selected row does not notify listeners', () {
+      final rig = _rig(commands: _threeCommands);
+      var notified = 0;
+      rig.container.listen(paletteProvider, (_, _) => notified++);
+      rig.palette.hover(_cmdId(PaletteCommand.newNote));
+      expect(notified, 0);
+      rig.palette.hover(_cmdId(PaletteCommand.newCanvas));
+      expect(notified, greaterThan(0));
+      final after = notified;
+      rig.palette.move(0);
+      expect(notified, after);
+    });
+
+    test(
+      'setQuery regroups once when the passages source answers mid call',
+      () {
+        final rig = _rig(
+          commands: _threeCommands,
+          makePassages: _Wi76AnsweringPassages.new,
+        );
+        rig.palette.hover(_cmdId(PaletteCommand.newCanvas));
+        var regroups = 0;
+        rig.container.listen(paletteProvider, (prev, next) {
+          if (!identical(prev?.groups, next.groups)) regroups++;
+        });
+        final before = rig.commandQueries.length;
+        rig.palette.setQuery('o');
+        expect(regroups, 1);
+        expect(rig.commandQueries.length - before, 1);
+        expect(rig.passages.queries, ['o']);
+        // The answer is listed and typing selects the first row.
+        expect(rig.kinds, [
+          PaletteGroupKind.commands,
+          PaletteGroupKind.passages,
+        ]);
+        expect(rig.state.selected, _cmdId(PaletteCommand.newNote));
+      },
+    );
+
+    test(
+      'the preview source hears nothing when the palette opens with no rows',
+      () async {
+        final rig = _rig();
+        await Future<void>.delayed(Duration.zero);
+        expect(rig.state.selected, isNull);
+        expect(rig.preview.selections, isEmpty);
+        rig.palette.setQuery('zz');
+        expect(rig.preview.selections, isEmpty);
+      },
+    );
+
+    test(
+      'a palette disposed before its first preview sync never calls the preview source',
+      () async {
+        final rig = _rig(commands: _threeCommands);
+        final preview = rig.preview;
+        rig.container.dispose();
+        await Future<void>.delayed(Duration.zero);
+        expect(preview.selections, isEmpty);
+      },
+    );
+
+    test(
+      'invalidating the palette starts a fresh session where choose and the preview sync work again',
+      () async {
+        final rig = _rig(commands: _threeCommands);
+        await Future<void>.delayed(Duration.zero);
+        expect(rig.preview.selections, hasLength(1));
+        rig.palette.hover(_cmdId(PaletteCommand.newCanvas));
+        expect(rig.preview.selections, hasLength(2));
+        rig.palette.choose(newTab: false);
+        rig.palette.choose(newTab: false);
+        expect(rig.commandChoices, hasLength(1), reason: 'once per session');
+
+        rig.container.invalidate(paletteProvider);
+        // A fresh session: empty input, the first row selected.
+        expect(rig.state.query, '');
+        expect(rig.state.selected, _cmdId(PaletteCommand.newNote));
+        // The preview source hears the first selection again.
+        await Future<void>.delayed(Duration.zero);
+        expect(rig.preview.selections, hasLength(3));
+        expect(rig.preview.selections.last?.id, _cmdId(PaletteCommand.newNote));
+        // The preview still follows the selection (not latched disposed).
+        rig.palette.move(1);
+        expect(rig.preview.selections, hasLength(4));
+        expect(
+          rig.preview.selections.last?.id,
+          _cmdId(PaletteCommand.newCanvas),
+        );
+        // Choosing is armed again, and runs once more.
+        rig.palette.choose(newTab: true);
+        rig.palette.choose(newTab: true);
+        expect(rig.commandChoices, hasLength(2));
+        expect(rig.commandChoices.last.$1.command, PaletteCommand.newCanvas);
+        expect(rig.commandChoices.last.$2, isTrue);
+      },
+    );
+
+    test('a palette closed then invalidated chooses again', () {
+      final rig = _rig(commands: _threeCommands);
+      rig.palette.close();
+      rig.palette.choose(newTab: false);
+      expect(rig.choices, 0, reason: 'closed');
+      rig.container.invalidate(paletteProvider);
+      expect(rig.state.selected, _cmdId(PaletteCommand.newNote));
+      rig.palette.choose(newTab: false);
+      expect(rig.commandChoices, hasLength(1));
+      expect(rig.commandChoices.single.$1.command, PaletteCommand.newNote);
+    });
+
+    test(
+      'a palette rebuilt before its first preview sync tells the preview source once',
+      () async {
+        final rig = _rig(commands: _threeCommands);
+        // Rebuilt in the same turn the first build's microtask is pending.
+        rig.container.invalidate(paletteProvider);
+        expect(rig.state.selected, _cmdId(PaletteCommand.newNote));
+        await Future<void>.delayed(Duration.zero);
+        expect(rig.preview.selections, hasLength(1));
+        expect(
+          rig.preview.selections.single?.id,
+          _cmdId(PaletteCommand.newNote),
+        );
+      },
+    );
+
+    test(
+      'a palette rebuilt and then disposed before the preview sync never calls the preview source',
+      () async {
+        final rig = _rig(commands: _threeCommands);
+        final preview = rig.preview;
+        rig.container.invalidate(paletteProvider);
+        expect(rig.state.selected, _cmdId(PaletteCommand.newNote));
+        rig.container.dispose();
+        await Future<void>.delayed(Duration.zero);
+        expect(preview.selections, isEmpty);
+      },
+    );
   });
 }

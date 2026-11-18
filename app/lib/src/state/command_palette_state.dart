@@ -508,6 +508,11 @@ final palettePassageChooserProvider =
 ///   item while it is still listed, and otherwise selects the first row;
 /// - when the first rows arrive, the first one is selected;
 /// - with no rows nothing is selected and [choose] does nothing.
+///
+/// Each build is one palette session: `ref.invalidate(paletteProvider)`
+/// starts a fresh one (empty input, first row selected, [choose] armed again,
+/// the preview source told the selection again), also while an old route
+/// still listens.
 class PaletteNotifier extends AutoDisposeNotifier<PaletteState> {
   /// Set while [setQuery] forwards the input to the Passages source: a
   /// Passages answer then doesn't regroup by itself (setQuery regroups once).
@@ -519,19 +524,37 @@ class PaletteNotifier extends AutoDisposeNotifier<PaletteState> {
   /// The id the preview source last heard (null: none, or nothing yet).
   PaletteItemId? _previewed;
 
+  /// Counts builds. Riverpod keeps this instance across a rebuild (e.g.
+  /// `ref.invalidate(paletteProvider)`), so each build's microtask and
+  /// dispose callback act only while their build is the current one.
+  var _build = 0;
+
+  /// Set when the current build is disposed (the provider disposed, or is
+  /// about to rebuild).
   var _disposed = false;
 
   @override
   PaletteState build() {
+    // A rebuild starts a fresh session on this same instance: clear every
+    // latch the previous build left behind.
+    _forwardingQuery = false;
+    _done = false;
+    _previewed = null;
+    _disposed = false;
+    final build = ++_build;
     // Listen, never watch: a rebuild here would lose the query.
     ref.listen(paletteCommandsSourceProvider, (_, _) => _regroup());
     ref.listen(paletteTitlesSourceProvider, (_, _) => _regroup());
     ref.listen(palettePassagesProvider, (_, _) => _regroup());
     ref.listen(palettePreviewProvider, (_, view) => state = _withPreview(view));
-    ref.onDispose(() => _disposed = true);
+    ref.onDispose(() {
+      if (build == _build) _disposed = true;
+    });
     // A provider can't change another while it builds: the preview source
     // hears the first selection a microtask later.
-    Future.microtask(_syncPreview);
+    Future.microtask(() {
+      if (build == _build) _syncPreview();
+    });
     return _compose(
       query: '',
       keep: null,

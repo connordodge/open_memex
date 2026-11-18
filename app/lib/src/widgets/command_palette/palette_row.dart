@@ -50,7 +50,9 @@ abstract final class PaletteKeys {
 /// `surface4`; [showEnterChip] (the list-only layout) adds the `↵` chip to a
 /// selected row. Pointer movement over the row calls the palette's
 /// `hover(id)` (a rebuild under a resting pointer doesn't); a press calls
-/// `hover(id)` then `choose(newTab: <⌘ held at the press>)`. Semantics: a
+/// `hover(id)` then, only when that selected this row,
+/// `choose(newTab: <⌘ held at the press>)`: a press on a row the palette no
+/// longer lists chooses nothing. Semantics: a
 /// button with the selected state, labelled `<title>, <meta>` (`<title>`
 /// with no meta). Keys itself with [PaletteKeys.row]: don't give it that key
 /// again.
@@ -74,6 +76,9 @@ class PaletteRow extends ConsumerWidget {
     void press({required bool newTab}) {
       final palette = ref.read(paletteProvider.notifier);
       palette.hover(item.id);
+      // A row the palette no longer lists (a regroup dropped it before this
+      // frame rebuilt the list) chooses nothing, never the selected row.
+      if (ref.read(paletteProvider).selected != item.id) return;
       palette.choose(newTab: newTab);
     }
 
