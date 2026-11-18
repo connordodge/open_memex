@@ -195,6 +195,44 @@ _Avoid_: open (for staying in the tab), jump, go to
 The ordered record of what one tab has shown, which Back walks through. Each tab has its own.
 _Avoid_: navigation stack, breadcrumbs, recents
 
+## Outline (#54)
+
+**Outline**:
+The list of a note's headings, in document order and indented by heading level, that shows the note's structure and jumps to a section.
+_Avoid_: table of contents, TOC, contents, headings panel
+
+## Command palette (#56)
+
+**Command bar**:
+The sidebar row, labelled `search · ask · run`, that opens the Command palette.
+_Avoid_: search bar, omnibar, quick open, quick switcher, spotlight
+
+**Command palette**:
+The panel the Command bar or ⌘K opens: one input, a result list and a preview of the selected result. Typing finds app commands by name, notes and canvases by title, and Passages of note text.
+_Avoid_: search bar, omnibar, quick open, quick switcher, spotlight
+
+**Passage**:
+A stretch of note text the Command palette finds by keyword and by meaning (Semantic recall).
+_Avoid_: snippet
+
+## Find in note (#55)
+
+**Find in note**:
+Finding every occurrence of a query within the open note, from the Find bar.
+_Avoid_: find-in-page, search (finding across the vault is the Command palette's job)
+
+**Find bar**:
+The floating box in the note editor that holds the query field, the match counter, and the previous, next and close buttons.
+_Avoid_: search bar, find panel
+
+**Match**:
+One occurrence of the Find bar's query in the open note.
+_Avoid_: hit, result
+
+**Current match**:
+The match the person has stepped to, drawn more strongly than the other matches and kept in view.
+_Avoid_: selected match, active result
+
 ## Releases (#356)
 
 **Release**:

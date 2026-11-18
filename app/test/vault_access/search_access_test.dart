@@ -471,6 +471,38 @@ void main() {
       },
     );
 
+    test(
+      'FakeSearchAccess each call keeps the answer queued when it started even when gates release out of order',
+      () async {
+        final fake = FakeSearchAccess();
+        final firstAnswer = SearchReady(
+          [_hit(chunkId: '01JSEARCHCHUNKFIRST000000')],
+          semantic: Semantic.on,
+          truncated: false,
+        );
+        final secondAnswer = SearchReady(
+          [_hit(chunkId: '01JSEARCHCHUNKSECOND00000')],
+          semantic: Semantic.on,
+          truncated: false,
+        );
+        fake
+          ..enqueue(firstAnswer)
+          ..enqueue(secondAnswer);
+        final firstGate = Completer<void>();
+        fake.gate = firstGate;
+        final first = fake.search('pri');
+        final secondGate = Completer<void>();
+        fake.gate = secondGate;
+        final second = fake.search('pricing');
+
+        secondGate.complete();
+        expect(await second, secondAnswer);
+        firstGate.complete();
+        expect(await first, firstAnswer);
+        expect(await first, isNot(secondAnswer));
+      },
+    );
+
     test('FakeSearchAccess default answer is an empty ready search', () async {
       final fake = FakeSearchAccess();
 
