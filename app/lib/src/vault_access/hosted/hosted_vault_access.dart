@@ -11,6 +11,7 @@ import 'graph.dart';
 import 'hosted_client.dart';
 import 'notes.dart';
 import 'revision.dart';
+import 'search.dart';
 import 'tags.dart';
 import 'topics.dart';
 import 'words.dart';
@@ -53,6 +54,7 @@ class HostedVaultAccess implements VaultAccess {
       graph = HostedGraphAccess(client: client, vaultName: vaultName),
       tags = HostedTagsAccess(client: client, vaultName: vaultName),
       words = HostedWordsAccess(client: client, vaultName: vaultName),
+      search = HostedSearchAccess(client: client, vaultName: vaultName),
       _revision = HostedRevision(client, vaultName);
 
   final _ComposedClient _client;
@@ -89,6 +91,10 @@ class HostedVaultAccess implements VaultAccess {
 
   @override
   final HostedWordsAccess words;
+
+  /// A [HostedSearchAccess] (#75).
+  @override
+  final SearchAccess search;
 
   final HostedRevision _revision;
 

@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "invalid_argument",
+    "message": "invalid limit: 0 (1 to 20)"
+  }
+}

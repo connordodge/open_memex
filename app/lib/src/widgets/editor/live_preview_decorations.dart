@@ -183,6 +183,13 @@ bool _touches(TextSelection? selection, TextRange range) =>
     selection.start <= range.end &&
     selection.end >= range.start;
 
+/// Whether the valid [findReveal] range touches [range] (WI #84).
+bool _findTouches(TextRange? findReveal, TextRange range) =>
+    findReveal != null &&
+    findReveal.isValid &&
+    findReveal.start <= range.end &&
+    findReveal.end >= range.start;
+
 /// Every decoration of a field showing [text] measured by [boxes], in
 /// paint order (backgrounds first: code boxes and quote bands, then pills,
 /// then rules), all inside the text column [columnLeft]..[columnRight]
@@ -192,10 +199,12 @@ bool _touches(TextSelection? selection, TextRange range) =>
 /// from `tokenizeInline` (never inside a fence). [quote]: the field is one
 /// quote row's text, so all of it is banded. [reveal]: the field's
 /// selection while its segment has focus (null otherwise); a fenced block
-/// it touches is revealed. A table's pills (one per code span, cell by
-/// cell) are added only while [reveal] touches one of its lines; a rendered
-/// table's grid paints its own (ruling D15). Quote bands fill with
-/// [quoteBandColor].
+/// it touches is revealed. [findReveal]: Find in note's reveal range (WI
+/// #84, ruling D7), whatever the focus; a fenced block or table it touches
+/// is revealed as one [reveal] touches. A table's pills (one per code span,
+/// cell by cell) are added only while [reveal] or [findReveal] touches one
+/// of its lines; a rendered table's grid paints its own (ruling D15). Quote
+/// bands fill with [quoteBandColor].
 List<PaintedDecoration> layoutDecorations({
   required String text,
   required LineBoxSource boxes,
@@ -204,8 +213,11 @@ List<PaintedDecoration> layoutDecorations({
   bool atSegmentStart = true,
   bool quote = false,
   TextSelection? reveal,
+  TextRange? findReveal,
   Color quoteBandColor = OmColors.surface3,
 }) {
+  bool revealed(TextRange range) =>
+      _touches(reveal, range) || _findTouches(findReveal, range);
   final backgrounds = <PaintedDecoration>[];
   final pills = <PaintedDecoration>[];
   final rules = <PaintedDecoration>[];
@@ -250,7 +262,7 @@ List<PaintedDecoration> layoutDecorations({
           block,
           columnLeft: columnLeft,
           columnRight: columnRight,
-          revealed: _touches(reveal, block),
+          revealed: revealed(block),
         );
         if (rect != null) {
           backgrounds.add(
@@ -322,7 +334,7 @@ List<PaintedDecoration> layoutDecorations({
       case MdLineKind.tableHeader:
         final last = tableLastLine(lines, i);
         final table = TextRange(start: line.start, end: lines[last].contentEnd);
-        if (_touches(reveal, table)) {
+        if (revealed(table)) {
           for (var t = i; t <= last; t++) {
             final row = lines[t];
             final split = splitTableLine(
@@ -526,7 +538,10 @@ class _RenderDecorations extends RenderProxyBox {
       columnRight: size.width - origin.dx,
       atSegmentStart: controller.atSegmentStart,
       quote: controller.quote,
+      // The selection while focused, and Find in note's reveal range
+      // (WI #84) whatever the focus, as the spans reveal them.
       reveal: controller.revealGate.value ? controller.selection : null,
+      findReveal: controller.findDecoration?.value?.revealRange,
       quoteBandColor: _quoteBandColor,
     );
     final shift = offset + origin;

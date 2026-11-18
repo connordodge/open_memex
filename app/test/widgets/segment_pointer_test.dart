@@ -2138,18 +2138,19 @@ void main() {
         await t.click(t.glyph(t.at('Known', plus: 2)));
         expect(t.tabs.followed, hasLength(1));
         await t.pastDoubleClick();
-        final lineEnd = t.at('\n');
+        final here = t.glyph(t.at('here', plus: 2));
+        final pressed = t.offsetAt(here);
 
-        await t.click(t.glyph(t.at('here', plus: 2)));
+        await t.click(here);
 
         expect(
           t.tabs.followed,
           hasLength(1),
           reason: 'plain text follows nothing',
         );
-        // The press reveals the line, and the row's tap lands on its new layout.
-        expect(b.selection().isCollapsed, isTrue);
-        expect(b.selection().baseOffset, inInclusiveRange(0, lineEnd));
+        // The press reveals the line, and the caret stays at the offset the
+        // press resolved on the layout shown then (#65, Spec #57 R5).
+        expect(b.selection(), TextSelection.collapsed(offset: pressed));
         expect(b.view().focusedRow, 0);
         await t.pastDoubleClick();
       },
