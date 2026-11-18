@@ -13,6 +13,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/agent_activity.dart';
 import 'package:open_memex_app/src/state/unsent_hosted_text.dart';
+import 'package:open_memex_app/src/state/url_opener.dart';
 import 'package:open_memex_app/src/updater/appcast.dart';
 import 'package:open_memex_app/src/updater/update_controller.dart';
 import 'package:open_memex_app/src/updater/update_modal.dart';
@@ -140,6 +141,55 @@ class _Wi38HeldController extends FakeUpdateController {
     calls.add('relaunch');
     await hold.future;
     return RelaunchOutcome.exiting;
+  }
+}
+
+/// A [FakeUpdateController] whose relaunch waits on [hold], then either
+/// asks its `confirmQuit` (recording the answer) or answers [outcome].
+class _Wi38LateRelaunch extends FakeUpdateController {
+  _Wi38LateRelaunch(super.initial, {this.outcome, this.ask = false});
+
+  final RelaunchOutcome? outcome;
+  final bool ask;
+  final Completer<void> hold = Completer<void>();
+
+  @override
+  Future<RelaunchOutcome> relaunch({
+    required Future<bool> Function() confirmQuit,
+  }) async {
+    calls.add('relaunch');
+    await hold.future;
+    if (ask) {
+      final confirmed = await confirmQuit();
+      confirmQuitAnswers.add(confirmed);
+      // D2: a refused quit is a cancelled relaunch, like the real controller.
+      if (!confirmed) return RelaunchOutcome.cancelled;
+    }
+    return outcome ?? RelaunchOutcome.exiting;
+  }
+}
+
+/// A [FakeUpdateController] whose `later()` moves to Idle, as the real
+/// controller's does on Update available (req 16a).
+class _Wi38LaterGoesIdle extends FakeUpdateController {
+  _Wi38LaterGoesIdle(super.initial);
+
+  @override
+  void later() {
+    super.later();
+    emit(const UpdateIdle());
+  }
+}
+
+/// A url opener whose open stays in flight until [hold] completes.
+class _Wi38HeldOpener implements UrlOpener {
+  final List<String> opened = [];
+  final Completer<void> hold = Completer<void>();
+
+  @override
+  Future<void> open(String url) async {
+    opened.add(url);
+    await hold.future;
   }
 }
 
@@ -840,6 +890,90 @@ void main() {
         _releasesPage,
       ),
       (
+        'download from GitHub with a dot dot segment in the link opens the releases page',
+        UpdateErrorCause.noPublicKey,
+        '$_releasesPage/../../../attacker/repo/releases',
+        _releasesPage,
+      ),
+      (
+        'download from GitHub with a dot dot segment after a page in the link opens the releases page',
+        UpdateErrorCause.noPublicKey,
+        '$_releasesPage/tag/v1.4.2/..',
+        _releasesPage,
+      ),
+      (
+        'download from GitHub with a dot segment in the link opens the releases page',
+        UpdateErrorCause.noPublicKey,
+        '$_releasesPage/./tag/v1.4.2',
+        _releasesPage,
+      ),
+      (
+        'download from GitHub with an encoded dot dot segment in the link opens the releases page',
+        UpdateErrorCause.noPublicKey,
+        '$_releasesPage/%2e%2e/%2e%2e/x/y',
+        _releasesPage,
+      ),
+      (
+        'download from GitHub with an upper case encoded dot in the link opens the releases page',
+        UpdateErrorCause.noPublicKey,
+        '$_releasesPage/tag/%2E%2E/v1.4.2',
+        _releasesPage,
+      ),
+      (
+        'download from GitHub with an encoded slash in the link opens the releases page',
+        UpdateErrorCause.noPublicKey,
+        '$_releasesPage/tag%2f..%2fv1.4.2',
+        _releasesPage,
+      ),
+      (
+        'download from GitHub with an upper case encoded slash in the link opens the releases page',
+        UpdateErrorCause.noPublicKey,
+        '$_releasesPage/tag%2Fv1.4.2',
+        _releasesPage,
+      ),
+      (
+        'download from GitHub with an encoded backslash in the link opens the releases page',
+        UpdateErrorCause.noPublicKey,
+        '$_releasesPage/tag%5Cv1.4.2',
+        _releasesPage,
+      ),
+      (
+        'download from GitHub with a backslash in the link opens the releases page',
+        UpdateErrorCause.noPublicKey,
+        '$_releasesPage/tag\\..\\v1.4.2',
+        _releasesPage,
+      ),
+      (
+        'download from GitHub with no page below releases in the link opens the releases page',
+        UpdateErrorCause.noPublicKey,
+        '$_releasesPage/',
+        _releasesPage,
+      ),
+      (
+        'download from GitHub with only a query below releases in the link opens the releases page',
+        UpdateErrorCause.noPublicKey,
+        '$_releasesPage/?tab=1',
+        _releasesPage,
+      ),
+      (
+        'download from GitHub with only a fragment below releases in the link opens the releases page',
+        UpdateErrorCause.noPublicKey,
+        '$_releasesPage/#top',
+        _releasesPage,
+      ),
+      (
+        'download from GitHub with dots only in the query opens the link as written',
+        UpdateErrorCause.noPublicKey,
+        '$tag?from=..#a/../b',
+        '$tag?from=..#a/../b',
+      ),
+      (
+        'download from GitHub with a download link opens the link as written',
+        UpdateErrorCause.folderNotWritable,
+        '$_releasesPage/download/v1.4.2/Open-Memex-1.4.2.dmg',
+        '$_releasesPage/download/v1.4.2/Open-Memex-1.4.2.dmg',
+      ),
+      (
         'download from GitHub with an empty link opens the releases page',
         UpdateErrorCause.folderNotWritable,
         '',
@@ -1227,6 +1361,303 @@ void main() {
       for (final k in _actions(tester)) {
         expect(find.descendant(of: _modal, matching: _k(k)), findsOneWidget);
       }
+    });
+  });
+
+  // ------------------------------------------------------- verify pins (#38)
+
+  group('verify pins', () {
+    testWidgets(
+      'download from GitHub pressed twice in the same frame opens once',
+      (tester) async {
+        final opener = _Wi38HeldOpener();
+        await _open(
+          tester,
+          state: const UpdateError(UpdateErrorCause.noPublicKey),
+          overrides: [urlOpenerProvider.overrideWithValue(opener)],
+        );
+
+        await tester.tap(_k('update-modal-download-github'));
+        await tester.tap(_k('update-modal-download-github'));
+        await tester.pump();
+
+        expect(opener.opened, [_releasesPage]);
+        opener.hold.complete();
+        await _frames(tester);
+      },
+    );
+
+    testWidgets('empty release notes show no notes box', (tester) async {
+      await _open(tester, state: UpdateAvailable(_wi38Item(notes: '')));
+
+      expect(_title(tester), 'Update available');
+      expect(_k('update-modal-notes'), findsNothing);
+    });
+
+    testWidgets('ready hides the agent line when the agent view failed', (
+      tester,
+    ) async {
+      final notifier = _Wi38Agents(() => throw StateError('agents are down'));
+      await _open(
+        tester,
+        state: UpdateReady(_wi38Item(), dmgPath: '/updater/p.dmg'),
+        overrides: [agentActivityAsyncProvider.overrideWith(() => notifier)],
+      );
+
+      expect(_title(tester), 'Update ready');
+      expect(find.text(_agentLine), findsNothing);
+    });
+
+    testWidgets(
+      'a relaunch cancelled after the modal was dismissed pops no page under it',
+      (tester) async {
+        final controller = _Wi38LateRelaunch(
+          UpdateReady(_wi38Item(), dmgPath: '/updater/q.dmg'),
+          outcome: RelaunchOutcome.cancelled,
+        );
+        final h = await pumpUpdaterHarness(tester, controller: controller);
+        unawaited(
+          Navigator.of(h.context).push<void>(
+            MaterialPageRoute<void>(
+              builder: (_) => const Scaffold(key: Key('wi38-page-under')),
+            ),
+          ),
+        );
+        await _frames(tester);
+        final under = find.byKey(const Key('wi38-page-under'));
+        expect(under, findsOneWidget);
+        final navigator = tester.state<NavigatorState>(
+          find.byType(Navigator).first,
+        );
+        unawaited(openUpdateModal(h.context, h.container.read));
+        await _frames(tester);
+
+        await tester.tap(_k('update-modal-relaunch'));
+        await tester.pump();
+        navigator.pop();
+        await tester.pump();
+        expect(_modal, findsOneWidget, reason: 'still fading out');
+
+        controller.hold.complete();
+        await tester.pump();
+        await _frames(tester);
+        await _frames(tester);
+
+        expect(_modal, findsNothing);
+        expect(under, findsOneWidget, reason: 'only the modal was popped');
+      },
+    );
+
+    testWidgets(
+      'a relaunch asking to quit after the modal is gone answers no',
+      (tester) async {
+        final controller = _Wi38LateRelaunch(
+          UpdateReady(_wi38Item(), dmgPath: '/updater/r.dmg'),
+          ask: true,
+        );
+        await _open(
+          tester,
+          controller: controller,
+          overrides: [
+            hasUnsentHostedTextProvider.overrideWithValue(true),
+            unsentHostedTextProvider.overrideWithValue(
+              UnsentHostedText(
+                serverName: 'nas',
+                vaultName: 'seed',
+                notes: [
+                  UnsentHostedNote(
+                    title: 'Draft 38b',
+                    since: DateTime.utc(2026, 3, 8, 9, 30),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        );
+
+        await tester.tap(_k('update-modal-relaunch'));
+        await tester.pump();
+        await tester.tap(_k('update-modal-later'));
+        await _frames(tester);
+        expect(_modal, findsNothing);
+
+        controller.hold.complete();
+        await _frames(tester);
+
+        expect(controller.confirmQuitAnswers, [false]);
+        expect(_k('leave-confirm'), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'later on update available keeps showing it while the modal fades out',
+      (tester) async {
+        final controller = _Wi38LaterGoesIdle(
+          UpdateAvailable(_wi38Item(notes: 'Fixes.')),
+        );
+        await _open(tester, controller: controller);
+
+        await tester.tap(_k('update-modal-later'));
+        expect(controller.calls, ['later']);
+        expect(controller.current, isA<UpdateIdle>());
+        for (var i = 0; i < 4; i++) {
+          await tester.pump(const Duration(milliseconds: 30));
+          expect(_modal, findsOneWidget, reason: 'still fading, frame $i');
+          expect(find.text('Checking for updates'), findsNothing);
+          expect(_title(tester), 'Update available');
+          expect(_k('update-modal-install'), findsOneWidget);
+        }
+        await _frames(tester);
+
+        expect(_modal, findsNothing);
+      },
+    );
+
+    testWidgets(
+      'later on update ready keeps showing it while the modal fades out',
+      (tester) async {
+        final controller = _Wi38LaterGoesIdle(
+          UpdateReady(_wi38Item(), dmgPath: '/updater/s.dmg'),
+        );
+        await _open(tester, controller: controller);
+
+        await tester.tap(_k('update-modal-later'));
+        await tester.pump(const Duration(milliseconds: 30));
+
+        expect(find.text('Checking for updates'), findsNothing);
+        expect(_title(tester), 'Update ready');
+      },
+    );
+
+    testWidgets(
+      'a relaunch cancelled after an escape dismiss pops no page and throws nothing',
+      (tester) async {
+        final controller = _Wi38LateRelaunch(
+          UpdateReady(_wi38Item(), dmgPath: '/updater/t.dmg'),
+          ask: true,
+        );
+        final h = await pumpUpdaterHarness(tester, controller: controller);
+        unawaited(
+          Navigator.of(h.context).push<void>(
+            MaterialPageRoute<void>(
+              builder: (_) => const Scaffold(key: Key('wi38-esc-page-under')),
+            ),
+          ),
+        );
+        await _frames(tester);
+        final under = find.byKey(const Key('wi38-esc-page-under'));
+        expect(under, findsOneWidget);
+        unawaited(openUpdateModal(h.context, h.container.read));
+        await _frames(tester);
+
+        await tester.tap(_k('update-modal-relaunch'));
+        await tester.pump();
+        expect(controller.calls, ['relaunch']);
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await _frames(tester);
+        await _frames(tester);
+        expect(_modal, findsNothing, reason: 'escape dismissed the modal');
+        expect(under, findsOneWidget);
+
+        controller.hold.complete();
+        await _frames(tester);
+        await _frames(tester);
+
+        expect(controller.confirmQuitAnswers, [false]);
+        expect(tester.takeException(), isNull);
+        expect(under, findsOneWidget, reason: 'only the modal was popped');
+        expect(_k('leave-confirm'), findsNothing);
+      },
+    );
+  });
+
+  // ---------------------------------------------------------------- busy
+
+  group('busy actions', () {
+    bool enabled(WidgetTester tester, String key) =>
+        tester.widget<DialogButton>(_k(key)).onPressed != null;
+
+    for (final (name, state, key, others) in [
+      (
+        'install shows disabled while it runs and enabled once it finished',
+        UpdateAvailable(_wi38Item()),
+        'update-modal-install',
+        ['update-modal-later'],
+      ),
+      (
+        'try again shows disabled while it runs and enabled once it finished',
+        UpdateError(UpdateErrorCause.badSignature, item: _wi38Item()),
+        'update-modal-try-again',
+        ['update-modal-close'],
+      ),
+      (
+        'relaunch shows disabled while it runs and enabled once it finished',
+        UpdateReady(_wi38Item(), dmgPath: '/updater/u.dmg'),
+        'update-modal-relaunch',
+        ['update-modal-later'],
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final controller = _Wi38HeldController(state);
+        await _open(tester, controller: controller);
+        expect(enabled(tester, key), isTrue, reason: 'idle');
+
+        await tester.tap(_k(key));
+        await tester.pump();
+
+        expect(enabled(tester, key), isFalse, reason: 'in flight');
+        for (final other in others) {
+          expect(enabled(tester, other), isTrue, reason: '$other stays on');
+        }
+
+        controller.hold.complete();
+        await _frames(tester);
+
+        expect(enabled(tester, key), isTrue, reason: 'finished');
+      });
+    }
+
+    testWidgets(
+      'download from GitHub shows disabled while it opens and enabled once it did',
+      (tester) async {
+        final opener = _Wi38HeldOpener();
+        await _open(
+          tester,
+          state: const UpdateError(UpdateErrorCause.noPublicKey),
+          overrides: [urlOpenerProvider.overrideWithValue(opener)],
+        );
+        expect(enabled(tester, 'update-modal-download-github'), isTrue);
+
+        await tester.tap(_k('update-modal-download-github'));
+        await tester.pump();
+
+        expect(enabled(tester, 'update-modal-download-github'), isFalse);
+        expect(enabled(tester, 'update-modal-close'), isTrue);
+
+        opener.hold.complete();
+        await _frames(tester);
+
+        expect(enabled(tester, 'update-modal-download-github'), isTrue);
+      },
+    );
+
+    testWidgets('close and later still close a modal while an action runs', (
+      tester,
+    ) async {
+      final controller = _Wi38HeldController(UpdateAvailable(_wi38Item()));
+      await _open(tester, controller: controller);
+
+      await tester.tap(_k('update-modal-install'));
+      await tester.pump();
+      await tester.tap(_k('update-modal-later'));
+      await _frames(tester);
+
+      expect(controller.calls, ['install', 'later']);
+      expect(_modal, findsNothing);
+      controller.hold.complete();
+      await _frames(tester);
+      expect(tester.takeException(), isNull);
     });
   });
 }

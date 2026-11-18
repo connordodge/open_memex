@@ -481,6 +481,9 @@ class _BrandRow extends ConsumerWidget {
           UpdateVersionLabel(
             textKey: const Key('picker-version-label'),
             version: version,
+            // The logo's height, under the title's line: the Ready label's
+            // click target grows it without growing the row.
+            hitHeight: 22,
             style: OmType.mono(
               size: 11,
               color: OmColors.fg3,

@@ -84,8 +84,10 @@ class UpdateController extends Notifier<UpdateState> {
       state = UpdateError(UpdateErrorCause.failureRecorded, reason: reason);
       return true;
     }
-    await check(manual: false);
-    return state is UpdateAvailable;
+    // Decided from the result of the check the launch ran or joined, never
+    // from the state after the await: a menu check joining during the stamp
+    // write re-enters Checking until it applies that same result.
+    return await _check(manual: false) is UpdateAvailable;
   }
 
   /// Whether a download or verify is running, or an update is staged Ready.
@@ -101,11 +103,15 @@ class UpdateController extends Notifier<UpdateState> {
   ///
   /// While Ready, Downloading or Verifying it keeps the current state and
   /// fetches nothing (req 17, D20).
-  Future<void> check({required bool manual}) async {
-    if (_installBusy) return;
-    if (!manual && !await _checkDue()) return;
+  Future<void> check({required bool manual}) => _check(manual: manual);
+
+  /// [check], completing with the result state of the check it ran or
+  /// joined, or null when it fetched nothing (throttled or install busy).
+  Future<UpdateState?> _check({required bool manual}) async {
+    if (_installBusy) return null;
+    if (!manual && !await _checkDue()) return null;
     // An install may have started while the stamp was read.
-    if (_installBusy) return;
+    if (_installBusy) return null;
     final inFlight = _checking;
     if (inFlight != null) {
       // The launch may have shown a recorded failure over this check, which
@@ -117,9 +123,9 @@ class UpdateController extends Notifier<UpdateState> {
       final result = await inFlight;
       // A check started after this one finished owns Checking now.
       if (_checking == null && state is UpdateChecking) state = result;
-      return;
+      return result;
     }
-    await (_checking = _runCheck().whenComplete(() => _checking = null));
+    return _checking = _runCheck().whenComplete(() => _checking = null);
   }
 
   /// Whether the last check was never stamped, or stamped at least

@@ -424,6 +424,9 @@ class _BrandRow extends ConsumerWidget {
                 child: UpdateVersionLabel(
                   textKey: const Key('sidebar-version-label'),
                   version: version,
+                  // The row's own height: the Ready label's click target
+                  // spans it without growing the row.
+                  hitHeight: 44,
                   style: OmType.mono(
                     size: 10,
                     color: OmColors.fg3,
