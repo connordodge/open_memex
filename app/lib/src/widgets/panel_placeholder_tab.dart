@@ -11,11 +11,16 @@ class PanelPlaceholderTab extends StatelessWidget {
     required this.subtitle,
     required this.empty,
     this.emptyKey,
+    this.headerTrailing,
   });
   final String eyebrow;
   final String subtitle;
   final String empty;
   final Key? emptyKey;
+
+  /// Shown at the header's trailing end (the Outline's keycap); null for the
+  /// other tabs.
+  final Widget? headerTrailing;
   @override
   Widget build(BuildContext context) {
     return ListView(

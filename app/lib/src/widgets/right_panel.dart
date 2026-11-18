@@ -13,6 +13,7 @@ import '../vault_access/vault_scoped.dart';
 import 'activity_tab.dart';
 import 'atoms.dart';
 import 'echoes_tab.dart';
+import 'outline/outline_tab.dart';
 import 'panel_placeholder_tab.dart';
 
 export '../state/right_panel_tab.dart';
@@ -169,6 +170,7 @@ class _TabBody extends ConsumerWidget {
     return switch (tab) {
       RightPanelTab.connections => const _ConnectionsTab(),
       RightPanelTab.echoes => const EchoesTab(),
+      RightPanelTab.outline => const OutlineTab(),
       RightPanelTab.activity => const ActivityTab(),
     };
   }
