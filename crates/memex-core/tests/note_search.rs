@@ -576,6 +576,12 @@ fn ready_on_a_vault_with_no_vector_table_still_answers_keyword_hits() {
         .expect("a missing chunk_vec table is never an Err");
 
     assert_eq!(keys(&got.hits), want, "the kNN arm adds nothing");
+    assert_eq!(
+        got.semantic,
+        Semantic::Unavailable,
+        "on means the vector arm ran (requirement 35); no chunk_vec table, no vector arm"
+    );
+    assert_eq!(semantic(&got), "unavailable");
 }
 
 // ---------------------------------------------------------------- AC 4: failing embedder
@@ -903,6 +909,32 @@ fn any_limit_answers_without_panicking() {
     }
 }
 
+#[test]
+fn ready_with_a_large_limit_still_runs_the_vector_arm() {
+    let mut fx = new_vault();
+    let emb = AxisEmbedder::new();
+    meaning_vault(&mut fx, &emb);
+    fx.embedded_plain("Plains", "The striped horses graze at dusk.", &emb);
+
+    for limit in [1000, 4096, 5000, 1 << 40, i64::MAX as usize, usize::MAX] {
+        let got = fx
+            .try_run("zebra", limit, SearchEmbedder::Ready(&emb), 0)
+            .unwrap_or_else(|e| panic!("Ready, limit {limit}: {e}"));
+        let t = titles(&got);
+        assert_eq!(
+            got.semantic,
+            Semantic::On,
+            "limit {limit}: the kNN k is clamped, so the vector arm runs: {t:?}"
+        );
+        for meaning_only in ["Savanna", "Plains"] {
+            assert!(
+                t.iter().any(|x| x == meaning_only),
+                "limit {limit}: the kNN returns every close vector, {meaning_only} missing: {t:?}"
+            );
+        }
+    }
+}
+
 // ---------------------------------------------------------------- AC 10: pending embedding
 
 #[test]
@@ -1194,14 +1226,16 @@ fn semantic_serializes_to_its_four_wire_strings() {
     let emb = AxisEmbedder::new();
     let failing = FailingEmbedder::new();
 
-    let cases: [(SearchEmbedder<'_>, &str); 4] = [
-        (SearchEmbedder::Ready(&emb), "on"),
-        (SearchEmbedder::NotDownloaded, "model_not_downloaded"),
-        (SearchEmbedder::Off, "embeddings_off"),
-        (SearchEmbedder::Ready(&failing), "unavailable"),
+    // `on` needs the vector arm to have run, so its row embeds the pending
+    // chunks (cap 64) and builds the vector table first.
+    let cases: [(SearchEmbedder<'_>, usize, &str); 4] = [
+        (SearchEmbedder::Ready(&emb), 64, "on"),
+        (SearchEmbedder::NotDownloaded, 0, "model_not_downloaded"),
+        (SearchEmbedder::Off, 0, "embeddings_off"),
+        (SearchEmbedder::Ready(&failing), 0, "unavailable"),
     ];
-    for (embedder, want) in cases {
-        let got = fx.run("quasar", 8, embedder, 0);
+    for (embedder, cap, want) in cases {
+        let got = fx.run("quasar", 8, embedder, cap);
         assert_eq!(got.hits.len(), 2, "{want}: the keyword hits");
         assert_eq!(semantic(&got), want);
     }
