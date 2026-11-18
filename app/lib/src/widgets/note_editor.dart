@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show RenderAbstractViewport;
@@ -8,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../db.dart';
 import '../state/echo_scroll_target.dart';
 import '../state/editor_controller.dart';
+import '../state/note_reveal.dart';
 import '../state/pending_saves.dart';
 import '../state/tabs_state.dart'
     show CanvasTab, TabsNotifier, TabsState, VirtualTodayTab, tabsProvider;
@@ -23,6 +23,7 @@ import 'editor/echo_arrival_highlight.dart';
 import 'editor/editor_toolbar.dart';
 import 'editor/note_header.dart';
 import 'editor/note_menu.dart';
+import 'editor/note_reveal.dart';
 import 'editor/segmented_body.dart';
 import 'editor/source_surface.dart';
 import 'editor/spelling_learn_error.dart';
@@ -44,7 +45,8 @@ import 'editor/text_segment.dart' show EditorScrollScope;
 /// Scroll offsets live on Tab history entries (#270, TD7). This editor reports
 /// the segmented body's offset to [TabsNotifier.recordScrollOffset]; an arrival
 /// on the active tab jumps once, after the note's layout, to the offset
-/// [TabsNotifier.takeScrollRestore] hands out or else to the top.
+/// [TabsNotifier.takeScrollRestore] hands out or else to the top. An echo's
+/// target or a [noteRevealProvider] request lands instead (#66, D3).
 class NoteEditor extends ConsumerStatefulWidget {
   const NoteEditor({
     super.key,
@@ -152,12 +154,15 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
       );
     }
     if (resolved || note == null || _outgoing) return;
-    // An echo's target wins over the restore, which is still taken so it
-    // can't reach a later arrival; it also keeps a daily note's caret put.
+    // An echo's target wins over the restore and a reveal request, which are
+    // still taken so they can't reach a later arrival; a reveal request wins
+    // over the restore. Either keeps a daily note's caret put.
     final echo = ref.read(echoScrollTargetProvider.notifier).take(note.id);
     final restore = _tabs?.takeScrollRestore(note.id);
-    if (echo != null) {
-      _landAtEcho(note, echo.startByte);
+    final reveal = ref.read(noteRevealProvider.notifier).take(note.id);
+    final request = echo == null ? reveal : _echoRequest(echo);
+    if (request != null) {
+      _reveal(note, request, arrival: true);
       return;
     }
     _jumpAfterLayout(restore ?? 0.0);
@@ -194,19 +199,60 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
     setState(() => _view = _BodyView.segmented);
     final echo = ref.read(echoScrollTargetProvider.notifier).take(noteId);
     final restore = _tabs?.takeScrollRestore(noteId);
-    // The note as it is stored now: [_hydratedNote] is the copy from when
-    // this note was hydrated, and an edit saved since changed its text.
-    final current = currentVaultData(
-      ref.read(editorNoteAsyncProvider),
-      ref.read(currentVaultProvider),
-    )?.value;
-    final note = current?.id == noteId ? current : _hydratedNote;
-    if (echo != null && note != null) {
-      _landAtEcho(note, echo.startByte);
+    // A request made before this arrival dies here (D3b); one made after it
+    // reaches [_onReveal].
+    final reveal = ref.read(noteRevealProvider.notifier).take(noteId);
+    final request = echo == null ? reveal : _echoRequest(echo);
+    final note = _storedNote(noteId);
+    if (request != null && note != null) {
+      _reveal(note, request, arrival: true);
       return;
     }
     _jumpAfterLayout(restore ?? 0.0);
   }
+
+  /// Note [noteId] as it is stored now: [_hydratedNote] is the copy from when
+  /// this note was hydrated, and an edit saved since changed its text.
+  Note? _storedNote(String noteId) {
+    final current = currentVaultData(
+      ref.read(editorNoteAsyncProvider),
+      ref.read(currentVaultProvider),
+    )?.value;
+    return current?.id == noteId ? current : _hydratedNote;
+  }
+
+  /// A reveal request made for the note shown (D3a): it lands on the next
+  /// frame. Requests for any other note wait for its hydrate.
+  void _onReveal(PendingReveal? previous, PendingReveal? next) {
+    final noteId = _hydratedFor;
+    if (next == null || noteId == null || _outgoing) return;
+    if (next.request.noteId != noteId) return;
+    WidgetsBinding.instance
+      ..addPostFrameCallback((_) {
+        if (!mounted || _outgoing || noteId != _hydratedFor) return;
+        // A later request in the same frame replaced this one: the first
+        // callback takes it, the others find nothing.
+        final request = ref.read(noteRevealProvider.notifier).take(noteId);
+        final note = _storedNote(noteId);
+        if (request == null || note == null) return;
+        if (!_sourceMode) {
+          _reveal(note, request, now: true);
+        } else if (request.leaveSource) {
+          setState(() => _view = _BodyView.segmented);
+          _reveal(note, request);
+        }
+      })
+      ..scheduleFrame();
+  }
+
+  /// An echo's target (Spec #391 req 27) as the reveal it lands as: its
+  /// passage a third of the way down, highlighted.
+  NoteRevealRequest _echoRequest(EchoScrollTarget echo) => NoteRevealRequest(
+    echo.noteId,
+    RevealAtByte(echo.startByte),
+    const RevealThird(),
+    flash: true,
+  );
 
   /// The arrival highlight showing, if any.
   OverlayEntry? _echoHighlight;
@@ -217,128 +263,129 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
     if (entry != null && entry.mounted) entry.remove();
   }
 
-  /// An arrival with an echo's target (Spec #391 req 27): after [note]'s
-  /// layout, scrolls the passage at [startByte] to a third of the viewport
-  /// and highlights it, or opens at the top without a usable offset. The
-  /// landing offset is recorded on the entry, so Back then Forward returns
-  /// to the passage.
-  void _landAtEcho(Note note, int? startByte) {
-    final arrival = locateEchoArrival(
-      note.contentMd,
-      startByte,
-      role: note.role,
-    );
-    if (arrival == null) {
-      _jumpAfterLayout(0.0);
+  /// Lands [request] on [note] under the D3 rules: finds its anchor in the
+  /// segmented body after the next layout (at once when [now]: the caller
+  /// runs after a layout), retrying for up to 8 frames, then scrolls it to
+  /// the request's placement, records the offset on the entry and, with
+  /// `flash`, highlights its band. Never touches the selection, focus or
+  /// history. [arrival]: the request came with an arrival on this note, which
+  /// then opens at the top when the request cannot land; on the note already
+  /// shown such a request does nothing. A byte request with no offset always
+  /// opens at the top.
+  void _reveal(
+    Note note,
+    NoteRevealRequest request, {
+    bool arrival = false,
+    bool now = false,
+  }) {
+    final at = request.at;
+    var content = note.contentMd;
+    EchoArrival? target;
+    int? end;
+    switch (at) {
+      case RevealAtByte(:final startByte):
+        if (startByte == null) {
+          _jumpAfterLayout(0.0);
+          return;
+        }
+        target = locateEchoArrival(content, startByte, role: note.role);
+      case RevealAtText(:final segment, :final start, end: final to):
+        content = at.content;
+        target = locateInSegment(content, segment, start, role: note.role);
+        // `toLocal` shifts a prose row's offsets by its start.
+        if (target != null && to != null) {
+          end = (target.local + to - start).clamp(0, target.rowText.length);
+        }
+      case RevealAtCard(:final segment):
+        content = at.content;
+        target = locateInSegment(content, segment, 0, role: note.role);
+        // A text segment is no card.
+        if (target?.kind != null) target = null;
+    }
+    final found = target;
+    if (found == null) {
+      if (arrival) _jumpAfterLayout(0.0);
       return;
     }
     final jump = ++_jumpSeq;
     var tries = 0;
     void land(Duration _) {
       if (!mounted || jump != _jumpSeq) return;
-      final found = _echoRow(note, arrival);
-      if (found == null && ++tries < 8) {
+      final shown = revealRow(context, note.id, content, found);
+      if (shown == null && ++tries < 8) {
         WidgetsBinding.instance
           ..addPostFrameCallback(land)
           ..scheduleFrame();
         return;
       }
-      final viewport = found == null
+      final viewport = shown == null
           ? null
-          : RenderAbstractViewport.maybeOf(found.row);
-      if (found == null || viewport == null || !_scroll.hasClients) {
-        _jumpAfterLayout(0.0);
+          : RenderAbstractViewport.maybeOf(shown.row);
+      if (shown == null || viewport == null || !_scroll.hasClients) {
+        if (arrival) _jumpAfterLayout(0.0);
         return;
       }
-      final rects = echoArrivalRects(found.row, arrival, column: found.column);
+      final rects = echoArrivalRects(shown.row, found, column: shown.column);
+      final anchor = at is RevealAtByte
+          ? rects.anchor
+          : revealAnchorRect(shown.row, found, end: end);
       final position = _scroll.position;
-      final reveal = viewport
-          .getOffsetToReveal(found.row, 0.0, rect: rects.anchor)
-          .offset;
-      final to = math.min(
-        reveal,
-        reveal - (position.viewportDimension / 3 - rects.anchor.height / 2),
+      final to = revealScrollOffset(
+        request.placement,
+        reveal: viewport.getOffsetToReveal(shown.row, 0.0, rect: anchor).offset,
+        pixels: position.pixels,
+        viewport: position.viewportDimension,
+        height: anchor.height,
       );
-      _scroll.jumpTo(
-        to.clamp(position.minScrollExtent, position.maxScrollExtent),
-      );
+      // Held across the jump: the landing records its offset once, below.
+      _reportsHeld = true;
+      if (to != null) {
+        _scroll.jumpTo(
+          to.clamp(position.minScrollExtent, position.maxScrollExtent),
+        );
+      }
       _reportsHeld = false;
       _tabs?.recordScrollOffset(note.id, _scroll.offset);
       _clearEchoHighlight();
-      final overlay = Overlay.maybeOf(context, rootOverlay: true);
-      if (overlay == null) return;
-      final clip = switch (viewport) {
-        final RenderBox box => box,
-        _ => null,
-      };
-      late final OverlayEntry entry;
-      entry = OverlayEntry(
-        builder: (_) => EchoArrivalHighlight(
-          target: found.row,
-          band: rects.band,
-          clip: clip,
-          repaint: _scroll,
-          onDone: () {
-            if (identical(_echoHighlight, entry)) _echoHighlight = null;
-            if (entry.mounted) entry.remove();
-          },
-        ),
-      );
-      _echoHighlight = entry;
-      overlay.insert(entry);
+      if (request.flash) _flash(shown.row, rects.band, viewport);
     }
 
-    WidgetsBinding.instance.addPostFrameCallback(land);
+    if (now) {
+      land(Duration.zero);
+    } else {
+      WidgetsBinding.instance.addPostFrameCallback(land);
+    }
   }
 
-  /// The laid-out widget holding [arrival] in this editor's segmented body
-  /// showing [note]'s stored text, and its text segment; null until then.
-  ({RenderBox row, RenderBox? column})? _echoRow(
-    Note note,
-    EchoArrival arrival,
-  ) {
-    Element? body;
-    void findBody(Element e) {
-      if (body != null) return;
-      final w = e.widget;
-      if (w is SegmentedBody && w.note.id == note.id) {
-        body = e;
-      } else {
-        e.visitChildren(findBody);
-      }
-    }
-
-    context.visitChildElements(findBody);
-    final host = body;
-    if (host == null ||
-        (host.widget as SegmentedBody).content != note.contentMd) {
-      return null;
-    }
-    final keys = {
-      arrival.key,
-      ?arrival.fallbackKey,
-      ValueKey('text-segment-${arrival.segment}'),
+  /// Shows the arrival highlight over [band] of [row], clipped to
+  /// [viewport], in the root overlay.
+  void _flash(RenderBox row, Rect band, RenderAbstractViewport viewport) {
+    final overlay = Overlay.maybeOf(context, rootOverlay: true);
+    if (overlay == null) return;
+    final clip = switch (viewport) {
+      final RenderBox box => box,
+      _ => null,
     };
-    final found = <Key, Element>{};
-    void visit(Element e) {
-      final key = e.widget.key;
-      if (key != null && keys.contains(key)) found.putIfAbsent(key, () => e);
-      e.visitChildren(visit);
-    }
-
-    host.visitChildren(visit);
-    RenderBox? laidOut(Key? key) {
-      final box = key == null ? null : found[key]?.findRenderObject();
-      return box is RenderBox && box.attached && box.hasSize ? box : null;
-    }
-
-    final row = laidOut(arrival.key) ?? laidOut(arrival.fallbackKey);
-    if (row == null) return null;
-    return (
-      row: row,
-      column: laidOut(ValueKey('text-segment-${arrival.segment}')),
+    late final OverlayEntry entry;
+    entry = OverlayEntry(
+      builder: (_) => EchoArrivalHighlight(
+        target: row,
+        band: band,
+        clip: clip,
+        repaint: _scroll,
+        onDone: () {
+          if (identical(_echoHighlight, entry)) _echoHighlight = null;
+          if (entry.mounted) entry.remove();
+        },
+      ),
     );
+    _echoHighlight = entry;
+    overlay.insert(entry);
   }
+
+  /// The segmented body as the editor shows it: the Outline's section
+  /// tracker (#58) wraps it here.
+  Widget _trackSections(Note note, Widget body) => body;
 
   /// Jumps to [offset], clamped, after the next frame: that frame lays out what
   /// the caller just asked to be built. Runs once, unless an arrival cancels it.
@@ -393,6 +440,61 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
     });
   }
 
+  /// The editor body for [note]: the Source field, or the segmented body
+  /// through [_trackSections].
+  Widget _body(
+    Note note,
+    EditorStateValue editor,
+    EditorController controller,
+    Widget? header,
+  ) {
+    if (_sourceMode) {
+      return SourceSurface(
+        bodyCtrl: _bodyCtrl,
+        bodyFocusNode: _bodyFocus,
+        noteId: note.id,
+        noteRole: note.role,
+        onContentChanged: controller.onContentChanged,
+        errorMessage: editor.errorMessage,
+        header: header,
+        dailyNoteId:
+            note.role == 'daily' && VirtualTodayTab.dateOf(note.id) == null
+            ? note.id
+            : null,
+        onTopicLinked: (version) => rebaseEditorOnVersion(
+          ref,
+          fallback: note,
+          version: version,
+          content: _bodyCtrl.text,
+        ),
+      );
+    }
+    return _trackSections(
+      note,
+      EditorScrollScope(
+        controller: _scroll,
+        child: SegmentedBody(
+          // Until the post-frame hydrate loads a newly selected note, the
+          // editor still holds the previous note's text: keep the body on
+          // the note that text belongs to.
+          note: _hydratedNote ?? note,
+          content: editor.contentMd,
+          savedVersion: editor.lastSavedVersion,
+          onContentChanged: controller.onContentChanged,
+          primaryFocusNode: _bodyFocus,
+          errorMessage: editor.errorMessage,
+          onDismissError: controller.dismissError,
+          header: header,
+          carryCaret: editor.contentMd == controller.mergedText,
+        ),
+      ),
+    );
+  }
+
+  /// What the editor shows over [note]'s body, above it in the body's Stack
+  /// (Find in note's bar and matches, #61).
+  List<Widget> _bodyOverlays(Note note) => const [];
+
   @override
   Widget build(BuildContext context) {
     final note = watchVaultValue(ref, editorNoteAsyncProvider, null);
@@ -401,6 +503,7 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
     final vaultPath = ref.watch(currentVaultProvider).localPath;
 
     if (ref.exists(tabsProvider)) ref.listen<TabsState>(tabsProvider, _onTabs);
+    ref.listen<PendingReveal?>(noteRevealProvider, _onReveal);
     ref.listen<EditorStateValue>(editorControllerProvider, _followSource);
     ref.listen<AsyncValue<VaultScoped<Note?>>>(
       editorNoteAsyncProvider,
@@ -449,43 +552,13 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
           Expanded(
             child: note == null
                 ? _EmptyEditor()
-                : _sourceMode
-                ? SourceSurface(
-                    bodyCtrl: _bodyCtrl,
-                    bodyFocusNode: _bodyFocus,
-                    noteId: note.id,
-                    noteRole: note.role,
-                    onContentChanged: controller.onContentChanged,
-                    errorMessage: editor.errorMessage,
-                    header: header,
-                    dailyNoteId:
-                        note.role == 'daily' &&
-                            VirtualTodayTab.dateOf(note.id) == null
-                        ? note.id
-                        : null,
-                    onTopicLinked: (version) => rebaseEditorOnVersion(
-                      ref,
-                      fallback: note,
-                      version: version,
-                      content: _bodyCtrl.text,
-                    ),
-                  )
-                : EditorScrollScope(
-                    controller: _scroll,
-                    child: SegmentedBody(
-                      // Until the post-frame hydrate loads a newly selected
-                      // note, the editor still holds the previous note's text:
-                      // keep the body on the note that text belongs to.
-                      note: _hydratedNote ?? note,
-                      content: editor.contentMd,
-                      savedVersion: editor.lastSavedVersion,
-                      onContentChanged: controller.onContentChanged,
-                      primaryFocusNode: _bodyFocus,
-                      errorMessage: editor.errorMessage,
-                      onDismissError: controller.dismissError,
-                      header: header,
-                      carryCaret: editor.contentMd == controller.mergedText,
-                    ),
+                : Stack(
+                    children: [
+                      Positioned.fill(
+                        child: _body(note, editor, controller, header),
+                      ),
+                      ..._bodyOverlays(note),
+                    ],
                   ),
           ),
           const OmHairline(),
