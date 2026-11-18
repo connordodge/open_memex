@@ -405,6 +405,54 @@ void main() {
     });
 
     testWidgets(
+      'a full page route pushed over the workspace is not a modal and Find stays enabled',
+      (tester) async {
+        // Only PopupRoutes (dialogs, palette, popup menus) count; an ordinary
+        // page route, pushed, replaced or popped, never sends a change.
+        final r = _wi81Attached();
+        r.tabs.openOrFocus(_wi81Note('alpha'));
+        final nav = await _wi81PumpNavigator(tester, r);
+        await _wi81Flush(tester);
+        expect(r.menu.findEnabledCalls, [false, true]);
+
+        final page = MaterialPageRoute<void>(
+          builder: (_) => const SizedBox(key: Key('page-81')),
+        );
+        nav.currentState!.push(page);
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('page-81')), findsOneWidget);
+        expect(r.menu.findEnabledCalls, [false, true]);
+
+        nav.currentState!.replace(
+          oldRoute: page,
+          newRoute: MaterialPageRoute<void>(
+            builder: (_) => const SizedBox(key: Key('page2-81')),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(r.menu.findEnabledCalls, [false, true]);
+
+        nav.currentState!.pop();
+        await tester.pumpAndSettle();
+        expect(r.menu.findEnabledCalls, [false, true]);
+
+        showDialog<void>(
+          context: nav.currentContext!,
+          builder: (_) => const SizedBox(key: Key('dialog-81')),
+        );
+        await tester.pumpAndSettle();
+        nav.currentState!.pop();
+        await tester.pumpAndSettle();
+        expect(r.menu.findEnabledCalls, [
+          false,
+          true,
+          false,
+          true,
+        ], reason: 'the earlier page routes left no residue in the count');
+      },
+    );
+
+    testWidgets(
       'a dialog replaced by another dialog keeps Find disabled until the second pops',
       (tester) async {
         final r = _wi81Attached();
