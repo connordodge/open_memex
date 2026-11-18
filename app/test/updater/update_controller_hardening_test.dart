@@ -195,6 +195,84 @@ void main() {
   );
 
   test(
+    'try again on a recorded failure over a held manual fetch adopts its Available result',
+    () async {
+      final fakes = _GatedFakes()..marker.gate = Completer<void>();
+      final rig = ControllerRig(fakes: fakes);
+      fakes.marker.reason = _recorded;
+      final item = newerItem();
+      fakes.fetcher
+        ..items = [item]
+        ..hold = Completer<void>();
+
+      final launch = rig.controller.launch();
+      await pumpEventQueue();
+      final manual = rig.controller.check(manual: true);
+      await pumpEventQueue();
+      fakes.marker.gate!.complete();
+      expect(await launch, isTrue);
+      expect(rig.state, isA<UpdateError>());
+
+      final tryAgain = rig.controller.tryAgain();
+      await pumpEventQueue();
+      expect(
+        rig.state,
+        isA<UpdateChecking>(),
+        reason: 'try again is not swallowed by the orphaned check',
+      );
+
+      fakes.fetcher.hold!.complete();
+      await tryAgain;
+      await manual;
+
+      expect(
+        rig.state,
+        isA<UpdateAvailable>().having((a) => a.item, 'item', item),
+      );
+      expect(fakes.fetcher.fetchCount, 1, reason: 'one fetch answers both');
+      expect(fakes.lastCheck.writes, hasLength(1));
+    },
+  );
+
+  test(
+    'try again on a recorded failure over a held manual fetch adopts its offline failure without a stamp',
+    () async {
+      final fakes = _GatedFakes()..marker.gate = Completer<void>();
+      final rig = ControllerRig(fakes: fakes);
+      fakes.marker.reason = _recorded;
+      fakes.fetcher
+        ..failure = const UpdateFailure(UpdateErrorCause.offline)
+        ..hold = Completer<void>();
+
+      final launch = rig.controller.launch();
+      await pumpEventQueue();
+      final manual = rig.controller.check(manual: true);
+      await pumpEventQueue();
+      fakes.marker.gate!.complete();
+      expect(await launch, isTrue);
+
+      final tryAgain = rig.controller.tryAgain();
+      await pumpEventQueue();
+      expect(rig.state, isA<UpdateChecking>());
+
+      fakes.fetcher.hold!.complete();
+      await tryAgain;
+      await manual;
+
+      expect(
+        rig.state,
+        isA<UpdateError>().having(
+          (e) => e.cause,
+          'cause',
+          UpdateErrorCause.offline,
+        ),
+      );
+      expect(fakes.lastCheck.writes, isEmpty);
+      expect(fakes.fetcher.fetchCount, 1);
+    },
+  );
+
+  test(
     'a recorded failure arriving while a download runs is dropped and launch answers false',
     () async {
       final fakes = _GatedFakes()..marker.gate = Completer<void>();
