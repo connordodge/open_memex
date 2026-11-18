@@ -1884,12 +1884,16 @@ void main() {
 
   group('the palette card', () {
     for (final (name, target) in <(String, Finder Function())>[
-      ('the hint footer', () => find.text('close')),
-      ('a group header', () => find.text('COMMANDS · 12')),
+      (
+        'a mouse click on the hint footer keeps the keyboard in the palette',
+        () => find.text('close'),
+      ),
+      (
+        'a mouse click on a group header keeps the keyboard in the palette',
+        () => find.text('COMMANDS · 12'),
+      ),
     ]) {
-      testWidgets('a mouse click on $name keeps the keyboard in the palette', (
-        tester,
-      ) async {
+      testWidgets(name, (tester) async {
         await _host(tester);
         await _open(tester);
 
