@@ -262,6 +262,184 @@ void main() {
   );
 
   test(
+    'the update download directory is under the system temp directory and under the per-user temp directory when the system temp directory is /tmp',
+    () {
+      var calls = 0;
+      String? userDir(String? value) {
+        calls++;
+        return value;
+      }
+
+      String dirFor(String systemTemp, String? user) =>
+          updateDownloadDirFor(systemTemp, userTempDir: () => userDir(user));
+
+      // TMPDIR set: the system temp directory, and getconf is never asked.
+      expect(
+        dirFor('/vaults/My Vault/T', '/var/folders/zz/T/'),
+        '/vaults/My Vault/T/open-memex-update',
+      );
+      expect(
+        dirFor('/tmp/other', '/var/folders/zz/T/'),
+        '/tmp/other/open-memex-update',
+      );
+      expect(
+        dirFor('/private/var/folders/aa/T', '/var/folders/zz/T/'),
+        '/private/var/folders/aa/T/open-memex-update',
+      );
+      expect(calls, 0);
+
+      // TMPDIR unset: /tmp falls back to the per-user temp directory.
+      for (final shared in ['/tmp', '/tmp/', '/private/tmp', '/private/tmp/']) {
+        expect(
+          dirFor(shared, '/var/folders/zz/T/'),
+          '/var/folders/zz/T/open-memex-update',
+          reason: shared,
+        );
+        expect(
+          dirFor(shared, '/var/folders/zz/T'),
+          '/var/folders/zz/T/open-memex-update',
+          reason: shared,
+        );
+      }
+      expect(calls, 8);
+
+      // No usable per-user directory: the path stays under /tmp, which the
+      // downloader refuses.
+      expect(dirFor('/tmp', null), '/tmp/open-memex-update');
+      expect(dirFor('/tmp', ''), '/tmp/open-memex-update');
+      expect(dirFor('/tmp', '/tmp'), '/tmp/open-memex-update');
+      expect(dirFor('/tmp', '/tmp/'), '/tmp/open-memex-update');
+      expect(dirFor('/tmp', '/private/tmp/'), '/tmp/open-memex-update');
+      expect(dirFor('/private/tmp', null), '/private/tmp/open-memex-update');
+    },
+  );
+
+  test(
+    'a download over an existing DMG in the update download directory leaves exactly the new bytes',
+    () async {
+      final dir = p.join(_wi33Root(), 'open-memex-update');
+      Directory(dir).createSync(recursive: true);
+      // A stale file longer than the new download, under the same name.
+      File(
+        p.join(dir, updateDmgFileName),
+      ).writeAsBytesSync(List<int>.filled(25, 0xee));
+      final net = _Wi33DlHttp(_wi33Chunks(_wi33TenBytes(), contentLength: 10));
+
+      final path = await _wi33Downloader(net, dir).download(_wi33Item());
+
+      expect(File(path).readAsBytesSync(), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+      expect(Directory(dir).listSync(), hasLength(1));
+    },
+  );
+
+  test(
+    'two downloads in a row into the same directory leave the second download bytes only',
+    () async {
+      final dir = p.join(_wi33Root(), 'open-memex-update');
+      var round = 0;
+      final net = _Wi33DlHttp(
+        (_) => http.StreamedResponse(
+          Stream.value(List<int>.filled(7, ++round)),
+          200,
+          contentLength: 7,
+        ),
+      );
+      final downloader = _wi33Downloader(net, dir);
+
+      await downloader.download(_wi33Item());
+      final path = await downloader.download(_wi33Item());
+
+      expect(File(path).readAsBytesSync(), List<int>.filled(7, 2));
+    },
+  );
+
+  test(
+    'a download directory that cannot be set to mode 0700 fails with the download-failed cause and writes nothing',
+    () async {
+      // /private/tmp exists and is owned by root, so a user cannot chmod it;
+      // the guards below keep this test from ever changing a real mode.
+      const dir = '/private/tmp';
+      if (!Platform.isMacOS || !Directory(dir).existsSync()) {
+        markTestSkipped('needs the macOS /private/tmp owned by root');
+        return;
+      }
+      if (Process.runSync('/usr/bin/id', ['-u']).stdout.toString().trim() ==
+          '0') {
+        markTestSkipped('root can chmod /private/tmp; the test must not');
+        return;
+      }
+      final leftover = File(p.join(dir, updateDmgFileName));
+      if (leftover.existsSync()) {
+        markTestSkipped('${leftover.path} exists already');
+        return;
+      }
+      addTearDown(() {
+        if (leftover.existsSync()) leftover.deleteSync();
+      });
+      final modeBefore = _wi33Mode(dir);
+      final net = _Wi33DlHttp(_wi33Chunks(_wi33TenBytes(), contentLength: 10));
+
+      await expectLater(
+        _wi33Downloader(net, dir).download(_wi33Item()),
+        _wi33FailsWith(UpdateErrorCause.downloadFailed),
+      );
+
+      expect(leftover.existsSync(), isFalse);
+      expect(net.requests, isEmpty);
+      expect(_wi33Mode(dir), modeBefore);
+    },
+  );
+
+  test(
+    'a download directory that is a symbolic link fails with the download-failed cause and writes nothing through the link',
+    () async {
+      final root = _wi33Root();
+      final target = Directory(p.join(root, 'elsewhere'))..createSync();
+      final dir = p.join(root, 'open-memex-update');
+      Link(dir).createSync(target.path);
+      final net = _Wi33DlHttp(_wi33Chunks(_wi33TenBytes(), contentLength: 10));
+
+      await expectLater(
+        _wi33Downloader(net, dir).download(_wi33Item()),
+        _wi33FailsWith(UpdateErrorCause.downloadFailed),
+      );
+
+      expect(target.listSync(), isEmpty);
+      expect(net.requests, isEmpty);
+      // The link is left as it was, and the target keeps its mode.
+      expect(FileSystemEntity.isLinkSync(dir), isTrue);
+      expect(_wi33Mode(target.path), isNot(_wi33Mode0700));
+    },
+  );
+
+  test(
+    'a download directory directly under the shared /tmp fails with the download-failed cause and creates nothing',
+    () async {
+      final unique = p.basename(_wi33Root());
+      for (final parent in ['/tmp', '/tmp/', '/private/tmp']) {
+        final dir = p.join(parent, 'open-memex-update-$unique');
+        addTearDown(() {
+          if (Directory(dir).existsSync()) {
+            Directory(dir).deleteSync(recursive: true);
+          }
+        });
+        final net = _Wi33DlHttp(
+          _wi33Chunks(_wi33TenBytes(), contentLength: 10),
+        );
+
+        await expectLater(
+          _wi33Downloader(net, dir).download(_wi33Item()),
+          _wi33FailsWith(UpdateErrorCause.downloadFailed),
+          reason: parent,
+        );
+
+        expect(Directory(dir).existsSync(), isFalse, reason: parent);
+        expect(net.requests, isEmpty, reason: parent);
+      }
+    },
+  );
+
+  test(
     'a download creates the update download directory with mode 0700',
     () async {
       final dir = p.join(_wi33Root(), 'open-memex-update');
@@ -545,28 +723,44 @@ void main() {
     'the idle timeout restarts on every chunk and does not limit the whole download',
     () async {
       final dir = p.join(_wi33Root(), 'open-memex-update');
-      final body = StreamController<List<int>>();
-      addTearDown(body.close);
+      const idle = Duration(milliseconds: 500);
+      const gap = Duration(milliseconds: 25);
+      const chunks = 30; // 750 ms from the first listen to the close
+      final fromListen = Stopwatch();
+      late final StreamController<List<int>> body;
+      // The chunk schedule starts when the download starts listening to the
+      // body, not when it was called: the time before that (the directory
+      // setup) never counts against the idle timeout under test.
+      body = StreamController<List<int>>(
+        onListen: () async {
+          fromListen.start();
+          for (var i = 0; i < chunks; i++) {
+            await Future<void>.delayed(gap);
+            if (body.isClosed) return;
+            body.add([i]);
+          }
+          await body.close();
+        },
+      );
+      addTearDown(() {
+        if (!body.isClosed) body.close();
+      });
       final net = _Wi33DlHttp(
-        (_) => http.StreamedResponse(body.stream, 200, contentLength: 6),
+        (_) => http.StreamedResponse(body.stream, 200, contentLength: chunks),
       );
       final downloader = HttpUpdateDownloader(
         clientFactory: net.call,
         directory: dir,
-        idleTimeout: const Duration(milliseconds: 400),
+        idleTimeout: idle,
       );
 
-      final result = downloader.download(_wi33Item());
-      // Six chunks 100 ms apart: 600 ms in all, more than the idle timeout,
-      // but no gap reaches it.
-      for (var i = 1; i <= 6; i++) {
-        await Future<void>.delayed(const Duration(milliseconds: 100));
-        body.add([i]);
-      }
-      await body.close();
+      final path = await downloader.download(_wi33Item());
 
-      final path = await result;
-      expect(File(path).readAsBytesSync(), [1, 2, 3, 4, 5, 6]);
+      // The whole body took longer than the idle timeout, yet no gap did.
+      expect(fromListen.elapsed, greaterThan(idle));
+      expect(File(path).readAsBytesSync(), [
+        for (var i = 0; i < chunks; i++) i,
+      ]);
     },
   );
 

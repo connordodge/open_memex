@@ -446,6 +446,40 @@ void main() {
         );
         expect(File(path).existsSync(), isFalse);
       }
+
+      // The signature is checked before the file is read: a file that is not
+      // there gives the signature cause, not the file cause.
+      final missing = p.join(_wi33TempDir().path, 'Open-Memex-missing.dmg');
+      final missingCases = [
+        ('', signature, UpdateErrorCause.noPublicKey),
+        (key.publicKeyBase64, '', UpdateErrorCause.noSignature),
+        (
+          key.publicKeyBase64,
+          'not valid base64 !!!',
+          UpdateErrorCause.badSignature,
+        ),
+        (
+          key.publicKeyBase64,
+          base64.encode(List<int>.filled(63, 1)),
+          UpdateErrorCause.badSignature,
+        ),
+      ];
+      for (final (publicKey, edSignature, cause) in missingCases) {
+        await expectLater(
+          _wi33Verifier(
+            publicKey,
+          ).verify(dmgPath: missing, edSignature: edSignature),
+          _wi33FailsWith(cause),
+          reason: 'missing file, key "$publicKey" signature "$edSignature"',
+        );
+      }
+      // And with a valid key and signature, the missing file is the cause.
+      await expectLater(
+        _wi33Verifier(
+          key.publicKeyBase64,
+        ).verify(dmgPath: missing, edSignature: signature),
+        _wi33FailsWith(UpdateErrorCause.downloadFailed),
+      );
     },
   );
 

@@ -441,6 +441,87 @@ void main() {
   );
 
   test(
+    'a URL that is not http or https with a host fails with the feed-unreadable cause before any request',
+    () async {
+      final urls = [
+        Uri.parse('appcast.xml'),
+        Uri.parse('connordodge.github.io/open_memex/appcast.xml'),
+        Uri.parse('file:///vaults/My%20Vault/appcast.xml'),
+        Uri.parse('ftp://example.com/appcast.xml'),
+        Uri.parse('https:///appcast.xml'),
+        Uri.parse('http:///appcast.xml'),
+        Uri(),
+      ];
+      for (final url in urls) {
+        final net = _Wi33Http(_wi33Answer(updaterFixture('appcast_valid.xml')));
+
+        await expectLater(
+          HttpAppcastFetcher(clientFactory: net.call, url: url).fetch(),
+          _wi33FailsWith(UpdateErrorCause.feedUnreadable),
+          reason: '$url',
+        );
+        expect(net.requests, isEmpty, reason: '$url');
+      }
+    },
+  );
+
+  test('an http URL and an https URL with a host are both requested', () async {
+    for (final url in [
+      'http://localhost:8765/a.xml',
+      'https://example.com/a',
+    ]) {
+      final net = _Wi33Http(_wi33Answer(updaterFixture('appcast_valid.xml')));
+
+      final items = await HttpAppcastFetcher(
+        clientFactory: net.call,
+        url: Uri.parse(url),
+      ).fetch();
+
+      expect(items, isNotEmpty, reason: url);
+      expect(net.requests.single.url.toString(), url);
+    }
+  });
+
+  test(
+    'a define value that is not a URI gives the empty URI and the fetch fails with the feed-unreadable cause',
+    () async {
+      // Building the URL never throws, so a bad define cannot break the
+      // provider; the fetch refuses it.
+      final url = appcastUrlFor('::not a uri');
+      expect(url, Uri());
+      final net = _Wi33Http(_wi33Answer(updaterFixture('appcast_valid.xml')));
+
+      await expectLater(
+        HttpAppcastFetcher(clientFactory: net.call, url: url).fetch(),
+        _wi33FailsWith(UpdateErrorCause.feedUnreadable),
+      );
+      expect(net.requests, isEmpty);
+      // A define without a scheme parses, and the fetch refuses it too.
+      await expectLater(
+        HttpAppcastFetcher(
+          clientFactory: net.call,
+          url: appcastUrlFor('127.0.0.1:8765/appcast.xml'),
+        ).fetch(),
+        _wi33FailsWith(UpdateErrorCause.feedUnreadable),
+      );
+      expect(net.requests, isEmpty);
+    },
+  );
+
+  test(
+    'an ArgumentError from the HTTP client fails with the feed-unreadable cause and the client is closed',
+    () async {
+      final net = _Wi33Http((_) => throw ArgumentError('No host specified'));
+
+      await expectLater(
+        _wi33Fetcher(net).fetch(),
+        _wi33FailsWith(UpdateErrorCause.feedUnreadable),
+      );
+      expect(net.clients.single.closed, isTrue);
+    },
+  );
+
+  test(
     'the production HTTP client factory makes a new client on each call',
     () {
       final container = ProviderContainer();
