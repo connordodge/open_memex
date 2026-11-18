@@ -87,6 +87,10 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
   /// Identifies the jump that is due, so an arrival cancels an earlier one.
   int _jumpSeq = 0;
 
+  /// Identifies the latest reveal request on the note shown, so a later one
+  /// cancels it while it still waits for its row.
+  int _revealSeq = 0;
+
   /// The note this State was built to zoom into, null on a note tab. An
   /// `AnimatedSwitcher` keeps the old zoomed editor alive through a zoom
   /// change, and it sees the new selection too. A note tab's editor stays until
@@ -272,6 +276,11 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
   /// then opens at the top when the request cannot land; on the note already
   /// shown such a request does nothing. A byte request with no offset always
   /// opens at the top.
+  ///
+  /// An arrival cancels any jump still due when it starts. A request on the
+  /// note shown cancels one only when it lands, so one that gives up leaves an
+  /// arrival landing that is still retrying to finish (and to release the
+  /// held scroll reports).
   void _reveal(
     Note note,
     NoteRevealRequest request, {
@@ -307,10 +316,12 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
       if (arrival) _jumpAfterLayout(0.0);
       return;
     }
-    final jump = ++_jumpSeq;
+    final jump = arrival ? ++_jumpSeq : _jumpSeq;
+    final mine = arrival ? null : ++_revealSeq;
     var tries = 0;
     void land(Duration _) {
       if (!mounted || jump != _jumpSeq) return;
+      if (mine != null && mine != _revealSeq) return;
       final shown = revealRow(context, note.id, content, found);
       if (shown == null && ++tries < 8) {
         WidgetsBinding.instance
@@ -337,6 +348,8 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
         viewport: position.viewportDimension,
         height: anchor.height,
       );
+      // Landing now: any jump still due (an arrival's) is cancelled.
+      if (!arrival) _jumpSeq++;
       // Held across the jump: the landing records its offset once, below.
       _reportsHeld = true;
       if (to != null) {
