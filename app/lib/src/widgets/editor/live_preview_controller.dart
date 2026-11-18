@@ -392,9 +392,16 @@ final class _SpanBuilder {
     }
 
     for (final (i, line) in lines.indexed) {
-      // A code row's hidden fence line hides its terminator too (D18).
+      // A code row's hidden fence line hides its terminator too (D18). A
+      // revealed heading line's terminator takes the style of the code unit
+      // before it (#64): the caret at the line end reads the terminator's
+      // box, so a body-styled terminator draws it before a trailing space
+      // in the heading's face and size. Its markers are shown, so that unit
+      // is never hidden, and the line's height is unchanged.
       final terminator = codeRow && fenceLines[i] && !revealed[i]
           ? _hiddenKey
+          : levels[i] > 0 && revealed[i]
+          ? _key(line.contentEnd - 1, levels[i], codeLines[i], true)
           : _terminatorKey;
       for (var at = line.start; at < line.end; at++) {
         final key = at >= line.contentEnd

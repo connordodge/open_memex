@@ -2283,4 +2283,114 @@ void main() {
       );
     });
   });
+
+  // WI #64 (Spec #57 Req 1-4, TD 1-2): the caret after a heading line's
+  // trailing spaces before a terminator is drawn after those spaces, the
+  // span still holding only TextSpans whose plain text is the field text.
+  group('heading trailing spaces before a terminator (WI 64)', () {
+    testWidgets(
+      'heading lines with trailing spaces before a terminator keep the field text as plain text in TextSpans and draw the caret after the spaces',
+      (tester) async {
+        for (final (level, _) in _wi223Sizes) {
+          for (final terminator in ['\n', '\r\n']) {
+            // Not '#  ' (no word, two spaces): there the trailing spaces
+            // span the marker run and a whitespace-only text run, which
+            // lays out short even at the end of the text on main.
+            for (final (word, spaces) in [
+              ('', 0),
+              ('Hi', 1),
+              ('Hi', 2),
+              ('Hi **b**', 1),
+              ('Hi **b**', 2),
+            ]) {
+              {
+                final head = '${'#' * level} $word${' ' * spaces}';
+                final text = '$head${terminator}body';
+                final end = head.length;
+                final why = 'H$level "${_wi64Show(text)}"';
+                final c = _controller(text, selection: _caret(end));
+                final editable = await _wi223PumpEditorField(tester, c);
+                _expectExactPlainText(
+                  editable.text! as TextSpan,
+                  text,
+                  '$why field span',
+                );
+                _expectExactPlainText(
+                  _build(text, selection: _caret(end)),
+                  text,
+                  '$why builder span',
+                );
+                final caret = editable
+                    .getLocalRectForCaret(TextPosition(offset: end))
+                    .left;
+                expect(
+                  caret,
+                  closeTo(_wi64TrailingEdge(editable, end), 0.5),
+                  reason: '$why: caret at $end on the last space edge',
+                );
+                expect(
+                  caret,
+                  greaterThan(_wi64TrailingEdge(editable, end - 1) + 1),
+                  reason: '$why: caret right of the code unit before it',
+                );
+              }
+            }
+          }
+        }
+      },
+    );
+
+    test(
+      'a range selection across a heading lines trailing spaces and terminator keeps the selected marker and the heading and body styles',
+      () {
+        for (final (level, size) in _wi223Sizes) {
+          final (_, colour) = _wi223Colours[level - 1];
+          for (final terminator in ['\n', '\r\n']) {
+            final text = '${'#' * level} Hi  ${terminator}body';
+            final why = 'H$level "${_wi64Show(text)}" selected';
+            final span = _build(
+              text,
+              selection: TextSelection(
+                baseOffset: 0,
+                extentOffset: text.length,
+              ),
+            );
+            _expectMarker(
+              span,
+              text,
+              (0, level + 1),
+              size: size,
+              color: OmColors.fg1,
+            );
+            _wi223ExpectHeadingText(
+              span,
+              text,
+              _range(text, 'Hi'),
+              size: size,
+              weight: level <= 3 ? FontWeight.w700 : FontWeight.w500,
+              colour: colour,
+              why: why,
+            );
+            _expectPlainRange(span, text, _range(text, 'body'));
+            _expectExactPlainText(span, text, why);
+          }
+        }
+      },
+    );
+  });
+}
+
+/// Shows [text] for a failure reason (`\r` and `\n` spelled out).
+String _wi64Show(String text) =>
+    text.replaceAll('\r', r'\r').replaceAll('\n', r'\n');
+
+/// The trailing (right) edge of the glyph of the code unit just before
+/// [offset], from [editable]'s own laid-out text (the leftmost box: a range
+/// that ends at a line end can also report the line's trailing box).
+double _wi64TrailingEdge(RenderEditable editable, int offset) {
+  final boxes = editable.getBoxesForSelection(
+    TextSelection(baseOffset: offset - 1, extentOffset: offset),
+  )..sort((a, b) => a.left.compareTo(b.left));
+  expect(boxes, isNotEmpty, reason: 'a box for code unit ${offset - 1}');
+  return boxes.first.right;
 }
