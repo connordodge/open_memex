@@ -29,6 +29,7 @@ class SourceSurface extends StatefulWidget {
     this.onTopicLinked,
     this.noteId,
     this.noteRole,
+    this.active = true,
   });
   final TextEditingController bodyCtrl;
   final ValueChanged<String> onContentChanged;
@@ -56,6 +57,11 @@ class SourceSurface extends StatefulWidget {
   /// checked, the Note footer excluded. Null: no spell checking.
   final String? noteId;
   final String? noteRole;
+
+  /// Whether this surface belongs to the active editor (#61 F3, F6 wires
+  /// it): the Source field's find highlights (Key `find-highlights-source`)
+  /// paint only while true.
+  final bool active;
 
   @override
   State<SourceSurface> createState() => _SourceSurfaceState();

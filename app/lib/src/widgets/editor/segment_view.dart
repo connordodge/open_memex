@@ -93,6 +93,7 @@ class SegmentView extends StatefulWidget {
     required this.onRowRemoved,
     required this.fieldBuilder,
     required this.builder,
+    this.active = true,
   });
 
   /// The segment's index (`<i>` of `text-segment-<i>`).
@@ -122,6 +123,12 @@ class SegmentView extends StatefulWidget {
   final EditorRowFieldBuilder fieldBuilder;
 
   final SegmentRowsBuilder builder;
+
+  /// Whether this segment belongs to the active editor (#61 F3, F6 wires
+  /// it): its rows' and table grid cells' find highlights (Keys
+  /// `find-highlights-<s>-<r>`, `find-highlights-grid-<s>-<row>-<cell>`)
+  /// paint only while true.
+  final bool active;
 
   @override
   State<SegmentView> createState() => SegmentViewState();

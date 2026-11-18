@@ -52,10 +52,24 @@ import 'table_grid.dart';
 ///   included, adds no listener, gesture detector or mouse region (D14).
 /// - Otherwise display only: no caret, focus, toggling or link clicks.
 class CardRows extends StatelessWidget {
-  const CardRows({super.key, required this.text});
+  const CardRows({
+    super.key,
+    required this.text,
+    this.segment,
+    this.active = true,
+  });
 
   /// The card's rendered excerpt text (`RenderedExcerpt.text`).
   final String text;
+
+  /// The card's `split()` index, for its rows' find highlights (#61 F3,
+  /// Key `find-highlights-card-<segment>-<r>`); null: the enclosing
+  /// `ExcerptCard`'s index.
+  final int? segment;
+
+  /// Whether the card belongs to the active editor (#61 F3, F6 wires it):
+  /// its find highlights paint only while true.
+  final bool active;
 
   /// The card's base text style, as built (pack #172: `fg1`).
   static TextStyle _baseStyle() =>
