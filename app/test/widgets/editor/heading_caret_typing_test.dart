@@ -60,7 +60,7 @@ LogicalKeyboardKey _wi64KeyFor(String ch) => switch (ch) {
   '#' => LogicalKeyboardKey.digit3,
   ' ' => LogicalKeyboardKey.space,
   _ =>
-    LogicalKeyboardKey.findKeyByKeyId(ch.codeUnitAt(0)) ??
+    LogicalKeyboardKey.findKeyByKeyId(ch.toLowerCase().codeUnitAt(0)) ??
         (throw ArgumentError('no key for $ch')),
 };
 
@@ -231,6 +231,36 @@ List<String> _wi64HeadingKeys(int level) => [
   ' ',
   ' ',
 ];
+
+/// The AC9 cases (`# `, `## Hello world `, `###### a b `) typed above an
+/// existing line, for both terminators and from the row start and a row
+/// middle. Used by the bundled-font test in
+/// `heading_caret_typing_real_font_test.dart`, which lays the text out in
+/// the shipped JetBrains Mono instead of the test font.
+Future<void> wi64TypeAc9Cases(WidgetTester tester) async {
+  for (final (hashes, rest) in [(1, ''), (2, 'Hello world '), (6, 'a b ')]) {
+    for (final (before, after) in [
+      ('', '\nbody'),
+      ('', '\r\nbody'),
+      ('top\n', '\nend'),
+      ('top\r\n', '\r\nend'),
+    ]) {
+      final why = '${'#' * hashes} "$rest" in "${_wi64Show('$before|$after')}"';
+      await _wi64PumpFocused(tester, '$before$after', local: before.length);
+      await _wi64TypeAndCheck(
+        tester,
+        [for (var i = 0; i < hashes; i++) '#', ' ', ...rest.split('')],
+        why,
+        markerSpace: hashes,
+      );
+      expect(
+        wi171FocusedController().text,
+        '$before${'#' * hashes} $rest$after',
+        reason: '$why: typed',
+      );
+    }
+  }
+}
 
 void main() {
   holdFontFetches();
@@ -550,7 +580,8 @@ void main() {
                 reason: '$why: the marker at the line size $size',
               );
             } else {
-              // Hidden code units lay out no box wider than zero.
+              // Hidden code units lay out no box wider than zero, and the
+              // line's text starts at the line start like a body line's.
               final boxes = editable.getBoxesForSelection(
                 TextSelection(baseOffset: marker.$1, extentOffset: marker.$2),
               );
@@ -559,6 +590,17 @@ void main() {
                   b.right - b.left,
                   lessThan(0.01),
                   reason: '$why: marker hidden',
+                );
+              }
+              if (end > marker.$2) {
+                final bodyStart = text.lastIndexOf('\n') + 1;
+                expect(
+                  _wi64LeadingEdge(editable, marker.$2),
+                  closeTo(
+                    _wi64LeadingEdge(editable, bodyStart),
+                    _wi64CaretTolerance,
+                  ),
+                  reason: '$why: the hidden marker takes no width',
                 );
               }
             }
