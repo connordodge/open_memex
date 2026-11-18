@@ -1180,10 +1180,11 @@ void main() {
         );
         expect(
           RegExp(
-            r'Widget\s+_trackSections\(Note note,\s*Widget body\)\s*=>\s*body\s*;',
+            r'Widget\s+_trackSections\(Note note,\s*Widget body\)\s*=>'
+            r'\s*SectionTracker\(note: note, child: body\)\s*;',
           ).hasMatch(source),
           isTrue,
-          reason: '_trackSections is the identity',
+          reason: '_trackSections wraps the body in #69s SectionTracker',
         );
         expect(
           RegExp(r'_trackSections\(').allMatches(source).length,
