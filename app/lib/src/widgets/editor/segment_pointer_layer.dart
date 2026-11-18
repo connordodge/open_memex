@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
 import '../../editor/editor_rows.dart';
+import '../../editor/markdown_lines.dart';
 import '../../editor/row_geometry.dart';
 import '../../editor/segment_selection.dart';
 import 'live_preview_controller.dart';
@@ -38,9 +39,21 @@ const double _autoScrollSpeed = 1200;
 /// - A press inside an editor row's marker column is the column's (its
 ///   checkbox; a revealed marker is display only): the layer ignores it,
 ///   with no caret move, focus change, selection or drag.
-/// - A plain click, a double or triple click and a Cmd+click stay the
-///   row's (and the link region's): the layer only wins the gesture arena
-///   for a drag, a Shift+press or a marked press.
+/// - A plain click on an editor row line whose markup is hidden (not
+///   `revealedLines` in its row field) is the layer's (Spec #57 R5-R8,
+///   TD4): it wins the gesture arena when it goes down and puts the caret at
+///   the offset it resolved then, on the layout shown then, so neither the
+///   row field's tap nor the line's reveal moves it. A press on a heading
+///   line whose marker is hidden, at or before the end of the marker and its
+///   space, puts the caret after them (R7). A click within
+///   `kDoubleTapTimeout` and `kDoubleTapSlop` of it wins the arena at once
+///   and selects at the first press's offset: the word a double click
+///   selects on that line already revealed (second click), or its line with
+///   its line terminator, as a triple click does (third and later). A press
+///   the link region marked follows its link instead.
+/// - A plain, double or triple click on a revealed line (and on the empty
+///   area below the rows) and a Cmd+click stay the row's (and the link
+///   region's).
 /// - A press the link region marked on a rendered link (Spec #232 TD6) wins
 ///   the arena when it goes down, so no row recognizer sees it, and moves no
 ///   caret. A release inside `kPrecisePointerHitSlop` follows the link it
@@ -125,7 +138,8 @@ class _Press implements GestureArenaMember {
   final VoidCallback? follow;
 
   /// True once the layer won the arena: the press is a drag, a Shift+press,
-  /// a marked press, a press on a rendered grid or a multi-click.
+  /// a marked press, a plain press on the rows, a press on a rendered grid
+  /// or a multi-click.
   bool accepted = false;
 
   /// True once the pointer moved more than `kPrecisePointerHitSlop` from
@@ -147,16 +161,39 @@ class _Press implements GestureArenaMember {
   void rejectGesture(int pointer) => onReject(this);
 }
 
-/// A click chain that started with a press on a rendered table grid: where
-/// its first press went down (global), that press's offset (segment
-/// offset) and the clicks so far.
+/// A click chain that started with a plain press on an editor row or a
+/// rendered table grid: where its first press went down (global), that
+/// press's offset (segment offset) and the clicks so far.
 class _Clicks {
-  _Clicks(this.down, this.offset);
+  _Clicks(
+    this.down,
+    this.offset, {
+    this.grid = false,
+    this.affinity = TextAffinity.downstream,
+  });
 
   final Offset down;
   final int offset;
+
+  /// The chain started on a rendered table grid.
+  final bool grid;
+
+  /// The first press's affinity in its row's field: upstream on the right
+  /// half of the glyph before [offset] (the word a double click selects).
+  final TextAffinity affinity;
   int count = 1;
 }
+
+/// A source line of a row's live preview field as the field shows it: where
+/// the field's text starts in the segment, the line in field offsets,
+/// whether it renders as a heading, and whether its markup is revealed
+/// (`revealedLines`, as the field renders it).
+typedef _ShownLine = ({
+  int textStart,
+  MdLine line,
+  bool heading,
+  bool revealed,
+});
 
 class _SegmentPointerLayerState extends State<SegmentPointerLayer>
     with SingleTickerProviderStateMixin {
@@ -255,6 +292,129 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
     );
   }
 
+  /// The row holding segment [offset] (the last row past them) and its
+  /// field, or null while the rows and fields don't match.
+  ({RowSpec row, EditableTextState field})? _rowAt(
+    SegmentViewState host,
+    int offset,
+  ) {
+    final rows = splitRows(host.text, atSegmentStart: true);
+    final fields = _rowFields();
+    if (fields.length != rows.length || rows.isEmpty) return null;
+    final i = rows.indexWhere((row) => offset < row.end);
+    final r = i < 0 ? rows.length - 1 : i;
+    return (row: rows[r], field: fields[r]);
+  }
+
+  /// Whether global [point] lies on the segment's rows (not the empty area
+  /// below them).
+  bool _onRows(SegmentViewState host, Offset point) {
+    final boxes = host.lineBoxes();
+    if (boxes == null) return false;
+    final dy = boxes.box.globalToLocal(point).dy;
+    return dy >= 0 && dy < boxes.box.size.height;
+  }
+
+  /// The source line holding segment [at] in its row's live preview field,
+  /// read from the field's state now (before a press reveals it). Null when
+  /// the row's field is no live preview field.
+  _ShownLine? _shownLineAt(SegmentViewState host, int at) {
+    final hit = _rowAt(host, at);
+    final controller = hit?.field.widget.controller;
+    if (hit == null || controller is! LivePreviewController) return null;
+    final lines = classifyLines(
+      controller.text,
+      atSegmentStart: controller.atSegmentStart,
+    );
+    if (lines.isEmpty) return null;
+    final local = at - hit.row.textStart;
+    final i = lines.indexWhere((line) => local < line.end);
+    final index = i < 0 ? lines.length - 1 : i;
+    final revealed = revealedLines(
+      lines,
+      controller.selection,
+      forceHidden: !controller.revealGate.value,
+      itemText: controller.itemText,
+    );
+    return (
+      textStart: hit.row.textStart,
+      line: lines[index],
+      // An item row's field holds no heading (`buildLivePreviewSpan`).
+      heading: !controller.itemText && lines[index].kind == MdLineKind.heading,
+      revealed: revealed[index],
+    );
+  }
+
+  /// [at], or the end of the marker and its space when [at] lies inside the
+  /// hidden marker of [shown], a heading line (Spec #57 R7): a click at or
+  /// left of the heading's first shown character, or on an empty heading,
+  /// never puts the caret before `#` or between `#` and its space.
+  int _pastHiddenHeadingMarker(_ShownLine shown, int at) {
+    final line = shown.line;
+    final local = at - shown.textStart;
+    if (shown.revealed ||
+        !shown.heading ||
+        local < line.markerStart ||
+        local >= line.separatorEnd) {
+      return at;
+    }
+    return shown.textStart + line.separatorEnd;
+  }
+
+  /// The affinity of the press at global [point] in the field of the row
+  /// holding segment [at], as the field resolves it on the layout shown
+  /// now: upstream on the right half of the glyph before [at].
+  TextAffinity _affinityAt(SegmentViewState host, Offset point, int at) {
+    final hit = _rowAt(host, at);
+    if (hit == null) return TextAffinity.downstream;
+    final position = hit.field.renderEditable.getPositionForPoint(point);
+    return hit.row.textStart + position.offset == at
+        ? position.affinity
+        : TextAffinity.downstream;
+  }
+
+  /// The word a double click on an editor row selects at segment [offset]
+  /// with [affinity], as the row's field selects it on macOS
+  /// (`RenderEditable.selectWord`): a caret past the field's text.
+  TextSelection _rowWordAt(
+    SegmentViewState host,
+    int offset,
+    TextAffinity affinity,
+  ) {
+    final hit = _rowAt(host, offset);
+    if (hit == null) return TextSelection.collapsed(offset: offset);
+    final start = hit.row.textStart;
+    final length = hit.field.widget.controller.text.length;
+    final local = offset - start;
+    if (local >= length) return TextSelection.collapsed(offset: start + length);
+    final word = hit.field.renderEditable.getWordBoundary(
+      TextPosition(offset: math.max(0, local), affinity: affinity),
+    );
+    return TextSelection(
+      baseOffset: start + word.start,
+      extentOffset: start + word.end,
+    );
+  }
+
+  /// The line a triple click on an editor row selects at segment [offset],
+  /// as the row's field selects it on macOS (its paragraph, with the line
+  /// terminator).
+  TextSelection _rowLineAt(SegmentViewState host, int offset) {
+    final hit = _rowAt(host, offset);
+    if (hit == null) return _sourceLineAt(host.text, offset);
+    final start = hit.row.textStart;
+    final text = hit.field.widget.controller.text;
+    final local = math.max(0, math.min(offset - start, text.length));
+    final boundary = ParagraphBoundary(text);
+    final from =
+        boundary.getLeadingTextBoundaryAt(
+          local == text.length ? local - 1 : local,
+        ) ??
+        0;
+    final to = boundary.getTrailingTextBoundaryAt(local) ?? text.length;
+    return TextSelection(baseOffset: start + from, extentOffset: start + to);
+  }
+
   /// Focuses the row holding segment [offset] unless it has focus. With
   /// [keep], [keep] becomes the segment selection again once the focus
   /// change has settled (a row taking focus reports its own slice).
@@ -315,9 +475,13 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
     final keyboard = HardwareKeyboard.instance;
     final cmd = keyboard.isMetaPressed;
     final shift = keyboard.isShiftPressed;
+    // A press the link region marked follows its link, also inside a row
+    // click chain's window (Spec #57 R6); a grid chain wins it (L7).
+    final follow = _markedFollow(event.pointer);
     if (clicks != null &&
         !cmd &&
         !shift &&
+        (clicks.grid || follow == null) &&
         (event.position - clicks.down).distance <= kDoubleTapSlop) {
       _clicks = clicks;
       _onMultiClick(event, host, clicks);
@@ -327,10 +491,18 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
     // A Cmd+click belongs to the link region (B3); on a rendered grid only
     // when the link region wins the arena (D14).
     if (cmd && !grid) return;
-    final at = _offsetAt(host, event.position);
-    if (at == null) return;
+    final pressed = _offsetAt(host, event.position);
+    if (pressed == null) return;
+    // A plain press on a row line whose markup is hidden: the layer's from
+    // its down, since the press reveals the line (Spec #57 R5, R6). On a
+    // revealed line the click stays the row field's.
+    final shown = !grid && !cmd && !shift && follow == null
+        ? _shownLineAt(host, pressed)
+        : null;
+    final row =
+        shown != null && !shown.revealed && _onRows(host, event.position);
+    final at = row ? _pastHiddenHeadingMarker(shown, pressed) : pressed;
     final current = host.selection;
-    final follow = _markedFollow(event.pointer);
     final press = _Press(
       pointer: event.pointer,
       down: event.position,
@@ -357,10 +529,38 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
       press.entry.resolve(GestureDisposition.accepted);
     } else {
       // As a macOS field does on mouse down: the caret goes to the press.
+      // Read before the select, which may reveal the line.
+      final affinity = row
+          ? _affinityAt(host, event.position, at)
+          : TextAffinity.downstream;
       host.select(TextSelection.collapsed(offset: at));
       _focusRowAt(host, at);
-      if (grid) _clicks = _Clicks(event.position, at);
+      if (grid) {
+        _clicks = _Clicks(event.position, at, grid: true);
+      } else if (row) {
+        // Before the row field's tap, which would resolve the press again
+        // on the revealed layout; it would also have closed its menu.
+        if (_rowAt(host, at) case final hit?) {
+          hit.field.hideToolbar();
+          _endComposingAt(hit.field, at - hit.row.textStart);
+        }
+        press.entry.resolve(GestureDisposition.accepted);
+        _clicks = _Clicks(event.position, at, affinity: affinity);
+      }
     }
+  }
+
+  /// Puts [field]'s caret at its offset [local] through the field, as its
+  /// own tap does, when it has focus and an IME is composing in it: the
+  /// segment's select leaves a composing row's selection alone (D9), and
+  /// the field's selection change ends a composition the caret leaves.
+  void _endComposingAt(EditableTextState field, int local) {
+    final value = field.textEditingValue;
+    if (!field.widget.focusNode.hasFocus || !value.composing.isValid) return;
+    field.userUpdateTextEditingValue(
+      value.copyWith(selection: TextSelection.collapsed(offset: local)),
+      SelectionChangedCause.tap,
+    );
   }
 
   /// A secondary press on a rendered grid puts the caret at the pressed
@@ -384,9 +584,12 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
   ) {
     clicks.count++;
     final offset = clicks.offset;
-    final selection = clicks.count == 2
-        ? _wordAt(host, offset)
-        : _sourceLineAt(host.text, offset);
+    final selection = switch ((clicks.grid, clicks.count == 2)) {
+      (true, true) => _wordAt(host, offset),
+      (true, false) => _sourceLineAt(host.text, offset),
+      (false, true) => _rowWordAt(host, offset, clicks.affinity),
+      (false, false) => _rowLineAt(host, offset),
+    };
     final press = _Press(
       pointer: event.pointer,
       down: event.position,
@@ -436,7 +639,8 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
     if (_clicks != null) {
       _clicksTimer = Timer(kDoubleTapTimeout, () => _clicks = null);
     }
-    // A click: the row's (or the empty area's) tap recognizer takes it.
+    // A click on a revealed line or the empty area below the rows: the row's
+    // (or the empty area's) tap recognizer takes it.
     if (!press.accepted) press.entry.resolve(GestureDisposition.rejected);
     // Last: this leaves the note, and the press is over by now.
     if (event is PointerUpEvent && !press.dragging) press.follow?.call();
