@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../editor/outline.dart';
+import 'note_reveal.dart';
 
 // The Outline's current section (#69, Spec #58 R22-R26, R41, TD6): the
 // entry of the section the editor shows at its top, or none. The editor's
@@ -37,8 +38,9 @@ final outlineSectionProvider =
     );
 
 /// An Outline jump to [entry] of note [noteId], computed from [content],
-/// made while `tabsProvider.arrivals` was [arrivals] (Spec #58 R22: the
-/// jumped-to entry is current right after the jump).
+/// made while `tabsProvider.arrivals` was [arrivals], as the reveal request
+/// numbered [seq] (Spec #58 R22: the jumped-to entry is current right after
+/// the jump).
 @immutable
 class OutlineJump {
   const OutlineJump({
@@ -46,12 +48,16 @@ class OutlineJump {
     required this.entry,
     required this.content,
     required this.arrivals,
+    this.seq,
   });
 
   final String noteId;
   final OutlineEntry entry;
   final String content;
   final int? arrivals;
+
+  /// The `PendingReveal.seq` of the jump's request, if known.
+  final int? seq;
 }
 
 /// What the editor's section tracker shares with the Outline side: whether
@@ -72,7 +78,8 @@ class OutlineSectionHub extends ChangeNotifier {
   /// The last Outline jump, until the tracker drops it.
   OutlineJump? get jump => _jump;
 
-  /// The page has sat where [jump] lands it since the tracker last looked.
+  /// A pass saw the page sit where [jump] lands it. From then on any scroll
+  /// the jump did not cause drops it.
   bool get jumpLanded => _jumpLanded;
 
   void _attach(OutlineSectionNotifier notifier) {
@@ -89,7 +96,17 @@ class OutlineSectionHub extends ChangeNotifier {
   void _setWatched(OutlineSectionNotifier notifier, bool watched) {
     if (!identical(_notifier, notifier) || _watched == watched) return;
     _watched = watched;
+    // Unwatched, no pass sees the jump land: it could land, be scrolled
+    // away from and back onto unseen.
+    if (!watched && !_jumpLanded) _jump = null;
     notifyListeners();
+  }
+
+  /// A reveal request numbered [seq] was made: a jump of another request
+  /// that has not landed never will (the seam lands only the latest one).
+  void _requested(int seq) {
+    final jump = _jump;
+    if (jump != null && !_jumpLanded && jump.seq != seq) dropJump();
   }
 
   /// [owner] (a tracker) reports [entry] as the current section.
@@ -129,6 +146,9 @@ class OutlineSectionHub extends ChangeNotifier {
 /// The one [OutlineSectionHub] of the app.
 final outlineSectionHubProvider = Provider<OutlineSectionHub>((ref) {
   final hub = OutlineSectionHub();
+  ref.listen<PendingReveal?>(noteRevealProvider, (_, next) {
+    if (next != null) hub._requested(next.seq);
+  });
   ref.onDispose(hub.dispose);
   return hub;
 });

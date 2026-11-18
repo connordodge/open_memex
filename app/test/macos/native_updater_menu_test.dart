@@ -331,12 +331,17 @@ void main() {
             r'override\s+func\s+validateMenuItem\(\s*_\s+menuItem\s*:\s*NSMenuItem\s*\)\s*->\s*Bool',
           ),
         );
-        expect(body.trim().split('\n').map((l) => l.trim()).toList(), [
+        // WI #81 (Spec #61 F5) adds the Edit ▸ Find branches between the
+        // Agents branch and the fall-through (native_find_menu_test.dart
+        // pins them); the Agents branch and super stay as they were.
+        final lines = body.trim().split('\n').map((l) => l.trim()).toList();
+        expect(lines.take(3).toList(), [
           'if menuItem.action == #selector(openAgents(_:)) {',
           'return agentsMenuEnabled',
           '}',
-          'return super.validateMenuItem(menuItem)',
         ]);
+        expect(lines.last, 'return super.validateMenuItem(menuItem)');
+        expect(body, isNot(contains('checkForUpdates')));
       },
     );
 
