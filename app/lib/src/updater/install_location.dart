@@ -2,15 +2,28 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'update_ports.dart';
 
-// Stub (A0 #32). A2 #34 fills this file and keeps each `defaultX(Ref)`.
+// Skeleton (#34 red): A2 #34 fills this file and keeps each `defaultX(Ref)`.
 
 /// The production [InstallLocationCheck] behind
-/// `installLocationCheckProvider`.
+/// `installLocationCheckProvider`: resolves the enclosing `.app` bundle from
+/// `resolvedExecutableProvider` and probes its parent folder with
+/// `folderWritableProvider` (req 24).
 InstallLocationCheck defaultInstallLocationCheck(Ref ref) =>
-    throw UnimplementedError();
+    const _InstallLocationCheck();
 
-/// The production executable path behind `resolvedExecutableProvider`.
+/// The production executable path behind `resolvedExecutableProvider`
+/// (`Platform.resolvedExecutable`).
 String defaultResolvedExecutable(Ref ref) => '';
 
-/// The production writability probe behind `folderWritableProvider`.
-FolderWritable defaultFolderWritable(Ref ref) => throw UnimplementedError();
+/// The production writability probe behind `folderWritableProvider`: creates
+/// and deletes a file in the folder; false when either fails (D6).
+FolderWritable defaultFolderWritable(Ref ref) => _neverWritable;
+
+Future<bool> _neverWritable(String folder) async => false;
+
+class _InstallLocationCheck implements InstallLocationCheck {
+  const _InstallLocationCheck();
+
+  @override
+  Future<String> check() async => '';
+}
