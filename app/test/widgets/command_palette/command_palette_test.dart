@@ -1790,16 +1790,45 @@ void main() {
         '/vaults/Other Vault',
       );
       await pumpFrames(tester);
-      // Riverpod's debug assert 'Only one task can be scheduled at a time'
-      // fires when the removed route unmounts in the frame the vault's
-      // providers refresh (debug builds only, nothing of the palette's).
-      tester.takeException();
+      // No exception at all: removing the route with the card still in it
+      // trips Riverpod's debug assert 'Only one task can be scheduled at a
+      // time' in the frame the vault's providers refresh.
+      expect(tester.takeException(), isNull);
 
       expect(_palette, findsNothing, reason: 'closed under the modal');
       expect(find.byKey(_modalField), findsOneWidget);
       expect(_modalFieldFocused(tester), isTrue);
       expect(h.read(commandPaletteOpenProvider), isFalse);
     });
+
+    testWidgets(
+      'a covered palette is removed card first then route then the bar rests',
+      (tester) async {
+        final h = await _host(tester);
+        await _open(tester);
+        _showOtherModal(_wi77HostContext);
+        await pumpFrames(tester);
+        expect(_palette, findsOneWidget);
+        expect(h.read(commandPaletteOpenProvider), isTrue);
+
+        closeCommandPalette(h.container);
+        // Step 1: the card is gone at once; the bar's open state stays
+        // until the route has gone a frame later.
+        await tester.pump();
+        expect(_palette, findsNothing, reason: 'card first');
+        expect(
+          h.read(commandPaletteOpenProvider),
+          isTrue,
+          reason: 'the bar rests only after the route has gone',
+        );
+        expect(tester.takeException(), isNull);
+
+        await pumpFrames(tester, frames: 8);
+        expect(h.read(commandPaletteOpenProvider), isFalse);
+        expect(tester.takeException(), isNull);
+        expect(find.byKey(_modalField), findsOneWidget);
+      },
+    );
   });
 
   group('the editor focus after a choice', () {
