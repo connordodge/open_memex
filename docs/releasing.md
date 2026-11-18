@@ -71,6 +71,7 @@ The manual dry-run job reads none of these.
 4. In a fresh clone, pull `main`, tag it and push the tag: `git tag v<ver>` and `git push origin v<ver>`. The tag starts the release workflow.
 5. Approve the run: open the workflow run on the repo's Actions tab and approve the deployment to the `release` environment. Nothing is signed or published until you do.
 6. Check the Release when the run ends. It must be published (not a draft) with four assets: `Open-Memex-<ver>-arm64.dmg`, `memex-<ver>-macos-arm64.zip`, `THIRD_PARTY_NOTICES.txt` and `SHA256SUMS.txt`. Download the DMG, verify it against `SHA256SUMS.txt` (`shasum -a 256 -c --ignore-missing SHA256SUMS.txt`, because the sums file also lists the files you did not download), install it on a Mac and open it; run `scripts/leak-check.sh --artifact` on the files if you want a second look.
+7. For the first two Self-update Releases, run the manual check in [`docs/self-update-acceptance.md`](self-update-acceptance.md) against the Release you just published.
 
 To try a build without publishing, run the Release workflow by hand (Actions → Release → Run workflow) with a version. That dry run reads no secrets, and it does not sign, notarize or publish.
 
