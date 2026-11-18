@@ -72,6 +72,8 @@ class InstallHelperRig {
   ///   rename into place fails.
   /// - [verifyFails]: `codesign` exits 1.
   /// - [staleNew]: an `Open Memex.app.new` holding `stale.txt` already exists.
+  /// - [lockStaleNew]: like [staleNew], with the file immutable so the stale
+  ///   `.new` cannot be deleted.
   /// - [lockFileInOld]: an immutable file inside the installed app, so
   ///   deleting `Open Memex.app.old` after the swap fails.
   /// - [lockInstalled]: the installed app's folder is immutable, so renaming
@@ -89,6 +91,7 @@ class InstallHelperRig {
     bool lockCopy = false,
     bool verifyFails = false,
     bool staleNew = false,
+    bool lockStaleNew = false,
     bool lockFileInOld = false,
     bool lockInstalled = false,
     bool staleOld = false,
@@ -105,6 +108,7 @@ class InstallHelperRig {
       lockCopy: lockCopy,
       verifyFails: verifyFails,
       staleNew: staleNew,
+      lockStaleNew: lockStaleNew,
       lockFileInOld: lockFileInOld,
       lockInstalled: lockInstalled,
       staleOld: staleOld,
@@ -122,6 +126,7 @@ class InstallHelperRig {
     required bool lockCopy,
     required bool verifyFails,
     required bool staleNew,
+    required bool lockStaleNew,
     required bool lockFileInOld,
     required bool lockInstalled,
     required bool staleOld,
@@ -131,15 +136,20 @@ class InstallHelperRig {
   }) async {
     _writeApp(bundlePath, 'old');
     _writeApp('$_dmgSource/$rigAppName', 'new');
+    // The downloaded app carries the quarantine attribute.
+    File(
+      '$_dmgSource/$rigAppName/Contents/quarantine.marker',
+    ).writeAsStringSync('quarantined');
     File(dmgPath)
       ..createSync(recursive: true)
       ..writeAsStringSync('not a real disk image');
     Directory('${root.path}/Application Support').createSync();
     Directory(tmpDir).createSync();
-    if (staleNew) {
-      File('$newPath/stale.txt')
+    if (staleNew || lockStaleNew) {
+      final stale = File('$newPath/stale.txt')
         ..createSync(recursive: true)
         ..writeAsStringSync('from an earlier attempt');
+      if (lockStaleNew) await _chflags(['uchg', stale.path]);
     }
 
     if (staleOld || lockStaleOld) {
@@ -202,8 +212,25 @@ $record
 ${verifyFails ? 'echo "a sealed resource is missing or invalid" >&2; exit 1' : 'exit 0'}
 ''');
 
+    // Like the real tool, it strips the quarantine attribute (the
+    // `Contents/quarantine.marker` file the DMG's app carries) only when it
+    // is asked to delete it (`-d`) recursively (`-r`), for that attribute
+    // name, on the given bundle.
     _tool(_fakeBin, 'xattr', '''
 $record
+del=no; rec=no; attr=''; target=''
+for a in "\$@"; do
+  case "\$a" in
+  -*)
+    case "\$a" in *d*) del=yes ;; esac
+    case "\$a" in *r*) rec=yes ;; esac ;;
+  com.apple.quarantine) attr=\$a ;;
+  *) target=\$a ;;
+  esac
+done
+if [ "\$del" = yes ] && [ "\$rec" = yes ] && [ "\$attr" = com.apple.quarantine ]; then
+  /bin/rm -f "\$target/Contents/quarantine.marker"
+fi
 exit 0
 ''');
 
@@ -324,6 +351,11 @@ exit 97
     final f = File('${path ?? bundlePath}/Contents/version.txt');
     return f.existsSync() ? f.readAsStringSync() : null;
   }
+
+  /// Whether the bundle at [path] (the installed path by default) still
+  /// carries the fake quarantine attribute.
+  bool quarantinedAt([String? path]) =>
+      File('${path ?? bundlePath}/Contents/quarantine.marker').existsSync();
 
   /// The marker's text, trimmed, or null when there is no marker.
   String? marker() {

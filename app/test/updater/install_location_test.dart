@@ -245,18 +245,32 @@ void main() {
     );
 
     test(
-      'the production writability probe overwrites a probe file left by a crashed run and deletes it',
+      'the production writability probe never touches an existing entry at the old probe name and leaves nothing behind',
       () async {
         final container = ProviderContainer();
         addTearDown(container.dispose);
         final writable = container.read(folderWritableProvider);
-        final folder = await Directory('${root.path}/My Apps').create();
-        final leftover = File('${folder.path}/.open-memex-write-probe-$pid')
-          ..writeAsStringSync('left behind');
+        final oldName = '.open-memex-write-probe-$pid';
 
-        expect(await writable(folder.path), isTrue);
-        expect(leftover.existsSync(), isFalse);
-        expect(folder.listSync(), isEmpty);
+        // A file left at the name an earlier version probed with.
+        final plain = await Directory('${root.path}/My Apps').create();
+        final leftover = File('${plain.path}/$oldName')
+          ..writeAsStringSync('left behind');
+        expect(await writable(plain.path), isTrue);
+        expect(leftover.readAsStringSync(), 'left behind');
+        expect(plain.listSync(), hasLength(1));
+
+        // A symlink planted at that name, pointing at a file the probe must
+        // never truncate: another account could plant it in a shared folder.
+        final shared = await Directory('${root.path}/Shared Apps').create();
+        final victim = File('${root.path}/victim note.md')
+          ..writeAsStringSync('precious notes');
+        final planted = Link('${shared.path}/$oldName')
+          ..createSync(victim.path);
+        expect(await writable(shared.path), isTrue);
+        expect(victim.readAsStringSync(), 'precious notes');
+        expect(planted.targetSync(), victim.path);
+        expect(shared.listSync(), hasLength(1));
       },
     );
   });

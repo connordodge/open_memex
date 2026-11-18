@@ -275,11 +275,13 @@ void main() {
         final out = '${root.path}/out file';
         final stop = '${root.path}/stop';
 
-        // The process writes its arguments, then runs until `stop` exists:
-        // the runner returning at all shows it does not wait for the exit.
+        // The process writes its arguments, its parent pid and its process
+        // group, then runs until `stop` exists: the runner returning at all
+        // shows it does not wait for the exit.
         await run('/bin/sh', [
           '-c',
-          r'printf "%s|%s" "$1" "$2" > "$3.tmp" && mv "$3.tmp" "$3"; '
+          r'printf "%s|%s|%s|%s" "$1" "$2" "$PPID" "$(/bin/ps -o pgid= -p $$)" '
+              r'> "$3.tmp" && mv "$3.tmp" "$3"; '
               r'while [ ! -e "$4" ]; do sleep 0.05; done',
           'runner-probe',
           'a b',
@@ -294,12 +296,21 @@ void main() {
           await Future<void>.delayed(const Duration(milliseconds: 25));
         }
         expect(file.existsSync(), isTrue, reason: 'the process ran');
-        expect(file.readAsStringSync(), "a b|it's");
+        final seen = file.readAsStringSync().split('|');
+        expect(seen.take(2).join('|'), "a b|it's");
 
-        expect(
-          File('lib/src/updater/install_helper.dart').readAsStringSync(),
-          contains('ProcessStartMode.detached'),
-        );
+        // Detached: the child is not this process's child (a started process
+        // in the default mode has this pid as its parent) and is outside this
+        // process's group (it leads a group of its own).
+        final ownGroup = await Process.run('/bin/ps', [
+          '-o',
+          'pgid=',
+          '-p',
+          '$pid',
+        ]);
+        expect(ownGroup.exitCode, 0, reason: '${ownGroup.stderr}');
+        expect(seen[2].trim(), isNot('$pid'));
+        expect(seen[3].trim(), isNot((ownGroup.stdout as String).trim()));
       },
       timeout: const Timeout(Duration(seconds: 30)),
     );

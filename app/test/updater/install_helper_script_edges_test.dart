@@ -22,6 +22,7 @@ Future<ProcessResult> _runHelper(
   InstallHelperRig rig, {
   required int pid,
   String waitLimit = '10',
+  String? tmpDir,
 }) async {
   final io = RecordingUpdaterIo();
   final container = ProviderContainer(
@@ -41,7 +42,7 @@ Future<ProcessResult> _runHelper(
   return Process.run(
     run.executable,
     args,
-    environment: {'PATH': rig.inheritedPath, 'TMPDIR': rig.tmpDir},
+    environment: {'PATH': rig.inheritedPath, 'TMPDIR': tmpDir ?? rig.tmpDir},
   );
 }
 
@@ -93,6 +94,7 @@ void main() {
     bool lockInstalled = false,
     bool staleOld = false,
     bool lockStaleOld = false,
+    bool lockStaleNew = false,
     bool detachNeedsForce = false,
   }) async {
     final rig = await InstallHelperRig.create(
@@ -104,6 +106,7 @@ void main() {
       lockInstalled: lockInstalled,
       staleOld: staleOld,
       lockStaleOld: lockStaleOld,
+      lockStaleNew: lockStaleNew,
       detachNeedsForce: detachNeedsForce,
     );
     rigs.add(rig);
@@ -220,6 +223,66 @@ void main() {
     );
   });
 
+  group('guards before the copy', () {
+    test(
+      'a stale new app that cannot be removed records the copy reason without copying into it and relaunches the old app',
+      () async {
+        final rig = await makeRig(lockStaleNew: true);
+
+        final r = await _runHelper(rig, pid: await _exitedPid());
+
+        _expectExit(r, 1);
+        expect(rig.marker(), "the new app couldn't be copied");
+        // Nothing was copied into (merged with) the stale folder, so nothing
+        // was verified or moved.
+        expect(rig.callsTo('ditto'), isEmpty, reason: '${rig.calls()}');
+        expect(rig.callsTo('codesign'), isEmpty);
+        expect(Directory(rig.oldPath).existsSync(), isFalse);
+        expect(
+          File('${rig.newPath}/stale.txt').readAsStringSync(),
+          'from an earlier attempt',
+        );
+        expect(
+          Directory('${rig.newPath}/Contents').existsSync(),
+          isFalse,
+          reason: 'no part of the new app was copied into the stale folder',
+        );
+        // It had mounted the image: detached before the old app is relaunched,
+        // and the mount point is gone.
+        expect(rig.indexOf('hdiutil', 'detach'), isNot(-1));
+        expect(rig.indexOf('hdiutil', 'detach'), lessThan(rig.indexOf('open')));
+        expect(rig.tmpEntries(), isEmpty);
+        _expectOldAppRelaunched(rig);
+      },
+      timeout: _timeout,
+    );
+
+    test(
+      'a mount point that cannot be created records the disk image reason without mounting and relaunches the old app',
+      () async {
+        final rig = await makeRig();
+
+        final r = await _runHelper(
+          rig,
+          pid: await _exitedPid(),
+          tmpDir: '${rig.tmpDir}/Missing Temp Folder',
+        );
+
+        _expectExit(r, 1);
+        expect(rig.marker(), "the disk image couldn't be opened");
+        // No mount point, so the image was never attached, copied or checked.
+        expect(rig.callsTo('hdiutil'), isEmpty, reason: '${rig.calls()}');
+        expect(rig.callsTo('ditto'), isEmpty);
+        expect(rig.callsTo('codesign'), isEmpty);
+        expect(rig.tmpEntries(), isEmpty);
+        expect(Directory(rig.newPath).existsSync(), isFalse);
+        expect(Directory(rig.oldPath).existsSync(), isFalse);
+        _expectOldAppRelaunched(rig);
+      },
+      timeout: _timeout,
+    );
+  });
+
   group('cleanup after a failure', () {
     test(
       'a failed copy removes the partial new app and the mount point',
@@ -328,7 +391,13 @@ void main() {
         expect(detaches, hasLength(2), reason: '${rig.calls()}');
         expect(detaches.first.args, isNot(contains('-force')));
         expect(detaches.last.args, contains('-force'));
-        expect(detaches.last.args, contains(detaches.first.args.first));
+        final mount = rig
+            .callsTo('hdiutil')
+            .firstWhere((c) => c.args.first == 'attach')
+            .after('-mountpoint');
+        expect(mount, isNotNull);
+        expect(detaches.first.args, contains(mount));
+        expect(detaches.last.args, contains(mount));
         // The forced detach worked, so the mount point is gone.
         expect(rig.tmpEntries(), isEmpty);
         expect(rig.versionAt(), 'new');

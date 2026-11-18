@@ -143,6 +143,10 @@ void main() {
       expect(xattr, hasLength(1));
       expect(xattr.single.args, contains('com.apple.quarantine'));
       expect(xattr.single.last, rig.bundlePath);
+      // The new app came out of the DMG quarantined; the fake xattr strips
+      // that only when asked to delete (-d) recursively (-r) the quarantine
+      // attribute of the installed bundle, so it is gone only then.
+      expect(rig.quarantinedAt(), isFalse, reason: '${rig.calls()}');
 
       final attach = rig
           .callsTo('hdiutil')
