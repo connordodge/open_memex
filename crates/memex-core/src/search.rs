@@ -75,11 +75,55 @@ pub fn search(conn: &Connection, opts: SearchOptions<'_>) -> Result<SearchResult
         });
     }
 
-    let want_fts = matches!(opts.mode, SearchMode::Hybrid | SearchMode::Fts);
-    let want_vec = matches!(opts.mode, SearchMode::Hybrid | SearchMode::Vector)
-        && opts.embedder.is_some();
+    let q_vec = match opts.embedder {
+        Some(embedder) if wants_vec(opts.mode) => embed_query(embedder, q)?,
+        _ => None,
+    };
+    search_with_query_vec(conn, &opts, q_vec.as_deref()).map(|(found, _)| found)
+}
 
-    let oversample = (opts.k as i64) * (FTS_OVERSAMPLE.max(VEC_OVERSAMPLE));
+/// The largest kNN `k` sqlite-vec accepts.
+const VEC_K_MAX: i64 = 4096;
+
+fn wants_vec(mode: SearchMode) -> bool {
+    matches!(mode, SearchMode::Hybrid | SearchMode::Vector)
+}
+
+/// Embeds the trimmed query text `q` in one batch. `None` when the embedder
+/// answers no vector or an empty one.
+pub(crate) fn embed_query(embedder: &dyn Embedder, q: &str) -> Result<Option<Vec<f32>>> {
+    Ok(embedder
+        .embed_batch(&[q.to_string()])?
+        .into_iter()
+        .next()
+        .filter(|v| !v.is_empty()))
+}
+
+/// The connection half of [`search`]: FTS, kNN with the query vector `q_vec`
+/// computed beforehand, fusion, enrichment and transclusion expansion. It
+/// never calls an embedder (`opts.embedder` is ignored). The vector arm runs
+/// when `opts.mode` wants it and `q_vec` is `Some`; a kNN error (no
+/// `chunk_vec` table, say) leaves it empty. The `bool` is whether the kNN
+/// query ran and answered.
+pub(crate) fn search_with_query_vec(
+    conn: &Connection,
+    opts: &SearchOptions<'_>,
+    q_vec: Option<&[f32]>,
+) -> Result<(SearchResults, bool)> {
+    let q = opts.query.trim();
+    if q.is_empty() {
+        let found = SearchResults {
+            hits: Vec::new(),
+            truncated: false,
+        };
+        return Ok((found, false));
+    }
+
+    let want_fts = matches!(opts.mode, SearchMode::Hybrid | SearchMode::Fts);
+
+    let oversample = i64::try_from(opts.k)
+        .unwrap_or(i64::MAX)
+        .saturating_mul(FTS_OVERSAMPLE.max(VEC_OVERSAMPLE));
 
     let fts_ranked: Vec<(String, i64)> = if want_fts {
         fts_search(conn, q, oversample)?
@@ -87,21 +131,14 @@ pub fn search(conn: &Connection, opts: SearchOptions<'_>) -> Result<SearchResult
         Vec::new()
     };
 
-    let vec_ranked: Vec<(String, i64)> = if want_vec {
-        let embedder = opts.embedder.expect("checked");
-        let q_vec = embedder
-            .embed_batch(&[q.to_string()])?
-            .into_iter()
-            .next()
-            .unwrap_or_default();
-        if q_vec.is_empty() {
-            Vec::new()
-        } else {
-            vec_search(conn, &q_vec, oversample).unwrap_or_default()
+    let vec_ranked: Option<Vec<(String, i64)>> = match q_vec {
+        Some(q_vec) if wants_vec(opts.mode) => {
+            vec_search(conn, q_vec, oversample.min(VEC_K_MAX)).ok()
         }
-    } else {
-        Vec::new()
+        _ => None,
     };
+    let vec_ran = vec_ranked.is_some();
+    let vec_ranked = vec_ranked.unwrap_or_default();
 
     // RRF fuse
     use std::collections::HashMap;
@@ -117,10 +154,11 @@ pub fn search(conn: &Connection, opts: SearchOptions<'_>) -> Result<SearchResult
     fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
     if fused.is_empty() {
-        return Ok(SearchResults {
+        let found = SearchResults {
             hits: Vec::new(),
             truncated: false,
-        });
+        };
+        return Ok((found, vec_ran));
     }
 
     let mut hits = Vec::new();
@@ -134,10 +172,11 @@ pub fn search(conn: &Connection, opts: SearchOptions<'_>) -> Result<SearchResult
     }
     let truncated = hits.len() >= opts.k && fused.len() > hits.len();
     let (hits, dropped) = expand_transclusions(conn, hits, opts.k, &opts.filters)?;
-    Ok(SearchResults {
+    let found = SearchResults {
         hits,
         truncated: truncated || dropped,
-    })
+    };
+    Ok((found, vec_ran))
 }
 
 /// A topic note found through a transclusion of a daily-note hit's blocks.
