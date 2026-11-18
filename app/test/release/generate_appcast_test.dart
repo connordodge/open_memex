@@ -553,6 +553,16 @@ void main() {
     }) async {
       expect(r.exitCode, code, reason: '$r');
       expect(r.stderr, contains(mentions), reason: 'a clear message\n$r');
+      expect(
+        r.stderr,
+        contains('generate_appcast:'),
+        reason: 'the script own message, not an interpreter crash\n$r',
+      );
+      expect(
+        r.stderr,
+        isNot(contains('Traceback')),
+        reason: 'a clear message, not a stack trace\n$r',
+      );
       expect(g.pagesSnapshot(), before, reason: 'gh-pages is untouched');
     }
 
@@ -660,6 +670,11 @@ void main() {
           code: 1,
           before: before,
           mentions: 'appcast.xml',
+        );
+        expect(
+          r.stderr,
+          contains('gh-pages checkout'),
+          reason: 'the message points at the missing checkout\n$r',
         );
       },
     );
