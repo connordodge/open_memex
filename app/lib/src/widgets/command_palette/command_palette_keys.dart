@@ -14,7 +14,8 @@ import 'command_palette.dart';
 /// Only the exact chord (Cmd, no Shift, Control or Option) is handled, so
 /// Cmd+F, Cmd+G and Cmd+E reach the native menu. A key repeat is claimed and
 /// does nothing; a key up is not handled. While another modal route covers
-/// the workspace the chord is not handled. Unmounting closes the palette.
+/// the workspace, or covers the showing palette, the chord is not handled.
+/// Unmounting closes the palette.
 /// Builds nothing.
 class CommandPaletteKeys extends StatefulWidget {
   const CommandPaletteKeys({super.key});
@@ -74,8 +75,13 @@ class _CommandPaletteKeysState extends State<CommandPaletteKeys> {
       return false;
     }
     final showing = isCommandPaletteShowing(_container);
-    // A modal other than the palette owns the keyboard.
-    if (!showing && ModalRoute.of(context)?.isCurrent == false) return false;
+    // A modal other than the palette owns the keyboard: one over the
+    // workspace, or one pushed over the palette itself.
+    if (showing) {
+      if (!isCommandPaletteCurrent(_container)) return false;
+    } else if (ModalRoute.of(context)?.isCurrent == false) {
+      return false;
+    }
     // A held chord is claimed (so macOS does not beep) but toggles once.
     if (event is! KeyDownEvent) return true;
     if (showing) {

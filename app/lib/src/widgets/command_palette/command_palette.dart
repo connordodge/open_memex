@@ -11,6 +11,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../graph/graph_scope.dart';
+import '../../state/clock.dart';
 import '../../state/command_palette_state.dart';
 import '../../state/daily_state.dart';
 import '../../state/editor_controller.dart';
@@ -114,6 +115,11 @@ Future<void> showCommandPalette(BuildContext context) async {
 bool isCommandPaletteShowing(ProviderContainer container) =>
     container.read(_sessionProvider).route != null;
 
+/// Whether the Command palette shows and is the current route: false while
+/// another modal (an update or leave-confirm dialog) covers it.
+bool isCommandPaletteCurrent(ProviderContainer container) =>
+    container.read(_sessionProvider).route?.isCurrent ?? false;
+
 /// Closes the Command palette without a choice, when it shows.
 void closeCommandPalette(ProviderContainer container) =>
     container.read(_sessionProvider).close();
@@ -141,8 +147,8 @@ class _PaletteSession {
   /// Set by a choice: the chosen row's action places the focus.
   var _chosen = false;
 
-  /// Palette routes pushed and not yet faded out.
-  var _live = 0;
+  /// Palette routes pushed and not yet faded out (or removed).
+  final _live = <_PaletteRoute>{};
 
   void opened({
     required _PaletteRoute route,
@@ -153,7 +159,7 @@ class _PaletteSession {
     this.host = host;
     _restoreFocus = restoreFocus;
     _chosen = false;
-    _live++;
+    _live.add(route);
     container.read(commandPaletteOpenProvider.notifier).state = true;
   }
 
@@ -161,19 +167,21 @@ class _PaletteSession {
   /// (board C3 state 3: "also while it closes").
   void watchFade(_PaletteRoute route) {
     final fade = route.animation;
-    if (fade == null) return _faded();
+    if (fade == null) return _faded(route);
     late final AnimationStatusListener listener;
     listener = (status) {
       if (status != AnimationStatus.dismissed) return;
       fade.removeStatusListener(listener);
-      _faded();
+      _faded(route);
     };
     fade.addStatusListener(listener);
   }
 
-  void _faded() {
-    _live = max(0, _live - 1);
-    if (_live > 0) return;
+  /// [route] has faded out, or was removed without a fade: once no palette
+  /// route is left, the Command bar draws its rest state.
+  void _faded(_PaletteRoute route) {
+    _live.remove(route);
+    if (_live.isNotEmpty) return;
     try {
       container.read(commandPaletteOpenProvider.notifier).state = false;
     } on StateError {
@@ -189,9 +197,12 @@ class _PaletteSession {
     if (route.isCurrent) {
       route.navigator?.pop();
     } else {
-      // Another route covers it (none should): remove it in place.
-      closed(route);
+      // Another modal covers it (an update or leave-confirm dialog): remove
+      // it in place. It plays no fade, and the focus stays with the modal
+      // on top.
+      closed(route, restoreFocus: false);
       if (route.isActive) route.navigator?.removeRoute(route);
+      _faded(route);
     }
   }
 
@@ -206,8 +217,9 @@ class _PaletteSession {
   }
 
   /// [route] closed (popped or removed): tells the palette's sources, and
-  /// gives the focus back unless a row was chosen.
-  void closed(_PaletteRoute route) {
+  /// gives the focus back unless a row was chosen or [restoreFocus] is
+  /// false (another route is on top).
+  void closed(_PaletteRoute route, {bool restoreFocus = true}) {
     if (this.route != route) return;
     this.route = null;
     host = null;
@@ -216,7 +228,7 @@ class _PaletteSession {
     }
     final restore = _restoreFocus;
     _restoreFocus = null;
-    if (_chosen || restore == null) return;
+    if (_chosen || !restoreFocus || restore == null) return;
     if (restore.context?.mounted ?? false) restore.requestFocus();
   }
 }
@@ -335,50 +347,81 @@ void _showNote(
   if (tab is NoteTab) _focusEditorOnArrival(container, item.noteId, tab);
 }
 
-/// How many frames [_focusEditorOnArrival] waits for the editor.
-const _editorFocusFrames = 40;
+/// How long [_focusEditorOnArrival] waits for the editor to show the note
+/// (a hosted vault reads it over the network).
+const _editorFocusWait = Duration(seconds: 10);
 
 /// Puts the keyboard focus in the note editor's body once it shows
 /// [noteId] (req 28: after a choice, focus goes to the opened note's
-/// editor). Gives up when the active tab moves on or the editor doesn't
-/// show the note within [_editorFocusFrames] frames.
+/// editor). It reacts to the editor taking the note, then waits one frame
+/// so the editor has rebuilt its body for it. Gives up when the active tab
+/// moves on, or at its first check later than [_editorFocusWait] after the
+/// choice (by [clockProvider]): a check runs on each editor change.
 void _focusEditorOnArrival(
   ProviderContainer container,
   String noteId,
   NoteTab tab,
 ) {
   final binding = SchedulerBinding.instance;
-  var frames = 0;
+  final clock = container.read(clockProvider);
+  final deadline = clock.now().add(_editorFocusWait);
+  ProviderSubscription<Object?>? editor;
+  ProviderSubscription<Object?>? tabs;
+  var done = false;
+  var scheduled = false;
   var loaded = false;
-  void next(void Function(Duration) check) {
-    binding.addPostFrameCallback(check);
+
+  void stop() {
+    done = true;
+    editor?.close();
+    tabs?.close();
+  }
+
+  void check() {
+    if (done || scheduled) return;
+    scheduled = true;
+    binding.addPostFrameCallback((_) {
+      scheduled = false;
+      if (done) return;
+      try {
+        if (container.read(tabsProvider).activeTab != tab ||
+            clock.now().isAfter(deadline)) {
+          return stop();
+        }
+        final shown =
+            container.read(editorControllerProvider.notifier).activeNoteId ==
+            noteId;
+        if (!shown) {
+          // Wait for the editor to take the note.
+          loaded = false;
+          return;
+        }
+        if (loaded) {
+          final field = _editorBodyField();
+          if (field != null) {
+            if (!field.focusNode.hasFocus) field.focusNode.requestFocus();
+            return stop();
+          }
+        }
+        loaded = true;
+      } on StateError {
+        return stop(); // The container was disposed.
+      }
+      check();
+    });
     binding.scheduleFrame();
   }
 
-  void check(Duration _) {
-    if (frames++ > _editorFocusFrames) return;
-    try {
-      if (container.read(tabsProvider).activeTab != tab) return;
-      final shown =
-          container.read(editorControllerProvider.notifier).activeNoteId ==
-          noteId;
-      // One more frame after the editor took the note, so it has rebuilt
-      // its body for it.
-      if (shown && loaded) {
-        final field = _editorBodyField();
-        if (field != null) {
-          if (!field.focusNode.hasFocus) field.focusNode.requestFocus();
-          return;
-        }
-      }
-      loaded = shown;
-    } on StateError {
-      return; // The container was disposed.
-    }
-    next(check);
+  try {
+    editor = container.listen(editorControllerProvider, (_, _) => check());
+    tabs = container.listen<TabsState>(tabsProvider, (_, next) {
+      if (next.activeTab != tab) stop();
+    });
+  } on StateError {
+    return stop();
   }
-
-  next(check);
+  // The editor may show the note already (it was the active note).
+  check();
 }
 
 /// The note editor body's first text field (Key `editor-body`), if a note
@@ -445,7 +488,8 @@ class _CommandPaletteState extends ConsumerState<_CommandPalette> {
     if (route.isCurrent) Navigator.of(context).pop();
   }
 
-  /// The current vault changed (req 42): closes without a choice.
+  /// The current vault changed (req 42): closes without a choice, also
+  /// while another modal covers the palette.
   void _closeForVaultChange() {
     if (SchedulerBinding.instance.schedulerPhase ==
         SchedulerPhase.persistentCallbacks) {
@@ -454,7 +498,7 @@ class _CommandPaletteState extends ConsumerState<_CommandPalette> {
       });
       return;
     }
-    _close();
+    closeCommandPalette(ProviderScope.containerOf(context, listen: false));
   }
 
   /// ↑, ↓, ↵, ⌘↵ and Esc, as key-downs (req 25). Repeats of ↑ and ↓ move;
@@ -614,6 +658,10 @@ class _InputRow extends StatelessWidget {
                   key: PaletteKeys.input,
                   controller: controller,
                   autofocus: true,
+                  // A click on the card outside the field (the preview, a
+                  // header, the hint footer) keeps the keyboard here, so
+                  // Esc, the arrows and Enter still work.
+                  onTapOutside: (_) {},
                   onChanged: onChanged,
                   style: style,
                   cursorColor: OmColors.accent,
