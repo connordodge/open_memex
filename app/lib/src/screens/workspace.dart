@@ -8,14 +8,15 @@ import '../state/pending_saves.dart';
 import '../state/revision_poller.dart';
 import '../state/tab_not_loaded.dart';
 import '../state/tabs_state.dart';
-import '../state/vault_access_state.dart';
 import '../state/vault_state.dart';
+import '../state/workspace_actions.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
 import '../widgets/agents_sheet/agents_sheet.dart' show AgentsWindowMenuAttach;
 import '../widgets/atoms.dart';
-import '../vault_access/errors.dart';
 import '../widgets/canvas_view.dart';
+import '../widgets/command_palette/command_palette.dart';
+import '../widgets/command_palette/command_palette_keys.dart';
 import '../widgets/graph/graph_view.dart';
 import '../widgets/hosted/not_loaded_state.dart';
 import '../widgets/note_editor.dart';
@@ -37,7 +38,10 @@ class Workspace extends ConsumerWidget {
       body: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Sidebar(onNewNote: () => _createNote(context, ref)),
+          Sidebar(
+            onNewNote: () => createNote(context),
+            onCommandBar: () => showCommandPalette(context),
+          ),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -53,6 +57,7 @@ class Workspace extends ConsumerWidget {
                   ),
                 ),
                 const AgentsWindowMenuAttach(), // Window ▸ Agents… (#407, D24)
+                const CommandPaletteKeys(), // ⌘K (#77, D12)
               ],
             ),
           ),
@@ -64,29 +69,6 @@ class Workspace extends ConsumerWidget {
         ],
       ),
     );
-  }
-
-  Future<void> _createNote(BuildContext context, WidgetRef ref) async {
-    final access = ref.read(vaultAccessProvider);
-    if (access == null || !access.canWrite) return;
-    try {
-      final id = await guardVaultWrite(
-        context,
-        () => access.notes.addNote(
-          title: 'Untitled',
-          contentMd: '# Untitled\n\n',
-        ),
-      );
-      if (id == null) return;
-      ref.read(vaultRevisionProvider.notifier).state++;
-      ref.read(tabsProvider.notifier).navigate(NoteTab(id));
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Could not create note: $e')));
-      }
-    }
   }
 }
 
