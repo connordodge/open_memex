@@ -576,6 +576,12 @@ fn ready_on_a_vault_with_no_vector_table_still_answers_keyword_hits() {
         .expect("a missing chunk_vec table is never an Err");
 
     assert_eq!(keys(&got.hits), want, "the kNN arm adds nothing");
+    assert_eq!(
+        got.semantic,
+        Semantic::Unavailable,
+        "on means the vector arm ran (requirement 35); no chunk_vec table, no vector arm"
+    );
+    assert_eq!(semantic(&got), "unavailable");
 }
 
 // ---------------------------------------------------------------- AC 4: failing embedder
@@ -903,6 +909,32 @@ fn any_limit_answers_without_panicking() {
     }
 }
 
+#[test]
+fn ready_with_a_large_limit_still_runs_the_vector_arm() {
+    let mut fx = new_vault();
+    let emb = AxisEmbedder::new();
+    meaning_vault(&mut fx, &emb);
+    fx.embedded_plain("Plains", "The striped horses graze at dusk.", &emb);
+
+    for limit in [1000, 4096, 5000, 1 << 40, i64::MAX as usize, usize::MAX] {
+        let got = fx
+            .try_run("zebra", limit, SearchEmbedder::Ready(&emb), 0)
+            .unwrap_or_else(|e| panic!("Ready, limit {limit}: {e}"));
+        let t = titles(&got);
+        assert_eq!(
+            got.semantic,
+            Semantic::On,
+            "limit {limit}: the kNN k is clamped, so the vector arm runs: {t:?}"
+        );
+        for meaning_only in ["Savanna", "Plains"] {
+            assert!(
+                t.iter().any(|x| x == meaning_only),
+                "limit {limit}: the kNN returns every close vector, {meaning_only} missing: {t:?}"
+            );
+        }
+    }
+}
+
 // ---------------------------------------------------------------- AC 10: pending embedding
 
 #[test]
@@ -1194,15 +1226,288 @@ fn semantic_serializes_to_its_four_wire_strings() {
     let emb = AxisEmbedder::new();
     let failing = FailingEmbedder::new();
 
-    let cases: [(SearchEmbedder<'_>, &str); 4] = [
-        (SearchEmbedder::Ready(&emb), "on"),
-        (SearchEmbedder::NotDownloaded, "model_not_downloaded"),
-        (SearchEmbedder::Off, "embeddings_off"),
-        (SearchEmbedder::Ready(&failing), "unavailable"),
+    // `on` needs the vector arm to have run, so its row embeds the pending
+    // chunks (cap 64) and builds the vector table first.
+    let cases: [(SearchEmbedder<'_>, usize, &str); 4] = [
+        (SearchEmbedder::Ready(&emb), 64, "on"),
+        (SearchEmbedder::NotDownloaded, 0, "model_not_downloaded"),
+        (SearchEmbedder::Off, 0, "embeddings_off"),
+        (SearchEmbedder::Ready(&failing), 0, "unavailable"),
     ];
-    for (embedder, want) in cases {
-        let got = fx.run("quasar", 8, embedder, 0);
+    for (embedder, cap, want) in cases {
+        let got = fx.run("quasar", 8, embedder, cap);
         assert_eq!(got.hits.len(), 2, "{want}: the keyword hits");
         assert_eq!(semantic(&got), want);
     }
+}
+
+// ---------------------------------------------------------------- verify: embedder error sources (D11)
+
+/// Embeds like [`AxisEmbedder`] for a single text, but fails a batch of
+/// several (the pending chunks) with an error that is not an embedder error.
+struct BatchFailsWithOtherErrorEmbedder;
+
+impl Embedder for BatchFailsWithOtherErrorEmbedder {
+    fn model_version(&self) -> &str {
+        "axis-v1"
+    }
+
+    fn dimension(&self) -> usize {
+        DIM
+    }
+
+    fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        if texts.len() > 1 {
+            return Err(MemexError::NotFound("the model runtime".into()));
+        }
+        Ok(texts.iter().map(|t| axis_of(t)).collect())
+    }
+}
+
+/// Embeds like [`AxisEmbedder`] for a single text, but answers one vector
+/// short for a batch of several (the pending chunks).
+struct BatchAnswersShortEmbedder;
+
+impl Embedder for BatchAnswersShortEmbedder {
+    fn model_version(&self) -> &str {
+        "axis-v1"
+    }
+
+    fn dimension(&self) -> usize {
+        DIM
+    }
+
+    fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let n = if texts.len() > 1 {
+            texts.len() - 1
+        } else {
+            texts.len()
+        };
+        Ok(texts.iter().take(n).map(|t| axis_of(t)).collect())
+    }
+}
+
+/// Answers an empty vector for the query.
+struct EmptyQueryVectorEmbedder;
+
+impl Embedder for EmptyQueryVectorEmbedder {
+    fn model_version(&self) -> &str {
+        "empty-v1"
+    }
+
+    fn dimension(&self) -> usize {
+        DIM
+    }
+
+    fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        Ok(texts.iter().map(|_| Vec::new()).collect())
+    }
+}
+
+#[test]
+fn a_non_embedder_error_from_pending_inference_answers_keyword_hits_as_unavailable() {
+    let mut fx = new_vault();
+    quasar_notes(&mut fx, 3);
+    let want = search_keys(&fx.fts("quasar", 8));
+    assert!(fx.unembedded() > 1, "precondition: several pending chunks");
+
+    let got = fx
+        .try_run(
+            "quasar",
+            8,
+            SearchEmbedder::Ready(&BatchFailsWithOtherErrorEmbedder),
+            64,
+        )
+        .expect("an embedder failure while embedding pending chunks is never an Err");
+
+    assert_eq!(keys(&got.hits), want);
+    assert_eq!(got.semantic, Semantic::Unavailable);
+}
+
+#[test]
+fn an_embedder_answering_too_few_vectors_for_pending_chunks_answers_unavailable() {
+    let mut fx = new_vault();
+    quasar_notes(&mut fx, 3);
+    let want = search_keys(&fx.fts("quasar", 8));
+    assert!(fx.unembedded() > 1, "precondition: several pending chunks");
+
+    let got = fx
+        .try_run(
+            "quasar",
+            8,
+            SearchEmbedder::Ready(&BatchAnswersShortEmbedder),
+            64,
+        )
+        .expect("a vector-count mismatch is never an Err");
+
+    assert_eq!(keys(&got.hits), want);
+    assert_eq!(got.semantic, Semantic::Unavailable);
+}
+
+#[test]
+fn an_empty_query_vector_answers_keyword_hits_as_unavailable() {
+    let mut fx = new_vault();
+    quasar_notes(&mut fx, 3);
+    let want = search_keys(&fx.fts("quasar", 8));
+
+    let got = fx
+        .try_run(
+            "quasar",
+            8,
+            SearchEmbedder::Ready(&EmptyQueryVectorEmbedder),
+            0,
+        )
+        .expect("an empty query vector is never an Err");
+
+    assert_eq!(keys(&got.hits), want);
+    assert_eq!(got.semantic, Semantic::Unavailable);
+}
+
+// ---------------------------------------------------------------- verify: role and day edge cases
+
+#[test]
+fn a_daily_note_whose_title_is_not_a_date_has_no_day() {
+    let mut fx = new_vault();
+    let note = fx.daily(DAY, "Nebula over the field.\n");
+    fx.conn()
+        .execute(
+            "UPDATE notes SET title = 'Not a date' WHERE id = ?",
+            [note.id.as_str()],
+        )
+        .unwrap();
+
+    let got = fx.run("nebula", 8, SearchEmbedder::Off, 0);
+
+    let h = the_hit(&got, &note);
+    assert_eq!(h.note_role.as_deref(), Some("daily"));
+    assert_eq!(h.day, None, "a title that is not an ISO date is no day");
+}
+
+#[test]
+fn a_non_text_role_in_the_frontmatter_is_no_role_and_not_an_error() {
+    let mut fx = new_vault();
+    let note = fx.plain("Odd Role", "Nebula catalogue.");
+    fx.conn()
+        .execute(
+            "UPDATE notes SET frontmatter = '{\"role\": 5}' WHERE id = ?",
+            [note.id.as_str()],
+        )
+        .unwrap();
+
+    let got = fx
+        .try_run("nebula", 8, SearchEmbedder::Off, 0)
+        .expect("a numeric role is never an Err");
+
+    let h = the_hit(&got, &note);
+    assert_eq!(h.note_role, None);
+    assert_eq!(h.day, None);
+}
+
+// ---------------------------------------------------------------- one read snapshot
+
+/// What the authorizer hook does the first time the lease body prepares a
+/// read of `notes.updated_at` (`enrich`, after the search): another
+/// connection deletes every note, as another process could mid-search.
+struct DeleteMidSearch {
+    db: PathBuf,
+    fired: AtomicUsize,
+    delete_error: Mutex<Option<String>>,
+}
+
+const SQLITE_READ: std::os::raw::c_int = 20;
+const SQLITE_OK: std::os::raw::c_int = 0;
+
+unsafe extern "C" fn delete_notes_on_first_updated_at_read(
+    user: *mut std::os::raw::c_void,
+    action: std::os::raw::c_int,
+    table: *const std::os::raw::c_char,
+    column: *const std::os::raw::c_char,
+    _db: *const std::os::raw::c_char,
+    _trigger: *const std::os::raw::c_char,
+) -> std::os::raw::c_int {
+    if action != SQLITE_READ || table.is_null() || column.is_null() {
+        return SQLITE_OK;
+    }
+    let table = unsafe { std::ffi::CStr::from_ptr(table) };
+    let column = unsafe { std::ffi::CStr::from_ptr(column) };
+    if table.to_bytes() != b"notes" || column.to_bytes() != b"updated_at" {
+        return SQLITE_OK;
+    }
+    let hook = unsafe { &*(user as *const DeleteMidSearch) };
+    if hook.fired.fetch_add(1, Ordering::SeqCst) > 0 {
+        return SQLITE_OK;
+    }
+    let outcome = Connection::open(&hook.db).and_then(|other| {
+        other.busy_timeout(Duration::from_secs(5))?;
+        other.execute("DELETE FROM notes", [])
+    });
+    if let Err(e) = outcome {
+        *hook.delete_error.lock().unwrap() = Some(e.to_string());
+    }
+    SQLITE_OK
+}
+
+/// A lease over one connection with the delete hook installed.
+struct HookLease<'a> {
+    conn: &'a mut Connection,
+    hook: &'a DeleteMidSearch,
+}
+
+impl ConnLease for HookLease<'_> {
+    fn lease<R>(&mut self, f: impl FnOnce(&mut Connection) -> Result<R>) -> Result<R> {
+        // SAFETY: `hook` outlives the connection's use of the authorizer,
+        // which is removed before this returns.
+        unsafe {
+            rusqlite::ffi::sqlite3_set_authorizer(
+                self.conn.handle(),
+                Some(delete_notes_on_first_updated_at_read),
+                self.hook as *const DeleteMidSearch as *mut std::os::raw::c_void,
+            );
+        }
+        let out = f(self.conn);
+        unsafe {
+            rusqlite::ffi::sqlite3_set_authorizer(self.conn.handle(), None, std::ptr::null_mut());
+        }
+        out
+    }
+}
+
+#[test]
+fn a_note_deleted_by_another_connection_mid_search_is_still_answered_from_one_snapshot() {
+    let mut fx = new_vault();
+    quasar_notes(&mut fx, 3);
+    let want = search_keys(&fx.fts("quasar", 8));
+    assert_eq!(want.len(), 3, "precondition: three keyword matches");
+    let Fx { _dir, db, vault } = fx;
+    drop(vault);
+    let mut conn = Connection::open(&db).unwrap();
+    conn.busy_timeout(Duration::from_secs(5)).unwrap();
+    let hook = DeleteMidSearch {
+        db: db.clone(),
+        fired: AtomicUsize::new(0),
+        delete_error: Mutex::new(None),
+    };
+    let mut lease = HookLease {
+        conn: &mut conn,
+        hook: &hook,
+    };
+
+    let got = note_search(&mut lease, "quasar", 8, SearchEmbedder::Off, 0)
+        .expect("a note deleted mid-search never fails the search");
+
+    assert!(
+        hook.fired.load(Ordering::SeqCst) > 0,
+        "the hook ran: enrichment read notes.updated_at"
+    );
+    assert_eq!(*hook.delete_error.lock().unwrap(), None, "the delete ran");
+    let left: i64 = Connection::open(&db)
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(left, 0, "the other connection committed its delete");
+    assert_eq!(
+        keys(&got.hits),
+        want,
+        "every hit is whole: the search and its enrichment read one snapshot"
+    );
 }
