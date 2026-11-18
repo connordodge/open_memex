@@ -25,9 +25,12 @@ import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/main.dart' show appRootOverrides;
 import 'package:open_memex_app/src/memex_cli.dart' show MemexCliTimeout;
 import 'package:open_memex_app/src/state/command_palette_state.dart';
 import 'package:open_memex_app/src/state/palette_passages.dart';
+import 'package:open_memex_app/src/state/palette_preview_state.dart';
+import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/vault_access/search_access.dart';
 import 'package:open_memex_app/src/widgets/command_palette/palette_row.dart';
@@ -974,5 +977,38 @@ void main() {
         'via 2026-11-17',
       );
     });
+  });
+
+  group('app root wiring', () {
+    testWidgets(
+      'appRootOverrides fills the Passages, preview and passage chooser seams',
+      (tester) async {
+        final h = await pumpPaletteHost(tester, overrides: appRootOverrides);
+
+        expect(
+          h.read(palettePassagesProvider.notifier),
+          isA<PalettePassagesRunner>(),
+        );
+        expect(
+          h.read(palettePreviewProvider.notifier),
+          isA<PalettePreviewReader>(),
+        );
+
+        // Behaviour, not just types: the debounced search runs ...
+        h.container.listen(paletteProvider, (_, _) {}, fireImmediately: true);
+        h.read(paletteProvider.notifier).setQuery('pr');
+        h.clock.advance(const Duration(milliseconds: 250));
+        await tester.pump();
+        await tester.pump();
+        expect([for (final c in h.search.calls) c.query], ['pr']);
+
+        // ... and choosing a passage navigates to its note.
+        h.read(palettePassageChooserProvider)(
+          PassageItem(_wi78Hit('c-root', startByte: 3), meta: 'note · 2 h ago'),
+          newTab: false,
+        );
+        expect(h.tabs.navigated, [NoteTab('n-78-c-root')]);
+      },
+    );
   });
 }

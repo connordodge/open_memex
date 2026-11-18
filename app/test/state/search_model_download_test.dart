@@ -469,4 +469,164 @@ void main() {
       expect(r.passageChunks, ['c-fresh'], reason: 'the re-run shows');
     },
   );
+
+  Finder noMatchesLine(String query) => find.descendant(
+    of: find.byKey(PaletteKeys.noMatches),
+    matching: find.text('no matches for “$query”'),
+  );
+
+  testWidgets(
+    'no matches shows for an empty model_not_downloaded answer while a download runs',
+    (tester) async {
+      final r = await _wi78Pump(tester);
+      await r.keywordOnly('price');
+      final gate = Completer<void>();
+      r.search.gate = gate;
+      await r.pressDownload();
+      expect(_wi78Line('downloading', _wi78Downloading), findsOneWidget);
+
+      r.search.gate = null;
+      r.search.enqueue(
+        _wi78Ready(const [], semantic: Semantic.modelNotDownloaded),
+      );
+      await r.type('zzzz');
+      await r.wait(250);
+
+      expect(r.calls.last, ('zzzz', false));
+      expect(r.state.noMatches, isTrue);
+      expect(noMatchesLine('zzzz'), findsOneWidget);
+      expect(
+        find.byKey(PaletteKeys.passagesState('downloading')),
+        findsNothing,
+        reason: 'no hits, so no downloading header',
+      );
+      expect(find.byKey(PaletteKeys.download), findsNothing);
+      await r.release(gate);
+    },
+  );
+
+  testWidgets(
+    'no matches shows for an empty model_not_downloaded answer after a failed download',
+    (tester) async {
+      final r = await _wi78Pump(tester);
+      await r.keywordOnly('price');
+      r.search.enqueue(_wi78Ready(const [], semantic: Semantic.unavailable));
+      await r.pressDownload();
+      expect(
+        r.h.read(
+          searchModelDownloadProvider(LocalVaultRef([paletteVaultPath].join())),
+        ),
+        SearchModelDownloadStatus.failed,
+      );
+
+      r.search.enqueue(
+        _wi78Ready(const [], semantic: Semantic.modelNotDownloaded),
+      );
+      await r.type('zzzz');
+      await r.wait(250);
+
+      expect(r.state.noMatches, isTrue);
+      expect(noMatchesLine('zzzz'), findsOneWidget);
+      expect(find.byKey(PaletteKeys.download), findsNothing);
+      expect(
+        find.byKey(PaletteKeys.passagesState('model-not-downloaded')),
+        findsNothing,
+      );
+    },
+  );
+
+  testWidgets(
+    'a download that starts elsewhere keeps no matches on screen when the answer had no hits',
+    (tester) async {
+      final r = await _wi78Pump(tester);
+      r.search.enqueue(
+        _wi78Ready(const [], semantic: Semantic.modelNotDownloaded),
+      );
+      await r.type('zzzz');
+      await r.wait(250);
+      expect(noMatchesLine('zzzz'), findsOneWidget);
+
+      final gate = Completer<void>();
+      r.search.gate = gate;
+      r.h
+          .read(
+            searchModelDownloadProvider(
+              LocalVaultRef([paletteVaultPath].join()),
+            ).notifier,
+          )
+          .start('zzzz');
+      await tester.pump();
+      await tester.pump();
+
+      expect(r.state.noMatches, isTrue);
+      expect(noMatchesLine('zzzz'), findsOneWidget);
+      expect(
+        find.byKey(PaletteKeys.passagesState('downloading')),
+        findsNothing,
+      );
+      await r.release(gate);
+    },
+  );
+
+  testWidgets(
+    'a stale answer never shows once a download re-run is queued for the same input',
+    (tester) async {
+      final r = await _wi78Pump(tester);
+      await r.keywordOnly('price');
+      final seen = <PassagesView>[];
+      final sub = r.h.container.listen(
+        palettePassagesProvider,
+        (_, next) => seen.add(next),
+      );
+      addTearDown(sub.close);
+
+      final download = Completer<void>();
+      r.search.gate = download;
+      r.search.enqueue(_wi78Ready([_wi78Hit('c-1')]));
+      await r.pressDownload();
+
+      // A search for the next input starts, then the model arrives.
+      final stale = Completer<void>();
+      r.search.gate = stale;
+      r.search.enqueue(
+        _wi78Ready([
+          _wi78Hit('c-stale'),
+        ], semantic: Semantic.modelNotDownloaded),
+      );
+      r.search.enqueue(_wi78Ready([_wi78Hit('c-fresh')]));
+      await r.type('prices');
+      await r.wait(250);
+      await r.release(download);
+      expect(r.calls.length, 3, reason: 'the re-run waits its turn');
+
+      // The same input settles again before the stale search answers: this
+      // must not drop the re-run the download queued.
+      await r.type('pricesx');
+      await r.type('prices');
+      await r.wait(250);
+      expect(r.calls.length, 3, reason: 'still one in flight, one queued');
+
+      r.search.gate = null;
+      await r.release(stale);
+      await r.wait(0);
+
+      expect(r.calls, [
+        ('price', false),
+        ('price', true),
+        ('prices', false),
+        ('prices', false),
+      ]);
+      expect(r.passageChunks, ['c-fresh'], reason: 'the re-run shows');
+      final staleShown = [
+        for (final v in seen)
+          if (v.rows.any((row) => row.hit.chunkId == 'c-stale')) v,
+      ];
+      expect(staleShown, isEmpty, reason: 'the older answer never shows');
+      expect(find.byKey(PaletteKeys.download), findsNothing);
+      expect(
+        find.byKey(PaletteKeys.passagesState('model-not-downloaded')),
+        findsNothing,
+      );
+    },
+  );
 }

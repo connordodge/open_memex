@@ -840,5 +840,71 @@ void main() {
         expect(inBand('after line 0'), findsNothing);
       },
     );
+
+    testWidgets(
+      'closing the palette during the 120 ms rest cancels the pending preview read',
+      (tester) async {
+        final p = await _wi78PumpPreview(
+          tester,
+          recent: [_wi78Note(_wi78ShortId, 'Pricing model')],
+        );
+        await p.wait(60);
+        expect(p.preview, isA<PreviewLoading>());
+        expect(p.reads, isEmpty);
+
+        final pending = p.clock.pendingTimers;
+        expect(pending, greaterThan(0), reason: 'the rest timer is pending');
+
+        p.palette.close();
+        expect(
+          p.clock.pendingTimers,
+          pending - 1,
+          reason: 'closing cancels the rest timer at once',
+        );
+        await p.wait(1000);
+        await p.settle();
+
+        expect(p.reads, isEmpty, reason: 'the rest timer was cancelled');
+      },
+    );
+
+    testWidgets(
+      'a note preview draws markdown source as plain text and a long note from the top',
+      (tester) async {
+        const id = 'n-78-markdown';
+        final body =
+            '## Heading kept as typed\n\n'
+            'Some **bold** words and a [link](https://example.com).\n\n'
+            '${[for (var i = 0; i < 80; i++) '- bullet $i\n\n'].join()}';
+        final p = await _wi78PumpPreview(
+          tester,
+          seed: (db) => db.seedNote(
+            id: id,
+            title: 'Markdown note',
+            content: body,
+            updatedAt: paletteHoursAgo(5),
+          ),
+          recent: [_wi78Note(id, 'Markdown note')],
+        );
+        await p.wait(120);
+        await p.settle();
+
+        expect(p.reads, [id]);
+        expect(_wi78Text('## Heading kept as typed'), findsWidgets);
+        expect(
+          _wi78Text('Some **bold** words and a [link](https://example.com).'),
+          findsWidgets,
+        );
+        expect(_wi78Text('- bullet 0'), findsWidgets);
+        expect(_wi78InPane(find.byType(EditableText)), findsNothing);
+        final scroll = tester.state<ScrollableState>(_wi78Scroll);
+        expect(scroll.position.pixels, 0, reason: 'from the top');
+        expect(
+          scroll.position.maxScrollExtent,
+          greaterThan(0),
+          reason: 'the note is longer than the pane',
+        );
+      },
+    );
   });
 }
