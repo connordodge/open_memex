@@ -93,9 +93,12 @@ class _SectionTrackerState extends ConsumerState<SectionTracker> {
     if (n is ScrollUpdateNotification &&
         SchedulerBinding.instance.schedulerPhase !=
             SchedulerPhase.postFrameCallbacks &&
-        !_hub.jumpLanded) {
-      // A scroll from outside a frame's end (a person's) before the jump
-      // landed: the seam lands only from there, so this jump never will.
+        _hub.jumpLanded) {
+      // A scroll from outside a frame's end (a person's: the seam lands
+      // only from there) after the jump landed: the normal rule decides
+      // again, also while nothing watches, so scrolling back onto the
+      // landing never brings the jump back. Before it lands such a scroll
+      // keeps it: the seam still lands it.
       _hub.dropJump();
     }
     if (n is ScrollNotification || n is ScrollMetricsNotification) {

@@ -39,6 +39,7 @@ void jumpToOutlineEntry(
       leaveSource: true,
     ),
   );
+  final pending = ref.read(noteRevealProvider);
   ref
       .read(outlineSectionHubProvider)
       .jumped(
@@ -46,7 +47,8 @@ void jumpToOutlineEntry(
           noteId: noteId,
           entry: entry,
           content: content,
-          arrivals: ref.read(noteRevealProvider)?.arrivals,
+          arrivals: pending?.arrivals,
+          seq: pending?.seq,
         ),
       );
 }
