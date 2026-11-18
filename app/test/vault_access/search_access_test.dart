@@ -1,20 +1,14 @@
 // #74 (56-A1): the app search seam (Spec #59 req 34, 39). SearchHit parsing
 // and value equality, the sealed result and reasons, the VaultAccess wiring
-// (local default, no CLI, the hosted placeholder until #75) and the
+// (local default, no CLI; hosted is #75s hosted_search_access_test) and the
 // FakeSearchAccess double that #76-#78 drive palette state with.
 import 'dart:async';
 
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:open_memex_app/src/state/clock.dart';
-import 'package:open_memex_app/src/state/hosted_connection_state.dart';
-import 'package:open_memex_app/src/vault_access/hosted/hosted_vault_access.dart';
 import 'package:open_memex_app/src/vault_access/local/local_vault_access.dart';
 import 'package:open_memex_app/src/vault_access/vault_access.dart';
 
-import '../support/fake_clock.dart';
 import '../support/fake_memex_cli.dart';
-import '../support/fake_vault_server.dart';
 import '../support/search_fakes.dart';
 
 const _vault = '/vaults/My Vault';
@@ -326,34 +320,6 @@ void main() {
 
       expect(identical(vault.search, fake), isTrue);
     });
-
-    test(
-      'HostedVaultAccess search answers SearchUnavailable ServerOutdated until the hosted route lands',
-      () async {
-        final server = FakeVaultServer();
-        final container = ProviderContainer(
-          overrides: [
-            clockProvider.overrideWithValue(FakeClock()),
-            utcOffsetProvider.overrideWithValue(() => Duration.zero),
-          ],
-        );
-        addTearDown(container.dispose);
-        final VaultAccess vault = HostedVaultAccess(
-          client: server.connect(container),
-          vaultName: 'seed',
-        );
-
-        expect(
-          await vault.search.search('pricing'),
-          const SearchUnavailable(ServerOutdated()),
-        );
-        expect(
-          await vault.search.search('pricing', allowDownload: true),
-          SearchUnavailable(ServerOutdated()),
-        );
-        expect(server.requests, isEmpty);
-      },
-    );
   });
 
   group('FakeSearchAccess', () {
