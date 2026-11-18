@@ -15,6 +15,7 @@
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -169,6 +170,34 @@ RichText _richTextOf(WidgetTester tester, Finder row, String text) {
   );
   expect(found, findsOneWidget, reason: 'the title text $text');
   return tester.widget<RichText>(found);
+}
+
+/// The UTF-16 indices of [text] (the RichText under [row] with that plain
+/// text) drawn on an `accentMark` background.
+Set<int> _markedChars(WidgetTester tester, Finder row, String text) {
+  final rich = _richTextOf(tester, row, text);
+  final out = <int>{};
+  var at = 0;
+  void walk(InlineSpan s, TextStyle? parent) {
+    final style = parent == null ? s.style : parent.merge(s.style);
+    if (s is TextSpan) {
+      final t = s.text;
+      if (t != null) {
+        if (style?.backgroundColor == OmColors.accentMark) {
+          for (var i = 0; i < t.length; i++) {
+            out.add(at + i);
+          }
+        }
+        at += t.length;
+      }
+      for (final child in s.children ?? const <InlineSpan>[]) {
+        walk(child, style);
+      }
+    }
+  }
+
+  walk(rich.text, null);
+  return out;
 }
 
 /// The text drawn on an `accentMark` fill under [row], one string per mark,
@@ -985,5 +1014,189 @@ void main() {
         expect(find.byType(PassagesFooter), findsOneWidget);
       },
     );
+  });
+
+  group('verify contracts', () {
+    testWidgets(
+      'a row that appears under a resting pointer does not take the selection',
+      (tester) async {
+        final choices = <(PaletteItemId, bool)>[];
+        final rows = [
+          _cmd(PaletteCommand.backups),
+          _cmd(PaletteCommand.agents),
+          _cmd(PaletteCommand.newNote),
+        ];
+        final shown = StateProvider<List<CommandItem>>(
+          (_) => rows.sublist(0, 2),
+        );
+        final h = await pumpPaletteHost(
+          tester,
+          overrides: [
+            ..._sources(choices: choices),
+            paletteCommandsSourceProvider.overrideWith((ref) {
+              final list = ref.watch(shown);
+              return (_) => list;
+            }),
+          ],
+          child: const _Wi76List(),
+        );
+        expect(_selected(h), _cmdId(PaletteCommand.backups));
+        // The pointer rests where the third row will be.
+        final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+        await mouse.addPointer(location: const Offset(100, 80));
+        addTearDown(mouse.removePointer);
+        await tester.pump();
+        expect(_rowOf(rows[2]), findsNothing);
+
+        h.container.read(shown.notifier).state = rows;
+        await tester.pump();
+        await tester.pump();
+        expect(_rowOf(rows[2]), findsOneWidget);
+        expect(
+          tester.getRect(_rowOf(rows[2])).contains(const Offset(100, 80)),
+          isTrue,
+        );
+        expect(_selected(h), _cmdId(PaletteCommand.backups));
+        expect(choices, isEmpty);
+
+        // Moving the pointer a little over that row does select it.
+        await mouse.moveTo(const Offset(101, 80));
+        await tester.pump();
+        expect(_selected(h), _cmdId(PaletteCommand.newNote));
+      },
+    );
+
+    testWidgets(
+      'the accessibility tap action on a palette row selects it and chooses it with newTab false',
+      (tester) async {
+        final handle = tester.ensureSemantics();
+        final choices = <(PaletteItemId, bool)>[];
+        final rows = [
+          _cmd(PaletteCommand.backups),
+          _cmd(PaletteCommand.agents),
+        ];
+        final h = await _pumpPalette(tester, commands: rows, choices: choices);
+        expect(_selected(h), _cmdId(PaletteCommand.backups));
+        tester.semantics.performAction(
+          find.semantics.byLabel('agents'),
+          SemanticsAction.tap,
+        );
+        await tester.pump();
+        expect(choices, [(_cmdId(PaletteCommand.agents), false)]);
+        expect(_selected(h), _cmdId(PaletteCommand.agents));
+        handle.dispose();
+      },
+    );
+
+    testWidgets('passage marks given out of order are all drawn', (
+      tester,
+    ) async {
+      const text = 'the quick brown fox jumps over the lazy dog';
+      final item = _passage(
+        'ch-1',
+        snippet: text,
+        marks: [
+          TextRange(start: text.indexOf('lazy'), end: text.indexOf('lazy') + 4),
+          TextRange(start: 4, end: 9),
+          TextRange(start: text.indexOf('fox'), end: text.indexOf('fox') + 3),
+        ],
+      );
+      await _pumpRows(tester, [PaletteRow(item: item, selected: false)]);
+      expect(_markedChars(tester, _rowOf(item), text), {
+        for (var i = 4; i < 9; i++) i,
+        for (var i = 16; i < 19; i++) i,
+        for (var i = 35; i < 39; i++) i,
+      });
+      expect(_markedText(tester, _rowOf(item)), ['quick', 'fox', 'lazy']);
+    });
+
+    testWidgets('overlapping passage marks are drawn once over their union', (
+      tester,
+    ) async {
+      const text = 'the quick brown fox jumps over the lazy dog';
+      final partial = _passage(
+        'ch-1',
+        snippet: text,
+        marks: [
+          const TextRange(start: 4, end: 12),
+          const TextRange(start: 8, end: 15),
+        ],
+      );
+      final contained = _passage(
+        'ch-2',
+        snippet: text,
+        marks: [
+          const TextRange(start: 4, end: 19),
+          const TextRange(start: 10, end: 14),
+        ],
+      );
+      await _pumpRows(tester, [
+        PaletteRow(item: partial, selected: false),
+        PaletteRow(item: contained, selected: false),
+      ]);
+      expect(tester.takeException(), isNull);
+      expect(_markedChars(tester, _rowOf(partial), text), {
+        for (var i = 4; i < 15; i++) i,
+      });
+      expect(_markedChars(tester, _rowOf(contained), text), {
+        for (var i = 4; i < 19; i++) i,
+      });
+    });
+
+    testWidgets(
+      'passage marks past the text end are clamped and empty marks draw nothing',
+      (tester) async {
+        const text = 'the quick brown fox';
+        final clamped = _passage(
+          'ch-1',
+          snippet: text,
+          marks: [const TextRange(start: 16, end: 400)],
+        );
+        final outside = _passage(
+          'ch-2',
+          snippet: text,
+          marks: [
+            const TextRange(start: 40, end: 50),
+            const TextRange(start: 8, end: 8),
+          ],
+        );
+        await _pumpRows(tester, [
+          PaletteRow(item: clamped, selected: false),
+          PaletteRow(item: outside, selected: false),
+        ]);
+        expect(tester.takeException(), isNull);
+        expect(_markedChars(tester, _rowOf(clamped), text), {16, 17, 18});
+        expect(_markedChars(tester, _rowOf(outside), text), isEmpty);
+        // The text is drawn whole either way.
+        expect(
+          find.descendant(
+            of: _rowOf(outside),
+            matching: find.text(text, findRichText: true),
+          ),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets('marked passage characters are fg0 and the rest fg1', (
+      tester,
+    ) async {
+      const text = 'the quick brown fox';
+      final item = _passage(
+        'ch-1',
+        snippet: text,
+        marks: [const TextRange(start: 4, end: 9)],
+      );
+      await _pumpRows(tester, [PaletteRow(item: item, selected: false)]);
+      final chars = _charColors(_richTextOf(tester, _rowOf(item), text).text);
+      expect(chars.map((c) => c.$1).join(), text);
+      for (var i = 0; i < chars.length; i++) {
+        expect(
+          chars[i].$2,
+          i >= 4 && i < 9 ? OmColors.fg0 : OmColors.fg1,
+          reason: '[$i] ${chars[i].$1}',
+        );
+      }
+    });
   });
 }
