@@ -37,12 +37,23 @@ final class RevealAtText extends RevealAt {
   final String content;
 }
 
-/// The whole excerpt card at `split(content)` index [segment].
+/// The whole excerpt card at `split(content)` index [segment]; with [start],
+/// the card's lines holding `[start, end)` (#61 F6, D2).
 final class RevealAtCard extends RevealAt {
-  const RevealAtCard({required this.segment, required this.content});
+  const RevealAtCard({
+    required this.segment,
+    required this.content,
+    this.start,
+    this.end,
+  });
 
   final int segment;
   final String content;
+
+  /// UTF-16 offsets into the card's text (`RenderedExcerpt.text`), [end]
+  /// exclusive; null [start]: the whole card.
+  final int? start;
+  final int? end;
 }
 
 /// Where the anchor sits in the viewport after the reveal.

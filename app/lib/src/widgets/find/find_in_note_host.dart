@@ -603,7 +603,12 @@ class _FindInNoteHostState extends ConsumerState<FindInNoteHost> {
     }
     final content = ref.read(editorControllerProvider).contentMd;
     final RevealAt at = match.kind == FindSourceKind.card
-        ? RevealAtCard(segment: match.segment, content: content)
+        ? RevealAtCard(
+            segment: match.segment,
+            content: content,
+            start: match.start,
+            end: match.end,
+          )
         : RevealAtText(
             segment: match.segment,
             start: match.start,

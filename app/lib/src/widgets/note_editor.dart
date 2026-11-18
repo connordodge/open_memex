@@ -306,6 +306,8 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
     var content = note.contentMd;
     EchoArrival? target;
     int? end;
+    int? cardStart;
+    int? cardEnd;
     switch (at) {
       case RevealAtByte(:final startByte):
         if (startByte == null) {
@@ -325,6 +327,9 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
         target = locateInSegment(content, segment, 0, role: note.role);
         // A text segment is no card.
         if (target?.kind != null) target = null;
+        // The card's lines holding [start, end) (#61 F6, D2).
+        cardStart = at.start;
+        cardEnd = at.end;
     }
     final found = target;
     if (found == null) {
@@ -370,7 +375,14 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
       final rects = echoArrivalRects(shown.row, found, column: shown.column);
       final anchor = at is RevealAtByte
           ? rects.anchor
-          : revealAnchorRect(shown.row, found, end: end);
+          : revealAnchorRect(
+              shown.row,
+              found,
+              end: end,
+              element: shown.element,
+              cardStart: cardStart,
+              cardEnd: cardEnd,
+            );
       final position = _scroll.position;
       final to = revealScrollOffset(
         request.placement,
@@ -509,6 +521,8 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
         onContentChanged: controller.onContentChanged,
         errorMessage: editor.errorMessage,
         header: header,
+        // The outgoing editor of a zoom paints no find highlights (#61 F6).
+        active: !_outgoing,
         dailyNoteId:
             note.role == 'daily' && VirtualTodayTab.dateOf(note.id) == null
             ? note.id
