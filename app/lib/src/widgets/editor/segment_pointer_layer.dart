@@ -540,11 +540,27 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
       } else if (row) {
         // Before the row field's tap, which would resolve the press again
         // on the revealed layout; it would also have closed its menu.
-        _rowAt(host, at)?.field.hideToolbar();
+        if (_rowAt(host, at) case final hit?) {
+          hit.field.hideToolbar();
+          _endComposingAt(hit.field, at - hit.row.textStart);
+        }
         press.entry.resolve(GestureDisposition.accepted);
         _clicks = _Clicks(event.position, at, affinity: affinity);
       }
     }
+  }
+
+  /// Puts [field]'s caret at its offset [local] through the field, as its
+  /// own tap does, when it has focus and an IME is composing in it: the
+  /// segment's select leaves a composing row's selection alone (D9), and
+  /// the field's selection change ends a composition the caret leaves.
+  void _endComposingAt(EditableTextState field, int local) {
+    final value = field.textEditingValue;
+    if (!field.widget.focusNode.hasFocus || !value.composing.isValid) return;
+    field.userUpdateTextEditingValue(
+      value.copyWith(selection: TextSelection.collapsed(offset: local)),
+      SelectionChangedCause.tap,
+    );
   }
 
   /// A secondary press on a rendered grid puts the caret at the pressed
