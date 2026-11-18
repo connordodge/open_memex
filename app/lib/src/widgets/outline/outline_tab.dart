@@ -94,13 +94,16 @@ class _OutlineTabState extends ConsumerState<OutlineTab> {
 
   List<OutlineEntry> get _entries => _shown?.entries ?? const [];
 
+  /// The note the ring's row belongs to.
+  String? _ringNoteId;
+
+  /// Focus regained after a passing loss (the app going inactive, a modal
+  /// closing) keeps the ring's row; after Esc or a note change the ring
+  /// starts from the current row, else the first.
   void _onFocusChange() {
     if (!mounted) return;
     setState(() {
-      if (!_focus.hasFocus) {
-        // The ring starts again from the current row next time.
-        _focusedIndex = null;
-      } else if (_focusedIndex == null && _entries.isNotEmpty) {
+      if (_focus.hasFocus && _focusedIndex == null && _entries.isNotEmpty) {
         _focusedIndex = _currentIndex() ?? 0;
       }
     });
@@ -192,8 +195,10 @@ class _OutlineTabState extends ConsumerState<OutlineTab> {
       // A held key jumps once.
       if (down) _activate(entries[at]);
     } else if (key == LogicalKeyboardKey.escape) {
-      if (down && !ref.read(editorFocusMemoryProvider).restore()) {
-        _focus.unfocus();
+      if (down) {
+        // The ring starts again from the current row next time.
+        setState(() => _focusedIndex = null);
+        if (!ref.read(editorFocusMemoryProvider).restore()) _focus.unfocus();
       }
     } else {
       return KeyEventResult.ignored;
@@ -248,6 +253,10 @@ class _OutlineTabState extends ConsumerState<OutlineTab> {
           );
         }
         _shown = outline;
+        if (outline.noteId != _ringNoteId) {
+          _ringNoteId = outline.noteId;
+          if (!_focus.hasFocus) _focusedIndex = null;
+        }
         final entries = outline.entries;
         final currentIndex = _currentIndex(current);
         if (currentIndex != _keptCurrent) {
