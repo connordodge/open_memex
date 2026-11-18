@@ -320,6 +320,37 @@ Future<void> _wi90ExpectEveryOffset(
   }
 }
 
+/// The scenarios the bundled-font test in
+/// `heading_caret_spaces_real_font_test.dart` replays in the shipped
+/// JetBrains Mono: for every level, the hashes then three spaces then a
+/// word, typed on a heading line above another line (LF and CRLF), with
+/// the oracles of the tests below.
+Future<void> wi90TypeSpacesCases(WidgetTester tester) async {
+  for (final (level, _) in _wi90Levels) {
+    for (final (before, after) in [
+      ('', '\nbody'),
+      ('top\n', '\nend'),
+      ('', '\r\nbody'),
+      ('top\r\n', '\r\nend'),
+    ]) {
+      final why = 'H$level in "${_wi90Show('$before|$after')}"';
+      await _wi90PumpFocused(tester, '$before$after', local: before.length);
+      await _wi90TypeHeading(
+        tester,
+        [..._wi90HashesThenSpaces(level, 3), 'h', 'i'],
+        why,
+        level: level,
+        lineStart: before.length,
+      );
+      expect(
+        wi171FocusedController().text,
+        '$before${'#' * level}   hi$after',
+        reason: '$why: typed',
+      );
+    }
+  }
+}
+
 void main() {
   holdFontFetches();
 
@@ -385,6 +416,37 @@ void main() {
             final caret = _wi90ExpectCaret(at, lineStart: start, level: level);
             _wi90ExpectRightOfPrevious(at, caret, end);
           }
+        }
+      }
+    },
+  );
+
+  testWidgets(
+    'a click past the end of a heading line of hashes and several spaces puts the caret after the last space and draws it there at every level',
+    (tester) async {
+      for (final (level, _) in _wi90Levels) {
+        for (final spaces in [2, 3]) {
+          final head = '${'#' * level}${' ' * spaces}';
+          final text = 'top\n$head\nend';
+          const start = 4;
+          final end = start + head.length;
+          final why = 'H$level "${_wi90Show(text)}" clicked past the end';
+          // The caret starts on another line, so the heading marker hides.
+          await _wi90PumpFocused(tester, text, local: 0);
+          final editable = _wi90Editable();
+          final line = editable.localToGlobal(
+            editable.getLocalRectForCaret(TextPosition(offset: end)).center,
+          );
+          final right = tester.getRect(wi171FieldOf(0, 0)).right;
+          await tester.tapAt(Offset(right - 3, line.dy));
+          await tester.pump();
+          expect(
+            wi171FocusedController().selection,
+            TextSelection.collapsed(offset: end),
+            reason: '$why: the caret is after the last space',
+          );
+          final caret = _wi90ExpectCaret(why, lineStart: start, level: level);
+          _wi90ExpectRightOfPrevious(why, caret, end);
         }
       }
     },
