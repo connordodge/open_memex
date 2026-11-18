@@ -97,7 +97,10 @@ class _OutlineTabState extends ConsumerState<OutlineTab> {
   void _onFocusChange() {
     if (!mounted) return;
     setState(() {
-      if (_focus.hasFocus && _focusedIndex == null && _entries.isNotEmpty) {
+      if (!_focus.hasFocus) {
+        // The ring starts again from the current row next time.
+        _focusedIndex = null;
+      } else if (_focusedIndex == null && _entries.isNotEmpty) {
         _focusedIndex = _currentIndex() ?? 0;
       }
     });
