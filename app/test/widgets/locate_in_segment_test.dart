@@ -111,7 +111,9 @@ void main() {
 
         final after = _wi66Located(_wi66Normal, 0, _wi66Seg0.indexOf('after'));
         expect(after.key, const ValueKey('editor-row-0-4'));
-        expect(after.rowText, 'after');
+        // A segment ending in a terminator ends in a prose row keeping it
+        // (splitRows; locateEchoArrival on main returns the same text).
+        expect(after.rowText, 'after\n');
         expect(after.local, 0);
       },
     );
@@ -165,7 +167,7 @@ void main() {
 
         expect(stray.key, const ValueKey('editor-row-0-0'));
         expect(stray.kind, RowKind.prose);
-        expect(stray.rowText, 'morning\n## Stray heading\nstray line');
+        expect(stray.rowText, 'morning\n## Stray heading\nstray line\n');
         expect(stray.local, local);
         final line = _wi66Located(
           _wi66Daily,
@@ -252,7 +254,9 @@ void main() {
           );
           if (echo != null) compared++;
         }
-        expect(compared, greaterThan(10), reason: 'role $role');
+        // The fewest locatable offsets: a daily note's shared prefix
+        // ('morning\n') has 8, a footed body ('body line\n') 10.
+        expect(compared, greaterThanOrEqualTo(8), reason: 'role $role');
       }
     });
   });
