@@ -90,6 +90,10 @@ class HostedVaultAccess implements VaultAccess {
   @override
   final HostedWordsAccess words;
 
+  /// A placeholder until the hosted search route's access lands (#75).
+  @override
+  final SearchAccess search = const _ServerOutdatedSearch();
+
   final HostedRevision _revision;
 
   @override
@@ -184,4 +188,18 @@ class _ComposedClient implements HostedClient {
       rethrow;
     }
   }
+}
+
+/// The hosted [SearchAccess] until #75: a vault server's search route is not
+/// wired yet.
+// TODO(#74): skeleton only.
+class _ServerOutdatedSearch implements SearchAccess {
+  const _ServerOutdatedSearch();
+
+  @override
+  Future<SearchResult> search(
+    String query, {
+    bool allowDownload = false,
+  }) async =>
+      const SearchReady([], semantic: Semantic.unknown, truncated: false);
 }
