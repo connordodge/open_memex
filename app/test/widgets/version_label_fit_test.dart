@@ -149,4 +149,116 @@ void main() {
       );
     },
   );
+
+  testWidgets(
+    'the sidebar brand row narrows its gap and end padding only while ready',
+    (tester) async {
+      final controller = FakeUpdateController();
+      await wi362PumpLocal(
+        tester,
+        extraOverrides: [
+          appVersionProvider.overrideWithValue(['1', '2', '3'].join('.')),
+          updatesEnabledProvider.overrideWithValue(true),
+          updateControllerProvider.overrideWith(() => controller),
+        ],
+      );
+      tester.platformDispatcher.textScaleFactorTestValue = 1.0;
+      for (var i = 0; i < 4; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+
+      final label = find.byKey(const Key('sidebar-version-label'));
+      final title = find.descendant(
+        of: find.byType(Sidebar),
+        matching: find.text('open memex'),
+      );
+      bool clipped() => tester
+          .renderObject<RenderParagraph>(
+            find.descendant(of: label, matching: find.byType(RichText)),
+          )
+          .didExceedMaxLines;
+
+      final idleTitleLeft = tester.getTopLeft(title).dx;
+      final idleLabelRight = tester.getTopRight(label).dx;
+      expect(clipped(), isFalse, reason: 'the plain label is not clipped');
+
+      controller.emit(
+        UpdateReady(
+          testAppcastItem(shortVersionString: ['1', '4', '0'].join('.')),
+          dmgPath: '/updater-test/wi38-gap.dmg',
+        ),
+      );
+      for (var i = 0; i < 4; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(tester.takeException(), isNull);
+      expect(tester.widget<Text>(label).data, 'v1.2.3 · update ready');
+      expect(
+        clipped(),
+        isFalse,
+        reason: 'the whole update ready label fits, no ellipsis',
+      );
+      expect(
+        tester.getTopLeft(title).dx,
+        idleTitleLeft - 3,
+        reason: 'the logo-to-title gap goes from 9 to 6 while ready',
+      );
+      expect(
+        tester.getTopRight(label).dx,
+        idleLabelRight + 5,
+        reason: 'the end padding goes from 14 to 9 while ready',
+      );
+
+      controller.emit(const UpdateIdle());
+      for (var i = 0; i < 4; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(tester.getTopLeft(title).dx, idleTitleLeft);
+      expect(tester.getTopRight(label).dx, idleLabelRight);
+    },
+  );
+
+  testWidgets(
+    'at a larger text scale the update ready label ellipsizes inside the row',
+    (tester) async {
+      // Other sidebar rows overflow at this scale under the test fonts (see
+      // the file header); only the brand row is asserted here.
+      final previous = FlutterError.onError;
+      FlutterError.onError = (_) {};
+      addTearDown(() => FlutterError.onError = previous);
+      await wi362PumpLocal(
+        tester,
+        extraOverrides: [
+          appVersionProvider.overrideWithValue(['1', '2', '3'].join('.')),
+          updatesEnabledProvider.overrideWithValue(true),
+          updateControllerProvider.overrideWith(
+            () => FakeUpdateController(
+              UpdateReady(
+                testAppcastItem(shortVersionString: ['1', '4', '0'].join('.')),
+                dmgPath: '/updater-test/wi38-scale.dmg',
+              ),
+            ),
+          ),
+        ],
+      );
+      tester.platformDispatcher.textScaleFactorTestValue = 2.0;
+      for (var i = 0; i < 4; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+
+      final label = find.byKey(const Key('sidebar-version-label'));
+      final text = tester.widget<Text>(label);
+      expect(text.maxLines, 1);
+      expect(text.softWrap, isFalse);
+      expect(text.overflow, TextOverflow.ellipsis);
+      final flex = tester.renderObject<RenderFlex>(_wi38BrandRow());
+      var used = 0.0;
+      var child = flex.firstChild;
+      while (child != null) {
+        used += child.size.width;
+        child = (child.parentData! as FlexParentData).nextSibling;
+      }
+      expect(used, lessThanOrEqualTo(flex.size.width), reason: 'no overflow');
+    },
+  );
 }
