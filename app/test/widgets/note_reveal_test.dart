@@ -266,6 +266,22 @@ void main() {
         expect(h.read(echoScrollTargetProvider), isNull, reason: 'taken');
         expect(h.pending, isNull, reason: 'taken after the echo target');
         expect(jumps.count, 1, reason: 'one landing: ${jumps.values}');
+
+        // The echo's landing is the one that ran: its passage a third of the
+        // way down and highlighted, not the request's heading at the inset.
+        final echoAt = _wi66Line(h, 300);
+        final vh = h.position().viewportDimension;
+        expect(
+          _wi66FromTop(h, echoAt),
+          closeTo(vh / 3 - h.lineBoxOf(0, echoAt).height / 2, _wi66Px),
+          reason: 'the echo passage sits a third of the way down',
+        );
+        expect(h.highlight, findsOneWidget, reason: 'the echo flashes');
+        expect(
+          _wi66FromTop(h, h.offsetOf(revealMidHeading)),
+          isNot(closeTo(16, 1)),
+          reason: 'the request did not land',
+        );
       },
     );
 
@@ -389,6 +405,44 @@ void main() {
         expect(
           h.linesOf(0, start, end).top - h.viewport().top,
           closeTo(vh / 3 - height / 2, _wi66Px),
+        );
+      },
+    );
+
+    testWidgets(
+      'a text request with an end in a prose row that starts after the segment start anchors on the line boxes holding the range',
+      (tester) async {
+        final h = await _wi66PumpRows(tester);
+        final start = h.offsetOf('after bullet 40\n');
+        final end = h.offsetOf('after bullet 43\n');
+        final spec = h.rowOf(0, start).spec;
+        // The prose row after the bullet row starts well past offset 0, so a
+        // segment offset used as a row offset would land far past the range.
+        expect(spec.start, greaterThan(end - start));
+        expect(h.rowOf(0, end).spec.start, spec.start, reason: 'one row');
+        final height = h.linesOf(0, start, end).height;
+        expect(
+          height,
+          greaterThan(h.lineBoxOf(0, start).height * 2),
+          reason: 'three lines',
+        );
+
+        h.request(
+          NoteRevealRequest(
+            fixtureTopicId,
+            h.textAt(start, end: end),
+            const RevealThird(),
+          ),
+        );
+        await pumpFrames(tester);
+
+        final vh = h.position().viewportDimension;
+        final lines = h.linesOf(0, start, end);
+        expect(lines.height, closeTo(height, _wi66Px));
+        expect(
+          lines.top - h.viewport().top,
+          closeTo(vh / 3 - height / 2, _wi66Px),
+          reason: 'the anchor is the three lines, not the rest of the row',
         );
       },
     );
@@ -1009,19 +1063,22 @@ void main() {
       },
     );
 
-    // The same arrivals on the note already shown (a focused second tab):
-    // the editor keeps its scroll, so opening at the top is observable.
+    // The same arrivals on the note already shown (a focused second tab): the
+    // arrival's restore runs before the request is made (D3b: a request made
+    // before an arrival dies at it), so the request reaches a note that is
+    // shown and does nothing. The restore, 700, differs from the top and from
+    // the editor's own scroll, 1500, so what the page keeps is observable.
     for (final (name, at) in <(String, RevealAt Function())>[
       (
-        'an unlocatable text request lands at the top on a same note arrival',
+        'an unlocatable text request after a same note arrival keeps the restored scroll',
         () => RevealAtText(segment: 4, start: 0, content: revealLongBody),
       ),
       (
-        'an unlocatable card request lands at the top on a same note arrival',
+        'an unlocatable card request after a same note arrival keeps the restored scroll',
         () => RevealAtCard(segment: 0, content: revealLongBody),
       ),
       (
-        'a stale text request lands at the top on a same note arrival',
+        'a stale text request after a same note arrival keeps the restored scroll',
         () => RevealAtText(
           segment: 0,
           start: _wi66StoredMid,
@@ -1031,6 +1088,7 @@ void main() {
     ]) {
       testWidgets(name, (tester) async {
         final h = await pumpNoteReveal(tester);
+        await h.scrollTo(700);
         h.tabs.openOrFocus(const NoteTab(revealOtherId));
         await pumpFrames(tester);
         await h.navigate(const NoteTab(revealLongId));
@@ -1038,6 +1096,9 @@ void main() {
         await h.scrollTo(1500);
 
         h.tabs.openOrFocus(const NoteTab(revealLongId));
+        await pumpFrames(tester);
+        expect(h.tabState.activeIndex, 0);
+        expect(h.pixels(), 700.0, reason: 'the arrival restored tab 0');
         h.request(
           NoteRevealRequest(revealLongId, at(), _wi66Top16, flash: true),
         );
@@ -1045,11 +1106,16 @@ void main() {
           await pumpFrames(tester);
         }
 
-        expect(h.tabState.activeIndex, 0);
-        expect(h.pixels(), 0.0);
+        expect(h.pixels(), 700.0, reason: 'the request did nothing');
         expect(h.highlight, findsNothing);
         expect(h.pending, isNull);
-        await _wi66ExpectReportsResume(h);
+        await h.scrollTo(900);
+        expect(h.recorded.last, (
+          noteId: revealLongId,
+          offset: 900.0,
+        ), reason: 'the scroll after the request is recorded');
+
+        await _wi66ExpectControlLands(tester, h);
       });
     }
 
@@ -1114,6 +1180,98 @@ void main() {
         expect(h.pending, isNull);
 
         await _wi66ExpectControlLands(tester, h);
+      },
+    );
+  });
+
+  // ----------------------------------------------- arrival landings still due
+  group('arrival landings still due', () {
+    /// Back onto the long note (restore 1500 due) with a hydrate-time request
+    /// whose text is not the text shown: its landing retries for 8 frames,
+    /// then gives up and opens at the top. Pumps the hydrate frame only.
+    Future<NoteRevealHarness> retryingArrival(WidgetTester tester) async {
+      final h = await pumpNoteReveal(tester);
+      await h.scrollTo(1500);
+      await h.navigate(const NoteTab(revealOtherId));
+      h.tabs.back();
+      h.request(
+        NoteRevealRequest(
+          revealLongId,
+          RevealAtText(
+            segment: 0,
+            start: _wi66StoredMid,
+            content: '${revealLongBody}stale',
+          ),
+          _wi66Top16,
+          flash: true,
+        ),
+      );
+      // Frame by frame until the long note shows: the landing retries from
+      // there.
+      for (var i = 0; i < 10 && h.pending != null; i++) {
+        await tester.pump();
+      }
+      expect(h.body().note.id, revealLongId, reason: 'the arrival hydrated');
+      expect(h.pending, isNull, reason: 'the arrival took its request');
+      return h;
+    }
+
+    testWidgets(
+      'a shown note request that gives up leaves a retrying arrival landing to finish and release the reports',
+      (tester) async {
+        final h = await retryingArrival(tester);
+        final mid = h.offsetOf(revealMidHeading);
+
+        // A request for the note shown while the arrival still retries; its
+        // text is not shown either, so it gives up after its own 8 frames.
+        h.request(
+          NoteRevealRequest(
+            revealLongId,
+            RevealAtText(
+              segment: 0,
+              start: mid,
+              content: '${h.shownContent()}stale',
+            ),
+            _wi66Top16,
+          ),
+        );
+        for (var i = 0; i < 24; i++) {
+          await tester.pump(const Duration(milliseconds: 20));
+        }
+
+        expect(h.pending, isNull);
+        expect(h.pixels(), 0.0, reason: 'the arrival opened at the top');
+        expect(h.highlight, findsNothing);
+        await _wi66ExpectReportsResume(h);
+        await _wi66ExpectControlLands(tester, h);
+      },
+    );
+
+    testWidgets(
+      'a shown note request that lands cancels an arrival landing still retrying',
+      (tester) async {
+        final h = await retryingArrival(tester);
+        final mid = h.offsetOf(revealMidHeading);
+        final jumps = h.jumps();
+
+        h.request(_wi66Req(h, mid));
+        for (var i = 0; i < 4; i++) {
+          await tester.pump(const Duration(milliseconds: 20));
+        }
+        expect(_wi66FromTop(h, mid), closeTo(16, _wi66Px), reason: 'landed');
+        final landed = h.pixels();
+        expect(jumps.count, 1);
+
+        // The arrival's 8 frames run out; it must not jump to the top.
+        for (var i = 0; i < 20; i++) {
+          await tester.pump(const Duration(milliseconds: 20));
+        }
+
+        expect(h.pixels(), landed, reason: 'the arrival gave way');
+        expect(jumps.count, 1, reason: 'no second jump: ${jumps.values}');
+        expect(h.recorded.last, (noteId: revealLongId, offset: landed));
+        await h.scrollTo(landed + 50);
+        expect(h.recorded.last, (noteId: revealLongId, offset: landed + 50));
       },
     );
   });
@@ -1241,6 +1399,35 @@ void main() {
     );
 
     testWidgets(
+      'revealAnchorRect with an end in a prose row that starts after the segment start spans the line boxes holding the range',
+      (tester) async {
+        final h = await _wi66PumpRows(tester);
+        final start = h.offsetOf('after bullet 40\n');
+        final end = h.offsetOf('after bullet 43\n');
+        final index = h.rowOf(0, start).index;
+        final spec = h.rowOf(0, start).spec;
+        expect(spec.start, greaterThan(0));
+        final row = _wi66RowBox(h, 0, index);
+        final arrival = locateInSegment(
+          h.shownContent(),
+          0,
+          start,
+          role: h.body().note.role,
+        );
+        expect(arrival, isNotNull);
+
+        final rect = revealAnchorRect(row, arrival!, end: spec.toLocal(end));
+
+        final lines = h.linesOf(0, start, end);
+        expect(row.localToGlobal(rect.topLeft).dy, closeTo(lines.top, _wi66Px));
+        expect(
+          row.localToGlobal(rect.bottomLeft).dy,
+          closeTo(lines.bottom, _wi66Px),
+        );
+      },
+    );
+
+    testWidgets(
       'revealAnchorRect with an empty or inverted range is the first line only',
       (tester) async {
         final h = await pumpNoteReveal(tester);
@@ -1328,8 +1515,8 @@ void main() {
             [0.0, 0.0, 0.0, 0.0],
             reason: 'Positioned.fill',
           );
-          expect(stack.children, hasLength(1), reason: 'no overlays yet');
-          expect(stack.children.single, same(positioned));
+          // The body is the first child; overlays (#61) stack above it.
+          expect(stack.children.first, same(positioned));
           if (h.sourceSurface.evaluate().isEmpty) await h.toggleSource();
         }
       },
@@ -1342,20 +1529,20 @@ void main() {
           'lib/src/widgets/note_editor.dart',
         ).readAsStringSync();
 
+        // The stubs' bodies are not pinned: #61 fills `_bodyOverlays` and
+        // #58 fills `_trackSections` later. Their declarations and call
+        // sites are the seam.
         expect(
-          RegExp(
-            r'List<Widget>\s+_bodyOverlays\(Note note\)\s*=>\s*const\s*\[\]\s*;'
-            r'\s*@override\s*Widget build\(',
-          ).hasMatch(source),
+          RegExp(r'List<Widget>\s+_bodyOverlays\(Note note\)').hasMatch(source),
           isTrue,
-          reason: '_bodyOverlays returns const [] just before build',
+          reason: '_bodyOverlays is declared',
         );
         expect(
           RegExp(
-            r'Widget\s+_trackSections\(Note note,\s*Widget body\)\s*=>\s*body\s*;',
+            r'Widget\s+_trackSections\(Note note,\s*Widget body\)',
           ).hasMatch(source),
           isTrue,
-          reason: '_trackSections is the identity',
+          reason: '_trackSections is declared',
         );
         expect(
           RegExp(r'_trackSections\(').allMatches(source).length,
