@@ -43,6 +43,7 @@ class LocalVaultAccess implements VaultAccess {
     LocalGraphAccess? graph,
     LocalTagsAccess? tags,
     LocalWordsAccess? words,
+    LocalSearchAccess? search,
   }) : notes =
            notes ?? LocalNotesAccess(vaultPath: vaultPath, db: db, cli: cli),
        agents = agents ?? LocalAgentsAccess(vaultPath: vaultPath, db: db),
@@ -59,7 +60,8 @@ class LocalVaultAccess implements VaultAccess {
        graph = graph ?? LocalGraphAccess(vaultPath: vaultPath, db: db),
        tags = tags ?? LocalTagsAccess(vaultPath: vaultPath, db: db, cli: cli),
        words =
-           words ?? LocalWordsAccess(vaultPath: vaultPath, db: db, cli: cli);
+           words ?? LocalWordsAccess(vaultPath: vaultPath, db: db, cli: cli),
+       search = search ?? LocalSearchAccess(vaultPath: vaultPath, cli: cli);
 
   final String vaultPath;
   final VaultDb? db;
@@ -85,6 +87,8 @@ class LocalVaultAccess implements VaultAccess {
   final LocalTagsAccess tags;
   @override
   final LocalWordsAccess words;
+  @override
+  final LocalSearchAccess search;
 
   /// The revision of a local vault with no database handle. Constant: with no
   /// handle every read is empty, so there is nothing to reload.
