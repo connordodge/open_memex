@@ -86,6 +86,17 @@ void main() {
     });
 
     test(
+      'findCounterForm hides at 260 px exactly when the field is under 96',
+      () {
+        // field = box - 110 - max(34, short text width)
+        expect(form(260, 40), FindCounterForm.short);
+        expect(form(260, 54), FindCounterForm.short);
+        expect(form(260, 54.5), FindCounterForm.hidden);
+        expect(form(260, 20), FindCounterForm.short);
+      },
+    );
+
+    test(
       'findCounterForm keeps the full form whatever the short text width',
       () {
         expect(form(300, 60), FindCounterForm.full);
