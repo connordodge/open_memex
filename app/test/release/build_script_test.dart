@@ -1725,10 +1725,12 @@ void main() {
       'a dry run with an unreadable SPARKLE_ED_KEY_PATH still signs and exits 0',
       () async {
         final fx = await _fixture();
+        await _sh(['/bin/chmod', '000', fx.edKey]);
+        addTearDown(() => _sh(['/bin/chmod', '600', fx.edKey]));
         final r = await _runBuild(
           fx,
           _dryArgs(fx),
-          env: {'SPARKLE_ED_KEY_PATH': '${fx.state}/no-such-key'},
+          env: {'SPARKLE_ED_KEY_PATH': fx.edKey},
         );
         expect(r.exitCode, 0, reason: '$r');
         expect(_steps(r), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
@@ -2019,6 +2021,77 @@ void main() {
         final r = await _runBuild(fx, _signedArgs(fx), env: env);
         _expectRefused(r, fx, 'SPARKLE_ED_KEY_PATH');
         expect(signUpdateCalls(fx.state), isEmpty);
+      });
+    }
+
+    // A key file that exists and is readable but does not hold a base64 EdDSA
+    // private key (32 or 96 bytes): an unset secret decodes to an empty file.
+    // (test name, builds the key file text)
+    final badKeyText = <(String, String Function())>[
+      (
+        'signed mode with an empty SPARKLE_ED_KEY_PATH file exits 2 before STEP 1',
+        () => '',
+      ),
+      (
+        'signed mode with a white space only SPARKLE_ED_KEY_PATH file exits 2 before STEP 1',
+        () => ' \n\r\n\t \n',
+      ),
+      (
+        'signed mode with a SPARKLE_ED_KEY_PATH file that is not base64 exits 2 before STEP 1',
+        () => 'this is not a key!\n',
+      ),
+      (
+        'signed mode with a SPARKLE_ED_KEY_PATH key with characters outside base64 exits 2 before STEP 1',
+        // base64 -d skips the trailing - and _ and still gets 32 bytes, so
+        // only the character check refuses it.
+        () => '${mintEdKeyBase64()}-_\n',
+      ),
+      for (final n in [16, 31, 33, 64, 95, 97])
+        (
+          'signed mode with a SPARKLE_ED_KEY_PATH key of $n bytes exits 2 before STEP 1',
+          () => '${base64Encode(List.filled(n, 7))}\n',
+        ),
+    ];
+    for (final (name, text) in badKeyText) {
+      test(name, () async {
+        final fx = await _fixture();
+        File(fx.edKey).writeAsStringSync(text());
+        final r = await _runBuild(fx, _signedArgs(fx), env: _signedEnv(fx));
+        _expectRefused(r, fx, 'SPARKLE_ED_KEY_PATH');
+        expect(signUpdateCalls(fx.state), isEmpty);
+        final keyText = File(fx.edKey).readAsStringSync().trim();
+        if (keyText.isNotEmpty) {
+          expect(
+            r.output,
+            isNot(contains(keyText)),
+            reason: 'the refusal must not print the key text',
+          );
+        }
+      });
+    }
+
+    // (test name, builds the key file text). Both accepted formats, with the
+    // white space a decoded secret may carry; each runs to the end.
+    final goodKeyText = <(String, String Function())>[
+      (
+        'signed mode accepts a 96 byte SPARKLE_ED_KEY_PATH key and signs with it',
+        () => '${base64Encode(List.generate(96, (i) => i * 7 % 256))}\n',
+      ),
+      (
+        'signed mode accepts a SPARKLE_ED_KEY_PATH key with CRLF line ends and indentation',
+        () => '  ${mintEdKeyBase64()}\r\n\t\r\n',
+      ),
+    ];
+    for (final (name, text) in goodKeyText) {
+      test(name, () async {
+        final fx = await _fixture();
+        File(fx.edKey).writeAsStringSync(text());
+        final r = await _runBuild(fx, _signedArgs(fx), env: _signedEnv(fx));
+        expect(r.exitCode, 0, reason: '$r');
+        expect(_steps(r), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        final signings = signUpdateCalls(fx.state);
+        expect(signings, hasLength(1), reason: _callList(_calls(fx)));
+        expect(signings.single.keyPath, fx.edKey);
       });
     }
 
@@ -2553,6 +2626,23 @@ void main() {
     );
 
     test(
+      'a sign_update that prints a signature and then fails fails step 9 and writes nothing to out',
+      () async {
+        final fx = await _fixture();
+        final r = await _runBuild(
+          fx,
+          _dryArgs(fx),
+          env: {'FAKE_SIGN_UPDATE_FAIL_WITH_SIG': '1'},
+        );
+        final why = '$r\n${_callList(_calls(fx))}';
+        expect(r.exitCode, 1, reason: why);
+        expect(_failed(r), [9], reason: why);
+        expect(_steps(r), [1, 2, 3, 4, 5, 6, 7, 8, 9], reason: why);
+        expect(Directory(fx.out).listSync(), isEmpty, reason: why);
+      },
+    );
+
+    test(
       'a failing leak check after EdDSA signing leaves the signature and length out of out',
       () async {
         final fx = await _fixture();
@@ -2762,6 +2852,25 @@ void main() {
         );
         expect(r.exitCode, 1, reason: '$r');
         expect(r.stdout.trim(), isEmpty, reason: '$r');
+        expect(
+          _edCalls(fx).where((c) => c.tool == 'sign_update'),
+          hasLength(1),
+          reason: 'sign_update was not run',
+        );
+      },
+    );
+
+    test(
+      'eddsa_sign.sh exits 1 and prints nothing when sign_update prints a signature and then fails',
+      () async {
+        final fx = await _edFixture();
+        final r = await _runEddsa(
+          fx,
+          [fx.file],
+          env: {'FAKE_SIGN_UPDATE_FAIL_WITH_SIG': '1'},
+        );
+        expect(r.exitCode, 1, reason: '$r');
+        expect(r.stdout.trim(), isEmpty, reason: 'a failed signing leaked $r');
         expect(
           _edCalls(fx).where((c) => c.tool == 'sign_update'),
           hasLength(1),

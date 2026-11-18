@@ -279,7 +279,10 @@ _fake_sig() {
 /// `sparkle:edSignature="<sig>" length="<n>"`. Without a key file the real
 /// tool reads the login Keychain: the fake records that in
 /// `$FAKE_STATE/keychain` and fails. A bad key or file fails with exit 1.
-/// `FAKE_SIGN_UPDATE_FAIL=1` makes it fail. `FAKE_SIGN_UPDATE_GARBAGE=1`
+/// `FAKE_SIGN_UPDATE_FAIL=1` makes it fail. `FAKE_SIGN_UPDATE_FAIL_WITH_SIG=1`
+/// makes it print a valid-looking 88 character base64 signature on stdout
+/// and then exit 1, like a tool that fails after it has printed.
+/// `FAKE_SIGN_UPDATE_GARBAGE=1`
 /// makes it exit 0 printing text that is not a base64 signature. Each signing appends
 /// `<$0>\t<key path>\t<key base64>\t<key bytes>\t<file>\t<file sha256>\t<sig>`
 /// to `$FAKE_STATE/sign_update.calls`.
@@ -307,6 +310,12 @@ for a in "$@"; do
 done
 if [ "${FAKE_SIGN_UPDATE_FAIL:-}" = 1 ]; then
   echo "ERROR! fake sign_update: signing failed" >&2
+  exit 1
+fi
+if [ "${FAKE_SIGN_UPDATE_FAIL_WITH_SIG:-}" = 1 ]; then
+  printf 'A%.0s' $(seq 1 86)
+  printf '==\n'
+  echo "ERROR! fake sign_update: failed after printing a signature" >&2
   exit 1
 fi
 if [ "${FAKE_SIGN_UPDATE_GARBAGE:-}" = 1 ]; then
