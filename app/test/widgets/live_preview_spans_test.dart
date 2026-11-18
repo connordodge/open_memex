@@ -2378,6 +2378,71 @@ void main() {
       },
     );
   });
+
+  // WI #90 (Spec #57 Req 1-4, TD 1-2): a heading line of hashes and two or
+  // more spaces with no word yet. On the base the first space sits in the
+  // marker run and the rest in a whitespace-only text run whose boxes
+  // overlap it, so the caret after the last space is one space short.
+  group('heading hashes with several spaces and no word (WI 90)', () {
+    testWidgets(
+      'heading lines of hashes and several spaces keep the field text as plain text in TextSpans and draw the caret after the last space',
+      (tester) async {
+        for (final (level, size) in _wi223Sizes) {
+          for (final terminator in ['', '\n', '\r\n']) {
+            for (final spaces in [2, 3]) {
+              final head = '${'#' * level}${' ' * spaces}';
+              final rest = terminator.isEmpty ? '' : '${terminator}body';
+              final text = '$head$rest';
+              final end = head.length;
+              final why = 'H$level "${_wi64Show(text)}"';
+              // The builder span keeps the text revealed (the caret after
+              // the spaces), selected (a range across the text) and hidden.
+              for (final (state, selection, hidden) in [
+                ('revealed', _caret(end), false),
+                (
+                  'selected',
+                  TextSelection(baseOffset: 0, extentOffset: text.length),
+                  false,
+                ),
+                ('hidden', _caret(end), true),
+              ]) {
+                _expectExactPlainText(
+                  _build(text, selection: selection, forceHidden: hidden),
+                  text,
+                  '$why $state builder span',
+                );
+              }
+              final c = _controller(text, selection: _caret(end));
+              final editable = await _wi223PumpEditorField(tester, c);
+              _expectExactPlainText(
+                editable.text! as TextSpan,
+                text,
+                '$why field span',
+              );
+              final caret = editable
+                  .getLocalRectForCaret(TextPosition(offset: end))
+                  .left;
+              expect(
+                caret,
+                closeTo(_wi64TrailingEdge(editable, end), 0.5),
+                reason: '$why: caret at $end on the last space edge',
+              );
+              expect(
+                caret,
+                greaterThan(_wi64TrailingEdge(editable, end - 1) + 1),
+                reason: '$why: caret right of the space before the last',
+              );
+              expect(
+                caret,
+                closeTo(_normalWidth(head, size), 0.5),
+                reason: '$why: caret one width of "$head" at $size in',
+              );
+            }
+          }
+        }
+      },
+    );
+  });
 }
 
 /// Shows [text] for a failure reason (`\r` and `\n` spelled out).
