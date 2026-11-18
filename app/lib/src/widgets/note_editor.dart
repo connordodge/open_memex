@@ -28,6 +28,7 @@ import 'editor/segmented_body.dart';
 import 'editor/source_surface.dart';
 import 'editor/spelling_learn_error.dart';
 import 'editor/text_segment.dart' show EditorScrollScope;
+import 'outline/section_tracker.dart';
 
 /// The note editor host: wires the selected note and [EditorController] into
 /// the [EditorToolbar], the body (with its [NoteHeader]) and the save status
@@ -428,7 +429,8 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
 
   /// The segmented body as the editor shows it: the Outline's section
   /// tracker (#58) wraps it here.
-  Widget _trackSections(Note note, Widget body) => body;
+  Widget _trackSections(Note note, Widget body) =>
+      SectionTracker(note: note, child: body);
 
   /// Jumps to [offset], clamped, after the next frame: that frame lays out what
   /// the caller just asked to be built. Runs once, unless an arrival cancels it.

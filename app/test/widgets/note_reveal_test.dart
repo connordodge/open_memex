@@ -1704,6 +1704,15 @@ void main() {
         ).readAsStringSync();
 
         expect(_wi66SeamSlotProblems(source), isEmpty);
+        // #69 fills `_trackSections` with its SectionTracker.
+        expect(
+          RegExp(
+            r'Widget\s+_trackSections\(Note note,\s*Widget body\)\s*=>'
+            r'\s*SectionTracker\(note: note, child: body\)\s*;',
+          ).hasMatch(source),
+          isTrue,
+          reason: '_trackSections wraps the body in #69s SectionTracker',
+        );
       },
     );
 
