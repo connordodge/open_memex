@@ -12,10 +12,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/src/db.dart' show Note;
 import 'package:open_memex_app/src/editor/outline.dart';
+import 'package:open_memex_app/src/state/note_reveal.dart';
 import 'package:open_memex_app/src/state/outline_section.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/widgets/editor/segmented_body.dart';
+import 'package:open_memex_app/src/widgets/editor/text_segment.dart'
+    show EditorScrollScope;
 import 'package:open_memex_app/src/widgets/note_editor.dart';
 import 'package:open_memex_app/src/widgets/outline/outline_jump.dart';
 import 'package:open_memex_app/src/widgets/outline/section_tracker.dart';
@@ -100,6 +104,18 @@ void _wi69Jump(WidgetTester tester, NoteRevealHarness h, OutlineEntry entry) =>
       entry,
       h.shownContent(),
     );
+
+/// A bare note [id] for a hand-built editor tree.
+Note _wi69Note(String id) => Note(
+  id: id,
+  title: id,
+  contentMd: '',
+  frontmatter: '',
+  version: 1,
+  createdAt: 0,
+  updatedAt: 0,
+  tags: const [],
+);
 
 void main() {
   holdFontFetches();
@@ -434,6 +450,62 @@ void main() {
         expect(sub.read(), _wi69Entry(h, 'Mid heading'));
       },
     );
+
+    testWidgets(
+      'a tracker whose note differs from the one its body shows reports no entry of the body',
+      (tester) async {
+        // The editor keeps building the previous note's body until the new
+        // note hydrates (`SegmentedBody(note: _hydratedNote ?? note)`): the
+        // tracker already holds the new note and must not report the old
+        // body's headings.
+        final h = await pumpNoteReveal(tester, open: null);
+        final shown = _wi69Note('wi69-shown');
+        final other = _wi69Note('wi69-other');
+        final controller = ScrollController();
+        addTearDown(controller.dispose);
+        final content = '## Head\n${revealLines('line', 0, 120)}';
+        Widget tree(Note tracked) => UncontrolledProviderScope(
+          container: h.container,
+          child: MaterialApp(
+            home: Material(
+              child: SectionTracker(
+                note: tracked,
+                child: EditorScrollScope(
+                  controller: controller,
+                  child: SegmentedBody(
+                    note: shown,
+                    content: content,
+                    savedVersion: 1,
+                    onContentChanged: (_) {},
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+
+        await tester.pumpWidget(tree(shown));
+        final sub = h.container.listen<OutlineEntry?>(
+          outlineSectionProvider,
+          (_, _) {},
+        );
+        addTearDown(sub.close);
+        await pumpFrames(tester);
+        // The control: the heading line scrolled well above the viewport top.
+        final head = outlineEntries(content).single;
+        controller.jumpTo(100);
+        await pumpFrames(tester);
+        expect(sub.read(), head, reason: 'the note it shows: reported');
+
+        await tester.pumpWidget(tree(other));
+        await pumpFrames(tester);
+        expect(sub.read(), isNull, reason: 'the body shows another note');
+
+        await tester.pumpWidget(tree(shown));
+        await pumpFrames(tester);
+        expect(sub.read(), head, reason: 'shown again: reported again');
+      },
+    );
   });
 
   group('work', () {
@@ -623,22 +695,138 @@ void main() {
     );
 
     testWidgets(
-      'a scroll before a jump has landed drops it so a later scroll back onto the target does not pin it',
+      'a scroll before a jump has landed does not drop it so the jumped-to entry is current once it lands',
       (tester) async {
         final h = await pumpNoteReveal(tester);
         final sub = await _wi69Watch(h);
         final end = _wi69Entry(h, 'Near the end');
-        final wrapped = _wi69Entry(h, 'Wrapped');
 
         // The request is made and a person scrolls before any frame lands
-        // it (a scroll outside a frame's end).
+        // it (a scroll outside a frame's end): the seam still lands it.
         _wi69Jump(tester, h, end);
         h.position().jumpTo(1200);
         await pumpFrames(tester);
-        // The seam still lands it, at the end of the note.
-        expect(h.pixels(), h.position().maxScrollExtent);
-        expect(sub.read(), _wi69Expected(h));
-        expect(sub.read(), wrapped, reason: 'no pin: the jump was dropped');
+        expect(h.pixels(), h.position().maxScrollExtent, reason: 'landed');
+        expect(sub.read(), end, reason: 'the jumped-to entry is current');
+
+        // Then the pin ends with the next scroll, as ever.
+        await h.scrollTo(h.position().maxScrollExtent - 1);
+        await tester.pump();
+        expect(sub.read(), _wi69Entry(h, 'Wrapped'), reason: 'normal rule');
+      },
+    );
+
+    testWidgets(
+      'a clamped jump is dropped by a scroll away and back while nothing watches the provider',
+      (tester) async {
+        final (:h, :sub) = await clamped(tester);
+        final max = h.position().maxScrollExtent;
+
+        // The Outline is hidden: no pass runs while the page is scrolled
+        // away and back onto the exact landing.
+        sub.close();
+        await pumpFrames(tester);
+        await h.scrollTo(max - 300);
+        await h.scrollTo(max);
+        await pumpFrames(tester);
+
+        final again = await _wi69Watch(h, frames: 1);
+        expect(h.pixels(), max);
+        expect(again.read(), _wi69Entry(h, 'Wrapped'), reason: 'pin is gone');
+      },
+    );
+
+    testWidgets(
+      'a clamped jump is dropped by a same length text change that leaves its entry where it was',
+      (tester) async {
+        final (:h, :sub) = await clamped(tester);
+        final max = h.position().maxScrollExtent;
+        final end = _wi69Entry(h, 'Near the end');
+
+        // Nothing moves: the entry, the layout and the offset are the same,
+        // only the text differs.
+        final segment = editorBodySegment(tester);
+        segment.replaceText(
+          segment.text.replaceFirst('line 10\n', 'line 1x\n'),
+        );
+        await pumpFrames(tester);
+        await pumpFrames(tester);
+        expect(h.pixels(), max, reason: 'the page did not move');
+        expect(_wi69Entries(h).contains(end), isTrue, reason: 'entry unmoved');
+        expect(sub.read(), _wi69Entry(h, 'Wrapped'), reason: 'pin dropped');
+      },
+    );
+
+    testWidgets(
+      'a clamped jump is dropped by an arrival that restores the page to the landing while nothing watches the provider',
+      (tester) async {
+        final (:h, :sub) = await clamped(tester);
+        final max = h.position().maxScrollExtent;
+        final arrivals = h.tabState.arrivals;
+
+        // Hidden Outline: away to another note and back; the tabs restore
+        // the recorded landing offset, so the page sits exactly where the
+        // jump put it, in a new arrival.
+        sub.close();
+        await pumpFrames(tester);
+        await h.navigate(const NoteTab(revealOtherId));
+        await pumpFrames(tester);
+        h.tabs.back();
+        await pumpFrames(tester);
+        await pumpFrames(tester);
+        expect(h.tabState.arrivals, greaterThan(arrivals), reason: 'arrived');
+        expect(h.body().note.id, revealLongId);
+        expect(h.pixels(), max, reason: 'restored to the landing');
+
+        final again = await _wi69Watch(h, frames: 1);
+        expect(again.read(), _wi69Entry(h, 'Wrapped'), reason: 'pin is gone');
+      },
+    );
+
+    testWidgets(
+      'a jump that has not landed is dropped when another reveal request replaces it',
+      (tester) async {
+        final h = await pumpNoteReveal(tester);
+        final sub = await _wi69Watch(h);
+        final end = _wi69Entry(h, 'Near the end');
+
+        // The jump is replaced in the same frame by a plain reveal that
+        // also lands at the end of the note: the seam lands only the
+        // latest request, so the Outline did not put the page there.
+        _wi69Jump(tester, h, end);
+        h.request(
+          NoteRevealRequest(
+            h.body().note.id,
+            h.textAt(end.local, segment: end.segment),
+            const RevealTop(_wi69Inset),
+          ),
+        );
+        await pumpFrames(tester);
+        expect(h.pixels(), h.position().maxScrollExtent, reason: 'clamped');
+        expect(sub.read(), _wi69Entry(h, 'Wrapped'), reason: 'no pin');
+      },
+    );
+
+    testWidgets(
+      'a jump that has not landed is dropped when the provider loses its listener',
+      (tester) async {
+        final h = await pumpNoteReveal(tester);
+        final sub = await _wi69Watch(h);
+        final end = _wi69Entry(h, 'Near the end');
+
+        // Hidden before the frame lands it: it lands unseen, is scrolled
+        // away from and back onto unseen.
+        _wi69Jump(tester, h, end);
+        sub.close();
+        await pumpFrames(tester);
+        final max = h.position().maxScrollExtent;
+        expect(h.pixels(), max, reason: 'the seam landed it');
+        await h.scrollTo(max - 300);
+        await h.scrollTo(max);
+        await pumpFrames(tester);
+
+        final again = await _wi69Watch(h, frames: 1);
+        expect(again.read(), _wi69Entry(h, 'Wrapped'), reason: 'no pin');
       },
     );
   });

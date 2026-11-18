@@ -5,6 +5,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/outline.dart';
+import 'package:open_memex_app/src/state/note_reveal.dart';
 import 'package:open_memex_app/src/state/outline_section.dart';
 
 OutlineEntry _wi69Entry(String text) =>
@@ -90,12 +91,20 @@ void main() {
     },
   );
 
-  test('a report with nothing watching does not throw and is not kept', () {
-    final tracker = Object();
-    hub.report(tracker, _wi69Entry('A'));
-    final sub = container.listen(outlineSectionProvider, (_, _) {});
-    expect(sub.read(), isNull);
-  });
+  test(
+    'a report with nothing watching changes nothing a later listener sees',
+    () {
+      final tracker = Object();
+      expect(() => hub.report(tracker, _wi69Entry('A')), returnsNormally);
+      final sub = container.listen(outlineSectionProvider, (_, _) {});
+      expect(sub.read(), isNull);
+      // Once watched, a report is kept and a later null replaces it.
+      hub.report(tracker, _wi69Entry('B'));
+      expect(sub.read(), _wi69Entry('B'));
+      hub.report(tracker, null);
+      expect(sub.read(), isNull);
+    },
+  );
 
   test(
     'a jump notifies the hub, replaces the earlier one and can be dropped',
@@ -127,6 +136,65 @@ void main() {
       hub.dropJump();
       expect(hub.jump, isNull);
       expect(hub.jumpLanded, isFalse);
+    },
+  );
+
+  OutlineJump jumpWith({int? seq}) => OutlineJump(
+    noteId: 'n',
+    entry: _wi69Entry('A'),
+    content: 'c',
+    arrivals: 1,
+    seq: seq,
+  );
+
+  NoteRevealRequest request() => NoteRevealRequest(
+    'n',
+    const RevealAtText(segment: 0, start: 0, content: 'c'),
+    const RevealTop(16),
+  );
+
+  test(
+    'a jump that has not landed is dropped when its provider loses the last listener',
+    () {
+      final sub = container.listen(outlineSectionProvider, (_, _) {});
+      hub.jumped(jumpWith());
+      sub.close();
+      expect(hub.jump, isNull);
+      expect(hub.jumpLanded, isFalse);
+    },
+  );
+
+  test(
+    'a jump that has landed survives its provider losing the last listener',
+    () {
+      final sub = container.listen(outlineSectionProvider, (_, _) {});
+      final jump = jumpWith();
+      hub.jumped(jump);
+      hub.markLanded();
+      sub.close();
+      expect(hub.jump, jump);
+      expect(hub.jumpLanded, isTrue);
+    },
+  );
+
+  test(
+    'a jump that has not landed is dropped by a newer reveal request and a landed one is not',
+    () {
+      final reveal = container.read(noteRevealProvider.notifier);
+      reveal.request(request());
+      final first = container.read(noteRevealProvider)!;
+      hub.jumped(jumpWith(seq: first.seq));
+      expect(hub.jump, isNotNull, reason: 'its own request does not drop it');
+
+      reveal.request(request());
+      expect(hub.jump, isNull, reason: 'another request replaced it');
+
+      final second = container.read(noteRevealProvider)!;
+      hub.jumped(jumpWith(seq: second.seq));
+      hub.markLanded();
+      reveal.request(request());
+      expect(hub.jump, isNotNull, reason: 'landed: a later request is another');
+      expect(hub.jumpLanded, isTrue);
     },
   );
 }
