@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Open Memex</title>
+    <item>
+      <sparkle:version>9</sparkle:version>
+      <sparkle:shortVersionString>1.3.0</sparkle:shortVersionString>
+      <description><![CDATA[## v1.3.0
+- Notes may hold ]]]]><![CDATA[> now
+- Search & replace]]></description>
+      <link>https://github.com/connordodge/open_memex/releases/tag/v1.3.0</link>
+      <enclosure url="https://github.com/connordodge/open_memex/releases/download/v1.3.0/Open-Memex-1.3.0-arm64.dmg" sparkle:edSignature="c2lnbmF0dXJlLWZvci0xLjMuMA==" length="38765432" type="application/octet-stream"/>
+    </item>
+  </channel>
+</rss>

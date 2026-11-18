@@ -208,3 +208,11 @@ _Avoid_: embedded CLI, helper, sidecar
 **Leak check**:
 The check that fails when a file, diff or build artifact contains a home directory path, a personal email address or another private identifier that must not go public.
 _Avoid_: secret scan (secrets are only one kind of leak), audit
+
+**Self-update**:
+The app's own flow that finds a newer Release, downloads and verifies it, and replaces the installed `Open Memex.app` with it once the person chooses to relaunch.
+_Avoid_: auto-update, upgrade, patch
+
+**Appcast**:
+The signed feed of Releases, in Sparkle's appcast XML format, that Self-update reads to learn the newest version and where to download it.
+_Avoid_: update feed, manifest, releases.json
