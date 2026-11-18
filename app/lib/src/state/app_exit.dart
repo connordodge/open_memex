@@ -4,6 +4,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart' show AppLifecycleListener, VoidCallback;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'find_in_note_state.dart' show FindMenuAction;
+
 /// The app's window method channel (macOS `MainFlutterWindow.swift`).
 ///
 /// - native → Dart `windowShouldClose` (no arguments): the window delegate
@@ -14,16 +16,23 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 ///   was picked; Dart opens the Agents sheet.
 /// - Dart → native `setAgentsMenuEnabled` (argument: a `bool`): enables or
 ///   greys out Window ▸ Agents….
+/// - native → Dart `find` (argument: the action string `show`, `next`,
+///   `previous` or `useSelection`): Edit ▸ Find ▸ Find… (⌘F), Find Next
+///   (⌘G), Find Previous (⇧⌘G) or Use Selection for Find (⌘E) was picked;
+///   Dart performs it. Native never reads the reply.
+/// - Dart → native `setFindMenuEnabled` (argument: a `bool`): enables or
+///   greys out those four items.
 ///
 /// The channel has one Dart handler, [appWindowRouter] (D18); no host sets
 /// its own.
 const appWindowChannel = MethodChannel('open_memex/window');
 
 /// The one Dart handler on a window channel (Spec #394 req 7, D18). It
-/// dispatches `windowShouldClose` to the [AppExitHost]'s handler and
-/// `openAgents` to the [WindowMenuHost]'s callback; any other method, or one
-/// whose host is not attached, throws [MissingPluginException] (an empty
-/// reply natively). A second `setMethodCallHandler` would replace the first,
+/// dispatches `windowShouldClose` to the [AppExitHost]'s handler,
+/// `openAgents` to the [WindowMenuHost]'s callback and `find` to the find
+/// handler (Spec #61 F5; a `find` whose argument is no known action string
+/// is answered and ignored); any other method, or one whose host is not
+/// attached, throws [MissingPluginException] (an empty reply natively). A second `setMethodCallHandler` would replace the first,
 /// so the hosts register here instead and attach in either order.
 class WindowChannelRouter {
   WindowChannelRouter(this.channel);
@@ -32,6 +41,15 @@ class WindowChannelRouter {
 
   WindowCloseHandler? _onWindowClose;
   VoidCallback? _onOpenAgents;
+  FindMenuHandler? _onFind;
+
+  /// The `find` argument (the native wire format) → its action.
+  static const _findActions = <String, FindMenuAction>{
+    'show': FindMenuAction.show,
+    'next': FindMenuAction.next,
+    'previous': FindMenuAction.previous,
+    'useSelection': FindMenuAction.useSelection,
+  };
 
   /// Routes `windowShouldClose` to [handler].
   void setWindowCloseHandler(WindowCloseHandler handler) {
@@ -44,6 +62,20 @@ class WindowChannelRouter {
   void clearWindowCloseHandler(WindowCloseHandler handler) {
     if (!identical(_onWindowClose, handler)) return;
     _onWindowClose = null;
+    _sync();
+  }
+
+  /// Routes `find` to [handler].
+  void setFindHandler(FindMenuHandler handler) {
+    _onFind = handler;
+    _sync();
+  }
+
+  /// Stops routing `find`, unless another handler than [handler] has been
+  /// set since.
+  void clearFindHandler(FindMenuHandler handler) {
+    if (!identical(_onFind, handler)) return;
+    _onFind = null;
     _sync();
   }
 
@@ -61,20 +93,27 @@ class WindowChannelRouter {
     _sync();
   }
 
-  /// One handler while either host is attached; none once both detach.
+  /// One handler while any host is attached; none once all detach.
   void _sync() {
-    final idle = _onWindowClose == null && _onOpenAgents == null;
+    final idle =
+        _onWindowClose == null && _onOpenAgents == null && _onFind == null;
     channel.setMethodCallHandler(idle ? null : _handle);
   }
 
   Future<Object?> _handle(MethodCall call) async {
     final onWindowClose = _onWindowClose;
     final onOpenAgents = _onOpenAgents;
+    final onFind = _onFind;
     if (call.method == 'windowShouldClose' && onWindowClose != null) {
       return onWindowClose();
     }
     if (call.method == 'openAgents' && onOpenAgents != null) {
       onOpenAgents();
+      return null;
+    }
+    if (call.method == 'find' && onFind != null) {
+      final action = _findActions[call.arguments];
+      if (action != null) onFind(action);
       return null;
     }
     throw MissingPluginException('${channel.name}: ${call.method}');
@@ -83,6 +122,9 @@ class WindowChannelRouter {
 
 /// The router that owns [appWindowChannel]'s handler.
 final appWindowRouter = WindowChannelRouter(appWindowChannel);
+
+/// Performs one native Edit ▸ Find item (`find` on [appWindowChannel]).
+typedef FindMenuHandler = void Function(FindMenuAction action);
 
 /// Answers a window-close request: true lets the window close.
 typedef WindowCloseHandler = Future<bool> Function();
@@ -155,6 +197,11 @@ abstract interface class WindowMenuHost {
   /// Enables or disables Window ▸ Agents… (and with it ⇧⌘A). With no
   /// native handler (widget tests) it does nothing.
   Future<void> setAgentsMenuEnabled(bool enabled);
+
+  /// Enables or disables Edit ▸ Find ▸ Find…, Find Next, Find Previous and
+  /// Use Selection for Find. With no native handler (widget tests) it does
+  /// nothing.
+  Future<void> setFindMenuEnabled(bool enabled);
 }
 
 /// The real host: `openAgents` arrives on [appWindowChannel] through the
@@ -187,6 +234,17 @@ class PlatformWindowMenuHost implements WindowMenuHost {
         'setAgentsMenuEnabled',
         enabled,
       );
+    } on MissingPluginException {
+      // No native window (widget tests, other platforms): no menu to grey.
+    }
+  }
+
+  /// Sends `setFindMenuEnabled` on [appWindowChannel]. Only a missing
+  /// native handler is swallowed; a native error is passed on.
+  @override
+  Future<void> setFindMenuEnabled(bool enabled) async {
+    try {
+      await appWindowChannel.invokeMethod<void>('setFindMenuEnabled', enabled);
     } on MissingPluginException {
       // No native window (widget tests, other platforms): no menu to grey.
     }
