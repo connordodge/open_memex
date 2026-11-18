@@ -28,13 +28,14 @@ mod api_fixtures;
 #[path = "support/server.rs"]
 mod server;
 
+use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use memex_core::embedder::{Embedder, GatedEmbedder, TableEmbedder};
+use memex_core::embedder::{Embedder, FastEmbedder, GatedEmbedder, TableEmbedder};
 use memex_core::indexer;
 use memex_core::notes::{create_note_as, CreateNote};
 use memex_core::schema;
@@ -222,6 +223,148 @@ impl Embedder for NoCall {
 /// The embedder of the `on` rows: it knows only [`QUERY`].
 fn query_table() -> TableEmbedder {
     TableEmbedder::new(DIM).with(QUERY, query_vec())
+}
+
+/// A working embedder, counting its batches: [`QUERY`] gets [`query_vec`]
+/// and any other text (a blank query's load probe, say) gets `e(1)`.
+struct CountingTable {
+    calls: AtomicUsize,
+}
+
+impl CountingTable {
+    fn new() -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+impl Embedder for CountingTable {
+    fn model_version(&self) -> &str {
+        "counting-table-v1"
+    }
+
+    fn dimension(&self) -> usize {
+        DIM
+    }
+
+    fn embed_batch(&self, texts: &[String]) -> memex_core::Result<Vec<Vec<f32>>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(texts
+            .iter()
+            .map(|t| if t == QUERY { query_vec() } else { e(1) })
+            .collect())
+    }
+}
+
+// ---------------------------------------------------------------- model cache
+
+/// A local port that counts and drops every connection, for `HF_ENDPOINT`.
+/// Any hf-hub request fails at once and is counted.
+struct Tripwire {
+    url: String,
+    hits: Arc<AtomicUsize>,
+}
+
+impl Tripwire {
+    fn start() -> Self {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let hits = Arc::new(AtomicUsize::new(0));
+        let h = hits.clone();
+        std::thread::spawn(move || {
+            for s in listener.incoming() {
+                h.fetch_add(1, Ordering::SeqCst);
+                drop(s);
+            }
+        });
+        Self { url, hits }
+    }
+
+    fn hits(&self) -> usize {
+        self.hits.load(Ordering::SeqCst)
+    }
+}
+
+/// Serializes the tests that read `HF_HOME` / `HF_ENDPOINT` (a blank query
+/// asks `FastEmbedder::is_cached`, which reads `HF_HOME`), and fixes both
+/// for the test: `HF_HOME` unset, `HF_ENDPOINT` at `hub` when given, else
+/// unset. The old values come back on drop.
+struct HfEnv {
+    saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    _lock: tokio::sync::MutexGuard<'static, ()>,
+}
+
+static HF_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+impl HfEnv {
+    async fn set(hub: Option<&Tripwire>) -> Self {
+        let lock = HF_ENV_LOCK.lock().await;
+        let saved = ["HF_HOME", "HF_ENDPOINT"]
+            .into_iter()
+            .map(|k| (k, std::env::var_os(k)))
+            .collect();
+        std::env::remove_var("HF_HOME");
+        match hub {
+            Some(hub) => std::env::set_var("HF_ENDPOINT", &hub.url),
+            None => std::env::remove_var("HF_ENDPOINT"),
+        }
+        Self { saved, _lock: lock }
+    }
+}
+
+impl Drop for HfEnv {
+    fn drop(&mut self) {
+        for (k, v) in &self.saved {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+    }
+}
+
+/// A complete, fake BGE-small-en-v1.5 cache under `cache` in hf-hub's layout
+/// (`refs/main` -> a snapshot holding every file fastembed reads).
+/// `FastEmbedder::is_cached` reads it as cached; loading it would fail on
+/// the fake bytes, with no network access.
+fn write_fake_cached_model(cache: &Path) {
+    const COMMIT: &str = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a";
+    let repo = cache.join("models--Xenova--bge-small-en-v1.5");
+    for file in [
+        "onnx/model.onnx",
+        "tokenizer.json",
+        "config.json",
+        "special_tokens_map.json",
+        "tokenizer_config.json",
+    ] {
+        let path = repo.join("snapshots").join(COMMIT).join(file);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, format!("fake {file}\n")).unwrap();
+    }
+    fs::create_dir_all(repo.join("refs")).unwrap();
+    fs::write(repo.join("refs/main"), COMMIT).unwrap();
+}
+
+/// Every path under `dir`, relative and sorted.
+fn tree(dir: &Path) -> Vec<String> {
+    fn walk(base: &Path, dir: &Path, out: &mut Vec<String>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            out.push(path.strip_prefix(base).unwrap().display().to_string());
+            if path.is_dir() {
+                walk(base, &path, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out);
+    out.sort();
+    out
 }
 
 /// Opens the gate when dropped, so a failing test never leaves a blocking
@@ -766,13 +909,108 @@ async fn search_route_without_q_answers_200_with_no_hits() {
     assert_eq!(blank.status, 200, "{}", blank.body);
     assert_eq!(blank.json()["hits"], json!([]), "a whitespace query");
 
-    // With an embedder, an empty query never reaches it.
+    // With an embedder and no cached model, a blank query answers no hits
+    // and never reaches the embedder (the model cannot load: unavailable).
+    let _env = HfEnv::set(None).await;
     let embedder = Arc::new(NoCall::default());
     let on = Srv::seed_with(embedder.clone()).await;
     let reply = on.get(&search_path(SEED_VAULT_NAME, "?limit=8")).await;
     assert_eq!(reply.status, 200, "{}", reply.body);
     assert_eq!(reply.json()["hits"], json!([]));
+    assert_eq!(reply.json()["semantic"], json!("unavailable"));
     assert_eq!(embedder.calls.load(Ordering::SeqCst), 0);
+}
+
+/// Blank queries: a missing q, an empty q, a whitespace q (and the query
+/// echoed back as given).
+const BLANK_PATHS: [(&str, &str); 4] = [
+    ("", ""),
+    ("?limit=8", ""),
+    ("?q=&limit=8", ""),
+    ("?q=%20%09%20", " \t "),
+];
+
+fn blank_body(semantic: &str, query: &str) -> Value {
+    json!({"query": query, "semantic": semantic, "hits": [], "truncated": false})
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blank_query_with_a_failing_embedder_and_a_cached_model_answers_200_unavailable() {
+    let _env = HfEnv::set(None).await;
+    let embedder = Arc::new(NoCall::default());
+    let srv = Srv::seed_with(embedder.clone()).await;
+    write_fake_cached_model(&model_cache_dir(srv.root.path()));
+
+    for (i, (query, echoed)) in BLANK_PATHS.iter().enumerate() {
+        let reply = srv.get(&search_path(SEED_VAULT_NAME, query)).await;
+        assert_eq!(reply.status, 200, "{query:?}: {}", reply.body);
+        assert_eq!(reply.json(), blank_body("unavailable", echoed), "{query:?}");
+        assert_eq!(
+            embedder.calls.load(Ordering::SeqCst),
+            i + 1,
+            "{query:?}: the model is cached, so the probe reaches the embedder once"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blank_query_with_a_working_embedder_and_a_cached_model_answers_200_on() {
+    let _env = HfEnv::set(None).await;
+    let embedder = Arc::new(CountingTable::new());
+    let srv = Srv::seed_with(embedder.clone()).await;
+    write_fake_cached_model(&model_cache_dir(srv.root.path()));
+
+    for (i, (query, echoed)) in BLANK_PATHS.iter().enumerate() {
+        let reply = srv.get(&search_path(SEED_VAULT_NAME, query)).await;
+        assert_eq!(reply.status, 200, "{query:?}: {}", reply.body);
+        assert_eq!(reply.json(), blank_body("on", echoed), "{query:?}");
+        assert_eq!(embedder.calls(), i + 1, "{query:?}: one probe per request");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blank_query_with_a_working_embedder_but_no_cached_model_answers_unavailable_unprobed() {
+    let _env = HfEnv::set(None).await;
+    let embedder = Arc::new(CountingTable::new());
+    let srv = Srv::seed_with(embedder.clone()).await;
+    let cache = model_cache_dir(srv.root.path());
+    assert!(!FastEmbedder::is_cached(&cache), "precondition: no model");
+
+    for (query, echoed) in BLANK_PATHS {
+        let reply = srv.get(&search_path(SEED_VAULT_NAME, query)).await;
+        assert_eq!(reply.status, 200, "{query:?}: {}", reply.body);
+        assert_eq!(reply.json(), blank_body("unavailable", echoed), "{query:?}");
+    }
+    assert_eq!(embedder.calls(), 0, "an uncached model is never asked");
+
+    // A non-blank query is not guarded: it reaches the embedder as before.
+    let reply = srv
+        .get(&search_path(SEED_VAULT_NAME, &format!("?q={QUERY}")))
+        .await;
+    assert_eq!(reply.json()["semantic"], json!("on"), "{}", reply.body);
+    assert_eq!(embedder.calls(), 1, "the query vector was computed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blank_query_on_a_server_with_the_real_embedder_and_no_model_never_touches_the_network() {
+    let hub = Tripwire::start();
+    let _env = HfEnv::set(Some(&hub)).await;
+    let root = tempfile::tempdir().unwrap();
+    pre_embed_seed(root.path());
+    let cache = model_cache_dir(root.path());
+    fs::create_dir_all(&cache).unwrap();
+    assert!(!FastEmbedder::is_cached(&cache), "precondition: no model");
+    let real: Arc<dyn Embedder> = Arc::new(FastEmbedder::bge_small_en_v15(Some(cache.clone())));
+    let srv = Srv::start(root, Some(real)).await;
+    let before = tree(&cache);
+
+    for (query, echoed) in BLANK_PATHS {
+        let reply = srv.get(&search_path(SEED_VAULT_NAME, query)).await;
+        assert_eq!(reply.status, 200, "{query:?}: {}", reply.body);
+        assert_eq!(reply.json(), blank_body("unavailable", echoed), "{query:?}");
+    }
+    assert_eq!(hub.hits(), 0, "nothing contacted HF_ENDPOINT");
+    assert_eq!(tree(&cache), before, "no model file was created");
 }
 
 // ---------------------------------------------------------------- AC 6

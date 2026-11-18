@@ -20,6 +20,10 @@ use crate::{MemexError, Result};
 const DAILY_ROLE: &str = "daily";
 const TOPIC_ROLE: &str = "topic";
 
+/// The text a blank query embeds with a `Ready` embedder, to learn whether
+/// the model loads.
+const LOAD_PROBE: &str = "memex";
+
 /// What the caller can offer for meaning search.
 pub enum SearchEmbedder<'a> {
     /// A loaded (or lazily loading) local embedder.
@@ -82,13 +86,17 @@ pub struct NoteSearchHit {
 ///   `model_not_downloaded`.
 /// - `Ready` first embeds up to `pending_cap` chunks that have no vector
 ///   (`vectors::embed_missing`; 0 skips it), then embeds the query, then
-///   runs FTS and kNN (`on`). A DB error while embedding pending chunks skips
-///   that step; an embedder error anywhere answers FTS hits as `unavailable`.
-///   Neither is an `Err`.
-/// - An empty or whitespace query answers no hits, with no embedder call.
+///   runs FTS and kNN (`on`; `unavailable` when the kNN query cannot run).
+///   A DB error while embedding pending chunks skips that step; an embedder
+///   error anywhere answers FTS hits as `unavailable`. Neither is an `Err`.
+/// - An empty or whitespace query answers no hits and takes no lease. With
+///   `Ready` it embeds one probe text, so a model that cannot load answers
+///   `unavailable` (`on` when it loads); it embeds no pending chunk. `Off`
+///   and `NotDownloaded` make no embedder call.
 ///
 /// No lease is held across inference (D10): the query vector is computed
-/// first, then one lease covers FTS, kNN, enrichment and expansion.
+/// first, then one lease and one read transaction cover FTS, kNN,
+/// enrichment and expansion.
 pub fn note_search<L: ConnLease>(
     conn: &mut L,
     query: &str,
@@ -103,6 +111,10 @@ pub fn note_search<L: ConnLease>(
     };
     let q = query.trim();
     if q.is_empty() {
+        let semantic = match ready {
+            Some(e) if e.embed_batch(&[LOAD_PROBE.to_string()]).is_err() => Semantic::Unavailable,
+            _ => semantic,
+        };
         return Ok(NoteSearch {
             query: query.to_string(),
             semantic,
@@ -123,15 +135,25 @@ pub fn note_search<L: ConnLease>(
         filters: SearchFilters::default(),
         embedder: None,
     };
-    let (hits, truncated) = conn.lease(|c| {
-        let found = search_with_query_vec(c, &opts, q_vec.as_deref())?;
+    let (hits, truncated, vec_ran) = conn.lease(|c| {
+        // One read transaction, so every read sees one snapshot: a note
+        // another process deletes mid-search is either whole or absent.
+        let tx = c.transaction()?;
+        let (found, vec_ran) = search_with_query_vec(&tx, &opts, q_vec.as_deref())?;
         let hits = found
             .hits
             .into_iter()
-            .map(|h| enrich(c, h))
+            .map(|h| enrich(&tx, h))
             .collect::<Result<Vec<_>>>()?;
-        Ok((hits, found.truncated))
+        tx.commit()?;
+        Ok((hits, found.truncated, vec_ran))
     })?;
+    // `on` means the vector arm ran (requirement 35): a kNN that could not
+    // run (no `chunk_vec` table, say) answers keyword hits as `unavailable`.
+    let semantic = match semantic {
+        Semantic::On if !vec_ran => Semantic::Unavailable,
+        other => other,
+    };
     Ok(NoteSearch {
         query: query.to_string(),
         semantic,
