@@ -43,7 +43,7 @@ class OmColors {
 
   /// The Command palette's mark highlight (pack 76): accent at 15 %
   /// (alpha 38). Not [successBg] (alpha 26).
-  static final accentMark = const Color(0x00000000);
+  static final accentMark = const Color(0xFF7CFFB2).withAlpha(38);
 
   // Semantic.
   static const info = Color(0xFF7AA2FF);

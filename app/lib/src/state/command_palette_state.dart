@@ -2,6 +2,7 @@
 // D17): the Command palette's frozen seam. #77 (shell, Commands, Notes,
 // Recent) and #78 (Passages, preview) fill it in parallel: each replaces one
 // provider below in its own file, with no edit here.
+import 'dart:math' show max, min;
 import 'dart:ui' show TextRange;
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -28,7 +29,20 @@ enum PaletteCommand {
 
   /// The row label (req 19). [rightPanel] reads `Hide right panel` while
   /// [rightPanelOpen], `Show right panel` otherwise.
-  String label({bool rightPanelOpen = false}) => '';
+  String label({bool rightPanelOpen = false}) => switch (this) {
+    newNote => 'New note',
+    newCanvas => 'New canvas',
+    openToday => 'Open today',
+    openVaultGraph => 'Open vault graph',
+    switchVault => 'Switch vault…',
+    vaultSettings => 'Vault settings',
+    backups => 'Backups',
+    agents => 'Agents',
+    rightPanel => rightPanelOpen ? 'Hide right panel' : 'Show right panel',
+    showDays => 'Show Days',
+    showTopics => 'Show Topics',
+    showTags => 'Show Tags',
+  };
 
   /// The one-line description shown in the preview pane, verbatim from
   /// Sketch board C5 (design pack 76), with [vaultName] and [today] (ISO
@@ -37,7 +51,31 @@ enum PaletteCommand {
     required String vaultName,
     required String today,
     bool rightPanelOpen = false,
-  }) => '';
+  }) => switch (this) {
+    newNote =>
+      'Makes an untitled note in $vaultName and shows it in this tab, '
+          'ready to type.',
+    newCanvas =>
+      'Makes an empty canvas in $vaultName and shows it in this tab.',
+    openToday => 'Shows today’s daily note, $today, in this tab.',
+    openVaultGraph => 'Shows how the notes in $vaultName link to each other.',
+    switchVault =>
+      'Opens the vault picker, to switch to another vault or a vault server.',
+    vaultSettings => 'Opens the settings for $vaultName.',
+    backups =>
+      'Opens the backups for $vaultName: make one now, or restore an earlier '
+          'one.',
+    agents =>
+      'Opens the agents sheet: who is connected to $vaultName, and what they '
+          'did.',
+    rightPanel =>
+      rightPanelOpen
+          ? 'Hides the right panel, so the note has the full width.'
+          : 'Shows the right panel beside the note.',
+    showDays => 'Switches the sidebar to Days, newest first.',
+    showTopics => 'Switches the sidebar to Topics, notes grouped by subject.',
+    showTags => 'Switches the sidebar to Tags, with a count for each.',
+  };
 }
 
 /// What a palette row is, for its stable [PaletteItemId] and row key.
@@ -53,9 +91,17 @@ class PaletteItemId {
 
   final PaletteItemKind kind;
   final String id;
-}
 
-const _noId = PaletteItemId(PaletteItemKind.command, '');
+  @override
+  bool operator ==(Object other) =>
+      other is PaletteItemId && other.kind == kind && other.id == id;
+
+  @override
+  int get hashCode => Object.hash(kind, id);
+
+  @override
+  String toString() => 'PaletteItemId(${kind.name}, $id)';
+}
 
 /// One selectable palette row.
 sealed class PaletteItem {
@@ -95,11 +141,11 @@ class CommandItem extends PaletteItem {
   final List<int> matched;
 
   @override
-  PaletteItemId get id => _noId;
+  PaletteItemId get id => PaletteItemId(PaletteItemKind.command, command.name);
 
   /// The [label].
   @override
-  String get title => '';
+  String get title => label;
 }
 
 /// A note, daily note or canvas row. Its id is `(note|daily|canvas,
@@ -127,7 +173,11 @@ class NoteItem extends PaletteItem {
   final List<int> matched;
 
   @override
-  PaletteItemId get id => _noId;
+  PaletteItemId get id => PaletteItemId(switch (kind) {
+    PaletteNoteKind.note => PaletteItemKind.note,
+    PaletteNoteKind.daily => PaletteItemKind.daily,
+    PaletteNoteKind.canvas => PaletteItemKind.canvas,
+  }, noteId);
 }
 
 /// A passage row. Its id is `(passage, hit.chunkId)`; its title is the hit's
@@ -144,11 +194,11 @@ class PassageItem extends PaletteItem {
   final List<TextRange> marks;
 
   @override
-  PaletteItemId get id => _noId;
+  PaletteItemId get id => PaletteItemId(PaletteItemKind.passage, hit.chunkId);
 
   /// The hit's note title.
   @override
-  String get title => '';
+  String get title => hit.noteTitle;
 
   /// Passage titles carry no matched characters.
   @override
@@ -180,6 +230,9 @@ sealed class PassagesView {
   /// The Passages group's header hint, or null.
   String? get hint => null;
 }
+
+const _hintKeywordMeaning = 'keyword + meaning';
+const _hintKeywordOnly = 'keyword only';
 
 /// Passages don't run for this input (empty, or under 2 characters).
 class PassagesIdle extends PassagesView {
@@ -216,7 +269,8 @@ class PassagesShown extends PassagesView {
   /// `keyword + meaning` when [semantic] is [Semantic.on], else
   /// `keyword only` (req 30).
   @override
-  String? get hint => null;
+  String? get hint =>
+      semantic == Semantic.on ? _hintKeywordMeaning : _hintKeywordOnly;
 }
 
 /// Search can't run on this vault: one state row for [reason].
@@ -240,7 +294,7 @@ class PassagesDownloading extends PassagesView {
 
   /// `keyword only`.
   @override
-  String? get hint => null;
+  String? get hint => _hintKeywordOnly;
 }
 
 /// The model download failed: keyword [rows] and the model-not-downloaded
@@ -253,7 +307,7 @@ class PassagesDownloadFailed extends PassagesView {
 
   /// `keyword only`.
   @override
-  String? get hint => null;
+  String? get hint => _hintKeywordOnly;
 }
 
 /// What the preview pane shows for the selected row (req 29). #78's preview
@@ -455,26 +509,194 @@ final palettePassageChooserProvider =
 /// - when the first rows arrive, the first one is selected;
 /// - with no rows nothing is selected and [choose] does nothing.
 class PaletteNotifier extends AutoDisposeNotifier<PaletteState> {
-  @override
-  PaletteState build() => const PaletteState();
+  /// Set while [setQuery] forwards the input to the Passages source: a
+  /// Passages answer then doesn't regroup by itself (setQuery regroups once).
+  var _forwardingQuery = false;
 
-  /// The input changed to [query] (as typed).
-  void setQuery(String query) {}
+  /// Set by the first choice and by [close]: [choose] runs at most once.
+  var _done = false;
+
+  /// The id the preview source last heard (null: none, or nothing yet).
+  PaletteItemId? _previewed;
+
+  var _disposed = false;
+
+  @override
+  PaletteState build() {
+    // Listen, never watch: a rebuild here would lose the query.
+    ref.listen(paletteCommandsSourceProvider, (_, _) => _regroup());
+    ref.listen(paletteTitlesSourceProvider, (_, _) => _regroup());
+    ref.listen(palettePassagesProvider, (_, _) => _regroup());
+    ref.listen(palettePreviewProvider, (_, view) => state = _withPreview(view));
+    ref.onDispose(() => _disposed = true);
+    // A provider can't change another while it builds: the preview source
+    // hears the first selection a microtask later.
+    Future.microtask(_syncPreview);
+    return _compose(
+      query: '',
+      keep: null,
+      preview: ref.read(palettePreviewProvider),
+    );
+  }
+
+  /// The input changed to [query] (as typed). The sources hear it trimmed.
+  void setQuery(String query) {
+    _forwardingQuery = true;
+    try {
+      ref.read(palettePassagesProvider.notifier).setQuery(query.trim());
+    } finally {
+      _forwardingQuery = false;
+    }
+    _apply(_compose(query: query, keep: null, preview: state.preview));
+  }
 
   /// Moves the selection by [delta] rows through every group in display
   /// order, stopping at the first and last rows.
-  void move(int delta) {}
+  void move(int delta) {
+    final ids = _ids(state.groups);
+    if (ids.isEmpty) return;
+    final at = ids.indexWhere((id) => id == state.selected);
+    _select(ids[max(0, min(ids.length - 1, at + delta))]);
+  }
 
   /// Pointer hover: selects [id] when it is listed.
-  void hover(PaletteItemId id) {}
+  void hover(PaletteItemId id) {
+    if (_ids(state.groups).contains(id)) _select(id);
+  }
 
   /// Runs the selected row's chooser with [newTab]. Does nothing with no
   /// rows, and after a choice or [close].
-  void choose({required bool newTab}) {}
+  void choose({required bool newTab}) {
+    if (_done) return;
+    final item = _itemFor(state.selected);
+    if (item == null) return;
+    _done = true;
+    switch (item) {
+      case CommandItem():
+        ref.read(paletteCommandChooserProvider)(item, newTab: newTab);
+      case NoteItem():
+        ref.read(paletteNoteChooserProvider)(item, newTab: newTab);
+      case PassageItem():
+        ref.read(palettePassageChooserProvider)(item, newTab: newTab);
+    }
+  }
 
   /// The palette closes: forwards `close()` to the Passages and preview
   /// sources.
-  void close() {}
+  void close() {
+    _done = true;
+    ref.read(palettePassagesProvider.notifier).close();
+    ref.read(palettePreviewProvider.notifier).close();
+  }
+
+  /// A source answered again: the same input, keeping the selection while
+  /// it is still listed.
+  void _regroup() {
+    if (_forwardingQuery) return;
+    _apply(
+      _compose(
+        query: state.query,
+        keep: state.selected,
+        preview: state.preview,
+      ),
+    );
+  }
+
+  /// The groups for [query] from every source, selecting [keep] when it is
+  /// listed and otherwise the first row.
+  PaletteState _compose({
+    required String query,
+    required PaletteItemId? keep,
+    required PreviewView preview,
+  }) {
+    final trimmed = query.trim();
+    final typed = trimmed.isNotEmpty;
+    final commands = ref.read(paletteCommandsSourceProvider)(trimmed);
+    final titles = ref.read(paletteTitlesSourceProvider)(trimmed);
+    final passages = ref.read(palettePassagesProvider);
+    final groups = [
+      if (commands.isNotEmpty)
+        PaletteGroup(PaletteGroupKind.commands, commands),
+      if (titles.isNotEmpty)
+        PaletteGroup(
+          typed ? PaletteGroupKind.notes : PaletteGroupKind.recent,
+          titles,
+        ),
+      if (typed && passages.rows.isNotEmpty)
+        PaletteGroup(
+          PaletteGroupKind.passages,
+          passages.rows,
+          hint: passages.hint,
+        ),
+    ];
+    final ids = _ids(groups);
+    return PaletteState(
+      query: query,
+      groups: groups,
+      selected: ids.contains(keep) ? keep : ids.firstOrNull,
+      passages: passages,
+      preview: preview,
+      noMatches:
+          typed &&
+          ids.isEmpty &&
+          (passages is PassagesIdle || passages is PassagesShown),
+    );
+  }
+
+  void _select(PaletteItemId id) {
+    if (id == state.selected) return;
+    final s = state;
+    _apply(
+      PaletteState(
+        query: s.query,
+        groups: s.groups,
+        selected: id,
+        passages: s.passages,
+        preview: s.preview,
+        noMatches: s.noMatches,
+      ),
+    );
+  }
+
+  PaletteState _withPreview(PreviewView preview) {
+    final s = state;
+    return PaletteState(
+      query: s.query,
+      groups: s.groups,
+      selected: s.selected,
+      passages: s.passages,
+      preview: preview,
+      noMatches: s.noMatches,
+    );
+  }
+
+  void _apply(PaletteState next) {
+    state = next;
+    _syncPreview();
+  }
+
+  /// Tells the preview source the selected row, when it changed.
+  void _syncPreview() {
+    if (_disposed) return;
+    final selected = state.selected;
+    if (selected == _previewed) return;
+    _previewed = selected;
+    ref.read(palettePreviewProvider.notifier).select(_itemFor(selected));
+  }
+
+  PaletteItem? _itemFor(PaletteItemId? id) {
+    for (final group in state.groups) {
+      for (final row in group.rows) {
+        if (row.id == id) return row;
+      }
+    }
+    return null;
+  }
+
+  static List<PaletteItemId> _ids(List<PaletteGroup> groups) => [
+    for (final group in groups)
+      for (final row in group.rows) row.id,
+  ];
 }
 
 final paletteProvider =
