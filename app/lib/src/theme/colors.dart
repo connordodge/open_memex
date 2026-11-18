@@ -50,12 +50,12 @@ class OmColors {
   static final dangerBg = const Color(0xFFFF7A8A).withAlpha(26);
 
   // Find in note (#61 F3, pack 83). Not [warnBg] (10%).
-  /// An other match's fill: [warn] at 0x33 (20%). Skeleton: transparent.
-  static const findMatch = Color(0x00000000);
+  /// An other match's fill: [warn] at 0x33 (20%).
+  static const findMatch = Color(0x33FFD27A);
 
   /// An other match's 1 px inside border and a hidden match's outline:
-  /// [warn] at 0x80 (50%). Skeleton: transparent.
-  static const findMatchLine = Color(0x00000000);
+  /// [warn] at 0x80 (50%).
+  static const findMatchLine = Color(0x80FFD27A);
 
   // Agent (AI activity).
   static const agent = Color(0xFFB9A6FF);

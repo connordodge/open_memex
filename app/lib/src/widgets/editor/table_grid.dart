@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 
+import '../../editor/find_in_note.dart';
 import '../../editor/markdown_inline.dart';
 import '../../editor/markdown_table.dart'
     show ParsedTable, TableAlign, parseTable;
@@ -10,6 +11,8 @@ import '../../editor/row_geometry.dart';
 import '../../editor/table_geometry.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
+import '../find/find_highlights.dart';
+import '../find/find_keys.dart';
 import 'line_boxes.dart';
 import 'live_preview_controller.dart';
 import 'live_preview_decorations.dart';
@@ -100,6 +103,30 @@ class TableGridState extends State<TableGrid> {
     final hover = widget.links?.cmdHover;
     final metrics = _metrics(scaler);
     final rows = [table.header.cells, for (final row in table.body) row.cells];
+    // A body row's cells mount their find highlights (#61 F3, D8).
+    final find = FindGridScope.maybeOf(context);
+    Widget cellText(int g, int j, RichText text) {
+      if (find == null || j >= rows[g].length) return text;
+      final cell = rows[g][j];
+      final start = find.textStart + cell.start;
+      final end = find.textStart + cell.end;
+      return FindParagraphHighlights(
+        layerKey: findGridHighlightsKey(find.segment, g, j),
+        // A grid shows every marker hidden: it never reveals (D8).
+        ranges: (state) => find.active
+            ? findPaintRanges(
+                state,
+                segment: find.segment,
+                kind: FindSourceKind.body,
+                start: start,
+                end: end,
+                reveals: false,
+              )
+            : const [],
+        child: text,
+      );
+    }
+
     return _GridLayout(
       key: _gridKey,
       text: text,
@@ -113,28 +140,33 @@ class TableGridState extends State<TableGrid> {
               key: keyPrefix == null ? null : ValueKey('$keyPrefix-$g-$j'),
               padding: metrics.cellPadding,
               inset: g == 0 ? metrics.hiddenLineHeight / 2 : 0,
-              child: RichText(
-                textAlign: _textAlign(table.alignments[j]),
-                textScaler: scaler,
-                strutStyle: strut,
-                text: buildLivePreviewSpan(
-                  j < cells.length ? cells[j].text(text) : '',
-                  style: g == 0 ? headerStyle : widget.style,
-                  itemText: true,
-                  forceHidden: true,
-                  // Grid row 0 is line 0; the delimiter line has no grid row.
-                  fenced: [
-                    widget.fenced?.elementAtOrNull(g == 0 ? 0 : g + 1) ?? false,
-                  ],
-                  isResolved: widget.links?.isResolved,
-                  // As the source field judges the cell: by the character
-                  // before it in the table line, not as a line start.
-                  before: j < cells.length
-                      ? unitBeforeInLine(text, cells[j].start)
-                      : null,
-                  cmdHover: j < cells.length
-                      ? _cellHover(hover, cells[j].start, cells[j].end)
-                      : null,
+              child: cellText(
+                g,
+                j,
+                RichText(
+                  textAlign: _textAlign(table.alignments[j]),
+                  textScaler: scaler,
+                  strutStyle: strut,
+                  text: buildLivePreviewSpan(
+                    j < cells.length ? cells[j].text(text) : '',
+                    style: g == 0 ? headerStyle : widget.style,
+                    itemText: true,
+                    forceHidden: true,
+                    // Grid row 0 is line 0; the delimiter line has no grid row.
+                    fenced: [
+                      widget.fenced?.elementAtOrNull(g == 0 ? 0 : g + 1) ??
+                          false,
+                    ],
+                    isResolved: widget.links?.isResolved,
+                    // As the source field judges the cell: by the character
+                    // before it in the table line, not as a line start.
+                    before: j < cells.length
+                        ? unitBeforeInLine(text, cells[j].start)
+                        : null,
+                    cmdHover: j < cells.length
+                        ? _cellHover(hover, cells[j].start, cells[j].end)
+                        : null,
+                  ),
                 ),
               ),
             ),
@@ -196,7 +228,8 @@ const double _wrapSlack = 0.01;
 const double _pillRadius = 3;
 
 /// A drawn cell (TD8): a box as big as the grid lays it out (the cell's
-/// rect, padding included) holding the cell's [RichText] [padding] (c) in
+/// rect, padding included) holding the cell's [RichText] (alone, or under
+/// its find highlights: a [FindParagraphHighlights]) [padding] (c) in
 /// from its left and [inset] (H / 2 in the header band, else 0) down from
 /// its top, as wide as the box less c on each side (plus the wrap slack).
 class _Cell extends SingleChildRenderObjectWidget {
@@ -204,7 +237,7 @@ class _Cell extends SingleChildRenderObjectWidget {
     super.key,
     required this.padding,
     required this.inset,
-    required RichText super.child,
+    required Widget super.child,
   });
 
   final double padding;
@@ -246,16 +279,29 @@ class _RenderCell extends RenderShiftedBox {
     markNeedsLayout();
   }
 
-  /// The cell's paragraph.
-  RenderParagraph get paragraph => child! as RenderParagraph;
+  /// The cell's paragraph: its child, or the paragraph under its find
+  /// highlights' stack (laid out at the stack's origin, as big as it).
+  RenderParagraph get paragraph {
+    var node = child!;
+    while (node is RenderStack) {
+      node = node.lastChild!;
+    }
+    return node as RenderParagraph;
+  }
 
   /// The paragraph's offset in the cell: (c, inset).
-  Offset get textOffset => (paragraph.parentData! as BoxParentData).offset;
+  Offset get textOffset {
+    var offset = Offset.zero;
+    for (RenderObject node = paragraph; node != this; node = node.parent!) {
+      offset += (node.parentData! as BoxParentData).offset;
+    }
+    return offset;
+  }
 
   @override
   void performLayout() {
     final width = constraints.maxWidth;
-    final text = paragraph;
+    final text = child!;
     text.layout(
       BoxConstraints.tightFor(
         width: math.max(0.0, width - 2 * _padding) + _wrapSlack,

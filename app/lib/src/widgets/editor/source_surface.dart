@@ -1,11 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../editor/editor_rows.dart';
+import '../../editor/find_in_note.dart';
 import '../../editor/list_indent.dart';
 import '../../editor/row_edits.dart';
+import '../../state/find_in_note_state.dart';
 import '../../state/spell_check_controller.dart';
+import '../find/find_highlights.dart';
+import '../find/find_keys.dart';
 import '../inline_error.dart';
+import 'line_boxes.dart';
 import 'spell_check_host.dart';
 import 'spell_issue_scope.dart';
 import 'spell_squiggles.dart';
@@ -69,6 +75,9 @@ class SourceSurface extends StatefulWidget {
 
 class _SourceSurfaceState extends State<SourceSurface> {
   final _kindChips = KindChipHost();
+
+  /// Holds the body field, whose line boxes the find highlights measure.
+  final _fieldKey = GlobalKey(debugLabel: 'editor-source-field');
 
   /// This note editor's spelling issues, per row field (WI #434).
   final _spellIssues = SpellIssueRegistry();
@@ -203,18 +212,31 @@ class _SourceSurfaceState extends State<SourceSurface> {
                   // Spelling squiggles and hint (WI #437).
                   child: SpellSquiggles(
                     controller: widget.bodyCtrl,
-                    child: TextSegmentField(
-                      controller: widget.bodyCtrl,
-                      focusNode: widget.bodyFocusNode,
-                      onChanged: widget.onContentChanged,
-                      kindChips: _kindChips,
-                      minLines: 12,
-                      hintText: 'type [[ to link a note · write markdown…',
-                      dailyNoteId: widget.dailyNoteId,
-                      onTopicLinked: widget.onTopicLinked,
-                      onCreateError: (message) {
-                        if (mounted) setState(() => _createError = message);
-                      },
+                    // Find highlights under the field (#61 F3, Req 28).
+                    child: Stack(
+                      fit: StackFit.passthrough,
+                      children: [
+                        Positioned.fill(child: _findHighlights()),
+                        KeyedSubtree(
+                          key: _fieldKey,
+                          child: TextSegmentField(
+                            controller: widget.bodyCtrl,
+                            focusNode: widget.bodyFocusNode,
+                            onChanged: widget.onContentChanged,
+                            kindChips: _kindChips,
+                            minLines: 12,
+                            hintText:
+                                'type [[ to link a note · write markdown…',
+                            dailyNoteId: widget.dailyNoteId,
+                            onTopicLinked: widget.onTopicLinked,
+                            onCreateError: (message) {
+                              if (mounted) {
+                                setState(() => _createError = message);
+                              }
+                            },
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
@@ -225,5 +247,37 @@ class _SourceSurfaceState extends State<SourceSurface> {
         overlays: [KindChipLayer(host: _kindChips)],
       ),
     );
+  }
+
+  /// The Source field's find highlights (Key `find-highlights-source`):
+  /// every match a fill, nothing hidden (Req 2); nothing while not active.
+  Widget _findHighlights() => Consumer(
+    builder: (context, ref, _) {
+      final state = ref.watch(findInNoteProvider);
+      return FindHighlights(
+        key: findSourceHighlightsKey,
+        ranges: widget.active
+            ? findPaintRanges(
+                state,
+                segment: 0,
+                kind: FindSourceKind.source,
+                start: 0,
+                end: widget.bodyCtrl.text.length,
+              )
+            : const [],
+        boxes: _fieldBoxes,
+        repaint: widget.bodyCtrl,
+      );
+    },
+  );
+
+  /// The body field's line boxes once it is laid out.
+  LineBoxSource? _fieldBoxes() {
+    final editable = findRenderEditable(
+      _fieldKey.currentContext?.findRenderObject(),
+    );
+    return editable != null && editable.hasSize
+        ? RenderEditableLineBoxes(editable)
+        : null;
   }
 }
