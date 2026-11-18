@@ -744,6 +744,63 @@ void main() {
       });
     }
 
+    test(
+      'two try again calls in the same frame after a download failure start one download',
+      () async {
+        final rig = ControllerRig();
+        final item = await driveToAvailable(rig);
+        rig.fakes.downloader.failure = const UpdateFailure(
+          UpdateErrorCause.downloadFailed,
+        );
+        await rig.controller.install();
+        expect(rig.state, isUpdateError(UpdateErrorCause.downloadFailed));
+        rig.fakes.downloader.failure = null;
+        final hold = Completer<void>();
+        rig.fakes.downloader.hold = hold;
+
+        final first = rig.controller.tryAgain();
+        final second = rig.controller.tryAgain();
+        await pumpEventQueue();
+        expect(rig.fakes.downloader.downloads, [same(item), same(item)]);
+
+        hold.complete();
+        await Future.wait([first, second]);
+        expect(rig.fakes.downloader.downloads, hasLength(2));
+        expect(rig.fakes.verifier.calls, hasLength(1));
+        expect(rig.state, isA<UpdateReady>());
+      },
+    );
+
+    test(
+      'two try again calls in the same frame after an offline error make one fetch',
+      () async {
+        final fakes = UpdaterFakes();
+        fakes.fetcher.failure = const UpdateFailure(UpdateErrorCause.offline);
+        final rig = ControllerRig(fakes: fakes);
+        await rig.controller.check(manual: true);
+        expect(rig.state, isUpdateError(UpdateErrorCause.offline));
+        final item = newerItem();
+        fakes.fetcher
+          ..failure = null
+          ..items = [item]
+          ..hold = Completer<void>();
+        final fetches = fakes.fetcher.fetchCount;
+
+        final first = rig.controller.tryAgain();
+        final second = rig.controller.tryAgain();
+        await pumpEventQueue();
+        expect(fakes.fetcher.fetchCount, fetches + 1);
+
+        fakes.fetcher.hold!.complete();
+        await Future.wait([first, second]);
+        expect(fakes.fetcher.fetchCount, fetches + 1);
+        expect(
+          rig.state,
+          isA<UpdateAvailable>().having((s) => s.item, 'item', same(item)),
+        );
+      },
+    );
+
     test('try again outside an Error does nothing', () async {
       final rig = ControllerRig();
       final ready = await driveToReady(rig);
