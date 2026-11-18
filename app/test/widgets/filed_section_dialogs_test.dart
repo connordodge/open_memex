@@ -1,7 +1,8 @@
 // WI #399 (F3, Spec #393 requirements 15-18, 21): the Move to..., File in...
 // and Remove dialogs of the `Filed from this day` section show the block they
 // act on, and the Activity subtitle and each entry's day line move from fg3 to
-// fg2.
+// fg2. WI #68 (Spec #58 R37) moved the shared PanelPlaceholderTab subtitle and
+// empty copy to fg2 as well.
 //
 // The dialogs are driven through the section's own buttons, so the three call
 // sites are tested together with the dialog. A person has to hover a row before
@@ -821,7 +822,7 @@ void main() {
     );
 
     testWidgets(
-      'an Activity tab with no entries still draws its placeholder subtitle and empty copy in fg3',
+      'an Activity tab with no entries draws its placeholder subtitle and empty copy in fg2',
       (tester) async {
         await pumpF260(
           tester,
@@ -830,21 +831,22 @@ void main() {
         );
 
         final subtitleStyle = _style(tester, find.text(_subtitle));
+        // WI #68 (Spec #58 R37): the shared placeholder moved fg3 -> fg2.
         expect(
           subtitleStyle.color,
-          OmColors.fg3,
+          OmColors.fg2,
           reason: 'PanelPlaceholderTab',
         );
         final emptyStyle = _style(
           tester,
           find.byKey(const Key('activity-empty')),
         );
-        expect(emptyStyle.color, OmColors.fg3);
+        expect(emptyStyle.color, OmColors.fg2);
       },
     );
 
     testWidgets(
-      'PanelPlaceholderTab pumped alone still draws its subtitle and empty copy in fg3',
+      'PanelPlaceholderTab pumped alone draws its subtitle and empty copy in fg2',
       (tester) async {
         await tester.pumpWidget(
           MaterialApp(
@@ -862,14 +864,14 @@ void main() {
         await tester.pump();
 
         final subtitle = _style(tester, find.text('some subtitle'));
-        expect(subtitle.color, OmColors.fg3);
+        expect(subtitle.color, OmColors.fg2);
         expect(subtitle.fontSize, 10.5);
         expect(subtitle.height, 1.6);
         final empty = _style(
           tester,
           find.byKey(const Key('placeholder-empty')),
         );
-        expect(empty.color, OmColors.fg3);
+        expect(empty.color, OmColors.fg2);
         expect(empty.fontSize, 11);
       },
     );

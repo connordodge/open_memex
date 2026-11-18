@@ -181,6 +181,8 @@ enum Commands {
     Filing(cli::filing::FilingArgs),
     /// Find passages in other, unlinked notes that are close to a note.
     Echoes(cli::echoes::EchoesArgs),
+    /// Search note text by keyword and meaning, for the Command palette.
+    Search(cli::search::SearchArgs),
     /// Written comments and Corrections.
     Feedback(cli::feedback::FeedbackArgs),
     /// Read the Vault Guide or return to an earlier text.
@@ -365,6 +367,7 @@ async fn dispatch(command: Commands) -> Result<()> {
         Commands::Settings(args) => cli::settings::run(args),
         Commands::Filing(args) => cli::filing::run(args),
         Commands::Echoes(args) => cli::echoes::run(args),
+        Commands::Search(args) => cli::search::run(args),
         Commands::Feedback(args) => cli::feedback::run(args),
         Commands::Guide(args) => cli::guide::run(args),
         Commands::ReadOnly(args) => cli::read_only::run(args),
