@@ -26,9 +26,14 @@ import FlutterMacOS
 ///   `copy_failed` error whose details are `{domain: "NSPasteboard", code: 0}`
 ///   (`NSPasteboard.setString` returns a Bool, not an `NSError`); a
 ///   non-`String` argument gets `bad_arguments`. The text is never logged.
+///
+/// Updater channel `open_memex/updater` (Dart side: `app/lib/src/updater/updater_menu_host.dart`):
+/// - native → Dart `checkForUpdatesFromMenu` (no arguments): sent when
+///   Open Memex ▸ Check for Updates… is chosen. Native never reads the reply.
 class MainFlutterWindow: NSWindow, NSWindowDelegate {
   private var windowChannel: FlutterMethodChannel?
   private var filesChannel: FlutterMethodChannel?
+  private var updaterChannel: FlutterMethodChannel?
   /// Owns `open_memex/spelling` and the Edit ▸ Spelling and Grammar items.
   private var spellingMenu: SpellingMenuController?
   private var agentsMenuEnabled = false
@@ -131,6 +136,9 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
       }
     }
     filesChannel = files
+    updaterChannel = FlutterMethodChannel(
+      name: "open_memex/updater",
+      binaryMessenger: flutterViewController.engine.binaryMessenger)
     spellingMenu = SpellingMenuController(
       binaryMessenger: flutterViewController.engine.binaryMessenger)
     self.delegate = self
@@ -141,6 +149,11 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
   /// Window ▸ Agents…: Dart decides what opening the Agents sheet means.
   @IBAction func openAgents(_ sender: Any?) {
     windowChannel?.invokeMethod("openAgents", arguments: nil)
+  }
+
+  /// Open Memex ▸ Check for Updates…: Dart opens the update modal.
+  @IBAction func checkForUpdates(_ sender: Any?) {
+    updaterChannel?.invokeMethod("checkForUpdatesFromMenu", arguments: nil)
   }
 
   /// Greys out Window ▸ Agents… until Dart enables it; every other item is

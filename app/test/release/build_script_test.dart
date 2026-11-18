@@ -1,5 +1,6 @@
 // Tests for scripts/release/build.sh (#375, Spec #367 requirements 13, 19,
-// 21-23).
+// 21-23) and its EdDSA signing with scripts/release/eddsa_sign.sh (#35,
+// Spec #31 requirements 5-7).
 //
 // Every run uses a fixture checkout: a temp git repo holding copies of the
 // release scripts, the Leak check and the files the build reads. Fake
@@ -29,6 +30,15 @@
 //                  image; attach extracts it to -mountpoint; detach of a
 //                  read-write attach writes it back; convert copies.
 //   ditto          runs the real /usr/bin/ditto; lipo -archs prints arm64.
+//   curl           (script_harness.dart) serves a fake Sparkle-2.10.1.tar.xz
+//                  for the pinned URL; the fixture's build.sh pins that
+//                  tarball's SHA-256 in place of the real one.
+//   sign_update    the tarball's bin/sign_update logs as `sign_update`; a
+//                  trap copy first on PATH logs as `sign_update-path`.
+//   security       logs (build.sh must never read the Keychain).
+//
+// The steps since #35: 1 sparkle, 2 memex, 3 app, 4 embed, 5 notices,
+// 6 sign, 7 dmg, 8 notarize, 9 edsign, 10 zip, 11 leak check, 12 checksums.
 //
 // Fixtures never hold a literal leak: planted home paths and emails are
 // built at runtime.
@@ -55,6 +65,9 @@ const _keyId = 'FAKEKEY123';
 const _issuer = '00000000-1111-4222-8333-444444444444';
 const _warn = 'LEAK WARN: no deny-list';
 const _firstSubmissionId = '00000000-0000-4000-8000-000000000001';
+const _edsigName = 'Open-Memex-0.1.0-arm64.dmg.edsig';
+const _lengthName = 'Open-Memex-0.1.0-arm64.dmg.length';
+const _eddsa = 'scripts/release/eddsa_sign.sh';
 
 const _memexMarker = 'FAKE-MEMEX-BINARY';
 const _crateMarker = 'BUILD-FIXTURE serde licence text';
@@ -479,8 +492,19 @@ esac
 exit 0
 ''';
 
+// The zip step (ditto -c) records whether each key a sign_update used (field 2
+// of sign_update.calls) still exists, to `$FAKE_STATE/key-at-zip`.
 const _fakeDitto = r'''
 _fake_log ditto "$@"
+case " $* " in
+  *" -c "*)
+    if [ -f "$FAKE_STATE/sign_update.calls" ]; then
+      while IFS=$'\t' read -r _ k _; do
+        if [ -e "$k" ]; then echo "exists $k"; else echo "gone $k"; fi
+      done <"$FAKE_STATE/sign_update.calls" >>"$FAKE_STATE/key-at-zip"
+    fi
+    ;;
+esac
 exec /usr/bin/ditto "$@"
 ''';
 
@@ -524,7 +548,7 @@ const _fakes = {
 // Fixture checkout.
 
 class _Fx {
-  _Fx(this.iso, this.root, this.bin, this.state, this.out);
+  _Fx(this.iso, this.root, this.bin, this.state, this.out, this.sparkle);
 
   final IsolatedEnv iso;
 
@@ -536,10 +560,17 @@ class _Fx {
   /// The --out directory the tests pass (not created up front).
   final String out;
 
+  /// The fake Sparkle tarball the fake curl serves by default.
+  final FakeSparkleTarball sparkle;
+
   String get log => '$state/tools.log';
   String get envLog => '$state/cargo-env.log';
   String get metadata => '$state/metadata.json';
   String get p8 => '$state/AuthKey_$_keyId.p8';
+
+  /// The signed-mode EdDSA key file (a key minted for this fixture).
+  String get edKey => '$state/sparkle-ed-key';
+  String get edKeyBase64 => File(edKey).readAsStringSync().trim();
 }
 
 Future<void> _sh(List<String> argv, {String? cwd}) async {
@@ -553,18 +584,26 @@ Future<void> _sh(List<String> argv, {String? cwd}) async {
   }
 }
 
+final _shaLine = RegExp(r'^SPARKLE_SHA256=[0-9a-f]{64}$', multiLine: true);
+
 /// A fixture checkout with fake tools. [licenseExtra] is appended to the
-/// fixture's LICENSE (which only the memex zip carries).
-Future<_Fx> _fixture({String licenseExtra = ''}) async {
+/// fixture's LICENSE (which only the memex zip carries). With [pinFakeSparkle]
+/// the fixture's build.sh pins the fake Sparkle tarball's SHA-256 in place of
+/// the real one; without it build.sh keeps the real pin.
+Future<_Fx> _fixture({
+  String licenseExtra = '',
+  bool pinFakeSparkle = true,
+}) async {
   final iso = await isolatedEnv();
   final w = iso.work.path;
   final root = '$w/checkout';
   final bin = '$w/fakebin';
   final state = '$w/state';
-  for (final d in [root, bin, state]) {
+  for (final d in [root, bin, state, '$w/sparkle']) {
     Directory(d).createSync(recursive: true);
   }
-  final fx = _Fx(iso, root, bin, state, '$w/out');
+  final sparkle = await buildFakeSparkleTarball('$w/sparkle');
+  final fx = _Fx(iso, root, bin, state, '$w/out', sparkle);
 
   final src = repoRoot();
   for (final rel in _copied) {
@@ -662,6 +701,31 @@ Future<_Fx> _fixture({String licenseExtra = ''}) async {
   File(fx.p8).writeAsStringSync(
     '-----BEGIN PRIVATE KEY-----\nZmFrZQ==\n-----END PRIVATE KEY-----\n',
   );
+  File(fx.edKey).writeAsStringSync('${mintEdKeyBase64()}\n');
+
+  // The fixture's build.sh trusts the fake tarball (main has no pin line, so
+  // this is a no-op there).
+  final buildSh = File('$root/$_build');
+  if (pinFakeSparkle && buildSh.existsSync()) {
+    buildSh.writeAsStringSync(
+      buildSh.readAsStringSync().replaceAll(
+        _shaLine,
+        'SPARKLE_SHA256=${sparkle.sha256}',
+      ),
+    );
+  }
+
+  // The Sparkle fakes. The sign_update first on PATH is a trap build.sh must
+  // never use: it signs only with the one from the checked tarball.
+  final sparkleFakes = {
+    'curl': fakeCurlScript,
+    'security': fakeSecurityScript,
+    'sign_update': fakeSignUpdateScript('sign_update-path'),
+  };
+  for (final e in sparkleFakes.entries) {
+    final f = File('$bin/${e.key}')..writeAsStringSync(e.value);
+    await _sh(['/bin/chmod', '755', f.path]);
+  }
 
   for (final e in _fakes.entries) {
     final f = File('$bin/${e.key}');
@@ -697,6 +761,7 @@ Future<ScriptResult> _runBuild(
     'FAKE_ENV_LOG': fx.envLog,
     'FAKE_STATE': fx.state,
     'FAKE_CARGO_METADATA': fx.metadata,
+    'FAKE_SPARKLE_TARBALL': fx.sparkle.path,
     ...env,
   };
   final proc = await Process.start(
@@ -736,6 +801,7 @@ Map<String, String> _signedEnv(_Fx fx) => {
   'NOTARY_KEY_ID': _keyId,
   'NOTARY_ISSUER_ID': _issuer,
   'LEAK_PATTERNS': _unusedDeny,
+  'SPARKLE_ED_KEY_PATH': fx.edKey,
 };
 
 // ---------------------------------------------------------------------------
@@ -1094,6 +1160,137 @@ Future<void> _expectAppSealed(_Fx fx) async {
   );
 }
 
+// ---------------------------------------------------------------------------
+// EdDSA signing (#35).
+
+/// The build's work dir (`$WORK`), from where the fake flutter built the app
+/// (`$WORK/src/app`).
+String _workDir(_Fx fx) {
+  final line = File(
+    fx.envLog,
+  ).readAsLinesSync().firstWhere((l) => l.startsWith('FLUTTER_BUILD_PWD='));
+  final pwd = line.substring('FLUTTER_BUILD_PWD='.length);
+  expect(pwd, endsWith('/src/app'), reason: pwd);
+  return pwd.substring(0, pwd.length - '/src/app'.length);
+}
+
+/// The one line [path] holds (a trailing newline allowed, nothing else).
+String _oneLine(String path) {
+  final f = File(path);
+  expect(f.existsSync(), isTrue, reason: '$path is missing');
+  final text = f.readAsStringSync();
+  final body = text.endsWith('\n') ? text.substring(0, text.length - 1) : text;
+  expect(body, isNotEmpty, reason: '$path is empty');
+  expect(body.contains('\n'), isFalse, reason: '$path has more lines: $text');
+  expect(body.contains('\r'), isFalse, reason: '$path has a CR: $text');
+  expect(body.trim(), body, reason: '$path has white space: "$text"');
+  return body;
+}
+
+final _base64Sig = RegExp(r'^[A-Za-z0-9+/]{86}==$');
+
+bool _isTool(_Call c, String tool) => c.tool == tool;
+
+bool _isSparkleDownload(_Call c) =>
+    c.tool == 'curl' && c.args.contains(sparkleTarballUrl);
+
+/// Asserts the DMG in --out has a `.edsig` that is the fake signature of its
+/// final bytes with [keyBase64], and a `.length` that is its byte length.
+Future<void> _expectEdFiles(_Fx fx, String keyBase64) async {
+  final dmg = '${fx.out}/$_dmgName';
+  final sig = _oneLine('${fx.out}/$_edsigName');
+  expect(sig, matches(_base64Sig), reason: 'a base64 Ed25519 signature');
+  expect(
+    sig,
+    await fakeEdSignature(keyBase64, dmg),
+    reason: 'the signature is not over the final DMG with that key',
+  );
+  expect(
+    _oneLine('${fx.out}/$_lengthName'),
+    '${File(dmg).lengthSync()}',
+    reason: 'the length is not the final DMG byte length',
+  );
+}
+
+/// The temp dir and fake tools for one eddsa_sign.sh run.
+class _EdFx {
+  _EdFx(this.iso, this.bin, this.state, this.key, this.file);
+
+  final IsolatedEnv iso;
+  final String bin;
+  final String state;
+  final String key;
+
+  /// The file to sign.
+  final String file;
+
+  String get log => '$state/tools.log';
+}
+
+Future<_EdFx> _edFixture() async {
+  final iso = await isolatedEnv();
+  final w = iso.work.path;
+  final bin = '$w/fakebin';
+  final state = '$w/state';
+  for (final d in [bin, state]) {
+    Directory(d).createSync(recursive: true);
+  }
+  final su = File('$bin/sign_update')
+    ..writeAsStringSync(fakeSignUpdateScript('sign_update'));
+  await _sh(['/bin/chmod', '755', su.path]);
+  final sec = File('$bin/security')..writeAsStringSync(fakeSecurityScript);
+  await _sh(['/bin/chmod', '755', sec.path]);
+  final key = File('$w/ed-key')..writeAsStringSync('${mintEdKeyBase64()}\n');
+  final file = File('$w/Open-Memex-1.2.3-arm64.dmg')
+    ..writeAsBytesSync([...utf8.encode('FAKE-DMG '), 0, 1, 2, 255, 10]);
+  return _EdFx(iso, bin, state, key.path, file.path);
+}
+
+/// Runs the real eddsa_sign.sh (it must exist) with a from-scratch
+/// environment: the fake sign_update first on PATH, and [env].
+/// `SPARKLE_ED_KEY_PATH` is the fixture key unless [env] maps it to null.
+Future<ScriptResult> _runEddsa(
+  _EdFx fx,
+  List<String> args, {
+  Map<String, String?> env = const {},
+}) async {
+  final script = '${repoRoot()}/$_eddsa';
+  expect(File(script).existsSync(), isTrue, reason: '$_eddsa is missing');
+  final environment = <String, String>{
+    'PATH': '${fx.bin}:/usr/bin:/bin:/usr/sbin:/sbin',
+    'TMPDIR': Platform.environment['TMPDIR'] ?? '/tmp',
+    'LANG': 'en_US.UTF-8',
+    ...fx.iso.env,
+    'FAKE_LOG': fx.log,
+    'FAKE_STATE': fx.state,
+    'SPARKLE_ED_KEY_PATH': fx.key,
+  };
+  env.forEach((k, v) {
+    if (v == null) {
+      environment.remove(k);
+    } else {
+      environment[k] = v;
+    }
+  });
+  final r = await Process.run(
+    script,
+    args,
+    environment: environment,
+    includeParentEnvironment: false,
+    workingDirectory: fx.iso.work.path,
+  );
+  return ScriptResult(r.exitCode, r.stdout as String, r.stderr as String);
+}
+
+List<_Call> _edCalls(_EdFx fx) {
+  final f = File(fx.log);
+  if (!f.existsSync()) return [];
+  return f.readAsLinesSync().where((l) => l.isNotEmpty).map((l) {
+    final p = l.split('\t');
+    return _Call(p.first, p.sublist(1));
+  }).toList();
+}
+
 void main() {
   group('dry run with fake tools', () {
     late _Fx fx;
@@ -1107,10 +1304,23 @@ void main() {
     });
 
     test(
-      'dry run prints STEP 1 to STEP 10 in order and exits 0 with leaks 0',
+      'dry run prints STEP 1 to STEP 12 in order and exits 0 with leaks 0',
       () {
         expect(r.exitCode, 0, reason: '$r');
-        expect(_steps(r), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], reason: '$r');
+        expect(_steps(r), [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+        ], reason: '$r');
         expect(_failed(r), isEmpty, reason: '$r');
         expect(r.output, contains('leaks: 0'), reason: '$r');
         // No deny-list is set, so the dry run lets the Leak check run without
@@ -1173,7 +1383,7 @@ void main() {
 
     test('dry run never calls notarytool or stapler and never uploads', () {
       expect(r.exitCode, 0, reason: '$r');
-      expect(_steps(r), contains(6), reason: '$r');
+      expect(_steps(r), contains(7), reason: '$r');
       expect(calls.where(_isHdiCreate), isNotEmpty, reason: _callList(calls));
       expect(calls.where(_isNotary), isEmpty, reason: _callList(calls));
       expect(calls.where(_isStapler), isEmpty, reason: _callList(calls));
@@ -1369,6 +1579,182 @@ void main() {
         );
       },
     );
+
+    test(
+      'dry run downloads the pinned Sparkle tarball before it builds or signs',
+      () {
+        expect(r.exitCode, 0, reason: '$r');
+        final why = _callList(calls);
+        final downloads = calls.where(_isSparkleDownload).toList();
+        expect(downloads, hasLength(1), reason: why);
+        final curl = calls.indexOf(downloads.single);
+        final cargo = _indexWhere(
+          calls,
+          (c) => c.tool == 'cargo' && c.args.contains('build'),
+        );
+        final signUpdate = _indexWhere(calls, (c) => c.tool == 'sign_update');
+        expect(cargo, greaterThan(curl), reason: why);
+        expect(signUpdate, greaterThan(curl), reason: why);
+      },
+    );
+
+    test(
+      'dry run signs the DMG only with the sign_update from the checked tarball in its work dir',
+      () {
+        expect(r.exitCode, 0, reason: '$r');
+        final why = _callList(calls);
+        expect(
+          calls.where((c) => c.tool == 'sign_update-path'),
+          isEmpty,
+          reason: 'build.sh used a sign_update from PATH\n$why',
+        );
+        final signings = signUpdateCalls(fx.state);
+        expect(signings, hasLength(1), reason: why);
+        final work = _workDir(fx);
+        expect(signings.single.bin, startsWith('$work/'), reason: '$signings');
+        expect(signings.single.file, endsWith('/$_dmgName'));
+        expect(Directory(work).existsSync(), isFalse, reason: 'WORK is kept');
+      },
+    );
+
+    test(
+      'dry run writes the DMG signature and byte length each on one line to out',
+      () async {
+        expect(r.exitCode, 0, reason: '$r');
+        final signings = signUpdateCalls(fx.state);
+        expect(signings, hasLength(1), reason: _callList(calls));
+        await _expectEdFiles(fx, signings.single.keyBase64);
+        expect(
+          signings.single.fileSha256,
+          await _sha256('${fx.out}/$_dmgName'),
+          reason: 'the DMG changed after it was signed',
+        );
+      },
+    );
+
+    test(
+      'dry run signs with a throwaway 32 byte key in its work dir that is gone after the run',
+      () {
+        expect(r.exitCode, 0, reason: '$r');
+        final signings = signUpdateCalls(fx.state);
+        expect(signings, hasLength(1), reason: _callList(calls));
+        final s = signings.single;
+        final work = _workDir(fx);
+        expect(s.keyPath, startsWith('$work/'), reason: '$s');
+        expect(s.keyBytes, 32, reason: 'the generate_keys -x seed format');
+        expect(base64Decode(s.keyBase64), hasLength(32));
+        expect(File(s.keyPath).existsSync(), isFalse, reason: 'key kept');
+        expect(signUpdateReadKeychain(fx.state), isFalse);
+        expect(
+          calls.where((c) => c.tool == 'security' || c.tool == 'generate_keys'),
+          isEmpty,
+          reason: _callList(calls),
+        );
+      },
+    );
+
+    test(
+      'dry run lists neither the signature nor the length in SHA256SUMS',
+      () {
+        expect(r.exitCode, 0, reason: '$r');
+        expect(File('${fx.out}/$_edsigName').existsSync(), isTrue);
+        expect(File('${fx.out}/$_lengthName').existsSync(), isTrue);
+        expect(_readSums('${fx.out}/$_sums').keys.toSet(), {
+          _dmgName,
+          _zipName,
+          _notices,
+        });
+        expect(
+          File('${fx.out}/$_sums').readAsStringSync(),
+          allOf(isNot(contains('.edsig')), isNot(contains('.length'))),
+        );
+      },
+    );
+
+    test(
+      'the dry run DMG holds Open Memex.app at its root next to the Applications link',
+      () async {
+        expect(r.exitCode, 0, reason: '$r');
+        final vol = await _openDmg(fx, '${fx.out}/$_dmgName');
+        final top = Directory(vol)
+            .listSync()
+            .map((e) => e.path.split('/').last)
+            .where((n) => n != '.' && !n.startsWith('._'))
+            .toSet();
+        expect(top, {_appName, 'Applications'}, reason: '$top');
+        expect(
+          File('$vol/$_appName/Contents/Info.plist').existsSync(),
+          isTrue,
+          reason: 'Open Memex.app at the DMG root',
+        );
+      },
+    );
+  });
+
+  group('dry run secrets', () {
+    test(
+      'a dry run never signs with the SPARKLE_ED_KEY_PATH key or the key secret',
+      () async {
+        final fx = await _fixture();
+        final r = await _runBuild(
+          fx,
+          _dryArgs(fx),
+          env: {
+            'SPARKLE_ED_KEY_PATH': fx.edKey,
+            'SPARKLE_ED_PRIVATE_KEY_BASE64': fx.edKeyBase64,
+          },
+        );
+        expect(r.exitCode, 0, reason: '$r');
+        final signings = signUpdateCalls(fx.state);
+        expect(signings, hasLength(1), reason: _callList(_calls(fx)));
+        final s = signings.single;
+        expect(s.keyPath, isNot(fx.edKey), reason: '$s');
+        expect(s.keyBase64, isNot(fx.edKeyBase64), reason: 'the real key');
+        expect(s.keyPath, startsWith('${_workDir(fx)}/'), reason: '$s');
+        expect(signUpdateReadKeychain(fx.state), isFalse);
+        expect(
+          _calls(fx).where((c) => c.tool == 'security'),
+          isEmpty,
+          reason: _callList(_calls(fx)),
+        );
+        await _expectEdFiles(fx, s.keyBase64);
+      },
+    );
+
+    test(
+      'a dry run with an unreadable SPARKLE_ED_KEY_PATH still signs and exits 0',
+      () async {
+        final fx = await _fixture();
+        await _sh(['/bin/chmod', '000', fx.edKey]);
+        addTearDown(() => _sh(['/bin/chmod', '600', fx.edKey]));
+        final r = await _runBuild(
+          fx,
+          _dryArgs(fx),
+          env: {'SPARKLE_ED_KEY_PATH': fx.edKey},
+        );
+        expect(r.exitCode, 0, reason: '$r');
+        expect(_steps(r), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        final signings = signUpdateCalls(fx.state);
+        expect(signings, hasLength(1), reason: _callList(_calls(fx)));
+        await _expectEdFiles(fx, signings.single.keyBase64);
+      },
+    );
+
+    test('two dry runs sign with two different throwaway keys', () async {
+      final fx = await _fixture();
+      final a = await _runBuild(fx, _dryArgs(fx));
+      expect(a.exitCode, 0, reason: '$a');
+      final b = await _runBuild(fx, _dryArgs(fx));
+      expect(b.exitCode, 0, reason: '$b');
+      final signings = signUpdateCalls(fx.state);
+      expect(signings, hasLength(2), reason: _callList(_calls(fx)));
+      expect(signings.every((s) => s.keyBytes == 32), isTrue);
+      expect(
+        signings[0].keyBase64,
+        isNot(signings[1].keyBase64),
+        reason: 'a fixed key, not a fresh random one',
+      );
+    });
   });
 
   group('dry run outputs and usage', () {
@@ -1435,22 +1821,22 @@ void main() {
     // (test name, fixture LICENSE extra, env) for a leak in one output.
     final plantCases = <(String, String, Map<String, String>)>[
       (
-        'a leak planted in the app executable fails step 9 and writes no checksums',
+        'a leak planted in the app executable fails step 11 and writes no checksums',
         '',
         {'FAKE_RUNNER_PLANT': _stranger},
       ),
       (
-        'a leak planted in memex fails step 9 and writes no checksums',
+        'a leak planted in memex fails step 11 and writes no checksums',
         '',
         {'FAKE_MEMEX_PLANT': _stranger},
       ),
       (
-        'a leak planted only in the DMG fails step 9 and writes no checksums',
+        'a leak planted only in the DMG fails step 11 and writes no checksums',
         '',
         {'FAKE_DMG_PLANT': _stranger},
       ),
       (
-        'a leak planted only in the memex zip fails step 9 and writes no checksums',
+        'a leak planted only in the memex zip fails step 11 and writes no checksums',
         'Notice: $_stranger',
         <String, String>{},
       ),
@@ -1460,11 +1846,11 @@ void main() {
         final fx = await _fixture(licenseExtra: licenseExtra);
         final r = await _runBuild(fx, _dryArgs(fx), env: env);
         expect(r.exitCode, 1, reason: '$r');
-        expect(_failed(r), [9], reason: '$r');
+        expect(_failed(r), [11], reason: '$r');
         expect(_leakRules(r), contains('home-path'), reason: '$r');
         final steps = _steps(r);
-        expect(steps, containsAllInOrder([1, 2, 3, 4, 5, 6, 7, 8, 9]));
-        expect(steps, isNot(contains(10)), reason: '$r');
+        expect(steps, containsAllInOrder([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]));
+        expect(steps, isNot(contains(12)), reason: '$r');
         expect(File('${fx.out}/$_sums').existsSync(), isFalse);
         expect(
           r.output.contains(_strangerRoot),
@@ -1484,7 +1870,7 @@ void main() {
           env: {'LEAK_PATTERNS': _denyEmail, 'FAKE_MEMEX_PLANT': _denyEmail},
         );
         expect(r.exitCode, 1, reason: '$r');
-        expect(_failed(r), [9], reason: '$r');
+        expect(_failed(r), [11], reason: '$r');
         expect(_leakRules(r), contains('deny-list'), reason: '$r');
         expect(r.output, isNot(contains(_warn)), reason: '$r');
         expect(File('${fx.out}/$_sums').existsSync(), isFalse);
@@ -1492,7 +1878,7 @@ void main() {
       },
     );
 
-    test('a failing codesign verify fails step 5', () async {
+    test('a failing codesign verify fails step 6', () async {
       final fx = await _fixture();
       final r = await _runBuild(
         fx,
@@ -1501,7 +1887,7 @@ void main() {
       );
       final calls = _calls(fx);
       expect(r.exitCode, 1, reason: '$r');
-      expect(_failed(r), [5], reason: '$r');
+      expect(_failed(r), [6], reason: '$r');
       expect(
         calls.where(
           (c) =>
@@ -1512,7 +1898,7 @@ void main() {
         isNotEmpty,
         reason: _callList(calls),
       );
-      expect(_steps(r), isNot(contains(6)), reason: '$r');
+      expect(_steps(r), isNot(contains(7)), reason: '$r');
       expect(calls.where(_isHdiCreate), isEmpty, reason: _callList(calls));
       expect(File('${fx.out}/$_sums').existsSync(), isFalse);
     });
@@ -1592,6 +1978,142 @@ void main() {
       });
     }
 
+    // (test name, how SPARKLE_ED_KEY_PATH is set: null unsets it). Each run
+    // has every other signed-mode setting, so only the key is missing.
+    final keyCases = <(String, String?)>[
+      ('signed mode without SPARKLE_ED_KEY_PATH exits 2 before STEP 1', null),
+      (
+        'signed mode with an empty SPARKLE_ED_KEY_PATH exits 2 before STEP 1',
+        '',
+      ),
+      (
+        'signed mode with a SPARKLE_ED_KEY_PATH that does not exist exits 2 before STEP 1',
+        '<missing>',
+      ),
+      (
+        'signed mode with a SPARKLE_ED_KEY_PATH that is a directory exits 2 before STEP 1',
+        '<dir>',
+      ),
+      (
+        'signed mode with an unreadable SPARKLE_ED_KEY_PATH file exits 2 before STEP 1',
+        '<unreadable>',
+      ),
+    ];
+    for (final (name, value) in keyCases) {
+      test(name, () async {
+        final fx = await _fixture();
+        final env = _signedEnv(fx);
+        switch (value) {
+          case null:
+            env.remove('SPARKLE_ED_KEY_PATH');
+          case '<missing>':
+            env['SPARKLE_ED_KEY_PATH'] = '${fx.state}/no-such-ed-key';
+          case '<dir>':
+            final d = Directory('${fx.state}/ed-key-dir')..createSync();
+            env['SPARKLE_ED_KEY_PATH'] = d.path;
+          case '<unreadable>':
+            await _sh(['/bin/chmod', '000', fx.edKey]);
+            addTearDown(() => _sh(['/bin/chmod', '600', fx.edKey]));
+            env['SPARKLE_ED_KEY_PATH'] = fx.edKey;
+          default:
+            env['SPARKLE_ED_KEY_PATH'] = value;
+        }
+        final r = await _runBuild(fx, _signedArgs(fx), env: env);
+        _expectRefused(r, fx, 'SPARKLE_ED_KEY_PATH');
+        expect(signUpdateCalls(fx.state), isEmpty);
+      });
+    }
+
+    // A key file that exists and is readable but does not hold a base64 EdDSA
+    // private key (32 or 96 bytes): an unset secret decodes to an empty file.
+    // (test name, builds the key file text)
+    final badKeyText = <(String, String Function())>[
+      (
+        'signed mode with an empty SPARKLE_ED_KEY_PATH file exits 2 before STEP 1',
+        () => '',
+      ),
+      (
+        'signed mode with a white space only SPARKLE_ED_KEY_PATH file exits 2 before STEP 1',
+        () => ' \n\r\n\t \n',
+      ),
+      (
+        'signed mode with a SPARKLE_ED_KEY_PATH file that is not base64 exits 2 before STEP 1',
+        () => 'this is not a key!\n',
+      ),
+      (
+        'signed mode with a SPARKLE_ED_KEY_PATH key with characters outside base64 exits 2 before STEP 1',
+        // base64 -d skips the trailing - and _ and still gets 32 bytes, so
+        // only the character check refuses it.
+        () => '${mintEdKeyBase64()}-_\n',
+      ),
+      (
+        'signed mode with a SPARKLE_ED_KEY_PATH key of 16 bytes exits 2 before STEP 1',
+        () => '${base64Encode(List.filled(16, 7))}\n',
+      ),
+      (
+        'signed mode with a SPARKLE_ED_KEY_PATH key of 31 bytes exits 2 before STEP 1',
+        () => '${base64Encode(List.filled(31, 7))}\n',
+      ),
+      (
+        'signed mode with a SPARKLE_ED_KEY_PATH key of 33 bytes exits 2 before STEP 1',
+        () => '${base64Encode(List.filled(33, 7))}\n',
+      ),
+      (
+        'signed mode with a SPARKLE_ED_KEY_PATH key of 64 bytes exits 2 before STEP 1',
+        () => '${base64Encode(List.filled(64, 7))}\n',
+      ),
+      (
+        'signed mode with a SPARKLE_ED_KEY_PATH key of 95 bytes exits 2 before STEP 1',
+        () => '${base64Encode(List.filled(95, 7))}\n',
+      ),
+      (
+        'signed mode with a SPARKLE_ED_KEY_PATH key of 97 bytes exits 2 before STEP 1',
+        () => '${base64Encode(List.filled(97, 7))}\n',
+      ),
+    ];
+    for (final (name, text) in badKeyText) {
+      test(name, () async {
+        final fx = await _fixture();
+        File(fx.edKey).writeAsStringSync(text());
+        final r = await _runBuild(fx, _signedArgs(fx), env: _signedEnv(fx));
+        _expectRefused(r, fx, 'SPARKLE_ED_KEY_PATH');
+        expect(signUpdateCalls(fx.state), isEmpty);
+        final keyText = File(fx.edKey).readAsStringSync().trim();
+        if (keyText.isNotEmpty) {
+          expect(
+            r.output,
+            isNot(contains(keyText)),
+            reason: 'the refusal must not print the key text',
+          );
+        }
+      });
+    }
+
+    // (test name, builds the key file text). Both accepted formats, with the
+    // white space a decoded secret may carry; each runs to the end.
+    final goodKeyText = <(String, String Function())>[
+      (
+        'signed mode accepts a 96 byte SPARKLE_ED_KEY_PATH key and signs with it',
+        () => '${base64Encode(List.generate(96, (i) => i * 7 % 256))}\n',
+      ),
+      (
+        'signed mode accepts a SPARKLE_ED_KEY_PATH key with CRLF line ends and indentation',
+        () => '  ${mintEdKeyBase64()}\r\n\t\r\n',
+      ),
+    ];
+    for (final (name, text) in goodKeyText) {
+      test(name, () async {
+        final fx = await _fixture();
+        File(fx.edKey).writeAsStringSync(text());
+        final r = await _runBuild(fx, _signedArgs(fx), env: _signedEnv(fx));
+        expect(r.exitCode, 0, reason: '$r');
+        expect(_steps(r), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        final signings = signUpdateCalls(fx.state);
+        expect(signings, hasLength(1), reason: _callList(_calls(fx)));
+        expect(signings.single.keyPath, fx.edKey);
+      });
+    }
+
     test(
       'signed mode with a deny-list only from --patterns runs every step',
       () async {
@@ -1605,7 +2127,20 @@ void main() {
           patterns.path,
         ], env: env);
         expect(r.exitCode, 0, reason: '$r');
-        expect(_steps(r), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], reason: '$r');
+        expect(_steps(r), [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+        ], reason: '$r');
         expect(r.output, contains('leaks: 0'), reason: '$r');
       },
     );
@@ -1625,7 +2160,7 @@ void main() {
           patterns.path,
         ], env: env);
         expect(r.exitCode, 1, reason: '$r');
-        expect(_failed(r), [9], reason: '$r');
+        expect(_failed(r), [11], reason: '$r');
         expect(_leakRules(r), contains('deny-list'), reason: '$r');
         expect(File('${fx.out}/$_sums').existsSync(), isFalse);
         expect(r.output.contains(_denyEmail), isFalse, reason: 'unredacted');
@@ -1645,10 +2180,23 @@ void main() {
     });
 
     test(
-      'signed mode exits 0 after STEP 1 to STEP 10 with leaks 0 and no empty deny-list warning',
+      'signed mode exits 0 after STEP 1 to STEP 12 with leaks 0 and no empty deny-list warning',
       () {
         expect(r.exitCode, 0, reason: '$r');
-        expect(_steps(r), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], reason: '$r');
+        expect(_steps(r), [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+        ], reason: '$r');
         expect(r.output, contains('leaks: 0'), reason: '$r');
         expect(r.output, isNot(contains(_warn)), reason: '$r');
       },
@@ -1781,36 +2329,652 @@ void main() {
       }
     });
 
+    test('signed mode staples only the DMG and sums the stapled DMG', () async {
+      expect(r.exitCode, 0, reason: '$r');
+      final dmg = '${fx.out}/$_dmgName';
+      expect(_readLoose(dmg), contains(_stapleMarker));
+      final vol = await _openDmg(fx, dmg);
+      final ticket = File('$vol/$_appName/Contents/CodeResources');
+      expect(
+        ticket.existsSync() &&
+            ticket.readAsStringSync().contains(_stapleMarker),
+        isFalse,
+        reason:
+            'the app inside the DMG is stapled, but only the DMG is notarized',
+      );
+      final zip = '${fx.out}/$_zipName';
+      final entries = await _zipEntries(zip);
+      final memex = entries.firstWhere((e) => e.split('/').last == 'memex');
+      expect(
+        await _unzipEntry(zip, memex),
+        contains('FAKE-CODESIGN $_identity'),
+      );
+    });
+
     test(
-      'signed mode staples only the DMG and sums the stapled DMG',
+      'signed mode signs the DMG with the EdDSA key only after notarize and staple',
       () async {
         expect(r.exitCode, 0, reason: '$r');
-        final dmg = '${fx.out}/$_dmgName';
-        expect(_readLoose(dmg), contains(_stapleMarker));
-        final vol = await _openDmg(fx, dmg);
-        final ticket = File('$vol/$_appName/Contents/CodeResources');
-        expect(
-          ticket.existsSync() &&
-              ticket.readAsStringSync().contains(_stapleMarker),
-          isFalse,
-          reason: 'the app inside the DMG is stapled, but only the DMG is notarized',
+        final why = _callList(calls);
+        final submit = _indexWhere(calls, _isSubmit);
+        final staple = _indexWhere(
+          calls,
+          (c) => _isStaple(c) && c.args.last.endsWith(_dmgName),
         );
-        final zip = '${fx.out}/$_zipName';
-        final entries = await _zipEntries(zip);
-        final memex = entries.firstWhere((e) => e.split('/').last == 'memex');
+        final edSign = _indexWhere(calls, (c) => _isTool(c, 'sign_update'));
+        expect(submit, greaterThanOrEqualTo(0), reason: why);
+        expect(staple, greaterThan(submit), reason: why);
+        expect(edSign, greaterThan(staple), reason: why);
+        final signings = signUpdateCalls(fx.state);
+        expect(signings, hasLength(1), reason: why);
+        expect(signings.single.file, endsWith('/$_dmgName'));
+        // The bytes it signed are the stapled DMG that ships.
         expect(
-          await _unzipEntry(zip, memex),
-          contains('FAKE-CODESIGN $_identity'),
+          signings.single.fileSha256,
+          await _sha256('${fx.out}/$_dmgName'),
+          reason: 'the DMG changed after it was EdDSA signed',
+        );
+        expect(_readLoose('${fx.out}/$_dmgName'), contains(_stapleMarker));
+      },
+    );
+
+    test(
+      'signed mode signs with the SPARKLE_ED_KEY_PATH key file and never the Keychain',
+      () {
+        expect(r.exitCode, 0, reason: '$r');
+        final signings = signUpdateCalls(fx.state);
+        expect(signings, hasLength(1), reason: _callList(calls));
+        expect(signings.single.keyPath, fx.edKey);
+        expect(signings.single.keyBase64, fx.edKeyBase64);
+        expect(signUpdateReadKeychain(fx.state), isFalse);
+        expect(
+          calls.where(
+            (c) =>
+                c.tool == 'security' ||
+                c.tool == 'generate_keys' ||
+                c.tool == 'sign_update-path',
+          ),
+          isEmpty,
+          reason: _callList(calls),
+        );
+      },
+    );
+
+    test(
+      'signed mode writes the signature and byte length of the stapled DMG to out',
+      () async {
+        expect(r.exitCode, 0, reason: '$r');
+        await _expectEdFiles(fx, fx.edKeyBase64);
+      },
+    );
+
+    test(
+      'signed mode downloads the pinned Sparkle tarball before it notarizes',
+      () {
+        expect(r.exitCode, 0, reason: '$r');
+        final why = _callList(calls);
+        final downloads = calls.where(_isSparkleDownload).toList();
+        expect(downloads, hasLength(1), reason: why);
+        final curl = calls.indexOf(downloads.single);
+        expect(_indexWhere(calls, _isNotary), greaterThan(curl), reason: why);
+        final signings = signUpdateCalls(fx.state);
+        expect(signings, hasLength(1), reason: why);
+        expect(signings.single.bin, startsWith('${_workDir(fx)}/'));
+      },
+    );
+
+    test(
+      'signed mode lists neither the signature nor the length in SHA256SUMS',
+      () async {
+        expect(r.exitCode, 0, reason: '$r');
+        expect(File('${fx.out}/$_edsigName').existsSync(), isTrue);
+        expect(File('${fx.out}/$_lengthName').existsSync(), isTrue);
+        await _expectSumsMatch(fx.out);
+        expect(
+          File('${fx.out}/$_sums').readAsStringSync(),
+          allOf(isNot(contains('.edsig')), isNot(contains('.length'))),
         );
       },
     );
   });
 
+  group('the Sparkle sign_update download', () {
+    Future<void> expectFailedAtDownload(_Fx fx, ScriptResult r) async {
+      final calls = _calls(fx);
+      final why = '$r\n${_callList(calls)}';
+      expect(r.exitCode, 1, reason: why);
+      expect(_failed(r), [1], reason: why);
+      expect(_steps(r), [1], reason: why);
+      expect(calls.where(_isSparkleDownload), isNotEmpty, reason: why);
+      expect(signUpdateCalls(fx.state), isEmpty, reason: why);
+      expect(
+        calls.where(
+          (c) =>
+              c.tool == 'cargo' ||
+              c.tool == 'flutter' ||
+              c.tool == 'codesign' ||
+              _isNotary(c),
+        ),
+        isEmpty,
+        reason: why,
+      );
+      expect(Directory(fx.out).listSync(), isEmpty, reason: why);
+    }
+
+    test('build.sh pins Sparkle 2.10.1 and its SHA-256 on their own lines', () {
+      final lines = File('${repoRoot()}/$_build').readAsLinesSync();
+      expect(
+        lines.where((l) => l == 'SPARKLE_VERSION=$sparkleVersion'),
+        hasLength(1),
+        reason: 'SPARKLE_VERSION=$sparkleVersion on its own line',
+      );
+      expect(
+        lines.where((l) => l == 'SPARKLE_SHA256=$sparkleSha256'),
+        hasLength(1),
+        reason: 'SPARKLE_SHA256=$sparkleSha256 on its own line',
+      );
+      expect(
+        lines.where((l) => RegExp(r'^\s*SPARKLE_SHA256=').hasMatch(l)),
+        hasLength(1),
+        reason: 'one SPARKLE_SHA256 assignment',
+      );
+    });
+
+    // (test name, dry run, the fake tarball variant served, env)
+    final mismatchCases = <(String, bool, String, Map<String, String>)>[
+      (
+        'a dry run with a Sparkle tarball whose SHA-256 does not match fails step 1',
+        true,
+        'tampered',
+        {},
+      ),
+      (
+        'signed mode with a Sparkle tarball whose SHA-256 does not match fails step 1',
+        false,
+        'tampered',
+        {},
+      ),
+      (
+        'a SPARKLE_SHA256 in the environment does not override the pinned hash',
+        true,
+        'tampered',
+        {'SPARKLE_SHA256': '<tampered>'},
+      ),
+      (
+        'a Sparkle download that returns a not found page fails step 1',
+        true,
+        '<not-found>',
+        {},
+      ),
+      (
+        'a failed Sparkle download fails step 1',
+        true,
+        '',
+        {'FAKE_CURL_FAIL': '1'},
+      ),
+    ];
+    for (final (name, dry, variant, env) in mismatchCases) {
+      test(name, () async {
+        final fx = await _fixture();
+        final run = <String, String>{...env};
+        if (variant == '<not-found>') {
+          // The pinned URL answers 404: curl fails with --fail, or hands back
+          // a Not Found page whose SHA-256 cannot match.
+          run['FAKE_CURL_NOT_FOUND'] = '1';
+        } else if (variant.isNotEmpty) {
+          final dir = Directory('${fx.iso.work.path}/sparkle-$variant')
+            ..createSync();
+          final bad = await buildFakeSparkleTarball(dir.path, variant: variant);
+          expect(bad.sha256, isNot(fx.sparkle.sha256));
+          run['FAKE_SPARKLE_TARBALL'] = bad.path;
+          if (run['SPARKLE_SHA256'] == '<tampered>') {
+            run['SPARKLE_SHA256'] = bad.sha256;
+          }
+        }
+        final r = await _runBuild(
+          fx,
+          dry ? _dryArgs(fx) : _signedArgs(fx),
+          env: {if (!dry) ..._signedEnv(fx), ...run},
+        );
+        await expectFailedAtDownload(fx, r);
+      });
+    }
+
+    // (test name, tarball has bin/sign_update, bin/sign_update is executable)
+    final brokenTool = <(String, bool, bool)>[
+      (
+        'a checked Sparkle tarball without bin/sign_update fails step 1',
+        false,
+        true,
+      ),
+      (
+        'a checked Sparkle tarball whose bin/sign_update is not executable fails step 1',
+        true,
+        false,
+      ),
+    ];
+    for (final (name, withTool, executable) in brokenTool) {
+      test(name, () async {
+        final fx = await _fixture();
+        final dir = Directory('${fx.iso.work.path}/sparkle-broken')
+          ..createSync();
+        final bad = await buildFakeSparkleTarball(
+          dir.path,
+          variant: 'broken',
+          withSignUpdate: withTool,
+          signUpdateExecutable: executable,
+        );
+        // The pin matches this tarball: only its contents are wrong.
+        final buildSh = File('${fx.root}/$_build');
+        buildSh.writeAsStringSync(
+          buildSh.readAsStringSync().replaceAll(
+            _shaLine,
+            'SPARKLE_SHA256=${bad.sha256}',
+          ),
+        );
+        final r = await _runBuild(
+          fx,
+          _dryArgs(fx),
+          env: {'FAKE_SPARKLE_TARBALL': bad.path},
+        );
+        await expectFailedAtDownload(fx, r);
+      });
+    }
+
+    test(
+      'the real pinned SHA-256 refuses a Sparkle tarball with another hash',
+      () async {
+        final fx = await _fixture(pinFakeSparkle: false);
+        expect(fx.sparkle.sha256, isNot(sparkleSha256));
+        final r = await _runBuild(fx, _dryArgs(fx));
+        await expectFailedAtDownload(fx, r);
+      },
+    );
+  });
+
+  group('EdDSA signing failures and outputs', () {
+    test(
+      'a sign_update that prints text that is not a signature fails step 9 and writes nothing to out',
+      () async {
+        final fx = await _fixture();
+        final r = await _runBuild(
+          fx,
+          _dryArgs(fx),
+          env: {'FAKE_SIGN_UPDATE_GARBAGE': '1'},
+        );
+        final why = '$r\n${_callList(_calls(fx))}';
+        expect(r.exitCode, 1, reason: why);
+        expect(_failed(r), [9], reason: why);
+        expect(Directory(fx.out).listSync(), isEmpty, reason: why);
+      },
+    );
+
+    test(
+      'a dry run deletes the throwaway key right after signing, before the zip',
+      () async {
+        final fx = await _fixture();
+        final r = await _runBuild(fx, _dryArgs(fx));
+        expect(r.exitCode, 0, reason: '$r');
+        final seen = File('${fx.state}/key-at-zip').readAsLinesSync();
+        expect(seen, hasLength(1), reason: '$seen');
+        expect(seen.single, startsWith('gone '), reason: '$seen');
+      },
+    );
+
+    test(
+      'a failing sign_update fails step 9 and writes nothing to out',
+      () async {
+        final fx = await _fixture();
+        final r = await _runBuild(
+          fx,
+          _dryArgs(fx),
+          env: {'FAKE_SIGN_UPDATE_FAIL': '1'},
+        );
+        final calls = _calls(fx);
+        final why = '$r\n${_callList(calls)}';
+        expect(r.exitCode, 1, reason: why);
+        expect(_failed(r), [9], reason: why);
+        expect(_steps(r), [1, 2, 3, 4, 5, 6, 7, 8, 9], reason: why);
+        expect(
+          calls.where((c) => c.tool == 'sign_update'),
+          isNotEmpty,
+          reason: why,
+        );
+        expect(Directory(fx.out).listSync(), isEmpty, reason: why);
+      },
+    );
+
+    test(
+      'a sign_update that prints a signature and then fails fails step 9 and writes nothing to out',
+      () async {
+        final fx = await _fixture();
+        final r = await _runBuild(
+          fx,
+          _dryArgs(fx),
+          env: {'FAKE_SIGN_UPDATE_FAIL_WITH_SIG': '1'},
+        );
+        final why = '$r\n${_callList(_calls(fx))}';
+        expect(r.exitCode, 1, reason: why);
+        expect(_failed(r), [9], reason: why);
+        expect(_steps(r), [1, 2, 3, 4, 5, 6, 7, 8, 9], reason: why);
+        expect(Directory(fx.out).listSync(), isEmpty, reason: why);
+      },
+    );
+
+    test(
+      'a failing leak check after EdDSA signing leaves the signature and length out of out',
+      () async {
+        final fx = await _fixture();
+        final r = await _runBuild(
+          fx,
+          _dryArgs(fx),
+          env: {'FAKE_MEMEX_PLANT': _stranger},
+        );
+        final why = '$r\n${_callList(_calls(fx))}';
+        expect(r.exitCode, 1, reason: why);
+        expect(_failed(r), [11], reason: why);
+        expect(signUpdateCalls(fx.state), hasLength(1), reason: why);
+        expect(Directory(fx.out).listSync(), isEmpty, reason: why);
+      },
+    );
+
+    test(
+      'a rerun replaces the signature and length of an earlier run',
+      () async {
+        final fx = await _fixture();
+        Directory(fx.out).createSync(recursive: true);
+        File('${fx.out}/$_edsigName').writeAsStringSync('STALE signature\n');
+        File('${fx.out}/$_lengthName').writeAsStringSync('1\n');
+        final r = await _runBuild(fx, _dryArgs(fx));
+        expect(r.exitCode, 0, reason: '$r');
+        final signings = signUpdateCalls(fx.state);
+        expect(signings, hasLength(1), reason: _callList(_calls(fx)));
+        await _expectEdFiles(fx, signings.single.keyBase64);
+      },
+    );
+  });
+
+  group('build.sh contracts kept by the EdDSA signing', () {
+    test('build.sh never names SELF_UPDATE_APPCAST_URL', () {
+      final src = File('${repoRoot()}/$_build').readAsStringSync();
+      expect(src, isNot(contains('SELF_UPDATE_APPCAST_URL')));
+      final ed = File('${repoRoot()}/$_eddsa');
+      if (ed.existsSync()) {
+        expect(
+          ed.readAsStringSync(),
+          isNot(contains('SELF_UPDATE_APPCAST_URL')),
+        );
+      }
+    });
+
+    test(
+      'a dry run passes no SELF_UPDATE_APPCAST_URL define to the app build',
+      () async {
+        final fx = await _fixture();
+        final r = await _runBuild(
+          fx,
+          _dryArgs(fx),
+          env: {
+            'SELF_UPDATE_APPCAST_URL': 'https://example.invalid/appcast.xml',
+          },
+        );
+        expect(r.exitCode, 0, reason: '$r');
+        final flutter = _calls(fx).where((c) => c.tool == 'flutter').toList();
+        expect(flutter, isNotEmpty);
+        for (final c in flutter) {
+          expect(
+            c.args.where(
+              (a) =>
+                  a.contains('SELF_UPDATE_APPCAST_URL') ||
+                  a.startsWith('--dart-define-from-file'),
+            ),
+            isEmpty,
+            reason: '$c',
+          );
+        }
+      },
+    );
+
+    test('build.sh keeps the four asset name lines verbatim', () {
+      final lines = File('${repoRoot()}/$_build').readAsLinesSync();
+      for (final l in [
+        r'DMG_NAME="Open-Memex-$VERSION-arm64.dmg"',
+        r'ZIP_NAME="memex-$VERSION-macos-arm64.zip"',
+        'NOTICES_NAME=THIRD_PARTY_NOTICES.txt',
+        'SUMS_NAME=SHA256SUMS.txt',
+      ]) {
+        expect(lines.where((x) => x == l), hasLength(1), reason: l);
+      }
+    });
+
+    test('build.sh never reads the SPARKLE_ED_PRIVATE_KEY_BASE64 secret', () {
+      final src = File('${repoRoot()}/$_build').readAsStringSync();
+      expect(src, isNot(contains('SPARKLE_ED_PRIVATE_KEY_BASE64')));
+    });
+  });
+
+  group('eddsa_sign.sh', () {
+    test(
+      'eddsa_sign.sh runs sign_update with -f and the key file and prints only the base64 signature',
+      () async {
+        final fx = await _edFixture();
+        final r = await _runEddsa(fx, [fx.file]);
+        expect(r.exitCode, 0, reason: '$r');
+        final keyB64 = File(fx.key).readAsStringSync().trim();
+        final sig = await fakeEdSignature(keyB64, fx.file);
+        expect(sig, matches(_base64Sig));
+        expect(
+          r.stdout == sig || r.stdout == '$sig\n',
+          isTrue,
+          reason: 'stdout must be only the signature: "${r.stdout}"',
+        );
+        final calls = _edCalls(fx).where((c) => c.tool == 'sign_update');
+        expect(calls, hasLength(1), reason: '${_edCalls(fx)}');
+        final a = calls.single.args;
+        final f = a.indexOf('-f');
+        expect(f, greaterThanOrEqualTo(0), reason: '$a');
+        expect(a[f + 1], fx.key, reason: '$a');
+        expect(a.last, fx.file, reason: '$a');
+        final signings = signUpdateCalls(fx.state);
+        expect(signings.single.keyPath, fx.key);
+        expect(signings.single.file, fx.file);
+      },
+    );
+
+    test(
+      'eddsa_sign.sh exits non zero with nothing on stdout when sign_update fails',
+      () async {
+        final fx = await _edFixture();
+        final r = await _runEddsa(
+          fx,
+          [fx.file],
+          env: {'FAKE_SIGN_UPDATE_FAIL': '1'},
+        );
+        expect(r.exitCode, isNot(0), reason: '$r');
+        expect(r.stdout.trim(), isEmpty, reason: '$r');
+        expect(
+          _edCalls(fx).where((c) => c.tool == 'sign_update'),
+          hasLength(1),
+          reason: 'sign_update was not run',
+        );
+      },
+    );
+
+    test(
+      'eddsa_sign.sh exits non zero when sign_update cannot decode the key',
+      () async {
+        final fx = await _edFixture();
+        // 16 bytes: not an Ed25519 private key, so sign_update refuses it.
+        File(fx.key).writeAsStringSync('${base64Encode(List.filled(16, 7))}\n');
+        final r = await _runEddsa(fx, [fx.file]);
+        expect(r.exitCode, isNot(0), reason: '$r');
+        expect(r.stdout.trim(), isEmpty, reason: '$r');
+        expect(
+          _edCalls(fx).where((c) => c.tool == 'sign_update'),
+          hasLength(1),
+          reason: 'sign_update was not run',
+        );
+        expect(signUpdateCalls(fx.state), isEmpty);
+      },
+    );
+
+    // (test name, SPARKLE_ED_KEY_PATH: null unsets it)
+    final noKey = <(String, String?)>[
+      (
+        'eddsa_sign.sh without SPARKLE_ED_KEY_PATH fails and never lets sign_update read the Keychain',
+        null,
+      ),
+      (
+        'eddsa_sign.sh with an empty SPARKLE_ED_KEY_PATH fails and never lets sign_update read the Keychain',
+        '',
+      ),
+    ];
+    for (final (name, value) in noKey) {
+      test(name, () async {
+        final fx = await _edFixture();
+        final r = await _runEddsa(
+          fx,
+          [fx.file],
+          env: {'SPARKLE_ED_KEY_PATH': value},
+        );
+        expect(r.exitCode, isNot(0), reason: '$r');
+        expect(r.stdout.trim(), isEmpty, reason: '$r');
+        expect(signUpdateReadKeychain(fx.state), isFalse, reason: '$r');
+        expect(
+          _edCalls(fx).where((c) => c.tool == 'security'),
+          isEmpty,
+          reason: '${_edCalls(fx)}',
+        );
+        expect(signUpdateCalls(fx.state), isEmpty);
+      });
+    }
+
+    test('eddsa_sign.sh with a missing file exits non zero', () async {
+      final fx = await _edFixture();
+      final r = await _runEddsa(fx, ['${fx.iso.work.path}/no-such.dmg']);
+      expect(r.exitCode, isNot(0), reason: '$r');
+      expect(r.stdout.trim(), isEmpty, reason: '$r');
+      final none = await _runEddsa(fx, []);
+      expect(none.exitCode, isNot(0), reason: '$none');
+      expect(none.stdout.trim(), isEmpty, reason: '$none');
+      expect(signUpdateCalls(fx.state), isEmpty);
+    });
+
+    test(
+      'eddsa_sign.sh exits 1 and prints nothing when sign_update prints text that is not a signature',
+      () async {
+        final fx = await _edFixture();
+        final r = await _runEddsa(
+          fx,
+          [fx.file],
+          env: {'FAKE_SIGN_UPDATE_GARBAGE': '1'},
+        );
+        expect(r.exitCode, 1, reason: '$r');
+        expect(r.stdout.trim(), isEmpty, reason: '$r');
+        expect(
+          _edCalls(fx).where((c) => c.tool == 'sign_update'),
+          hasLength(1),
+          reason: 'sign_update was not run',
+        );
+      },
+    );
+
+    test(
+      'eddsa_sign.sh exits 1 and prints nothing when sign_update prints a signature and then fails',
+      () async {
+        final fx = await _edFixture();
+        final r = await _runEddsa(
+          fx,
+          [fx.file],
+          env: {'FAKE_SIGN_UPDATE_FAIL_WITH_SIG': '1'},
+        );
+        expect(r.exitCode, 1, reason: '$r');
+        expect(r.stdout.trim(), isEmpty, reason: 'a failed signing leaked $r');
+        expect(
+          _edCalls(fx).where((c) => c.tool == 'sign_update'),
+          hasLength(1),
+          reason: 'sign_update was not run',
+        );
+      },
+    );
+
+    test('eddsa_sign.sh exits 1 when sign_update fails', () async {
+      final fx = await _edFixture();
+      final r = await _runEddsa(
+        fx,
+        [fx.file],
+        env: {'FAKE_SIGN_UPDATE_FAIL': '1'},
+      );
+      expect(r.exitCode, 1, reason: '$r');
+    });
+
+    test(
+      'eddsa_sign.sh exits 1 when there is no sign_update on PATH',
+      () async {
+        final fx = await _edFixture();
+        File('${fx.bin}/sign_update').deleteSync();
+        final r = await _runEddsa(fx, [fx.file]);
+        expect(r.exitCode, 1, reason: '$r');
+        expect(r.stdout.trim(), isEmpty, reason: '$r');
+      },
+    );
+
+    test(
+      'eddsa_sign.sh exits 2 for a usage error and never runs sign_update',
+      () async {
+        final fx = await _edFixture();
+        final w = fx.iso.work.path;
+        final results = <String, ScriptResult>{
+          'no file': await _runEddsa(fx, []),
+          'two files': await _runEddsa(fx, [fx.file, fx.file]),
+          'missing file': await _runEddsa(fx, ['$w/no.dmg']),
+          'empty file name': await _runEddsa(fx, ['']),
+          'directory': await _runEddsa(fx, [w]),
+          'no key': await _runEddsa(
+            fx,
+            [fx.file],
+            env: {'SPARKLE_ED_KEY_PATH': null},
+          ),
+          'empty key': await _runEddsa(
+            fx,
+            [fx.file],
+            env: {'SPARKLE_ED_KEY_PATH': ''},
+          ),
+          'key is a directory': await _runEddsa(
+            fx,
+            [fx.file],
+            env: {'SPARKLE_ED_KEY_PATH': w},
+          ),
+          'key does not exist': await _runEddsa(
+            fx,
+            [fx.file],
+            env: {'SPARKLE_ED_KEY_PATH': '$w/no-key'},
+          ),
+        };
+        results.forEach((why, r) {
+          expect(r.exitCode, 2, reason: '$why: $r');
+          expect(r.stdout.trim(), isEmpty, reason: '$why: $r');
+        });
+        expect(_edCalls(fx).where((c) => c.tool == 'sign_update'), isEmpty);
+        expect(signUpdateReadKeychain(fx.state), isFalse);
+      },
+    );
+
+    test('eddsa_sign.sh is an executable bash script', () {
+      final f = File('${repoRoot()}/$_eddsa');
+      expect(f.existsSync(), isTrue, reason: '$_eddsa is missing');
+      expect(f.statSync().mode & 0x49, 0x49, reason: 'not executable');
+      final first = f.readAsLinesSync().first;
+      expect(first.startsWith('#!'), isTrue);
+      expect(first, contains('bash'));
+    });
+  });
+
   group('notarization failures', () {
     // (test name, the fake submit exit status for an Invalid result)
     final cases = <(String, String)>[
-      ('a failing notarytool fails step 7 and prints its log', '1'),
-      ('a rejected notarization that exits 0 still fails step 7', '0'),
+      ('a failing notarytool fails step 8 and prints its log', '1'),
+      ('a rejected notarization that exits 0 still fails step 8', '0'),
     ];
     for (final (name, exit) in cases) {
       test(name, () async {
@@ -1826,7 +2990,7 @@ void main() {
         );
         final calls = _calls(fx);
         expect(r.exitCode, 1, reason: '$r');
-        expect(_failed(r), [7], reason: '$r');
+        expect(_failed(r), [8], reason: '$r');
         expect(r.output, contains(_notaryLogMarker), reason: '$r');
         expect(
           calls.where(
@@ -1838,7 +3002,12 @@ void main() {
           isNotEmpty,
           reason: _callList(calls),
         );
-        expect(_steps(r), isNot(contains(8)), reason: '$r');
+        expect(_steps(r), isNot(contains(9)), reason: '$r');
+        expect(
+          signUpdateCalls(fx.state),
+          isEmpty,
+          reason: 'no EdDSA signature after a failed notarization',
+        );
         expect(
           calls.where((c) => c.tool == 'ditto' && c.args.contains('-c')),
           isEmpty,
@@ -1963,22 +3132,22 @@ void main() {
     // (test name, what the fake lipo reports on, its archs)
     final fatCases = <(String, String, String)>[
       (
-        'a fat memex fails step 3 and signs nothing',
+        'a fat memex fails step 4 and signs nothing',
         'Contents/MacOS/memex',
         'arm64 x86_64',
       ),
       (
-        'an x86_64 only framework fails step 3 and signs nothing',
+        'an x86_64 only framework fails step 4 and signs nothing',
         'FlutterMacOS.framework/FlutterMacOS',
         'x86_64',
       ),
       (
-        'a fat app executable fails step 3 and signs nothing',
+        'a fat app executable fails step 4 and signs nothing',
         'Contents/MacOS/Open Memex',
         'x86_64 arm64',
       ),
       (
-        'a fat dylib fails step 3 and signs nothing',
+        'a fat dylib fails step 4 and signs nothing',
         'libfake_plugin.dylib',
         'arm64 x86_64',
       ),
@@ -1993,8 +3162,8 @@ void main() {
         );
         final calls = _calls(fx);
         expect(r.exitCode, 1, reason: '$r');
-        expect(_failed(r), [3], reason: '$r');
-        expect(_steps(r), [1, 2, 3], reason: '$r');
+        expect(_failed(r), [4], reason: '$r');
+        expect(_steps(r), [1, 2, 3, 4], reason: '$r');
         expect(r.output, contains(bad.split('/').last), reason: '$r');
         expect(calls.where(_isSign), isEmpty, reason: _callList(calls));
         expect(Directory(fx.out).listSync(), isEmpty);
@@ -2009,7 +3178,7 @@ void main() {
         env: {'FAKE_MEMEX_PLANT': _stranger},
       );
       expect(r.exitCode, 1, reason: '$r');
-      expect(_failed(r), [9], reason: '$r');
+      expect(_failed(r), [11], reason: '$r');
       expect(
         Directory(fx.out).listSync().map((e) => e.path.split('/').last),
         isEmpty,
@@ -2018,21 +3187,21 @@ void main() {
     });
 
     test(
-      'a leak check that cannot run fails step 9 and writes nothing',
+      'a leak check that cannot run fails step 11 and writes nothing',
       () async {
         final fx = await _fixture();
         File('${fx.root}/scripts/leak-check.sh').deleteSync();
         final r = await _runBuild(fx, _dryArgs(fx));
         expect(r.exitCode, 1, reason: '$r');
-        expect(_failed(r), [9], reason: '$r');
+        expect(_failed(r), [11], reason: '$r');
         expect(r.output, isNot(contains('leaks: 0')), reason: '$r');
-        expect(_steps(r), isNot(contains(10)), reason: '$r');
+        expect(_steps(r), isNot(contains(12)), reason: '$r');
         expect(Directory(fx.out).listSync(), isEmpty);
       },
     );
 
     test(
-      'a successful run leaves exactly the four release files in --out',
+      'a successful run leaves exactly the four release files and the DMG signature and length in --out',
       () async {
         final fx = await _fixture();
         final r = await _runBuild(fx, _dryArgs(fx));
@@ -2041,7 +3210,7 @@ void main() {
           Directory(
             fx.out,
           ).listSync().map((e) => e.path.split('/').last).toSet(),
-          {_dmgName, _zipName, _notices, _sums},
+          {_dmgName, _zipName, _notices, _sums, _edsigName, _lengthName},
         );
       },
     );
@@ -2095,27 +3264,27 @@ void main() {
     // (test name, env, failing step, the tool that must not have run)
     final cases = <(String, Map<String, String>, int, String)>[
       (
-        'a failing cargo build fails step 1 and builds nothing else',
+        'a failing cargo build fails step 2 and builds nothing else',
         {'FAKE_CARGO_FAIL': '1'},
-        1,
+        2,
         'flutter',
       ),
       (
-        'a failing flutter pub get fails step 2 and builds no app',
+        'a failing flutter pub get fails step 3 and builds no app',
         {'FAKE_FLUTTER_FAIL': 'pubget'},
-        2,
+        3,
         'codesign',
       ),
       (
-        'a failing flutter build fails step 2 and signs nothing',
+        'a failing flutter build fails step 3 and signs nothing',
         {'FAKE_FLUTTER_FAIL': 'build'},
-        2,
+        3,
         'codesign',
       ),
       (
-        'a failing hdiutil fails step 6 and makes no zip',
+        'a failing hdiutil fails step 7 and makes no zip',
         {'FAKE_HDIUTIL_FAIL': '1'},
-        6,
+        7,
         'ditto-zip',
       ),
     ];
@@ -2146,7 +3315,7 @@ void main() {
       });
     }
 
-    test('unreadable cargo metadata fails step 4 and signs nothing', () async {
+    test('unreadable cargo metadata fails step 5 and signs nothing', () async {
       final fx = await _fixture();
       final broken = File('${fx.state}/broken-metadata.json')
         ..writeAsStringSync('{}');
@@ -2157,14 +3326,14 @@ void main() {
       );
       final calls = _calls(fx);
       expect(r.exitCode, 1, reason: '$r');
-      expect(_failed(r), [4], reason: '$r');
+      expect(_failed(r), [5], reason: '$r');
       expect(calls.where(_isSign), isEmpty, reason: _callList(calls));
       expect(Directory(fx.out).listSync(), isEmpty);
     });
 
     // The Nth notarization submit is rejected: there is one, the DMG.
     final notaryCases = <(String, String, int)>[
-      ('a rejected DMG notarization fails step 7 and writes nothing', '1', 7),
+      ('a rejected DMG notarization fails step 8 and writes nothing', '1', 8),
     ];
     for (final (name, at, step) in notaryCases) {
       test(name, () async {
@@ -2293,37 +3462,37 @@ void main() {
     // made before it, whether the app was signed).
     final cases = <(String, Map<String, String>, int, int, int)>[
       (
-        'a failing codesign of memex fails step 5 and signs nothing else',
+        'a failing codesign of memex fails step 6 and signs nothing else',
         {'FAKE_CODESIGN_SIGN_FAIL': '/Contents/MacOS/memex'},
-        5,
-        0,
-        0,
-      ),
-      (
-        'a failing codesign of a framework fails step 5 before the app is signed',
-        {'FAKE_CODESIGN_SIGN_FAIL': '/App.framework'},
-        5,
-        0,
-        0,
-      ),
-      (
-        'a failing codesign of the app fails step 5 and notarizes nothing',
-        {'FAKE_CODESIGN_SIGN_FAIL': '.app'},
-        5,
-        0,
-        0,
-      ),
-      (
-        'a failing codesign of the DMG fails step 6 and notarizes nothing',
-        {'FAKE_CODESIGN_SIGN_FAIL': '.dmg'},
         6,
         0,
         0,
       ),
       (
-        'a failing stapler for the DMG fails step 7 and makes no zip',
-        {'FAKE_STAPLER_FAIL': '1'},
+        'a failing codesign of a framework fails step 6 before the app is signed',
+        {'FAKE_CODESIGN_SIGN_FAIL': '/App.framework'},
+        6,
+        0,
+        0,
+      ),
+      (
+        'a failing codesign of the app fails step 6 and notarizes nothing',
+        {'FAKE_CODESIGN_SIGN_FAIL': '.app'},
+        6,
+        0,
+        0,
+      ),
+      (
+        'a failing codesign of the DMG fails step 7 and notarizes nothing',
+        {'FAKE_CODESIGN_SIGN_FAIL': '.dmg'},
         7,
+        0,
+        0,
+      ),
+      (
+        'a failing stapler for the DMG fails step 8 and makes no zip',
+        {'FAKE_STAPLER_FAIL': '1'},
+        8,
         1,
         1,
       ),
@@ -2353,7 +3522,7 @@ void main() {
           expect(kinds.last, 'app', reason: why);
           expect(calls.where(_isVerify), isEmpty, reason: why);
         }
-        if (step < 6) {
+        if (step < 7) {
           expect(calls.where(_isHdiCreate), isEmpty, reason: why);
         } else {
           expect(calls.where(_isHdiCreate), isNotEmpty, reason: why);
@@ -2435,7 +3604,7 @@ void main() {
         ..writeAsStringSync('x\n');
       final r = await _runBuild(fx, _signedArgs(fx), env: _signedEnv(fx));
       expect(r.exitCode, 0, reason: '$r');
-      expect(_steps(r), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], reason: '$r');
+      expect(_steps(r), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], reason: '$r');
       expect(r.stderr, isNot(contains('clean checkout')), reason: '$r');
     });
 
@@ -2446,7 +3615,20 @@ void main() {
         File('${fx.root}/app/lib_extra.dart').writeAsStringSync('// new\n');
         final r = await _runBuild(fx, _dryArgs(fx));
         expect(r.exitCode, 0, reason: '$r');
-        expect(_steps(r), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], reason: '$r');
+        expect(_steps(r), [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+        ], reason: '$r');
         expect(r.stderr, contains('uncommitted or untracked'), reason: '$r');
         expect(r.output, contains('leaks: 0'), reason: '$r');
       },
@@ -2458,7 +3640,7 @@ void main() {
       expect(r.exitCode, 0, reason: '$r');
       expect(r.stderr, isNot(contains('uncommitted')), reason: '$r');
       expect(r.stderr, isNot(contains('WARNING')), reason: '$r');
-      expect(_steps(r), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], reason: '$r');
+      expect(_steps(r), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], reason: '$r');
     });
   });
 
