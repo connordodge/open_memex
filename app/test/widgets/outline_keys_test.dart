@@ -237,6 +237,11 @@ void main() {
       testWidgets(name, (tester) async {
         final h = await pumpWi70(tester, panelOpen: false);
         await setUpFocus(tester);
+        // Focusing the body at a segment-end selection starts a caret-reveal
+        // scroll toward the note end: let it run, then return to the top.
+        await pumpFrames(tester);
+        await h.scrollTo(0);
+        await pumpFrames(tester);
         expect(wi70ExpectedCurrent(h), isNull, reason: 'at the note top');
 
         expect(await wi70OutlineChord(tester), isTrue, reason: 'handled');

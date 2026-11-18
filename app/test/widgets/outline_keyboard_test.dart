@@ -435,6 +435,11 @@ void main() {
       (tester) async {
         final h = await pumpWi70(tester);
         await focusSegmentAt(tester, find.byKey(editorBodyKey), offset: 20);
+        // The focus starts a caret-reveal scroll toward the note end (the
+        // selection is still at the segment end): let it finish, then return.
+        await pumpFrames(tester);
+        await h.scrollTo(0);
+        await pumpFrames(tester);
         _wi70Body(
           tester,
         ).select(const TextSelection(baseOffset: 20, extentOffset: 35));
@@ -497,10 +502,15 @@ void main() {
     testWidgets(
       'Esc returns focus to the field focused last when the title and then the body had focus',
       (tester) async {
-        await pumpWi70(tester);
+        final h = await pumpWi70(tester);
         await tester.showKeyboard(find.byKey(const Key('editor-title')));
         await tester.pump();
         await focusSegmentAt(tester, find.byKey(editorBodyKey), offset: 9);
+        // The focus starts a caret-reveal scroll toward the note end (the
+        // selection is still at the segment end): let it finish, then return.
+        await pumpFrames(tester);
+        await h.scrollTo(0);
+        await pumpFrames(tester);
         final before = _wi70Snapshot(tester, title: false);
         // Focus leaves the editor for the sidebar before the Outline.
         await wi70FocusSidebar(tester);
@@ -588,6 +598,11 @@ void main() {
       (tester) async {
         final h = await pumpWi70(tester);
         await focusSegmentAt(tester, find.byKey(editorBodyKey), offset: 4);
+        // The focus starts a caret-reveal scroll toward the note end (the
+        // selection is still at the segment end): let it finish, then return.
+        await pumpFrames(tester);
+        await h.scrollTo(0);
+        await pumpFrames(tester);
         final before = _wi70Snapshot(tester, title: false);
         h.read(findInNoteProvider.notifier).show();
         await pumpFrames(tester);
