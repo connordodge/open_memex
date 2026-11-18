@@ -7,5 +7,6 @@
   {"method": "POST", "path": "/vaults/seed/api/v1/words", "response": "words_not_found.json", "status": 404, "dart_only": true},
   {"method": "DELETE", "path": "/vaults/seed/api/v1/words/serendipity", "response": "words_not_found.json", "status": 404, "dart_only": true},
   {"method": "GET", "path": "/vaults/seed/api/v1/tools", "response": "tools_not_found.json", "status": 404, "dart_only": true},
-  {"method": "GET", "path": "/vaults/seed/api/v1/embeddings", "response": "embeddings_not_found.json", "status": 404, "dart_only": true}
+  {"method": "GET", "path": "/vaults/seed/api/v1/embeddings", "response": "embeddings_not_found.json", "status": 404, "dart_only": true},
+  {"method": "GET", "path": "/vaults/seed/api/v1/search?q=prices&limit=8", "response": "search_not_found.json", "status": 404, "dart_only": true}
 ]
