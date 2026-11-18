@@ -1,3 +1,8 @@
+// WI #38 (Spec #31 req 17, D15) adds the update-ready label: the same one
+// Text reads `v<current> · update ready` while the update controller is
+// Ready (A0's FakeUpdateController), and only then is it a tap target that
+// opens the update modal at Ready. `_wi38` helpers are this WI's.
+//
 // WI #374 (Spec #367 Req 15-17; label style and position unchanged): the
 // vault picker header and the sidebar show `v<version>` from
 // appVersionProvider in place of the hard-coded `v0.4`, and show nothing when
@@ -5,14 +10,21 @@
 // reinstall Open Memex or build it from source. Seams: `pumpVaultPicker`
 // (test/support/vault_picker_harness.dart) and `wi362PumpLocal`
 // (test/support/wi362_modal.dart), both with `extraOverrides`.
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/app_version.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
+import 'package:open_memex_app/src/updater/appcast.dart';
+import 'package:open_memex_app/src/updater/update_controller.dart';
+import 'package:open_memex_app/src/updater/update_seams.dart';
+import 'package:open_memex_app/src/updater/update_state.dart';
 import 'package:open_memex_app/src/widgets/sidebar.dart';
 
 import '../support/font_fetch_hold.dart';
+import '../support/updater_fakes.dart';
 import '../support/vault_picker_harness.dart';
 import '../support/wi362_modal.dart';
 import '../support/wi363_sidebar.dart';
@@ -36,6 +48,79 @@ List<String> _wi374Texts(WidgetTester tester, Finder row) => [
     find.descendant(of: row, matching: find.byType(Text)),
   ))
     t.data ?? '',
+];
+
+/// The label Keys (D15).
+const _wi38SidebarLabel = Key('sidebar-version-label');
+const _wi38PickerLabel = Key('picker-version-label');
+
+/// `1.2.3`, built at run time.
+final _wi38Version = ['1', '2', '3'].join('.');
+
+AppcastItem _wi38Item() => testAppcastItem(
+  shortVersionString: ['1', '4', '0'].join('.'),
+  version: '12',
+);
+
+UpdateReady _wi38Ready() =>
+    UpdateReady(_wi38Item(), dmgPath: '/updater-test/wi38.dmg');
+
+/// The app version, the fake controller and updates on (so a modal opened
+/// from the label renders the controller's state, not the off copy).
+List<Override> _wi38Overrides(FakeUpdateController controller) => [
+  appVersionProvider.overrideWithValue(_wi38Version),
+  updatesEnabledProvider.overrideWithValue(true),
+  updateControllerProvider.overrideWith(() => controller),
+];
+
+/// Pumps the picker or the sidebar (a vault open) over [controller].
+Future<Finder> _wi38Pump(
+  WidgetTester tester,
+  FakeUpdateController controller, {
+  required bool picker,
+}) async {
+  final overrides = _wi38Overrides(controller);
+  if (picker) {
+    await pumpVaultPicker(tester, extraOverrides: overrides);
+  } else {
+    await wi362PumpLocal(tester, extraOverrides: overrides);
+  }
+  return find.byKey(picker ? _wi38PickerLabel : _wi38SidebarLabel);
+}
+
+/// Draws frames without settling (the workspace animates forever).
+Future<void> _wi38Frames(WidgetTester tester) async {
+  for (var i = 0; i < 4; i++) {
+    await tester.pump(const Duration(milliseconds: 100));
+  }
+}
+
+/// The cursor a mouse shows over [target]'s centre; the mouse is removed
+/// afterwards.
+Future<MouseCursor?> _wi38CursorOver(WidgetTester tester, Finder target) async {
+  final at = tester.getCenter(target);
+  final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+  await mouse.addPointer(location: at);
+  try {
+    await tester.pump();
+    await mouse.moveTo(at);
+    await tester.pump();
+    return RendererBinding.instance.mouseTracker.debugDeviceActiveCursor(1);
+  } finally {
+    await mouse.removePointer();
+    await tester.pump();
+  }
+}
+
+/// The states outside Ready, built at run time.
+List<UpdateState> _wi38NotReady() => [
+  const UpdateIdle(),
+  const UpdateChecking(),
+  const UpdateUpToDate(),
+  UpdateAvailable(_wi38Item()),
+  UpdateDownloading(_wi38Item(), progress: 0.5),
+  UpdateVerifying(_wi38Item()),
+  UpdateError(UpdateErrorCause.downloadFailed, item: _wi38Item()),
 ];
 
 void main() {
@@ -195,5 +280,136 @@ void main() {
         expect(find.text('locate memex binary…'), findsOneWidget);
       },
     );
+  });
+
+  group('update ready label', () {
+    for (final (name, picker) in [
+      (
+        'the sidebar label reads the version and update ready only while ready',
+        false,
+      ),
+      (
+        'the picker label reads the version and update ready only while ready',
+        true,
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final controller = FakeUpdateController();
+        final label = await _wi38Pump(tester, controller, picker: picker);
+
+        expect(label, findsOneWidget);
+        expect(tester.widget<Text>(label).data, 'v1.2.3');
+
+        controller.emit(_wi38Ready());
+        await _wi38Frames(tester);
+        expect(label, findsOneWidget);
+        expect(tester.widget<Text>(label).data, 'v1.2.3 · update ready');
+        expect(find.text('v1.2.3 · update ready'), findsOneWidget);
+        expect(find.text('v1.2.3'), findsNothing, reason: 'one Text, not two');
+
+        for (final state in _wi38NotReady()) {
+          controller.emit(state);
+          await _wi38Frames(tester);
+          expect(tester.widget<Text>(label).data, 'v1.2.3', reason: '$state');
+        }
+      });
+    }
+
+    for (final (name, picker, size) in [
+      ('the sidebar update ready label keeps the label style', false, 10.0),
+      ('the picker update ready label keeps the label style', true, 11.0),
+    ]) {
+      testWidgets(name, (tester) async {
+        final label = await _wi38Pump(
+          tester,
+          FakeUpdateController(_wi38Ready()),
+          picker: picker,
+        );
+
+        final text = tester.widget<Text>(label);
+        expect(text.data, 'v1.2.3 · update ready');
+        expect(text.style?.fontSize, size);
+        expect(text.style?.color, OmColors.fg3);
+        expect(text.style?.letterSpacing, 0.8);
+        final row = _wi374BrandRow(
+          picker ? find.byType(Scaffold) : find.byType(Sidebar),
+        );
+        expect(_wi374Texts(tester, row), [
+          'open memex',
+          'v1.2.3 · update ready',
+        ]);
+        expect(
+          tester.getTopLeft(label).dx,
+          greaterThan(
+            tester
+                .getTopRight(
+                  find.descendant(of: row, matching: find.text('open memex')),
+                )
+                .dx,
+          ),
+        );
+      });
+    }
+
+    for (final (name, picker) in [
+      (
+        'clicking the sidebar label while ready opens the modal at ready',
+        false,
+      ),
+      ('clicking the picker label while ready opens the modal at ready', true),
+    ]) {
+      testWidgets(name, (tester) async {
+        final controller = FakeUpdateController(_wi38Ready());
+        final label = await _wi38Pump(tester, controller, picker: picker);
+        expect(find.byKey(const Key('update-modal')), findsNothing);
+
+        await tester.tap(label);
+        await _wi38Frames(tester);
+
+        expect(find.byKey(const Key('update-modal')), findsOneWidget);
+        expect(
+          tester.widget<Text>(find.byKey(const Key('update-modal-title'))).data,
+          'Update ready',
+        );
+        expect(find.byKey(const Key('update-modal-relaunch')), findsOneWidget);
+        expect(controller.calls, isEmpty, reason: 'opening calls no action');
+      });
+    }
+
+    for (final (name, picker) in [
+      ('outside ready the sidebar label is no tap target', false),
+      ('outside ready the picker label is no tap target', true),
+    ]) {
+      testWidgets(name, (tester) async {
+        final controller = FakeUpdateController();
+        final label = await _wi38Pump(tester, controller, picker: picker);
+        expect(label, findsOneWidget);
+
+        controller.emit(_wi38Ready());
+        await _wi38Frames(tester);
+        expect(
+          await _wi38CursorOver(tester, label),
+          SystemMouseCursors.click,
+          reason: 'Ready: a tap target',
+        );
+
+        for (final state in _wi38NotReady()) {
+          controller.emit(state);
+          await _wi38Frames(tester);
+          expect(
+            await _wi38CursorOver(tester, label),
+            isNot(SystemMouseCursors.click),
+            reason: '$state',
+          );
+          await tester.tap(label, warnIfMissed: false);
+          await _wi38Frames(tester);
+          expect(
+            find.byKey(const Key('update-modal')),
+            findsNothing,
+            reason: '$state',
+          );
+        }
+      });
+    }
   });
 }
