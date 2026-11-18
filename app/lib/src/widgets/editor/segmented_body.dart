@@ -15,6 +15,7 @@ import '../../state/topic_actions.dart';
 import '../../state/vault_access_state.dart';
 import '../../state/vault_state.dart';
 import '../../vault_access/errors.dart';
+import '../find/find_in_note_host.dart';
 import '../inline_error.dart';
 import 'capture_gutter.dart';
 import 'excerpt_card.dart';
@@ -209,13 +210,29 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
       widget.primaryFocusNode ??
       (_ownPrimary ??= FocusNode(debugLabel: 'editor-body'));
 
+  /// Find in note's link to this note editor (#61 F6): whether the editor is
+  /// the active one, and this body's text segments for its host.
+  late final FindEditorLink _find = FindEditorLink.of(_primary);
+
   @override
   void initState() {
     super.initState();
     _isDaily = widget.note.role == 'daily';
     _isGuide = widget.note.role == 'guide';
     _resplit(widget.content);
+    _find.active.addListener(_onFindActive);
+    _find.fields = _findFields;
   }
+
+  void _onFindActive() {
+    if (mounted) setState(() {});
+  }
+
+  /// The text segments, for Find in note's host.
+  List<FindBodyField> _findFields() => [
+    for (final (i, s) in _segs.indexed)
+      if (s is _TextSeg) (segment: i, controller: s.ctrl, focus: s.focus),
+  ];
 
   @override
   void didUpdateWidget(SegmentedBody old) {
@@ -247,6 +264,8 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
 
   @override
   void dispose() {
+    _find.active.removeListener(_onFindActive);
+    if (_find.fields == _findFields) _find.fields = null;
     _disposeSegs(_segs);
     _ownPrimary?.dispose();
     _kindChips.dispose();
@@ -575,7 +594,9 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
   Widget build(BuildContext context) => SpellCheckHost(
     noteId: widget.note.id,
     registry: _spellIssues,
-    child: _page(context),
+    // Whether this editor is the active one, for its cards' find
+    // highlights (#61 F6).
+    child: FindActiveScope(active: _find.active.value, child: _page(context)),
   );
 
   Widget _page(BuildContext context) {
@@ -609,6 +630,7 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
                     controller: t.ctrl,
                     focusNode: t.focus,
                     revealGate: t.gate,
+                    active: _find.active.value,
                     minLines: single ? 12 : (identical(t, texts.last) ? 4 : 1),
                     hintText: single
                         ? 'type [[ to link a note · write markdown…'

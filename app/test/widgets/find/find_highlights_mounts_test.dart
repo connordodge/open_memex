@@ -386,14 +386,35 @@ void main() {
           'Bake it **hot** today.\n\nBulk until **domed**.\n',
         );
         final text = e.robot.segmentText(0);
-        // Current: line 3's first marker (unrevealed: zero width, so it
-        // has no box); line 1's two markers share one outline around `hot`.
+        // Current: line 3's first marker. Find reveals the current match's
+        // line (Req 27), so line 3's markers show: the current one paints
+        // the current fill and the other one an other box on its own range
+        // (lead ruling #83 Q1). Line 1 stays unrevealed: its two markers
+        // share one outline around `hot`.
         await _wi83Open(e, [wi83Body(0, text)], '**', current: 2);
         expect(_wi83State(e).matches, hasLength(4), reason: 'fixture');
         expect(_wi83State(e).matches.every((m) => m.hidden), isTrue);
         final hot = wi83Find(text, 'hot');
         final r = _wi83RowAt(e, 0, hot.start);
-        _wi83ExpectRow(e, 0, r, _wi83RowBoxes(e, 0, r, hot, _outline));
+        final current = _wi83RowBoxes(
+          e,
+          0,
+          r,
+          wi83Find(text, '**', 2),
+          _current,
+        );
+        final other = _wi83RowBoxes(e, 0, r, wi83Find(text, '**', 3), _other);
+        expect(
+          current,
+          hasLength(1),
+          reason: 'line 3 shows the current marker',
+        );
+        expect(other, hasLength(1), reason: 'line 3 shows the other marker');
+        _wi83ExpectRow(e, 0, r, [
+          ..._wi83RowBoxes(e, 0, r, hot, _outline),
+          ...current,
+          ...other,
+        ]);
       },
     );
 

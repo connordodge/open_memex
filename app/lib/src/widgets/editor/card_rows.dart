@@ -14,10 +14,14 @@ import '../../editor/tag_grammar.dart' show fencedRowLines, normalizeTagName;
 import '../../state/tags_browse_state.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
+import '../../state/find_in_note_state.dart';
 import '../find/find_highlights.dart';
+import '../find/find_in_note_host.dart'
+    show FindActiveScope, findFieldDecoration;
 import '../find/find_keys.dart';
 import 'editor_row.dart';
 import 'excerpt_card.dart';
+import 'find_decoration.dart';
 import 'line_boxes.dart';
 import 'live_preview_controller.dart';
 import 'live_preview_decorations.dart';
@@ -98,6 +102,8 @@ class CardRows extends StatelessWidget {
     final base = _baseStyle();
     final seg =
         segment ?? context.findAncestorWidgetOfExactType<ExcerptCard>()?.index;
+    // The excerpt card's editor says whether it is the active one (#61 F6).
+    final on = active && FindActiveScope.of(context);
     bool blank(RowSpec spec) =>
         spec.kind == RowKind.prose && spec.textLength == 0;
     // The rows between the leading and the trailing empty prose rows.
@@ -114,7 +120,7 @@ class CardRows extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         for (var r = first; r <= last; r++)
-          _row(r, specs[r], geometries[r], fenced[r], base, scaler, seg),
+          _row(r, specs[r], geometries[r], fenced[r], base, scaler, seg, on),
       ],
     );
   }
@@ -127,6 +133,7 @@ class CardRows extends StatelessWidget {
     TextStyle base,
     TextScaler scaler,
     int? seg,
+    bool on,
   ) {
     final rowText = text.substring(spec.textStart, spec.textEnd);
     final quote = spec.kind == RowKind.quote;
@@ -159,17 +166,15 @@ class CardRows extends StatelessWidget {
               : FindGridScope(
                   segment: seg,
                   textStart: spec.textStart,
-                  active: active,
+                  active: on,
                   cardRow: r,
                   child: grid,
                 );
         }),
       );
     }
-    final plain = tagged(
-      (links) => _RowText(
-        key: ValueKey('card-row-text-$r'),
-        child: RichText(
+    RichText rowRich(LivePreviewController? links, FindDecoration? find) =>
+        RichText(
           textScaler: scaler,
           // As the body field's EditableText does with its strut.
           strutStyle: livePreviewStrut(
@@ -186,8 +191,32 @@ class CardRows extends StatelessWidget {
             cmdHover: links?.cmdHover,
             codeRow: codeRow,
             fenced: fenced,
+            // Find in note's ink in the row (#61 F6, D7); cards never reveal.
+            inkRanges: find?.inkRanges ?? const <TextRange>[],
+            current: find?.current,
           ),
-        ),
+        );
+    final plain = tagged(
+      (links) => _RowText(
+        key: ValueKey('card-row-text-$r'),
+        child: seg == null || !on
+            ? rowRich(links, null)
+            : Consumer(
+                builder: (context, ref, _) => rowRich(
+                  links,
+                  ref.watch(
+                    findInNoteProvider.select(
+                      (state) => findFieldDecoration(
+                        state,
+                        segment: seg,
+                        kind: FindSourceKind.card,
+                        start: spec.textStart,
+                        end: spec.textEnd,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
       ),
     );
     // The row's find highlights, under its text (#61 F3).
@@ -195,7 +224,7 @@ class CardRows extends StatelessWidget {
         ? plain
         : FindParagraphHighlights(
             layerKey: findCardHighlightsKey(seg, r),
-            ranges: (state) => active
+            ranges: (state) => on
                 ? findPaintRanges(
                     state,
                     segment: seg,
