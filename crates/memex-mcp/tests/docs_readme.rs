@@ -5261,7 +5261,7 @@ fn versions_are_0_4_0_in_the_app_the_workspace_and_the_lockfile() {
 // ---------- GLOSSARY.md ----------
 
 #[test]
-fn glossary_ends_with_the_releases_section_holding_the_three_entries_verbatim() {
+fn glossary_ends_with_the_releases_section_holding_the_five_entries_verbatim() {
     let glossary = read_repo_file("GLOSSARY.md");
     let headings: Vec<&str> = glossary.lines().filter(|l| l.starts_with("## ")).collect();
     assert_eq!(
@@ -5284,11 +5284,19 @@ _Avoid_: embedded CLI, helper, sidecar
 
 **Leak check**:
 The check that fails when a file, diff or build artifact contains a home directory path, a personal email address or another private identifier that must not go public.
-_Avoid_: secret scan (secrets are only one kind of leak), audit";
+_Avoid_: secret scan (secrets are only one kind of leak), audit
+
+**Self-update**:
+The app's own flow that finds a newer Release, downloads and verifies it, and replaces the installed `Open Memex.app` with it once the person chooses to relaunch.
+_Avoid_: auto-update, upgrade, patch
+
+**Appcast**:
+The signed feed of Releases, in Sparkle's appcast XML format, that Self-update reads to learn the newest version and where to download it.
+_Avoid_: update feed, manifest, releases.json";
     assert_eq!(
         body.trim(),
         expected,
-        "the section holds exactly the three entries, verbatim"
+        "the section holds exactly the five entries, verbatim"
     );
     assert_eq!(
         glossary.matches("## Releases (#356)").count(),
