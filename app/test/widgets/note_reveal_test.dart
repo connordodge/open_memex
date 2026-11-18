@@ -185,6 +185,38 @@ Future<NoteRevealHarness> _wi66RetryingArrival(WidgetTester tester) async {
   return h;
 }
 
+/// What is missing from the D6 slots in a `note_editor.dart` source: the
+/// declarations and call sites, never the stub bodies (#61 and #58 fill them).
+List<String> _wi66SeamSlotProblems(String source) {
+  return [
+    if (!RegExp(r'List<Widget>\s+_bodyOverlays\(Note note\)').hasMatch(source))
+      '_bodyOverlays is declared',
+    if (!RegExp(
+      r'Widget\s+_trackSections\(Note note,\s*Widget body\)',
+    ).hasMatch(source))
+      '_trackSections is declared',
+    if (RegExp(r'_trackSections\(').allMatches(source).length < 2)
+      'the segmented body goes through _trackSections',
+    if (!RegExp(r'Positioned\.fill\(').hasMatch(source))
+      'the body is Positioned.fill',
+    if (!RegExp(r'\.\.\._bodyOverlays\(note\)').hasMatch(source))
+      'the overlays are spread after the body',
+  ];
+}
+
+/// The echo landing helpers `note_editor.dart` still declares or calls, with
+/// comments left out (a comment may name where they went).
+List<String> _wi66EchoLandingDeclarations(String source) {
+  final code = source
+      .split('\n')
+      .where((line) => !line.trimLeft().startsWith('//'))
+      .join('\n');
+  return [
+    for (final name in const ['_landAtEcho', '_echoRow'])
+      if (RegExp('\\b$name\\s*\\(').hasMatch(code)) name,
+  ];
+}
+
 void main() {
   holdFontFetches();
 
@@ -1671,30 +1703,61 @@ void main() {
           'lib/src/widgets/note_editor.dart',
         ).readAsStringSync();
 
-        // The stubs' bodies are not pinned: #61 fills `_bodyOverlays` and
-        // #58 fills `_trackSections` later. Their declarations and call
-        // sites are the seam.
-        expect(
-          RegExp(r'List<Widget>\s+_bodyOverlays\(Note note\)').hasMatch(source),
-          isTrue,
-          reason: '_bodyOverlays is declared',
-        );
-        expect(
-          RegExp(
-            r'Widget\s+_trackSections\(Note note,\s*Widget body\)',
-          ).hasMatch(source),
-          isTrue,
-          reason: '_trackSections is declared',
-        );
-        expect(
-          RegExp(r'_trackSections\(').allMatches(source).length,
-          greaterThanOrEqualTo(2),
-          reason: 'the segmented body goes through it',
-        );
-        expect(RegExp(r'Positioned\.fill\(').hasMatch(source), isTrue);
-        expect(RegExp(r'\.\.\._bodyOverlays\(note\)').hasMatch(source), isTrue);
+        expect(_wi66SeamSlotProblems(source), isEmpty);
       },
     );
+
+    // #61 fills `_bodyOverlays` and #58 fills `_trackSections`: the seam is
+    // their declarations and call sites, never their stub bodies. These pin
+    // the check itself, so tightening it back to the stub bodies fails here.
+    test('the seam slot check accepts filled stub bodies', () {
+      const filled = """
+class _S {
+  Widget _trackSections(Note note, Widget body) {
+    return SectionTracker(note: note, child: body);
+  }
+
+  Widget _body(Note note) => _trackSections(note, SegmentedBody());
+
+  List<Widget> _bodyOverlays(Note note) {
+    return [FindBar(note: note), const FindMatches()];
+  }
+
+  Widget build() => Stack(children: [
+        Positioned.fill(child: _body(note)),
+        ..._bodyOverlays(note),
+      ]);
+
+  Widget other() => _trackSections(note, SegmentedBody());
+}
+""";
+
+      expect(_wi66SeamSlotProblems(filled), isEmpty);
+    });
+
+    test('the seam slot check names each missing slot piece', () {
+      expect(
+        _wi66SeamSlotProblems('class _S {}'),
+        unorderedEquals(<String>[
+          '_bodyOverlays is declared',
+          '_trackSections is declared',
+          'the segmented body goes through _trackSections',
+          'the body is Positioned.fill',
+          'the overlays are spread after the body',
+        ]),
+      );
+      expect(
+        _wi66SeamSlotProblems(
+          'List<Widget> _bodyOverlays(Note note) => const [];\n'
+          'Widget _trackSections(Note note, Widget body) => body;\n'
+          'Positioned.fill(c); [_bodyOverlays(n)];',
+        ),
+        unorderedEquals(<String>[
+          'the segmented body goes through _trackSections',
+          'the overlays are spread after the body',
+        ]),
+      );
+    });
 
     test(
       'note_editor.dart no longer holds the echo landing and its row lookup',
@@ -1703,10 +1766,26 @@ void main() {
           'lib/src/widgets/note_editor.dart',
         ).readAsStringSync();
 
-        expect(source, isNot(contains('_landAtEcho')));
-        expect(source, isNot(contains('_echoRow')));
+        expect(_wi66EchoLandingDeclarations(source), isEmpty);
         expect(source, contains('_reveal('));
       },
     );
+
+    test('the echo landing check finds a declaration and ignores comments', () {
+      expect(
+        _wi66EchoLandingDeclarations(
+          'void _landAtEcho(Note n) {}\nvoid _echoRow() {}',
+        ),
+        unorderedEquals(['_landAtEcho', '_echoRow']),
+      );
+      expect(
+        _wi66EchoLandingDeclarations(
+          '// _landAtEcho moved to _reveal; _echoRow is in note_reveal.dart\n'
+          '/// see _landAtEcho\n'
+          'void _reveal(Note n) {}',
+        ),
+        isEmpty,
+      );
+    });
   });
 }
