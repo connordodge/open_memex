@@ -644,8 +644,10 @@ fn embedder_failing_only_on_the_query_answers_keyword_hits_as_unavailable() {
 
 // ---------------------------------------------------------------- AC 5: empty query
 
+const BLANK_QUERIES: [&str; 5] = ["", " ", "   ", "\t", "\n \t "];
+
 #[test]
-fn empty_or_whitespace_query_answers_no_hits_and_calls_no_embedder() {
+fn empty_or_whitespace_query_answers_no_hits_and_embeds_no_pending_chunk() {
     let mut fx = new_vault();
     quasar_notes(&mut fx, 3);
     let emb = AxisEmbedder::new();
@@ -654,7 +656,7 @@ fn empty_or_whitespace_query_answers_no_hits_and_calls_no_embedder() {
     let pending = fx.unembedded();
     assert!(pending > 0, "precondition: pending chunks");
 
-    for q in ["", " ", "   ", "\t", "\n \t "] {
+    for q in BLANK_QUERIES {
         for embedder in [
             SearchEmbedder::Ready(&emb),
             SearchEmbedder::NotDownloaded,
@@ -665,10 +667,109 @@ fn empty_or_whitespace_query_answers_no_hits_and_calls_no_embedder() {
                 .unwrap_or_else(|e| panic!("query {q:?}: {e}"));
             assert!(got.hits.is_empty(), "query {q:?} answers no hits");
             assert!(!got.truncated, "query {q:?} is not truncated");
+            assert_eq!(got.query, q, "the query is echoed as given");
         }
     }
-    assert_eq!(emb.calls(), 0, "an empty query never calls the embedder");
+    assert_eq!(
+        emb.calls(),
+        BLANK_QUERIES.len(),
+        "one probe per blank query"
+    );
+    assert_eq!(
+        emb.texts.load(Ordering::SeqCst),
+        emb.calls(),
+        "a blank query embeds one probe text per call, never a pending chunk"
+    );
     assert_eq!(fx.unembedded(), pending, "nor embeds pending chunks");
+}
+
+#[test]
+fn blank_query_with_a_failing_ready_embedder_answers_unavailable_after_one_probe_and_no_lease() {
+    let mut fx = new_vault();
+    quasar_notes(&mut fx, 3);
+    let pending = fx.unembedded();
+    assert!(pending > 0, "precondition: pending chunks");
+    let (_dir, shared) = into_shared(fx);
+    let emb = FailingEmbedder::new();
+
+    for (i, q) in BLANK_QUERIES.iter().enumerate() {
+        let mut lease = MutexLease {
+            conn: &shared,
+            leases: 0,
+        };
+        let got = note_search(&mut lease, q, 8, SearchEmbedder::Ready(&emb), 64)
+            .unwrap_or_else(|e| panic!("query {q:?}: {e}"));
+
+        assert_eq!(got.semantic, Semantic::Unavailable, "query {q:?}");
+        assert!(got.hits.is_empty(), "query {q:?} answers no hits");
+        assert!(!got.truncated, "query {q:?} is not truncated");
+        assert_eq!(got.query, *q, "the query is echoed as given");
+        assert_eq!(lease.leases, 0, "the probe takes no lease (query {q:?})");
+        assert_eq!(
+            emb.calls.load(Ordering::SeqCst),
+            i + 1,
+            "exactly one embed_batch call per blank query"
+        );
+    }
+    let c = embedding_counts(&shared.lock().unwrap()).unwrap();
+    assert_eq!(c.chunks - c.embedded, pending, "no pending chunk embedded");
+}
+
+#[test]
+fn blank_query_with_a_working_ready_embedder_answers_on_after_one_probe_and_no_lease() {
+    let mut fx = new_vault();
+    quasar_notes(&mut fx, 3);
+    let pending = fx.unembedded();
+    assert!(pending > 0, "precondition: pending chunks");
+    let (_dir, shared) = into_shared(fx);
+    let emb = AxisEmbedder::new();
+
+    for (i, q) in BLANK_QUERIES.iter().enumerate() {
+        let mut lease = MutexLease {
+            conn: &shared,
+            leases: 0,
+        };
+        let got = note_search(&mut lease, q, 8, SearchEmbedder::Ready(&emb), 64)
+            .unwrap_or_else(|e| panic!("query {q:?}: {e}"));
+
+        assert_eq!(got.semantic, Semantic::On, "query {q:?}");
+        assert!(got.hits.is_empty(), "query {q:?} answers no hits");
+        assert!(!got.truncated, "query {q:?} is not truncated");
+        assert_eq!(got.query, *q, "the query is echoed as given");
+        assert_eq!(lease.leases, 0, "the probe takes no lease (query {q:?})");
+        assert_eq!(emb.calls(), i + 1, "exactly one embed_batch call per query");
+        assert_eq!(
+            emb.texts.load(Ordering::SeqCst),
+            i + 1,
+            "the probe is one text"
+        );
+    }
+    let c = embedding_counts(&shared.lock().unwrap()).unwrap();
+    assert_eq!(c.chunks - c.embedded, pending, "no pending chunk embedded");
+}
+
+#[test]
+fn blank_query_with_not_downloaded_or_off_answers_its_state_and_takes_no_lease() {
+    let mut fx = new_vault();
+    quasar_notes(&mut fx, 2);
+    let (_dir, shared) = into_shared(fx);
+
+    for q in BLANK_QUERIES {
+        for (embedder, want) in [
+            (SearchEmbedder::NotDownloaded, Semantic::ModelNotDownloaded),
+            (SearchEmbedder::Off, Semantic::EmbeddingsOff),
+        ] {
+            let mut lease = MutexLease {
+                conn: &shared,
+                leases: 0,
+            };
+            let got = note_search(&mut lease, q, 8, embedder, 64).unwrap();
+
+            assert_eq!(got.semantic, want, "query {q:?}");
+            assert!(got.hits.is_empty(), "query {q:?} answers no hits");
+            assert_eq!(lease.leases, 0, "query {q:?} takes no lease");
+        }
+    }
 }
 
 // ---------------------------------------------------------------- AC 6: start_byte

@@ -71,6 +71,13 @@ const _newRows = <(String, String, String, String)>[
     '$_base/embeddings',
     'embeddings_not_found.json',
   ),
+  // WI #73: an older server has no note-text search route.
+  (
+    'compat GET search answers 404 not_found with the main message',
+    'GET',
+    '$_base/search?q=prices&limit=8',
+    'search_not_found.json',
+  ),
 ];
 
 const _files = [
@@ -79,6 +86,7 @@ const _files = [
   'words_not_found.json',
   'tools_not_found.json',
   'embeddings_not_found.json',
+  'search_not_found.json',
 ];
 
 Future<http.Response> _send(
@@ -97,7 +105,7 @@ Future<http.Response> _send(
 }
 
 void main() {
-  test('compat index keeps its two existing rows and appends seven new rows '
+  test('compat index keeps its two existing rows and appends eight new rows '
       'in order', () {
     final rows = loadFixtureRows(_compatDir);
     expect(
@@ -114,7 +122,7 @@ void main() {
       isTrue,
       reason: 'every compat row is dart_only',
     );
-    expect(rows, hasLength(9));
+    expect(rows, hasLength(10));
   });
 
   test('compat index rows are one line per row in the existing style', () {
@@ -122,7 +130,7 @@ void main() {
     expect(lines.first, '[');
     expect(lines.last, ']');
     final rowLines = lines.sublist(1, lines.length - 1);
-    expect(rowLines, hasLength(9));
+    expect(rowLines, hasLength(10));
     for (var i = 0; i < rowLines.length; i++) {
       final line = rowLines[i];
       expect(line, startsWith('  {"method": "'), reason: line);

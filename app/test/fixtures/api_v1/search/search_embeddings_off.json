@@ -1,0 +1,40 @@
+{
+  "hits": [
+    {
+      "chunk_id": "01M5DQAYZKVWVP01WR8GCXZ6KZ",
+      "day": "2026-10-17",
+      "note_id": "01M5DQAYZ5T5B865CDF2RWAC37",
+      "note_role": "daily",
+      "note_title": "2026-10-17",
+      "note_updated_at": 1792535788530,
+      "snippet": "Tuned the shop prices.\n\nThen undid half of it.",
+      "start_byte": 0,
+      "via": null
+    },
+    {
+      "chunk_id": "01M5DQAYZG5BY1XHQ8EB1ZKK52",
+      "day": "2026-10-19",
+      "note_id": "01M5DQAYZ51PF87XFZWSV5PWXK",
+      "note_role": "daily",
+      "note_title": "2026-10-19",
+      "note_updated_at": 1792535788528,
+      "snippet": "Sketched a crafting tree.\n\nPrices felt too low in town.",
+      "start_byte": 0,
+      "via": null
+    },
+    {
+      "chunk_id": "01M5DQAYZFW5NANWNHESXCHD7R",
+      "day": null,
+      "note_id": "01M5DQAYZ47QW55S90ZF0A56AH",
+      "note_role": "topic",
+      "note_title": "Economy Design",
+      "note_updated_at": 1792535788527,
+      "snippet": "Sketched a crafting tree.",
+      "start_byte": 0,
+      "via": "2026-10-19"
+    }
+  ],
+  "query": "prices",
+  "semantic": "embeddings_off",
+  "truncated": false
+}
