@@ -32,6 +32,7 @@ import '../../support/canvas_seeds.dart';
 import '../../support/fake_vault_db.dart';
 import '../../support/font_fetch_hold.dart';
 import '../../support/note_reveal_pump.dart';
+import '../../support/segment_editing_finder.dart';
 import '../../support/wi85_find_editor.dart';
 
 // ------------------------------------------------------------------ helpers
@@ -42,6 +43,24 @@ int get _wi85ToastAt => wi85Seg2.indexOf('rye slices');
 /// The current match is the `rye` of `Toast the rye slices.` (segment 2).
 bool _wi85IsToast(FindMatch m) =>
     m.kind == FindSourceKind.body && m.segment == 2 && m.start == _wi85ToastAt;
+
+/// Puts the caret at [offset] of segment 2 (after its table). Segment 2 holds
+/// a table row whose field is Offstage, so the shared `focusSegmentAt` (which
+/// counts visible fields against editor rows) cannot be used: this focuses
+/// the visible field holding [offset] and selects through the handle.
+Future<void> _wi85FocusSeg2(Wi85 w, int offset) async {
+  final tester = w.tester;
+  final seg = find.byKey(textSegmentKey(2));
+  final handle = segmentEditingOf(tester, seg);
+  final fields = segmentRowFields(seg);
+  final hidden = handle.rowCount - fields.evaluate().length;
+  final row = segmentRowHolding(handle, offset) - hidden;
+  expect(row, greaterThanOrEqualTo(0), reason: 'offset is in a visible row');
+  await tester.showKeyboard(fields.at(row));
+  await tester.pump();
+  segmentEditingOf(tester, seg).select(TextSelection.collapsed(offset: offset));
+  await tester.pump();
+}
 
 bool _wi85IsCard(FindMatch m) => m.kind == FindSourceKind.card;
 
@@ -353,6 +372,33 @@ void main() {
       },
     );
 
+    testWidgets('a removed excerpt stub text is not searched', (tester) async {
+      final w = await pumpWi85(
+        tester,
+        overrides: [
+          excerptRenderProvider.overrideWith((ref, token) async {
+            final vault = ref.watch(currentVaultProvider);
+            return VaultScoped(
+              vault,
+              const RenderedExcerpt(
+                date: wi85DailyDate,
+                text: 'removed from $wi85DailyDate',
+                removed: true,
+              ),
+            );
+          }),
+        ],
+      );
+      await w.send('show');
+      await w.typeQuery('removed from');
+      expect(w.state.query, 'removed from');
+      expect(w.state.matches, isEmpty, reason: 'the stub is not note text');
+
+      // Control: body matches still count, and the card adds none.
+      await w.typeQuery(wi85Query);
+      expect(w.state.matches, hasLength(10));
+    });
+
     testWidgets(
       'typing in the body with the bar open updates the counter live and keeps the current match',
       (tester) async {
@@ -462,7 +508,7 @@ void main() {
       (tester) async {
         final w = await pumpWi85(tester);
         final caret = wi85Seg2.indexOf('Plain line one.');
-        await w.robot.focusSegment(2, offset: caret);
+        await _wi85FocusSeg2(w, caret);
         await w.send('show');
         await w.typeQuery(wi85Query);
         expect(
@@ -483,7 +529,7 @@ void main() {
         await w.escInField();
         expect(w.bar, findsNothing);
         final caret = wi85Seg2.indexOf('Plain line one.');
-        await w.robot.focusSegment(2, offset: caret);
+        await _wi85FocusSeg2(w, caret);
 
         await w.send('next');
         expect(w.bar, findsOneWidget);
@@ -573,6 +619,41 @@ void main() {
       },
     );
 
+    testWidgets('useSelection with the Find field focused does nothing', (
+      tester,
+    ) async {
+      final w = await pumpWi85(tester);
+      await w.openOn(wi85Query);
+      expect(w.fieldFocused, isTrue);
+      w.fieldEditable.controller.selection = const TextSelection(
+        baseOffset: 0,
+        extentOffset: 2,
+      );
+      await tester.pump();
+      final matches = w.state.matches;
+
+      await w.send('useSelection');
+      expect(w.state.query, wi85Query, reason: 'not the field selection');
+      expect(w.state.matches, matches);
+      expect(w.bar, findsOneWidget);
+      expect(w.fieldFocused, isTrue);
+
+      // Control: with a body selection the same message sets the query.
+      final at = wi85Seg0.indexOf('rye bread');
+      await w.robot.focusSegment(0, offset: at);
+      w.robot
+          .segment(0)
+          .select(
+            TextSelection(
+              baseOffset: at,
+              extentOffset: at + 'rye bread'.length,
+            ),
+          );
+      await tester.pump();
+      await w.send('useSelection');
+      expect(w.state.query, 'rye bread');
+    });
+
     testWidgets('a title selection is ignored by useSelection', (tester) async {
       final w = await pumpWi85(tester);
       final title = find.descendant(
@@ -647,7 +728,7 @@ void main() {
       (tester) async {
         final w = await pumpWi85(tester);
         final caret = wi85Seg2.indexOf('Plain line one.') + 3;
-        await w.robot.focusSegment(2, offset: caret);
+        await _wi85FocusSeg2(w, caret);
         await w.send('show');
         await w.typeQuery(wi85Query);
         await w.stepUntil(_wi85IsCard);
