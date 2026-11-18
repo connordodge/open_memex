@@ -144,16 +144,26 @@ class CardRows extends StatelessWidget {
     if (spec.kind == RowKind.table) {
       return KeyedSubtree(
         key: ValueKey('card-row-$r'),
-        child: tagged(
-          (links) => TableGrid(
+        child: tagged((links) {
+          final grid = TableGrid(
             key: ValueKey('card-table-$r'),
             text: rowText,
             style: style,
             links: links,
             headerBand: OmColors.surface4,
             fenced: fenced,
-          ),
-        ),
+          );
+          // Its cells' find highlights (#61 F3, D8).
+          return seg == null
+              ? grid
+              : FindGridScope(
+                  segment: seg,
+                  textStart: spec.textStart,
+                  active: active,
+                  cardRow: r,
+                  child: grid,
+                );
+        }),
       );
     }
     final plain = tagged(
@@ -194,6 +204,7 @@ class CardRows extends StatelessWidget {
                     end: spec.textEnd,
                   )
                 : const [],
+            layout: rowText,
             child: plain,
           );
     final Widget row = switch (spec.kind) {

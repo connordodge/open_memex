@@ -13,6 +13,7 @@ import '../../state/find_in_note_state.dart';
 import '../../theme/colors.dart';
 import '../editor/line_boxes.dart';
 import '../editor/paragraph_line_boxes.dart';
+import 'find_keys.dart';
 
 /// Test-only work counter: incremented once each time any find highlight
 /// layer paints. Tests read deltas to prove a rebuild with unchanged ranges
@@ -165,14 +166,15 @@ String? _sourceText(FindInNoteState state, int segment, FindSourceKind kind) {
 /// A box is the range's run on that line (its advance width) and 17 px
 /// (scaled with the text) tall, centred on its line box: 3 px below the top
 /// of a 22.95 px body line (pack 83). Paints no glyphs. Repaints when
-/// [ranges] change (by value) or [repaint] notifies (the field's text or
-/// reveal), never on an unrelated rebuild.
+/// [ranges] change (by value), [layout] changes (by value) or [repaint]
+/// notifies (the field's text or reveal), never on an unrelated rebuild.
 class FindHighlights extends LeafRenderObjectWidget {
   const FindHighlights({
     super.key,
     required this.ranges,
     required this.boxes,
     this.repaint,
+    this.layout,
   });
 
   /// Field-local ranges and styles, from [findPaintRanges].
@@ -184,13 +186,24 @@ class FindHighlights extends LeafRenderObjectWidget {
   /// Notifies when the measured field's layout may have changed.
   final Listenable? repaint;
 
+  /// A value standing for where the measured field sits in this box and how
+  /// it lays out its text (a row's marker column, a cell's text): a change
+  /// (by value) repaints, as the field may have moved under unchanged
+  /// [ranges].
+  final Object? layout;
+
   @override
   RenderObject createRenderObject(BuildContext context) =>
-      _RenderFindHighlights(ranges, boxes, repaint);
+      _RenderFindHighlights(ranges, boxes, repaint, layout);
 
   @override
   void updateRenderObject(BuildContext context, RenderObject renderObject) =>
-      (renderObject as _RenderFindHighlights).update(ranges, boxes, repaint);
+      (renderObject as _RenderFindHighlights).update(
+        ranges,
+        boxes,
+        repaint,
+        layout,
+      );
 }
 
 /// The box height on a body line at text scale 1 (pack 83).
@@ -206,11 +219,12 @@ const double _spread = 1;
 const double _border = 1;
 
 class _RenderFindHighlights extends RenderBox {
-  _RenderFindHighlights(this._ranges, this._boxes, this._repaint);
+  _RenderFindHighlights(this._ranges, this._boxes, this._repaint, this._layout);
 
   List<FindPaintRange> _ranges;
   LineBoxSource? Function() _boxes;
   Listenable? _repaint;
+  Object? _layout;
 
   /// The measured editable's scroll offset, listened to while painting.
   ViewportOffset? _scroll;
@@ -219,12 +233,19 @@ class _RenderFindHighlights extends RenderBox {
     List<FindPaintRange> ranges,
     LineBoxSource? Function() boxes,
     Listenable? repaint,
+    Object? layout,
   ) {
     _boxes = boxes;
     if (!identical(repaint, _repaint)) {
       if (attached) _repaint?.removeListener(markNeedsPaint);
       _repaint = repaint;
       if (attached) _repaint?.addListener(markNeedsPaint);
+    }
+    // The field moved or relaid its text under this box: the old picture
+    // is stale even with equal ranges.
+    if (layout != _layout) {
+      _layout = layout;
+      markNeedsPaint();
     }
     if (listEquals(ranges, _ranges)) return;
     _ranges = ranges;
@@ -345,10 +366,16 @@ class FindParagraphHighlights extends StatefulWidget {
     required this.layerKey,
     required this.ranges,
     required this.child,
+    this.layout,
   });
 
   /// The layer's Key (`find_keys.dart`).
   final Key layerKey;
+
+  /// The layer's [FindHighlights.layout]: a value that changes whenever
+  /// [child]'s text may lay out differently (its text), so the layer
+  /// repaints under unchanged ranges.
+  final Object? layout;
 
   /// The field's ranges in [state] (usually [findPaintRanges]).
   final List<FindPaintRange> Function(FindInNoteState state) ranges;
@@ -382,6 +409,7 @@ class _FindParagraphHighlightsState extends State<FindParagraphHighlights> {
             key: widget.layerKey,
             ranges: widget.ranges(ref.watch(findInNoteProvider)),
             boxes: _boxes,
+            layout: widget.layout,
           ),
         ),
       ),
@@ -406,28 +434,59 @@ RenderParagraph? _firstParagraph(RenderObject? root) {
   return found;
 }
 
-/// What a body row's table grid cells need to mount their find highlights
-/// (Keys `find-highlights-grid-<segment>-<row>-<cell>`): the text segment,
-/// where the row's text starts in it, and whether the segment is active.
-/// The segment's rows host puts one above each row; a grid without one (an
-/// excerpt card's) mounts none.
+/// The Key of the find highlights layer on cell [cell] of grid row [row]
+/// of the table in card row [cardRow] of excerpt card [segment],
+/// `find-highlights-card-grid-<segment>-<cardRow>-<row>-<cell>`.
+///
+/// Spelled here, not in the frozen `find_keys.dart` (F1), which has no Key
+/// for a card's table cells.
+Key findCardGridHighlightsKey(int segment, int cardRow, int row, int cell) =>
+    ValueKey<String>('find-highlights-card-grid-$segment-$cardRow-$row-$cell');
+
+/// What a table grid's cells need to mount their find highlights: the
+/// segment, where the table row's text starts in its source text, whether
+/// the segment is active, and, in an excerpt card, the card row holding the
+/// table ([cardRow]).
+///
+/// - [cardRow] null: a body row's grid in a text segment; its cells match
+///   [FindSourceKind.body] (Keys `find-highlights-grid-<segment>-<row>-<cell>`).
+///   The segment's rows host puts one above each row.
+/// - Else an excerpt card's grid; its cells match [FindSourceKind.card]
+///   (Keys [findCardGridHighlightsKey]). `CardRows` puts one above each
+///   table row.
+///
+/// A grid without one mounts no find highlights.
 class FindGridScope extends InheritedWidget {
   const FindGridScope({
     super.key,
     required this.segment,
     required this.textStart,
     required this.active,
+    this.cardRow,
     required super.child,
   });
 
-  /// The text segment's index.
+  /// The text segment's or excerpt card's index.
   final int segment;
 
-  /// Where the row's field text starts in the segment text.
+  /// Where the table row's text starts in the source text.
   final int textStart;
 
   /// Whether the segment belongs to the active editor.
   final bool active;
+
+  /// The card row holding the table; null in a text segment.
+  final int? cardRow;
+
+  /// The source the cells' text belongs to.
+  FindSourceKind get kind =>
+      cardRow == null ? FindSourceKind.body : FindSourceKind.card;
+
+  /// The Key of the layer on cell [cell] of grid row [row].
+  Key cellKey(int row, int cell) => switch (cardRow) {
+    final card? => findCardGridHighlightsKey(segment, card, row, cell),
+    null => findGridHighlightsKey(segment, row, cell),
+  };
 
   static FindGridScope? maybeOf(BuildContext context) =>
       context.dependOnInheritedWidgetOfExactType<FindGridScope>();
@@ -436,5 +495,6 @@ class FindGridScope extends InheritedWidget {
   bool updateShouldNotify(FindGridScope oldWidget) =>
       segment != oldWidget.segment ||
       textStart != oldWidget.textStart ||
-      active != oldWidget.active;
+      active != oldWidget.active ||
+      cardRow != oldWidget.cardRow;
 }

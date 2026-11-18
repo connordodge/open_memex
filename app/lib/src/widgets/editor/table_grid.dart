@@ -3,7 +3,6 @@ import 'dart:math' as math;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 
-import '../../editor/find_in_note.dart';
 import '../../editor/markdown_inline.dart';
 import '../../editor/markdown_table.dart'
     show ParsedTable, TableAlign, parseTable;
@@ -12,7 +11,6 @@ import '../../editor/table_geometry.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import '../find/find_highlights.dart';
-import '../find/find_keys.dart';
 import 'line_boxes.dart';
 import 'live_preview_controller.dart';
 import 'live_preview_decorations.dart';
@@ -103,7 +101,8 @@ class TableGridState extends State<TableGrid> {
     final hover = widget.links?.cmdHover;
     final metrics = _metrics(scaler);
     final rows = [table.header.cells, for (final row in table.body) row.cells];
-    // A body row's cells mount their find highlights (#61 F3, D8).
+    // The cells mount their find highlights under a scope (#61 F3, D8): a
+    // text segment's body rows, an excerpt card's table rows.
     final find = FindGridScope.maybeOf(context);
     Widget cellText(int g, int j, RichText text) {
       if (find == null || j >= rows[g].length) return text;
@@ -111,18 +110,19 @@ class TableGridState extends State<TableGrid> {
       final start = find.textStart + cell.start;
       final end = find.textStart + cell.end;
       return FindParagraphHighlights(
-        layerKey: findGridHighlightsKey(find.segment, g, j),
+        layerKey: find.cellKey(g, j),
         // A grid shows every marker hidden: it never reveals (D8).
         ranges: (state) => find.active
             ? findPaintRanges(
                 state,
                 segment: find.segment,
-                kind: FindSourceKind.body,
+                kind: find.kind,
                 start: start,
                 end: end,
                 reveals: false,
               )
             : const [],
+        layout: cell.text(widget.text),
         child: text,
       );
     }

@@ -706,6 +706,9 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
                     revealGate: widget.revealGate,
                     active: widget.active,
                     boxes: () => _fieldBoxes(row),
+                    // Where the field sits in the row: an indent or a
+                    // wider marker column moves it under equal ranges.
+                    layout: (row.spec.kind, geometries[r]?.textX),
                   ),
                 ),
                 FindGridScope(
@@ -797,6 +800,7 @@ class _RowFindHighlights extends ConsumerWidget {
     required this.revealGate,
     required this.active,
     required this.boxes,
+    required this.layout,
   });
 
   final int segment;
@@ -806,6 +810,9 @@ class _RowFindHighlights extends ConsumerWidget {
   final ValueListenable<bool> revealGate;
   final bool active;
   final LineBoxSource? Function() boxes;
+
+  /// The layer's [FindHighlights.layout]: the field's place in the row.
+  final Object? layout;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -829,6 +836,7 @@ class _RowFindHighlights extends ConsumerWidget {
             : const [],
         boxes: boxes,
         repaint: changes,
+        layout: layout,
       ),
     );
   }
