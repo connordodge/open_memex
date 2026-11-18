@@ -22,9 +22,29 @@
 //   push-only a job whose `if` requires `github.event_name == 'push'` with
 //             no `||`; every other job can run on workflow_dispatch
 // `if: always()` steps (clean-up) don't count when finding the last step.
+//
+// Self-update (#36, Spec #31 reqs 5, 8, D11, D18):
+//   key decode  a release-job step whose env reads
+//               secrets.SPARKLE_ED_PRIVATE_KEY_BASE64 and whose run decodes
+//               it under `umask 077` to `$RUNNER_TEMP/sparkle-ed-key`
+//   appcast-input  the release-job step right after the build: a SHA-pinned
+//               actions/upload-artifact named `appcast-input` whose path
+//               matches exactly the build's `.edsig` and `.length` files
+//   appcast job `jobs.appcast`. Its steps run, in order: a checkout of the
+//               tag (persist-credentials: false), the SHA-pinned
+//               actions/download-artifact of `appcast-input`, a run step that
+//               fails with a message naming gh-pages when the branch does not
+//               exist, a checkout of gh-pages (actions/checkout with
+//               `ref: gh-pages` and a `path`, or a git clone in a run step),
+//               scripts/release/generate_appcast.sh from the tag checkout, and
+//               a git push of gh-pages authenticated with github.token.
+//               The group `appcast job runs against a fixture remote` runs
+//               those steps for real against a local bare repo.
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/src/updater/appcast.dart';
 import 'package:yaml/yaml.dart';
 
 import 'support/script_harness.dart';
@@ -32,6 +52,9 @@ import 'support/script_harness.dart';
 const _workflowPath = '.github/workflows/release.yml';
 const _checkVersion = 'scripts/release/check-version.sh';
 const _buildScript = 'scripts/release/build.sh';
+const _generator = 'scripts/release/generate_appcast.sh';
+const _keySecret = 'SPARKLE_ED_PRIVATE_KEY_BASE64';
+const _releasingDoc = 'docs/releasing.md';
 
 const _releaseSecrets = [
   'MACOS_CERT_P12_BASE64',
@@ -40,6 +63,7 @@ const _releaseSecrets = [
   'NOTARY_KEY_ID',
   'NOTARY_ISSUER_ID',
   'LEAK_PATTERNS',
+  _keySecret,
 ];
 
 /// A `secrets.X` / `secrets['X']` reference, or any `${{ }}` expression that
@@ -415,7 +439,7 @@ void main() {
 
   group('permissions', () {
     test(
-      'top-level permissions are contents read and only the release job has contents write',
+      'top-level permissions are contents read and only the release and appcast jobs have contents write',
       () {
         final wf = _workflow();
         final top = wf['permissions'];
@@ -427,16 +451,24 @@ void main() {
           {'contents': 'read'},
         );
         final release = _releaseJob(wf);
-        final rp = release.value['permissions'];
-        expect(rp, isA<Map>(), reason: 'the release job sets permissions');
-        expect((rp as Map)['contents'], 'write');
+        final writers = {release.key, 'appcast'};
         expect(
-          rp.entries.where((e) => e.value == 'write').map((e) => '${e.key}'),
-          ['contents'],
-          reason: 'contents is the only scope the release job writes',
+          _jobs(wf).keys,
+          contains('appcast'),
+          reason: 'the appcast job exists',
         );
+        for (final name in writers) {
+          final p = _jobs(wf)[name]!['permissions'];
+          expect(p, isA<Map>(), reason: 'the $name job sets permissions');
+          expect((p as Map)['contents'], 'write', reason: name);
+          expect(
+            p.entries.where((e) => e.value == 'write').map((e) => '${e.key}'),
+            ['contents'],
+            reason: 'contents is the only scope the $name job writes',
+          );
+        }
         for (final e in _jobs(wf).entries) {
-          if (e.key == release.key) continue;
+          if (writers.contains(e.key)) continue;
           final p = e.value['permissions'];
           expect(p, isNot('write-all'), reason: e.key);
           if (p is Map) {
@@ -449,6 +481,14 @@ void main() {
             expect(p, anyOf(isNull, 'read-all'), reason: e.key);
           }
         }
+        expect(
+          [
+            for (final e in _jobs(wf).entries)
+              if (e.value['environment'] != null) e.key,
+          ],
+          [release.key],
+          reason: 'release is the only job bound to any environment',
+        );
       },
     );
   });
@@ -935,6 +975,9 @@ mkdir -p "$out"
 for f in "Open-Memex-$ver-arm64.dmg" "memex-$ver-macos-arm64.zip" THIRD_PARTY_NOTICES.txt SHA256SUMS.txt; do
   : > "$out/$f"
 done
+# build.sh's EdDSA outputs for the appcast job (Spec #31 req 6), one line each.
+printf 'c2lnbmF0dXJl\n' > "$out/Open-Memex-$ver-arm64.dmg.edsig"
+printf '0\n' > "$out/Open-Memex-$ver-arm64.dmg.length"
 ''';
 
     Future<_StepEnv> setUpEnv() async {
@@ -1237,7 +1280,118 @@ done
           'memex-0.2.0-macos-arm64.zip',
           'THIRD_PARTY_NOTICES.txt',
           'SHA256SUMS.txt',
+          'Open-Memex-0.2.0-arm64.dmg.edsig',
+          'Open-Memex-0.2.0-arm64.dmg.length',
         });
+      },
+    );
+
+    test(
+      'the appcast-input upload matches exactly the edsig and length files the build step writes',
+      () async {
+        final e = await setUpEnv();
+        final steps = _steps(job());
+        final buildAt = _indexWhere(steps, (s) => _runsBuild(_run(s)));
+        final b = await runStep(e, steps[buildAt], tag: 'v0.2.0');
+        expect(b.exitCode, 0, reason: 'the build step ran its stub\n$b');
+        final upload = _appcastInputUpload(steps);
+        expect(upload, isNotNull, reason: 'an appcast-input upload step');
+        final patterns = '${_with(upload!)['path'] ?? ''}'
+            .split('\n')
+            .map((l) => l.trim())
+            .where((l) => l.isNotEmpty)
+            .toList();
+        expect(patterns, isNotEmpty, reason: 'the upload names its files');
+        final files = [
+          for (final f in Directory(e.repo).listSync(recursive: true))
+            if (f is File && !f.path.contains('/.git/'))
+              f.path.substring(e.repo.length + 1),
+        ];
+        final matched = {
+          for (final p in patterns)
+            for (final f in files)
+              if (_glob(p).hasMatch(f)) f,
+        };
+        expect(matched, {
+          'dist/Open-Memex-0.2.0-arm64.dmg.edsig',
+          'dist/Open-Memex-0.2.0-arm64.dmg.length',
+        }, reason: 'only the signature and length, never the DMG itself');
+      },
+    );
+
+    test(
+      'the key decode step writes the decoded key to RUNNER_TEMP sparkle-ed-key with mode 600 and prints nothing',
+      () async {
+        final e = await setUpEnv();
+        final steps = _steps(job());
+        final decodeAt = _keyDecodeAt(steps);
+        expect(decodeAt, greaterThanOrEqualTo(0), reason: 'a key decode step');
+        final step = steps[decodeAt];
+        // What `generate_keys -x` exports, base64 again as the secret.
+        const exported = 'ZmFrZS1lZDI1NTE5LXNlZWQtZm9yLXRlc3RzLW9ubHk=\n';
+        final secret = base64.encode(utf8.encode(exported));
+        final secretEnv = {
+          for (final en in ((step['env'] as Map?) ?? const {}).entries)
+            if ('${en.value}'.contains('secrets.$_keySecret'))
+              '${en.key}': secret,
+        };
+        expect(secretEnv, isNotEmpty, reason: 'the secret reaches it via env');
+        final r = await Process.run(
+          'bash',
+          ['-eo', 'pipefail', '-c', 'umask 022\n${_run(step)}'],
+          workingDirectory: e.repo,
+          includeParentEnvironment: false,
+          environment: {
+            ...e.iso.env,
+            'PATH': Platform.environment['PATH'] ?? '/usr/bin:/bin',
+            'RUNNER_TEMP': e.temp,
+            ...secretEnv,
+          },
+        );
+        expect(r.exitCode, 0, reason: '${r.stdout}\n${r.stderr}');
+        final key = File('${e.temp}/sparkle-ed-key');
+        expect(key.existsSync(), isTrue);
+        expect(key.readAsStringSync(), exported);
+        expect(
+          key.statSync().mode & 0x1ff,
+          0x180,
+          reason: 'mode 600 under umask 077, whatever the runner umask is',
+        );
+        final out = '${r.stdout}${r.stderr}';
+        expect(out, isNot(contains(secret)));
+        expect(out, isNot(contains(exported.trim())));
+      },
+    );
+
+    test(
+      'the always step deletes RUNNER_TEMP sparkle-ed-key with the other key files',
+      () async {
+        final e = await setUpEnv();
+        final steps = _steps(job());
+        final cleanup = steps
+            .where(
+              (s) =>
+                  _isAlways(s) && _run(s).contains('security delete-keychain'),
+            )
+            .single;
+        expect(_run(cleanup), matches(RegExp(r'rm\s+-f[^\n]*sparkle-ed-key')));
+        File('${e.bin}/security').writeAsStringSync(
+          '#!/bin/bash\necho "security \$*" >> "\$STUB_LOG"\n',
+        );
+        await Process.run('chmod', ['+x', '${e.bin}/security']);
+        for (final name in [
+          'sparkle-ed-key',
+          'notary-key.p8',
+          'release-signing.p12',
+        ]) {
+          File('${e.temp}/$name').writeAsStringSync('x');
+        }
+        final r = await runStep(e, cleanup, tag: 'v0.2.0');
+        expect(r.exitCode, 0, reason: '$r');
+        expect(File('${e.temp}/sparkle-ed-key').existsSync(), isFalse);
+        expect(File('${e.temp}/notary-key.p8').existsSync(), isFalse);
+        final again = await runStep(e, cleanup, tag: 'v0.2.0');
+        expect(again.exitCode, 0, reason: 'nothing to delete is fine\n$again');
       },
     );
 
@@ -1275,6 +1429,410 @@ done
       },
     );
   });
+
+  group('EdDSA key in the release job', () {
+    test(
+      'the release job decodes SPARKLE_ED_PRIVATE_KEY_BASE64 under umask 077 to RUNNER_TEMP sparkle-ed-key before the build',
+      () {
+        final steps = _steps(_releaseJob(_workflow()).value);
+        final decodeAt = _keyDecodeAt(steps);
+        expect(decodeAt, greaterThanOrEqualTo(0), reason: 'a key decode step');
+        final run = _run(steps[decodeAt]);
+        expect(
+          RegExp(
+            r'umask\s+0?077\b[\s\S]*base64\s+(--decode|-d|-D)\b',
+          ).hasMatch(run),
+          isTrue,
+          reason: 'umask 077, then the decode:\n$run',
+        );
+        expect(
+          RegExp(r'\$\{?RUNNER_TEMP\}?/sparkle-ed-key\b').hasMatch(run),
+          isTrue,
+          reason: run,
+        );
+        final buildAt = _indexWhere(steps, (s) => _runsBuild(_run(s)));
+        expect(decodeAt, lessThan(buildAt), reason: 'decoded before build');
+      },
+    );
+
+    test(
+      'the build step gets SPARKLE_ED_KEY_PATH set to the decoded key file and never the key itself',
+      () {
+        final wf = _workflow();
+        final job = _releaseJob(wf).value;
+        final steps = _steps(job);
+        final buildAt = _indexWhere(steps, (s) => _runsBuild(_run(s)));
+        final env = _envOf(wf, job, steps[buildAt]);
+        expect(
+          env['SPARKLE_ED_KEY_PATH']?.replaceAll(RegExp(r'\s'), ''),
+          r'${{runner.temp}}/sparkle-ed-key',
+        );
+        expect(_text(steps[buildAt]), isNot(contains(_keySecret)));
+        final readers = [
+          for (final j in _jobs(wf).values)
+            for (final s in _steps(j))
+              if (_text(s).contains(_keySecret)) '${s['name']}',
+        ];
+        expect(
+          readers,
+          hasLength(1),
+          reason: 'only the decode step sees the private key: $readers',
+        );
+        expect(
+          _text(job['env']),
+          isNot(contains(_keySecret)),
+          reason: 'not in the job env, where every step would see it',
+        );
+      },
+    );
+  });
+
+  group('appcast-input upload', () {
+    test(
+      'the release job uploads appcast-input with a SHA-pinned upload-artifact right after the build step and still publishes last',
+      () {
+        final steps = _steps(_releaseJob(_workflow()).value);
+        final buildAt = _indexWhere(steps, (s) => _runsBuild(_run(s)));
+        expect(buildAt, greaterThanOrEqualTo(0));
+        final upload = _appcastInputUpload(steps);
+        expect(upload, isNotNull, reason: 'an appcast-input upload step');
+        expect(
+          steps.indexOf(upload!),
+          buildAt + 1,
+          reason: 'right after Build, sign and notarize',
+        );
+        expect(
+          '${upload['uses']}',
+          matches(RegExp(r'^actions/upload-artifact@[0-9a-f]{40}$')),
+        );
+        expect(
+          _with(upload)['if-no-files-found'],
+          'error',
+          reason: 'a build without the .edsig or .length fails the job',
+        );
+        expect(upload['if'], isNull, reason: 'runs only when the build did');
+        expect(upload['continue-on-error'], anyOf(isNull, isFalse));
+        final runs = [for (final s in steps) _run(s)];
+        expect(
+          runs.indexWhere(_publishes),
+          steps.lastIndexWhere((s) => !_isAlways(s)),
+          reason: 'Publish the Release is still the last step',
+        );
+      },
+    );
+  });
+
+  group('appcast job', () {
+    test(
+      'the appcast job needs release, has the release job if without always and runs on macos-15',
+      () {
+        final wf = _workflow();
+        final job = _appcastJob(wf);
+        final needs = job['needs'];
+        expect(needs is List ? needs.map((n) => '$n').toList() : ['$needs'], [
+          'release',
+        ]);
+        final release = _releaseJob(wf).value;
+        expect(_cond(job), _cond(release), reason: 'the release job if');
+        expect(_cond(job), isNot(contains('always()')));
+        expect(_cond(job), isNot(contains('failure()')));
+        expect(job['runs-on'], 'macos-15');
+        expect(job['continue-on-error'], anyOf(isNull, isFalse));
+      },
+    );
+
+    test(
+      'the appcast job has contents write only, no environment and no secrets',
+      () {
+        final job = _appcastJob(_workflow());
+        final p = job['permissions'];
+        expect(p, isA<Map>());
+        expect(
+          Map<String, String>.from(
+            (p as Map).map((k, v) => MapEntry('$k', '$v')),
+          ),
+          {'contents': 'write'},
+        );
+        expect(job['environment'], isNull);
+        expect(_mentionsSecrets(job), isFalse);
+      },
+    );
+
+    test(
+      'the appcast job downloads appcast-input with a SHA-pinned download-artifact',
+      () {
+        final steps = _steps(_appcastJob(_workflow()));
+        final downloads = [
+          for (final s in steps)
+            if (_usesAction(s, 'actions/download-artifact')) s,
+        ];
+        expect(downloads, hasLength(1));
+        expect(
+          '${downloads.single['uses']}',
+          matches(RegExp(r'^actions/download-artifact@[0-9a-f]{40}$')),
+        );
+        expect(_with(downloads.single)['name'], 'appcast-input');
+      },
+    );
+
+    test(
+      'the appcast job uses concurrency group appcast without cancelling in progress',
+      () {
+        final c = _appcastJob(_workflow())['concurrency'];
+        expect(c, isA<Map>());
+        expect('${(c as Map)['group']}', 'appcast');
+        expect(c['cancel-in-progress'], isFalse);
+      },
+    );
+
+    test(
+      'the appcast job checks out the tag without persisting credentials',
+      () {
+        final steps = _steps(_appcastJob(_workflow()));
+        final tagCheckouts = steps.where(_isTagCheckout).toList();
+        expect(tagCheckouts, isNotEmpty, reason: 'a checkout of the tag');
+        for (final s in tagCheckouts) {
+          expect(_with(s)['persist-credentials'], isFalse, reason: '$s');
+        }
+      },
+    );
+
+    test('the appcast job pushes gh-pages with github.token', () {
+      final wf = _workflow();
+      final job = _appcastJob(wf);
+      final steps = _steps(job);
+      final pushes = [
+        for (final s in steps)
+          if (_gitPush.hasMatch(_run(s))) s,
+      ];
+      expect(pushes, hasLength(1), reason: 'one push step');
+      final push = pushes.single;
+      expect(
+        RegExp(r'--force\b|\s-f\b|\+\S*gh-pages').hasMatch(_run(push)),
+        isFalse,
+        reason: 'never a force push: gh-pages keeps its history',
+      );
+      final pushEnv = _envOf(wf, job, push).values.join('\n');
+      final pagesTokens = [
+        for (final s in steps)
+          if (_isPagesCheckout(s)) '${_with(s)['token'] ?? ''}',
+      ].join('\n');
+      expect(
+        pushEnv.contains('github.token') ||
+            pagesTokens.contains('github.token'),
+        isTrue,
+        reason: 'the push is authenticated with github.token',
+      );
+      for (final s in steps) {
+        if (RegExp(r'\bgh\s').hasMatch(_run(s))) {
+          expect(
+            _envOf(wf, job, s)['GH_TOKEN'],
+            contains('github.token'),
+            reason: 'step ${s['name']} calls gh',
+          );
+        }
+      }
+    });
+
+    test(
+      'the appcast job runs the generator from the tag checkout after the download and before the push',
+      () {
+        final steps = _steps(_appcastJob(_workflow()));
+        final genAt = _indexWhere(steps, (s) => _run(s).contains(_generator));
+        expect(genAt, greaterThanOrEqualTo(0), reason: 'the generator runs');
+        final gen = steps[genAt];
+        expect(
+          gen['working-directory'],
+          anyOf(isNull, '.'),
+          reason: 'the script comes from the tag checkout root',
+        );
+        final line = _run(
+          gen,
+        ).split('\n').firstWhere((l) => l.contains(_generator));
+        expect(
+          RegExp(
+            r'(^|[\s;&|])(\./)?scripts/release/generate_appcast\.sh\b',
+          ).hasMatch(line),
+          isTrue,
+          reason: 'the tag checkout copy, never one from gh-pages: $line',
+        );
+        for (final flag in ['--version', '--input', '--appcast']) {
+          expect(line, contains(flag));
+        }
+        final tagAt = _indexWhere(steps, _isTagCheckout);
+        final downloadAt = _indexWhere(
+          steps,
+          (s) => _usesAction(s, 'actions/download-artifact'),
+        );
+        final pushAt = _indexWhere(steps, (s) => _gitPush.hasMatch(_run(s)));
+        expect(tagAt, lessThan(genAt));
+        expect(downloadAt, inExclusiveRange(-1, genAt));
+        expect(pushAt, greaterThan(genAt));
+        expect(
+          steps.where((s) => '${s['uses'] ?? ''}'.startsWith('./')),
+          isEmpty,
+          reason: 'no local action, which could come from gh-pages',
+        );
+      },
+    );
+
+    test('release.yml never sets SELF_UPDATE_APPCAST_URL', () {
+      expect(_rawWorkflow(), isNot(contains('SELF_UPDATE_APPCAST_URL')));
+    });
+  });
+
+  group('appcast job runs against a fixture remote', () {
+    // Runs every step of jobs.appcast in order against a local bare repo
+    // standing in for github.com (git url.insteadOf), with a stub gh that
+    // answers branch lookups from that repo. actions/checkout and
+    // actions/download-artifact are simulated; run steps run for real with
+    // `bash -eo pipefail`.
+    const timeout = Timeout(Duration(minutes: 3));
+
+    test(
+      'the appcast job publishes the item to gh-pages on the fixture remote and keeps its history and nojekyll file',
+      () async {
+        final sim = await _AppcastSim.create(pages: _Pages.branch);
+        final before = await sim.pagesTip();
+        final run = await sim.runJob(_workflow());
+        expect(run.ok, isTrue, reason: '$run');
+        final items = parseAppcast(await sim.remoteAppcast());
+        expect(items, hasLength(1), reason: '$run');
+        final item = items.single;
+        expect(item.shortVersionString, '1.2.3');
+        expect(item.version, '42');
+        expect(item.notes, _AppcastSim.notes);
+        expect(item.edSignature, 'c2lnbmF0dXJlLWZvci0xLjIuMw==');
+        expect(item.length, 38123456);
+        expect(item.minimumSystemVersion, '14.0');
+        expect(
+          item.url,
+          'https://github.com/connordodge/open_memex/releases/download/v1.2.3/Open-Memex-1.2.3-arm64.dmg',
+        );
+        expect(
+          await sim.pagesFiles(),
+          containsAll(['.nojekyll', 'appcast.xml']),
+        );
+        expect(
+          await sim.isAncestor(before!, 'refs/heads/gh-pages'),
+          isTrue,
+          reason: 'a new commit on gh-pages, not a replaced history',
+        );
+      },
+      timeout: timeout,
+    );
+
+    test(
+      'rerunning the appcast job for the same Release succeeds and keeps one item',
+      () async {
+        final sim = await _AppcastSim.create(pages: _Pages.branch);
+        final first = await sim.runJob(_workflow());
+        expect(first.ok, isTrue, reason: '$first');
+        final second = await sim.runJob(_workflow());
+        expect(second.ok, isTrue, reason: 'Re-run failed jobs works\n$second');
+        final items = parseAppcast(await sim.remoteAppcast());
+        expect(items.map((i) => i.shortVersionString), ['1.2.3']);
+      },
+      timeout: timeout,
+    );
+
+    for (final (name, pages) in [
+      (
+        'the appcast job fails in its own step naming gh-pages and creates no branch when gh-pages is missing',
+        _Pages.none,
+      ),
+      (
+        'the appcast job fails in its own step naming gh-pages when only a gh-pages tag exists',
+        _Pages.tagOnly,
+      ),
+    ]) {
+      test(name, () async {
+        final sim = await _AppcastSim.create(pages: pages);
+        final wf = _workflow();
+        final run = await sim.runJob(wf);
+        expect(run.ok, isFalse, reason: '$run');
+        final failed = run.steps.last;
+        expect(
+          failed.isRun,
+          isTrue,
+          reason: 'a run step of the job reports it, not a checkout\n$run',
+        );
+        expect(failed.output, contains('gh-pages'), reason: '$run');
+        expect(
+          run.steps.where((s) => s.ranGenerator),
+          isEmpty,
+          reason: 'it stops before the generator\n$run',
+        );
+        expect(await sim.pagesTip(), isNull, reason: 'no branch is created');
+      }, timeout: timeout);
+    }
+
+    test(
+      'the appcast job fails and leaves gh-pages unchanged when an appcast-input file is missing',
+      () async {
+        final sim = await _AppcastSim.create(pages: _Pages.branch);
+        File('${sim.artifact}/Open-Memex-1.2.3-arm64.dmg.length').deleteSync();
+        final before = await sim.pagesTip();
+        final run = await sim.runJob(_workflow());
+        expect(run.ok, isFalse, reason: '$run');
+        expect(await sim.pagesTip(), before);
+      },
+      timeout: timeout,
+    );
+  });
+
+  group('docs', () {
+    String doc() {
+      final f = File('${repoRoot()}/$_releasingDoc');
+      expect(f.existsSync(), isTrue);
+      return f.readAsStringSync();
+    }
+
+    test(
+      'releasing.md documents the Self-update one-time setup with the keypair, secret, public key, gh-pages and Pages',
+      () {
+        final d = doc();
+        for (final s in [
+          'generate_keys',
+          '-x',
+          _keySecret,
+          'sparkleEdPublicKey',
+          'app/lib/src/updater/sparkle_ed_public_key.dart',
+          'gh-pages',
+          '.nojekyll',
+          'GitHub Pages',
+          'https://connordodge.github.io/open_memex/appcast.xml',
+        ]) {
+          expect(d, contains(s), reason: 'releasing.md mentions $s');
+        }
+        expect(
+          RegExp(
+            '\\|\\s*`$_keySecret`\\s*\\|\\s*environment secret\\s*\\|',
+          ).hasMatch(d),
+          isTrue,
+          reason: 'the release environment table lists the key secret',
+        );
+      },
+    );
+
+    test(
+      'releasing.md documents the appcast job and recovery with Re-run failed jobs',
+      () {
+        final d = doc();
+        expect(d, contains('`appcast` job'));
+        expect(d, contains('appcast-input'));
+        expect(d, contains('Re-run failed jobs'));
+        expect(d, contains(_generator));
+      },
+    );
+
+    test('releasing.md documents key rotation and the Pages cache', () {
+      final d = doc().toLowerCase();
+      expect(d, contains('rotat'), reason: 'key rotation');
+      expect(d, contains('old key'), reason: 'sign with the old key');
+      expect(d, contains('10 minutes'), reason: 'the Pages cache');
+    });
+  });
 }
 
 /// A fixture for running one workflow step: a repo, a stub-gh bin directory,
@@ -1302,4 +1860,489 @@ class _StepResult {
   @override
   String toString() =>
       'StepResult(exit $exitCode)\n--- stdout ---\n$stdout\n--- stderr ---\n$stderr\n--- gh calls ---\n${calls.join('\n')}';
+}
+// ---------------------------------------------------------------------------
+// Self-update helpers (#36).
+
+Map<dynamic, dynamic> _appcastJob(Map<dynamic, dynamic> wf) {
+  final job = _jobs(wf)['appcast'];
+  expect(job, isNotNull, reason: 'release.yml has an appcast job');
+  return job!;
+}
+
+Map<dynamic, dynamic> _with(Map<dynamic, dynamic> step) =>
+    step['with'] is Map ? step['with'] as Map : const {};
+
+bool _usesAction(Map<dynamic, dynamic> step, String action) =>
+    '${step['uses'] ?? ''}'.startsWith('$action@');
+
+bool _isPagesCheckout(Map<dynamic, dynamic> step) =>
+    _usesAction(step, 'actions/checkout') &&
+    RegExp(
+      r'^(refs/heads/)?gh-pages$',
+    ).hasMatch('${_with(step)['ref'] ?? ''}'.trim());
+
+bool _isTagCheckout(Map<dynamic, dynamic> step) =>
+    _usesAction(step, 'actions/checkout') && !_isPagesCheckout(step);
+
+final _gitPush = RegExp(r'\bgit\b[^\n;&|]*\spush\b');
+
+/// The release-job step that reads the private-key secret.
+int _keyDecodeAt(List<Map<dynamic, dynamic>> steps) =>
+    steps.indexWhere((s) => _text(s['env']).contains('secrets.$_keySecret'));
+
+/// The upload-artifact step named appcast-input, or null.
+Map<dynamic, dynamic>? _appcastInputUpload(List<Map<dynamic, dynamic>> steps) {
+  for (final s in steps) {
+    if (_usesAction(s, 'actions/upload-artifact') &&
+        _with(s)['name'] == 'appcast-input') {
+      return s;
+    }
+  }
+  return null;
+}
+
+/// An upload-artifact path pattern as a regex over repo-relative paths: `*`
+/// within a segment, `**` across segments, and any `${{ }}` expression as a
+/// wildcard.
+RegExp _glob(String pattern) {
+  var p = pattern
+      .replaceAll(RegExp(r'\$\{\{\s*github\.workspace\s*\}\}/'), '')
+      .replaceAll(RegExp(r'\$\{\{[^}]*\}\}'), '\u0000');
+  if (p.startsWith('./')) p = p.substring(2);
+  final b = StringBuffer('^');
+  for (var i = 0; i < p.length; i++) {
+    final c = p[i];
+    if (c == '*' && i + 1 < p.length && p[i + 1] == '*') {
+      b.write('.*');
+      i++;
+    } else if (c == '*' || c == '\u0000') {
+      b.write('[^/]*');
+    } else if (c == '?') {
+      b.write('[^/]');
+    } else {
+      b.write(RegExp.escape(c));
+    }
+  }
+  b.write(r'$');
+  return RegExp(b.toString());
+}
+
+enum _Pages { branch, none, tagOnly }
+
+/// One simulated step of the appcast job.
+class _SimStep {
+  _SimStep(
+    this.name,
+    this.exitCode,
+    this.output, {
+    required this.isRun,
+    this.ranGenerator = false,
+  });
+
+  final String name;
+  final int exitCode;
+  final String output;
+  final bool isRun;
+  final bool ranGenerator;
+
+  @override
+  String toString() =>
+      '--- ${isRun ? 'run' : 'uses'}: $name (exit $exitCode)\n$output';
+}
+
+class _JobRun {
+  _JobRun(this.steps);
+
+  final List<_SimStep> steps;
+
+  bool get ok => steps.isNotEmpty && steps.every((s) => s.exitCode == 0);
+
+  @override
+  String toString() => 'JobRun(ok: $ok)\n${steps.join('\n')}';
+}
+
+/// A fixture for running jobs.appcast: a bare repo standing in for
+/// github.com/example-owner/example-repo (tag v1.2.3 holding the real
+/// generator, a pubspec 1.2.3+42, the notes and the real pbxproj; gh-pages
+/// per [_Pages]), the tag checkout as GITHUB_WORKSPACE, the appcast-input
+/// artifact, RUNNER_TEMP and a stub gh.
+class _AppcastSim {
+  _AppcastSim._(this.iso, this.w, this.sha);
+
+  static const repoName = 'example-owner/example-repo';
+  static const notes = '## Highlights\n- Self-update ]]> & more\n';
+
+  final IsolatedEnv iso;
+  final String w;
+  final String sha;
+
+  String get remotes => '$w/remotes';
+  String get bare => '$remotes/$repoName.git';
+  String get workspace => '$w/workspace';
+  String get artifact => '$w/artifact';
+  String get temp => '$w/runner-temp';
+  String get bin => '$w/bin';
+  String get jobGitConfig => '$w/job-gitconfig';
+
+  static const _stubGh = r'''#!/bin/bash
+{ for a in "$@"; do printf '[%s]' "$a"; done; printf '\n'; } >> "$STUB_LOG"
+all="$*"
+if [ "$1" = api ]; then
+  case "$all" in
+    *"repos/$GITHUB_REPOSITORY/branches/gh-pages"*|*"repos/$GITHUB_REPOSITORY/git/ref/heads/gh-pages"*|*"repos/$GITHUB_REPOSITORY/git/refs/heads/gh-pages"*)
+      if git --git-dir="$STUB_REMOTE" rev-parse --verify --quiet refs/heads/gh-pages >/dev/null; then
+        case "$all" in
+          *--jq*) printf 'gh-pages\n' ;;
+          *) printf '{"name":"gh-pages"}\n' ;;
+        esac
+        exit 0
+      fi
+      printf '{"message":"Branch not found","status":"404"}\n'
+      echo 'gh: Branch not found (HTTP 404)' >&2
+      exit 1
+      ;;
+  esac
+fi
+echo "stub gh: unexpected call: $all" >&2
+exit 99
+''';
+
+  static Future<_AppcastSim> create({required _Pages pages}) async {
+    final iso = await isolatedEnv();
+    final w = iso.work.path;
+    final root = repoRoot();
+
+    final src = '$w/src';
+    final gen = File('$root/$_generator');
+    if (gen.existsSync()) {
+      gen.copySync(
+        (File('$src/$_generator')..createSync(recursive: true)).path,
+      );
+      await Process.run('chmod', ['+x', '$src/$_generator']);
+    }
+    File('$src/app/pubspec.yaml')
+      ..createSync(recursive: true)
+      ..writeAsStringSync('name: open_memex_app\nversion: 1.2.3+42\n');
+    File('$src/release-notes/v1.2.3.md')
+      ..createSync(recursive: true)
+      ..writeAsStringSync(notes);
+    const pbx = 'app/macos/Runner.xcodeproj/project.pbxproj';
+    File(
+      '$root/$pbx',
+    ).copySync((File('$src/$pbx')..createSync(recursive: true)).path);
+    await runGit(iso, src, ['init', '-q']);
+    await runGit(iso, src, ['add', '-A']);
+    await runGit(iso, src, ['commit', '-q', '-m', 'release 1.2.3']);
+    await runGit(iso, src, ['tag', 'v1.2.3']);
+    final sha = (await runGit(iso, src, ['rev-parse', 'HEAD'])).stdout.trim();
+
+    final sim = _AppcastSim._(iso, w, sha);
+    Directory('${sim.remotes}/example-owner').createSync(recursive: true);
+    await runGit(iso, w, ['clone', '-q', '--bare', src, sim.bare]);
+    Link('${sim.remotes}/$repoName').createSync(sim.bare);
+
+    if (pages != _Pages.none) {
+      final p = '$w/pages';
+      Directory(p).createSync();
+      File('$p/.nojekyll').writeAsStringSync('');
+      File('$p/appcast.xml').writeAsStringSync(
+        File(
+          '$root/app/test/fixtures/updater/appcast_empty_channel.xml',
+        ).readAsStringSync(),
+      );
+      await runGit(iso, p, ['init', '-q']);
+      await runGit(iso, p, ['add', '-A']);
+      await runGit(iso, p, ['commit', '-q', '-m', 'empty channel']);
+      await runGit(iso, p, [
+        'push',
+        '-q',
+        sim.bare,
+        pages == _Pages.branch
+            ? 'HEAD:refs/heads/gh-pages'
+            : 'HEAD:refs/tags/gh-pages',
+      ]);
+    }
+
+    await runGit(iso, w, ['clone', '-q', sim.bare, sim.workspace]);
+    await runGit(iso, sim.workspace, ['checkout', '-q', '--detach', 'v1.2.3']);
+    await runGit(iso, sim.workspace, [
+      'remote',
+      'set-url',
+      'origin',
+      'https://github.com/$repoName',
+    ]);
+
+    Directory(sim.artifact).createSync();
+    File(
+      '${sim.artifact}/Open-Memex-1.2.3-arm64.dmg.edsig',
+    ).writeAsStringSync('c2lnbmF0dXJlLWZvci0xLjIuMw==\n');
+    File(
+      '${sim.artifact}/Open-Memex-1.2.3-arm64.dmg.length',
+    ).writeAsStringSync('38123456\n');
+    Directory(sim.temp).createSync();
+    Directory(sim.bin).createSync();
+    File('${sim.bin}/gh').writeAsStringSync(_stubGh);
+    await Process.run('chmod', ['+x', '${sim.bin}/gh']);
+    // A runner has no git identity: the job must set its own.
+    File(sim.jobGitConfig).writeAsStringSync(
+      [
+        '[user]',
+        '\tuseConfigOnly = true',
+        '[commit]',
+        '\tgpgsign = false',
+        '[tag]',
+        '\tgpgsign = false',
+        '[init]',
+        '\tdefaultBranch = main',
+        '[protocol "file"]',
+        '\tallow = always',
+        '',
+      ].join('\n'),
+    );
+    return sim;
+  }
+
+  Map<String, String> _baseEnv(String envFile) {
+    const prefixes = [
+      'https://github.com/',
+      'https://x-access-token:placeholder-token@github.com/',
+      'https://oauth2:placeholder-token@github.com/',
+      'https://placeholder-token@github.com/',
+      'git@github.com:',
+    ];
+    return {
+      'HOME': iso.home,
+      'XDG_CONFIG_HOME': iso.env['XDG_CONFIG_HOME']!,
+      'GIT_CONFIG_GLOBAL': jobGitConfig,
+      'GIT_CONFIG_NOSYSTEM': '1',
+      'GIT_TERMINAL_PROMPT': '0',
+      'GIT_CONFIG_COUNT': '${prefixes.length}',
+      for (var i = 0; i < prefixes.length; i++) ...{
+        'GIT_CONFIG_KEY_$i': 'url.file://$remotes/.insteadOf',
+        'GIT_CONFIG_VALUE_$i': prefixes[i],
+      },
+      'PATH': '$bin:${Platform.environment['PATH'] ?? '/usr/bin:/bin'}',
+      'CI': 'true',
+      'GITHUB_ACTIONS': 'true',
+      'GITHUB_EVENT_NAME': 'push',
+      'GITHUB_REPOSITORY': repoName,
+      'GITHUB_SERVER_URL': 'https://github.com',
+      'GITHUB_WORKSPACE': workspace,
+      'GITHUB_REF': 'refs/tags/v1.2.3',
+      'GITHUB_REF_NAME': 'v1.2.3',
+      'GITHUB_SHA': sha,
+      'GITHUB_ENV': envFile,
+      'GITHUB_OUTPUT': '$w/github-output',
+      'GITHUB_STEP_SUMMARY': '$w/github-step-summary',
+      'GITHUB_PATH': '$w/github-path',
+      'RUNNER_TEMP': temp,
+      'STUB_LOG': '$w/gh.log',
+      'STUB_REMOTE': bare,
+    };
+  }
+
+  String _expand(String s, Map<String, String> env) =>
+      s.replaceAllMapped(RegExp(r'\$\{\{\s*(.*?)\s*\}\}'), (m) {
+        final e = m.group(1)!;
+        if (e.startsWith('env.')) return env[e.substring(4)] ?? '';
+        return switch (e) {
+          'github.token' => 'placeholder-token',
+          'runner.temp' => temp,
+          'github.workspace' => workspace,
+          'github.repository' => repoName,
+          'github.ref_name' => 'v1.2.3',
+          'github.ref' => 'refs/tags/v1.2.3',
+          'github.sha' => sha,
+          'github.server_url' => 'https://github.com',
+          'github.event_name' => 'push',
+          _ => throw TestFailure('the simulator does not know ${m.group(0)}'),
+        };
+      });
+
+  String _resolve(String path) =>
+      path.startsWith('/') ? path : '$workspace/$path';
+
+  /// Runs jobs.appcast's steps in order, stopping at the first failure.
+  ///
+  /// Each call is a fresh job attempt, as Re-run failed jobs gives: an empty
+  /// RUNNER_TEMP and a clean tag checkout (actions/checkout cleans it).
+  Future<_JobRun> runJob(Map<dynamic, dynamic> wf) async {
+    final job = _appcastJob(wf);
+    Directory(temp).deleteSync(recursive: true);
+    Directory(temp).createSync();
+    await runGit(iso, workspace, ['clean', '-ffdxq']);
+    await runGit(iso, workspace, [
+      'checkout',
+      '-q',
+      '--force',
+      '--detach',
+      'v1.2.3',
+    ]);
+    final envFile = '$w/github-env';
+    File(envFile).writeAsStringSync('');
+    final base = _baseEnv(envFile);
+    final jobEnv = <String, String>{
+      for (final e in ((job['env'] as Map?) ?? const {}).entries)
+        '${e.key}': _expand('${e.value}', const {}),
+    };
+    final defaultsRun = (job['defaults'] is Map)
+        ? (job['defaults'] as Map)['run']
+        : null;
+    final jobWd = defaultsRun is Map ? defaultsRun['working-directory'] : null;
+    final steps = <_SimStep>[];
+    for (final step in _steps(job)) {
+      final name = '${step['name'] ?? step['uses'] ?? 'run'}';
+      final c = _cond(step);
+      if (c.isNotEmpty && c != 'success()') {
+        throw TestFailure('the simulator does not evaluate step if: $c');
+      }
+      final exported = <String, String>{
+        for (final l in File(envFile).readAsLinesSync())
+          if (l.contains('='))
+            l.substring(0, l.indexOf('=')): l.substring(l.indexOf('=') + 1),
+      };
+      final ctx = {...jobEnv, ...exported};
+      final stepEnv = {
+        ...ctx,
+        for (final e in ((step['env'] as Map?) ?? const {}).entries)
+          '${e.key}': _expand('${e.value}', ctx),
+      };
+      final _SimStep r;
+      if (step['uses'] != null) {
+        r = await _uses(name, step, base, ctx);
+      } else {
+        final wd = step['working-directory'] ?? jobWd;
+        final run = _expand('${step['run'] ?? ''}', ctx);
+        final p = await Process.run(
+          'bash',
+          ['--noprofile', '--norc', '-eo', 'pipefail', '-c', run],
+          workingDirectory: wd == null
+              ? workspace
+              : _resolve(_expand('$wd', ctx)),
+          includeParentEnvironment: false,
+          environment: {...base, ...stepEnv},
+        );
+        r = _SimStep(
+          name,
+          p.exitCode,
+          '${p.stdout}${p.stderr}',
+          isRun: true,
+          ranGenerator: run.contains(_generator),
+        );
+      }
+      steps.add(r);
+      if (r.exitCode != 0) break;
+    }
+    return _JobRun(steps);
+  }
+
+  Future<_SimStep> _uses(
+    String name,
+    Map<dynamic, dynamic> step,
+    Map<String, String> base,
+    Map<String, String> ctx,
+  ) async {
+    final inputs = {
+      for (final e in _with(step).entries)
+        '${e.key}': _expand('${e.value}', ctx),
+    };
+    _SimStep done(int code, String out) =>
+        _SimStep(name, code, out, isRun: false);
+    if (_usesAction(step, 'actions/checkout')) {
+      final path = inputs['path'];
+      if (_isPagesCheckout(step)) {
+        if (path == null) {
+          return done(
+            1,
+            'simulated checkout: no path, so it would replace the tag checkout',
+          );
+        }
+        final p = await Process.run(
+          'git',
+          [
+            'clone',
+            '-q',
+            '--branch',
+            'gh-pages',
+            'https://github.com/$repoName',
+            _resolve(path),
+          ],
+          includeParentEnvironment: false,
+          environment: base,
+          workingDirectory: workspace,
+        );
+        return p.exitCode == 0
+            ? done(0, '')
+            : done(
+                1,
+                'simulated checkout: the requested ref could not be fetched',
+              );
+      }
+      if (path == null) return done(0, '');
+      final p = await Process.run(
+        'git',
+        [
+          'clone',
+          '-q',
+          '--branch',
+          'v1.2.3',
+          'https://github.com/$repoName',
+          _resolve(path),
+        ],
+        includeParentEnvironment: false,
+        environment: base,
+        workingDirectory: workspace,
+      );
+      return done(p.exitCode, '${p.stderr}');
+    }
+    if (_usesAction(step, 'actions/download-artifact')) {
+      if (inputs['name'] != 'appcast-input') {
+        return done(1, 'simulated download: no artifact ${inputs['name']}');
+      }
+      final dest = Directory(_resolve(inputs['path'] ?? '.'))
+        ..createSync(recursive: true);
+      for (final f in Directory(artifact).listSync().whereType<File>()) {
+        f.copySync('${dest.path}/${f.uri.pathSegments.last}');
+      }
+      return done(0, '');
+    }
+    throw TestFailure('the simulator does not run ${step['uses']}');
+  }
+
+  Future<ScriptResult> _git(List<String> args) =>
+      runTool(iso, 'git', ['--git-dir=$bare', ...args], workingDirectory: w);
+
+  /// The gh-pages branch tip on the fixture remote, or null.
+  Future<String?> pagesTip() async {
+    final r = await Process.run('git', [
+      '--git-dir=$bare',
+      'rev-parse',
+      '--verify',
+      '--quiet',
+      'refs/heads/gh-pages',
+    ], environment: iso.env);
+    return r.exitCode == 0 ? '${r.stdout}'.trim() : null;
+  }
+
+  Future<String> remoteAppcast() async =>
+      (await _git(['show', 'refs/heads/gh-pages:appcast.xml'])).stdout;
+
+  Future<List<String>> pagesFiles() async => (await _git([
+    'ls-tree',
+    '--name-only',
+    'refs/heads/gh-pages',
+  ])).stdout.split('\n').where((l) => l.isNotEmpty).toList();
+
+  Future<bool> isAncestor(String a, String b) async {
+    final r = await Process.run('git', [
+      '--git-dir=$bare',
+      'merge-base',
+      '--is-ancestor',
+      a,
+      b,
+    ], environment: iso.env);
+    final tip = await pagesTip();
+    return r.exitCode == 0 && tip != a;
+  }
 }
