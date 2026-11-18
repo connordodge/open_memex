@@ -1081,15 +1081,15 @@ fn an_empty_query_answers_no_hits_and_exits_0() {
 }
 
 #[test]
-fn a_blank_query_with_allow_download_fetches_the_model_and_answers_on() {
-    // `on` means the model loaded, so a blank query still fetches it.
+fn a_query_with_allow_download_fetches_the_model_and_answers_on() {
+    // Orchestrator condition (a): a blank query never downloads, so the
+    // download is pinned on a query that has text (the app's download
+    // button only runs on a non-blank input).
     let mut fx_vault = keyword_vault();
     let path = fx_vault.vx.close();
     let hub = FakeHub::start();
-    for q in ["", "   "] {
-        let got = ok_json(&run_search(&path, q, &["--allow-download"], &hub.url));
-        assert_blank_answer(&got, q, "on");
-    }
+    let got = ok_json(&run_search(&path, "jump", &["--allow-download"], &hub.url));
+    assert_eq!(got["semantic"], json!("on"), "{got}");
     assert!(
         model_files_present(&model_cache_dir(&path)),
         "the model is in <vault>/.memex/models"
@@ -1103,14 +1103,12 @@ fn a_blank_query_with_allow_download_fetches_the_model_and_answers_on() {
 }
 
 #[test]
-fn a_blank_query_with_allow_download_and_an_unreachable_hub_answers_unavailable_and_exits_0() {
+fn a_query_with_allow_download_and_an_unreachable_hub_answers_unavailable_and_exits_0() {
     let mut fx_vault = keyword_vault();
     let path = fx_vault.vx.close();
     let hub = fx::Tripwire::start();
-    for q in ["", "   "] {
-        let got = ok_json(&run_search(&path, q, &["--allow-download"], &hub.url));
-        assert_blank_answer(&got, q, "unavailable");
-    }
+    let got = ok_json(&run_search(&path, "jump", &["--allow-download"], &hub.url));
+    assert_eq!(got["semantic"], json!("unavailable"), "{got}");
     assert!(hub.hits() > 0, "--allow-download tried HF_ENDPOINT");
 }
 
@@ -1138,6 +1136,29 @@ fn a_blank_query_with_a_cached_model_answers_on_with_no_network_access() {
         assert_blank_answer(&got, q, "on");
     }
     assert_eq!(hub.hits(), 0, "a cached model loads with no network access");
+}
+
+#[test]
+fn a_blank_query_with_allow_download_and_no_cached_model_never_downloads_and_answers_model_not_downloaded(
+) {
+    // Orchestrator condition (a): a blank query never triggers a download,
+    // so --allow-download is ignored for it.
+    let mut fx_vault = keyword_vault();
+    let path = fx_vault.vx.close();
+    assert!(!model_files_present(&model_cache_dir(&path)));
+    let hub = fx::Tripwire::start();
+    for q in ["", "   "] {
+        let out = run_search(&path, q, &["--allow-download"], &hub.url);
+        let got = ok_json(&out);
+        assert_blank_answer(&got, q, "model_not_downloaded");
+    }
+    assert_eq!(hub.hits(), 0, "nothing contacted HF_ENDPOINT");
+    assert!(!model_repo_dir(&path).exists(), "no model was downloaded");
+    let models = path.join(".memex").join("models");
+    assert!(
+        !models.exists() || fs::read_dir(&models).unwrap().next().is_none(),
+        "no files were created under <vault>/.memex/models"
+    );
 }
 
 // ---------------------------------------------------------------- AC 8
