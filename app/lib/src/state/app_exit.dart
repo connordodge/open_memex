@@ -4,6 +4,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart' show AppLifecycleListener, VoidCallback;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'find_in_note_state.dart' show FindMenuAction;
+
 /// The app's window method channel (macOS `MainFlutterWindow.swift`).
 ///
 /// - native → Dart `windowShouldClose` (no arguments): the window delegate
@@ -47,6 +49,13 @@ class WindowChannelRouter {
     _sync();
   }
 
+  /// Routes `find` to [handler] (WI #81 skeleton: no behaviour yet).
+  void setFindHandler(FindMenuHandler handler) {}
+
+  /// Stops routing `find`, unless another handler than [handler] has been
+  /// set since (WI #81 skeleton: no behaviour yet).
+  void clearFindHandler(FindMenuHandler handler) {}
+
   /// Routes `openAgents` to [callback].
   void setOpenAgentsHandler(VoidCallback callback) {
     _onOpenAgents = callback;
@@ -83,6 +92,9 @@ class WindowChannelRouter {
 
 /// The router that owns [appWindowChannel]'s handler.
 final appWindowRouter = WindowChannelRouter(appWindowChannel);
+
+/// Performs one native Edit ▸ Find item (`find` on [appWindowChannel]).
+typedef FindMenuHandler = void Function(FindMenuAction action);
 
 /// Answers a window-close request: true lets the window close.
 typedef WindowCloseHandler = Future<bool> Function();
@@ -155,6 +167,11 @@ abstract interface class WindowMenuHost {
   /// Enables or disables Window ▸ Agents… (and with it ⇧⌘A). With no
   /// native handler (widget tests) it does nothing.
   Future<void> setAgentsMenuEnabled(bool enabled);
+
+  /// Enables or disables Edit ▸ Find ▸ Find…, Find Next, Find Previous and
+  /// Use Selection for Find. With no native handler (widget tests) it does
+  /// nothing.
+  Future<void> setFindMenuEnabled(bool enabled);
 }
 
 /// The real host: `openAgents` arrives on [appWindowChannel] through the
@@ -191,6 +208,10 @@ class PlatformWindowMenuHost implements WindowMenuHost {
       // No native window (widget tests, other platforms): no menu to grey.
     }
   }
+
+  /// WI #81 skeleton: no behaviour yet.
+  @override
+  Future<void> setFindMenuEnabled(bool enabled) => Future<void>.value();
 }
 
 /// The Window menu seam the workspace attaches to.
