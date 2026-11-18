@@ -53,7 +53,40 @@ Future<void> openUpdateModal(BuildContext context, ProviderReader read) async {
 /// is on this repo's Releases path, otherwise the Releases page (D14).
 String _gitHubPage(AppcastItem? item) {
   final link = item?.link ?? '';
-  return link.startsWith(_releasesPrefix) ? link : _releasesPage;
+  return _isReleasesLink(link) ? link : _releasesPage;
+}
+
+/// Whether [link] stays on this repo's Releases path once a browser resolves
+/// it (D14): it starts with [_releasesPrefix], is plain `https` on
+/// `github.com` with no user info or port, names a page below `releases/`,
+/// and has no dot segment, encoded dot or slash, or backslash that could
+/// climb out of that path.
+bool _isReleasesLink(String link) {
+  if (!link.startsWith(_releasesPrefix)) return false;
+  final lower = link.toLowerCase();
+  if (lower.contains(r'\') ||
+      lower.contains('%2e') ||
+      lower.contains('%2f') ||
+      lower.contains('%5c')) {
+    return false;
+  }
+  final uri = Uri.tryParse(link);
+  if (uri == null ||
+      uri.scheme != 'https' ||
+      uri.host != 'github.com' ||
+      uri.userInfo.isNotEmpty ||
+      uri.hasPort) {
+    return false;
+  }
+  // The path as written, before any normalizing parse: no `.` or `..`.
+  final rawPath = link.split(RegExp('[?#]')).first;
+  if (rawPath.split('/').any((s) => s == '.' || s == '..')) return false;
+  final segments = uri.pathSegments;
+  return segments.length > 3 &&
+      segments[0] == 'connordodge' &&
+      segments[1] == 'open_memex' &&
+      segments[2] == 'releases' &&
+      segments.skip(3).any((s) => s.isNotEmpty);
 }
 
 /// The error body for [error] (req 15's cause table, verbatim).
@@ -102,6 +135,11 @@ class _UpdateModalState extends ConsumerState<_UpdateModal> {
   /// The modal has popped itself; a second close or later pops nothing.
   bool _closed = false;
 
+  /// What the modal last showed. Once it has popped itself it keeps showing
+  /// this while it fades out, so a state change that **later** causes (Idle)
+  /// never flashes another state's copy.
+  _Content? _shown;
+
   UpdateController get _controller =>
       ref.read(updateControllerProvider.notifier);
 
@@ -123,14 +161,23 @@ class _UpdateModalState extends ConsumerState<_UpdateModal> {
   }
 
   /// Runs [action] unless another one is in flight, so two presses in one
-  /// frame start it once.
+  /// frame start it once. While it runs, the buttons that start one show as
+  /// disabled.
   Future<void> _run(Future<void> Function() action) async {
     if (_busy) return;
-    _busy = true;
+    _setBusy(true);
     try {
       await action();
     } finally {
-      _busy = false;
+      _setBusy(false);
+    }
+  }
+
+  void _setBusy(bool busy) {
+    if (mounted) {
+      setState(() => _busy = busy);
+    } else {
+      _busy = busy;
     }
   }
 
@@ -152,9 +199,11 @@ class _UpdateModalState extends ConsumerState<_UpdateModal> {
 
   @override
   Widget build(BuildContext context) {
-    final enabled = ref.watch(updatesEnabledProvider);
-    final state = ref.watch(updateControllerProvider);
-    final content = enabled ? _content(state) : _offContent();
+    final content = _closed && _shown != null
+        ? _shown!
+        : (_shown = ref.watch(updatesEnabledProvider)
+              ? _content(ref.watch(updateControllerProvider))
+              : _offContent());
     return Dialog(
       backgroundColor: Colors.transparent,
       surfaceTintColor: Colors.transparent,
@@ -241,7 +290,7 @@ class _UpdateModalState extends ConsumerState<_UpdateModal> {
           'update-modal-install',
           'install',
           OmButtonKind.primary,
-          _install,
+          _unlessBusy(_install),
         ),
       ],
     ),
@@ -298,7 +347,7 @@ class _UpdateModalState extends ConsumerState<_UpdateModal> {
           'update-modal-relaunch',
           'relaunch',
           OmButtonKind.primary,
-          _relaunch,
+          _unlessBusy(_relaunch),
         ),
       ],
     ),
@@ -314,14 +363,14 @@ class _UpdateModalState extends ConsumerState<_UpdateModal> {
             'update-modal-try-again',
             'try again',
             OmButtonKind.primary,
-            _tryAgain,
+            _unlessBusy(_tryAgain),
           ),
         if (error.cause.offersGitHubDownload)
           _button(
             'update-modal-download-github',
             'download from GitHub',
             OmButtonKind.primary,
-            () => _openGitHub(error.item),
+            _unlessBusy(() => _openGitHub(error.item)),
           ),
       ],
     ),
@@ -342,6 +391,9 @@ class _UpdateModalState extends ConsumerState<_UpdateModal> {
     style: OmType.sans(size: 13.5, color: OmColors.fg0, height: 20.93 / 13.5),
   );
 
+  /// [action], or null (a disabled button) while another action runs.
+  VoidCallback? _unlessBusy(VoidCallback action) => _busy ? null : action;
+
   Widget _closeButton() =>
       _button('update-modal-close', 'close', OmButtonKind.ghost, _close);
 
@@ -352,7 +404,7 @@ class _UpdateModalState extends ConsumerState<_UpdateModal> {
     String key,
     String label,
     OmButtonKind kind,
-    VoidCallback onPressed,
+    VoidCallback? onPressed,
   ) => DialogButton(
     key: Key(key),
     kind: kind,
@@ -420,8 +472,8 @@ class _Notes extends StatelessWidget {
 
 /// The sidebar's and the vault picker's version label (req 17, D15): one
 /// Text keyed [textKey] reading `v<version>`, or `v<version> · update ready`
-/// while the controller is Ready, in [style]. Only in Ready is it a tap
-/// target, and a tap opens the update modal (at Ready).
+/// while the controller is Ready, in [style]. Only in Ready is it a button,
+/// and pressing it opens the update modal (at Ready).
 ///
 /// The Text is one line that ellipsizes rather than wraps, so inside a
 /// Flexible it never overflows its row.
@@ -431,19 +483,26 @@ class UpdateVersionLabel extends ConsumerWidget {
     required this.textKey,
     required this.version,
     required this.style,
+    required this.hitHeight,
   });
 
   final Key textKey;
   final String version;
   final TextStyle style;
 
+  /// How tall the Ready button's hit area is, centred on the text; it never
+  /// widens the label. Callers pass a height their row already has, so Ready
+  /// moves nothing else in the row.
+  final double hitHeight;
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final ready = ref.watch(
       updateControllerProvider.select((s) => s is UpdateReady),
     );
+    final label = ready ? 'v$version · update ready' : 'v$version';
     final text = Text(
-      ready ? 'v$version · update ready' : 'v$version',
+      label,
       key: textKey,
       maxLines: 1,
       softWrap: false,
@@ -451,13 +510,83 @@ class UpdateVersionLabel extends ConsumerWidget {
       style: style,
     );
     if (!ready) return text;
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: () => openUpdateModal(context, ref.read),
-        child: text,
-      ),
+    return _ReadyLabelButton(
+      label: label,
+      hitHeight: hitHeight,
+      onPressed: () => openUpdateModal(context, ref.read),
+      child: text,
     );
   }
+}
+
+/// The Ready version label as a button: a click, or Enter or Space while it
+/// has the focus (a held key presses it once), calls [onPressed]. It reads
+/// as a button labelled [label], shows a focus ring while focused from the
+/// keyboard, and takes clicks across [hitHeight].
+class _ReadyLabelButton extends StatefulWidget {
+  const _ReadyLabelButton({
+    required this.label,
+    required this.hitHeight,
+    required this.onPressed,
+    required this.child,
+  });
+
+  final String label;
+  final double hitHeight;
+  final VoidCallback onPressed;
+  final Widget child;
+
+  @override
+  State<_ReadyLabelButton> createState() => _ReadyLabelButtonState();
+}
+
+class _ReadyLabelButtonState extends State<_ReadyLabelButton> {
+  bool _highlight = false;
+
+  late final Map<Type, Action<Intent>> _actions = {
+    ActivateIntent: CallbackAction<ActivateIntent>(onInvoke: _press),
+    ButtonActivateIntent: CallbackAction<ButtonActivateIntent>(
+      onInvoke: _press,
+    ),
+  };
+
+  Object? _press(Intent _) {
+    widget.onPressed();
+    return null;
+  }
+
+  @override
+  Widget build(BuildContext context) => FocusableActionDetector(
+    shortcuts: keyboardButtonShortcuts,
+    actions: _actions,
+    mouseCursor: SystemMouseCursors.click,
+    onShowFocusHighlight: (v) => setState(() => _highlight = v),
+    child: Semantics(
+      container: true,
+      button: true,
+      label: widget.label,
+      onTap: widget.onPressed,
+      excludeSemantics: true,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onPressed,
+        child: SizedBox(
+          height: widget.hitHeight,
+          child: Align(
+            widthFactor: 1,
+            child: DecoratedBox(
+              position: DecorationPosition.foreground,
+              decoration: BoxDecoration(
+                border: _highlight
+                    ? Border.all(color: OmColors.accentSoft)
+                    : null,
+                borderRadius: BorderRadius.circular(3),
+              ),
+              child: widget.child,
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
 }
