@@ -36,8 +36,13 @@ class UpdateController extends Notifier<UpdateState> {
   /// The check in flight, so a check started meanwhile joins it.
   Future<void>? _checking;
 
-  /// Whether a download and verify is running.
-  bool _installing = false;
+  /// The launch's leftover-directory delete while it runs, so a download
+  /// started meanwhile waits for it instead of writing into a directory
+  /// being deleted.
+  Future<void>? _deletingLeftovers;
+
+  /// Whether [launch] has run; it runs at most once per controller.
+  bool _launched = false;
 
   /// Whether a relaunch is running.
   bool _relaunching = false;
@@ -53,11 +58,28 @@ class UpdateController extends Notifier<UpdateState> {
   /// a recorded reason enters Error and skips this launch's check. Else it
   /// runs the check if one is due (req 11) and answers true only when that
   /// check offers an update.
+  ///
+  /// It runs at most once per controller; a later call answers false and
+  /// touches nothing. Work the menu starts meanwhile (it is live from the
+  /// first frame) is never overwritten mid-flight: the delete is skipped
+  /// while a download runs or one is staged Ready, and a recorded reason is
+  /// dropped once an install has started, because that install supersedes
+  /// the recorded failure.
   Future<bool> launch() async {
-    if (!ref.read(updatesEnabledProvider)) return false;
-    await ref.read(updateDownloaderProvider).deleteLeftovers();
+    if (_launched || !ref.read(updatesEnabledProvider)) return false;
+    _launched = true;
+    if (!_installBusy) {
+      final deleting = ref.read(updateDownloaderProvider).deleteLeftovers();
+      _deletingLeftovers = deleting;
+      try {
+        await deleting;
+      } finally {
+        _deletingLeftovers = null;
+      }
+    }
     final reason = await ref.read(failureMarkerStoreProvider).take();
     if (reason != null) {
+      if (_installBusy) return false;
       state = UpdateError(UpdateErrorCause.failureRecorded, reason: reason);
       return true;
     }
@@ -65,16 +87,24 @@ class UpdateController extends Notifier<UpdateState> {
     return state is UpdateAvailable;
   }
 
+  /// Whether a download or verify is running, or an update is staged Ready.
+  /// The state is the busy guard: [_install] enters Downloading before its
+  /// first await, so no second install or check can slip in.
+  bool get _installBusy => switch (state) {
+    UpdateReady() || UpdateDownloading() || UpdateVerifying() => true,
+    _ => false,
+  };
+
   /// Checks the Appcast. A [manual] check is never throttled; any other
   /// runs only when due (req 11).
   ///
   /// While Ready, Downloading or Verifying it keeps the current state and
   /// fetches nothing (req 17, D20).
   Future<void> check({required bool manual}) async {
-    if (state case UpdateReady() || UpdateDownloading() || UpdateVerifying()) {
-      return;
-    }
+    if (_installBusy) return;
     if (!manual && !await _checkDue()) return;
+    // An install may have started while the stamp was read.
+    if (_installBusy) return;
     await (_checking ??= _runCheck().whenComplete(() => _checking = null));
   }
 
@@ -90,15 +120,19 @@ class UpdateController extends Notifier<UpdateState> {
   /// Fetches and parses the Appcast, then offers the newest item the
   /// version decision picks (req 9). A fetched and parsed Appcast stamps
   /// the last check; a failed fetch does not.
+  ///
+  /// If the state left Checking while the fetch ran (the launch showed a
+  /// recorded failure), the result is dropped so it can't overwrite that.
   Future<void> _runCheck() async {
     state = const UpdateChecking();
     final List<AppcastItem> items;
     try {
       items = await ref.read(appcastFetcherProvider).fetch();
     } on UpdateFailure catch (failure) {
-      state = _error(failure);
+      if (state is UpdateChecking) state = _error(failure);
       return;
     }
+    if (state is! UpdateChecking) return;
     final offered = decideUpdate(
       items,
       installedVersion: ref.read(appVersionProvider),
@@ -110,19 +144,24 @@ class UpdateController extends Notifier<UpdateState> {
   }
 
   /// Downloads and verifies the offered update. Outside Available it does
-  /// nothing.
+  /// nothing, so a second call while one runs (Downloading) starts nothing.
   Future<void> install() async {
     final current = state;
-    if (_installing || current is! UpdateAvailable) return;
+    if (current is! UpdateAvailable) return;
     await _install(current.item);
   }
 
   /// Downloads [item], verifies it and stages it Ready; a failure enters
-  /// Error with its cause and [item].
+  /// Error with its cause and [item]. It enters Downloading before its
+  /// first await, which is what keeps a second install out.
   Future<void> _install(AppcastItem item) async {
-    _installing = true;
     try {
       state = UpdateDownloading(item);
+      final deleting = _deletingLeftovers;
+      if (deleting != null) {
+        // The launch reports its own delete failure; only the order matters.
+        await deleting.then((_) {}, onError: (Object _) {});
+      }
       final dmgPath = await ref
           .read(updateDownloaderProvider)
           .download(
@@ -137,14 +176,13 @@ class UpdateController extends Notifier<UpdateState> {
       state = UpdateReady(item, dmgPath: dmgPath);
     } on UpdateFailure catch (failure) {
       state = _error(failure, item: item);
-    } finally {
-      _installing = false;
     }
   }
 
   /// **try again**: goes where the error cause's target says (req 15). A
   /// check cause runs a new check; a download or signature cause downloads
-  /// the same item again. Outside Error it does nothing.
+  /// the same item again. Outside Error it does nothing, so a second call
+  /// while the retry runs (Checking or Downloading) starts nothing.
   Future<void> tryAgain() async {
     final current = state;
     if (current is! UpdateError) return;
@@ -153,7 +191,7 @@ class UpdateController extends Notifier<UpdateState> {
       case UpdateRetryTarget.checking:
         await check(manual: true);
       case UpdateRetryTarget.downloading:
-        if (item != null && !_installing) await _install(item);
+        if (item != null) await _install(item);
       case UpdateRetryTarget.none:
         return;
     }
