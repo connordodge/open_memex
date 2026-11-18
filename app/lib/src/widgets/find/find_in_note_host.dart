@@ -489,7 +489,7 @@ class _FindInNoteHostState extends ConsumerState<FindInNoteHost> {
       case FindMenuAction.useSelection:
         // A selection in the title (or anywhere outside the body) is
         // ignored (Req 14).
-        if (_selectionText() case final text?) _notifier.useSelection(text);
+        if (_selectionText() case final text?) _useSelection(text);
       case FindMenuAction.next:
         _menuStep(forward: true);
       case FindMenuAction.previous:
@@ -513,6 +513,18 @@ class _FindInNoteHostState extends ConsumerState<FindInNoteHost> {
     if (match == null) return;
     if (focused) _select(match);
     _reveal(match);
+  }
+
+  /// ⌘E with [text]: it sets the query and the current match (Req 18). The
+  /// open bar's own query again is no query change to [_onState], so a
+  /// current match it moves is revealed here (Req 23).
+  void _useSelection(String text) {
+    final before = ref.read(findInNoteProvider);
+    _notifier.useSelection(text);
+    final after = ref.read(findInNoteProvider);
+    if (!before.open || before.query != after.query) return;
+    if (after.current == before.current) return;
+    if (after.currentMatch case final match?) _reveal(match);
   }
 
   /// The non-empty selection of the focused body field (the Source field in
