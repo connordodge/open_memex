@@ -4220,11 +4220,8 @@ fn readme_install_section_explains_the_upgrade_steps_and_watching_releases() {
 fn readme_install_section_states_the_privacy_line_and_links_license_contributing_and_security() {
     let install = wi377_install_section();
     let flat = wi377_flat(&install.body);
-    assert!(
-        flat.contains("makes no network request unless you connect a hosted vault"),
-        "Install says the app makes no network request unless you connect a hosted vault:\n{}",
-        install.body
-    );
+    // WI #40: the old "no network request" sentence is gone; the new Privacy
+    // text is pinned by `readme_privacy_*` below.
     assert!(
         install.body.contains("`memex --with-embeddings`")
             && flat.contains("downloads its embedding model once"),
@@ -6161,4 +6158,909 @@ fn docs_spell_agent_read_only_one_way_and_never_call_it_locked_protected_or_pinn
             "{doc} names Agent read-only: {docs_mentioning:?}"
         );
     }
+}
+
+// ======================================================================
+// WI #40 (C1): Self-update in the README and the manual acceptance
+// checklist (Spec #31, req 27; Testing Strategy, Manual end-to-end check).
+//
+// The README's Upgrading and Privacy paragraphs, the new
+// `docs/self-update-acceptance.md` and the one pointer line in
+// `docs/releasing.md`. The prose is read by hand and the checklist is run on
+// the first two Self-update Releases (MANUAL); these tests pin the facts that
+// can be checked mechanically. Each README fact is pinned against one
+// sentence, so the wording can vary but a fact cannot go missing or be split
+// across sentences. Helpers carry a `wi40_` prefix so sibling WIs editing this
+// file do not collide.
+// ======================================================================
+
+const WI40_ACCEPTANCE: &str = "docs/self-update-acceptance.md";
+
+/// The README's `**Upgrading.**` paragraph and its steps, up to `**Privacy.**`.
+fn wi40_upgrading() -> String {
+    let readme = readme();
+    let start = readme
+        .find("**Upgrading.**")
+        .expect("README.md has an `**Upgrading.**` paragraph");
+    let rest = &readme[start..];
+    let end = rest
+        .find("**Privacy.**")
+        .expect("README.md has a `**Privacy.**` paragraph after Upgrading");
+    rest[..end].to_string()
+}
+
+/// The README's `**Privacy.**` paragraph, up to the next blank line.
+fn wi40_privacy() -> String {
+    let readme = readme();
+    let start = readme
+        .find("**Privacy.**")
+        .expect("README.md has a `**Privacy.**` paragraph");
+    let rest = &readme[start..];
+    let end = rest.find("\n\n").unwrap_or(rest.len());
+    rest[..end].to_string()
+}
+
+fn wi40_acceptance() -> String {
+    read_repo_file(WI40_ACCEPTANCE)
+}
+
+/// Straight apostrophes and one-line spacing, so a quoted modal body matches
+/// whichever apostrophe the doc was typed with.
+fn wi40_norm(text: &str) -> String {
+    text.replace(['\u{2019}', '\u{2018}'], "'")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Whether `quote` appears word for word inside a code span or a fenced block
+/// of `md` (the way the doc quotes the modal's own copy).
+fn wi40_quotes_in_code(md: &str, quote: &str) -> bool {
+    let quote = wi40_norm(quote);
+    code_snippets(md)
+        .iter()
+        .any(|snippet| wi40_norm(snippet).contains(&quote))
+}
+
+/// The numbered `## N. title` sections of the checklist, in order: `(N, body)`.
+fn wi40_numbered_sections(doc: &str) -> Vec<(u32, String)> {
+    let number = Regex::new(r"^(\d+)\.\s").unwrap();
+    hosted_sections(doc)
+        .into_iter()
+        .filter(|s| s.level == 2)
+        .filter_map(|s| {
+            number
+                .captures(&s.title)
+                .map(|c| (c[1].parse().unwrap(), s.body))
+        })
+        .collect()
+}
+
+/// Section number `n` (1-based) of the checklist.
+fn wi40_section(doc: &str, n: u32) -> String {
+    let sections = wi40_numbered_sections(doc);
+    sections
+        .iter()
+        .find(|(num, _)| *num == n)
+        .map(|(_, body)| body.clone())
+        .unwrap_or_else(|| {
+            panic!(
+                "{WI40_ACCEPTANCE} has a numbered section {n}: {:?}",
+                sections.iter().map(|(num, _)| num).collect::<Vec<_>>()
+            )
+        })
+}
+
+fn wi40_assert_section_mentions(doc: &str, n: u32, needles: &[&str]) {
+    let flat = wi40_norm(&wi40_section(doc, n)).to_lowercase();
+    for needle in needles {
+        assert!(
+            flat.contains(&needle.to_lowercase()),
+            "{WI40_ACCEPTANCE} section {n} mentions `{needle}`"
+        );
+    }
+}
+
+/// The `_Avoid_` terms of the Self-update and Appcast glossary entries that
+/// cannot be mistaken for ordinary English, plus two spellings of
+/// `auto-update`.
+const WI40_AVOIDED: [&str; 6] = [
+    "auto-update",
+    "auto update",
+    "autoupdate",
+    "update feed",
+    "manifest",
+    "releases.json",
+];
+
+/// Prose (no code spans, no fenced blocks: the modal's own copy is quoted in
+/// code and may say "update feed") must hold none of `WI40_AVOIDED`.
+fn wi40_avoided_terms_in_prose(md: &str) -> Vec<&'static str> {
+    let prose = prose_only(md).to_lowercase();
+    WI40_AVOIDED
+        .iter()
+        .copied()
+        .filter(|term| {
+            Regex::new(&format!(r"\b{}\b", regex::escape(term)))
+                .unwrap()
+                .is_match(&prose)
+        })
+        .collect()
+}
+
+fn wi40_assert_no_avoided_terms(doc_name: &str, md: &str) {
+    let glossary = read_repo_file("GLOSSARY.md");
+    for (entry, first) in [
+        ("**Self-update**", "auto-update"),
+        ("**Appcast**", "update feed"),
+    ] {
+        let at = glossary
+            .find(entry)
+            .unwrap_or_else(|| panic!("GLOSSARY.md defines {entry}"));
+        let avoid = glossary[at..]
+            .lines()
+            .find(|l| l.starts_with("_Avoid_"))
+            .expect("the entry has an _Avoid_ line")
+            .to_lowercase();
+        assert!(
+            avoid.contains(first),
+            "{entry}'s _Avoid_ line lists `{first}`"
+        );
+    }
+    assert_eq!(
+        wi40_avoided_terms_in_prose(md),
+        Vec::<&str>::new(),
+        "{doc_name} uses an `_Avoid_` term of Self-update or Appcast outside quoted modal copy"
+    );
+}
+
+#[test]
+fn wi40_avoided_term_scan_flags_prose_and_allows_quoted_modal_copy() {
+    assert_eq!(
+        wi40_avoided_terms_in_prose("The auto-update checks the update feed daily."),
+        vec!["auto-update", "update feed"]
+    );
+    assert!(wi40_avoided_terms_in_prose(
+        "The offline copy reads `Open Memex couldn't reach the update feed.` verbatim."
+    )
+    .is_empty());
+    assert!(
+        wi40_avoided_terms_in_prose("```\nupdate feed\n```\nSelf-update reads the Appcast.")
+            .is_empty()
+    );
+    assert!(wi40_quotes_in_code(
+        "Reads `Open Memex couldn\u{2019}t  reach it.`",
+        "Open Memex couldn't reach it."
+    ));
+    assert!(!wi40_quotes_in_code(
+        "Reads \"Open Memex couldn't reach it.\" in prose.",
+        "Open Memex couldn't reach it."
+    ));
+}
+
+// ---------- AC 1: Upgrading says the app offers new Releases itself ----------
+
+#[test]
+fn readme_upgrading_says_the_app_offers_new_releases_itself_checks_daily_and_installs_on_relaunch()
+{
+    let upgrading = wi40_upgrading();
+    wi17_assert_sentence(
+        "Upgrading says that from the first Self-update Release on the app offers each new Release itself",
+        &upgrading,
+        &[r"first Self-update Release", r"\boffers?\b", r"new Release"],
+    );
+    wi17_assert_sentence(
+        "Upgrading says the check runs once a day at launch and from Open Memex, Check for Updates…",
+        &upgrading,
+        &[
+            r"once a day",
+            r"\blaunch\b",
+            r"Open Memex",
+            r"Check for Updates…",
+        ],
+    );
+    wi17_assert_sentence(
+        "Upgrading says the update installs when the person chooses relaunch",
+        &upgrading,
+        &[r"\brelaunch\b", r"\binstalls?\b"],
+    );
+}
+
+// ---------- AC 2: v0.4.0 and earlier install the first one by hand ----------
+
+#[test]
+fn readme_upgrading_says_v0_4_0_and_earlier_install_the_first_self_update_release_by_hand() {
+    wi17_assert_sentence(
+        "Upgrading says v0.4.0 and earlier install the first Self-update Release by hand",
+        &wi40_upgrading(),
+        &[
+            r"v0\.4\.0",
+            r"or earlier",
+            r"first Self-update Release",
+            r"by hand",
+        ],
+    );
+}
+
+// ---------- AC 3: the back-up and restart-MCP-clients steps stay ----------
+
+#[test]
+fn readme_upgrading_still_says_back_up_first_and_restart_mcp_clients_for_the_new_bundled_memex() {
+    let upgrading = wi40_upgrading();
+    wi17_assert_sentence(
+        "Upgrading says to back up your vault first",
+        &upgrading,
+        &[r"back up", r"vault", r"first"],
+    );
+    wi17_assert_sentence(
+        "Upgrading says to restart MCP clients so they start the new Bundled memex",
+        &upgrading,
+        &[r"restart", r"MCP clients", r"new Bundled memex"],
+    );
+    // Self-update replaces the app, and with it the Bundled memex, but a
+    // client's running `memex serve` keeps its old binary (Spec req 22, 25).
+    wi17_assert_sentence(
+        "Upgrading says connected agents keep the old memex until they restart",
+        &upgrading,
+        &[r"connected agents", r"until they restart"],
+    );
+}
+
+// ---------- AC 4: Privacy names the two requests, and neither sends vault data ----------
+
+#[test]
+fn readme_privacy_names_the_daily_appcast_fetch_and_the_dmg_download_and_says_neither_sends_vault_data(
+) {
+    let privacy = wi40_privacy();
+    let flat = wi377_flat(&privacy);
+    assert!(
+        !flat.contains("no network request"),
+        "Privacy no longer says the app makes no network request:\n{privacy}"
+    );
+    wi17_assert_sentence(
+        "Privacy says the app fetches the Appcast from GitHub Pages (connordodge.github.io)",
+        &privacy,
+        &[
+            r"fetch",
+            r"Appcast",
+            r"GitHub Pages",
+            r"connordodge\.github\.io",
+        ],
+    );
+    wi17_assert_sentence(
+        "Privacy says the Appcast is fetched once a day at launch and on Check for Updates…",
+        &privacy,
+        &[r"once a day", r"\blaunch\b", r"Check for Updates…"],
+    );
+    wi17_assert_sentence(
+        "Privacy says the DMG is downloaded from GitHub only when the person chooses install",
+        &privacy,
+        &[r"download", r"\bDMG\b", r"GitHub", r"only", r"\binstall\b"],
+    );
+    wi17_assert_sentence(
+        "Privacy says neither request sends vault data",
+        &privacy,
+        &[r"\bNeither\b", r"vault data"],
+    );
+    // The embeddings sentence stays.
+    assert!(
+        privacy.contains("`memex --with-embeddings`")
+            && flat.contains("downloads its embedding model once"),
+        "Privacy keeps the `memex --with-embeddings` embedding model sentence:\n{privacy}"
+    );
+}
+
+// ---------- AC 5: docs/self-update-acceptance.md ----------
+
+#[test]
+fn self_update_acceptance_doc_has_nine_numbered_sections_each_with_an_expected_line() {
+    let doc = wi40_acceptance();
+    assert!(
+        doc.lines().next().is_some_and(|l| l.starts_with("# ")),
+        "the checklist opens with a title"
+    );
+    let flat = wi40_norm(&doc).to_lowercase();
+    assert!(
+        flat.contains("first two self-update releases"),
+        "the checklist says it runs once on each of the first two Self-update Releases"
+    );
+    let sections = wi40_numbered_sections(&doc);
+    let numbers: Vec<u32> = sections.iter().map(|(n, _)| *n).collect();
+    assert!(
+        numbers.len() >= 9,
+        "at least nine numbered `## N. title` sections: {numbers:?}"
+    );
+    let expected_run: Vec<u32> = (1..=numbers.len() as u32).collect();
+    assert_eq!(numbers, expected_run, "sections are numbered 1..n in order");
+    for (n, body) in &sections {
+        assert!(
+            body.contains("**Expected**"),
+            "numbered section {n} has an **Expected** line: {}",
+            body.lines().next().unwrap_or_default()
+        );
+    }
+}
+
+#[test]
+fn self_update_acceptance_doc_sections_1_and_2_install_the_older_release_and_publish_the_newer_one()
+{
+    let doc = wi40_acceptance();
+    wi40_assert_section_mentions(
+        &doc,
+        1,
+        &["older", "Release", "DMG", "/Applications/Open Memex.app"],
+    );
+    wi40_assert_section_mentions(
+        &doc,
+        2,
+        &["publish", "newer", "Appcast", "GitHub Pages", "10 minutes"],
+    );
+}
+
+#[test]
+fn self_update_acceptance_doc_section_3_confirms_every_modal_state_quoting_the_copy_verbatim() {
+    let doc = wi40_acceptance();
+    // Every state of Spec req 15: its title, by name.
+    for title in [
+        "Checking for updates",
+        "Update available",
+        "Downloading update",
+        "Verifying update",
+        "Update ready",
+        "Update check failed",
+        "Update failed",
+        "Updates are off",
+    ] {
+        wi40_assert_section_mentions(&doc, 3, &[title]);
+    }
+    let section = wi40_section(&doc, 3);
+    let flat = wi40_norm(&section).to_lowercase();
+    assert!(
+        flat.contains("you're up to date"),
+        "section 3 names the up to date title"
+    );
+    // The three states the WI names: Off in a debug build, no Appcast (404)
+    // and a folder the app cannot write.
+    for needle in ["debug build", "404", "not writable"] {
+        assert!(
+            flat.contains(needle),
+            "section 3 covers `{needle}`:\n{section}"
+        );
+    }
+    // The modal's own copy is quoted verbatim, in code, so that "update feed"
+    // in it is not an avoided term in prose.
+    for quote in [
+        "No updates have been published yet.",
+        "Open Memex couldn't reach the update feed. Check your connection and try again.",
+        "Open Memex can't replace itself in",
+    ] {
+        assert!(
+            wi40_quotes_in_code(&section, quote),
+            "section 3 quotes `{quote}` word for word in code:\n{section}"
+        );
+    }
+}
+
+#[test]
+fn self_update_acceptance_doc_sections_4_to_6_cover_later_relaunch_with_unsent_hosted_text_and_a_connected_agent(
+) {
+    let doc = wi40_acceptance();
+    wi40_assert_section_mentions(&doc, 4, &["later", "downloading", "· update ready"]);
+    wi40_assert_section_mentions(&doc, 5, &["relaunch", "unsent", "hosted", "leave confirm"]);
+    let five = wi40_norm(&wi40_section(&doc, 5)).to_lowercase();
+    assert!(
+        Regex::new(r"\b(once|one leave confirm|exactly one|a single)\b")
+            .unwrap()
+            .is_match(&five),
+        "section 5 expects the leave confirm to show once: {five}"
+    );
+    wi40_assert_section_mentions(
+        &doc,
+        6,
+        &[
+            "relaunch",
+            "Claude Desktop",
+            "agent",
+            "restart",
+            "Bundled memex",
+        ],
+    );
+    assert!(
+        wi40_quotes_in_code(
+            &wi40_section(&doc, 6),
+            "Connected agents keep using the current memex until they restart."
+        ),
+        "section 6 quotes the agent line word for word in code"
+    );
+}
+
+#[test]
+fn self_update_acceptance_doc_sections_7_to_9_cover_the_disk_image_app_management_and_the_local_rehearsal(
+) {
+    let doc = wi40_acceptance();
+    wi40_assert_section_mentions(&doc, 7, &["mounted", "DMG", "disk image"]);
+    assert!(
+        wi40_quotes_in_code(
+            &wi40_section(&doc, 7),
+            "Open Memex is running from a disk image or a temporary location, so it can't replace itself."
+        ),
+        "section 7 quotes the disk image message word for word in code"
+    );
+    wi40_assert_section_mentions(&doc, 8, &["macOS 15", "App Management", "Update failed"]);
+    let eight = wi40_norm(&wi40_section(&doc, 8)).to_lowercase();
+    assert!(
+        Regex::new(r"(without|not|never|don't) grant")
+            .unwrap()
+            .is_match(&eight),
+        "section 8 says not to grant App Management: {eight}"
+    );
+    wi40_assert_section_mentions(&doc, 9, &["rehearsal", "local", "Appcast", "v0.5.0", "tag"]);
+    let nine = wi40_section(&doc, 9);
+    assert!(
+        code_snippets(&nine)
+            .iter()
+            .any(|s| s.contains("--dart-define=SELF_UPDATE_APPCAST_URL=")),
+        "section 9 shows the `--dart-define=SELF_UPDATE_APPCAST_URL=<url>` build flag in code:\n{nine}"
+    );
+    let flat = wi40_norm(&nine).to_lowercase();
+    assert!(
+        wi377_in_order(&flat, &["before", "v0.5.0", "tag"]),
+        "section 9 says to rehearse before the v0.5.0 tag: {flat}"
+    );
+}
+
+/// One numbered step of checklist section 3: its title, the modal body quoted
+/// in code, and the action labels it names. `n` is the step number.
+struct Wi40ModalStep {
+    n: u32,
+    title: &'static str,
+    quotes: &'static [&'static str],
+    actions: &'static [&'static str],
+}
+
+const WI40_MODAL_STEPS: [Wi40ModalStep; 15] = [
+    Wi40ModalStep {
+        n: 1,
+        title: "Checking for updates",
+        quotes: &[],
+        actions: &["spinner", "close"],
+    },
+    Wi40ModalStep {
+        n: 2,
+        title: "You're up to date",
+        quotes: &["Open Memex <current> is the newest version."],
+        actions: &["close"],
+    },
+    Wi40ModalStep {
+        n: 3,
+        title: "Update available",
+        quotes: &["Version <new> is available."],
+        actions: &["later", "install"],
+    },
+    Wi40ModalStep {
+        n: 4,
+        title: "Downloading update",
+        quotes: &[],
+        actions: &["progress bar", "percentage", "later"],
+    },
+    Wi40ModalStep {
+        n: 5,
+        title: "Verifying update",
+        quotes: &["Checking the update's signature."],
+        actions: &["spinner"],
+    },
+    Wi40ModalStep {
+        n: 6,
+        title: "Update ready",
+        quotes: &["Version <new> is downloaded. Relaunch to apply it."],
+        actions: &["later", "relaunch"],
+    },
+    Wi40ModalStep {
+        n: 7,
+        title: "Update check failed",
+        quotes: &[
+            "Open Memex couldn't reach the update feed. Check your connection and try again.",
+        ],
+        actions: &["close", "try again"],
+    },
+    Wi40ModalStep {
+        n: 8,
+        title: "Update check failed",
+        quotes: &["No updates have been published yet."],
+        actions: &["close", "try again"],
+    },
+    Wi40ModalStep {
+        n: 9,
+        title: "Update failed",
+        quotes: &["Open Memex can't replace itself in"],
+        actions: &["close", "download from GitHub"],
+    },
+    Wi40ModalStep {
+        n: 10,
+        title: "Updates are off",
+        quotes: &["Updates are off in development builds."],
+        actions: &["debug build"],
+    },
+    Wi40ModalStep {
+        n: 11,
+        title: "Update check failed",
+        quotes: &["The update feed couldn't be read. Try again later."],
+        actions: &["close", "try again"],
+    },
+    Wi40ModalStep {
+        n: 12,
+        title: "Update failed",
+        quotes: &["The update isn't signed by the Open Memex release key, so it wasn't installed."],
+        actions: &["close", "try again", "update ready"],
+    },
+    Wi40ModalStep {
+        n: 13,
+        title: "Update failed",
+        quotes: &["The update has no signature, so it wasn't installed."],
+        actions: &["close", "try again", "sparkle:edSignature"],
+    },
+    Wi40ModalStep {
+        n: 14,
+        title: "Update failed",
+        quotes: &["This build can't verify updates. Download the update from GitHub instead."],
+        actions: &["close", "download from GitHub", "no try again"],
+    },
+    Wi40ModalStep {
+        n: 15,
+        title: "Update failed",
+        quotes: &["The download didn't finish. Check your connection and try again."],
+        actions: &["close", "try again", "Downloading"],
+    },
+];
+
+/// The numbered steps of section 3, each from its `N. ` line to the next step
+/// or the `**Expected**` line: `(N, text)`.
+fn wi40_section_3_steps(doc: &str) -> Vec<(u32, String)> {
+    let start = Regex::new(r"^(\d+)\. ").unwrap();
+    let mut steps: Vec<(u32, String)> = Vec::new();
+    let mut open = false;
+    for line in wi40_section(doc, 3).lines() {
+        if line.starts_with("**Expected**") {
+            open = false;
+        } else if let Some(c) = start.captures(line) {
+            steps.push((c[1].parse().unwrap(), line.to_string()));
+            open = true;
+        } else if open {
+            if let Some((_, text)) = steps.last_mut() {
+                text.push(' ');
+                text.push_str(line);
+            }
+        }
+    }
+    steps
+}
+
+/// A Dart source with adjacent string literals joined (`'a '\n 'b'` -> `a b`,
+/// quote marks between them dropped) and `\'` unescaped, so a message the
+/// source wraps over several lines can be searched as one string.
+fn wi40_dart_literals_joined(src: &str) -> String {
+    Regex::new(r#"['"]\s*\n\s*['"]"#)
+        .unwrap()
+        .replace_all(src, "")
+        .replace("\\'", "'")
+}
+
+/// The fixed text around `<placeholder>` tokens of a checklist quote.
+fn wi40_quote_fragments(quote: &str) -> Vec<String> {
+    Regex::new(r"<[^>]*>")
+        .unwrap()
+        .split(quote)
+        .map(|f| f.trim().to_string())
+        .filter(|f| !f.is_empty())
+        .collect()
+}
+
+#[test]
+fn self_update_acceptance_doc_section_3_has_fifteen_steps_each_pinning_its_title_quoted_body_and_actions(
+) {
+    let doc = wi40_acceptance();
+    let steps = wi40_section_3_steps(&doc);
+    assert_eq!(
+        steps.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+        (1..=15).collect::<Vec<u32>>(),
+        "section 3 lists fifteen numbered modal states in order"
+    );
+    for expected in &WI40_MODAL_STEPS {
+        let (_, text) = &steps[(expected.n - 1) as usize];
+        assert!(
+            wi40_norm(text).contains(&format!("**{}**", expected.title)),
+            "step {} names its title **{}**: {text}",
+            expected.n,
+            expected.title
+        );
+        for quote in expected.quotes {
+            assert!(
+                wi40_quotes_in_code(text, quote),
+                "step {} quotes `{quote}` word for word in code: {text}",
+                expected.n
+            );
+        }
+        let flat = wi40_norm(text).to_lowercase();
+        for action in expected.actions {
+            assert!(
+                flat.contains(&action.to_lowercase()),
+                "step {} names `{action}`: {text}",
+                expected.n
+            );
+        }
+    }
+}
+
+#[test]
+fn wi40_dart_literal_join_and_quote_fragments_work_on_wrapped_messages() {
+    let src = "=>\n    \"Open Memex couldn't reach the update feed. Check your connection \"\n        'and try again.',\n  x => 'a \\'b\\'';\n";
+    let joined = wi40_dart_literals_joined(src);
+    assert!(joined.contains(
+        "Open Memex couldn't reach the update feed. Check your connection and try again."
+    ));
+    assert!(joined.contains("a 'b'"));
+    assert!(!joined.contains("connection \"\n"));
+    assert_eq!(
+        wi40_quote_fragments("Version <new> is downloaded. Relaunch to apply it."),
+        vec!["Version", "is downloaded. Relaunch to apply it."]
+    );
+    assert!(wi40_quote_fragments("<only>").is_empty());
+}
+
+#[test]
+fn self_update_acceptance_doc_quotes_match_the_modal_source_once_it_has_landed() {
+    let src = read_repo_file("app/lib/src/updater/update_modal.dart");
+    let joined = wi40_dart_literals_joined(&src);
+    // While update_modal.dart is still the A0 stub there is no copy to compare.
+    if !joined.contains("Updates are off in development builds.") {
+        eprintln!("update_modal.dart has no modal copy yet; nothing to compare");
+        return;
+    }
+    let mut quotes: Vec<(String, &str)> = WI40_MODAL_STEPS
+        .iter()
+        .flat_map(|s| s.quotes.iter().map(move |q| (format!("step {}", s.n), *q)))
+        .collect();
+    quotes.push((
+        "section 6".into(),
+        "Connected agents keep using the current memex until they restart.",
+    ));
+    quotes.push((
+        "section 7".into(),
+        "Open Memex is running from a disk image or a temporary location, so it can't replace itself. Move Open Memex to your Applications folder, open it from there and try again.",
+    ));
+    for (at, quote) in &quotes {
+        for fragment in wi40_quote_fragments(quote) {
+            assert!(
+                joined.contains(&fragment),
+                "{at}: the checklist quotes `{fragment}` but update_modal.dart has no such text"
+            );
+        }
+    }
+    for step in &WI40_MODAL_STEPS {
+        assert!(
+            joined.contains(&format!("'{}'", step.title))
+                || joined.contains(&format!("\"{}\"", step.title)),
+            "step {}: update_modal.dart has no title `{}`",
+            step.n,
+            step.title
+        );
+    }
+    for label in [
+        "close",
+        "later",
+        "install",
+        "relaunch",
+        "try again",
+        "download from GitHub",
+    ] {
+        assert!(
+            joined.contains(&format!("'{label}'")),
+            "update_modal.dart has an action labelled `{label}`"
+        );
+    }
+}
+
+#[test]
+fn self_update_acceptance_doc_section_9_rehearses_on_a_separate_keychain_account_and_a_localhost_enclosure(
+) {
+    let doc = wi40_acceptance();
+    let nine = wi40_section(&doc, 9);
+    let flat = wi40_norm(&nine);
+    // The rehearsal key lives on its own Keychain account, never the release key's.
+    assert!(
+        wi40_quotes_in_code(&nine, "generate_keys --account open-memex-rehearsal")
+            && wi40_quotes_in_code(
+                &nine,
+                "generate_keys --account open-memex-rehearsal -x <scratch key file>"
+            ),
+        "section 9 mints and exports the key on the open-memex-rehearsal account: {nine}"
+    );
+    let bare =
+        Regex::new(r"generate_keys\s+(?:-x\s+\S+\s+)?--account\s+open-memex(?:\s|`|$)").unwrap();
+    assert!(
+        !bare.is_match(&nine),
+        "section 9 never runs generate_keys on the release key's own account: {nine}"
+    );
+    assert!(
+        flat.contains("never the release key's account `open-memex`"),
+        "section 9 says never to use the release key's account: {flat}"
+    );
+    assert!(
+        flat.contains("delete only the `open-memex-rehearsal` item")
+            && flat.contains("the release key's `open-memex` item must stay"),
+        "section 9 deletes only the rehearsal Keychain item: {flat}"
+    );
+    // The generator writes a GitHub enclosure; the checklist rewrites it to localhost.
+    assert!(
+        flat.contains("always writes the GitHub Releases address"),
+        "section 9 says the generator writes the GitHub address: {flat}"
+    );
+    assert!(
+        wi40_quotes_in_code(&nine, "http://localhost:8000/Open-Memex-<newer>-arm64.dmg")
+            && flat.contains("edit the item's enclosure `url`"),
+        "section 9 rewrites the enclosure url to the local DMG: {flat}"
+    );
+    assert!(
+        wi40_quotes_in_code(&nine, "http://localhost:8000/appcast.xml"),
+        "section 9 points the build at the local Appcast"
+    );
+    // Prerequisites of the generator and the signer.
+    for needle in [
+        "release-notes/v<newer>.md",
+        "sign_update",
+        "`PATH`",
+        "one empty channel",
+        "scripts/release/generate_appcast.sh --version <newer>",
+        "scripts/release/eddsa_sign.sh",
+        ".edsig",
+        ".length",
+    ] {
+        assert!(
+            flat.contains(needle),
+            "section 9 mentions `{needle}`: {flat}"
+        );
+    }
+}
+
+#[test]
+fn self_update_acceptance_doc_sections_3_5_and_8_pin_run_order_and_expected_outcomes() {
+    let doc = wi40_acceptance();
+    // Section 3: once at Update ready, Check for Updates only reopens the
+    // modal, so the failure states need a quit and reopen first.
+    let three = wi40_norm(&wi40_section(&doc, 3));
+    assert!(
+        three.contains("only reopens that modal, so quit and reopen the app before any step that needs a fresh check (steps 7 to 15)"),
+        "section 3 says to quit and reopen before steps 7 to 15: {three}"
+    );
+    assert!(
+        three.contains("Steps 11 to 15 need the local setup of section 9."),
+        "section 3 says steps 11 to 15 need the section 9 setup"
+    );
+    assert!(
+        three.contains("Sections 5 and 6 start from this state."),
+        "section 3 says sections 5 and 6 start from Update ready"
+    );
+    // Section 3 Expected: one modal at a time, and no stray download folder.
+    let expected = wi40_norm(
+        wi40_section(&doc, 3)
+            .split("**Expected**")
+            .nth(1)
+            .expect("section 3 has an Expected line"),
+    );
+    for needle in [
+        "never two modals at once",
+        "one modal",
+        "the temporary download folder for the update is gone",
+    ] {
+        assert!(
+            expected.contains(needle),
+            "section 3 Expected says `{needle}`: {expected}"
+        );
+    }
+    // Section 5: cancel keeps Update ready; the second relaunch asks nothing.
+    let five = wi40_norm(&wi40_section(&doc, 5));
+    for needle in [
+        "asks about the unsent text exactly one time",
+        "Choosing cancel closes the modal and the update stays Update ready",
+        "the label still reading `· update ready`",
+        "the app quits without asking a second time",
+        "the newer Release opens from `/Applications/Open Memex.app` showing `v<newer>`",
+    ] {
+        assert!(five.contains(needle), "section 5 says `{needle}`: {five}");
+    }
+    // Section 8: both outcomes, the once-only failure, and no half install.
+    let eight = wi40_norm(&wi40_section(&doc, 8));
+    for needle in [
+        "the update installs and the newer Release opens",
+        "the app relaunches on the older Release",
+        "the next launch shows Update failed once, with the reason",
+        "the modal's try again goes back to Checking",
+        "Record which of the two happened for this macOS version",
+        "never leaves a half-installed `Open Memex.app` in `/Applications`",
+    ] {
+        assert!(eight.contains(needle), "section 8 says `{needle}`: {eight}");
+    }
+}
+
+// ---------- AC 6: docs/releasing.md points at the checklist ----------
+
+#[test]
+fn releasing_doc_links_the_self_update_acceptance_checklist_from_every_release() {
+    let doc = wi377_releasing();
+    let section = hosted_section(&doc, "Every release", r"^every release\s*$").body;
+    let pointer: Vec<&str> = section
+        .lines()
+        .filter(|l| l.contains("self-update-acceptance"))
+        .collect();
+    assert_eq!(
+        pointer.len(),
+        1,
+        "`## Every release` has exactly one pointer line to the checklist: {pointer:?}"
+    );
+    let line = pointer[0].trim_start();
+    assert!(
+        line.starts_with("- ") || Regex::new(r"^\d+\. ").unwrap().is_match(line),
+        "the pointer is a line of the Every release list: {line}"
+    );
+    let target = Regex::new(r"\]\(([^)#\s]*self-update-acceptance\.md)(?:#[^)]*)?\)")
+        .unwrap()
+        .captures(line)
+        .unwrap_or_else(|| panic!("the pointer line links the checklist as `](…)`: {line}"))[1]
+        .to_string();
+    let resolved = repo_root().join("docs").join(&target);
+    assert!(
+        resolved.is_file(),
+        "the link `{target}` from docs/releasing.md resolves to a file: {}",
+        resolved.display()
+    );
+    assert_eq!(
+        resolved.canonicalize().unwrap(),
+        repo_root().join(WI40_ACCEPTANCE).canonicalize().unwrap(),
+        "the link points at {WI40_ACCEPTANCE}"
+    );
+}
+
+// ---------- AC 7: glossary terms, no avoided terms, no home path ----------
+
+#[test]
+fn self_update_docs_use_the_glossary_terms_no_avoided_terms_and_no_home_path() {
+    let upgrading = wi40_upgrading();
+    let privacy = wi40_privacy();
+    let acceptance = wi40_acceptance();
+    let readme_text = format!("{upgrading}\n\n{privacy}");
+
+    has_all_terms(
+        "README.md Upgrading and Privacy",
+        &readme_text,
+        &["Self-update", "Appcast", "Release", "Bundled memex"],
+    );
+    has_all_terms(
+        WI40_ACCEPTANCE,
+        &acceptance,
+        &["Self-update", "Appcast", "Release", "Bundled memex"],
+    );
+    wi40_assert_no_avoided_terms("README.md Upgrading and Privacy", &readme_text);
+    wi40_assert_no_avoided_terms(WI40_ACCEPTANCE, &acceptance);
+
+    // No home-directory path: not in the README's new text, and in the
+    // checklist only the placeholders `/Applications/Open Memex.app` and
+    // `/vaults/My Vault`.
+    assert_eq!(
+        non_placeholder_home_paths(&readme_text),
+        Vec::<String>::new(),
+        "README Upgrading and Privacy name no real home path"
+    );
+    for (name, text) in [
+        ("README.md Upgrading and Privacy", &readme_text),
+        (WI40_ACCEPTANCE, &acceptance),
+    ] {
+        assert!(
+            !text.contains("/Users/") && !text.contains("~/"),
+            "{name} names no home-directory path"
+        );
+    }
+    assert!(
+        acceptance.contains("/Applications/Open Memex.app"),
+        "the checklist names the placeholder install path /Applications/Open Memex.app"
+    );
 }

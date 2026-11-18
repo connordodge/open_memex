@@ -18,15 +18,17 @@ Two ways to use it: a Flutter macOS desktop app for typing/editing notes, and an
 sudo ln -s "/Applications/Open Memex.app/Contents/MacOS/memex" /usr/local/bin/memex
 ```
 
-**Upgrading.**
+**Upgrading.** From the first Self-update Release on, the app offers each new Release itself. It checks once a day at launch and whenever you choose Open Memex → Check for Updates…, and an update installs when you choose relaunch. If you are on v0.4.0 or earlier, install the first Self-update Release by hand:
 
 1. Read the Upgrade notes in the new Release, and back up your vault first (see [`docs/backups.md`](docs/backups.md)).
 2. Quit the app and any MCP client, download the new DMG and replace the app in Applications.
 3. Restart your MCP clients so they start the new Bundled memex.
 
+An update installed by Self-update replaces the Bundled memex too. Connected agents keep the old memex until they restart, so restart your MCP clients after it as well.
+
 To hear about new Releases, open the repo on GitHub and choose Watch → Custom → Releases.
 
-**Privacy.** The app makes no network request unless you connect a hosted vault. `memex --with-embeddings` downloads its embedding model once, the first time you use it.
+**Privacy.** The app fetches the Appcast from GitHub Pages (`connordodge.github.io`) once a day at launch and when you choose Check for Updates…. It downloads a Release's DMG from GitHub only when you choose install. Neither request sends vault data. If you connect a hosted vault, the app also talks to that server. `memex --with-embeddings` downloads its embedding model once, the first time you use it.
 
 Open Memex is released under the [MIT license](LICENSE). To contribute, see [CONTRIBUTING.md](CONTRIBUTING.md); to report a vulnerability, see [SECURITY.md](SECURITY.md).
 
