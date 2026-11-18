@@ -53,6 +53,7 @@ List<FindPaintRange> _wi83Paint(
   required int start,
   required int end,
   bool reveals = true,
+  List<TextRange> revealed = const [],
 }) => findPaintRanges(
   state,
   segment: segment,
@@ -60,6 +61,7 @@ List<FindPaintRange> _wi83Paint(
   start: start,
   end: end,
   reveals: reveals,
+  revealed: revealed,
 );
 
 void main() {
@@ -533,6 +535,162 @@ void main() {
       expect(
         _wi83Paint(s, segment: 3, kind: FindSourceKind.card, start: 0, end: 11),
         const [FindPaintRange(2, 7, _current)],
+      );
+    });
+  });
+
+  group('revealed lines (lead ruling Q1)', () {
+    // `see [label](https://x.org/rye) daily`: the URL match is hidden; its
+    // outline is the label. Both markup ranges are hidden when unrevealed.
+    const link = 'see [label](https://x.org/rye) daily';
+    final linkHidden = [
+      const FindRange(4, 5), // [
+      FindRange(10, link.indexOf(' daily')), // ](https://x.org/rye)
+    ];
+    final label = FindRange(5, 10);
+    final url = TextRange(
+      start: link.indexOf('rye'),
+      end: link.indexOf('rye') + 3,
+    );
+
+    test(
+      'a hidden non current match on a revealed line paints other on its own range and on an unrevealed line an outline',
+      () {
+        const text = '$link\nrye';
+        final s = _wi83State(
+          [_wi83Body(0, text, linkHidden)],
+          'rye',
+          current: 1,
+        );
+        expect(s.matches.first.hidden, isTrue, reason: 'fixture');
+        final plain = text.lastIndexOf('rye');
+        // The caret is on the link line: its markup shows.
+        expect(
+          _wi83Paint(
+            s,
+            start: 0,
+            end: text.length,
+            revealed: [TextRange(start: 0, end: link.length)],
+          ),
+          unorderedEquals([
+            FindPaintRange(url.start, url.end, _other),
+            FindPaintRange(plain, plain + 3, _current),
+          ]),
+        );
+        // The caret is elsewhere: the label is outlined.
+        expect(
+          _wi83Paint(s, start: 0, end: text.length),
+          unorderedEquals([
+            FindPaintRange(label.start, label.end, _outline),
+            FindPaintRange(plain, plain + 3, _current),
+          ]),
+        );
+        // Another line is revealed, not the match's.
+        expect(
+          _wi83Paint(
+            s,
+            start: 0,
+            end: text.length,
+            revealed: [TextRange(start: link.length + 1, end: text.length)],
+          ),
+          unorderedEquals([
+            FindPaintRange(label.start, label.end, _outline),
+            FindPaintRange(plain, plain + 3, _current),
+          ]),
+        );
+      },
+    );
+
+    test(
+      'a revealed range holds a hidden match only when it spans the whole match',
+      () {
+        const text = 'xx $link\nrye';
+        const at = 3; // the link line starts after `xx `
+        final hidden = [
+          for (final r in linkHidden) FindRange(r.start + at, r.end + at),
+        ];
+        final s = _wi83State([_wi83Body(0, text, hidden)], 'rye', current: 1);
+        final m = s.matches.first;
+        expect(m.hidden, isTrue, reason: 'fixture');
+        // The field is the whole text, so field-local equals source offsets.
+        List<FindPaintStyle> styleOf(TextRange revealed) => [
+          for (final r in _wi83Paint(
+            s,
+            start: 0,
+            end: text.length,
+            revealed: [revealed],
+          ))
+            if (r.start == m.start || r.style == _outline) r.style,
+        ];
+        // Exactly the match: shown (both bounds inclusive).
+        expect(styleOf(TextRange(start: m.start, end: m.end)), [_other]);
+        // A range starting one unit after the match start does not hold it.
+        expect(styleOf(TextRange(start: m.start + 1, end: m.end)), [_outline]);
+        // A range ending one unit before the match end does not hold it.
+        expect(styleOf(TextRange(start: m.start, end: m.end - 1)), [_outline]);
+        // A range wider than the match holds it.
+        expect(styleOf(TextRange(start: m.start - 1, end: m.end + 1)), [
+          _other,
+        ]);
+      },
+    );
+
+    test(
+      'revealed ranges are field local: the field start is subtracted before comparing',
+      () {
+        // Two rows of one segment: the field is the second, from `start`.
+        const text = 'a line\n$link\nrye';
+        const start = 7;
+        final hidden = [
+          for (final r in linkHidden) FindRange(r.start + start, r.end + start),
+        ];
+        final s = _wi83State([_wi83Body(0, text, hidden)], 'rye', current: 1);
+        final m = s.matches.first;
+        expect(m.hidden, isTrue, reason: 'fixture');
+        final plain = text.lastIndexOf('rye');
+        final local = TextRange(start: m.start - start, end: m.end - start);
+        final lineLocal = TextRange(start: 0, end: link.length);
+        expect(
+          _wi83Paint(s, start: start, end: text.length, revealed: [lineLocal]),
+          unorderedEquals([
+            FindPaintRange(local.start, local.end, _other),
+            FindPaintRange(plain - start, plain - start + 3, _current),
+          ]),
+        );
+        // Exactly the match's own field-local range holds it (both bounds
+        // compare field-local, not source, offsets).
+        expect(
+          _wi83Paint(s, start: start, end: text.length, revealed: [local]),
+          unorderedEquals([
+            FindPaintRange(local.start, local.end, _other),
+            FindPaintRange(plain - start, plain - start + 3, _current),
+          ]),
+        );
+        // A range in source offsets (not field local) is another line here.
+        final asSource = TextRange(start: m.start, end: m.end);
+        expect(
+          _wi83Paint(s, start: start, end: text.length, revealed: [asSource]),
+          unorderedEquals([
+            FindPaintRange(label.start, label.end, _outline),
+            FindPaintRange(plain - start, plain - start + 3, _current),
+          ]),
+        );
+      },
+    );
+
+    test('a grid cell never reveals: revealed ranges are ignored', () {
+      const text = '$link\nrye';
+      final s = _wi83State([_wi83Body(0, text, linkHidden)], 'rye', current: 1);
+      expect(s.matches.first.hidden, isTrue, reason: 'fixture');
+      expect(
+        _wi83Paint(
+          s,
+          start: 0,
+          end: link.length,
+          reveals: false,
+          revealed: [TextRange(start: 0, end: link.length)],
+        ),
+        [FindPaintRange(label.start, label.end, _outline)],
       );
     });
   });

@@ -462,6 +462,260 @@ void main() {
     }
   });
 
+  group('scroll and detached fields', () {
+    testWidgets('boxes follow an internally scrolling field when it scrolls', (
+      tester,
+    ) async {
+      final text = [for (var i = 0; i < 12; i++) 'line $i rye'].join('\n');
+      final target = wi83Find(text, 'rye', 4);
+      final scroll = ScrollController();
+      addTearDown(scroll.dispose);
+      final controller = TextEditingController(text: text);
+      addTearDown(controller.dispose);
+      final fieldKey = GlobalKey(debugLabel: 'wi83-scroll-field');
+      await pumpFind(
+        tester,
+        child: Align(
+          alignment: Alignment.topLeft,
+          child: SizedBox(
+            width: 300,
+            child: Stack(
+              children: [
+                KeyedSubtree(
+                  key: fieldKey,
+                  child: TextField(
+                    controller: controller,
+                    scrollController: scroll,
+                    maxLines: 3,
+                    decoration: const InputDecoration.collapsed(hintText: null),
+                  ),
+                ),
+                Positioned.fill(
+                  child: FindHighlights(
+                    key: _wi83LayerKey,
+                    ranges: [
+                      FindPaintRange(
+                        target.start,
+                        target.end,
+                        FindPaintStyle.other,
+                      ),
+                    ],
+                    boxes: () {
+                      final editable = findRenderEditable(
+                        fieldKey.currentContext?.findRenderObject(),
+                      );
+                      return editable != null && editable.hasSize
+                          ? RenderEditableLineBoxes(editable)
+                          : null;
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      final editable = findRenderEditable(
+        tester.renderObject(find.byKey(fieldKey)),
+      )!;
+      List<Wi83Box> expected() => wi83BoxesOf(
+        RenderEditableLineBoxes(editable),
+        target,
+        FindPaintStyle.other,
+        wi83Layer(tester, _wi83LayerKey),
+        scale: wi83ScaleOf(editable),
+      );
+      final before = expected().single.rect;
+      wi83ExpectBoxes(wi83LayerOps(tester, _wi83LayerKey), [
+        (rect: before, style: FindPaintStyle.other),
+      ], y: 0.05);
+      final paints = debugFindHighlightPaints;
+      scroll.jumpTo(40);
+      await tester.pump();
+      expect(
+        debugFindHighlightPaints,
+        greaterThan(paints),
+        reason: 'a scroll of the field repaints the layer',
+      );
+      final after = expected().single.rect;
+      expect(after.top, moreOrLessEquals(before.top - 40, epsilon: 0.05));
+      wi83ExpectBoxes(wi83LayerOps(tester, _wi83LayerKey), [
+        (rect: after, style: FindPaintStyle.other),
+      ], y: 0.05);
+    });
+
+    testWidgets('a layer over a field that is detached paints nothing', (
+      tester,
+    ) async {
+      final field = RenderParagraph(
+        const TextSpan(text: 'rye'),
+        textDirection: TextDirection.ltr,
+      );
+      addTearDown(field.dispose);
+      field.layout(BoxConstraints.tight(const Size(100, 20)));
+      expect(field.hasSize, isTrue, reason: 'fixture: laid out');
+      expect(field.attached, isFalse, reason: 'fixture: not in a tree');
+      await pumpFind(
+        tester,
+        child: FindHighlights(
+          key: _wi83LayerKey,
+          ranges: const [FindPaintRange(0, 3, FindPaintStyle.other)],
+          boxes: () => _Wi83Unlaid(field),
+        ),
+      );
+      expect(tester.takeException(), isNull);
+      expect(wi83LayerOps(tester, _wi83LayerKey), isEmpty);
+    });
+
+    testWidgets(
+      'a layer over a field that is attached but not laid out paints nothing',
+      (tester) async {
+        final textKey = GlobalKey(debugLabel: 'wi83-offstage-text');
+        await pumpFind(
+          tester,
+          child: Stack(
+            children: [
+              _Wi83NeverLaidOut(
+                child: RichText(
+                  key: textKey,
+                  text: const TextSpan(text: 'rye'),
+                  textDirection: TextDirection.ltr,
+                ),
+              ),
+              Positioned.fill(
+                child: FindHighlights(
+                  key: _wi83LayerKey,
+                  ranges: const [FindPaintRange(0, 3, FindPaintStyle.other)],
+                  boxes: () {
+                    final box = textKey.currentContext?.findRenderObject();
+                    return box is RenderBox ? _Wi83Unlaid(box) : null;
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+        final paragraph =
+            textKey.currentContext!.findRenderObject()! as RenderParagraph;
+        expect(paragraph.attached, isTrue, reason: 'fixture: in the tree');
+        expect(
+          paragraph.hasSize,
+          isFalse,
+          reason: 'fixture: its parent never lays it out',
+        );
+        expect(tester.takeException(), isNull);
+        expect(wi83LayerOps(tester, _wi83LayerKey), isEmpty);
+      },
+    );
+  });
+
+  group('FindGridScope', () {
+    // A dependent counts its builds; its `const` child rebuilds only when
+    // the scope notifies.
+    var builds = 0;
+    FindGridScope? seen;
+
+    Future<void> pumpScope(
+      WidgetTester tester, {
+      int segment = 1,
+      int textStart = 10,
+      bool active = true,
+    }) => tester.pumpWidget(
+      FindGridScope(
+        segment: segment,
+        textStart: textStart,
+        active: active,
+        child: const _Wi83ScopeProbe(),
+      ),
+    );
+
+    setUp(() {
+      builds = 0;
+      seen = null;
+      _wi83ScopeBuilt = (scope) {
+        builds++;
+        seen = scope;
+      };
+    });
+
+    testWidgets('a dependent reads the scope it sits under and none above it', (
+      tester,
+    ) async {
+      await tester.pumpWidget(const _Wi83ScopeProbe());
+      expect(seen, isNull);
+      await pumpScope(tester);
+      expect(seen!.segment, 1);
+      expect(seen!.textStart, 10);
+      expect(seen!.active, isTrue);
+    });
+
+    for (final (name, segment, textStart, active, notifies) in [
+      (
+        'a scope with only its segment changed notifies its dependents',
+        2,
+        10,
+        true,
+        true,
+      ),
+      (
+        'a scope with only its text start changed notifies its dependents',
+        1,
+        11,
+        true,
+        true,
+      ),
+      (
+        'a scope with only its active flag changed notifies its dependents',
+        1,
+        10,
+        false,
+        true,
+      ),
+      (
+        'a scope with nothing changed does not notify its dependents',
+        1,
+        10,
+        true,
+        false,
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        await pumpScope(tester);
+        final first = builds;
+        await pumpScope(
+          tester,
+          segment: segment,
+          textStart: textStart,
+          active: active,
+        );
+        expect(builds - first, notifies ? 1 : 0);
+        expect(seen!.segment, segment);
+        expect(seen!.textStart, textStart);
+        expect(seen!.active, active);
+      });
+    }
+  });
+
+  group('card without a segment', () {
+    testWidgets(
+      'a card row with no segment and no excerpt card mounts no layer',
+      (tester) async {
+        const text = 'Raised rye to 78%.';
+        await pumpFind(
+          tester,
+          sources: [
+            const FindSource(segment: 3, kind: FindSourceKind.card, text: text),
+          ],
+          query: 'rye',
+          child: const CardRows(text: text),
+        );
+        expect(find.byType(FindHighlights), findsNothing);
+        expect(find.byKey(const ValueKey('card-row-text-0')), findsOneWidget);
+      },
+    );
+  });
+
   group('pointers', () {
     testWidgets(
       'the layer ignores pointers: a tap on a highlighted word places the caret there',
@@ -640,4 +894,59 @@ class _Wi83SegmentState extends State<_Wi83Segment> {
       builder: (context, rows, _) => rows,
     ),
   );
+}
+
+/// A line box source over a [RenderParagraph] that was never laid out: its
+/// geometry accessors fail if the layer asks for them.
+class _Wi83Unlaid implements LineBoxSource {
+  _Wi83Unlaid(this.box);
+
+  @override
+  final RenderBox box;
+
+  @override
+  List<LineBox> get lines => throw StateError('not laid out');
+
+  @override
+  List<Rect> boxesFor(TextRange range) => throw StateError('not laid out');
+
+  @override
+  Rect caretRect(int offset) => throw StateError('not laid out');
+
+  @override
+  int offsetAt(Offset point) => throw StateError('not laid out');
+}
+
+/// Called by [_Wi83ScopeProbe] on every build with the scope it reads.
+void Function(FindGridScope? scope) _wi83ScopeBuilt = (_) {};
+
+class _Wi83ScopeProbe extends StatelessWidget {
+  const _Wi83ScopeProbe();
+
+  @override
+  Widget build(BuildContext context) {
+    _wi83ScopeBuilt(FindGridScope.maybeOf(context));
+    return const SizedBox.shrink();
+  }
+}
+
+/// Mounts [child] but never lays it out nor paints it, as a parent that
+/// skips a child would.
+class _Wi83NeverLaidOut extends SingleChildRenderObjectWidget {
+  const _Wi83NeverLaidOut({required Widget super.child});
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _Wi83RenderNeverLaidOut();
+}
+
+class _Wi83RenderNeverLaidOut extends RenderProxyBox {
+  @override
+  void performLayout() => size = constraints.biggest;
+
+  @override
+  void paint(PaintingContext context, Offset offset) {}
+
+  @override
+  void visitChildrenForSemantics(RenderObjectVisitor visitor) {}
 }

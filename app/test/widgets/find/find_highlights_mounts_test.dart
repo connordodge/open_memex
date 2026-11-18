@@ -315,6 +315,34 @@ void main() {
     );
 
     testWidgets(
+      'a hidden non current match in a link URL paints an other box on its own range while the caret reveals its line and the label outline while it does not',
+      (tester) async {
+        final e = await _wi83Pump(tester, _wi83LinkBody);
+        final text = e.robot.segmentText(0);
+        final url = wi83Find(text, 'rye');
+        final label = wi83Find(text, 'bread notes');
+        final plain = wi83Find(text, 'rye', 1);
+        // The caret on another line: the link markup is hidden.
+        await e.robot.focusSegment(0, offset: plain.start);
+        await _wi83Open(e, [wi83Body(0, text)], 'rye', current: 1);
+        expect(_wi83State(e).matches.first.hidden, isTrue, reason: 'fixture');
+        _wi83ExpectSegment(e, 0, [(label, _outline), (plain, _current)]);
+        // The caret on the link line reveals it: the URL shows, and its
+        // match is an ordinary other match on its own range.
+        await e.robot.focusSegment(0, offset: wi83Find(text, 'see').start);
+        expect(
+          _wi83RowBoxes(e, 0, _wi83RowAt(e, 0, url.start), url, _other),
+          hasLength(1),
+          reason: 'fixture: the revealed URL has width',
+        );
+        _wi83ExpectSegment(e, 0, [(url, _other), (plain, _current)]);
+        // The caret leaves: the outline is back.
+        await e.robot.focusSegment(0, offset: plain.start);
+        _wi83ExpectSegment(e, 0, [(label, _outline), (plain, _current)]);
+      },
+    );
+
+    testWidgets(
       'a hidden non current match on a bold run marker paints a border around the bold text',
       (tester) async {
         final e = await _wi83Pump(
@@ -535,6 +563,81 @@ void main() {
         );
       });
     }
+
+    testWidgets(
+      'a table the caret reveals stops showing its grid and its row layer paints the matches while the grid layers go',
+      (tester) async {
+        final e = await _wi83Pump(tester, _wi83TableBody);
+        final text = e.robot.segmentText(0);
+        await _wi83Open(e, [
+          wi83Body(0, text, hidden: _wi83TableHidden(text)),
+        ], 'rye');
+        final r = _wi83TableRow(e, 0);
+        _wi83ExpectGrid(e, 0, r);
+        // As a grid the row layer paints nothing: the cells paint.
+        expect(
+          _wi83FindOps(tester, findHighlightsKey(0, r)),
+          isEmpty,
+          reason: 'a grid row paints in its cells only',
+        );
+        expect(
+          _wi83FindOps(tester, findGridHighlightsKey(0, 1, 1)),
+          isNotEmpty,
+        );
+        // The caret in the table reveals its source.
+        final wet = wi83Find(text, 'rye');
+        // Focus the Intro row (opens the reveal gate), then move the caret
+        // into the table row.
+        await tester.showKeyboard(
+          find.descendant(
+            of: find.byKey(const ValueKey('editor-row-0-0')),
+            matching: find.byType(EditableText),
+          ),
+        );
+        await tester.pump();
+        e.robot.segment(0).select(TextSelection.collapsed(offset: wet.start));
+        await tester.pump();
+        await tester.pump();
+        expect(find.byKey(ValueKey('editor-table-0-$r')), findsNothing);
+        expect(
+          find.byKey(findGridHighlightsKey(0, 1, 1)),
+          findsNothing,
+          reason: 'the cell layers leave with the grid',
+        );
+        // Every `rye` of the table paints in the row layer: the revealed
+        // source shows the URL too.
+        final url = wi83Find(text, 'rye', 1);
+        final dry = wi83Find(text, 'rye', 2);
+        expect(_wi83State(e).matches, hasLength(3), reason: 'fixture');
+        _wi83ExpectRow(e, 0, r, [
+          ..._wi83RowBoxes(e, 0, r, wet, _current),
+          ..._wi83RowBoxes(e, 0, r, url, _other),
+          ..._wi83RowBoxes(e, 0, r, dry, _other),
+        ]);
+      },
+    );
+
+    testWidgets(
+      'a table row shorter than its header paints in the cells it has and mounts no layer for the missing one',
+      (tester) async {
+        const body =
+            'Intro\n\n| A | B | C |\n| --- | --- | --- |\n| rye | x |\n';
+        final e = await _wi83Pump(tester, body);
+        final text = e.robot.segmentText(0);
+        await _wi83Open(e, [wi83Body(0, text)], 'rye');
+        final r = _wi83TableRow(e, 0);
+        _wi83ExpectGrid(e, 0, r);
+        _wi83ExpectCell(
+          e,
+          0,
+          1,
+          0,
+          _wi83CellBoxes(e, 0, r, 1, 0, wi83Find(text, 'rye'), _current),
+        );
+        expect(find.byKey(findGridHighlightsKey(0, 1, 1)), findsOneWidget);
+        expect(find.byKey(findGridHighlightsKey(0, 1, 2)), findsNothing);
+      },
+    );
 
     testWidgets(
       'a match spanning two grid cells paints its visible part in each cell',
