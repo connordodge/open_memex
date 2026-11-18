@@ -13,12 +13,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/src/editor/editor_rows.dart';
 import 'package:open_memex_app/src/editor/find_in_note.dart';
 import 'package:open_memex_app/src/editor/segments.dart';
 import 'package:open_memex_app/src/state/app_exit.dart';
 import 'package:open_memex_app/src/state/find_in_note_state.dart';
 import 'package:open_memex_app/src/state/note_reveal.dart';
 import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
+import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_styles.dart';
 import 'package:open_memex_app/src/widgets/find/find_highlights.dart';
 import 'package:open_memex_app/src/widgets/find/find_keys.dart';
@@ -104,6 +106,19 @@ String get wi85LongBody {
   return out.toString();
 }
 
+/// A note whose matches each draw their own ink: strike runs (fg2, lifted
+/// to fg1 inside a match that is not current) and plain runs, in a body text
+/// segment (0), an excerpt card (1, text [wi85InkCardText]) and a table
+/// (segment 2). Six matches of `rye`, in that order.
+const wi85InkId = 'topic-85-ink';
+const wi85InkSeg0 = 'Plain rye first.\n~~struck rye~~ then more.\n';
+const wi85InkCardText = 'Card ~~rye~~ one.\nCard plain rye two.';
+const wi85InkSeg2 =
+    '| Item | Note |\n'
+    '| --- | --- |\n'
+    '| ~~rye~~ cell | plain rye cell |\n';
+const wi85InkBody = '$wi85InkSeg0$wi85Token\n$wi85InkSeg2';
+
 /// Another plain note.
 const wi85OtherId = 'topic-85-other';
 const wi85OtherBody = 'Nothing to see in this note.\n';
@@ -128,6 +143,7 @@ FakeVaultDb wi85SeedVault([FakeVaultDb? into]) {
   );
   db.seedNote(id: wi85LinkId, title: 'Link note', content: wi85LinkBody);
   db.seedNote(id: wi85LongId, title: 'Long marker', content: wi85LongBody);
+  db.seedNote(id: wi85InkId, title: 'Ink note', content: wi85InkBody);
   db.seedNote(id: wi85OtherId, title: 'Plain other', content: wi85OtherBody);
   db.seedNote(
     id: wi85DayId,
@@ -276,6 +292,70 @@ class Wi85 {
 
   /// The live preview segments of the shown note.
   List<Segment> get segments => h.shownSegments();
+
+  // -------------------------------------------------------------- ink
+
+  /// The live preview span of the body row field holding offset [local] of
+  /// text segment [segment], and [local] in that row's own text.
+  (InlineSpan, int) bodyRowSpan(int segment, int local, {Finder? under}) {
+    final row = h.rowOf(segment, local, under: under);
+    final field = find.descendant(
+      of: h.rowFinder(segment, row.index, under: under),
+      matching: find.byType(EditableText),
+    );
+    final controller =
+        tester.widget<EditableText>(field).controller as LivePreviewController;
+    return (
+      controller.buildTextSpan(
+        context: tester.element(field),
+        withComposing: false,
+      ),
+      row.spec.toLocal(local),
+    );
+  }
+
+  /// The span of the excerpt card [segment]'s row holding offset [at] of its
+  /// text [cardText], and [at] in that row's own text.
+  (InlineSpan, int) cardRowSpan(
+    int segment,
+    String cardText,
+    int at, {
+    Finder? under,
+  }) {
+    final specs = splitRows(cardText, atSegmentStart: true);
+    final r = specs.lastIndexWhere((spec) => spec.start <= at);
+    final text = find.descendant(
+      of: find.descendant(
+        of: _scope(under, find.byKey(Key('excerpt-card-$segment'))),
+        matching: find.byKey(ValueKey('card-row-text-$r')),
+      ),
+      matching: find.byType(RichText),
+    );
+    return (tester.widget<RichText>(text).text, at - specs[r].textStart);
+  }
+
+  /// The span of the table cell of text segment [segment] whose text is
+  /// [cell] (one per table).
+  InlineSpan tableCellSpan(int segment, String cell, {Finder? under}) {
+    final cells = find.descendant(
+      of: _scope(
+        under,
+        find.byWidgetPredicate((widget) {
+          final k = widget.key;
+          return k is ValueKey<String> &&
+              k.value.startsWith('editor-table-$segment-');
+        }),
+      ),
+      matching: find.byWidgetPredicate(
+        (widget) => widget is RichText && widget.text.toPlainText() == cell,
+      ),
+    );
+    expect(cells, findsOneWidget, reason: 'the cell "$cell" shows');
+    return tester.widget<RichText>(cells).text;
+  }
+
+  Finder _scope(Finder? under, Finder finder) =>
+      under == null ? finder : find.descendant(of: under, matching: finder);
 
   /// The global rect of the visual line holding offset [local] of the Source
   /// field, from its own line boxes.

@@ -84,6 +84,46 @@ FakeVaultDb _wi85CanvasVault() {
 
 Finder _wi85Zoomed(String id) => find.byKey(Key('zoomed-$id'));
 
+/// The canvas fixture where Alpha and Beta each hold a card between two
+/// `rye` lines: four matches (body, 2 in the card, body).
+FakeVaultDb _wi85CardZoomVault() {
+  final db = wi85SeedVault(seedCanvasFixture(FakeVaultDb.v5()));
+  for (final id in [C89.alpha, C89.beta]) {
+    db.db.execute('UPDATE notes SET content_md = ? WHERE id = ?', [
+      'Rye one.\n$wi85Token\nRye two.\n',
+      id,
+    ]);
+  }
+  return db;
+}
+
+/// The colour the live preview draws match [m] of the ink note in at its
+/// first code unit: from its body row, card row or table cell.
+Color? _wi85InkAt(Wi85 w, FindMatch m, {Finder? under}) {
+  switch (m.kind) {
+    case FindSourceKind.card:
+      final (span, at) = w.cardRowSpan(
+        m.segment,
+        wi85InkCardText,
+        m.start,
+        under: under,
+      );
+      return wi85ColorAt(span, at);
+    case FindSourceKind.body when m.segment == 2:
+      final first = m.start < wi85InkSeg2.indexOf('| plain rye');
+      final cell = first ? '~~rye~~ cell' : 'plain rye cell';
+      return wi85ColorAt(
+        w.tableCellSpan(2, cell, under: under),
+        cell.indexOf('rye'),
+      );
+    case FindSourceKind.body:
+      final (span, at) = w.bodyRowSpan(m.segment, m.start, under: under);
+      return wi85ColorAt(span, at);
+    case FindSourceKind.source:
+      throw StateError('no Source match in live preview');
+  }
+}
+
 /// Presses [key] with Cmd (and Shift) held; returns whether Dart handled it.
 Future<bool> _wi85CmdHandled(
   WidgetTester tester,
@@ -275,8 +315,8 @@ void main() {
       'live preview matches cover body segments and loaded card text but not the title or the Note footer',
       (tester) async {
         final w = await pumpWi85(tester);
-        // Fixture: the title, the footer and the token hold the query or
-        // its letters, which must not count.
+        // Fixture: the title and the footer hold the query, which must not
+        // count. (The token holds none: see the next test.)
         expect(wi85TopicTitle.toLowerCase(), contains(wi85Query));
         expect(wi85Footer.toLowerCase(), contains(wi85Query));
         expect(wi85Count(wi85Seg0 + wi85Seg2, wi85Query), 10);
@@ -324,6 +364,29 @@ void main() {
         expect(w.counter, endsWith(' of 11'));
       },
     );
+
+    testWidgets('the raw transclusion token behind a card is not searched', (
+      tester,
+    ) async {
+      final w = await pumpWi85(tester);
+      expect(w.segments[1], isA<TransclusionSegment>());
+      const inToken = 'k1a2b3';
+      expect(wi85Token, contains(inToken));
+      expect(wi85CardText, isNot(contains(inToken)));
+      expect(wi85Seg0 + wi85Seg2, isNot(contains(inToken)));
+
+      await w.openOn(inToken);
+      expect(w.state.matches, isEmpty, reason: 'live preview: the card shows');
+
+      await w.h.toggleSource();
+      expect(w.state.matches, hasLength(1), reason: 'Source shows the token');
+      final m = w.state.matches.single;
+      expect(m.kind, FindSourceKind.source);
+      expect(m.start, wi85TopicBody.indexOf(inToken));
+
+      await w.h.toggleSource();
+      expect(w.state.matches, isEmpty);
+    });
 
     testWidgets('a daily note date header is not searched', (tester) async {
       final w = await pumpWi85(tester, open: wi85DayId);
@@ -407,10 +470,12 @@ void main() {
         final current = await w.stepUntil(_wi85IsToast);
         final index = w.state.current!;
         expect(w.counter, '${index + 1} of 12');
+        final reveals = w.reveals();
 
         await w.robot.focusSegment(0, offset: 0);
         await w.robot.typeChars('rye ');
         await pumpFrames(tester);
+        expect(reveals.count, 0, reason: 'editing the text reveals nothing');
 
         expect(w.robot.segmentText(0), startsWith('rye Rye bread'));
         expect(w.bar, findsOneWidget, reason: 'typing keeps the bar open');
@@ -427,6 +492,7 @@ void main() {
         await w.openOn(wi85Query);
         final current = await w.stepUntil(_wi85IsToast);
         final index = w.state.current!;
+        final reveals = w.reveals();
 
         // A write that adds a match before the current one keeps it.
         await _wi85ServerWrites(w, 'More rye here.\n$wi85TopicBody', 5);
@@ -448,6 +514,11 @@ void main() {
         final seg2 = w.h.segmentText(2);
         expect(moved.start, seg2.indexOf('Rye and caraway'));
         expect(w.state.current, index + 1);
+        expect(
+          reveals.count,
+          0,
+          reason: 'a Req 38 move from a polled write reveals nothing',
+        );
       },
     );
   });
@@ -902,6 +973,32 @@ void main() {
     );
 
     testWidgets(
+      'toggling Source mode keeps the offsets of a body match after a card',
+      (tester) async {
+        final w = await pumpWi85(tester);
+        await w.openOn(wi85Query);
+        final m = await w.stepUntil(_wi85IsToast);
+        expect(m.segment, 2, reason: 'fixture: after the card token');
+
+        await w.h.toggleSource();
+        final source = w.sourceEditable.controller.text;
+        final now = w.state.currentMatch!;
+        expect(now.kind, FindSourceKind.source);
+        // The Source offset counts segment 0, the card token and its line
+        // break before segment 2's own offset.
+        final at = wi85TopicBody.indexOf('rye slices');
+        expect(source.indexOf('rye slices'), at);
+        expect(now.start, at);
+        expect(now.end, at + wi85Query.length);
+        expect(source.substring(now.start, now.end).toLowerCase(), wi85Query);
+
+        // And back: the same body match, in segment 2 again.
+        await w.h.toggleSource();
+        expect(w.state.currentMatch, m);
+      },
+    );
+
+    testWidgets(
       'toggling Source mode maps a card current match to the first match at or after the card token',
       (tester) async {
         final w = await pumpWi85(tester);
@@ -1000,6 +1097,142 @@ void main() {
         await finishSwitch();
         expect(_wi85Zoomed(C89.alpha), findsNothing);
         expect(w.bar, findsOneWidget);
+      },
+    );
+  });
+
+  // ------------------------------------------------------------- match ink
+  group('match ink', () {
+    testWidgets(
+      'live preview draws the current match in surface0 and lifts other matches in body rows card rows and table cells',
+      (tester) async {
+        final w = await pumpWi85(
+          tester,
+          open: wi85InkId,
+          overrides: [
+            excerptRenderProvider.overrideWith((ref, token) async {
+              final vault = ref.watch(currentVaultProvider);
+              return VaultScoped(
+                vault,
+                const RenderedExcerpt(
+                  date: wi85DailyDate,
+                  text: wi85InkCardText,
+                  removed: false,
+                ),
+              );
+            }),
+          ],
+        );
+        await w.openOn(wi85Query);
+        final matches = w.state.matches;
+        expect(matches, hasLength(6));
+        expect(
+          [for (final m in matches) (m.kind, m.segment)],
+          [
+            (FindSourceKind.body, 0),
+            (FindSourceKind.body, 0),
+            (FindSourceKind.card, 1),
+            (FindSourceKind.card, 1),
+            (FindSourceKind.body, 2),
+            (FindSourceKind.body, 2),
+          ],
+        );
+        // Matches 1, 2 and 4 sit in strike runs (fg2 at rest).
+        const struck = {1, 2, 4};
+
+        for (var step = 0; step < matches.length; step++) {
+          expect(w.state.current, step);
+          for (final (j, m) in matches.indexed) {
+            final colour = _wi85InkAt(w, m);
+            final where = 'match $j while match $step is current';
+            if (j == step) {
+              expect(colour, OmColors.surface0, reason: where);
+            } else if (struck.contains(j)) {
+              expect(colour, OmColors.fg1, reason: '$where: lifted to fg1');
+            } else {
+              expect(colour, isNot(OmColors.surface0), reason: where);
+            }
+          }
+          await w.tapNext();
+        }
+
+        // Closed: no ink anywhere.
+        await w.tapClose();
+        for (final m in matches) {
+          expect(_wi85InkAt(w, m), isNot(OmColors.surface0));
+        }
+        expect(_wi85InkAt(w, matches[1]), OmColors.fg2);
+        expect(_wi85InkAt(w, matches[2]), OmColors.fg2);
+        expect(_wi85InkAt(w, matches[4]), OmColors.fg2);
+      },
+    );
+
+    testWidgets(
+      'the outgoing editor of a canvas zoom colours no match in its body or card rows',
+      (tester) async {
+        const duration = Duration(seconds: 3);
+        final w = await pumpWi85(
+          tester,
+          open: null,
+          db: _wi85CardZoomVault(),
+          zoom: duration,
+        );
+        await w.h.navigate(const CanvasTab(C89.newer));
+        await w.h.navigate(const CanvasTab(C89.newer, zoomedNoteId: C89.alpha));
+        await tester.pump(duration);
+        await tester.pump(duration);
+        await pumpFrames(tester);
+
+        w.h.tabs.navigate(const CanvasTab(C89.newer, zoomedNoteId: C89.beta));
+        await tester.pump(const Duration(milliseconds: 50));
+        await tester.pump(const Duration(milliseconds: 50));
+        final alpha = _wi85Zoomed(C89.alpha);
+        final beta = _wi85Zoomed(C89.beta);
+        expect(alpha, findsOneWidget, reason: 'switching');
+        expect(beta, findsOneWidget);
+
+        await w.openOn(wi85Query);
+        final matches = w.state.matches;
+        expect(matches, hasLength(4));
+        expect(
+          [for (final m in matches) m.kind],
+          [
+            FindSourceKind.body,
+            FindSourceKind.card,
+            FindSourceKind.card,
+            FindSourceKind.body,
+          ],
+        );
+        Color? inkOf(FindMatch m, Finder under) {
+          if (m.kind == FindSourceKind.card) {
+            final (span, at) = w.cardRowSpan(
+              m.segment,
+              wi85CardText,
+              m.start,
+              under: under,
+            );
+            return wi85ColorAt(span, at);
+          }
+          final (span, at) = w.bodyRowSpan(m.segment, m.start, under: under);
+          return wi85ColorAt(span, at);
+        }
+
+        for (final step in [0, 1, 3]) {
+          while (w.state.current != step) {
+            await w.tapNext();
+          }
+          final m = w.state.currentMatch!;
+          expect(
+            inkOf(m, beta),
+            OmColors.surface0,
+            reason: 'the active editor colours match $step',
+          );
+          expect(
+            inkOf(m, alpha),
+            isNot(OmColors.surface0),
+            reason: 'the outgoing editor colours nothing (match $step)',
+          );
+        }
       },
     );
   });
