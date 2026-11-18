@@ -1318,6 +1318,18 @@ void main() {
       'a reveal range that is not valid reveals no line even when its end reaches one',
       () {
         const text = 'One **a** x\nTwo **b** y';
+        // Positive control: a valid range on line 1 reveals it, so the
+        // invalid ones below are filtered and not merely ignored.
+        expect(
+          revealedLines(
+            classifyLines(text, atSegmentStart: true),
+            null,
+            forceHidden: true,
+            revealRange: const TextRange(start: 0, end: 5),
+          ),
+          [true, false],
+          reason: 'a valid range on line 1',
+        );
         final revealed = revealedLines(
           classifyLines(text, atSegmentStart: true),
           null,

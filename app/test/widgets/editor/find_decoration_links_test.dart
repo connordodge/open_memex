@@ -203,11 +203,7 @@ void main() {
               expect(_wi84Cursor(), SystemMouseCursors.click, reason: reason);
               expect(f.controller.cmdHover, token, reason: reason);
             } else {
-              expect(
-                _wi84Cursor(),
-                isNot(SystemMouseCursors.click),
-                reason: reason,
-              );
+              expect(_wi84Cursor(), SystemMouseCursors.text, reason: reason);
               expect(f.controller.cmdHover, isNull, reason: reason);
             }
           } finally {
