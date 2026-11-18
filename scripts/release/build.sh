@@ -22,7 +22,10 @@
 # NOTARY_ISSUER_ID, SPARKLE_ED_KEY_PATH, and a deny-list (LEAK_PATTERNS or
 # --patterns). NOTARY_KEY_P8_PATH and SPARKLE_ED_KEY_PATH must be readable
 # files. SPARKLE_ED_KEY_PATH holds the Sparkle EdDSA private key: base64 of
-# the 32-byte Ed25519 seed, the format `generate_keys -x` exports. It also
+# the 32-byte Ed25519 seed, the format `generate_keys -x` exports (the legacy
+# 96-byte key is accepted too). A key file that is empty, is not base64 or
+# does not decode to 32 or 96 bytes is refused before STEP 1, so a missing
+# secret fails before the build and notarization. It also
 # refuses a checkout with uncommitted or untracked files (a dry run warns).
 #
 # A dry run never reads SPARKLE_ED_KEY_PATH, a secret or the Keychain: it
@@ -180,6 +183,21 @@ if [ "$DRY_RUN" = 0 ]; then
     { printf 'build: NOTARY_KEY_P8_PATH is not a readable file\n' >&2; exit 2; }
   [ -f "$SPARKLE_ED_KEY_PATH" ] && [ -r "$SPARKLE_ED_KEY_PATH" ] ||
     { printf 'build: SPARKLE_ED_KEY_PATH is not a readable file\n' >&2; exit 2; }
+  # An unset secret decodes to an empty file; refuse it here, not after the
+  # long builds and notarization. The key text is never printed.
+  ed_key_b64=$(tr -d ' \n\r\t' <"$SPARKLE_ED_KEY_PATH")
+  case "$ed_key_b64" in
+    '' | *[!A-Za-z0-9+/=]*) ed_key_bytes=0 ;;
+    *) ed_key_bytes=$(printf '%s' "$ed_key_b64" | base64 -d 2>/dev/null | wc -c | tr -d ' ') ;;
+  esac
+  unset ed_key_b64
+  case "$ed_key_bytes" in
+    32 | 96) ;;
+    *)
+      printf 'build: SPARKLE_ED_KEY_PATH is not a base64 EdDSA private key (32 or 96 bytes)\n' >&2
+      exit 2
+      ;;
+  esac
 fi
 
 [ -n "${HOME:-}" ] || die_usage "HOME is not set"
@@ -197,8 +215,8 @@ for t in $tools; do
   command -v "$t" >/dev/null 2>&1 || die_usage "$t is required on PATH"
 done
 
-# A release is built from a clean checkout: step 1 builds memex from the whole
-# working tree and step 2 copies the tracked app/ files as they are on disk, so
+# A release is built from a clean checkout: step 2 builds memex from the whole
+# working tree and step 3 copies the tracked app/ files as they are on disk, so
 # local edits or untracked files would ship in a build that matches no commit.
 # Signed mode refuses; a dry run warns. Ignored files (target/, dist/) do not count.
 if ! dirty=$(git -C "$ROOT" status --porcelain --untracked-files=normal 2>/dev/null); then
