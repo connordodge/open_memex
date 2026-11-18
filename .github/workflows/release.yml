@@ -281,7 +281,9 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
-    # One Appcast push at a time, across Releases; a queued run waits.
+    # One Appcast push at a time, across Releases. GitHub keeps only one
+    # pending run per group: a newer one cancels the older pending run,
+    # which is then recovered with Re-run failed jobs (docs/releasing.md).
     concurrency:
       group: appcast
       cancel-in-progress: false

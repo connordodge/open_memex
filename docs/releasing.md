@@ -127,7 +127,7 @@ The `appcast` job runs only after the `release` job succeeds. It has no environm
 scripts/release/generate_appcast.sh --version <ver> --input <appcast-input dir> --appcast <gh-pages checkout>/appcast.xml
 ```
 
-The generator takes the build number from `app/pubspec.yaml`, the notes from `release-notes/v<ver>.md` and the minimum macOS version from the app's deployment target. It keys each item on the version (`sparkle:shortVersionString`): running it again for a version replaces that version's item, and every other Release's item is kept. Only one `appcast` job runs at a time.
+The generator takes the build number from `app/pubspec.yaml`, the notes from `release-notes/v<ver>.md` and the minimum macOS version from the app's deployment target. It keys each item on the version (`sparkle:shortVersionString`): running it again for a version replaces that version's item, and every other Release's item is kept. Only one `appcast` job runs at a time, and GitHub keeps only one waiting behind it: if you push a third tag while one `appcast` job runs and another waits, GitHub cancels the waiting one. Its Release then has no Appcast item; recover it as in [If the appcast job fails](#if-the-appcast-job-fails).
 
 GitHub Pages caches the file for about 10 minutes, so a new item can take that long to reach the app.
 

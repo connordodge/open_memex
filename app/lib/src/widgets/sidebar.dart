@@ -21,6 +21,9 @@ import '../state/vault_paths.dart';
 import '../state/vault_state.dart';
 import '../theme/colors.dart';
 import '../theme/typography.dart';
+import '../updater/update_controller.dart';
+import '../updater/update_modal.dart';
+import '../updater/update_state.dart';
 import '../vault_access/errors.dart';
 import '../vault_access/vault_async_view.dart';
 import 'agents/agent_footer.dart';
@@ -359,13 +362,29 @@ class _ModeSegment extends StatelessWidget {
   }
 }
 
+/// The sidebar's brand row: the ring logo, `open memex` and the version
+/// label (D15). While an update is Ready the logo-to-title gap and the end
+/// padding narrow by [_readyGapSaving] and [_readyPaddingSaving], so the
+/// whole `v<current> · update ready` fits at text scale 1.0 (lead ruling Q1,
+/// #38); every other state keeps the row's geometry.
 class _BrandRow extends ConsumerWidget {
+  static const _padding = 14.0;
+  static const _gap = 9.0;
+  static const _readyGapSaving = 3.0;
+  static const _readyPaddingSaving = 5.0;
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final version = ref.watch(appVersionProvider);
+    final ready = ref.watch(
+      updateControllerProvider.select((s) => s is UpdateReady),
+    );
     return Container(
       height: 44,
-      padding: const EdgeInsets.symmetric(horizontal: 14),
+      padding: EdgeInsetsDirectional.only(
+        start: _padding,
+        end: ready ? _padding - _readyPaddingSaving : _padding,
+      ),
       child: Row(
         children: [
           Container(
@@ -386,7 +405,7 @@ class _BrandRow extends ConsumerWidget {
               ),
             ),
           ),
-          const SizedBox(width: 9),
+          SizedBox(width: ready ? _gap - _readyGapSaving : _gap),
           Text(
             'open memex',
             style: OmType.mono(
@@ -396,14 +415,24 @@ class _BrandRow extends ConsumerWidget {
               letterSpacing: 0.2,
             ),
           ),
-          const Spacer(),
           if (version.isNotEmpty)
-            Text(
-              'v$version',
-              style: OmType.mono(
-                size: 10,
-                color: OmColors.fg3,
-                letterSpacing: 0.8,
+            // Expanded + Align, not a Spacer: the label sits at the row end
+            // and, at a larger text scale, ellipsizes instead of overflowing.
+            Expanded(
+              child: Align(
+                alignment: AlignmentDirectional.centerEnd,
+                child: UpdateVersionLabel(
+                  textKey: const Key('sidebar-version-label'),
+                  version: version,
+                  // The row's own height: the Ready label's click target
+                  // spans it without growing the row.
+                  hitHeight: 44,
+                  style: OmType.mono(
+                    size: 10,
+                    color: OmColors.fg3,
+                    letterSpacing: 0.8,
+                  ),
+                ),
               ),
             ),
         ],

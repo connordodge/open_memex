@@ -1723,6 +1723,42 @@ printf '0\n' > "$out/Open-Memex-$ver-arm64.dmg.length"
     );
 
     test(
+      'the appcast job push authenticates through a credential helper that supplies github.token and never stores it',
+      () async {
+        final sim = await _AppcastSim.create(pages: _Pages.branch);
+        final run = await sim.runJob(_workflow());
+        expect(run.ok, isTrue, reason: '$run');
+        final log = File(sim.pushLog).readAsStringSync();
+        final argvLines = [
+          for (final l in log.split('\n'))
+            if (l.startsWith('ARGV: ')) l,
+        ];
+        expect(argvLines, hasLength(1), reason: 'one push\n$log');
+        expect(log, contains('CRED: username=x-access-token'), reason: log);
+        expect(log, contains('CRED: password=placeholder-token'), reason: log);
+        expect(
+          argvLines.single,
+          isNot(contains('placeholder-token')),
+          reason: 'the token is never on a command line',
+        );
+        final config = File(
+          '${sim.workspace}/gh-pages/.git/config',
+        ).readAsStringSync();
+        expect(
+          config,
+          isNot(contains('placeholder-token')),
+          reason: 'the token is never written to .git/config',
+        );
+        expect(
+          config,
+          isNot(contains('credential')),
+          reason: 'the helper is set for the push only',
+        );
+      },
+      timeout: timeout,
+    );
+
+    test(
       'rerunning the appcast job for the same Release succeeds and keeps one item',
       () async {
         final sim = await _AppcastSim.create(pages: _Pages.branch);
@@ -1984,6 +2020,7 @@ class _AppcastSim {
   String get temp => '$w/runner-temp';
   String get bin => '$w/bin';
   String get jobGitConfig => '$w/job-gitconfig';
+  String get pushLog => '$w/git-push.log';
 
   static const _stubGh = r'''#!/bin/bash
 { for a in "$@"; do printf '[%s]' "$a"; done; printf '\n'; } >> "$STUB_LOG"
@@ -2006,6 +2043,31 @@ if [ "$1" = api ]; then
 fi
 echo "stub gh: unexpected call: $all" >&2
 exit 99
+''';
+
+  // A git in front of the real one. For a push it first runs the credential
+  // lookup git itself would run for an https remote, with the same leading
+  // -c settings, and logs what came back and the push command line. The
+  // simulator rewrites https://github.com/ to a local path, and git never
+  // asks a credential helper about a local path, so without this nothing
+  // would ever run the helper the push step sets.
+  static const _stubGit = r'''#!/bin/bash
+real=$(PATH="${PATH#"$STUB_BIN":}" command -v git)
+args=("$@")
+cfg=()
+i=0
+while [ "${args[$i]:-}" = -c ]; do
+  cfg+=(-c "${args[$((i + 1))]}")
+  i=$((i + 2))
+done
+if [ "${args[$i]:-}" = push ]; then
+  {
+    printf 'ARGV: %s\n' "$*"
+    printf 'protocol=https\nhost=github.com\n\n' |
+      "$real" ${cfg[@]+"${cfg[@]}"} credential fill 2>&1 | sed 's/^/CRED: /' || true
+  } >> "$STUB_PUSH_LOG"
+fi
+exec "$real" "$@"
 ''';
 
   static Future<_AppcastSim> create({required _Pages pages}) async {
@@ -2084,6 +2146,8 @@ exit 99
     Directory(sim.bin).createSync();
     File('${sim.bin}/gh').writeAsStringSync(_stubGh);
     await Process.run('chmod', ['+x', '${sim.bin}/gh']);
+    File('${sim.bin}/git').writeAsStringSync(_stubGit);
+    await Process.run('chmod', ['+x', '${sim.bin}/git']);
     // A runner has no git identity: the job must set its own.
     File(sim.jobGitConfig).writeAsStringSync(
       [
@@ -2139,6 +2203,8 @@ exit 99
       'RUNNER_TEMP': temp,
       'STUB_LOG': '$w/gh.log',
       'STUB_REMOTE': bare,
+      'STUB_BIN': bin,
+      'STUB_PUSH_LOG': pushLog,
     };
   }
 

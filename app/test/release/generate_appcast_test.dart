@@ -553,6 +553,16 @@ void main() {
     }) async {
       expect(r.exitCode, code, reason: '$r');
       expect(r.stderr, contains(mentions), reason: 'a clear message\n$r');
+      expect(
+        r.stderr,
+        contains('generate_appcast:'),
+        reason: 'the script own message, not an interpreter crash\n$r',
+      );
+      expect(
+        r.stderr,
+        isNot(contains('Traceback')),
+        reason: 'a clear message, not a stack trace\n$r',
+      );
       expect(g.pagesSnapshot(), before, reason: 'gh-pages is untouched');
     }
 
@@ -661,6 +671,11 @@ void main() {
           before: before,
           mentions: 'appcast.xml',
         );
+        expect(
+          r.stderr,
+          contains('gh-pages checkout'),
+          reason: 'the message points at the missing checkout\n$r',
+        );
       },
     );
 
@@ -717,5 +732,153 @@ void main() {
         expect(g.pagesSnapshot(), before);
       });
     }
+  });
+
+  group('guards that refuse and re-run stability', () {
+    const header = '<?xml version="1.0" encoding="utf-8"?>\n';
+    const ns = 'http://www.andymatuschak.org/xml-namespaces/sparkle';
+
+    for (final (name, feed, mentions) in [
+      (
+        'the generator fails and changes nothing when the Appcast root does not declare the sparkle namespace',
+        '$header<rss version="2.0"><channel><title>Open Memex</title></channel></rss>\n',
+        'xmlns:sparkle',
+      ),
+      (
+        'the generator fails and changes nothing when the Appcast has two channels',
+        '$header<rss version="2.0" xmlns:sparkle="$ns">'
+            '<channel><title>A</title></channel>'
+            '<channel><title>B</title></channel></rss>\n',
+        'channel',
+      ),
+    ]) {
+      test(name, () async {
+        final g = await _setUp();
+        File(g.appcast).writeAsStringSync(feed);
+        final before = g.pagesSnapshot();
+        final r = await g.run('1.2.3');
+        expect(r.exitCode, 1, reason: '$r');
+        expect(r.stderr, contains(mentions), reason: '$r');
+        expect(g.pagesSnapshot(), before);
+      });
+    }
+
+    test(
+      'the generator fails and changes nothing when the deployment targets disagree',
+      () async {
+        final g = await _setUp();
+        final pbx = File('${g.repo}/$_pbxproj');
+        pbx.writeAsStringSync(
+          pbx.readAsStringSync().replaceFirst(
+            'MACOSX_DEPLOYMENT_TARGET = 14.0;',
+            'MACOSX_DEPLOYMENT_TARGET = 15.0;',
+          ),
+        );
+        final before = g.pagesSnapshot();
+        final r = await g.run('1.2.3');
+        expect(r.exitCode, 1, reason: '$r');
+        expect(r.stderr, contains('MACOSX_DEPLOYMENT_TARGET'), reason: '$r');
+        expect(g.pagesSnapshot(), before);
+      },
+    );
+
+    test(
+      'the generator fails and changes nothing when the notes hold a character XML forbids',
+      () async {
+        final g = await _setUp();
+        g.release('1.2.3', notes: 'Bad \u0001 control character\n');
+        final before = g.pagesSnapshot();
+        final r = await g.run('1.2.3');
+        expect(r.exitCode, 1, reason: '$r');
+        expect(r.stderr, contains('well-formed'), reason: '$r');
+        expect(g.pagesSnapshot(), before);
+      },
+    );
+
+    test(
+      'the generator fails and changes nothing when the edsig file is not base64',
+      () async {
+        final g = await _setUp();
+        g.release('1.2.3', edsig: 'not a signature!\n');
+        final before = g.pagesSnapshot();
+        final r = await g.run('1.2.3');
+        expect(r.exitCode, 1, reason: '$r');
+        expect(r.stderr, contains('.edsig'), reason: '$r');
+        expect(g.pagesSnapshot(), before);
+      },
+    );
+
+    test(
+      'the generator exits 2 when an option is given without a value',
+      () async {
+        final g = await _setUp();
+        final before = g.pagesSnapshot();
+        final r = await g.run(
+          '1.2.3',
+          args: ['--input', g.input, '--appcast', g.appcast, '--version'],
+        );
+        expect(r.exitCode, 2, reason: '$r');
+        expect(r.stderr, contains('--version'), reason: '$r');
+        expect(g.pagesSnapshot(), before);
+      },
+    );
+
+    test(
+      'the generator reads a quoted pubspec version with a trailing comment and a quoted deployment target',
+      () async {
+        final g = await _setUp(pbxproj: _minimalPbxproj('"14.0"'));
+        File('${g.repo}/app/pubspec.yaml').writeAsStringSync(
+          'name: open_memex_app\nversion: "1.2.3+77"   # the build\n',
+        );
+        final r = await g.run('1.2.3');
+        expect(r.exitCode, 0, reason: '$r');
+        final item = _itemsFor(_doc(g), '1.2.3').single;
+        expect(_sp(item, 'version'), '77');
+        expect(_sp(item, 'minimumSystemVersion'), '14.0');
+      },
+    );
+
+    test(
+      'rerunning the generator with the same inputs leaves a byte identical file',
+      () async {
+        final g = await _setUp();
+        File(g.appcast).writeAsStringSync(_fixture('appcast_valid.xml'));
+        expect((await g.run('1.2.3')).exitCode, 0);
+        final once = File(g.appcast).readAsStringSync();
+        final r = await g.run('1.2.3');
+        expect(r.exitCode, 0, reason: '$r');
+        expect(
+          File(g.appcast).readAsStringSync(),
+          once,
+          reason: 'the appcast job relies on this to push nothing',
+        );
+      },
+    );
+
+    test(
+      'generating a version collapses duplicate items for it and keeps the other versions',
+      () async {
+        final g = await _setUp();
+        String item(String short, String build) =>
+            '    <item>\n'
+            '      <sparkle:version>$build</sparkle:version>\n'
+            '      <sparkle:shortVersionString>$short</sparkle:shortVersionString>\n'
+            '      <enclosure url="https://example.test/$short.dmg" sparkle:edSignature="c2ln" length="1" type="application/octet-stream"/>\n'
+            '    </item>\n';
+        File(g.appcast).writeAsStringSync(
+          '$header<rss version="2.0" xmlns:sparkle="$ns">\n  <channel>\n'
+          '    <title>Open Memex</title>\n'
+          '${item('1.2.3', '5')}${item('1.2.2', '4')}${item('1.2.3', '6')}'
+          '  </channel>\n</rss>\n',
+        );
+        g.release('1.2.3', build: '9');
+        final r = await g.run('1.2.3');
+        expect(r.exitCode, 0, reason: '$r');
+        final doc = _doc(g);
+        expect(_items(doc), hasLength(2), reason: doc.toXmlString());
+        expect(_sp(_itemsFor(doc, '1.2.3').single, 'version'), '9');
+        expect(_sp(_itemsFor(doc, '1.2.2').single, 'version'), '4');
+      },
+    );
   });
 }
