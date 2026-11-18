@@ -9,4 +9,4 @@ const sparkleEdPublicKey = String.fromEnvironment(
 );
 
 /// The committed release public key. Empty until the release key lands.
-const _committed = '';
+const _committed = '8WNzgeCfAzuwBpEp3kB3xX/rMxU6qAnjIRm4EbsJnm4=';
