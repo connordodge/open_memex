@@ -492,8 +492,19 @@ esac
 exit 0
 ''';
 
+// The zip step (ditto -c) records whether each key a sign_update used (field 2
+// of sign_update.calls) still exists, to `$FAKE_STATE/key-at-zip`.
 const _fakeDitto = r'''
 _fake_log ditto "$@"
+case " $* " in
+  *" -c "*)
+    if [ -f "$FAKE_STATE/sign_update.calls" ]; then
+      while IFS=$'\t' read -r _ k _; do
+        if [ -e "$k" ]; then echo "exists $k"; else echo "gone $k"; fi
+      done <"$FAKE_STATE/sign_update.calls" >>"$FAKE_STATE/key-at-zip"
+    fi
+    ;;
+esac
 exec /usr/bin/ditto "$@"
 ''';
 
@@ -2437,6 +2448,47 @@ void main() {
       });
     }
 
+    // (test name, tarball has bin/sign_update, bin/sign_update is executable)
+    final brokenTool = <(String, bool, bool)>[
+      (
+        'a checked Sparkle tarball without bin/sign_update fails step 1',
+        false,
+        true,
+      ),
+      (
+        'a checked Sparkle tarball whose bin/sign_update is not executable fails step 1',
+        true,
+        false,
+      ),
+    ];
+    for (final (name, withTool, executable) in brokenTool) {
+      test(name, () async {
+        final fx = await _fixture();
+        final dir = Directory('${fx.iso.work.path}/sparkle-broken')
+          ..createSync();
+        final bad = await buildFakeSparkleTarball(
+          dir.path,
+          variant: 'broken',
+          withSignUpdate: withTool,
+          signUpdateExecutable: executable,
+        );
+        // The pin matches this tarball: only its contents are wrong.
+        final buildSh = File('${fx.root}/$_build');
+        buildSh.writeAsStringSync(
+          buildSh.readAsStringSync().replaceAll(
+            _shaLine,
+            'SPARKLE_SHA256=${bad.sha256}',
+          ),
+        );
+        final r = await _runBuild(
+          fx,
+          _dryArgs(fx),
+          env: {'FAKE_SPARKLE_TARBALL': bad.path},
+        );
+        await expectFailedAtDownload(fx, r);
+      });
+    }
+
     test(
       'the real pinned SHA-256 refuses a Sparkle tarball with another hash',
       () async {
@@ -2449,6 +2501,34 @@ void main() {
   });
 
   group('EdDSA signing failures and outputs', () {
+    test(
+      'a sign_update that prints text that is not a signature fails step 9 and writes nothing to out',
+      () async {
+        final fx = await _fixture();
+        final r = await _runBuild(
+          fx,
+          _dryArgs(fx),
+          env: {'FAKE_SIGN_UPDATE_GARBAGE': '1'},
+        );
+        final why = '$r\n${_callList(_calls(fx))}';
+        expect(r.exitCode, 1, reason: why);
+        expect(_failed(r), [9], reason: why);
+        expect(Directory(fx.out).listSync(), isEmpty, reason: why);
+      },
+    );
+
+    test(
+      'a dry run deletes the throwaway key right after signing, before the zip',
+      () async {
+        final fx = await _fixture();
+        final r = await _runBuild(fx, _dryArgs(fx));
+        expect(r.exitCode, 0, reason: '$r');
+        final seen = File('${fx.state}/key-at-zip').readAsLinesSync();
+        expect(seen, hasLength(1), reason: '$seen');
+        expect(seen.single, startsWith('gone '), reason: '$seen');
+      },
+    );
+
     test(
       'a failing sign_update fails step 9 and writes nothing to out',
       () async {
@@ -2670,6 +2750,87 @@ void main() {
       expect(none.stdout.trim(), isEmpty, reason: '$none');
       expect(signUpdateCalls(fx.state), isEmpty);
     });
+
+    test(
+      'eddsa_sign.sh exits 1 and prints nothing when sign_update prints text that is not a signature',
+      () async {
+        final fx = await _edFixture();
+        final r = await _runEddsa(
+          fx,
+          [fx.file],
+          env: {'FAKE_SIGN_UPDATE_GARBAGE': '1'},
+        );
+        expect(r.exitCode, 1, reason: '$r');
+        expect(r.stdout.trim(), isEmpty, reason: '$r');
+        expect(
+          _edCalls(fx).where((c) => c.tool == 'sign_update'),
+          hasLength(1),
+          reason: 'sign_update was not run',
+        );
+      },
+    );
+
+    test('eddsa_sign.sh exits 1 when sign_update fails', () async {
+      final fx = await _edFixture();
+      final r = await _runEddsa(
+        fx,
+        [fx.file],
+        env: {'FAKE_SIGN_UPDATE_FAIL': '1'},
+      );
+      expect(r.exitCode, 1, reason: '$r');
+    });
+
+    test(
+      'eddsa_sign.sh exits 1 when there is no sign_update on PATH',
+      () async {
+        final fx = await _edFixture();
+        File('${fx.bin}/sign_update').deleteSync();
+        final r = await _runEddsa(fx, [fx.file]);
+        expect(r.exitCode, 1, reason: '$r');
+        expect(r.stdout.trim(), isEmpty, reason: '$r');
+      },
+    );
+
+    test(
+      'eddsa_sign.sh exits 2 for a usage error and never runs sign_update',
+      () async {
+        final fx = await _edFixture();
+        final w = fx.iso.work.path;
+        final results = <String, ScriptResult>{
+          'no file': await _runEddsa(fx, []),
+          'two files': await _runEddsa(fx, [fx.file, fx.file]),
+          'missing file': await _runEddsa(fx, ['$w/no.dmg']),
+          'empty file name': await _runEddsa(fx, ['']),
+          'directory': await _runEddsa(fx, [w]),
+          'no key': await _runEddsa(
+            fx,
+            [fx.file],
+            env: {'SPARKLE_ED_KEY_PATH': null},
+          ),
+          'empty key': await _runEddsa(
+            fx,
+            [fx.file],
+            env: {'SPARKLE_ED_KEY_PATH': ''},
+          ),
+          'key is a directory': await _runEddsa(
+            fx,
+            [fx.file],
+            env: {'SPARKLE_ED_KEY_PATH': w},
+          ),
+          'key does not exist': await _runEddsa(
+            fx,
+            [fx.file],
+            env: {'SPARKLE_ED_KEY_PATH': '$w/no-key'},
+          ),
+        };
+        results.forEach((why, r) {
+          expect(r.exitCode, 2, reason: '$why: $r');
+          expect(r.stdout.trim(), isEmpty, reason: '$why: $r');
+        });
+        expect(_edCalls(fx).where((c) => c.tool == 'sign_update'), isEmpty);
+        expect(signUpdateReadKeychain(fx.state), isFalse);
+      },
+    );
 
     test('eddsa_sign.sh is an executable bash script', () {
       final f = File('${repoRoot()}/$_eddsa');

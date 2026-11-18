@@ -279,7 +279,8 @@ _fake_sig() {
 /// `sparkle:edSignature="<sig>" length="<n>"`. Without a key file the real
 /// tool reads the login Keychain: the fake records that in
 /// `$FAKE_STATE/keychain` and fails. A bad key or file fails with exit 1.
-/// `FAKE_SIGN_UPDATE_FAIL=1` makes it fail. Each signing appends
+/// `FAKE_SIGN_UPDATE_FAIL=1` makes it fail. `FAKE_SIGN_UPDATE_GARBAGE=1`
+/// makes it exit 0 printing text that is not a base64 signature. Each signing appends
 /// `<$0>\t<key path>\t<key base64>\t<key bytes>\t<file>\t<file sha256>\t<sig>`
 /// to `$FAKE_STATE/sign_update.calls`.
 String fakeSignUpdateScript(String logName) =>
@@ -307,6 +308,10 @@ done
 if [ "${FAKE_SIGN_UPDATE_FAIL:-}" = 1 ]; then
   echo "ERROR! fake sign_update: signing failed" >&2
   exit 1
+fi
+if [ "${FAKE_SIGN_UPDATE_GARBAGE:-}" = 1 ]; then
+  echo "Signing complete, no signature to show"
+  exit 0
 fi
 if [ -z "$key" ]; then
   printf '%s\n' "$*" >>"$FAKE_STATE/keychain"
@@ -438,10 +443,14 @@ class FakeSparkleTarball {
 /// Builds `<dir>/Sparkle-2.10.1.tar.xz` laid out like the real one
 /// (`bin/sign_update`, `bin/generate_keys` and `LICENSE` at its top level).
 /// Its fake `bin/sign_update` logs as `sign_update`. A different [variant]
-/// gives a tarball with other bytes, so another SHA-256.
+/// gives a tarball with other bytes, so another SHA-256. [withSignUpdate]
+/// false leaves `bin/sign_update` out; [signUpdateExecutable] false makes it
+/// mode 644.
 Future<FakeSparkleTarball> buildFakeSparkleTarball(
   String dir, {
   String variant = '',
+  bool withSignUpdate = true,
+  bool signUpdateExecutable = true,
 }) async {
   final src = Directory('$dir/sparkle-src');
   Directory('${src.path}/bin').createSync(recursive: true);
@@ -450,8 +459,12 @@ Future<FakeSparkleTarball> buildFakeSparkleTarball(
     'generate_keys': fakeGenerateKeysScript,
   };
   for (final e in tools.entries) {
+    if (e.key == 'sign_update' && !withSignUpdate) continue;
     final f = File('${src.path}/bin/${e.key}')..writeAsStringSync(e.value);
-    final r = await Process.run('/bin/chmod', ['755', f.path]);
+    final mode = e.key == 'sign_update' && !signUpdateExecutable
+        ? '644'
+        : '755';
+    final r = await Process.run('/bin/chmod', [mode, f.path]);
     if (r.exitCode != 0) throw StateError('chmod ${f.path}: ${r.stderr}');
   }
   File(
