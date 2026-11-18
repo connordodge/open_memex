@@ -167,6 +167,84 @@ void main() {
     }, variant: macOnly);
   });
 
+  group('the context menu', () {
+    /// Right-clicks 45 px into the field (on its first letters) and returns
+    /// the open menu's item finder for [label].
+    Future<Finder> openMenu(WidgetTester tester, String label) async {
+      final g = await tester.startGesture(
+        tester.getTopLeft(wi82Field) + const Offset(45, 15),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await g.up();
+      await tester.pumpAndSettle();
+      return find.text(label);
+    }
+
+    testWidgets(
+      'right-click Paste of two lines sets the query two lines and closes the menu',
+      (tester) async {
+        MacClipboard.install(tester, initial: 'two\nlines');
+        final rig = await wi82Pump(tester, query: '');
+        await wi82FocusField(tester);
+        final paste = await openMenu(tester, 'Paste');
+        expect(paste, findsOneWidget);
+        await tester.tap(paste, kind: PointerDeviceKind.mouse);
+        await tester.pumpAndSettle();
+        expect(rig.find.state.query, 'two lines');
+        expect(wi82Editable(tester).controller.text, 'two lines');
+        expect(find.text('Paste'), findsNothing);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'right-click Paste over a selection replaces just the selection with a CRLF break as one space',
+      (tester) async {
+        MacClipboard.install(tester, initial: 'a\r\nb');
+        final rig = await wi82Pump(tester, query: 'hydration');
+        await wi82FocusField(tester);
+        wi82Editable(tester).controller.selection = const TextSelection(
+          baseOffset: 0,
+          extentOffset: 5,
+        );
+        await tester.pump();
+        final paste = await openMenu(tester, 'Paste');
+        await tester.tap(paste, kind: PointerDeviceKind.mouse);
+        await tester.pumpAndSettle();
+        expect(rig.find.state.query, 'a btion');
+        expect(wi82Editable(tester).controller.text, 'a btion');
+        expect(
+          wi82Editable(tester).controller.selection,
+          const TextSelection.collapsed(offset: 3),
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'the other menu items stay: Copy puts the selected letters on the clipboard and does not paste',
+      (tester) async {
+        final clip = MacClipboard.install(tester, initial: 'two\nlines');
+        final rig = await wi82Pump(tester, query: 'hydration');
+        await wi82FocusField(tester);
+        wi82Editable(tester).controller.selection = const TextSelection(
+          baseOffset: 0,
+          extentOffset: 5,
+        );
+        await tester.pump();
+        final copy = await openMenu(tester, 'Copy');
+        expect(copy, findsOneWidget);
+        await tester.tap(copy, kind: PointerDeviceKind.mouse);
+        await tester.pumpAndSettle();
+        expect(clip.writes, ['hydra']);
+        expect(rig.find.state.query, 'hydration');
+        expect(wi82Editable(tester).controller.text, 'hydration');
+      },
+      variant: macOnly,
+    );
+  });
+
   group('a mouse click on the bar', () {
     testWidgets(
       'a mouse click on the down button keeps focus in the find field',

@@ -202,6 +202,36 @@ void main() {
       true,
     ),
     (
+      'at body 324 a 14 character full counter 1,000 of 9,999 fits and keeps the full form beside a 97 px field',
+      324,
+      'x',
+      wi82Many(9999),
+      999,
+      97.6,
+      '1,000 of 9,999',
+      true,
+    ),
+    (
+      'at body 324 the full counter 1,000 of 10,000 would push the field under 96 px so the short form 1,000/10,000 shows',
+      324,
+      'x',
+      wi82Many(10000),
+      999,
+      110.8,
+      '1,000/10,000',
+      true,
+    ),
+    (
+      'at body 324 neither 100,000/100,000 nor its full form leaves a 96 px field so the counter hides',
+      324,
+      'x',
+      wi82Many(100000),
+      99999,
+      202,
+      null,
+      true,
+    ),
+    (
       'at body 264 a query with no matches reads None in the short slot beside a 96 px field',
       264,
       'zzz',
@@ -278,6 +308,7 @@ void main() {
         (wi82Word, null, 1),
         ('zzz', null, null),
         ('x', wi82Many(2431), 0),
+        ('x', wi82Many(10000), 9999),
       ];
       for (final body in bodies) {
         for (final (query, sources, current) in seeds) {
