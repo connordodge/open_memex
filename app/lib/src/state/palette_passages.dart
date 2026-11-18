@@ -131,7 +131,13 @@ class PalettePassagesRunner extends PalettePassagesNotifier {
     if (running != null) {
       final served =
           !again && running.query == query && running.session == _session;
-      _queued = served ? null : query;
+      // A served input drops an older queued one, but never the re-run a
+      // finished download queued for this same input.
+      if (!served) {
+        _queued = query;
+      } else if (_queued != query) {
+        _queued = null;
+      }
       return;
     }
     _run(query);
@@ -154,7 +160,9 @@ class PalettePassagesRunner extends PalettePassagesNotifier {
     }
     if (!identical(_inFlight, run)) return;
     _inFlight = null;
-    if (_shows(run)) _show(run, answer);
+    // A re-run queued for this same input (the model just arrived) answers
+    // instead, so this older answer never brings the Download button back.
+    if (_shows(run) && _queued != run.query) _show(run, answer);
     final next = _queued;
     _queued = null;
     if (next != null && !_closed && next == _query) _run(next);
@@ -197,9 +205,11 @@ class PalettePassagesRunner extends PalettePassagesNotifier {
   }
 
   /// A model-not-downloaded answer's view for the vault's download state.
+  /// With no hits it stays [shown], so an all-empty palette still shows
+  /// `no matches for “<query>”` (req 33).
   PassagesView _withDownload(List<PassageItem> rows, PassagesView shown) {
     final vault = ref.read(currentVaultProvider);
-    if (vault == null) return shown;
+    if (vault == null || rows.isEmpty) return shown;
     return switch (ref.read(searchModelDownloadProvider(vault))) {
       SearchModelDownloadStatus.downloading => PassagesDownloading(rows),
       SearchModelDownloadStatus.failed => PassagesDownloadFailed(rows),
@@ -212,7 +222,9 @@ class PalettePassagesRunner extends PalettePassagesNotifier {
     final view = state;
     switch (status) {
       case SearchModelDownloadStatus.downloading:
-        if (_wantsModel(view)) state = PassagesDownloading(view.rows);
+        if (_wantsModel(view) && view.rows.isNotEmpty) {
+          state = PassagesDownloading(view.rows);
+        }
       case SearchModelDownloadStatus.failed:
         if (view is PassagesDownloading) {
           state = PassagesDownloadFailed(view.rows);
