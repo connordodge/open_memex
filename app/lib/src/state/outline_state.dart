@@ -7,6 +7,7 @@ import '../editor/outline.dart';
 import '../vault_access/vault_scoped.dart';
 import 'editor_controller.dart';
 import 'today_state.dart';
+import 'vault_state.dart';
 
 /// The Outline of one note: its id, the live editor text the entries came
 /// from, and the entries.
@@ -50,8 +51,11 @@ final _outlineEntriesProvider = Provider.autoDispose
 /// `EditorController.contentMd` with that note's role. A null value means no
 /// note is open. Loading while the editor's note is still loading, and while
 /// the editor still holds another note's text (a note switch before the
-/// editor loads the new note). AutoDispose: nothing is computed while nothing
-/// listens (R41).
+/// editor loads the new note). When the editor already holds the selected
+/// note but the note value is still the previous one (a virtual Today note
+/// whose first edit just resolved it to the real daily note), the entries
+/// come from the editor text with that previous value's role. AutoDispose:
+/// nothing is computed while nothing listens (R41).
 final outlineProvider =
     Provider.autoDispose<AsyncValue<VaultScoped<NoteOutline?>>>((ref) {
       final noteAsync = ref.watch(editorNoteAsyncProvider);
@@ -67,7 +71,15 @@ final outlineProvider =
       }
       final Note? note = scoped.value;
       if (note == null) return AsyncData(VaultScoped(scoped.vault, null));
-      if (ref.read(editorControllerProvider.notifier).activeNoteId != note.id) {
+      final activeId = ref.read(editorControllerProvider.notifier).activeNoteId;
+      // The editor already holds the selected note while the note value is
+      // still the previous one: a virtual Today note that its first edit just
+      // made the real daily note, whose read is in flight. Its text is the
+      // selected note's, so the entries stay (same daily role) rather than
+      // blanking to the loading state.
+      if (activeId == null ||
+          (activeId != note.id &&
+              activeId != ref.watch(selectedNoteIdProvider))) {
         return const AsyncLoading();
       }
       final text = editor.contentMd;
@@ -75,7 +87,7 @@ final outlineProvider =
       return AsyncData(
         VaultScoped(
           scoped.vault,
-          NoteOutline(noteId: note.id, content: text, entries: entries),
+          NoteOutline(noteId: activeId, content: text, entries: entries),
         ),
       );
     });
