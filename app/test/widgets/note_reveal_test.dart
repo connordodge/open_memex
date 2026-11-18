@@ -98,6 +98,16 @@ Future<void> _wi66ExpectStill(
   }
 }
 
+/// After an arrival that landed at the top, a user scroll is reported again
+/// (the arrival released the held reports).
+Future<void> _wi66ExpectReportsResume(NoteRevealHarness h) async {
+  await h.scrollTo(200);
+  expect(h.recorded.last, (
+    noteId: revealLongId,
+    offset: 200.0,
+  ), reason: 'the scroll after the arrival is recorded');
+}
+
 /// A control after a no-op: a request for the mid heading lands it.
 Future<void> _wi66ExpectControlLands(
   WidgetTester tester,
@@ -664,13 +674,19 @@ void main() {
           h.lineBoxOf(0, at).bottom,
           h.viewport().bottom + 1,
         );
+        final displaced = h.pixels();
+        expect(displaced, closeTo(pixels - 1, _wi66Px), reason: 'moved 1 px');
         h.request(_wi66Req(h, at, placement: _wi66Within60));
         await pumpFrames(tester);
         expect(
           h.lineBoxOf(0, at).bottom,
           closeTo(h.viewport().bottom, _wi66Px),
         );
-        expect(h.pixels(), closeTo(pixels + 1, _wi66Px), reason: 'by 1 px');
+        expect(
+          h.pixels(),
+          closeTo(displaced + 1, _wi66Px),
+          reason: 'scrolled by 1 px, back to the bottom edge',
+        );
       },
     );
 
@@ -907,6 +923,136 @@ void main() {
       expect(h.pending, isNull);
     });
 
+    testWidgets('an unlocatable text request lands at the top on arrival', (
+      tester,
+    ) async {
+      final h = await pumpNoteReveal(tester);
+      await h.scrollTo(1500);
+      await h.navigate(const NoteTab(revealOtherId));
+      final content = revealLongBody;
+
+      // Back would restore 1500.
+      h.tabs.back();
+      h.request(
+        NoteRevealRequest(
+          revealLongId,
+          RevealAtText(segment: 4, start: 0, content: content),
+          _wi66Top16,
+          flash: true,
+        ),
+      );
+      await pumpFrames(tester);
+      await pumpFrames(tester);
+
+      expect(h.body().note.id, revealLongId);
+      expect(h.pixels(), 0.0);
+      expect(h.highlight, findsNothing);
+      expect(h.pending, isNull);
+      await _wi66ExpectReportsResume(h);
+    });
+
+    testWidgets('an unlocatable card request lands at the top on arrival', (
+      tester,
+    ) async {
+      final h = await pumpNoteReveal(tester);
+      await h.scrollTo(1500);
+      await h.navigate(const NoteTab(revealOtherId));
+
+      h.tabs.back();
+      h.request(
+        NoteRevealRequest(
+          revealLongId,
+          RevealAtCard(segment: 0, content: revealLongBody),
+          _wi66Top16,
+          flash: true,
+        ),
+      );
+      await pumpFrames(tester);
+      await pumpFrames(tester);
+
+      expect(h.body().note.id, revealLongId);
+      expect(h.pixels(), 0.0);
+      expect(h.highlight, findsNothing);
+      expect(h.pending, isNull);
+      await _wi66ExpectReportsResume(h);
+    });
+
+    testWidgets(
+      'a text request whose content differs from the text shown lands at the top on arrival',
+      (tester) async {
+        final h = await pumpNoteReveal(tester);
+        await h.scrollTo(1500);
+        await h.navigate(const NoteTab(revealOtherId));
+
+        h.tabs.back();
+        h.request(
+          NoteRevealRequest(
+            revealLongId,
+            RevealAtText(
+              segment: 0,
+              start: _wi66StoredMid,
+              content: '${revealLongBody}stale',
+            ),
+            _wi66Top16,
+            flash: true,
+          ),
+        );
+        for (var i = 0; i < 8; i++) {
+          await pumpFrames(tester);
+        }
+
+        expect(h.body().note.id, revealLongId);
+        expect(h.pixels(), 0.0);
+        expect(h.highlight, findsNothing);
+        expect(h.pending, isNull);
+        await _wi66ExpectReportsResume(h);
+      },
+    );
+
+    // The same arrivals on the note already shown (a focused second tab):
+    // the editor keeps its scroll, so opening at the top is observable.
+    for (final (name, at) in <(String, RevealAt Function())>[
+      (
+        'an unlocatable text request lands at the top on a same note arrival',
+        () => RevealAtText(segment: 4, start: 0, content: revealLongBody),
+      ),
+      (
+        'an unlocatable card request lands at the top on a same note arrival',
+        () => RevealAtCard(segment: 0, content: revealLongBody),
+      ),
+      (
+        'a stale text request lands at the top on a same note arrival',
+        () => RevealAtText(
+          segment: 0,
+          start: _wi66StoredMid,
+          content: '${revealLongBody}stale',
+        ),
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final h = await pumpNoteReveal(tester);
+        h.tabs.openOrFocus(const NoteTab(revealOtherId));
+        await pumpFrames(tester);
+        await h.navigate(const NoteTab(revealLongId));
+        expect(h.tabState.activeIndex, 1);
+        await h.scrollTo(1500);
+
+        h.tabs.openOrFocus(const NoteTab(revealLongId));
+        h.request(
+          NoteRevealRequest(revealLongId, at(), _wi66Top16, flash: true),
+        );
+        for (var i = 0; i < 8; i++) {
+          await pumpFrames(tester);
+        }
+
+        expect(h.tabState.activeIndex, 0);
+        expect(h.pixels(), 0.0);
+        expect(h.highlight, findsNothing);
+        expect(h.pending, isNull);
+        await _wi66ExpectReportsResume(h);
+      });
+    }
+
     testWidgets('an unlocatable text request does nothing', (tester) async {
       final h = await pumpNoteReveal(tester);
       await h.scrollTo(1500);
@@ -1091,6 +1237,32 @@ void main() {
           greaterThan(lines.bottom),
           reason: 'line 53 is not part of it',
         );
+      },
+    );
+
+    testWidgets(
+      'revealAnchorRect with an empty or inverted range is the first line only',
+      (tester) async {
+        final h = await pumpNoteReveal(tester);
+        final start = _wi66Line(h, 50);
+        final row = _wi66RowBox(h, 0, 0);
+        final spec = h.rowOf(0, start).spec;
+        final line = h.lineBoxOf(0, start);
+
+        for (final end in [spec.toLocal(start), spec.toLocal(start) - 6]) {
+          final rect = revealAnchorRect(row, _wi66Echo(h, start), end: end);
+
+          expect(
+            row.localToGlobal(rect.topLeft).dy,
+            closeTo(line.top, _wi66Px),
+            reason: 'end $end',
+          );
+          expect(
+            rect.height,
+            closeTo(line.height, _wi66Px),
+            reason: 'end $end',
+          );
+        }
       },
     );
 
