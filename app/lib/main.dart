@@ -13,6 +13,7 @@ import 'src/state/app_support_dir.dart';
 import 'src/state/app_version.dart';
 import 'src/state/find_menu_enablement.dart';
 import 'src/state/hosted_identity.dart';
+import 'src/state/palette_passages.dart';
 import 'src/state/picker_actions.dart';
 import 'src/state/settings.dart';
 import 'src/state/spelling_menu_sync.dart';
@@ -80,6 +81,7 @@ final List<Override> appRootOverrides = [
   pickerActionsProvider.overrideWithValue(const AppPickerActions()),
   updateTokenSeamProvider.overrideWith(_editServerSeam),
   hostedUpdateTokenProvider.overrideWith(_editServerSeam),
+  ...palettePassagesOverrides,
   ...paletteShellOverrides,
 ];
 
