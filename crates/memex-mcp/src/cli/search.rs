@@ -1,0 +1,68 @@
+//! `memex search` (Spec #59 requirements 34-36): the Command palette's note
+//! text search, as `memex_core::note_search::note_search` answers it.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use clap::Args;
+use memex_core::embedder::{Embedder, FastEmbedder};
+use memex_core::note_search::{note_search, SearchEmbedder};
+use memex_core::Vault;
+use serde_json::Value;
+
+use super::echoes::{validate_limit, OTHERS_CAP};
+use super::write_json_line;
+use crate::state::{build_embedder_in, model_cache_dir};
+
+/// `memex search --vault V --query TEXT [--limit N] [--allow-download]`
+#[derive(Args, Debug)]
+pub struct SearchArgs {
+    /// Vault directory.
+    #[arg(long)]
+    pub vault: PathBuf,
+    /// The text to search for, as given (it may start with a hyphen).
+    #[arg(long, allow_hyphen_values = true)]
+    pub query: String,
+    /// Most hits to print, 1 to 20.
+    #[arg(long, default_value_t = 8)]
+    pub limit: i64,
+    /// Download the embedding model (about 130 MB) into the vault if it is not
+    /// cached.
+    #[arg(long)]
+    pub allow_download: bool,
+}
+
+/// Prints one line of JSON in the `NoteSearch` shape and exits 0, whatever
+/// the meaning state: without `--allow-download` an uncached model answers
+/// keyword hits as `model_not_downloaded`; a model that fails to download,
+/// load or embed answers them as `unavailable`. A bad `--limit` or vault
+/// path is a C1 error.
+///
+/// An empty or whitespace query never downloads the model: it builds the
+/// embedder only when the model is already cached, whatever
+/// `--allow-download` says, so an uncached model answers
+/// `model_not_downloaded`. With a cached model, core probes that it loads
+/// (`note_search`, #96) and answers `on` or `unavailable`.
+pub fn run(args: SearchArgs) -> anyhow::Result<()> {
+    let limit = validate_limit(args.limit)?;
+    // Opened first, so a missing vault path creates no model folder and
+    // contacts no hub.
+    let mut vault = Vault::open(&args.vault)?;
+    let cached = FastEmbedder::is_cached(&model_cache_dir(&args.vault));
+    // A blank query never fetches the model, so `--allow-download` counts
+    // only for a query that has text.
+    let may_download = args.allow_download && !args.query.trim().is_empty();
+    let embedder: Option<Arc<dyn Embedder>> = if may_download || cached {
+        Some(build_embedder_in(&args.vault))
+    } else {
+        None
+    };
+    let search_embedder = match &embedder {
+        Some(e) => SearchEmbedder::Ready(e.as_ref()),
+        None => SearchEmbedder::NotDownloaded,
+    };
+    let mut conn = vault.connection_mut();
+    let out = note_search(&mut conn, &args.query, limit, search_embedder, OTHERS_CAP)?;
+    let value: Value = serde_json::to_value(out)?;
+    write_json_line(&mut std::io::stdout().lock(), &value)
+}

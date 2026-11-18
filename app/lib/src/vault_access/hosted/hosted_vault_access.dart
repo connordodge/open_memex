@@ -11,6 +11,7 @@ import 'graph.dart';
 import 'hosted_client.dart';
 import 'notes.dart';
 import 'revision.dart';
+import 'search.dart';
 import 'tags.dart';
 import 'topics.dart';
 import 'words.dart';
@@ -53,6 +54,7 @@ class HostedVaultAccess implements VaultAccess {
       graph = HostedGraphAccess(client: client, vaultName: vaultName),
       tags = HostedTagsAccess(client: client, vaultName: vaultName),
       words = HostedWordsAccess(client: client, vaultName: vaultName),
+      search = HostedSearchAccess(client: client, vaultName: vaultName),
       _revision = HostedRevision(client, vaultName);
 
   final _ComposedClient _client;
@@ -90,9 +92,9 @@ class HostedVaultAccess implements VaultAccess {
   @override
   final HostedWordsAccess words;
 
-  /// A placeholder until the hosted search route's access lands (#75).
+  /// A [HostedSearchAccess] (#75).
   @override
-  final SearchAccess search = const _ServerOutdatedSearch();
+  final SearchAccess search;
 
   final HostedRevision _revision;
 
@@ -188,16 +190,4 @@ class _ComposedClient implements HostedClient {
       rethrow;
     }
   }
-}
-
-/// The hosted [SearchAccess] until #75: a vault server's search route is not
-/// wired yet, so every search answers [ServerOutdated].
-class _ServerOutdatedSearch implements SearchAccess {
-  const _ServerOutdatedSearch();
-
-  @override
-  Future<SearchResult> search(
-    String query, {
-    bool allowDownload = false,
-  }) async => const SearchUnavailable(ServerOutdated());
 }

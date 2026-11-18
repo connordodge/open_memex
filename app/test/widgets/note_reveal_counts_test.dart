@@ -291,6 +291,56 @@ void main() {
       );
     });
 
+    testWidgets(
+      'a request for the outgoing zoomed canvas editor note gives no jump there',
+      (tester) async {
+        const duration = Duration(milliseconds: 300);
+        const canvas = CanvasTab(C89.newer);
+        const zoomedAlpha = CanvasTab(C89.newer, zoomedNoteId: C89.alpha);
+        const zoomedBeta = CanvasTab(C89.newer, zoomedNoteId: C89.beta);
+        Finder zoomed(String id) => find.byKey(Key('zoomed-$id'));
+        final db = seedRevealNotes(seedCanvasFixture(FakeVaultDb.v5()));
+        for (final id in [C89.alpha, C89.beta]) {
+          db.db.execute('UPDATE notes SET content_md = ? WHERE id = ?', [
+            revealLongBody,
+            id,
+          ]);
+        }
+        final h = await pumpNoteReveal(
+          tester,
+          db: db,
+          open: null,
+          zoom: duration,
+        );
+        await h.navigate(canvas);
+        await pumpFrames(tester);
+        await h.navigate(zoomedAlpha);
+        await tester.pump(duration);
+        await tester.pump(duration);
+        await pumpFrames(tester);
+        final alphaJumps = h.jumps(under: zoomed(C89.alpha));
+        final recorded = h.recorded.length;
+
+        // The switch has begun: alpha is outgoing when the request is made.
+        h.tabs.navigate(zoomedBeta);
+        h.request(_wi66cMidRequest(noteId: C89.alpha, flash: true));
+        await tester.pump(const Duration(milliseconds: 50));
+        await tester.pump(const Duration(milliseconds: 50));
+        expect(zoomed(C89.alpha), findsOneWidget, reason: 'still switching');
+        await tester.pump(const Duration(milliseconds: 50));
+        await tester.pump(duration);
+        await tester.pump(duration);
+        await pumpFrames(tester);
+
+        expect(alphaJumps.count, 0, reason: 'the outgoing editor never lands');
+        expect(h.highlight, findsNothing);
+        expect(
+          h.recorded.skip(recorded).where((r) => r.noteId == C89.alpha),
+          isEmpty,
+        );
+      },
+    );
+
     testWidgets('RevealWithin with the anchor already in band gives no jump', (
       tester,
     ) async {

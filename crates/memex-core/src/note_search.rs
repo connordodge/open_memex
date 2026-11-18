@@ -20,6 +20,10 @@ use crate::{MemexError, Result};
 const DAILY_ROLE: &str = "daily";
 const TOPIC_ROLE: &str = "topic";
 
+/// The text a blank query embeds with a `Ready` embedder, to learn whether
+/// the model loads.
+const LOAD_PROBE: &str = "memex";
+
 /// What the caller can offer for meaning search.
 pub enum SearchEmbedder<'a> {
     /// A loaded (or lazily loading) local embedder.
@@ -85,7 +89,10 @@ pub struct NoteSearchHit {
 ///   runs FTS and kNN (`on`; `unavailable` when the kNN query cannot run).
 ///   A DB error while embedding pending chunks skips that step; an embedder
 ///   error anywhere answers FTS hits as `unavailable`. Neither is an `Err`.
-/// - An empty or whitespace query answers no hits, with no embedder call.
+/// - An empty or whitespace query answers no hits and takes no lease. With
+///   `Ready` it embeds one probe text, so a model that cannot load answers
+///   `unavailable` (`on` when it loads); it embeds no pending chunk. `Off`
+///   and `NotDownloaded` make no embedder call.
 ///
 /// No lease is held across inference (D10): the query vector is computed
 /// first, then one lease and one read transaction cover FTS, kNN,
@@ -104,6 +111,10 @@ pub fn note_search<L: ConnLease>(
     };
     let q = query.trim();
     if q.is_empty() {
+        let semantic = match ready {
+            Some(e) if e.embed_batch(&[LOAD_PROBE.to_string()]).is_err() => Semantic::Unavailable,
+            _ => semantic,
+        };
         return Ok(NoteSearch {
             query: query.to_string(),
             semantic,

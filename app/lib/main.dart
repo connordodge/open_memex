@@ -11,6 +11,7 @@ import 'src/state/agents_sheet/agents_menu_enablement.dart';
 import 'src/state/app_exit.dart';
 import 'src/state/app_support_dir.dart';
 import 'src/state/app_version.dart';
+import 'src/state/find_menu_enablement.dart';
 import 'src/state/hosted_identity.dart';
 import 'src/state/picker_actions.dart';
 import 'src/state/settings.dart';
@@ -131,6 +132,7 @@ class _OpenMemexAppState extends ConsumerState<OpenMemexApp> {
     );
     ref.read(spellingMenuSyncProvider); // Spelling menu and tags (#392, D24).
     ref.read(agentsMenuEnablementProvider); // Window ▸ Agents… (#408, D24).
+    ref.read(findMenuEnablementProvider); // Edit ▸ Find (#81, D13).
   }
 
   @override
@@ -181,6 +183,7 @@ class _OpenMemexAppState extends ConsumerState<OpenMemexApp> {
     final theme = buildOmTheme();
     return MaterialApp(
       navigatorKey: _navigatorKey,
+      navigatorObservers: [ref.read(findMenuModalObserverProvider)],
       title: 'Open Memex',
       debugShowCheckedModeBanner: false,
       themeMode: ThemeMode.dark,

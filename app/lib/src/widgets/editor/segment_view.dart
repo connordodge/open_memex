@@ -1,7 +1,13 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../editor/editor_rows.dart';
+import '../../editor/find_in_note.dart';
+import '../../editor/markdown_lines.dart';
+import '../../state/find_in_note_state.dart';
+import '../find/find_highlights.dart';
+import '../find/find_keys.dart';
 import '../../editor/row_geometry.dart';
 import '../../editor/tag_grammar.dart' show fencedRowLines;
 import 'editor_row.dart';
@@ -93,6 +99,7 @@ class SegmentView extends StatefulWidget {
     required this.onRowRemoved,
     required this.fieldBuilder,
     required this.builder,
+    this.active = true,
   });
 
   /// The segment's index (`<i>` of `text-segment-<i>`).
@@ -123,6 +130,12 @@ class SegmentView extends StatefulWidget {
 
   final SegmentRowsBuilder builder;
 
+  /// Whether this segment belongs to the active editor (#61 F3, F6 wires
+  /// it): its rows' and table grid cells' find highlights (Keys
+  /// `find-highlights-<s>-<r>`, `find-highlights-grid-<s>-<row>-<cell>`)
+  /// paint only while true.
+  final bool active;
+
   @override
   State<SegmentView> createState() => SegmentViewState();
 }
@@ -149,6 +162,11 @@ class _Row {
 
   /// Holds a table row's grid while it shows (ruling D12).
   final GlobalKey gridKey;
+
+  /// The controller's value as its listener last saw it: a notification
+  /// with the same value (the controller repainting for its find
+  /// decoration, hover or resolver) is no edit and no selection move.
+  TextEditingValue seen = TextEditingValue.empty;
 
   late final VoidCallback onValue;
   late final VoidCallback onFocus;
@@ -217,6 +235,7 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
 
   _Row _newRow(RowSpec spec) {
     final row = _Row(spec, _text.substring(spec.textStart, spec.textEnd));
+    row.seen = row.controller.value;
     row.onValue = () => _onRowValue(row);
     row.onFocus = () => _onRowFocus(row);
     row.controller.addListener(row.onValue);
@@ -264,8 +283,10 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
 
   /// A row field's typed change or selection move.
   void _onRowValue(_Row row) {
-    if (_applying) return;
     final value = row.controller.value;
+    final changed = value != row.seen;
+    row.seen = value;
+    if (_applying || !changed) return;
     if (_intercepted(row, value)) return;
     if (value.text != row.text) {
       final local = SegmentEdit.diff(row.text, value.text);
@@ -679,32 +700,58 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
         for (final (r, row) in _rows.indexed)
           KeyedSubtree(
             key: ObjectKey(row.controller),
-            child: EditorRow(
-              segment: widget.index,
-              index: r,
-              kind: row.spec.kind,
-              geometry: geometries[r],
-              // The marker as written, without the row's indentation.
-              marker: _text
-                  .substring(row.spec.start, row.spec.textStart)
-                  .trimLeft(),
-              controller: row.controller,
-              focusNode: row.focusNode,
-              boxes: () => _rowBoxes(row),
-              gridKey: row.gridKey,
-              field: KeyedSubtree(
-                key: row.fieldKey,
-                child: widget.fieldBuilder(
-                  context,
-                  EditorRowField(
+            // Find highlights below the row (#61 F3, Req 28): under its
+            // selection fill, spelling squiggles and text.
+            child: Stack(
+              fit: StackFit.passthrough,
+              children: [
+                Positioned.fill(
+                  child: _RowFindHighlights(
+                    segment: widget.index,
+                    index: r,
+                    spec: row.spec,
                     controller: row.controller,
-                    focusNode: row.focusNode,
-                    first: r == 0,
-                    last: r == last,
-                    hintText: _text.isEmpty ? widget.hintText : null,
+                    revealGate: widget.revealGate,
+                    active: widget.active,
+                    boxes: () => _fieldBoxes(row),
+                    // Where the field sits in the row: an indent or a
+                    // wider marker column moves it under equal ranges.
+                    layout: (row.spec.kind, geometries[r]?.textX),
                   ),
                 ),
-              ),
+                FindGridScope(
+                  segment: widget.index,
+                  textStart: row.spec.textStart,
+                  active: widget.active,
+                  child: EditorRow(
+                    segment: widget.index,
+                    index: r,
+                    kind: row.spec.kind,
+                    geometry: geometries[r],
+                    // The marker as written, without the row's indentation.
+                    marker: _text
+                        .substring(row.spec.start, row.spec.textStart)
+                        .trimLeft(),
+                    controller: row.controller,
+                    focusNode: row.focusNode,
+                    boxes: () => _rowBoxes(row),
+                    gridKey: row.gridKey,
+                    field: KeyedSubtree(
+                      key: row.fieldKey,
+                      child: widget.fieldBuilder(
+                        context,
+                        EditorRowField(
+                          controller: row.controller,
+                          focusNode: row.focusNode,
+                          first: r == 0,
+                          last: r == last,
+                          hintText: _text.isEmpty ? widget.hintText : null,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
       ],
@@ -740,6 +787,85 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
       ),
       lineBoxes,
     );
+  }
+}
+
+/// The find highlights of one editor row's field (#61 F3, Key
+/// `find-highlights-<segment>-<index>`): the matches in the row's
+/// `[textStart, textEnd)` of the segment text, over the field's line boxes.
+///
+/// A hidden match on a line the field reveals now (the caret or selection
+/// on it, as `revealedLines` decides for the field's own span) paints as a
+/// visible match (lead ruling Q1). A table row showing its grid paints
+/// nothing here: its cells paint their own (D8). Nothing while not
+/// [active].
+class _RowFindHighlights extends ConsumerWidget {
+  const _RowFindHighlights({
+    required this.segment,
+    required this.index,
+    required this.spec,
+    required this.controller,
+    required this.revealGate,
+    required this.active,
+    required this.boxes,
+    required this.layout,
+  });
+
+  final int segment;
+  final int index;
+  final RowSpec spec;
+  final LivePreviewController controller;
+  final ValueListenable<bool> revealGate;
+  final bool active;
+  final LineBoxSource? Function() boxes;
+
+  /// The layer's [FindHighlights.layout]: the field's place in the row.
+  final Object? layout;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state = ref.watch(findInNoteProvider);
+    // The field's text, selection and reveal change its layout and which
+    // lines show their markup.
+    final changes = Listenable.merge([controller, revealGate]);
+    return ListenableBuilder(
+      listenable: changes,
+      builder: (context, _) => FindHighlights(
+        key: findHighlightsKey(segment, index),
+        ranges: active && !(controller.tableRow && !controller.tableRevealed)
+            ? findPaintRanges(
+                state,
+                segment: segment,
+                kind: FindSourceKind.body,
+                start: spec.textStart,
+                end: spec.textEnd,
+                revealed: _revealed(),
+              )
+            : const [],
+        boxes: boxes,
+        repaint: changes,
+        layout: layout,
+      ),
+    );
+  }
+
+  /// The field-local ranges of the field's lines that show their markup
+  /// now, as `LivePreviewController.buildTextSpan` decides them.
+  List<TextRange> _revealed() {
+    final lines = classifyLines(
+      controller.text,
+      atSegmentStart: controller.atSegmentStart,
+    );
+    final revealed = revealedLines(
+      lines,
+      controller.selection,
+      forceHidden: !revealGate.value,
+      itemText: controller.itemText,
+    );
+    return [
+      for (final (i, line) in lines.indexed)
+        if (revealed[i]) TextRange(start: line.start, end: line.contentEnd),
+    ];
   }
 }
 
