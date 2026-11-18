@@ -139,12 +139,6 @@ void main() {
     },
   );
 
-  // #36 (B2) replaces this test when it commits the real key, with its
-  // decodes-to-32-bytes test (D9a).
-  test('the committed public key is empty until the release key lands', () {
-    expect(sparkleEdPublicKey, '');
-  });
-
   test('appBuildNumberProvider is empty until main overrides it', () {
     final container = ProviderContainer();
     addTearDown(container.dispose);
