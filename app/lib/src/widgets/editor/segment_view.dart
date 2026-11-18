@@ -150,6 +150,11 @@ class _Row {
   /// Holds a table row's grid while it shows (ruling D12).
   final GlobalKey gridKey;
 
+  /// The controller's value as its listener last saw it: a notification
+  /// with the same value (the controller repainting for its find
+  /// decoration, hover or resolver) is no edit and no selection move.
+  TextEditingValue seen = TextEditingValue.empty;
+
   late final VoidCallback onValue;
   late final VoidCallback onFocus;
 }
@@ -217,6 +222,7 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
 
   _Row _newRow(RowSpec spec) {
     final row = _Row(spec, _text.substring(spec.textStart, spec.textEnd));
+    row.seen = row.controller.value;
     row.onValue = () => _onRowValue(row);
     row.onFocus = () => _onRowFocus(row);
     row.controller.addListener(row.onValue);
@@ -264,8 +270,10 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
 
   /// A row field's typed change or selection move.
   void _onRowValue(_Row row) {
-    if (_applying) return;
     final value = row.controller.value;
+    final changed = value != row.seen;
+    row.seen = value;
+    if (_applying || !changed) return;
     if (_intercepted(row, value)) return;
     if (value.text != row.text) {
       final local = SegmentEdit.diff(row.text, value.text);

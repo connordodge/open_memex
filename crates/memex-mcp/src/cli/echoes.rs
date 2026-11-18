@@ -20,7 +20,7 @@ pub const LIMIT_MIN: i64 = 1;
 pub const LIMIT_MAX: i64 = 20;
 /// The CLI's `others_cap`: other notes' unembedded chunks one read embeds
 /// (Spec #391 req 11.1, "64 locally").
-const OTHERS_CAP: usize = 64;
+pub(crate) const OTHERS_CAP: usize = 64;
 
 /// `memex echoes --vault V --note-id ID [--limit N] [--allow-download]`
 #[derive(Args, Debug)]
