@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../editor/markdown_inline.dart';
 import '../../editor/markdown_table.dart'
@@ -10,7 +11,10 @@ import '../../editor/row_geometry.dart';
 import '../../editor/table_geometry.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
+import '../../state/find_in_note_state.dart';
 import '../find/find_highlights.dart';
+import '../find/find_in_note_host.dart' show findFieldDecoration;
+import 'find_decoration.dart';
 import 'line_boxes.dart';
 import 'live_preview_controller.dart';
 import 'live_preview_decorations.dart';
@@ -104,7 +108,32 @@ class TableGridState extends State<TableGrid> {
     // The cells mount their find highlights under a scope (#61 F3, D8): a
     // text segment's body rows, an excerpt card's table rows.
     final find = FindGridScope.maybeOf(context);
-    Widget cellText(int g, int j, RichText text) {
+    // Find in note's ink in cell [j] of grid row [g] (#61 F6, D7): built
+    // under the find state while the grid's scope is active.
+    Widget inked(int g, int j, RichText Function(FindDecoration? ink) text) {
+      if (find == null || !find.active || j >= rows[g].length) {
+        return text(null);
+      }
+      final start = find.textStart + rows[g][j].start;
+      final end = find.textStart + rows[g][j].end;
+      return Consumer(
+        builder: (context, ref, _) => text(
+          ref.watch(
+            findInNoteProvider.select(
+              (state) => findFieldDecoration(
+                state,
+                segment: find.segment,
+                kind: find.kind,
+                start: start,
+                end: end,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    Widget cellText(int g, int j, Widget text) {
       if (find == null || j >= rows[g].length) return text;
       final cell = rows[g][j];
       final start = find.textStart + cell.start;
@@ -143,29 +172,35 @@ class TableGridState extends State<TableGrid> {
               child: cellText(
                 g,
                 j,
-                RichText(
-                  textAlign: _textAlign(table.alignments[j]),
-                  textScaler: scaler,
-                  strutStyle: strut,
-                  text: buildLivePreviewSpan(
-                    j < cells.length ? cells[j].text(text) : '',
-                    style: g == 0 ? headerStyle : widget.style,
-                    itemText: true,
-                    forceHidden: true,
-                    // Grid row 0 is line 0; the delimiter line has no grid row.
-                    fenced: [
-                      widget.fenced?.elementAtOrNull(g == 0 ? 0 : g + 1) ??
-                          false,
-                    ],
-                    isResolved: widget.links?.isResolved,
-                    // As the source field judges the cell: by the character
-                    // before it in the table line, not as a line start.
-                    before: j < cells.length
-                        ? unitBeforeInLine(text, cells[j].start)
-                        : null,
-                    cmdHover: j < cells.length
-                        ? _cellHover(hover, cells[j].start, cells[j].end)
-                        : null,
+                inked(
+                  g,
+                  j,
+                  (ink) => RichText(
+                    textAlign: _textAlign(table.alignments[j]),
+                    textScaler: scaler,
+                    strutStyle: strut,
+                    text: buildLivePreviewSpan(
+                      j < cells.length ? cells[j].text(text) : '',
+                      style: g == 0 ? headerStyle : widget.style,
+                      itemText: true,
+                      forceHidden: true,
+                      // Grid row 0 is line 0; the delimiter line has no grid row.
+                      fenced: [
+                        widget.fenced?.elementAtOrNull(g == 0 ? 0 : g + 1) ??
+                            false,
+                      ],
+                      isResolved: widget.links?.isResolved,
+                      // As the source field judges the cell: by the character
+                      // before it in the table line, not as a line start.
+                      before: j < cells.length
+                          ? unitBeforeInLine(text, cells[j].start)
+                          : null,
+                      cmdHover: j < cells.length
+                          ? _cellHover(hover, cells[j].start, cells[j].end)
+                          : null,
+                      inkRanges: ink?.inkRanges ?? const <TextRange>[],
+                      current: ink?.current,
+                    ),
                   ),
                 ),
               ),

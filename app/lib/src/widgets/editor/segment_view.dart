@@ -7,10 +7,12 @@ import '../../editor/find_in_note.dart';
 import '../../editor/markdown_lines.dart';
 import '../../state/find_in_note_state.dart';
 import '../find/find_highlights.dart';
+import '../find/find_in_note_host.dart' show findFieldDecoration;
 import '../find/find_keys.dart';
 import '../../editor/row_geometry.dart';
 import '../../editor/tag_grammar.dart' show fencedRowLines;
 import 'editor_row.dart';
+import 'find_decoration.dart';
 import 'line_boxes.dart';
 import 'live_preview_controller.dart';
 import 'segment_editing.dart';
@@ -163,6 +165,9 @@ class _Row {
   /// Holds a table row's grid while it shows (ruling D12).
   final GlobalKey gridKey;
 
+  /// Find in note's decoration of the row's field (#61 F6, D7).
+  final ValueNotifier<FindDecoration?> find = ValueNotifier(null);
+
   /// The controller's value as its listener last saw it: a notification
   /// with the same value (the controller repainting for its find
   /// decoration, hover or resolver) is no edit and no selection move.
@@ -183,6 +188,9 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
 
   /// The segment text the rows were derived from.
   String _text = '';
+
+  /// The Find in note state the rows' decorations follow (#61 F6).
+  ProviderSubscription<FindInNoteState>? _find;
 
   /// True while the host writes the segment and row controllers.
   bool _applying = false;
@@ -222,7 +230,48 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_find != null) return;
+    _find = ProviderScope.containerOf(
+      context,
+      listen: false,
+    ).listen<FindInNoteState>(findInNoteProvider, (_, _) => _decorateRows());
+    _decorateRows();
+  }
+
+  @override
+  void didUpdateWidget(SegmentView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.active != widget.active || oldWidget.index != widget.index) {
+      _decorateRows();
+    }
+  }
+
+  /// Every row's find decoration, from the Find in note state; none while
+  /// not [SegmentView.active].
+  void _decorateRows() {
+    for (final row in _rows) {
+      _decorate(row);
+    }
+  }
+
+  void _decorate(_Row row) {
+    final state = _find?.read();
+    row.find.value = state == null || !widget.active
+        ? null
+        : findFieldDecoration(
+            state,
+            segment: widget.index,
+            kind: FindSourceKind.body,
+            start: row.spec.textStart,
+            end: row.spec.textEnd,
+          );
+  }
+
+  @override
   void dispose() {
+    _find?.close();
     widget.controller.removeListener(_onSegmentChanged);
     widget.focusNode.removeListener(_onSegmentFocus);
     for (final row in _rows) {
@@ -261,6 +310,7 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   void _disposeRetired() {
     for (final row in _retired) {
       row.controller.dispose();
+      row.find.dispose();
       row.focusNode.dispose();
     }
     _retired.clear();
@@ -511,7 +561,9 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
         ..taskDone = spec.done
         ..quote = spec.kind == RowKind.quote
         ..atSegmentStart = spec.textStart == 0
-        ..revealGate = widget.revealGate;
+        ..revealGate = widget.revealGate
+        ..findDecoration = row.find;
+      _decorate(row);
       // A code row's hidden fence lines lay out 8 px tall (ruling D18).
       // Setting codeRow notifies, so only a change is written.
       final code = spec.kind == RowKind.code;
@@ -861,6 +913,9 @@ class _RowFindHighlights extends ConsumerWidget {
       controller.selection,
       forceHidden: !revealGate.value,
       itemText: controller.itemText,
+      // A line Find in note reveals for the current match shows its markup
+      // too (#61 F6, lead ruling Q1).
+      revealRange: controller.findDecoration?.value?.revealRange,
     );
     return [
       for (final (i, line) in lines.indexed)

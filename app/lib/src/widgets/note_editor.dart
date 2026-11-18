@@ -28,6 +28,8 @@ import 'editor/segmented_body.dart';
 import 'editor/source_surface.dart';
 import 'editor/spelling_learn_error.dart';
 import 'editor/text_segment.dart' show EditorScrollScope;
+import 'find/find_in_note_host.dart';
+import 'find/find_source_controller.dart';
 
 /// The note editor host: wires the selected note and [EditorController] into
 /// the [EditorToolbar], the body (with its [NoteHeader]) and the save status
@@ -122,7 +124,8 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
   void initState() {
     super.initState();
     _titleCtrl = TextEditingController();
-    _bodyCtrl = TextEditingController();
+    // Source mode draws Find in note's match ink (#61 F6, TD3).
+    _bodyCtrl = FindSourceController();
     _scroll.addListener(_reportScroll);
     if (ref.exists(tabsProvider)) {
       final tab = ref.read(tabsProvider).activeTab;
@@ -540,7 +543,17 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
 
   /// What the editor shows over [note]'s body, above it in the body's Stack
   /// (Find in note's bar and matches, #61).
-  List<Widget> _bodyOverlays(Note note) => const [];
+  List<Widget> _bodyOverlays(Note note) => [
+    Positioned.fill(
+      child: FindInNoteHost(
+        note: _hydratedNote ?? note,
+        sourceMode: _sourceMode,
+        sourceController: _bodyCtrl as FindSourceController,
+        bodyFocus: _bodyFocus,
+        zoomedNote: _zoomedNote,
+      ),
+    ),
+  ];
 
   @override
   Widget build(BuildContext context) {
