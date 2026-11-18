@@ -25,6 +25,7 @@ pub mod read_only;
 pub mod restore;
 pub mod revisions;
 pub mod rm;
+pub mod search;
 pub mod serve;
 pub mod settings;
 pub mod tag;
