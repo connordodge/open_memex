@@ -1277,4 +1277,61 @@ void main() {
       },
     );
   });
+
+  // -------------------------------------------------------------------------
+  // Verify pins: out-of-bounds and invalid ranges
+  // -------------------------------------------------------------------------
+  group('out of bounds find ranges', () {
+    test(
+      'ink and current ranges reaching before the start or past the end of the text are clamped to it',
+      () {
+        const text = '~~old~~';
+        // old = offsets 2..5; the markers are hidden without a selection.
+        final head = _build(
+          text,
+          inkRanges: const [TextRange(start: -1, end: 4)],
+        );
+        expect(_colourAt(head, 2), OmColors.fg1, reason: 'o, inside the head');
+        expect(_colourAt(head, 3), OmColors.fg1, reason: 'l, inside the head');
+        expect(_colourAt(head, 4), OmColors.fg2, reason: 'd, at the range end');
+
+        final tail = _build(
+          text,
+          inkRanges: const [TextRange(start: 3, end: 99)],
+        );
+        expect(_colourAt(tail, 2), OmColors.fg2, reason: 'o, before the tail');
+        expect(_colourAt(tail, 3), OmColors.fg1, reason: 'l, inside the tail');
+        expect(_colourAt(tail, 4), OmColors.fg1, reason: 'd, inside the tail');
+
+        final cur = _build(
+          text,
+          inkRanges: const [TextRange(start: 3, end: 99)],
+          current: const TextRange(start: -1, end: 3),
+        );
+        expect(_colourAt(cur, 2), OmColors.surface0, reason: 'o, current');
+        expect(_colourAt(cur, 3), OmColors.fg1, reason: 'l, other');
+        expect(_colourAt(cur, 4), OmColors.fg1, reason: 'd, other');
+      },
+    );
+
+    test(
+      'a reveal range that is not valid reveals no line even when its end reaches one',
+      () {
+        const text = 'One **a** x\nTwo **b** y';
+        final revealed = revealedLines(
+          classifyLines(text, atSegmentStart: true),
+          null,
+          forceHidden: true,
+          revealRange: const TextRange(start: -1, end: 5),
+        );
+        expect(revealed, [false, false]);
+        final selected = revealedLines(
+          classifyLines(text, atSegmentStart: true),
+          _caret(text.length),
+          revealRange: const TextRange(start: -1, end: 5),
+        );
+        expect(selected, [false, true], reason: 'the selection alone');
+      },
+    );
+  });
 }
