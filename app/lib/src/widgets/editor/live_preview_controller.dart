@@ -5,6 +5,7 @@ import '../../editor/markdown_inline.dart';
 import '../../editor/markdown_lines.dart';
 import '../../editor/markdown_table.dart';
 import '../../editor/tag_grammar.dart' show fencedMdLines;
+import 'find_decoration.dart';
 import 'live_preview_styles.dart';
 
 /// A plain press `LinkRegion` marked on a followable link whose line is not
@@ -83,6 +84,13 @@ class LivePreviewController extends TextEditingController {
 
   /// True while the field's text segment has focus. Default: never true.
   ValueListenable<bool> revealGate = const AlwaysStoppedAnimation<bool>(false);
+
+  /// Find in note's decoration of this field (WI #84, ruling D7): its
+  /// reveal range reveals the lines it touches even while [revealGate] is
+  /// false, and its ink ranges recolour the text inside them. Null (the
+  /// default), or a listenable holding null: no decoration. Each time the
+  /// listenable fires, the controller notifies its listeners once.
+  ValueListenable<FindDecoration?>? findDecoration;
 
   /// Whether a wikilink or transclusion target resolves (B3 sets it; D7).
   /// Called with the token's target: a wikilink's title trimmed of
@@ -173,11 +181,16 @@ int tableLastLine(List<MdLine> lines, int header) {
 /// is touched, and every line of a table when any of its lines is touched
 /// (Spec #197 R13). With [itemText] no block reveals as a unit. None while
 /// [forceHidden] or with a null or invalid [selection].
+///
+/// [revealRange] (Find in note's current match, WI #84): the lines it
+/// touches reveal as a selection's would, by the same fence and table rules,
+/// even while [forceHidden]. Null: none.
 List<bool> revealedLines(
   List<MdLine> lines,
   TextSelection? selection, {
   bool forceHidden = false,
   bool itemText = false,
+  TextRange? revealRange,
 }) {
   final revealed = List<bool>.filled(lines.length, false);
   if (forceHidden || selection == null || !selection.isValid) return revealed;
@@ -240,6 +253,11 @@ List<bool> revealedLines(
 ///   whole delimiter line render as markers, and its header line's cell
 ///   text is bold. Every table line stays one body line (no code-row strut).
 ///
+/// - [inkRanges] and [current] (WI #84, Spec #61 Reqs 24-25): inside a range
+///   of [inkRanges] that is not [current], text that would draw in fg2, fg3
+///   or info draws in fg1; inside [current] every run draws in surface0.
+///   They never reveal anything (cards and grid cells pass them).
+///
 /// The controller calls it as `buildLivePreviewSpan(text, style: style,
 /// selection: selection, forceHidden: !revealGate.value, ...)`, forwarding
 /// every prop. `toPlainText()` of the result equals [text] code unit for
@@ -258,6 +276,8 @@ TextSpan buildLivePreviewSpan(
   bool codeRow = false,
   int? before,
   List<bool>? fenced,
+  List<TextRange> inkRanges = const <TextRange>[],
+  TextRange? current,
 }) {
   if (text.isEmpty) return TextSpan(style: style, text: text);
   return _SpanBuilder(
