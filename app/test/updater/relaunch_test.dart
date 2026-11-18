@@ -243,7 +243,6 @@ void main() {
         expect(fakes.fetcher.fetchCount, 0);
         expect(fakes.verifier.calls, isEmpty);
         expect(fakes.location.checkCount, 0);
-        expect(fakes.helper.starts, isEmpty);
         expect(fakes.exit.calls, isEmpty);
         expect(fakes.io.httpRequests, isEmpty);
         expect(fakes.io.writableProbes, isEmpty);
@@ -260,18 +259,19 @@ void main() {
 
         await _relaunchFromMenu(r);
         expect(find.byKey(_confirm), findsOneWidget, reason: 'the quit guard');
-        expect(r.fakes.helper.starts, isEmpty, reason: 'helper after confirm');
+        expect(r.fakes.io.helperRuns, isEmpty, reason: 'helper after confirm');
         expect(r.fakes.exit.calls, isEmpty);
 
         await tester.tap(find.byKey(_proceed));
         await r.robot.settle();
 
         expect(find.byKey(_confirm), findsNothing, reason: 'shown once only');
-        expect(r.fakes.helper.starts, hasLength(1));
-        final start = r.fakes.helper.starts.single;
-        expect(start.pid, 4242);
-        expect(start.bundlePath, '/Applications/Open Memex.app');
-        expect(start.dmgPath, r.fakes.downloader.dmgPath);
+        expect(r.fakes.io.helperRuns, hasLength(1));
+        final run = r.fakes.io.helperRuns.single;
+        expect(run.executable, '/bin/sh');
+        expect(run.arguments[3], '4242', reason: 'the app pid');
+        expect(run.arguments[4], r.fakes.downloader.dmgPath);
+        expect(run.arguments[5], '/Applications/Open Memex.app');
         expect(r.fakes.exit.calls, [AppExitType.required]);
         expect(r.h.read(appExitConfirmationProvider).confirmed, isTrue);
       },
@@ -288,7 +288,7 @@ void main() {
         await r.robot.settle();
 
         expect(find.byKey(_confirm), findsNothing);
-        expect(r.fakes.helper.starts, isEmpty);
+        expect(r.fakes.io.helperRuns, isEmpty);
         expect(r.fakes.exit.calls, isEmpty);
         expect(r.state, isA<UpdateReady>());
         expect(r.h.read(appExitConfirmationProvider).confirmed, isFalse);
@@ -312,7 +312,7 @@ void main() {
         expect(r.fakes.location.checkCount, 1);
         r.robot.expectModal('Update failed');
         expect(find.byKey(_confirm), findsNothing);
-        expect(r.fakes.helper.starts, isEmpty);
+        expect(r.fakes.io.helperRuns, isEmpty);
         expect(r.fakes.exit.calls, isEmpty);
       },
     );
@@ -325,7 +325,7 @@ void main() {
         await _relaunchFromMenu(r);
 
         expect(find.byKey(_confirm), findsNothing);
-        expect(r.fakes.helper.starts, hasLength(1));
+        expect(r.fakes.io.helperRuns, hasLength(1));
         expect(r.fakes.exit.calls, [AppExitType.required]);
       },
     );

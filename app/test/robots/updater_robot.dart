@@ -19,6 +19,11 @@ import '../support/updater_harness.dart';
 /// (`pumpJourneyApp`, `pumpWorkspace`) already override the clock, so build
 /// [fakes] over that same FakeClock. [controller] replaces the real
 /// controller when given.
+///
+/// The real `defaultInstallHelper` runs over the recording runner seam
+/// (`installHelperRunnerProvider` -> `fakes.io.runHelper`), so a relaunch is
+/// seen in `fakes.io.helperRuns`; the InstallHelper port fake
+/// (`fakes.helper`) is deliberately not wired.
 List<Override> wi39UpdaterOverrides(
   UpdaterFakes fakes, {
   UpdateController Function()? controller,
@@ -35,7 +40,6 @@ List<Override> wi39UpdaterOverrides(
   updateDownloaderProvider.overrideWithValue(fakes.downloader),
   edDsaVerifierProvider.overrideWithValue(fakes.verifier),
   installLocationCheckProvider.overrideWithValue(fakes.location),
-  installHelperProvider.overrideWithValue(fakes.helper),
   failureMarkerStoreProvider.overrideWithValue(fakes.marker),
   lastCheckStoreProvider.overrideWithValue(fakes.lastCheck),
   updateHttpClientFactoryProvider.overrideWithValue(fakes.io.clientFactory),

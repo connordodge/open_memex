@@ -92,8 +92,12 @@ void main() {
       await robot.tapRelaunch();
       expect(find.byKey(const Key('leave-confirm')), findsNothing);
       expect(fakes.location.checkCount, 1);
-      expect(fakes.helper.starts, hasLength(1));
-      expect(fakes.helper.starts.single.pid, 4242);
+      expect(fakes.io.helperRuns, hasLength(1));
+      final run = fakes.io.helperRuns.single;
+      expect(run.executable, '/bin/sh');
+      expect(run.arguments[3], '4242', reason: 'the app pid');
+      expect(run.arguments[4], fakes.downloader.dmgPath);
+      expect(run.arguments[5], '/Applications/Open Memex.app');
       expect(fakes.exit.calls, [AppExitType.required]);
       expect(fakes.fetcher.fetchCount, 1, reason: 'one check in the journey');
     },
