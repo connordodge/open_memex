@@ -1,5 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'tabs_state.dart' show tabsProvider;
+
 // The note reveal seam (#66, architect rulings D1-D6): one "reveal a place in
 // the open note" request for every feature that scrolls the editor to a
 // passage (the Outline, Find in note, Passages, and echo arrivals through
@@ -106,18 +108,32 @@ final class PendingReveal {
 }
 
 /// The one-shot reveal request holder: callers navigate or `openOrFocus`
-/// first, then [request]; the editor [take]s it.
+/// first, then [request]; the editor [take]s it (D3a, D3b).
 class NoteRevealNotifier extends Notifier<PendingReveal?> {
+  /// The last sequence number handed out.
+  int _seq = 0;
+
   @override
   PendingReveal? build() => null;
 
+  /// `tabsProvider.arrivals` now; null when nothing created the tabs.
+  int? get _arrivals =>
+      ref.exists(tabsProvider) ? ref.read(tabsProvider).arrivals : null;
+
   /// Holds [r], replacing any earlier request, stamped with the next
   /// sequence number and the current `tabsProvider.arrivals`.
-  void request(NoteRevealRequest r) {}
+  void request(NoteRevealRequest r) =>
+      state = PendingReveal(request: r, seq: ++_seq, arrivals: _arrivals);
 
-  /// The pending request when it is for [noteId], else null. Either way
-  /// nothing is pending afterwards.
-  NoteRevealRequest? take(String noteId) => null;
+  /// The pending request when it is for [noteId] and no arrival came since
+  /// it was made (an untaken request dies at the next arrival), else null.
+  /// Either way nothing is pending afterwards.
+  NoteRevealRequest? take(String noteId) {
+    final held = state;
+    state = null;
+    if (held == null || held.request.noteId != noteId) return null;
+    return held.arrivals == _arrivals ? held.request : null;
+  }
 }
 
 final noteRevealProvider = NotifierProvider<NoteRevealNotifier, PendingReveal?>(

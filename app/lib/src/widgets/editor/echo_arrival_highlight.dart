@@ -86,11 +86,11 @@ EchoArrival? locateEchoArrival(
         // A daily person section can end in stray text moved from below the
         // marker: only its prefix shared with the body is at body offsets.
         final limit = daily ? _sharedPrefix(text, contentMd) : text.length;
-        if (offset < at + limit) return _inText(text, s, offset - at);
+        if (offset < at + limit) return _inSegment(segments, s, offset - at);
         at += text.length;
       case TransclusionSegment(:final raw):
         if (offset < at + raw.length) {
-          return EchoArrival._(key: Key('excerpt-card-$s'), segment: s);
+          return _inSegment(segments, s, offset - at);
         }
         at += raw.length;
       case FooterSegment():
@@ -110,7 +110,28 @@ EchoArrival? locateInSegment(
   int segment,
   int local, {
   String? role,
-}) => null;
+}) => _inSegment(
+  split(contentMd, isDaily: role == 'daily', noteFooter: role != 'guide'),
+  segment,
+  local,
+);
+
+/// [locateInSegment] over [segments], `split` already.
+EchoArrival? _inSegment(List<Segment> segments, int segment, int local) {
+  if (segment < 0 || segment >= segments.length || local < 0) return null;
+  return switch (segments[segment]) {
+    TextSegment(:final text) when local < text.length => _inText(
+      text,
+      segment,
+      local,
+    ),
+    TransclusionSegment(:final raw) when local < raw.length => EchoArrival._(
+      key: Key('excerpt-card-$segment'),
+      segment: segment,
+    ),
+    _ => null,
+  };
+}
 
 EchoArrival? _inText(String text, int segment, int offset) {
   final rows = splitRows(text, atSegmentStart: true);
