@@ -1,0 +1,256 @@
+// WI #80 (Spec #61 F1): the Find in note model and its pure rules: matching
+// (Reqs 1-10), hidden matches and their outline (Reqs 4, 26), the current
+// match rules (Reqs 15, 18-21, 37-39) and the Find bar counter (Reqs 10,
+// 29, 32-34). F2 (Find bar), F3 (highlight painter), F5 (native menu) and
+// F6 (editor integration) build on these shapes: they are frozen.
+//
+// Pure Dart: no Flutter imports and no `dart:ui` (lesson #435). Every offset
+// is a UTF-16 code-unit index into its source's text (source-local), never a
+// byte offset (rulings D2, D3).
+
+/// A half-open UTF-16 range `[start, end)` in one source's text.
+final class FindRange {
+  const FindRange(this.start, this.end);
+
+  /// First code unit of the range.
+  final int start;
+
+  /// One past the last code unit of the range.
+  final int end;
+
+  @override
+  bool operator ==(Object other) =>
+      other is FindRange && other.start == start && other.end == end;
+
+  @override
+  int get hashCode => Object.hash(start, end);
+
+  @override
+  String toString() => 'FindRange($start, $end)';
+}
+
+/// What a [FindSource] is.
+enum FindSourceKind {
+  /// A live-preview text segment of the note body (tables included: a
+  /// table is row text inside its text segment, Req 3).
+  body,
+
+  /// An excerpt card's rendered text (`RenderedExcerpt.text`, Req 1).
+  card,
+
+  /// The whole Source-mode field as it shows it (Req 2).
+  source,
+}
+
+/// One searchable run: a live-preview text segment, an excerpt card's text,
+/// or the whole Source field.
+final class FindSource {
+  const FindSource({
+    required this.segment,
+    required this.kind,
+    required this.text,
+    this.hidden = const [],
+  });
+
+  /// The `split()` index of the segment (`segments.dart`); 0 for the Source
+  /// field.
+  final int segment;
+
+  /// What this source is.
+  final FindSourceKind kind;
+
+  /// body: the segment's text; card: `RenderedExcerpt.text`; source: the
+  /// whole field.
+  final String text;
+
+  /// The UTF-16 ranges of [text] that render hidden (zero width) in live
+  /// preview (`livePreviewHiddenRanges`); empty for the Source field.
+  final List<FindRange> hidden;
+}
+
+/// One match of the query in one source (D20: every field F3 needs to paint
+/// it without probing glyphs).
+final class FindMatch {
+  const FindMatch({
+    required this.segment,
+    required this.kind,
+    required this.start,
+    required this.end,
+    this.hidden = false,
+    this.outline,
+  });
+
+  /// The [FindSource.segment] of the source it lies in.
+  final int segment;
+
+  /// The [FindSource.kind] of the source it lies in.
+  final FindSourceKind kind;
+
+  /// First code unit, UTF-16, source-local.
+  final int start;
+
+  /// One past the last code unit, UTF-16, source-local.
+  final int end;
+
+  /// Every code unit of the match lies in the source's hidden ranges. Only
+  /// body matches are ever hidden: a wholly hidden card match is dropped
+  /// (Req 4).
+  final bool hidden;
+
+  /// Body only, when [hidden]: the visible text of the inline element that
+  /// hides the match (the link label for a match in a link URL, the bold
+  /// text for a match on its `**`), source-local. Null when there is no
+  /// visible owner, and always null when not [hidden] (Req 26).
+  final FindRange? outline;
+
+  @override
+  bool operator ==(Object other) =>
+      other is FindMatch &&
+      other.segment == segment &&
+      other.kind == kind &&
+      other.start == start &&
+      other.end == end &&
+      other.hidden == hidden &&
+      other.outline == outline;
+
+  @override
+  int get hashCode => Object.hash(segment, kind, start, end, hidden, outline);
+
+  @override
+  String toString() =>
+      'FindMatch($segment, ${kind.name}, $start-$end'
+      '${hidden ? ', hidden' : ''}${outline == null ? '' : ', outline $outline'})';
+}
+
+/// Every match of [query] in [sources], in document order: by
+/// [FindSource.segment], then by offset (Req 8).
+///
+/// - Literal, case folding only: accents and punctuation must match exactly
+///   (Req 5).
+/// - Non-overlapping, left to right: the next search starts at the end of
+///   the previous match. A query of only spaces matches spaces (Req 6).
+/// - No cap (Req 10). An empty query has no matches (Req 29).
+/// - A card match wholly inside the card's hidden ranges is dropped; one
+///   partly inside counts, not hidden (Req 4).
+/// - A body match wholly inside hidden ranges counts, [FindMatch.hidden]
+///   true, with its [FindMatch.outline] (Req 26, `tokenizeInline`).
+List<FindMatch> findMatches(List<FindSource> sources, String query) => const [];
+
+/// A caret anchor: an offset in the body text segment [segment] (in Source
+/// mode, segment 0 and the Source field's offset).
+final class FindCaret {
+  const FindCaret(this.segment, this.offset);
+
+  /// The `split()` index of the segment holding the caret.
+  final int segment;
+
+  /// UTF-16, segment-local.
+  final int offset;
+
+  @override
+  bool operator ==(Object other) =>
+      other is FindCaret && other.segment == segment && other.offset == offset;
+
+  @override
+  int get hashCode => Object.hash(segment, offset);
+
+  @override
+  String toString() => 'FindCaret($segment, $offset)';
+}
+
+/// The index of the first match at or after [caret]: in a later segment, or
+/// in the caret's segment starting at or after its offset. A null [caret]
+/// (never placed in this note) gives the first match. With no match at or
+/// after the caret it wraps to the first match. Null when [matches] is
+/// empty (Req 18).
+int? firstAtOrAfter(List<FindMatch> matches, FindCaret? caret) => null;
+
+/// The index of the last match before [caret]: in an earlier segment, or in
+/// the caret's segment starting before its offset. A null [caret] and no
+/// match before the caret both wrap to the last match. Null when [matches]
+/// is empty (Req 15).
+int? lastBefore(List<FindMatch> matches, FindCaret? caret) => null;
+
+/// The index one step from [current] among [total] matches, wrapping from
+/// the last to the first ([forward]) and from the first to the last
+/// (Req 19).
+int stepIndex(int current, int total, {required bool forward}) => 0;
+
+/// The current match after a text change (Reqs 37-38): [before] and [after]
+/// are the sources around the change, [oldMatches] / [newMatches] their
+/// matches and [oldCurrent] the index into [oldMatches].
+///
+/// The same match keeps current when it survives (its start carried through
+/// the edit of its source's text with `carryOffset`, `conflict_merge.dart`).
+/// Otherwise it is the first match at or after the old match's carried
+/// position, wrapping to the first match. Null when [newMatches] is empty.
+int? carryCurrent({
+  required List<FindSource> before,
+  required List<FindMatch> oldMatches,
+  required int? oldCurrent,
+  required List<FindSource> after,
+  required List<FindMatch> newMatches,
+}) => null;
+
+/// The current match after toggling Source mode (Req 39): [from] are the
+/// matches in the mode being left, [current] an index into them, [to] the
+/// matches in the mode being entered.
+///
+/// [tokenOffset] gives the Source-field offset where `split()` segment
+/// `segment` starts (for a card, its transclusion token). A match's Source
+/// position is its start for a source match, `tokenOffset(segment) + start`
+/// for a body match and `tokenOffset(segment)` for a card match. The match
+/// in [to] at the same position keeps current (a body match keeps its
+/// offsets); otherwise the first match in [to] at or after that position,
+/// wrapping to the first. Null when [current] is null or [to] is empty.
+int? mapCurrentAcrossMode({
+  required List<FindMatch> from,
+  required int? current,
+  required List<FindMatch> to,
+  required int Function(int segment) tokenOffset,
+}) => null;
+
+/// The Find bar's width over a note body [bodyWidth] wide:
+/// `min(372, bodyWidth - 24)` (Req 30).
+double findBoxWidth(double bodyWidth) => 0;
+
+/// Which counter the Find bar shows (Req 32).
+enum FindCounterForm {
+  /// `3 of 12`, `No matches`.
+  full,
+
+  /// `3/12`, `None`.
+  short,
+
+  /// No counter.
+  hidden,
+}
+
+/// The counter form for a Find bar [boxWidth] wide whose short counter text
+/// measures [shortTextWidth] (Req 32): full at 300 px and wider; short below
+/// 300; hidden below 240, and also when a short text wider than its 34 px
+/// minimum slot would push the field under its 96 px floor.
+FindCounterForm findCounterForm({
+  required double boxWidth,
+  required double shortTextWidth,
+}) => FindCounterForm.full;
+
+/// The counter text in [form] (Reqs 10, 29, 32): [current] is the 0-based
+/// index of the current match among [total]. Full: `3 of 12`, `1 of 2,431`
+/// (thousands separator), `No matches`. Short: `3/12`, `None`. Null for an
+/// empty [query] and for [FindCounterForm.hidden].
+String? findCounterText({
+  required int? current,
+  required int total,
+  required String query,
+  required FindCounterForm form,
+}) => null;
+
+/// The Find field's semantics value (Req 34): always the full counter text
+/// (`3 of 12`, `No matches`), whatever form the counter shows; empty for an
+/// empty [query].
+String findSemanticsValue({
+  required int? current,
+  required int total,
+  required String query,
+}) => '';
