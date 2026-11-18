@@ -328,6 +328,32 @@ Future<PaletteHarness> _pumpPalette(
   child: const _Wi76List(),
 );
 
+/// The palette's rows plus one [PaletteRow] for [stale], an item no source
+/// lists: a row a regroup dropped before this frame rebuilt the list.
+Future<PaletteHarness> _pumpStaleRow(
+  WidgetTester tester, {
+  required List<CommandItem> commands,
+  required PaletteItem stale,
+  required List<(PaletteItemId, bool)> choices,
+}) => pumpPaletteHost(
+  tester,
+  overrides: _sources(commands: commands, choices: choices),
+  child: Align(
+    alignment: Alignment.topLeft,
+    child: SizedBox(
+      width: _listWidth,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const _Wi76List(),
+          PaletteRow(item: stale, selected: false),
+        ],
+      ),
+    ),
+  ),
+);
+
 PaletteItemId? _selected(PaletteHarness h) => h.read(paletteProvider).selected;
 
 PaletteItemId _cmdId(PaletteCommand c) =>
@@ -740,6 +766,73 @@ void main() {
       await tester.pump();
       expect(choices, [(_cmdId(PaletteCommand.newNote), false)]);
     });
+
+    testWidgets(
+      'a click on a row the palette no longer lists chooses nothing',
+      (tester) async {
+        final choices = <(PaletteItemId, bool)>[];
+        final rows = [
+          _cmd(PaletteCommand.newNote),
+          _cmd(PaletteCommand.newCanvas),
+        ];
+        final stale = _note('gone', 'Dropped note');
+        final h = await _pumpStaleRow(
+          tester,
+          commands: rows,
+          stale: stale,
+          choices: choices,
+        );
+        expect(_selected(h), _cmdId(PaletteCommand.newNote));
+        await tester.tap(_rowOf(stale));
+        await tester.pump();
+        // Not the stale row, and not the row that is selected now either.
+        expect(choices, isEmpty);
+        expect(_selected(h), _cmdId(PaletteCommand.newNote));
+        // A cmd click chooses nothing either.
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+        await tester.tap(_rowOf(stale));
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+        await tester.pump();
+        expect(choices, isEmpty);
+        // A listed row still chooses, so the palette was not latched shut.
+        await tester.tap(_rowOf(rows[1]));
+        await tester.pump();
+        expect(choices, [(_cmdId(PaletteCommand.newCanvas), false)]);
+      },
+    );
+
+    testWidgets(
+      'a semantics tap on a row the palette no longer lists chooses nothing',
+      (tester) async {
+        final handle = tester.ensureSemantics();
+        final choices = <(PaletteItemId, bool)>[];
+        final rows = [
+          _cmd(PaletteCommand.newNote, label: 'New note'),
+          _cmd(PaletteCommand.newCanvas, label: 'New canvas'),
+        ];
+        final stale = _note('gone', 'Dropped note', meta: 'note · 3 d ago');
+        final h = await _pumpStaleRow(
+          tester,
+          commands: rows,
+          stale: stale,
+          choices: choices,
+        );
+        void tapNode(String label) {
+          final node = tester.getSemantics(find.bySemanticsLabel(label));
+          node.owner!.performAction(node.id, SemanticsAction.tap);
+        }
+
+        tapNode('Dropped note, note · 3 d ago');
+        await tester.pump();
+        expect(choices, isEmpty);
+        expect(_selected(h), _cmdId(PaletteCommand.newNote));
+        // A listed row's semantics tap still chooses it.
+        tapNode('New canvas');
+        await tester.pump();
+        expect(choices, [(_cmdId(PaletteCommand.newCanvas), false)]);
+        handle.dispose();
+      },
+    );
   });
 
   group('semantics', () {

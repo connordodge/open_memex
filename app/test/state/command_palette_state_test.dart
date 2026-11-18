@@ -1074,5 +1074,82 @@ void main() {
         expect(preview.selections, isEmpty);
       },
     );
+
+    test(
+      'invalidating the palette starts a fresh session where choose and the preview sync work again',
+      () async {
+        final rig = _rig(commands: _threeCommands);
+        await Future<void>.delayed(Duration.zero);
+        expect(rig.preview.selections, hasLength(1));
+        rig.palette.hover(_cmdId(PaletteCommand.newCanvas));
+        expect(rig.preview.selections, hasLength(2));
+        rig.palette.choose(newTab: false);
+        rig.palette.choose(newTab: false);
+        expect(rig.commandChoices, hasLength(1), reason: 'once per session');
+
+        rig.container.invalidate(paletteProvider);
+        // A fresh session: empty input, the first row selected.
+        expect(rig.state.query, '');
+        expect(rig.state.selected, _cmdId(PaletteCommand.newNote));
+        // The preview source hears the first selection again.
+        await Future<void>.delayed(Duration.zero);
+        expect(rig.preview.selections, hasLength(3));
+        expect(rig.preview.selections.last?.id, _cmdId(PaletteCommand.newNote));
+        // The preview still follows the selection (not latched disposed).
+        rig.palette.move(1);
+        expect(rig.preview.selections, hasLength(4));
+        expect(
+          rig.preview.selections.last?.id,
+          _cmdId(PaletteCommand.newCanvas),
+        );
+        // Choosing is armed again, and runs once more.
+        rig.palette.choose(newTab: true);
+        rig.palette.choose(newTab: true);
+        expect(rig.commandChoices, hasLength(2));
+        expect(rig.commandChoices.last.$1.command, PaletteCommand.newCanvas);
+        expect(rig.commandChoices.last.$2, isTrue);
+      },
+    );
+
+    test('a palette closed then invalidated chooses again', () {
+      final rig = _rig(commands: _threeCommands);
+      rig.palette.close();
+      rig.palette.choose(newTab: false);
+      expect(rig.choices, 0, reason: 'closed');
+      rig.container.invalidate(paletteProvider);
+      expect(rig.state.selected, _cmdId(PaletteCommand.newNote));
+      rig.palette.choose(newTab: false);
+      expect(rig.commandChoices, hasLength(1));
+      expect(rig.commandChoices.single.$1.command, PaletteCommand.newNote);
+    });
+
+    test(
+      'a palette rebuilt before its first preview sync tells the preview source once',
+      () async {
+        final rig = _rig(commands: _threeCommands);
+        // Rebuilt in the same turn the first build's microtask is pending.
+        rig.container.invalidate(paletteProvider);
+        expect(rig.state.selected, _cmdId(PaletteCommand.newNote));
+        await Future<void>.delayed(Duration.zero);
+        expect(rig.preview.selections, hasLength(1));
+        expect(
+          rig.preview.selections.single?.id,
+          _cmdId(PaletteCommand.newNote),
+        );
+      },
+    );
+
+    test(
+      'a palette rebuilt and then disposed before the preview sync never calls the preview source',
+      () async {
+        final rig = _rig(commands: _threeCommands);
+        final preview = rig.preview;
+        rig.container.invalidate(paletteProvider);
+        expect(rig.state.selected, _cmdId(PaletteCommand.newNote));
+        rig.container.dispose();
+        await Future<void>.delayed(Duration.zero);
+        expect(preview.selections, isEmpty);
+      },
+    );
   });
 }
