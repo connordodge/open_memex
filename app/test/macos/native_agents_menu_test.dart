@@ -589,12 +589,28 @@ void main() {
           reason: 'openAgents: is enabled exactly when the flag is set',
         );
         final fallThrough = body.substring(ifMatch.end + ifBody.length + 1);
+        // WI #81 (Spec #61 F5) adds the Edit ▸ Find branches before the
+        // fall-through; native_find_menu_test.dart pins them. None of them
+        // touches the Agents item or enables anything unconditionally.
+        final rest = fallThrough.trim().split('\n').map((l) => l.trim());
         expect(
-          fallThrough.trim(),
+          rest.last,
           'return super.validateMenuItem(menuItem)',
           reason:
-              'every other item (Minimize, Zoom) asks super, with no '
-              'else, no other return',
+              'every other item (Minimize, Zoom) asks super, as the last '
+              'statement',
+        );
+        expect(fallThrough, isNot(contains('openAgents')));
+        expect(fallThrough, isNot(contains('agentsMenuEnabled')));
+        expect(
+          fallThrough,
+          isNot(matches(RegExp(r'return\s+true\b'))),
+          reason: 'no other item is enabled unconditionally',
+        );
+        expect(
+          RegExp(r'\belse\b').hasMatch(fallThrough),
+          isFalse,
+          reason: 'no else branch ahead of super',
         );
       },
     );
