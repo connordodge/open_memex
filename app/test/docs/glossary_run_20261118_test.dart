@@ -1,9 +1,10 @@
 // WI #79 (Spec #61 G0, ruling D15): GLOSSARY.md gains the Outline (#54),
-// Command palette (#56) and Find in note (#55) sections, appended after
-// `## Releases (#356)`. A pure source scan: flutter test runs with cwd app/,
-// so the repo file is `../GLOSSARY.md`. It pins the last four headings and
-// each new section's text, and deliberately does not snapshot the rest of the
-// file, which later WIs edit inside their own sections.
+// Command palette (#56) and Find in note (#55) sections, inserted directly
+// before `## Releases (#356)`, which stays the last section (lead ruling Q1).
+// A pure source scan: flutter test runs with cwd app/, so the repo file is
+// `../GLOSSARY.md`. It pins the last five headings and each new section's
+// text, and deliberately does not snapshot the rest of the file, which later
+// WIs edit inside their own sections.
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -11,6 +12,7 @@ import 'package:flutter_test/flutter_test.dart';
 const _outlineHeading = '## Outline (#54)';
 const _paletteHeading = '## Command palette (#56)';
 const _findHeading = '## Find in note (#55)';
+const _navigationHeading = '## Navigation (#230)';
 const _releasesHeading = '## Releases (#356)';
 
 const _outlineBody = r'''
@@ -74,15 +76,16 @@ String _section(String text, String heading) {
 
 void main() {
   test(
-    'glossary ends with the Releases Outline Command palette Find in note headings in order',
+    'glossary ends with the Navigation Outline Command palette Find in note Releases headings in order',
     () {
       final headings = _headings(_glossary());
-      expect(headings.length, greaterThanOrEqualTo(4));
-      expect(headings.sublist(headings.length - 4), [
-        _releasesHeading,
+      expect(headings.length, greaterThanOrEqualTo(5));
+      expect(headings.sublist(headings.length - 5), [
+        _navigationHeading,
         _outlineHeading,
         _paletteHeading,
         _findHeading,
+        _releasesHeading,
       ]);
     },
   );
