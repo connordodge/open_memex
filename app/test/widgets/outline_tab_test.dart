@@ -345,12 +345,21 @@ Future<void> _wi68PumpList(
 
 /// A notes domain whose `getNote` waits on [gate].
 class _Wi68GatedNotes extends LocalNotesAccess {
-  _Wi68GatedNotes({required super.vaultPath, super.db, required this.gate});
+  _Wi68GatedNotes({
+    required super.vaultPath,
+    super.db,
+    required this.gate,
+    this.readError,
+  });
   final Wi90Gate gate;
+
+  /// When set, `getNote` fails with it once the gate opens.
+  final Object? readError;
 
   @override
   Future<Note?> getNote(String id) async {
     await gate.wait;
+    if (readError != null) throw readError!;
     return super.getNote(id);
   }
 }
@@ -403,6 +412,7 @@ Future<_Wi68Panel> _wi68PumpPanel(
   RightPanelTab? tab = RightPanelTab.outline,
   double scale = 1.0,
   bool load = true,
+  Object? readError,
 }) async {
   tester.view.physicalSize = const Size(800, 1000);
   tester.view.devicePixelRatio = 1.0;
@@ -432,7 +442,12 @@ Future<_Wi68Panel> _wi68PumpPanel(
         (ref) => LocalVaultAccess(
           vaultPath: '/unused-68',
           db: db,
-          notes: _Wi68GatedNotes(vaultPath: '/unused-68', db: db, gate: gate),
+          notes: _Wi68GatedNotes(
+            vaultPath: '/unused-68',
+            db: db,
+            gate: gate,
+            readError: readError,
+          ),
         ),
       ),
       editorControllerProvider.overrideWith(_Wi68Editor.new),
@@ -1049,6 +1064,27 @@ void main() {
 
   // ------------------------------------------------------------- activate
   group('activation', () {
+    testWidgets(
+      'a row shows the click cursor under a mouse and not after it leaves',
+      (tester) async {
+        await _wi68PumpList(tester, entries: _wi68Entries());
+        final mouse = await _wi68Mouse(tester);
+        await mouse.moveTo(tester.getCenter(_wi68Text(3)));
+        await tester.pump();
+        expect(
+          RendererBinding.instance.mouseTracker.debugDeviceActiveCursor(1),
+          SystemMouseCursors.click,
+        );
+        await mouse.moveTo(const Offset(790, 890));
+        await tester.pump();
+        expect(
+          RendererBinding.instance.mouseTracker.debugDeviceActiveCursor(1),
+          isNot(SystemMouseCursors.click),
+        );
+        await _wi68MouseAway(tester, mouse);
+      },
+    );
+
     testWidgets('tapping anywhere on a row calls onActivate with that entry', (
       tester,
     ) async {
@@ -1425,6 +1461,26 @@ void main() {
 
         expect(find.byKey(vaultAsyncLoadingKey), findsNothing);
         expect(_wi68Text(0), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'a hosted note whose read failed shows the header and no loading state or entries',
+      (tester) async {
+        await _wi68PumpPanel(
+          tester,
+          vault: const HostedVaultRef('srv', 'a'),
+          load: false,
+          readError: Exception('read failed'),
+        );
+        await pumpFrames(tester);
+
+        expect(find.byKey(vaultAsyncLoadingKey), findsNothing);
+        expect(find.text(_wi68Eyebrow), findsOneWidget);
+        expect(_wi68KeycapFinder, findsOneWidget);
+        expect(find.byKey(const Key('outline-list')), findsNothing);
+        expect(find.text(_wi68NoNote), findsNothing);
+        expect(find.text(_wi68NoHeadings), findsNothing);
       },
     );
 
