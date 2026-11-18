@@ -24,6 +24,7 @@ import 'src/updater/update_controller.dart';
 import 'src/updater/update_modal.dart';
 import 'src/updater/update_seams.dart';
 import 'src/updater/updater_menu_host.dart';
+import 'src/widgets/command_palette/command_palette.dart';
 import 'src/widgets/hosted/hosted_bindings.dart';
 import 'src/widgets/hosted/leave_confirm_dialog.dart';
 
@@ -78,6 +79,7 @@ final List<Override> appRootOverrides = [
   pickerActionsProvider.overrideWithValue(const AppPickerActions()),
   updateTokenSeamProvider.overrideWith(_editServerSeam),
   hostedUpdateTokenProvider.overrideWith(_editServerSeam),
+  ...paletteShellOverrides,
 ];
 
 /// An update-token seam: the picker actions' edit-server dialog for the
