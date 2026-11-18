@@ -227,11 +227,13 @@ final windowTitleProvider = Provider<WindowTitle>(
 /// after its own quit guard, so the app root's quit handler lets the exit
 /// through without asking again (req 23).
 class ExitConfirmation {
+  bool _confirmed = false;
+
   /// Whether [confirm] was called.
-  bool get confirmed => false;
+  bool get confirmed => _confirmed;
 
   /// Marks the exit as confirmed.
-  void confirm() {}
+  void confirm() => _confirmed = true;
 }
 
 /// The app's [ExitConfirmation] (one per provider container).
@@ -246,5 +248,5 @@ typedef AppProcessExit = Future<AppExitResponse> Function(AppExitType type);
 /// `ServicesBinding.instance.exitApplication(type)`; tests override it.
 final appProcessExitProvider = Provider<AppProcessExit>(
   (_) =>
-      (_) async => AppExitResponse.cancel,
+      (type) => ServicesBinding.instance.exitApplication(type),
 );

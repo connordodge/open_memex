@@ -50,14 +50,42 @@ enum UpdateErrorCause {
   failureRecorded;
 
   /// Where **try again** goes for this cause.
-  UpdateRetryTarget get tryAgain => UpdateRetryTarget.none;
+  UpdateRetryTarget get tryAgain => switch (this) {
+    offline ||
+    feedUnreadable ||
+    noAppcast ||
+    failureRecorded => UpdateRetryTarget.checking,
+    badSignature ||
+    noSignature ||
+    downloadFailed => UpdateRetryTarget.downloading,
+    noPublicKey || folderNotWritable || diskImage => UpdateRetryTarget.none,
+  };
 
   /// Whether this cause is a check failure (title `Update check failed`)
   /// rather than an install failure (title `Update failed`).
-  bool get isCheckFailure => false;
+  bool get isCheckFailure => switch (this) {
+    offline || feedUnreadable || noAppcast => true,
+    badSignature ||
+    noSignature ||
+    noPublicKey ||
+    downloadFailed ||
+    folderNotWritable ||
+    diskImage ||
+    failureRecorded => false,
+  };
 
   /// Whether the modal offers **download from GitHub** for this cause.
-  bool get offersGitHubDownload => false;
+  bool get offersGitHubDownload => switch (this) {
+    noPublicKey || folderNotWritable => true,
+    offline ||
+    feedUnreadable ||
+    noAppcast ||
+    badSignature ||
+    noSignature ||
+    downloadFailed ||
+    diskImage ||
+    failureRecorded => false,
+  };
 }
 
 /// The state of Self-update: the single source of truth the modal and the
