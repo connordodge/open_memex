@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/byte_offsets.dart';
 import 'package:open_memex_app/src/state/echo_scroll_target.dart';
+import 'package:open_memex_app/src/state/editor_controller.dart';
 import 'package:open_memex_app/src/state/note_reveal.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/widgets/editor/echo_arrival_highlight.dart';
@@ -152,6 +153,36 @@ EchoArrival _wi66Echo(NoteRevealHarness h, int at) {
   final arrival = locateEchoArrival(content, utf16ToUtf8(content, at));
   expect(arrival, isNotNull);
   return arrival!;
+}
+
+/// Back onto the long note (restore 1500 due) with a hydrate-time request
+/// whose text is not the text shown: its landing retries for 8 frames,
+/// then gives up and opens at the top. Pumps the hydrate frame only.
+Future<NoteRevealHarness> _wi66RetryingArrival(WidgetTester tester) async {
+  final h = await pumpNoteReveal(tester);
+  await h.scrollTo(1500);
+  await h.navigate(const NoteTab(revealOtherId));
+  h.tabs.back();
+  h.request(
+    NoteRevealRequest(
+      revealLongId,
+      RevealAtText(
+        segment: 0,
+        start: _wi66StoredMid,
+        content: '${revealLongBody}stale',
+      ),
+      _wi66Top16,
+      flash: true,
+    ),
+  );
+  // Frame by frame until the long note shows: the landing retries from
+  // there.
+  for (var i = 0; i < 10 && h.pending != null; i++) {
+    await tester.pump();
+  }
+  expect(h.body().note.id, revealLongId, reason: 'the arrival hydrated');
+  expect(h.pending, isNull, reason: 'the arrival took its request');
+  return h;
 }
 
 void main() {
@@ -1186,40 +1217,10 @@ void main() {
 
   // ----------------------------------------------- arrival landings still due
   group('arrival landings still due', () {
-    /// Back onto the long note (restore 1500 due) with a hydrate-time request
-    /// whose text is not the text shown: its landing retries for 8 frames,
-    /// then gives up and opens at the top. Pumps the hydrate frame only.
-    Future<NoteRevealHarness> retryingArrival(WidgetTester tester) async {
-      final h = await pumpNoteReveal(tester);
-      await h.scrollTo(1500);
-      await h.navigate(const NoteTab(revealOtherId));
-      h.tabs.back();
-      h.request(
-        NoteRevealRequest(
-          revealLongId,
-          RevealAtText(
-            segment: 0,
-            start: _wi66StoredMid,
-            content: '${revealLongBody}stale',
-          ),
-          _wi66Top16,
-          flash: true,
-        ),
-      );
-      // Frame by frame until the long note shows: the landing retries from
-      // there.
-      for (var i = 0; i < 10 && h.pending != null; i++) {
-        await tester.pump();
-      }
-      expect(h.body().note.id, revealLongId, reason: 'the arrival hydrated');
-      expect(h.pending, isNull, reason: 'the arrival took its request');
-      return h;
-    }
-
     testWidgets(
       'a shown note request that gives up leaves a retrying arrival landing to finish and release the reports',
       (tester) async {
-        final h = await retryingArrival(tester);
+        final h = await _wi66RetryingArrival(tester);
         final mid = h.offsetOf(revealMidHeading);
 
         // A request for the note shown while the arrival still retries; its
@@ -1250,7 +1251,7 @@ void main() {
     testWidgets(
       'a shown note request that lands cancels an arrival landing still retrying',
       (tester) async {
-        final h = await retryingArrival(tester);
+        final h = await _wi66RetryingArrival(tester);
         final mid = h.offsetOf(revealMidHeading);
         final jumps = h.jumps();
 
@@ -1272,6 +1273,147 @@ void main() {
         expect(h.recorded.last, (noteId: revealLongId, offset: landed));
         await h.scrollTo(landed + 50);
         expect(h.recorded.last, (noteId: revealLongId, offset: landed + 50));
+      },
+    );
+  });
+
+  // ------------------------------------- arrival gives up, a request waits
+  group('an arrival landing that gives up while a request waits', () {
+    Future<void> frames(WidgetTester tester, int n) async {
+      for (var i = 0; i < n; i++) {
+        await tester.pump(const Duration(milliseconds: 20));
+      }
+    }
+
+    /// A retrying arrival, then four frames of its tries, then a request on
+    /// the note shown whose text is [grown] (the shown text plus a letter): it
+    /// waits for the note to show that text. The arrival began first, so it
+    /// runs out of tries first. Returns after five more frames, the arrival
+    /// having given up and the request's tries not yet spent.
+    Future<({NoteRevealHarness h, String grown, int mid})> waiting(
+      WidgetTester tester,
+    ) async {
+      final h = await _wi66RetryingArrival(tester);
+      final mid = h.offsetOf(revealMidHeading);
+      final grown = '${h.shownContent()}X';
+      await frames(tester, 4);
+      h.request(
+        NoteRevealRequest(
+          revealLongId,
+          RevealAtText(segment: 0, start: mid, content: grown),
+          _wi66Top16,
+        ),
+      );
+      await frames(tester, 5);
+      return (h: h, grown: grown, mid: mid);
+    }
+
+    testWidgets(
+      'a later request that finds its row after the arrival gave up lands and the reports resume',
+      (tester) async {
+        final w = await waiting(tester);
+        final h = w.h;
+        final jumps = h.jumps();
+
+        // The arrival gave up: its scroll reports are released, and it did
+        // not open the note at the top (the request still waits).
+        await h.scrollTo(200);
+        expect(h.recorded.last, (noteId: revealLongId, offset: 200.0));
+        expect(h.pixels(), 200.0, reason: 'no jump to the top while it waits');
+        jumps.clear();
+
+        // The note now shows the request's text.
+        h.container
+            .read(editorControllerProvider.notifier)
+            .onContentChanged(w.grown);
+        await frames(tester, 6);
+
+        expect(_wi66FromTop(h, w.mid), closeTo(16, _wi66Px), reason: 'landed');
+        expect(
+          jumps.count,
+          1,
+          reason: 'one jump, to the request: ${jumps.values}',
+        );
+        expect(h.pending, isNull);
+        final landed = h.pixels();
+        expect(h.recorded.last, (noteId: revealLongId, offset: landed));
+        // Nothing owed to the arrival afterwards.
+        await frames(tester, 12);
+        expect(h.pixels(), landed);
+        expect(jumps.count, 1);
+        await h.scrollTo(landed + 50);
+        expect(h.recorded.last, (noteId: revealLongId, offset: landed + 50));
+      },
+    );
+
+    testWidgets(
+      'a later request that also gives up opens the note at the top once for the arrival',
+      (tester) async {
+        final w = await waiting(tester);
+        final h = w.h;
+        final jumps = h.jumps();
+
+        await h.scrollTo(200);
+        expect(h.recorded.last, (noteId: revealLongId, offset: 200.0));
+        expect(h.pixels(), 200.0, reason: 'the request still waits');
+        jumps.clear();
+
+        // The note never shows the request's text: it runs out of tries.
+        await frames(tester, 20);
+
+        expect(h.pixels(), 0.0, reason: 'the arrival is owed the top');
+        expect(jumps.values, [0.0], reason: 'one jump, to the top');
+        expect(h.highlight, findsNothing);
+        expect(h.pending, isNull);
+        await _wi66ExpectReportsResume(h);
+        await _wi66ExpectControlLands(tester, h);
+      },
+    );
+
+    testWidgets(
+      'a request cancelled by an arrival does not hold back the arrival top jump',
+      (tester) async {
+        final h = await pumpNoteReveal(tester);
+        final mid = h.offsetOf(revealMidHeading);
+
+        // A request for the note shown that waits (stale text), then an
+        // arrival at the note supersedes it before it gives up.
+        h.request(
+          NoteRevealRequest(
+            revealLongId,
+            RevealAtText(
+              segment: 0,
+              start: mid,
+              content: '${h.shownContent()}stale',
+            ),
+            _wi66Top16,
+          ),
+        );
+        await h.navigate(const NoteTab(revealOtherId));
+        h.tabs.back();
+        h.request(
+          NoteRevealRequest(
+            revealLongId,
+            RevealAtText(
+              segment: 0,
+              start: _wi66StoredMid,
+              content: '${revealLongBody}stale',
+            ),
+            _wi66Top16,
+          ),
+        );
+        for (var i = 0; i < 10 && h.pending != null; i++) {
+          await tester.pump();
+        }
+        expect(h.body().note.id, revealLongId, reason: 'the arrival hydrated');
+        await h.scrollTo(200);
+        final jumps = h.jumps();
+
+        await frames(tester, 20);
+
+        expect(h.pixels(), 0.0, reason: 'the arrival gave up to the top');
+        expect(jumps.values, [0.0]);
+        await _wi66ExpectReportsResume(h);
       },
     );
   });
