@@ -16,6 +16,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/main.dart' show appRootOverrides;
 import 'package:open_memex_app/src/graph/graph_scope.dart';
 import 'package:open_memex_app/src/screens/workspace.dart';
 import 'package:open_memex_app/src/state/command_palette_state.dart';
@@ -53,7 +54,7 @@ const _ctrl = LogicalKeyboardKey.controlLeft;
 const _alt = LogicalKeyboardKey.altLeft;
 const _keyK = LogicalKeyboardKey.keyK;
 
-const _newNoteId = 'n-77-new-note';
+const _newNoteId = '01J77NEWNOTE00000000000000';
 const _newCanvasId = 'cv-77-new-canvas';
 const _editorNoteId = 'n-77-editor-note';
 
@@ -168,6 +169,7 @@ Future<PaletteHarness> _host(
   FakeVaultDb? db,
   FakeMemexCli? cli,
   bool memexConfigured = true,
+  bool seed = true,
   List<Override> overrides = const [],
 }) async {
   final settings = await _settings();
@@ -176,6 +178,7 @@ Future<PaletteHarness> _host(
     tester,
     size: size,
     textScale: textScale,
+    seed: seed,
     db: fakeDb,
     cli: cli ?? (memexConfigured ? _writingCli(fakeDb) : null),
     memexConfigured: memexConfigured,
@@ -188,6 +191,7 @@ Future<PaletteHarness> _host(
     overrides: [
       settings,
       uiStateStoreProvider.overrideWithValue(null),
+      ...paletteShellOverrides,
       ...overrides,
     ],
   );
@@ -226,7 +230,7 @@ Future<PaletteHarness> _workspace(
     db: fakeDb,
     cli: _writingCli(fakeDb),
     child: wrap == null ? workspace : wrap(workspace),
-    overrides: [settings, ...overrides],
+    overrides: [settings, ...paletteShellOverrides, ...overrides],
   );
   await pumpFrames(tester);
   return h;
@@ -339,6 +343,25 @@ List<Override> _fakeSources() => [
 
 void main() {
   holdFontFetches();
+
+  test(
+    'a container built on appRootOverrides resolves the commands source to the real one',
+    () {
+      final container = ProviderContainer(overrides: appRootOverrides);
+      addTearDown(container.dispose);
+
+      final rows = container.read(paletteCommandsSourceProvider)('');
+
+      expect(
+        [for (final r in rows) r.command],
+        [
+          for (final c in _requirement19)
+            if (c != PaletteCommand.newNote && c != PaletteCommand.newCanvas) c,
+        ],
+        reason: 'the app root fills #76 empty default, no vault can be written',
+      );
+    },
+  );
 
   group('the shell', () {
     testWidgets(
@@ -928,6 +951,52 @@ void main() {
           tester.getRect(footer).top,
           greaterThanOrEqualTo(tester.getRect(passage).bottom),
         );
+      },
+    );
+    testWidgets(
+      'dimmed passage rows are drawn at half opacity and shown ones are not dimmed',
+      (tester) async {
+        await _host(tester, overrides: _fakeSources());
+        await _open(tester);
+        await _type(tester, 'pricing');
+        const hit = SearchHit(
+          noteId: PaletteSeeds.pricingModel,
+          noteTitle: 'Pricing model',
+          chunkId: 'ch-77-3',
+          snippet: 'the pricing model for next year',
+          startByte: 0,
+          noteUpdatedAt: 0,
+        );
+        const item = PassageItem(hit, meta: 'note · 2 h ago');
+        final passage = _row(
+          const PaletteItemId(PaletteItemKind.passage, 'ch-77-3'),
+        );
+        Finder dimming() => find.ancestor(
+          of: passage,
+          matching: find.byWidgetPredicate(
+            (w) => w is Opacity && w.opacity == 0.5,
+          ),
+        );
+
+        _passages!.emit(const PassagesDimmed([item], hint: 'keyword only'));
+        await pumpFrames(tester);
+        expect(passage, findsOneWidget);
+        expect(dimming(), findsOneWidget, reason: 'the previous answer dims');
+        expect(
+          find.ancestor(
+            of: _row(_note(PaletteSeeds.pricingModel)),
+            matching: find.byWidgetPredicate((w) => w is Opacity),
+          ),
+          findsNothing,
+          reason: 'only Passages rows dim',
+        );
+
+        _passages!.emit(
+          const PassagesShown(rows: [item], semantic: Semantic.embeddingsOff),
+        );
+        await pumpFrames(tester);
+        expect(passage, findsOneWidget);
+        expect(dimming(), findsNothing, reason: 'the latest answer is full');
       },
     );
   });
@@ -1537,5 +1606,299 @@ void main() {
         expect(tester.takeException(), isNull);
       },
     );
+  });
+
+  group('shell contracts', () {
+    const hit = SearchHit(
+      noteId: PaletteSeeds.pricingModel,
+      noteTitle: 'Pricing model',
+      chunkId: 'ch-77-9',
+      snippet: 'the pricing model for next year',
+      startByte: 0,
+      noteUpdatedAt: 0,
+    );
+    const passageId = PaletteItemId(PaletteItemKind.passage, 'ch-77-9');
+
+    testWidgets('the wide hint footer for a passage row names show here', (
+      tester,
+    ) async {
+      await _host(tester, overrides: _fakeSources());
+      await _open(tester);
+      await _type(tester, 'pricing');
+      _passages!.emit(
+        const PassagesShown(
+          rows: [PassageItem(hit, meta: 'note')],
+          semantic: Semantic.on,
+        ),
+      );
+      await pumpFrames(tester);
+      for (var i = 0; i < 6 && !_selected().contains(passageId); i++) {
+        await _key(tester, LogicalKeyboardKey.arrowDown);
+      }
+      expect(_selected(), [passageId]);
+
+      expect(find.text('show here, at this passage'), findsOneWidget);
+      expect(find.text('new tab'), findsOneWidget);
+      expect(find.text('close'), findsOneWidget);
+      expect(find.text('move'), findsNothing);
+      expect(find.text('choose'), findsNothing);
+      expect(find.text('run'), findsNothing);
+    });
+
+    testWidgets(
+      'the wide hint footer with no selection offers move and close',
+      (tester) async {
+        await _host(tester);
+        await _open(tester);
+        await _type(tester, 'qzxv');
+        expect(_selected(), isEmpty);
+
+        expect(find.text('move'), findsOneWidget);
+        expect(find.text('close'), findsOneWidget);
+        expect(find.text('choose'), findsNothing);
+        expect(find.text('new tab'), findsNothing);
+        expect(find.text('run'), findsNothing);
+        expect(find.text('in a new tab'), findsNothing);
+        expect(find.text('show here, at this passage'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'the no matches row and the passages state row follow the input and the passages state',
+      (tester) async {
+        await _host(tester, overrides: _fakeSources());
+        await _open(tester);
+        final noMatches = find.byKey(PaletteKeys.noMatches);
+
+        // Empty input: neither, whatever Passages says.
+        _passages!.emit(const PassagesSearching());
+        await pumpFrames(tester);
+        expect(find.byType(PassagesStateRow), findsNothing);
+        expect(noMatches, findsNothing);
+
+        await _type(tester, 'qzxv');
+        expect(find.byType(PassagesStateRow), findsOneWidget);
+        expect(noMatches, findsNothing, reason: 'Passages is still searching');
+
+        _passages!.emit(const PassagesShown(rows: [], semantic: Semantic.on));
+        await pumpFrames(tester);
+        expect(noMatches, findsOneWidget);
+        expect(find.text('no matches for “qzxv”'), findsOneWidget);
+        expect(find.byType(PassagesStateRow), findsNothing);
+
+        _passages!.emit(const PassagesIdle());
+        await pumpFrames(tester);
+        expect(noMatches, findsOneWidget);
+        expect(find.byType(PassagesStateRow), findsNothing);
+
+        // Rows listed: no no-matches row; an idle Passages adds no state row.
+        await _type(tester, 'pricing');
+        expect(noMatches, findsNothing);
+        expect(find.byType(PassagesStateRow), findsNothing);
+
+        // Passages answered with no rows next to notes: its state row.
+        _passages!.emit(const PassagesShown(rows: [], semantic: Semantic.on));
+        await pumpFrames(tester);
+        expect(noMatches, findsNothing);
+        expect(find.byType(PassagesStateRow), findsOneWidget);
+
+        // Passage rows listed: their footer, never the state row.
+        _passages!.emit(
+          const PassagesShown(
+            rows: [PassageItem(hit, meta: 'note')],
+            semantic: Semantic.on,
+          ),
+        );
+        await pumpFrames(tester);
+        expect(find.byType(PassagesStateRow), findsNothing);
+        expect(find.byType(PassagesFooter), findsOneWidget);
+      },
+    );
+
+    testWidgets('an Up or Down key repeat moves the selection and is claimed', (
+      tester,
+    ) async {
+      await _host(tester);
+      await _open(tester);
+
+      expect(
+        await tester.sendKeyRepeatEvent(
+          LogicalKeyboardKey.arrowDown,
+          platform: 'macos',
+        ),
+        isTrue,
+      );
+      await tester.pump();
+      expect(_selected(), [_cmd(PaletteCommand.newCanvas)]);
+      expect(
+        await tester.sendKeyRepeatEvent(
+          LogicalKeyboardKey.arrowUp,
+          platform: 'macos',
+        ),
+        isTrue,
+      );
+      await tester.pump();
+      expect(_selected(), [_cmd(PaletteCommand.newNote)]);
+    });
+
+    testWidgets('an Enter or Esc key repeat is claimed and does nothing', (
+      tester,
+    ) async {
+      final h = await _host(tester);
+      await _open(tester);
+      await _key(tester, LogicalKeyboardKey.arrowDown);
+      await _key(tester, LogicalKeyboardKey.arrowDown);
+      await _key(tester, LogicalKeyboardKey.arrowDown);
+      expect(_selected(), [_cmd(PaletteCommand.openVaultGraph)]);
+
+      for (final key in [LogicalKeyboardKey.enter, LogicalKeyboardKey.escape]) {
+        expect(
+          await tester.sendKeyRepeatEvent(key, platform: 'macos'),
+          isTrue,
+          reason: 'a held $key is claimed',
+        );
+        await pumpFrames(tester);
+        expect(_palette, findsOneWidget, reason: '$key repeat closed it');
+        expect(h.tabs.navigated, isEmpty, reason: '$key repeat chose a row');
+      }
+    });
+
+    testWidgets('releasing Enter, Esc, Up or Down does nothing', (
+      tester,
+    ) async {
+      final h = await _host(tester);
+      await _open(tester);
+      await _key(tester, LogicalKeyboardKey.arrowDown);
+      final before = _selected();
+
+      for (final key in [
+        LogicalKeyboardKey.enter,
+        LogicalKeyboardKey.escape,
+        LogicalKeyboardKey.arrowDown,
+        LogicalKeyboardKey.arrowUp,
+      ]) {
+        await tester.sendKeyUpEvent(key, platform: 'macos');
+        await pumpFrames(tester);
+      }
+
+      expect(_palette, findsOneWidget);
+      expect(_selected(), before);
+      expect(h.tabs.navigated, isEmpty);
+    });
+
+    testWidgets('the numpad Enter chooses the selected row', (tester) async {
+      final h = await _host(tester);
+      await _open(tester);
+      await _key(tester, LogicalKeyboardKey.arrowDown);
+      await _key(tester, LogicalKeyboardKey.arrowDown);
+      await _key(tester, LogicalKeyboardKey.arrowDown);
+      expect(_selected(), [_cmd(PaletteCommand.openVaultGraph)]);
+
+      expect(
+        await tester.sendKeyEvent(
+          LogicalKeyboardKey.numpadEnter,
+          platform: 'macos',
+        ),
+        isTrue,
+      );
+      await pumpFrames(tester, frames: 8);
+
+      expect(_palette, findsNothing);
+      expect(h.tabs.navigated, [GraphTab(const GraphScope.vault())]);
+    });
+
+    testWidgets('a key the palette does not use is left to the field', (
+      tester,
+    ) async {
+      await _host(tester);
+      await _open(tester);
+
+      final handled = await tester.sendKeyEvent(
+        LogicalKeyboardKey.keyA,
+        platform: 'macos',
+      );
+      await tester.pump();
+
+      expect(handled, isFalse);
+      expect(_palette, findsOneWidget);
+      expect(_selected(), [_cmd(PaletteCommand.newNote)]);
+    });
+
+    testWidgets('a 950 px window shows the preview with a 902 px card', (
+      tester,
+    ) async {
+      await _host(tester, size: const Size(950, 700));
+      await _open(tester);
+      expect(find.byType(PalettePreview), findsOneWidget);
+      expect(tester.getSize(_palette).width, closeTo(902, 0.5));
+    });
+
+    testWidgets('a 949 px window shows the list-only card', (tester) async {
+      await _host(tester, size: const Size(949, 700));
+      await _open(tester);
+      expect(find.byType(PalettePreview), findsNothing);
+      expect(tester.getSize(_palette).width, closeTo(640, 0.5));
+    });
+
+    testWidgets('a window narrower than the card leaves 24 px each side', (
+      tester,
+    ) async {
+      await _host(tester, size: const Size(600, 700));
+      await _open(tester);
+      final card = tester.getRect(_palette);
+      expect(card.left, closeTo(24, 0.5));
+      expect(card.width, closeTo(552, 0.5));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets(
+      'showCommandPalette does nothing while another modal covers it',
+      (tester) async {
+        await _host(tester);
+        unawaited(
+          showDialog<void>(
+            context: _wi77HostContext,
+            builder: (_) => const AlertDialog(content: Text('other modal')),
+          ),
+        );
+        await pumpFrames(tester);
+        expect(find.text('other modal'), findsOneWidget);
+
+        unawaited(showCommandPalette(_wi77HostContext));
+        await pumpFrames(tester);
+
+        expect(_palette, findsNothing);
+        expect(find.text('other modal'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'Open today with no daily note yet shows the virtual Today note',
+      (tester) async {
+        final h = await _host(tester, seed: false);
+        await _open(tester);
+        await _type(tester, 'open today');
+        expect(_selected(), [_cmd(PaletteCommand.openToday)]);
+
+        await _key(tester, LogicalKeyboardKey.enter);
+        await pumpFrames(tester, frames: 8);
+
+        expect(h.tabs.navigated, [VirtualTodayTab('2026-11-18')]);
+      },
+    );
+
+    testWidgets('the command bar open state follows the palette', (
+      tester,
+    ) async {
+      final h = await _host(tester);
+      expect(h.read(commandPaletteOpenProvider), isFalse);
+      await _open(tester);
+      expect(h.read(commandPaletteOpenProvider), isTrue);
+
+      await _key(tester, LogicalKeyboardKey.escape);
+      await pumpFrames(tester);
+      expect(_palette, findsNothing);
+      expect(h.read(commandPaletteOpenProvider), isFalse);
+    });
   });
 }

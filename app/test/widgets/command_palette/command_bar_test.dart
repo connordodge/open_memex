@@ -17,6 +17,8 @@ import 'package:open_memex_app/src/state/command_palette_state.dart';
 import 'package:open_memex_app/src/state/settings.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
+import 'package:open_memex_app/src/widgets/command_palette/command_palette.dart'
+    show paletteShellOverrides;
 import 'package:open_memex_app/src/widgets/command_palette/palette_row.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -46,7 +48,10 @@ Future<PaletteHarness> _workspace(WidgetTester tester) async {
     cli: FakeMemexCli()
       ..on('settings get', (_) => FakeMemexCli.ok(settingsGetMaxDepthStdout)),
     child: const Workspace(),
-    overrides: [settingsProvider.overrideWith((_) => settings)],
+    overrides: [
+      settingsProvider.overrideWith((_) => settings),
+      ...paletteShellOverrides,
+    ],
   );
   await pumpFrames(tester);
   expect(_bar, findsOneWidget, reason: 'the sidebar shows the command bar');
