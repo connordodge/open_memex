@@ -326,6 +326,7 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
       controller.selection,
       forceHidden: !controller.revealGate.value,
       itemText: controller.itemText,
+      revealRange: controller.findDecoration?.value?.revealRange,
     );
     final start = link.span.start;
     return !revealed[lines.indexWhere((line) => start < line.end)];

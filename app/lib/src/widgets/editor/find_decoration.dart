@@ -1,4 +1,5 @@
 // WI #84 (#61 F4, ruling D7): the one find input of a live preview field.
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/widgets.dart' show TextRange;
 
 /// What Find in note decorates in one live preview field (Spec #61 Reqs 24,
@@ -24,4 +25,15 @@ final class FindDecoration {
   final TextRange? revealRange;
   final List<TextRange> inkRanges;
   final TextRange? current;
+
+  @override
+  bool operator ==(Object other) =>
+      other is FindDecoration &&
+      other.revealRange == revealRange &&
+      other.current == current &&
+      listEquals(other.inkRanges, inkRanges);
+
+  @override
+  int get hashCode =>
+      Object.hash(revealRange, Object.hashAll(inkRanges), current);
 }

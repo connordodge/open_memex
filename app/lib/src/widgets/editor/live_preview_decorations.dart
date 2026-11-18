@@ -526,7 +526,17 @@ class _RenderDecorations extends RenderProxyBox {
       columnRight: size.width - origin.dx,
       atSegmentStart: controller.atSegmentStart,
       quote: controller.quote,
-      reveal: controller.revealGate.value ? controller.selection : null,
+      // Focused: the selection. Unfocused: Find in note's reveal range
+      // (WI #84), which reveals its lines while the segment is unfocused.
+      reveal: controller.revealGate.value
+          ? controller.selection
+          : switch (controller.findDecoration?.value?.revealRange) {
+              final range? => TextSelection(
+                baseOffset: range.start,
+                extentOffset: range.end,
+              ),
+              null => null,
+            },
       quoteBandColor: _quoteBandColor,
     );
     final shift = offset + origin;
