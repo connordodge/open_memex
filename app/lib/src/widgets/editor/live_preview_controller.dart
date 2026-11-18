@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
@@ -5,6 +7,8 @@ import '../../editor/markdown_inline.dart';
 import '../../editor/markdown_lines.dart';
 import '../../editor/markdown_table.dart';
 import '../../editor/tag_grammar.dart' show fencedMdLines;
+import '../../theme/colors.dart';
+import 'find_decoration.dart';
 import 'live_preview_styles.dart';
 
 /// A plain press `LinkRegion` marked on a followable link whose line is not
@@ -84,6 +88,24 @@ class LivePreviewController extends TextEditingController {
   /// True while the field's text segment has focus. Default: never true.
   ValueListenable<bool> revealGate = const AlwaysStoppedAnimation<bool>(false);
 
+  /// Find in note's decoration of this field (WI #84, ruling D7): its
+  /// reveal range reveals the lines it touches even while [revealGate] is
+  /// false, and its ink ranges recolour the text inside them. Null (the
+  /// default), or a listenable holding null: no decoration. Each time the
+  /// listenable fires, the controller notifies its listeners once.
+  /// Setting it subscribes to the new listenable and unsubscribes from the
+  /// old one; setting the same one again changes nothing. [dispose]
+  /// unsubscribes.
+  ValueListenable<FindDecoration?>? get findDecoration => _findDecoration;
+  set findDecoration(ValueListenable<FindDecoration?>? value) {
+    if (identical(value, _findDecoration)) return;
+    _findDecoration?.removeListener(notifyListeners);
+    _findDecoration = value;
+    value?.addListener(notifyListeners);
+  }
+
+  ValueListenable<FindDecoration?>? _findDecoration;
+
   /// Whether a wikilink or transclusion target resolves (B3 sets it; D7).
   /// Called with the token's target: a wikilink's title trimmed of
   /// whitespace, a transclusion's date. Null (the default): every target
@@ -119,28 +141,42 @@ class LivePreviewController extends TextEditingController {
   /// code lines keep their 22.95 px body line.
   StrutStyle? get strutStyle => codeRow ? _codeRowStrut : livePreviewStrut();
 
-  /// The live preview span of [text] for the current [selection], markers
-  /// revealed only while [revealGate] is true. The composing range is not
-  /// underlined.
+  /// The live preview span of [text] for the current [selection]: markers
+  /// reveal on the lines it touches only while [revealGate] is true, and on
+  /// the lines the [findDecoration]'s reveal range touches; its ink ranges
+  /// recolour their text. The composing range is not underlined.
   @override
   TextSpan buildTextSpan({
     required BuildContext context,
     TextStyle? style,
     required bool withComposing,
-  }) => buildLivePreviewSpan(
-    text,
-    style: style,
-    selection: selection,
-    forceHidden: !revealGate.value,
-    itemText: itemText,
-    taskDone: taskDone,
-    quote: quote,
-    atSegmentStart: atSegmentStart,
-    isResolved: isResolved,
-    cmdHover: cmdHover,
-    codeRow: codeRow,
-    fenced: fenced,
-  );
+  }) {
+    final find = findDecoration?.value;
+    return _buildSpan(
+      text,
+      style: style,
+      selection: selection,
+      forceHidden: !revealGate.value,
+      itemText: itemText,
+      taskDone: taskDone,
+      quote: quote,
+      atSegmentStart: atSegmentStart,
+      isResolved: isResolved,
+      cmdHover: cmdHover,
+      codeRow: codeRow,
+      before: null,
+      fenced: fenced,
+      revealRange: find?.revealRange,
+      inkRanges: find?.inkRanges ?? const <TextRange>[],
+      current: find?.current,
+    );
+  }
+
+  @override
+  void dispose() {
+    findDecoration = null;
+    super.dispose();
+  }
 }
 
 /// The design's hidden fence line height (pack #161: 7 px padding plus a
@@ -173,17 +209,27 @@ int tableLastLine(List<MdLine> lines, int header) {
 /// is touched, and every line of a table when any of its lines is touched
 /// (Spec #197 R13). With [itemText] no block reveals as a unit. None while
 /// [forceHidden] or with a null or invalid [selection].
+///
+/// [revealRange] (Find in note's current match, WI #84): the lines it
+/// touches reveal as a selection's would, by the same fence and table rules,
+/// even while [forceHidden]. Null: none.
 List<bool> revealedLines(
   List<MdLine> lines,
   TextSelection? selection, {
   bool forceHidden = false,
   bool itemText = false,
+  TextRange? revealRange,
 }) {
   final revealed = List<bool>.filled(lines.length, false);
-  if (forceHidden || selection == null || !selection.isValid) return revealed;
+  final ranges = <TextRange>[
+    if (!forceHidden && selection != null && selection.isValid) selection,
+    if (revealRange != null && revealRange.isValid) revealRange,
+  ];
+  if (ranges.isEmpty) return revealed;
   for (final (i, line) in lines.indexed) {
-    revealed[i] =
-        selection.start <= line.contentEnd && selection.end >= line.start;
+    revealed[i] = ranges.any(
+      (r) => r.start <= line.contentEnd && r.end >= line.start,
+    );
   }
   if (itemText) return revealed;
   for (var open = 0; open < lines.length; open++) {
@@ -240,6 +286,11 @@ List<bool> revealedLines(
 ///   whole delimiter line render as markers, and its header line's cell
 ///   text is bold. Every table line stays one body line (no code-row strut).
 ///
+/// - [inkRanges] and [current] (WI #84, Spec #61 Reqs 24-25): inside a range
+///   of [inkRanges] that is not [current], text that would draw in fg2, fg3
+///   or info draws in fg1; inside [current] every run draws in surface0.
+///   They never reveal anything (cards and grid cells pass them).
+///
 /// The controller calls it as `buildLivePreviewSpan(text, style: style,
 /// selection: selection, forceHidden: !revealGate.value, ...)`, forwarding
 /// every prop. `toPlainText()` of the result equals [text] code unit for
@@ -258,6 +309,46 @@ TextSpan buildLivePreviewSpan(
   bool codeRow = false,
   int? before,
   List<bool>? fenced,
+  List<TextRange> inkRanges = const <TextRange>[],
+  TextRange? current,
+}) => _buildSpan(
+  text,
+  style: style,
+  selection: selection,
+  forceHidden: forceHidden,
+  itemText: itemText,
+  taskDone: taskDone,
+  quote: quote,
+  atSegmentStart: atSegmentStart,
+  isResolved: isResolved,
+  cmdHover: cmdHover,
+  codeRow: codeRow,
+  before: before,
+  fenced: fenced,
+  revealRange: null,
+  inkRanges: inkRanges,
+  current: current,
+);
+
+/// [buildLivePreviewSpan] plus the field's find [revealRange] (WI #84),
+/// which only the controller passes: cards and grid cells never reveal.
+TextSpan _buildSpan(
+  String text, {
+  required TextStyle? style,
+  required TextSelection? selection,
+  required bool forceHidden,
+  required bool itemText,
+  required bool taskDone,
+  required bool quote,
+  required bool atSegmentStart,
+  required bool Function(String target)? isResolved,
+  required TextRange? cmdHover,
+  required bool codeRow,
+  required int? before,
+  required List<bool>? fenced,
+  required TextRange? revealRange,
+  required List<TextRange> inkRanges,
+  required TextRange? current,
 }) {
   if (text.isEmpty) return TextSpan(style: style, text: text);
   return _SpanBuilder(
@@ -273,6 +364,9 @@ TextSpan buildLivePreviewSpan(
     codeRow: codeRow,
     before: before,
     fenced: fenced,
+    revealRange: revealRange,
+    inkRanges: inkRanges,
+    current: current,
   ).build(style);
 }
 
@@ -284,6 +378,11 @@ const int _strike = 8;
 const int _link = 16;
 const int _ghost = 32;
 const int _hover = 64;
+
+// Per code unit find ink (WI #84): inside another match, inside the current
+// one.
+const int _findOther = 1;
+const int _findCurrent = 2;
 
 // Run keys that are not a shown-text key.
 const int _hiddenKey = -1;
@@ -306,9 +405,18 @@ final class _SpanBuilder {
     required this.codeRow,
     required this.before,
     required this.fenced,
+    required this.revealRange,
+    required List<TextRange> inkRanges,
+    required TextRange? current,
   }) : _selection = selection != null && selection.isValid ? selection : null,
        _flags = Uint8List(text.length),
-       _ink = Uint8List(text.length);
+       _ink = Uint8List(text.length),
+       _find = Uint8List(text.length) {
+    for (final range in inkRanges) {
+      _findRange(range, _findOther);
+    }
+    if (current != null) _findRange(current, _findCurrent);
+  }
 
   final String text;
   final bool forceHidden;
@@ -327,9 +435,16 @@ final class _SpanBuilder {
   /// Which lines of [text] are fenced code, from the host; null = judge
   /// [text] alone.
   final List<bool>? fenced;
+
+  /// Find in note's reveal range (WI #84): the lines it touches reveal even
+  /// while [forceHidden]. Null: none.
+  final TextRange? revealRange;
   final TextSelection? _selection;
   final Uint8List _flags;
   final Uint8List _ink;
+
+  /// Each code unit's find ink: 0, [_findOther] or [_findCurrent].
+  final Uint8List _find;
   final Map<int, TextStyle?> _styles = {};
 
   /// Whether the line being tokenized is fenced code on the server, so a tag
@@ -343,6 +458,7 @@ final class _SpanBuilder {
       _selection,
       forceHidden: forceHidden,
       itemText: itemText,
+      revealRange: revealRange,
     );
     final levels = List<int>.filled(lines.length, 0);
     final codeLines = List<bool>.filled(lines.length, false);
@@ -392,9 +508,16 @@ final class _SpanBuilder {
     }
 
     for (final (i, line) in lines.indexed) {
-      // A code row's hidden fence line hides its terminator too (D18).
+      // A code row's hidden fence line hides its terminator too (D18). A
+      // revealed heading line's terminator takes the style of the code unit
+      // before it (#64): the caret at the line end reads the terminator's
+      // box, so a body-styled terminator draws it before a trailing space
+      // in the heading's face and size. Its markers are shown, so that unit
+      // is never hidden, and the line's height is unchanged.
       final terminator = codeRow && fenceLines[i] && !revealed[i]
           ? _hiddenKey
+          : levels[i] > 0 && revealed[i]
+          ? _key(line.contentEnd - 1, levels[i], codeLines[i], true)
           : _terminatorKey;
       for (var at = line.start; at < line.end; at++) {
         final key = at >= line.contentEnd
@@ -452,6 +575,14 @@ final class _SpanBuilder {
   void _markRange(int start, int end, int flag) {
     for (var at = start; at < end; at++) {
       _flags[at] |= flag;
+    }
+  }
+
+  /// Sets the find ink of [range]'s code units inside [text] to [find].
+  void _findRange(TextRange range, int find) {
+    final end = math.min(range.end, text.length);
+    for (var at = math.max(range.start, 0); at < end; at++) {
+      _find[at] = find;
     }
   }
 
@@ -547,11 +678,13 @@ final class _SpanBuilder {
   int _key(int at, int level, bool codeLine, bool revealed) {
     final flags = _flags[at];
     final selected = _selected(at) ? 1 : 0;
+    final find = _find[at] << 17;
     if (flags & _marker != 0) {
       if (!revealed) return _hiddenKey;
-      return 1 << 24 | selected << 16 | level;
+      return 1 << 24 | find | selected << 16 | level;
     }
-    return selected << 16 |
+    return find |
+        selected << 16 |
         _ink[at] << 12 |
         flags << 4 |
         (codeLine ? 1 : 0) << 3 |
@@ -561,6 +694,32 @@ final class _SpanBuilder {
   TextStyle? _style(int key) => _styles.putIfAbsent(key, () {
     if (key == _terminatorKey) return null;
     if (key == _hiddenKey) return livePreviewHiddenStyle;
+    return _findInk(_shownStyle(key), key >> 17 & 3);
+  });
+
+  /// [style] under the find ink [find] (Spec #61 Reqs 24-25): inside the
+  /// current match every run draws in surface0; inside another match a run
+  /// that would draw in fg2, fg3 or info draws in fg1. Only the colour
+  /// changes.
+  static TextStyle? _findInk(TextStyle? style, int find) {
+    if (find == _findCurrent) {
+      return (style ?? const TextStyle()).copyWith(color: OmColors.surface0);
+    }
+    if (find == _findOther && _lifted.contains(style?.color)) {
+      return style!.copyWith(color: OmColors.fg1);
+    }
+    return style;
+  }
+
+  /// The colours another match lifts to fg1 (Req 24).
+  static const List<Color> _lifted = [
+    OmColors.fg2,
+    OmColors.fg3,
+    OmColors.info,
+  ];
+
+  /// The style of a shown run's [key] before any find ink.
+  TextStyle? _shownStyle(int key) {
     final selected = key >> 16 & 1 == 1;
     final level = key & 7;
     if (key >> 24 & 1 == 1) {
@@ -581,5 +740,5 @@ final class _SpanBuilder {
       done: taskDone,
       selected: selected,
     );
-  });
+  }
 }
