@@ -2442,6 +2442,95 @@ void main() {
         }
       },
     );
+
+    // Pins which runs the spaces after the separator belong to: only a
+    // revealed line with no word folds them into the marker run (#90).
+    test(
+      'heading spaces with no word are marker text while revealed and heading text otherwise',
+      () {
+        for (final (level, size) in _wi223Sizes) {
+          final (_, colour) = _wi223Colours[level - 1];
+          final weight = level <= 3 ? FontWeight.w700 : FontWeight.w500;
+          final hashes = '#' * level;
+          for (final terminator in ['', '\n', '\r\n']) {
+            final rest = terminator.isEmpty ? '' : '${terminator}body';
+            for (final spaces in [2, 3]) {
+              final head = '$hashes${' ' * spaces}';
+              final text = '$head$rest';
+              final why = 'H$level "${_wi64Show(text)}"';
+              // Revealed: the hashes and every space are one marker run.
+              _expectMarker(
+                _build(text, selection: _caret(head.length)),
+                text,
+                (0, head.length),
+                size: size,
+              );
+              _expectMarker(
+                _build(
+                  text,
+                  selection: TextSelection(
+                    baseOffset: 0,
+                    extentOffset: text.length,
+                  ),
+                ),
+                text,
+                (0, head.length),
+                size: size,
+                color: OmColors.fg1,
+              );
+              // Hidden: the hashes and the separator are zero width and the
+              // spaces after the separator stay shown heading text.
+              final hidden = _build(text, forceHidden: true);
+              _expectHidden(hidden, text, 0, level + 1);
+              _wi223ExpectHeadingText(
+                hidden,
+                text,
+                (level + 1, head.length),
+                size: size,
+                weight: weight,
+                colour: colour,
+                why: '$why hidden spaces',
+              );
+            }
+          }
+
+          // A word after the spaces: only the hashes and the separator are
+          // the marker, the further spaces and the word are heading text.
+          final word = '$hashes  Hi';
+          for (final (state, span) in [
+            ('revealed', _build(word, selection: _caret(word.length))),
+            ('hidden', _build(word, forceHidden: true)),
+          ]) {
+            if (state == 'revealed') {
+              _expectMarker(span, word, (0, level + 1), size: size);
+            } else {
+              _expectHidden(span, word, 0, level + 1);
+            }
+            _wi223ExpectHeadingText(
+              span,
+              word,
+              (level + 1, word.length),
+              size: size,
+              weight: weight,
+              colour: colour,
+              why: 'H$level "$word" $state text',
+            );
+          }
+
+          // A tab after the spaces is not folded into the marker run.
+          final tabbed = '$hashes  \t';
+          final tabSpan = _build(tabbed, selection: _caret(tabbed.length));
+          _expectMarker(tabSpan, tabbed, (0, level + 1), size: size);
+          _eachStyle(tabSpan, tabbed, (level + 1, tabbed.length), (s, unit) {
+            expect(
+              _weight(s),
+              weight,
+              reason: 'H$level "$hashes  \\t" $unit is heading text',
+            );
+          });
+        }
+      },
+    );
   });
 }
 
