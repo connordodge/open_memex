@@ -389,18 +389,22 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
 
   /// Jumps to [offset], clamped, after the next frame: that frame lays out what
   /// the caller just asked to be built. Runs once, unless an arrival cancels it.
+  /// Schedules that frame: a caller inside a post-frame callback (a landing
+  /// that gave up) has none coming.
   void _jumpAfterLayout(double offset) {
     final jump = ++_jumpSeq;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || jump != _jumpSeq) return;
-      if (_scroll.hasClients) {
-        final position = _scroll.position;
-        _scroll.jumpTo(
-          offset.clamp(position.minScrollExtent, position.maxScrollExtent),
-        );
-      }
-      _reportsHeld = false;
-    });
+    WidgetsBinding.instance
+      ..addPostFrameCallback((_) {
+        if (!mounted || jump != _jumpSeq) return;
+        if (_scroll.hasClients) {
+          final position = _scroll.position;
+          _scroll.jumpTo(
+            offset.clamp(position.minScrollExtent, position.maxScrollExtent),
+          );
+        }
+        _reportsHeld = false;
+      })
+      ..scheduleFrame();
   }
 
   /// In Source, the field follows text the editor took from elsewhere while
