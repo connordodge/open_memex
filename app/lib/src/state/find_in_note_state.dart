@@ -47,6 +47,33 @@ final class FindInNoteState {
 
   /// Bumped when the Find bar should focus its field and select all of it.
   final int focusRequest;
+
+  /// The current match, or null when there is none.
+  FindMatch? get currentMatch => current == null ? null : matches[current!];
+
+  /// This state with the given fields replaced. [current] and [caret] are
+  /// nullable, so they are replaced only when their `set` flag is true.
+  FindInNoteState copyWith({
+    bool? open,
+    String? query,
+    String? lastQuery,
+    List<FindSource>? sources,
+    List<FindMatch>? matches,
+    int? current,
+    bool setCurrent = false,
+    FindCaret? caret,
+    bool setCaret = false,
+    int? focusRequest,
+  }) => FindInNoteState(
+    open: open ?? this.open,
+    query: query ?? this.query,
+    lastQuery: lastQuery ?? this.lastQuery,
+    sources: sources ?? this.sources,
+    matches: matches ?? this.matches,
+    current: setCurrent ? current : this.current,
+    caret: setCaret ? caret : this.caret,
+    focusRequest: focusRequest ?? this.focusRequest,
+  );
 }
 
 /// The commands on [FindInNoteState] (Reqs 12-15, 18-19, 37-42).
@@ -57,16 +84,49 @@ class FindInNoteNotifier extends Notifier<FindInNoteState> {
   /// Closed: opens with [FindInNoteState.lastQuery] as the query, its
   /// matches, the current match from `firstAtOrAfter(caret)`, and bumps
   /// `focusRequest`. Open: only bumps `focusRequest` (Reqs 12-13).
-  void show() {}
+  void show() {
+    if (state.open) {
+      state = state.copyWith(focusRequest: state.focusRequest + 1);
+      return;
+    }
+    _openWith(state.lastQuery, focusRequest: state.focusRequest + 1);
+  }
+
+  /// Opens with [query] as the query and last query, its matches, and the
+  /// current match from `firstAtOrAfter(caret)`.
+  void _openWith(String query, {int? focusRequest}) {
+    final matches = findMatches(state.sources, query);
+    state = state.copyWith(
+      open: true,
+      query: query,
+      lastQuery: query,
+      matches: matches,
+      current: firstAtOrAfter(matches, state.caret),
+      setCurrent: true,
+      focusRequest: focusRequest,
+    );
+  }
 
   /// Uses the editor's selection [text] as the query (line breaks become
   /// spaces), opening the bar without bumping `focusRequest` (focus stays
   /// in the editor). An empty [text] changes nothing (Req 14).
-  void useSelection(String text) {}
+  void useSelection(String text) {
+    if (text.isEmpty) return;
+    _openWith(text.replaceAll('\n', ' '));
+  }
 
   /// Sets the query and the last query, then recomputes the matches and
   /// sets the current match from `firstAtOrAfter(caret)` (Req 18).
-  void setQuery(String query) {}
+  void setQuery(String query) {
+    final matches = findMatches(state.sources, query);
+    state = state.copyWith(
+      query: query,
+      lastQuery: query,
+      matches: matches,
+      current: firstAtOrAfter(matches, state.caret),
+      setCurrent: true,
+    );
+  }
 
   /// Replaces the searched sources. While open, recomputes the matches and
   /// keeps the current match through `carryCurrent` when [carry]; otherwise,
@@ -74,28 +134,90 @@ class FindInNoteNotifier extends Notifier<FindInNoteState> {
   /// `firstAtOrAfter(caret)` (Reqs 37-38). While open, `current` is null
   /// exactly when `matches` is empty.
   /// While closed, only stores [sources].
-  void setSources(List<FindSource> sources, {bool carry = true}) {}
+  void setSources(List<FindSource> sources, {bool carry = true}) {
+    if (!state.open) {
+      state = state.copyWith(sources: sources);
+      return;
+    }
+    final matches = findMatches(sources, state.query);
+    final carried = carry
+        ? carryCurrent(
+            before: state.sources,
+            oldMatches: state.matches,
+            oldCurrent: state.current,
+            after: sources,
+            newMatches: matches,
+          )
+        : null;
+    state = state.copyWith(
+      sources: sources,
+      matches: matches,
+      current: carried ?? firstAtOrAfter(matches, state.caret),
+      setCurrent: true,
+    );
+  }
 
   /// Sets the caret anchor. Never moves the current match.
-  void setCaret(FindCaret? caret) {}
+  void setCaret(FindCaret? caret) {
+    state = state.copyWith(caret: caret, setCaret: true);
+  }
 
   /// Open: steps forward with wrap (Req 19). Closed with a non-empty last
   /// query: opens with it at `firstAtOrAfter(caret)`, without bumping
   /// `focusRequest` (Req 15). Closed with an empty last query: nothing.
   /// Returns the new current match, or null.
-  FindMatch? next() => null;
+  FindMatch? next() => _step(forward: true);
 
   /// As [next], stepping back; a closed bar opens at `lastBefore(caret)`.
-  FindMatch? previous() => null;
+  FindMatch? previous() => _step(forward: false);
+
+  FindMatch? _step({required bool forward}) {
+    if (!state.open) {
+      final query = state.lastQuery;
+      if (query.isEmpty) return null;
+      final matches = findMatches(state.sources, query);
+      state = state.copyWith(
+        open: true,
+        query: query,
+        matches: matches,
+        current: forward
+            ? firstAtOrAfter(matches, state.caret)
+            : lastBefore(matches, state.caret),
+        setCurrent: true,
+      );
+      return state.currentMatch;
+    }
+    final current = state.current;
+    if (current == null) return null;
+    state = state.copyWith(
+      current: stepIndex(current, state.matches.length, forward: forward),
+      setCurrent: true,
+    );
+    return state.currentMatch;
+  }
 
   /// Closes: returns the current match (or null) so the editor can select
   /// it, clears the matches and the current match, keeps the last query
   /// (Req 40).
-  FindMatch? close() => null;
+  FindMatch? close() {
+    final current = state.currentMatch;
+    state = state.copyWith(
+      open: false,
+      matches: const [],
+      current: null,
+      setCurrent: true,
+    );
+    return current;
+  }
 
   /// Another note shows: closes as [close] does and forgets the caret
   /// anchor and the sources, keeping the last query (Req 42).
-  void noteChanged() {}
+  void noteChanged() {
+    state = FindInNoteState(
+      lastQuery: state.lastQuery,
+      focusRequest: state.focusRequest,
+    );
+  }
 }
 
 /// The one app-wide Find in note state (TD1).
@@ -136,7 +258,9 @@ class FindMenuActionsNotifier extends Notifier<FindMenuDispatch?> {
   FindMenuDispatch? build() => null;
 
   /// Dispatches [action] with the next sequence number.
-  void dispatch(FindMenuAction action) {}
+  void dispatch(FindMenuAction action) {
+    state = FindMenuDispatch(action, (state?.seq ?? 0) + 1);
+  }
 }
 
 /// The native menu's Find actions (F5 dispatches, F6 performs).

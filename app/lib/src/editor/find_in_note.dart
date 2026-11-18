@@ -8,6 +8,11 @@
 // is a UTF-16 code-unit index into its source's text (source-local), never a
 // byte offset (rulings D2, D3).
 
+import 'dart:math' show max, min;
+
+import 'conflict_merge.dart' show carryOffset;
+import 'markdown_inline.dart' show InlineToken, tokenizeInline;
+
 /// A half-open UTF-16 range `[start, end)` in one source's text.
 final class FindRange {
   const FindRange(this.start, this.end);
@@ -134,7 +139,94 @@ final class FindMatch {
 ///   partly inside counts, not hidden (Req 4).
 /// - A body match wholly inside hidden ranges counts, [FindMatch.hidden]
 ///   true, with its [FindMatch.outline] (Req 26, `tokenizeInline`).
-List<FindMatch> findMatches(List<FindSource> sources, String query) => const [];
+List<FindMatch> findMatches(List<FindSource> sources, String query) {
+  if (query.isEmpty) return const [];
+  final needle = _fold(query);
+  final ordered = [...sources]..sort((a, b) => a.segment.compareTo(b.segment));
+  final out = <FindMatch>[];
+  for (final source in ordered) {
+    final haystack = _fold(source.text);
+    final hidden = source.kind == FindSourceKind.source
+        ? const <FindRange>[]
+        : ([...source.hidden]..sort((a, b) => a.start.compareTo(b.start)));
+    List<InlineToken>? tokens;
+    // Hidden ranges ending at or before a match can hold no later match.
+    var from = 0;
+    var at = haystack.indexOf(needle);
+    while (at >= 0) {
+      final end = at + needle.length;
+      while (from < hidden.length && hidden[from].end <= at) {
+        from++;
+      }
+      final wholly = _covered(hidden, from, at, end);
+      if (!wholly) {
+        out.add(
+          FindMatch(
+            segment: source.segment,
+            kind: source.kind,
+            start: at,
+            end: end,
+          ),
+        );
+      } else if (source.kind == FindSourceKind.body) {
+        tokens ??= tokenizeInline(source.text);
+        out.add(
+          FindMatch(
+            segment: source.segment,
+            kind: source.kind,
+            start: at,
+            end: end,
+            hidden: true,
+            outline: _outline(tokens, at, end),
+          ),
+        );
+      }
+      at = haystack.indexOf(needle, end);
+    }
+  }
+  return out;
+}
+
+/// [text] with case folded code unit for code unit, so every offset into
+/// the result is the same offset into [text]. A character whose lower case
+/// changes its length (`İ`) keeps its own case.
+String _fold(String text) {
+  final lower = text.toLowerCase();
+  if (lower.length == text.length) return lower;
+  final out = StringBuffer();
+  for (final rune in text.runes) {
+    final char = String.fromCharCode(rune);
+    final folded = char.toLowerCase();
+    out.write(folded.length == char.length ? folded : char);
+  }
+  return out.toString();
+}
+
+/// Whether every code unit of `[start, end)` lies in [sorted] (ranges by
+/// start, read from index [from]; adjacent and overlapping ranges join).
+bool _covered(List<FindRange> sorted, int from, int start, int end) {
+  var reach = start;
+  for (final range in sorted.skip(from)) {
+    if (range.start > reach) break;
+    reach = max(reach, range.end);
+    if (reach >= end) return true;
+  }
+  return false;
+}
+
+/// The content of the innermost inline token whose span holds the hidden
+/// match `[start, end)`, or null when no token holds it (Req 26).
+/// [tokenizeInline] lists nested tokens too, by strictly increasing start,
+/// and tokens that both hold the match nest: the last one is innermost.
+FindRange? _outline(List<InlineToken> tokens, int start, int end) {
+  InlineToken? owner;
+  for (final token in tokens) {
+    if (token.start > start) break;
+    if (token.end >= end) owner = token;
+  }
+  if (owner == null) return null;
+  return FindRange(owner.content.start, owner.content.end);
+}
 
 /// A caret anchor: an offset in the body text segment [segment] (in Source
 /// mode, segment 0 and the Source field's offset).
@@ -163,18 +255,37 @@ final class FindCaret {
 /// (never placed in this note) gives the first match. With no match at or
 /// after the caret it wraps to the first match. Null when [matches] is
 /// empty (Req 18).
-int? firstAtOrAfter(List<FindMatch> matches, FindCaret? caret) => null;
+int? firstAtOrAfter(List<FindMatch> matches, FindCaret? caret) {
+  if (matches.isEmpty) return null;
+  if (caret == null) return 0;
+  final at = matches.indexWhere(
+    (m) => _atOrAfter(m, caret.segment, caret.offset),
+  );
+  return at < 0 ? 0 : at;
+}
+
+/// Whether [m] starts at or after offset [offset] of segment [segment].
+bool _atOrAfter(FindMatch m, int segment, int offset) =>
+    m.segment > segment || (m.segment == segment && m.start >= offset);
 
 /// The index of the last match before [caret]: in an earlier segment, or in
 /// the caret's segment starting before its offset. A null [caret] and no
 /// match before the caret both wrap to the last match. Null when [matches]
 /// is empty (Req 15).
-int? lastBefore(List<FindMatch> matches, FindCaret? caret) => null;
+int? lastBefore(List<FindMatch> matches, FindCaret? caret) {
+  if (matches.isEmpty) return null;
+  if (caret == null) return matches.length - 1;
+  final at = matches.lastIndexWhere(
+    (m) => !_atOrAfter(m, caret.segment, caret.offset),
+  );
+  return at < 0 ? matches.length - 1 : at;
+}
 
 /// The index one step from [current] among [total] matches, wrapping from
 /// the last to the first ([forward]) and from the first to the last
 /// (Req 19).
-int stepIndex(int current, int total, {required bool forward}) => 0;
+int stepIndex(int current, int total, {required bool forward}) =>
+    (current + (forward ? 1 : total - 1)) % total;
 
 /// The current match after a text change (Reqs 37-38): [before] and [after]
 /// are the sources around the change, [oldMatches] / [newMatches] their
@@ -183,14 +294,46 @@ int stepIndex(int current, int total, {required bool forward}) => 0;
 /// The same match keeps current when it survives (its start carried through
 /// the edit of its source's text with `carryOffset`, `conflict_merge.dart`).
 /// Otherwise it is the first match at or after the old match's carried
-/// position, wrapping to the first match. Null when [newMatches] is empty.
+/// position, wrapping to the first match. Null when [newMatches] is empty,
+/// and when [oldCurrent] is null (no current match to carry: the caller
+/// takes one from the caret).
 int? carryCurrent({
   required List<FindSource> before,
   required List<FindMatch> oldMatches,
   required int? oldCurrent,
   required List<FindSource> after,
   required List<FindMatch> newMatches,
-}) => null;
+}) {
+  if (oldCurrent == null || newMatches.isEmpty) return null;
+  final old = oldMatches[oldCurrent];
+  final was = _sourceOf(before, old);
+  final now = _sourceOf(after, old);
+  final carried = was == null || now == null
+      ? old.start
+      : carryOffset(was.text, now.text, old.start);
+  final same = newMatches.indexWhere(
+    (m) =>
+        m.segment == old.segment &&
+        m.kind == old.kind &&
+        m.start == carried &&
+        m.end - m.start == old.end - old.start,
+  );
+  if (same >= 0) return same;
+  final next = newMatches.indexWhere(
+    (m) => _atOrAfter(m, old.segment, carried),
+  );
+  return next < 0 ? 0 : next;
+}
+
+/// The source in [sources] that [match] lies in, or null when it is gone.
+FindSource? _sourceOf(List<FindSource> sources, FindMatch match) {
+  for (final source in sources) {
+    if (source.segment == match.segment && source.kind == match.kind) {
+      return source;
+    }
+  }
+  return null;
+}
 
 /// The current match after toggling Source mode (Req 39): [from] are the
 /// matches in the mode being left, [current] an index into them, [to] the
@@ -208,11 +351,23 @@ int? mapCurrentAcrossMode({
   required int? current,
   required List<FindMatch> to,
   required int Function(int segment) tokenOffset,
-}) => null;
+}) {
+  if (current == null || to.isEmpty) return null;
+  int position(FindMatch m) => switch (m.kind) {
+    FindSourceKind.source => m.start,
+    FindSourceKind.body => tokenOffset(m.segment) + m.start,
+    FindSourceKind.card => tokenOffset(m.segment),
+  };
+  final at = position(from[current]);
+  final same = to.indexWhere((m) => position(m) == at);
+  if (same >= 0) return same;
+  final next = to.indexWhere((m) => position(m) >= at);
+  return next < 0 ? 0 : next;
+}
 
 /// The Find bar's width over a note body [bodyWidth] wide:
 /// `min(372, bodyWidth - 24)` (Req 30).
-double findBoxWidth(double bodyWidth) => 0;
+double findBoxWidth(double bodyWidth) => min(372.0, bodyWidth - 24);
 
 /// Which counter the Find bar shows (Req 32).
 enum FindCounterForm {
@@ -229,22 +384,51 @@ enum FindCounterForm {
 /// The counter form for a Find bar [boxWidth] wide whose short counter text
 /// measures [shortTextWidth] (Req 32): full at 300 px and wider; short below
 /// 300; hidden below 240, and also when a short text wider than its 34 px
-/// minimum slot would push the field under its 96 px floor.
+/// minimum slot would push the field under its 96 px floor. The field is
+/// `boxWidth - 110 - max(34.0, shortTextWidth)` wide beside a short counter
+/// (design B4, packs/82.md; lead ruling Q1).
 FindCounterForm findCounterForm({
   required double boxWidth,
   required double shortTextWidth,
-}) => FindCounterForm.full;
+}) {
+  if (boxWidth >= 300) return FindCounterForm.full;
+  if (boxWidth < 240) return FindCounterForm.hidden;
+  final field = boxWidth - 110 - max(34, shortTextWidth);
+  return field < 96 ? FindCounterForm.hidden : FindCounterForm.short;
+}
 
 /// The counter text in [form] (Reqs 10, 29, 32): [current] is the 0-based
 /// index of the current match among [total]. Full: `3 of 12`, `1 of 2,431`
 /// (thousands separator), `No matches`. Short: `3/12`, `None`. Null for an
-/// empty [query] and for [FindCounterForm.hidden].
+/// empty [query] and for [FindCounterForm.hidden]. A null [current] among
+/// matches (never while the bar is open) shows as 0.
 String? findCounterText({
   required int? current,
   required int total,
   required String query,
   required FindCounterForm form,
-}) => null;
+}) {
+  if (query.isEmpty) return null;
+  final shown = current == null ? 0 : current + 1;
+  return switch (form) {
+    FindCounterForm.hidden => null,
+    FindCounterForm.full =>
+      total == 0 ? 'No matches' : '${_grouped(shown)} of ${_grouped(total)}',
+    FindCounterForm.short =>
+      total == 0 ? 'None' : '${_grouped(shown)}/${_grouped(total)}',
+  };
+}
+
+/// [n] with a comma every three digits: `2,431`.
+String _grouped(int n) {
+  final digits = n.toString();
+  final out = StringBuffer();
+  for (var i = 0; i < digits.length; i++) {
+    if (i > 0 && (digits.length - i) % 3 == 0) out.write(',');
+    out.write(digits[i]);
+  }
+  return out.toString();
+}
 
 /// The Find field's semantics value (Req 34): always the full counter text
 /// (`3 of 12`, `No matches`), whatever form the counter shows; empty for an
@@ -253,4 +437,11 @@ String findSemanticsValue({
   required int? current,
   required int total,
   required String query,
-}) => '';
+}) =>
+    findCounterText(
+      current: current,
+      total: total,
+      query: query,
+      form: FindCounterForm.full,
+    ) ??
+    '';
