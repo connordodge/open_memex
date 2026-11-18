@@ -2,8 +2,11 @@
 // R35, R41, TD3; WI #68).
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../db.dart';
 import '../editor/outline.dart';
 import '../vault_access/vault_scoped.dart';
+import 'editor_controller.dart';
+import 'today_state.dart';
 
 /// The Outline of one note: its id, the live editor text the entries came
 /// from, and the entries.
@@ -34,11 +37,45 @@ final outlineEntriesFnProvider = Provider<OutlineEntriesFn>(
   (_) => outlineEntries,
 );
 
+/// The entries of one (text, role) pair, so an editor state change that
+/// keeps the text computes nothing (R41). AutoDispose: a pair nothing
+/// watches any more is dropped.
+final _outlineEntriesProvider = Provider.autoDispose
+    .family<List<OutlineEntry>, (String, String?)>((ref, key) {
+      final (text, role) = key;
+      return ref.watch(outlineEntriesFnProvider)(text, role: role);
+    });
+
 /// The Outline of the note in `editorNoteAsyncProvider`, from the live
 /// `EditorController.contentMd` with that note's role. A null value means no
-/// note is open. Loading while the editor's note is still loading.
-/// AutoDispose: nothing is computed while nothing listens (R41).
+/// note is open. Loading while the editor's note is still loading, and while
+/// the editor still holds another note's text (a note switch before the
+/// editor loads the new note). AutoDispose: nothing is computed while nothing
+/// listens (R41).
 final outlineProvider =
-    Provider.autoDispose<AsyncValue<VaultScoped<NoteOutline?>>>(
-      (ref) => const AsyncLoading(),
-    );
+    Provider.autoDispose<AsyncValue<VaultScoped<NoteOutline?>>>((ref) {
+      final noteAsync = ref.watch(editorNoteAsyncProvider);
+      // The whole state, not only its text: loading a note whose text equals
+      // the previous text (an empty Today note over '') still changes the
+      // note the entries belong to.
+      final editor = ref.watch(editorControllerProvider);
+      final scoped = noteAsync.valueOrNull;
+      if (scoped == null) {
+        return noteAsync.hasError
+            ? AsyncError(noteAsync.error!, noteAsync.stackTrace!)
+            : const AsyncLoading();
+      }
+      final Note? note = scoped.value;
+      if (note == null) return AsyncData(VaultScoped(scoped.vault, null));
+      if (ref.read(editorControllerProvider.notifier).activeNoteId != note.id) {
+        return const AsyncLoading();
+      }
+      final text = editor.contentMd;
+      final entries = ref.watch(_outlineEntriesProvider((text, note.role)));
+      return AsyncData(
+        VaultScoped(
+          scoped.vault,
+          NoteOutline(noteId: note.id, content: text, entries: entries),
+        ),
+      );
+    });

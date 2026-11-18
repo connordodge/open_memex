@@ -64,7 +64,7 @@ class _TabRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 8),
       child: Row(
         children: [
-          // At a large text scale the three chips would overflow the 340 px
+          // At a large text scale the four chips would overflow the 340 px
           // panel (Spec #391 req 35): they shrink together to fit, and keep
           // their natural size whenever they fit.
           Expanded(
@@ -87,6 +87,13 @@ class _TabRow extends StatelessWidget {
                       icon: LucideIcons.history,
                       active: active == RightPanelTab.echoes,
                       onTap: () => onChange(RightPanelTab.echoes),
+                    ),
+                    _TabButton(
+                      key: const Key('outline-tab-chip'),
+                      label: 'outline',
+                      icon: LucideIcons.listTree,
+                      active: active == RightPanelTab.outline,
+                      onTap: () => onChange(RightPanelTab.outline),
                     ),
                     _TabButton(
                       label: 'activity',
@@ -118,6 +125,7 @@ class _TabRow extends StatelessWidget {
 
 class _TabButton extends StatelessWidget {
   const _TabButton({
+    super.key,
     required this.label,
     required this.icon,
     required this.active,
@@ -142,7 +150,7 @@ class _TabButton extends StatelessWidget {
         onTap: onTap,
         child: Container(
           height: 28,
-          padding: const EdgeInsets.symmetric(horizontal: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 6),
           margin: const EdgeInsets.only(right: 2),
           decoration: BoxDecoration(
             color: active ? OmColors.surface3 : Colors.transparent,
@@ -152,7 +160,7 @@ class _TabButton extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(icon, size: 11, color: iconColor),
-              const SizedBox(width: 5),
+              const SizedBox(width: 4),
               Text(label, style: OmType.sans(size: 12, color: fg)),
             ],
           ),
