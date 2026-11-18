@@ -353,7 +353,16 @@ final class _SpanBuilder {
       switch (itemText ? MdLineKind.plain : line.kind) {
         case MdLineKind.heading:
           levels[i] = line.level;
-          _markRange(line.markerStart, line.separatorEnd, _marker);
+          // While revealed, spaces after the separator with no word yet join
+          // the marker run (#90): split across the marker's body face and a
+          // whitespace-only heading-face run, their boxes overlap and the
+          // caret after the last space draws one space short. Hidden, the
+          // spaces stay shown text so the line keeps the heading's height.
+          final markerEnd =
+              revealed[i] && _onlySpaces(line.textStart, line.contentEnd)
+              ? line.contentEnd
+              : line.separatorEnd;
+          _markRange(line.markerStart, markerEnd, _marker);
           _tokenize(line.textStart, line.contentEnd);
         case MdLineKind.bullet ||
             MdLineKind.numbered ||
@@ -454,6 +463,14 @@ final class _SpanBuilder {
     for (final pipe in split.pipes) {
       _markRange(pipe, pipe + 1, _marker);
     }
+  }
+
+  /// Whether `[start, end)` of [text] holds only spaces (true when empty).
+  bool _onlySpaces(int start, int end) {
+    for (var at = start; at < end; at++) {
+      if (text.codeUnitAt(at) != 0x20) return false;
+    }
+    return true;
   }
 
   void _markRange(int start, int end, int flag) {
