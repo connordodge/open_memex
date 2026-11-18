@@ -869,6 +869,58 @@ void main() {
       },
       variant: macOnly,
     );
+
+    testWidgets(
+      'focus returning to the Outline list after a passing loss keeps the ring on the row it was on',
+      (tester) async {
+        final h = await pumpWi70(tester);
+        await wi70PutCurrent(h, 10);
+        await _wi70FocusOutline(tester, 10);
+        await wi70Press(tester, _up, times: 3);
+        wi70ExpectOutlineFocus(tester, 7, reason: 'moved up');
+
+        // The app going inactive and back: primary focus leaves, then the
+        // same node is focused again. Not Esc, so the ring row is kept.
+        wi70Unfocus();
+        await pumpFrames(tester);
+        expect(wi70FocusInOutline(), isFalse, reason: 'fixture: focus lost');
+        _wi70ListFocusNode().requestFocus();
+        await pumpFrames(tester);
+        wi70ExpectOutlineFocus(tester, 7, reason: 'after unfocus and back');
+
+        // The same after focus moved to another widget (a modal closing).
+        await wi70FocusSidebar(tester);
+        expect(wi70FocusInOutline(), isFalse, reason: 'fixture: in sidebar');
+        _wi70ListFocusNode().requestFocus();
+        await pumpFrames(tester);
+        wi70ExpectOutlineFocus(tester, 7, reason: 'after the sidebar and back');
+        expect(wi70CurrentRows(tester), [10], reason: 'current stays');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'switching notes while the Outline list is unfocused resets the ring to the new notes current row',
+      (tester) async {
+        final h = await pumpWi70(tester);
+        await wi70PutCurrent(h, 10);
+        await _wi70FocusOutline(tester, 10);
+        await wi70Press(tester, _up, times: 3);
+        wi70ExpectOutlineFocus(tester, 7, reason: 'moved up');
+        await wi70FocusSidebar(tester);
+        expect(wi70FocusInOutline(), isFalse, reason: 'fixture: focus left');
+
+        await h.navigate(const NoteTab(wi70TallId));
+        await pumpFrames(tester);
+        expect(h.body().note.id, wi70TallId, reason: 'fixture: switched');
+        expect(wi70CurrentRows(tester), isEmpty, reason: 'fixture: no current');
+        _wi70ListFocusNode().requestFocus();
+        await pumpFrames(tester);
+
+        wi70ExpectOutlineFocus(tester, 0, reason: 'the new note, first row');
+      },
+      variant: macOnly,
+    );
   });
 
   // ------------------------------------------------------------- ring
