@@ -1028,4 +1028,268 @@ void main() {
       variant: macOnly,
     );
   });
+
+  // -------------------------------------------------------------------------
+  // Rows whose field text starts after segment offset 0 (review r1, finding 1)
+  // -------------------------------------------------------------------------
+  group('rows after the first row of the segment', () {
+    testWidgets(
+      'a click at the end of a word in an unrevealed heading in a prose row after an item row keeps the press-time caret',
+      (tester) async {
+        const text = '- item\n## Hello world\nnext line';
+        final (:b, tabs: _) = await _wi65Pump(tester, text);
+        expect(b.rows(), hasLength(2));
+        final lineStart = text.indexOf('##');
+        expect(_wi65Shown(b, lineStart), isFalse);
+        final end = text.indexOf('Hello') + 'Hello'.length;
+
+        final seen = await _wi65Click(b, _wi65RightHalf(b, end - 1));
+
+        _wi65ExpectCaret(seen, end);
+        expect(b.view().focusedRow, 1);
+        expect(_wi65Shown(b, lineStart), isTrue);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a click at the left edge of an unrevealed heading in a prose row after an item row puts the caret after the marker and its space',
+      (tester) async {
+        const text = '- item\n## Hello world\nnext line';
+        final (:b, tabs: _) = await _wi65Pump(tester, text);
+        final content = text.indexOf('Hello');
+        final first = _wi65Glyph(b, content);
+        final edge = Offset(first.left + 0.5, first.center.dy);
+
+        final seen = await _wi65Click(b, edge);
+
+        _wi65ExpectCaret(seen, content);
+      },
+      variant: macOnly,
+    );
+
+    for (final (text, name) in [
+      (
+        '- a\n# \nbody line',
+        'a click on an empty H1 in a prose row after an item row puts the caret at the line content end',
+      ),
+      (
+        '- a\n- b\n### \nbody line',
+        'a click on an empty H3 in a prose row after two item rows puts the caret at the line content end',
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final (:b, tabs: _) = await _wi65Pump(tester, text);
+        final lineStart = text.indexOf('#');
+        final contentEnd = text.indexOf('\n', lineStart);
+        final boxes = b.segmentBoxes();
+        final line = boxes.lines.firstWhere(
+          (l) => l.range.start <= lineStart && lineStart <= l.range.end,
+        );
+        final field = b.toGlobal(boxes, Offset.zero & boxes.box.size);
+        final y = boxes.box
+            .localToGlobal(Offset(0, (line.top + line.bottom) / 2))
+            .dy;
+
+        for (final x in [field.left + 1, field.left + 200]) {
+          final seen = await _wi65Click(b, Offset(x, y));
+
+          _wi65ExpectCaret(seen, contentEnd);
+          await b.focusOutside();
+          await _wi65Settle(tester);
+        }
+      }, variant: macOnly);
+    }
+
+    testWidgets(
+      'a click past bold markup in an item row keeps the press-time caret after release and settle',
+      (tester) async {
+        const text = '- one\n- see **bold** here\n- three';
+        final (:b, tabs: _) = await _wi65Pump(tester, text);
+        expect(b.rows(), hasLength(3));
+        final here = text.indexOf('here');
+        expect(_wi65Shown(b, text.indexOf('**')), isFalse);
+
+        final seen = await _wi65Click(b, _wi65RightHalf(b, here + 3));
+
+        _wi65ExpectCaret(seen, here + 4);
+        expect(b.view().focusedRow, 1);
+        expect(_wi65Shown(b, text.indexOf('**')), isTrue);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a click on the left half of the first character after a hidden opening marker in an item row puts the caret after the marker',
+      (tester) async {
+        const text = '- one\n- see **bold** here\n- three';
+        final (:b, tabs: _) = await _wi65Pump(tester, text);
+        final bold = text.indexOf('bold');
+
+        final seen = await _wi65Click(b, _wi65LeftHalf(b, bold));
+
+        _wi65ExpectCaret(seen, bold);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a double click on a word in an unrevealed heading in a prose row after an item row selects that word',
+      (tester) async {
+        const text = '- item\n## Hi world\nnext line';
+        final (:b, tabs: _) = await _wi65Pump(tester, text);
+        final word = text.indexOf('world');
+
+        await _wi65Clicks(tester, [_wi65Center(b, word)]);
+
+        expect(_wi65Range(b.selection()), (word, word + 5));
+        expect(b.view().focusedRow, 1);
+        await _wi65Settle(tester);
+        expect(_wi65Range(b.selection()), (word, word + 5));
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a double click on a bold word in an item row after another item row selects that word',
+      (tester) async {
+        const text = '- one\n- see **bold** here\n- three';
+        final (:b, tabs: _) = await _wi65Pump(tester, text);
+        final word = text.indexOf('bold');
+
+        await _wi65Clicks(tester, [_wi65Center(b, word + 1)]);
+
+        expect(_wi65Range(b.selection()), (word, word + 4));
+        expect(b.view().focusedRow, 1);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a triple click on an unrevealed heading in a prose row after an item row selects that line',
+      (tester) async {
+        const text = '- item\n## Hi world\nnext line';
+        final (:b, tabs: _) = await _wi65Pump(tester, text);
+        final line = text.indexOf('##');
+
+        await _wi65Clicks(tester, [
+          _wi65Center(b, text.indexOf('world')),
+        ], count: 3);
+
+        expect(_wi65Range(b.selection()), (line, text.indexOf('next')));
+        expect(b.view().focusedRow, 1);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a triple click on a bold line in an item row after another item row selects the same range a triple click selects on that line already revealed',
+      (tester) async {
+        const text = '- one\n- see **bold** here\n- three';
+        final (:b, tabs: _) = await _wi65Pump(tester, text);
+        final at = text.indexOf('here') + 1;
+        final lineStart = text.indexOf('- see');
+
+        await b.placeCaret(lineStart + 4);
+        await _wi65Clicks(tester, [_wi65Center(b, at)], count: 3);
+        final revealed = b.selection();
+        expect(
+          revealed.start,
+          inInclusiveRange(lineStart, lineStart + 2),
+          reason: 'oracle: $revealed',
+        );
+        expect(revealed.end, lessThanOrEqualTo(text.indexOf('- three')));
+        await b.focusOutside();
+        await _wi65Settle(tester);
+        expect(_wi65Shown(b, text.indexOf('**')), isFalse);
+
+        await _wi65Clicks(tester, [_wi65Center(b, at)], count: 3);
+
+        expect(_wi65Range(b.selection()), _wi65Range(revealed));
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a click on a line with a transclusion keeps the press-time caret after release and settle',
+      (tester) async {
+        const text = 'intro\n**bold** ![[Known]] tail\nnext line';
+        final (:b, tabs: _) = await _wi65Pump(tester, text);
+        final tail = text.indexOf('tail');
+        expect(_wi65Shown(b, text.indexOf('**')), isFalse);
+
+        final seen = await _wi65Click(b, _wi65RightHalf(b, tail + 3));
+
+        _wi65ExpectCaret(seen, tail + 4);
+      },
+      variant: macOnly,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // A composing row (review r1, finding 2)
+  // -------------------------------------------------------------------------
+  group('a click in the row an IME is composing in', () {
+    testWidgets(
+      'a click on another unrevealed line of the composing row moves the field caret to the press and ends the composition',
+      (tester) async {
+        const text = 'intro line\n## Hello world\nnext line';
+        final (:b, tabs: _) = await _wi65Pump(tester, text);
+        await b.placeCaret(5);
+        await tester.macCompose(text, const TextRange(start: 0, end: 5));
+        expect(b.focusedField().textEditingValue.composing.isValid, isTrue);
+        final end = text.indexOf('Hello') + 'Hello'.length;
+
+        final seen = await _wi65Click(b, _wi65RightHalf(b, end - 1));
+
+        _wi65ExpectCaret(seen, end);
+        final field = b.focusedField().textEditingValue;
+        expect(field.selection, TextSelection.collapsed(offset: end));
+        expect(field.composing, TextRange.empty);
+        expect(b.view().focusedRow, 0);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a click on another unrevealed line of a composing row after an item row puts the field caret at the row-local press',
+      (tester) async {
+        const rowText = 'intro line\n## Hello world\nnext line';
+        const text = '- item\n$rowText';
+        final (:b, tabs: _) = await _wi65Pump(tester, text);
+        final start = text.indexOf('intro');
+        await b.placeCaret(start + 5);
+        expect(b.view().focusedRow, 1);
+        await tester.macCompose(rowText, const TextRange(start: 0, end: 5));
+        expect(b.focusedField().textEditingValue.composing.isValid, isTrue);
+        final end = text.indexOf('Hello') + 'Hello'.length;
+
+        final seen = await _wi65Click(b, _wi65RightHalf(b, end - 1));
+
+        _wi65ExpectCaret(seen, end);
+        final field = b.focusedField().textEditingValue;
+        expect(field.selection, TextSelection.collapsed(offset: end - start));
+        expect(field.composing, TextRange.empty);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a click on an unrevealed line of a focused row the IME is not composing in leaves the row text and composing range untouched',
+      (tester) async {
+        const text = 'intro line\n## Hello world\nnext line';
+        final (:b, tabs: _) = await _wi65Pump(tester, text);
+        await b.placeCaret(5);
+        final end = text.indexOf('Hello') + 'Hello'.length;
+
+        final seen = await _wi65Click(b, _wi65RightHalf(b, end - 1));
+
+        _wi65ExpectCaret(seen, end);
+        final field = b.focusedField().textEditingValue;
+        expect(field.text, text);
+        expect(field.composing, TextRange.empty);
+      },
+      variant: macOnly,
+    );
+  });
 }
