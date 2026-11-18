@@ -976,4 +976,56 @@ void main() {
       variant: macOnly,
     );
   });
+
+  // -------------------------------------------------------------------------
+  // Contracts of the row click chain (verify)
+  // -------------------------------------------------------------------------
+  group('contracts of the row click chain (verify)', () {
+    testWidgets(
+      'a click on the left half of a hash that starts an item row text keeps the press-time caret as the item holds no heading',
+      (tester) async {
+        const text = '- # item\nnext line';
+        final (:b, tabs: _) = await _wi65Pump(tester, text);
+        // `- |# item`: the left half of the hash, no heading marker here.
+        final hash = text.indexOf('#');
+
+        final seen = await _wi65Click(b, _wi65LeftHalf(b, hash));
+
+        _wi65ExpectCaret(seen, hash);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a double click past the end of the last line of an unrevealed heading keeps a caret at the text end',
+      (tester) async {
+        const text = '## Hello world';
+        final (:b, tabs: _) = await _wi65Pump(tester, text);
+        final end = _wi65Glyph(b, text.length - 1);
+        final past = Offset(end.right + 60, end.center.dy);
+
+        await _wi65Clicks(tester, [past]);
+
+        expect(_wi65Range(b.selection()), (text.length, text.length));
+        await _wi65Settle(tester);
+        expect(_wi65Range(b.selection()), (text.length, text.length));
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a triple click past the end of the last line of an unrevealed heading selects that whole line',
+      (tester) async {
+        const text = 'intro\n## Hello world';
+        final (:b, tabs: _) = await _wi65Pump(tester, text);
+        final end = _wi65Glyph(b, text.length - 1);
+        final past = Offset(end.right + 60, end.center.dy);
+
+        await _wi65Clicks(tester, [past], count: 3);
+
+        expect(_wi65Range(b.selection()), (6, text.length));
+      },
+      variant: macOnly,
+    );
+  });
 }
