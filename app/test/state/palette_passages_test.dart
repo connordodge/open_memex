@@ -787,4 +787,192 @@ void main() {
       semantics.dispose();
     });
   });
+  group('verify contracts', () {
+    testWidgets('the no matches row is a live region with no Passages header', (
+      tester,
+    ) async {
+      final semantics = tester.ensureSemantics();
+      final r = await _wi78Pump(tester);
+      await r.type('zzzz');
+      await r.wait(250);
+
+      final line = find.descendant(
+        of: find.byKey(PaletteKeys.noMatches),
+        matching: find.text('no matches for “zzzz”'),
+      );
+      expect(line, findsOneWidget);
+      var live = false;
+      for (
+        SemanticsNode? n = tester.getSemantics(line);
+        n != null;
+        n = n.parent
+      ) {
+        if (n.getSemanticsData().flagsCollection.isLiveRegion) live = true;
+      }
+      expect(live, isTrue);
+      expect(find.text('PASSAGES'), findsNothing);
+      semantics.dispose();
+    });
+
+    testWidgets(
+      'on a hosted vault model_not_downloaded shows keyword matches only with no button',
+      (tester) async {
+        final r = await _wi78Pump(tester);
+        r.h.container.read(currentVaultProvider.notifier).state =
+            const HostedVaultRef('srv-78', 'Team vault');
+        await tester.pump();
+        r.search.enqueue(
+          _wi78Ready([_wi78Hit('c-1')], semantic: Semantic.modelNotDownloaded),
+        );
+        await r.type('price');
+        await r.wait(250);
+
+        expect(r.passageChunks, ['c-1']);
+        expect(
+          _wi78Line('unavailable', 'keyword matches only.'),
+          findsOneWidget,
+        );
+        expect(find.byKey(PaletteKeys.download), findsNothing);
+        expect(
+          find.byKey(PaletteKeys.passagesState('model-not-downloaded')),
+          findsNothing,
+        );
+      },
+    );
+
+    testWidgets(
+      'repeating the same input after its answer makes no second search',
+      (tester) async {
+        final r = await _wi78Pump(tester);
+        r.search.enqueue(_wi78Ready([_wi78Hit('c-a')]));
+        await r.type('price');
+        await r.wait(250);
+        expect(r.queries, ['price']);
+
+        await r.type('price');
+        await r.wait(5000);
+        expect(r.queries, ['price'], reason: 'the same input is a no-op');
+        expect(r.passages, isA<PassagesShown>(), reason: 'rows are not dimmed');
+        expect(r.passageChunks, ['c-a']);
+      },
+    );
+
+    testWidgets(
+      'typing under two characters drops the queued input and shows nothing',
+      (tester) async {
+        final r = await _wi78Pump(tester);
+        final gate = Completer<void>();
+        r.search.gate = gate;
+        await r.type('pri');
+        await r.wait(250);
+        await r.type('pric');
+        await r.wait(250);
+        expect(r.queries, ['pri']);
+
+        await r.type('p');
+        expect(r.passages, isA<PassagesIdle>());
+        r.search.gate = null;
+        await r.release(gate);
+        await r.wait(5000);
+
+        expect(r.queries, ['pri'], reason: 'the queued pric never runs');
+        expect(r.passages, isA<PassagesIdle>());
+        expect(r.passagesGroup, isNull);
+      },
+    );
+
+    testWidgets(
+      'switching vault with a search in flight shows nothing from the old vault',
+      (tester) async {
+        final r = await _wi78Pump(tester);
+        final gate = Completer<void>();
+        r.search.gate = gate;
+        r.search.enqueue(_wi78Ready([_wi78Hit('c-old')]));
+        await r.type('price');
+        await r.wait(250);
+        expect(r.queries, ['price']);
+
+        r.h.container.read(currentVaultProvider.notifier).state = LocalVaultRef(
+          ['/vaults', 'Other Vault'].join('/'),
+        );
+        await tester.pump();
+        r.search.gate = null;
+        await r.release(gate);
+        await r.wait(5000);
+
+        expect(r.passageChunks, isEmpty);
+        expect(r.passages, isNot(isA<PassagesShown>()));
+        expect(r.queries, ['price'], reason: 'no further call');
+      },
+    );
+
+    test(
+      'passageMarks merges overlapping ranges and keeps touching ones apart',
+      () {
+        expect(passageMarks('abcd', 'ab bc'), [
+          const TextRange(start: 0, end: 3),
+        ]);
+        expect(passageMarks('abcd', 'abcd bc'), [
+          const TextRange(start: 0, end: 4),
+        ]);
+        expect(passageMarks('abcd', 'cd ab'), [
+          const TextRange(start: 0, end: 2),
+          const TextRange(start: 2, end: 4),
+        ]);
+        expect(passageMarks('a.b axb', 'a.b'), [
+          const TextRange(start: 0, end: 3),
+        ], reason: 'a typed dot is literal');
+        expect(passageMarks('Price PRICE price', '  price '), [
+          const TextRange(start: 0, end: 5),
+          const TextRange(start: 6, end: 11),
+          const TextRange(start: 12, end: 17),
+        ]);
+        expect(passageMarks('abc', '   '), isEmpty);
+        expect(passageMarks('abc', 'zz'), isEmpty);
+      },
+    );
+
+    test('paletteAge reads just now under an hour and h, d and w after', () {
+      final now = DateTime(2026, 11, 18, 9);
+      String age(Duration ago) =>
+          paletteAge(now.subtract(ago).millisecondsSinceEpoch, now);
+      expect(age(const Duration(minutes: 59)), 'just now');
+      expect(age(const Duration(hours: 1)), '1 h ago');
+      expect(age(const Duration(hours: 23, minutes: 59)), '23 h ago');
+      expect(age(const Duration(hours: 24)), '1 d ago');
+      expect(age(const Duration(days: 6, hours: 23)), '6 d ago');
+      expect(age(const Duration(days: 7)), '1 w ago');
+      expect(age(const Duration(days: 15)), '2 w ago');
+      expect(
+        paletteAge(
+          now.add(const Duration(hours: 3)).millisecondsSinceEpoch,
+          now,
+        ),
+        'just now',
+        reason: 'a backward clock never reads negative',
+      );
+    });
+
+    test('passageMeta reads daily for a daily note and via before the age', () {
+      final now = DateTime(2026, 11, 18, 9);
+      SearchHit hit({String? role, String? via}) => SearchHit(
+        noteId: ['n'].join(),
+        noteTitle: ['t'].join(),
+        noteRole: role,
+        chunkId: ['c'].join(),
+        snippet: ['s'].join(),
+        via: via,
+        noteUpdatedAt: now
+            .subtract(const Duration(hours: 5))
+            .millisecondsSinceEpoch,
+      );
+      expect(passageMeta(hit(role: 'daily'), now), 'daily · 5 h ago');
+      expect(passageMeta(hit(role: 'topic'), now), 'note · 5 h ago');
+      expect(passageMeta(hit(), now), 'note · 5 h ago');
+      expect(
+        passageMeta(hit(role: 'daily', via: '2026-11-17'), now),
+        'via 2026-11-17',
+      );
+    });
+  });
 }

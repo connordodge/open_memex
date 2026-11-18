@@ -211,7 +211,11 @@ void main() {
       expect(r.passagesGroup!.hint, 'keyword only');
 
       var live = false;
-      for (SemanticsNode? n = tester.getSemantics(line); n != null; n = n.parent) {
+      for (
+        SemanticsNode? n = tester.getSemantics(line);
+        n != null;
+        n = n.parent
+      ) {
         if (n.getSemanticsData().flagsCollection.isLiveRegion) live = true;
       }
       expect(live, isTrue, reason: 'the downloading line is a live region');
@@ -266,7 +270,10 @@ void main() {
       expect(r.calls, [('price', false), ('price', true), ('price', false)]);
       expect(r.passageChunks, ['c-1', 'c-3'], reason: 'the re-run shows');
       expect(r.passagesGroup!.hint, 'keyword + meaning');
-      expect(find.byKey(PaletteKeys.passagesState('downloading')), findsNothing);
+      expect(
+        find.byKey(PaletteKeys.passagesState('downloading')),
+        findsNothing,
+      );
       expect(
         find.byKey(PaletteKeys.passagesState('model-not-downloaded')),
         findsNothing,
@@ -362,4 +369,104 @@ void main() {
     expect(r.h.cli!.callsFor('echoes'), isEmpty);
     expect(r.h.container.exists(echoesAsyncProvider), isFalse);
   });
+  testWidgets('a download for a vault that is not open starts no search', (
+    tester,
+  ) async {
+    final r = await _wi78Pump(tester);
+    final other = LocalVaultRef(['/vaults', 'Other Vault'].join('/'));
+    r.h.read(searchModelDownloadProvider(other).notifier).start('price');
+    await tester.pump();
+    await tester.pump();
+
+    expect(r.calls, isEmpty);
+    expect(
+      r.h.read(searchModelDownloadProvider(other)),
+      SearchModelDownloadStatus.idle,
+    );
+  });
+
+  testWidgets(
+    'a keyword answer with the model still missing counts as a failed download',
+    (tester) async {
+      final r = await _wi78Pump(tester);
+      await r.keywordOnly('price');
+      r.search.enqueue(
+        _wi78Ready(const [], semantic: Semantic.modelNotDownloaded),
+      );
+      await r.pressDownload();
+
+      expect(
+        r.h.read(
+          searchModelDownloadProvider(LocalVaultRef([paletteVaultPath].join())),
+        ),
+        SearchModelDownloadStatus.failed,
+      );
+      expect(find.byKey(PaletteKeys.download), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'a download started elsewhere leaves a semantic on answer on screen unchanged',
+    (tester) async {
+      final r = await _wi78Pump(tester);
+      r.search.enqueue(_wi78Ready([_wi78Hit('c-1')]));
+      await r.type('price');
+      await r.wait(250);
+      expect(r.passageChunks, ['c-1']);
+      final shown = r.h.read(palettePassagesProvider);
+
+      final gate = Completer<void>();
+      r.search.gate = gate;
+      r.h
+          .read(
+            searchModelDownloadProvider(
+              LocalVaultRef([paletteVaultPath].join()),
+            ).notifier,
+          )
+          .start('price');
+      await tester.pump();
+
+      expect(r.h.read(palettePassagesProvider), same(shown));
+      expect(
+        find.byKey(PaletteKeys.passagesState('downloading')),
+        findsNothing,
+      );
+      await r.release(gate);
+    },
+  );
+
+  testWidgets(
+    'a download that succeeds while the same input is still searching runs that input once more',
+    (tester) async {
+      final r = await _wi78Pump(tester);
+      await r.keywordOnly('price');
+      final download = Completer<void>();
+      r.search.gate = download;
+      r.search.enqueue(_wi78Ready([_wi78Hit('c-1')]));
+      await r.pressDownload();
+
+      final stale = Completer<void>();
+      r.search.gate = stale;
+      r.search.enqueue(_wi78Ready([_wi78Hit('c-stale')]));
+      r.search.enqueue(_wi78Ready([_wi78Hit('c-fresh')]));
+      await r.type('prices');
+      await r.wait(250);
+      expect(r.calls, [('price', false), ('price', true), ('prices', false)]);
+
+      // The model arrives while the prices search is still in flight.
+      await r.release(download);
+      expect(r.calls.length, 3, reason: 'queued behind the one in flight');
+
+      r.search.gate = null;
+      await r.release(stale);
+      await r.wait(0);
+      expect(r.calls, [
+        ('price', false),
+        ('price', true),
+        ('prices', false),
+        ('prices', false),
+      ]);
+      expect(r.passageChunks, ['c-fresh'], reason: 'the re-run shows');
+    },
+  );
 }

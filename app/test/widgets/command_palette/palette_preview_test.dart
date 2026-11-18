@@ -231,6 +231,7 @@ Future<_Wi78Preview> _wi78PumpPreview(
   List<CommandItem> commands = const [],
   List<NoteItem> recent = const [],
   List<PassageItem> passages = const [],
+  void Function(FakeVaultDb db)? seed,
 }) async {
   expect(
     fontFetchesHeld,
@@ -258,6 +259,7 @@ Future<_Wi78Preview> _wi78PumpPreview(
       updatedAt: paletteHoursAgo(3 + i),
     );
   }
+  seed?.call(db);
   final notes = _Wi78Notes(db);
   final canvas = _Wi78Canvas(db);
   final clock = FakeClock(paletteNow);
@@ -511,9 +513,7 @@ void main() {
       await p.settle();
       expect(p.reads, ['n-78-row-0', 'n-78-row-1']);
       expect(
-        _wi78InPane(
-          find.text("couldn't load the preview."),
-        ),
+        _wi78InPane(find.text("couldn't load the preview.")),
         findsOneWidget,
       );
       expect(_wi78Text('Body of row note 0.'), findsNothing);
@@ -608,5 +608,237 @@ void main() {
     await p.settle();
     expect(p.reads, ['n-78-row-0']);
     expect(_wi78Pane, findsOneWidget);
+  });
+
+  group('verify contracts', () {
+    testWidgets('the preview shows at exactly 950 px wide and not at 949', (
+      tester,
+    ) async {
+      final p = await _wi78PumpPreview(
+        tester,
+        size: const Size(950, 700),
+        recent: [_wi78Note(_wi78ShortId, 'Pricing model')],
+      );
+      await p.wait(120);
+      await p.settle();
+      expect(p.reads, [_wi78ShortId]);
+      expect(_wi78Text('Pricing model'), findsWidgets);
+
+      tester.view.physicalSize = const Size(949, 700);
+      await tester.pump();
+      p.palette.setQuery('x');
+      p.palette.setQuery('');
+      await p.wait(120);
+      await p.settle();
+      expect(_wi78Pane, findsNothing);
+      expect(p.preview, isA<PreviewNone>());
+      expect(p.reads, [_wi78ShortId], reason: 'no read at 949');
+    });
+
+    testWidgets('each kind of selection shows its own eyebrow', (tester) async {
+      final p = await _wi78PumpPreview(
+        tester,
+        commands: [CommandItem(PaletteCommand.showDays, label: 'Show Days')],
+        recent: [
+          _wi78Note(_wi78ShortId, 'Pricing model'),
+          _wi78Note('n-78-row-0', 'Row note 0', kind: PaletteNoteKind.daily),
+          _wi78Note('cv-78-board', 'Board', kind: PaletteNoteKind.canvas),
+        ],
+      );
+      p.canvas.details['cv-78-board'] = wi89Detail(
+        'cv-78-board',
+        title: ['Board'].join(),
+        nodes: [wi89Node('n-78-card-0', 'Only card', 0, 0, zOrder: 0)],
+      );
+      await p.wait(0);
+      await p.settle();
+      expect(_wi78Text('COMMAND'), findsOneWidget);
+
+      p.palette.move(1);
+      await p.wait(120);
+      await p.settle();
+      expect(_wi78Text('NOTE · EDITED 2 H AGO'), findsOneWidget);
+
+      p.palette.move(1);
+      await p.wait(120);
+      await p.settle();
+      expect(_wi78Text('DAILY NOTE · 3 H AGO'), findsOneWidget);
+
+      p.palette.move(1);
+      await p.wait(120);
+      await p.settle();
+      expect(_wi78Text('CANVAS'), findsOneWidget);
+      expect(_wi78Text('1 card'), findsOneWidget);
+      expect(_wi78Text('1 cards'), findsNothing);
+    });
+
+    testWidgets('a passage eyebrow follows its note role and age', (
+      tester,
+    ) async {
+      PassageItem passage(String chunk, {String? role}) => PassageItem(
+        SearchHit(
+          noteId: [_wi78LongId].join(),
+          noteTitle: ['Q3 planning'].join(),
+          noteRole: role,
+          chunkId: [chunk].join(),
+          snippet: _wi78Chunk.trim(),
+          startByte: null,
+          noteUpdatedAt: paletteHoursAgo(24),
+        ),
+        meta: 'note · 1 d ago',
+      );
+      final p = await _wi78PumpPreview(
+        tester,
+        passages: [
+          passage('c-a'),
+          passage('c-b', role: 'daily'),
+        ],
+      );
+      p.palette.setQuery('back');
+      await tester.pump();
+      await p.wait(120);
+      await p.settle();
+      expect(_wi78Text('NOTE · EDITED 1 D AGO'), findsOneWidget);
+
+      p.palette.move(1);
+      await p.wait(120);
+      await p.settle();
+      expect(_wi78Text('DAILY NOTE · 1 D AGO'), findsOneWidget);
+    });
+
+    testWidgets(
+      'a window that narrows between the selection and the read reads nothing',
+      (tester) async {
+        final p = await _wi78PumpPreview(
+          tester,
+          recent: [_wi78Note(_wi78ShortId, 'Pricing model')],
+        );
+        await p.wait(60);
+        expect(p.preview, isA<PreviewLoading>());
+
+        tester.view.physicalSize = paletteNarrowSize;
+        await tester.pump();
+        await p.wait(60);
+        await p.settle();
+
+        expect(p.reads, isEmpty);
+        expect(p.preview, isA<PreviewNone>());
+        expect(_wi78Pane, findsNothing);
+      },
+    );
+
+    testWidgets('a note or canvas that cannot be found shows the error line', (
+      tester,
+    ) async {
+      final p = await _wi78PumpPreview(
+        tester,
+        recent: [
+          _wi78Note('n-78-missing', 'Gone note'),
+          _wi78Note(
+            'cv-78-missing',
+            'Gone board',
+            kind: PaletteNoteKind.canvas,
+          ),
+        ],
+      );
+      await p.wait(120);
+      await p.settle();
+      expect(p.reads, ['n-78-missing']);
+      expect(p.preview, isA<PreviewFailed>());
+      expect(
+        _wi78InPane(find.text("couldn't load the preview.")),
+        findsOneWidget,
+      );
+
+      p.palette.move(1);
+      await p.wait(120);
+      await p.settle();
+      expect(p.canvas.reads, ['cv-78-missing']);
+      expect(p.preview, isA<PreviewFailed>());
+      expect(
+        _wi78InPane(find.text("couldn't load the preview.")),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets(
+      'a start_byte past the end or below zero shows the passage from the top with no band',
+      (tester) async {
+        final p = await _wi78PumpPreview(
+          tester,
+          passages: [
+            _wi78Passage('c-end', startByte: utf8.encode(_wi78LongBody).length),
+            _wi78Passage('c-neg', startByte: -1),
+          ],
+        );
+        p.palette.setQuery('back');
+        await tester.pump();
+        await p.wait(120);
+        await p.settle();
+        expect(p.reads, [_wi78LongId]);
+        expect(_wi78Text('Q3 planning'), findsWidgets);
+        expect(_wi78Filled(OmColors.surface3), findsNothing);
+        expect(tester.state<ScrollableState>(_wi78Scroll).position.pixels, 0);
+
+        p.palette.move(1);
+        await tester.pump();
+        await p.wait(120);
+        await p.settle();
+        expect(_wi78Filled(OmColors.surface3), findsNothing);
+        expect(tester.state<ScrollableState>(_wi78Scroll).position.pixels, 0);
+      },
+    );
+
+    testWidgets(
+      'a byte offset after multi-byte text still bands the chunk lines',
+      (tester) async {
+        const id = 'n-78-accents';
+        final body =
+            '${[for (var i = 0; i < 40; i++) 'café déjà vu $i\n'].join()}'
+            'chunk starts mid line here\nand ends on this one\n'
+            '${[for (var i = 0; i < 40; i++) 'after line $i\n'].join()}';
+        final start = body.indexOf('starts mid');
+        final byte = utf8.encode(body.substring(0, start)).length;
+        expect(byte, greaterThan(start), reason: 'bytes and characters differ');
+        final p = await _wi78PumpPreview(
+          tester,
+          seed: (db) => db.seedNote(
+            id: id,
+            title: 'Accents',
+            content: body,
+            updatedAt: paletteHoursAgo(5),
+          ),
+          passages: [
+            PassageItem(
+              SearchHit(
+                noteId: [id].join(),
+                noteTitle: ['Accents'].join(),
+                chunkId: ['c-acc'].join(),
+                snippet: ['starts mid line here\nand ends on this one'].join(),
+                startByte: byte,
+                noteUpdatedAt: paletteHoursAgo(5),
+              ),
+              meta: 'note · 5 h ago',
+            ),
+          ],
+        );
+        p.palette.setQuery('mid');
+        await tester.pump();
+        await p.wait(120);
+        await p.settle();
+
+        final band = _wi78Filled(OmColors.surface3);
+        expect(band, findsOneWidget);
+        Finder inBand(String text) => find.descendant(
+          of: band,
+          matching: find.textContaining(text, findRichText: true),
+        );
+        // The whole first line and the second, nothing from the neighbours.
+        expect(inBand('chunk starts mid line here'), findsWidgets);
+        expect(inBand('and ends on this one'), findsWidgets);
+        expect(inBand('café déjà vu 39'), findsNothing);
+        expect(inBand('after line 0'), findsNothing);
+      },
+    );
   });
 }
