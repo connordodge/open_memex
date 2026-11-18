@@ -107,12 +107,12 @@ class FindInNoteNotifier extends Notifier<FindInNoteState> {
     );
   }
 
-  /// Uses the editor's selection [text] as the query (line breaks become
-  /// spaces), opening the bar without bumping `focusRequest` (focus stays
+  /// Uses the editor's selection [text] as the query (each line break,
+  /// `\n`, `\r\n` or `\r`, becomes one space), opening the bar without bumping `focusRequest` (focus stays
   /// in the editor). An empty [text] changes nothing (Req 14).
   void useSelection(String text) {
     if (text.isEmpty) return;
-    _openWith(text.replaceAll('\n', ' '));
+    _openWith(text.replaceAll(RegExp('\r\n|\r|\n'), ' '));
   }
 
   /// Sets the query and the last query, then recomputes the matches and
@@ -153,6 +153,33 @@ class FindInNoteNotifier extends Notifier<FindInNoteState> {
       sources: sources,
       matches: matches,
       current: carried ?? firstAtOrAfter(matches, state.caret),
+      setCurrent: true,
+    );
+  }
+
+  /// Source mode toggled (Req 39): [sources] are the searched text of the
+  /// mode being entered. While open, keeps the query, recomputes the
+  /// matches and maps the current match with `mapCurrentAcrossMode` through
+  /// [tokenOffset] (the Source-field offset where `split()` segment
+  /// `segment` starts). While closed, only stores [sources].
+  void switchMode(
+    List<FindSource> sources, {
+    required int Function(int segment) tokenOffset,
+  }) {
+    if (!state.open) {
+      state = state.copyWith(sources: sources);
+      return;
+    }
+    final matches = findMatches(sources, state.query);
+    state = state.copyWith(
+      sources: sources,
+      matches: matches,
+      current: mapCurrentAcrossMode(
+        from: state.matches,
+        current: state.current,
+        to: matches,
+        tokenOffset: tokenOffset,
+      ),
       setCurrent: true,
     );
   }
