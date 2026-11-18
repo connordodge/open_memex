@@ -10,11 +10,13 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/src/editor/editor_rows.dart';
 import 'package:open_memex_app/src/editor/find_in_note.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/widgets/editor/card_rows.dart';
 import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
+import 'package:open_memex_app/src/widgets/editor/paragraph_line_boxes.dart';
 import 'package:open_memex_app/src/widgets/editor/segment_view.dart';
 import 'package:open_memex_app/src/widgets/editor/source_surface.dart';
 import 'package:open_memex_app/src/widgets/editor/text_segment.dart';
@@ -34,11 +36,15 @@ class _Wi83Field extends StatefulWidget {
   const _Wi83Field({
     required this.controller,
     required this.ranges,
+    this.layout,
     this.width = 400,
   });
 
   final LivePreviewController controller;
   final ValueListenable<List<FindPaintRange>> ranges;
+
+  /// The layer's `layout` value, read on each rebuild.
+  final ValueListenable<Object?>? layout;
   final double width;
 
   @override
@@ -80,13 +86,14 @@ class _Wi83FieldState extends State<_Wi83Field> {
             ),
           ),
           Positioned.fill(
-            child: ValueListenableBuilder(
-              valueListenable: widget.ranges,
-              builder: (context, ranges, _) => FindHighlights(
+            child: ListenableBuilder(
+              listenable: Listenable.merge([widget.ranges, widget.layout]),
+              builder: (context, _) => FindHighlights(
                 key: _wi83LayerKey,
-                ranges: ranges,
+                ranges: widget.ranges.value,
                 boxes: _boxes,
                 repaint: widget.controller,
+                layout: widget.layout?.value,
               ),
             ),
           ),
@@ -100,6 +107,7 @@ class _Wi83FieldState extends State<_Wi83Field> {
 typedef _Wi83Pumped = ({
   LivePreviewController controller,
   ValueNotifier<List<FindPaintRange>> ranges,
+  ValueNotifier<Object?> layout,
 });
 
 /// Pumps [_Wi83Field] of [text] with [ranges].
@@ -113,12 +121,19 @@ Future<_Wi83Pumped> _wi83PumpField(
   addTearDown(controller.dispose);
   final notifier = ValueNotifier(ranges);
   addTearDown(notifier.dispose);
+  final layout = ValueNotifier<Object?>(null);
+  addTearDown(layout.dispose);
   await pumpFind(
     tester,
-    child: _Wi83Field(controller: controller, ranges: notifier, width: width),
+    child: _Wi83Field(
+      controller: controller,
+      ranges: notifier,
+      layout: layout,
+      width: width,
+    ),
   );
   await tester.pump();
-  return (controller: controller, ranges: notifier);
+  return (controller: controller, ranges: notifier, layout: layout);
 }
 
 /// Rebuilds the pumped field's layer with [ranges] (a new list).
@@ -390,6 +405,57 @@ void main() {
       },
     );
 
+    testWidgets(
+      'a changed layout value repaints the layer under equal ranges and an equal one does not',
+      (tester) async {
+        const ranges = [FindPaintRange(0, 3, FindPaintStyle.other)];
+        final field = await _wi83PumpField(tester, 'rye bread', ranges);
+        field.layout.value = ('numbered', 8.1);
+        await tester.pump();
+        var paints = debugFindHighlightPaints;
+        // A rebuild with equal ranges and an equal (new) layout value.
+        field.layout.value = ('numbered', 8.1);
+        await _wi83Rebuild(tester, field, [
+          const FindPaintRange(0, 3, FindPaintStyle.other),
+        ]);
+        expect(
+          debugFindHighlightPaints,
+          paints,
+          reason: 'an equal layout value does not repaint',
+        );
+        // Each part of the layout value counts.
+        field.layout.value = ('numbered', 16.2);
+        await _wi83Rebuild(tester, field, [
+          const FindPaintRange(0, 3, FindPaintStyle.other),
+        ]);
+        expect(
+          debugFindHighlightPaints,
+          greaterThan(paints),
+          reason: 'a changed layout value repaints',
+        );
+        paints = debugFindHighlightPaints;
+        field.layout.value = null;
+        await _wi83Rebuild(tester, field, [
+          const FindPaintRange(0, 3, FindPaintStyle.other),
+        ]);
+        expect(
+          debugFindHighlightPaints,
+          greaterThan(paints),
+          reason: 'a layout value that goes away repaints',
+        );
+        // The repainted layer still paints the same boxes.
+        wi83ExpectBoxes(
+          wi83LayerOps(tester, _wi83LayerKey),
+          _wi83Expected(
+            tester,
+            const TextRange(start: 0, end: 3),
+            FindPaintStyle.other,
+          ),
+          y: 0.05,
+        );
+      },
+    );
+
     // Each arm of the layer's repaint check: a change of any range's start,
     // end or style, or of the list's length, repaints; equal ranges in a new
     // list do not.
@@ -621,11 +687,13 @@ void main() {
       int segment = 1,
       int textStart = 10,
       bool active = true,
+      int? cardRow,
     }) => tester.pumpWidget(
       FindGridScope(
         segment: segment,
         textStart: textStart,
         active: active,
+        cardRow: cardRow,
         child: const _Wi83ScopeProbe(),
       ),
     );
@@ -695,6 +763,73 @@ void main() {
         expect(seen!.active, active);
       });
     }
+
+    for (final (name, from, to, notifies) in <(String, int?, int?, bool)>[
+      (
+        'a scope that becomes a card scope notifies its dependents',
+        null,
+        0,
+        true,
+      ),
+      (
+        'a scope that stops being a card scope notifies its dependents',
+        0,
+        null,
+        true,
+      ),
+      (
+        'a scope with only its card row changed notifies its dependents',
+        0,
+        1,
+        true,
+      ),
+      (
+        'a card scope with nothing changed does not notify its dependents',
+        2,
+        2,
+        false,
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        await pumpScope(tester, cardRow: from);
+        final first = builds;
+        await pumpScope(tester, cardRow: to);
+        expect(builds - first, notifies ? 1 : 0);
+        expect(seen!.cardRow, to);
+      });
+    }
+
+    testWidgets(
+      'a text segment scope matches body text and keys its cells find-highlights-grid',
+      (tester) async {
+        await pumpScope(tester, segment: 4);
+        expect(seen!.cardRow, isNull);
+        expect(seen!.kind, FindSourceKind.body);
+        expect(seen!.cellKey(2, 1), findGridHighlightsKey(4, 2, 1));
+        expect(
+          (seen!.cellKey(2, 1) as ValueKey<String>).value,
+          'find-highlights-grid-4-2-1',
+        );
+      },
+    );
+
+    testWidgets(
+      'a card scope matches card text and keys its cells find-highlights-card-grid',
+      (tester) async {
+        await pumpScope(tester, segment: 4, cardRow: 3);
+        expect(seen!.cardRow, 3);
+        expect(seen!.kind, FindSourceKind.card);
+        expect(seen!.cellKey(2, 1), findCardGridHighlightsKey(4, 3, 2, 1));
+        expect(
+          (seen!.cellKey(2, 1) as ValueKey<String>).value,
+          'find-highlights-card-grid-4-3-2-1',
+        );
+        // A card row 0 is a card scope too.
+        await pumpScope(tester, segment: 4, cardRow: 0);
+        expect(seen!.kind, FindSourceKind.card);
+        expect(seen!.cellKey(0, 0), findCardGridHighlightsKey(4, 0, 0, 0));
+      },
+    );
   });
 
   group('card without a segment', () {
@@ -750,6 +885,249 @@ void main() {
         await tester.pump(const Duration(milliseconds: 400));
         expect(controller.selection, TextSelection.collapsed(offset: want));
         expect(want, inInclusiveRange(rye.start, rye.end));
+      },
+    );
+  });
+
+  group('excerpt card table cells and card stacking', () {
+    // A card of a prose row and a table: its header cell and a body cell
+    // hold `rye`, the body cell after other text.
+    const text =
+        'Intro rye\n| rye bread | B |\n| --- | --- |\n| big rye | x |\n';
+    final sources = [
+      const FindSource(segment: 3, kind: FindSourceKind.card, text: text),
+    ];
+    final tableRow = splitRows(
+      text,
+      atSegmentStart: true,
+    ).indexWhere((spec) => spec.kind == RowKind.table);
+
+    RenderParagraph paragraphOf(WidgetTester tester, Key key) =>
+        tester.renderObject<RenderParagraph>(
+          find.descendant(
+            of: find.byWidgetPredicate(
+              (w) => w is FindParagraphHighlights && w.layerKey == key,
+            ),
+            matching: find.byType(RichText),
+          ),
+        );
+
+    List<Wi83Box> boxesIn(
+      WidgetTester tester,
+      Key key,
+      TextRange range,
+      FindPaintStyle style,
+    ) {
+      final paragraph = paragraphOf(tester, key);
+      return wi83BoxesOf(
+        RenderParagraphLineBoxes(paragraph),
+        range,
+        style,
+        wi83Layer(tester, key),
+        scale: wi83ScaleOf(paragraph),
+      );
+    }
+
+    Key cell(int g, int c) => findCardGridHighlightsKey(3, tableRow, g, c);
+
+    testWidgets(
+      'a card table cell match paints in its cell with the card keys and the current one is solid',
+      (tester) async {
+        expect(tableRow, 1, reason: 'fixture: the table is card row 1');
+        // Matches in order: the prose row, the header cell, the body cell.
+        await pumpFind(
+          tester,
+          sources: sources,
+          query: 'rye',
+          current: 1,
+          child: const CardRows(text: text, segment: 3),
+        );
+        expect(
+          find.byKey(const ValueKey('card-table-1')),
+          findsOneWidget,
+          reason: 'the table stays a grid',
+        );
+        wi83ExpectBoxes(
+          wi83LayerOps(tester, cell(0, 0)),
+          boxesIn(
+            tester,
+            cell(0, 0),
+            const TextRange(start: 0, end: 3),
+            FindPaintStyle.current,
+          ),
+          reason: 'header cell',
+        );
+        wi83ExpectBoxes(
+          wi83LayerOps(tester, cell(1, 0)),
+          boxesIn(
+            tester,
+            cell(1, 0),
+            const TextRange(start: 4, end: 7),
+            FindPaintStyle.other,
+          ),
+          reason: 'body cell',
+        );
+        expect(wi83LayerOps(tester, cell(0, 1)), isEmpty, reason: 'cell B');
+        expect(wi83LayerOps(tester, cell(1, 1)), isEmpty, reason: 'cell x');
+        // The prose row paints its own match, as an other box.
+        wi83ExpectBoxes(
+          wi83LayerOps(tester, findCardHighlightsKey(3, 0)),
+          boxesIn(
+            tester,
+            findCardHighlightsKey(3, 0),
+            const TextRange(start: 6, end: 9),
+            FindPaintStyle.other,
+          ),
+          reason: 'prose row',
+        );
+        // The table row itself has no paragraph layer: its cells do.
+        expect(find.byKey(findCardHighlightsKey(3, 1)), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'a card table cell layer is not an excerpt card body layer and a card scope does not reach a text segment key',
+      (tester) async {
+        await pumpFind(
+          tester,
+          sources: sources,
+          query: 'rye',
+          child: const CardRows(text: text, segment: 3),
+        );
+        expect(
+          find.byKey(findGridHighlightsKey(3, 0, 0)),
+          findsNothing,
+          reason: 'a card cell never takes a text segment grid key',
+        );
+        expect(find.byKey(cell(0, 0)), findsOneWidget);
+      },
+    );
+
+    testWidgets('a card with active false paints no find boxes in its table', (
+      tester,
+    ) async {
+      await pumpFind(
+        tester,
+        sources: sources,
+        query: 'rye',
+        child: const CardRows(text: text, segment: 3),
+      );
+      expect(wi83LayerOps(tester, cell(0, 0)), isNotEmpty);
+      await pumpFind(
+        tester,
+        sources: sources,
+        query: 'rye',
+        child: const CardRows(text: text, segment: 3, active: false),
+      );
+      expect(_wi83FindOpsAt(tester, cell(0, 0)), isEmpty);
+      expect(_wi83FindOpsAt(tester, cell(1, 0)), isEmpty);
+      expect(_wi83FindOpsAt(tester, findCardHighlightsKey(3, 0)), isEmpty);
+    });
+
+    testWidgets(
+      'a card row layer and a card table cell layer paint below the row text',
+      (tester) async {
+        await pumpFind(
+          tester,
+          sources: sources,
+          query: 'rye',
+          child: const CardRows(text: text, segment: 3),
+        );
+        for (final key in [
+          findCardHighlightsKey(3, 0),
+          cell(0, 0),
+          cell(1, 0),
+        ]) {
+          final stack = tester.renderObject(
+            find.byWidgetPredicate(
+              (w) => w is FindParagraphHighlights && w.layerKey == key,
+            ),
+          );
+          final colors = wi83Record(stack).colors;
+          final lastFind = colors.lastIndexWhere(
+            (c) => c != null && wi83IsFindColor(c),
+          );
+          final firstText = colors.indexWhere((c) => c == null);
+          expect(lastFind, isNonNegative, reason: '$key: boxes paint');
+          expect(firstText, isNonNegative, reason: '$key: the text paints');
+          expect(lastFind, lessThan(firstText), reason: '$key: below its text');
+        }
+      },
+    );
+
+    testWidgets(
+      'a card row repaints when its text changes under equal ranges and not when it is rebuilt unchanged',
+      (tester) async {
+        const before = 'Raised rye to 78%.';
+        final next = ValueNotifier<(String, int)>((before, 0));
+        addTearDown(next.dispose);
+        await pumpFind(
+          tester,
+          sources: const [
+            FindSource(segment: 3, kind: FindSourceKind.card, text: before),
+          ],
+          query: 'rye',
+          child: ValueListenableBuilder(
+            valueListenable: next,
+            builder: (context, v, _) => CardRows(text: v.$1, segment: 3),
+          ),
+        );
+        var paints = debugFindHighlightPaints;
+        next.value = (before, 1);
+        await tester.pump();
+        expect(
+          debugFindHighlightPaints,
+          paints,
+          reason: 'unchanged: no repaint',
+        );
+        next.value = ('Raised rye to 79%.', 2);
+        await tester.pump();
+        expect(
+          debugFindHighlightPaints,
+          greaterThan(paints),
+          reason: 'the row text changed: the layer repaints',
+        );
+        paints = debugFindHighlightPaints;
+        next.value = ('Raised rye to 79%.', 3);
+        await tester.pump();
+        expect(debugFindHighlightPaints, paints, reason: 'unchanged again');
+      },
+    );
+
+    testWidgets(
+      'a card table cell repaints when its text changes under equal ranges and not when it is rebuilt unchanged',
+      (tester) async {
+        const before = '| rye 78 | B |\n| --- | --- |\n| x | y |\n';
+        final next = ValueNotifier<(String, int)>((before, 0));
+        addTearDown(next.dispose);
+        await pumpFind(
+          tester,
+          sources: const [
+            FindSource(segment: 3, kind: FindSourceKind.card, text: before),
+          ],
+          query: 'rye',
+          child: ValueListenableBuilder(
+            valueListenable: next,
+            builder: (context, v, _) => CardRows(text: v.$1, segment: 3),
+          ),
+        );
+        final key = findCardGridHighlightsKey(3, 0, 0, 0);
+        expect(wi83LayerOps(tester, key), isNotEmpty, reason: 'fixture');
+        var paints = debugFindHighlightPaints;
+        next.value = (before, 1);
+        await tester.pump();
+        expect(
+          debugFindHighlightPaints,
+          paints,
+          reason: 'unchanged: no repaint',
+        );
+        next.value = (before.replaceFirst('78', '79'), 2);
+        await tester.pump();
+        expect(
+          debugFindHighlightPaints,
+          greaterThan(paints),
+          reason: 'the cell text changed: its layer repaints',
+        );
       },
     );
   });

@@ -343,6 +343,42 @@ void main() {
     );
 
     testWidgets(
+      'a hidden non current match in a link URL goes back to the label outline when the segment loses focus with the caret still on the link line',
+      (tester) async {
+        final e = await _wi83Pump(tester, _wi83LinkBody);
+        final text = e.robot.segmentText(0);
+        final url = wi83Find(text, 'rye');
+        final label = wi83Find(text, 'bread notes');
+        final plain = wi83Find(text, 'rye', 1);
+        // The caret on the link line: the segment has focus and its markup
+        // shows, so the URL match is an other box on its own range.
+        await e.robot.focusSegment(0, offset: wi83Find(text, 'see').start);
+        await _wi83Open(e, [wi83Body(0, text)], 'rye', current: 1);
+        expect(_wi83State(e).matches.first.hidden, isTrue, reason: 'fixture');
+        _wi83ExpectSegment(e, 0, [(url, _other), (plain, _current)]);
+        final selection = _wi83Segment(e, 0).selection;
+        // Cmd+F moves focus to the find field: the segment loses focus, its
+        // selection stays on the link line, and its markup hides again.
+        final paints = debugFindHighlightPaints;
+        await _wi83Unfocus(tester);
+        expect(
+          _wi83Segment(e, 0).selection,
+          selection,
+          reason: 'fixture: the selection stays on the link line',
+        );
+        expect(
+          debugFindHighlightPaints,
+          greaterThan(paints),
+          reason: 'the closed gate repaints the layers',
+        );
+        _wi83ExpectSegment(e, 0, [(label, _outline), (plain, _current)]);
+        // Focus back: the markup shows and the URL match is an other box.
+        await e.robot.focusSegment(0, offset: selection.baseOffset);
+        _wi83ExpectSegment(e, 0, [(url, _other), (plain, _current)]);
+      },
+    );
+
+    testWidgets(
       'a hidden non current match on a bold run marker paints a border around the bold text',
       (tester) async {
         final e = await _wi83Pump(
@@ -836,6 +872,140 @@ void main() {
           (c) => c != null && wi83IsFindColor(c),
         );
         expect(lastFind, lessThan(selectionAt), reason: 'all of it');
+      },
+    );
+
+    testWidgets(
+      'the Source field overlay paints below the selection fill and the field text',
+      (tester) async {
+        final e = await pumpSpellingEditor(
+          tester,
+          body: 'ryee flour and ryee\n',
+          source: true,
+        );
+        await _wi83Unfocus(tester);
+        final text = e.robot.sourceText;
+        await _wi83Open(e, [
+          FindSource(segment: 0, kind: FindSourceKind.source, text: text),
+        ], 'ryee');
+        final field = tester.widget<EditableText>(e.sourceField);
+        final controller = field.controller;
+        field.focusNode.requestFocus();
+        await tester.pump();
+        // Select the first match, so the field paints a selection fill over
+        // the box.
+        controller.selection = const TextSelection(
+          baseOffset: 0,
+          extentOffset: 4,
+        );
+        await tester.pump();
+        final stack = tester.renderObject(
+          find
+              .ancestor(
+                of: find.byKey(findSourceHighlightsKey),
+                matching: find.byType(Stack),
+              )
+              .first,
+        );
+        final colors = wi83Record(stack).colors;
+        final firstFind = colors.indexWhere(
+          (c) => c != null && wi83IsFindColor(c),
+        );
+        final lastFind = colors.lastIndexWhere(
+          (c) => c != null && wi83IsFindColor(c),
+        );
+        final selectionAt = colors.indexWhere(
+          (c) => c != null && wi83SameColor(c, OmColors.selection),
+        );
+        final textAt = colors.indexWhere((c) => c == null);
+        expect(firstFind, isNonNegative, reason: 'the match boxes paint');
+        expect(selectionAt, isNonNegative, reason: 'the selection paints');
+        expect(textAt, isNonNegative, reason: 'the field text paints');
+        expect(lastFind, lessThan(selectionAt), reason: 'below the selection');
+        expect(lastFind, lessThan(textAt), reason: 'below the field text');
+      },
+    );
+  });
+
+  group('field moves inside its row', () {
+    // The row layer is a repaint boundary beside the whole row, and works out
+    // where the field sits only when it paints: a field that moves sideways
+    // under equal ranges must still repaint it. Real layers, no inline
+    // recorder: after a layout-only pump a layer that needs no paint would
+    // keep its old picture.
+    String numbered(int n) => [
+      for (var i = 1; i <= n; i++) '$i. item${i == 1 ? ' rye' : ''}\n',
+    ].join();
+
+    Future<void> expectRepaints(
+      SpellingEditorHarness e,
+      String after, {
+      required int row,
+      List<FindSource>? sources,
+    }) async {
+      final tester = e.tester;
+      final layer = wi83Layer(tester, findHighlightsKey(0, row));
+      expect(layer.debugNeedsPaint, isFalse, reason: 'fixture: painted');
+      _wi83Segment(e, 0).replaceText(after);
+      // The matches move with their text, as Find re-derives them.
+      if (sources != null) _wi83Find(e).setSources(sources);
+      await tester.pump(Duration.zero, EnginePhase.layout);
+      expect(
+        wi83Layer(tester, findHighlightsKey(0, row)).debugNeedsPaint,
+        isTrue,
+        reason: 'the field moved in its row: the layer must repaint',
+      );
+    }
+
+    testWidgets(
+      'a numbered run growing from 9 to 10 items repaints the layer of a row whose ranges are unchanged',
+      (tester) async {
+        final e = await _wi83Pump(tester, numbered(9));
+        final text = e.robot.segmentText(0);
+        await _wi83Open(e, [wi83Body(0, text)], 'rye');
+        final r = _wi83RowAt(e, 0, wi83Find(text, 'rye').start);
+        expect(r, 0, reason: 'fixture');
+        final textX = _wi83RowEditable(
+          tester,
+          0,
+          r,
+        ).localToGlobal(Offset.zero).dx;
+        await expectRepaints(e, numbered(10), row: r);
+        await tester.pump();
+        expect(
+          _wi83RowEditable(tester, 0, r).localToGlobal(Offset.zero).dx,
+          greaterThan(textX),
+          reason: 'fixture: the wider marker column moved the field',
+        );
+        _wi83ExpectSegment(e, 0, [(wi83Find(text, 'rye'), _current)]);
+      },
+    );
+
+    testWidgets(
+      'indenting a list item repaints the layer of a row whose ranges are unchanged',
+      (tester) async {
+        final e = await _wi83Pump(tester, '- one\n- bake rye\n');
+        final text = e.robot.segmentText(0);
+        await _wi83Open(e, [wi83Body(0, text)], 'rye');
+        final r = _wi83RowAt(e, 0, wi83Find(text, 'rye').start);
+        expect(r, 1, reason: 'fixture');
+        final textX = _wi83RowEditable(
+          tester,
+          0,
+          r,
+        ).localToGlobal(Offset.zero).dx;
+        const after = '- one\n  - bake rye\n';
+        await expectRepaints(e, after, row: r, sources: [wi83Body(0, after)]);
+        // The field-local range is unchanged: the match moved with the
+        // indent.
+        expect(_wi83State(e).matches.single.start, text.indexOf('rye') + 2);
+        await tester.pump();
+        expect(
+          _wi83RowEditable(tester, 0, r).localToGlobal(Offset.zero).dx,
+          greaterThan(textX),
+          reason: 'fixture: the indent moved the field',
+        );
+        _wi83ExpectSegment(e, 0, [(wi83Find(after, 'rye'), _current)]);
       },
     );
   });

@@ -33,6 +33,14 @@ const Color wi83Current = OmColors.warn;
 /// The design box height on a 22.95 px body line at text scale 1.
 const double wi83BoxHeight = 17;
 
+/// The corner radius of an other match's fill and of every border ring
+/// (pack 83: all boxes radius 2).
+const double wi83Radius = 2;
+
+/// The corner radius of the current match's solid fill: the box's radius 2
+/// grown by its 1 px outward spread.
+const double wi83CurrentRadius = 3;
+
 // ------------------------------------------------------------------ record
 
 /// One recorded paint of a find colour: the area it covers ([outer], and
@@ -218,6 +226,11 @@ void wi83ExpectBoxes(
               '$reason: a 1 px inside findMatchLine border on $r '
               '(${box.style.name}); find ops: $find',
         );
+        expect(
+          ring.first.radius,
+          moreOrLessEquals(wi83Radius),
+          reason: '$reason: the border ring on $r has radius 2',
+        );
         used.add(ring.first);
         final fills = find.where(
           (op) =>
@@ -231,6 +244,11 @@ void wi83ExpectBoxes(
             fills,
             isNotEmpty,
             reason: '$reason: a findMatch fill on $r; find ops: $find',
+          );
+          expect(
+            fills.first.radius,
+            moreOrLessEquals(wi83Radius),
+            reason: '$reason: the fill on $r has radius 2',
           );
           used.add(fills.first);
         } else {
@@ -250,10 +268,18 @@ void wi83ExpectBoxes(
                   op.outer.overlaps(r),
             )
             .toList();
+        final solid = warn.where(
+          (op) => op.isFill && _containsNear(op.outer, r, x, y),
+        );
         expect(
-          warn.where((op) => op.isFill && _containsNear(op.outer, r, x, y)),
+          solid,
           isNotEmpty,
           reason: '$reason: a solid warn fill covering $r; find ops: $find',
+        );
+        expect(
+          solid.first.radius,
+          moreOrLessEquals(wi83CurrentRadius),
+          reason: '$reason: the current box on $r has radius 2 plus its spread',
         );
         final union = warn
             .map((op) => op.outer)
