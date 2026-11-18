@@ -1,5 +1,6 @@
 // WI #34 (Spec #31 req 26, D8): the failure marker store reads and clears
 // `<appSupportDir>/self_update_failure`; only the five fixed reasons count.
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -27,7 +28,11 @@ void main() {
     await Directory('${root.path}/Application Support').create();
   });
 
-  tearDown(() => root.delete(recursive: true));
+  tearDown(() async {
+    // Undo the immutable flag a test set before deleting.
+    await Process.run('/usr/bin/chflags', ['-R', 'nouchg', root.path]);
+    await root.delete(recursive: true);
+  });
 
   FailureMarkerStore store() {
     final container = ProviderContainer(
@@ -113,6 +118,45 @@ void main() {
       );
       // Computing the path touches no file system.
       expect(Directory(support).existsSync(), isFalse);
+    },
+  );
+
+  test(
+    'a marker that is not valid text is cleared and reads as no failure',
+    () async {
+      File(markerPath).writeAsBytesSync([0xff, 0xfe, 0x00, 0xc3, 0x28]);
+
+      expect(await store().take(), isNull);
+      expect(File(markerPath).existsSync(), isFalse);
+
+      // A fixed reason with a bad byte after it is not that reason.
+      File(markerPath).writeAsBytesSync([...utf8.encode(_reasons[0]), 0xff]);
+      expect(await store().take(), isNull);
+      expect(File(markerPath).existsSync(), isFalse);
+    },
+  );
+
+  test('a marker that cannot be deleted still reads as its reason', () async {
+    File(markerPath).writeAsStringSync('${_reasons[1]}\n');
+    final lock = await Process.run('/usr/bin/chflags', ['uchg', markerPath]);
+    expect(lock.exitCode, 0, reason: '${lock.stderr}');
+    addTearDown(() => Process.run('/usr/bin/chflags', ['nouchg', markerPath]));
+
+    expect(await store().take(), _reasons[1]);
+    expect(File(markerPath).existsSync(), isTrue);
+  });
+
+  test(
+    'an unknown marker that cannot be deleted still reads as no failure',
+    () async {
+      File(markerPath).writeAsStringSync('something else\n');
+      final lock = await Process.run('/usr/bin/chflags', ['uchg', markerPath]);
+      expect(lock.exitCode, 0, reason: '${lock.stderr}');
+      addTearDown(
+        () => Process.run('/usr/bin/chflags', ['nouchg', markerPath]),
+      );
+
+      expect(await store().take(), isNull);
     },
   );
 }

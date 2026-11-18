@@ -135,6 +135,49 @@ void main() {
   );
 
   test(
+    'an executable outside any app bundle fails with the folder not writable cause and its folder',
+    () async {
+      final r = _checkFor('/vaults/My Tools/open-memex');
+
+      await expectLater(
+        r.check.check(),
+        _failsWith(
+          UpdateErrorCause.folderNotWritable,
+          folder: '/vaults/My Tools',
+        ),
+      );
+      expect(r.io.writableProbes, isEmpty);
+
+      // A top-level executable has the root as its folder.
+      final top = _checkFor('/open-memex');
+      await expectLater(
+        top.check.check(),
+        _failsWith(UpdateErrorCause.folderNotWritable, folder: '/'),
+      );
+    },
+  );
+
+  test(
+    'a bundle directly under the root is probed in the root folder',
+    () async {
+      final r = _checkFor('/Open Memex.app/$_exe');
+
+      expect(await r.check.check(), '/Open Memex.app');
+      expect(r.io.writableProbes, ['/']);
+    },
+  );
+
+  test(
+    'a relative executable path whose first segment is the bundle still resolves to it',
+    () async {
+      final r = _checkFor('Open Memex.app/$_exe');
+
+      expect(await r.check.check(), 'Open Memex.app');
+      expect(r.io.writableProbes, ['/']);
+    },
+  );
+
+  test(
     'the production resolvedExecutableProvider is Platform.resolvedExecutable',
     () {
       final container = ProviderContainer();
@@ -198,6 +241,22 @@ void main() {
         // Still true for a writable folder afterwards.
         expect(await writable(open.path), isTrue);
         expect(open.listSync(), isEmpty);
+      },
+    );
+
+    test(
+      'the production writability probe overwrites a probe file left by a crashed run and deletes it',
+      () async {
+        final container = ProviderContainer();
+        addTearDown(container.dispose);
+        final writable = container.read(folderWritableProvider);
+        final folder = await Directory('${root.path}/My Apps').create();
+        final leftover = File('${folder.path}/.open-memex-write-probe-$pid')
+          ..writeAsStringSync('left behind');
+
+        expect(await writable(folder.path), isTrue);
+        expect(leftover.existsSync(), isFalse);
+        expect(folder.listSync(), isEmpty);
       },
     );
   });

@@ -76,6 +76,11 @@ class InstallHelperRig {
   ///   deleting `Open Memex.app.old` after the swap fails.
   /// - [lockInstalled]: the installed app's folder is immutable, so renaming
   ///   it to `.old` fails.
+  /// - [staleOld]: an `Open Memex.app.old` holding `stale-old.txt` already
+  ///   exists.
+  /// - [lockStaleOld]: like [staleOld], with the file immutable so it cannot
+  ///   be deleted.
+  /// - [detachNeedsForce]: `hdiutil detach` fails unless given `-force`.
   /// - [killOnFirstSleep]: the first fake `sleep` kills this pid.
   static Future<InstallHelperRig> create({
     bool mountFails = false,
@@ -86,6 +91,9 @@ class InstallHelperRig {
     bool staleNew = false,
     bool lockFileInOld = false,
     bool lockInstalled = false,
+    bool staleOld = false,
+    bool lockStaleOld = false,
+    bool detachNeedsForce = false,
     int? killOnFirstSleep,
   }) async {
     final root = await Directory.systemTemp.createTemp('open memex helper ');
@@ -99,6 +107,9 @@ class InstallHelperRig {
       staleNew: staleNew,
       lockFileInOld: lockFileInOld,
       lockInstalled: lockInstalled,
+      staleOld: staleOld,
+      lockStaleOld: lockStaleOld,
+      detachNeedsForce: detachNeedsForce,
       killOnFirstSleep: killOnFirstSleep,
     );
     return rig;
@@ -113,6 +124,9 @@ class InstallHelperRig {
     required bool staleNew,
     required bool lockFileInOld,
     required bool lockInstalled,
+    required bool staleOld,
+    required bool lockStaleOld,
+    required bool detachNeedsForce,
     required int? killOnFirstSleep,
   }) async {
     _writeApp(bundlePath, 'old');
@@ -126,6 +140,13 @@ class InstallHelperRig {
       File('$newPath/stale.txt')
         ..createSync(recursive: true)
         ..writeAsStringSync('from an earlier attempt');
+    }
+
+    if (staleOld || lockStaleOld) {
+      final stale = File('$oldPath/stale-old.txt')
+        ..createSync(recursive: true)
+        ..writeAsStringSync('from an earlier attempt');
+      if (lockStaleOld) await _chflags(['uchg', stale.path]);
     }
 
     final log = _sq(logPath);
@@ -152,6 +173,7 @@ attach)
   ${appAtMountRoot ? '/bin/cp -R $src "\$mnt/"' : '/bin/mkdir -p "\$mnt/Open Memex" && /bin/cp -R $src "\$mnt/Open Memex/"'}
   exit 0 ;;
 detach)
+  ${detachNeedsForce ? 'forced=no; for a in "\$@"; do if [ "\$a" = -force ]; then forced=yes; fi; done; [ "\$forced" = yes ] || exit 1' : ':'}
   for a in "\$@"; do
     if [ -e "\$a/.fake-mounted" ]; then
       /bin/rm -rf "\$a"/* "\$a/.fake-mounted"
@@ -283,6 +305,12 @@ exit 97
     }
     return null;
   }
+
+  /// The entries left in the rig's TMPDIR (a leftover mount point shows up
+  /// here).
+  List<String> tmpEntries() => [
+    for (final e in Directory(tmpDir).listSync()) e.path.split('/').last,
+  ];
 
   /// The tool names that hit the trap PATH.
   List<String> trapped() => [

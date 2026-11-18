@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/updater/install_helper.dart';
 import 'package:open_memex_app/src/updater/update_ports.dart';
 import 'package:open_memex_app/src/updater/update_seams.dart';
+import 'package:open_memex_app/src/updater/update_state.dart';
 
 import '../support/updater_fakes.dart';
 
@@ -28,6 +29,13 @@ List<String> _commandLines(String script) => [
 
 /// Matches a reference to positional parameter [n] (`$n` or `${n}`).
 RegExp _positional(int n) => RegExp('\\\$\\{?$n\\}?(?![0-9])');
+
+/// The ruled failure when the helper cannot be started (lead ruling L-34a):
+/// not one of the five marker reasons, and no folder.
+final _couldNotStart = isA<UpdateFailure>()
+    .having((f) => f.cause, 'cause', UpdateErrorCause.failureRecorded)
+    .having((f) => f.reason, 'reason', "the install helper couldn't be started")
+    .having((f) => f.folder, 'folder', isNull);
 
 void main() {
   group('the helper script text', () {
@@ -213,9 +221,34 @@ void main() {
           container
               .read(installHelperProvider)
               .start(pid: 4242, dmgPath: dmg, bundlePath: bundle),
-          throwsA(isA<UpdateFailure>()),
+          throwsA(_couldNotStart),
         );
         expect(calls, ['/bin/sh']);
+      },
+    );
+
+    test(
+      'start reports the helper could not be started when the marker path cannot be read',
+      () async {
+        final io = RecordingUpdaterIo();
+        final container = ProviderContainer(
+          overrides: [
+            installHelperRunnerProvider.overrideWithValue(io.runHelper),
+            failureMarkerFileProvider.overrideWith(
+              (ref) => throw StateError('no app support folder'),
+            ),
+            currentPidProvider.overrideWithValue(4242),
+          ],
+        );
+        addTearDown(container.dispose);
+
+        await expectLater(
+          container
+              .read(installHelperProvider)
+              .start(pid: 4242, dmgPath: dmg, bundlePath: bundle),
+          throwsA(_couldNotStart),
+        );
+        expect(io.helperRuns, isEmpty);
       },
     );
   });
