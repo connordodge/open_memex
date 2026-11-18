@@ -452,80 +452,90 @@ void main() {
     }, variant: macOnly);
 
     for (final (name, key) in <(String, LogicalKeyboardKey)>[
-      ('Enter', LogicalKeyboardKey.enter),
-      ('Space', LogicalKeyboardKey.space),
-      ('numpad Enter', LogicalKeyboardKey.numpadEnter),
+      (
+        'holding Enter jumps once and its repeats do not jump again',
+        LogicalKeyboardKey.enter,
+      ),
+      (
+        'holding Space jumps once and its repeats do not jump again',
+        LogicalKeyboardKey.space,
+      ),
+      (
+        'holding numpad Enter jumps once and its repeats do not jump again',
+        LogicalKeyboardKey.numpadEnter,
+      ),
     ]) {
-      testWidgets(
-        'holding $name jumps once and its repeats do not jump again',
-        (tester) async {
-          final h = await pumpWi70(tester);
-          await wi70PutCurrent(h, 3);
-          await _wi70FocusOutline(tester, 3);
-          await wi70Press(tester, _down, times: 4);
-          final entry = wi70Entries(h)[7];
+      testWidgets(name, (tester) async {
+        final h = await pumpWi70(tester);
+        await wi70PutCurrent(h, 3);
+        await _wi70FocusOutline(tester, 3);
+        await wi70Press(tester, _down, times: 4);
+        final entry = wi70Entries(h)[7];
 
-          await tester.sendKeyDownEvent(key, platform: 'macos');
-          await pumpFrames(tester);
-          expect(wi70FromTop(h, entry), closeTo(16, _wi70Px), reason: 'jumped');
+        await tester.sendKeyDownEvent(key, platform: 'macos');
+        await pumpFrames(tester);
+        expect(wi70FromTop(h, entry), closeTo(16, _wi70Px), reason: 'jumped');
 
-          await h.scrollTo(0);
-          await pumpFrames(tester);
-          expect(
-            wi70FromTop(h, entry),
-            greaterThan(h.viewport().height),
-            reason: 'fixture: scrolled away from the heading',
-          );
-          await tester.sendKeyRepeatEvent(key, platform: 'macos');
-          await tester.sendKeyRepeatEvent(key, platform: 'macos');
-          await tester.sendKeyUpEvent(key, platform: 'macos');
-          await pumpFrames(tester);
+        await h.scrollTo(0);
+        await pumpFrames(tester);
+        expect(
+          wi70FromTop(h, entry),
+          greaterThan(h.viewport().height),
+          reason: 'fixture: scrolled away from the heading',
+        );
+        await tester.sendKeyRepeatEvent(key, platform: 'macos');
+        await tester.sendKeyRepeatEvent(key, platform: 'macos');
+        await tester.sendKeyUpEvent(key, platform: 'macos');
+        await pumpFrames(tester);
 
-          expect(
-            wi70FromTop(h, entry),
-            greaterThan(h.viewport().height),
-            reason: 'a held key jumps once',
-          );
-          wi70ExpectOutlineFocus(tester, 7, reason: 'focus stays');
-        },
-        variant: macOnly,
-      );
+        expect(
+          wi70FromTop(h, entry),
+          greaterThan(h.viewport().height),
+          reason: 'a held key jumps once',
+        );
+        wi70ExpectOutlineFocus(tester, 7, reason: 'focus stays');
+      }, variant: macOnly);
     }
 
     for (final (name, mod) in <(String, LogicalKeyboardKey)>[
-      ('Cmd', wi70Meta),
-      ('Ctrl', wi70Ctrl),
-      ('Alt', wi70Alt),
+      (
+        'with Cmd held Up Down Enter and Esc are left alone by the Outline',
+        wi70Meta,
+      ),
+      (
+        'with Ctrl held Up Down Enter and Esc are left alone by the Outline',
+        wi70Ctrl,
+      ),
+      (
+        'with Alt held Up Down Enter and Esc are left alone by the Outline',
+        wi70Alt,
+      ),
     ]) {
-      testWidgets(
-        'with $name held Up Down Enter and Esc are left alone by the Outline',
-        (tester) async {
-          final h = await pumpWi70(tester);
-          await wi70PutCurrent(h, 3);
-          await _wi70FocusOutline(tester, 3);
-          final pixels = h.pixels();
-          final list = wi70ListPosition(tester).pixels;
+      testWidgets(name, (tester) async {
+        final h = await pumpWi70(tester);
+        await wi70PutCurrent(h, 3);
+        await _wi70FocusOutline(tester, 3);
+        final pixels = h.pixels();
+        final list = wi70ListPosition(tester).pixels;
 
-          await tester.sendKeyDownEvent(mod, platform: 'macos');
-          for (final key in [
-            _down,
-            _up,
-            LogicalKeyboardKey.enter,
-            LogicalKeyboardKey.space,
-            LogicalKeyboardKey.escape,
-          ]) {
-            await tester.sendKeyEvent(key, platform: 'macos');
-            await pumpFrames(tester);
-          }
-          await tester.sendKeyUpEvent(mod, platform: 'macos');
+        await tester.sendKeyDownEvent(mod, platform: 'macos');
+        for (final key in [
+          _down,
+          _up,
+          LogicalKeyboardKey.enter,
+          LogicalKeyboardKey.space,
+          LogicalKeyboardKey.escape,
+        ]) {
+          await tester.sendKeyEvent(key, platform: 'macos');
           await pumpFrames(tester);
+        }
+        await tester.sendKeyUpEvent(mod, platform: 'macos');
+        await pumpFrames(tester);
 
-          wi70ExpectOutlineFocus(tester, 3, reason: 'ring and focus stay');
-          expect(h.pixels(), pixels, reason: 'no jump');
-          expect(wi70ListPosition(tester).pixels, list);
-        },
-        variant: macOnly,
-      );
+        wi70ExpectOutlineFocus(tester, 3, reason: 'ring and focus stay');
+        expect(h.pixels(), pixels, reason: 'no jump');
+        expect(wi70ListPosition(tester).pixels, list);
+      }, variant: macOnly);
     }
   });
 
