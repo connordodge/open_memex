@@ -11,6 +11,7 @@ import 'src/state/agents_sheet/agents_menu_enablement.dart';
 import 'src/state/app_exit.dart';
 import 'src/state/app_support_dir.dart';
 import 'src/state/app_version.dart';
+import 'src/state/palette_passages.dart';
 import 'src/state/hosted_identity.dart';
 import 'src/state/picker_actions.dart';
 import 'src/state/settings.dart';
@@ -78,6 +79,7 @@ final List<Override> appRootOverrides = [
   pickerActionsProvider.overrideWithValue(const AppPickerActions()),
   updateTokenSeamProvider.overrideWith(_editServerSeam),
   hostedUpdateTokenProvider.overrideWith(_editServerSeam),
+  ...palettePassagesOverrides,
 ];
 
 /// An update-token seam: the picker actions' edit-server dialog for the

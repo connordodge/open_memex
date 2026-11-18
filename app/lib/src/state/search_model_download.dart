@@ -2,7 +2,9 @@
 // download, kept per vault outside the palette's own state.
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'vault_ref.dart';
+import '../vault_access/search_access.dart';
+import 'vault_access_state.dart';
+import 'vault_state.dart';
 
 /// Where a vault's palette model download stands.
 enum SearchModelDownloadStatus {
@@ -24,13 +26,40 @@ enum SearchModelDownloadStatus {
 /// download state.
 class SearchModelDownloadNotifier
     extends FamilyNotifier<SearchModelDownloadStatus, VaultRef> {
+  var _disposed = false;
+
   @override
-  SearchModelDownloadStatus build(VaultRef arg) =>
-      SearchModelDownloadStatus.idle;
+  SearchModelDownloadStatus build(VaultRef arg) {
+    _disposed = false;
+    ref.onDispose(() => _disposed = true);
+    return SearchModelDownloadStatus.idle;
+  }
 
   /// The `Download model (130 MB)` button: runs `search([query],
-  /// allowDownload: true)` once; does nothing while a download runs.
-  void start(String query) {}
+  /// allowDownload: true)` once; does nothing while a download runs, or when
+  /// [arg] is not the open vault. The search's own timeout (10 min for a
+  /// download) ends it as a failure.
+  void start(String query) {
+    if (state == SearchModelDownloadStatus.downloading) return;
+    if (ref.read(currentVaultProvider) != arg) return;
+    final search = ref.read(vaultAccessProvider)?.search;
+    if (search == null) return;
+    state = SearchModelDownloadStatus.downloading;
+    _run(search, query);
+  }
+
+  Future<void> _run(SearchAccess search, String query) async {
+    SearchModelDownloadStatus outcome;
+    try {
+      final result = await search.search(query, allowDownload: true);
+      outcome = result is SearchReady && result.semantic == Semantic.on
+          ? SearchModelDownloadStatus.succeeded
+          : SearchModelDownloadStatus.failed;
+    } catch (_) {
+      outcome = SearchModelDownloadStatus.failed;
+    }
+    if (!_disposed) state = outcome;
+  }
 }
 
 final searchModelDownloadProvider =
