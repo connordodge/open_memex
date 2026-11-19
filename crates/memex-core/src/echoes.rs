@@ -15,7 +15,7 @@ use crate::embedder::Embedder;
 use crate::guide::GUIDE_NOTE;
 use crate::links::{daily_note_id_for_title, LinkKind};
 use crate::transclusion::{parse_transclusions, resolve_span};
-use crate::vectors::{embed_missing, ConnLease};
+use crate::vectors::{embed_missing_notes, ConnLease};
 use crate::{MemexError, Result};
 
 /// The lowest similarity (`1 - cosine distance`) an echo may have; a
@@ -46,7 +46,7 @@ pub struct Echoes {
     /// no block, else `None`. Only a topic note's transclusions count, as only
     /// they give query vectors (req 11.2).
     pub reason: Option<&'static str>,
-    /// Unembedded chunks left after the read's `embed_missing` run.
+    /// Unembedded note chunks left after the read's `embed_missing_notes` run.
     pub pending: usize,
 }
 
@@ -74,7 +74,7 @@ pub struct Echo {
 /// embeds (64 for the CLI, 0 on the vault server). A missing note is
 /// `MemexError::NotFound`.
 ///
-/// The connection is leased for the existence check, for `embed_missing`'s
+/// The connection is leased for the existence check, for `embed_missing_notes`'s
 /// own leases, and once for the kNN read; the best-block batch is embedded
 /// with no lease held, and only when some kept chunk has more than one block.
 pub fn echoes<L: ConnLease>(
@@ -85,7 +85,7 @@ pub fn echoes<L: ConnLease>(
     others_cap: usize,
 ) -> Result<Echoes> {
     conn.lease(|c| load_note(c, note_id).map(|_| ()))?;
-    let pending = embed_missing(conn, embedder, Some(note_id), NOTE_CAP, others_cap)?.pending;
+    let pending = embed_missing_notes(conn, embedder, Some(note_id), NOTE_CAP, others_cap)?.pending;
     let Some(kept) = conn.lease(|c| read_kept(c, note_id, limit))? else {
         return Ok(Echoes {
             echoes: Vec::new(),

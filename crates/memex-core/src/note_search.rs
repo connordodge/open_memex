@@ -12,7 +12,8 @@ use serde::Serialize;
 use crate::daily::parse_iso_date;
 use crate::embedder::Embedder;
 use crate::search::{
-    embed_query, search_with_query_vec, SearchFilters, SearchHit, SearchMode, SearchOptions,
+    embed_query, search_with_query_vec, AttachmentMatch, HitAttachment, SearchFilters, SearchHit,
+    SearchMode, SearchOptions,
 };
 use crate::vectors::{embed_missing, ConnLease};
 use crate::{MemexError, Result};
@@ -56,9 +57,15 @@ pub struct NoteSearch {
     pub semantic: Semantic,
     pub hits: Vec<NoteSearchHit>,
     pub truncated: bool,
+    /// The matching attachments, best first, at most `limit` (Spec #123
+    /// R47, R48). Absent from JSON when empty, so a body with no attachment
+    /// match is v0.6's.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<AttachmentMatch>,
 }
 
-/// One hit. Every `Option` serializes as `null` when `None`.
+/// One hit. Every legacy `Option` serializes as `null` when `None`;
+/// `attachment` is absent from JSON when `None`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NoteSearchHit {
     pub note_id: String,
@@ -69,12 +76,16 @@ pub struct NoteSearchHit {
     pub day: Option<String>,
     pub chunk_id: String,
     pub snippet: String,
-    /// The chunk's `chunks.start_byte`, or `None` when it has none.
+    /// The chunk's `chunks.start_byte`, or `None` when it has none; on a
+    /// direct attachment hit, the reference line's offset instead (R46).
     pub start_byte: Option<usize>,
     /// The daily-note date a transcluded hit came through, else `None`.
     pub via: Option<String>,
     /// The note's `updated_at`, in ms since the epoch.
     pub note_updated_at: i64,
+    /// The attachment the hit came from (R46, R48), else `None` (absent).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<HitAttachment>,
 }
 
 /// Searches note text for the Command palette, always in hybrid mode: the
@@ -120,6 +131,7 @@ pub fn note_search<L: ConnLease>(
             semantic,
             hits: Vec::new(),
             truncated: false,
+            attachments: Vec::new(),
         });
     }
 
@@ -135,7 +147,7 @@ pub fn note_search<L: ConnLease>(
         filters: SearchFilters::default(),
         embedder: None,
     };
-    let (hits, truncated, vec_ran) = conn.lease(|c| {
+    let (hits, truncated, attachments, vec_ran) = conn.lease(|c| {
         // One read transaction, so every read sees one snapshot: a note
         // another process deletes mid-search is either whole or absent.
         let tx = c.transaction()?;
@@ -146,7 +158,7 @@ pub fn note_search<L: ConnLease>(
             .map(|h| enrich(&tx, h))
             .collect::<Result<Vec<_>>>()?;
         tx.commit()?;
-        Ok((hits, found.truncated, vec_ran))
+        Ok((hits, found.truncated, found.attachments, vec_ran))
     })?;
     // `on` means the vector arm ran (requirement 35): a kNN that could not
     // run (no `chunk_vec` table, say) answers keyword hits as `unavailable`.
@@ -159,6 +171,7 @@ pub fn note_search<L: ConnLease>(
         semantic,
         hits,
         truncated,
+        attachments,
     })
 }
 
@@ -221,17 +234,14 @@ impl Embedder for Watched<'_> {
     }
 }
 
-/// Adds the chunk's `start_byte` and the note's role, day and `updated_at`
-/// to a `search::search` hit.
+/// Adds the chunk's `start_byte` (a direct attachment hit's reference line
+/// offset instead) and the note's role, day and `updated_at` to a
+/// `search::search` hit.
 fn enrich(c: &Connection, hit: SearchHit) -> Result<NoteSearchHit> {
-    let start_byte: Option<i64> = c
-        .query_row(
-            "SELECT start_byte FROM chunks WHERE id = ?",
-            params![hit.chunk_id],
-            |r| r.get(0),
-        )
-        .optional()?
-        .flatten();
+    let start_byte: Option<i64> = match hit.line_start {
+        Some(at) => i64::try_from(at).ok(),
+        None => chunk_start(c, &hit.chunk_id)?,
+    };
     let (title, role, updated_at): (String, Option<String>, i64) = c.query_row(
         "SELECT title,
                 CASE WHEN json_valid(frontmatter) THEN json_extract(frontmatter, '$.role') END,
@@ -254,5 +264,17 @@ fn enrich(c: &Connection, hit: SearchHit) -> Result<NoteSearchHit> {
         start_byte: start_byte.and_then(|s| usize::try_from(s).ok()),
         via: hit.via,
         note_updated_at: updated_at,
+        attachment: hit.attachment,
     })
+}
+
+/// `chunks.start_byte` of chunk `chunk_id`, `None` when it has none.
+fn chunk_start(c: &Connection, chunk_id: &str) -> Result<Option<i64>> {
+    Ok(c.query_row(
+        "SELECT start_byte FROM chunks WHERE id = ?",
+        params![chunk_id],
+        |r| r.get(0),
+    )
+    .optional()?
+    .flatten())
 }
