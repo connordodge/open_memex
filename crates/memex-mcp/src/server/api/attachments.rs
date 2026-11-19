@@ -130,7 +130,7 @@ fn read(vault: &Path, path: &str, with_bytes: bool) -> Result<(String, u64, Vec<
         return Err(InvalidArgument(format!("{path} is not an attachment path")).into());
     };
     for candidate in &candidates {
-        if let Some(file) = locate(vault, &candidate.path)? {
+        if let Some(file) = locate(vault, candidate)? {
             let len = std::fs::metadata(&file)?.len();
             let bytes = if with_bytes {
                 std::fs::read(&file)?
@@ -143,17 +143,26 @@ fn read(vault: &Path, path: &str, with_bytes: bool) -> Result<(String, u64, Vec<
     Err(MemexError::NotFound(format!("attachment {}", last.path)).into())
 }
 
-/// `<vault>/<rel>` when it is a regular file reached without a symlink:
-/// `None` when it (or a folder on the way) is missing, 400 when a part is a
-/// symlink or the end is not a file. `rel` is an R4 path, so it has no `..`
-/// and stays under `<vault>/objects`.
-fn locate(vault: &Path, rel: &str) -> Result<Option<PathBuf>, ApiError> {
+/// `<vault>/<path>` when it is a regular file reached without a symlink.
+/// `None` (404) when it or a folder on the way is missing, or when its name
+/// is one R1 never stores (a NUL, over 255 bytes: anything
+/// [`attachments::stored_name`] changes), so no such file can exist. 400
+/// when a part is a symlink or not what it should be (a file in a folder's
+/// place, an end that is not a file). `path` is an R4 path, so it has no
+/// `..` and stays under `<vault>/objects`.
+fn locate(vault: &Path, path: &AttachmentPath) -> Result<Option<PathBuf>, ApiError> {
+    let rel = &path.path;
+    if attachments::stored_name(&path.name) != path.name {
+        return Ok(None);
+    }
+    let not_a_file = || ApiError::from(InvalidArgument(format!("{rel} is not a file")));
     let mut at = vault.to_path_buf();
     for part in rel.split('/') {
         at.push(part);
         let meta = match std::fs::symlink_metadata(&at) {
             Ok(meta) => meta,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) if e.kind() == io::ErrorKind::NotADirectory => return Err(not_a_file()),
             Err(e) => return Err(e.into()),
         };
         if meta.file_type().is_symlink() {
@@ -161,7 +170,7 @@ fn locate(vault: &Path, rel: &str) -> Result<Option<PathBuf>, ApiError> {
         }
     }
     if !at.is_file() {
-        return Err(InvalidArgument(format!("{rel} is not a file")).into());
+        return Err(not_a_file());
     }
     Ok(Some(at))
 }
