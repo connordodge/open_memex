@@ -1463,6 +1463,102 @@ void main() {
     );
   });
 
+  group('stale field text guards (verify r2)', () {
+    testWidgets(
+      'the text slot lines of a field are answered only while its laid out text equals the given text, not only its length',
+      (tester) async {
+        final controller = TextEditingController(text: 'field text');
+        addTearDown(controller.dispose);
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: Column(
+                key: const ValueKey('t127-field-root'),
+                children: [TextField(controller: controller)],
+              ),
+            ),
+          ),
+        );
+        final root = tester.renderObject(
+          find.byKey(const ValueKey('t127-field-root')),
+        );
+
+        final same = textSlotLines(root, 'field text');
+        expect(same, isNotNull, reason: 'the same text');
+        expect(same!.boxes, isA<RenderEditableLineBoxes>());
+        expect(
+          textSlotLines(root, 'FIELD TEXT'),
+          isNull,
+          reason: 'another text of the same length',
+        );
+      },
+    );
+
+    testWidgets(
+      'the selection fill of a row paints nothing while its field is laid out with another text of the same length',
+      (tester) async {
+        final row = LivePreviewController(text: 'alpha')
+          ..selection = const TextSelection(baseOffset: 1, extentOffset: 4);
+        final shown = LivePreviewController(text: 'omega');
+        final node = FocusNode();
+        addTearDown(row.dispose);
+        addTearDown(shown.dispose);
+        addTearDown(node.dispose);
+
+        Widget lone(LivePreviewController fieldController) => editorScope(
+          MaterialApp(
+            theme: buildOmTheme(),
+            home: Material(
+              child: Align(
+                alignment: Alignment.topLeft,
+                child: SizedBox(
+                  width: 400,
+                  child: EditorRow(
+                    segment: 0,
+                    index: 0,
+                    kind: RowKind.prose,
+                    geometry: null,
+                    marker: '',
+                    controller: row,
+                    focusNode: node,
+                    boxes: () => null,
+                    field: EditableText(
+                      controller: fieldController,
+                      focusNode: node,
+                      style: editorBodyStyle(),
+                      cursorColor: const Color(0xFF000000),
+                      backgroundCursorColor: const Color(0xFF000000),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+        final paintsFill = paints
+          ..something((method, args) {
+            if (method != #drawRect) return false;
+            final paint = args[1] as Paint;
+            return paint.color.toARGB32() == OmColors.selection.toARGB32();
+          });
+
+        await tester.pumpWidget(lone(row));
+        expect(
+          tester.renderObject(find.byKey(const ValueKey('editor-row-0-0'))),
+          paintsFill,
+          reason: 'a field laid out with the row text gets the fill',
+        );
+
+        await tester.pumpWidget(lone(shown));
+        expect(
+          tester.renderObject(find.byKey(const ValueKey('editor-row-0-0'))),
+          isNot(paintsFill),
+          reason: 'a stale field gets no fill',
+        );
+      },
+    );
+  });
+
   group('rows host accessor edges (verify)', () {
     testWidgets(
       'the host answers nothing for a row before the first or past the last and something for each row in range',
