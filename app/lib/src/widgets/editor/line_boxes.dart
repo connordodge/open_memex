@@ -1,7 +1,7 @@
 import 'dart:math' as math;
 import 'dart:ui' as ui show BoxHeightStyle, LineMetrics;
 
-import 'package:flutter/foundation.dart' show immutable;
+import 'package:flutter/foundation.dart' show immutable, visibleForTesting;
 import 'package:flutter/rendering.dart';
 
 /// The line-box seam (D6, TD10): the real geometry of a laid-out field's
@@ -126,6 +126,25 @@ class RenderEditableLineBoxes implements LineBoxSource {
   /// The measured field's render object.
   final RenderEditable editable;
 
+  /// Test-only work counter: fresh `TextPainter` layouts of the whole field
+  /// text (every `_measure` call), summed over all instances.
+  @visibleForTesting
+  static int debugMeasures = 0;
+
+  /// Test-only work counter: whole-text line walks (`_linesOf` over every
+  /// line of a measured text), summed over all instances. Every `_measure`
+  /// of today's [lines], [boxesFor] and [caretRect] walks once, so it moves
+  /// with [debugMeasures]; a range-local measure that skips the walk raises
+  /// [debugMeasures] or [debugLineSpans] only.
+  @visibleForTesting
+  static int debugLineWalks = 0;
+
+  /// Test-only work counter: per-line measures (`_spanOf`), one for each line
+  /// a [boxesFor] range read touches, summed over all instances. Differs from
+  /// [debugLineWalks]: a range over 2 lines is 1 walk and 2 spans.
+  @visibleForTesting
+  static int debugLineSpans = 0;
+
   @override
   RenderBox get box => editable;
 
@@ -170,6 +189,7 @@ class RenderEditableLineBoxes implements LineBoxSource {
   /// Runs [read] over a copy of the editable's text laid out as the
   /// editable lays it out, then disposes the copy.
   T _measure<T>(T Function(TextPainter painter, String text) read) {
+    debugMeasures++;
     final constraints = editable.constraints;
     final available = math.max(
       0.0,
@@ -202,6 +222,7 @@ class RenderEditableLineBoxes implements LineBoxSource {
 
   /// Every line of [painter]'s laid-out [text], top to bottom.
   List<LineBox> _linesOf(TextPainter painter, String text) {
+    debugLineWalks++;
     final lines = <LineBox>[];
     final metrics = painter.computeLineMetrics();
     var start = 0;
@@ -280,6 +301,7 @@ class RenderEditableLineBoxes implements LineBoxSource {
   /// The rect of [part] of [line]: its characters' x extent (the caret's x
   /// when they all render zero-width) and the line box's full height.
   Rect _spanOf(TextPainter painter, TextRange part, LineBox line) {
+    debugLineSpans++;
     final dx = _paintOffset.dx;
     final rect =
         _union(

@@ -23,6 +23,9 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/editor_rows.dart';
+import 'package:open_memex_app/src/editor/find_in_note.dart';
+import 'package:open_memex_app/src/editor/spell_issues.dart';
+import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/theme/app_theme.dart';
 import 'package:open_memex_app/src/widgets/editor/attachment_row.dart';
 import 'package:open_memex_app/src/widgets/editor/editor_row.dart';
@@ -31,13 +34,18 @@ import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
 import 'package:open_memex_app/src/widgets/editor/row_kinds.dart';
 import 'package:open_memex_app/src/widgets/editor/segment_editing.dart';
 import 'package:open_memex_app/src/widgets/editor/segment_view.dart';
+import 'package:open_memex_app/src/widgets/editor/spell_issue_scope.dart';
 import 'package:open_memex_app/src/widgets/editor/table_grid.dart';
+import 'package:open_memex_app/src/widgets/find/find_highlights.dart';
+import 'package:open_memex_app/src/widgets/find/find_keys.dart';
 
 import '../../support/editor_rows_probe.dart';
 import '../../support/editor_scope.dart';
 import '../../support/font_fetch_hold.dart';
 import '../../support/segment_editing_finder.dart';
+import '../../support/spelling_editor_pump.dart';
 import '../../support/table_harness.dart';
+import '../../support/wi83_find_paint.dart';
 
 /// A small table (header, delimiter, one body line).
 const _t124Table = '| Step | Notes |\n|---|---|\n| Alpha | one |';
@@ -91,17 +99,20 @@ Future<void> _t124Click(
 /// A presenter that shows the row's field, then a [height] px block under
 /// [PresentedRow.blockKey]. It owns presses inside the block when
 /// [ownsBlock]; its block geometry is a [BlockLineBoxes] over the block
-/// when [measuresBlock].
+/// when [measuresBlock]. It hides the row's text (field offstage, so the
+/// block stands in) when [hidesText].
 class _T124BlockPresenter extends RowKindPresenter {
   const _T124BlockPresenter({
     this.height = 40,
     this.ownsBlock = false,
     this.measuresBlock = false,
+    this.hidesText = false,
   });
 
   final double height;
   final bool ownsBlock;
   final bool measuresBlock;
+  final bool hidesText;
 
   @override
   Widget build(BuildContext context, PresentedRow row, RowTextSlot textSlot) =>
@@ -109,7 +120,7 @@ class _T124BlockPresenter extends RowKindPresenter {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          textSlot(offstage: false),
+          textSlot(offstage: hidesText),
           KeyedSubtree(
             key: row.blockKey,
             child: SizedBox(
@@ -121,7 +132,7 @@ class _T124BlockPresenter extends RowKindPresenter {
       );
 
   @override
-  bool textHidden(PresentedRow row) => false;
+  bool textHidden(PresentedRow row) => hidesText;
 
   RenderBox? _block(PresentedRow row) {
     final box = row.blockKey?.currentContext?.findRenderObject();
@@ -146,6 +157,16 @@ class _T124BlockPresenter extends RowKindPresenter {
   }
 }
 
+/// A presenter that hides its text for the row at [hiddenAt] only.
+class _T124IndexPresenter extends TextRowPresenter {
+  const _T124IndexPresenter(this.hiddenAt);
+
+  final int hiddenAt;
+
+  @override
+  bool textHidden(PresentedRow row) => row.index == hiddenAt;
+}
+
 /// Presents every prose row with [presenter] until the test ends.
 void _t124PresentProseWith(RowKindPresenter presenter) {
   debugRowKindPresenterOverride = (kind) =>
@@ -163,6 +184,94 @@ Widget _t124Field(LivePreviewController controller, FocusNode node) =>
       backgroundCursorColor: const Color(0xFF000000),
       maxLines: null,
     );
+
+/// The painted state of one prose row a presenter shows (WI #124, D2): the
+/// find ranges its highlight layer got, whether its squiggle layer paints
+/// and whether the segment paints a selection fill.
+typedef _T124Paint = ({
+  List<FindPaintRange> find,
+  bool squiggle,
+  bool selectionFill,
+});
+
+/// Pumps the whole editor on a prose row `Alpha beta gamma` presented by
+/// [presenter], finds `beta`, flags it as misspelled, selects `beta` in the
+/// segment and returns what the row paints.
+Future<_T124Paint> _t124PaintedWith(
+  WidgetTester tester,
+  RowKindPresenter presenter,
+) async {
+  _t124PresentProseWith(presenter);
+  final e = await pumpSpellingEditor(tester, body: 'Alpha beta gamma');
+  FocusManager.instance.primaryFocus?.unfocus();
+  await tester.pump();
+  final row = find.byKey(const ValueKey('editor-row-0-0'), skipOffstage: false);
+  expect(row, findsOneWidget, reason: 'fixture: the prose row');
+  final field = find.descendant(
+    of: row,
+    matching: find.byType(EditableText, skipOffstage: false),
+    skipOffstage: false,
+  );
+  final text = e.robot.segmentText(0);
+  final beta = text.indexOf('beta');
+
+  // Find highlights.
+  wi83Open(e.container, [
+    FindSource(segment: 0, kind: FindSourceKind.body, text: text),
+  ], 'beta');
+  await tester.pump();
+  await tester.pump();
+  final highlights = tester.widget<FindHighlights>(
+    find.byKey(findHighlightsKey(0, 0), skipOffstage: false),
+  );
+
+  // Squiggles.
+  final registry = SpellIssueScope.maybeOf(tester.element(field));
+  expect(registry, isNotNull, reason: 'fixture: the field has a registry');
+  registry!.setIssues(tester.widget<EditableText>(field).controller, [
+    SpellIssue(kind: SpellIssueKind.spelling, start: beta, length: 4),
+  ]);
+  await tester.pump();
+  final layer = find.descendant(
+    of: row,
+    matching: find.byWidgetPredicate(
+      (w) => w.runtimeType.toString() == '_SquiggleLayer',
+      description: 'squiggle layer',
+      skipOffstage: false,
+    ),
+    skipOffstage: false,
+  );
+  expect(layer, findsOneWidget, reason: 'fixture: the squiggle layer');
+  final squiggle = _t124Paints(tester.renderObject(layer), (i) {
+    return i.memberName == #drawPath;
+  });
+
+  // Selection fill: `beta` selected in the segment.
+  segmentEditingAt(
+    tester,
+    0,
+  ).select(TextSelection(baseOffset: beta, extentOffset: beta + 4));
+  await tester.pump();
+  final fill = _t124Paints(
+    tester.renderObject(find.byKey(textSegmentKey(0))),
+    (i) =>
+        i.memberName == #drawRect &&
+        (i.positionalArguments[1] as Paint).color.toARGB32() ==
+            OmColors.selection.toARGB32(),
+  );
+  return (
+    find: List.of(highlights.ranges),
+    squiggle: squiggle,
+    selectionFill: fill,
+  );
+}
+
+/// Whether painting [root] makes a canvas call [match] accepts.
+bool _t124Paints(RenderObject root, bool Function(Invocation call) match) {
+  final canvas = TestRecordingCanvas();
+  (root as RenderBox).paint(TestRecordingPaintingContext(canvas), Offset.zero);
+  return canvas.invocations.any((c) => match(c.invocation));
+}
 
 void main() {
   holdFontFetches();
@@ -349,6 +458,103 @@ void main() {
         await body.focusOutside();
         expect(table.textHidden, isTrue);
         expect(prose.textHidden, isFalse);
+      },
+    );
+
+    testWidgets(
+      'a presenter that shows its text lets find, squiggles and the selection fill paint',
+      (tester) async {
+        final painted = await _t124PaintedWith(
+          tester,
+          const _T124BlockPresenter(),
+        );
+        expect(painted.find, isNotEmpty, reason: 'find highlights');
+        expect(painted.squiggle, isTrue, reason: 'squiggle');
+        expect(painted.selectionFill, isTrue, reason: 'selection fill');
+      },
+    );
+
+    testWidgets(
+      'a presenter that hides its text suppresses find highlights, squiggles and the selection fill',
+      (tester) async {
+        final painted = await _t124PaintedWith(
+          tester,
+          const _T124BlockPresenter(hidesText: true),
+        );
+        expect(painted.find, isEmpty, reason: 'find highlights');
+        expect(painted.squiggle, isFalse, reason: 'squiggle');
+        expect(painted.selectionFill, isFalse, reason: 'selection fill');
+      },
+    );
+
+    test(
+      'textHidden asks the presenter hook first and falls back to the table rule',
+      () {
+        final c = LivePreviewController(text: 'x');
+        addTearDown(c.dispose);
+        expect(c.presenterTextHidden, isNull, reason: 'no host: no hook');
+        expect(c.textHidden, isFalse, reason: 'bare prose controller');
+        c.tableRow = true;
+        expect(c.textHidden, isTrue, reason: 'bare table: the fallback');
+
+        // The hook wins over the table rule, both ways.
+        c.presenterTextHidden = () => false;
+        expect(c.textHidden, isFalse, reason: 'hook says shown on a table');
+        c.tableRow = false;
+        c.presenterTextHidden = () => true;
+        expect(c.textHidden, isTrue, reason: 'hook says hidden on prose');
+
+        // Cleared: the fallback again.
+        c.presenterTextHidden = null;
+        expect(c.textHidden, isFalse);
+      },
+    );
+
+    testWidgets(
+      'a row that moves answers textHidden for its current index at once',
+      (tester) async {
+        _t124PresentProseWith(const _T124IndexPresenter(1));
+        await pumpTable(tester, 'Alpha line\n- item one');
+        final prose = tableRowController(tester, 0, 0);
+        expect(prose.textHidden, isFalse, reason: 'prose row at index 0');
+
+        // A bullet row goes in above it: the prose row is row 1 now.
+        segmentEditingAt(tester, 0).applyEdit(
+          const SegmentEdit(start: 0, end: 0, replacement: '- new\n'),
+        );
+        expect(prose.textHidden, isTrue, reason: 'the presenter sees index 1');
+        await tester.pump();
+        expect(
+          tableRowController(tester, 0, 1),
+          same(prose),
+          reason: 'fixture: the prose row is kept, now row 1',
+        );
+      },
+    );
+
+    testWidgets(
+      'a row that changes kind answers textHidden from its new presenter at once',
+      (tester) async {
+        // Prose rows are presented by a presenter that hides its text.
+        _t124PresentProseWith(const _T124BlockPresenter(hidesText: true));
+        final body = await pumpTable(tester, _t124Table);
+        await body.placeCaret(_t124Table.indexOf('Alpha'));
+        expectTableRevealed(0, 0);
+        final row = tableRowController(tester, 0, 0);
+        expect(row.textHidden, isFalse, reason: 'a revealed table row');
+
+        // The focused row becomes prose; rows re-derive in the call, before
+        // the next frame builds them.
+        segmentEditingAt(tester, 0).replaceText('Alpha line');
+        expect(
+          tableRowController(tester, 0, 0),
+          same(row),
+          reason: 'fixture: the focused row is kept across the kind change',
+        );
+        expect(row.tableRow, isFalse, reason: 'fixture: now a prose row');
+        expect(row.textHidden, isTrue, reason: 'the prose presenter answers');
+        await tester.pump();
+        expect(row.textHidden, isTrue);
       },
     );
   });
@@ -953,5 +1159,52 @@ void main() {
         expect(rowTextOf(tester, 0, 1), 'item two');
       },
     );
+  });
+
+  group('row field wrapper (verify pins)', () {
+    // The Offstage widgets inside editor row [r]'s keyed slot, also while
+    // the field is offstage.
+    Finder wrappers(int r) => find.descendant(
+      of: find.byKey(ValueKey('editor-row-0-$r'), skipOffstage: false),
+      matching: find.byType(Offstage, skipOffstage: false),
+    );
+
+    testWidgets(
+      'only a table row keeps its field under an Offstage, off while revealed',
+      (tester) async {
+        final body = await pumpTable(tester, _t124Mixed);
+        // Prose and item rows: the field sits bare, as on main.
+        for (final r in [0, 1, 3]) {
+          expect(wrappers(r), findsNothing, reason: 'row $r has no wrapper');
+        }
+        // A rendered table: one wrapper, offstage.
+        expectTableRendered(0, 2);
+        expect(wrappers(2), findsOneWidget);
+        expect(tester.widget<Offstage>(wrappers(2)).offstage, isTrue);
+
+        // Revealed: the same wrapper, on screen (the field never reparents).
+        await body.placeCaret(_t124Mixed.indexOf('Alpha'));
+        expectTableRevealed(0, 2);
+        expect(wrappers(2), findsOneWidget, reason: 'still wrapped');
+        expect(tester.widget<Offstage>(wrappers(2)).offstage, isFalse);
+        for (final r in [0, 1, 3]) {
+          expect(wrappers(r), findsNothing, reason: 'row $r has no wrapper');
+        }
+      },
+    );
+
+    test('an attachment row has no marker column and no item geometry', () {
+      expect(markerColumnKind(RowKind.attachment), isNull);
+      const text = '![chart](objects/ab/c.png)';
+      final spec = RowSpec(
+        kind: RowKind.attachment,
+        start: 0,
+        textStart: 0,
+        textEnd: text.length,
+        end: text.length,
+      );
+      expect(rowGeometries([spec]), [isNull]);
+      expect(markerColumnKind(RowKind.table), isNull);
+    });
   });
 }

@@ -47,8 +47,10 @@ abstract interface class SegmentEditing {
   void applyEdit(SegmentEdit edit);
 
   /// The segment offset under global [position] (frozen, WI #124 ruling
-  /// D12): the offset nearest to it in the segment's line boxes, as a press
-  /// there resolves it. Null while the segment has no line boxes (before its
-  /// rows are laid out).
+  /// D12): the offset nearest to it in the segment's line boxes
+  /// (`LineBoxSource.offsetAt`). Over text it is the offset a press there
+  /// resolves to; above or below the rows it is not clamped as the pointer
+  /// layer clamps a press. Null while the segment has no line boxes (before
+  /// its rows are laid out).
   int? offsetAtGlobal(Offset position);
 }

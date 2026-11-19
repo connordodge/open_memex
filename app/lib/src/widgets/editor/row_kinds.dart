@@ -75,7 +75,12 @@ abstract class RowKindPresenter {
 
   /// Whether [row]'s text is hidden now: its field is mounted offstage and a
   /// block shows in its place. Find highlights, squiggles, the selection
-  /// fill and link hits skip a row whose text is hidden.
+  /// fill and link hits skip a row whose text is hidden: the rows host routes
+  /// this answer through the row's controller
+  /// (`LivePreviewController.textHidden`), which they read. The answer may
+  /// change only when the row's controller or its reveal gate notifies, so
+  /// they repaint. It must not read `LivePreviewController.textHidden`
+  /// itself (that is this answer).
   bool textHidden(PresentedRow row);
 
   /// [row]'s geometry while a block stands in for its text, in the row
@@ -188,8 +193,12 @@ class TableRowPresenter extends RowKindPresenter {
     );
   }
 
+  /// The grid shows: `tableRow && !tableRevealed`.
   @override
-  bool textHidden(PresentedRow row) => row.controller.textHidden;
+  bool textHidden(PresentedRow row) {
+    final controller = row.controller;
+    return controller.tableRow && !controller.tableRevealed;
+  }
 
   @override
   LineBoxSource? blockBoxes(PresentedRow row) {
