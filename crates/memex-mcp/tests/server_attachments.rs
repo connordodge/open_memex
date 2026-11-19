@@ -1034,6 +1034,63 @@ async fn a_symlink_under_objects_that_resolves_outside_it_is_400() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_symlink_that_stays_inside_objects_and_a_folder_in_a_files_place_are_400() {
+    use std::os::unix::fs::symlink;
+
+    let srv = start().await;
+    let h = plant_secrets(&srv);
+    let objects = vault_dir(&srv).join("objects");
+    let dir = objects.join(&h[..2]).join(&h);
+
+    // A file link to the real attachment next to it, and a hash folder that
+    // is a link to the real hash folder: both stay under objects/.
+    symlink(dir.join("real.txt"), dir.join("alias.txt")).unwrap();
+    let h_ab = fake_hash("ab");
+    std::fs::create_dir_all(objects.join("ab")).unwrap();
+    symlink(&dir, objects.join("ab").join(&h_ab)).unwrap();
+    // A folder where the file should be.
+    std::fs::create_dir_all(dir.join("folder.png")).unwrap();
+
+    let paths = [
+        format!("objects/{}/{h}/alias.txt", &h[..2]),
+        format!("objects/ab/{h_ab}/real.txt"),
+        format!("objects/{}/{h}/folder.png", &h[..2]),
+    ];
+    for method in ["GET", "HEAD"] {
+        for p in &paths {
+            let path = format!("{BASE}/attachments/{p}");
+            let r = raw_get(&srv, method, &path).await;
+            assert_400_without_secret(&r, &format!("{method} {path}"), method);
+        }
+    }
+    let ok = raw_get(
+        &srv,
+        "GET",
+        &format!("{BASE}/attachments/objects/{}/{h}/real.txt", &h[..2]),
+    )
+    .await;
+    assert_eq!((ok.status, ok.body.as_str()), (200, "an attachment"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_upload_path_with_an_empty_vault_name_keeps_the_8_mib_limit() {
+    let srv = start().await;
+    let r = raw_request(
+        srv.addr(),
+        &upload_head(
+            "POST",
+            "/vaults//api/v1/attachments?name=a.bin",
+            Some(&srv.bearer()),
+            Some(BODY_LIMIT + 1),
+        ),
+        b"",
+    )
+    .await;
+    assert_eq!(r.status, 413, "{}", r.body);
+    assert_eq!(r.json(), other_route_too_large());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_missing_attachment_is_404_with_its_own_text_distinct_from_an_unknown_route() {
     let srv = start().await;
     let h = plant_secrets(&srv);
