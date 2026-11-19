@@ -481,6 +481,308 @@ fn after_a_write_that_fails_midway_no_file_exists_at_the_final_path() {
     );
 }
 
+/// Blocks or unblocks SIGXFSZ for the calling thread.
+unsafe fn set_xfsz_mask(how: libc::c_int) {
+    let mut set: libc::sigset_t = std::mem::zeroed();
+    libc::sigemptyset(&mut set);
+    libc::sigaddset(&mut set, libc::SIGXFSZ);
+    assert_eq!(libc::pthread_sigmask(how, &set, std::ptr::null_mut()), 0);
+}
+
+const CRASH_ENV: &str = "MEMEX_134_CRASH_STORE_VAULT";
+
+/// Not a check of its own. Run by the crash test with `CRASH_ENV` set: limits
+/// this process's file size to `LIMIT` and leaves SIGXFSZ at its default, so
+/// the process is killed by the signal part-way through the write and no
+/// cleanup runs (a real crash or power cut). `MEMEX_134_CRASH_FROM` is
+/// `bytes` or `file`. Without the variable it returns at once.
+#[test]
+fn crash_store_child_process() {
+    let Some(vault) = std::env::var_os(CRASH_ENV) else {
+        return;
+    };
+    let vault = PathBuf::from(vault);
+    let from = std::env::var("MEMEX_134_CRASH_FROM").unwrap();
+    let source = PathBuf::from(std::env::var_os("MEMEX_134_FSIZE_SOURCE").unwrap());
+    unsafe {
+        let none = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: libc::RLIM_INFINITY,
+        };
+        assert_eq!(libc::setrlimit(libc::RLIMIT_CORE, &none), 0);
+        let lim = libc::rlimit {
+            rlim_cur: LIMIT as libc::rlim_t,
+            rlim_max: libc::RLIM_INFINITY,
+        };
+        assert_eq!(libc::setrlimit(libc::RLIMIT_FSIZE, &lim), 0);
+    }
+    // The parent started this process with SIGXFSZ blocked, so every thread
+    // that inherits the mask has it blocked. Only the worker unblocks it: the
+    // kernel may deliver the signal to any thread that does not block it
+    // (macOS picks the first), and it has to be the one that is writing.
+    std::thread::spawn(move || {
+        unsafe { set_xfsz_mask(libc::SIG_UNBLOCK) };
+        if from == "bytes" {
+            let _ = attachments::store_bytes(&vault, &big_bytes(), "crashed.bin");
+        } else {
+            let _ = attachments::store_file(&vault, &source, Some("crashed.bin"));
+        }
+    })
+    .join()
+    .unwrap();
+    // Only reached if the write was not cut short.
+    println!("SURVIVED");
+    io::stdout().flush().unwrap();
+}
+
+#[test]
+fn a_store_killed_part_way_leaves_only_an_objects_tmp_file_that_the_backup_skips() {
+    use std::os::unix::process::{CommandExt, ExitStatusExt};
+
+    for from in ["bytes", "file"] {
+        let fx = Fx::new();
+        let bytes = big_bytes();
+        let source = fx.source("big source.bin", &bytes);
+        let mut child = Command::new(std::env::current_exe().unwrap());
+        child
+            .args([
+                "--exact",
+                "crash_store_child_process",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CRASH_ENV, &fx.vault)
+            .env("MEMEX_134_CRASH_FROM", from)
+            .env("MEMEX_134_FSIZE_SOURCE", &source)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        // SAFETY: only signal mask calls, which are async-signal-safe.
+        unsafe {
+            child.pre_exec(|| {
+                set_xfsz_mask(libc::SIG_BLOCK);
+                Ok(())
+            });
+        }
+        let out = child.output().expect("re-exec the test binary");
+        assert_eq!(
+            out.status.signal(),
+            Some(libc::SIGXFSZ),
+            "{from}: the store is killed by the file size limit: {:?} {}",
+            out.status,
+            String::from_utf8_lossy(&out.stdout)
+        );
+
+        let final_path = fx.vault.join(rel_path(&bytes, "crashed.bin"));
+        assert!(
+            fs::symlink_metadata(&final_path).is_err(),
+            "{from}: no file at the final path after the crash"
+        );
+        let left = files_under(&fx.objects());
+        assert_eq!(left.len(), 1, "{from}: exactly one leftover: {left:?}");
+        let tmp = left.iter().next().unwrap();
+        assert!(
+            tmp.starts_with(".tmp-") && !tmp.contains('/'),
+            "{from}: the leftover is objects/.tmp-<random>, found objects/{tmp}"
+        );
+        assert!(
+            fs::metadata(fx.objects().join(tmp)).unwrap().len() < bytes.len() as u64,
+            "{from}: the leftover is the partial write"
+        );
+
+        // The backup that runs next succeeds and leaves the partial file out.
+        let dest = fx.root.join("Backup Drive");
+        fs::create_dir(&dest).unwrap();
+        let outcome = run_backup(&fx.vault, &dest, T1, false);
+        let BackupOutcome::Created { file, .. } = outcome else {
+            panic!("{from}: a first backup creates a file: {outcome:?}");
+        };
+        let names = zip_names(&file);
+        assert!(
+            names.iter().all(|n| !n.contains(".tmp")),
+            "{from}: the partial write is not in the backup: {names:?}"
+        );
+        assert!(
+            fx.objects().join(tmp).exists(),
+            "{from}: the backup leaves it alone"
+        );
+    }
+}
+
+// ---- Review r1: executable bits, on-disk spelling ---------------------------------------------------
+
+fn mode_of(path: &Path) -> u32 {
+    fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+#[test]
+fn store_file_keeps_the_sources_executable_bits_so_is_executable_sees_them() {
+    let fx = Fx::new();
+    // (source mode, expected executable bits on the stored file)
+    for (mode, bits) in [
+        (0o755, 0o111),
+        (0o700, 0o100),
+        (0o710, 0o110),
+        (0o601, 0o001),
+        (0o644, 0o000),
+    ] {
+        let bytes = format!("#!/bin/sh\necho {mode:o}\n");
+        let src = fx.source(&format!("deploy {mode:o}"), bytes.as_bytes());
+        fs::set_permissions(&src, fs::Permissions::from_mode(mode)).unwrap();
+        let got = attachments::store_file(&fx.vault, &src, None).unwrap();
+        let stored = fx.vault.join(&got.path);
+        assert_eq!(
+            mode_of(&stored) & 0o111,
+            bits,
+            "source mode {mode:o}: the stored file's executable bits"
+        );
+        assert!(
+            mode_of(&stored) & 0o400 != 0,
+            "source mode {mode:o}: still readable by the owner"
+        );
+        assert_eq!(
+            attachments::is_executable(&stored),
+            bits != 0,
+            "source mode {mode:o}: an extensionless file counts as executable by its bits"
+        );
+    }
+}
+
+#[test]
+fn store_bytes_never_gives_a_stored_file_an_executable_bit() {
+    let fx = Fx::new();
+    let got = attachments::store_bytes(&fx.vault, b"#!/bin/sh\n", "deploy").unwrap();
+    let stored = fx.vault.join(&got.path);
+    assert_eq!(mode_of(&stored) & 0o111, 0);
+    assert!(!attachments::is_executable(&stored));
+}
+
+#[test]
+fn a_reused_file_keeps_its_permissions_whatever_the_source_mode() {
+    let fx = Fx::new();
+    let bytes = b"#!/bin/sh\necho same\n";
+    let first = attachments::store_bytes(&fx.vault, bytes, "deploy").unwrap();
+    let stored = fx.vault.join(&first.path);
+    let before = mode_of(&stored);
+    assert_eq!(before & 0o111, 0);
+    let src = fx.source("deploy", bytes);
+    fs::set_permissions(&src, fs::Permissions::from_mode(0o755)).unwrap();
+    let again = attachments::store_file(&fx.vault, &src, None).unwrap();
+    assert_eq!(again.path, first.path);
+    assert_eq!(mode_of(&stored), before, "a reused file is not changed");
+}
+
+/// Whether the volume under `dir` treats names that differ only in letter
+/// case as the same name.
+fn case_insensitive(dir: &Path) -> bool {
+    let probe = dir.join("CaseProbe.tmp");
+    fs::write(&probe, b"x").unwrap();
+    let same = dir.join("caseprobe.TMP").exists();
+    fs::remove_file(&probe).unwrap();
+    same
+}
+
+/// The names in the folder that holds `got.path`, as bytes.
+fn names_beside(fx: &Fx, got: &StoredAttachment) -> Vec<Vec<u8>> {
+    let dir = fx.vault.join(&got.path);
+    fs::read_dir(dir.parent().unwrap())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().as_bytes().to_vec())
+        .collect()
+}
+
+/// The invariant that holds on any volume: the returned name, path and
+/// markdown spell a file that is on disk under exactly that name.
+fn assert_spelled_as_on_disk(fx: &Fx, got: &StoredAttachment, bytes: &[u8]) {
+    let h = sha(bytes);
+    assert!(
+        names_beside(fx, got).contains(&got.name.as_bytes().to_vec()),
+        "{:?} is on disk under that spelling: {:?}",
+        got.name,
+        names_beside(fx, got)
+    );
+    assert_eq!(got.path, format!("objects/{}/{h}/{}", &h[..2], got.name));
+    assert_eq!(got.markdown, attachments::markdown_for(&got.name, &h));
+    assert_eq!(fs::read(fx.vault.join(&got.path)).unwrap(), bytes);
+}
+
+/// Stores `first`, then the same bytes as `second` (a spelling the volume may
+/// see as the same name), then each of them again, from bytes and from a file.
+fn same_name_other_spelling(first: &str, second: &str, insensitive: impl Fn(&Fx) -> bool) {
+    for from_file in [false, true] {
+        let fx = Fx::new();
+        let bytes = format!("the same photo {from_file}").into_bytes();
+        let store = |name: &str| {
+            if from_file {
+                let src = fx.source("any source.bin", &bytes);
+                attachments::store_file(&fx.vault, &src, Some(name)).unwrap()
+            } else {
+                attachments::store_bytes(&fx.vault, &bytes, name).unwrap()
+            }
+        };
+        let one = store(first);
+        assert_eq!(one.name, first);
+        let two = store(second);
+        assert_spelled_as_on_disk(&fx, &two, &bytes);
+        let same = insensitive(&fx);
+        let count = files_under(&fx.objects()).len();
+        if same {
+            assert_eq!(two.name, first, "the existing file's spelling is returned");
+            assert_eq!(two.path, one.path);
+            assert_eq!(count, 1, "one file on disk");
+        } else {
+            assert_eq!(two.name, second, "a second file in the same folder");
+            assert_eq!(count, 2);
+        }
+        // Storing either spelling again gives the same answer each time.
+        let one_again = store(first);
+        assert_eq!(one_again.name, first, "an exact spelling on disk wins");
+        let two_again = store(second);
+        assert_eq!(two_again.name, two.name);
+        assert_spelled_as_on_disk(&fx, &two_again, &bytes);
+        assert_eq!(files_under(&fx.objects()).len(), count, "nothing added");
+    }
+}
+
+#[test]
+fn the_same_bytes_under_a_name_that_differs_only_in_case_return_the_spelling_on_disk() {
+    same_name_other_spelling("Photo.PNG", "photo.png", |fx| {
+        case_insensitive(&fx.objects())
+    });
+}
+
+#[test]
+fn the_same_bytes_under_a_name_that_differs_only_in_unicode_form_return_the_spelling_on_disk() {
+    // NFC and NFD forms of the same name; APFS ignores the difference.
+    let nfc = "Montr\u{e9}al.txt";
+    let nfd = "Montre\u{301}al.txt";
+    assert_ne!(nfc, nfd);
+    same_name_other_spelling(nfc, nfd, |fx| {
+        let probe = fx.objects().join(nfd);
+        fs::write(fx.objects().join(nfc), b"x").unwrap();
+        let same = probe.exists();
+        fs::remove_file(fx.objects().join(nfc)).unwrap();
+        same
+    });
+}
+
+#[test]
+fn a_rewrite_over_a_case_variant_of_the_name_returns_the_spelling_on_disk() {
+    let fx = Fx::new();
+    let bytes = b"the right bytes";
+    // A file of the wrong size at the content address, under another spelling.
+    let wanted = fx.vault.join(rel_path(bytes, "Photo.PNG"));
+    fs::create_dir_all(wanted.parent().unwrap()).unwrap();
+    fs::write(&wanted, b"stale").unwrap();
+    let got = attachments::store_bytes(&fx.vault, bytes, "photo.png").unwrap();
+    assert_spelled_as_on_disk(&fx, &got, bytes);
+    if case_insensitive(&fx.objects()) {
+        assert_eq!(got.name, "Photo.PNG");
+        assert_eq!(names_beside(&fx, &got).len(), 1, "one file in the folder");
+    } else {
+        assert_eq!(got.name, "photo.png");
+    }
+}
+
 // ---- AC: refusals (R15) -------------------------------------------------------------------------
 
 /// A sparse file of `len` bytes.
