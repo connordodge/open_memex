@@ -216,7 +216,8 @@ void main() {
     'the default provider reads the clipboard through the channel',
     () async {
       final bytes = fakePngBytes(6);
-      _native((_) => {'png': Uint8List.fromList(bytes), 'hasText': true});
+      // A reply the native side can send: an image with no files and no text.
+      _native((_) => {'png': Uint8List.fromList(bytes)});
       final container = ProviderContainer();
       addTearDown(container.dispose);
 
@@ -224,7 +225,8 @@ void main() {
 
       expect(_received.single.$1, 'readPasteboard');
       expect(c.png, bytes);
-      expect(c.hasText, isTrue);
+      expect(c.files, isEmpty);
+      expect(c.hasText, isFalse);
     },
   );
 
