@@ -76,14 +76,15 @@ fn response_json(dir: &Path, file: &str) -> Value {
 }
 
 /// WI #415 reblessed the vault info fixtures at schema V7, WI #8 (Spec #7)
-/// at V8; every other domain fixture stays byte-identical.
+/// at V8, WI #135 (Spec #123) at V9; every other domain fixture stays
+/// byte-identical.
 #[test]
-fn vault_info_fixtures_carry_schema_version_8() {
+fn vault_info_fixtures_carry_schema_version_9() {
     let dir = api_v1_dir().join("server");
     for file in ["vault_info.json", "vault_info_created.json"] {
         assert_eq!(
             response_json(&dir, file)["schema_version"],
-            Value::from(8),
+            Value::from(9),
             "{file}"
         );
     }

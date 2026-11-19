@@ -140,6 +140,60 @@ fn parse_destination_accepts_every_valid_rows_destination_and_refuses_bare_non_p
 }
 
 #[test]
+fn parse_path_takes_an_already_decoded_path_and_does_not_decode_it_again() {
+    let fx = fixture();
+    for row in rows(&fx, "references")
+        .iter()
+        .filter(|r| r["valid"] == true)
+    {
+        let why = text(row, "why");
+        let path = text(row, "path");
+        let target = attachments::parse_path(path)
+            .unwrap_or_else(|| panic!("{why}: {path:?} is an attachment path"));
+        assert_eq!(target.path, path, "{why}: path");
+        assert_eq!(target.name, text(row, "name"), "{why}: name");
+        assert_eq!(target.hash, path.split('/').nth(2).unwrap(), "{why}: hash");
+    }
+    let h = fx["hash"].as_str().unwrap();
+    // A decoded name may hold a `%`: it stays as it is, not decoded again.
+    let target = attachments::parse_path(&format!("objects/66/{h}/a%41.txt")).unwrap();
+    assert_eq!(target.name, "a%41.txt");
+    // A decoded `%` that isn't followed by hex digits is just a character.
+    assert!(attachments::parse_path(&format!("objects/66/{h}/100%.txt")).is_some());
+    for bad in [
+        format!("objects/66/{}/x.txt", h.to_uppercase()),
+        format!("objects/77/{h}/x.txt"),
+        format!("objects/66/{}/x.txt", &h[..63]),
+        format!("objects/66/{h}/.."),
+        format!("objects/66/{h}/."),
+        format!("objects/66/{h}/a/b.txt"),
+        format!("objects/66/{h}/"),
+        format!("/objects/66/{h}/x.txt"),
+        format!("Objects/66/{h}/x.txt"),
+        format!("objects66/{h}/x.txt"),
+        format!("objects/66/{h}"),
+        "objects".to_string(),
+        String::new(),
+    ] {
+        assert_eq!(attachments::parse_path(&bad), None, "{bad:?}");
+    }
+}
+
+#[test]
+fn a_stored_attachments_path_is_a_parse_path_path_and_its_markdown_a_reference() {
+    let h = H;
+    let name = "Q3 report [final].pdf";
+    let md = attachments::markdown_for(name, h);
+    let r = attachments::parse_reference(&md).expect("reference");
+    assert_eq!(r.target.name, name);
+    assert_eq!(r.target.hash, h);
+    assert_eq!(
+        attachments::parse_path(&r.target.path).as_ref(),
+        Some(&r.target)
+    );
+}
+
+#[test]
 fn every_refs_json_encode_row_is_what_markdown_for_and_encode_name_return() {
     let fx = fixture();
     let encode = rows(&fx, "encode");
@@ -325,6 +379,21 @@ fn stored_name_of_an_empty_or_blank_name_is_file() {
 }
 
 #[test]
+fn stored_name_of_dot_or_dot_dot_after_the_trim_is_file() {
+    for given in [".", "..", " .. ", " . ", "\u{a0}..\u{a0}"] {
+        assert_eq!(attachments::stored_name(given), "file", "{given:?}");
+    }
+    // Control characters become `_` before the trim, so they are not trimmed.
+    assert_eq!(attachments::stored_name("\t..\n"), "_.._");
+    assert_eq!(attachments::stored_name("/"), "_");
+    // Only exactly `.` and `..` are special.
+    for kept in ["...", ".hidden", "a.", "a..", ". .", ".a"] {
+        assert_eq!(attachments::stored_name(kept), kept, "{kept:?}");
+    }
+    assert_eq!(attachments::stored_name(&".".repeat(300)), ".".repeat(255));
+}
+
+#[test]
 fn stored_name_over_255_bytes_is_cut_on_a_character_boundary_keeping_the_extension() {
     // ASCII: exactly 255 bytes stays; 256 is cut to 255.
     let at = format!("{}.pdf", "a".repeat(251));
@@ -365,6 +434,43 @@ fn stored_name_over_255_bytes_is_cut_on_a_character_boundary_keeping_the_extensi
     assert_eq!(attachments::stored_name(&padded), at);
 }
 
+#[test]
+fn stored_name_trims_whitespace_the_255_byte_cut_leaves_and_is_idempotent() {
+    // The cut lands just after a space in the stem.
+    let spaced = format!("{} {}.txt", "a".repeat(250), "b".repeat(10));
+    let got = attachments::stored_name(&spaced);
+    assert_eq!(got, format!("{}.txt", "a".repeat(250)));
+    assert_eq!(attachments::stored_name(&got), got, "idempotent");
+
+    // No extension: the cut lands just after a space at the end.
+    let plain = format!("{} {}", "a".repeat(254), "b".repeat(10));
+    let got = attachments::stored_name(&plain);
+    assert_eq!(got, "a".repeat(254));
+    assert_eq!(attachments::stored_name(&got), got, "idempotent");
+
+    // Several spaces before the cut are all trimmed.
+    let many = format!("{}   {}.pdf", "c".repeat(248), "d".repeat(20));
+    let got = attachments::stored_name(&many);
+    assert_eq!(got, format!("{}.pdf", "c".repeat(248)));
+    assert_eq!(attachments::stored_name(&got), got, "idempotent");
+}
+
+#[test]
+fn stored_name_keeps_an_extension_of_254_bytes_and_cuts_one_of_255() {
+    // Extension of 254 bytes (the dot and 253 letters): one byte is left for
+    // the stem.
+    let ext254 = format!(".{}", "e".repeat(253));
+    let got = attachments::stored_name(&format!("stem{ext254}"));
+    assert_eq!(got, format!("s{ext254}"));
+    assert_eq!(got.len(), 255);
+
+    // Extension of 255 bytes: it leaves no room, so the name is cut whole.
+    let ext255 = format!(".{}", "e".repeat(254));
+    let got = attachments::stored_name(&format!("stem{ext255}"));
+    assert_eq!(got.len(), 255);
+    assert_eq!(got, format!("stem.{}", "e".repeat(250)));
+}
+
 // ---------------------------------------------------------------------------
 // AC: MIME table, inline types and the executable table (R31, R33).
 // ---------------------------------------------------------------------------
@@ -388,6 +494,54 @@ fn mime_for_maps_known_extensions_in_any_case_and_unknown_ones_to_octet_stream()
         ("no extension", "application/octet-stream"),
         ("png", "application/octet-stream"),
         ("", "application/octet-stream"),
+    ] {
+        assert_eq!(attachments::mime_for(name), mime, "{name:?}");
+    }
+}
+
+#[test]
+fn mime_for_every_other_table_entry_and_the_types_a_browser_would_run_as_a_page() {
+    for (name, mime) in [
+        ("a.heic", "image/heic"),
+        ("a.heif", "image/heif"),
+        ("a.tif", "image/tiff"),
+        ("a.TIFF", "image/tiff"),
+        ("a.bmp", "image/bmp"),
+        ("a.markdown", "text/markdown"),
+        ("a.tsv", "text/tab-separated-values"),
+        ("a.rtf", "application/rtf"),
+        ("a.zip", "application/zip"),
+        ("a.gz", "application/gzip"),
+        ("a.tar", "application/x-tar"),
+        ("a.mp3", "audio/mpeg"),
+        ("a.m4a", "audio/mp4"),
+        ("a.wav", "audio/wav"),
+        ("a.mp4", "video/mp4"),
+        ("a.mov", "video/quicktime"),
+        ("a.doc", "application/msword"),
+        (
+            "a.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+        ("a.xls", "application/vnd.ms-excel"),
+        (
+            "a.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
+        ("a.ppt", "application/vnd.ms-powerpoint"),
+        (
+            "a.pptx",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ),
+        // Served as a download, never run as a page.
+        ("a.html", "application/octet-stream"),
+        ("a.HTM", "application/octet-stream"),
+        ("a.xhtml", "application/octet-stream"),
+        ("a.svg", "application/octet-stream"),
+        ("a.js", "application/octet-stream"),
+        // Only the last extension counts.
+        ("a.png.txt", "text/plain"),
+        ("a.txt.qqq", "application/octet-stream"),
     ] {
         assert_eq!(attachments::mime_for(name), mime, "{name:?}");
     }
@@ -460,6 +614,14 @@ fn a_file_with_any_executable_permission_bit_counts_as_executable() {
         let p = file_with_mode(dir, name, mode);
         assert_eq!(attachments::is_executable(&p), want, "{name} mode {mode:o}");
     }
+    // The x-bit rule is for regular files: a folder is not executable, a
+    // missing path is not, and a missing path with a table extension is.
+    let folder = dir.join("some folder");
+    fs::create_dir(&folder).unwrap();
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!attachments::is_executable(&folder), "a folder");
+    assert!(!attachments::is_executable(&dir.join("missing.txt")));
+    assert!(attachments::is_executable(&dir.join("missing.exe")));
     // The extension table applies to files on disk too, without any x bit.
     let p = file_with_mode(dir, "build.sh", 0o644);
     assert!(attachments::is_executable(&p), "build.sh by its extension");

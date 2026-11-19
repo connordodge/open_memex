@@ -205,6 +205,11 @@ final class TransclusionLinkToken extends InlineToken {
   final String date;
 }
 
+/// Test-only work counter: how many times [tokenizeInline] ran. Plain
+/// top-level int (pure Dart: no `package:meta`, ruling D9). Never read by
+/// production code.
+int debugTokenizeInlineCalls = 0;
+
 /// Tokenizes one line of prose or item text, or a multi-line prose field
 /// (Spec R37). Never call it on fenced code.
 ///
@@ -235,6 +240,7 @@ final class TransclusionLinkToken extends InlineToken {
 /// in the whole line, so `|#x|` holds no tag. Null means [text] starts its
 /// line. See [unitBeforeInLine].
 List<InlineToken> tokenizeInline(String text, {int? before}) {
+  debugTokenizeInlineCalls++;
   final out = <InlineToken>[];
   var lineStart = 0;
   while (true) {

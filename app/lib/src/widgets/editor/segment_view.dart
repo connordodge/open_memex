@@ -186,6 +186,15 @@ class _Row {
 
 /// The [SegmentEditing] handle over a [SegmentView]'s editor rows.
 class SegmentViewState extends State<SegmentView> implements SegmentEditing {
+  /// Test-only work counter: how many times any segment view built.
+  @visibleForTesting
+  static int debugBuilds = 0;
+
+  /// Test-only work counter: how many times any segment view called
+  /// `setState` after re-deriving its rows.
+  @visibleForTesting
+  static int debugSetStates = 0;
+
   final _rowsKey = GlobalKey(debugLabel: 'editor-rows');
   final SegmentUndoRecorder _undo = segmentUndoRecorderFactory();
   List<_Row> _rows = const [];
@@ -548,6 +557,7 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
         if (kept[j] case final row?) (row..spec = spec) else _newRow(spec),
     ];
     _syncRows(selection);
+    debugSetStates++;
     setState(() {});
   }
 
@@ -786,6 +796,7 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
 
   @override
   Widget build(BuildContext context) {
+    debugBuilds++;
     final geometries = rowGeometries([for (final row in _rows) row.spec]);
     for (final (r, row) in _rows.indexed) {
       row.presented = PresentedRow(

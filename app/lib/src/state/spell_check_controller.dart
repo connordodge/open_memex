@@ -11,7 +11,8 @@
 import 'dart:async';
 import 'dart:math' show max, min;
 
-import 'package:flutter/foundation.dart' show ValueListenable;
+import 'package:flutter/foundation.dart'
+    show ValueListenable, visibleForTesting;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
@@ -93,6 +94,11 @@ abstract interface class SpellFieldHost {
 /// are field-local and filtered by the skip ranges, the learned words, the
 /// session's ignore sets, the composing range, the caret and the flags.
 class SpellCheckController {
+  /// Test-only work counter: how many times any controller ran an
+  /// evaluation pass.
+  @visibleForTesting
+  static int debugEvaluations = 0;
+
   SpellCheckController({
     required String noteId,
     required SpellIssueSink sink,
@@ -523,6 +529,7 @@ class SpellCheckController {
     bool all = false,
     TextEditingController? from,
   }) {
+    debugEvaluations++;
     if (!_canCheck) return const [];
     final note = _noteId;
     final tag = _session.knownTag(note);

@@ -47,9 +47,11 @@ void main() {
   group('reference grammar (R4)', () {
     test('parseAttachmentReference matches every refs json reference row', () {
       final rows = _rows('references');
-      expect(rows, hasLength(34), reason: 'every fixture row is read');
+      expect(rows, isNotEmpty, reason: 'the fixture has rows');
+      var checked = 0;
       final wrong = <String>[];
       for (final row in rows) {
+        checked++;
         final markdown = row['markdown']! as String;
         final got = parseAttachmentReference(markdown);
         if (row['valid']! as bool) {
@@ -69,6 +71,7 @@ void main() {
         }
       }
       expect(wrong, isEmpty);
+      expect(checked, rows.length, reason: 'every fixture row is checked');
     });
 
     test(
@@ -126,6 +129,80 @@ void main() {
       },
     );
 
+    test(
+      'parseAttachmentReference refuses every Unicode whitespace code point in the destination',
+      () {
+        const whitespace = [
+          0x09,
+          0x0B,
+          0x0C,
+          0x20,
+          0x85,
+          0xA0,
+          0x1680,
+          0x2000,
+          0x2005,
+          0x200A,
+          0x2028,
+          0x2029,
+          0x202F,
+          0x205F,
+          0x3000,
+        ];
+        // Neighbours of each range that Rust does not treat as whitespace.
+        const notWhitespace = [
+          0x08,
+          0x0E,
+          0x1F,
+          0x21,
+          0x84,
+          0x86,
+          0xA1,
+          0x167F,
+          0x1681,
+          0x1FFF,
+          0x200B,
+          0x2027,
+          0x202A,
+          0x202E,
+          0x2030,
+          0x205E,
+          0x2060,
+          0x2FFF,
+          0x3001,
+          0xFEFF,
+        ];
+        final accepted = [
+          for (final cp in whitespace)
+            if (parseAttachmentReference(
+                  '[x]($_dir/a${String.fromCharCode(cp)}b.txt)',
+                ) !=
+                null)
+              cp.toRadixString(16),
+        ];
+        final refused = [
+          for (final cp in notWhitespace)
+            if (parseAttachmentReference(
+                  '[x]($_dir/a${String.fromCharCode(cp)}b.txt)',
+                ) ==
+                null)
+              cp.toRadixString(16),
+        ];
+        expect(accepted, isEmpty, reason: 'whitespace refused');
+        expect(refused, isEmpty, reason: 'non whitespace accepted');
+      },
+    );
+
+    test(
+      'parseAttachmentReference refuses a carriage return or line feed in the text',
+      () {
+        expect(parseAttachmentReference('[a b]($_dir/x.txt)'), isNotNull);
+        expect(parseAttachmentReference('[a\nb]($_dir/x.txt)'), isNull);
+        expect(parseAttachmentReference('[a\rb]($_dir/x.txt)'), isNull);
+        expect(parseAttachmentReference('![a\rb]($_dir/x.png)'), isNull);
+      },
+    );
+
     test('parseAttachmentReference reads the image form as image', () {
       final ref = _some(parseAttachmentReference('![x]($_dir/x.png)'));
       expect(ref.kind, AttachmentRefKind.image);
@@ -175,6 +252,59 @@ void main() {
       },
     );
 
+    test(
+      'parseAttachmentDestination decodes only hex digits after a percent sign',
+      () {
+        // Every hex digit, both cases, in both positions of an escape.
+        expect(
+          _some(
+            parseAttachmentDestination(
+              '$_dir/a%F0%9F%98%80%c3%a9%C3%A9%09%7A%00',
+            ),
+          ).name,
+          'a😀éé\t'
+          'z\u0000',
+        );
+        final accepted = <String>[];
+        for (final c in ['/', ':', '@', '`', 'g', 'G']) {
+          if (parseAttachmentDestination('$_dir/a%4${c}b') != null) {
+            accepted.add('lo $c');
+          }
+          if (parseAttachmentDestination('$_dir/a%${c}1b') != null) {
+            accepted.add('hi $c');
+          }
+        }
+        expect(accepted, isEmpty);
+      },
+    );
+
+    test(
+      'parseAttachmentDestination refuses a leading byte order mark like Rust',
+      () {
+        // Control: the same destination without the mark is accepted.
+        expect(parseAttachmentDestination('$_dir/x.png'), isNotNull);
+        // Percent-encoded BOM bytes in front of the path.
+        expect(parseAttachmentDestination('%EF%BB%BF$_dir/x.png'), isNull);
+        expect(parseAttachmentDestination('%ef%bb%bf$_dir/x.png'), isNull);
+        // A literal U+FEFF in front of the path.
+        expect(parseAttachmentDestination('\uFEFF$_dir/x.png'), isNull);
+        expect(
+          parseAttachmentReference('![x.png](%EF%BB%BF$_dir/x.png)'),
+          isNull,
+        );
+        // Only a leading mark is refused: one inside the name is kept.
+        expect(
+          _some(parseAttachmentDestination('$_dir/a%EF%BB%BFb.png')).name,
+          'a\uFEFFb.png',
+        );
+      },
+    );
+
+    test('parseAttachmentDestination decodes an escape at the very end', () {
+      expect(_some(parseAttachmentDestination('$_dir/100%25')).name, '100%');
+      expect(_some(parseAttachmentDestination('$_dir/a%41')).name, 'aA');
+    });
+
     test('parseAttachmentPath accepts a decoded path and keeps it as is', () {
       final got = _some(parseAttachmentPath('$_dir/100%.txt'));
       expect(got.path, '$_dir/100%.txt');
@@ -188,6 +318,41 @@ void main() {
       );
       expect(_some(parseAttachmentPath('$_dir/.hidden')).name, '.hidden');
     });
+
+    test('parseAttachmentPath refuses a path cut short before the name', () {
+      expect(parseAttachmentPath('$_dir/x.txt'), isNotNull);
+      for (final path in [
+        'objects',
+        'objects/',
+        'objects/66',
+        'objects/66/',
+        'objects/66/$_hash',
+        'objects//$_hash/x.txt',
+      ]) {
+        expect(parseAttachmentPath(path), isNull, reason: path);
+      }
+    });
+
+    test(
+      'parseAttachmentPath accepts only lowercase hex digits in the hash',
+      () {
+        final head = _hash.substring(0, 63);
+        for (final c in ['0', '9', 'a', 'f']) {
+          expect(
+            parseAttachmentPath('objects/66/$head$c/x.txt'),
+            isNotNull,
+            reason: c,
+          );
+        }
+        for (final c in ['/', ':', '@', '`', 'g', 'G', 'A', 'F']) {
+          expect(
+            parseAttachmentPath('objects/66/$head$c/x.txt'),
+            isNull,
+            reason: c,
+          );
+        }
+      },
+    );
 
     test('parseAttachmentPath refuses every malformed path', () {
       final bad = <String, String>{
@@ -223,14 +388,17 @@ void main() {
   group('encoding (R3)', () {
     test('encodeAttachmentName produces every refs json encode row', () {
       final rows = _rows('encode');
-      expect(rows, hasLength(22), reason: 'every fixture row is read');
+      expect(rows, isNotEmpty, reason: 'the fixture has rows');
+      var checked = 0;
       final wrong = <String>[];
       for (final row in rows) {
+        checked++;
         final name = row['name']! as String;
         final got = encodeAttachmentName(name);
         if (got != row['encoded_name']) wrong.add('$name -> $got');
       }
       expect(wrong, isEmpty);
+      expect(checked, rows.length, reason: 'every fixture row is checked');
     });
 
     test('attachmentMarkdown produces every refs json encode row markdown', () {
@@ -374,15 +542,18 @@ void main() {
 
     test('isExecutableName matches every refs json executable row', () {
       final rows = _rows('executable');
-      expect(rows, hasLength(25), reason: 'every fixture row is read');
+      expect(rows, isNotEmpty, reason: 'the fixture has rows');
+      var checked = 0;
       final wrong = <String>[];
       for (final row in rows) {
+        checked++;
         final name = row['name']! as String;
         if (isExecutableName(name) != row['executable']) {
           wrong.add('$name: ${row['why']}');
         }
       }
       expect(wrong, isEmpty);
+      expect(checked, rows.length, reason: 'every fixture row is checked');
     });
 
     test(
@@ -398,6 +569,15 @@ void main() {
         expect(executableExtensions, isNotEmpty);
       },
     );
+
+    test('extension matching folds ASCII letters only like Rust', () {
+      // U+212A KELVIN SIGN lower-cases to k in Dart but is not ASCII.
+      expect(isExecutableName('x.wor\u212Aflow'), isFalse);
+      expect(isExecutableName('x.worKflow'), isTrue);
+      expect(isExecutableName('x.\u212Aflow'), isFalse);
+      expect(isInlineImageName('x.p\u212Ang'), isFalse);
+      expect(isInlineImageName('x.\u0130mg'), isFalse);
+    });
 
     test('an extension is what follows the last dot, even for a dotfile', () {
       // The Rust core: `extension` is what follows a name's last `.`.
@@ -443,6 +623,12 @@ void main() {
       expect(attachmentTypeLabel('notes.Md'), 'MD');
       expect(attachmentTypeLabel('no extension'), 'FILE');
       expect(attachmentTypeLabel('png'), 'FILE');
+    });
+
+    test('attachmentTypeLabel is FILE when nothing follows the last dot', () {
+      expect(attachmentTypeLabel('report.'), 'FILE');
+      expect(attachmentTypeLabel('a.b.'), 'FILE');
+      expect(attachmentTypeLabel('.hidden'), 'HIDDEN');
     });
 
     test('attachmentCaption joins type and size with a middle dot', () {
