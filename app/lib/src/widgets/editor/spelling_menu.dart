@@ -440,11 +440,14 @@ Future<bool> showRowSpellingMenu(
     },
     issue: issue,
     anchor: anchor,
+    live: () => view.mounted && view.rowIndexOf(ctrl) != null,
   );
 }
 
 /// Opens SpellingMenu for [issue] of [ctrl] (see [showSpellingMenu]) from
-/// [context], under the editor's spell check and issue scopes.
+/// [context], under the editor's spell check and issue scopes. When [live]
+/// is given, the menu opens only if it still holds once the guesses arrive
+/// (a row retired meanwhile gets no menu).
 Future<bool> _openSpellingMenu(
   BuildContext context, {
   required TextEditingController ctrl,
@@ -453,6 +456,7 @@ Future<bool> _openSpellingMenu(
   required EditableTextState? Function() field,
   required SpellIssue issue,
   required Offset anchor,
+  bool Function()? live,
 }) async {
   final open = ++_opens;
   final checker = context
@@ -482,7 +486,12 @@ Future<bool> _openSpellingMenu(
           );
     }
   }
-  if (open != _opens || !context.mounted || ctrl.text != text) return false;
+  if (open != _opens ||
+      !context.mounted ||
+      (live != null && !live()) ||
+      ctrl.text != text) {
+    return false;
+  }
   final session = _MenuSession(
     checker: checker,
     container: container,

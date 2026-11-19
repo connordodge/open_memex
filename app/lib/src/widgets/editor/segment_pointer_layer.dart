@@ -104,7 +104,8 @@ class SegmentPointerLayer extends StatefulWidget {
 
   /// Whether global [point] lies on a rendered table grid of the segment
   /// whose pointer layer is above [context] (a table row that is not
-  /// `tableRevealed`, ruling D14); false without one.
+  /// `tableRevealed`, ruling D14); false without one, and false inside a
+  /// block a row's presenter owns (ruling D23).
   static bool onRenderedGrid(BuildContext context, Offset point) {
     final layer = context.findAncestorStateOfType<_SegmentPointerLayerState>();
     final host = layer?._host;
@@ -270,8 +271,12 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
   }
 
   /// Whether global [point] lies on a table row that shows its grid (its
-  /// controller is not `tableRevealed`, Spec #197 R12, ruling D12).
+  /// controller is not `tableRevealed`, Spec #197 R12, ruling D12). A press
+  /// a row's presenter owns (an attachment's block) is never on a grid, so
+  /// a secondary press there moves no caret, reveals nothing and opens no
+  /// selection-ops menu (ruling D23).
   bool _onRenderedGrid(SegmentViewState host, Offset point) {
+    if (host.rowOwnsPress(point)) return false;
     final boxes = host.lineBoxes();
     if (boxes == null) return false;
     final local = boxes.box.globalToLocal(point);
