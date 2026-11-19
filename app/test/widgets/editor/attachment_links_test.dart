@@ -267,6 +267,75 @@ void main() {
     });
   });
 
+  group('empty brackets (R27, R34, ruling D21)', () {
+    test(
+      'an empty bracket attachment ref shows its file name link styled with the rest hidden',
+      () {
+        final text =
+            'See ![](${_t142Path('chart.png')}) and [](${_t142Path('r.pdf')}) end\nother';
+        final span = buildLivePreviewSpan(
+          text,
+          style: _t142Base(),
+          selection: TextSelection.collapsed(offset: text.length),
+        );
+        expect(span.toPlainText(), text);
+        _t142ExpectLinkStyled(span, text, 'chart.png');
+        _t142ExpectLinkStyled(span, text, 'r.pdf');
+        _t142ExpectHidden(span, text, '![](objects/3f/$_t142Hash/');
+        _t142ExpectHidden(
+          span,
+          text,
+          '[](objects/3f/$_t142Hash/',
+          after: 'and',
+        );
+        _t142ExpectHidden(span, text, ')', after: 'chart.png');
+        expect(_t142StyleAt(span, 0).color, OmColors.fg0);
+        // A percent-encoded name shows as written (D21).
+        final enc = '![](${_t142Path('My%20chart.png')})';
+        final encSpan = buildLivePreviewSpan(
+          enc,
+          style: _t142Base(),
+          selection: const TextSelection.collapsed(offset: 0),
+        );
+        expect(encSpan.toPlainText(), enc);
+      },
+    );
+
+    testWidgets(
+      'a click on an empty bracket attachment ref opens its decoded path through the attachments domain',
+      (tester) async {
+        final text =
+            'See ![](${_t142Path('My%20chart.png')}) and []('
+            '${_t142Path('run.command')}) end\nother';
+        final e = await _t142Pump(tester, text);
+        await _t142Click(tester, _t142PointOn(tester, 0, 'My%20chart.png'));
+        await _t142Click(tester, _t142PointOn(tester, 0, 'run.command'));
+        expect(e.attachments!.openCalls, [
+          _t142Path('My chart.png'),
+          _t142Path('run.command'),
+        ]);
+        expect(e.attachments!.revealCalls, isEmpty);
+        expect(e.opener.opened, isEmpty, reason: 'never urlOpenerProvider');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a click on an empty bracket link with any other destination opens nothing',
+      (tester) async {
+        // No token, so nothing to click: the line stays plain text.
+        const text =
+            'See [](a/b.png) and ![](https://example.com/x.png) end\nother';
+        final e = await _t142Pump(tester, text);
+        await _t142Click(tester, _t142PointOn(tester, 0, 'a/b.png'));
+        await _t142Click(tester, _t142PointOn(tester, 0, 'example.com'));
+        expect(e.attachments!.openCalls, isEmpty);
+        expect(e.opener.opened, isEmpty);
+      },
+      variant: macOnly,
+    );
+  });
+
   group('web images (R29)', () {
     testWidgets(
       'a web image renders as link styled alt text and nothing fetches it',

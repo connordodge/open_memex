@@ -116,19 +116,32 @@ void _expectWellFormed(String text) {
         expect(t.kind, InlineTokenKind.link, reason: why);
         expect(_pair(t.textRange), _pair(t.content), reason: '$why link text');
         checkRange(t.urlRange, 'link url');
-        expect(
-          t.markers.any((m) => inside(m, t.urlRange)),
-          isTrue,
-          reason: '$why url hidden in a marker',
+        // WI #142 (D21): an empty-bracket attachment ref shows the url's
+        // last segment, so its first marker runs into the url.
+        final first = text.substring(
+          t.markers.first.start,
+          t.markers.first.end,
         );
+        final emptyRef = first.startsWith('![](') || first.startsWith('[](');
+        if (!emptyRef) {
+          expect(
+            t.markers.any((m) => inside(m, t.urlRange)),
+            isTrue,
+            reason: '$why url hidden in a marker',
+          );
+        }
         expect(t.url, text.substring(t.urlRange.start, t.urlRange.end));
         expect(t.url.contains(' '), isFalse, reason: '$why url has a space');
         // WI #142 (D9): an image's first marker is `![`, a link's is `[`.
-        expect(
-          text.substring(t.markers.first.start, t.markers.first.end),
-          t.image ? '![' : '[',
-          reason: '$why link first marker',
-        );
+        if (emptyRef) {
+          expect(
+            first.startsWith('![]('),
+            t.image,
+            reason: '$why empty ref marker matches the image flag',
+          );
+        } else {
+          expect(first, t.image ? '![' : '[', reason: '$why link first marker');
+        }
         expect(t.markers.first.start, s.start, reason: '$why marker at start');
       case TransclusionLinkToken():
         expect(t.kind, InlineTokenKind.transclusion, reason: why);
@@ -2734,6 +2747,112 @@ void main() {
           ],
           [true, false],
         );
+      },
+    );
+
+    // Q1 / ruling D21: empty brackets give a token only for an attachment
+    // reference; its content is the url's last segment, as written.
+    test(
+      'an empty bracket attachment image gives an image link token whose content is the file name',
+      () {
+        const url = 'objects/3f/$hash/chart.png';
+        const text = 'see ![]($url) here';
+        final link = onlyLink(text);
+        expect(link.kind, InlineTokenKind.link);
+        expect(link.image, isTrue);
+        expect(link.span.of(text), '![]($url)');
+        expect(link.content.of(text), 'chart.png');
+        expect(_pair(link.textRange), _pair(link.content));
+        expect(link.markers, hasLength(2));
+        expect(link.markers.first.of(text), '![](objects/3f/$hash/');
+        expect(link.markers.last.of(text), ')');
+        expect(_pair(link.markers.first), [4, link.content.start]);
+        expect(_pair(link.markers.last), [link.content.end, link.span.end]);
+        expect(link.url, url);
+        expect(link.urlRange.of(text), url);
+        expect(link.content.end, link.urlRange.end);
+      },
+    );
+
+    test(
+      'an empty bracket attachment link gives a link token without the image flag',
+      () {
+        const url = 'objects/3f/$hash/report.pdf';
+        const text = 'a []($url) b';
+        final link = onlyLink(text);
+        expect(link.image, isFalse);
+        expect(link.span.of(text), '[]($url)');
+        expect(link.content.of(text), 'report.pdf');
+        expect(link.markers.first.of(text), '[](objects/3f/$hash/');
+        expect(link.markers.last.of(text), ')');
+        expect(link.url, url);
+      },
+    );
+
+    test(
+      'an empty bracket attachment name stays percent encoded as written',
+      () {
+        const url = 'objects/3f/$hash/My%20chart%20v2.png';
+        const text = '![]($url)';
+        final link = onlyLink(text);
+        expect(link.content.of(text), 'My%20chart%20v2.png');
+        expect(link.url, url);
+        // Underscores and stars in the name are plain text.
+        const odd = '![](objects/3f/$hash/a_b_*c*.png)';
+        expect(onlyLink(odd).content.of(odd), 'a_b_*c*.png');
+      },
+    );
+
+    test(
+      'empty brackets with any other destination give no token and bracketed text keeps its token',
+      () {
+        const bad = [
+          '![](https://example.com/logo.png)',
+          '[](https://example.com)',
+          '[](mailto:a@example.com)',
+          '[](a/b.png)',
+          '![](chart.png)',
+          '[]()',
+          '![]()',
+          '[](objects/zz/$hash/x.png)',
+          '[](objects/3f/abc/x.png)',
+          '[](objects/3f/$hash/)',
+          '[](objects/3f/$hash)',
+          '[](objects/3f/$hash/a%zz.png)',
+        ];
+        for (final text in bad) {
+          expect(tokenizeInline(text), isEmpty, reason: 'input: $text');
+        }
+        // The same destination with text in the brackets still tokenizes
+        // normally: the name comes from the brackets, not from the url.
+        const url = 'objects/3f/$hash/chart.png';
+        const named = '![shown]($url)';
+        final link = onlyLink(named);
+        expect(link.content.of(named), 'shown');
+        expect(link.markers.first.of(named), '![');
+        expect(link.markers.last.of(named), ']($url)');
+      },
+    );
+
+    test(
+      'empty bracket attachment refs sit beside links and stay opaque to emphasis around them',
+      () {
+        const url = 'objects/3f/$hash/a_b_.png';
+        const text = '*x ![]($url) y*';
+        final tokens = tokenizeInline(text);
+        expect(tokens.map((t) => t.kind), [
+          InlineTokenKind.italic,
+          InlineTokenKind.link,
+        ]);
+        expect(_pair(tokens.first.span), [0, text.length]);
+        final link = tokens.last as LinkToken;
+        expect(link.image, isTrue);
+        expect(link.content.of(text), 'a_b_.png');
+
+        const two = '![](objects/3f/$hash/a.png) [](objects/3f/$hash/b.pdf)';
+        final links = tokenizeInline(two).cast<LinkToken>();
+        expect([for (final l in links) l.content.of(two)], ['a.png', 'b.pdf']);
+        expect([for (final l in links) l.image], [true, false]);
       },
     );
   });
