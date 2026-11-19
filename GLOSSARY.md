@@ -161,6 +161,12 @@ The folder a vault's backups are written into: a folder in iCloud Drive, Google 
 **Restore**:
 Making a new vault folder from a backup. A restore never changes a vault that already exists, and the new vault keeps the backed-up vault's id.
 
+## Attachments (#121)
+
+**Attachment**:
+A file copied into a vault's `objects/` folder, stored once per content, and referenced from a note body by a markdown image or link whose target is its vault-relative path.
+_Avoid_: asset, media, embed (images are not transclusions), upload
+
 ## Spelling (#392)
 
 **Learned word**:

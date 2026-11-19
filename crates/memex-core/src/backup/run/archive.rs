@@ -3,8 +3,9 @@
 //!
 //! Members, all deflate-compressed: `memex.db`, `manifest.json`, `objects/`
 //! (folders and files, sorted bytewise by name), `backup.json` last. The
-//! write pass feeds the [`Fingerprinter`] the very bytes it puts in the zip,
-//! so the recorded and printed fingerprint is the zip's own.
+//! write pass feeds the [`Fingerprinter`] the very bytes it puts in the zip
+//! (for a content-addressed object, the count of bytes it puts there; Spec
+//! #123 R51), so the recorded and printed fingerprint is the zip's own.
 
 use std::cell::Cell;
 use std::fs::{self, File, OpenOptions};
@@ -16,6 +17,7 @@ use serde::Serialize;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
+use crate::attachments::{is_content_addressed, TMP_PREFIX};
 use crate::backup::fingerprint::Fingerprinter;
 use crate::backup::{ArchiveSink, BackupSource, FORMAT};
 use crate::error::MemexError;
@@ -47,7 +49,9 @@ fn failed(what: &str, e: impl std::fmt::Display) -> MemexError {
 /// Every entry under `objects_dir`, sorted bytewise by relative path (a
 /// folder's path ends in `/`, so `a.txt` < `a/` < `a/x.bin`). Anything that
 /// isn't a regular file or a folder, or has a name that isn't UTF-8, fails
-/// the backup: it is never skipped (D9). No `objects/` folder is no objects.
+/// the backup: it is never skipped (D9). The one exception is a store's temp
+/// file, `objects/.tmp-*` (Spec #123 R2), which is left out. No `objects/`
+/// folder is no objects.
 pub(super) fn list_objects(objects_dir: &Path) -> Result<Vec<Entry>> {
     match fs::symlink_metadata(objects_dir) {
         Ok(meta) if meta.is_dir() => {}
@@ -76,6 +80,11 @@ fn walk(dir: &Path, prefix: &str, out: &mut Vec<Entry>) -> Result<()> {
                 name.to_string_lossy()
             ))
         })?;
+        // A store's temp file (Spec #123 R2) is never backed up: it is only
+        // ever directly in `objects/`, and is renamed away or removed.
+        if prefix.is_empty() && name.starts_with(TMP_PREFIX) {
+            continue;
+        }
         let rel = format!("{prefix}{name}");
         // Not followed: a symlink is reported as one.
         let kind = entry.file_type().map_err(read)?;
@@ -163,7 +172,8 @@ impl Content<'_> {
         fp.manifest(self.manifest);
         for entry in self.objects {
             if let Entry::File(rel) = entry {
-                fp.object(rel, &mut open_object(self.objects_dir, rel)?.0)?;
+                let (mut file, len) = open_object(self.objects_dir, rel)?;
+                fp.object_with_len(rel, len, &mut file)?;
             }
         }
         Ok(fp.finish())
@@ -219,7 +229,16 @@ impl Content<'_> {
                 Entry::File(rel) => {
                     let (mut file, len) = open_object(self.objects_dir, rel)?;
                     start_file(zip, &name, len)?;
-                    tee(&name, &mut file, zip, |r| fp.object(rel, r))?;
+                    tee(&name, &mut file, zip, |r| {
+                        if !is_content_addressed(rel) {
+                            return fp.object(rel, r);
+                        }
+                        // Its bytes still go into the zip, through the tee;
+                        // the fingerprint takes the count copied (R51).
+                        let copied = io::copy(r, &mut io::sink())
+                            .map_err(|e| failed(&format!("read objects/{rel}"), e))?;
+                        fp.object_with_len(rel, copied, &mut io::empty())
+                    })?;
                 }
             }
         }
