@@ -1,0 +1,147 @@
+{
+  "attachments": [
+    {
+      "name": "Field Notes.txt",
+      "notes": [
+        {
+          "id": "01M7TXDP3FFD7THMZRQ0NFNHW4",
+          "title": "Bay"
+        },
+        {
+          "id": "01M7TXDP3QVAJKX82MTXXYARQX",
+          "title": "Cove"
+        },
+        {
+          "id": "01M7TXDP3V0NSS6W1T9T89MK0Q",
+          "title": "Dune"
+        },
+        {
+          "id": "01M7TXDP3YEJ07AM3TKAYMNE39",
+          "title": "Fen"
+        }
+      ],
+      "path": "objects/f1/f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1/Field Notes.txt",
+      "size": 2048,
+      "snippet": "The heron waited by the mill race until dusk.",
+      "type": "text/plain"
+    },
+    {
+      "name": "Heron Sketch.png",
+      "notes": [
+        {
+          "id": "01M7TXDP2R2Z15MG015CZ625G1",
+          "title": "2026-10-20"
+        }
+      ],
+      "path": "objects/a5/a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5/Heron Sketch.png",
+      "size": 81234,
+      "type": "image/png"
+    }
+  ],
+  "hits": [
+    {
+      "attachment": {
+        "name": "Heron Sketch.png",
+        "path": "objects/a5/a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5/Heron Sketch.png"
+      },
+      "chunk_id": "01M7TXDP38CVN2HVTT8F95CJX1",
+      "day": "2026-10-20",
+      "note_id": "01M7TXDP2R2Z15MG015CZ625G1",
+      "note_role": "daily",
+      "note_title": "2026-10-20",
+      "note_updated_at": 1795125860440,
+      "snippet": "Heron Sketch.png",
+      "start_byte": 15,
+      "via": null
+    },
+    {
+      "attachment": {
+        "name": "Heron Sketch.png",
+        "path": "objects/a5/a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5/Heron Sketch.png"
+      },
+      "chunk_id": "01M7TXDP3KQEZ2VV70M3XHMDQ8",
+      "day": null,
+      "note_id": "01M7TXDP3KTDDJ1H7KG2PR7HQN",
+      "note_role": "topic",
+      "note_title": "Bird Topics",
+      "note_updated_at": 1795125860467,
+      "snippet": "Heron Sketch.png",
+      "start_byte": 0,
+      "via": "2026-10-20"
+    },
+    {
+      "chunk_id": "01M7TXDP3CW8H6A9N44FKM19F8",
+      "day": null,
+      "note_id": "01M7TXDP3C3C8GN8H7AQ11RP0E",
+      "note_role": null,
+      "note_title": "Alpha Walk",
+      "note_updated_at": 1795125860460,
+      "snippet": "Saw a heron at dawn.",
+      "start_byte": 0,
+      "via": null
+    },
+    {
+      "attachment": {
+        "name": "Field Notes.txt",
+        "path": "objects/f1/f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1/Field Notes.txt"
+      },
+      "chunk_id": "01M7TXDP3F3109807QBVE13740",
+      "day": null,
+      "note_id": "01M7TXDP3FFD7THMZRQ0NFNHW4",
+      "note_role": null,
+      "note_title": "Bay",
+      "note_updated_at": 1795125860463,
+      "snippet": "Field Notes.txt · The heron waited by the mill race until dusk.",
+      "start_byte": 11,
+      "via": null
+    },
+    {
+      "attachment": {
+        "name": "Field Notes.txt",
+        "path": "objects/f1/f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1/Field Notes.txt"
+      },
+      "chunk_id": "01M7TXDP3QWQVQJ2P2Y155WSZ5",
+      "day": null,
+      "note_id": "01M7TXDP3QVAJKX82MTXXYARQX",
+      "note_role": null,
+      "note_title": "Cove",
+      "note_updated_at": 1795125860471,
+      "snippet": "Field Notes.txt · The heron waited by the mill race until dusk.",
+      "start_byte": 12,
+      "via": null
+    },
+    {
+      "attachment": {
+        "name": "Field Notes.txt",
+        "path": "objects/f1/f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1/Field Notes.txt"
+      },
+      "chunk_id": "01M7TXDP3VCGQWWMWS95EJZ0SP",
+      "day": null,
+      "note_id": "01M7TXDP3V0NSS6W1T9T89MK0Q",
+      "note_role": null,
+      "note_title": "Dune",
+      "note_updated_at": 1795125860475,
+      "snippet": "Field Notes.txt · The heron waited by the mill race until dusk.",
+      "start_byte": 12,
+      "via": null
+    },
+    {
+      "attachment": {
+        "name": "Field Notes.txt",
+        "path": "objects/f1/f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1/Field Notes.txt"
+      },
+      "chunk_id": "01M7TXDP3YKP3P60M566A07PR5",
+      "day": null,
+      "note_id": "01M7TXDP3YEJ07AM3TKAYMNE39",
+      "note_role": null,
+      "note_title": "Fen",
+      "note_updated_at": 1795125860478,
+      "snippet": "Field Notes.txt · The heron waited by the mill race until dusk.",
+      "start_byte": 11,
+      "via": null
+    }
+  ],
+  "query": "heron",
+  "semantic": "embeddings_off",
+  "truncated": false
+}
