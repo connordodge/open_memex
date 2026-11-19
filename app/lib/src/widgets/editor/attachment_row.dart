@@ -41,6 +41,9 @@ const int attachmentImageMaxBytes = 30 * 1024 * 1024;
 /// The most bytes read from a local image file for its header (D7).
 const int _headerBytes = 256 * 1024;
 
+/// The `Reveal in Finder` semantics action of a block (R37, R41).
+const _revealAction = CustomSemanticsAction(label: 'Reveal in Finder');
+
 /// Shows why opening or revealing the attachment [name] failed (Spec #123
 /// R42, ruling D22): for [AttachmentLookupFailure.offline] a SnackBar
 /// through the nearest `ScaffoldMessenger` (none without one) reading
@@ -270,7 +273,9 @@ final class _Known {
   bool card = false;
 }
 
-/// Per decoded path, for the session (D7).
+/// Per decoded path, for the session (D7). It holds only what the file's
+/// content says (the path is content addressed), never whether a vault has
+/// the file: every probe asks its vault that (R35).
 final Map<String, _Known> _session = {};
 
 /// Memo of [_referenceOf]'s last answer: presenters ask on every paint.
@@ -306,34 +311,46 @@ class AttachmentRowPresenter extends RowKindPresenter {
   @override
   Widget build(BuildContext context, PresentedRow row, RowTextSlot textSlot) {
     final controller = row.controller;
-    final text = controller.text.trim();
-    final ref = _referenceOf(controller.text);
-    if (ref == null) return textSlot(offstage: false);
-    final block = Align(
-      alignment: AlignmentDirectional.topStart,
-      child: KeyedSubtree(
-        key: row.blockKey,
-        child: KeyedSubtree(
-          key: ValueKey('editor-attachment-${row.segment}-${row.index}'),
-          child: AttachmentBlock(
-            reference: ref,
-            name: attachmentShownName(text, ref),
-            onPlaceCaret: () => _placeCaret(context, row),
-          ),
-        ),
-      ),
-    );
+    // The reference and shown name come from the text at each notify, not
+    // from this build: the host need not rebuild the row for a text edit.
+    // The block widget is kept while the text is unchanged, so a selection
+    // or reveal change rebuilds only the text slot.
+    String? blockText;
+    Widget? block;
     return ListenableBuilder(
       listenable: Listenable.merge([controller, controller.revealGate]),
-      child: block,
-      builder: (context, block) => Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          textSlot(offstage: textHidden(row)),
-          block!,
-        ],
-      ),
+      builder: (_, _) {
+        final text = controller.text;
+        final ref = _referenceOf(text);
+        if (ref == null) {
+          blockText = null;
+          block = null;
+        } else if (block == null || text != blockText) {
+          blockText = text;
+          block = Align(
+            alignment: AlignmentDirectional.topStart,
+            child: KeyedSubtree(
+              key: row.blockKey,
+              child: KeyedSubtree(
+                key: ValueKey('editor-attachment-${row.segment}-${row.index}'),
+                child: AttachmentBlock(
+                  reference: ref,
+                  name: attachmentShownName(text.trim(), ref),
+                  onPlaceCaret: () => _placeCaret(context, row),
+                ),
+              ),
+            ),
+          );
+        }
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            textSlot(offstage: textHidden(row)),
+            ?block,
+          ],
+        );
+      },
     );
   }
 
@@ -496,9 +513,11 @@ class _AttachmentBlockState extends ConsumerState<AttachmentBlock> {
         return;
       }
       unawaited(_read(access, generation));
-    } else if (_imageForm) {
-      if (!known.card) unawaited(_read(access, generation));
-    } else if (known.size == null) {
+    } else if (_imageForm && !known.card) {
+      unawaited(_read(access, generation));
+    } else {
+      // Asked even when the size is known: the session cache says nothing
+      // about whether this vault has the file (R35).
       unawaited(_info(access, generation));
     }
   }
@@ -575,8 +594,22 @@ class _AttachmentBlockState extends ConsumerState<AttachmentBlock> {
     }
   }
 
-  /// Offers `Open` and `Reveal in Finder` at global [at]. It shows after
-  /// any menu the press's segment shows for it, so it replaces that one.
+  /// Whether the block offers `Reveal in Finder`: on a local vault only
+  /// (R41).
+  bool get _revealable => _access is LocalAttachmentsAccess;
+
+  void _open() => unawaited(_act(reveal: false));
+
+  void _reveal() => unawaited(_act(reveal: true));
+
+  /// The semantics actions of a block that opens: `Reveal in Finder` where
+  /// offered (the tap action opens).
+  Map<CustomSemanticsAction, VoidCallback>? get _semanticsActions =>
+      _revealable ? {_revealAction: _reveal} : null;
+
+  /// Offers `Open`, and `Reveal in Finder` where offered, at global [at].
+  /// It shows after any menu the press's segment shows for it, so it
+  /// replaces that one.
   void _showMenu(Offset at) {
     scheduleMicrotask(() {
       if (!mounted) return;
@@ -597,7 +630,7 @@ class _AttachmentBlockState extends ConsumerState<AttachmentBlock> {
               anchors: TextSelectionToolbarAnchors(primaryAnchor: at),
               buttonItems: [
                 item('Open', reveal: false),
-                item('Reveal in Finder', reveal: true),
+                if (_revealable) item('Reveal in Finder', reveal: true),
               ],
             ),
           ),
@@ -628,14 +661,19 @@ class _AttachmentBlockState extends ConsumerState<AttachmentBlock> {
           child: AttachmentNotice(text: notice),
         );
       }
+      // Assistive tech opens the image with its tap action and reveals it
+      // with a custom one; the pointer gestures stay out of the semantics.
       return Semantics(
         container: true,
         image: true,
         label: name,
+        onTap: _open,
+        customSemanticsActions: _semanticsActions,
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
+          excludeFromSemantics: true,
           onTap: widget.onPlaceCaret,
-          onDoubleTap: () => unawaited(_act(reveal: false)),
+          onDoubleTap: _open,
           onSecondaryTapUp: (details) => _showMenu(details.globalPosition),
           child: AttachmentImageBox(
             natural: dims,
@@ -649,7 +687,8 @@ class _AttachmentBlockState extends ConsumerState<AttachmentBlock> {
     final size = known.size;
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
-      onTap: missing ? null : () => unawaited(_act(reveal: false)),
+      excludeFromSemantics: true,
+      onTap: missing ? null : _open,
       onSecondaryTapUp: missing
           ? (_) => _noMenu()
           : (details) => _showMenu(details.globalPosition),
@@ -659,6 +698,8 @@ class _AttachmentBlockState extends ConsumerState<AttachmentBlock> {
         icon: attachmentTypeIcon(widget.reference.target.name),
         size: size == null ? null : formatAttachmentSize(size),
         missing: missing,
+        onOpen: missing ? null : _open,
+        onReveal: missing || !_revealable ? null : _reveal,
       ),
     );
   }
@@ -819,7 +860,9 @@ class _RenderImageFit extends RenderProxyBox {
 /// `<TYPE> · <size>` ([type], [size], `—` while null), in ExcerptCard's
 /// border, radius and type tokens, raised while hovered. [missing] shows a
 /// muted `File not found · <name>` instead (R35). Its semantics label is
-/// `<name>, <TYPE>, <size>` (R37).
+/// `<name>, <TYPE>, <size>` (R37); assistive tech opens it with its tap
+/// action ([onOpen]) and reveals it with a `Reveal in Finder` custom action
+/// ([onReveal]). It handles no pointer press itself.
 class AttachmentFileCard extends StatefulWidget {
   const AttachmentFileCard({
     super.key,
@@ -828,6 +871,8 @@ class AttachmentFileCard extends StatefulWidget {
     required this.icon,
     this.size,
     this.missing = false,
+    this.onOpen,
+    this.onReveal,
   });
 
   final String name;
@@ -835,6 +880,12 @@ class AttachmentFileCard extends StatefulWidget {
   final IconData icon;
   final String? size;
   final bool missing;
+
+  /// The card's semantics tap action; null for none.
+  final VoidCallback? onOpen;
+
+  /// The card's `Reveal in Finder` semantics action; null for none.
+  final VoidCallback? onReveal;
 
   /// The widest a card shows.
   static const double maxWidth = 360;
@@ -880,10 +931,15 @@ class _AttachmentFileCardState extends State<AttachmentFileCard> {
               ),
             ],
           );
+    final onReveal = widget.onReveal;
     return Semantics(
       container: true,
       button: !missing,
       label: label,
+      onTap: widget.onOpen,
+      customSemanticsActions: onReveal == null
+          ? null
+          : {_revealAction: onReveal},
       excludeSemantics: true,
       child: MouseRegion(
         cursor: missing ? MouseCursor.defer : SystemMouseCursors.click,
