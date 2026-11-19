@@ -954,4 +954,51 @@ void main() {
       },
     );
   });
+
+  group('row field wrapper (verify pins)', () {
+    // The Offstage widgets inside editor row [r]'s keyed slot, also while
+    // the field is offstage.
+    Finder wrappers(int r) => find.descendant(
+      of: find.byKey(ValueKey('editor-row-0-$r'), skipOffstage: false),
+      matching: find.byType(Offstage, skipOffstage: false),
+    );
+
+    testWidgets(
+      'only a table row keeps its field under an Offstage, off while revealed',
+      (tester) async {
+        final body = await pumpTable(tester, _t124Mixed);
+        // Prose and item rows: the field sits bare, as on main.
+        for (final r in [0, 1, 3]) {
+          expect(wrappers(r), findsNothing, reason: 'row $r has no wrapper');
+        }
+        // A rendered table: one wrapper, offstage.
+        expectTableRendered(0, 2);
+        expect(wrappers(2), findsOneWidget);
+        expect(tester.widget<Offstage>(wrappers(2)).offstage, isTrue);
+
+        // Revealed: the same wrapper, on screen (the field never reparents).
+        await body.placeCaret(_t124Mixed.indexOf('Alpha'));
+        expectTableRevealed(0, 2);
+        expect(wrappers(2), findsOneWidget, reason: 'still wrapped');
+        expect(tester.widget<Offstage>(wrappers(2)).offstage, isFalse);
+        for (final r in [0, 1, 3]) {
+          expect(wrappers(r), findsNothing, reason: 'row $r has no wrapper');
+        }
+      },
+    );
+
+    test('an attachment row has no marker column and no item geometry', () {
+      expect(markerColumnKind(RowKind.attachment), isNull);
+      const text = '![chart](objects/ab/c.png)';
+      final spec = RowSpec(
+        kind: RowKind.attachment,
+        start: 0,
+        textStart: 0,
+        textEnd: text.length,
+        end: text.length,
+      );
+      expect(rowGeometries([spec]), [isNull]);
+      expect(markerColumnKind(RowKind.table), isNull);
+    });
+  });
 }
