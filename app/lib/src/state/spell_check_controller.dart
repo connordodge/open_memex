@@ -64,6 +64,18 @@ abstract interface class SpellFieldHost {
   /// The editor page's laid-out viewport, or null.
   RenderBox? viewportBox();
 
+  /// The global top and bottom of the field's laid-out text (WI #127, Spec
+  /// #122 Req 25: a geometry-free seam), or null before it is laid out.
+  ({double top, double bottom})? extent();
+
+  /// The global top and bottom of the line holding field-local [offset]
+  /// (its caret's), or null before the field is laid out.
+  ({double top, double bottom})? extentAt(int offset);
+
+  /// The global top and bottom of the editor page's laid-out viewport, or
+  /// null without one.
+  ({double top, double bottom})? viewport();
+
   /// False only for a table row that shows its grid (Spec #392 req 2).
   bool revealed(TextEditingController field);
 

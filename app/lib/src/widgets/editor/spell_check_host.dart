@@ -358,6 +358,16 @@ class _SpellCheckFieldState extends State<SpellCheckField>
     return box is RenderBox && box.attached && box.hasSize ? box : null;
   }
 
+  // WI #127 skeleton: the geometry-free seam (Spec #122 Req 25).
+  @override
+  ({double top, double bottom})? extent() => null;
+
+  @override
+  ({double top, double bottom})? extentAt(int offset) => null;
+
+  @override
+  ({double top, double bottom})? viewport() => null;
+
   @override
   bool revealed(TextEditingController field) =>
       field is! LivePreviewController || !field.textHidden;
