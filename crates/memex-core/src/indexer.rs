@@ -4,6 +4,7 @@
 //! Vector embeddings are written if a non-None [`crate::embedder::Embedder`]
 //! is provided; otherwise indexing is FTS-only.
 
+use std::borrow::Cow;
 use std::ops::Range;
 
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
@@ -117,6 +118,50 @@ fn attachment_reference_lines(content_md: &str, person: &Range<usize>) -> Vec<(S
     out
 }
 
+/// The text of a note chunk that `chunk_fts` and the embedding input hold
+/// (R45): `content` with the `(objects/…)` destination of each attachment
+/// reference line left out, so `[name](objects/…)` reads `[name]` and hash
+/// fragments never match a query. A reference line is one whose content,
+/// without surrounding whitespace, is exactly one attachment reference,
+/// outside fenced code, as [`attachment_reference_lines`] reads it. Every
+/// other byte is kept; `chunks.content` itself is never changed.
+pub(crate) fn index_text(content: &str) -> Cow<'_, str> {
+    let mut cuts: Vec<Range<usize>> = Vec::new();
+    let mut fence: Option<tags::Fence> = None;
+    let mut at = 0;
+    for line in content.split_inclusive('\n') {
+        let text = line.strip_suffix('\n').unwrap_or(line);
+        if let Some(open) = fence {
+            if open.closed_by(text) {
+                fence = None;
+            }
+        } else if let Some(opened) = tags::Fence::opened_by(text) {
+            fence = Some(opened);
+        } else {
+            let trimmed = text.trim();
+            if attachments::parse_reference(trimmed).is_some() {
+                // A destination holds no `(`, so the last one opens it.
+                let lead = text.len() - text.trim_start().len();
+                if let Some(open) = trimmed.rfind('(') {
+                    cuts.push(at + lead + open..at + lead + trimmed.len());
+                }
+            }
+        }
+        at += line.len();
+    }
+    if cuts.is_empty() {
+        return Cow::Borrowed(content);
+    }
+    let mut out = String::with_capacity(content.len());
+    let mut kept = 0;
+    for cut in cuts {
+        out.push_str(&content[kept..cut.start]);
+        kept = cut.end;
+    }
+    out.push_str(&content[kept..]);
+    Cow::Owned(out)
+}
+
 /// Rewrites a note's index rows (flags, links, chunks, FTS, vectors and
 /// attachment references) from `content_md`, its `person` section range and
 /// `chunks` inside the caller's transaction, and removes its `pending_index`
@@ -175,7 +220,10 @@ fn write_index(
     // Compute embeddings up front (outside the SQL loop) if requested.
     let embeddings: Option<Vec<Vec<f32>>> = match embedder {
         Some(e) if !chunks.is_empty() => {
-            let texts: Vec<String> = chunks.iter().map(|c| c.content.clone()).collect();
+            let texts: Vec<String> = chunks
+                .iter()
+                .map(|c| index_text(&c.content).into_owned())
+                .collect();
             Some(e.embed_batch(&texts)?)
         }
         _ => None,
@@ -201,7 +249,7 @@ fn write_index(
         )?;
         tx.execute(
             "INSERT INTO chunk_fts (chunk_id, note_id, content) VALUES (?, ?, ?)",
-            params![chunk_id, note_id, c.content],
+            params![chunk_id, note_id, index_text(&c.content)],
         )?;
         if let Some(embs) = &embeddings {
             let bytes = floats_le_bytes(&embs[idx]);

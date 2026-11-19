@@ -6,7 +6,8 @@
 //! text is never indexed into the topic, so this is the only way a topic is
 //! found through the day's words.
 
-use std::collections::HashSet;
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,11 @@ use crate::Result;
 const RRF_K: f32 = 60.0;
 const FTS_OVERSAMPLE: i64 = 5;
 const VEC_OVERSAMPLE: i64 = 5;
+/// The characters of a chunk a snippet keeps.
+const SNIPPET_CHARS: usize = 280;
+/// Between an attachment's name and its matching text in a hit's snippet
+/// (R46): U+00B7 with a space on each side.
+const NAME_SEP: &str = " \u{b7} ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -50,12 +56,59 @@ pub struct SearchHit {
     /// through a transclusion (D25). Absent from JSON when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via: Option<String>,
+    /// The attachment a hit came from (Spec #123 R46, R48), set only on a
+    /// hit for a note that references a matching attachment. Absent from
+    /// JSON when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<HitAttachment>,
+    /// The byte offset of the attachment's reference line in the note's
+    /// stored body (`note_attachments.line_start_byte`), on a direct
+    /// attachment hit only. `note_search` answers it as `start_byte`.
+    #[serde(skip)]
+    pub(crate) line_start: Option<usize>,
+}
+
+/// `attachment` of a passage hit (R48): the attachment's stored name and
+/// vault-relative path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HitAttachment {
+    pub name: String,
+    pub path: String,
+}
+
+/// One entry of the results' `attachments` list (R47, R48): a matching
+/// attachment that at least one note (passing the filters) references.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachmentMatch {
+    pub name: String,
+    pub path: String,
+    /// The MIME type (`attachments.type`).
+    #[serde(rename = "type")]
+    pub mime: String,
+    pub size: i64,
+    /// The first 280 characters of the best-matching attachment chunk; `None`
+    /// (absent from JSON) for a name-only match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+    /// The referencing notes, in title then id order.
+    pub notes: Vec<AttachmentNote>,
+}
+
+/// A note that references a listed attachment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachmentNote {
+    pub id: String,
+    pub title: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResults {
     pub hits: Vec<SearchHit>,
     pub truncated: bool,
+    /// The matching attachments, best first, at most `k` (R47, R48). Absent
+    /// from JSON when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<AttachmentMatch>,
 }
 
 pub struct SearchOptions<'a> {
@@ -72,6 +125,7 @@ pub fn search(conn: &Connection, opts: SearchOptions<'_>) -> Result<SearchResult
         return Ok(SearchResults {
             hits: Vec::new(),
             truncated: false,
+            attachments: Vec::new(),
         });
     }
 
@@ -104,7 +158,20 @@ pub(crate) fn embed_query(embedder: &dyn Embedder, q: &str) -> Result<Option<Vec
 /// never calls an embedder (`opts.embedder` is ignored). The vector arm runs
 /// when `opts.mode` wants it and `q_vec` is `Some`; a kNN error (no
 /// `chunk_vec` table, say) leaves it empty. The `bool` is whether the kNN
-/// query ran and answered.
+/// query over `chunk_vec` ran and answered.
+///
+/// Attachments (Spec #123 R46-R49, TD "Search fusion"): the keyword arm also
+/// ranks `attachment_chunk_fts` chunks and attachment names, and the vector
+/// arm `attachment_chunk_vec` chunks, each its own RRF list. Only attachments
+/// some note references (`note_attachments`) take part. An attachment's
+/// score is its name score plus its best chunk's score; it becomes one hit
+/// per referencing note passing the filters, on that note's chunk holding its
+/// first reference line (see [`attachment_hits`]). A note's own chunk hits
+/// merge into its best attachment hit, so a note shows at most one hit per
+/// attachment. Hits sort by score, then note title, note id, ord, line and
+/// chunk id, so equal scores come in the same order on every search. `k`
+/// caps the hits (attachment hits count) and, separately, the attachments
+/// list; `truncated` says more hits matched.
 pub(crate) fn search_with_query_vec(
     conn: &Connection,
     opts: &SearchOptions<'_>,
@@ -115,6 +182,7 @@ pub(crate) fn search_with_query_vec(
         let found = SearchResults {
             hits: Vec::new(),
             truncated: false,
+            attachments: Vec::new(),
         };
         return Ok((found, false));
     }
@@ -125,58 +193,287 @@ pub(crate) fn search_with_query_vec(
         .unwrap_or(i64::MAX)
         .saturating_mul(FTS_OVERSAMPLE.max(VEC_OVERSAMPLE));
 
-    let fts_ranked: Vec<(String, i64)> = if want_fts {
-        fts_search(conn, q, oversample)?
-    } else {
-        Vec::new()
-    };
+    // RRF scores: note chunks, attachment chunks, attachment names (by path).
+    let mut note_scores: HashMap<String, f32> = HashMap::new();
+    let mut chunk_scores: HashMap<String, f32> = HashMap::new();
+    let mut name_scores: HashMap<String, f32> = HashMap::new();
 
-    let vec_ranked: Option<Vec<(String, i64)>> = match q_vec {
-        Some(q_vec) if wants_vec(opts.mode) => {
-            vec_search(conn, q_vec, oversample.min(VEC_K_MAX)).ok()
+    if want_fts {
+        add_ranks(&mut note_scores, fts_search(conn, q, oversample)?);
+        add_ranks(
+            &mut chunk_scores,
+            attachment_fts_search(conn, q, oversample)?,
+        );
+        add_ranks(&mut name_scores, name_search(conn, q, oversample)?);
+    }
+
+    let mut vec_ran = false;
+    if let Some(q_vec) = q_vec.filter(|_| wants_vec(opts.mode)) {
+        let k = oversample.min(VEC_K_MAX);
+        if let Ok(ranked) = vec_search(conn, "chunk_vec", q_vec, k) {
+            vec_ran = true;
+            add_ranks(&mut note_scores, ranked);
         }
-        _ => None,
-    };
-    let vec_ran = vec_ranked.is_some();
-    let vec_ranked = vec_ranked.unwrap_or_default();
-
-    // RRF fuse
-    use std::collections::HashMap;
-    let mut score_by_chunk: HashMap<String, f32> = HashMap::new();
-    for (cid, rank) in &fts_ranked {
-        *score_by_chunk.entry(cid.clone()).or_insert(0.0) += 1.0 / (RRF_K + (*rank as f32));
-    }
-    for (cid, rank) in &vec_ranked {
-        *score_by_chunk.entry(cid.clone()).or_insert(0.0) += 1.0 / (RRF_K + (*rank as f32));
-    }
-
-    let mut fused: Vec<(String, f32)> = score_by_chunk.into_iter().collect();
-    fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-    if fused.is_empty() {
-        let found = SearchResults {
-            hits: Vec::new(),
-            truncated: false,
-        };
-        return Ok((found, vec_ran));
-    }
-
-    let mut hits = Vec::new();
-    for (chunk_id, score) in fused.iter() {
-        if let Some(hit) = enrich_hit(conn, chunk_id, *score, &opts.filters)? {
-            hits.push(hit);
-            if hits.len() >= opts.k {
-                break;
-            }
+        // No `attachment_chunk_vec` yet (no attachment chunk embedded) is an
+        // empty list.
+        if let Ok(ranked) = vec_search(conn, "attachment_chunk_vec", q_vec, k) {
+            add_ranks(&mut chunk_scores, referenced_only(conn, ranked)?);
         }
     }
-    let truncated = hits.len() >= opts.k && fused.len() > hits.len();
+
+    let found = fuse(conn, opts, note_scores, chunk_scores, name_scores)?;
+    Ok((found, vec_ran))
+}
+
+/// Adds `1 / (RRF_K + rank)` for each ranked key to `scores`.
+fn add_ranks(scores: &mut HashMap<String, f32>, ranked: Vec<(String, i64)>) {
+    for (key, rank) in ranked {
+        *scores.entry(key).or_insert(0.0) += 1.0 / (RRF_K + (rank as f32));
+    }
+}
+
+/// A matching attachment before it becomes hits and a list entry.
+struct Matched {
+    path: String,
+    name: String,
+    mime: String,
+    size: i64,
+    score: f32,
+    /// The best-matching chunk's content; `None` for a name-only match.
+    chunk_text: Option<String>,
+    /// Referencing notes passing the filters: `(id, title, first reference
+    /// line start)`, in title then id order.
+    notes: Vec<(String, String, usize)>,
+}
+
+/// Turns the three score maps into ranked, capped, expanded hits and the
+/// attachments list (see [`search_with_query_vec`]).
+fn fuse(
+    conn: &Connection,
+    opts: &SearchOptions<'_>,
+    note_scores: HashMap<String, f32>,
+    chunk_scores: HashMap<String, f32>,
+    name_scores: HashMap<String, f32>,
+) -> Result<SearchResults> {
+    let matched = matched_attachments(conn, &opts.filters, chunk_scores, name_scores)?;
+
+    let mut own: Vec<SearchHit> = Vec::new();
+    for (chunk_id, score) in note_scores {
+        if let Some(hit) = enrich_hit(conn, &chunk_id, score, &opts.filters)? {
+            own.push(hit);
+        }
+    }
+    let mut hits = attachment_hits(conn, &matched)?;
+    hits.sort_by(hit_order);
+
+    // A note's own hits merge into its best attachment hit (R46).
+    let mut best: HashMap<String, usize> = HashMap::new();
+    for (i, h) in hits.iter().enumerate() {
+        best.entry(h.note_id.clone()).or_insert(i);
+    }
+    for hit in own {
+        match best.get(&hit.note_id) {
+            Some(&i) => hits[i].score = hits[i].score.max(hit.score),
+            None => hits.push(hit),
+        }
+    }
+    hits.sort_by(hit_order);
+
+    let truncated = hits.len() > opts.k;
+    hits.truncate(opts.k);
     let (hits, dropped) = expand_transclusions(conn, hits, opts.k, &opts.filters)?;
-    let found = SearchResults {
+
+    let attachments = matched
+        .into_iter()
+        .take(opts.k)
+        .map(|m| AttachmentMatch {
+            name: m.name,
+            path: m.path,
+            mime: m.mime,
+            size: m.size,
+            snippet: m.chunk_text.map(|t| snippet(&t, SNIPPET_CHARS)),
+            notes: m
+                .notes
+                .into_iter()
+                .map(|(id, title, _)| AttachmentNote { id, title })
+                .collect(),
+        })
+        .collect();
+    Ok(SearchResults {
         hits,
         truncated: truncated || dropped,
-    };
-    Ok((found, vec_ran))
+        attachments,
+    })
+}
+
+/// The order of fused hits: score (best first), then note title, note id,
+/// ord, reference line, chunk id and attachment path, so ties never depend
+/// on map order.
+fn hit_order(a: &SearchHit, b: &SearchHit) -> Ordering {
+    b.score
+        .total_cmp(&a.score)
+        .then_with(|| a.note_title.cmp(&b.note_title))
+        .then_with(|| a.note_id.cmp(&b.note_id))
+        .then_with(|| a.ord.cmp(&b.ord))
+        .then_with(|| a.line_start.cmp(&b.line_start))
+        .then_with(|| a.chunk_id.cmp(&b.chunk_id))
+        .then_with(|| {
+            let path = |h: &SearchHit| h.attachment.as_ref().map(|x| x.path.clone());
+            path(a).cmp(&path(b))
+        })
+}
+
+/// The matching attachments with at least one referencing note passing
+/// `filters`, best first (then name, then path). An attachment's score is
+/// its name score plus its best chunk's score (ties: lower ord, then id).
+fn matched_attachments(
+    conn: &Connection,
+    filters: &SearchFilters,
+    chunk_scores: HashMap<String, f32>,
+    name_scores: HashMap<String, f32>,
+) -> Result<Vec<Matched>> {
+    // path → (best chunk score, ord, id, content)
+    let mut best_chunk: HashMap<String, (f32, i64, String, String)> = HashMap::new();
+    for (id, score) in chunk_scores {
+        let row: Option<(String, i64, String)> = conn
+            .query_row(
+                "SELECT path, ord, content FROM attachment_chunks WHERE id = ?",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        let Some((path, ord, content)) = row else {
+            continue;
+        };
+        let better = match best_chunk.get(&path) {
+            None => true,
+            Some((s, o, i, _)) => score
+                .total_cmp(s)
+                .then_with(|| o.cmp(&ord))
+                .then_with(|| i.as_str().cmp(id.as_str()))
+                .is_gt(),
+        };
+        if better {
+            best_chunk.insert(path, (score, ord, id, content));
+        }
+    }
+
+    let paths: HashSet<String> = best_chunk
+        .keys()
+        .chain(name_scores.keys())
+        .cloned()
+        .collect();
+    let mut out = Vec::new();
+    for path in paths {
+        let row: Option<(String, String, i64)> = conn
+            .query_row(
+                "SELECT name, type, size FROM attachments WHERE path = ?",
+                params![path],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        let Some((name, mime, size)) = row else {
+            continue;
+        };
+        let notes = referencing_notes(conn, &path, filters)?;
+        if notes.is_empty() {
+            continue;
+        }
+        let chunk = best_chunk.remove(&path);
+        let score = name_scores.get(&path).copied().unwrap_or(0.0)
+            + chunk.as_ref().map_or(0.0, |(s, ..)| *s);
+        out.push(Matched {
+            path,
+            name,
+            mime,
+            size,
+            score,
+            chunk_text: chunk.map(|(_, _, _, content)| content),
+            notes,
+        });
+    }
+    out.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    Ok(out)
+}
+
+/// The notes passing `filters` that reference attachment `path`: `(id,
+/// title, first reference line start)`, in title then id order.
+fn referencing_notes(
+    conn: &Connection,
+    path: &str,
+    filters: &SearchFilters,
+) -> Result<Vec<(String, String, usize)>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT n.id, n.title, MIN(na.line_start_byte)
+           FROM note_attachments na JOIN notes n ON n.id = na.note_id
+          WHERE na.path = ?
+          GROUP BY n.id, n.title
+          ORDER BY n.title, n.id",
+    )?;
+    let rows = stmt
+        .query_map(params![path], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows
+        .into_iter()
+        .filter(|(id, ..)| passes_filters(conn, id, filters))
+        .map(|(id, title, at)| (id, title, usize::try_from(at).unwrap_or(0)))
+        .collect())
+}
+
+/// One hit per (referencing note, matched attachment), R46: on the note's
+/// chunk holding the reference line (else the nearest chunk before it, else
+/// the nearest after it), with the attachment's score, `attachment`, and the
+/// snippet `<name> · <first 280 characters of the best chunk>` (`<name>` for
+/// a name-only match). A note with no chunks gets no hit.
+fn attachment_hits(conn: &Connection, matched: &[Matched]) -> Result<Vec<SearchHit>> {
+    let mut out = Vec::new();
+    for m in matched {
+        let text = match &m.chunk_text {
+            Some(t) => format!("{}{NAME_SEP}{}", m.name, snippet(t, SNIPPET_CHARS)),
+            None => m.name.clone(),
+        };
+        for (note_id, note_title, line) in &m.notes {
+            let chunk: Option<(String, i64)> = conn
+                .query_row(
+                    "SELECT id, ord FROM chunks WHERE note_id = ?1
+                      ORDER BY (start_byte <= ?2 AND ?2 < end_byte) DESC,
+                               (start_byte <= ?2) DESC, abs(start_byte - ?2), ord
+                      LIMIT 1",
+                    params![note_id, *line as i64],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            let Some((chunk_id, ord)) = chunk else {
+                continue;
+            };
+            out.push(SearchHit {
+                chunk_id,
+                note_id: note_id.clone(),
+                note_title: note_title.clone(),
+                snippet: text.clone(),
+                score: m.score,
+                ord,
+                via: None,
+                attachment: Some(HitAttachment {
+                    name: m.name.clone(),
+                    path: m.path.clone(),
+                }),
+                line_start: Some(*line),
+            });
+        }
+    }
+    Ok(out)
 }
 
 /// A topic note found through a transclusion of a daily-note hit's blocks.
@@ -219,6 +516,11 @@ fn expand_transclusions(
         shown_direct.insert(source.note_id.clone());
         let date = source.note_title.clone();
         let score = source.score;
+        // An attachment hit's expansions keep its attachment and snippet (R46).
+        let from_attachment = source
+            .attachment
+            .clone()
+            .map(|a| (a, source.snippet.clone()));
         hits.push(source);
         for t in topics {
             if shown_direct.contains(&t.note_id) || !pairs.insert((t.note_id.clone(), date.clone()))
@@ -226,14 +528,20 @@ fn expand_transclusions(
                 continue;
             }
             shown_expanded.insert(t.note_id.clone());
+            let (attachment, snippet) = match &from_attachment {
+                Some((a, s)) => (Some(a.clone()), s.clone()),
+                None => (None, t.snippet),
+            };
             hits.push(SearchHit {
                 chunk_id: t.chunk_id,
                 note_id: t.note_id,
                 note_title: t.note_title,
-                snippet: t.snippet,
+                snippet,
                 score,
                 ord: t.ord,
                 via: Some(date.clone()),
+                attachment,
+                line_start: None,
             });
         }
     }
@@ -340,7 +648,7 @@ fn transcluding_topics(
             note_title,
             chunk_id,
             ord,
-            snippet: snippet(&content, 280),
+            snippet: snippet(&content, SNIPPET_CHARS),
         });
     }
     Ok(out)
@@ -375,14 +683,16 @@ fn fts_search(conn: &Connection, q: &str, k: i64) -> Result<Vec<(String, i64)>> 
     Ok(out)
 }
 
-fn vec_search(conn: &Connection, q_vec: &[f32], k: i64) -> Result<Vec<(String, i64)>> {
+/// The kNN of `q_vec` over vector table `table` (`chunk_vec` or
+/// `attachment_chunk_vec`): chunk ids with ranks from 1.
+fn vec_search(conn: &Connection, table: &str, q_vec: &[f32], k: i64) -> Result<Vec<(String, i64)>> {
     let mut bytes = Vec::with_capacity(q_vec.len() * 4);
     for f in q_vec {
         bytes.extend_from_slice(&f.to_le_bytes());
     }
-    let mut stmt = conn.prepare(
-        "SELECT chunk_id FROM chunk_vec WHERE embedding MATCH ? AND k = ? ORDER BY distance",
-    )?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT chunk_id FROM {table} WHERE embedding MATCH ? AND k = ? ORDER BY distance"
+    ))?;
     let mut rows = stmt.query(params![bytes, k])?;
     let mut out = Vec::new();
     let mut rank: i64 = 1;
@@ -391,6 +701,83 @@ fn vec_search(conn: &Connection, q_vec: &[f32], k: i64) -> Result<Vec<(String, i
         rank += 1;
     }
     Ok(out)
+}
+
+/// `ranked` attachment chunk ids, keeping only those of an attachment some
+/// note references (R49), re-ranked from 1.
+fn referenced_only(conn: &Connection, ranked: Vec<(String, i64)>) -> Result<Vec<(String, i64)>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT EXISTS (SELECT 1 FROM attachment_chunks c JOIN note_attachments na
+                         ON na.path = c.path WHERE c.id = ?)",
+    )?;
+    let mut out = Vec::new();
+    for (id, _) in ranked {
+        if stmt.query_row(params![id], |r| r.get::<_, bool>(0))? {
+            let rank = out.len() as i64 + 1;
+            out.push((id, rank));
+        }
+    }
+    Ok(out)
+}
+
+/// Keyword matches over attachment chunks (`attachment_chunk_fts`, bm25) of
+/// attachments some note references (R43, R49): chunk ids with ranks from 1.
+fn attachment_fts_search(conn: &Connection, q: &str, k: i64) -> Result<Vec<(String, i64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT chunk_id FROM attachment_chunk_fts
+          WHERE attachment_chunk_fts MATCH ?1
+            AND path IN (SELECT path FROM note_attachments)
+          ORDER BY bm25(attachment_chunk_fts), chunk_id
+          LIMIT ?2",
+    )?;
+    let mut rows = stmt.query(params![sanitize_match(q), k])?;
+    let mut out = Vec::new();
+    let mut rank: i64 = 1;
+    while let Some(r) = rows.next()? {
+        out.push((r.get::<_, String>(0)?, rank));
+        rank += 1;
+    }
+    Ok(out)
+}
+
+/// Keyword matches on attachment names (R43): referenced attachments whose
+/// name holds every word of `q` (a word is a run of letters and numbers,
+/// compared lowercased), by name then path, as paths with ranks from 1, at
+/// most `k`.
+fn name_search(conn: &Connection, q: &str, k: i64) -> Result<Vec<(String, i64)>> {
+    let wanted = words(q);
+    if wanted.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn.prepare(
+        "SELECT a.path, a.name FROM attachments a
+          WHERE a.path IN (SELECT path FROM note_attachments)
+          ORDER BY a.name, a.path",
+    )?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let cap = usize::try_from(k).unwrap_or(usize::MAX);
+    let mut out = Vec::new();
+    for (path, name) in rows {
+        if out.len() >= cap {
+            break;
+        }
+        let have = words(&name);
+        if wanted.iter().all(|w| have.contains(w)) {
+            let rank = out.len() as i64 + 1;
+            out.push((path, rank));
+        }
+    }
+    Ok(out)
+}
+
+/// The lowercased runs of letters and numbers of `s`.
+fn words(s: &str) -> HashSet<String> {
+    s.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect()
 }
 
 fn enrich_hit(
@@ -421,10 +808,12 @@ fn enrich_hit(
         chunk_id: cid,
         note_id: nid,
         note_title: title,
-        snippet: snippet(&content, 280),
+        snippet: snippet(&content, SNIPPET_CHARS),
         score,
         ord,
         via: None,
+        attachment: None,
+        line_start: None,
     }))
 }
 
