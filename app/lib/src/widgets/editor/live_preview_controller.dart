@@ -37,6 +37,11 @@ final class MarkedPress {
 /// - [revealGate]: true while the field's text segment has focus (markers
 ///   may reveal only then).
 class LivePreviewController extends TextEditingController {
+  /// Test-only work counter: how many times any controller's
+  /// [buildTextSpan] ran.
+  @visibleForTesting
+  static int debugBuildTextSpans = 0;
+
   LivePreviewController({super.text});
 
   LivePreviewController.fromValue(super.value) : super.fromValue();
@@ -167,6 +172,7 @@ class LivePreviewController extends TextEditingController {
     TextStyle? style,
     required bool withComposing,
   }) {
+    debugBuildTextSpans++;
     final find = findDecoration?.value;
     return _buildSpan(
       text,
