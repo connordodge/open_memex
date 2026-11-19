@@ -11,6 +11,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../graph/graph_scope.dart';
+import '../../state/attach_controller.dart';
 import '../../state/clock.dart';
 import '../../state/command_palette_state.dart';
 import '../../state/daily_state.dart';
@@ -322,7 +323,9 @@ void _runCommand(
     case PaletteCommand.newCanvas:
       unawaited(newCanvas(host));
     case PaletteCommand.attachFile:
-      break;
+      unawaited(
+        container.read(attachControllerProvider).attachFromPicker(host),
+      );
     case PaletteCommand.openToday:
       unawaited(_openToday(container, show));
     case PaletteCommand.openVaultGraph:

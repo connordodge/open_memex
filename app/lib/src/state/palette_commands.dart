@@ -3,6 +3,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../editor/fuzzy_score.dart';
+import 'attach_controller.dart';
 import 'command_palette_state.dart';
 import 'daily_state.dart';
 import 'sidebar_mode_state.dart';
@@ -11,19 +12,22 @@ import 'vault_state.dart';
 
 /// Fills #76's `paletteCommandsSourceProvider`: requirement 19's commands
 /// available on the open vault (New note and New canvas only when
-/// `VaultAccess.canWrite`), fuzzy-matched against the trimmed input, best
+/// `VaultAccess.canWrite`, and Attach file… only then and with a note open
+/// in the editor, `attachEditorProvider`), fuzzy-matched against the trimmed input, best
 /// first, ties in fixed order. The right-panel label follows
 /// `rightPanelOpenProvider`; Open today's meta is today's date; the current
 /// sidebar mode's Show row has meta `shown`.
 final Override paletteCommandsOverride = paletteCommandsSourceProvider
     .overrideWith((ref) {
       final canWrite = ref.watch(vaultAccessProvider)?.canWrite ?? false;
+      final noteOpen = ref.watch(attachEditorProvider) != null;
       final rightPanelOpen = ref.watch(rightPanelOpenProvider);
       final mode = ref.watch(sidebarModeProvider);
       final today = ref.watch(todayDateProvider);
       final all = [
         for (final command in PaletteCommand.values)
-          if (canWrite || !_writes(command))
+          if ((canWrite || !_writes(command)) &&
+              (noteOpen || command != PaletteCommand.attachFile))
             CommandItem(
               command,
               label: command.label(rightPanelOpen: rightPanelOpen),
@@ -33,9 +37,11 @@ final Override paletteCommandsOverride = paletteCommandsSourceProvider
       return (query) => _match(all, query);
     });
 
-/// New note and New canvas write to the vault.
+/// New note, New canvas and Attach file… write to the vault.
 bool _writes(PaletteCommand command) =>
-    command == PaletteCommand.newNote || command == PaletteCommand.newCanvas;
+    command == PaletteCommand.newNote ||
+    command == PaletteCommand.newCanvas ||
+    command == PaletteCommand.attachFile;
 
 /// Open today's ISO date, `shown` on the Show row of [mode], else none.
 String? _meta(
