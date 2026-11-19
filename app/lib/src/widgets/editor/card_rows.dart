@@ -237,7 +237,8 @@ class CardRows extends StatelessWidget {
             child: plain,
           );
     final Widget row = switch (spec.kind) {
-      RowKind.prose => rich,
+      // An attachment row shows as prose until #123 gives it a card arm.
+      RowKind.prose || RowKind.attachment => rich,
       RowKind.code => Padding(
         padding: EdgeInsets.only(
           left: codeTextInsetLeft,

@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'dart:ui' as ui show BoxHeightStyle;
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/rendering.dart';
 
 import 'line_boxes.dart';
@@ -25,6 +26,25 @@ class RenderParagraphLineBoxes implements LineBoxSource {
 
   /// The measured paragraph.
   final RenderParagraph paragraph;
+
+  /// Test-only work counter: fresh `TextPainter` layouts of the whole
+  /// paragraph text (every `_measure` call), summed over all instances.
+  @visibleForTesting
+  static int debugMeasures = 0;
+
+  /// Test-only work counter: whole-text line walks (`_linesOf` over every
+  /// line of a measured text), summed over all instances. Every `_measure`
+  /// of today's [lines], [boxesFor] and [caretRect] walks once, so it moves
+  /// with [debugMeasures]; a range-local measure that skips the walk raises
+  /// [debugMeasures] or [debugLineSpans] only.
+  @visibleForTesting
+  static int debugLineWalks = 0;
+
+  /// Test-only work counter: per-line measures (`_spanOf`), one for each line
+  /// a [boxesFor] range read touches, summed over all instances. Differs from
+  /// [debugLineWalks]: a range over 2 lines is 1 walk and 2 spans.
+  @visibleForTesting
+  static int debugLineSpans = 0;
 
   @override
   RenderBox get box => paragraph;
@@ -63,6 +83,7 @@ class RenderParagraphLineBoxes implements LineBoxSource {
   /// Runs [read] over a copy of the paragraph's text laid out as the
   /// paragraph lays it out, then disposes the copy.
   T _measure<T>(T Function(TextPainter painter, String text) read) {
+    debugMeasures++;
     final constraints = paragraph.constraints;
     final wraps =
         paragraph.softWrap || paragraph.overflow == TextOverflow.ellipsis;
@@ -91,6 +112,7 @@ class RenderParagraphLineBoxes implements LineBoxSource {
 
   /// Every line of [painter]'s laid-out [text], top to bottom.
   static List<LineBox> _linesOf(TextPainter painter, String text) {
+    debugLineWalks++;
     final lines = <LineBox>[];
     final metrics = painter.computeLineMetrics();
     var start = 0;
@@ -159,6 +181,7 @@ class RenderParagraphLineBoxes implements LineBoxSource {
   /// The rect of [part] of [line]: its characters' x extent (the caret's x
   /// when they all render zero-width) and the line box's full height.
   static Rect _spanOf(TextPainter painter, TextRange part, LineBox line) {
+    debugLineSpans++;
     final rect =
         _union(
           painter.getBoxesForSelection(

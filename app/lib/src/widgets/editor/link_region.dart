@@ -286,9 +286,7 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
           });
     // On a rendered table grid the segment's pointer layer owns every other
     // press (D14): winning the arena keeps it from revealing the table.
-    if ((_pressed != null || marked != null) &&
-        controller.tableRow &&
-        !controller.tableRevealed) {
+    if ((_pressed != null || marked != null) && controller.textHidden) {
       GestureBinding.instance.gestureArena
           .add(event.pointer, const _LinkPress())
           .resolve(GestureDisposition.accepted);
