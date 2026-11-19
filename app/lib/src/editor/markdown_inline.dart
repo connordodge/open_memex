@@ -237,7 +237,8 @@ int debugTokenizeInlineCalls = 0;
 /// closes inside a word; no token spans a line terminator; unclosed
 /// delimiters stay literal (no token). Empty brackets give no token, except
 /// for an attachment reference (`[](objects/…)` or `![](objects/…)`): its
-/// content is the URL's last path segment, as written. No tokens for bare
+/// content is the URL's last path segment, as written. An attachment's text
+/// (its file name) holds no emphasis or strike. No tokens for bare
 /// URLs, `<autolinks>`, `==highlight==`, HTML, footnotes or math (Spec
 /// R38). Tables are line grammar, not inline tokens: `classifyLines` and
 /// `markdown_table.dart` find them (Spec #197).
@@ -780,12 +781,13 @@ final class _LineTokenizer {
     final url = urlRange.of(text);
     final isImage = open > start && _isDelimiter(open - 1, _bang);
     final spanStart = isImage ? open - 1 : open;
+    final isAttachment = parseAttachmentDestination(url) != null;
     final InlineRange textRange;
     final List<InlineRange> markers;
     if (emptyText) {
       // Empty brackets: only an attachment reference, shown by its name.
-      if (parseAttachmentDestination(url) == null) return null;
-      final nameStart = urlRange.start + url.lastIndexOf('/') + 1;
+      if (!isAttachment) return null;
+      final nameStart = urlRange.start + _nameOffset(url);
       textRange = InlineRange(nameStart, urlEnd);
       markers = [
         InlineRange(spanStart, nameStart),
@@ -794,7 +796,9 @@ final class _LineTokenizer {
     } else {
       textRange = InlineRange(open + 1, close);
       markers = [InlineRange(spanStart, open + 1), InlineRange(close, spanEnd)];
-      _linkTexts.add(textRange);
+      // An attachment's text is its file name, shown as written: a `_` or
+      // `*` in it never opens emphasis (Spec #123 R27, R34).
+      if (!isAttachment) _linkTexts.add(textRange);
     }
     _atomEnd[spanStart] = spanEnd;
     _linkUrls.add(urlRange);
@@ -810,6 +814,17 @@ final class _LineTokenizer {
       ),
     );
     return spanEnd;
+  }
+
+  /// The offset in [url], an attachment destination, where its name (the
+  /// last path segment, as written) starts: after the last `/` or `%2F`.
+  static int _nameOffset(String url) {
+    var offset = url.lastIndexOf('/') + 1;
+    for (final slash in const ['%2F', '%2f']) {
+      final at = url.lastIndexOf(slash);
+      if (at >= 0 && at + slash.length > offset) offset = at + slash.length;
+    }
+    return offset;
   }
 
   /// Emphasis and strike in `[from, to)`, stepping over atoms (CommonMark's

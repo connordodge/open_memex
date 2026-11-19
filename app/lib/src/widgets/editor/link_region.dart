@@ -476,8 +476,8 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
 }
 
 /// Whether a click opens [url]: its scheme (case-insensitive) is http, https
-/// or mailto, or it is an attachment destination (Spec #123 R4). Any other
-/// relative path opens nothing.
+/// or mailto, or it is an attachment destination (Spec #123 R27, R29, R34).
+/// Any other relative path opens nothing.
 bool _openable(String url) {
   if (parseAttachmentDestination(url) != null) return true;
   final colon = url.indexOf(':');
