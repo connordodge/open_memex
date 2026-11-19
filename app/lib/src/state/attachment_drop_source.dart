@@ -13,6 +13,14 @@ typedef AttachmentDropCallback =
 /// The drop-target seam (Spec #123 R7): wraps a child so files dragged from
 /// Finder report as plain callbacks. Tests replace it with a fake that fires
 /// the callbacks directly.
+///
+/// Known limitation: the native `desktop_drop` view accepts every file drag
+/// app-wide, whatever [enabled] says, and copies the dropped files (for a
+/// file promise, such as a Mail attachment or a browser image, the promised
+/// files) into `$TMPDIR/Drops/` before Dart is told. [enabled] only decides
+/// whether the callbacks fire, so a drop the app ignores still leaves that
+/// copy behind. The paths reported by `onDropped` carry no marker for a
+/// promised copy or a directory.
 abstract interface class AttachmentDropSource {
   /// Wraps [child] in a drop target.
   ///

@@ -36,10 +36,12 @@ import FlutterMacOS
 ///   non-`String` argument gets `bad_arguments`. The text is never logged.
 /// - Dart → native `readPasteboard` (no arguments): reads the general
 ///   pasteboard. Replies a map: `files` (absolute paths) when it holds file
-///   URLs, else `png` (`FlutterStandardTypedData` PNG bytes; a TIFF image is
-///   converted) when it holds an image, plus `hasText` (Bool) when a string
-///   is present. Replies an empty map when it holds none of these. Errors
-///   reply `FlutterError` with details `{domain, code}`.
+///   URLs; `hasText` (Bool, true) when a string is present; `png`
+///   (`FlutterStandardTypedData` PNG bytes; a TIFF image is converted) only
+///   when it holds an image and neither files nor text (Spec #123 R8: files,
+///   then text, then image, so the image is never decoded when it would go
+///   unused). Replies an empty map when it holds none of these. Never replies
+///   an error: nothing in this path throws.
 ///
 /// Updater channel `open_memex/updater` (Dart side: `app/lib/src/updater/updater_menu_host.dart`):
 /// - native → Dart `checkForUpdatesFromMenu` (no arguments): sent when
@@ -184,18 +186,21 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
           pb.readObjects(
             forClasses: [NSURL.self],
             options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        let hasText = pb.availableType(from: [.string]) != nil
+        if hasText {
+          reply["hasText"] = true
+        }
         if !urls.isEmpty {
           reply["files"] = urls.map { $0.path }
-        } else if let png = pb.data(forType: .png) {
-          reply["png"] = FlutterStandardTypedData(bytes: png)
-        } else if let tiff = pb.data(forType: .tiff),
-          let rep = NSBitmapImageRep(data: tiff),
-          let png = rep.representation(using: .png, properties: [:])
-        {
-          reply["png"] = FlutterStandardTypedData(bytes: png)
-        }
-        if pb.availableType(from: [.string]) != nil {
-          reply["hasText"] = true
+        } else if !hasText {
+          if let png = pb.data(forType: .png) {
+            reply["png"] = FlutterStandardTypedData(bytes: png)
+          } else if let tiff = pb.data(forType: .tiff),
+            let rep = NSBitmapImageRep(data: tiff),
+            let png = rep.representation(using: .png, properties: [:])
+          {
+            reply["png"] = FlutterStandardTypedData(bytes: png)
+          }
         }
         result(reply)
       default:

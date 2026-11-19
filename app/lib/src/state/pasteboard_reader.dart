@@ -5,9 +5,10 @@ import 'vault_trash.dart';
 
 /// What the system clipboard holds that an attachment can use (Spec #123 R8).
 ///
-/// The native side reports files first, else PNG image bytes; [hasText] is
-/// reported on its own so the caller can apply R8's order: files, then
-/// text, then image.
+/// The native side reports files, and [hasText] on its own, so the caller can
+/// apply R8's order: files, then text, then image. It reads image bytes only
+/// when the clipboard holds neither files nor text, so [png] is null whenever
+/// [hasText] is true.
 class PasteboardContents {
   const PasteboardContents({
     this.files = const [],
@@ -19,7 +20,7 @@ class PasteboardContents {
   final List<String> files;
 
   /// A PNG image on the clipboard (a TIFF is converted natively); null when
-  /// none.
+  /// none, and not read at all when the clipboard holds files or text.
   final Uint8List? png;
 
   /// Whether the clipboard also holds plain text.
