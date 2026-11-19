@@ -410,6 +410,10 @@ class NoteAttachHost extends ConsumerStatefulWidget {
 class _NoteAttachHostState extends ConsumerState<NoteAttachHost>
     implements AttachEditor {
   late final ProviderContainer _container;
+
+  /// The open-editor registry, read once while the scope is alive so
+  /// [dispose] never reads a container that may already be disposed.
+  late final StateController<AttachEditor?> _registry;
   Object _session = Object();
 
   /// The text segment that last had focus since the note was shown: its
@@ -424,6 +428,7 @@ class _NoteAttachHostState extends ConsumerState<NoteAttachHost>
   void initState() {
     super.initState();
     _container = ProviderScope.containerOf(context, listen: false);
+    _registry = _container.read(attachEditorProvider.notifier);
     FocusManager.instance.addListener(_onFocus);
     _register(widget.active);
     _recheckFocus();
@@ -452,9 +457,12 @@ class _NoteAttachHostState extends ConsumerState<NoteAttachHost>
 
   /// Registers this editor (or withdraws it, when it is the registered
   /// one) once the current frame's work is done: providers can't change
-  /// while widgets build.
+  /// while widgets build. The change is dropped when the scope's container,
+  /// and so [_registry], is disposed before the microtask runs (a test or
+  /// scope tearing down with this host still mounted).
   void _register(bool on) => scheduleMicrotask(() {
-    final registry = _container.read(attachEditorProvider.notifier);
+    final registry = _registry;
+    if (!registry.mounted) return;
     if (on && mounted) {
       registry.state = this;
     } else if (identical(registry.state, this)) {
