@@ -1365,3 +1365,637 @@ fn hits_and_attachments_come_in_the_same_order_on_every_search() {
         assert_eq!(core, again, "search::search run {i} differs");
     }
 }
+
+// ================================================================ pinned contracts (verify)
+
+/// Overwrites the stored byte ranges of a note's chunks, by ord.
+fn set_chunk_ranges(conn: &Connection, note: &Note, ranges: &[(i64, i64)]) {
+    for (ord, (s, e)) in ranges.iter().enumerate() {
+        let n = conn
+            .execute(
+                "UPDATE chunks SET start_byte = ?, end_byte = ? WHERE note_id = ? AND ord = ?",
+                params![s, e, note.id.as_str(), ord as i64],
+            )
+            .unwrap();
+        assert_eq!(n, 1, "fixture: {} has a chunk at ord {ord}", note.title);
+    }
+}
+
+/// Moves the (only) `note_attachments` row of `note` to byte `at`.
+fn move_reference(conn: &Connection, note: &Note, at: i64) {
+    let n = conn
+        .execute(
+            "UPDATE note_attachments SET line_start_byte = ? WHERE note_id = ?",
+            params![at, note.id.as_str()],
+        )
+        .unwrap();
+    assert_eq!(n, 1, "fixture: one reference row");
+}
+
+#[test]
+fn two_reference_lines_in_different_chunks_give_the_first_lines_offset_and_chunk() {
+    let (_d, mut vault) = fresh_vault();
+    let att = seed_attachment(
+        vault.connection_ref(),
+        "b6",
+        "Tide Table.txt",
+        200,
+        &["High heron tide at noon."],
+    );
+    let body = format!(
+        "{}\n\n{}\n\n{}\n\n{}\n\n{}\n",
+        filler(300),
+        att.markdown,
+        filler(300),
+        filler(300),
+        att.markdown
+    );
+    let n = create(&mut vault, "Twice Apart", &body);
+    let conn = vault.connection_ref();
+    let lines: Vec<usize> = refs(conn, n.id.as_str())
+        .into_iter()
+        .map(|(_, a)| a)
+        .collect();
+    assert_eq!(lines.len(), 2, "fixture");
+    let (first_chunk, _) = chunk_holding(conn, &n, lines[0]);
+    let (last_chunk, _) = chunk_holding(conn, &n, lines[1]);
+    assert_ne!(first_chunk, last_chunk, "fixture: different chunks");
+
+    let got = ns(&mut vault, "heron", 8);
+    let hit = the_hit(&got, &n);
+    assert_eq!(
+        hit["chunk_id"],
+        json!(first_chunk),
+        "the first line's chunk"
+    );
+    assert_eq!(
+        hit["start_byte"],
+        json!(lines[0]),
+        "the first line's offset"
+    );
+    let core = core_search(&vault, "heron", 8, SearchMode::Fts);
+    assert_eq!(the_hit(&core, &n)["chunk_id"], json!(first_chunk));
+}
+
+#[test]
+fn a_reference_line_outside_every_chunk_lands_on_the_nearest_chunk_before_it_else_after() {
+    let (_d, mut vault) = fresh_vault();
+    let att = seed_attachment(
+        vault.connection_ref(),
+        "c7",
+        "Gap.txt",
+        10,
+        &["heron in the gap"],
+    );
+    let body = format!(
+        "{}\n\n{}\n\n{}\n\n{}\n",
+        filler(300),
+        filler(300),
+        filler(300),
+        att.markdown
+    );
+    let n = create(&mut vault, "Gappy", &body);
+    let conn = vault.connection_ref();
+    let rows = chunk_rows(conn, n.id.as_str());
+    let last = rows.len() - 1;
+    assert!(last >= 2, "fixture: at least three chunks");
+    let ids: Vec<String> = rows.iter().map(|r| r.0.clone()).collect();
+    // The chunks, by ord: 100..200, 300..400, 500..600, and every later one
+    // far past those.
+    let mut ranges = vec![(100, 200), (300, 400), (500, 600)];
+    for i in 3..=last {
+        ranges.push((10_000 + 1000 * i as i64, 10_500 + 1000 * i as i64));
+    }
+    set_chunk_ranges(conn, &n, &ranges);
+
+    // (line start, expected chunk ord): inside a chunk; in a gap (the chunk
+    // starting before it wins even when the next one starts closer); before
+    // every chunk (the first one).
+    for (at, ord) in [(350, 1), (250, 0), (290, 0), (450, 1), (50, 0), (550, 2)] {
+        move_reference(vault.connection_ref(), &n, at);
+        let got = ns(&mut vault, "heron", 8);
+        let hit = the_hit(&got, &n);
+        assert_eq!(
+            hit["chunk_id"],
+            json!(ids[ord]),
+            "reference at byte {at} lands on chunk ord {ord}"
+        );
+        assert_eq!(
+            hit["start_byte"],
+            json!(at),
+            "start_byte is the line offset"
+        );
+    }
+    // Past every chunk: the last one by start.
+    move_reference(vault.connection_ref(), &n, 1_000_000);
+    let got = ns(&mut vault, "heron", 8);
+    assert_eq!(the_hit(&got, &n)["chunk_id"], json!(ids[last]));
+}
+
+#[test]
+fn a_note_without_chunks_gets_no_attachment_hit_but_is_listed_for_its_attachment() {
+    let (_d, mut vault) = fresh_vault();
+    let att = seed_attachment(
+        vault.connection_ref(),
+        "d8",
+        "Bare.txt",
+        10,
+        &["heron by the bare note"],
+    );
+    let bare = create(&mut vault, "Bare", &format!("Bare.\n\n{}\n", att.markdown));
+    let other = create(
+        &mut vault,
+        "Other",
+        &format!("Other.\n\n{}\n", att.markdown),
+    );
+    {
+        let conn = vault.connection_ref();
+        conn.execute(
+            "DELETE FROM chunk_fts WHERE note_id = ?",
+            [bare.id.as_str()],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM chunks WHERE note_id = ?", [bare.id.as_str()])
+            .unwrap();
+    }
+
+    for got in [
+        ns(&mut vault, "heron", 8),
+        core_search(&vault, "heron", 8, SearchMode::Fts),
+    ] {
+        assert!(hits_on(&got, &bare).is_empty(), "no chunk, no hit: {got:#}");
+        assert_eq!(the_hit(&got, &other)["attachment"], att.hit_json());
+        let list = att_list(&got);
+        assert_eq!(list.len(), 1);
+        assert_eq!(
+            sorted_notes(&list[0]),
+            note_refs(&[&bare, &other]),
+            "the list still names the chunkless note"
+        );
+    }
+}
+
+#[test]
+fn the_attachments_list_honours_filters_and_drops_an_attachment_no_passing_note_references() {
+    let (_d, mut vault) = fresh_vault();
+    let conn = vault.connection_ref();
+    let shared = seed_attachment(conn, "e1", "Shared.txt", 10, &["heron shared"]);
+    let only_a = seed_attachment(conn, "f2", "Only A.txt", 10, &["heron only a"]);
+    let a = create(
+        &mut vault,
+        "Alpha",
+        &format!("A.\n\n{}\n\n{}\n", shared.markdown, only_a.markdown),
+    );
+    let b = create(&mut vault, "Beta", &format!("B.\n\n{}\n", shared.markdown));
+
+    let got = search(
+        vault.connection_ref(),
+        SearchOptions {
+            query: "heron",
+            k: 8,
+            mode: SearchMode::Fts,
+            filters: SearchFilters {
+                tags_all: Vec::new(),
+                note_id: Some(b.id.as_str().to_string()),
+            },
+            embedder: None,
+        },
+    )
+    .unwrap();
+    let got = serde_json::to_value(got).unwrap();
+    assert_eq!(
+        att_paths(&got),
+        vec![shared.path.clone()],
+        "Only A.txt has no passing note: {got:#}"
+    );
+    assert_eq!(
+        sorted_notes(&att_list(&got)[0]),
+        note_refs(&[&b]),
+        "only the note passing the filter is listed"
+    );
+    assert!(hits_on(&got, &a).is_empty());
+}
+
+#[test]
+fn a_name_and_text_match_outranks_a_text_only_match_by_adding_the_two_scores() {
+    let (_d, mut vault) = fresh_vault();
+    let conn = vault.connection_ref();
+    // Y's chunk is the better keyword match (rank 1), X's chunk ranks 2, but
+    // X's name matches too: its score is the sum of both.
+    let y_text = "heron heron heron.";
+    let x_text = format!("The {} heron {}.", filler(60), filler(60));
+    let y = seed_attachment(conn, "a5", "Alpha.txt", 10, &[y_text]);
+    let x = seed_attachment(conn, "b6", "Heron Log.txt", 10, &[x_text.as_str()]);
+    create(&mut vault, "Why", &format!("Y.\n\n{}\n", y.markdown));
+    let nx = create(
+        &mut vault,
+        "Ex",
+        &format!(
+            "Ex.\n\n{}\n",
+            x.markdown.replacen("[Heron Log.txt]", "[]", 1)
+        ),
+    );
+
+    for got in [
+        ns(&mut vault, "heron", 8),
+        core_search(&vault, "heron", 8, SearchMode::Fts),
+    ] {
+        assert_eq!(
+            att_paths(&got),
+            vec![x.path.clone(), y.path.clone()],
+            "name score + chunk score beats a lone chunk score: {got:#}"
+        );
+        assert_eq!(hits(&got)[0]["note_id"], json!(nx.id.as_str()));
+    }
+}
+
+#[test]
+fn a_note_hit_merges_into_its_attachment_hit_keeping_the_higher_score() {
+    let (_d, mut vault) = fresh_vault();
+    let conn = vault.connection_ref();
+    // The attachment's name and chunk both match: 2/61. The note's own
+    // chunk is the only note chunk that matches: 1/61.
+    let att = seed_attachment(conn, "c8", "Heron Weir.txt", 10, &["heron at the weir"]);
+    let n = create(
+        &mut vault,
+        "Weir",
+        &format!("A heron.\n\n{}\n", att.markdown),
+    );
+    let got = core_search(&vault, "heron", 8, SearchMode::Fts);
+    let hit = the_hit(&got, &n);
+    let score = hit["score"].as_f64().unwrap();
+    assert!(
+        (score - 2.0 / 61.0).abs() < 1e-5,
+        "the attachment hit's 2/61, not the note chunk's 1/61: {score}"
+    );
+}
+
+#[test]
+fn a_note_chunk_outscoring_its_attachment_hit_lifts_the_merged_hit_score() {
+    let (_d, mut vault) = fresh_vault();
+    let conn = vault.connection_ref();
+    // The attachment's chunk is rank 1 of the attachment chunks only
+    // (1/61); the note's own chunk is rank 1 of the note chunks (1/61) and
+    // Other's chunk rank 2 (1/62), so a merged hit never drops below 1/61.
+    let att = seed_attachment(conn, "d9", "Plain.txt", 10, &["filler heron"]);
+    let m = create(
+        &mut vault,
+        "Reeds",
+        &format!("heron heron heron\n\n{}\n", att.markdown),
+    );
+    create(
+        &mut vault,
+        "Other",
+        "one heron here, filler words around it",
+    );
+    let got = core_search(&vault, "heron", 8, SearchMode::Fts);
+    let score = the_hit(&got, &m)["score"].as_f64().unwrap();
+    assert!((score - 1.0 / 61.0).abs() < 1e-5, "{score}");
+    // Reeds (1/61) is ahead of Other (1/62).
+    assert_eq!(hits(&got)[0]["note_id"], json!(m.id.as_str()));
+}
+
+#[test]
+fn a_query_without_letters_or_digits_matches_no_attachment_name() {
+    let (_d, mut vault) = fresh_vault();
+    let sketch = seed_attachment(vault.connection_ref(), "e2", "Heron Sketch.png", 70, &[]);
+    create(
+        &mut vault,
+        "Holder",
+        &format!(
+            "Holder.\n\n{}\n",
+            sketch.markdown.replacen("[Heron Sketch.png]", "[]", 1)
+        ),
+    );
+    for q in ["?!", "...", "- _"] {
+        for got in [
+            ns(&mut vault, q, 8),
+            core_search(&vault, q, 8, SearchMode::Fts),
+        ] {
+            assert!(hits(&got).is_empty(), "{q:?}: {got:#}");
+            assert!(att_list(&got).is_empty(), "{q:?}: {got:#}");
+        }
+    }
+}
+
+#[test]
+fn a_name_match_needs_every_query_word_as_a_whole_lowercased_word_of_the_name() {
+    let (_d, mut vault) = fresh_vault();
+    let sketch = seed_attachment(vault.connection_ref(), "f3", "Heron Sketch.png", 70, &[]);
+    create(
+        &mut vault,
+        "Holder",
+        &format!(
+            "Holder.\n\n{}\n",
+            sketch.markdown.replacen("[Heron Sketch.png]", "[]", 1)
+        ),
+    );
+    for (q, listed) in [
+        ("sketch", true),
+        ("SKETCH", true),
+        ("sketch png", true),
+        ("png heron", true),
+        ("sketch jpg", false),
+        ("sketch zebra", false),
+        ("sketches", false),
+        ("sket", false),
+    ] {
+        let got = ns(&mut vault, q, 8);
+        let want = if listed {
+            vec![sketch.path.clone()]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(att_paths(&got), want, "{q:?}: {got:#}");
+    }
+}
+
+#[test]
+fn equal_scores_order_by_note_title_and_attachments_by_name_then_path() {
+    let (_d, mut vault) = fresh_vault();
+    let conn = vault.connection_ref();
+    // Zeta's chunk is rank 1 of the chunk list; Heron Alpha's name is rank 1
+    // of the name list: the same score. Name order and path order disagree.
+    let zeta = seed_attachment(conn, "a1", "Zeta.txt", 10, &["heron zeta"]);
+    let alpha = seed_attachment(conn, "b2", "Heron Alpha.png", 10, &[]);
+    assert!(zeta.path < alpha.path, "fixture: path order is Zeta first");
+    for title in ["Fen", "Dune", "Cove", "Bay"] {
+        create(
+            &mut vault,
+            title,
+            &format!(
+                "{title}.\n\n{}\n\n{}\n",
+                zeta.markdown,
+                alpha.markdown.replacen("[Heron Alpha.png]", "[]", 1)
+            ),
+        );
+    }
+    let got = core_search(&vault, "heron", 20, SearchMode::Fts);
+    assert_eq!(
+        att_paths(&got),
+        vec![alpha.path.clone(), zeta.path.clone()],
+        "equal score: name before path"
+    );
+    let titles = |entry: &Value| -> Vec<String> {
+        entry["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["title"].as_str().unwrap().to_string())
+            .collect()
+    };
+    for entry in att_list(&got) {
+        assert_eq!(
+            titles(&entry),
+            ["Bay", "Cove", "Dune", "Fen"],
+            "title order"
+        );
+    }
+    // Equal scores: hits come by note title, then by attachment path.
+    let order: Vec<(String, String)> = hits(&got)
+        .iter()
+        .map(|h| {
+            (
+                h["note_title"].as_str().unwrap().to_string(),
+                h["attachment"]["path"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    let mut want = order.clone();
+    want.sort();
+    assert_eq!(order, want, "title, then attachment path: {order:?}");
+    assert_eq!(order.len(), 8);
+}
+
+#[test]
+fn index_text_cuts_each_reference_destination_outside_fences_and_keeps_every_other_byte() {
+    let (_d, mut vault) = fresh_vault();
+    let a = seed_attachment(vault.connection_ref(), "a8", "Notes (draft).txt", 10, &[]);
+    let b = seed_attachment(vault.connection_ref(), "b9", "Plain.txt", 10, &[]);
+    let c = seed_attachment(vault.connection_ref(), "c1", "Fenced.txt", 10, &[]);
+    let cut = |att: &Att| att.markdown[..att.markdown.rfind('(').unwrap()].to_string();
+    let dest = |att: &Att| att.markdown[att.markdown.rfind('(').unwrap()..].to_string();
+    // An indented reference after multibyte text, a second one, a fenced one
+    // that stays whole, and a last one with no trailing newline.
+    let body = format!(
+        "Zoë 🦩 café.\n  {}\nMiddle.\n{}\n```\n{}\n```\nTail.\n{}",
+        a.markdown, b.markdown, c.markdown, a.markdown
+    );
+    let n = create(&mut vault, "Cuts", &body);
+    let stored = stored_body(vault.connection_ref(), n.id.as_str());
+    let conn = vault.connection_ref();
+    assert_eq!(
+        refs(conn, n.id.as_str()).len(),
+        3,
+        "fixture: fenced one is no reference"
+    );
+    let rows = chunk_rows(conn, n.id.as_str());
+    assert_eq!(rows.len(), 1, "fixture: one chunk");
+    assert_eq!(
+        rows[0].1,
+        stored.trim_end(),
+        "chunks.content is the exact slice"
+    );
+    let want = format!(
+        "Zoë 🦩 café.\n  {}\nMiddle.\n{}\n```\n{}\n```\nTail.\n{}",
+        cut(&a),
+        cut(&b),
+        c.markdown,
+        cut(&a)
+    );
+    let fts: String = conn
+        .query_row(
+            "SELECT content FROM chunk_fts WHERE chunk_id = ?",
+            [&rows[0].0],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        fts, want,
+        "chunk_fts: destinations cut, everything else kept"
+    );
+    assert!(!fts.contains(&dest(&a)) && !fts.contains(&dest(&b)));
+    assert!(fts.contains(&dest(&c)), "a fenced line is not a reference");
+
+    // The embedding input is the same text, from reindex and embed_missing.
+    let emb = Words::new();
+    reindex(&mut vault, n.id.as_str(), Some(&emb));
+    assert_eq!(emb.texts(), vec![want.clone()]);
+    vault
+        .connection_ref()
+        .execute("DELETE FROM chunk_vec", [])
+        .unwrap();
+    let emb = Words::new();
+    {
+        let mut conn: &mut Connection = vault.connection_mut();
+        embed_missing(&mut conn, &emb, None, 0, 64).unwrap();
+    }
+    assert_eq!(emb.texts(), vec![want]);
+}
+
+#[test]
+fn embed_missing_picks_attachment_chunks_after_note_chunks_inside_the_shared_cap() {
+    let (_d, mut vault) = fresh_vault();
+    let att = seed_attachment(
+        vault.connection_ref(),
+        "d2",
+        "Reef.txt",
+        10,
+        &["first chunk", "second chunk", "third chunk"],
+    );
+    let n = create(&mut vault, "Dive", &format!("Dive.\n\n{}\n", att.markdown));
+    assert_eq!(
+        chunk_rows(vault.connection_ref(), n.id.as_str()).len(),
+        1,
+        "fixture: one note chunk"
+    );
+    let emb = Words::new();
+    let run = |vault: &mut Vault, cap: usize| {
+        let mut conn: &mut Connection = vault.connection_mut();
+        embed_missing(&mut conn, &emb, None, 0, cap).unwrap()
+    };
+
+    // Cap 2: the note chunk first, then one attachment chunk (lowest id).
+    let r = run(&mut vault, 2);
+    assert_eq!((r.embedded, r.pending), (2, 2));
+    assert_eq!(
+        attachment_vec_ids(vault.connection_ref()),
+        BTreeSet::from([att.chunk_ids[0].clone()]),
+        "attachment chunks go by ascending id after the note chunks"
+    );
+    let r = run(&mut vault, 1);
+    assert_eq!((r.embedded, r.pending), (1, 1));
+    assert!(attachment_vec_ids(vault.connection_ref()).contains(&att.chunk_ids[1]));
+    let r = run(&mut vault, 5);
+    assert_eq!((r.embedded, r.pending), (1, 0));
+}
+
+#[test]
+fn embed_missing_deletes_attachment_vectors_whose_chunk_is_gone_and_only_those() {
+    let (_d, mut vault) = fresh_vault();
+    let att = seed_attachment(
+        vault.connection_ref(),
+        "e3",
+        "Reef.txt",
+        10,
+        &["zebra one", "kelp two"],
+    );
+    create(&mut vault, "Dive", &format!("Dive.\n\n{}\n", att.markdown));
+    let emb = Words::new();
+    {
+        let mut conn: &mut Connection = vault.connection_mut();
+        embed_missing(&mut conn, &emb, None, 0, 64).unwrap();
+    }
+    let note_vecs = chunk_vec_ids(vault.connection_ref());
+    assert!(!note_vecs.is_empty());
+    {
+        let conn = vault.connection_ref();
+        conn.execute(
+            "DELETE FROM attachment_chunk_fts WHERE chunk_id = ?",
+            [&att.chunk_ids[1]],
+        )
+        .unwrap();
+        conn.execute(
+            "DELETE FROM attachment_chunks WHERE id = ?",
+            [&att.chunk_ids[1]],
+        )
+        .unwrap();
+    }
+    {
+        let mut conn: &mut Connection = vault.connection_mut();
+        embed_missing(&mut conn, &emb, None, 0, 64).unwrap();
+    }
+    assert_eq!(
+        attachment_vec_ids(vault.connection_ref()),
+        BTreeSet::from([att.chunk_ids[0].clone()]),
+        "the vector of the deleted attachment chunk is gone, the other kept"
+    );
+    assert_eq!(
+        chunk_vec_ids(vault.connection_ref()),
+        note_vecs,
+        "note vectors are never orphans of attachment_chunks"
+    );
+    let counts = embedding_counts(vault.connection_ref()).unwrap();
+    assert_eq!(counts.chunks, counts.embedded);
+}
+
+#[test]
+fn an_unreferenced_attachments_vectors_neither_hit_nor_take_a_rank_from_referenced_ones() {
+    let (_d, mut vault) = fresh_vault();
+    let conn = vault.connection_ref();
+    let kept = seed_attachment(conn, "f4", "Kept.txt", 10, &["kelp bed by the pier"]);
+    let never = seed_attachment(conn, "a6", "Never.txt", 10, &["a striped zebra alone"]);
+    let n = create(&mut vault, "Keeper", &format!("K.\n\n{}\n", kept.markdown));
+    // The nearest note chunk to "striped" (axis 0); Keeper's own chunk
+    // (axis 1) is rank 2 of the note chunks.
+    create(&mut vault, "Zebra Note", "Zebra grazing.");
+    let emb = Words::new();
+    {
+        let mut conn: &mut Connection = vault.connection_mut();
+        embed_missing(&mut conn, &emb, None, 0, 64).unwrap();
+    }
+    assert!(
+        attachment_vec_ids(vault.connection_ref()).contains(&never.chunk_ids[0]),
+        "fixture: the unreferenced chunk has a vector"
+    );
+
+    let got = search(
+        vault.connection_ref(),
+        SearchOptions {
+            query: "striped",
+            k: 8,
+            mode: SearchMode::Vector,
+            filters: SearchFilters::default(),
+            embedder: Some(&emb),
+        },
+    )
+    .unwrap();
+    let got = serde_json::to_value(got).unwrap();
+    for h in hits(&got) {
+        assert_ne!(h["attachment"]["path"], json!(never.path), "{got:#}");
+    }
+    assert_eq!(att_paths(&got), vec![kept.path.clone()], "{got:#}");
+    // Kept.txt's chunk is rank 1 of the referenced attachment chunks (the
+    // unreferenced, nearer one takes no rank): 1/61, above Keeper's own
+    // chunk at 1/62.
+    let score = the_hit(&got, &n)["score"].as_f64().unwrap();
+    assert!((score - 1.0 / 61.0).abs() < 1e-5, "{score}");
+}
+
+#[test]
+fn equally_scored_chunks_of_one_attachment_go_to_the_lower_ord_for_the_snippet() {
+    let (_d, mut vault) = fresh_vault();
+    // Two chunks tie: ord 1 is rank 1 of the keyword list and rank 2 of the
+    // vector list, ord 0 the other way round (1/61 + 1/62 each).
+    let low = format!("heron {}", filler(30));
+    let high = "heron heron zebra";
+    let att = seed_attachment(
+        vault.connection_ref(),
+        "b7",
+        "Tie.txt",
+        10,
+        &[low.as_str(), high],
+    );
+    create(&mut vault, "Holder", &format!("H.\n\n{}\n", att.markdown));
+    let emb = Words::new();
+    {
+        let mut conn: &mut Connection = vault.connection_mut();
+        embed_missing(&mut conn, &emb, None, 0, 64).unwrap();
+    }
+    let got = search(
+        vault.connection_ref(),
+        SearchOptions {
+            query: "heron",
+            k: 8,
+            mode: SearchMode::Hybrid,
+            filters: SearchFilters::default(),
+            embedder: Some(&emb),
+        },
+    )
+    .unwrap();
+    let got = serde_json::to_value(got).unwrap();
+    let list = att_list(&got);
+    assert_eq!(list.len(), 1, "{got:#}");
+    let want: String = low.chars().take(SNIPPET_CHARS).collect();
+    assert_eq!(list[0]["snippet"], json!(want), "the lower ord wins a tie");
+}
