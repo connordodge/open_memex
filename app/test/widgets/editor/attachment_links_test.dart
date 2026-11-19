@@ -28,6 +28,7 @@ import 'package:open_memex_app/src/editor/spell_ranges.dart';
 import 'package:open_memex_app/src/state/attachments_state.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/theme/typography.dart';
+import 'package:open_memex_app/src/vault_access/attachments_access.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_styles.dart';
 
@@ -523,6 +524,26 @@ void main() {
           reason: 'no /usr/bin/open call with an objects/ path',
         );
         expect(e.opener.opened, isEmpty);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a click on an attachment link whose open fails asks the domain once and never the url opener',
+      (tester) async {
+        final text = 'See [gone.pdf](${_t142Path('gone.pdf')}) here\nother';
+        final e = await _t142Pump(tester, text);
+        e.attachments!.openResults.add(
+          const AttachmentActionFailed(AttachmentLookupFailure.missing),
+        );
+        await _t142Click(tester, _t142PointOn(tester, 0, 'gone.pdf'));
+        expect(e.attachments!.openCalls, [_t142Path('gone.pdf')]);
+        expect(
+          e.opener.opened,
+          isEmpty,
+          reason: 'a failed open never falls back to the url opener',
+        );
+        expect(tester.takeException(), isNull);
       },
       variant: macOnly,
     );
