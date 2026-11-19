@@ -622,6 +622,8 @@ fn seed_tables(conn: &Connection) -> Vec<String> {
                    AND name NOT LIKE 'sqlite~_%' ESCAPE '~'
                    AND name NOT LIKE 'chunk~_fts%' ESCAPE '~'
                    AND name NOT LIKE 'chunk~_vec%' ESCAPE '~'
+                   AND name NOT LIKE 'attachment~_chunk~_fts%' ESCAPE '~'
+                   AND name NOT LIKE 'attachment~_chunk~_vec%' ESCAPE '~'
                  ORDER BY name",
             )
             .unwrap();

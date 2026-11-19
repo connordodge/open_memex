@@ -349,8 +349,8 @@ void _wi8FixtureTests() {
         final db = FakeVaultDb();
         addTearDown(db.close);
 
-        expect(db.schemaVersionForTest, 8);
-        expect(fixtureSchemaVersion, 8);
+        expect(db.schemaVersionForTest, 9);
+        expect(fixtureSchemaVersion, 9);
         expect(db.hasTables(const ['note_revisions']), isTrue);
         expect(_wi8Columns(db.db, 'notes'), contains('agent_read_only'));
         expect(_wi8Columns(db.db, 'note_revisions'), [
@@ -417,7 +417,7 @@ void _wi8FixtureTests() {
 
           db.migrateToV6();
 
-          expect(db.schemaVersionForTest, 8, reason: what);
+          expect(db.schemaVersionForTest, fixtureSchemaVersion, reason: what);
           expect(db.hasTables(v8Tables), isTrue, reason: what);
           expect(
             _wi8Columns(db.db, 'notes'),
@@ -461,7 +461,7 @@ void _wi8FixtureTests() {
 
       db.migrateToV6(tagColumns: false);
 
-      expect(db.schemaVersionForTest, 8);
+      expect(db.schemaVersionForTest, fixtureSchemaVersion);
       expect(_wi8Columns(db.db, 'notes'), containsAll(v8NoteColumns));
     });
   });
