@@ -5,6 +5,7 @@
 use axum::Router;
 
 pub mod agents;
+pub mod attachments;
 pub mod backup;
 pub mod canvas;
 pub mod daily;
@@ -38,4 +39,5 @@ pub fn router() -> Router {
         .merge(embeddings::router())
         .merge(note_edits::router())
         .merge(search::router())
+        .merge(attachments::router())
 }
