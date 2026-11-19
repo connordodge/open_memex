@@ -46,6 +46,7 @@ import 'package:open_memex_app/src/widgets/editor/marker_column.dart';
 import 'package:open_memex_app/src/widgets/editor/row_kinds.dart';
 import 'package:open_memex_app/src/widgets/editor/segment_view.dart';
 import 'package:open_memex_app/src/widgets/editor/spell_check_host.dart';
+import 'package:open_memex_app/src/widgets/editor/spelling_menu.dart';
 import 'package:open_memex_app/src/widgets/editor/text_segment.dart';
 
 import '../../support/app_harness.dart';
@@ -216,6 +217,17 @@ class _T128IdlePresenter extends RowKindPresenter {
   bool ownsPress(PresentedRow row, Offset position) => false;
 }
 
+/// [_T128IdlePresenter] whose row [owned] owns every press inside its
+/// rect (D5: a presenter's `ownsPress` wins).
+class _T128OwningPresenter extends _T128IdlePresenter {
+  const _T128OwningPresenter(this.owned);
+
+  final int owned;
+
+  @override
+  bool ownsPress(PresentedRow row, Offset position) => row.index == owned;
+}
+
 // ---------------------------------------------------------------- harness
 
 /// One pumped note editor on [_t128Body] with the idle presenter.
@@ -321,9 +333,10 @@ class _T128Editor {
 Future<_T128Editor> _t128Pump(
   WidgetTester tester, {
   Wi438Actions? actions,
+  RowKindPresenter presenter = const _T128IdlePresenter(),
 }) async {
   debugRowKindPresenterOverride = (kind) =>
-      kind == RowKind.table ? null : const _T128IdlePresenter();
+      kind == RowKind.table ? null : presenter;
   addTearDown(() => debugRowKindPresenterOverride = null);
   final w = await wi438Pump(
     tester,
@@ -1077,6 +1090,526 @@ void main() {
 
         expect(e.selected, e.range(6, 'smal'));
         expect(e.active, 6, reason: 'the row is the active row');
+      },
+      variant: macOnly,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Verify pins: contracts the doc comments promise
+  // -------------------------------------------------------------------------
+  group('right-click places the layer does not own (verify pins)', () {
+    testWidgets(
+      'a right click on the marker column of an item row without a field opens no menu and moves nothing',
+      (tester) async {
+        final e = await _t128Pump(tester);
+        await e.focusFieldRow();
+        final selection = e.host.selection;
+        final marker = find.byKey(const ValueKey('editor-row-marker-0-1'));
+        expect(marker, findsOneWidget, reason: 'fixture: row 1 is an item');
+
+        await wi438RightClick(tester, tester.getCenter(marker));
+
+        expect(wi438Menu, findsNothing);
+        expect(wi438DefaultMenu, findsNothing);
+        expect(e.host.selection, selection, reason: 'the selection stays');
+        expect(e.active, isNull, reason: 'no row became active');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a right click on a row whose presenter owns the press opens no row menu and moves nothing',
+      (tester) async {
+        final e = await _t128Pump(
+          tester,
+          presenter: const _T128OwningPresenter(0),
+        );
+        await e.focusFieldRow();
+        final selection = e.host.selection;
+
+        await wi438RightClick(tester, e.wordPoint(0, 'teh'));
+
+        expect(wi438Menu, findsNothing, reason: 'no spelling menu');
+        expect(wi438DefaultMenu, findsNothing, reason: 'no text menu');
+        expect(e.host.selection, selection, reason: 'the selection stays');
+        expect(e.active, isNull, reason: 'row 0 did not activate');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a right click below the rows of the segment opens no row menu and moves nothing',
+      (tester) async {
+        final e = await _t128Pump(tester);
+        await e.focusFieldRow();
+        final selection = e.host.selection;
+        final segment = e.host.context.findRenderObject()! as RenderBox;
+        final rows = e.host.lineBoxes()!.box;
+        final below = Offset(
+          rows.localToGlobal(Offset.zero).dx + 200,
+          rows.localToGlobal(Offset(0, rows.size.height)).dy + 4,
+        );
+        expect(
+          below.dy,
+          lessThan(segment.localToGlobal(Offset(0, segment.size.height)).dy),
+          reason: 'fixture: the point lies on the empty area of the segment',
+        );
+
+        await wi438RightClick(tester, below);
+
+        expect(wi438Menu, findsNothing);
+        expect(wi438DefaultMenu, findsNothing);
+        expect(e.host.selection, selection);
+        expect(e.active, isNull);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a right click inside the selection of a field row keeps that selection and opens the field menu',
+      (tester) async {
+        final e = await _t128Pump(tester);
+        const text = 'field anchor words';
+        final start = e.spec(_t128FieldRow).textStart;
+        await e.w.select(
+          'field anchor',
+          const TextSelection(baseOffset: 0, extentOffset: text.length),
+        );
+        final inside = e.w.glyphPoint(
+          'field anchor',
+          e.w.at('field anchor', 'anchor') + 1,
+        );
+
+        await wi438RightClick(tester, inside);
+
+        expect(wi438DefaultMenu, findsOneWidget);
+        expect(
+          e.selected,
+          TextRange(start: start, end: start + text.length),
+          reason: 'a field keeps a selection the right click lands on',
+        );
+        expect(e.active, isNull);
+      },
+      variant: macOnly,
+    );
+  });
+
+  group('the text menu of a row without a field (verify pins)', () {
+    testWidgets(
+      'the text menu over a selection lists Cut Copy and Paste and Copy puts the word on the clipboard and closes the menu',
+      (tester) async {
+        final e = await _t128Pump(tester);
+        await e.focusFieldRow();
+
+        await wi438RightClick(tester, e.wordPoint(0, 'plain'));
+        expect(_t128DefaultMenuLabels(tester), ['Cut', 'Copy', 'Paste']);
+        await tester.tap(
+          find.descendant(of: wi438DefaultMenu, matching: wi438AnyText('Copy')),
+        );
+        await pumpFrames(tester);
+
+        expect(e.w.clip.text, 'plain', reason: 'Copy copies the word');
+        expect(wi438DefaultMenu, findsNothing, reason: 'the item closed it');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'Cut in the text menu of a row without a field removes the word and puts it on the clipboard',
+      (tester) async {
+        final e = await _t128Pump(tester);
+        await e.focusFieldRow();
+        final before = e.body;
+        final plain = e.at(0, 'plain');
+
+        await wi438RightClick(tester, e.wordPoint(0, 'plain'));
+        await tester.tap(
+          find.descendant(of: wi438DefaultMenu, matching: wi438AnyText('Cut')),
+        );
+        await pumpFrames(tester);
+
+        expect(e.body, before.replaceRange(plain, plain + 5, ''));
+        expect(e.w.clip.text, 'plain');
+        expect(wi438DefaultMenu, findsNothing);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets('the text menu over a caret lists only Paste', (tester) async {
+      final e = await _t128Pump(tester);
+      await _t128Click(tester, e.wordPoint(0, 'plain'));
+      expect(e.host.selection.isCollapsed, isTrue, reason: 'fixture: caret');
+
+      await showRowTextMenu(e.host, 0, anchor: const Offset(100, 100));
+      await pumpFrames(tester);
+
+      expect(_t128DefaultMenuLabels(tester), ['Paste']);
+    }, variant: macOnly);
+
+    testWidgets(
+      'the text menu lists no Paste while the clipboard holds no text',
+      (tester) async {
+        final e = await _t128Pump(tester);
+        await e.focusFieldRow();
+        e.w.clip.text = null;
+
+        await wi438RightClick(tester, e.wordPoint(0, 'plain'));
+
+        expect(_t128DefaultMenuLabels(tester), ['Cut', 'Copy']);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'no text menu opens over a caret while the clipboard holds no text',
+      (tester) async {
+        final e = await _t128Pump(tester);
+        await _t128Click(tester, e.wordPoint(0, 'plain'));
+        e.w.clip.text = null;
+
+        await showRowTextMenu(e.host, 0, anchor: const Offset(100, 100));
+        await pumpFrames(tester);
+
+        expect(wi438DefaultMenu, findsNothing, reason: 'it has no items');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets('the text menu of a row past the last row opens nothing', (
+      tester,
+    ) async {
+      final e = await _t128Pump(tester);
+      await e.focusFieldRow();
+
+      await showRowTextMenu(e.host, 99, anchor: const Offset(100, 100));
+      await showRowTextMenu(e.host, -1, anchor: const Offset(100, 100));
+      await pumpFrames(tester);
+
+      expect(wi438DefaultMenu, findsNothing);
+    }, variant: macOnly);
+
+    testWidgets(
+      'a press on a row closes the text menu of a row without a field',
+      (tester) async {
+        final e = await _t128Pump(tester);
+        await e.focusFieldRow();
+        await wi438RightClick(tester, e.wordPoint(0, 'plain'));
+        expect(wi438DefaultMenu, findsOneWidget, reason: 'fixture: it is open');
+
+        final point = e.w.glyphPoint(
+          'field anchor',
+          e.w.at('field anchor', 'anchor') + 1,
+        );
+        final press = await tester.startGesture(
+          point,
+          kind: PointerDeviceKind.mouse,
+          buttons: kPrimaryButton,
+        );
+        await tester.pump();
+
+        expect(wi438DefaultMenu, findsNothing, reason: 'the press closed it');
+        await press.up();
+        await pumpFrames(tester);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a tap outside the editor closes the text menu of a row without a field',
+      (tester) async {
+        final e = await _t128Pump(tester);
+        await e.focusFieldRow();
+        await wi438RightClick(tester, e.wordPoint(0, 'plain'));
+        expect(wi438DefaultMenu, findsOneWidget, reason: 'fixture: it is open');
+
+        await tester.tapAt(const Offset(2, 2));
+        await pumpFrames(tester);
+
+        expect(wi438DefaultMenu, findsNothing);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a change of the segment text closes the text menu of a row without a field',
+      (tester) async {
+        final e = await _t128Pump(tester);
+        await e.focusFieldRow();
+        await wi438RightClick(tester, e.wordPoint(0, 'plain'));
+        expect(wi438DefaultMenu, findsOneWidget, reason: 'fixture: it is open');
+
+        e.host.applyEdit(
+          const SegmentEdit(start: 0, end: 0, replacement: 'Zed '),
+        );
+        await pumpFrames(tester);
+
+        expect(wi438DefaultMenu, findsNothing);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a change of the segment selection closes the text menu of a row without a field',
+      (tester) async {
+        final e = await _t128Pump(tester);
+        await e.focusFieldRow();
+        await wi438RightClick(tester, e.wordPoint(0, 'plain'));
+        expect(wi438DefaultMenu, findsOneWidget, reason: 'fixture: it is open');
+
+        e.host.select(const TextSelection.collapsed(offset: 1));
+        await pumpFrames(tester);
+
+        expect(wi438DefaultMenu, findsNothing);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a second right click replaces the text menu with one for the new word',
+      (tester) async {
+        final e = await _t128Pump(tester);
+        await e.focusFieldRow();
+        await wi438RightClick(tester, e.wordPoint(3, 'quote'));
+        expect(wi438DefaultMenu, findsOneWidget, reason: 'fixture: it is open');
+
+        await wi438RightClick(tester, e.wordPoint(0, 'plain'));
+
+        expect(wi438DefaultMenu, findsOneWidget, reason: 'one menu only');
+        expect(e.selected, e.range(0, 'plain'));
+        expect(e.active, 0);
+      },
+      variant: macOnly,
+    );
+  });
+
+  group('the spelling menu of a row without a field (verify pins)', () {
+    testWidgets(
+      'a second right click on another flagged word opens that menu after the first',
+      (tester) async {
+        final e = await _t128Pump(tester);
+        await e.focusFieldRow();
+        await wi438RightClick(tester, e.wordPoint(0, 'teh'));
+        expect(wi438Labels(tester).first, 'the', reason: 'fixture: first menu');
+
+        await wi438RightClick(tester, e.wordPoint(1, 'wrld'));
+
+        expect(wi438Menu, findsOneWidget);
+        expect(wi438Labels(tester).first, 'world');
+        expect(e.active, 1);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'closing the spelling menu of a row without a field makes that row the active row again with its selection',
+      (tester) async {
+        final e = await _t128Pump(tester);
+        await e.focusFieldRow();
+        final teh = e.range(0, 'teh');
+        e.host.select(
+          TextSelection(baseOffset: teh.start, extentOffset: teh.end),
+        );
+        final issue = rowSpellingIssue(e.host, 0);
+        expect(issue, isNotNull, reason: 'fixture: the selection is on teh');
+        expect(e.active, isNull, reason: 'fixture: row 0 is idle');
+
+        final opened = await showRowSpellingMenu(
+          e.host,
+          0,
+          issue: issue!,
+          anchor: e.wordPoint(0, 'teh'),
+        );
+        await pumpFrames(tester);
+        expect(opened, isTrue);
+        expect(wi438Menu, findsOneWidget);
+        await wi438Key(tester, wi438Esc);
+        await pumpFrames(tester);
+
+        expect(wi438Menu, findsNothing, reason: 'Esc closed the menu');
+        expect(e.active, 0, reason: 'the row is the active row again');
+        expect(e.focused, 0, reason: 'and has focus');
+        expect(e.selected, teh, reason: 'with the selection as it was');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets('the spelling menu of a row past the last row opens nothing', (
+      tester,
+    ) async {
+      final e = await _t128Pump(tester);
+      await e.focusFieldRow();
+      final teh = e.range(0, 'teh');
+      e.host.select(
+        TextSelection(baseOffset: teh.start, extentOffset: teh.end),
+      );
+      final real = rowSpellingIssue(e.host, 0)!;
+
+      final opened = await showRowSpellingMenu(
+        e.host,
+        99,
+        issue: real,
+        anchor: const Offset(100, 100),
+      );
+      await pumpFrames(tester);
+
+      expect(opened, isFalse);
+      expect(wi438Menu, findsNothing);
+      expect(rowSpellingIssue(e.host, 99), isNull);
+    }, variant: macOnly);
+
+    testWidgets(
+      'Check Document Now opens the spelling menu of a row without a field below the misspelling',
+      (tester) async {
+        final e = await _t128Pump(tester);
+        await e.focusFieldRow();
+
+        e.w.spelling.emitCheckDocumentNow();
+        await pumpFrames(tester, frames: 10);
+
+        expect(wi438Menu, findsOneWidget, reason: 'the menu opens');
+        expect(wi438Labels(tester).take(3), [
+          'small',
+          'Learn Spelling',
+          'Ignore Spelling',
+        ]);
+        // The row has its field by now: read the word from its own boxes.
+        final smal = e.local(6, 'smal');
+        final boxes = rowBoxesOf(tester, 0, 6);
+        final rects = boxes.boxesFor(TextRange(start: smal, end: smal + 4));
+        final bottom = boxes.box.localToGlobal(rects.first.bottomLeft).dy;
+        expect(
+          tester.getRect(wi438Item('small')).top,
+          greaterThanOrEqualTo(bottom - 1),
+          reason: 'the menu hangs below the word',
+        );
+      },
+      variant: macOnly,
+    );
+  });
+
+  group('Cmd+press on a row without a field (verify pins)', () {
+    testWidgets(
+      'a Cmd+click on a wikilink in a row without a field opens its note and puts the caret at the link',
+      (tester) async {
+        final e = await _t128Pump(tester);
+        await e.focusFieldRow();
+        // The note the link opens takes the editor's place: keep this host.
+        final host = e.host;
+        final link = e.local(6, 'Other note');
+        final at = e.glyphs(6, link, link + 5).center;
+        final expected = e.offsetAt(6, at);
+
+        await tester.macHolding([LogicalKeyboardKey.metaLeft], () async {
+          final g = await tester.startGesture(
+            at,
+            kind: PointerDeviceKind.mouse,
+            buttons: kPrimaryButton,
+          );
+          await tester.pump();
+          expect(
+            host.selection,
+            isNot(TextSelection.collapsed(offset: expected)),
+            reason: 'the caret waits for the release',
+          );
+          await g.up();
+          await tester.pump();
+        });
+        await pumpFrames(tester);
+
+        expect(
+          e.w.e.container.read(tabsProvider).activeTab,
+          const NoteTab(_t128OtherId),
+        );
+        expect(host.selection, TextSelection.collapsed(offset: expected));
+        expect(host.activeRow.value, 6);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a Cmd+drag from a row without a field to another row selects from the press and keeps focus in the first row',
+      (tester) async {
+        final e = await _t128Pump(tester);
+        await e.focusFieldRow();
+        final start = e.wordPoint(0, 'typo');
+        final base = e.offsetAt(0, start);
+        final end = e.wordPoint(3, 'text');
+        final extent = e.offsetAt(3, end);
+
+        await tester.macHolding([
+          LogicalKeyboardKey.metaLeft,
+        ], () => _t128Drag(tester, start, end));
+
+        expect(
+          e.host.selection,
+          TextSelection(baseOffset: base, extentOffset: extent),
+        );
+        expect(e.focused, 0, reason: 'focus is in the row the press began in');
+        expect(e.active, 0);
+      },
+      variant: macOnly,
+    );
+  });
+
+  group('the active row of the rows host (verify pins)', () {
+    testWidgets(
+      'the active row follows its row when a row is inserted above it',
+      (tester) async {
+        final e = await _t128Pump(tester);
+        await _t128Click(tester, e.wordPoint(6, 'line'));
+        expect(e.active, 6, reason: 'fixture');
+        final rows = e.host.rowCount;
+
+        e.host.applyEdit(
+          const SegmentEdit(start: 0, end: 0, replacement: '- first\n'),
+        );
+        await pumpFrames(tester);
+
+        expect(e.host.rowCount, rows + 1, reason: 'fixture: a row was added');
+        expect(e.active, 7, reason: 'the row moved down by one');
+        expect(rowTextOf(tester, 0, 7), startsWith('Omega'));
+      },
+      variant: macOnly,
+    );
+
+    testWidgets('the active row becomes null when its row is retired', (
+      tester,
+    ) async {
+      final e = await _t128Pump(tester);
+      await _t128Click(tester, e.wordPoint(6, 'line'));
+      expect(e.active, 6, reason: 'fixture');
+      // Focus leaves the row: a focused row keeps its identity, another
+      // row whose kind changes has no continuation.
+      await e.focusFieldRow();
+      final start = e.spec(6).textStart;
+
+      // The prose row turns into a bullet row.
+      e.host.applyEdit(
+        SegmentEdit(start: start, end: start, replacement: '- '),
+      );
+      await pumpFrames(tester);
+
+      expect(e.active, isNull);
+    }, variant: macOnly);
+
+    testWidgets(
+      'a click on a row without a field after one on an earlier row without a field makes the later row the active row',
+      (tester) async {
+        final e = await _t128Pump(tester);
+        await e.focusFieldRow();
+        await _t128Click(tester, e.wordPoint(0, 'plain'));
+        expect(e.active, 0, reason: 'fixture: row 0 is active');
+
+        await _t128Click(tester, e.wordPoint(3, 'quote'));
+
+        expect(e.active, 3);
+        expect(e.focused, 3);
+        expect(
+          find.byKey(_t128SlotKey(0, 0)),
+          findsOneWidget,
+          reason: 'row 0 is idle again',
+        );
       },
       variant: macOnly,
     );
