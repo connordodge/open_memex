@@ -1,0 +1,482 @@
+-- The shipped V8 schema of a fresh vault (v0.6.0), frozen for migration_v9.rs (WI #135).
+-- Copied from app/test/fixtures/vault_schema_v5.sql as schema_dump.rs wrote it at V8. Do not edit.
+
+CREATE TABLE agent_activity (
+    id           TEXT PRIMARY KEY,
+    session_id   TEXT NOT NULL,
+    client_name  TEXT NOT NULL,
+    tool         TEXT NOT NULL,
+    summary      TEXT NOT NULL,
+    note_id      TEXT NULL,
+    created_at   INTEGER NOT NULL
+);
+
+CREATE TABLE agent_changes (
+    id            TEXT PRIMARY KEY,
+    note_id       TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    day           TEXT NOT NULL,
+    created_at    INTEGER NOT NULL,
+    bullets_json  TEXT NOT NULL
+);
+
+CREATE TABLE blocks (
+    note_id          TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    block_id         TEXT NOT NULL,
+    ord              INTEGER NOT NULL,
+    start_byte       INTEGER NOT NULL,
+    end_byte         INTEGER NOT NULL,
+    text             TEXT NOT NULL,
+    content_hash     TEXT NOT NULL,
+    source           TEXT NOT NULL
+                     CHECK (source IN ('person','agent','quick-entry')),
+    created_version  INTEGER NOT NULL,
+    created_at       INTEGER NOT NULL,
+    PRIMARY KEY (note_id, block_id)
+);
+
+CREATE TABLE canvas_nodes (
+    canvas_id   TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
+    note_id     TEXT NOT NULL REFERENCES notes(id)    ON DELETE CASCADE,
+    x           REAL NOT NULL,
+    y           REAL NOT NULL,
+    z_order     INTEGER NOT NULL DEFAULT 0,
+    placed_at   INTEGER NOT NULL,
+    PRIMARY KEY (canvas_id, note_id)
+);
+
+CREATE TABLE canvases (
+    id          TEXT PRIMARY KEY,
+    title       TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    version     INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE chunks (
+    id                  TEXT PRIMARY KEY,
+    note_id             TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    ord                 INTEGER NOT NULL,
+    content             TEXT NOT NULL,
+    token_count         INTEGER NOT NULL,
+    embed_model_version TEXT
+, start_byte INTEGER, end_byte INTEGER);
+
+CREATE TABLE content_revision (
+    id  INTEGER PRIMARY KEY CHECK (id = 1),
+    n   INTEGER NOT NULL
+);
+
+CREATE TABLE day_review_blocks (
+    note_id       TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    block_id      TEXT NOT NULL,
+    content_hash  TEXT NOT NULL,
+    text          TEXT NOT NULL,
+    PRIMARY KEY (note_id, block_id)
+);
+
+CREATE TABLE day_reviews (
+    note_id                   TEXT PRIMARY KEY REFERENCES notes(id) ON DELETE CASCADE,
+    content_version           INTEGER NOT NULL DEFAULT 0,
+    reviewed_content_version  INTEGER NULL,
+    reviewed_at               INTEGER NULL
+);
+
+CREATE TABLE feedback (
+    id                 TEXT PRIMARY KEY,
+    kind               TEXT NOT NULL CHECK (kind IN ('comment','correction')),
+    source             TEXT NOT NULL CHECK (source IN ('person','chat')),
+    note_id            TEXT NULL REFERENCES notes(id) ON DELETE SET NULL,
+    day                TEXT NULL,
+    agent_change_id    TEXT NULL REFERENCES agent_changes(id) ON DELETE SET NULL,
+    text               TEXT NULL,
+    correction_json    TEXT NULL,
+    status             TEXT NOT NULL CHECK (status IN ('open','handled')),
+    reply              TEXT NULL,
+    tag_correction_id  INTEGER NULL UNIQUE REFERENCES tag_corrections(id) ON DELETE SET NULL,
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL,
+    handled_at         INTEGER NULL
+);
+
+CREATE TABLE footer_chips (
+    daily_note_id  TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    topic_note_id  TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    origin         TEXT NOT NULL CHECK (origin IN ('excerpt','person')),
+    created_at     INTEGER NOT NULL,
+    PRIMARY KEY (daily_note_id, topic_note_id)
+);
+
+CREATE TABLE learned_words (
+    word_key    TEXT PRIMARY KEY,
+    word        TEXT NOT NULL,
+    created_at  INTEGER NOT NULL
+);
+
+CREATE TABLE links (
+    id            TEXT PRIMARY KEY,
+    from_note_id  TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    to_note_id    TEXT NULL REFERENCES notes(id) ON DELETE SET NULL,
+    link_text     TEXT NOT NULL,
+    link_kind     TEXT NOT NULL
+                  CHECK (link_kind GLOB '[a-z][a-z0-9-]*' AND length(link_kind) <= 64),
+    label         TEXT NULL,
+    position      INTEGER NOT NULL,
+    source        TEXT NOT NULL
+                  CHECK (source IN ('inline_body','inline_section','frontmatter','auto_added')),
+    UNIQUE (from_note_id, position)
+);
+
+CREATE TABLE note_revisions (
+    id                TEXT PRIMARY KEY,
+    note_id           TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    previous_md       TEXT NOT NULL,
+    previous_version  INTEGER NOT NULL,
+    new_version       INTEGER NOT NULL,
+    agent_change_id   TEXT NULL REFERENCES agent_changes(id) ON DELETE SET NULL,
+    created_at        INTEGER NOT NULL
+);
+
+CREATE TABLE notes (
+    id           TEXT PRIMARY KEY,
+    title        TEXT NOT NULL,
+    content_md   TEXT NOT NULL,
+    frontmatter  TEXT NOT NULL DEFAULT '{}',
+    version      INTEGER NOT NULL DEFAULT 1,
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL,
+    crdt_state   BLOB
+, has_open_questions INTEGER NOT NULL DEFAULT 0, frontmatter_parse_error INTEGER NOT NULL DEFAULT 0, agent_read_only INTEGER NOT NULL DEFAULT 0);
+
+CREATE TABLE notes_dedup_log (
+    note_id      TEXT PRIMARY KEY,
+    old_title    TEXT NOT NULL,
+    new_title    TEXT NOT NULL,
+    migrated_at  INTEGER NOT NULL
+);
+
+CREATE TABLE pending_index (
+    note_id     TEXT PRIMARY KEY REFERENCES notes(id) ON DELETE CASCADE,
+    enqueued_at INTEGER NOT NULL
+);
+
+CREATE TABLE schema_version (
+    version INTEGER PRIMARY KEY
+);
+
+CREATE TABLE smart_folder_members (
+    smart_folder_id  TEXT NOT NULL REFERENCES smart_folders(id) ON DELETE CASCADE,
+    note_id          TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    pinned           INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (smart_folder_id, note_id)
+);
+
+CREATE TABLE smart_folders (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    parent_id   TEXT NULL REFERENCES smart_folders(id),
+    pinned      INTEGER NOT NULL DEFAULT 0,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
+
+CREATE TABLE tag_corrections (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    note_id     TEXT REFERENCES notes(id) ON DELETE SET NULL,
+    note_title  TEXT NOT NULL,
+    tag         TEXT NOT NULL,
+    kind        TEXT NOT NULL CHECK (kind IN ('removed')),
+    created_at  INTEGER NOT NULL,
+    cleared_at  INTEGER
+);
+
+CREATE TABLE tags (
+    note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    tag     TEXT NOT NULL, origin TEXT NOT NULL DEFAULT 'person' CHECK (origin IN ('body','agent','person')), first_line TEXT,
+    PRIMARY KEY (note_id, tag)
+);
+
+CREATE TABLE vault_guide_revisions (
+    id                TEXT PRIMARY KEY,
+    note_id           TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    previous_md       TEXT NOT NULL,
+    previous_version  INTEGER NOT NULL,
+    new_version       INTEGER NOT NULL,
+    agent_change_id   TEXT NULL REFERENCES agent_changes(id) ON DELETE SET NULL,
+    created_at        INTEGER NOT NULL
+);
+
+CREATE TABLE vault_settings (
+    key    TEXT PRIMARY KEY,
+    value  TEXT NOT NULL
+);
+
+CREATE INDEX idx_agent_activity_created
+    ON agent_activity(created_at DESC);
+
+CREATE INDEX idx_agent_changes_note ON agent_changes(note_id, created_at DESC);
+
+CREATE INDEX idx_blocks_note_ord ON blocks(note_id, ord);
+
+CREATE INDEX idx_canvas_nodes_note ON canvas_nodes(note_id);
+
+CREATE UNIQUE INDEX idx_canvases_title_unique ON canvases(title);
+
+CREATE INDEX idx_canvases_updated_at ON canvases(updated_at DESC);
+
+CREATE INDEX idx_chunks_note ON chunks(note_id, ord);
+
+CREATE INDEX idx_feedback_note ON feedback(note_id, created_at);
+
+CREATE INDEX idx_feedback_status ON feedback(status, created_at);
+
+CREATE INDEX idx_footer_chips_topic ON footer_chips(topic_note_id);
+
+CREATE INDEX idx_links_from ON links(from_note_id);
+
+CREATE INDEX idx_links_kind ON links(link_kind, to_note_id);
+
+CREATE INDEX idx_links_to   ON links(to_note_id);
+
+CREATE INDEX idx_note_revisions_note
+    ON note_revisions(note_id, created_at DESC);
+
+CREATE UNIQUE INDEX idx_notes_daily_title ON notes(title)
+    WHERE CASE WHEN json_valid(frontmatter) THEN json_extract(frontmatter, '$.role') END = 'daily';
+
+CREATE UNIQUE INDEX idx_notes_guide
+    ON notes((CASE WHEN json_valid(frontmatter) THEN json_extract(frontmatter, '$.role') END))
+    WHERE CASE WHEN json_valid(frontmatter) THEN json_extract(frontmatter, '$.role') END = 'guide';
+
+CREATE UNIQUE INDEX idx_notes_title_unique ON notes(title);
+
+CREATE INDEX idx_notes_updated_at ON notes(updated_at DESC);
+
+CREATE INDEX idx_smart_folder_members_note ON smart_folder_members(note_id);
+
+CREATE UNIQUE INDEX idx_smart_folders_sibling_name
+    ON smart_folders(COALESCE(parent_id, ''), name COLLATE NOCASE);
+
+CREATE INDEX idx_tag_corrections_note ON tag_corrections(note_id, tag);
+
+CREATE INDEX idx_tags_tag ON tags(tag);
+
+CREATE INDEX idx_vault_guide_revisions_note
+    ON vault_guide_revisions(note_id, created_at DESC);
+
+CREATE TRIGGER content_revision_agent_activity_ad AFTER DELETE ON agent_activity
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_agent_activity_ai AFTER INSERT ON agent_activity
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_agent_activity_au AFTER UPDATE ON agent_activity
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_agent_changes_ad AFTER DELETE ON agent_changes
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_agent_changes_ai AFTER INSERT ON agent_changes
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_agent_changes_au AFTER UPDATE ON agent_changes
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_blocks_ad AFTER DELETE ON blocks
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_blocks_ai AFTER INSERT ON blocks
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_blocks_au AFTER UPDATE ON blocks
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_canvas_nodes_ad AFTER DELETE ON canvas_nodes
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_canvas_nodes_ai AFTER INSERT ON canvas_nodes
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_canvas_nodes_au AFTER UPDATE ON canvas_nodes
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_canvases_ad AFTER DELETE ON canvases
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_canvases_ai AFTER INSERT ON canvases
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_canvases_au AFTER UPDATE ON canvases
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_chunks_ad AFTER DELETE ON chunks
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_chunks_ai AFTER INSERT ON chunks
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_chunks_au AFTER UPDATE ON chunks
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_day_review_blocks_ad AFTER DELETE ON day_review_blocks
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_day_review_blocks_ai AFTER INSERT ON day_review_blocks
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_day_review_blocks_au AFTER UPDATE ON day_review_blocks
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_day_reviews_ad AFTER DELETE ON day_reviews
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_day_reviews_ai AFTER INSERT ON day_reviews
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_day_reviews_au AFTER UPDATE ON day_reviews
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_feedback_ad AFTER DELETE ON feedback
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_feedback_ai AFTER INSERT ON feedback
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_feedback_au AFTER UPDATE ON feedback
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_footer_chips_ad AFTER DELETE ON footer_chips
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_footer_chips_ai AFTER INSERT ON footer_chips
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_footer_chips_au AFTER UPDATE ON footer_chips
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_learned_words_ad AFTER DELETE ON learned_words
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_learned_words_ai AFTER INSERT ON learned_words
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_learned_words_au AFTER UPDATE ON learned_words
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_links_ad AFTER DELETE ON links
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_links_ai AFTER INSERT ON links
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_links_au AFTER UPDATE ON links
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_note_revisions_ad AFTER DELETE ON note_revisions
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_note_revisions_ai AFTER INSERT ON note_revisions
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_note_revisions_au AFTER UPDATE ON note_revisions
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_notes_ad AFTER DELETE ON notes
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_notes_ai AFTER INSERT ON notes
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_notes_au AFTER UPDATE ON notes
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_notes_dedup_log_ad AFTER DELETE ON notes_dedup_log
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_notes_dedup_log_ai AFTER INSERT ON notes_dedup_log
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_notes_dedup_log_au AFTER UPDATE ON notes_dedup_log
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_pending_index_ad AFTER DELETE ON pending_index
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_pending_index_ai AFTER INSERT ON pending_index
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_pending_index_au AFTER UPDATE ON pending_index
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_schema_version_ad AFTER DELETE ON schema_version
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_schema_version_ai AFTER INSERT ON schema_version
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_schema_version_au AFTER UPDATE ON schema_version
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_smart_folder_members_ad AFTER DELETE ON smart_folder_members
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_smart_folder_members_ai AFTER INSERT ON smart_folder_members
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_smart_folder_members_au AFTER UPDATE ON smart_folder_members
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_smart_folders_ad AFTER DELETE ON smart_folders
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_smart_folders_ai AFTER INSERT ON smart_folders
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_smart_folders_au AFTER UPDATE ON smart_folders
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_tag_corrections_ad AFTER DELETE ON tag_corrections
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_tag_corrections_ai AFTER INSERT ON tag_corrections
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_tag_corrections_au AFTER UPDATE ON tag_corrections
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_tags_ad AFTER DELETE ON tags
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_tags_ai AFTER INSERT ON tags
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_tags_au AFTER UPDATE ON tags
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_vault_guide_revisions_ad AFTER DELETE ON vault_guide_revisions
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_vault_guide_revisions_ai AFTER INSERT ON vault_guide_revisions
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_vault_guide_revisions_au AFTER UPDATE ON vault_guide_revisions
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_vault_settings_ad AFTER DELETE ON vault_settings
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_vault_settings_ai AFTER INSERT ON vault_settings
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_vault_settings_au AFTER UPDATE ON vault_settings
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+INSERT INTO schema_version(version) VALUES (1);
+INSERT INTO schema_version(version) VALUES (2);
+INSERT INTO schema_version(version) VALUES (3);
+INSERT INTO schema_version(version) VALUES (4);
+INSERT INTO schema_version(version) VALUES (5);
+INSERT INTO schema_version(version) VALUES (6);
+INSERT INTO schema_version(version) VALUES (7);
+INSERT INTO schema_version(version) VALUES (8);
+INSERT INTO vault_settings(key, value) VALUES ('smart_folder_max_depth', '2');
+INSERT INTO content_revision(id, n) VALUES (1, 0);

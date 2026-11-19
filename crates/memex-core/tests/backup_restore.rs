@@ -1893,3 +1893,85 @@ fn a_memex_db_with_no_memex_schema_fails_with_backup_invalid_and_leaves_no_temp(
         before.assert_untouched(&fx, case);
     }
 }
+
+// ---------------------------------------------------------------------------
+// WI #134 (Spec #123 R1, R51): an attachment whose given name had a `\`
+// backs up and restores at its stored path.
+// ---------------------------------------------------------------------------
+
+struct FixedClock134(i64);
+
+impl memex_core::Clock for FixedClock134 {
+    fn now_ms(&self) -> i64 {
+        self.0
+    }
+}
+
+fn plain_sink_134(file: fs::File) -> io::Result<Box<dyn memex_core::backup::ArchiveSink>> {
+    Ok(Box::new(file))
+}
+
+#[test]
+fn an_attachment_stored_from_a_name_with_a_backslash_restores_at_its_stored_path() {
+    use memex_core::attachments;
+    use memex_core::backup::{
+        backup_with, BackupOutcome, BackupRequest, BackupSeams, BackupSource,
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let root = fs::canonicalize(tmp.path()).unwrap();
+    let vault = root.join("My Vault");
+    drop(Vault::create(&vault).unwrap());
+    let bytes = b"%PDF-1.4 an invented plan";
+    let stored = attachments::store_bytes(&vault, bytes, "plans\\draft 2.pdf").unwrap();
+    assert_eq!(stored.name, "plans_draft 2.pdf", "the `\\` became `_`");
+    assert!(
+        !stored.path.contains('\\'),
+        "no `\\` in the stored path: {}",
+        stored.path
+    );
+    let also = attachments::store_bytes(&vault, b"second", "a/b\\c.txt").unwrap();
+    assert_eq!(also.name, "a_b_c.txt");
+
+    let dest = root.join("Backup Drive");
+    fs::create_dir(&dest).unwrap();
+    let clock = FixedClock134(1_794_304_800_250);
+    let seams = BackupSeams {
+        clock: &clock,
+        probe: &local_probe,
+        wrap_archive: &plain_sink_134,
+    };
+    let outcome = backup_with(
+        &BackupRequest {
+            vault: &vault,
+            destination: &dest,
+            keep: 30,
+            if_changed: false,
+            source: BackupSource::Local,
+        },
+        &seams,
+    )
+    .expect("the backup succeeds");
+    let BackupOutcome::Created { file, .. } = outcome else {
+        panic!("a first backup creates a file: {outcome:?}");
+    };
+
+    let to = root.join("Restored Vault");
+    restore_with(
+        &RestoreRequest {
+            from: &file,
+            to: &to,
+        },
+        &local_probe,
+    )
+    .expect("the backup restores (no member has a `\\` component)");
+    for (got, want) in [(&stored, &bytes[..]), (&also, &b"second"[..])] {
+        assert!(got.path.starts_with("objects/"), "{}", got.path);
+        assert_eq!(
+            fs::read(to.join(&got.path)).unwrap_or_else(|e| panic!("restored {}: {e}", got.path)),
+            want,
+            "{} restored at its stored path",
+            got.path
+        );
+    }
+}

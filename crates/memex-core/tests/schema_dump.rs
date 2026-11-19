@@ -5,7 +5,8 @@
 //! `sqlite_master.sql` for tables (first), indexes (second) and triggers
 //! (third), each group sorted by name, followed by the `schema_version` rows,
 //! the `vault_settings` rows and, last, the `content_revision` row. FTS5
-//! virtual tables and their shadow tables (`chunk_fts*`), `chunk_vec` and
+//! virtual tables and their shadow tables (`chunk_fts*`), `chunk_vec`, V9's
+//! `attachment_chunk_fts*` and `attachment_chunk_vec*` (WI #135) and
 //! `sqlite_*` internals are excluded so the dump loads without extensions.
 //!
 //! The `content_revision` row comes last so the triggers (V7, WI #415), which
@@ -13,7 +14,8 @@
 //! a loaded dump holds `(1, 0)`, as a fresh vault does.
 //!
 //! The file keeps its `vault_schema_v5.sql` name, but it holds the current
-//! schema of a fresh vault: V7 since WI #415, V8 since WI #8 (Spec #7).
+//! schema of a fresh vault: V7 since WI #415, V8 since WI #8 (Spec #7), V9
+//! since WI #135 (Spec #123).
 //!
 //! The committed file must equal the dump byte for byte. Regenerate it with:
 //!
@@ -56,6 +58,10 @@ fn dump_schema(conn: &Connection) -> String {
                AND name NOT LIKE 'chunk~_vec%' ESCAPE '~'
                AND tbl_name NOT LIKE 'chunk~_fts%' ESCAPE '~'
                AND tbl_name NOT LIKE 'chunk~_vec%' ESCAPE '~'
+               AND name NOT LIKE 'attachment~_chunk~_fts%' ESCAPE '~'
+               AND name NOT LIKE 'attachment~_chunk~_vec%' ESCAPE '~'
+               AND tbl_name NOT LIKE 'attachment~_chunk~_fts%' ESCAPE '~'
+               AND tbl_name NOT LIKE 'attachment~_chunk~_vec%' ESCAPE '~'
              ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 ELSE 2 END, name",
         )
         .unwrap();
@@ -115,14 +121,14 @@ fn dump_schema(conn: &Connection) -> String {
     out
 }
 
-/// Dump of a brand-new vault, which must be at schema V8.
+/// Dump of a brand-new vault, which must be at schema V9.
 fn fresh_v5_vault_dump() -> String {
     let dir = tempfile::tempdir().unwrap();
     let vault = Vault::create(dir.path().join("vault")).expect("create fresh vault");
     assert_eq!(
         vault.schema_version(),
-        8,
-        "a fresh vault must be at schema V8 for the app fixture"
+        9,
+        "a fresh vault must be at schema V9 for the app fixture"
     );
     dump_schema(vault.connection_ref())
 }
@@ -253,7 +259,7 @@ fn committed_app_fixture_excludes_fts_and_vec_and_ends_with_seed_rows() {
         .lines()
         .filter(|l| !l.trim().is_empty())
         .rev()
-        .take(10)
+        .take(11)
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
@@ -269,6 +275,7 @@ fn committed_app_fixture_excludes_fts_and_vec_and_ends_with_seed_rows() {
             "INSERT INTO schema_version(version) VALUES (6);",
             "INSERT INTO schema_version(version) VALUES (7);",
             "INSERT INTO schema_version(version) VALUES (8);",
+            "INSERT INTO schema_version(version) VALUES (9);",
             "INSERT INTO vault_settings(key, value) VALUES ('smart_folder_max_depth', '2');",
             "INSERT INTO content_revision(id, n) VALUES (1, 0);",
         ]
@@ -312,6 +319,9 @@ fn committed_app_fixture_loads_into_a_plain_sqlite_database() {
         "learned_words",
         "content_revision",
         "note_revisions",
+        "attachments",
+        "attachment_chunks",
+        "note_attachments",
     ] {
         assert!(
             tables.iter().any(|x| x == t),
@@ -321,7 +331,7 @@ fn committed_app_fixture_loads_into_a_plain_sqlite_database() {
     let max: i64 = conn
         .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(max, 8);
+    assert_eq!(max, 9);
     // V8 (WI #8): the app reads `notes.agent_read_only` from the fixture.
     let read_only: i64 = conn
         .query_row(
@@ -392,6 +402,8 @@ fn triggers_per_table(conn: &Connection) -> Vec<(String, Vec<String>)> {
                    AND name NOT LIKE 'sqlite~_%' ESCAPE '~'
                    AND name NOT LIKE 'chunk~_fts~_%' ESCAPE '~'
                    AND name NOT LIKE 'chunk~_vec~_%' ESCAPE '~'
+                   AND name NOT LIKE 'attachment~_chunk~_fts~_%' ESCAPE '~'
+                   AND name NOT LIKE 'attachment~_chunk~_vec~_%' ESCAPE '~'
                  ORDER BY name",
             )
             .unwrap();

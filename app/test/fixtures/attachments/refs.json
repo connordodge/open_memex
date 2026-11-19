@@ -1,0 +1,617 @@
+{
+  "about": "Shared attachment grammar fixture (Spec #123 R3, R4, R33; WI #134 owns it, ruling D18). The Rust core (crates/memex-core/tests/attachments_grammar.rs) and the app's Dart mirror read every row. references: `markdown` is the whole string given to the parser; when `valid`, `kind` is image or link, `path` is the percent-decoded vault-relative path and `name` the decoded name; otherwise kind, path and name are null. encode: the markdown for a stored `name` of content `hash`, its `kind`, and `encoded_name` (the percent-encoded name in the URL). executable: whether a file of that `name` is revealed, never opened (R33's table, last extension, any letter case; the executable-bit rule is tested on real files).",
+  "hash": "66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462",
+  "references": [
+    {
+      "markdown": "![Screenshot 2026-11-18.png](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/Screenshot%202026-11-18.png)",
+      "valid": true,
+      "kind": "image",
+      "path": "objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/Screenshot 2026-11-18.png",
+      "name": "Screenshot 2026-11-18.png",
+      "why": "image form; %20 decodes to a space"
+    },
+    {
+      "markdown": "[Q3 report.pdf](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/Q3%20report.pdf)",
+      "valid": true,
+      "kind": "link",
+      "path": "objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/Q3 report.pdf",
+      "name": "Q3 report.pdf",
+      "why": "link form"
+    },
+    {
+      "markdown": "[café.txt](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/caf%C3%A9.txt)",
+      "valid": true,
+      "kind": "link",
+      "path": "objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/café.txt",
+      "name": "café.txt",
+      "why": "non-ASCII name, uppercase percent hex"
+    },
+    {
+      "markdown": "[café.txt](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/caf%c3%a9.txt)",
+      "valid": true,
+      "kind": "link",
+      "path": "objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/café.txt",
+      "name": "café.txt",
+      "why": "lowercase percent hex decodes the same"
+    },
+    {
+      "markdown": "[100%.txt](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/100%25.txt)",
+      "valid": true,
+      "kind": "link",
+      "path": "objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/100%.txt",
+      "name": "100%.txt",
+      "why": "%25 in the destination is a % in the name"
+    },
+    {
+      "markdown": "![a.pdf](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/a.pdf)",
+      "valid": true,
+      "kind": "image",
+      "path": "objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/a.pdf",
+      "name": "a.pdf",
+      "why": "image form of a non-image type is still a reference (R23 decides image rows)"
+    },
+    {
+      "markdown": "[](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/notes.txt)",
+      "valid": true,
+      "kind": "link",
+      "path": "objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/notes.txt",
+      "name": "notes.txt",
+      "why": "empty bracketed text"
+    },
+    {
+      "markdown": "[notes \\[draft\\].md](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/notes%20%5Bdraft%5D.md)",
+      "valid": true,
+      "kind": "link",
+      "path": "objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/notes [draft].md",
+      "name": "notes [draft].md",
+      "why": "escaped brackets in the text"
+    },
+    {
+      "markdown": "[.hidden](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/.hidden)",
+      "valid": true,
+      "kind": "link",
+      "path": "objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/.hidden",
+      "name": ".hidden",
+      "why": "a name starting with a dot that is not . or .."
+    },
+    {
+      "markdown": "[x.txt](objects/db/dbb3f0b7b10a715559dc13b3007eca8a0fc7064a29eea355d2a954151c336351/x.txt)",
+      "valid": true,
+      "kind": "link",
+      "path": "objects/db/dbb3f0b7b10a715559dc13b3007eca8a0fc7064a29eea355d2a954151c336351/x.txt",
+      "name": "x.txt",
+      "why": "a hash starting with letters"
+    },
+    {
+      "markdown": "[Q3 report.pdf](objects/66/66BC7611813B7443F25C4AF21004864B3975EB83FB7C74BE572B9D6AA74BD462/Q3%20report.pdf)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "uppercase hash"
+    },
+    {
+      "markdown": "[x.txt](objects/DB/dbb3f0b7b10a715559dc13b3007eca8a0fc7064a29eea355d2a954151c336351/x.txt)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "uppercase <h2> is not equal to the hash's first two characters"
+    },
+    {
+      "markdown": "[x.txt](objects/77/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/x.txt)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "<h2> mismatch"
+    },
+    {
+      "markdown": "[x.txt](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd46/x.txt)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "63-hex hash"
+    },
+    {
+      "markdown": "[x.txt](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd4620/x.txt)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "65-hex hash"
+    },
+    {
+      "markdown": "[x.txt](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd46g/x.txt)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "non-hex character in the hash"
+    },
+    {
+      "markdown": "[.](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/.)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "name is ."
+    },
+    {
+      "markdown": "[..](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/..)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "name is .."
+    },
+    {
+      "markdown": "[x](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/%2E%2E)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "name decodes to .."
+    },
+    {
+      "markdown": "[a/b.txt](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/a%2Fb.txt)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "decoded name contains /"
+    },
+    {
+      "markdown": "[b.txt](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/a/b.txt)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "a deeper path: the name contains /"
+    },
+    {
+      "markdown": "[x](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "empty name"
+    },
+    {
+      "markdown": "[x](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "no name segment"
+    },
+    {
+      "markdown": "![x.png](https://example.com/objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/x.png)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "https destination"
+    },
+    {
+      "markdown": "[x.pdf](http://example.com/x.pdf)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "http destination"
+    },
+    {
+      "markdown": "[x.txt](notes/x.txt)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "another relative path"
+    },
+    {
+      "markdown": "[x.txt](./objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/x.txt)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "leading ./"
+    },
+    {
+      "markdown": "[x.txt](/objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/x.txt)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "absolute path"
+    },
+    {
+      "markdown": "[x.txt](Objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/x.txt)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "Objects is not objects"
+    },
+    {
+      "markdown": "[x.txt](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/x.txt) and more",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "text after the reference"
+    },
+    {
+      "markdown": "see [x.txt](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/x.txt)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "text before the reference"
+    },
+    {
+      "markdown": "[two\nlines.txt](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/x.txt)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "not one line"
+    },
+    {
+      "markdown": "[x.txt](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/x.txt",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "unclosed destination"
+    },
+    {
+      "markdown": "objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/x.txt",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "a bare path is not markdown"
+    },
+    {
+      "markdown": "[a b.txt](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/a b.txt)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "raw space in the destination"
+    },
+    {
+      "markdown": "[x](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/a(1).txt)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "raw ( and ) in the destination"
+    },
+    {
+      "markdown": "[a](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/x.txt) [b](y.txt)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "two references on one line"
+    },
+    {
+      "markdown": "[x](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/100%.txt)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "a % not followed by two hex digits"
+    },
+    {
+      "markdown": "[x](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/a%2.txt)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "a % followed by one hex digit"
+    },
+    {
+      "markdown": "[x](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/%FF.txt)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "percent-decoded bytes that are not UTF-8"
+    },
+    {
+      "markdown": "[x](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/x.txt)\t",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "a trailing tab after the reference"
+    }
+  ],
+  "encode": [
+    {
+      "name": "Screenshot 2026-11-18.png",
+      "hash": "66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462",
+      "markdown": "![Screenshot 2026-11-18.png](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/Screenshot%202026-11-18.png)",
+      "kind": "image",
+      "encoded_name": "Screenshot%202026-11-18.png"
+    },
+    {
+      "name": "Q3 report.pdf",
+      "hash": "66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462",
+      "markdown": "[Q3 report.pdf](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/Q3%20report.pdf)",
+      "kind": "link",
+      "encoded_name": "Q3%20report.pdf"
+    },
+    {
+      "name": "café.txt",
+      "hash": "66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462",
+      "markdown": "[café.txt](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/caf%C3%A9.txt)",
+      "kind": "link",
+      "encoded_name": "caf%C3%A9.txt"
+    },
+    {
+      "name": "100%.txt",
+      "hash": "66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462",
+      "markdown": "[100%.txt](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/100%25.txt)",
+      "kind": "link",
+      "encoded_name": "100%25.txt"
+    },
+    {
+      "name": "notes [draft].md",
+      "hash": "66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462",
+      "markdown": "[notes \\[draft\\].md](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/notes%20%5Bdraft%5D.md)",
+      "kind": "link",
+      "encoded_name": "notes%20%5Bdraft%5D.md"
+    },
+    {
+      "name": "a\\b.txt",
+      "hash": "66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462",
+      "markdown": "[a\\\\b.txt](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/a%5Cb.txt)",
+      "kind": "link",
+      "encoded_name": "a%5Cb.txt"
+    },
+    {
+      "name": "PHOTO.JPG",
+      "hash": "66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462",
+      "markdown": "![PHOTO.JPG](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/PHOTO.JPG)",
+      "kind": "image",
+      "encoded_name": "PHOTO.JPG"
+    },
+    {
+      "name": "anim.GiF",
+      "hash": "66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462",
+      "markdown": "![anim.GiF](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/anim.GiF)",
+      "kind": "image",
+      "encoded_name": "anim.GiF"
+    },
+    {
+      "name": "pic.jpeg",
+      "hash": "66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462",
+      "markdown": "![pic.jpeg](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/pic.jpeg)",
+      "kind": "image",
+      "encoded_name": "pic.jpeg"
+    },
+    {
+      "name": "pic.webp",
+      "hash": "66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462",
+      "markdown": "![pic.webp](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/pic.webp)",
+      "kind": "image",
+      "encoded_name": "pic.webp"
+    },
+    {
+      "name": "Pic.Png",
+      "hash": "66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462",
+      "markdown": "![Pic.Png](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/Pic.Png)",
+      "kind": "image",
+      "encoded_name": "Pic.Png"
+    },
+    {
+      "name": "photo.heic",
+      "hash": "66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462",
+      "markdown": "[photo.heic](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/photo.heic)",
+      "kind": "link",
+      "encoded_name": "photo.heic"
+    },
+    {
+      "name": "logo.svg",
+      "hash": "66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462",
+      "markdown": "[logo.svg](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/logo.svg)",
+      "kind": "link",
+      "encoded_name": "logo.svg"
+    },
+    {
+      "name": "scan.tiff",
+      "hash": "66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462",
+      "markdown": "[scan.tiff](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/scan.tiff)",
+      "kind": "link",
+      "encoded_name": "scan.tiff"
+    },
+    {
+      "name": "(paren) & co+1=2.png",
+      "hash": "66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462",
+      "markdown": "![(paren) & co+1=2.png](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/%28paren%29%20%26%20co%2B1%3D2.png)",
+      "kind": "image",
+      "encoded_name": "%28paren%29%20%26%20co%2B1%3D2.png"
+    },
+    {
+      "name": "😀.png",
+      "hash": "66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462",
+      "markdown": "![😀.png](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/%F0%9F%98%80.png)",
+      "kind": "image",
+      "encoded_name": "%F0%9F%98%80.png"
+    },
+    {
+      "name": "no extension",
+      "hash": "66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462",
+      "markdown": "[no extension](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/no%20extension)",
+      "kind": "link",
+      "encoded_name": "no%20extension"
+    },
+    {
+      "name": "archive.tar.gz",
+      "hash": "66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462",
+      "markdown": "[archive.tar.gz](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/archive.tar.gz)",
+      "kind": "link",
+      "encoded_name": "archive.tar.gz"
+    },
+    {
+      "name": "~tilde-dash_under.score.txt",
+      "hash": "66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462",
+      "markdown": "[~tilde-dash_under.score.txt](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/~tilde-dash_under.score.txt)",
+      "kind": "link",
+      "encoded_name": "~tilde-dash_under.score.txt"
+    },
+    {
+      "name": "png",
+      "hash": "66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462",
+      "markdown": "[png](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/png)",
+      "kind": "link",
+      "encoded_name": "png"
+    },
+    {
+      "name": "x.png.txt",
+      "hash": "66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462",
+      "markdown": "[x.png.txt](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/x.png.txt)",
+      "kind": "link",
+      "encoded_name": "x.png.txt"
+    },
+    {
+      "name": "a#b?c.txt",
+      "hash": "66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462",
+      "markdown": "[a#b?c.txt](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/a%23b%3Fc.txt)",
+      "kind": "link",
+      "encoded_name": "a%23b%3Fc.txt"
+    }
+  ],
+  "executable": [
+    {
+      "name": "Run.command",
+      "executable": true,
+      "why": "R33 table: .command"
+    },
+    {
+      "name": "x.tool",
+      "executable": true,
+      "why": "R33 table: .tool"
+    },
+    {
+      "name": "Shell.terminal",
+      "executable": true,
+      "why": "R33 table: .terminal"
+    },
+    {
+      "name": "build.sh",
+      "executable": true,
+      "why": "R33 table: .sh"
+    },
+    {
+      "name": "init.zsh",
+      "executable": true,
+      "why": "R33 table: .zsh"
+    },
+    {
+      "name": "env.bash",
+      "executable": true,
+      "why": "R33 table: .bash"
+    },
+    {
+      "name": "script.py",
+      "executable": true,
+      "why": "R33 table: .py"
+    },
+    {
+      "name": "tool.rb",
+      "executable": true,
+      "why": "R33 table: .rb"
+    },
+    {
+      "name": "tool.pl",
+      "executable": true,
+      "why": "R33 table: .pl"
+    },
+    {
+      "name": "Setup.pkg",
+      "executable": true,
+      "why": "R33 table: .pkg"
+    },
+    {
+      "name": "Setup.mpkg",
+      "executable": true,
+      "why": "R33 table: .mpkg"
+    },
+    {
+      "name": "Disk.dmg",
+      "executable": true,
+      "why": "R33 table: .dmg"
+    },
+    {
+      "name": "Calculator.app",
+      "executable": true,
+      "why": "R33 table: .app"
+    },
+    {
+      "name": "Automate.workflow",
+      "executable": true,
+      "why": "R33 table: .workflow"
+    },
+    {
+      "name": "Do.scpt",
+      "executable": true,
+      "why": "R33 table: .scpt"
+    },
+    {
+      "name": "Do.applescript",
+      "executable": true,
+      "why": "R33 table: .applescript"
+    },
+    {
+      "name": "lib.jar",
+      "executable": true,
+      "why": "R33 table: .jar"
+    },
+    {
+      "name": "setup.exe",
+      "executable": true,
+      "why": "R33 table: .exe"
+    },
+    {
+      "name": "INSTALL.SH",
+      "executable": true,
+      "why": "the table matches in any letter case"
+    },
+    {
+      "name": "notes.txt",
+      "executable": false,
+      "why": "control: not in the table"
+    },
+    {
+      "name": "report.pdf",
+      "executable": false,
+      "why": "control"
+    },
+    {
+      "name": "photo.png",
+      "executable": false,
+      "why": "control"
+    },
+    {
+      "name": "script.sh.txt",
+      "executable": false,
+      "why": "only the last extension counts"
+    },
+    {
+      "name": "bash",
+      "executable": false,
+      "why": "no extension"
+    },
+    {
+      "name": "my.app.zip",
+      "executable": false,
+      "why": "only the last extension counts"
+    }
+  ]
+}
