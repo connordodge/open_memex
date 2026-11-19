@@ -263,10 +263,12 @@ int debugSpellHostLineCalls = 0;
 int debugSpellHostRectCalls = 0;
 
 /// Test-only work counter: how many times any spell-check field host
-/// resolved its field's laid-out text (WI #127: once per
-/// [SpellFieldHost.extent] and [SpellFieldHost.extentAt] call, and per
-/// issue-rect or Check Document Now read), the geometry entry point of an
-/// evaluation's viewport check.
+/// resolved its field's laid-out text, as main's `editable()` counted: once
+/// per [SpellFieldHost.extent] call (the geometry entry point of an
+/// evaluation's viewport check, once per field), and per issue-rect or
+/// Check Document Now read. [SpellFieldHost.extentAt] reuses the text
+/// [SpellFieldHost.extent] resolved while it stays laid out (WI #127), so
+/// it counts only when there is none.
 @visibleForTesting
 int debugSpellHostEditableCalls = 0;
 
@@ -362,6 +364,14 @@ class _SpellCheckFieldState extends State<SpellCheckField>
     return (line: field.text, base: 0, atSegmentStart: true);
   }
 
+  /// The laid-out text [extent] last resolved ([_text]), which [extentAt]
+  /// reuses while it is still laid out in the tree.
+  RenderBox? _slot;
+
+  /// The `RichText` span whose plain-text length [_slotLength] holds.
+  InlineSpan? _slotSpan;
+  int _slotLength = 0;
+
   /// This field's laid-out text (WI #127): the text slot under it, a
   /// field's or a `RichText`'s standing in for it (`textSlotBox`, the
   /// row-geometry accessor's text-slot half), or null.
@@ -381,13 +391,17 @@ class _SpellCheckFieldState extends State<SpellCheckField>
 
   @override
   ({double top, double bottom})? extent() {
-    final box = _text();
+    final box = _slot = _text();
     return box == null ? null : _globalBand(box, Offset.zero & box.size);
   }
 
   @override
   ({double top, double bottom})? extentAt(int offset) {
-    final box = _text();
+    if (!mounted) return null;
+    final cached = _slot;
+    final box = cached != null && cached.attached && cached.hasSize
+        ? cached
+        : _slot = _text();
     final Rect? caret = switch (box) {
       final RenderEditable field => field.getLocalRectForCaret(
         TextPosition(offset: offset.clamp(0, field.plainText.length)),
@@ -400,12 +414,36 @@ class _SpellCheckFieldState extends State<SpellCheckField>
 
   /// [text]'s caret rect at [offset] (clamped to its text), as tall as its
   /// line's caret.
-  static Rect _paragraphCaret(RenderParagraph text, int offset) {
-    final position = TextPosition(
-      offset: offset.clamp(0, text.text.toPlainText().length),
-    );
+  Rect _paragraphCaret(RenderParagraph text, int offset) {
+    final position = TextPosition(offset: offset.clamp(0, _lengthOf(text)));
     final at = text.getOffsetForCaret(position, Rect.zero);
     return Rect.fromLTWH(at.dx, at.dy, 0, text.getFullHeightForCaret(position));
+  }
+
+  /// [text]'s plain-text length, counted once per span (no copy of its
+  /// text: a row's span can hold a whole long paragraph).
+  int _lengthOf(RenderParagraph text) {
+    final span = text.text;
+    if (!identical(span, _slotSpan)) {
+      _slotSpan = span;
+      _slotLength = _spanLength(span);
+    }
+    return _slotLength;
+  }
+
+  /// [span]'s plain-text length as its laid-out text holds it: a text
+  /// span's text, one code unit per placeholder (a widget span).
+  static int _spanLength(InlineSpan span) {
+    var length = 0;
+    span.visitChildren((s) {
+      length += switch (s) {
+        TextSpan(:final text) => text?.length ?? 0,
+        PlaceholderSpan() => 1,
+        _ => 0,
+      };
+      return true;
+    });
+    return length;
   }
 
   @override

@@ -16,6 +16,7 @@ import 'editor_row.dart';
 import 'find_decoration.dart';
 import 'line_boxes.dart';
 import 'live_preview_controller.dart';
+import 'marker_column.dart' show isMarkerColumnBox;
 import 'paragraph_line_boxes.dart';
 import 'row_kinds.dart';
 import 'segment_editing.dart';
@@ -1142,13 +1143,15 @@ class _RowsLineBoxes implements LineBoxSource {
 /// The laid-out text an editor row's text slot shows at or under [root]
 /// (WI #127, Spec #122 TD5): the first field's (`RenderEditable`), else the
 /// first `RichText`'s (`RenderParagraph`) standing in for the field; null
-/// when neither is there or laid out. The row-geometry accessor's text-slot
-/// half (`SegmentViewState.rowBoxes`); [textSlotBoxes] measures it.
+/// when neither is there or laid out. A marker column's subtree
+/// ([isMarkerColumnBox]) is skipped: its marker text is not the row's. The
+/// row-geometry accessor's text-slot half (`SegmentViewState.rowBoxes`);
+/// [textSlotBoxes] measures it.
 RenderBox? textSlotBox(RenderObject? root) {
   RenderEditable? field;
   RenderParagraph? text;
   void visit(RenderObject node) {
-    if (field != null) return;
+    if (field != null || isMarkerColumnBox(node)) return;
     if (node is RenderEditable) {
       field = node;
     } else if (node is RenderParagraph) {
@@ -1167,20 +1170,26 @@ RenderBox? textSlotBox(RenderObject? root) {
 /// (`RenderEditableLineBoxes`) or a `RichText`'s
 /// (`RenderParagraphLineBoxes`), in its own box coordinates and text
 /// offsets; null before it is laid out.
-LineBoxSource? textSlotBoxes(RenderObject? root) => switch (textSlotBox(root)) {
+LineBoxSource? textSlotBoxes(RenderObject? root) =>
+    _lineBoxesOf(textSlotBox(root));
+
+LineBoxSource? _lineBoxesOf(RenderBox? slot) => switch (slot) {
   final RenderEditable field => RenderEditableLineBoxes(field),
   final RenderParagraph text => RenderParagraphLineBoxes(text),
   _ => null,
 };
 
 /// The [textSlotBoxes] at or under [root] and their lines while they hold
-/// a text of [text]'s length (the last line ends at the laid-out text's
-/// end); null before then, or while the slot shows another text.
+/// [text]: a field's laid-out text equals it, a `RichText`'s has its length
+/// (the last line ends at the laid-out text's end); null before then, or
+/// while the slot shows another text.
 ({LineBoxSource boxes, List<LineBox> lines})? textSlotLines(
   RenderObject? root,
   String text,
 ) {
-  final boxes = textSlotBoxes(root);
+  final slot = textSlotBox(root);
+  if (slot is RenderEditable && slot.plainText != text) return null;
+  final boxes = _lineBoxesOf(slot);
   if (boxes == null) return null;
   final lines = boxes.lines;
   if (lines.isEmpty || lines.last.range.end != text.length) return null;

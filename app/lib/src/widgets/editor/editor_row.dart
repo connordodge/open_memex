@@ -278,6 +278,12 @@ class _RenderRowSelection extends RenderProxyBox {
     final boxes = host?.rowBoxes(_index) ?? textSlotBoxes(child);
     if (boxes == null) return const [];
     final rowText = controller.text;
+    // A field still laid out with another text than its row's (main's
+    // check); a RichText slot's laid-out length is checked below.
+    if (boxes is RenderEditableLineBoxes &&
+        boxes.editable.plainText != rowText) {
+      return const [];
+    }
     final length = rowText.length;
 
     // Where the segment selection meets the row's edges.
