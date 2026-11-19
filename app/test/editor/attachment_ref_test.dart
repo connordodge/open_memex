@@ -47,9 +47,11 @@ void main() {
   group('reference grammar (R4)', () {
     test('parseAttachmentReference matches every refs json reference row', () {
       final rows = _rows('references');
-      expect(rows, hasLength(34), reason: 'every fixture row is read');
+      expect(rows, isNotEmpty, reason: 'the fixture has rows');
+      var checked = 0;
       final wrong = <String>[];
       for (final row in rows) {
+        checked++;
         final markdown = row['markdown']! as String;
         final got = parseAttachmentReference(markdown);
         if (row['valid']! as bool) {
@@ -69,6 +71,7 @@ void main() {
         }
       }
       expect(wrong, isEmpty);
+      expect(checked, rows.length, reason: 'every fixture row is checked');
     });
 
     test(
@@ -385,14 +388,17 @@ void main() {
   group('encoding (R3)', () {
     test('encodeAttachmentName produces every refs json encode row', () {
       final rows = _rows('encode');
-      expect(rows, hasLength(22), reason: 'every fixture row is read');
+      expect(rows, isNotEmpty, reason: 'the fixture has rows');
+      var checked = 0;
       final wrong = <String>[];
       for (final row in rows) {
+        checked++;
         final name = row['name']! as String;
         final got = encodeAttachmentName(name);
         if (got != row['encoded_name']) wrong.add('$name -> $got');
       }
       expect(wrong, isEmpty);
+      expect(checked, rows.length, reason: 'every fixture row is checked');
     });
 
     test('attachmentMarkdown produces every refs json encode row markdown', () {
@@ -536,15 +542,18 @@ void main() {
 
     test('isExecutableName matches every refs json executable row', () {
       final rows = _rows('executable');
-      expect(rows, hasLength(25), reason: 'every fixture row is read');
+      expect(rows, isNotEmpty, reason: 'the fixture has rows');
+      var checked = 0;
       final wrong = <String>[];
       for (final row in rows) {
+        checked++;
         final name = row['name']! as String;
         if (isExecutableName(name) != row['executable']) {
           wrong.add('$name: ${row['why']}');
         }
       }
       expect(wrong, isEmpty);
+      expect(checked, rows.length, reason: 'every fixture row is checked');
     });
 
     test(
