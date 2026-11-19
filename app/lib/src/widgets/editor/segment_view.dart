@@ -295,6 +295,7 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
 
   @override
   void dispose() {
+    _activeRow.dispose();
     _find?.close();
     widget.controller.removeListener(_onSegmentChanged);
     widget.focusNode.removeListener(_onSegmentFocus);
@@ -773,6 +774,20 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
       SelectionChangedCause.tap,
     );
   }
+
+  /// The row [activateRow] last made active (WI #128, Spec #122 Req 27,
+  /// Req 30), or null before any was. It notifies when it changes, so a row
+  /// presenter can build that row's field in place of its text (#132).
+  ValueListenable<int?> get activeRow => _activeRow;
+  final ValueNotifier<int?> _activeRow = ValueNotifier(null);
+
+  /// Makes row [i] the active row with segment [selection] (WI #128, Spec
+  /// #122 Req 30): the press, menu or Check Document Now acting on a row
+  /// asks for it. The segment selection becomes [selection], [activeRow]
+  /// becomes [i], and row [i]'s focus node is asked for focus, which it
+  /// takes once the row's field is mounted (a row without a field mounts
+  /// one when its presenter sees [activeRow]). Nothing past the last row.
+  void activateRow(int i, TextSelection selection) {}
 
   /// [row]'s field state, or null while its slot holds no field.
   EditableTextState? _fieldStateOf(_Row row) {
