@@ -8,6 +8,7 @@ import '../../editor/editor_rows.dart';
 import '../../editor/segments.dart';
 import '../../theme/colors.dart';
 import 'line_boxes.dart';
+import 'segment_view.dart' show textSlotLines;
 
 // Open-at-passage (Spec #391 req 27, WI #428): where an opened echo lands in
 // the segmented editor, and the brief background highlight shown there.
@@ -186,19 +187,16 @@ int _sharedPrefix(String a, String b) {
   }
   final whole = Rect.fromLTRB(left, 0, right, size.height);
   if (arrival.kind != RowKind.prose) return (band: whole, anchor: whole);
-  final editable = findRenderEditable(row);
-  if (editable == null ||
-      !editable.hasSize ||
-      editable.plainText != arrival.rowText) {
-    return (band: whole, anchor: whole);
-  }
-  final lines = RenderEditableLineBoxes(editable).lines;
-  if (lines.isEmpty) return (band: whole, anchor: whole);
+  // The row's text through the row-geometry accessor's text-slot half
+  // (WI #127): its field's, or a RichText's standing in for it.
+  final text = textSlotLines(row, arrival.rowText);
+  if (text == null) return (band: whole, anchor: whole);
+  final (:boxes, :lines) = text;
   final block = _passageBlock(arrival.rowText, arrival.local);
   final first = lineHolding(lines, block.start);
   final last = lineHolding(lines, block.end);
-  double y(double editableY) =>
-      row.globalToLocal(editable.localToGlobal(Offset(0, editableY))).dy;
+  double y(double textY) =>
+      row.globalToLocal(boxes.box.localToGlobal(Offset(0, textY))).dy;
   final top = identical(first, lines.first) ? 0.0 : y(first.top);
   final bottom = identical(last, lines.last) ? size.height : y(last.bottom);
   final firstBottom = identical(first, lines.last)

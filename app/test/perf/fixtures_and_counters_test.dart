@@ -934,19 +934,46 @@ void main() {
       },
     );
 
-    testWidgets('a field host counts one editable lookup per editable call', (
-      tester,
-    ) async {
-      await pumpSpellingEditor(tester, body: 'Some words here.\n');
-      final spellHost =
-          tester.state(find.byType(host.SpellCheckField).first)
-              as SpellFieldHost;
-      PerfCounters.reset();
-      expect(spellHost.editable(), isNotNull);
-      expect(_n('spellHostEditableCalls'), 1);
-      expect(spellHost.editable(), isNotNull);
-      expect(_n('spellHostEditableCalls'), 2);
-    });
+    testWidgets(
+      'a field host counts one laid-out text lookup per extent call',
+      (tester) async {
+        await pumpSpellingEditor(tester, body: 'Some words here.\n');
+        final spellHost =
+            tester.state(find.byType(host.SpellCheckField).first)
+                as SpellFieldHost;
+        PerfCounters.reset();
+        expect(spellHost.extent(), isNotNull);
+        expect(_n('spellHostEditableCalls'), 1);
+        expect(spellHost.extent(), isNotNull);
+        expect(_n('spellHostEditableCalls'), 2);
+      },
+    );
+
+    testWidgets(
+      'a field host counts no laid-out text lookup per extentAt call once extent resolved it',
+      (tester) async {
+        await pumpSpellingEditor(tester, body: 'Some words here.\n');
+        final spellHost =
+            tester.state(find.byType(host.SpellCheckField).first)
+                as SpellFieldHost;
+        PerfCounters.reset();
+        // The editor's own evaluation already resolved the field's text via
+        // `extent`: probes reuse it.
+        expect(spellHost.extentAt(5), isNotNull);
+        expect(_n('spellHostEditableCalls'), 0, reason: 'reuses the text');
+        expect(spellHost.extentAt(5), isNotNull);
+        expect(_n('spellHostEditableCalls'), 0, reason: 'reuses the text');
+        // `extent` is the per-field entry point and counts one each call;
+        // the probes after it add none (main counted per field, not per
+        // probe).
+        expect(spellHost.extent(), isNotNull);
+        expect(_n('spellHostEditableCalls'), 1);
+        for (var i = 0; i < 20; i++) {
+          expect(spellHost.extentAt(i), isNotNull);
+        }
+        expect(_n('spellHostEditableCalls'), 1, reason: 'probes add none');
+      },
+    );
 
     testWidgets(
       'check document now measures an issue rect before and after the frame',
