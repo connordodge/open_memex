@@ -282,9 +282,7 @@ Iterable<(Rect, LineBox)> lineRectsOf(
     }
     final end = line.range.end;
     if (end >= range.end || end >= text.length) return;
-    final next = boxes.lineAt(
-      text.codeUnitAt(end) == _newline ? end + 1 : end,
-    );
+    final next = boxes.lineAt(text.codeUnitAt(end) == _newline ? end + 1 : end);
     if (next.range.start <= line.range.start) return;
     line = next;
   }
@@ -575,8 +573,10 @@ TextRange? overlapOfLine(TextRange range, TextRange line) {
 /// extent and [offsetAt] come from the editable itself. Offsets past the
 /// editable's text (typed, not laid out yet) are clamped to its end.
 ///
-/// Every answer equals what laying out a whole-text copy of the field's span
-/// and walking every line answered before WI #126.
+/// In the editor's text styles every answer equals what laying out a
+/// whole-text copy of the field's span and walking every line answered
+/// before WI #126. Outside them (another strut or leading) a baseline from
+/// the line laid out on its own may differ from that copy's.
 class RenderEditableLineBoxes implements LineBoxSource {
   RenderEditableLineBoxes(this.editable);
 

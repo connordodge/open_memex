@@ -29,8 +29,10 @@ const double _far = 1e7;
 /// to its end. A placeholder (`WidgetSpan`, test-only: no production row
 /// holds one, D1) measures as its laid-out child.
 ///
-/// Every answer equals what laying out a whole-text copy of the paragraph's
-/// span and walking every line answered before WI #126.
+/// In the editor's text styles every answer equals what laying out a
+/// whole-text copy of the paragraph's span and walking every line answered
+/// before WI #126. Outside them (another strut or leading) a baseline from
+/// the line laid out on its own may differ from that copy's.
 class RenderParagraphLineBoxes implements LineBoxSource {
   RenderParagraphLineBoxes(this.paragraph);
 
