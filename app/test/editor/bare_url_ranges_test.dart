@@ -332,6 +332,46 @@ void main() {
     });
   });
 
+  // WI #142 (D9): images are link tokens now; bareUrlRanges keeps its
+  // includeImageUrls contract for the spell checker.
+  group('image link tokens (WI 142)', () {
+    const hash =
+        '3f1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcd';
+
+    test(
+      'includeImageUrls reports an attachment image url once and never an attachment link url',
+      () {
+        const image = 'objects/3f/$hash/a.png';
+        const link = 'objects/3f/$hash/b.pdf';
+        const text =
+            'see ![a.png]($image) and [b.pdf]($link) https://c.example';
+        expect(_urls(text), ['https://c.example']);
+        final ranges = bareUrlRanges(text, includeImageUrls: true);
+        expect(
+          [for (final r in ranges) text.substring(r.start, r.end)],
+          [image, 'https://c.example'],
+        );
+        expect(ranges.first.start, text.indexOf(image));
+      },
+    );
+
+    test(
+      'a bare URL right before or after an image stops at it or is found after it',
+      () {
+        const text =
+            'x https://a.example![i](https://i.example/p.png)https://c.example y';
+        expect(_urls(text), ['https://a.example', 'https://c.example']);
+        expect(
+          [
+            for (final r in bareUrlRanges(text, includeImageUrls: true))
+              text.substring(r.start, r.end),
+          ],
+          ['https://a.example', 'https://i.example/p.png', 'https://c.example'],
+        );
+      },
+    );
+  });
+
   group('whitespace set', () {
     // A URL ends at exactly the code units a regex \s matches.
     const spaces = [
