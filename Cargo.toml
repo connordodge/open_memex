@@ -49,6 +49,7 @@ chrono = { version = "0.4.44", default-features = false, features = ["clock", "s
 strsim = "0.11.1"
 zip = { version = "9.5", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
+base64 = "0.22"
 
 [profile.release]
 lto = "thin"

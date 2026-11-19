@@ -6,10 +6,12 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../editor/attachment_ref.dart' show parseAttachmentDestination;
 import '../../editor/markdown_inline.dart';
 import '../../editor/markdown_lines.dart';
 import '../../editor/markdown_table.dart';
 import '../../editor/tag_grammar.dart' show fencedMdLines, normalizeTagName;
+import '../../state/attachments_state.dart';
 import '../../state/note_title_lookup.dart';
 import '../../state/tabs_state.dart';
 import '../../state/tags_browse_state.dart';
@@ -387,7 +389,19 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
       case TransclusionLinkToken(:final date):
         unawaited(_openDay(date));
       case LinkToken(:final url):
-        unawaited(ref.read(urlOpenerProvider).open(url));
+        // An attachment opens through the vault's attachments domain, with
+        // its decoded path; never the URL opener (Spec #123 D10, R33). A
+        // failed open, or no open vault, shows nothing yet: #143 wires its
+        // shared R42 toast to this one open call.
+        final attachment = parseAttachmentDestination(url);
+        if (attachment == null) {
+          unawaited(ref.read(urlOpenerProvider).open(url));
+        } else {
+          final attachments = ref.read(attachmentsProvider);
+          if (attachments != null) {
+            unawaited(attachments.open(attachment.path));
+          }
+        }
       case InlineToken(kind: InlineTokenKind.tag):
         revealTag(ref, link.tag!);
       default:
@@ -511,8 +525,10 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
 }
 
 /// Whether a click opens [url]: its scheme (case-insensitive) is http, https
-/// or mailto.
+/// or mailto, or it is an attachment destination (Spec #123 R27, R29, R34).
+/// Any other relative path opens nothing.
 bool _openable(String url) {
+  if (parseAttachmentDestination(url) != null) return true;
   final colon = url.indexOf(':');
   return colon > 0 &&
       _openableSchemes.contains(url.substring(0, colon).toLowerCase());

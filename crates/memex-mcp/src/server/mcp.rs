@@ -86,11 +86,12 @@ impl Services {
 }
 
 /// A stateless, JSON-response, any-Host MCP service over `entry`'s
-/// `AppState` (the same connection and mutex the app API uses), with a new
+/// `AppState` (the same connection and mutex the app API uses, with the
+/// transport set to Hosted), with a new
 /// [`HttpSessions`] for the vault. The vault's expired presence records are
 /// swept here, when it is first served.
 fn service_for(entry: &VaultEntry, clock: &SharedClock) -> McpService {
-    let state = Arc::new(entry.state.clone());
+    let state = Arc::new(entry.state.clone().hosted());
     let sessions = Arc::new(HttpSessions::new(
         &entry.state.vault_path,
         clock.clone(),

@@ -161,6 +161,8 @@ enum Commands {
     },
     /// Append text to a daily note. Text comes from TEXT or stdin.
     Append(cli::append::AppendArgs),
+    /// Store a file in the vault as an attachment and print its markdown.
+    Attach(cli::attach::AttachArgs),
     /// Print an agent prompt's raw text.
     Prompt(cli::prompt::PromptArgs),
     /// Delete a note.
@@ -357,6 +359,7 @@ async fn dispatch(command: Commands) -> Result<()> {
         } => cmd_update_link(vault, link_id, kind, label, clear_label, with_embeddings).await,
         Commands::Canvas { action } => cmd_canvas(action),
         Commands::Append(args) => cli::append::run(args),
+        Commands::Attach(args) => cli::attach::run(args),
         Commands::Prompt(args) => cli::prompt::run(args),
         Commands::Rm(args) => cli::rm::run(args),
         Commands::Excerpt(args) => cli::excerpt::run(args),
