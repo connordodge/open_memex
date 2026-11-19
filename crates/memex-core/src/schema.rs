@@ -710,3 +710,10 @@ pub fn ensure_vector_table(conn: &Connection, dim: usize) -> Result<()> {
     conn.execute_batch(&sql)?;
     Ok(())
 }
+
+/// Create the per-vault `attachment_chunk_vec` virtual table (vec0, like
+/// `chunk_vec`) for the given embedding dimension if it does not already
+/// exist. Idempotent. (WI #135 skeleton: not yet implemented.)
+pub fn ensure_attachment_vector_table(_conn: &Connection, _dim: usize) -> Result<()> {
+    Ok(())
+}
