@@ -36,6 +36,8 @@ reqwest = { workspace = true }
 ulid = { workspace = true }
 sha2 = { workspace = true }
 chrono = { workspace = true }
+# add_attachment `data` and get_attachment image content (Spec #123 R18, R21).
+base64 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

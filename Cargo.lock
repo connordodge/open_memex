@@ -1945,6 +1945,7 @@ version = "0.6.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "fastembed",

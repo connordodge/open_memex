@@ -229,7 +229,7 @@ void main() {
           );
         }
         final tools = _wireTools();
-        expect(tools, hasLength(38));
+        expect(tools, hasLength(40));
         expect(_shownTools(tester), _displayOrder(tools));
         // Labels sit above their own tools and below the previous group.
         var previousBottom = double.negativeInfinity;
@@ -315,7 +315,7 @@ void main() {
     ) async {
       await _pump(tester);
       final tools = _wireTools();
-      expect(tools.where((t) => t['writes'] == true), hasLength(25));
+      expect(tools.where((t) => t['writes'] == true), hasLength(26));
       for (final t in tools) {
         final name = t['name']! as String;
         expect(
@@ -324,7 +324,7 @@ void main() {
           reason: name,
         );
       }
-      expect(find.text('WRITES'), findsNWidgets(25));
+      expect(find.text('WRITES'), findsNWidgets(26));
     });
 
     testWidgets(
@@ -473,7 +473,7 @@ void main() {
         }
         expect(leaves.where((l) => l.$1 == 'WRITES'), hasLength(1));
         // The intro's WRITES is not a tool tag.
-        expect(find.text('WRITES'), findsNWidgets(25));
+        expect(find.text('WRITES'), findsNWidgets(26));
       },
     );
 
@@ -670,7 +670,7 @@ void main() {
     ) async {
       await _pump(tester);
       await type(tester, 'tag');
-      expect(_shownTools(tester).length, lessThan(38));
+      expect(_shownTools(tester).length, lessThan(40));
       await type(tester, '');
       expect(_shownTools(tester), _displayOrder(_wireTools()));
       expect(_shownGroups(tester), [for (final (id, _) in _groups) id]);
@@ -826,10 +826,10 @@ void main() {
       expect(_named(tester, 'prompt-row-'), [
         for (final p in _wirePrompts()) p['name'],
       ]);
-      expect(find.text('WRITES'), findsNWidgets(25));
+      expect(find.text('WRITES'), findsNWidgets(26));
       expect(_serverReads(server), 1);
       expect(h.cli.calls, isEmpty);
-      expect(h.read(toolsTabBadgeProvider), '38 tools');
+      expect(h.read(toolsTabBadgeProvider), '40 tools');
     });
 
     testWidgets(
@@ -1046,7 +1046,7 @@ void main() {
       expect(cli.callsFor('tools'), hasLength(2));
       expect(find.byKey(const Key('inline-error')), findsNothing);
       expect(_shownTools(tester), _displayOrder(_wireTools()));
-      expect(h.read(toolsTabBadgeProvider), '38 tools');
+      expect(h.read(toolsTabBadgeProvider), '40 tools');
     });
 
     testWidgets('a retry that fails again shows the new message', (
@@ -1134,8 +1134,8 @@ void main() {
       expect(_chipText(tester), 'Tools');
       gate.complete();
       await h.settle();
-      expect(h.read(toolsTabBadgeProvider), '38 tools');
-      expect(_chipText(tester), 'Tools 38 tools');
+      expect(h.read(toolsTabBadgeProvider), '40 tools');
+      expect(_chipText(tester), 'Tools 40 tools');
     });
 
     testWidgets('counts tools and not prompts', (tester) async {
@@ -1507,7 +1507,7 @@ void main() {
         addTearDown(sub.close);
         await h.settle();
         expect(cli.callsFor('tools'), hasLength(1));
-        expect(h.read(toolsTabBadgeProvider), '38 tools');
+        expect(h.read(toolsTabBadgeProvider), '40 tools');
 
         final server = FakeVaultServer()..serveDomain('tools');
         final hosted = HostedVaultRef(fakeServerId, seedVaultName);
@@ -1535,7 +1535,7 @@ void main() {
         expect(_serverReads(server), 1);
         expect(cli.callsFor('tools'), hasLength(1));
         expect(h.read(toolsTabProvider).valueOrNull, isA<ToolCatalogOk>());
-        expect(h.read(toolsTabBadgeProvider), '38 tools');
+        expect(h.read(toolsTabBadgeProvider), '40 tools');
 
         // Back to a local vault: the memex binary is read again, the server
         // is not.
@@ -1545,7 +1545,7 @@ void main() {
         expect(cli.callsFor('tools'), hasLength(2));
         expect(_serverReads(server), 1);
         expect(h.read(toolsTabProvider).valueOrNull, isA<ToolCatalogOk>());
-        expect(h.read(toolsTabBadgeProvider), '38 tools');
+        expect(h.read(toolsTabBadgeProvider), '40 tools');
       },
     );
 
@@ -1576,7 +1576,7 @@ void main() {
         expect(cli.callsFor('tools'), hasLength(3));
         expect(find.text('memex not found'), findsNothing);
         expect(_shownTools(tester), _displayOrder(_wireTools()));
-        expect(h.read(toolsTabBadgeProvider), '38 tools');
+        expect(h.read(toolsTabBadgeProvider), '40 tools');
       },
     );
 
@@ -1665,7 +1665,7 @@ void main() {
         expect(find.text('stale answer'), findsNothing);
         expect(find.byKey(const Key('inline-error')), findsNothing);
         expect(_shownTools(tester), _displayOrder(_wireTools()));
-        expect(h.read(toolsTabBadgeProvider), '38 tools');
+        expect(h.read(toolsTabBadgeProvider), '40 tools');
       },
     );
 
