@@ -1613,5 +1613,55 @@ void main() {
       },
       variant: macOnly,
     );
+
+    testWidgets(
+      'a right click on a flagged word of a later row without a field after a click on an earlier row opens its menu and makes it the active row',
+      (tester) async {
+        final e = await _t128Pump(tester);
+        await _t128Click(tester, e.wordPoint(0, 'plain'));
+        expect(e.active, 0, reason: 'fixture: row 0 is active with focus');
+
+        await wi438RightClick(tester, e.wordPoint(1, 'wrld'));
+
+        expect(wi438Menu, findsOneWidget);
+        expect(wi438Labels(tester).first, 'world');
+        expect(e.active, 1);
+        expect(e.selected, e.range(1, 'wrld'), reason: 'the menu word');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a right click on plain text of a later row without a field after a click on an earlier row opens the text menu and makes it the active row',
+      (tester) async {
+        final e = await _t128Pump(tester);
+        await _t128Click(tester, e.wordPoint(0, 'plain'));
+        expect(e.active, 0, reason: 'fixture: row 0 is active with focus');
+
+        await wi438RightClick(tester, e.wordPoint(3, 'quote'));
+
+        expect(wi438DefaultMenu, findsOneWidget);
+        expect(e.active, 3);
+        expect(e.focused, 3);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a click on a later row without a field after a right click on a flagged word of an earlier row makes the later row the active row',
+      (tester) async {
+        final e = await _t128Pump(tester);
+        await wi438RightClick(tester, e.wordPoint(0, 'teh'));
+        expect(wi438Menu, findsOneWidget, reason: 'fixture: the menu is open');
+        expect(e.active, 0, reason: 'fixture: row 0 is active');
+
+        await _t128Click(tester, e.wordPoint(3, 'quote'));
+
+        expect(e.active, 3);
+        expect(e.focused, 3);
+        expect(wi438Menu, findsNothing, reason: 'the press closed the menu');
+      },
+      variant: macOnly,
+    );
   });
 }
