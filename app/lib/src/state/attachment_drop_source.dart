@@ -15,12 +15,14 @@ typedef AttachmentDropCallback =
 /// the callbacks directly.
 ///
 /// Known limitation: the native `desktop_drop` view accepts every file drag
-/// app-wide, whatever [enabled] says, and copies the dropped files (for a
-/// file promise, such as a Mail attachment or a browser image, the promised
-/// files) into `$TMPDIR/Drops/` before Dart is told. [enabled] only decides
-/// whether the callbacks fire, so a drop the app ignores still leaves that
-/// copy behind. The paths reported by `onDropped` carry no marker for a
-/// promised copy or a directory.
+/// app-wide, whatever [enabled] says. [enabled] only decides whether the
+/// callbacks fire. Ordinary file drags (a Finder drag) report the original
+/// paths, which are the user's own files and must never be deleted. Only a
+/// file promise (a Mail attachment, a browser image) is written to
+/// `$TMPDIR/Drops/` first, and that copy is left behind even when the app
+/// ignores the drop. The paths reported by `onDropped` carry no marker for a
+/// promised copy or a directory, so any directory refusal belongs in the
+/// shared attach path, and nothing here may clean up reported paths.
 abstract interface class AttachmentDropSource {
   /// Wraps [child] in a drop target.
   ///
