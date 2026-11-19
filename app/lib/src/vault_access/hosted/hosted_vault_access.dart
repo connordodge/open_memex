@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import '../../memex_cli.dart';
 import '../vault_access.dart';
 import 'agents.dart';
+import 'attachments.dart';
 import 'canvas.dart';
 import 'daily.dart';
 import 'feedback.dart';
@@ -55,6 +56,10 @@ class HostedVaultAccess implements VaultAccess {
       tags = HostedTagsAccess(client: client, vaultName: vaultName),
       words = HostedWordsAccess(client: client, vaultName: vaultName),
       search = HostedSearchAccess(client: client, vaultName: vaultName),
+      attachments = HostedAttachmentsAccess(
+        client: client,
+        vaultName: vaultName,
+      ),
       _revision = HostedRevision(client, vaultName);
 
   final _ComposedClient _client;
@@ -95,6 +100,10 @@ class HostedVaultAccess implements VaultAccess {
   /// A [HostedSearchAccess] (#75).
   @override
   final SearchAccess search;
+
+  /// A [HostedAttachmentsAccess] (Spec #123 V1).
+  @override
+  final HostedAttachmentsAccess attachments;
 
   final HostedRevision _revision;
 

@@ -11,6 +11,12 @@
   ],
   "tools": [
     {
+      "group": "notes",
+      "name": "add_attachment",
+      "summary": "Stores a file in the vault and returns the markdown to place in a note.",
+      "writes": true
+    },
+    {
       "group": "daily",
       "name": "add_excerpt",
       "summary": "Files blocks of a daily note into a topic note as an excerpt.",
@@ -81,6 +87,12 @@
       "name": "edit_note",
       "summary": "Edits a note's text by exact find-and-replace or a full rewrite, unless it is read-only for agents.",
       "writes": true
+    },
+    {
+      "group": "notes",
+      "name": "get_attachment",
+      "summary": "Reads an attachment: an image, a text file's text, or its details.",
+      "writes": false
     },
     {
       "group": "canvas",
