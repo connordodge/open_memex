@@ -2005,3 +2005,514 @@ fn equally_scored_chunks_of_one_attachment_go_to_the_lower_ord_for_the_snippet()
     let want: String = low.chars().take(SNIPPET_CHARS).collect();
     assert_eq!(list[0]["snippet"], json!(want), "the lower ord wins a tie");
 }
+
+// ================================================================ review round 1 (verify)
+
+/// The RRF score of the first-ranked key of one list.
+const RANK_1: f64 = 1.0 / 61.0;
+
+fn score_of(hit: &Value) -> f64 {
+    hit["score"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("hit has a score: {hit}"))
+}
+
+#[test]
+fn two_attachments_in_one_note_chunk_give_one_hit_with_the_best_one_and_both_are_listed() {
+    let (_d, mut vault) = fresh_vault();
+    let conn = vault.connection_ref();
+    // Names sort A before B, so A is rank 1 of the name list and B rank 2.
+    let a = seed_attachment(conn, "a1", "Screenshot A.png", 10, &[]);
+    let b = seed_attachment(conn, "b2", "Screenshot B.png", 10, &[]);
+    // B's line comes first: the kept hit is the best attachment (A), not the
+    // earliest line.
+    let n = create(
+        &mut vault,
+        "Shots",
+        &format!("Shots.\n\n{}\n\n{}\n", b.markdown, a.markdown),
+    );
+    let other = create(&mut vault, "Other", &format!("O.\n\n{}\n", b.markdown));
+    let conn = vault.connection_ref();
+    let line_a = line_start(conn, &n, &a);
+    assert!(line_start(conn, &n, &b) < line_a, "fixture: B's line first");
+    assert_eq!(
+        chunk_rows(conn, n.id.as_str()).len(),
+        1,
+        "fixture: one chunk"
+    );
+    let (chunk, _) = chunk_holding(conn, &n, line_a);
+
+    let got = ns(&mut vault, "screenshot", 8);
+    assert_eq!(the_hit(&got, &n)["start_byte"], json!(line_a), "A's line");
+    for got in [got, core_search(&vault, "screenshot", 8, SearchMode::Fts)] {
+        let hit = the_hit(&got, &n);
+        assert_eq!(hit["chunk_id"], json!(chunk), "{got:#}");
+        assert_eq!(hit["attachment"], a.hit_json(), "the best attachment");
+        assert_eq!(hit["snippet"], json!(a.name));
+        // No two hits share a (note, chunk): clients key rows by chunk_id.
+        let ids: BTreeSet<(String, String)> = hits(&got)
+            .iter()
+            .map(|h| {
+                (
+                    h["note_id"].as_str().unwrap().to_string(),
+                    h["chunk_id"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(ids.len(), hits(&got).len(), "unique (note, chunk): {got:#}");
+        assert_eq!(hits(&got).len(), 2, "Shots and Other: {got:#}");
+        assert_eq!(the_hit(&got, &other)["attachment"], b.hit_json());
+        // Both attachments are still listed, each with its notes.
+        assert_eq!(att_paths(&got), vec![a.path.clone(), b.path.clone()]);
+        let list = att_list(&got);
+        assert_eq!(sorted_notes(&list[0]), note_refs(&[&n]));
+        assert_eq!(sorted_notes(&list[1]), note_refs(&[&n, &other]));
+    }
+}
+
+#[test]
+fn two_attachments_in_different_chunks_of_one_note_give_a_hit_each_on_their_own_chunk() {
+    let (_d, mut vault) = fresh_vault();
+    let conn = vault.connection_ref();
+    let a = seed_attachment(conn, "a3", "Screenshot A.png", 10, &[]);
+    let b = seed_attachment(conn, "b4", "Screenshot B.png", 10, &[]);
+    let body = format!(
+        "{}\n\n{}\n\n{}\n\n{}\n\n{}\n",
+        a.markdown,
+        filler(300),
+        filler(300),
+        filler(300),
+        b.markdown
+    );
+    let n = create(&mut vault, "Far Apart", &body);
+    let conn = vault.connection_ref();
+    let (chunk_a, _) = chunk_holding(conn, &n, line_start(conn, &n, &a));
+    let (chunk_b, _) = chunk_holding(conn, &n, line_start(conn, &n, &b));
+    assert_ne!(chunk_a, chunk_b, "fixture: different chunks");
+
+    let got = ns(&mut vault, "screenshot", 8);
+    let on = hits_on(&got, &n);
+    assert_eq!(on.len(), 2, "one hit per chunk: {got:#}");
+    let find = |att: &Att| {
+        on.iter()
+            .find(|h| h["attachment"] == att.hit_json())
+            .unwrap_or_else(|| panic!("a hit for {}: {got:#}", att.name))
+    };
+    assert_eq!(find(&a)["chunk_id"], json!(chunk_a));
+    assert_eq!(find(&b)["chunk_id"], json!(chunk_b));
+}
+
+#[test]
+fn a_day_keeps_the_topics_of_its_own_text_hit_when_an_attachment_hit_merges_it() {
+    let (_d, mut vault) = fresh_vault();
+    let att = seed_attachment(
+        vault.connection_ref(),
+        "d4",
+        "Pond Survey.txt",
+        512,
+        &["Heron nest count by the north pond."],
+    );
+    // Block 0 says heron (chunk 0); the attachment line is block 4 (a later
+    // chunk). Each is transcluded by its own topic.
+    let day = create_with(
+        &mut vault,
+        DAY,
+        &format!(
+            "Heron nest by the mill.\n\n{}\n\n{}\n\n{}\n\n{}\n",
+            filler(300),
+            filler(300),
+            filler(300),
+            att.markdown
+        ),
+        Some(json!({ "role": "daily" })),
+    );
+    for (ord, id) in [(0, "blk0a1"), (4, "blk0a2")] {
+        let n = vault
+            .connection_ref()
+            .execute(
+                "UPDATE blocks SET block_id = ? WHERE note_id = ? AND ord = ?",
+                params![id, day.id.as_str(), ord],
+            )
+            .unwrap();
+        assert_eq!(n, 1, "fixture: the day has a block at ord {ord}");
+    }
+    let text_topic = create_with(
+        &mut vault,
+        "Mill Topics",
+        &format!("Mill.\n\n![[{DAY}#^blk0a1]]\n"),
+        Some(json!({ "role": "topic" })),
+    );
+    let file_topic = create_with(
+        &mut vault,
+        "Pond Topics",
+        &format!("Pond.\n\n![[{DAY}#^blk0a2]]\n"),
+        Some(json!({ "role": "topic" })),
+    );
+    let conn = vault.connection_ref();
+    let line = line_start(conn, &day, &att);
+    let (att_chunk, _) = chunk_holding(conn, &day, line);
+    let (text_chunk, _) = chunk_holding(conn, &day, 0);
+    assert_ne!(att_chunk, text_chunk, "fixture: two chunks");
+
+    for got in [
+        ns(&mut vault, "heron", 8),
+        core_search(&vault, "heron", 8, SearchMode::Fts),
+    ] {
+        let mut titles: Vec<&str> = hits(&got)
+            .iter()
+            .map(|h| h["note_title"].as_str().unwrap())
+            .collect();
+        titles.sort_unstable();
+        assert_eq!(
+            titles,
+            vec![DAY, "Mill Topics", "Pond Topics"],
+            "the day, and the topic of each of its matching blocks: {got:#}"
+        );
+        let d = the_hit(&got, &day);
+        assert_eq!(d["attachment"], att.hit_json());
+        assert_eq!(d["chunk_id"], json!(att_chunk));
+        let t = the_hit(&got, &text_topic);
+        assert_eq!(
+            t["via"],
+            json!(DAY),
+            "the text hit's topic comes via the day"
+        );
+        assert!(
+            t.get("attachment").is_none_or(Value::is_null),
+            "a topic of the day's own text carries no attachment: {t}"
+        );
+        let t = the_hit(&got, &file_topic);
+        assert_eq!(t["via"], json!(DAY));
+        assert_eq!(t["attachment"], att.hit_json());
+    }
+}
+
+#[test]
+fn a_day_attachment_hit_expands_only_through_the_reference_lines_block() {
+    let (_d, mut vault) = fresh_vault();
+    let att = seed_attachment(
+        vault.connection_ref(),
+        "d5",
+        "Pond Survey.txt",
+        512,
+        &["Heron nest count by the north pond."],
+    );
+    // One chunk holds both blocks; only the attachment line's block matches.
+    let day = create_with(
+        &mut vault,
+        DAY,
+        &format!(
+            "Fixed the jump arc.\n\n{}\n\nSleep was bad.\n",
+            att.markdown
+        ),
+        Some(json!({ "role": "daily" })),
+    );
+    for (ord, id) in [(0, "blk0b1"), (1, "blk0b2")] {
+        let n = vault
+            .connection_ref()
+            .execute(
+                "UPDATE blocks SET block_id = ? WHERE note_id = ? AND ord = ?",
+                params![id, day.id.as_str(), ord],
+            )
+            .unwrap();
+        assert_eq!(n, 1, "fixture: the day has a block at ord {ord}");
+    }
+    let side = create_with(
+        &mut vault,
+        "Arc Topics",
+        &format!("Arc.\n\n![[{DAY}#^blk0b1]]\n"),
+        Some(json!({ "role": "topic" })),
+    );
+    let file_topic = create_with(
+        &mut vault,
+        "Pond Topics",
+        &format!("Pond.\n\n![[{DAY}#^blk0b2]]\n"),
+        Some(json!({ "role": "topic" })),
+    );
+    assert_eq!(
+        chunk_rows(vault.connection_ref(), day.id.as_str()).len(),
+        1,
+        "fixture: one chunk"
+    );
+    for got in [
+        ns(&mut vault, "heron", 8),
+        core_search(&vault, "heron", 8, SearchMode::Fts),
+    ] {
+        assert_eq!(
+            the_hit(&got, &file_topic)["via"],
+            json!(DAY),
+            "the reference line's block expands: {got:#}"
+        );
+        assert!(
+            hits_on(&got, &side).is_empty(),
+            "a block of the chunk that is not the reference line does not: {got:#}"
+        );
+    }
+}
+
+#[test]
+fn an_unreferenced_attachment_chunk_ranking_above_takes_no_keyword_rank_from_a_referenced_one() {
+    let (_d, mut vault) = fresh_vault();
+    let conn = vault.connection_ref();
+    // bm25 ranks Never's short chunk (three hits) above Kept's long one.
+    let long = format!("The {} heron {}.", filler(60), filler(60));
+    let kept = seed_attachment(conn, "f5", "Kept.txt", 10, &[long.as_str()]);
+    let _never = seed_attachment(conn, "a7", "Never.txt", 10, &["heron heron heron"]);
+    let n = create(&mut vault, "Keeper", &format!("K.\n\n{}\n", kept.markdown));
+    let got = core_search(&vault, "heron", 8, SearchMode::Fts);
+    assert_eq!(att_paths(&got), vec![kept.path.clone()], "{got:#}");
+    // Rank 1 of the referenced chunks: the unreferenced chunk takes none.
+    let score = score_of(the_hit(&got, &n));
+    assert!((score - RANK_1).abs() < 1e-5, "{score} vs {RANK_1}");
+}
+
+#[test]
+fn an_unreferenced_attachment_name_sorting_first_takes_no_name_rank_from_a_referenced_one() {
+    let (_d, mut vault) = fresh_vault();
+    let conn = vault.connection_ref();
+    // "Aaa Heron.png" sorts before "Zed Heron.png" in the name list.
+    let _never = seed_attachment(conn, "a8", "Aaa Heron.png", 10, &[]);
+    let kept = seed_attachment(conn, "f6", "Zed Heron.png", 10, &[]);
+    let n = create(&mut vault, "Keeper", &format!("K.\n\n{}\n", kept.markdown));
+    let got = core_search(&vault, "heron", 8, SearchMode::Fts);
+    assert_eq!(att_paths(&got), vec![kept.path.clone()], "{got:#}");
+    let score = score_of(the_hit(&got, &n));
+    assert!((score - RANK_1).abs() < 1e-5, "{score} vs {RANK_1}");
+}
+
+#[test]
+fn the_attachments_list_snippet_is_cut_at_280_characters_with_an_ellipsis() {
+    let (_d, mut vault) = fresh_vault();
+    let text = long_heron_text();
+    let att = seed_attachment(
+        vault.connection_ref(),
+        "c9",
+        "Heron Log.txt",
+        10,
+        &[text.as_str()],
+    );
+    create(&mut vault, "Holder", &format!("H.\n\n{}\n", att.markdown));
+    let want = format!("{}…", text.chars().take(SNIPPET_CHARS).collect::<String>());
+    for got in [
+        ns(&mut vault, "heron", 8),
+        core_search(&vault, "heron", 8, SearchMode::Fts),
+    ] {
+        let list = att_list(&got);
+        assert_eq!(list.len(), 1, "{got:#}");
+        assert_eq!(list[0]["snippet"], json!(want), "280 characters, then …");
+        let n = list[0]["snippet"].as_str().unwrap().chars().count();
+        assert_eq!(n, SNIPPET_CHARS + 1);
+    }
+}
+
+#[test]
+fn index_text_cuts_inline_list_quote_and_repeated_destinations_but_not_fenced_ones() {
+    let (_d, mut vault) = fresh_vault();
+    let a = seed_attachment(vault.connection_ref(), "a9", "Spec Sheet.pdf", 10, &[]);
+    let b = seed_attachment(vault.connection_ref(), "b1", "Plain.txt", 10, &[]);
+    let c = seed_attachment(vault.connection_ref(), "c2", "Fenced.txt", 10, &[]);
+    let cut = |att: &Att| att.markdown[..att.markdown.rfind('(').unwrap()].to_string();
+    let part = |cut_it: bool| -> String {
+        let (am, bm) = if cut_it {
+            (cut(&a), cut(&b))
+        } else {
+            (a.markdown.clone(), b.markdown.clone())
+        };
+        let cm = &c.markdown;
+        format!(
+            "Intro.\n\nSee {am} for details.\n\n- item {bm}\n\n> quoted {am} and {bm}.\n\n\
+             ```\nsee {cm}\n```\n\nEnd {am}, {bm}.\n"
+        )
+    };
+    let n = create(&mut vault, "Inline", &part(false));
+    let conn = vault.connection_ref();
+    let rows = chunk_rows(conn, n.id.as_str());
+    assert_eq!(rows.len(), 1, "fixture: one chunk");
+    assert_eq!(rows[0].1, part(false).trim_end(), "chunks.content is exact");
+    let fts: String = conn
+        .query_row(
+            "SELECT content FROM chunk_fts WHERE chunk_id = ?",
+            [&rows[0].0],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        fts,
+        part(true).trim_end(),
+        "every non-fenced destination cut"
+    );
+
+    // Neither hash matches; the fenced one still does.
+    for att in [&a, &b] {
+        for got in [
+            ns(&mut vault, &att.hash, 8),
+            core_search(&vault, &att.hash, 8, SearchMode::Fts),
+        ] {
+            assert!(
+                hits(&got).is_empty(),
+                "{}'s hash matches nothing: {got:#}",
+                att.name
+            );
+        }
+    }
+    assert_eq!(
+        hits_on(&ns(&mut vault, &c.hash, 8), &n).len(),
+        1,
+        "a fenced destination is plain code text"
+    );
+
+    // The embedding input is the same, from reindex and embed_missing.
+    let emb = Words::new();
+    reindex(&mut vault, n.id.as_str(), Some(&emb));
+    assert_eq!(emb.texts(), vec![part(true).trim_end().to_string()]);
+    vault
+        .connection_ref()
+        .execute("DELETE FROM chunk_vec", [])
+        .unwrap();
+    let emb = Words::new();
+    {
+        let mut conn: &mut Connection = vault.connection_mut();
+        embed_missing(&mut conn, &emb, None, 0, 64).unwrap();
+    }
+    assert_eq!(emb.texts(), vec![part(true).trim_end().to_string()]);
+}
+
+#[test]
+fn a_chunk_starting_inside_fenced_code_keeps_its_destination_and_a_later_one_is_cut() {
+    let (_d, mut vault) = fresh_vault();
+    let a = seed_attachment(vault.connection_ref(), "a2", "Probe.txt", 10, &[]);
+    let body = format!(
+        "Intro.\n\n```\n{}\n\nsee {}\n\n{}\n```\n\nAfter {}.\n",
+        filler(500),
+        a.markdown,
+        filler(500),
+        a.markdown
+    );
+    let n = create(&mut vault, "Fence Split", &body);
+    let conn = vault.connection_ref();
+    let rows = chunk_rows(conn, n.id.as_str());
+    let inside = rows
+        .iter()
+        .find(|r| r.1.starts_with("see ["))
+        .unwrap_or_else(|| panic!("fixture: a chunk starts inside the fence: {rows:?}"));
+    let after = rows.iter().find(|r| r.1.starts_with("After [")).unwrap();
+    let fts = |id: &str| -> String {
+        conn.query_row(
+            "SELECT content FROM chunk_fts WHERE chunk_id = ?",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert!(
+        fts(&inside.0).contains(&a.hash),
+        "fenced code text is kept whole, though its chunk starts mid-fence"
+    );
+    assert!(!fts(&after.0).contains(&a.hash), "after the fence: cut");
+    assert!(fts(&after.0).starts_with("After [Probe.txt]."));
+
+    let check = |texts: &[String], what: &str| {
+        let inner = texts.iter().find(|t| t.starts_with("see [")).unwrap();
+        assert!(
+            inner.contains(&a.hash),
+            "{what}: inside the fence {inner:?}"
+        );
+        let later = texts.iter().find(|t| t.starts_with("After [")).unwrap();
+        assert!(
+            !later.contains(&a.hash),
+            "{what}: after the fence {later:?}"
+        );
+    };
+    let emb = Words::new();
+    reindex(&mut vault, n.id.as_str(), Some(&emb));
+    check(&emb.texts(), "reindex");
+    vault
+        .connection_ref()
+        .execute("DELETE FROM chunk_vec", [])
+        .unwrap();
+    let emb = Words::new();
+    {
+        let mut conn: &mut Connection = vault.connection_mut();
+        embed_missing(&mut conn, &emb, None, 0, 64).unwrap();
+    }
+    check(&emb.texts(), "embed_missing");
+}
+
+#[test]
+fn echoes_pending_counts_only_note_chunks_and_embeds_no_attachment_chunk() {
+    let (_d, mut vault) = fresh_vault();
+    let att = seed_attachment(
+        vault.connection_ref(),
+        "e4",
+        "Herd.txt",
+        10,
+        &["zebra one", "zebra two", "zebra three"],
+    );
+    let open = create(
+        &mut vault,
+        "Crossing",
+        &format!("Zebra crossing.\n\n{}\n", att.markdown),
+    );
+    create(&mut vault, "Elsewhere", "Another note entirely.");
+    let emb = Words::new();
+    // Others' budget 0: the other note's chunk stays pending; the three
+    // attachment chunks are not Echoes' to count.
+    let got = {
+        let mut conn: &mut Connection = vault.connection_mut();
+        echoes(&mut conn, &emb, open.id.as_str(), 8, 0).unwrap()
+    };
+    assert_eq!(got.pending, 1, "only the other note's chunk is pending");
+    assert!(
+        attachment_vec_ids(vault.connection_ref()).is_empty(),
+        "Echoes embeds no attachment chunk"
+    );
+    // With budget, the pending count reaches 0 while attachment chunks are
+    // still unembedded (and left for embed_missing).
+    let got = {
+        let mut conn: &mut Connection = vault.connection_mut();
+        echoes(&mut conn, &emb, open.id.as_str(), 8, 64).unwrap()
+    };
+    assert_eq!(got.pending, 0);
+    assert!(attachment_vec_ids(vault.connection_ref()).is_empty());
+    let counts = embedding_counts(vault.connection_ref()).unwrap();
+    assert_eq!(counts.chunks - counts.embedded, 3, "attachment chunks wait");
+    let r = {
+        let mut conn: &mut Connection = vault.connection_mut();
+        embed_missing(&mut conn, &emb, None, 0, 64).unwrap()
+    };
+    assert_eq!((r.embedded, r.pending), (3, 0));
+}
+
+#[test]
+fn embed_missing_with_a_first_note_spends_the_others_cap_only_on_other_chunks() {
+    let (_d, mut vault) = fresh_vault();
+    let att = seed_attachment(
+        vault.connection_ref(),
+        "d7",
+        "Reef.txt",
+        10,
+        &["first chunk", "second chunk", "third chunk"],
+    );
+    let first = create(
+        &mut vault,
+        "First",
+        &format!("First.\n\n{}\n", att.markdown),
+    );
+    assert_eq!(
+        chunk_rows(vault.connection_ref(), first.id.as_str()).len(),
+        1
+    );
+    let emb = Words::new();
+    // note_cap 5 takes First's chunk; others_cap 1 is then free for exactly
+    // one attachment chunk (the note-first chunk does not spend it).
+    let r = {
+        let mut conn: &mut Connection = vault.connection_mut();
+        embed_missing(&mut conn, &emb, Some(first.id.as_str()), 5, 1).unwrap()
+    };
+    assert_eq!(r.embedded, 2, "the note chunk and one attachment chunk");
+    assert_eq!(
+        attachment_vec_ids(vault.connection_ref()),
+        BTreeSet::from([att.chunk_ids[0].clone()])
+    );
+    assert_eq!(r.pending, 2);
+}
