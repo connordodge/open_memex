@@ -1344,3 +1344,145 @@ async fn tools_list_includes_add_attachment_and_get_attachment_with_their_parame
         "get_attachment takes path: {get}"
     );
 }
+
+// ======================================================================
+// WI #138 verify: contracts the handoff listed as unpinned (R19, R21).
+// ======================================================================
+
+/// The C1 error object `{code, message}` of a refused `reply`.
+fn error_object(reply: &Reply) -> Value {
+    let result = reply.as_ref().expect("a tool result, not a JSON-RPC error");
+    let text = result["content"][0]["text"].as_str().unwrap_or_default();
+    let v: Value = serde_json::from_str(text).unwrap_or_else(|e| panic!("C1 JSON ({e}): {text}"));
+    assert!(v["error"].is_object(), "refused: {result}");
+    v["error"].clone()
+}
+
+#[tokio::test]
+async fn add_attachment_refuses_a_missing_file_path_as_not_found_and_a_hidden_one_as_hidden() {
+    let w = local().await;
+    let missing = w.root.join("files/never-written.txt");
+    let reply = w
+        .call("add_attachment", json!({ "file_path": s(&missing) }))
+        .await;
+    let err = error_object(&reply);
+    assert_eq!(err["code"], json!("not_found"), "{err}");
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("{} can't be read: ", s(&missing))),
+        "{err}"
+    );
+    assert_eq!(w.objects(), Vec::<String>::new(), "nothing stored");
+
+    // A missing hidden path is refused as hidden, before it is resolved, so
+    // the refusal does not say whether the path exists.
+    let hidden = w.root.join(".secret/never-written.txt");
+    assert_eq!(w.refused_path(s(&hidden)).await, hidden_text(s(&hidden)));
+}
+
+#[tokio::test]
+async fn add_attachment_refuses_dot_dot_inside_an_absolute_file_path_as_hidden() {
+    let w = local().await;
+    w.file("files/visible.txt", b"visible");
+    let given = format!("{}/files/../files/visible.txt", s(&w.root));
+    assert_eq!(w.refused_path(&given).await, hidden_text(&given));
+}
+
+#[tokio::test]
+async fn add_attachment_data_accepts_base64_with_or_without_its_padding() {
+    let w = local().await;
+    // "hi" is `aGk=`; "hi!" is `aGkh` (no padding to drop).
+    for (data, name, bytes) in [
+        ("aGk=", "padded.txt", &b"hi"[..]),
+        ("aGk", "unpadded.txt", &b"hi"[..]),
+        ("aGkh", "whole.txt", &b"hi!"[..]),
+    ] {
+        let reply = w
+            .call("add_attachment", json!({ "data": data, "name": name }))
+            .await;
+        assert_eq!(
+            payload("add_attachment", &reply),
+            expected(bytes, name),
+            "{data}"
+        );
+        assert_eq!(
+            fs::read(w.vault.join(object_path(bytes, name))).unwrap(),
+            bytes
+        );
+    }
+}
+
+#[tokio::test]
+async fn get_attachment_matches_an_extension_in_any_letter_case() {
+    let w = local().await;
+    let path = w.stored(b"loud notes\n", "NOTES.TXT");
+    assert_eq!(text(&w.get(&path).await), "loud notes\n");
+
+    let bytes = image_bytes(PNG_HEAD, 64);
+    let path = w.stored(&bytes, "SHOT.PNG");
+    let (mime, data) = image(&w.get(&path).await);
+    assert_eq!(mime, "image/png");
+    assert_eq!(data, bytes);
+}
+
+#[tokio::test]
+async fn get_attachment_refuses_a_link_inside_objects_that_points_outside() {
+    let w = local().await;
+    let secret = w.file("outside/secret.txt", b"wi138 outside secret");
+    let hidden = w.file(".secret/key.txt", b"wi138 hidden secret");
+
+    // The stored file itself replaced by a link to a file outside the vault.
+    let path = w.stored(b"original", "file-link.txt");
+    let on_disk = w.vault.join(&path);
+    fs::remove_file(&on_disk).unwrap();
+    symlink(&secret, &on_disk).unwrap();
+    let reply = w.get(&path).await;
+    assert_eq!(
+        error_message("get_attachment", &reply),
+        format!("Attachment not found: {path}")
+    );
+
+    // The same, into a hidden folder.
+    let path = w.stored(b"original two", "hidden-link.txt");
+    let on_disk = w.vault.join(&path);
+    fs::remove_file(&on_disk).unwrap();
+    symlink(&hidden, &on_disk).unwrap();
+    let reply = w.get(&path).await;
+    assert_eq!(
+        error_message("get_attachment", &reply),
+        format!("Attachment not found: {path}")
+    );
+
+    // The `<hash>` folder replaced by a link to a folder outside the vault
+    // that holds a file of the same name.
+    let path = w.stored(b"original three", "folder-link.txt");
+    let on_disk = w.vault.join(&path);
+    let hash_dir = on_disk.parent().unwrap().to_path_buf();
+    fs::remove_dir_all(&hash_dir).unwrap();
+    w.file(
+        "outside/folder/folder-link.txt",
+        b"wi138 outside folder secret",
+    );
+    symlink(w.root.join("outside/folder"), &hash_dir).unwrap();
+    let reply = w.get(&path).await;
+    assert_eq!(
+        error_message("get_attachment", &reply),
+        format!("Attachment not found: {path}")
+    );
+}
+
+#[tokio::test]
+async fn get_attachment_of_a_folder_at_an_attachment_path_gives_not_found() {
+    let w = local().await;
+    let path = w.stored(b"original", "was-a-file.txt");
+    let on_disk = w.vault.join(&path);
+    fs::remove_file(&on_disk).unwrap();
+    fs::create_dir(&on_disk).unwrap();
+    let reply = w.get(&path).await;
+    assert_eq!(
+        error_message("get_attachment", &reply),
+        format!("Attachment not found: {path}")
+    );
+}

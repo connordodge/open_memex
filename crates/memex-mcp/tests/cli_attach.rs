@@ -444,3 +444,31 @@ fn attach_stores_a_pasted_image_temp_file_under_the_given_name() {
         "{printed}"
     );
 }
+
+#[test]
+fn attach_to_a_folder_that_is_not_a_vault_exits_1_and_creates_no_objects() {
+    // `attach` opens the vault before it stores anything, so a stray folder
+    // is not turned into a vault by a file landing in `objects/`.
+    let w = World::new();
+    let bytes: &[u8] = b"wi138 stray";
+    let file = w.file("files/stray.txt", bytes);
+    let stray = w.root.join("not-a-vault");
+    fs::create_dir(&stray).unwrap();
+
+    let out = run(&[
+        "attach",
+        "--vault",
+        stray.to_str().unwrap(),
+        file.to_str().unwrap(),
+    ]);
+
+    let err = error_json(&out);
+    assert!(
+        err["error"]["code"].is_string() && err["error"]["message"].is_string(),
+        "a C1 object: {err}"
+    );
+    assert!(
+        !stray.join("objects").exists(),
+        "nothing was stored in a folder that is not a vault"
+    );
+}
