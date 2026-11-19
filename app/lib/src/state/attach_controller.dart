@@ -13,6 +13,8 @@ import '../vault_access/attachments_access.dart';
 import 'attachments_state.dart';
 import 'clock.dart';
 import 'editor_controller.dart';
+import 'vault_access_state.dart';
+import 'vault_state.dart';
 
 /// The note editor an attach action works on, as the editor showing a note
 /// registers it in [attachEditorProvider] (`NoteAttachHost`, beside the
@@ -62,9 +64,14 @@ class AttachController {
   /// insert: the busy guard.
   bool _picking = false;
 
+  /// Whether the open vault takes writes (`VaultAccess.canWrite`, R11).
+  /// False with no vault: every entry point fails closed.
+  bool get _canWrite => ref.read(vaultAccessProvider)?.canWrite ?? false;
+
   /// Attaches the files at [paths], in order, to the open note. The group
   /// goes after body line [anchorLine] (0-based, the note body's `\n`
-  /// lines), or after the caret line when [anchorLine] is null.
+  /// lines), or after the caret line when [anchorLine] is null. Does
+  /// nothing while the vault can't be written (R11).
   Future<void> attachPaths(
     BuildContext context,
     List<String> paths, {
@@ -72,9 +79,12 @@ class AttachController {
   }) async {
     final editor = ref.read(attachEditorProvider);
     final access = ref.read(attachmentsProvider);
-    if (editor == null || access == null || paths.isEmpty) return;
+    if (editor == null || access == null || paths.isEmpty || !_canWrite) {
+      return;
+    }
+    final vault = ref.read(currentVaultProvider);
     final anchor = _Anchor(ref, anchorLine ?? editor.caretLine);
-    await _run(ScaffoldMessenger.maybeOf(context), editor, anchor, [
+    await _run(ScaffoldMessenger.maybeOf(context), editor, vault, anchor, [
       for (final path in paths)
         (name: p.basename(path), store: () => access.add(path, null)),
     ]);
@@ -82,6 +92,7 @@ class AttachController {
 
   /// Attaches [bytes] stored under [name] (a pasted image, R8/R9) to the
   /// open note, at [anchorLine] or the caret line as [attachPaths] does.
+  /// Does nothing while the vault can't be written (R11).
   Future<void> attachBytes(
     BuildContext context,
     Uint8List bytes,
@@ -90,9 +101,10 @@ class AttachController {
   }) async {
     final editor = ref.read(attachEditorProvider);
     final access = ref.read(attachmentsProvider);
-    if (editor == null || access == null) return;
+    if (editor == null || access == null || !_canWrite) return;
+    final vault = ref.read(currentVaultProvider);
     final anchor = _Anchor(ref, anchorLine ?? editor.caretLine);
-    await _run(ScaffoldMessenger.maybeOf(context), editor, anchor, [
+    await _run(ScaffoldMessenger.maybeOf(context), editor, vault, anchor, [
       (name: name, store: () => access.addBytes(bytes, name)),
     ]);
   }
@@ -100,20 +112,22 @@ class AttachController {
   /// "Attach file…" (R10): opens the file picker with multiple selection
   /// and attaches the picked files at the caret line, or at the end of the
   /// person section when the editor has no caret. Cancelling changes
-  /// nothing. While an action runs, another start opens no picker.
+  /// nothing. While an action runs, another start opens no picker. Does
+  /// nothing while the vault can't be written (R11).
   Future<void> attachFromPicker(BuildContext context) async {
     if (_picking) return;
     final editor = ref.read(attachEditorProvider);
     final access = ref.read(attachmentsProvider);
-    if (editor == null || access == null) return;
+    if (editor == null || access == null || !_canWrite) return;
     _picking = true;
     final messenger = ScaffoldMessenger.maybeOf(context);
+    final vault = ref.read(currentVaultProvider);
     final anchor = _Anchor(ref, editor.caretLine);
     try {
       final picked = await FilePicker.platform.pickFiles(allowMultiple: true);
       final paths = picked?.paths.whereType<String>().toList() ?? const [];
       if (paths.isEmpty) return;
-      await _run(messenger, editor, anchor, [
+      await _run(messenger, editor, vault, anchor, [
         for (final path in paths)
           (name: p.basename(path), store: () => access.add(path, null)),
       ]);
@@ -136,10 +150,14 @@ class AttachController {
   /// One action (R13, R14): stores [files] in order under the Attaching
   /// toast, then inserts the stored files' lines once into [editor]'s note
   /// at [anchor], or shows the closed-note toast when that note is no
-  /// longer shown. Failed files get one failure toast.
+  /// longer shown: another note, no note, or another vault than [vault]
+  /// (the vault the files went to; leaving it closes the note, and a
+  /// virtual Today note has the same id in every vault). Failed files get
+  /// one failure toast.
   Future<void> _run(
     ScaffoldMessengerState? messenger,
     AttachEditor editor,
+    VaultRef? vault,
     _Anchor anchor,
     List<_File> files,
   ) async {
@@ -170,15 +188,24 @@ class AttachController {
     }
     if (stored.isNotEmpty) {
       final now = ref.read(attachEditorProvider);
-      final inserted =
-          now != null &&
-          identical(now.session, session) &&
-          now.insert(stored, anchor.lost ? now.caretLine : anchor.line);
-      if (!inserted) {
-        final n = stored.length;
+      final n = stored.length;
+      final files = n == 1 ? 'file' : 'files';
+      if (now == null ||
+          !identical(now.session, session) ||
+          ref.read(currentVaultProvider) != vault) {
         _toast(
           messenger,
-          'Attached $n ${n == 1 ? 'file' : 'files'}, but $title was closed; '
+          'Attached $n $files, but $title was closed; '
+          'drop or pick them again to add them.',
+        );
+      } else if (!now.insert(
+        stored,
+        anchor.lost ? now.caretLine : anchor.line,
+      )) {
+        // The note is still open but its editor couldn't take the edit.
+        _toast(
+          messenger,
+          "Attached $n $files, but couldn't add them to $title; "
           'drop or pick them again to add them.',
         );
       }

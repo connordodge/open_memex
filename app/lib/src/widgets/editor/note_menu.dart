@@ -518,12 +518,26 @@ class _NoteAttachHostState extends ConsumerState<NoteAttachHost>
     final layout = _layout();
     final start = layout.starts[field.segment];
     if (start == null) return null;
-    return _lineAt(
+    final ctrl = field.controller;
+    final line = _lineAt(
       layout.body,
-      field.controller.selection,
-      field.controller.text.length,
+      ctrl.selection,
+      ctrl.text.length,
       start: start,
     );
+    // A text segment right before an excerpt card ends in an empty row
+    // (its last `\n`, or nothing at all) that the body has no line for:
+    // the offset is the card line's start. Text typed there goes above the
+    // card, so a caret there anchors after the line above the card.
+    final text = ctrl.text;
+    final atEnd =
+        !ctrl.selection.isValid || ctrl.selection.extentOffset >= text.length;
+    if (layout.beforeCard.contains(field.segment) &&
+        atEnd &&
+        (text.isEmpty || text.endsWith('\n'))) {
+      return line > 0 ? line - 1 : 0;
+    }
+    return line;
   }
 
   /// The line of [body] holding [selection]'s extent, an offset into a
@@ -543,8 +557,15 @@ class _NoteAttachHostState extends ConsumerState<NoteAttachHost>
   }
 
   /// The body the segmented view shows, as `SegmentedBody` joins it, and
-  /// where each text segment (by index) starts in it, with its text.
-  ({String body, Map<int, int> starts, Map<int, String> texts}) _layout() {
+  /// where each text segment (by index) starts in it, with its text, and
+  /// which text segments come right before an excerpt card.
+  ({
+    String body,
+    Map<int, int> starts,
+    Map<int, String> texts,
+    Set<int> beforeCard,
+  })
+  _layout() {
     final content = _container.read(editorControllerProvider).contentMd;
     final segments = split(
       content,
@@ -559,6 +580,7 @@ class _NoteAttachHostState extends ConsumerState<NoteAttachHost>
     ];
     final starts = <int, int>{};
     final texts = <int, String>{};
+    final beforeCard = <int>{};
     var at = 0;
     for (final (i, s) in parts.indexed) {
       switch (s) {
@@ -566,13 +588,49 @@ class _NoteAttachHostState extends ConsumerState<NoteAttachHost>
           starts[i] = at;
           texts[i] = text;
           at += text.length;
+          if (i + 1 < parts.length && parts[i + 1] is TransclusionSegment) {
+            beforeCard.add(i);
+          }
         case TransclusionSegment(:final raw):
           at += raw.length;
         case FooterSegment():
           break;
       }
     }
-    return (body: join(parts), starts: starts, texts: texts);
+    return (
+      body: join(parts),
+      starts: starts,
+      texts: texts,
+      beforeCard: beforeCard,
+    );
+  }
+
+  /// [plan] moved out of an excerpt card's line into the text segment after
+  /// the card, when it adds the group after that line (an anchor on the
+  /// card: a drop on it, R7, or the person section's last line, R10). Only
+  /// a text segment takes an edit: inserting `\n` + rest at the card line's
+  /// end and inserting rest + `\n` after its `\n` give the same body.
+  static AttachmentInsertPlan _pastCardLine(
+    String body,
+    Iterable<({int start, int end})> fields,
+    AttachmentInsertPlan plan,
+  ) {
+    final inField = fields.any(
+      (f) => plan.start >= f.start && plan.end <= f.end,
+    );
+    if (inField ||
+        plan.start != plan.end ||
+        plan.start >= body.length ||
+        body[plan.start] != '\n' ||
+        !plan.replacement.startsWith('\n')) {
+      return plan;
+    }
+    return AttachmentInsertPlan(
+      start: plan.start + 1,
+      end: plan.start + 1,
+      replacement: '${plan.replacement.substring(1)}\n',
+      caret: plan.caret,
+    );
   }
 
   @override
@@ -599,11 +657,18 @@ class _NoteAttachHostState extends ConsumerState<NoteAttachHost>
       return true;
     }
     final layout = _layout();
-    final plan = planAttachmentInsert(
-      body: layout.body,
-      anchorLine: anchorLine,
-      lines: lines,
-      daily: _daily,
+    final plan = _pastCardLine(
+      layout.body,
+      [
+        for (final MapEntry(key: i, value: start) in layout.starts.entries)
+          (start: start, end: start + layout.texts[i]!.length),
+      ],
+      planAttachmentInsert(
+        body: layout.body,
+        anchorLine: anchorLine,
+        lines: lines,
+        daily: _daily,
+      ),
     );
     for (final field in _fields()) {
       final start = layout.starts[field.segment];
@@ -612,12 +677,22 @@ class _NoteAttachHostState extends ConsumerState<NoteAttachHost>
       if (plan.start < start || plan.end > start + text.length) continue;
       final handle = field.focus.context
           ?.findAncestorStateOfType<SegmentViewState>();
-      if (handle == null || handle.text != text) return false;
+      if (handle == null) return false;
+      // The field may lack the `\n` the save adds to a text ending right
+      // before a card or the Note footer (`SegmentedBody`, `join`).
+      final shown = handle.text;
+      final saveAddsNewline = shown != text;
+      if (saveAddsNewline && '$shown\n' != text) return false;
+      final end = plan.end - start;
+      if (end > shown.length) return false;
       handle.applyEdit(
         SegmentEdit(
           start: plan.start - start,
-          end: plan.end - start,
-          replacement: plan.replacement,
+          end: end,
+          // An edit at the field's end keeps that `\n` in the field.
+          replacement: saveAddsNewline && end == shown.length
+              ? '${plan.replacement}\n'
+              : plan.replacement,
           selection: SegmentSelection.collapsed(plan.caret - start),
         ),
       );
