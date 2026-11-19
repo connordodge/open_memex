@@ -258,13 +258,7 @@ class BlockLineBoxes implements LineBoxSource {
   final int textLength;
 
   @override
-  List<LineBox> get lines => [
-    LineBox(
-      range: TextRange(start: 0, end: textLength),
-      top: 0,
-      bottom: box.size.height,
-    ),
-  ];
+  List<LineBox> get lines => [lineAt(0)];
 
   @override
   List<Rect> boxesFor(TextRange range) =>
@@ -275,4 +269,12 @@ class BlockLineBoxes implements LineBoxSource {
 
   @override
   int offsetAt(Offset point) => 0;
+
+  /// The block's one line, whatever [offset].
+  @override
+  LineBox lineAt(int offset) => LineBox(
+    range: TextRange(start: 0, end: textLength),
+    top: 0,
+    bottom: box.size.height,
+  );
 }

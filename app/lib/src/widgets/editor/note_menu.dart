@@ -1,11 +1,17 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../cli/note_cli.dart';
 import '../../db.dart';
+import '../../editor/attachment_insert.dart';
+import '../../editor/editor_rows.dart' show SegmentEdit, SegmentSelection;
+import '../../editor/segments.dart';
 import '../../graph/graph_scope.dart';
 import '../../memex_cli.dart';
+import '../../state/attach_controller.dart';
 import '../../state/editor_controller.dart';
 import '../../state/graph_state.dart';
 import '../../state/note_edits_state.dart';
@@ -17,6 +23,8 @@ import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import '../agent_edits_keys.dart';
 import '../atoms.dart';
+import '../find/find_in_note_host.dart' show FindBodyField, FindEditorLink;
+import 'segment_view.dart' show SegmentViewState;
 
 /// The editor toolbar's ellipsis button (Key `note-menu-button`). It opens
 /// [NoteMenu] for the open note, and is disabled when no note is open.
@@ -96,6 +104,7 @@ class NoteMenu extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        _AttachFileItem(hostContext: hostContext),
         // The Vault Guide cannot be deleted.
         if (note.role != 'guide')
           MenuItemButton(
@@ -327,4 +336,371 @@ class NoteDeleteError extends ConsumerWidget {
       ),
     );
   }
+}
+
+/// `Attach file…` (Key `note-menu-attach-file`, Spec #123 R10, R11): opens
+/// the file picker through [AttachController.attachFromPicker]. Shown only
+/// while `VaultAccess.canWrite` (the menu itself exists only with a note
+/// open).
+class _AttachFileItem extends ConsumerWidget {
+  const _AttachFileItem({required this.hostContext});
+  final BuildContext hostContext;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (!(ref.watch(vaultAccessProvider)?.canWrite ?? false)) {
+      return const SizedBox.shrink();
+    }
+    final container = ProviderScope.containerOf(context, listen: false);
+    return MenuItemButton(
+      key: const Key('note-menu-attach-file'),
+      leadingIcon: const Icon(LucideIcons.paperclip, size: 14),
+      // The menu's own context goes with the menu: toasts use the host's.
+      onPressed: () => unawaited(
+        container.read(attachControllerProvider).attachFromPicker(hostContext),
+      ),
+      child: const Text('Attach file…'),
+    );
+  }
+}
+
+/// The attach action's link to the note editor showing [note] (WI #146):
+/// registers itself as [attachEditorProvider]'s [AttachEditor] while
+/// [active], and draws nothing. The editor places it beside its body, as it
+/// does Find in note's host. "Attach file…" and #147's drop and paste reach
+/// the editor only through it, via [AttachController].
+///
+/// It remembers the editor's last caret: the text segment (or, in Source
+/// mode, the Source field) that last had focus since [note] was shown, so
+/// the ⋯ menu or the palette taking focus keeps the caret line. Inserts go
+/// through the segment's `SegmentEditing.applyEdit` in live preview, and in
+/// Source mode as one value of [sourceController] reported to the editor
+/// controller, so one undo removes the group in either mode.
+class NoteAttachHost extends ConsumerStatefulWidget {
+  const NoteAttachHost({
+    super.key,
+    required this.note,
+    required this.sourceMode,
+    required this.sourceController,
+    required this.bodyFocus,
+    required this.active,
+  });
+
+  /// The note the editor shows.
+  final Note note;
+
+  /// Whether the editor shows the Source field rather than the segmented
+  /// body.
+  final bool sourceMode;
+
+  /// The Source field's controller.
+  final TextEditingController sourceController;
+
+  /// The editor's primary body focus node: the Source field's, and the
+  /// first text segment's.
+  final FocusNode bodyFocus;
+
+  /// False for an editor on its way out (a canvas zoom's outgoing editor).
+  final bool active;
+
+  @override
+  ConsumerState<NoteAttachHost> createState() => _NoteAttachHostState();
+}
+
+class _NoteAttachHostState extends ConsumerState<NoteAttachHost>
+    implements AttachEditor {
+  late final ProviderContainer _container;
+
+  /// The open-editor registry, read once while the scope is alive so
+  /// [dispose] never reads a container that may already be disposed.
+  late final StateController<AttachEditor?> _registry;
+  Object _session = Object();
+
+  /// The text segment that last had focus since the note was shown: its
+  /// controller and index. Null with none.
+  TextEditingController? _caretField;
+  int? _caretSegment;
+
+  /// Whether the Source field had focus since Source mode started.
+  bool _sourceCaret = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _container = ProviderScope.containerOf(context, listen: false);
+    _registry = _container.read(attachEditorProvider.notifier);
+    FocusManager.instance.addListener(_onFocus);
+    _register(widget.active);
+    _recheckFocus();
+  }
+
+  @override
+  void didUpdateWidget(NoteAttachHost old) {
+    super.didUpdateWidget(old);
+    final noteChanged = old.note.id != widget.note.id;
+    if (noteChanged) _session = Object();
+    if (noteChanged || old.sourceMode != widget.sourceMode) {
+      _caretField = null;
+      _caretSegment = null;
+      _sourceCaret = false;
+      _recheckFocus();
+    }
+    if (old.active != widget.active) _register(widget.active);
+  }
+
+  @override
+  void dispose() {
+    FocusManager.instance.removeListener(_onFocus);
+    _register(false);
+    super.dispose();
+  }
+
+  /// Registers this editor (or withdraws it, when it is the registered
+  /// one) once the current frame's work is done: providers can't change
+  /// while widgets build. The change is dropped when the scope's container,
+  /// and so [_registry], is disposed before the microtask runs (a test or
+  /// scope tearing down with this host still mounted).
+  void _register(bool on) => scheduleMicrotask(() {
+    final registry = _registry;
+    if (!registry.mounted) return;
+    if (on && mounted) {
+      registry.state = this;
+    } else if (identical(registry.state, this)) {
+      registry.state = null;
+    }
+  });
+
+  /// Records the field focused once the frame settles: focus a note keeps
+  /// from the previous one is no change the focus listener would hear.
+  void _recheckFocus() => WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (mounted) _onFocus();
+  });
+
+  List<FindBodyField> _fields() =>
+      FindEditorLink.of(widget.bodyFocus).fields?.call() ?? const [];
+
+  /// Remembers the field holding focus now, if any.
+  void _onFocus() {
+    if (widget.sourceMode) {
+      if (widget.bodyFocus.hasFocus) _sourceCaret = true;
+      return;
+    }
+    for (final field in _fields()) {
+      if (field.focus.hasFocus) {
+        _caretField = field.controller;
+        _caretSegment = field.segment;
+        return;
+      }
+    }
+  }
+
+  @override
+  Object get session => _session;
+
+  @override
+  String get noteTitle => widget.note.title;
+
+  bool get _daily => widget.note.role == 'daily';
+
+  @override
+  int? get caretLine {
+    _onFocus();
+    if (widget.sourceMode) {
+      if (!_sourceCaret) return null;
+      final text = widget.sourceController.text;
+      return _lineAt(text, widget.sourceController.selection, text.length);
+    }
+    final fields = _fields();
+    final field =
+        fields.where((f) => identical(f.controller, _caretField)).firstOrNull ??
+        fields.where((f) => f.segment == _caretSegment).firstOrNull;
+    if (field == null) return null;
+    final layout = _layout();
+    final start = layout.starts[field.segment];
+    if (start == null) return null;
+    final ctrl = field.controller;
+    final line = _lineAt(
+      layout.body,
+      ctrl.selection,
+      ctrl.text.length,
+      start: start,
+    );
+    // A text segment right before an excerpt card ends in an empty row
+    // (its last `\n`, or nothing at all) that the body has no line for:
+    // the offset is the card line's start. Text typed there goes above the
+    // card, so a caret there anchors after the line above the card.
+    final text = ctrl.text;
+    final atEnd =
+        !ctrl.selection.isValid || ctrl.selection.extentOffset >= text.length;
+    if (layout.beforeCard.contains(field.segment) &&
+        atEnd &&
+        (text.isEmpty || text.endsWith('\n'))) {
+      return line > 0 ? line - 1 : 0;
+    }
+    return line;
+  }
+
+  /// The line of [body] holding [selection]'s extent, an offset into a
+  /// field of [length] that starts at [start] of [body]; an invalid
+  /// selection counts as the field's end.
+  static int _lineAt(
+    String body,
+    TextSelection selection,
+    int length, {
+    int start = 0,
+  }) {
+    final local = selection.isValid
+        ? selection.extentOffset.clamp(0, length)
+        : length;
+    final at = (start + local).clamp(0, body.length);
+    return '\n'.allMatches(body.substring(0, at)).length;
+  }
+
+  /// The body the segmented view shows, as `SegmentedBody` joins it, and
+  /// where each text segment (by index) starts in it, with its text, and
+  /// which text segments come right before an excerpt card.
+  ({
+    String body,
+    Map<int, int> starts,
+    Map<int, String> texts,
+    Set<int> beforeCard,
+  })
+  _layout() {
+    final content = _container.read(editorControllerProvider).contentMd;
+    final segments = split(
+      content,
+      isDaily: _daily,
+      noteFooter: widget.note.role != 'guide',
+    );
+    // A daily note without a Topics marker saves its person text alone.
+    final withFooter = !_daily || splitDailyBody(content).person != content;
+    final parts = [
+      for (final s in segments)
+        if (withFooter || s is! FooterSegment) s,
+    ];
+    final starts = <int, int>{};
+    final texts = <int, String>{};
+    final beforeCard = <int>{};
+    var at = 0;
+    for (final (i, s) in parts.indexed) {
+      switch (s) {
+        case TextSegment(:final text):
+          starts[i] = at;
+          texts[i] = text;
+          at += text.length;
+          if (i + 1 < parts.length && parts[i + 1] is TransclusionSegment) {
+            beforeCard.add(i);
+          }
+        case TransclusionSegment(:final raw):
+          at += raw.length;
+        case FooterSegment():
+          break;
+      }
+    }
+    return (
+      body: join(parts),
+      starts: starts,
+      texts: texts,
+      beforeCard: beforeCard,
+    );
+  }
+
+  /// [plan] moved out of an excerpt card's line into the text segment after
+  /// the card, when it adds the group after that line (an anchor on the
+  /// card: a drop on it, R7, or the person section's last line, R10). Only
+  /// a text segment takes an edit: inserting `\n` + rest at the card line's
+  /// end and inserting rest + `\n` after its `\n` give the same body.
+  static AttachmentInsertPlan _pastCardLine(
+    String body,
+    Iterable<({int start, int end})> fields,
+    AttachmentInsertPlan plan,
+  ) {
+    final inField = fields.any(
+      (f) => plan.start >= f.start && plan.end <= f.end,
+    );
+    if (inField ||
+        plan.start != plan.end ||
+        plan.start >= body.length ||
+        body[plan.start] != '\n' ||
+        !plan.replacement.startsWith('\n')) {
+      return plan;
+    }
+    return AttachmentInsertPlan(
+      start: plan.start + 1,
+      end: plan.start + 1,
+      replacement: '${plan.replacement.substring(1)}\n',
+      caret: plan.caret,
+    );
+  }
+
+  @override
+  bool insert(List<String> lines, int? anchorLine) {
+    if (widget.sourceMode) {
+      final ctrl = widget.sourceController;
+      final plan = planAttachmentInsert(
+        body: ctrl.text,
+        anchorLine: anchorLine,
+        lines: lines,
+        daily: _daily,
+      );
+      final text = ctrl.text.replaceRange(
+        plan.start,
+        plan.end,
+        plan.replacement,
+      );
+      // One value change: the field's undo history records it once.
+      ctrl.value = TextEditingValue(
+        text: text,
+        selection: TextSelection.collapsed(offset: plan.caret),
+      );
+      _container.read(editorControllerProvider.notifier).onContentChanged(text);
+      return true;
+    }
+    final layout = _layout();
+    final plan = _pastCardLine(
+      layout.body,
+      [
+        for (final MapEntry(key: i, value: start) in layout.starts.entries)
+          (start: start, end: start + layout.texts[i]!.length),
+      ],
+      planAttachmentInsert(
+        body: layout.body,
+        anchorLine: anchorLine,
+        lines: lines,
+        daily: _daily,
+      ),
+    );
+    for (final field in _fields()) {
+      final start = layout.starts[field.segment];
+      final text = layout.texts[field.segment];
+      if (start == null || text == null) continue;
+      if (plan.start < start || plan.end > start + text.length) continue;
+      final handle = field.focus.context
+          ?.findAncestorStateOfType<SegmentViewState>();
+      if (handle == null) return false;
+      // The field may lack the `\n` the save adds to a text ending right
+      // before a card or the Note footer (`SegmentedBody`, `join`).
+      final shown = handle.text;
+      final saveAddsNewline = shown != text;
+      if (saveAddsNewline && '$shown\n' != text) return false;
+      final end = plan.end - start;
+      if (end > shown.length) return false;
+      handle.applyEdit(
+        SegmentEdit(
+          start: plan.start - start,
+          end: end,
+          // An edit at the field's end keeps that `\n` in the field.
+          replacement: saveAddsNewline && end == shown.length
+              ? '${plan.replacement}\n'
+              : plan.replacement,
+          selection: SegmentSelection.collapsed(plan.caret - start),
+        ),
+      );
+      return true;
+    }
+    return false;
+  }
+
+  @override
+  Widget build(BuildContext context) => const SizedBox.shrink();
 }

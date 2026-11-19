@@ -240,12 +240,15 @@ List<PaintedDecoration> layoutDecorations({
 
   // A quote row: every line of the field, an empty one included.
   if (quote) {
-    final all = boxes.lines;
-    if (all.isNotEmpty) {
-      band(
-        Rect.fromLTRB(columnLeft, all.first.top, columnRight, all.last.bottom),
-      );
-    }
+    // Its first and last lines only (WI #126): no walk of every line.
+    band(
+      Rect.fromLTRB(
+        columnLeft,
+        boxes.lineAt(0).top,
+        columnRight,
+        boxes.lineAt(text.length).bottom,
+      ),
+    );
   }
 
   final lines = classifyLines(text, atSegmentStart: atSegmentStart);

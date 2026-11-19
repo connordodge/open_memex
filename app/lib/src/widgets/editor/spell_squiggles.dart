@@ -336,10 +336,13 @@ class _RenderSquiggles extends RenderBox {
     final issues = _issues.value;
     if (issues.isEmpty || _hidden(_controller)) return;
 
-    final lines = boxes.lines;
-    if (lines.isEmpty) return;
-    // The last line ends at the laid-out text's end.
-    final length = lines.last.range.end;
+    // The laid-out text, read without a walk of its lines (WI #126).
+    final text = switch (boxes.box) {
+      final RenderEditable field => field.plainText,
+      final RenderParagraph paragraph => paragraph.text.toPlainText(),
+      _ => _controller.text,
+    };
+    final length = text.length;
     final selection = _controller.selection;
     final toHere = boxes.box.getTransformTo(this);
     final canvas = context.canvas;
@@ -354,9 +357,9 @@ class _RenderSquiggles extends RenderBox {
           SpellIssueKind.spelling => OmColors.danger,
           SpellIssueKind.grammar => OmColors.info,
         };
-      for (final rect in boxes.boxesFor(range)) {
-        final line = _lineOf(lines, rect);
-        if (line == null || rect.width <= 0) continue;
+      // Each item measures only its own lines (WI #126).
+      for (final (rect, line) in lineRectsOf(boxes, range, text)) {
+        if (rect.width <= 0) continue;
         final left = MatrixUtils.transformPoint(
           toHere,
           Offset(rect.left, line.baseline),
@@ -386,16 +389,6 @@ class _RenderSquiggles extends RenderBox {
     if (identical(scroll, _scroll)) return;
     _scroll?.removeListener(markNeedsPaint);
     _scroll = scroll..addListener(markNeedsPaint);
-  }
-
-  /// The line of [lines] whose box spans [rect] (a `boxesFor` rect spans
-  /// its line box's full height).
-  static LineBox? _lineOf(List<LineBox> lines, Rect rect) {
-    final y = rect.center.dy;
-    for (final line in lines) {
-      if (y >= line.top && y < line.bottom) return line;
-    }
-    return null;
   }
 
   /// A wavy band [_squiggleThickness] tall from [left] to [right], its top
