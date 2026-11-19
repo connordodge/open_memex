@@ -436,11 +436,14 @@ void main() {
       squiggles.debugSpellSquigglePaints = 21;
       findhl.debugFindHighlightUpdates = 22;
       findhl.debugFindHighlightPaints = 23;
+      RenderEditableLineBoxes.debugLineSpans = 24;
+      RenderParagraphLineBoxes.debugLineSpans = 25;
+      host.debugSpellHostEditableCalls = 26;
     }
 
     test('snapshot returns every counter by name', () {
-      expect(PerfCounters.names, hasLength(23));
-      expect(PerfCounters.names.toSet(), hasLength(23));
+      expect(PerfCounters.names, hasLength(26));
+      expect(PerfCounters.names.toSet(), hasLength(26));
       setAll();
       expect(PerfCounters.snapshot(), {
         for (final (i, name) in PerfCounters.names.indexed) name: i + 1,
@@ -609,9 +612,11 @@ void main() {
         );
         expect(_n('editableLineMeasures'), 1);
         expect(_n('editableLineWalks'), 1);
+        expect(_n('editableLineSpans'), 2);
         expect(boxes.boxesFor(const TextRange(start: 0, end: 4)), hasLength(1));
         expect(_n('editableLineMeasures'), 2);
         expect(_n('editableLineWalks'), 2);
+        expect(_n('editableLineSpans'), 3);
       },
     );
 
@@ -655,9 +660,11 @@ void main() {
         );
         expect(_n('paragraphLineMeasures'), 1);
         expect(_n('paragraphLineWalks'), 1);
+        expect(_n('paragraphLineSpans'), 2);
         expect(boxes.boxesFor(const TextRange(start: 0, end: 4)), hasLength(1));
         expect(_n('paragraphLineMeasures'), 2);
         expect(_n('paragraphLineWalks'), 2);
+        expect(_n('paragraphLineSpans'), 3);
       },
     );
 

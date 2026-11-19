@@ -263,6 +263,12 @@ int debugSpellHostLineCalls = 0;
 @visibleForTesting
 int debugSpellHostRectCalls = 0;
 
+/// Test-only work counter: how many times any spell-check field host
+/// resolved its field's laid-out render object ([SpellFieldHost.editable]),
+/// the geometry entry point of an evaluation's viewport check.
+@visibleForTesting
+int debugSpellHostEditableCalls = 0;
+
 class _SpellCheckFieldState extends State<SpellCheckField>
     implements SpellFieldHost {
   SpellCheckController? _checker;
@@ -357,6 +363,7 @@ class _SpellCheckFieldState extends State<SpellCheckField>
 
   @override
   RenderEditable? editable() {
+    debugSpellHostEditableCalls++;
     if (!mounted) return null;
     final editable = findRenderEditable(context.findRenderObject());
     return editable != null && editable.attached && editable.hasSize

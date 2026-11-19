@@ -35,8 +35,8 @@ abstract final class PerfCounters {
     'classifyLines',
     'splitRows',
     // Line-box measuring: `*Measures` is every fresh whole-field text
-    // layout; `*LineWalks` is every whole-text line walk. A single-line or
-    // range-local measure raises only `*Measures`.
+    // layout; `*LineWalks` is every whole-text line walk; `*LineSpans` (at
+    // the end of the list) is every per-line measure of a range read.
     'editableLineMeasures',
     'editableLineWalks',
     'paragraphLineMeasures',
@@ -62,6 +62,10 @@ abstract final class PerfCounters {
     // Find.
     'findHighlightUpdates',
     'findHighlightPaints',
+    // Per-line measures and host geometry (added after review of #150).
+    'editableLineSpans',
+    'paragraphLineSpans',
+    'spellHostEditableCalls',
   ];
 
   /// Every counter's current value, by [names].
@@ -89,6 +93,9 @@ abstract final class PerfCounters {
     'spellSquigglePaints': squiggles.debugSpellSquigglePaints,
     'findHighlightUpdates': find.debugFindHighlightUpdates,
     'findHighlightPaints': find.debugFindHighlightPaints,
+    'editableLineSpans': RenderEditableLineBoxes.debugLineSpans,
+    'paragraphLineSpans': RenderParagraphLineBoxes.debugLineSpans,
+    'spellHostEditableCalls': host.debugSpellHostEditableCalls,
   };
 
   /// Sets every counter to 0.
@@ -116,6 +123,9 @@ abstract final class PerfCounters {
     squiggles.debugSpellSquigglePaints = 0;
     find.debugFindHighlightUpdates = 0;
     find.debugFindHighlightPaints = 0;
+    RenderEditableLineBoxes.debugLineSpans = 0;
+    RenderParagraphLineBoxes.debugLineSpans = 0;
+    host.debugSpellHostEditableCalls = 0;
   }
 
   /// The work done since [before] (a [snapshot]): each counter's value now

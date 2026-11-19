@@ -132,10 +132,18 @@ class RenderEditableLineBoxes implements LineBoxSource {
   static int debugMeasures = 0;
 
   /// Test-only work counter: whole-text line walks (`_linesOf` over every
-  /// line of a measured text), summed over all instances. A measure that
-  /// reads one line or one range raises [debugMeasures] only.
+  /// line of a measured text), summed over all instances. Every `_measure`
+  /// of today's [lines], [boxesFor] and [caretRect] walks once, so it moves
+  /// with [debugMeasures]; a range-local measure that skips the walk raises
+  /// [debugMeasures] or [debugLineSpans] only.
   @visibleForTesting
   static int debugLineWalks = 0;
+
+  /// Test-only work counter: per-line measures (`_spanOf`), one for each line
+  /// a [boxesFor] range read touches, summed over all instances. Differs from
+  /// [debugLineWalks]: a range over 2 lines is 1 walk and 2 spans.
+  @visibleForTesting
+  static int debugLineSpans = 0;
 
   @override
   RenderBox get box => editable;
@@ -293,6 +301,7 @@ class RenderEditableLineBoxes implements LineBoxSource {
   /// The rect of [part] of [line]: its characters' x extent (the caret's x
   /// when they all render zero-width) and the line box's full height.
   Rect _spanOf(TextPainter painter, TextRange part, LineBox line) {
+    debugLineSpans++;
     final dx = _paintOffset.dx;
     final rect =
         _union(
