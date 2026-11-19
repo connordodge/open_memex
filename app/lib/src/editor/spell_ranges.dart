@@ -184,8 +184,9 @@ void _inlineRanges(
         token.span,
   ];
   bool inOpaque(int at) => opaque.any((s) => s.start <= at && at < s.end);
-  // The tokenizer gives an image no token, so its `(url)` (any scheme or a
-  // relative path) comes from bareUrlRanges too.
+  // An image's `(url)` (any scheme or a relative path) is a link token's
+  // urlRange above; bareUrlRanges gives it too, so an `![alt](url)` the
+  // tokenizer takes as no image still has its url skipped.
   for (final url in bareUrlRanges(slice, includeImageUrls: true)) {
     if (inOpaque(url.start)) continue;
     add(SpellSkipKind.url, from + url.start, from + url.end);

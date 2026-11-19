@@ -13,7 +13,6 @@ import 'dart:math' show max, min;
 
 import 'package:flutter/foundation.dart'
     show ValueListenable, visibleForTesting;
-import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 
@@ -59,11 +58,18 @@ abstract interface class SpellFieldHost {
   /// [field]'s line (see [SpellFieldLine]).
   SpellFieldLine line(TextEditingController field);
 
-  /// The field's laid-out text, or null.
-  RenderEditable? editable();
+  /// The global top and bottom of the field's laid-out text (WI #127, Spec
+  /// #122 Req 25: a geometry-free seam, so the controller holds no render
+  /// object), or null before it is laid out.
+  ({double top, double bottom})? extent();
 
-  /// The editor page's laid-out viewport, or null.
-  RenderBox? viewportBox();
+  /// The global top and bottom of the line holding field-local [offset]
+  /// (its caret's), or null before the field is laid out.
+  ({double top, double bottom})? extentAt(int offset);
+
+  /// The global top and bottom of the editor page's laid-out viewport, or
+  /// null without one.
+  ({double top, double bottom})? viewport();
 
   /// False only for a table row that shows its grid (Spec #392 req 2).
   bool revealed(TextEditingController field);
@@ -330,25 +336,24 @@ class SpellCheckController {
         return byKind != 0 ? byKind : a.length.compareTo(b.length);
       });
 
-  /// The fields in document order: by the laid-out top of their text, then
-  /// its left; a field not laid out goes after those, in joining order.
+  /// The fields in document order: by the laid-out top of their text (the
+  /// host's [SpellFieldHost.extent]), then joining order; a field not laid
+  /// out goes after those, in joining order.
   List<_Field> _inDocumentOrder() {
     final keyed = [
       for (final (i, f) in _fields.values.indexed)
-        (field: f, origin: f.host.editable()?.localToGlobal(Offset.zero), i: i),
+        (field: f, top: f.host.extent()?.top, i: i),
     ];
     keyed.sort((a, b) {
-      final ao = a.origin;
-      final bo = b.origin;
-      if (ao == null || bo == null) {
-        if (ao != null) return -1;
-        if (bo != null) return 1;
+      final at = a.top;
+      final bt = b.top;
+      if (at == null || bt == null) {
+        if (at != null) return -1;
+        if (bt != null) return 1;
         return a.i.compareTo(b.i);
       }
-      final byTop = ao.dy.compareTo(bo.dy);
-      if (byTop != 0) return byTop;
-      final byLeft = ao.dx.compareTo(bo.dx);
-      return byLeft != 0 ? byLeft : a.i.compareTo(b.i);
+      final byTop = at.compareTo(bt);
+      return byTop != 0 ? byTop : a.i.compareTo(b.i);
     });
     return [for (final k in keyed) k.field];
   }
@@ -652,43 +657,33 @@ class SpellCheckController {
   /// viewport to one screen below it; null without a laid-out viewport.
   ({double top, double bottom})? _window() {
     for (final f in _fields.values) {
-      final box = f.host.viewportBox();
-      if (box == null) continue;
-      final top = box.localToGlobal(Offset.zero).dy;
-      final h = box.size.height;
-      return (top: top - h, bottom: top + 2 * h);
+      final viewport = f.host.viewport();
+      if (viewport == null) continue;
+      final h = viewport.bottom - viewport.top;
+      return (top: viewport.top - h, bottom: viewport.bottom + h);
     }
     return null;
   }
 
-  /// [layout]'s paragraphs of [f] whose lines lie within [window].
+  /// [layout]'s paragraphs of [f] whose lines lie within [window], from the
+  /// tops and bottoms its host answers (Spec #122 Req 25).
   List<SpellParagraph> _near(
     _Field f,
     _Layout layout,
     ({double top, double bottom}) window,
   ) {
-    final editable = f.host.editable();
-    if (editable == null) return const [];
-    final origin = editable.localToGlobal(Offset.zero).dy;
-    if (origin + editable.size.height <= window.top ||
-        origin >= window.bottom) {
+    final extent = f.host.extent();
+    if (extent == null ||
+        extent.bottom <= window.top ||
+        extent.top >= window.bottom) {
       return const [];
     }
     final length = f.text.length;
-    double top(SpellParagraph p) =>
-        origin +
-        editable
-            .getLocalRectForCaret(
-              TextPosition(offset: (p.start - layout.base).clamp(0, length)),
-            )
-            .top;
-    double bottom(SpellParagraph p) =>
-        origin +
-        editable
-            .getLocalRectForCaret(
-              TextPosition(offset: (p.end - layout.base).clamp(0, length)),
-            )
-            .bottom;
+    // An offset the host cannot place counts as the field's own extent.
+    ({double top, double bottom}) at(int offset) =>
+        f.host.extentAt((offset - layout.base).clamp(0, length)) ?? extent;
+    double top(SpellParagraph p) => at(p.start).top;
+    double bottom(SpellParagraph p) => at(p.end).bottom;
     final ps = layout.paragraphs;
     // The first paragraph ending below the window's top.
     var lo = 0;

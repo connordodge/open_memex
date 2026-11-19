@@ -9,6 +9,7 @@ import 'card_rows.dart';
 import 'echo_arrival_highlight.dart';
 import 'line_boxes.dart';
 import 'paragraph_line_boxes.dart';
+import 'segment_view.dart' show textSlotLines;
 import 'segmented_body.dart';
 import 'table_grid.dart';
 
@@ -56,20 +57,17 @@ Rect revealAnchorRect(
     if (inner != null) return inner;
   }
   if (arrival.kind != RowKind.prose) return whole;
-  final editable = findRenderEditable(row);
-  if (editable == null ||
-      !editable.hasSize ||
-      editable.plainText != arrival.rowText) {
-    return whole;
-  }
-  final lines = RenderEditableLineBoxes(editable).lines;
-  if (lines.isEmpty) return whole;
+  // The row's text through the row-geometry accessor's text-slot half
+  // (WI #127): its field's, or a RichText's standing in for it.
+  final text = textSlotLines(row, arrival.rowText);
+  if (text == null) return whole;
+  final (:boxes, :lines) = text;
   final first = lineHolding(lines, arrival.local);
   final last = end == null || end <= arrival.local
       ? first
       : lineHolding(lines, end - 1);
-  double y(double editableY) =>
-      row.globalToLocal(editable.localToGlobal(Offset(0, editableY))).dy;
+  double y(double textY) =>
+      row.globalToLocal(boxes.box.localToGlobal(Offset(0, textY))).dy;
   final top = y(first.top);
   return Rect.fromLTRB(0, top, row.size.width, math.max(top, y(last.bottom)));
 }
@@ -112,18 +110,9 @@ Rect? _tableAnchor(
         ? null
         : _rangeAnchor(row, source, arrival.local, end);
   }
-  final editable = findRenderEditable(row);
-  if (editable == null ||
-      !editable.hasSize ||
-      editable.plainText != arrival.rowText) {
-    return null;
-  }
-  return _rangeAnchor(
-    row,
-    RenderEditableLineBoxes(editable),
-    arrival.local,
-    end,
-  );
+  final text = textSlotLines(row, arrival.rowText);
+  if (text == null) return null;
+  return _rangeAnchor(row, text.boxes, arrival.local, end);
 }
 
 /// A card's anchor: the lines of the card row holding [start] (a card text

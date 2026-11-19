@@ -520,6 +520,7 @@ void main() {
       const icons = {
         PaletteCommand.newNote: LucideIcons.filePlus,
         PaletteCommand.newCanvas: LucideIcons.grid2x2Plus,
+        PaletteCommand.attachFile: LucideIcons.paperclip,
         PaletteCommand.openToday: LucideIcons.calendarCheck,
         PaletteCommand.openVaultGraph: LucideIcons.network,
         PaletteCommand.switchVault: LucideIcons.arrowLeftRight,

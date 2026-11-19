@@ -6,7 +6,6 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -68,6 +67,11 @@ class _Wi436MapSink implements SpellIssueSink {
 }
 
 /// A field host with no geometry whose focus the test flips.
+///
+/// TEST-CHANGE (WI #127, Spec #122 Req 25): it answers the geometry-free
+/// seam (`extent`, `extentAt`, `viewport`: no geometry, null) and leaves
+/// every render-object member to [noSuchMethod] (null), so it compiles
+/// while the host interface drops `editable()`.
 class _Wi436FocusHost implements SpellFieldHost {
   bool focused = true;
 
@@ -76,10 +80,16 @@ class _Wi436FocusHost implements SpellFieldHost {
       (line: field.text, base: 0, atSegmentStart: true);
 
   @override
-  RenderEditable? editable() => null;
+  ({double top, double bottom})? extent() => null;
 
   @override
-  RenderBox? viewportBox() => null;
+  ({double top, double bottom})? extentAt(int offset) => null;
+
+  @override
+  ({double top, double bottom})? viewport() => null;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => null;
 
   @override
   bool revealed(TextEditingController field) => true;
