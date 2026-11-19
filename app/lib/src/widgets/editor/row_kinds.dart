@@ -10,8 +10,12 @@ import 'package:flutter/widgets.dart';
 import '../../editor/editor_rows.dart';
 import '../../editor/row_geometry.dart';
 import 'attachment_row.dart';
+import 'editor_row.dart' show markerColumnKind;
 import 'line_boxes.dart';
 import 'live_preview_controller.dart';
+import 'marker_column.dart';
+import 'table_grid.dart';
+import 'text_segment.dart' show editorBodyStyle;
 
 /// Builds an editor row's text slot (frozen, D2): the row's field under Key
 /// `editor-row-<segment>-<index>`, with the row's selection fill and
@@ -87,12 +91,50 @@ abstract class RowKindPresenter {
 
 /// The presenter of prose, code and item rows: the row's field, inset and
 /// marker-columned by its kind (frozen, D2).
+///
+/// - A prose row's text slot spans the text column.
+/// - A code row's is inset 16.2 px left and 10 px right (A2).
+/// - An item row (bullet, numbered, task, quote) puts a [MarkerColumn]
+///   (Key `editor-row-marker-<segment>-<index>`) of its
+///   [PresentedRow.geometry]'s width at its marker x, then the text slot from
+///   the item's text x to the text column's right edge (a quote keeps one
+///   column of right padding), so every wrapped line of the item starts at
+///   its text x (hanging indent).
 class TextRowPresenter extends RowKindPresenter {
   const TextRowPresenter();
 
   @override
-  Widget build(BuildContext context, PresentedRow row, RowTextSlot textSlot) =>
-      const SizedBox.shrink();
+  Widget build(BuildContext context, PresentedRow row, RowTextSlot textSlot) {
+    final slot = textSlot(offstage: false);
+    return switch ((row.kind, markerColumnKind(row.kind), row.geometry)) {
+      (RowKind.code, _, _) => Padding(
+        padding: EdgeInsets.only(
+          left: codeTextInsetLeft,
+          right: codeTextInsetRight,
+        ),
+        child: slot,
+      ),
+      (_, final column?, final item?) => Padding(
+        padding: EdgeInsets.only(left: item.markerX),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            KeyedSubtree(
+              key: ValueKey('editor-row-marker-${row.segment}-${row.index}'),
+              child: MarkerColumn(marker: row.marker, width: item.columnWidth),
+            ),
+            Expanded(
+              child: Padding(
+                padding: EdgeInsets.only(right: itemTextRightInset(column)),
+                child: slot,
+              ),
+            ),
+          ],
+        ),
+      ),
+      _ => slot,
+    };
+  }
 
   @override
   bool textHidden(PresentedRow row) => false;
@@ -109,18 +151,62 @@ class TextRowPresenter extends RowKindPresenter {
 /// while the row's controller is not `tableRevealed`, its field offstage;
 /// revealed, the field shows and the grid is gone. The pointer layer owns
 /// grid presses (D14), so it owns none.
+///
+/// While the grid shows, [blockBoxes] is the grid's line boxes
+/// (`TableGridState.lineBoxes`) once it is built and laid out; null before
+/// (the row's field, mounted offstage and still laid out, answers) and
+/// while revealed.
 class TableRowPresenter extends RowKindPresenter {
   const TableRowPresenter();
 
   @override
-  Widget build(BuildContext context, PresentedRow row, RowTextSlot textSlot) =>
-      const SizedBox.shrink();
+  Widget build(BuildContext context, PresentedRow row, RowTextSlot textSlot) {
+    final controller = row.controller;
+    return ListenableBuilder(
+      listenable: Listenable.merge([controller, controller.revealGate]),
+      builder: (context, _) {
+        final revealed = controller.tableRevealed;
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            textSlot(offstage: !revealed),
+            if (!revealed)
+              KeyedSubtree(
+                key: row.blockKey,
+                child: TableGrid(
+                  key: ValueKey('editor-table-${row.segment}-${row.index}'),
+                  text: controller.text,
+                  style: editorBodyStyle(),
+                  links: controller,
+                  fenced: controller.fenced,
+                ),
+              ),
+          ],
+        );
+      },
+    );
+  }
 
   @override
-  bool textHidden(PresentedRow row) => false;
+  bool textHidden(PresentedRow row) => row.controller.textHidden;
 
   @override
-  LineBoxSource? blockBoxes(PresentedRow row) => null;
+  LineBoxSource? blockBoxes(PresentedRow row) {
+    if (!textHidden(row)) return null;
+    TableGridState? grid;
+    void visit(Element element) {
+      if (grid != null) return;
+      if (element is StatefulElement && element.state is TableGridState) {
+        grid = element.state as TableGridState;
+      } else {
+        element.visitChildren(visit);
+      }
+    }
+
+    row.blockKey?.currentContext?.visitChildElements(visit);
+    return grid?.lineBoxes();
+  }
 
   @override
   bool ownsPress(PresentedRow row, Offset position) => false;
@@ -134,7 +220,18 @@ RowKindPresenter? Function(RowKind kind)? debugRowKindPresenterOverride;
 /// The presenter of editor rows of [kind] (frozen, D2): [TableRowPresenter]
 /// for tables, [AttachmentRowPresenter] for attachments, [TextRowPresenter]
 /// for every other kind.
-RowKindPresenter presenterFor(RowKind kind) => const TextRowPresenter();
+RowKindPresenter presenterFor(RowKind kind) =>
+    debugRowKindPresenterOverride?.call(kind) ??
+    switch (kind) {
+      RowKind.table => const TableRowPresenter(),
+      RowKind.attachment => const AttachmentRowPresenter(),
+      RowKind.prose ||
+      RowKind.code ||
+      RowKind.bullet ||
+      RowKind.numbered ||
+      RowKind.task ||
+      RowKind.quote => const TextRowPresenter(),
+    };
 
 /// [LineBoxSource] over a block [box] (an image, a card, frozen D2, D4): one
 /// line spanning the whole box, holding row offsets 0 to [textLength].
@@ -152,13 +249,20 @@ class BlockLineBoxes implements LineBoxSource {
   final int textLength;
 
   @override
-  List<LineBox> get lines => const [];
+  List<LineBox> get lines => [
+    LineBox(
+      range: TextRange(start: 0, end: textLength),
+      top: 0,
+      bottom: box.size.height,
+    ),
+  ];
 
   @override
-  List<Rect> boxesFor(TextRange range) => const [];
+  List<Rect> boxesFor(TextRange range) =>
+      range.isCollapsed ? const [] : [Offset.zero & box.size];
 
   @override
-  Rect caretRect(int offset) => Rect.zero;
+  Rect caretRect(int offset) => Rect.fromLTWH(0, 0, 0, box.size.height);
 
   @override
   int offsetAt(Offset point) => 0;

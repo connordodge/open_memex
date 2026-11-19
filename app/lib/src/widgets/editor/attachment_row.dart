@@ -15,7 +15,7 @@ class AttachmentRowPresenter extends RowKindPresenter {
 
   @override
   Widget build(BuildContext context, PresentedRow row, RowTextSlot textSlot) =>
-      const SizedBox.shrink();
+      textSlot(offstage: false);
 
   @override
   bool textHidden(PresentedRow row) => false;
