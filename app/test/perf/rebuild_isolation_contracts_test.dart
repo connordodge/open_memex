@@ -93,6 +93,9 @@ class _Wi129Boxes implements LineBoxSource {
 
   @override
   int offsetAt(Offset point) => 0;
+
+  @override
+  LineBox lineAt(int offset) => lineHolding(lines, offset);
 }
 
 List<PaintedDecoration> _decorate(

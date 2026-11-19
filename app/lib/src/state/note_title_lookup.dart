@@ -113,10 +113,10 @@ class NoteTitleResolver {
 
 /// The current vault's [NoteTitleResolver], fed from
 /// `noteTitlesAsyncProvider`. Watched by every link region: its value never
-/// changes, so watching it rebuilds nothing.
-final noteTitleResolverProvider = Provider.autoDispose<NoteTitleResolver>((
-  ref,
-) {
+/// changes, so watching it rebuilds nothing. Kept alive (not autoDispose)
+/// like the titles provider it follows, so disposing the last editor leaves
+/// no disposal scheduled.
+final noteTitleResolverProvider = Provider<NoteTitleResolver>((ref) {
   final resolver = NoteTitleResolver();
   void sync() => resolver.update(
     currentVaultData(
