@@ -179,6 +179,7 @@ int debugClassifyLinesCalls = 0;
 /// a body starts a new table (ruling D23). Fence and frontmatter lines are
 /// never table lines.
 List<MdLine> classifyLines(String segmentText, {required bool atSegmentStart}) {
+  debugClassifyLinesCalls++;
   final ranges = _scanLines(segmentText);
   final lines = <MdLine>[];
   var next = 0;

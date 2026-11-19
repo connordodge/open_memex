@@ -240,6 +240,7 @@ int debugTokenizeInlineCalls = 0;
 /// in the whole line, so `|#x|` holds no tag. Null means [text] starts its
 /// line. See [unitBeforeInLine].
 List<InlineToken> tokenizeInline(String text, {int? before}) {
+  debugTokenizeInlineCalls++;
   final out = <InlineToken>[];
   var lineStart = 0;
   while (true) {

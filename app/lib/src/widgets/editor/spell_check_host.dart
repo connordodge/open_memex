@@ -340,6 +340,7 @@ class _SpellCheckFieldState extends State<SpellCheckField>
 
   @override
   SpellFieldLine line(TextEditingController field) {
+    debugSpellHostLineCalls++;
     final segment = _segment;
     if (segment != null && segment.mounted) {
       final row = segment.rowLineOf(field);
@@ -404,6 +405,7 @@ class _SpellCheckFieldState extends State<SpellCheckField>
 
   /// [issue]'s range in the field's laid-out text (local), or null.
   Rect? _rectOf(SpellIssue issue) {
+    debugSpellHostRectCalls++;
     final e = editable();
     if (e == null) return null;
     final boxes = e.getBoxesForSelection(

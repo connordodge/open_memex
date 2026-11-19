@@ -211,6 +211,7 @@ int debugSplitRowsCalls = 0;
 /// a closed fence); `''` is one empty prose row. [atSegmentStart] is passed
 /// to [classifyLines] (leading frontmatter is prose).
 List<RowSpec> splitRows(String text, {required bool atSegmentStart}) {
+  debugSplitRowsCalls++;
   final lines = classifyLines(text, atSegmentStart: atSegmentStart);
   final rows = <RowSpec>[];
   // Indices of the open numbered runs by depth (R11).

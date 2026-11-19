@@ -197,7 +197,10 @@ class _MarkerColumnState extends State<MarkerColumn> {
   }
 
   void _changed() {
-    if (mounted) setState(() {});
+    if (mounted) {
+      debugMarkerColumnSetStates++;
+      setState(() {});
+    }
   }
 
   void _toggle() {
@@ -209,6 +212,7 @@ class _MarkerColumnState extends State<MarkerColumn> {
 
   @override
   Widget build(BuildContext context) {
+    debugMarkerColumnBuilds++;
     final place = _place();
     _watch([
       if (place != null) ...[
@@ -352,6 +356,7 @@ class _MarkerPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    debugMarkerColumnPaints++;
     if (fill case final fill?) {
       canvas.drawRect(Offset.zero & size, Paint()..color = fill);
     }

@@ -220,6 +220,7 @@ List<PaintedDecoration> layoutDecorations({
   TextRange? findReveal,
   Color quoteBandColor = OmColors.surface3,
 }) {
+  debugLayoutDecorationsCalls++;
   bool revealed(TextRange range) =>
       _touches(reveal, range) || _findTouches(findReveal, range);
   final backgrounds = <PaintedDecoration>[];

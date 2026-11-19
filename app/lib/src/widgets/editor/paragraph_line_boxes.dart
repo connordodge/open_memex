@@ -75,6 +75,7 @@ class RenderParagraphLineBoxes implements LineBoxSource {
   /// Runs [read] over a copy of the paragraph's text laid out as the
   /// paragraph lays it out, then disposes the copy.
   T _measure<T>(T Function(TextPainter painter, String text) read) {
+    debugMeasures++;
     final constraints = paragraph.constraints;
     final wraps =
         paragraph.softWrap || paragraph.overflow == TextOverflow.ellipsis;
@@ -103,6 +104,7 @@ class RenderParagraphLineBoxes implements LineBoxSource {
 
   /// Every line of [painter]'s laid-out [text], top to bottom.
   static List<LineBox> _linesOf(TextPainter painter, String text) {
+    debugLineWalks++;
     final lines = <LineBox>[];
     final metrics = painter.computeLineMetrics();
     var start = 0;

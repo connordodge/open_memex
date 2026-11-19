@@ -126,6 +126,7 @@ class EditorRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    debugBuilds++;
     final host = context.findAncestorStateOfType<SegmentViewState>();
     Widget keyedField(Widget child) => KeyedSubtree(
       key: ValueKey('editor-row-$segment-$index'),
@@ -287,6 +288,7 @@ class _RenderRowSelection extends RenderProxyBox {
 
   @override
   void paint(PaintingContext context, Offset offset) {
+    debugEditorRowSelectionPaints++;
     // One rect per line; lines never overlap, so the fill never doubles.
     final paint = Paint()..color = OmColors.selection;
     for (final rect in _selectionRects()) {

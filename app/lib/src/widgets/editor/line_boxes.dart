@@ -181,6 +181,7 @@ class RenderEditableLineBoxes implements LineBoxSource {
   /// Runs [read] over a copy of the editable's text laid out as the
   /// editable lays it out, then disposes the copy.
   T _measure<T>(T Function(TextPainter painter, String text) read) {
+    debugMeasures++;
     final constraints = editable.constraints;
     final available = math.max(
       0.0,
@@ -213,6 +214,7 @@ class RenderEditableLineBoxes implements LineBoxSource {
 
   /// Every line of [painter]'s laid-out [text], top to bottom.
   List<LineBox> _linesOf(TextPainter painter, String text) {
+    debugLineWalks++;
     final lines = <LineBox>[];
     final metrics = painter.computeLineMetrics();
     var start = 0;

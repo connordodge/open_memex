@@ -241,6 +241,7 @@ class _RenderFindHighlights extends RenderBox {
     Listenable? repaint,
     Object? layout,
   ) {
+    debugFindHighlightUpdates++;
     _boxes = boxes;
     if (!identical(repaint, _repaint)) {
       if (attached) _repaint?.removeListener(markNeedsPaint);

@@ -550,6 +550,7 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
         if (kept[j] case final row?) (row..spec = spec) else _newRow(spec),
     ];
     _syncRows(selection);
+    debugSetStates++;
     setState(() {});
   }
 
@@ -751,6 +752,7 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
 
   @override
   Widget build(BuildContext context) {
+    debugBuilds++;
     final geometries = rowGeometries([for (final row in _rows) row.spec]);
     final last = _rows.length - 1;
     final rows = Column(

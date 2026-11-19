@@ -156,6 +156,7 @@ class LivePreviewController extends TextEditingController {
     TextStyle? style,
     required bool withComposing,
   }) {
+    debugBuildTextSpans++;
     final find = findDecoration?.value;
     return _buildSpan(
       text,

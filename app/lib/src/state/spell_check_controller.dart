@@ -529,6 +529,7 @@ class SpellCheckController {
     bool all = false,
     TextEditingController? from,
   }) {
+    debugEvaluations++;
     if (!_canCheck) return const [];
     final note = _noteId;
     final tag = _session.knownTag(note);
