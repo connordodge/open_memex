@@ -44,6 +44,7 @@ import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
 import 'package:open_memex_app/src/widgets/editor/marker_column.dart';
 import 'package:open_memex_app/src/widgets/editor/row_kinds.dart';
+import 'package:open_memex_app/src/widgets/editor/segment_pointer_layer.dart';
 import 'package:open_memex_app/src/widgets/editor/segment_view.dart';
 import 'package:open_memex_app/src/widgets/editor/spell_check_host.dart';
 import 'package:open_memex_app/src/widgets/editor/spelling_menu.dart';
@@ -228,6 +229,23 @@ class _T128OwningPresenter extends _T128IdlePresenter {
   bool ownsPress(PresentedRow row, Offset position) => row.index == owned;
 }
 
+/// [_T128IdlePresenter] whose row [block] is a block: it hides its text
+/// (`textHidden`, as an unrevealed attachment does) and owns every press
+/// ([owns]; D5, D23).
+class _T128BlockPresenter extends _T128IdlePresenter {
+  const _T128BlockPresenter(this.block, {this.owns = true});
+
+  final int block;
+  final bool owns;
+
+  @override
+  bool textHidden(PresentedRow row) => row.index == block;
+
+  @override
+  bool ownsPress(PresentedRow row, Offset position) =>
+      owns && row.index == block;
+}
+
 // ---------------------------------------------------------------- harness
 
 /// One pumped note editor on [_t128Body] with the idle presenter.
@@ -399,6 +417,20 @@ Future<void> _t128SameFrameClicks(WidgetTester tester, Offset at) async {
   }
   await pumpFrames(tester);
   await tester.pump(kDoubleTapTimeout + const Duration(milliseconds: 50));
+}
+
+/// Two secondary-button mouse clicks at [at] (global) in the same frame (no
+/// pump between them), then pumps.
+Future<void> _t128SameFrameRightClicks(WidgetTester tester, Offset at) async {
+  for (var i = 0; i < 2; i++) {
+    final gesture = await tester.startGesture(
+      at,
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryButton,
+    );
+    await gesture.up();
+  }
+  await pumpFrames(tester);
 }
 
 /// A primary-button mouse drag from [from] to [to] (global) in [steps]
@@ -1195,6 +1227,131 @@ void main() {
     );
   });
 
+  group('a press a presenter owns is never on a grid (D23)', () {
+    testWidgets(
+      'a right click on a block whose presenter hides its text and owns the press moves no caret activates no row and opens no menu',
+      (tester) async {
+        final e = await _t128Pump(
+          tester,
+          presenter: const _T128BlockPresenter(0),
+        );
+        await e.focusFieldRow();
+        final selection = e.host.selection;
+        final point = e.wordPoint(0, 'teh');
+        expect(
+          SegmentPointerLayer.onRenderedGrid(
+            tester.element(find.byKey(_t128SlotKey(0, 0))),
+            point,
+          ),
+          isFalse,
+          reason: 'what the selection ops read: not a rendered grid',
+        );
+
+        await wi438RightClick(tester, point);
+        await pumpFrames(tester);
+
+        expect(e.host.selection, selection, reason: 'no caret moved');
+        expect(e.active, isNull, reason: 'row 0 did not activate');
+        expect(wi438Menu, findsNothing, reason: 'no spelling menu');
+        expect(
+          wi438DefaultMenu,
+          findsNothing,
+          reason: 'no text menu and no selection ops menu',
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a right click on a row that hides its text but owns no press puts the caret there and activates it as on a rendered grid',
+      (tester) async {
+        final e = await _t128Pump(
+          tester,
+          presenter: const _T128BlockPresenter(0, owns: false),
+        );
+        await e.focusFieldRow();
+        final point = e.wordPoint(0, 'teh');
+        expect(
+          SegmentPointerLayer.onRenderedGrid(
+            tester.element(find.byKey(_t128SlotKey(0, 0))),
+            point,
+          ),
+          isTrue,
+          reason:
+              'fixture: a row hiding its text and owning no press is a grid',
+        );
+        final expected = e.offsetAt(0, point);
+
+        await wi438RightClick(tester, point);
+
+        expect(e.host.selection, TextSelection.collapsed(offset: expected));
+        expect(e.active, 0);
+        expect(wi438Menu, findsNothing, reason: 'the layer opens no row menu');
+      },
+      variant: macOnly,
+    );
+  });
+
+  group('same-frame double presses on a row without a field (verify pins)', () {
+    testWidgets(
+      'two right clicks in the same frame on a flagged word of a row without a field open one spelling menu',
+      (tester) async {
+        final e = await _t128Pump(tester);
+        await e.focusFieldRow();
+
+        await _t128SameFrameRightClicks(tester, e.wordPoint(0, 'teh'));
+
+        expect(wi438Menu, findsOneWidget, reason: 'one spelling menu');
+        expect(wi438DefaultMenu, findsNothing);
+        expect(e.selected, e.range(0, 'teh'));
+        expect(e.active, 0);
+        expect(wi438Labels(tester).take(2), ['the', 'tea']);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'two right clicks in the same frame on plain text of a row without a field open one text menu',
+      (tester) async {
+        final e = await _t128Pump(tester);
+        await e.focusFieldRow();
+
+        await _t128SameFrameRightClicks(tester, e.wordPoint(0, 'plain'));
+
+        expect(wi438DefaultMenu, findsOneWidget, reason: 'one text menu');
+        expect(wi438Menu, findsNothing);
+        expect(e.selected, e.range(0, 'plain'));
+        expect(e.active, 0);
+        // One menu: tapping Copy closes it and nothing remains.
+        await tester.tap(
+          find.descendant(of: wi438DefaultMenu, matching: wi438AnyText('Copy')),
+        );
+        await pumpFrames(tester);
+        expect(wi438DefaultMenu, findsNothing, reason: 'no second menu');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'two Cmd+clicks in the same frame on plain text of a row without a field leave a caret there and make the row active',
+      (tester) async {
+        final e = await _t128Pump(tester);
+        await e.focusFieldRow();
+        final point = e.wordPoint(0, 'plain');
+        final expected = e.offsetAt(0, point);
+
+        await tester.macHolding([
+          LogicalKeyboardKey.metaLeft,
+        ], () => _t128SameFrameClicks(tester, point));
+
+        expect(e.host.selection, TextSelection.collapsed(offset: expected));
+        expect(e.focused, 0);
+        expect(e.active, 0);
+      },
+      variant: macOnly,
+    );
+  });
+
   group('the text menu of a row without a field (verify pins)', () {
     testWidgets(
       'the text menu over a selection lists Cut Copy and Paste and Copy puts the word on the clipboard and closes the menu',
@@ -1232,6 +1389,39 @@ void main() {
         expect(e.body, before.replaceRange(plain, plain + 5, ''));
         expect(e.w.clip.text, 'plain');
         expect(wi438DefaultMenu, findsNothing);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'Paste in the text menu of a row without a field over a selection across rows replaces the whole range once through the segment paste',
+      (tester) async {
+        final e = await _t128Pump(tester);
+        await e.focusFieldRow();
+        await _t128Click(tester, e.wordPoint(0, 'plain'));
+        expect(e.active, 0, reason: 'fixture: row 0 holds focus');
+        final before = e.body;
+        final start = e.at(0, 'plain');
+        final end = e.at(3, 'text');
+        e.host.select(TextSelection(baseOffset: start, extentOffset: end));
+        await pumpFrames(tester);
+
+        await showRowTextMenu(e.host, 0, anchor: const Offset(100, 100));
+        await pumpFrames(tester);
+        expect(wi438DefaultMenu, findsOneWidget, reason: 'fixture: it is open');
+        await tester.tap(
+          find.descendant(
+            of: wi438DefaultMenu,
+            matching: wi438AnyText('Paste'),
+          ),
+        );
+        await pumpFrames(tester);
+
+        expect(
+          e.body,
+          before.replaceRange(start, end, wi438Clip),
+          reason: 'only the segment PasteTextIntent replaces every row',
+        );
       },
       variant: macOnly,
     );
