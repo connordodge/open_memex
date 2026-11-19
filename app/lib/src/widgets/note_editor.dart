@@ -560,6 +560,15 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
   /// What the editor shows over [note]'s body, above it in the body's Stack
   /// (Find in note's bar and matches, #61).
   List<Widget> _bodyOverlays(Note note) => [
+    // The attach action's link to this editor (#146; #147's drop and paste
+    // reach the editor through it too). Draws nothing.
+    NoteAttachHost(
+      note: _hydratedNote ?? note,
+      sourceMode: _sourceMode,
+      sourceController: _bodyCtrl,
+      bodyFocus: _bodyFocus,
+      active: !_outgoing,
+    ),
     Positioned.fill(
       child: FindInNoteHost(
         note: _hydratedNote ?? note,

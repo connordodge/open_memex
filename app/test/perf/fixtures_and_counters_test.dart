@@ -10,6 +10,8 @@
 // runs it) and reads the counter by its [PerfCounters] name. A counter that
 // never moved, or moved twice per call, fails its test. The helper itself
 // (reset, snapshot by name, delta) has its own tests.
+import 'dart:ui' as ui show BoxHeightStyle;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -105,6 +107,9 @@ class _Wi125Boxes implements LineBoxSource {
 
   @override
   int offsetAt(Offset point) => 0;
+
+  @override
+  LineBox lineAt(int offset) => lineHolding(lines, offset);
 }
 
 /// An `EditorRow` pumped alone (no segment around it) on [controller].
@@ -544,16 +549,37 @@ void main() {
 
   // ------------------------------------------------------- line boxes
 
+  // TEST-CHANGE (#126, Spec #122 R14/R15/TD1): line boxes are lazy and
+  // range-local. A range read or a caret rect reads the laid-out render
+  // object's own painter for the lines it touches (one span each, no fresh
+  // whole-text layout and no line walk); `lines` walks once per layout and
+  // is cached (per render object, under a `LineBoxEpoch`) until the field or
+  // paragraph lays out again. `*Measures` (fresh whole-text layouts) stays 0.
   group('line box counters', () {
-    Future<RenderEditableLineBoxes> pumpEditable(WidgetTester tester) async {
-      final c = TextEditingController(text: 'first line\nsecond line\nthird');
-      addTearDown(c.dispose);
+    Future<RenderEditableLineBoxes> pumpEditable(
+      WidgetTester tester, {
+      double width = 300,
+      TextEditingController? controller,
+    }) async {
+      final c =
+          controller ??
+          TextEditingController(text: 'first line\nsecond line\nthird');
+      if (controller == null) addTearDown(c.dispose);
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
-            body: SizedBox(
-              width: 300,
-              child: TextField(controller: c, maxLines: null),
+            body: Align(
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: width,
+                child: LineBoxEpoch(
+                  child: TextField(
+                    controller: c,
+                    maxLines: null,
+                    selectionHeightStyle: ui.BoxHeightStyle.max,
+                  ),
+                ),
+              ),
             ),
           ),
         ),
@@ -565,15 +591,24 @@ void main() {
       return RenderEditableLineBoxes(editable);
     }
 
-    Future<RenderParagraphLineBoxes> pumpParagraph(WidgetTester tester) async {
+    Future<RenderParagraphLineBoxes> pumpParagraph(
+      WidgetTester tester, {
+      double width = 300,
+      String text = 'first line\nsecond line\nthird',
+    }) async {
       await tester.pumpWidget(
-        const Directionality(
+        Directionality(
           textDirection: TextDirection.ltr,
-          child: SizedBox(
-            width: 300,
-            child: Text.rich(
-              TextSpan(text: 'first line\nsecond line\nthird'),
-              key: Key('wi125-paragraph'),
+          child: Align(
+            alignment: Alignment.topLeft,
+            child: SizedBox(
+              width: width,
+              child: LineBoxEpoch(
+                child: Text.rich(
+                  TextSpan(text: text),
+                  key: const Key('wi125-paragraph'),
+                ),
+              ),
             ),
           ),
         ),
@@ -589,47 +624,63 @@ void main() {
     }
 
     testWidgets(
-      'an editable counts one measure and one line walk per lines read',
+      'an editable counts one line walk per layout for lines and none while cached',
       (tester) async {
-        final boxes = await pumpEditable(tester);
+        final c = TextEditingController(text: 'first line\nsecond line\nthird');
+        addTearDown(c.dispose);
+        final boxes = await pumpEditable(tester, controller: c);
         expect(boxes.lines, hasLength(3));
-        expect(_n('editableLineMeasures'), 1);
         expect(_n('editableLineWalks'), 1);
-        expect(boxes.lines, hasLength(3));
-        expect(_n('editableLineMeasures'), 2);
-        expect(_n('editableLineWalks'), 2);
+        // A fresh wrapper over the same render object shares its cache.
+        expect(RenderEditableLineBoxes(boxes.editable).lines, hasLength(3));
+        expect(_n('editableLineWalks'), 1, reason: 'cached until a layout');
+        expect(_n('editableLineMeasures'), 0, reason: 'no fresh text layout');
         expect(_n('editableLineSpans'), 0, reason: 'a lines read has no span');
         expect(_n('paragraphLineMeasures'), 0);
         expect(_n('paragraphLineWalks'), 0);
+        c.text = 'first line\nsecond line\nthird\nfourth';
+        await tester.pump();
+        expect(RenderEditableLineBoxes(boxes.editable).lines, hasLength(4));
+        expect(_n('editableLineWalks'), 2, reason: 'a layout invalidates');
       },
     );
 
     testWidgets(
-      'an editable counts one measure and one line walk per range read',
+      'an editable counts one span per line a range read touches and no walk',
       (tester) async {
         final boxes = await pumpEditable(tester);
         expect(
           boxes.boxesFor(const TextRange(start: 2, end: 15)),
           hasLength(2),
         );
-        expect(_n('editableLineMeasures'), 1);
-        expect(_n('editableLineWalks'), 1);
+        expect(_n('editableLineMeasures'), 0);
+        expect(_n('editableLineWalks'), 0);
         expect(_n('editableLineSpans'), 2);
-        expect(boxes.boxesFor(const TextRange(start: 0, end: 4)), hasLength(1));
-        expect(_n('editableLineMeasures'), 2);
-        expect(_n('editableLineWalks'), 2);
+        expect(
+          RenderEditableLineBoxes(
+            boxes.editable,
+          ).boxesFor(const TextRange(start: 2, end: 15)),
+          hasLength(2),
+        );
+        expect(_n('editableLineSpans'), 2, reason: 'the same read is cached');
+        expect(
+          boxes.boxesFor(const TextRange(start: 24, end: 27)),
+          hasLength(1),
+        );
         expect(_n('editableLineSpans'), 3);
+        expect(_n('editableLineMeasures'), 0);
+        expect(_n('editableLineWalks'), 0);
       },
     );
 
     testWidgets(
-      'an editable caret rect measures once while an offset query and a collapsed range measure nothing',
+      'an editable caret rect walks no line while an offset query and a collapsed range measure nothing',
       (tester) async {
         final boxes = await pumpEditable(tester);
         boxes.caretRect(14);
-        expect(_n('editableLineMeasures'), 1);
-        expect(_n('editableLineWalks'), 1);
-        expect(_n('editableLineSpans'), 0);
+        expect(_n('editableLineMeasures'), 0);
+        expect(_n('editableLineWalks'), 0);
+        expect(_n('editableLineSpans'), lessThanOrEqualTo(1));
         final before = PerfCounters.snapshot();
         boxes.offsetAt(const Offset(10, 5));
         expect(boxes.boxesFor(const TextRange.collapsed(3)), isEmpty);
@@ -640,47 +691,70 @@ void main() {
     );
 
     testWidgets(
-      'a paragraph counts one measure and one line walk per lines read',
+      'a paragraph counts one line walk per layout for lines and none while cached',
       (tester) async {
         final boxes = await pumpParagraph(tester);
         expect(boxes.lines, hasLength(3));
-        expect(_n('paragraphLineMeasures'), 1);
         expect(_n('paragraphLineWalks'), 1);
-        expect(boxes.lines, hasLength(3));
-        expect(_n('paragraphLineMeasures'), 2);
-        expect(_n('paragraphLineWalks'), 2);
+        expect(RenderParagraphLineBoxes(boxes.paragraph).lines, hasLength(3));
+        expect(_n('paragraphLineWalks'), 1, reason: 'cached until a layout');
+        expect(_n('paragraphLineMeasures'), 0, reason: 'no fresh text layout');
         expect(_n('paragraphLineSpans'), 0, reason: 'a lines read has no span');
         expect(_n('editableLineMeasures'), 0);
         expect(_n('editableLineWalks'), 0);
+        await pumpParagraph(
+          tester,
+          text: 'first line\nsecond line\nthird\nfourth',
+        );
+        final again = RenderParagraphLineBoxes(
+          tester.renderObject<RenderParagraph>(
+            find.descendant(
+              of: find.byKey(const Key('wi125-paragraph')),
+              matching: find.byType(RichText),
+            ),
+          ),
+        );
+        expect(again.lines, hasLength(4));
+        expect(_n('paragraphLineWalks'), 1, reason: 'a layout invalidates');
       },
     );
 
     testWidgets(
-      'a paragraph counts one measure and one line walk per range read',
+      'a paragraph counts one span per line a range read touches and no walk',
       (tester) async {
         final boxes = await pumpParagraph(tester);
         expect(
           boxes.boxesFor(const TextRange(start: 2, end: 15)),
           hasLength(2),
         );
-        expect(_n('paragraphLineMeasures'), 1);
-        expect(_n('paragraphLineWalks'), 1);
+        expect(_n('paragraphLineMeasures'), 0);
+        expect(_n('paragraphLineWalks'), 0);
         expect(_n('paragraphLineSpans'), 2);
-        expect(boxes.boxesFor(const TextRange(start: 0, end: 4)), hasLength(1));
-        expect(_n('paragraphLineMeasures'), 2);
-        expect(_n('paragraphLineWalks'), 2);
+        expect(
+          RenderParagraphLineBoxes(
+            boxes.paragraph,
+          ).boxesFor(const TextRange(start: 2, end: 15)),
+          hasLength(2),
+        );
+        expect(_n('paragraphLineSpans'), 2, reason: 'the same read is cached');
+        expect(
+          boxes.boxesFor(const TextRange(start: 24, end: 27)),
+          hasLength(1),
+        );
         expect(_n('paragraphLineSpans'), 3);
+        expect(_n('paragraphLineMeasures'), 0);
+        expect(_n('paragraphLineWalks'), 0);
       },
     );
 
     testWidgets(
-      'a paragraph caret rect measures once while an offset query and a collapsed range measure nothing',
+      'a paragraph caret rect walks no line while an offset query and a collapsed range measure nothing',
       (tester) async {
         final boxes = await pumpParagraph(tester);
         boxes.caretRect(14);
-        expect(_n('paragraphLineMeasures'), 1);
-        expect(_n('paragraphLineWalks'), 1);
-        expect(_n('paragraphLineSpans'), 0);
+        expect(_n('paragraphLineMeasures'), 0);
+        expect(_n('paragraphLineWalks'), 0);
+        expect(_n('paragraphLineSpans'), lessThanOrEqualTo(1));
         final before = PerfCounters.snapshot();
         boxes.offsetAt(const Offset(10, 5));
         expect(boxes.boxesFor(const TextRange.collapsed(3)), isEmpty);

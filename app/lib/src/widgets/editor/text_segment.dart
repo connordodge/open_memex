@@ -1,5 +1,5 @@
 import 'dart:math' show max;
-import 'dart:ui' as ui show BoxHeightStyle;
+import 'dart:ui' as ui show BoxHeightStyle, BoxWidthStyle;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -232,8 +232,11 @@ class TextSegmentField extends StatefulWidget {
   final void Function(int version)? onTopicLinked;
   final ValueChanged<String>? onCreateError;
 
-  /// How tall the field paints its selection boxes; null keeps the
-  /// platform default.
+  /// How tall a field that paints its own selection ([paintsSelection])
+  /// paints its selection boxes; null keeps the platform default. A field
+  /// that paints none (an editor row's) always measures max-height,
+  /// tight-width boxes: its line boxes are read straight from them
+  /// (`RenderEditableLineBoxes`, WI #126).
   final ui.BoxHeightStyle? selectionHeightStyle;
 
   /// Whether the field paints its own selection fill. False in an editor
@@ -346,29 +349,37 @@ class _TextSegmentFieldState extends State<TextSegmentField> {
           selectionColor: widget.paintsSelection
               ? OmColors.selection
               : const Color(0x00000000),
-          child: TextField(
-            key: _fieldKey,
-            controller: widget.controller,
-            focusNode: _focus,
-            maxLines: null,
-            minLines: widget.minLines,
-            cursorColor: OmColors.accent,
-            selectionHeightStyle: widget.selectionHeightStyle,
-            style: editorBodyStyle(),
-            // A live preview controller may lay its text out with its own
-            // strut (B1); null keeps the field's default.
-            strutStyle: switch (widget.controller) {
-              final LivePreviewController live => _emptySafe(live),
-              _ => null,
-            },
-            decoration: InputDecoration(
-              hintText: widget.hintText,
-              hintStyle: OmType.mono(size: _bodySize, color: OmColors.fg3),
+          // The per-line cache of the field's line boxes (WI #126).
+          child: LineBoxEpoch(
+            child: TextField(
+              key: _fieldKey,
+              controller: widget.controller,
+              focusNode: _focus,
+              maxLines: null,
+              minLines: widget.minLines,
+              cursorColor: OmColors.accent,
+              selectionHeightStyle: widget.paintsSelection
+                  ? widget.selectionHeightStyle
+                  : ui.BoxHeightStyle.max,
+              selectionWidthStyle: widget.paintsSelection
+                  ? null
+                  : ui.BoxWidthStyle.tight,
+              style: editorBodyStyle(),
+              // A live preview controller may lay its text out with its own
+              // strut (B1); null keeps the field's default.
+              strutStyle: switch (widget.controller) {
+                final LivePreviewController live => _emptySafe(live),
+                _ => null,
+              },
+              decoration: InputDecoration(
+                hintText: widget.hintText,
+                hintStyle: OmType.mono(size: _bodySize, color: OmColors.fg3),
+              ),
+              // A right click on a flagged range opens SpellingMenu (WI #438).
+              contextMenuBuilder: spellingAwareContextMenu,
+              // No onChanged: the controller listener reports typed AND
+              // spliced changes.
             ),
-            // A right click on a flagged range opens SpellingMenu (WI #438).
-            contextMenuBuilder: spellingAwareContextMenu,
-            // No onChanged: the controller listener reports typed AND
-            // spliced changes.
           ),
         ),
         // Zero-size; the popover lives in the root Overlay.

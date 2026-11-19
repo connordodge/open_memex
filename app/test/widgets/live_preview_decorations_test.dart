@@ -121,6 +121,9 @@ class _Wi165FakeBoxes implements LineBoxSource {
 
   @override
   int offsetAt(Offset point) => throw UnimplementedError();
+
+  @override
+  LineBox lineAt(int offset) => lineHolding(_lines, offset);
 }
 
 /// Every backtick offset of [text] (to hide them, as B1 does off the caret

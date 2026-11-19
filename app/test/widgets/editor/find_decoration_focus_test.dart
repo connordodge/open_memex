@@ -82,6 +82,9 @@ class _W84Boxes implements LineBoxSource {
 
   @override
   int offsetAt(Offset point) => throw UnimplementedError();
+
+  @override
+  LineBox lineAt(int offset) => lineHolding(_lines, offset);
 }
 
 List<PaintedDecoration> _w84Layout(
