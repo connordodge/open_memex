@@ -207,7 +207,7 @@ void main() {
 
   group('PaletteCommand', () {
     test(
-      'PaletteCommand values list the 12 commands in requirement 19 order with labels and C5 descriptions',
+      'PaletteCommand values list the 13 commands in requirement 19 order with labels and C5 descriptions',
       () {
         const vault = 'field-notes';
         const today = '2026-11-18';
@@ -222,6 +222,13 @@ void main() {
             PaletteCommand.newCanvas,
             'New canvas',
             'Makes an empty canvas in field-notes and shows it in this tab.',
+          ),
+          // WI #146 (Spec #123 R10): proposed copy, pending the lead's ruling.
+          (
+            PaletteCommand.attachFile,
+            'Attach file…',
+            'Opens the file picker to add files to the open note, at the '
+                'caret.',
           ),
           (
             PaletteCommand.openToday,
