@@ -1825,10 +1825,16 @@ void main() {
               reason: '$why: the strut of the body field',
             );
             expect(editable.size.height, closeTo(height, 0.01), reason: why);
+            // An editor row's field measures max-height boxes (WI #126:
+            // its line boxes are read from them); this compares tight
+            // glyph extents, so read them tight and restore the style.
+            final rowStyle = editable.selectionHeightStyle;
+            editable.selectionHeightStyle = ui.BoxHeightStyle.tight;
             final body = _wi172GlyphLines(
               editable.getBoxesForSelection,
               plain.length,
             );
+            editable.selectionHeightStyle = rowStyle;
             expect(body, hasLength(boxes.length), reason: '$why: extents');
             for (final (i, box) in body.indexed) {
               expect(

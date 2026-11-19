@@ -1293,6 +1293,9 @@ class _Wi83Unlaid implements LineBoxSource {
 
   @override
   int offsetAt(Offset point) => throw StateError('not laid out');
+
+  @override
+  LineBox lineAt(int offset) => throw StateError('not laid out');
 }
 
 /// Called by [_Wi83ScopeProbe] on every build with the scope it reads.

@@ -1138,6 +1138,30 @@ class _RowsLineBoxes implements LineBoxSource {
     );
     return row.spec.toSegment(row.source.offsetAt(point - row.shift));
   }
+
+  /// The line holding [offset]: in the last row starting at or before it
+  /// (the first row for an offset before every row), that row's line
+  /// holding the offset's row-local place, in segment offsets. Measures that
+  /// one line only.
+  @override
+  LineBox lineAt(int offset) {
+    final row = _rows.lastWhere(
+      (row) => row.spec.start <= offset,
+      orElse: () => _rows.first,
+    );
+    final line = row.source.lineAt(row.spec.toLocal(offset));
+    return LineBox(
+      range: TextRange(
+        start: line.range.start == 0
+            ? row.spec.start
+            : row.spec.toSegment(line.range.start),
+        end: row.spec.toSegment(line.range.end),
+      ),
+      top: line.top + row.shift.dy,
+      bottom: line.bottom + row.shift.dy,
+      baseline: line.baseline + row.shift.dy,
+    );
+  }
 }
 
 /// The laid-out text an editor row's text slot shows at or under [root]
