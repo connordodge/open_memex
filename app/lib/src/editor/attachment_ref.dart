@@ -173,6 +173,11 @@ String? _percentDecode(String s) {
       i += 1;
     }
   }
+  // Dart's decoder drops a leading BOM; Rust's String::from_utf8 keeps it, and
+  // the path check then fails. Refuse it so both reject the same input.
+  if (out.length >= 3 && out[0] == 0xEF && out[1] == 0xBB && out[2] == 0xBF) {
+    return null;
+  }
   try {
     return utf8.decode(out);
   } on FormatException {
@@ -261,8 +266,14 @@ String? _extension(String name) {
 
 bool _hasExtensionIn(String name, List<String> table) {
   final ext = _extension(name);
-  return ext != null && table.contains(ext.toLowerCase());
+  return ext != null && table.contains(_asciiLower(ext));
 }
+
+/// Lower-cases A-Z only, as Rust's to_ascii_lowercase does (Dart's
+/// toLowerCase also folds non-ASCII letters such as the Kelvin sign).
+String _asciiLower(String s) => String.fromCharCodes(
+  s.codeUnits.map((c) => c >= 0x41 && c <= 0x5A ? c + 0x20 : c),
+);
 
 /// Whether [name] has an inline image extension (R31), in any letter case.
 bool isInlineImageName(String name) =>
