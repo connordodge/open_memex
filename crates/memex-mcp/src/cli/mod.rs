@@ -11,6 +11,7 @@ use memex_core::MemexError;
 use serde_json::{json, Value};
 
 pub mod append;
+pub mod attach;
 pub mod backup;
 pub mod echoes;
 pub mod embeddings;

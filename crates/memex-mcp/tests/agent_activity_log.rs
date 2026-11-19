@@ -1271,10 +1271,10 @@ async fn every_write_tool_in_meta_write_tools_logs_exactly_one_row_with_its_summ
     );
 
     let called: BTreeSet<&str> = checks.iter().map(|c| c.tool).collect();
-    let writes: BTreeSet<&str> = meta::write_tools().into_iter().collect();
+    let writes = logged_write_tools();
     assert_eq!(
         called, writes,
-        "this test calls every tool meta::write_tools() names, and only those"
+        "this test calls every tool meta::write_tools() names except the unlogged ones, and only those"
     );
 
     let mut wrong = Vec::new();
@@ -1341,7 +1341,7 @@ fn summarize_covers_exactly_the_tools_meta_write_tools_names() {
     let result = json!({ "filed_block_ids": ["b7k2m9"], "removed_count": 1 });
     let pre = PreSnapshot::default();
 
-    let writes: BTreeSet<&str> = meta::write_tools().into_iter().collect();
+    let writes = logged_write_tools();
     let summarized: BTreeSet<&str> = meta::tools()
         .iter()
         .map(|t| t.name)
@@ -1349,13 +1349,27 @@ fn summarize_covers_exactly_the_tools_meta_write_tools_names() {
         .collect();
     assert_eq!(
         summarized, writes,
-        "summarize returns Some for exactly the write tools"
+        "summarize returns Some for exactly the logged write tools"
     );
     assert_eq!(
         WRITE_TOOLS.iter().copied().collect::<BTreeSet<_>>(),
         writes,
-        "activity_summary::WRITE_TOOLS (as a set) == meta::write_tools() (D11)"
+        "activity_summary::WRITE_TOOLS (as a set) == meta::write_tools() minus the unlogged \
+         writes (D11)"
     );
+}
+
+/// Write tools (`writes: true`) whose calls the hook never logs because no
+/// note changes: Spec #123 R18's `add_attachment` (WI #138).
+/// `mcp_attachments.rs` pins that it adds zero rows.
+const UNLOGGED_WRITE_TOOLS: [&str; 1] = ["add_attachment"];
+
+/// `meta::write_tools()` minus [`UNLOGGED_WRITE_TOOLS`].
+fn logged_write_tools() -> BTreeSet<&'static str> {
+    meta::write_tools()
+        .into_iter()
+        .filter(|name| !UNLOGGED_WRITE_TOOLS.contains(name))
+        .collect()
 }
 
 // ======================================================================

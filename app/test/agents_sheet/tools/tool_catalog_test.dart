@@ -80,8 +80,33 @@ void main() {
         "Edits a note's text by exact find-and-replace or a full "
         'rewrite, unless it is read-only for agents.',
       );
-      expect(catalog.tools, hasLength(38));
+      expect(catalog.tools, hasLength(40));
     });
+
+    // WI #138 (Spec #123 R18, R22): the attachment tools.
+    test(
+      'the T1 wire fixture lists add_attachment as a write and get_attachment as a read in notes',
+      () {
+        final catalog = ToolCatalog.fromJson(_wire());
+        final add = catalog.tools.where((t) => t.name == 'add_attachment');
+        final get = catalog.tools.where((t) => t.name == 'get_attachment');
+        expect(add, hasLength(1));
+        expect(get, hasLength(1));
+        expect(add.single.group, 'notes');
+        expect(add.single.writes, isTrue);
+        expect(
+          add.single.summary,
+          'Stores a file in the vault and returns the markdown to place in a '
+          'note.',
+        );
+        expect(get.single.group, 'notes');
+        expect(get.single.writes, isFalse);
+        expect(
+          get.single.summary,
+          "Reads an attachment: an image, a text file's text, or its details.",
+        );
+      },
+    );
 
     test('keeps the order the binary returned and does not sort', () {
       final catalog = ToolCatalog.fromJson({

@@ -94,7 +94,7 @@ const fn write(name: &'static str, group: Group, summary: &'static str) -> ToolM
 }
 
 /// Every tool row, by group, in the Spec #394 requirement 34 order within each.
-static TOOLS: [ToolMeta; 38] = [
+static TOOLS: [ToolMeta; 40] = [
     // Notes and search
     read(
         "search",
@@ -130,6 +130,16 @@ static TOOLS: [ToolMeta; 38] = [
         "update_link",
         Group::Notes,
         "Changes the kind or label of an existing wikilink.",
+    ),
+    write(
+        "add_attachment",
+        Group::Notes,
+        "Stores a file in the vault and returns the markdown to place in a note.",
+    ),
+    read(
+        "get_attachment",
+        Group::Notes,
+        "Reads an attachment: an image, a text file's text, or its details.",
     ),
     // Daily review
     read(
@@ -327,10 +337,20 @@ pub fn prompt(name: &str) -> Option<&'static PromptMeta> {
     PROMPTS.iter().find(|row| row.name == name)
 }
 
-/// True only for a registered tool that changes the vault. The activity hook
-/// decides "is this a write" through this function alone.
+/// True only for a registered tool that changes the vault.
 pub fn is_write(name: &str) -> bool {
     tool(name).is_some_and(|row| row.writes)
+}
+
+/// Write tools the activity hook never logs, because no note changes:
+/// `add_attachment` only stores a file (Spec #123 R18).
+const UNLOGGED_WRITES: [&str; 1] = ["add_attachment"];
+
+/// True for a write tool whose calls the activity hook logs: every
+/// [`is_write`] tool except `add_attachment`. The hook decides "is this a
+/// logged write" through this function alone.
+pub fn is_logged(name: &str) -> bool {
+    is_write(name) && !UNLOGGED_WRITES.contains(&name)
 }
 
 /// The names of every write tool.
