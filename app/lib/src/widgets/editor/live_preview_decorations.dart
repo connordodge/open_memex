@@ -194,6 +194,34 @@ bool _findTouches(TextRange? findReveal, TextRange range) =>
 @visibleForTesting
 int debugLayoutDecorationsCalls = 0;
 
+/// What [layoutDecorations] parses of one field's text (Spec #122 R18): its
+/// line kinds (`classifyLines` with [atSegmentStart]) and each line's or
+/// table cell's inline tokens, parsed once and kept for as long as the text
+/// and segment start hold. A painter keeps one per field, so a repaint with
+/// unchanged text parses nothing.
+final class DecorationsParse {
+  DecorationsParse(this.text, {required this.atSegmentStart})
+    : lines = classifyLines(text, atSegmentStart: atSegmentStart);
+
+  final String text;
+  final bool atSegmentStart;
+
+  /// [text]'s line kinds.
+  final List<MdLine> lines;
+
+  final Map<(int, int), List<InlineToken>> _tokens = {};
+
+  /// Whether this is the parse of [text] at [atSegmentStart].
+  bool holds(String text, {required bool atSegmentStart}) =>
+      atSegmentStart == this.atSegmentStart && text == this.text;
+
+  /// The inline tokens of `[start, end)` of [text].
+  List<InlineToken> tokens(int start, int end) => _tokens.putIfAbsent((
+    start,
+    end,
+  ), () => tokenizeInline(text.substring(start, end)));
+}
+
 /// Every decoration of a field showing [text] measured by [boxes], in
 /// paint order (backgrounds first: code boxes and quote bands, then pills,
 /// then rules), all inside the text column [columnLeft]..[columnRight]
@@ -209,6 +237,10 @@ int debugLayoutDecorationsCalls = 0;
 /// cell by cell) are added only while [reveal] or [findReveal] touches one
 /// of its lines; a rendered table's grid paints its own (ruling D15). Quote
 /// bands fill with [quoteBandColor].
+///
+/// [parse] is the field's parse from an earlier call: it is used while it
+/// [DecorationsParse.holds] [text] at [atSegmentStart], and the text is
+/// parsed again otherwise.
 List<PaintedDecoration> layoutDecorations({
   required String text,
   required LineBoxSource boxes,
@@ -219,8 +251,13 @@ List<PaintedDecoration> layoutDecorations({
   TextSelection? reveal,
   TextRange? findReveal,
   Color quoteBandColor = OmColors.surface3,
+  DecorationsParse? parse,
 }) {
   debugLayoutDecorationsCalls++;
+  final parsed =
+      parse != null && parse.holds(text, atSegmentStart: atSegmentStart)
+      ? parse
+      : DecorationsParse(text, atSegmentStart: atSegmentStart);
   bool revealed(TextRange range) =>
       _touches(reveal, range) || _findTouches(findReveal, range);
   final backgrounds = <PaintedDecoration>[];
@@ -248,7 +285,7 @@ List<PaintedDecoration> layoutDecorations({
     }
   }
 
-  final lines = classifyLines(text, atSegmentStart: atSegmentStart);
+  final lines = parsed.lines;
   for (var i = 0; i < lines.length; i++) {
     final line = lines[i];
     switch (line.kind) {
@@ -300,7 +337,7 @@ List<PaintedDecoration> layoutDecorations({
         }
         for (var q = i; q <= last; q++) {
           _addPills(
-            text,
+            parsed,
             lines[q].start,
             lines[q].contentEnd,
             boxes,
@@ -335,7 +372,14 @@ List<PaintedDecoration> layoutDecorations({
       case MdLineKind.bullet:
       case MdLineKind.numbered:
       case MdLineKind.task:
-        _addPills(text, line.start, line.contentEnd, boxes, columnLeft, pills);
+        _addPills(
+          parsed,
+          line.start,
+          line.contentEnd,
+          boxes,
+          columnLeft,
+          pills,
+        );
       case MdLineKind.tableHeader:
         final last = tableLastLine(lines, i);
         final table = TextRange(start: line.start, end: lines[last].contentEnd);
@@ -348,7 +392,7 @@ List<PaintedDecoration> layoutDecorations({
               end: row.contentEnd,
             );
             for (final cell in split.cells) {
-              _addPills(text, cell.start, cell.end, boxes, columnLeft, pills);
+              _addPills(parsed, cell.start, cell.end, boxes, columnLeft, pills);
             }
           }
         }
@@ -361,18 +405,18 @@ List<PaintedDecoration> layoutDecorations({
   return [...backgrounds, ...pills, ...rules];
 }
 
-/// Adds the pills of every code span in `[start, end)` of [text] (one
-/// line's text outside fences and frontmatter, or one table cell's) to
+/// Adds the pills of every code span in `[start, end)` of [parse]'s text
+/// (one line's text outside fences and frontmatter, or one table cell's) to
 /// [pills].
 void _addPills(
-  String text,
+  DecorationsParse parse,
   int start,
   int end,
   LineBoxSource boxes,
   double columnLeft,
   List<PaintedDecoration> pills,
 ) {
-  final tokens = tokenizeInline(text.substring(start, end));
+  final tokens = parse.tokens(start, end);
   for (final token in tokens) {
     if (token.kind != InlineTokenKind.codeSpan) continue;
     final content = TextRange(
@@ -483,6 +527,9 @@ class _RenderDecorations extends RenderProxyBox {
   /// The reveal gate listened to: the controller's, which a host may swap.
   ValueListenable<bool>? _gate;
 
+  /// The controller's text as last parsed ([layoutDecorations]).
+  DecorationsParse? _parse;
+
   void _listen() {
     _controller.addListener(_changed);
     _syncGate();
@@ -490,15 +537,21 @@ class _RenderDecorations extends RenderProxyBox {
 
   void _unlisten() {
     _controller.removeListener(_changed);
-    _gate?.removeListener(markNeedsPaint);
+    _gate?.removeListener(_gateChanged);
     _gate = null;
   }
 
   void _syncGate() {
     final gate = _controller.revealGate;
     if (identical(gate, _gate)) return;
-    _gate?.removeListener(markNeedsPaint);
-    _gate = gate..addListener(markNeedsPaint);
+    _gate?.removeListener(_gateChanged);
+    _gate = gate..addListener(_gateChanged);
+  }
+
+  /// The gate reveals only through the controller's selection: with none,
+  /// the decorations do not change.
+  void _gateChanged() {
+    if (_controller.selection.isValid) markNeedsPaint();
   }
 
   void _changed() {
@@ -536,18 +589,25 @@ class _RenderDecorations extends RenderProxyBox {
       Offset.zero,
     );
     final controller = _controller;
+    final text = controller.text;
+    final atSegmentStart = controller.atSegmentStart;
+    final parse = switch (_parse) {
+      final p? when p.holds(text, atSegmentStart: atSegmentStart) => p,
+      _ => _parse = DecorationsParse(text, atSegmentStart: atSegmentStart),
+    };
     final decorations = layoutDecorations(
-      text: controller.text,
+      text: text,
       boxes: source,
       columnLeft: _textLeft - origin.dx,
       columnRight: size.width - origin.dx,
-      atSegmentStart: controller.atSegmentStart,
+      atSegmentStart: atSegmentStart,
       quote: controller.quote,
       // The selection while focused, and Find in note's reveal range
       // (WI #84) whatever the focus, as the spans reveal them.
       reveal: controller.revealGate.value ? controller.selection : null,
       findReveal: controller.findDecoration?.value?.revealRange,
       quoteBandColor: _quoteBandColor,
+      parse: parse,
     );
     final shift = offset + origin;
     for (final d in decorations) {

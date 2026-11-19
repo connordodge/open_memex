@@ -6,7 +6,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../db.dart';
 import '../../editor/markdown_inline.dart';
 import '../../editor/markdown_lines.dart';
 import '../../editor/markdown_table.dart';
@@ -16,14 +15,8 @@ import '../../state/tabs_state.dart';
 import '../../state/tags_browse_state.dart';
 import '../../state/url_opener.dart';
 import '../../state/vault_access_state.dart';
-import '../../state/vault_state.dart';
-import '../../vault_access/vault_scoped.dart';
 import 'line_boxes.dart';
 import 'live_preview_controller.dart';
-
-/// The most titles `noteTitlesAsyncProvider` loads: a list this long may be
-/// cut short, so no wikilink renders as a ghost (D14).
-const int _titlesCap = 1000;
 
 /// Test-only work counter (WI #129, Spec #122 R22): how many times a link
 /// region was handed a note-titles change, whether it rebuilt for it or was
@@ -36,6 +29,36 @@ int debugLinkRegionTitleUpdates = 0;
 /// registration, one taken away per removal).
 @visibleForTesting
 int debugLinkKeyHandlers = 0;
+
+/// The link regions mounted now: while there is one, the one shared
+/// `HardwareKeyboard` handler ([_onSharedKey]) is registered (Spec #122 R21).
+final Set<_LinkRegionState> _regions = {};
+
+/// The regions with the mouse over their field: a key event (Cmd pressed or
+/// released) re-checks their hover.
+final Set<_LinkRegionState> _hovered = {};
+
+void _addRegion(_LinkRegionState region) {
+  if (_regions.isEmpty) {
+    HardwareKeyboard.instance.addHandler(_onSharedKey);
+    debugLinkKeyHandlers++;
+  }
+  _regions.add(region);
+}
+
+void _removeRegion(_LinkRegionState region) {
+  _hovered.remove(region);
+  if (!_regions.remove(region) || _regions.isNotEmpty) return;
+  HardwareKeyboard.instance.removeHandler(_onSharedKey);
+  debugLinkKeyHandlers--;
+}
+
+bool _onSharedKey(KeyEvent event) {
+  for (final region in [..._hovered]) {
+    if (region.mounted) region._refresh();
+  }
+  return false;
+}
 
 /// The URL schemes a click opens (D14, Spec #232 R13).
 const Set<String> _openableSchemes = {'http', 'https', 'mailto'};
@@ -51,9 +74,11 @@ bool isPlainClickFollowable(InlineToken token) => switch (token) {
 
 /// Link hit-testing over one field (D7, D14, B3).
 ///
-/// - Ghosts: sets [controller]'s `isResolved` from `noteTitlesAsyncProvider`
-///   (a target resolves when a note's title equals it). Every target
-///   resolves until the titles load and while the list holds 1,000 titles.
+/// - Ghosts: sets [controller]'s `isResolved` from the shared note-titles
+///   lookup (`noteTitleResolverProvider`, Spec #122 R22): a target resolves
+///   when a note's title equals it. Every target resolves until the titles
+///   load and while the list holds 1,000 titles. A reload re-renders the
+///   field only when one of its own link targets resolves differently.
 /// - Hovering the shown text of a resolved wikilink or transclusion token, or
 ///   of an http, https or mailto link, shows [SystemMouseCursors.click] and
 ///   sets [controller]'s `cmdHover` to the whole token, with Cmd held or on a
@@ -99,12 +124,16 @@ class LinkRegion extends ConsumerStatefulWidget {
 }
 
 class _LinkRegionState extends ConsumerState<LinkRegion> {
-  /// The loaded titles the resolution map was built from.
-  List<NoteTitle>? _titles;
+  /// The note-titles lookup every link region shares.
+  late final NoteTitleResolver _resolver = ref.read(noteTitleResolverProvider);
+
+  /// Calls [_titlesChanged] when one of this field's link targets resolves
+  /// differently after a titles reload.
+  NoteTitleSubscription? _titlesSubscription;
 
   /// Note id by title, or null while every target resolves (titles not
   /// loaded, or the list at its cap).
-  Map<String, String>? _ids;
+  Map<String, String>? get _ids => _resolver.lookup.ids;
 
   /// The mouse's global position while it is over the field, else null.
   Offset? _pointer;
@@ -119,10 +148,10 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
   /// The token a Cmd+press went down on, or null.
   _Link? _pressed;
 
-  /// The resolution map the controller last rendered with (see [_apply]).
-  Map<String, String>? _appliedIds;
-
   bool _applyScheduled = false;
+
+  /// Whether the next [_apply] re-renders the field for a titles change.
+  bool _titlesDirty = false;
 
   // Tokens of the controller's text, cached by text and line props.
   String? _tokensText;
@@ -134,8 +163,7 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
   @override
   void initState() {
     super.initState();
-    HardwareKeyboard.instance.addHandler(_onKey);
-    debugLinkKeyHandlers++;
+    _addRegion(this);
     widget.controller.addListener(_onControllerChanged);
   }
 
@@ -151,25 +179,29 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
 
   @override
   void dispose() {
-    HardwareKeyboard.instance.removeHandler(_onKey);
-    debugLinkKeyHandlers--;
+    _removeRegion(this);
+    _titlesSubscription?.cancel();
     widget.controller.removeListener(_onControllerChanged);
     super.dispose();
   }
 
+  /// One of this field's link targets resolves differently after a titles
+  /// reload: re-render it after this frame.
+  void _titlesChanged() {
+    debugLinkRegionTitleUpdates++;
+    _titlesDirty = true;
+    _scheduleApply();
+  }
+
   @override
   Widget build(BuildContext context) {
-    final titles = currentVaultData(
-      ref.watch(noteTitlesAsyncProvider),
-      ref.watch(currentVaultProvider),
-    )?.value;
-    if (!identical(titles, _titles)) {
-      debugLinkRegionTitleUpdates++;
-      _titles = titles;
-      _ids = titles == null || titles.length >= _titlesCap
-          ? null
-          : _titleIds(titles);
-      _scheduleApply();
+    // Keeps the shared lookup alive while the region shows; its value never
+    // changes, so this rebuilds nothing.
+    ref.watch(noteTitleResolverProvider);
+    if (_titlesSubscription == null) {
+      // Before the titles load, the first load calls back.
+      _titlesSubscription = _resolver.subscribe(_targets, _titlesChanged);
+      if (_resolver.lookup.titles != null) _scheduleApply();
     }
     return Stack(
       fit: StackFit.passthrough,
@@ -213,43 +245,37 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
 
   /// Whether [target] resolves under the current titles: every target does
   /// until they load and while the list is at its cap.
-  bool _resolves(String target) => _ids?.containsKey(target) ?? true;
+  bool _resolves(String target) => _resolver.lookup.resolves(target);
 
-  /// Installs [_resolves] as the controller's `isResolved` once, then sets
-  /// it again (to re-render) only when a link target in the text resolves
-  /// differently under the new titles. The setter notifies the controller's
-  /// listeners, and a notification with unchanged text is not free: the
-  /// wikilink popover re-opens on any notification while the caret sits in
-  /// an unclosed `[[`, so a titles reload after a Create must not send one.
-  void _apply() {
-    final controller = widget.controller;
-    final before = _appliedIds;
-    final after = _ids;
-    _appliedIds = after;
-    if (controller.isResolved != _resolves) {
-      controller.isResolved = _resolves;
-      return;
-    }
-    if (identical(before, after)) return;
-    bool resolves(Map<String, String>? ids, String target) =>
-        ids?.containsKey(target) ?? true;
-    for (final link in _linksOf(controller)) {
-      final target = switch (link.token) {
-        WikilinkToken(:final target) => target,
-        TransclusionLinkToken(:final date) => date,
-        _ => null,
-      };
-      if (target != null &&
-          resolves(before, target) != resolves(after, target)) {
-        controller.isResolved = _resolves;
-        return;
+  /// The field's wikilink targets and transclusion dates now.
+  Iterable<String> _targets() sync* {
+    for (final link in _linksOf(widget.controller)) {
+      switch (link.token) {
+        case WikilinkToken(:final target):
+          yield target;
+        case TransclusionLinkToken(:final date):
+          yield date;
+        default:
+          break;
       }
     }
   }
 
-  bool _onKey(KeyEvent event) {
-    if (_pointer != null) _refresh();
-    return false;
+  /// Installs [_resolves] as the controller's `isResolved` once (at the
+  /// first titles load, or when the region shows after it), then sets it
+  /// again (to re-render) only when the shared lookup reported that a link
+  /// target in the text resolves differently under new titles
+  /// ([_titlesChanged]). The setter notifies the controller's listeners,
+  /// and a notification with unchanged text is not free: the wikilink
+  /// popover re-opens on any notification while the caret sits in an
+  /// unclosed `[[`, so a titles reload after a Create must not send one.
+  void _apply() {
+    final controller = widget.controller;
+    final dirty = _titlesDirty;
+    _titlesDirty = false;
+    if (dirty || controller.isResolved != _resolves) {
+      controller.isResolved = _resolves;
+    }
   }
 
   void _onControllerChanged() {
@@ -263,6 +289,11 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
 
   void _pointerAt(Offset? global) {
     _pointer = global;
+    if (global == null) {
+      _hovered.remove(this);
+    } else {
+      _hovered.add(this);
+    }
     _refresh();
   }
 
@@ -477,12 +508,6 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
     _tokensFenced = controller.fenced;
     return _links = links;
   }
-}
-
-/// Note id by title of [titles] (the first of equal titles wins).
-Map<String, String> _titleIds(List<NoteTitle> titles) {
-  debugNoteTitleLookupBuilds++;
-  return {for (final t in titles.reversed) t.title: t.id};
 }
 
 /// Whether a click opens [url]: its scheme (case-insensitive) is http, https

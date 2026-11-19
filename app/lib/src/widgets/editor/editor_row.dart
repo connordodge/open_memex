@@ -73,10 +73,13 @@ List<ItemGeometry?> rowGeometries(List<RowSpec> rows) {
 ///   painted, hit or read by semantics (R26); revealed, the field shows and
 ///   the grid is gone.
 ///
-/// The field sits under Key `editor-row-<segment>-<index>` (D10). The row
-/// paints its part of the segment selection as one block behind the field,
-/// focused or not ([_RowSelection]), and its spelling squiggles and hint
-/// over it ([SpellSquiggles], WI #437).
+/// The field sits under Key `editor-row-<segment>-<index>` (D10). Inside a
+/// segment that Key names the row's index in the segment now (Spec #122
+/// R19): a row the rows host moves to another index keeps its field
+/// subtree, which the Key's thin wrapper ([_IndexKeyed]) does not recreate.
+/// The row paints its part of the segment selection as one block behind
+/// the field, focused or not ([_RowSelection]), and its spelling squiggles
+/// and hint over it ([SpellSquiggles], WI #437).
 class EditorRow extends StatelessWidget {
   /// Test-only work counter: how many times any editor row built.
   @visibleForTesting
@@ -132,8 +135,11 @@ class EditorRow extends StatelessWidget {
   Widget build(BuildContext context) {
     debugBuilds++;
     final host = context.findAncestorStateOfType<SegmentViewState>();
-    Widget keyedField(Widget child) => KeyedSubtree(
-      key: ValueKey('editor-row-$segment-$index'),
+    Widget keyedField(Widget child) => _IndexKeyed(
+      segment: segment,
+      index: index,
+      controller: controller,
+      host: host,
       child: _RowSelection(
         controller: controller,
         index: index,
@@ -169,6 +175,44 @@ class EditorRow extends StatelessWidget {
   }
 }
 
+/// The row field's index Key `editor-row-<segment>-<index>` (D10) over
+/// [child]. Inside a segment the Key is read from [host] whenever it is
+/// asked for, so it names the row's segment and index now: the old and the
+/// new wrapper of a row that moved to another index carry equal Keys, and
+/// the row's field subtree below is updated in place, never recreated or
+/// reparented. A row pumped alone keeps [segment] and [index].
+class _IndexKeyed extends StatelessWidget {
+  const _IndexKeyed({
+    required this.segment,
+    required this.index,
+    required this.controller,
+    required this.host,
+    required this.child,
+  });
+
+  final int segment;
+  final int index;
+  final TextEditingController controller;
+  final SegmentViewState? host;
+  final Widget child;
+
+  @override
+  Key get key {
+    final host = this.host;
+    final now = host != null && host.mounted
+        ? host.rowIndexOf(controller)
+        : null;
+    return ValueKey<String>(
+      now == null
+          ? 'editor-row-$segment-$index'
+          : 'editor-row-${host!.widget.index}-$now',
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => child;
+}
+
 /// Paints the row's part of the segment selection behind its field in
 /// `OmColors.selection`, as one block: each selected line is one rect from
 /// its first to its last selected character, the line box's full height,
@@ -176,6 +220,11 @@ class EditorRow extends StatelessWidget {
 /// blank line is that column). Lines of one selection touch, also across
 /// rows, and no two rects overlap, so the fill never doubles up. The field
 /// itself paints no selection (`TextSegmentField`).
+///
+/// It repaints when its row's controller notifies, when where the segment
+/// selection meets the row's edges changes (the host's `rowEdgesOf`), and
+/// on a reveal gate change only while it has a selection to fill (Spec #122
+/// R17a): another row's selection change repaints nothing here.
 class _RowSelection extends SingleChildRenderObjectWidget {
   const _RowSelection({
     required this.controller,
@@ -208,48 +257,81 @@ int debugEditorRowSelectionPaints = 0;
 
 class _RenderRowSelection extends RenderProxyBox {
   _RenderRowSelection(this._controller, this._index, this._host)
-    : _segment = _host?.widget.controller,
+    : _edges = _host?.rowEdgesOf(_controller),
       _gate = _host?.widget.revealGate;
 
   TextEditingController _controller;
   int _index;
   SegmentViewState? _host;
-  TextEditingController? _segment;
+
+  /// Where the segment selection meets the row's edges.
+  Listenable? _edges;
 
   /// Revealing or hiding markers moves line ends.
   Listenable? _gate;
-
-  Listenable get _changes => Listenable.merge([
-    _controller,
-    if (_segment != null) _segment,
-    if (_gate != null) _gate,
-  ]);
 
   void watch(
     TextEditingController controller,
     int index,
     SegmentViewState? host,
   ) {
-    if (attached) _changes.removeListener(markNeedsPaint);
+    final edges = host?.rowEdgesOf(controller);
+    final gate = host?.widget.revealGate;
+    if (identical(controller, _controller) &&
+        index == _index &&
+        identical(host, _host) &&
+        identical(edges, _edges) &&
+        identical(gate, _gate)) {
+      return;
+    }
+    if (attached) _unlisten();
     _controller = controller;
     _index = index;
     _host = host;
-    _segment = host?.widget.controller;
-    _gate = host?.widget.revealGate;
-    if (attached) _changes.addListener(markNeedsPaint);
-    // The rows were rebuilt: their line ends may have moved.
+    _edges = edges;
+    _gate = gate;
+    if (attached) _listen();
     markNeedsPaint();
+  }
+
+  void _listen() {
+    _controller.addListener(markNeedsPaint);
+    _edges?.addListener(markNeedsPaint);
+    _gate?.addListener(_gateChanged);
+  }
+
+  void _unlisten() {
+    _controller.removeListener(markNeedsPaint);
+    _edges?.removeListener(markNeedsPaint);
+    _gate?.removeListener(_gateChanged);
+  }
+
+  /// A reveal gate change moves line ends; only a row with a selection to
+  /// fill (its own slice, or the line break after it) shows that.
+  void _gateChanged() {
+    final local = _controller.selection;
+    final host = _host;
+    final spec = host?.rowSpec(_index);
+    final segment = host?.selection;
+    final rowBreak =
+        spec != null &&
+        segment != null &&
+        segment.isValid &&
+        !segment.isCollapsed &&
+        segment.start <= spec.textEnd &&
+        spec.textEnd < segment.end;
+    if ((local.isValid && !local.isCollapsed) || rowBreak) markNeedsPaint();
   }
 
   @override
   void attach(PipelineOwner owner) {
     super.attach(owner);
-    _changes.addListener(markNeedsPaint);
+    _listen();
   }
 
   @override
   void detach() {
-    _changes.removeListener(markNeedsPaint);
+    _unlisten();
     super.detach();
   }
 
@@ -326,7 +408,8 @@ class _RenderRowSelection extends RenderProxyBox {
         : const <Rect>[];
     final mdLines = controller is LivePreviewController && controller.itemText
         ? const <MdLine>[]
-        : classifyLines(rowText, atSegmentStart: spec?.textStart == 0);
+        : host?.rowLinesOf(controller) ??
+              classifyLines(rowText, atSegmentStart: spec?.textStart == 0);
 
     final out = <Rect>[];
     var firstLine = false;
