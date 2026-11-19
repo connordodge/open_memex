@@ -113,6 +113,44 @@ void main() {
     _expectEmpty(await _read());
   });
 
+  test(
+    'a files entry that is not a string is dropped from the files',
+    () async {
+      _native(
+        (_) => {
+          'files': [
+            '/vaults/My Vault/a.pdf',
+            42,
+            null,
+            '/vaults/My Vault/b.pdf',
+          ],
+        },
+      );
+
+      final c = await _read();
+
+      expect(c.files, ['/vaults/My Vault/a.pdf', '/vaults/My Vault/b.pdf']);
+    },
+  );
+
+  test('a files field that is not a list maps to no files', () async {
+    _native((_) => {'files': '/vaults/My Vault/a.pdf'});
+
+    _expectEmpty(await _read());
+  });
+
+  test('a png field that is not bytes maps to no image', () async {
+    _native((_) => {'png': 'not bytes'});
+
+    _expectEmpty(await _read());
+  });
+
+  test('a hasText field that is not true maps to no text', () async {
+    _native((_) => {'hasText': 'yes'});
+
+    _expectEmpty(await _read());
+  });
+
   test('hasText true maps to hasText with no files and no image', () async {
     _native((_) => {'hasText': true});
 
