@@ -8,7 +8,10 @@
 //! - `file_path` only on a Local transport, absolute, never hidden or inside
 //!   a hidden folder, and never inside the vault folder outside `objects/`,
 //!   checked on the given path and on the path with every symlink resolved
-//!   (L15). These checks run here, never only in a prompt. The CLI (the
+//!   (L15). On the resolved path, "inside the vault" is decided by folder
+//!   identity (device and inode), so another spelling of the vault folder
+//!   (the macOS `/System/Volumes/Data` firmlink, a letter-case variant, a
+//!   bind mount) is still inside it. These checks run here, never only in a prompt. The CLI (the
 //!   person's channel) has none of them;
 //! - `get_attachment` reads only regular files under `objects/`, and gives
 //!   `file_path` only on Local.
@@ -19,6 +22,7 @@
 use std::fs::{self, File};
 use std::io::{ErrorKind, Read};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use base64::engine::general_purpose::{GeneralPurpose, GeneralPurposeConfig};
@@ -154,10 +158,9 @@ fn store_path(
     if !path.is_absolute() {
         return Err(invalid(NOT_ABSOLUTE));
     }
-    let vaults = vault_forms(vault);
-    check_place(path, given, &vaults)?;
+    check_given(path, given, vault)?;
     let resolved = fs::canonicalize(path).map_err(|e| unreadable(given, &e))?;
-    check_place(&resolved, given, &vaults)?;
+    check_resolved(&resolved, given, vault)?;
     let base = path.file_name().map(|n| n.to_string_lossy().into_owned());
     let name = name.map(str::to_string).or(base).unwrap_or_default();
     attachments::store_file(vault, &resolved, Some(&name)).map_err(|e| core_error(&e))
@@ -177,21 +180,46 @@ fn vault_forms(vault: &Path) -> [PathBuf; 2] {
     [absolute, resolved]
 }
 
+/// Refuses the given path, before it is resolved (so a refusal tells
+/// nothing about whether it exists), when it is hidden or, as text, inside a
+/// vault folder form outside `objects/`.
+fn check_given(path: &Path, given: &str, vault: &Path) -> Result<(), String> {
+    check_hidden(path, given)?;
+    if vault_forms(vault)
+        .iter()
+        .any(|v| inside_outside_objects(path, v))
+    {
+        return Err(inside_vault(given));
+    }
+    Ok(())
+}
+
+/// Refuses the resolved path when it is hidden or, by folder identity,
+/// inside the vault folder outside `objects/`.
+fn check_resolved(resolved: &Path, given: &str, vault: &Path) -> Result<(), String> {
+    check_hidden(resolved, given)?;
+    if resolves_inside_outside_objects(resolved, vault).map_err(|e| unreadable(given, &e))? {
+        return Err(inside_vault(given));
+    }
+    Ok(())
+}
+
 /// Refuses `path` (`given`, or what it resolves to) when it is hidden or
-/// inside a hidden folder, or inside a vault folder form outside `objects/`.
-/// Each refusal names the path the agent gave.
-fn check_place(path: &Path, given: &str, vaults: &[PathBuf]) -> Result<(), String> {
+/// inside a hidden folder. The refusal names the path the agent gave.
+fn check_hidden(path: &Path, given: &str) -> Result<(), String> {
     if is_hidden(path) {
         return Err(invalid(&format!(
             "{given} is hidden or inside a hidden folder and can't be attached."
         )));
     }
-    if vaults.iter().any(|v| inside_outside_objects(path, v)) {
-        return Err(invalid(&format!(
-            "{given} is inside the vault and can't be attached."
-        )));
-    }
     Ok(())
+}
+
+/// The refusal of a `file_path` inside the vault folder outside `objects/`.
+fn inside_vault(given: &str) -> String {
+    invalid(&format!(
+        "{given} is inside the vault and can't be attached."
+    ))
 }
 
 /// Whether any component of `path` starts with `.` (`.env`, `.ssh`, `..`).
@@ -202,9 +230,40 @@ fn is_hidden(path: &Path) -> bool {
         .any(|c| c.first() == Some(&b'.'))
 }
 
-/// Whether `path` is the vault folder or inside it, but not in `objects/`.
+/// Whether `path` is the vault folder or inside it, but not in `objects/`,
+/// compared as text (the given path, before it is resolved).
 fn inside_outside_objects(path: &Path, vault: &Path) -> bool {
     path.starts_with(vault) && !path.starts_with(vault.join(OBJECTS))
+}
+
+/// Whether `resolved` (a path with every symlink resolved) is the vault
+/// folder or inside it, but not in `objects/`, compared by identity: the
+/// nearest ancestor (or `resolved` itself) that is the vault's `objects/`
+/// folder allows it, and one that is the vault folder refuses it. An
+/// ancestor that can't be read is an error, so the check fails closed.
+fn resolves_inside_outside_objects(resolved: &Path, vault: &Path) -> std::io::Result<bool> {
+    let vault_id = identity(vault)?;
+    // Not followed: an `objects` link never makes the folder it points to
+    // count as `objects/`.
+    let objects_id = fs::symlink_metadata(vault.join(OBJECTS))
+        .ok()
+        .map(|m| (m.dev(), m.ino()));
+    for ancestor in resolved.ancestors() {
+        let id = identity(ancestor)?;
+        if Some(id) == objects_id {
+            return Ok(false);
+        }
+        if id == vault_id {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The (device, inode) pair naming the file or folder at `path`.
+fn identity(path: &Path) -> std::io::Result<(u64, u64)> {
+    let meta = fs::metadata(path)?;
+    Ok((meta.dev(), meta.ino()))
 }
 
 // ---- get_attachment -----------------------------------------------------------------------
