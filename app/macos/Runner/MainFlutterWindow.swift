@@ -34,6 +34,12 @@ import FlutterMacOS
 ///   `copy_failed` error whose details are `{domain: "NSPasteboard", code: 0}`
 ///   (`NSPasteboard.setString` returns a Bool, not an `NSError`); a
 ///   non-`String` argument gets `bad_arguments`. The text is never logged.
+/// - Dart → native `readPasteboard` (no arguments): reads the general
+///   pasteboard. Replies a map: `files` (absolute paths) when it holds file
+///   URLs, else `png` (`FlutterStandardTypedData` PNG bytes; a TIFF image is
+///   converted) when it holds an image, plus `hasText` (Bool) when a string
+///   is present. Replies an empty map when it holds none of these. Errors
+///   reply `FlutterError` with details `{domain, code}`.
 ///
 /// Updater channel `open_memex/updater` (Dart side: `app/lib/src/updater/updater_menu_host.dart`):
 /// - native → Dart `checkForUpdatesFromMenu` (no arguments): sent when
@@ -171,6 +177,27 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
           return
         }
         result(nil)
+      case "readPasteboard":
+        let pb = NSPasteboard.general
+        var reply: [String: Any] = [:]
+        let urls =
+          pb.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        if !urls.isEmpty {
+          reply["files"] = urls.map { $0.path }
+        } else if let png = pb.data(forType: .png) {
+          reply["png"] = FlutterStandardTypedData(bytes: png)
+        } else if let tiff = pb.data(forType: .tiff),
+          let rep = NSBitmapImageRep(data: tiff),
+          let png = rep.representation(using: .png, properties: [:])
+        {
+          reply["png"] = FlutterStandardTypedData(bytes: png)
+        }
+        if pb.availableType(from: [.string]) != nil {
+          reply["hasText"] = true
+        }
+        result(reply)
       default:
         result(FlutterMethodNotImplemented)
       }

@@ -1,6 +1,7 @@
-import 'dart:typed_data';
-
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'vault_trash.dart';
 
 /// What the system clipboard holds that an attachment can use (Spec #123 R8).
 ///
@@ -37,7 +38,25 @@ class PlatformPasteboardReader implements PasteboardReader {
   const PlatformPasteboardReader();
 
   @override
-  Future<PasteboardContents> read() async => const PasteboardContents();
+  Future<PasteboardContents> read() async {
+    try {
+      final reply = await vaultFilesChannel.invokeMethod<Object?>(
+        'readPasteboard',
+      );
+      if (reply is! Map) return const PasteboardContents();
+      final files = reply['files'];
+      final png = reply['png'];
+      return PasteboardContents(
+        files: files is List ? files.whereType<String>().toList() : const [],
+        png: png is Uint8List ? png : null,
+        hasText: reply['hasText'] == true,
+      );
+    } on PlatformException {
+      return const PasteboardContents();
+    } on MissingPluginException {
+      return const PasteboardContents();
+    }
+  }
 }
 
 /// The app's [PasteboardReader]. Tests override it with a fake.

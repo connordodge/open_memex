@@ -1,3 +1,4 @@
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -43,7 +44,22 @@ class DesktopAttachmentDropSource implements AttachmentDropSource {
     AttachmentDragCallback? onUpdated,
     VoidCallback? onExited,
     AttachmentDropCallback? onDropped,
-  }) => child;
+  }) => DropTarget(
+    enable: enabled,
+    onDragEntered: onEntered == null
+        ? null
+        : (details) => onEntered(details.localPosition),
+    onDragUpdated: onUpdated == null
+        ? null
+        : (details) => onUpdated(details.localPosition),
+    onDragExited: onExited == null ? null : (_) => onExited(),
+    onDragDone: onDropped == null
+        ? null
+        : (details) => onDropped([
+            for (final file in details.files) file.path,
+          ], details.localPosition),
+    child: child,
+  );
 }
 
 /// The app's [AttachmentDropSource]. Tests override it with a fake.
