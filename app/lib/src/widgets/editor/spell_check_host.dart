@@ -23,7 +23,6 @@ import '../../state/settings.dart';
 import '../../state/spell_check_controller.dart';
 import '../../state/spell_session_state.dart';
 import '../../state/spelling_service.dart';
-import 'line_boxes.dart' show findRenderEditable;
 import 'live_preview_controller.dart';
 import 'segment_view.dart';
 import 'spell_issue_scope.dart';
@@ -264,8 +263,12 @@ int debugSpellHostLineCalls = 0;
 int debugSpellHostRectCalls = 0;
 
 /// Test-only work counter: how many times any spell-check field host
-/// resolved its field's laid-out render object ([SpellFieldHost.editable]),
-/// the geometry entry point of an evaluation's viewport check.
+/// resolved its field's laid-out text, as main's `editable()` counted: once
+/// per [SpellFieldHost.extent] call (the geometry entry point of an
+/// evaluation's viewport check, once per field), and per issue-rect or
+/// Check Document Now read. [SpellFieldHost.extentAt] reuses the text
+/// [SpellFieldHost.extent] resolved while it stays laid out (WI #127), so
+/// it counts only when there is none.
 @visibleForTesting
 int debugSpellHostEditableCalls = 0;
 
@@ -361,20 +364,94 @@ class _SpellCheckFieldState extends State<SpellCheckField>
     return (line: field.text, base: 0, atSegmentStart: true);
   }
 
-  @override
-  RenderEditable? editable() {
+  /// The laid-out text [extent] last resolved ([_text]), which [extentAt]
+  /// reuses while it is still laid out in the tree.
+  RenderBox? _slot;
+
+  /// The `RichText` span whose plain-text length [_slotLength] holds.
+  InlineSpan? _slotSpan;
+  int _slotLength = 0;
+
+  /// This field's laid-out text (WI #127): the text slot under it, a
+  /// field's or a `RichText`'s standing in for it (`textSlotBox`, the
+  /// row-geometry accessor's text-slot half), or null.
+  RenderBox? _text() {
     debugSpellHostEditableCalls++;
     if (!mounted) return null;
-    final editable = findRenderEditable(context.findRenderObject());
-    return editable != null && editable.attached && editable.hasSize
-        ? editable
-        : null;
+    final box = textSlotBox(context.findRenderObject());
+    return box != null && box.attached ? box : null;
+  }
+
+  /// [box]'s global top and the global bottom of its local [rect].
+  static ({double top, double bottom}) _globalBand(RenderBox box, Rect rect) =>
+      (
+        top: box.localToGlobal(Offset(0, rect.top)).dy,
+        bottom: box.localToGlobal(Offset(0, rect.bottom)).dy,
+      );
+
+  @override
+  ({double top, double bottom})? extent() {
+    final box = _slot = _text();
+    return box == null ? null : _globalBand(box, Offset.zero & box.size);
   }
 
   @override
-  RenderBox? viewportBox() {
+  ({double top, double bottom})? extentAt(int offset) {
+    if (!mounted) return null;
+    final cached = _slot;
+    final box = cached != null && cached.attached && cached.hasSize
+        ? cached
+        : _slot = _text();
+    final Rect? caret = switch (box) {
+      final RenderEditable field => field.getLocalRectForCaret(
+        TextPosition(offset: offset.clamp(0, field.plainText.length)),
+      ),
+      final RenderParagraph text => _paragraphCaret(text, offset),
+      _ => null,
+    };
+    return box == null || caret == null ? null : _globalBand(box, caret);
+  }
+
+  /// [text]'s caret rect at [offset] (clamped to its text), as tall as its
+  /// line's caret.
+  Rect _paragraphCaret(RenderParagraph text, int offset) {
+    final position = TextPosition(offset: offset.clamp(0, _lengthOf(text)));
+    final at = text.getOffsetForCaret(position, Rect.zero);
+    return Rect.fromLTWH(at.dx, at.dy, 0, text.getFullHeightForCaret(position));
+  }
+
+  /// [text]'s plain-text length, counted once per span (no copy of its
+  /// text: a row's span can hold a whole long paragraph).
+  int _lengthOf(RenderParagraph text) {
+    final span = text.text;
+    if (!identical(span, _slotSpan)) {
+      _slotSpan = span;
+      _slotLength = _spanLength(span);
+    }
+    return _slotLength;
+  }
+
+  /// [span]'s plain-text length as its laid-out text holds it: a text
+  /// span's text, one code unit per placeholder (a widget span).
+  static int _spanLength(InlineSpan span) {
+    var length = 0;
+    span.visitChildren((s) {
+      length += switch (s) {
+        TextSpan(:final text) => text?.length ?? 0,
+        PlaceholderSpan() => 1,
+        _ => 0,
+      };
+      return true;
+    });
+    return length;
+  }
+
+  @override
+  ({double top, double bottom})? viewport() {
     final box = _scrollable?.context.findRenderObject();
-    return box is RenderBox && box.attached && box.hasSize ? box : null;
+    return box is RenderBox && box.attached && box.hasSize
+        ? _globalBand(box, Offset.zero & box.size)
+        : null;
   }
 
   @override
@@ -410,17 +487,19 @@ class _SpellCheckFieldState extends State<SpellCheckField>
     return found;
   }
 
-  /// [issue]'s range in the field's laid-out text (local), or null.
+  /// [issue]'s range in the field's laid-out text ([_text], local), or
+  /// null.
   Rect? _rectOf(SpellIssue issue) {
     debugSpellHostRectCalls++;
-    final e = editable();
-    if (e == null) return null;
-    final boxes = e.getBoxesForSelection(
-      TextSelection(
-        baseOffset: issue.start,
-        extentOffset: issue.start + issue.length,
-      ),
+    final range = TextSelection(
+      baseOffset: issue.start,
+      extentOffset: issue.start + issue.length,
     );
+    final boxes = switch (_text()) {
+      final RenderEditable field => field.getBoxesForSelection(range),
+      final RenderParagraph text => text.getBoxesForSelection(range),
+      _ => const <TextBox>[],
+    };
     if (boxes.isEmpty) return null;
     var rect = boxes.first.toRect();
     for (final b in boxes.skip(1)) {
@@ -463,7 +542,7 @@ class _SpellCheckFieldState extends State<SpellCheckField>
     // padding: padding the same way leaves it nothing to scroll.
     final rect = _rectOf(issue);
     if (rect != null) {
-      editable()?.showOnScreen(
+      _text()?.showOnScreen(
         rect: field.widget.scrollPadding.inflateRect(rect),
         duration: Duration.zero,
       );
@@ -472,7 +551,7 @@ class _SpellCheckFieldState extends State<SpellCheckField>
     if (!stillCurrent() || !mounted || !field.mounted || ctrl.text != text) {
       return;
     }
-    final e = editable();
+    final e = _text();
     final shown = _rectOf(issue);
     if (e == null || shown == null) return;
     await showSpellingMenu(
