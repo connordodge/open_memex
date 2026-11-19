@@ -267,6 +267,47 @@ void main() {
     });
   });
 
+  group('attachment names stay literal (R27, R34)', () {
+    test(
+      'an attachment name with underscores or stars shows as written while a web image text keeps emphasis',
+      () {
+        final text =
+            'a ![_draft_.png](${_t142Path('_draft_.png')}) b\n'
+            'c [*star*.txt](${_t142Path('*star*.txt')}) d\n'
+            'e ![_web_](https://example.com/w.png) f\n'
+            'other';
+        final span = buildLivePreviewSpan(
+          text,
+          style: _t142Base(),
+          selection: TextSelection.collapsed(offset: text.length),
+        );
+        _t142ExpectLinkStyled(span, text, '_draft_.png');
+        _t142ExpectLinkStyled(span, text, '*star*.txt');
+        // Not one character of the name is hidden and none is italic.
+        for (final name in ['_draft_.png', '*star*.txt']) {
+          final at = text.indexOf(name);
+          for (var o = at; o < at + name.length; o++) {
+            final s = _t142StyleAt(span, o);
+            expect(
+              s.fontSize,
+              isNot(livePreviewHiddenStyle.fontSize),
+              reason: '"$name" @$o is shown',
+            );
+            expect(s.fontStyle, isNot(FontStyle.italic), reason: name);
+          }
+        }
+        // A web image keeps main's link rule: emphasis in its text applies.
+        final web = text.indexOf('_web_');
+        expect(
+          _t142StyleAt(span, web).fontSize,
+          livePreviewHiddenStyle.fontSize,
+          reason: 'the web alt text opens italic, hiding its first underscore',
+        );
+        expect(_t142StyleAt(span, web + 1).fontStyle, FontStyle.italic);
+      },
+    );
+  });
+
   group('empty brackets (R27, R34, ruling D21)', () {
     test(
       'an empty bracket attachment ref shows its file name link styled with the rest hidden',
@@ -323,13 +364,47 @@ void main() {
     testWidgets(
       'a click on an empty bracket link with any other destination opens nothing',
       (tester) async {
-        // No token, so nothing to click: the line stays plain text.
-        const text =
-            'See [](a/b.png) and ![](https://example.com/x.png) end\nother';
+        // Each case sits on its own line, so a click on one never reveals
+        // another (only the clicked line shows its markers). Clicked where a wrong tokenization would show the name.
+        final cases = <(String, String)>[
+          ('![](https://example.com/x.png)', 'x.png'),
+          ('[](https://example.org)', 'example.org'),
+          ('[](a/b.png)', 'b.png'),
+        ];
+        final control = '![](${_t142Path('ok.png')})';
+        final text =
+            'head\n${[for (final c in cases) c.$1].join('\n')}\n$control\ntail';
+        // Rendered: none is link styled or hidden (no token), the control is.
+        final span = buildLivePreviewSpan(
+          text,
+          style: _t142Base(),
+          selection: TextSelection.collapsed(offset: text.length),
+        );
+        for (final (ref, _) in cases) {
+          final at = text.indexOf(ref);
+          for (var o = at; o < at + ref.length; o++) {
+            final s = _t142StyleAt(span, o);
+            expect(s.color, isNot(OmColors.info), reason: '$ref @$o');
+            expect(
+              s.fontSize,
+              isNot(livePreviewHiddenStyle.fontSize),
+              reason: '$ref @$o is not a hidden marker',
+            );
+          }
+        }
+        _t142ExpectLinkStyled(span, text, 'ok.png');
+
         final e = await _t142Pump(tester, text);
-        await _t142Click(tester, _t142PointOn(tester, 0, 'a/b.png'));
-        await _t142Click(tester, _t142PointOn(tester, 0, 'example.com'));
+        expect(rowTextOf(tester, 0, 0), text, reason: 'one paragraph row');
+        for (final (_, name) in cases) {
+          await _t142Click(tester, _t142PointOn(tester, 0, name));
+        }
         expect(e.attachments!.openCalls, isEmpty);
+        expect(e.opener.opened, isEmpty);
+        // The same click on a real empty bracket attachment ref opens it:
+        // the clicks above did reach link rows.
+        await _t142Click(tester, _t142PointOn(tester, 0, 'ok.png'));
+        expect(e.attachments!.openCalls, [_t142Path('ok.png')]);
         expect(e.opener.opened, isEmpty);
       },
       variant: macOnly,

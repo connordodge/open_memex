@@ -2855,6 +2855,72 @@ void main() {
         expect([for (final l in links) l.image], [true, false]);
       },
     );
+
+    test(
+      'an attachment link or image name holds no emphasis or strike while other link text keeps it',
+      () {
+        const att = [
+          '![_draft_.png](objects/3f/$hash/_draft_.png)',
+          '[_draft_.png](objects/3f/$hash/_draft_.png)',
+          '[*a*](objects/3f/$hash/a.png)',
+          '![**b**](objects/3f/$hash/b.png)',
+          '[~~x~~.txt](objects/3f/$hash/x.txt)',
+          '[__init__.py](objects/3f/$hash/__init__.py)',
+        ];
+        for (final ref in att) {
+          final text = 'x $ref y';
+          final link = onlyLink(text);
+          expect(link.markers, hasLength(2), reason: ref);
+          expect(
+            link.content.of(text),
+            ref.substring(ref.indexOf('[') + 1, ref.indexOf('](')),
+            reason: ref,
+          );
+        }
+        // Emphasis around the whole ref still pairs.
+        expect(
+          tokenizeInline(
+            '_a ![_n_](objects/3f/$hash/n.png) b_',
+          ).map((t) => t.kind),
+          [InlineTokenKind.italic, InlineTokenKind.link],
+        );
+        // A web image and a plain link keep emphasis in their text.
+        for (final text in ['![_l_](https://e.com/l.png)', '[_l_](a/b.png)']) {
+          expect(tokenizeInline(text).map((t) => t.kind), [
+            InlineTokenKind.link,
+            InlineTokenKind.italic,
+          ], reason: text);
+        }
+        expect(tokenizeInline('[**b**](https://e.com)').map((t) => t.kind), [
+          InlineTokenKind.link,
+          InlineTokenKind.bold,
+        ]);
+      },
+    );
+
+    test(
+      'an empty bracket attachment name after an encoded slash shows only the name',
+      () {
+        const cases = [
+          ('objects%2F3f%2F$hash%2Fm%20n.png', 'm%20n.png'),
+          ('objects%2f3f%2f$hash%2fm%20n.png', 'm%20n.png'),
+          ('objects%2F3f%2f$hash%2Fm.png', 'm.png'),
+          // A later literal slash wins over an earlier encoded one.
+          ('objects%2F3f/$hash/m.png', 'm.png'),
+          ('objects/3f%2F$hash/m.png', 'm.png'),
+          // A later encoded slash wins over an earlier literal one.
+          ('objects/3f/$hash%2Fm.png', 'm.png'),
+          ('objects/3f/$hash%2fm.png', 'm.png'),
+        ];
+        for (final (url, name) in cases) {
+          final text = 'a ![]($url) b';
+          final link = onlyLink(text);
+          expect(link.content.of(text), name, reason: url);
+          expect(link.markers.last.of(text), ')', reason: url);
+          expect(link.url, url);
+        }
+      },
+    );
   });
 
   group('InlineRange', () {
