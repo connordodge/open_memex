@@ -66,6 +66,11 @@ pub struct SearchHit {
     /// attachment hit only. `note_search` answers it as `start_byte`.
     #[serde(skip)]
     pub(crate) line_start: Option<usize>,
+    /// The lower-ranked hits of the same note folded into this one before
+    /// the cap: its own chunk hits (R46) and other attachment hits on the
+    /// same chunk. A daily-note hit also expands through each of them.
+    #[serde(skip)]
+    pub(crate) merged: Vec<SearchHit>,
 }
 
 /// `attachment` of a passage hit (R48): the attachment's stored name and
@@ -166,9 +171,11 @@ pub(crate) fn embed_query(embedder: &dyn Embedder, q: &str) -> Result<Option<Vec
 /// some note references (`note_attachments`) take part. An attachment's
 /// score is its name score plus its best chunk's score; it becomes one hit
 /// per referencing note passing the filters, on that note's chunk holding its
-/// first reference line (see [`attachment_hits`]). A note's own chunk hits
-/// merge into its best attachment hit, so a note shows at most one hit per
-/// attachment. Hits sort by score, then note title, note id, ord, line and
+/// first reference line (see [`attachment_hits`]). Attachment hits landing
+/// on the same chunk of a note keep only the best one, so no two hits share
+/// a (note, chunk). A note's own chunk hits merge into its best attachment
+/// hit, so a note shows at most one hit per attachment; a daily note's
+/// merged hits still expand (see [`expand_transclusions`]). Hits sort by score, then note title, note id, ord, line and
 /// chunk id, so equal scores come in the same order on every search. `k`
 /// caps the hits (attachment hits count) and, separately, the attachments
 /// list; `truncated` says more hits matched.
@@ -263,17 +270,37 @@ fn fuse(
             own.push(hit);
         }
     }
-    let mut hits = attachment_hits(conn, &matched)?;
-    hits.sort_by(hit_order);
+    own.sort_by(hit_order);
+    let mut found = attachment_hits(conn, &matched)?;
+    found.sort_by(hit_order);
 
-    // A note's own hits merge into its best attachment hit (R46).
+    // One hit per (note, chunk): clients key passage rows by `chunk_id`, so
+    // two matching attachments referenced in one chunk of a note give one
+    // hit, the best one; the others fold into it.
+    let mut hits: Vec<SearchHit> = Vec::new();
+    let mut on_chunk: HashMap<(String, String), usize> = HashMap::new();
+    for hit in found {
+        match on_chunk.get(&(hit.note_id.clone(), hit.chunk_id.clone())) {
+            Some(&i) => hits[i].merged.push(hit),
+            None => {
+                on_chunk.insert((hit.note_id.clone(), hit.chunk_id.clone()), hits.len());
+                hits.push(hit);
+            }
+        }
+    }
+
+    // A note's own hits merge into its best attachment hit (R46), which
+    // keeps the higher score.
     let mut best: HashMap<String, usize> = HashMap::new();
     for (i, h) in hits.iter().enumerate() {
         best.entry(h.note_id.clone()).or_insert(i);
     }
     for hit in own {
         match best.get(&hit.note_id) {
-            Some(&i) => hits[i].score = hits[i].score.max(hit.score),
+            Some(&i) => {
+                hits[i].score = hits[i].score.max(hit.score);
+                hits[i].merged.push(hit);
+            }
             None => hits.push(hit),
         }
     }
@@ -470,6 +497,7 @@ fn attachment_hits(conn: &Connection, matched: &[Matched]) -> Result<Vec<SearchH
                     path: m.path.clone(),
                 }),
                 line_start: Some(*line),
+                merged: Vec::new(),
             });
         }
     }
@@ -498,6 +526,13 @@ struct Expansion {
 /// expanded, and a topic already shown as an expanded hit drops its own
 /// lower-ranked direct hit. The total is capped at `k`. Returns the hits and
 /// whether the cap dropped any.
+///
+/// A source hit expands through itself first, then through each hit merged
+/// into it ([`SearchHit::merged`]), so a day's own text hit merged into its
+/// attachment hit still brings the topics that transclude that text. An
+/// expansion through an attachment hit keeps that hit's attachment and
+/// snippet (R46); one through a note text hit has neither, and the topic
+/// chunk's snippet.
 fn expand_transclusions(
     conn: &Connection,
     direct: Vec<SearchHit>,
@@ -508,28 +543,30 @@ fn expand_transclusions(
     let mut shown_direct: HashSet<String> = HashSet::new();
     let mut shown_expanded: HashSet<String> = HashSet::new();
     let mut pairs: HashSet<(String, String)> = HashSet::new();
-    for source in direct {
+    for mut source in direct {
         if shown_expanded.contains(&source.note_id) {
             continue;
         }
-        let topics = transcluding_topics(conn, &source, filters)?;
+        let merged = std::mem::take(&mut source.merged);
+        let mut topics: Vec<(Expansion, Option<(HitAttachment, String)>)> = Vec::new();
+        for from in std::iter::once(&source).chain(&merged) {
+            let carried = from.attachment.clone().map(|a| (a, from.snippet.clone()));
+            for t in transcluding_topics(conn, from, filters)? {
+                topics.push((t, carried.clone()));
+            }
+        }
         shown_direct.insert(source.note_id.clone());
         let date = source.note_title.clone();
         let score = source.score;
-        // An attachment hit's expansions keep its attachment and snippet (R46).
-        let from_attachment = source
-            .attachment
-            .clone()
-            .map(|a| (a, source.snippet.clone()));
         hits.push(source);
-        for t in topics {
+        for (t, carried) in topics {
             if shown_direct.contains(&t.note_id) || !pairs.insert((t.note_id.clone(), date.clone()))
             {
                 continue;
             }
             shown_expanded.insert(t.note_id.clone());
-            let (attachment, snippet) = match &from_attachment {
-                Some((a, s)) => (Some(a.clone()), s.clone()),
+            let (attachment, snippet) = match carried {
+                Some((a, s)) => (Some(a), s),
                 None => (None, t.snippet),
             };
             hits.push(SearchHit {
@@ -542,6 +579,7 @@ fn expand_transclusions(
                 via: Some(date.clone()),
                 attachment,
                 line_start: None,
+                merged: Vec::new(),
             });
         }
     }
@@ -551,26 +589,22 @@ fn expand_transclusions(
 }
 
 /// The topic notes (passing `filters`) with a transclusion covering a block
-/// of `hit`'s daily note that overlaps the hit chunk's byte range, in title
-/// order. Empty unless `hit` is on the daily note of its title's date and
-/// its chunk has a stored range (NULL ranges never expand).
+/// of `hit`'s daily note that overlaps the hit's byte range, in title order:
+/// an attachment hit's reference line, else the hit chunk's range. Empty
+/// unless `hit` is on the daily note of its title's date and that range is
+/// known (a chunk's NULL range never expands).
 fn transcluding_topics(
     conn: &Connection,
     hit: &SearchHit,
     filters: &SearchFilters,
 ) -> Result<Vec<Expansion>> {
-    let (cs, ce): (Option<i64>, Option<i64>) = conn.query_row(
-        "SELECT start_byte, end_byte FROM chunks WHERE id = ?",
-        params![hit.chunk_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
-    let (Some(cs), Some(ce)) = (cs, ce) else {
-        return Ok(Vec::new());
-    };
     let date = hit.note_title.as_str();
     if daily_note_id_for_title(conn, date)?.as_deref() != Some(hit.note_id.as_str()) {
         return Ok(Vec::new());
     }
+    let Some((cs, ce)) = expansion_range(conn, hit)? else {
+        return Ok(Vec::new());
+    };
 
     // The ords of the day's blocks that overlap the chunk: block [s, e)
     // overlaps chunk [cs, ce) iff s < ce && cs < e.
@@ -652,6 +686,38 @@ fn transcluding_topics(
         });
     }
     Ok(out)
+}
+
+/// The byte range `[start, end)` of `hit`'s note a transclusion must cover
+/// a block of for `hit` to expand: an attachment hit's reference line
+/// (`line_start` to the end of its line, R46), else the hit chunk's stored
+/// range (`None` when NULL).
+fn expansion_range(conn: &Connection, hit: &SearchHit) -> Result<Option<(i64, i64)>> {
+    if let Some(at) = hit.line_start {
+        let body: Option<String> = conn
+            .query_row(
+                "SELECT content_md FROM notes WHERE id = ?",
+                params![hit.note_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(body) = body else {
+            return Ok(None);
+        };
+        let end = body
+            .get(at..)
+            .and_then(|rest| rest.find('\n'))
+            .map_or(body.len(), |n| at + n);
+        let end = std::cmp::max(end, at + 1);
+        let to_i64 = |n: usize| i64::try_from(n).unwrap_or(i64::MAX);
+        return Ok(Some((to_i64(at), to_i64(end))));
+    }
+    let (cs, ce): (Option<i64>, Option<i64>) = conn.query_row(
+        "SELECT start_byte, end_byte FROM chunks WHERE id = ?",
+        params![hit.chunk_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    Ok(cs.zip(ce))
 }
 
 /// Whether `token` transcludes one of `hit_ords` of daily note
@@ -814,6 +880,7 @@ fn enrich_hit(
         via: None,
         attachment: None,
         line_start: None,
+        merged: Vec::new(),
     }))
 }
 

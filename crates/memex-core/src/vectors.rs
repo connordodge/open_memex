@@ -115,7 +115,7 @@ struct Picked {
 /// (by ascending id), without holding the connection across inference (Spec
 /// #391 req 5, Spec #123 TD).
 ///
-/// A note chunk's embedding input is its `indexer::index_text` (R45: no
+/// A note chunk's embedding input is its `chunk_fts` text (R45: no
 /// `objects/…` destination); an attachment chunk's is its content. Note
 /// vectors go to `chunk_vec`, attachment vectors to `attachment_chunk_vec`
 /// (made once the vault has an attachment chunk). The orphan delete removes
@@ -133,6 +133,53 @@ pub fn embed_missing<L: ConnLease>(
     note_first: Option<&str>,
     note_cap: usize,
     others_cap: usize,
+) -> Result<EmbedMissing> {
+    embed_missing_of(
+        conn,
+        embedder,
+        note_first,
+        note_cap,
+        others_cap,
+        Attachments::Embed,
+    )
+}
+
+/// [`embed_missing`] over note chunks only, for Echoes, whose kNN reads only
+/// `chunk_vec`: no attachment chunk is picked, and `pending` counts only
+/// unembedded note chunks (`chunks` rows with no `chunk_vec` row), so
+/// attachment text never keeps Echoes "still indexing". Both orphan deletes
+/// still run.
+pub fn embed_missing_notes<L: ConnLease>(
+    conn: &mut L,
+    embedder: &dyn Embedder,
+    note_first: Option<&str>,
+    note_cap: usize,
+    others_cap: usize,
+) -> Result<EmbedMissing> {
+    embed_missing_of(
+        conn,
+        embedder,
+        note_first,
+        note_cap,
+        others_cap,
+        Attachments::Skip,
+    )
+}
+
+/// Whether an [`embed_missing`] run embeds and counts attachment chunks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Attachments {
+    Embed,
+    Skip,
+}
+
+fn embed_missing_of<L: ConnLease>(
+    conn: &mut L,
+    embedder: &dyn Embedder,
+    note_first: Option<&str>,
+    note_cap: usize,
+    others_cap: usize,
+    attachments: Attachments,
 ) -> Result<EmbedMissing> {
     let (picked, pending_now) = conn.lease(|c| {
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -155,9 +202,9 @@ pub fn embed_missing<L: ConnLease>(
                 [],
             )?;
         }
-        let picked = pick_unembedded(&tx, note_first, note_cap, others_cap)?;
+        let picked = pick_unembedded(&tx, note_first, note_cap, others_cap, attachments)?;
         let pending = if picked.is_empty() {
-            Some(pending_count(&tx)?)
+            Some(pending_count(&tx, attachments)?)
         } else {
             None
         };
@@ -188,7 +235,11 @@ pub fn embed_missing<L: ConnLease>(
     for (i, (p, vector)) in picked.iter().zip(&vectors).enumerate() {
         let (wrote, left) = conn.lease(|c| {
             let wrote = insert_if_unembedded(c, p.side, &p.id, vector)?;
-            let left = if i == last { pending_count(c)? } else { 0 };
+            let left = if i == last {
+                pending_count(c, attachments)?
+            } else {
+                0
+            };
             Ok((wrote, left))
         })?;
         if wrote {
@@ -201,49 +252,58 @@ pub fn embed_missing<L: ConnLease>(
 
 /// Unembedded chunks to embed: `note_first`'s by `ord` (at most
 /// `note_cap`), then other notes' by ascending id, then attachment chunks by
-/// ascending id (those two together at most `others_cap`).
+/// ascending id (those two together at most `others_cap`), unless
+/// `attachments` is [`Attachments::Skip`].
 fn pick_unembedded(
     conn: &Connection,
     note_first: Option<&str>,
     note_cap: usize,
     others_cap: usize,
+    attachments: Attachments,
 ) -> Result<Vec<Picked>> {
-    let note = |(id, content): (String, String)| Picked {
-        side: Side::Note,
-        text: indexer::index_text(&content).into_owned(),
-        id,
+    // (chunk id, note id, content, start_byte, the note's stored body)
+    type Row = (String, String, String, Option<i64>, Option<String>);
+    let read = |r: &rusqlite::Row<'_>| -> rusqlite::Result<Row> {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+    };
+    let note = |(id, note_id, content, start, body): Row| -> Result<Picked> {
+        let text =
+            indexer::stored_chunk_index_text(conn, &note_id, body.as_deref(), start, &content)?;
+        Ok(Picked {
+            side: Side::Note,
+            id,
+            text,
+        })
     };
     let mut picked = Vec::new();
     if let Some(note_id) = note_first {
         let mut stmt = conn.prepare(
-            "SELECT id, content FROM chunks
-              WHERE note_id = ?1 AND id NOT IN (SELECT chunk_id FROM chunk_vec)
-              ORDER BY ord, id
+            "SELECT c.id, c.note_id, c.content, c.start_byte, n.content_md
+               FROM chunks c LEFT JOIN notes n ON n.id = c.note_id
+              WHERE c.note_id = ?1 AND c.id NOT IN (SELECT chunk_id FROM chunk_vec)
+              ORDER BY c.ord, c.id
               LIMIT ?2",
         )?;
-        let rows = stmt.query_map(params![note_id, sql_limit(note_cap)], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })?;
+        let rows = stmt.query_map(params![note_id, sql_limit(note_cap)], read)?;
         for row in rows {
-            picked.push(note(row?));
+            picked.push(note(row?)?);
         }
     }
     let first = picked.len();
     let mut stmt = conn.prepare(
-        "SELECT id, content FROM chunks
-          WHERE (?1 IS NULL OR note_id <> ?1)
-            AND id NOT IN (SELECT chunk_id FROM chunk_vec)
-          ORDER BY id
+        "SELECT c.id, c.note_id, c.content, c.start_byte, n.content_md
+           FROM chunks c LEFT JOIN notes n ON n.id = c.note_id
+          WHERE (?1 IS NULL OR c.note_id <> ?1)
+            AND c.id NOT IN (SELECT chunk_id FROM chunk_vec)
+          ORDER BY c.id
           LIMIT ?2",
     )?;
-    let rows = stmt.query_map(params![note_first, sql_limit(others_cap)], |r| {
-        Ok((r.get(0)?, r.get(1)?))
-    })?;
+    let rows = stmt.query_map(params![note_first, sql_limit(others_cap)], read)?;
     for row in rows {
-        picked.push(note(row?));
+        picked.push(note(row?)?);
     }
     let left = others_cap.saturating_sub(picked.len() - first);
-    if left > 0 && has_table(conn, "attachment_chunk_vec")? {
+    if attachments == Attachments::Embed && left > 0 && has_table(conn, "attachment_chunk_vec")? {
         let mut stmt = conn.prepare(
             "SELECT id, content FROM attachment_chunks
               WHERE id NOT IN (SELECT chunk_id FROM attachment_chunk_vec)
@@ -296,8 +356,19 @@ fn insert_if_unembedded(
     Ok(insertable)
 }
 
-/// Unembedded chunks left: [`embedding_counts`] `chunks - embedded`.
-fn pending_count(conn: &Connection) -> Result<usize> {
-    let c = embedding_counts(conn)?;
-    Ok(usize::try_from(c.chunks - c.embedded).unwrap_or(0))
+/// Unembedded chunks left: [`embedding_counts`] `chunks - embedded`, or,
+/// with [`Attachments::Skip`], the `chunks` rows with no `chunk_vec` row.
+fn pending_count(conn: &Connection, attachments: Attachments) -> Result<usize> {
+    let left = match attachments {
+        Attachments::Embed => {
+            let c = embedding_counts(conn)?;
+            c.chunks - c.embedded
+        }
+        Attachments::Skip => conn.query_row(
+            "SELECT COUNT(*) FROM chunks WHERE id NOT IN (SELECT chunk_id FROM chunk_vec)",
+            [],
+            |r| r.get::<_, i64>(0),
+        )?,
+    };
+    Ok(usize::try_from(left).unwrap_or(0))
 }
