@@ -19,6 +19,26 @@ CREATE TABLE agent_changes (
     bullets_json  TEXT NOT NULL
 );
 
+CREATE TABLE attachment_chunks (
+    id                  TEXT PRIMARY KEY,
+    path                TEXT NOT NULL REFERENCES attachments(path) ON DELETE CASCADE,
+    ord                 INTEGER NOT NULL,
+    content             TEXT NOT NULL,
+    token_count         INTEGER NOT NULL,
+    embed_model_version TEXT
+);
+
+CREATE TABLE attachments (
+    path           TEXT PRIMARY KEY,
+    name           TEXT NOT NULL,
+    type           TEXT NOT NULL,
+    size           INTEGER NOT NULL,
+    extract_state  TEXT NOT NULL
+                   CHECK (extract_state IN ('pending', 'done', 'empty', 'failed')),
+    extract_error  TEXT NULL,
+    extracted_at   INTEGER NULL
+);
+
 CREATE TABLE blocks (
     note_id          TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
     block_id         TEXT NOT NULL,
@@ -126,6 +146,13 @@ CREATE TABLE links (
     UNIQUE (from_note_id, position)
 );
 
+CREATE TABLE note_attachments (
+    note_id          TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    path             TEXT NOT NULL,
+    line_start_byte  INTEGER NOT NULL,
+    PRIMARY KEY (note_id, path, line_start_byte)
+);
+
 CREATE TABLE note_revisions (
     id                TEXT PRIMARY KEY,
     note_id           TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
@@ -215,6 +242,8 @@ CREATE INDEX idx_agent_activity_created
 
 CREATE INDEX idx_agent_changes_note ON agent_changes(note_id, created_at DESC);
 
+CREATE INDEX idx_attachment_chunks_path ON attachment_chunks(path, ord);
+
 CREATE INDEX idx_blocks_note_ord ON blocks(note_id, ord);
 
 CREATE INDEX idx_canvas_nodes_note ON canvas_nodes(note_id);
@@ -236,6 +265,8 @@ CREATE INDEX idx_links_from ON links(from_note_id);
 CREATE INDEX idx_links_kind ON links(link_kind, to_note_id);
 
 CREATE INDEX idx_links_to   ON links(to_note_id);
+
+CREATE INDEX idx_note_attachments_path ON note_attachments(path);
 
 CREATE INDEX idx_note_revisions_note
     ON note_revisions(note_id, created_at DESC);
@@ -279,6 +310,24 @@ CREATE TRIGGER content_revision_agent_changes_ai AFTER INSERT ON agent_changes
 BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
 
 CREATE TRIGGER content_revision_agent_changes_au AFTER UPDATE ON agent_changes
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_attachment_chunks_ad AFTER DELETE ON attachment_chunks
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_attachment_chunks_ai AFTER INSERT ON attachment_chunks
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_attachment_chunks_au AFTER UPDATE ON attachment_chunks
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_attachments_ad AFTER DELETE ON attachments
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_attachments_ai AFTER INSERT ON attachments
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_attachments_au AFTER UPDATE ON attachments
 BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
 
 CREATE TRIGGER content_revision_blocks_ad AFTER DELETE ON blocks
@@ -369,6 +418,15 @@ CREATE TRIGGER content_revision_links_ai AFTER INSERT ON links
 BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
 
 CREATE TRIGGER content_revision_links_au AFTER UPDATE ON links
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_note_attachments_ad AFTER DELETE ON note_attachments
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_note_attachments_ai AFTER INSERT ON note_attachments
+BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
+
+CREATE TRIGGER content_revision_note_attachments_au AFTER UPDATE ON note_attachments
 BEGIN UPDATE content_revision SET n = n + 1 WHERE id = 1; END;
 
 CREATE TRIGGER content_revision_note_revisions_ad AFTER DELETE ON note_revisions
@@ -478,5 +536,6 @@ INSERT INTO schema_version(version) VALUES (5);
 INSERT INTO schema_version(version) VALUES (6);
 INSERT INTO schema_version(version) VALUES (7);
 INSERT INTO schema_version(version) VALUES (8);
+INSERT INTO schema_version(version) VALUES (9);
 INSERT INTO vault_settings(key, value) VALUES ('smart_folder_max_depth', '2');
 INSERT INTO content_revision(id, n) VALUES (1, 0);

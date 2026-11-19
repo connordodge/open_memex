@@ -256,7 +256,7 @@ void main() {
           }
         }
         expect(h.first.server.requests, isEmpty, reason: 'nas is untouched');
-        expect(await access.schemaVersion(), 8);
+        expect(await access.schemaVersion(), 9);
         expect(access.canWrite, isTrue);
       },
     );
