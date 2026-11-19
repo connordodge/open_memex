@@ -434,6 +434,43 @@ fn stored_name_over_255_bytes_is_cut_on_a_character_boundary_keeping_the_extensi
     assert_eq!(attachments::stored_name(&padded), at);
 }
 
+#[test]
+fn stored_name_trims_whitespace_the_255_byte_cut_leaves_and_is_idempotent() {
+    // The cut lands just after a space in the stem.
+    let spaced = format!("{} {}.txt", "a".repeat(250), "b".repeat(10));
+    let got = attachments::stored_name(&spaced);
+    assert_eq!(got, format!("{}.txt", "a".repeat(250)));
+    assert_eq!(attachments::stored_name(&got), got, "idempotent");
+
+    // No extension: the cut lands just after a space at the end.
+    let plain = format!("{} {}", "a".repeat(254), "b".repeat(10));
+    let got = attachments::stored_name(&plain);
+    assert_eq!(got, "a".repeat(254));
+    assert_eq!(attachments::stored_name(&got), got, "idempotent");
+
+    // Several spaces before the cut are all trimmed.
+    let many = format!("{}   {}.pdf", "c".repeat(248), "d".repeat(20));
+    let got = attachments::stored_name(&many);
+    assert_eq!(got, format!("{}.pdf", "c".repeat(248)));
+    assert_eq!(attachments::stored_name(&got), got, "idempotent");
+}
+
+#[test]
+fn stored_name_keeps_an_extension_of_254_bytes_and_cuts_one_of_255() {
+    // Extension of 254 bytes (the dot and 253 letters): one byte is left for
+    // the stem.
+    let ext254 = format!(".{}", "e".repeat(253));
+    let got = attachments::stored_name(&format!("stem{ext254}"));
+    assert_eq!(got, format!("s{ext254}"));
+    assert_eq!(got.len(), 255);
+
+    // Extension of 255 bytes: it leaves no room, so the name is cut whole.
+    let ext255 = format!(".{}", "e".repeat(254));
+    let got = attachments::stored_name(&format!("stem{ext255}"));
+    assert_eq!(got.len(), 255);
+    assert_eq!(got, format!("stem.{}", "e".repeat(250)));
+}
+
 // ---------------------------------------------------------------------------
 // AC: MIME table, inline types and the executable table (R31, R33).
 // ---------------------------------------------------------------------------
