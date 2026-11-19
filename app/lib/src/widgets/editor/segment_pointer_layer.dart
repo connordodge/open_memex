@@ -238,25 +238,14 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
     ).extentOffset;
   }
 
-  /// The segment's row fields, in row order.
-  List<EditableTextState> _rowFields() {
-    final fields = <EditableTextState>[];
-    void visit(Element element) {
-      if (element is StatefulElement && element.state is EditableTextState) {
-        fields.add(element.state as EditableTextState);
-      } else {
-        element.visitChildren(visit);
-      }
+  /// The index of the host's row holding segment [offset]: the first row
+  /// ending after it, else -1 (past every row).
+  static int _rowIndexAt(SegmentViewState host, int offset) {
+    for (var i = 0; i < host.rowCount; i++) {
+      if (offset < host.rowSpec(i)!.end) return i;
     }
-
-    context.visitChildElements(visit);
-    return fields;
+    return -1;
   }
-
-  /// The focus nodes of the segment's row fields, in row order.
-  List<FocusNode> _rowFocusNodes() => [
-    for (final field in _rowFields()) field.widget.focusNode,
-  ];
 
   /// Whether global [point] lies on a table row that shows its grid (its
   /// controller is not `tableRevealed`, Spec #197 R12, ruling D12).
@@ -265,45 +254,41 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
     if (boxes == null) return false;
     final local = boxes.box.globalToLocal(point);
     if (local.dy < 0 || local.dy >= boxes.box.size.height) return false;
-    final fields = _rowFields();
-    final rows = splitRows(host.text, atSegmentStart: true);
-    if (fields.length != rows.length) return false;
-    final offset = boxes.offsetAt(local);
-    final i = rows.indexWhere((row) => offset < row.end);
-    final controller = fields[i < 0 ? rows.length - 1 : i].widget.controller;
-    return controller is LivePreviewController && controller.textHidden;
+    final hit = _rowAt(host, boxes.offsetAt(local));
+    return hit != null && hit.controller.textHidden;
   }
 
-  /// The word at segment [offset], as its row's field finds words.
+  /// The word at segment [offset], as its row's text finds words (a
+  /// rendered table row's field, mounted offstage, does).
   TextSelection _wordAt(SegmentViewState host, int offset) {
-    final rows = splitRows(host.text, atSegmentStart: true);
-    final fields = _rowFields();
-    final i = rows.indexWhere((row) => offset < row.end);
-    if (fields.length != rows.length || i < 0) {
+    final i = _rowIndexAt(host, offset);
+    final row = host.rowSpec(i);
+    final word = row == null
+        ? null
+        : host.rowWordBoundary(
+            i,
+            TextPosition(offset: offset - row.textStart),
+          );
+    if (row == null || word == null) {
       return TextSelection.collapsed(offset: offset);
     }
-    final row = rows[i];
-    final word = fields[i].renderEditable.getWordBoundary(
-      TextPosition(offset: offset - row.textStart),
-    );
     return TextSelection(
       baseOffset: row.textStart + word.start,
       extentOffset: row.textStart + word.end,
     );
   }
 
-  /// The row holding segment [offset] (the last row past them) and its
-  /// field, or null while the rows and fields don't match.
-  ({RowSpec row, EditableTextState field})? _rowAt(
+  /// The host's row holding segment [offset] (the last row past them): its
+  /// index, spec and controller; null without rows.
+  ({int index, RowSpec row, LivePreviewController controller})? _rowAt(
     SegmentViewState host,
     int offset,
   ) {
-    final rows = splitRows(host.text, atSegmentStart: true);
-    final fields = _rowFields();
-    if (fields.length != rows.length || rows.isEmpty) return null;
-    final i = rows.indexWhere((row) => offset < row.end);
-    final r = i < 0 ? rows.length - 1 : i;
-    return (row: rows[r], field: fields[r]);
+    final count = host.rowCount;
+    if (count == 0) return null;
+    final i = _rowIndexAt(host, offset);
+    final r = i < 0 ? count - 1 : i;
+    return (index: r, row: host.rowSpec(r)!, controller: host.rowController(r)!);
   }
 
   /// Whether global [point] lies on the segment's rows (not the empty area
@@ -315,13 +300,13 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
     return dy >= 0 && dy < boxes.box.size.height;
   }
 
-  /// The source line holding segment [at] in its row's live preview field,
-  /// read from the field's state now (before a press reveals it). Null when
-  /// the row's field is no live preview field.
+  /// The source line holding segment [at] in its row's live preview text,
+  /// read from the row's controller now (before a press reveals it). Null
+  /// without rows.
   _ShownLine? _shownLineAt(SegmentViewState host, int at) {
     final hit = _rowAt(host, at);
-    final controller = hit?.field.widget.controller;
-    if (hit == null || controller is! LivePreviewController) return null;
+    if (hit == null) return null;
+    final controller = hit.controller;
     final lines = classifyLines(
       controller.text,
       atSegmentStart: controller.atSegmentStart,
@@ -361,13 +346,13 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
     return shown.textStart + line.separatorEnd;
   }
 
-  /// The affinity of the press at global [point] in the field of the row
-  /// holding segment [at], as the field resolves it on the layout shown
-  /// now: upstream on the right half of the glyph before [at].
+  /// The affinity of the press at global [point] in the text of the row
+  /// holding segment [at], as the row's text resolves it on the layout
+  /// shown now: upstream on the right half of the glyph before [at].
   TextAffinity _affinityAt(SegmentViewState host, Offset point, int at) {
     final hit = _rowAt(host, at);
-    if (hit == null) return TextAffinity.downstream;
-    final position = hit.field.renderEditable.getPositionForPoint(point);
+    final position = hit == null ? null : host.rowPositionAt(hit.index, point);
+    if (hit == null || position == null) return TextAffinity.downstream;
     return hit.row.textStart + position.offset == at
         ? position.affinity
         : TextAffinity.downstream;
@@ -375,7 +360,7 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
 
   /// The word a double click on an editor row selects at segment [offset]
   /// with [affinity], as the row's field selects it on macOS
-  /// (`RenderEditable.selectWord`): a caret past the field's text.
+  /// (`RenderEditable.selectWord`): a caret past the row's text.
   TextSelection _rowWordAt(
     SegmentViewState host,
     int offset,
@@ -384,12 +369,14 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
     final hit = _rowAt(host, offset);
     if (hit == null) return TextSelection.collapsed(offset: offset);
     final start = hit.row.textStart;
-    final length = hit.field.widget.controller.text.length;
+    final length = hit.controller.text.length;
     final local = offset - start;
     if (local >= length) return TextSelection.collapsed(offset: start + length);
-    final word = hit.field.renderEditable.getWordBoundary(
+    final word = host.rowWordBoundary(
+      hit.index,
       TextPosition(offset: math.max(0, local), affinity: affinity),
     );
+    if (word == null) return TextSelection.collapsed(offset: offset);
     return TextSelection(
       baseOffset: start + word.start,
       extentOffset: start + word.end,
@@ -403,7 +390,7 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
     final hit = _rowAt(host, offset);
     if (hit == null) return _sourceLineAt(host.text, offset);
     final start = hit.row.textStart;
-    final text = hit.field.widget.controller.text;
+    final text = hit.controller.text;
     final local = math.max(0, math.min(offset - start, text.length));
     final boundary = ParagraphBoundary(text);
     final from =
@@ -419,12 +406,9 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
   /// [keep], [keep] becomes the segment selection again once the focus
   /// change has settled (a row taking focus reports its own slice).
   void _focusRowAt(SegmentViewState host, int offset, {TextSelection? keep}) {
-    final nodes = _rowFocusNodes();
-    final rows = splitRows(host.text, atSegmentStart: true);
-    if (nodes.length != rows.length) return;
-    final i = rows.indexWhere((row) => offset < row.end);
-    final node = nodes[i < 0 ? rows.length - 1 : i];
-    if (node.hasFocus) return;
+    final hit = _rowAt(host, offset);
+    final node = hit == null ? null : host.rowFocusNode(hit.index);
+    if (node == null || node.hasFocus) return;
     node.requestFocus();
     if (keep != null) {
       // Runs after the focus manager's own microtask.
@@ -446,12 +430,11 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
 
   /// What a release of the press [pointer] does when a row's link region
   /// marked it, else null.
-  VoidCallback? _markedFollow(int pointer) {
-    for (final field in _rowFields()) {
-      if (field.widget.controller case LivePreviewController(
-        :final markedPress?,
-      ) when markedPress.pointer == pointer) {
-        return markedPress.follow;
+  VoidCallback? _markedFollow(SegmentViewState host, int pointer) {
+    for (var i = 0; i < host.rowCount; i++) {
+      if (host.rowController(i)?.markedPress case final marked?
+          when marked.pointer == pointer) {
+        return marked.follow;
       }
     }
     return null;
@@ -480,7 +463,7 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
     final shift = keyboard.isShiftPressed;
     // A press the link region marked follows its link, also inside a row
     // click chain's window (Spec #57 R6); a grid chain wins it (L7).
-    final follow = _markedFollow(event.pointer);
+    final follow = _markedFollow(host, event.pointer);
     if (clicks != null &&
         !cmd &&
         !shift &&
@@ -544,26 +527,12 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
         // Before the row field's tap, which would resolve the press again
         // on the revealed layout; it would also have closed its menu.
         if (_rowAt(host, at) case final hit?) {
-          hit.field.hideToolbar();
-          _endComposingAt(hit.field, at - hit.row.textStart);
+          host.rowPressed(hit.index, at - hit.row.textStart);
         }
         press.entry.resolve(GestureDisposition.accepted);
         _clicks = _Clicks(event.position, at, affinity: affinity);
       }
     }
-  }
-
-  /// Puts [field]'s caret at its offset [local] through the field, as its
-  /// own tap does, when it has focus and an IME is composing in it: the
-  /// segment's select leaves a composing row's selection alone (D9), and
-  /// the field's selection change ends a composition the caret leaves.
-  void _endComposingAt(EditableTextState field, int local) {
-    final value = field.textEditingValue;
-    if (!field.widget.focusNode.hasFocus || !value.composing.isValid) return;
-    field.userUpdateTextEditingValue(
-      value.copyWith(selection: TextSelection.collapsed(offset: local)),
-      SelectionChangedCause.tap,
-    );
   }
 
   /// A secondary press on a rendered grid puts the caret at the pressed

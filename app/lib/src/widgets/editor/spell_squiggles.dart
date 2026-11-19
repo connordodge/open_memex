@@ -322,17 +322,26 @@ class _RenderSquiggles extends RenderBox {
   void paint(PaintingContext context, Offset offset) {
     debugSpellSquigglePaints++;
     _segmentConsulted = false;
-    final editable = findRenderEditable(_stack);
-    if (editable == null || !editable.hasSize) return;
-    _follow(editable.offset);
+    // The row's text through the row-geometry accessor (WI #127): its
+    // field's or a RichText's standing in for it; outside a segment, the
+    // text under the stack.
+    final host = _host;
+    final index = _index;
+    final boxes =
+        (host == null || index == null ? null : host.rowBoxes(index)) ??
+        textSlotBoxes(_stack);
+    if (boxes == null) return;
+    // A field's text scrolls; a RichText's never does.
+    if (boxes.box case final RenderEditable field) _follow(field.offset);
     final issues = _issues.value;
     if (issues.isEmpty || _hidden(_controller)) return;
 
-    final length = editable.plainText.length;
-    final selection = _controller.selection;
-    final boxes = RenderEditableLineBoxes(editable);
     final lines = boxes.lines;
-    final toHere = editable.getTransformTo(this);
+    if (lines.isEmpty) return;
+    // The last line ends at the laid-out text's end.
+    final length = lines.last.range.end;
+    final selection = _controller.selection;
+    final toHere = boxes.box.getTransformTo(this);
     final canvas = context.canvas;
     for (final issue in issues) {
       final range = _clamped(issue, length);

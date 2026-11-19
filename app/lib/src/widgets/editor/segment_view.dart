@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -15,6 +16,8 @@ import 'editor_row.dart';
 import 'find_decoration.dart';
 import 'line_boxes.dart';
 import 'live_preview_controller.dart';
+import 'marker_column.dart' show isMarkerColumnBox;
+import 'paragraph_line_boxes.dart';
 import 'row_kinds.dart';
 import 'segment_editing.dart';
 import 'segment_keyboard.dart';
@@ -148,6 +151,7 @@ class _Row {
     : controller = LivePreviewController(text: text),
       focusNode = FocusNode(debugLabel: 'editor-row'),
       fieldKey = GlobalKey(debugLabel: 'editor-row-field'),
+      rowKey = GlobalKey(debugLabel: 'editor-row'),
       gridKey = GlobalKey(debugLabel: 'editor-row-table-grid');
 
   RowSpec spec;
@@ -161,6 +165,10 @@ class _Row {
   /// Keeps the row's field (and its EditableText, focus and text input
   /// connection) when the row moves or changes kind.
   final GlobalKey fieldKey;
+
+  /// The row's [EditorRow]: where the host looks for the row's text when
+  /// its presenter builds no text slot (WI #127).
+  final GlobalKey rowKey;
 
   /// Holds the row's block while it shows (a table row's grid, ruling D12;
   /// an attachment's image or card): its presenter's
@@ -618,8 +626,10 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
     _rows.last.focusNode.requestFocus();
   }
 
-  /// The rows' line boxes in segment offsets, or null before every row is
-  /// laid out.
+  /// The rows' line boxes in segment offsets, each row's through the
+  /// row-geometry accessor ([rowBoxes]: a block's, or its text slot's,
+  /// whether a field or a `RichText`), or null before every row is laid
+  /// out.
   LineBoxSource? lineBoxes() {
     final box = _rowsKey.currentContext?.findRenderObject();
     if (box is! RenderBox || !box.hasSize) return null;
@@ -648,14 +658,14 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
       i >= 0 && i < _rows.length ? _rowBoxes(_rows[i], i) : null;
 
   /// [row] (row [i])'s geometry, as [rowBoxes] reports it: its presenter's
-  /// block boxes when non-null, else its field's line boxes. A rendered
-  /// table's grid answers once built and laid out (`TableGridState.lineBoxes`,
-  /// ruling D12); until then its field (mounted offstage, still laid out)
-  /// does.
+  /// block boxes when non-null, else its text slot's line boxes
+  /// ([_slotBoxes]). A rendered table's grid answers once built and laid
+  /// out (`TableGridState.lineBoxes`, ruling D12); until then its field
+  /// (mounted offstage, still laid out) does.
   LineBoxSource? _rowBoxes(_Row row, int i) {
     final presented = _presented(row, i);
     return presenterFor(presented.kind).blockBoxes(presented) ??
-        _fieldBoxes(row);
+        _slotBoxes(row);
   }
 
   /// What [row] (row [i])'s presenter was last built with; before its first
@@ -694,14 +704,90 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
     return false;
   }
 
-  /// [row]'s field line boxes once it is laid out.
-  RenderEditableLineBoxes? _fieldBoxes(_Row row) {
-    final editable = findRenderEditable(
-      row.fieldKey.currentContext?.findRenderObject(),
+  /// The line boxes of [row]'s text slot once it is laid out (WI #127): of
+  /// the text laid out under the row's field (a field's, or a `RichText`'s
+  /// standing in for it), else, when its presenter built no text slot, of
+  /// the text laid out under the row ([textSlotBoxes]).
+  LineBoxSource? _slotBoxes(_Row row) => textSlotBoxes(_slotRoot(row));
+
+  /// The laid-out text of [row]'s text slot ([textSlotBox]), or null.
+  RenderBox? _slotText(_Row row) => textSlotBox(_slotRoot(row));
+
+  /// Where [row]'s text slot lies: its field's subtree, else the row's.
+  RenderObject? _slotRoot(_Row row) =>
+      row.fieldKey.currentContext?.findRenderObject() ??
+      row.rowKey.currentContext?.findRenderObject();
+
+  /// Row [i]'s controller (it holds only the row's text), null past the
+  /// last row.
+  LivePreviewController? rowController(int i) =>
+      i >= 0 && i < _rows.length ? _rows[i].controller : null;
+
+  /// Row [i]'s focus node, null past the last row.
+  FocusNode? rowFocusNode(int i) =>
+      i >= 0 && i < _rows.length ? _rows[i].focusNode : null;
+
+  /// The text position (row offset and affinity) of row [i]'s text slot
+  /// under global [point], as the slot's own text resolves it; null past
+  /// the last row and before the slot is laid out. A rendered table row
+  /// answers through its field (mounted offstage).
+  TextPosition? rowPositionAt(int i, Offset point) {
+    if (i < 0 || i >= _rows.length) return null;
+    return switch (_slotText(_rows[i])) {
+      final RenderEditable field => field.getPositionForPoint(point),
+      final RenderParagraph text => text.getPositionForOffset(
+        text.globalToLocal(point),
+      ),
+      _ => null,
+    };
+  }
+
+  /// The word at [position] (a row offset) in row [i]'s text slot, as the
+  /// slot's own text finds words; null past the last row and before the
+  /// slot is laid out.
+  TextRange? rowWordBoundary(int i, TextPosition position) {
+    if (i < 0 || i >= _rows.length) return null;
+    return switch (_slotText(_rows[i])) {
+      final RenderEditable field => field.getWordBoundary(position),
+      final RenderParagraph text => text.getWordBoundary(position),
+      _ => null,
+    };
+  }
+
+  /// A press the segment's pointer layer took at row offset [local] of row
+  /// [i], as the row field's own tap would end it: hides the field's
+  /// toolbar and, while the field has focus and an IME is composing in it,
+  /// puts its caret at [local] through the field (the segment's select
+  /// leaves a composing row's selection alone, D9; the field's selection
+  /// change ends a composition the caret leaves). Nothing for a row
+  /// without a field.
+  void rowPressed(int i, int local) {
+    if (i < 0 || i >= _rows.length) return;
+    final field = _fieldStateOf(_rows[i]);
+    if (field == null) return;
+    field.hideToolbar();
+    final value = field.textEditingValue;
+    if (!field.widget.focusNode.hasFocus || !value.composing.isValid) return;
+    field.userUpdateTextEditingValue(
+      value.copyWith(selection: TextSelection.collapsed(offset: local)),
+      SelectionChangedCause.tap,
     );
-    return editable != null && editable.hasSize
-        ? RenderEditableLineBoxes(editable)
-        : null;
+  }
+
+  /// [row]'s field state, or null while its slot holds no field.
+  EditableTextState? _fieldStateOf(_Row row) {
+    EditableTextState? found;
+    void visit(Element element) {
+      if (found != null) return;
+      if (element is StatefulElement && element.state is EditableTextState) {
+        found = element.state as EditableTextState;
+      } else {
+        element.visitChildren(visit);
+      }
+    }
+
+    row.fieldKey.currentContext?.visitChildElements(visit);
+    return found;
   }
 
   @override
@@ -832,7 +918,7 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
                     controller: row.controller,
                     revealGate: widget.revealGate,
                     active: widget.active,
-                    boxes: () => _fieldBoxes(row),
+                    boxes: () => _slotBoxes(row),
                     // Where the field sits in the row: an indent or a
                     // wider marker column moves it under equal ranges.
                     layout: (row.spec.kind, geometries[r]?.textX),
@@ -843,6 +929,7 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
                   textStart: row.spec.textStart,
                   active: widget.active,
                   child: EditorRow(
+                    key: row.rowKey,
                     segment: widget.index,
                     index: r,
                     kind: row.spec.kind,
@@ -1051,4 +1138,60 @@ class _RowsLineBoxes implements LineBoxSource {
     );
     return row.spec.toSegment(row.source.offsetAt(point - row.shift));
   }
+}
+
+/// The laid-out text an editor row's text slot shows at or under [root]
+/// (WI #127, Spec #122 TD5): the first field's (`RenderEditable`), else the
+/// first `RichText`'s (`RenderParagraph`) standing in for the field; null
+/// when neither is there or laid out. A marker column's subtree
+/// ([isMarkerColumnBox]) is skipped: its marker text is not the row's. The
+/// row-geometry accessor's text-slot half (`SegmentViewState.rowBoxes`);
+/// [textSlotBoxes] measures it.
+RenderBox? textSlotBox(RenderObject? root) {
+  RenderEditable? field;
+  RenderParagraph? text;
+  void visit(RenderObject node) {
+    if (field != null || isMarkerColumnBox(node)) return;
+    if (node is RenderEditable) {
+      field = node;
+    } else if (node is RenderParagraph) {
+      text ??= node;
+    } else {
+      node.visitChildren(visit);
+    }
+  }
+
+  if (root != null) visit(root);
+  final box = field ?? text;
+  return box != null && box.hasSize ? box : null;
+}
+
+/// The line boxes of [textSlotBox] at or under [root]: a field's
+/// (`RenderEditableLineBoxes`) or a `RichText`'s
+/// (`RenderParagraphLineBoxes`), in its own box coordinates and text
+/// offsets; null before it is laid out.
+LineBoxSource? textSlotBoxes(RenderObject? root) =>
+    _lineBoxesOf(textSlotBox(root));
+
+LineBoxSource? _lineBoxesOf(RenderBox? slot) => switch (slot) {
+  final RenderEditable field => RenderEditableLineBoxes(field),
+  final RenderParagraph text => RenderParagraphLineBoxes(text),
+  _ => null,
+};
+
+/// The [textSlotBoxes] at or under [root] and their lines while they hold
+/// [text]: a field's laid-out text equals it, a `RichText`'s has its length
+/// (the last line ends at the laid-out text's end); null before then, or
+/// while the slot shows another text.
+({LineBoxSource boxes, List<LineBox> lines})? textSlotLines(
+  RenderObject? root,
+  String text,
+) {
+  final slot = textSlotBox(root);
+  if (slot is RenderEditable && slot.plainText != text) return null;
+  final boxes = _lineBoxesOf(slot);
+  if (boxes == null) return null;
+  final lines = boxes.lines;
+  if (lines.isEmpty || lines.last.range.end != text.length) return null;
+  return (boxes: boxes, lines: lines);
 }
