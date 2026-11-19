@@ -732,6 +732,35 @@ void main() {
       expect(e.opener.opened, isEmpty, reason: 'never the url opener');
     }, variant: macOnly);
 
+    // The case #142's empty-bracket control used to pin as a lone line
+    // (lead Q1 addendum): an empty-bracket reference line is an image row.
+    testWidgets(
+      'a lone empty bracket image line is an image row that a tap and a double click reach',
+      (tester) async {
+        final vault = FakeAttachmentVault();
+        final path = testAttachmentPath(++_t143Ids, 'ok.png');
+        vault.putFile(path, testPngBytes(300, 200));
+        final e = await _t143Pump(
+          tester,
+          'Intro line\n![]($path)\nOutro line',
+          vault,
+        );
+        expect(_t143Block(1), findsOneWidget);
+        _t143ExpectIdle(tester, 1);
+        await _t143Click(tester, tester.getCenter(_t143Block(1)));
+        _t143ExpectCaretOn(tester, 1);
+        expect(vault.openCalls, isEmpty);
+        // Leave the line, then double-click the idle image.
+        await _t143Click(tester, _t143PointOn(tester, 2, 'Outro'));
+        _t143ExpectIdle(tester, 1);
+        await _t143DoubleClick(tester, tester.getCenter(_t143Block(1)));
+        expect(vault.openCalls, [path]);
+        expect(vault.revealCalls, isEmpty);
+        expect(e.opener.opened, isEmpty, reason: 'never the url opener');
+      },
+      variant: macOnly,
+    );
+
     testWidgets(
       'a secondary click in the image offers Open and Reveal in Finder',
       (tester) async {
