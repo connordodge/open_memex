@@ -321,6 +321,8 @@ void _runCommand(
       unawaited(createNote(host));
     case PaletteCommand.newCanvas:
       unawaited(newCanvas(host));
+    case PaletteCommand.attachFile:
+      break;
     case PaletteCommand.openToday:
       unawaited(_openToday(container, show));
     case PaletteCommand.openVaultGraph:

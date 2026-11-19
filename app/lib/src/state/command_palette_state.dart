@@ -14,6 +14,10 @@ import '../vault_access/search_access.dart';
 enum PaletteCommand {
   newNote,
   newCanvas,
+
+  /// `Attach file…` (Spec #123 R10, R11): only while a note is open on a
+  /// vault the app can write.
+  attachFile,
   openToday,
   openVaultGraph,
   switchVault,
@@ -32,6 +36,7 @@ enum PaletteCommand {
   String label({bool rightPanelOpen = false}) => switch (this) {
     newNote => 'New note',
     newCanvas => 'New canvas',
+    attachFile => '',
     openToday => 'Open today',
     openVaultGraph => 'Open vault graph',
     switchVault => 'Switch vault…',
@@ -57,6 +62,7 @@ enum PaletteCommand {
           'ready to type.',
     newCanvas =>
       'Makes an empty canvas in $vaultName and shows it in this tab.',
+    attachFile => '',
     openToday => 'Shows today’s daily note, $today, in this tab.',
     openVaultGraph => 'Shows how the notes in $vaultName link to each other.',
     switchVault =>
