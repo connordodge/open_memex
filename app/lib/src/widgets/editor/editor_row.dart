@@ -260,14 +260,16 @@ class _RenderRowSelection extends RenderProxyBox {
     if (controller is LivePreviewController && controller.textHidden) {
       return const [];
     }
-    final editable = findRenderEditable(child);
-    if (editable == null || !editable.hasSize) return const [];
+    // The row's text through the row-geometry accessor (WI #127): its
+    // field's or a RichText's standing in for it; a row pumped alone
+    // measures the text under it.
+    final host = _host;
+    final boxes = host?.rowBoxes(_index) ?? textSlotBoxes(child);
+    if (boxes == null) return const [];
     final rowText = controller.text;
-    if (editable.plainText != rowText) return const [];
     final length = rowText.length;
 
     // Where the segment selection meets the row's edges.
-    final host = _host;
     final spec = host?.rowSpec(_index);
     var breakAfter = false; // a line break follows the row
     var rowBreak = false; // ... and the selection holds it
@@ -298,9 +300,10 @@ class _RenderRowSelection extends RenderProxyBox {
     }
     if (start < 0 || start >= end) return const [];
 
-    final boxes = RenderEditableLineBoxes(editable);
     final lines = boxes.lines;
-    if (lines.isEmpty) return const [];
+    // Only the row's own text as laid out now: the last line ends at the
+    // text's end.
+    if (lines.isEmpty || lines.last.range.end != length) return const [];
     final chars = start < math.min(end, length)
         ? boxes.boxesFor(TextRange(start: start, end: math.min(end, length)))
         : const <Rect>[];
@@ -361,7 +364,7 @@ class _RenderRowSelection extends RenderProxyBox {
     // Into this box's coordinates; close the seams to the rows above and
     // below the selection runs on into.
     final at = MatrixUtils.transformPoint(
-      editable.getTransformTo(this),
+      boxes.box.getTransformTo(this),
       Offset.zero,
     );
     final shifted = [for (final r in out) r.shift(at)];

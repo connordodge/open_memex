@@ -272,12 +272,17 @@ class _SourceSurfaceState extends State<SourceSurface> {
   );
 
   /// The body field's line boxes once it is laid out.
-  LineBoxSource? _fieldBoxes() {
-    final editable = findRenderEditable(
-      _fieldKey.currentContext?.findRenderObject(),
-    );
-    return editable != null && editable.hasSize
-        ? RenderEditableLineBoxes(editable)
-        : null;
-  }
+  LineBoxSource? _fieldBoxes() =>
+      sourceFieldLineBoxes(_fieldKey.currentContext?.findRenderObject());
+}
+
+/// The Source field's line boxes once it is laid out, from the render
+/// object [root] at or above it (WI #127: Source mode's one field is no
+/// editor row, so its geometry comes from here, never from the row
+/// accessor); null before.
+RenderEditableLineBoxes? sourceFieldLineBoxes(RenderObject? root) {
+  final editable = findRenderEditable(root);
+  return editable != null && editable.hasSize
+      ? RenderEditableLineBoxes(editable)
+      : null;
 }

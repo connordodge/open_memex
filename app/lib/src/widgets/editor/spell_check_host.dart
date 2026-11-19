@@ -22,7 +22,6 @@ import '../../state/settings.dart';
 import '../../state/spell_check_controller.dart';
 import '../../state/spell_session_state.dart';
 import '../../state/spelling_service.dart';
-import 'line_boxes.dart' show findRenderEditable;
 import 'live_preview_controller.dart';
 import 'segment_view.dart';
 import 'spell_issue_scope.dart';
@@ -343,30 +342,58 @@ class _SpellCheckFieldState extends State<SpellCheckField>
     return (line: field.text, base: 0, atSegmentStart: true);
   }
 
-  @override
-  RenderEditable? editable() {
+  /// This field's laid-out text (WI #127): the text slot under it, a
+  /// field's or a `RichText`'s standing in for it (`textSlotBox`, the
+  /// row-geometry accessor's text-slot half), or null.
+  RenderBox? _text() {
     if (!mounted) return null;
-    final editable = findRenderEditable(context.findRenderObject());
-    return editable != null && editable.attached && editable.hasSize
-        ? editable
+    final box = textSlotBox(context.findRenderObject());
+    return box != null && box.attached ? box : null;
+  }
+
+  /// [box]'s global top and the global bottom of its local [rect].
+  static ({double top, double bottom}) _globalBand(RenderBox box, Rect rect) =>
+      (
+        top: box.localToGlobal(Offset(0, rect.top)).dy,
+        bottom: box.localToGlobal(Offset(0, rect.bottom)).dy,
+      );
+
+  @override
+  ({double top, double bottom})? extent() {
+    final box = _text();
+    return box == null ? null : _globalBand(box, Offset.zero & box.size);
+  }
+
+  @override
+  ({double top, double bottom})? extentAt(int offset) {
+    final box = _text();
+    final Rect? caret = switch (box) {
+      final RenderEditable field => field.getLocalRectForCaret(
+        TextPosition(offset: offset.clamp(0, field.plainText.length)),
+      ),
+      final RenderParagraph text => _paragraphCaret(text, offset),
+      _ => null,
+    };
+    return box == null || caret == null ? null : _globalBand(box, caret);
+  }
+
+  /// [text]'s caret rect at [offset] (clamped to its text), as tall as its
+  /// line's caret.
+  static Rect _paragraphCaret(RenderParagraph text, int offset) {
+    final position = TextPosition(
+      offset: offset.clamp(0, text.text.toPlainText().length),
+    );
+    final at = text.getOffsetForCaret(position, Rect.zero);
+    return Rect.fromLTWH(at.dx, at.dy, 0, text.getFullHeightForCaret(position));
+  }
+
+  @override
+  ({double top, double bottom})? viewport() {
+    final box = _scrollable?.context.findRenderObject();
+    return box is RenderBox && box.attached && box.hasSize
+        ? _globalBand(box, Offset.zero & box.size)
         : null;
   }
-
-  @override
-  RenderBox? viewportBox() {
-    final box = _scrollable?.context.findRenderObject();
-    return box is RenderBox && box.attached && box.hasSize ? box : null;
-  }
-
-  // WI #127 skeleton: the geometry-free seam (Spec #122 Req 25).
-  @override
-  ({double top, double bottom})? extent() => null;
-
-  @override
-  ({double top, double bottom})? extentAt(int offset) => null;
-
-  @override
-  ({double top, double bottom})? viewport() => null;
 
   @override
   bool revealed(TextEditingController field) =>
@@ -401,16 +428,18 @@ class _SpellCheckFieldState extends State<SpellCheckField>
     return found;
   }
 
-  /// [issue]'s range in the field's laid-out text (local), or null.
+  /// [issue]'s range in the field's laid-out text ([_text], local), or
+  /// null.
   Rect? _rectOf(SpellIssue issue) {
-    final e = editable();
-    if (e == null) return null;
-    final boxes = e.getBoxesForSelection(
-      TextSelection(
-        baseOffset: issue.start,
-        extentOffset: issue.start + issue.length,
-      ),
+    final range = TextSelection(
+      baseOffset: issue.start,
+      extentOffset: issue.start + issue.length,
     );
+    final boxes = switch (_text()) {
+      final RenderEditable field => field.getBoxesForSelection(range),
+      final RenderParagraph text => text.getBoxesForSelection(range),
+      _ => const <TextBox>[],
+    };
     if (boxes.isEmpty) return null;
     var rect = boxes.first.toRect();
     for (final b in boxes.skip(1)) {
@@ -453,7 +482,7 @@ class _SpellCheckFieldState extends State<SpellCheckField>
     // padding: padding the same way leaves it nothing to scroll.
     final rect = _rectOf(issue);
     if (rect != null) {
-      editable()?.showOnScreen(
+      _text()?.showOnScreen(
         rect: field.widget.scrollPadding.inflateRect(rect),
         duration: Duration.zero,
       );
@@ -462,7 +491,7 @@ class _SpellCheckFieldState extends State<SpellCheckField>
     if (!stillCurrent() || !mounted || !field.mounted || ctrl.text != text) {
       return;
     }
-    final e = editable();
+    final e = _text();
     final shown = _rectOf(issue);
     if (e == null || shown == null) return;
     await showSpellingMenu(
