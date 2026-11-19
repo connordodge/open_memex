@@ -116,13 +116,33 @@ void _expectWellFormed(String text) {
         expect(t.kind, InlineTokenKind.link, reason: why);
         expect(_pair(t.textRange), _pair(t.content), reason: '$why link text');
         checkRange(t.urlRange, 'link url');
-        expect(
-          t.markers.any((m) => inside(m, t.urlRange)),
-          isTrue,
-          reason: '$why url hidden in a marker',
+        // WI #142 (D21): an empty-bracket attachment ref shows the url's
+        // last segment, so its first marker runs into the url.
+        final first = text.substring(
+          t.markers.first.start,
+          t.markers.first.end,
         );
+        final emptyRef = first.startsWith('![](') || first.startsWith('[](');
+        if (!emptyRef) {
+          expect(
+            t.markers.any((m) => inside(m, t.urlRange)),
+            isTrue,
+            reason: '$why url hidden in a marker',
+          );
+        }
         expect(t.url, text.substring(t.urlRange.start, t.urlRange.end));
         expect(t.url.contains(' '), isFalse, reason: '$why url has a space');
+        // WI #142 (D9): an image's first marker is `![`, a link's is `[`.
+        if (emptyRef) {
+          expect(
+            first.startsWith('![]('),
+            t.image,
+            reason: '$why empty ref marker matches the image flag',
+          );
+        } else {
+          expect(first, t.image ? '![' : '[', reason: '$why link first marker');
+        }
+        expect(t.markers.first.start, s.start, reason: '$why marker at start');
       case TransclusionLinkToken():
         expect(t.kind, InlineTokenKind.transclusion, reason: why);
         expect(t.date, text.substring(t.content.start, t.content.end));
@@ -1189,7 +1209,6 @@ void main() {
         '<http://x>',
         '==hi==',
         '<b>x</b>',
-        '![alt](http://x)',
         '| a | b |',
         'note[^1]',
         r'$x^2$',
@@ -1720,8 +1739,11 @@ void main() {
       );
     });
 
-    test('images give no token and stay opaque to emphasis', () {
-      expect(_describe(tokenizeInline('*![a*b](c*d)*')), [
+    // WI #142 TEST-CHANGE (D9): images now give an image link token; they
+    // stay opaque to the emphasis around them.
+    test('images give an image link token and stay opaque to emphasis', () {
+      final tokens = tokenizeInline('*![a*b](c*d)*');
+      expect(_describe(tokens), [
         [
           InlineTokenKind.italic,
           [0, 13],
@@ -1731,15 +1753,30 @@ void main() {
           ],
           [1, 12],
         ],
+        [
+          InlineTokenKind.link,
+          [1, 12],
+          [
+            [1, 3],
+            [6, 12],
+          ],
+          [3, 6],
+        ],
       ]);
+      expect((tokens[1] as LinkToken).image, isTrue);
       // A bang after the line start that is escaped is no image.
-      expect(tokenizeInline(r'\![t](u)').map((t) => t.kind), [
+      final escaped = tokenizeInline(r'\![t](u)');
+      expect(escaped.map((t) => t.kind), [
         InlineTokenKind.escape,
         InlineTokenKind.link,
       ]);
-      expect(tokenizeInline('a ![t](u) [v](w)').map((t) => t.kind), [
+      expect((escaped[1] as LinkToken).image, isFalse);
+      final both = tokenizeInline('a ![t](u) [v](w)');
+      expect(both.map((t) => t.kind), [
+        InlineTokenKind.link,
         InlineTokenKind.link,
       ]);
+      expect([for (final t in both) (t as LinkToken).image], [true, false]);
     });
 
     test('wikilinks and transclusions are opaque to emphasis around them', () {
@@ -2252,7 +2289,7 @@ void main() {
         ]);
         expect(kindsOf('[#x](https://example.com)'), [InlineTokenKind.link]);
         expect(kindsOf('[see](#x)'), [InlineTokenKind.link]);
-        expect(kindsOf('![#alt](image.png)'), isEmpty);
+        expect(kindsOf('![#alt](image.png)'), [InlineTokenKind.link]);
         expect(kindsOf('[*a #x*](u)'), [
           InlineTokenKind.link,
           InlineTokenKind.italic,
@@ -2489,6 +2526,399 @@ void main() {
         expect(unitBeforeInLine('a\r\nbc', 3), isNull);
         expect(unitBeforeInLine('a|bc', 2), 0x7C);
         expect(unitBeforeInLine('a bc', 2), 0x20);
+      },
+    );
+  });
+
+  // WI #142 (Spec #123 R27, R29, R34; rulings D1, D9): `![text](url)` is a
+  // LinkToken (kind link) with the image flag, its `!` in the first marker.
+  group('image link tokens (WI 142)', () {
+    const hash =
+        '3f1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcd';
+
+    LinkToken onlyLink(String text) {
+      final tokens = tokenizeInline(text);
+      expect(tokens, hasLength(1), reason: 'input: $text');
+      expect(tokens.single, isA<LinkToken>(), reason: 'input: $text');
+      return tokens.single as LinkToken;
+    }
+
+    test(
+      'an attachment image on a line gives one image link token with the bang in its first marker',
+      () {
+        const url = 'objects/3f/$hash/mock.png';
+        const text = '![mock.png]($url)';
+        final link = onlyLink(text);
+        expect(link.kind, InlineTokenKind.link);
+        expect(link.image, isTrue);
+        expect(_pair(link.span), [0, text.length]);
+        expect(_pairs(link.markers), [
+          [0, 2],
+          [10, text.length],
+        ]);
+        expect(link.markers.first.of(text), '![');
+        expect(link.markers.last.of(text), ']($url)');
+        expect(link.content.of(text), 'mock.png');
+        expect(_pair(link.textRange), _pair(link.content));
+        expect(_pair(link.urlRange), [12, text.length - 1]);
+        expect(link.url, url);
+      },
+    );
+
+    test(
+      'an attachment link without a bang gives a link token without the image flag',
+      () {
+        const url = 'objects/3f/$hash/mock.png';
+        const text = '[mock.png]($url)';
+        final link = onlyLink(text);
+        expect(link.kind, InlineTokenKind.link);
+        expect(link.image, isFalse);
+        expect(_pair(link.span), [0, text.length]);
+        expect(_pairs(link.markers), [
+          [0, 1],
+          [9, text.length],
+        ]);
+        expect(link.content.of(text), 'mock.png');
+        expect(link.url, url);
+      },
+    );
+
+    test(
+      'a web image gives an image link token whose text is its alt text',
+      () {
+        const text = 'see ![logo](https://example.com/logo.png) here';
+        final link = onlyLink(text);
+        expect(link.image, isTrue);
+        expect(link.span.of(text), '![logo](https://example.com/logo.png)');
+        expect(link.markers.first.of(text), '![');
+        expect(link.markers.last.of(text), '](https://example.com/logo.png)');
+        expect(link.content.of(text), 'logo');
+        expect(link.url, 'https://example.com/logo.png');
+      },
+    );
+
+    test(
+      'images in a sentence a list item and a quote give image link tokens beside plain links',
+      () {
+        const text =
+            'a ![one.png](objects/3f/$hash/one.png) and [two.pdf](u) b';
+        final tokens = tokenizeInline(text);
+        expect(tokens.map((t) => t.kind), [
+          InlineTokenKind.link,
+          InlineTokenKind.link,
+        ]);
+        final image = tokens[0] as LinkToken;
+        final link = tokens[1] as LinkToken;
+        expect(image.image, isTrue);
+        expect(image.span.start, text.indexOf('!'));
+        expect(image.content.of(text), 'one.png');
+        expect(link.image, isFalse);
+        expect(link.span.start, text.indexOf('[two'));
+        // Item and quote text are tokenized after their markers.
+        for (final item in [
+          'list ![chart.png](objects/3f/$hash/chart.png) item',
+          'quote ![chart.png](objects/3f/$hash/chart.png) end',
+        ]) {
+          final t = onlyLink(item);
+          expect(t.image, isTrue, reason: item);
+          expect(t.markers.first.of(item), '![', reason: item);
+          expect(t.content.of(item), 'chart.png', reason: item);
+        }
+      },
+    );
+
+    test(
+      'a bang that is escaped in a code span or before the stretch makes no image',
+      () {
+        final escaped = tokenizeInline(r'\![t](u)');
+        expect(escaped.map((t) => t.kind), [
+          InlineTokenKind.escape,
+          InlineTokenKind.link,
+        ]);
+        expect((escaped.last as LinkToken).image, isFalse);
+        expect(_pair(escaped.last.span), [2, 8]);
+
+        final code = tokenizeInline('`x!`[t](u)');
+        expect(code.map((t) => t.kind), [
+          InlineTokenKind.codeSpan,
+          InlineTokenKind.link,
+        ]);
+        expect((code.last as LinkToken).image, isFalse);
+        expect(_pair(code.last.span), [4, 10]);
+
+        // The bang is in the real line but not in the tokenized stretch.
+        final cut = tokenizeInline('[t](u)', before: 0x21);
+        expect((cut.single as LinkToken).image, isFalse);
+        expect(_pair(cut.single.span), [0, 6]);
+
+        // A bang on the line before is not this line's.
+        final lines = tokenizeInline('wow!\n[t](u)');
+        expect((lines.single as LinkToken).image, isFalse);
+        expect(_pair(lines.single.span), [5, 11]);
+
+        // Two bangs: only the one next to the bracket opens the image.
+        final two = tokenizeInline('!![t](u)');
+        expect(two.map((t) => t.kind), [InlineTokenKind.link]);
+        expect(_pair(two.single.span), [1, 8]);
+        expect((two.single as LinkToken).image, isTrue);
+
+        // A link with no bang before it.
+        final plain = tokenizeInline('x [t](u)');
+        expect((plain.single as LinkToken).image, isFalse);
+        expect(_pair(plain.single.span), [2, 8]);
+      },
+    );
+
+    test(
+      'an image is opaque to tags and emphasis around it and its url holds no token',
+      () {
+        // A tag inside the alt text or the url gives no tag token.
+        expect(tokenizeInline('![#alt](image.png)').map((t) => t.kind), [
+          InlineTokenKind.link,
+        ]);
+        expect(tokenizeInline('![a](x#y) #z').map((t) => t.kind), [
+          InlineTokenKind.link,
+          InlineTokenKind.tag,
+        ]);
+        // Emphasis delimiters inside the url never pair with ones outside.
+        final tokens = tokenizeInline('_a ![b](c_d) e_');
+        expect(_describe(tokens), [
+          [
+            InlineTokenKind.italic,
+            [0, 15],
+            [
+              [0, 1],
+              [14, 15],
+            ],
+            [1, 14],
+          ],
+          [
+            InlineTokenKind.link,
+            [3, 12],
+            [
+              [3, 5],
+              [6, 12],
+            ],
+            [5, 6],
+          ],
+        ]);
+        expect(tokenizeInline('*x ![b](c*d)').map((t) => t.kind), [
+          InlineTokenKind.link,
+        ]);
+      },
+    );
+
+    test(
+      'a link token built at run time keeps its image flag and defaults to none',
+      () {
+        final from = DateTime(2026).year - 2026;
+        final image = from == 0;
+        final built = LinkToken(
+          span: InlineRange(from, from + 7),
+          markers: [
+            InlineRange(from, from + 2),
+            InlineRange(from + 3, from + 7),
+          ],
+          content: InlineRange(from + 2, from + 3),
+          textRange: InlineRange(from + 2, from + 3),
+          urlRange: InlineRange(from + 5, from + 6),
+          url: 'u' * (from + 1),
+          image: image,
+        );
+        expect(built.image, isTrue);
+        expect(built.kind, InlineTokenKind.link);
+        final plain = LinkToken(
+          span: InlineRange(from, from + 6),
+          markers: [
+            InlineRange(from, from + 1),
+            InlineRange(from + 2, from + 6),
+          ],
+          content: InlineRange(from + 1, from + 2),
+          textRange: InlineRange(from + 1, from + 2),
+          urlRange: InlineRange(from + 4, from + 5),
+          url: 'u',
+        );
+        expect(plain.image, isFalse);
+        // The tokenizer sets it for an image and leaves it off for a link.
+        expect(
+          [
+            for (final t in tokenizeInline('![t](u) [v](w)'))
+              (t as LinkToken).image,
+          ],
+          [true, false],
+        );
+      },
+    );
+
+    // Q1 / ruling D21: empty brackets give a token only for an attachment
+    // reference; its content is the url's last segment, as written.
+    test(
+      'an empty bracket attachment image gives an image link token whose content is the file name',
+      () {
+        const url = 'objects/3f/$hash/chart.png';
+        const text = 'see ![]($url) here';
+        final link = onlyLink(text);
+        expect(link.kind, InlineTokenKind.link);
+        expect(link.image, isTrue);
+        expect(link.span.of(text), '![]($url)');
+        expect(link.content.of(text), 'chart.png');
+        expect(_pair(link.textRange), _pair(link.content));
+        expect(link.markers, hasLength(2));
+        expect(link.markers.first.of(text), '![](objects/3f/$hash/');
+        expect(link.markers.last.of(text), ')');
+        expect(_pair(link.markers.first), [4, link.content.start]);
+        expect(_pair(link.markers.last), [link.content.end, link.span.end]);
+        expect(link.url, url);
+        expect(link.urlRange.of(text), url);
+        expect(link.content.end, link.urlRange.end);
+      },
+    );
+
+    test(
+      'an empty bracket attachment link gives a link token without the image flag',
+      () {
+        const url = 'objects/3f/$hash/report.pdf';
+        const text = 'a []($url) b';
+        final link = onlyLink(text);
+        expect(link.image, isFalse);
+        expect(link.span.of(text), '[]($url)');
+        expect(link.content.of(text), 'report.pdf');
+        expect(link.markers.first.of(text), '[](objects/3f/$hash/');
+        expect(link.markers.last.of(text), ')');
+        expect(link.url, url);
+      },
+    );
+
+    test(
+      'an empty bracket attachment name stays percent encoded as written',
+      () {
+        const url = 'objects/3f/$hash/My%20chart%20v2.png';
+        const text = '![]($url)';
+        final link = onlyLink(text);
+        expect(link.content.of(text), 'My%20chart%20v2.png');
+        expect(link.url, url);
+        // Underscores and stars in the name are plain text.
+        const odd = '![](objects/3f/$hash/a_b_*c*.png)';
+        expect(onlyLink(odd).content.of(odd), 'a_b_*c*.png');
+      },
+    );
+
+    test(
+      'empty brackets with any other destination give no token and bracketed text keeps its token',
+      () {
+        const bad = [
+          '![](https://example.com/logo.png)',
+          '[](https://example.com)',
+          '[](mailto:a@example.com)',
+          '[](a/b.png)',
+          '![](chart.png)',
+          '[]()',
+          '![]()',
+          '[](objects/zz/$hash/x.png)',
+          '[](objects/3f/abc/x.png)',
+          '[](objects/3f/$hash/)',
+          '[](objects/3f/$hash)',
+          '[](objects/3f/$hash/a%zz.png)',
+        ];
+        for (final text in bad) {
+          expect(tokenizeInline(text), isEmpty, reason: 'input: $text');
+        }
+        // The same destination with text in the brackets still tokenizes
+        // normally: the name comes from the brackets, not from the url.
+        const url = 'objects/3f/$hash/chart.png';
+        const named = '![shown]($url)';
+        final link = onlyLink(named);
+        expect(link.content.of(named), 'shown');
+        expect(link.markers.first.of(named), '![');
+        expect(link.markers.last.of(named), ']($url)');
+      },
+    );
+
+    test(
+      'empty bracket attachment refs sit beside links and stay opaque to emphasis around them',
+      () {
+        const url = 'objects/3f/$hash/a_b_.png';
+        const text = '*x ![]($url) y*';
+        final tokens = tokenizeInline(text);
+        expect(tokens.map((t) => t.kind), [
+          InlineTokenKind.italic,
+          InlineTokenKind.link,
+        ]);
+        expect(_pair(tokens.first.span), [0, text.length]);
+        final link = tokens.last as LinkToken;
+        expect(link.image, isTrue);
+        expect(link.content.of(text), 'a_b_.png');
+
+        const two = '![](objects/3f/$hash/a.png) [](objects/3f/$hash/b.pdf)';
+        final links = tokenizeInline(two).cast<LinkToken>();
+        expect([for (final l in links) l.content.of(two)], ['a.png', 'b.pdf']);
+        expect([for (final l in links) l.image], [true, false]);
+      },
+    );
+
+    test(
+      'an attachment link or image name holds no emphasis or strike while other link text keeps it',
+      () {
+        const att = [
+          '![_draft_.png](objects/3f/$hash/_draft_.png)',
+          '[_draft_.png](objects/3f/$hash/_draft_.png)',
+          '[*a*](objects/3f/$hash/a.png)',
+          '![**b**](objects/3f/$hash/b.png)',
+          '[~~x~~.txt](objects/3f/$hash/x.txt)',
+          '[__init__.py](objects/3f/$hash/__init__.py)',
+        ];
+        for (final ref in att) {
+          final text = 'x $ref y';
+          final link = onlyLink(text);
+          expect(link.markers, hasLength(2), reason: ref);
+          expect(
+            link.content.of(text),
+            ref.substring(ref.indexOf('[') + 1, ref.indexOf('](')),
+            reason: ref,
+          );
+        }
+        // Emphasis around the whole ref still pairs.
+        expect(
+          tokenizeInline(
+            '_a ![_n_](objects/3f/$hash/n.png) b_',
+          ).map((t) => t.kind),
+          [InlineTokenKind.italic, InlineTokenKind.link],
+        );
+        // A web image and a plain link keep emphasis in their text.
+        for (final text in ['![_l_](https://e.com/l.png)', '[_l_](a/b.png)']) {
+          expect(tokenizeInline(text).map((t) => t.kind), [
+            InlineTokenKind.link,
+            InlineTokenKind.italic,
+          ], reason: text);
+        }
+        expect(tokenizeInline('[**b**](https://e.com)').map((t) => t.kind), [
+          InlineTokenKind.link,
+          InlineTokenKind.bold,
+        ]);
+      },
+    );
+
+    test(
+      'an empty bracket attachment name after an encoded slash shows only the name',
+      () {
+        const cases = [
+          ('objects%2F3f%2F$hash%2Fm%20n.png', 'm%20n.png'),
+          ('objects%2f3f%2f$hash%2fm%20n.png', 'm%20n.png'),
+          ('objects%2F3f%2f$hash%2Fm.png', 'm.png'),
+          // A later literal slash wins over an earlier encoded one.
+          ('objects%2F3f/$hash/m.png', 'm.png'),
+          ('objects/3f%2F$hash/m.png', 'm.png'),
+          // A later encoded slash wins over an earlier literal one.
+          ('objects/3f/$hash%2Fm.png', 'm.png'),
+          ('objects/3f/$hash%2fm.png', 'm.png'),
+        ];
+        for (final (url, name) in cases) {
+          final text = 'a ![]($url) b';
+          final link = onlyLink(text);
+          expect(link.content.of(text), name, reason: url);
+          expect(link.markers.last.of(text), ')', reason: url);
+          expect(link.url, url);
+        }
       },
     );
   });
