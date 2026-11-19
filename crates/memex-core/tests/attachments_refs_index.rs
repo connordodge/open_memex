@@ -562,3 +562,46 @@ fn the_rechunk_drain_writes_the_same_rows_as_reindex_note() {
     assert_eq!(refs(conn, &queued_day.id), by_save_day, "daily notes too");
     drop(dir);
 }
+
+// ---- verify: surrounding whitespace, daily frontmatter offsets --------------------------------
+
+#[test]
+fn a_reference_line_with_surrounding_whitespace_writes_a_row_at_the_start_of_its_line() {
+    let (_dir, mut vault) = fresh_vault();
+    let a = att("6c", "indented.png");
+    let b = att("7d", "trailing.pdf");
+    let c = att("8e", "tabbed.pdf");
+    let body = format!(
+        "Top ☕\n  {}\n{}   \n\t{}\t\n",
+        a.markdown, b.markdown, c.markdown
+    );
+    let note = create(&mut vault, "Padded", "x\n", None);
+    save_raw(&mut vault, &note.id, &body);
+    let first = "Top ☕\n".len();
+    let second = first + 2 + a.markdown.len() + 1;
+    let third = second + b.markdown.len() + 3 + 1;
+    assert_eq!(
+        refs(vault.connection_ref(), &note.id),
+        vec![
+            (a.path.clone(), first),
+            (b.path.clone(), second),
+            (c.path.clone(), third),
+        ],
+        "the row's offset is the start of the line, indentation included"
+    );
+}
+
+#[test]
+fn a_daily_notes_row_offset_counts_its_leading_frontmatter_block_in_the_stored_body() {
+    let (_dir, mut vault) = fresh_vault();
+    let pic = att("9f", "daily.png");
+    let day = create(&mut vault, "2026-11-19", "x\n", daily_fm());
+    let head = "---\nrole: daily\nsummary: Café ☕\n---\nStandup 🎉\n";
+    let body = format!("{head}{}\n\n{TOPICS_MARKER}\nfooter\n", pic.markdown);
+    save_raw(&mut vault, &day.id, &body);
+    assert_eq!(
+        refs(vault.connection_ref(), &day.id),
+        vec![(pic.path.clone(), head.len())],
+        "the offset is into the full stored body, frontmatter bytes included"
+    );
+}
