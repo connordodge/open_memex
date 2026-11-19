@@ -35,6 +35,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db/daily_reads.dart';
 import 'package:open_memex_app/src/editor/editor_rows.dart';
 import 'package:open_memex_app/src/editor/find_in_note.dart';
+import 'package:open_memex_app/src/editor/row_geometry.dart';
 import 'package:open_memex_app/src/editor/spell_issues.dart';
 import 'package:open_memex_app/src/state/daily_state.dart';
 import 'package:open_memex_app/src/state/find_in_note_state.dart';
@@ -48,6 +49,7 @@ import 'package:open_memex_app/src/vault_access/vault_scoped.dart';
 import 'package:open_memex_app/src/widgets/editor/echo_arrival_highlight.dart';
 import 'package:open_memex_app/src/widgets/editor/editor_row.dart';
 import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
+import 'package:open_memex_app/src/widgets/editor/marker_column.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_decorations.dart';
 import 'package:open_memex_app/src/widgets/editor/paragraph_line_boxes.dart';
@@ -251,6 +253,79 @@ Offset _t127GlyphPoint(RenderParagraph slot, int offset) {
 List<(TextRange, double, double)> _t127Lines(LineBoxSource source) => [
   for (final l in source.lines) (l.range, l.top, l.bottom),
 ];
+
+/// A presenter that builds every item row (bullet, numbered, task, quote)
+/// as the built-in item layout does (the marker column, then the text
+/// column) but with [_T127SlotText] as its text, and no text slot of its
+/// own: the row's marker text sits before the slot in the row's render tree.
+class _T127ItemRichPresenter extends RowKindPresenter {
+  const _T127ItemRichPresenter();
+
+  @override
+  Widget build(BuildContext context, PresentedRow row, RowTextSlot textSlot) {
+    final item = row.geometry!;
+    final column = markerColumnKind(row.kind)!;
+    return Padding(
+      padding: EdgeInsets.only(left: item.markerX),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          KeyedSubtree(
+            key: ValueKey('editor-row-marker-${row.segment}-${row.index}'),
+            child: MarkerColumn(marker: row.marker, width: item.columnWidth),
+          ),
+          Expanded(
+            child: Padding(
+              padding: EdgeInsets.only(right: itemTextRightInset(column)),
+              child: KeyedSubtree(
+                key: ValueKey('editor-row-${row.segment}-${row.index}'),
+                child: _T127SlotText(
+                  controller: row.controller,
+                  slotKey: _t127SlotKey(row.segment, row.index),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  bool textHidden(PresentedRow row) => false;
+
+  @override
+  LineBoxSource? blockBoxes(PresentedRow row) => null;
+
+  @override
+  bool ownsPress(PresentedRow row, Offset position) => false;
+}
+
+/// A span that counts the plain-text copies and child walks asked of it.
+class _T127CountingSpan extends TextSpan {
+  const _T127CountingSpan({super.text, super.children, super.style});
+
+  static int copies = 0;
+  static int walks = 0;
+
+  @override
+  String toPlainText({
+    bool includeSemanticsLabels = true,
+    bool includePlaceholders = true,
+  }) {
+    copies++;
+    return super.toPlainText(
+      includeSemanticsLabels: includeSemanticsLabels,
+      includePlaceholders: includePlaceholders,
+    );
+  }
+
+  @override
+  bool visitChildren(InlineSpanVisitor visitor) {
+    walks++;
+    return super.visitChildren(visitor);
+  }
+}
 
 // ------------------------------------------------------------- gestures
 
@@ -2018,6 +2093,204 @@ void main() {
           ['unlaid a'],
           reason: 'fields not laid out keep the joining order',
         );
+      },
+    );
+  });
+
+  group('item rows and long slots (verify r1)', () {
+    testWidgets(
+      'a numbered item row with a RichText text slot measures its text and not its marker',
+      (tester) async {
+        debugRowKindPresenterOverride = (kind) => markerColumnKind(kind) != null
+            ? const _T127ItemRichPresenter()
+            : null;
+        const text = '1. first item\n2. second item\nOutro line';
+        final b = await pumpTable(tester, text);
+        final host = rowsHostOf(tester);
+        for (final r in [0, 1]) {
+          final spec = host.rowSpec(r)!;
+          expect(spec.textStart, greaterThan(spec.start), reason: 'marker $r');
+          final slot = _t127Slot(tester, 0, r);
+          final row = host.rowBoxes(r);
+          expect(row, isNotNull, reason: 'row $r reports geometry');
+          expect(row!.box, same(slot), reason: 'row $r measures its slot');
+          expect(
+            row.lines.last.range.end,
+            spec.textLength,
+            reason: 'row $r lines span its text, not the marker',
+          );
+          expect(
+            _t127Lines(row),
+            _t127Lines(RenderParagraphLineBoxes(slot)),
+            reason: 'row $r',
+          );
+        }
+        expect(host.lineBoxes(), isNotNull, reason: 'no row disables it');
+
+        // A click on the item's text lands in it, at the glyph's offset.
+        final slot = _t127Slot(tester, 0, 1);
+        final spec = host.rowSpec(1)!;
+        await _t127Click(tester, _t127GlyphPoint(slot, 4));
+        expect(
+          b.selection(),
+          TextSelection.collapsed(offset: spec.toSegment(4)),
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'the text slot lookup skips a marker column text and finds the text after it',
+      (tester) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: Row(
+                key: const ValueKey('t127-root'),
+                children: [
+                  const MarkerColumn(marker: '1. ', width: 30),
+                  Expanded(
+                    child: RichText(
+                      key: const ValueKey('t127-after'),
+                      text: const TextSpan(text: 'item text'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+        final root = tester.renderObject(
+          find.byKey(const ValueKey('t127-root')),
+        );
+        expect(
+          textSlotBox(root),
+          same(tester.renderObject(find.byKey(const ValueKey('t127-after')))),
+        );
+        expect(
+          find.descendant(
+            of: find.byType(MarkerColumn),
+            matching: find.byType(RichText),
+          ),
+          findsOneWidget,
+          reason: 'the marker column shows its number as text',
+        );
+        final marker = tester.renderObject(find.byType(MarkerColumn));
+        expect(
+          textSlotBox(marker),
+          isNull,
+          reason: 'a marker column holds no row text',
+        );
+      },
+    );
+
+    Future<SpellFieldHost> pumpSpan(
+      WidgetTester tester,
+      TextEditingController controller,
+      InlineSpan span,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Align(
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: 400,
+                child: SingleChildScrollView(
+                  child: SpellCheckField(
+                    controller: controller,
+                    child: RichText(text: span),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      return tester.state(find.byType(SpellCheckField)) as SpellFieldHost;
+    }
+
+    testWidgets(
+      'extentAt over a long RichText slot copies no plain text and walks its span once however many probes',
+      (tester) async {
+        final controller = TextEditingController();
+        addTearDown(controller.dispose);
+        final span = _T127CountingSpan(
+          text: List.filled(400, 'long prose line of the row').join(' '),
+          children: [const TextSpan(text: ' tail')],
+          style: const TextStyle(fontSize: 14),
+        );
+        final host = await pumpSpan(tester, controller, span);
+        expect(host.extent(), isNotNull);
+        final length = span.toPlainText().length;
+        _T127CountingSpan.copies = 0;
+        _T127CountingSpan.walks = 0;
+        final bands = <({double top, double bottom})>[];
+        for (var i = 0; i < 40; i++) {
+          bands.add(host.extentAt(i * length ~/ 39)!);
+        }
+        // The text painter copies the text once itself (end-of-text caret
+        // metrics, cached per layout); a copy per probe would be 40.
+        expect(
+          _T127CountingSpan.copies,
+          lessThanOrEqualTo(1),
+          reason: 'no copy of the text per probe',
+        );
+        expect(
+          _T127CountingSpan.walks,
+          lessThanOrEqualTo(1),
+          reason: 'the span is measured once, not per probe',
+        );
+        for (var i = 1; i < bands.length; i++) {
+          expect(
+            bands[i].top,
+            greaterThanOrEqualTo(bands[i - 1].top),
+            reason: 'probe $i is not above the previous',
+          );
+        }
+        expect(bands.last.top, greaterThan(bands.first.top));
+        final past = host.extentAt(length + 9999)!;
+        expect((past.top, past.bottom), (bands.last.top, bands.last.bottom));
+      },
+    );
+
+    testWidgets(
+      'the clamp of a RichText slot counts a placeholder as one character and measures a replaced span anew',
+      (tester) async {
+        final controller = TextEditingController();
+        addTearDown(controller.dispose);
+        // a b [] c \n: five characters, then an empty last line.
+        var host = await pumpSpan(
+          tester,
+          controller,
+          const TextSpan(
+            style: TextStyle(fontSize: 14, height: 1.5),
+            children: [
+              TextSpan(text: 'ab'),
+              WidgetSpan(child: SizedBox(width: 10, height: 10)),
+              TextSpan(text: 'c\n'),
+            ],
+          ),
+        );
+        final first = host.extentAt(0)!;
+        final end = host.extentAt(5)!;
+        expect(end.top, greaterThan(first.top), reason: 'end is on line 2');
+        final past = host.extentAt(500)!;
+        expect((past.top, past.bottom), (end.top, end.bottom));
+
+        // The same host over another span: its own length, not the cached.
+        host = await pumpSpan(
+          tester,
+          controller,
+          const TextSpan(
+            text: 'x\ny\nz\n',
+            style: TextStyle(fontSize: 14, height: 1.5),
+          ),
+        );
+        final lastText = host.extentAt(4)!;
+        final lastLine = host.extentAt(6)!;
+        expect(lastLine.top, greaterThan(lastText.top), reason: 'line 4');
+        expect(host.extentAt(600)!.top, lastLine.top);
       },
     );
   });
