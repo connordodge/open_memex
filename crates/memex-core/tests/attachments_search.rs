@@ -1751,7 +1751,9 @@ fn equal_scores_order_by_note_title_and_attachments_by_name_then_path() {
             "title order"
         );
     }
-    // Equal scores: hits come by note title, then by attachment path.
+    // Equal scores: hits come by note title. Both attachments sit in each
+    // note's one chunk, so each note gets one hit (lead ruling Q1: one hit
+    // per note chunk), carrying the attachment first by name.
     let order: Vec<(String, String)> = hits(&got)
         .iter()
         .map(|h| {
@@ -1761,10 +1763,14 @@ fn equal_scores_order_by_note_title_and_attachments_by_name_then_path() {
             )
         })
         .collect();
-    let mut want = order.clone();
-    want.sort();
-    assert_eq!(order, want, "title, then attachment path: {order:?}");
-    assert_eq!(order.len(), 8);
+    let want: Vec<(String, String)> = ["Bay", "Cove", "Dune", "Fen"]
+        .iter()
+        .map(|t| (t.to_string(), alpha.path.clone()))
+        .collect();
+    assert_eq!(
+        order, want,
+        "title order, one hit per note chunk: {order:?}"
+    );
 }
 
 #[test]

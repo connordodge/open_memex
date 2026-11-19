@@ -172,8 +172,8 @@ pub(crate) fn embed_query(embedder: &dyn Embedder, q: &str) -> Result<Option<Vec
 /// score is its name score plus its best chunk's score; it becomes one hit
 /// per referencing note passing the filters, on that note's chunk holding its
 /// first reference line (see [`attachment_hits`]). Attachment hits landing
-/// on the same chunk of a note keep only the best one, so no two hits share
-/// a (note, chunk). A note's own chunk hits merge into its best attachment
+/// on the same chunk of a note keep only the best one (ties: attachment name,
+/// then path), so no two hits share a (note, chunk). A note's own chunk hits merge into its best attachment
 /// hit, so a note shows at most one hit per attachment; a daily note's
 /// merged hits still expand (see [`expand_transclusions`]). Hits sort by score, then note title, note id, ord, line and
 /// chunk id, so equal scores come in the same order on every search. `k`
@@ -272,11 +272,12 @@ fn fuse(
     }
     own.sort_by(hit_order);
     let mut found = attachment_hits(conn, &matched)?;
-    found.sort_by(hit_order);
+    found.sort_by(same_chunk_order);
 
     // One hit per (note, chunk): clients key passage rows by `chunk_id`, so
     // two matching attachments referenced in one chunk of a note give one
-    // hit, the best one; the others fold into it.
+    // hit, the best one (ties: attachment name, then path); the others fold
+    // into it. Each still lists the note in `attachments`.
     let mut hits: Vec<SearchHit> = Vec::new();
     let mut on_chunk: HashMap<(String, String), usize> = HashMap::new();
     for hit in found {
@@ -288,6 +289,7 @@ fn fuse(
             }
         }
     }
+    hits.sort_by(hit_order);
 
     // A note's own hits merge into its best attachment hit (R46), which
     // keeps the higher score.
@@ -348,6 +350,21 @@ fn hit_order(a: &SearchHit, b: &SearchHit) -> Ordering {
             let path = |h: &SearchHit| h.attachment.as_ref().map(|x| x.path.clone());
             path(a).cmp(&path(b))
         })
+}
+
+/// Which of a note chunk's attachment hits is kept (lead ruling Q1, #137):
+/// score (best first), then attachment name, then path, as in the
+/// attachments list; [`hit_order`] breaks any remaining tie.
+fn same_chunk_order(a: &SearchHit, b: &SearchHit) -> Ordering {
+    let key = |h: &SearchHit| {
+        h.attachment
+            .as_ref()
+            .map(|x| (x.name.clone(), x.path.clone()))
+    };
+    b.score
+        .total_cmp(&a.score)
+        .then_with(|| key(a).cmp(&key(b)))
+        .then_with(|| hit_order(a, b))
 }
 
 /// The matching attachments with at least one referencing note passing
