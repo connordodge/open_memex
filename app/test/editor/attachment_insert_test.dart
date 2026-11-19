@@ -310,6 +310,27 @@ void main() {
       },
     );
 
+    test(
+      'an unclosed fence above the Topics footer of a daily note keeps the group out of the footer',
+      () {
+        // splitDailyBody ignores fences, so the marker is still the footer
+        // while the block skip from the fence runs to the end of the body.
+        const body = '```\ncode\n$topicsMarker\n[[Work~about]]\n';
+        for (final anchor in const [0, 1]) {
+          final r = _wi146Plan(body, anchorLine: anchor, daily: true);
+          final split = splitDailyBody(r.text);
+          expect(split.chips, ['Work'], reason: 'footer kept, anchor $anchor');
+          expect(split.person, contains(_wi146Spec), reason: 'in the person');
+          expect(
+            r.text,
+            '```\ncode\n\n$_wi146Mock\n$_wi146Spec\n'
+            '$topicsMarker\n[[Work~about]]\n',
+            reason: 'anchor $anchor',
+          );
+        }
+      },
+    );
+
     test('the group is its own block above the footer of a daily note', () {
       final body = assembleDailyBody('Morning\nEvening\n', const ['Work']);
       final r = _wi146Plan(body, anchorLine: 0, daily: true);
