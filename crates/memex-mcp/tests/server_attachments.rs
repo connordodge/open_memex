@@ -787,6 +787,19 @@ async fn every_other_route_keeps_the_8_mib_limit_and_its_413() {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_chunked_body_over_8_mib_on_a_json_route_is_413_and_writes_nothing() {
+    let srv = start().await;
+    let head = upload_head("POST", &format!("{BASE}/notes"), Some(&srv.bearer()), None)
+        .replace("application/octet-stream", "application/json");
+    // No Content-Length: only the streamed cap can refuse it.
+    let r = stream_request(srv.addr(), head, BODY_LIMIT + 1, true, None).await;
+    assert_eq!(r.status, 413, "{r:?}");
+    assert_eq!(r.json(), other_route_too_large());
+    let notes = fetch(&srv, Method::GET, &format!("{BASE}/notes?limit=3")).await;
+    assert_eq!(notes.json(), json!({ "notes": [] }), "no note written");
+}
+
 // ---------------------------------------------------------------------------
 // AC 4: GET returns the bytes with Content-Type and Content-Length; HEAD the
 // same headers, no body; encoded and decoded paths
@@ -807,6 +820,12 @@ async fn get_and_head_serve_the_file_with_its_type_and_length_by_encoded_or_deco
             "application/octet-stream",
         ),
         ("data.xyz", pattern(10), "application/octet-stream"),
+        // A literal `%` in the stored name: only the path as given finds
+        // `a%41.txt` by the url a client decoded once (decoding it again
+        // reads `aA.txt`), and only the decoded path finds `100%.txt` by
+        // the url a client sent encoded (`%.t` is not an escape).
+        ("100%.txt", pattern(7), "text/plain"),
+        ("a%41.txt", pattern(9), "text/plain"),
     ];
     for (name, bytes, mime) in &cases {
         let stored = store_bytes(&vault, bytes, name).expect("store");
@@ -1073,6 +1092,91 @@ async fn a_symlink_that_stays_inside_objects_and_a_folder_in_a_files_place_are_4
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_symlinked_objects_folder_out_of_the_vault_is_400_and_serves_nothing() {
+    use std::os::unix::fs::symlink;
+
+    let srv = start().await;
+    let vault = vault_dir(&srv);
+    // `objects/` itself moved elsewhere (another disk) and linked back,
+    // holding a well-formed attachment with the secret in it.
+    let h = fake_hash("ab");
+    let outside = srv.root().join("moved-objects");
+    std::fs::create_dir_all(outside.join("ab").join(&h)).unwrap();
+    std::fs::write(outside.join("ab").join(&h).join("a.png"), SECRET).unwrap();
+    let _ = std::fs::remove_dir_all(vault.join("objects"));
+    symlink(&outside, vault.join("objects")).unwrap();
+
+    for method in ["GET", "HEAD"] {
+        let path = format!("{BASE}/attachments/objects/ab/{h}/a.png");
+        let r = raw_get(&srv, method, &path).await;
+        assert_400_without_secret(&r, &format!("{method} {path}"), method);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_name_that_cannot_exist_is_404_and_a_file_in_a_folders_place_is_400_never_500() {
+    let srv = start().await;
+    let vault = vault_dir(&srv);
+    let h = plant_secrets(&srv);
+    let h2 = &h[..2];
+
+    // Names R1 never stores: a NUL (as the axum-decoded `%00`, and as `%2500`
+    // that only the second decode turns into one) and 256 bytes (NAME_MAX is
+    // 255). None can exist, so each is 404, not an internal error.
+    let long = format!("{}.png", "a".repeat(252));
+    assert_eq!(long.len(), 256);
+    let never = [
+        object_path(&h, "a%00b.png"),
+        object_path(&h, "a%2500b.png"),
+        object_path(&h, &long),
+    ];
+    for method in ["GET", "HEAD"] {
+        for p in &never {
+            let path = format!("{BASE}/attachments/{p}");
+            let r = raw_get(&srv, method, &path).await;
+            assert_eq!(r.status, 404, "{method} {path}: {}", r.body);
+            assert!(!r.body.contains(SECRET), "{method} {path}");
+            if method == "GET" {
+                assert_eq!(r.c1_code(), "not_found", "{path}");
+            }
+        }
+    }
+
+    // The longest name R1 stores (255 bytes) is still served.
+    let edge = format!("{}.png", "b".repeat(251));
+    assert_eq!(edge.len(), 255);
+    let stored = store_bytes(&vault, b"edge", &edge).expect("store a 255-byte name");
+    let r = raw_get(&srv, "GET", &format!("{BASE}/attachments/{}", stored.path)).await;
+    assert_eq!((r.status, r.body.as_str()), (200, "edge"));
+
+    // A regular file where a folder should be: `objects/<h2>` and
+    // `objects/<h2>/<hash>`.
+    let h_cd = fake_hash("cd");
+    std::fs::write(vault.join("objects").join("cd"), SECRET).unwrap();
+    let h_ef = fake_hash("ef");
+    std::fs::create_dir_all(vault.join("objects").join("ef")).unwrap();
+    std::fs::write(vault.join("objects").join("ef").join(&h_ef), SECRET).unwrap();
+    for method in ["GET", "HEAD"] {
+        for p in [
+            format!("objects/cd/{h_cd}/a.png"),
+            format!("objects/ef/{h_ef}/a.png"),
+        ] {
+            let path = format!("{BASE}/attachments/{p}");
+            let r = raw_get(&srv, method, &path).await;
+            assert_400_without_secret(&r, &format!("{method} {path}"), method);
+        }
+    }
+    // The real attachment is still served.
+    let ok = raw_get(
+        &srv,
+        "GET",
+        &format!("{BASE}/attachments/objects/{h2}/{h}/real.txt"),
+    )
+    .await;
+    assert_eq!((ok.status, ok.body.as_str()), (200, "an attachment"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_upload_path_with_an_empty_vault_name_keeps_the_8_mib_limit() {
     let srv = start().await;
     let r = raw_request(
@@ -1117,6 +1221,23 @@ async fn a_missing_attachment_is_404_with_its_own_text_distinct_from_an_unknown_
         let head = fetch(&srv, Method::HEAD, &path).await;
         assert_eq!(head.status, 404, "HEAD {path}");
         assert!(head.body.is_empty(), "HEAD {path}: no body");
+    }
+    // A missing name with a space, sent as the R3 url (the server sees the
+    // space) and encoded once more (it sees `%20`): the 404 names the decoded
+    // path either way.
+    let spaced = object_path(&h, "gone me.png");
+    for wire in [
+        object_path(&h, "gone%20me.png"),
+        object_path(&h, "gone%2520me.png"),
+    ] {
+        let path = format!("{BASE}/attachments/{wire}");
+        let got = fetch(&srv, Method::GET, &path).await;
+        assert_eq!(got.status, 404, "GET {path}");
+        assert_eq!(
+            got.json()["error"]["message"],
+            json!(format!("not found: attachment {spaced}")),
+            "GET {path}"
+        );
     }
     // An unknown route keeps the old server's text.
     for path in [
