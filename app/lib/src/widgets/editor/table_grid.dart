@@ -822,9 +822,13 @@ final class _GridGeometry implements LineBoxSource {
     return cell.start + math.min(local, cell.end - cell.start);
   }
 
+  /// The grid line holding [offset] among [lines]; the first line for an
+  /// offset before it.
   @override
-  LineBox lineAt(int offset) =>
-      const LineBox(range: TextRange.collapsed(0), top: 0, bottom: 0);
+  LineBox lineAt(int offset) => lines.lastWhere(
+    (line) => line.range.start <= offset,
+    orElse: () => lines.first,
+  );
 
   /// The end of cell ([g], [j])'s text; for a missing cell, of the row's
   /// last cell; for a row without cells, its line start.
