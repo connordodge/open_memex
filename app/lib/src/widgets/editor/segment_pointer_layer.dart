@@ -1,9 +1,9 @@
-import 'dart:async' show Timer, scheduleMicrotask;
+import 'dart:async' show Timer, unawaited;
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart';
-import 'package:flutter/scheduler.dart' show Ticker;
+import 'package:flutter/scheduler.dart' show SchedulerBinding, Ticker;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
@@ -15,6 +15,8 @@ import 'live_preview_controller.dart';
 import 'live_preview_styles.dart';
 import 'marker_column.dart';
 import 'segment_view.dart';
+import 'spelling_menu.dart' show rowSpellingIssue, showRowSpellingMenu;
+import 'text_segment.dart' show hideRowTextMenu, showRowTextMenu;
 
 /// How far inside the editor page's top or bottom edge a drag starts to
 /// scroll the page (Spec R26).
@@ -56,6 +58,20 @@ const double _autoScrollSpeed = 1200;
 /// - A plain, double or triple click on a revealed line (and on the empty
 ///   area below the rows) and a Cmd+click stay the row's (and the link
 ///   region's).
+/// - On a row without a field (its text slot a `RichText`, WI #128, Spec
+///   #122 Req 30) every press is the layer's, as on a hidden line: a plain
+///   click on any of its lines and the click chain it starts, as above; a
+///   Cmd+click puts the caret at the pressed offset on its release, after
+///   the link region has seen it (as a field's tap does); a right click
+///   selects the word under the pointer (`RenderEditable.selectWord` on
+///   macOS) and, once the row has taken focus, opens SpellingMenu on a
+///   flagged word (`showRowSpellingMenu`) or else the text context menu
+///   (`showRowTextMenu`). A press that moves the caret, and a right click,
+///   make the row the host's active row (`SegmentViewState.activateRow`),
+///   which mounts its field and focuses it.
+/// - Every press that moves focus does so through
+///   `SegmentViewState.activateRow`: a click focuses the row it puts the
+///   caret in; a drag and a Shift+click keep focus in the row it was in.
 /// - A press the link region marked on a rendered link (Spec #232 TD6) wins
 ///   the arena when it goes down, so no row recognizer sees it, and moves no
 ///   caret. A release inside `kPrecisePointerHitSlop` follows the link it
@@ -109,6 +125,7 @@ class _Press implements GestureArenaMember {
     required this.onReject,
     this.at = 0,
     this.deferred = false,
+    this.onRelease = false,
     this.multi = false,
     this.follow,
   }) : position = down;
@@ -131,6 +148,11 @@ class _Press implements GestureArenaMember {
   /// layer wins the arena (the link region wins it on a link it opens). A
   /// marked press: only once it drags past the slop.
   final bool deferred;
+
+  /// A deferred Cmd+press on a row without a field (WI #128): the caret
+  /// goes to [at] on its release, after the link region has seen it (a row
+  /// field's tap puts it there then), or once it drags past the slop.
+  final bool onRelease;
 
   /// A double or triple click: it has selected, and never drags.
   final bool multi;
@@ -265,10 +287,7 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
     final row = host.rowSpec(i);
     final word = row == null
         ? null
-        : host.rowWordBoundary(
-            i,
-            TextPosition(offset: offset - row.textStart),
-          );
+        : host.rowWordBoundary(i, TextPosition(offset: offset - row.textStart));
     if (row == null || word == null) {
       return TextSelection.collapsed(offset: offset);
     }
@@ -288,7 +307,11 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
     if (count == 0) return null;
     final i = _rowIndexAt(host, offset);
     final r = i < 0 ? count - 1 : i;
-    return (index: r, row: host.rowSpec(r)!, controller: host.rowController(r)!);
+    return (
+      index: r,
+      row: host.rowSpec(r)!,
+      controller: host.rowController(r)!,
+    );
   }
 
   /// Whether global [point] lies on the segment's rows (not the empty area
@@ -402,20 +425,21 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
     return TextSelection(baseOffset: start + from, extentOffset: start + to);
   }
 
-  /// Focuses the row holding segment [offset] unless it has focus. With
-  /// [keep], [keep] becomes the segment selection again once the focus
-  /// change has settled (a row taking focus reports its own slice).
-  void _focusRowAt(SegmentViewState host, int offset, {TextSelection? keep}) {
+  /// Makes the row holding segment [offset] the host's active row with the
+  /// segment selection as it is now (`SegmentViewState.activateRow`, WI
+  /// #128): it takes focus, mounting its field first when it has none, and
+  /// that focus keeps the selection (a row taking focus would report its
+  /// own slice).
+  void _activateRowAt(SegmentViewState host, int offset) {
     final hit = _rowAt(host, offset);
-    final node = hit == null ? null : host.rowFocusNode(hit.index);
-    if (node == null || node.hasFocus) return;
-    node.requestFocus();
-    if (keep != null) {
-      // Runs after the focus manager's own microtask.
-      scheduleMicrotask(() {
-        if (mounted && host.mounted) host.select(keep);
-      });
-    }
+    if (hit != null) host.activateRow(hit.index, host.selection);
+  }
+
+  /// Whether the row holding segment [offset] has no field (WI #128): its
+  /// text slot is a `RichText`, so every press on it is the layer's.
+  bool _withoutField(SegmentViewState host, int offset) {
+    final hit = _rowAt(host, offset);
+    return hit != null && host.rowField(hit.index) == null;
   }
 
   /// Whether global [point] lies inside one of the segment's editor row
@@ -451,6 +475,9 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
       return;
     }
     if (event.buttons != kPrimaryButton) return;
+    // A press closes the text menu of a row without a field, as a field's
+    // own press closes its menu.
+    hideRowTextMenu();
     // A press on a marker column belongs to the column (Spec Q4, D11).
     if (_inMarkerColumn(event.position)) return;
     final host = _host;
@@ -474,19 +501,27 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
       return;
     }
     final grid = _onRenderedGrid(host, event.position);
-    // A Cmd+click belongs to the link region (B3); on a rendered grid only
-    // when the link region wins the arena (D14).
-    if (cmd && !grid) return;
     final pressed = _offsetAt(host, event.position);
     if (pressed == null) return;
-    // A plain press on a row line whose markup is hidden: the layer's from
-    // its down, since the press reveals the line (Spec #57 R5, R6). On a
-    // revealed line the click stays the row field's.
+    // A press on a row without a field is the layer's (WI #128): no field
+    // takes a click, a click chain or a Cmd+click there.
+    final bare =
+        !grid && _onRows(host, event.position) && _withoutField(host, pressed);
+    // A Cmd+click belongs to the link region (B3); on a rendered grid only
+    // when the link region wins the arena (D14). On a row without a field
+    // the caret goes to it on its release, as a field puts it there.
+    if (cmd && !grid && !bare) return;
+    // A plain press on a row line whose markup is hidden, or on any line of
+    // a row without a field: the layer's from its down, since the press
+    // reveals the line (Spec #57 R5, R6). On a revealed line of a row field
+    // the click stays the field's.
     final shown = !grid && !cmd && !shift && follow == null
         ? _shownLineAt(host, pressed)
         : null;
     final row =
-        shown != null && !shown.revealed && _onRows(host, event.position);
+        shown != null &&
+        (!shown.revealed || bare) &&
+        _onRows(host, event.position);
     final at = row ? _pastHiddenHeadingMarker(shown, pressed) : pressed;
     final current = host.selection;
     final press = _Press(
@@ -495,6 +530,7 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
       base: shift && current.isValid ? current.baseOffset : at,
       at: at,
       deferred: cmd || follow != null,
+      onRelease: cmd && bare,
       follow: follow,
       onAccept: _onAccept,
       onReject: _onReject,
@@ -511,7 +547,7 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
     if (shift) {
       final selection = TextSelection(baseOffset: press.base, extentOffset: at);
       host.select(selection);
-      if (host.focusedRow == null) _focusRowAt(host, at, keep: selection);
+      if (host.focusedRow == null) _activateRowAt(host, at);
       press.entry.resolve(GestureDisposition.accepted);
     } else {
       // As a macOS field does on mouse down: the caret goes to the press.
@@ -520,7 +556,7 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
           ? _affinityAt(host, event.position, at)
           : TextAffinity.downstream;
       host.select(TextSelection.collapsed(offset: at));
-      _focusRowAt(host, at);
+      _activateRowAt(host, at);
       if (grid) {
         _clicks = _Clicks(event.position, at, grid: true);
       } else if (row) {
@@ -537,14 +573,56 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
 
   /// A secondary press on a rendered grid puts the caret at the pressed
   /// offset and focuses the table row, as a plain click does; the selection
-  /// ops show the menu (D14). Elsewhere it is the row field's.
+  /// ops show the menu (D14). On a row without a field it is the layer's
+  /// ([_onSecondaryBare]). Elsewhere it is the row field's.
   void _onSecondaryDown(PointerDownEvent event) {
     final host = _host;
-    if (host == null || !_onRenderedGrid(host, event.position)) return;
+    if (host == null) return;
+    if (!_onRenderedGrid(host, event.position)) {
+      _onSecondaryBare(host, event);
+      return;
+    }
     final at = _offsetAt(host, event.position);
     if (at == null) return;
     host.select(TextSelection.collapsed(offset: at));
-    _focusRowAt(host, at);
+    _activateRowAt(host, at);
+  }
+
+  /// A secondary press on the text of a row without a field (WI #128), as
+  /// a macOS field takes a right click: selects the word under the pointer
+  /// (`RenderEditable.selectWord`), makes the row the active row and, once
+  /// it has taken focus (after this frame), opens the menu a field would:
+  /// SpellingMenu when the selection is a flagged word
+  /// ([rowSpellingIssue], read now, while the row's spell checks are the
+  /// ones it showed), else the text context menu ([showRowTextMenu]), both
+  /// at the pointer. A press on a marker column, on a block a presenter
+  /// owns or below the rows is not the layer's.
+  void _onSecondaryBare(SegmentViewState host, PointerDownEvent event) {
+    final point = event.position;
+    if (!_onRows(host, point) ||
+        _inMarkerColumn(point) ||
+        host.rowOwnsPress(point)) {
+      return;
+    }
+    final at = _offsetAt(host, point);
+    if (at == null || !_withoutField(host, at)) return;
+    final hit = _rowAt(host, at)!;
+    host.select(_rowWordAt(host, at, _affinityAt(host, point, at)));
+    final issue = rowSpellingIssue(host, hit.index);
+    _activateRowAt(host, at);
+    final controller = hit.controller;
+    final binding = SchedulerBinding.instance;
+    binding.addPostFrameCallback((_) {
+      if (!mounted || !host.mounted) return;
+      final i = host.rowIndexOf(controller);
+      if (i == null) return;
+      if (issue != null) {
+        unawaited(showRowSpellingMenu(host, i, issue: issue, anchor: point));
+      } else {
+        unawaited(showRowTextMenu(host, i, anchor: point));
+      }
+    }, debugLabel: 'SegmentPointerLayer.rowMenu');
+    binding.ensureVisualUpdate();
   }
 
   /// The second (word) or a later (source line) click of [clicks]: wins
@@ -578,7 +656,7 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
     _press = press;
     press.entry.resolve(GestureDisposition.accepted);
     host.select(selection);
-    _focusRowAt(host, offset, keep: selection);
+    _activateRowAt(host, offset);
   }
 
   void _onMove(PointerMoveEvent event) {
@@ -594,7 +672,7 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
       // Before the row's own tap-and-drag recognizer sees this move.
       if (!press.accepted) {
         press.entry.resolve(GestureDisposition.accepted);
-      } else if (press.follow != null) {
+      } else if (press.follow != null || press.onRelease) {
         _placeCaret(press);
       }
     }
@@ -614,23 +692,37 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
     // A click on a revealed line or the empty area below the rows: the row's
     // (or the empty area's) tap recognizer takes it.
     if (!press.accepted) press.entry.resolve(GestureDisposition.rejected);
+    // A Cmd+click on a row without a field: the link region has seen its
+    // release (WI #128).
+    if (event is PointerUpEvent &&
+        press.onRelease &&
+        press.accepted &&
+        !press.dragging) {
+      _placeCaret(press);
+    }
     // Last: this leaves the note, and the press is over by now.
     if (event is PointerUpEvent && !press.dragging) press.follow?.call();
   }
 
   /// A Cmd+press on a rendered grid that the link region left to the layer
   /// is a plain click (pack correction: a ghost link ignores Cmd). A marked
-  /// press wins at its down and places no caret until it drags.
+  /// press wins at its down and places no caret until it drags. A Cmd+press
+  /// on a row without a field places it on its release (WI #128).
   void _onAccept(_Press press) {
-    if (press.deferred && press.follow == null) _placeCaret(press);
+    if (press.deferred &&
+        press.follow == null &&
+        (!press.onRelease || press.dragging)) {
+      _placeCaret(press);
+    }
   }
 
-  /// Puts the caret at [press]'s offset and focuses the row holding it.
+  /// Puts the caret at [press]'s offset and makes the row holding it the
+  /// active row.
   void _placeCaret(_Press press) {
     final host = _host;
     if (host == null) return;
     host.select(TextSelection.collapsed(offset: press.at));
-    _focusRowAt(host, press.at);
+    _activateRowAt(host, press.at);
   }
 
   void _onReject(_Press press) {

@@ -325,6 +325,8 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   /// [row] has no continuation: its field goes away with this frame.
   void _retire(_Row row) {
     _unlisten(row);
+    if (identical(_active, row)) _active = null;
+    if (identical(_activating, row)) _activating = null;
     widget.onRowRemoved(row.controller);
     if (_retired.isEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _disposeRetired());
@@ -432,7 +434,11 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
       _rowHolding(selection.start) != _rowHolding(selection.end);
 
   void _onRowFocus(_Row row) {
-    if (row.focusNode.hasFocus) _selectFrom(row);
+    if (!row.focusNode.hasFocus) return;
+    final activating = identical(_activating, row);
+    _activating = null;
+    // An activated row's focus keeps the segment selection (WI #128).
+    if (!activating) _selectFrom(row);
   }
 
   /// The focused [row]'s selection becomes the segment's.
@@ -565,6 +571,9 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
       for (final (j, spec) in specs.indexed)
         if (kept[j] case final row?) (row..spec = spec) else _newRow(spec),
     ];
+    // The active row keeps being active where it moved to (WI #128).
+    final active = _active;
+    _activeRow.value = active == null ? null : _rows.indexOf(active);
     _syncRows(selection);
     debugSetStates++;
     setState(() {});
@@ -716,8 +725,17 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
 
   /// Where [row]'s text slot lies: its field's subtree, else the row's.
   RenderObject? _slotRoot(_Row row) =>
-      row.fieldKey.currentContext?.findRenderObject() ??
-      row.rowKey.currentContext?.findRenderObject();
+      _attachedUnder(row.fieldKey) ?? _attachedUnder(row.rowKey);
+
+  /// The render object of [key]'s subtree while it is in the tree, else
+  /// null. A subtree that left the tree this frame (a row swapping its
+  /// field for a `RichText`, WI #128) keeps its key until the frame ends,
+  /// with its render object detached.
+  static RenderObject? _attachedUnder(GlobalKey key) {
+    final element = key.currentContext as Element?;
+    final box = element?.renderObject;
+    return box != null && box.attached ? box : null;
+  }
 
   /// Row [i]'s controller (it holds only the row's text), null past the
   /// last row.
@@ -777,17 +795,57 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
 
   /// The row [activateRow] last made active (WI #128, Spec #122 Req 27,
   /// Req 30), or null before any was. It notifies when it changes, so a row
-  /// presenter can build that row's field in place of its text (#132).
+  /// presenter can build that row's field in place of its text (#132). It
+  /// follows that row when rows re-derive (its index moves with it) and
+  /// becomes null once the row goes away.
+  ///
+  /// The host's activation seam (lead ruling Q1): #132 extends which row is
+  /// active (Req 27) without changing this signature.
   ValueListenable<int?> get activeRow => _activeRow;
   final ValueNotifier<int?> _activeRow = ValueNotifier(null);
+
+  /// The row [activeRow] names, or null.
+  _Row? _active;
+
+  /// The row [activateRow] asked focus for until that focus arrives: the
+  /// focus keeps the segment selection rather than taking the row's slice.
+  _Row? _activating;
 
   /// Makes row [i] the active row with segment [selection] (WI #128, Spec
   /// #122 Req 30): the press, menu or Check Document Now acting on a row
   /// asks for it. The segment selection becomes [selection], [activeRow]
   /// becomes [i], and row [i]'s focus node is asked for focus, which it
   /// takes once the row's field is mounted (a row without a field mounts
-  /// one when its presenter sees [activeRow]). Nothing past the last row.
-  void activateRow(int i, TextSelection selection) {}
+  /// one when its presenter sees [activeRow]). When that focus arrives the
+  /// segment selection stays as it is then (a drag may have extended it),
+  /// so a selection across rows keeps its ends. Nothing past the last row.
+  ///
+  /// The host's activation seam (lead ruling Q1): the pointer layer, the
+  /// row menus and Check Document Now activate rows through it only.
+  void activateRow(int i, TextSelection selection) {
+    if (i < 0 || i >= _rows.length) return;
+    final row = _rows[i];
+    _select(selection);
+    _active = row;
+    _activeRow.value = i;
+    final node = row.focusNode;
+    _activating = node.hasFocus ? null : row;
+    node.requestFocus();
+  }
+
+  /// Row [i]'s field state (WI #128), or null past the last row and while
+  /// the row's text slot holds no field (a `RichText` stands in for it).
+  EditableTextState? rowField(int i) =>
+      i >= 0 && i < _rows.length ? _fieldStateOf(_rows[i]) : null;
+
+  /// The index of the row whose controller is [controller] (WI #128), or
+  /// null when it is no row of this segment.
+  int? rowIndexOf(TextEditingController controller) {
+    for (final (i, row) in _rows.indexed) {
+      if (identical(row.controller, controller)) return i;
+    }
+    return null;
+  }
 
   /// [row]'s field state, or null while its slot holds no field.
   EditableTextState? _fieldStateOf(_Row row) {
@@ -801,6 +859,7 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
       }
     }
 
+    if (_attachedUnder(row.fieldKey) == null) return null;
     row.fieldKey.currentContext?.visitChildElements(visit);
     return found;
   }
