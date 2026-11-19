@@ -361,15 +361,18 @@ class _SegmentKeyboardState extends State<SegmentKeyboard> {
         : selection.isCollapsed
         ? _inRow(spec, selection.extentOffset)
         : (forward ? selection.end : selection.start);
-    final lines = boxes.lines;
-    final at = lines.lastIndexWhere((line) => line.range.start <= origin);
-    final next = at + (forward ? 1 : -1);
+    // The origin's line and its neighbour only (WI #126): no walk of every
+    // line of every row.
+    final at = origin < k.rows.first.start ? null : boxes.lineAt(origin);
+    final next = at == null
+        ? null
+        : _neighbourLine(k.rows, boxes, at, forward: forward);
     final int to;
-    if (at < 0 || next < 0 || next >= lines.length) {
+    if (next == null) {
       if (!across) return false;
       to = forward ? k.rows.last.textEnd : k.rows.first.textStart;
     } else {
-      final line = lines[next];
+      final line = next;
       if (!across && _rowOf(k.rows, line.range.start) == k.row) return false;
       to = boxes.offsetAt(
         Offset(boxes.caretRect(origin).left, (line.top + line.bottom) / 2),
@@ -452,12 +455,42 @@ class _SegmentKeyboardState extends State<SegmentKeyboard> {
   /// text.
   int _lineEdge(_Keys k, int offset, {required bool forward}) {
     final row = k.rows[_rowOf(k.rows, offset)];
-    final lines = k.view.lineBoxes()?.lines ?? const <LineBox>[];
-    final at = lines.lastIndexWhere((line) => line.range.start <= offset);
-    final edge = at < 0
+    final boxes = k.view.lineBoxes();
+    final at = boxes == null || offset < k.rows.first.start
+        ? null
+        : boxes.lineAt(offset);
+    final edge = at == null
         ? (forward ? row.textEnd : row.textStart)
-        : (forward ? lines[at].range.end : lines[at].range.start);
+        : (forward ? at.range.end : at.range.start);
     return edge.clamp(row.textStart, row.textEnd);
+  }
+
+  /// The line after (or, not [forward], before) [line] among [boxes]' lines
+  /// (the segment's [rows]' lines, top to bottom), or null past the first or
+  /// last: found with a few [LineBoxSource.lineAt] reads, never a walk.
+  static LineBox? _neighbourLine(
+    List<RowSpec> rows,
+    LineBoxSource boxes,
+    LineBox line, {
+    required bool forward,
+  }) {
+    final start = line.range.start;
+    if (!forward) {
+      return start <= rows.first.start ? null : boxes.lineAt(start - 1);
+    }
+    // The next line starts at this one's end (a wrap), after its line break,
+    // or at the next row's start.
+    final row = _rowOf(rows, start);
+    final end = line.range.end;
+    for (final offset in [
+      end,
+      end + 1,
+      if (row + 1 < rows.length) rows[row + 1].start,
+    ]) {
+      final next = boxes.lineAt(offset);
+      if (next.range.start > start) return next;
+    }
+    return null;
   }
 
   /// Sets the segment selection to [selection]. When it lies in one row

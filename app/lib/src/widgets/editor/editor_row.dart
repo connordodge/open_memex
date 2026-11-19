@@ -317,10 +317,14 @@ class _RenderRowSelection extends RenderProxyBox {
     }
     if (start < 0 || start >= end) return const [];
 
-    final lines = boxes.lines;
-    // Only the row's own text as laid out now: the last line ends at the
-    // text's end.
-    if (lines.isEmpty || lines.last.range.end != length) return const [];
+    // Only the row's own text as laid out now (a field's text was compared
+    // above): the last line ends at the text's end and none starts after
+    // it. Read line by line, never a walk of every line (WI #126).
+    if (boxes is! RenderEditableLineBoxes &&
+        (boxes.lineAt(length).range.end != length ||
+            boxes.lineAt(length + 1).range.start > length)) {
+      return const [];
+    }
     final chars = start < math.min(end, length)
         ? boxes.boxesFor(TextRange(start: start, end: math.min(end, length)))
         : const <Rect>[];
@@ -331,7 +335,15 @@ class _RenderRowSelection extends RenderProxyBox {
     final out = <Rect>[];
     var firstLine = false;
     var lastLine = false;
-    for (final (i, line) in lines.indexed) {
+    // The row's first line, where a selection from above closes its seam.
+    final first = fromAbove ? boxes.lineAt(0) : null;
+    // Only the lines the selection reaches: from the one holding its start
+    // to the last one starting before its end.
+    LineBox? next = boxes.lineAt(start);
+    while (next != null && next.range.start < end) {
+      final line = next;
+      next = _nextLine(boxes, line, length);
+      final last = next == null;
       Rect? rect;
       for (final c in chars) {
         // Two measurements of one line may differ by a fraction of a pixel.
@@ -340,7 +352,6 @@ class _RenderRowSelection extends RenderProxyBox {
           rect = rect?.expandToInclude(c) ?? c;
         }
       }
-      final last = i == lines.length - 1;
       final lineEnd = line.range.end;
       final breaks = last
           ? breakAfter
@@ -371,9 +382,9 @@ class _RenderRowSelection extends RenderProxyBox {
       // Each line runs to the next line's top: measured line boxes can
       // leave a pixel between lines of different heights (a blank line
       // above a heading), which would show as a seam.
-      final bottom = last ? line.bottom : lines[i + 1].top;
+      final bottom = next?.top ?? line.bottom;
       out.add(Rect.fromLTRB(rect.left, line.top, rect.right, bottom));
-      if (i == 0) firstLine = true;
+      if (line.range.start == first?.range.start) firstLine = true;
       if (last) lastLine = true;
     }
     if (out.isEmpty) return const [];
@@ -394,6 +405,17 @@ class _RenderRowSelection extends RenderProxyBox {
       shifted.last = Rect.fromLTRB(r.left, r.top, r.right, size.height);
     }
     return shifted;
+  }
+
+  /// The line after [line] in [boxes], a row of [length] characters: the
+  /// first one starting after [line]'s start, at its end (a wrap) or after
+  /// its line break; null for the last line.
+  static LineBox? _nextLine(LineBoxSource boxes, LineBox line, int length) {
+    for (var offset = line.range.end; offset <= length; offset++) {
+      final next = boxes.lineAt(offset);
+      if (next.range.start > line.range.start) return next;
+    }
+    return null;
   }
 
   /// The heading level of the source line holding row-local [offset], null
