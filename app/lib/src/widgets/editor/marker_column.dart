@@ -293,9 +293,27 @@ class _MarkerColumnState extends State<MarkerColumn> {
       );
     }
     if (place != null) column = _MarkerColumnArea(child: column);
-    return TextFieldTapRegion(child: column);
+    return _MarkerColumnBox(child: TextFieldTapRegion(child: column));
   }
 }
+
+/// Whether [node] is a [MarkerColumn]'s outermost render object (WI #127):
+/// the row-geometry accessor's text-slot lookup (`textSlotBox`) skips its
+/// subtree, so a marker's own text (a number, a revealed marker) never
+/// stands in for its row's text.
+bool isMarkerColumnBox(RenderObject node) => node is _RenderMarkerColumnBox;
+
+/// Marks a [MarkerColumn]'s subtree in the render tree (layout, paint and
+/// hit testing are its child's).
+class _MarkerColumnBox extends SingleChildRenderObjectWidget {
+  const _MarkerColumnBox({required super.child});
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderMarkerColumnBox();
+}
+
+class _RenderMarkerColumnBox extends RenderProxyBox {}
 
 /// Whether [result]'s hit-test path passes through an editor row's
 /// [MarkerColumn] (not a read-only one or one outside a segment's rows):

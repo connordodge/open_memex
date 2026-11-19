@@ -9,6 +9,7 @@
 import 'dart:math' show min;
 import 'dart:typed_data';
 
+import 'attachment_ref.dart' show parseAttachmentDestination;
 import 'segments.dart' show parseTransclusions;
 import 'tag_grammar.dart' show findTagsInLine;
 
@@ -178,9 +179,12 @@ final class LinkToken extends InlineToken {
     required this.textRange,
     required this.urlRange,
     required this.url,
+    this.image = false,
   }) : super(kind: InlineTokenKind.link);
 
-  /// The text between `[` and `]` (equal to [content]).
+  /// The text between `[` and `]` (equal to [content]). For an attachment
+  /// reference with empty brackets it is the last path segment of the URL,
+  /// as written, which shows in place of the text (Spec #123 R27, R34).
   final InlineRange textRange;
 
   /// The URL between `(` and `)`.
@@ -188,6 +192,10 @@ final class LinkToken extends InlineToken {
 
   /// The URL text, exactly as written.
   final String url;
+
+  /// Whether this is an image `![text](url)` (Spec #123 R29, ruling D9):
+  /// its `!` belongs to the first marker.
+  final bool image;
 }
 
 /// A transclusion token left in a text segment
@@ -218,15 +226,20 @@ int debugTokenizeInlineCalls = 0;
 /// over the wikilink inside it), then `[text](url)`, then `#tag`, then
 /// emphasis and strike. A tag is an atom for emphasis, so a `_` inside
 /// `#my_tag_x` never opens emphasis, and `*a #x*` keeps its emphasis with the
-/// tag nested inside it. A token may only nest inside the
+/// tag nested inside it. An image `![alt](url)` is a [LinkToken] with
+/// [LinkToken.image] set and its `!` in the first marker (Spec #123 R29,
+/// ruling D9). A token may only nest inside the
 /// [InlineToken.content] of a link, emphasis or strike token; nothing nests
 /// inside a code span, wikilink, transclusion, escape or tag, and no token
 /// touches another's markers.
 ///
 /// Rules: code spans match equal-length backtick runs; `_` never opens or
 /// closes inside a word; no token spans a line terminator; unclosed
-/// delimiters stay literal (no token). No tokens for bare URLs,
-/// `<autolinks>`, `==highlight==`, HTML, images, footnotes or math (Spec
+/// delimiters stay literal (no token). Empty brackets give no token, except
+/// for an attachment reference (`[](objects/…)` or `![](objects/…)`): its
+/// content is the URL's last path segment, as written. An attachment's text
+/// (its file name) holds no emphasis or strike. No tokens for bare
+/// URLs, `<autolinks>`, `==highlight==`, HTML, footnotes or math (Spec
 /// R38). Tables are line grammar, not inline tokens: `classifyLines` and
 /// `markdown_table.dart` find them (Spec #197).
 ///
@@ -273,9 +286,8 @@ final RegExp _bareUrlSchemeRe = RegExp(
   caseSensitive: false,
 );
 
-/// An image `![alt](url)` on one line: the tokenizer gives images no token,
-/// so [bareUrlRanges] finds the url (group 1) itself, to leave it out (or to
-/// report it with `includeImageUrls`).
+/// An image `![alt](url)` on one line: [bareUrlRanges] finds the url
+/// (group 1) with this pattern, to report it with `includeImageUrls`.
 final RegExp _imageUrlRe = RegExp(r'!\[[^\[\]\n]*\]\(([^\s()]+)\)');
 
 /// Sentence punctuation that never ends a bare URL.
@@ -304,10 +316,10 @@ bool _isSpaceUnit(int unit) =>
 /// (repeatedly), and so is a `)` that has no `(` to match inside the URL. The
 /// `(url)` part of a `[text](url)` link (or of an image link) is never
 /// reported as a bare URL: [tokenizeInline] finds the link and the caller
-/// skips its url, so nothing is counted twice. The tokenizer gives an image
-/// no token, so with [includeImageUrls] the `(url)` of each `![alt](url)`
-/// image (any scheme, or a relative path) is reported too, in order among the
-/// bare URLs; this is the one place that shape is matched. A URL cut down to
+/// skips its url, so nothing is counted twice. With [includeImageUrls] the
+/// `(url)` of each `![alt](url)` image (any scheme, or a relative path) is
+/// reported too, in order among the bare URLs; this is the one place that
+/// shape is matched. A URL cut down to
 /// its scheme is not reported. The cost is linear in the length of [text].
 List<InlineRange> bareUrlRanges(String text, {bool includeImageUrls = false}) {
   final links = tokenizeInline(text).whereType<LinkToken>().toList()
@@ -719,8 +731,8 @@ final class _LineTokenizer {
       _occupied(offset) == _free &&
       !_escaped.contains(offset);
 
-  /// `[text](url)` links and `![alt](url)` images (images give no token but
-  /// stay opaque to emphasis).
+  /// `[text](url)` links and `![alt](url)` images (link tokens with the
+  /// image flag, opaque to the emphasis around them).
   void _findLinks() {
     var i = start;
     while (i < end) {
@@ -749,7 +761,7 @@ final class _LineTokenizer {
       }
       close++;
     }
-    if (close == open + 1) return null;
+    final emptyText = close == open + 1;
     final paren = close + 1;
     if (paren >= end || !_isDelimiter(paren, _openParen)) return null;
     // The URL: no whitespace, no unescaped parentheses, nothing occupied.
@@ -765,27 +777,54 @@ final class _LineTokenizer {
     }
     if (urlEnd == paren + 1) return null;
     final spanEnd = urlEnd + 1;
-    final isImage = open > start && _isDelimiter(open - 1, _bang);
-    if (isImage) {
-      _atomEnd[open - 1] = spanEnd;
-      return spanEnd;
-    }
-    final textRange = InlineRange(open + 1, close);
     final urlRange = InlineRange(paren + 1, urlEnd);
-    _atomEnd[open] = spanEnd;
-    _linkTexts.add(textRange);
+    final url = urlRange.of(text);
+    final isImage = open > start && _isDelimiter(open - 1, _bang);
+    final spanStart = isImage ? open - 1 : open;
+    final isAttachment = parseAttachmentDestination(url) != null;
+    final InlineRange textRange;
+    final List<InlineRange> markers;
+    if (emptyText) {
+      // Empty brackets: only an attachment reference, shown by its name.
+      if (!isAttachment) return null;
+      final nameStart = urlRange.start + _nameOffset(url);
+      textRange = InlineRange(nameStart, urlEnd);
+      markers = [
+        InlineRange(spanStart, nameStart),
+        InlineRange(urlEnd, spanEnd),
+      ];
+    } else {
+      textRange = InlineRange(open + 1, close);
+      markers = [InlineRange(spanStart, open + 1), InlineRange(close, spanEnd)];
+      // An attachment's text is its file name, shown as written: a `_` or
+      // `*` in it never opens emphasis (Spec #123 R27, R34).
+      if (!isAttachment) _linkTexts.add(textRange);
+    }
+    _atomEnd[spanStart] = spanEnd;
     _linkUrls.add(urlRange);
     out.add(
       LinkToken(
-        span: InlineRange(open, spanEnd),
-        markers: [InlineRange(open, open + 1), InlineRange(close, spanEnd)],
+        span: InlineRange(spanStart, spanEnd),
+        markers: markers,
         content: textRange,
         textRange: textRange,
         urlRange: urlRange,
-        url: urlRange.of(text),
+        url: url,
+        image: isImage,
       ),
     );
     return spanEnd;
+  }
+
+  /// The offset in [url], an attachment destination, where its name (the
+  /// last path segment, as written) starts: after the last `/` or `%2F`.
+  static int _nameOffset(String url) {
+    var offset = url.lastIndexOf('/') + 1;
+    for (final slash in const ['%2F', '%2f']) {
+      final at = url.lastIndexOf(slash);
+      if (at >= 0 && at + slash.length > offset) offset = at + slash.length;
+    }
+    return offset;
   }
 
   /// Emphasis and strike in `[from, to)`, stepping over atoms (CommonMark's

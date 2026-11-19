@@ -20,6 +20,7 @@ import 'package:open_memex_app/src/state/ui_state_store.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/widgets/editor/echo_arrival_highlight.dart';
 import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
+import 'package:open_memex_app/src/widgets/editor/segment_view.dart';
 import 'package:open_memex_app/src/widgets/editor/segmented_body.dart';
 import 'package:open_memex_app/src/widgets/editor/text_segment.dart';
 import 'package:open_memex_app/src/widgets/note_editor.dart';
@@ -317,20 +318,41 @@ class NoteRevealHarness {
     return tester.getRect(rowFinder(segment, row.index, under: under));
   }
 
+  /// Row [row] of text segment [segment]'s geometry through the rows host's
+  /// row-geometry accessor (`SegmentViewState.rowBoxes`, WI #127): its
+  /// field's, its RichText's or its block's line boxes. Fails when the row
+  /// reports none.
+  ///
+  /// TEST-CHANGE (WI #127, Spec #122 Req 38): [lineBoxOf] and [lineCount]
+  /// read the accessor instead of `findRenderEditable` on the row.
+  LineBoxSource rowBoxes(int segment, int row, {Finder? under}) {
+    final host = tester.state<SegmentViewState>(
+      find
+          .descendant(
+            of: _in(under, find.byKey(ValueKey('text-segment-$segment'))),
+            matching: find.byType(SegmentView),
+            matchRoot: true,
+          )
+          .first,
+    );
+    final boxes = host.rowBoxes(row);
+    if (boxes == null) {
+      throw TestFailure('editor row $segment-$row reports no geometry');
+    }
+    return boxes;
+  }
+
   /// The global rect of the visual line holding segment offset [local] of
-  /// segment [segment], from the row field's line boxes (its real top and
-  /// bottom, the field's full width).
+  /// segment [segment], from the row's line boxes through the accessor
+  /// ([rowBoxes]): its real top and bottom, the row's full width.
   Rect lineBoxOf(int segment, int local, {Finder? under}) {
     final row = rowOf(segment, local, under: under);
-    final editable = findRenderEditable(
-      tester.renderObject(rowFinder(segment, row.index, under: under)),
-    );
-    expect(editable, isNotNull, reason: 'row ${row.index} has a field');
-    final lines = RenderEditableLineBoxes(editable!).lines;
-    final line = lineHolding(lines, row.spec.toLocal(local));
+    final boxes = rowBoxes(segment, row.index, under: under);
+    final box = boxes.box;
+    final line = lineHolding(boxes.lines, row.spec.toLocal(local));
     return Rect.fromPoints(
-      editable.localToGlobal(Offset(0, line.top)),
-      editable.localToGlobal(Offset(editable.size.width, line.bottom)),
+      box.localToGlobal(Offset(0, line.top)),
+      box.localToGlobal(Offset(box.size.width, line.bottom)),
     );
   }
 
@@ -350,10 +372,7 @@ class NoteRevealHarness {
   /// How many visual lines hold `[start, end)` of segment [segment].
   int lineCount(int segment, int start, int end, {Finder? under}) {
     final row = rowOf(segment, start, under: under);
-    final editable = findRenderEditable(
-      tester.renderObject(rowFinder(segment, row.index, under: under)),
-    )!;
-    final lines = RenderEditableLineBoxes(editable).lines;
+    final lines = rowBoxes(segment, row.index, under: under).lines;
     final from = row.spec.toLocal(start);
     final to = row.spec.toLocal(end);
     return lines.where((l) => l.range.end > from && l.range.start < to).length;

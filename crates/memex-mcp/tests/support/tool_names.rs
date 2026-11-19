@@ -59,9 +59,15 @@ pub const FEEDBACK_TOOLS: &[&str] = &[
 /// The note edit tools (#11 fills this block; owner Spec #7).
 pub const EDIT_TOOLS: &[&str] = &["edit_note"];
 
+/// The attachment tools (#138 fills this block; owner Spec #123, ticket #121).
+pub const ATTACHMENT_TOOLS: &[&str] = &["add_attachment", "get_attachment"];
+
 /// How many tools the server exposes: the sum of every block.
-pub const TOOL_COUNT: usize =
-    EXISTING_TOOLS.len() + TAG_TOOLS.len() + FEEDBACK_TOOLS.len() + EDIT_TOOLS.len();
+pub const TOOL_COUNT: usize = EXISTING_TOOLS.len()
+    + TAG_TOOLS.len()
+    + FEEDBACK_TOOLS.len()
+    + EDIT_TOOLS.len()
+    + ATTACHMENT_TOOLS.len();
 
 /// Every tool name of every block, sorted by name.
 pub fn all_tool_names() -> Vec<&'static str> {
@@ -70,6 +76,7 @@ pub fn all_tool_names() -> Vec<&'static str> {
         .chain(TAG_TOOLS)
         .chain(FEEDBACK_TOOLS)
         .chain(EDIT_TOOLS)
+        .chain(ATTACHMENT_TOOLS)
         .copied()
         .collect();
     names.sort_unstable();

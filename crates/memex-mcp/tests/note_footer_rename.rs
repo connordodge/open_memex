@@ -324,7 +324,12 @@ fn tool_list_tests_read_support_tool_names_and_carry_no_count_in_their_names() {
 #[test]
 fn shared_tool_list_has_one_block_per_feature_and_distinct_sorted_names() {
     let src = mcp_test_file("support/tool_names.rs");
-    for block in ["EXISTING_TOOLS", "TAG_TOOLS", "FEEDBACK_TOOLS"] {
+    for block in [
+        "EXISTING_TOOLS",
+        "TAG_TOOLS",
+        "FEEDBACK_TOOLS",
+        "ATTACHMENT_TOOLS",
+    ] {
         assert!(
             Regex::new(&format!(r"(?m)^pub const {block}\b"))
                 .unwrap()

@@ -26,6 +26,7 @@ import '../editor/excerpt_card.dart' show excerptRenderProvider;
 import '../editor/find_decoration.dart';
 import '../editor/line_boxes.dart';
 import '../editor/note_reveal.dart' show revealScrollOffset;
+import '../editor/source_surface.dart' show sourceFieldLineBoxes;
 import 'find_bar.dart';
 import 'find_source_controller.dart';
 import 'find_sources.dart';
@@ -634,21 +635,20 @@ class _FindInNoteHostState extends ConsumerState<FindInNoteHost> {
         if (!mounted || !widget.sourceMode) return;
         final context = widget.bodyFocus.context;
         if (context == null || !context.mounted) return;
-        final editable = findRenderEditable(context.findRenderObject());
+        // Source mode's one field: its geometry comes from the Source
+        // surface (WI #127), not from an editor row.
+        final boxes = sourceFieldLineBoxes(context.findRenderObject());
         final scrollable = Scrollable.maybeOf(context);
-        if (editable == null ||
-            !editable.attached ||
-            !editable.hasSize ||
+        if (boxes == null ||
+            !boxes.editable.attached ||
             scrollable == null ||
-            match.start > editable.plainText.length) {
+            match.start > boxes.editable.plainText.length) {
           return;
         }
+        final editable = boxes.editable;
         final viewport = RenderAbstractViewport.maybeOf(editable);
         if (viewport == null) return;
-        final line = lineHolding(
-          RenderEditableLineBoxes(editable).lines,
-          match.start,
-        );
+        final line = lineHolding(boxes.lines, match.start);
         final rect = Rect.fromLTRB(
           0,
           line.top,
