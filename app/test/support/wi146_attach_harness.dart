@@ -73,6 +73,9 @@ class Wi146HeldAttachments extends FakeAttachmentsAccess {
   bool holding = false;
   final List<Completer<void>> _holds = [];
 
+  /// File names whose `add` throws an [Exception] instead of answering.
+  final Set<String> throwingNames = {};
+
   /// Stores still waiting.
   int get pending => _holds.where((c) => !c.isCompleted).length;
 
@@ -85,8 +88,12 @@ class Wi146HeldAttachments extends FakeAttachmentsAccess {
   }
 
   @override
-  Future<AttachmentAddResult> add(String filePath, String? name) =>
-      _held(super.add(filePath, name));
+  Future<AttachmentAddResult> add(String filePath, String? name) {
+    if (throwingNames.contains(filePath.split('/').last)) {
+      return Future.error(Exception('disk gone'));
+    }
+    return _held(super.add(filePath, name));
+  }
 
   @override
   Future<AttachmentAddResult> addBytes(Uint8List bytes, String name) =>

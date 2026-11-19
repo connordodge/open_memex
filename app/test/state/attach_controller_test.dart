@@ -6,6 +6,7 @@
 // while storing. The editor is read through its handles and
 // `editorControllerProvider`; one undo step is checked with Cmd+Z.
 
+import 'package:flutter/material.dart' show FocusManager, SnackBar;
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -615,6 +616,160 @@ void main() {
       );
       expect(r.body, wi146Example);
     });
+  });
+
+  group('stores that go wrong or have nothing to do (AC5)', () {
+    testWidgets(
+      'a store that throws becomes a failure toast and the other files still attach',
+      (tester) async {
+        final r = await wi146Pump(tester);
+        await r.open();
+        await r.caretAfter('Review the draft');
+        r.attachments.throwingNames.add('spec.pdf');
+
+        await _wi146Attach(r, const [wi146MockPath, wi146SpecPath]);
+        expect(
+          find.text("Couldn't attach spec.pdf: Exception: disk gone"),
+          findsOneWidget,
+        );
+        expect(
+          r.body,
+          'Review the draft\n\n${wi146Line('mock.png')}\n\nNext steps',
+        );
+        expect(find.textContaining('Attaching'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'a failed pasted image shows the failure toast with its name and inserts nothing',
+      (tester) async {
+        final r = await wi146Pump(tester);
+        await r.open();
+        await r.caretAfter('Review the draft');
+        r.attachments.addBytesResults.add(
+          const AttachmentAddFailed(
+            AttachmentAddFailureReason.unsupported,
+            'Not supported here.',
+          ),
+        );
+        r.bodyChanges.clear();
+        const name = 'Pasted image 2026-11-18 14.03.22.png';
+
+        unawaited(
+          r.controller.attachBytes(
+            r.context,
+            Uint8List.fromList(const [1, 2, 3]),
+            name,
+          ),
+        );
+        await r.releaseAll();
+        expect(
+          find.text("Couldn't attach $name: Not supported here."),
+          findsOneWidget,
+        );
+        expect(r.body, wi146Example);
+        expect(r.bodyChanges, isEmpty);
+      },
+    );
+
+    testWidgets('an action with no paths stores nothing and shows no toast', (
+      tester,
+    ) async {
+      final r = await wi146Pump(tester);
+      await r.open();
+      await r.caretAfter('Review the draft');
+      r.bodyChanges.clear();
+
+      await _wi146Attach(r, const []);
+      expect(r.attachments.addCalls, isEmpty);
+      expect(find.byType(SnackBar), findsNothing);
+      expect(r.bodyChanges, isEmpty);
+    });
+
+    testWidgets(
+      'a closed note toast and a failure toast both show, the closed one first',
+      (tester) async {
+        final r = await wi146Pump(tester);
+        await r.open();
+        await r.caretAfter('Review the draft');
+        r.attachments.addResults
+          ..add(AttachmentAdded(fakeAddedAttachment('mock.png')))
+          ..add(
+            const AttachmentAddFailed(
+              AttachmentAddFailureReason.tooLarge,
+              _wi146BigMessageAscii,
+            ),
+          );
+        r.attachments.holding = true;
+
+        _wi146Start(r, const [wi146MockPath, _wi146BigPath]);
+        await pumpFrames(tester);
+        await r.open(wi146OtherId);
+        await r.releaseAll();
+
+        expect(find.textContaining('was closed'), findsOneWidget);
+        expect(find.textContaining("Couldn't attach"), findsNothing);
+        final failure = find.textContaining("Couldn't attach");
+        for (var i = 0; i < 30 && failure.evaluate().isEmpty; i++) {
+          await tester.pump(const Duration(milliseconds: 500));
+        }
+        expect(
+          find.text("Couldn't attach big.mov: $_wi146BigMessageAscii"),
+          findsOneWidget,
+          reason: 'the failure toast follows the closed toast',
+        );
+      },
+    );
+  });
+
+  group('the anchor and caret edges (AC4)', () {
+    testWidgets(
+      'in Source mode typing on the anchor line while storing keeps the group after that line',
+      (tester) async {
+        const body = 'Alpha\nBeta\nGamma';
+        final r = await wi146Pump(tester, body: body);
+        await r.open();
+        await r.sourceCaret('Alpha\nBeta'.length);
+        r.attachments.holding = true;
+
+        _wi146Start(r, const [wi146MockPath]);
+        await pumpFrames(tester);
+        const typed = 'Alpha\nBeta!!\nGamma';
+        await r.sourceInput(
+          const TextEditingValue(
+            text: typed,
+            selection: TextSelection.collapsed(offset: typed.length),
+          ),
+        );
+        await pumpFrames(tester);
+
+        await r.releaseAll();
+        expect(
+          r.robot.sourceText,
+          'Alpha\nBeta!!\n\n${wi146Line('mock.png')}\n\nGamma',
+        );
+      },
+    );
+
+    testWidgets(
+      'in Source mode with no caret since the mode started the group goes at the end of the person section',
+      (tester) async {
+        const body = 'Alpha\nBeta\nGamma';
+        final r = await wi146Pump(tester, body: body);
+        await r.open();
+        await r.robot.toggleSource();
+        await pumpFrames(tester);
+        expect(r.robot.sourceSurface, findsOneWidget);
+        FocusManager.instance.primaryFocus?.unfocus();
+        await pumpFrames(tester);
+
+        await _wi146Attach(r, const [wi146MockPath]);
+        expect(
+          r.robot.sourceText,
+          'Alpha\nBeta\nGamma\n\n${wi146Line('mock.png')}',
+        );
+      },
+    );
   });
 
   group('the pasted image name (AC6)', () {

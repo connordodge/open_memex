@@ -370,4 +370,112 @@ void main() {
       },
     );
   });
+  group('anchors and bodies at the edges (AC2)', () {
+    test(
+      'an anchor line past the end of the body puts the group at the end of the person section',
+      () {
+        final r = _wi146Plan('Review\nNext', anchorLine: 99);
+        expect(r.text, 'Review\nNext\n\n$_wi146Mock\n$_wi146Spec');
+        expect(r.caret, r.text.length);
+      },
+    );
+
+    test(
+      'a daily note whose first line is the Topics marker gets the group above the footer',
+      () {
+        final body = assembleDailyBody('', const ['Work']);
+        expect(body, startsWith(topicsMarker), reason: 'the footer is first');
+        for (final anchor in const [0, 1, null]) {
+          final r = _wi146Plan(body, anchorLine: anchor, daily: true);
+          expect(
+            r.text,
+            '$_wi146Mock\n$_wi146Spec\n$body',
+            reason: 'anchor $anchor',
+          );
+          expect(
+            r.caret,
+            '$_wi146Mock\n$_wi146Spec'.length,
+            reason: 'the end of the group line',
+          );
+        }
+      },
+    );
+
+    test(
+      'an unclosed fence puts the group after its last line with the caret at the end',
+      () {
+        const body = 'Top\n```\ncode\nmore';
+        final r = _wi146Plan(body, anchorLine: 1);
+        expect(r.text, '$body\n\n$_wi146Mock\n$_wi146Spec');
+        expect(r.caret, r.text.length);
+      },
+    );
+
+    test(
+      'a CRLF body keeps its terminators and puts the caret at the start of the blank line after the group',
+      () {
+        const body = 'Review\r\n\r\nNext';
+        final r = _wi146Plan(body, anchorLine: 0);
+        expect(r.text, 'Review\n\n$_wi146Mock\n$_wi146Spec\r\n\r\nNext');
+        expect(r.text.substring(r.caret), startsWith('\r\nNext'));
+      },
+    );
+
+    test('a whitespace only line away from the anchor is left as it is', () {
+      final r = _wi146Plan('Intro\n \nOutro', anchorLine: 2);
+      expect(r.text, 'Intro\n \nOutro\n\n$_wi146Mock\n$_wi146Spec');
+    });
+  });
+
+  group('carrying the anchor line through an edit (AC4)', () {
+    test('an unchanged body keeps the line', () {
+      expect(carryAttachmentAnchor('A\nB\nC', 'A\nB\nC', 1), 1);
+    });
+
+    test('a line inserted above moves the anchor down by one', () {
+      expect(carryAttachmentAnchor('A\nB\nC', 'New\nA\nB\nC', 1), 2);
+    });
+
+    test('several lines inserted above move the anchor down by that many', () {
+      expect(carryAttachmentAnchor('A\nB\nC', 'N1\nN2\nA\nB\nC', 2), 4);
+    });
+
+    test('a line removed above moves the anchor up by one', () {
+      expect(carryAttachmentAnchor('A\nB\nC', 'B\nC', 2), 1);
+    });
+
+    test('text changed on a line above keeps the anchor index', () {
+      expect(carryAttachmentAnchor('A\nB\nC', 'A!\nB\nC', 2), 2);
+    });
+
+    test('an edit below the anchor keeps its index', () {
+      expect(carryAttachmentAnchor('A\nB\nC', 'A\nB\nC\nD', 1), 1);
+      expect(carryAttachmentAnchor('A\nB\nC', 'A\nB\nC!', 0), 0);
+    });
+
+    test('a line added at the end below the anchor keeps its index', () {
+      expect(carryAttachmentAnchor('A\nB', 'A\nB\nC', 0), 0);
+    });
+
+    test('typing on the anchor line keeps its index', () {
+      expect(carryAttachmentAnchor('A\nB\nC', 'A\nB!\nC', 1), 1);
+    });
+
+    test('Enter inside the anchor line keeps the index of its first half', () {
+      expect(carryAttachmentAnchor('A\nBC\nD', 'A\nB\nC\nD', 1), 1);
+    });
+
+    test('removing the anchor line gives no line', () {
+      expect(carryAttachmentAnchor('A\nB\nC', 'A\nC', 1), isNull);
+    });
+
+    test('replacing the anchor line along with the next gives no line', () {
+      expect(carryAttachmentAnchor('A\nB\nC\nD', 'A\nX\nD', 1), isNull);
+      expect(carryAttachmentAnchor('A\nB\nC\nD', 'A\nX\nD', 2), isNull);
+    });
+
+    test('a line below a removed line moves up past it', () {
+      expect(carryAttachmentAnchor('A\nB\nC\nD', 'A\nD', 3), 1);
+    });
+  });
 }
