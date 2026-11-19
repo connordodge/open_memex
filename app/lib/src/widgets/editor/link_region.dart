@@ -343,7 +343,9 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
         unawaited(_openDay(date));
       case LinkToken(:final url):
         // An attachment opens through the vault's attachments domain, with
-        // its decoded path; never the URL opener (Spec #123 D10, R33).
+        // its decoded path; never the URL opener (Spec #123 D10, R33). A
+        // failed open, or no open vault, shows nothing yet: #143 wires its
+        // shared R42 toast to this one open call.
         final attachment = parseAttachmentDestination(url);
         if (attachment == null) {
           unawaited(ref.read(urlOpenerProvider).open(url));
