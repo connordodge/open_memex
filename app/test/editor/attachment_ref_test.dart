@@ -275,6 +275,28 @@ void main() {
       },
     );
 
+    test(
+      'parseAttachmentDestination refuses a leading byte order mark like Rust',
+      () {
+        // Control: the same destination without the mark is accepted.
+        expect(parseAttachmentDestination('$_dir/x.png'), isNotNull);
+        // Percent-encoded BOM bytes in front of the path.
+        expect(parseAttachmentDestination('%EF%BB%BF$_dir/x.png'), isNull);
+        expect(parseAttachmentDestination('%ef%bb%bf$_dir/x.png'), isNull);
+        // A literal U+FEFF in front of the path.
+        expect(parseAttachmentDestination('\uFEFF$_dir/x.png'), isNull);
+        expect(
+          parseAttachmentReference('![x.png](%EF%BB%BF$_dir/x.png)'),
+          isNull,
+        );
+        // Only a leading mark is refused: one inside the name is kept.
+        expect(
+          _some(parseAttachmentDestination('$_dir/a%EF%BB%BFb.png')).name,
+          'a\uFEFFb.png',
+        );
+      },
+    );
+
     test('parseAttachmentDestination decodes an escape at the very end', () {
       expect(_some(parseAttachmentDestination('$_dir/100%25')).name, '100%');
       expect(_some(parseAttachmentDestination('$_dir/a%41')).name, 'aA');
@@ -538,6 +560,15 @@ void main() {
         expect(executableExtensions, isNotEmpty);
       },
     );
+
+    test('extension matching folds ASCII letters only like Rust', () {
+      // U+212A KELVIN SIGN lower-cases to k in Dart but is not ASCII.
+      expect(isExecutableName('x.wor\u212Aflow'), isFalse);
+      expect(isExecutableName('x.worKflow'), isTrue);
+      expect(isExecutableName('x.\u212Aflow'), isFalse);
+      expect(isInlineImageName('x.p\u212Ang'), isFalse);
+      expect(isInlineImageName('x.\u0130mg'), isFalse);
+    });
 
     test('an extension is what follows the last dot, even for a dotfile', () {
       // The Rust core: `extension` is what follows a name's last `.`.
