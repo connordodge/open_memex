@@ -22,7 +22,8 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
 use serde::Serialize;
@@ -71,6 +72,9 @@ const EMPTY_NAME: &str = "file";
 /// Temp files of a store live directly in `objects/` under this prefix (R2);
 /// the backup walk skips them.
 pub(crate) const TMP_PREFIX: &str = ".tmp-";
+
+/// The executable permission bits (owner, group, other).
+const EXEC_BITS: u32 = 0o111;
 
 const OCTET_STREAM: &str = "application/octet-stream";
 
@@ -194,7 +198,14 @@ fn folder() -> MemexError {
 /// so a FIFO is refused rather than waited on. Its bytes are hashed first;
 /// when the final path already holds a file of the same size, nothing is
 /// written. Otherwise they are read again into `objects/.tmp-<random>`,
-/// checked against the first hash, and renamed into place.
+/// checked against the first hash, and renamed into place. A file it writes
+/// keeps the source's executable permission bits, so [`is_executable`]
+/// still sees them (R33); a reused file is left as it is.
+///
+/// On a case- or normalization-insensitive volume the final path may name a
+/// file stored under another spelling of the name; the returned name, path
+/// and markdown are then that file's spelling on disk, so the reference
+/// still names the file after a restore onto a case-sensitive volume.
 pub fn store_file(vault: &Path, source: &Path, name: Option<&str>) -> Result<StoredAttachment> {
     let given = match name {
         Some(name) => name.to_string(),
@@ -229,13 +240,15 @@ pub fn store_file(vault: &Path, source: &Path, name: Option<&str>) -> Result<Sto
         return Err(not_regular(&name));
     }
 
+    let exec_bits = opened.permissions().mode() & EXEC_BITS;
+
     let (hash, size) = digest(&name, &mut file, &mut io::sink())?;
     let target = Target::new(&hash, name);
     if target.reusable(vault, size)? {
-        return Ok(target.stored(size));
+        return target.on_disk(vault)?.stored(size);
     }
     file.seek(SeekFrom::Start(0))?;
-    target.write(vault, |tmp| {
+    target.write(vault, exec_bits, |tmp| {
         let (again, copied) = digest(&target.name, &mut file, tmp)?;
         if again != hash || copied != size {
             return Err(MemexError::Io(io::Error::other(format!(
@@ -245,11 +258,13 @@ pub fn store_file(vault: &Path, source: &Path, name: Option<&str>) -> Result<Sto
         }
         Ok(())
     })?;
-    Ok(target.stored(size))
+    target.on_disk(vault)?.stored(size)
 }
 
 /// Stores `bytes` under a stored name that starts from `name`. When the
 /// final path already holds a file of the same size, nothing is written.
+/// The returned spelling of the name is the one on disk, as for
+/// [`store_file`].
 pub fn store_bytes(vault: &Path, bytes: &[u8], name: &str) -> Result<StoredAttachment> {
     let name = stored_name(name);
     let size = bytes.len() as u64;
@@ -258,9 +273,9 @@ pub fn store_bytes(vault: &Path, bytes: &[u8], name: &str) -> Result<StoredAttac
     }
     let target = Target::new(&hex(&Sha256::digest(bytes)), name);
     if !target.reusable(vault, size)? {
-        target.write(vault, |tmp| Ok(tmp.write_all(bytes)?))?;
+        target.write(vault, 0, |tmp| Ok(tmp.write_all(bytes)?))?;
     }
-    Ok(target.stored(size))
+    target.on_disk(vault)?.stored(size)
 }
 
 /// Hashes up to one byte more than the limit of `from`, copying what it reads
@@ -320,10 +335,16 @@ impl Target {
         }
     }
 
-    /// Fills a new `objects/.tmp-<random>` with `fill`, flushes it to disk and
-    /// renames it to the final path, replacing what is there. On failure the
-    /// temp file is removed and the final path is untouched.
-    fn write(&self, vault: &Path, fill: impl FnOnce(&mut File) -> Result<()>) -> Result<()> {
+    /// Fills a new `objects/.tmp-<random>` with `fill`, adds `exec_bits` to
+    /// its permissions, flushes it to disk and renames it to the final path,
+    /// replacing what is there. On failure the temp file is removed and the
+    /// final path is untouched.
+    fn write(
+        &self,
+        vault: &Path,
+        exec_bits: u32,
+        fill: impl FnOnce(&mut File) -> Result<()>,
+    ) -> Result<()> {
         let objects = vault.join(OBJECTS_DIR);
         // Not `create_dir_all`: a missing vault folder is an error.
         match fs::create_dir(&objects) {
@@ -335,6 +356,12 @@ impl Target {
             .permissions(fs::Permissions::from_mode(0o644))
             .tempfile_in(&objects)?;
         fill(tmp.as_file_mut())?;
+        if exec_bits != 0 {
+            // fchmod: not narrowed by the umask, unlike the mode at creation.
+            let mode = tmp.as_file().metadata()?.permissions().mode();
+            tmp.as_file()
+                .set_permissions(fs::Permissions::from_mode(mode | exec_bits))?;
+        }
         tmp.as_file().sync_all()?;
         let path = vault.join(&self.rel);
         if let Some(parent) = path.parent() {
@@ -344,14 +371,53 @@ impl Target {
         Ok(())
     }
 
-    fn stored(&self, size: u64) -> StoredAttachment {
-        StoredAttachment {
+    /// This target under the name its final path has on disk. Where the
+    /// volume matches names in any case or Unicode normalization, the final
+    /// path may resolve to a file stored as another spelling (`Photo.PNG` for
+    /// `photo.png`); that spelling is returned, so the reference and the
+    /// backup member agree. An exact entry always wins.
+    fn on_disk(self, vault: &Path) -> Result<Target> {
+        let path = vault.join(&self.rel);
+        let Some(dir) = path.parent() else {
+            return Ok(self);
+        };
+        let want = fs::symlink_metadata(&path)?;
+        let mut variant = None;
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let file_name = entry.file_name();
+            if file_name.as_bytes() == self.name.as_bytes() {
+                return Ok(self);
+            }
+            if variant.is_some() {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if meta.dev() != want.dev() || meta.ino() != want.ino() {
+                continue;
+            }
+            if let Some(spelled) = file_name.to_str() {
+                if stored_name(spelled) == spelled {
+                    variant = Some(spelled.to_string());
+                }
+            }
+        }
+        Ok(match variant {
+            Some(spelled) => Target::new(&self.hash, spelled),
+            None => self,
+        })
+    }
+
+    fn stored(&self, size: u64) -> Result<StoredAttachment> {
+        Ok(StoredAttachment {
             markdown: markdown_for(&self.name, &self.hash),
             path: self.rel.clone(),
             name: self.name.clone(),
             size,
             mime: mime_for(&self.name).to_string(),
-        }
+        })
     }
 }
 
@@ -362,7 +428,8 @@ impl Target {
 /// - leading and trailing whitespace is trimmed;
 /// - a name over 255 UTF-8 bytes is cut on a character boundary, keeping its
 ///   extension (the name's last `.` and what follows, when that is shorter
-///   than 255 bytes);
+///   than 255 bytes), and whitespace the cut leaves before the extension or
+///   at the end is trimmed;
 /// - an empty result, `.` or `..` becomes `file`.
 pub fn stored_name(given: &str) -> String {
     let replaced: String = given
@@ -384,7 +451,9 @@ pub fn stored_name(given: &str) -> String {
 }
 
 /// `name` cut to [`MAX_NAME_BYTES`], keeping its extension when it has one
-/// that leaves room.
+/// that leaves room. Whitespace the cut leaves at the end of the stem (or of
+/// a name with no extension) is trimmed, so the rule gives the same name
+/// when applied again.
 fn cut_name(name: &str) -> String {
     if name.len() <= MAX_NAME_BYTES {
         return name.to_string();
@@ -392,10 +461,10 @@ fn cut_name(name: &str) -> String {
     match name.rfind('.') {
         Some(dot) if name.len() - dot < MAX_NAME_BYTES => {
             let (stem, ext) = name.split_at(dot);
-            let stem = prefix_within(stem, MAX_NAME_BYTES - ext.len());
+            let stem = prefix_within(stem, MAX_NAME_BYTES - ext.len()).trim_end();
             format!("{stem}{ext}")
         }
-        _ => prefix_within(name, MAX_NAME_BYTES).to_string(),
+        _ => prefix_within(name, MAX_NAME_BYTES).trim_end().to_string(),
     }
 }
 
