@@ -304,8 +304,8 @@ class _SpellCheckFieldState extends State<SpellCheckField>
 
   /// Whether the primary focus is this field or below it.
   bool _focusInside() {
-    final focus = FocusManager.instance.primaryFocus?.context;
-    if (!mounted || focus == null || !focus.mounted) return false;
+    final focus = _primaryFocusContext();
+    if (!mounted || focus == null) return false;
     if (identical(focus, context)) return true;
     var inside = false;
     focus.visitAncestorElements((e) {
@@ -626,10 +626,33 @@ class _SpellCheckFieldState extends State<SpellCheckField>
   Widget build(BuildContext context) => widget.child;
 }
 
-/// The [SpellCheckField] whose subtree holds the primary focus, or null.
-_SpellCheckFieldState? _fieldWithFocus() {
+/// The primary focus's context when an ancestor walk from it is safe, or
+/// null.
+///
+/// Focus can still sit in a field whose row swapped to idle this frame: a
+/// click on a later row deactivates the earlier row's field before focus
+/// moves on. That element is deactivated but still [BuildContext.mounted],
+/// and an ancestor lookup from it throws "Looking up a deactivated
+/// widget's ancestor is unsafe" when a [SpellCheckField] registers in the
+/// same frame. Such a context counts as no focus. Only debug builds can
+/// tell an inactive element; in profile and release the walk is safe and
+/// stops at the deactivated subtree's detached root, so it reaches no
+/// live field.
+BuildContext? _primaryFocusContext() {
   final focus = FocusManager.instance.primaryFocus?.context;
   if (focus == null || !focus.mounted) return null;
+  var active = true;
+  assert(() {
+    active = focus is! Element || focus.debugIsActive;
+    return true;
+  }());
+  return active ? focus : null;
+}
+
+/// The [SpellCheckField] whose subtree holds the primary focus, or null.
+_SpellCheckFieldState? _fieldWithFocus() {
+  final focus = _primaryFocusContext();
+  if (focus == null) return null;
   _SpellCheckFieldState? found;
   bool visit(Element e) {
     if (e is StatefulElement && e.state is _SpellCheckFieldState) {
@@ -645,8 +668,8 @@ _SpellCheckFieldState? _fieldWithFocus() {
 
 /// Whether the primary focus is in a SpellingMenu.
 bool _spellingMenuHasFocus() {
-  final focus = FocusManager.instance.primaryFocus?.context;
-  if (focus == null || !focus.mounted) return false;
+  final focus = _primaryFocusContext();
+  if (focus == null) return false;
   return focus.widget is SpellingMenu ||
       focus.findAncestorWidgetOfExactType<SpellingMenu>() != null;
 }
