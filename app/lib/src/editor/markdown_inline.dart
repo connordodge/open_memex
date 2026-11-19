@@ -178,6 +178,7 @@ final class LinkToken extends InlineToken {
     required this.textRange,
     required this.urlRange,
     required this.url,
+    this.image = false,
   }) : super(kind: InlineTokenKind.link);
 
   /// The text between `[` and `]` (equal to [content]).
@@ -188,6 +189,10 @@ final class LinkToken extends InlineToken {
 
   /// The URL text, exactly as written.
   final String url;
+
+  /// Whether this is an image `![text](url)` (Spec #123 R29, ruling D9):
+  /// its `!` belongs to the first marker.
+  final bool image;
 }
 
 /// A transclusion token left in a text segment
