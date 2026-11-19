@@ -13,10 +13,11 @@
 
 use std::fs::File;
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use memex_core::backup::fingerprint::Fingerprinter;
-use memex_core::backup::snapshot;
+use memex_core::backup::{self, snapshot, BackupOutcome};
+use memex_core::fs_guard::FsInfo;
 use memex_core::Vault;
 use rusqlite::params;
 use sha2::{Digest, Sha256};
@@ -446,4 +447,242 @@ fn one_committed_write_between_two_snapshots_changes_the_fingerprint() {
     let after = vault_fingerprint(&root);
     assert_ne!(before, after, "one committed write changes the fingerprint");
     assert_eq!(after, vault_fingerprint(&root), "and the new one is stable");
+}
+
+// ---- WI #134 (Spec #123 R51): content-addressed objects by path and size -----------------------
+
+/// `fixed_input()`'s snapshot and manifest with no objects, digested on
+/// main @ 3b6bbfd (Python `hashlib`, the layout above). R51 must not change
+/// it: no vault held objects before #121.
+const PINNED_NO_OBJECTS_DIGEST: &str =
+    "1954dd8a10bca47b3221d06b5e33f2373cac79bb503de2d247adbdeff805514c";
+
+/// The hash part of a content-addressed object path `<2 hex>/<64 hex>/<name>`.
+const CA_HASH: &str = "66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462";
+
+fn ca_rel(name: &str) -> String {
+    format!("66/{CA_HASH}/{name}")
+}
+
+/// Snapshot and manifest of `fixed_input()`, then one object through
+/// `object_with_len`.
+fn digest_with_len(rel: &str, len: u64, bytes: &mut dyn Read) -> memex_core::Result<String> {
+    let input = fixed_input();
+    let mut fp = Fingerprinter::new();
+    fp.snapshot(&mut input.snapshot.as_slice()).unwrap();
+    fp.manifest(&input.manifest);
+    fp.object_with_len(rel, len, bytes)?;
+    Ok(fp.finish())
+}
+
+#[test]
+fn a_vault_with_no_objects_has_the_same_fingerprint_as_on_main() {
+    let mut input = fixed_input();
+    input.objects.clear();
+    assert_eq!(
+        reference(&input),
+        PINNED_NO_OBJECTS_DIGEST,
+        "the reference layout"
+    );
+    assert_eq!(digest(&input), PINNED_NO_OBJECTS_DIGEST);
+}
+
+#[test]
+fn a_content_addressed_object_is_fingerprinted_by_path_and_size_never_its_bytes() {
+    let rel = ca_rel("Q3 report.pdf");
+    // Never read: a reader that fails on the first read still fingerprints.
+    let never_read = digest_with_len(&rel, 9, &mut Failing { ok: 0 })
+        .expect("a content-addressed object's bytes are never read");
+    // Same size, other bytes: unchanged.
+    let a = digest_with_len(&rel, 9, &mut b"123456789".as_slice()).unwrap();
+    let b = digest_with_len(&rel, 9, &mut b"abcdefghi".as_slice()).unwrap();
+    assert_eq!(a, b, "same size with changed bytes: unchanged");
+    assert_eq!(a, never_read, "the bytes play no part");
+    // Changed size: changed.
+    let grown = digest_with_len(&rel, 10, &mut b"abcdefghij".as_slice()).unwrap();
+    assert_ne!(a, grown, "changed size: changed");
+    let empty = digest_with_len(&rel, 0, &mut b"".as_slice()).unwrap();
+    assert_ne!(a, empty, "size 0 is a size too");
+    // Another path: changed.
+    let other = digest_with_len(&ca_rel("Q4 report.pdf"), 9, &mut b"abcdefghi".as_slice()).unwrap();
+    assert_ne!(a, other, "another name: changed");
+    let other_hash = format!("ab/ab{}/Q3 report.pdf", &CA_HASH[2..]);
+    let other = digest_with_len(&other_hash, 9, &mut b"abcdefghi".as_slice()).unwrap();
+    assert_ne!(a, other, "another hash: changed");
+    // Not today's layout for the same bytes.
+    let mut input = fixed_input();
+    input.objects = vec![(rel.clone(), b"abcdefghi".to_vec())];
+    assert_ne!(a, reference(&input), "not hashed by its bytes");
+    assert_lower_hex_sha256(&a);
+}
+
+#[test]
+fn objects_that_are_not_content_addressed_are_fingerprinted_as_today() {
+    for rel in [
+        "a b/note one.md".to_string(),
+        "ab/cdef0123".to_string(),
+        "image one.png".to_string(),
+        format!("66/{}/x.txt", &CA_HASH[..63]),
+        format!("66/{CA_HASH}0/x.txt"),
+        format!("66/{}g/x.txt", &CA_HASH[..63]),
+        format!("zz/{CA_HASH}/x.txt"),
+        format!("6/{CA_HASH}/x.txt"),
+        format!("66/{CA_HASH}"),
+        format!("66/{CA_HASH}/sub/x.txt"),
+    ] {
+        let bytes = b"same size".to_vec();
+        let mut input = fixed_input();
+        input.objects = vec![(rel.clone(), bytes.clone())];
+        let got = digest_with_len(&rel, bytes.len() as u64, &mut bytes.as_slice()).unwrap();
+        assert_eq!(
+            got,
+            reference(&input),
+            "{rel}: hashed by its bytes as today"
+        );
+        let flipped =
+            digest_with_len(&rel, bytes.len() as u64, &mut b"SAME SIZE".as_slice()).unwrap();
+        assert_ne!(got, flipped, "{rel}: changed bytes change the digest");
+    }
+}
+
+struct FixedClock(i64);
+
+impl memex_core::Clock for FixedClock {
+    fn now_ms(&self) -> i64 {
+        self.0
+    }
+}
+
+fn local_probe(_: &Path) -> io::Result<FsInfo> {
+    Ok(FsInfo::MacOs {
+        fstypename: "apfs".into(),
+        local: true,
+    })
+}
+
+fn plain_sink(file: File) -> io::Result<Box<dyn backup::ArchiveSink>> {
+    Ok(Box::new(file))
+}
+
+fn backup_at(vault: &Path, dest: &Path, at_ms: i64, if_changed: bool) -> BackupOutcome {
+    let clock = FixedClock(at_ms);
+    let seams = backup::BackupSeams {
+        clock: &clock,
+        probe: &local_probe,
+        wrap_archive: &plain_sink,
+    };
+    let request = backup::BackupRequest {
+        vault,
+        destination: dest,
+        keep: 30,
+        if_changed,
+        source: backup::BackupSource::Local,
+    };
+    backup::backup_with(&request, &seams).expect("the backup succeeds")
+}
+
+/// A closed vault `My Vault` and a destination `Backup Drive`.
+fn backup_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let vault = root.join("My Vault");
+    drop(Vault::create(&vault).unwrap());
+    let dest = root.join("Backup Drive");
+    std::fs::create_dir(&dest).unwrap();
+    (tmp, vault, dest)
+}
+
+fn sha_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn zip_member(file: &Path, name: &str) -> Vec<u8> {
+    let mut zip = zip::ZipArchive::new(File::open(file).unwrap()).unwrap();
+    let mut out = Vec::new();
+    zip.by_name(name).unwrap().read_to_end(&mut out).unwrap();
+    out
+}
+
+/// 2026-11-10T10:00:00.250Z, then an hour apart.
+const H1: i64 = 1_794_304_800_250;
+const HOUR: i64 = 3_600_000;
+
+#[test]
+fn if_changed_ignores_same_size_byte_changes_in_content_addressed_objects_but_not_size_changes() {
+    let (_tmp, vault, dest) = backup_fixture();
+    let bytes = b"an attachment's bytes";
+    let h = sha_hex(bytes);
+    let rel = format!("objects/{}/{h}/attached file.pdf", &h[..2]);
+    let object = vault.join(&rel);
+    std::fs::create_dir_all(object.parent().unwrap()).unwrap();
+    std::fs::write(&object, bytes).unwrap();
+
+    let first = backup_at(&vault, &dest, H1, false);
+    assert!(matches!(first, BackupOutcome::Created { .. }), "{first:?}");
+    let unchanged = backup_at(&vault, &dest, H1 + HOUR, true);
+    assert!(
+        matches!(unchanged, BackupOutcome::Unchanged { .. }),
+        "no change: the pre-pass equals the recorded write-pass fingerprint: {unchanged:?}"
+    );
+
+    // Same size, other bytes: the path holds the content hash, so unchanged.
+    let mut flipped = bytes.to_vec();
+    flipped[0] ^= 0x20;
+    std::fs::write(&object, &flipped).unwrap();
+    let same_size = backup_at(&vault, &dest, H1 + 2 * HOUR, true);
+    assert!(
+        matches!(same_size, BackupOutcome::Unchanged { .. }),
+        "same size with changed bytes: unchanged: {same_size:?}"
+    );
+
+    // Changed size: a new backup, whose zip still carries the bytes in full.
+    let mut grown = bytes.to_vec();
+    grown.push(b'!');
+    std::fs::write(&object, &grown).unwrap();
+    let changed = backup_at(&vault, &dest, H1 + 3 * HOUR, true);
+    let BackupOutcome::Created { file, .. } = changed else {
+        panic!("changed size: a new backup: {changed:?}");
+    };
+    assert_eq!(
+        zip_member(&file, &rel),
+        grown,
+        "the zip member holds the bytes"
+    );
+}
+
+#[test]
+fn if_changed_still_sees_byte_changes_in_objects_that_are_not_content_addressed() {
+    let (_tmp, vault, dest) = backup_fixture();
+    let object = vault.join("objects/ab/image one.png");
+    std::fs::create_dir_all(object.parent().unwrap()).unwrap();
+    std::fs::write(&object, b"png bytes").unwrap();
+    let first = backup_at(&vault, &dest, H1, false);
+    assert!(matches!(first, BackupOutcome::Created { .. }), "{first:?}");
+    std::fs::write(&object, b"PNG BYTES").unwrap();
+    let second = backup_at(&vault, &dest, H1 + HOUR, true);
+    assert!(
+        matches!(second, BackupOutcome::Created { .. }),
+        "same size, other bytes, not content-addressed: changed: {second:?}"
+    );
+}
+
+#[test]
+fn a_backup_of_a_vault_with_no_objects_records_the_fingerprint_main_computes() {
+    let (_tmp, vault, dest) = backup_fixture();
+    let outcome = backup_at(&vault, &dest, H1, false);
+    let BackupOutcome::Created {
+        file, fingerprint, ..
+    } = outcome
+    else {
+        panic!("a first backup creates a file: {outcome:?}");
+    };
+    let input = Input {
+        snapshot: zip_member(&file, "memex.db"),
+        manifest: zip_member(&file, "manifest.json"),
+        objects: Vec::new(),
+    };
+    assert_eq!(fingerprint, reference(&input), "main's layout, unchanged");
 }

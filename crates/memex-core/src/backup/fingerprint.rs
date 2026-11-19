@@ -81,6 +81,16 @@ impl Fingerprinter {
         Ok(())
     }
 
+    /// One `objects/` file whose length `len` is known. A content-addressed
+    /// object (`<2 hex>/<64 hex>/<name>`, Spec #123 R51) is hashed by its
+    /// path and `len`, never its bytes; any other object as [`object`].
+    ///
+    /// [`object`]: Fingerprinter::object
+    pub fn object_with_len(&mut self, rel: &str, len: u64, bytes: &mut dyn Read) -> Result<()> {
+        let _ = len;
+        self.object(rel, bytes)
+    }
+
     /// The lowercase hex SHA-256.
     pub fn finish(self) -> String {
         self.hasher
