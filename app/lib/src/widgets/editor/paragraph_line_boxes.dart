@@ -80,6 +80,10 @@ class RenderParagraphLineBoxes implements LineBoxSource {
   @override
   int offsetAt(Offset point) => paragraph.getPositionForOffset(point).offset;
 
+  @override
+  LineBox lineAt(int offset) =>
+      const LineBox(range: TextRange.collapsed(0), top: 0, bottom: 0);
+
   /// Runs [read] over a copy of the paragraph's text laid out as the
   /// paragraph lays it out, then disposes the copy.
   T _measure<T>(T Function(TextPainter painter, String text) read) {

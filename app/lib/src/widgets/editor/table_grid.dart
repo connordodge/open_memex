@@ -822,6 +822,10 @@ final class _GridGeometry implements LineBoxSource {
     return cell.start + math.min(local, cell.end - cell.start);
   }
 
+  @override
+  LineBox lineAt(int offset) =>
+      const LineBox(range: TextRange.collapsed(0), top: 0, bottom: 0);
+
   /// The end of cell ([g], [j])'s text; for a missing cell, of the row's
   /// last cell; for a row without cells, its line start.
   int _textEnd(int g, int j) {

@@ -1051,4 +1051,8 @@ class _RowsLineBoxes implements LineBoxSource {
     );
     return row.spec.toSegment(row.source.offsetAt(point - row.shift));
   }
+
+  @override
+  LineBox lineAt(int offset) =>
+      const LineBox(range: TextRange.collapsed(0), top: 0, bottom: 0);
 }

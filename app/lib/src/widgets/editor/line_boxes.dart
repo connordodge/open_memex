@@ -3,6 +3,8 @@ import 'dart:ui' as ui show BoxHeightStyle, LineMetrics;
 
 import 'package:flutter/foundation.dart' show immutable, visibleForTesting;
 import 'package:flutter/rendering.dart';
+import 'package:flutter/widgets.dart'
+    show BuildContext, SingleChildRenderObjectWidget;
 
 /// The line-box seam (D6, TD10): the real geometry of a laid-out field's
 /// text, measured from what the field renders (styled spans, hidden
@@ -37,6 +39,34 @@ abstract interface class LineBoxSource {
 
   /// The text offset nearest to [point].
   int offsetAt(Offset point);
+
+  /// The line box holding [offset] (WI #126): the [lines] entry
+  /// `lineHolding(lines, offset)` returns, the last line starting at or
+  /// before [offset] (clamped to the text), so an offset at a wrap boundary
+  /// belongs to the line it starts. Costs only that line, never a walk of
+  /// every line.
+  LineBox lineAt(int offset);
+}
+
+/// The layout epoch of the field or paragraph directly below it (WI #126,
+/// Spec #122 TD1): a thin proxy whose [RenderLineBoxEpoch.epoch] moves on
+/// every layout, so cached line boxes of the render object under it stay
+/// valid until it lays out again (a font load, a width, a text or a style
+/// change) and survive a paint-only change.
+class LineBoxEpoch extends SingleChildRenderObjectWidget {
+  const LineBoxEpoch({super.key, super.child});
+
+  @override
+  RenderLineBoxEpoch createRenderObject(BuildContext context) =>
+      RenderLineBoxEpoch();
+}
+
+/// [LineBoxEpoch]'s render object.
+class RenderLineBoxEpoch extends RenderProxyBox {
+  RenderLineBoxEpoch([super.child]);
+
+  /// How many times this proxy has laid out.
+  int get epoch => 0;
 }
 
 /// One laid-out line of a [LineBoxSource].
@@ -179,6 +209,10 @@ class RenderEditableLineBoxes implements LineBoxSource {
   @override
   int offsetAt(Offset point) =>
       editable.getPositionForPoint(editable.localToGlobal(point)).offset;
+
+  @override
+  LineBox lineAt(int offset) =>
+      const LineBox(range: TextRange.collapsed(0), top: 0, bottom: 0);
 
   /// Where the editable paints its text's origin (its scroll offset).
   Offset get _paintOffset {

@@ -125,6 +125,9 @@ class _Wi202MonoBoxes implements LineBoxSource {
 
   @override
   int offsetAt(Offset point) => throw UnimplementedError();
+
+  @override
+  LineBox lineAt(int offset) => lineHolding(_lines, offset);
 }
 
 Note _wi202Note(String content) => Note(
