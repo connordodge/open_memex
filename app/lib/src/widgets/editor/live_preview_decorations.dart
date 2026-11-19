@@ -190,6 +190,10 @@ bool _findTouches(TextRange? findReveal, TextRange range) =>
     findReveal.start <= range.end &&
     findReveal.end >= range.start;
 
+/// Test-only work counter: how many times [layoutDecorations] ran.
+@visibleForTesting
+int debugLayoutDecorationsCalls = 0;
+
 /// Every decoration of a field showing [text] measured by [boxes], in
 /// paint order (backgrounds first: code boxes and quote bands, then pills,
 /// then rules), all inside the text column [columnLeft]..[columnRight]

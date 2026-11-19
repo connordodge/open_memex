@@ -9,7 +9,8 @@
 // note editor acts (see [SpellCheckHost]).
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show ValueListenable;
+import 'package:flutter/foundation.dart'
+    show ValueListenable, visibleForTesting;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
@@ -251,6 +252,16 @@ class SpellCheckField extends StatefulWidget {
   @override
   State<SpellCheckField> createState() => _SpellCheckFieldState();
 }
+
+/// Test-only work counter: how many times any spell-check field host
+/// answered [SpellFieldHost.line] (a segment row lookup).
+@visibleForTesting
+int debugSpellHostLineCalls = 0;
+
+/// Test-only work counter: how many times any spell-check field host
+/// measured an issue's rect in its field.
+@visibleForTesting
+int debugSpellHostRectCalls = 0;
 
 class _SpellCheckFieldState extends State<SpellCheckField>
     implements SpellFieldHost {

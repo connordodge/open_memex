@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'dart:ui' as ui show BoxHeightStyle;
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/rendering.dart';
 
 import 'line_boxes.dart';
@@ -25,6 +26,17 @@ class RenderParagraphLineBoxes implements LineBoxSource {
 
   /// The measured paragraph.
   final RenderParagraph paragraph;
+
+  /// Test-only work counter: fresh `TextPainter` layouts of the whole
+  /// paragraph text (every `_measure` call), summed over all instances.
+  @visibleForTesting
+  static int debugMeasures = 0;
+
+  /// Test-only work counter: whole-text line walks (`_linesOf` over every
+  /// line of a measured text), summed over all instances. A measure that
+  /// reads one line or one range raises [debugMeasures] only.
+  @visibleForTesting
+  static int debugLineWalks = 0;
 
   @override
   RenderBox get box => paragraph;

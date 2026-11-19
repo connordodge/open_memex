@@ -21,6 +21,12 @@ import 'find_keys.dart';
 @visibleForTesting
 int debugFindHighlightPaints = 0;
 
+/// Test-only work counter: incremented once each time any find highlight
+/// layer is handed its ranges, boxes, repaint and layout (a find decoration
+/// update), whether or not they changed.
+@visibleForTesting
+int debugFindHighlightUpdates = 0;
+
 /// How one [FindPaintRange] paints (Reqs 24-26, pack 83).
 enum FindPaintStyle {
   /// Every match but the current one: `OmColors.findMatch` fill, a 1 px

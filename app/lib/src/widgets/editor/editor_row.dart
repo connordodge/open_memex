@@ -76,6 +76,10 @@ List<ItemGeometry?> rowGeometries(List<RowSpec> rows) {
 /// focused or not ([_RowSelection]), and its spelling squiggles and hint
 /// over it ([SpellSquiggles], WI #437).
 class EditorRow extends StatelessWidget {
+  /// Test-only work counter: how many times any editor row built.
+  @visibleForTesting
+  static int debugBuilds = 0;
+
   const EditorRow({
     super.key,
     required this.segment,
@@ -228,6 +232,11 @@ class _RowSelection extends SingleChildRenderObjectWidget {
     _RenderRowSelection renderObject,
   ) => renderObject.watch(controller, index, host);
 }
+
+/// Test-only work counter: how many times any editor row painted its
+/// selection block.
+@visibleForTesting
+int debugEditorRowSelectionPaints = 0;
 
 class _RenderRowSelection extends RenderProxyBox {
   _RenderRowSelection(this._controller, this._index, this._host)

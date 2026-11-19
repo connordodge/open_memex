@@ -83,6 +83,19 @@ MarkerTaskCheck markerTaskCheck() {
   );
 }
 
+/// Test-only work counter: how many times any marker column built.
+@visibleForTesting
+int debugMarkerColumnBuilds = 0;
+
+/// Test-only work counter: how many times any marker column called
+/// `setState` after a watched listenable changed.
+@visibleForTesting
+int debugMarkerColumnSetStates = 0;
+
+/// Test-only work counter: how many times any marker column painted.
+@visibleForTesting
+int debugMarkerColumnPaints = 0;
+
 /// The marker column of one item row (Spec R2, R4, R11, R22, R24): [width]
 /// (A2's unrevealed marker column width) wide and one item line tall.
 ///

@@ -1,7 +1,7 @@
 import 'dart:math' as math;
 import 'dart:ui' as ui show BoxHeightStyle, LineMetrics;
 
-import 'package:flutter/foundation.dart' show immutable;
+import 'package:flutter/foundation.dart' show immutable, visibleForTesting;
 import 'package:flutter/rendering.dart';
 
 /// The line-box seam (D6, TD10): the real geometry of a laid-out field's
@@ -125,6 +125,17 @@ class RenderEditableLineBoxes implements LineBoxSource {
 
   /// The measured field's render object.
   final RenderEditable editable;
+
+  /// Test-only work counter: fresh `TextPainter` layouts of the whole field
+  /// text (every `_measure` call), summed over all instances.
+  @visibleForTesting
+  static int debugMeasures = 0;
+
+  /// Test-only work counter: whole-text line walks (`_linesOf` over every
+  /// line of a measured text), summed over all instances. A measure that
+  /// reads one line or one range raises [debugMeasures] only.
+  @visibleForTesting
+  static int debugLineWalks = 0;
 
   @override
   RenderBox get box => editable;
