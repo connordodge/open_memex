@@ -799,8 +799,8 @@ fn key(c: &str, desc: bool) -> (String, bool) {
 // ---- AC 1: version, columns, tables, indexes --------------------------------------------------
 
 #[test]
-fn app_schema_version_is_8() {
-    assert_eq!(schema::APP_SCHEMA_VERSION, 8);
+fn app_schema_version_is_9() {
+    assert_eq!(schema::APP_SCHEMA_VERSION, 9);
 }
 
 #[test]
@@ -814,7 +814,7 @@ fn v6_apply_advances_v5_database_to_version_6() {
         &conn,
         "SELECT CAST(version AS TEXT) FROM schema_version ORDER BY version",
     );
-    assert_eq!(versions, ["1", "2", "3", "4", "5", "6", "7", "8"]);
+    assert_eq!(versions, ["1", "2", "3", "4", "5", "6", "7", "8", "9"]);
 }
 
 #[test]

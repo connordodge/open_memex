@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::error::MemexError;
 use crate::Result;
 
-pub const APP_SCHEMA_VERSION: i64 = 8;
+pub const APP_SCHEMA_VERSION: i64 = 9;
 
 pub const MAX_DEDUP_COLLISIONS: i64 = 1000;
 
@@ -352,6 +352,56 @@ CREATE INDEX IF NOT EXISTS idx_note_revisions_note
     ON note_revisions(note_id, created_at DESC);
 "#;
 
+/// V9 (Spec #123 R50, ruling D15): the derived attachment index. The note
+/// body's reference line and the file in `objects/` stay the source of truth
+/// (R5); these tables only index them. `attachments` holds one row per
+/// stored file and its text-extraction state, `attachment_chunks` (with its
+/// FTS5 mirror `attachment_chunk_fts`) the extracted text, and
+/// `note_attachments` one row per attachment reference line of a note's
+/// person section. `note_attachments.path` has no key to `attachments`: a
+/// note may reference a file the index holds no row for. `attachment_chunk_vec`
+/// is made lazily by [`ensure_attachment_vector_table`]. Add-only and
+/// `IF NOT EXISTS` throughout, so the V9 step can re-run over V9 tables.
+const V9: &str = r#"
+CREATE TABLE IF NOT EXISTS attachments (
+    path           TEXT PRIMARY KEY,
+    name           TEXT NOT NULL,
+    type           TEXT NOT NULL,
+    size           INTEGER NOT NULL,
+    extract_state  TEXT NOT NULL
+                   CHECK (extract_state IN ('pending', 'done', 'empty', 'failed')),
+    extract_error  TEXT NULL,
+    extracted_at   INTEGER NULL
+);
+
+CREATE TABLE IF NOT EXISTS attachment_chunks (
+    id                  TEXT PRIMARY KEY,
+    path                TEXT NOT NULL REFERENCES attachments(path) ON DELETE CASCADE,
+    ord                 INTEGER NOT NULL,
+    content             TEXT NOT NULL,
+    token_count         INTEGER NOT NULL,
+    embed_model_version TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_attachment_chunks_path ON attachment_chunks(path, ord);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS attachment_chunk_fts USING fts5(
+    content,
+    chunk_id UNINDEXED,
+    path UNINDEXED,
+    tokenize = 'porter unicode61'
+);
+
+CREATE TABLE IF NOT EXISTS note_attachments (
+    note_id          TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    path             TEXT NOT NULL,
+    line_start_byte  INTEGER NOT NULL,
+    PRIMARY KEY (note_id, path, line_start_byte)
+);
+
+CREATE INDEX IF NOT EXISTS idx_note_attachments_path ON note_attachments(path);
+"#;
+
 /// Columns V8 adds to existing tables: (table, column, declaration). Every
 /// existing note reads `agent_read_only = 0` (Spec #7 Req 3).
 const V8_COLUMNS: [(&str, &str, &str); 1] =
@@ -465,6 +515,24 @@ pub fn apply(conn: &mut Connection) -> Result<()> {
         }
         tx.commit()?;
     }
+
+    // v9: the derived attachment index (R50), in one transaction, with the
+    // revision triggers put on its regular tables. Like V8, the step writes
+    // no content, so `content_revision.n` is read before it and written back
+    // after it. No backfill: no vault holds attachments before V9.
+    {
+        let tx = conn.transaction()?;
+        if current_version(&tx)? < 9 {
+            let n: i64 = tx.query_row("SELECT n FROM content_revision WHERE id = 1", [], |r| {
+                r.get(0)
+            })?;
+            tx.execute_batch(V9)?;
+            tx.execute("INSERT INTO schema_version(version) VALUES (9)", [])?;
+            ensure_revision_triggers(&tx)?;
+            tx.execute("UPDATE content_revision SET n = ?1 WHERE id = 1", [n])?;
+        }
+        tx.commit()?;
+    }
     Ok(())
 }
 
@@ -491,7 +559,8 @@ fn apply_v7(conn: &Connection) -> Result<()> {
 
 /// Puts `content_revision_<t>_{ai,au,ad}` on every table in `sqlite_master`
 /// except `content_revision`, SQLite's own `sqlite_*` tables, virtual tables
-/// and the shadow tables of `chunk_fts` and `chunk_vec`, so each row a write
+/// and the shadow tables of `chunk_fts`, `chunk_vec`, `attachment_chunk_fts`
+/// and `attachment_chunk_vec`, so each row a write
 /// inserts, updates or deletes in any other table moves `content_revision.n`
 /// by one. `IF NOT EXISTS`: a re-run adds no duplicate trigger.
 pub(crate) fn ensure_revision_triggers(conn: &Connection) -> Result<()> {
@@ -528,6 +597,8 @@ fn is_revision_exempt(table: &str, sql: &str) -> bool {
         || table.starts_with("sqlite_")
         || table.starts_with("chunk_fts_")
         || table.starts_with("chunk_vec_")
+        || table.starts_with("attachment_chunk_fts_")
+        || table.starts_with("attachment_chunk_vec_")
         || is_virtual
 }
 
@@ -704,8 +775,21 @@ pub fn current_version(conn: &Connection) -> Result<i64> {
 /// Create the per-vault `chunk_vec` virtual table for the given embedding
 /// dimension if it does not already exist. Idempotent.
 pub fn ensure_vector_table(conn: &Connection, dim: usize) -> Result<()> {
+    create_vec0_table(conn, "chunk_vec", dim)
+}
+
+/// Create the per-vault `attachment_chunk_vec` virtual table (R50), declared
+/// like `chunk_vec`, for the given embedding dimension if it does not
+/// already exist. Idempotent: an existing table keeps its dimension.
+pub fn ensure_attachment_vector_table(conn: &Connection, dim: usize) -> Result<()> {
+    create_vec0_table(conn, "attachment_chunk_vec", dim)
+}
+
+/// `CREATE VIRTUAL TABLE IF NOT EXISTS <name>` over vec0, keyed by chunk id,
+/// with cosine distance.
+fn create_vec0_table(conn: &Connection, name: &str, dim: usize) -> Result<()> {
     let sql = format!(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS chunk_vec USING vec0(\n    chunk_id TEXT PRIMARY KEY,\n    embedding float[{dim}] distance_metric=cosine\n);"
+        "CREATE VIRTUAL TABLE IF NOT EXISTS {name} USING vec0(\n    chunk_id TEXT PRIMARY KEY,\n    embedding float[{dim}] distance_metric=cosine\n);"
     );
     conn.execute_batch(&sql)?;
     Ok(())

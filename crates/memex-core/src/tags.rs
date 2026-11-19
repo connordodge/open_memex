@@ -120,7 +120,7 @@ pub fn is_system_tag(name: &str) -> bool {
 
 /// An open fenced code block: its fence character and run length.
 #[derive(Debug, Clone, Copy)]
-struct Fence {
+pub(crate) struct Fence {
     ch: char,
     len: usize,
 }
@@ -128,7 +128,7 @@ struct Fence {
 impl Fence {
     /// The fence `line` opens: three or more backticks or tildes after any
     /// indentation. A backtick fence's info string holds no backtick.
-    fn opened_by(line: &str) -> Option<Fence> {
+    pub(crate) fn opened_by(line: &str) -> Option<Fence> {
         let trimmed = line.trim_start_matches([' ', '\t']);
         let ch = trimmed.chars().next().filter(|c| matches!(c, '`' | '~'))?;
         let info = trimmed.trim_start_matches(ch);
@@ -138,7 +138,7 @@ impl Fence {
 
     /// Whether `line` closes this fence: the same character, at least as many
     /// times, after any indentation, and nothing but whitespace after it.
-    fn closed_by(self, line: &str) -> bool {
+    pub(crate) fn closed_by(self, line: &str) -> bool {
         let trimmed = line.trim_start_matches([' ', '\t']);
         let rest = trimmed.trim_start_matches(self.ch);
         trimmed.len() - rest.len() >= self.len && rest.trim().is_empty()
