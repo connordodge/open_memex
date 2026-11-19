@@ -35,6 +35,12 @@ enum RowKind {
   /// A markdown table (Spec #197 R8), from its header line through its last
   /// body line. Keeps its interior terminators.
   table,
+
+  /// An attachment line (Spec #123, ruling D1): an image row or a file card.
+  /// Its row-kind presenter (`attachment_row.dart`) shows it; until #123
+  /// fills that presenter it renders and edits like a prose row with the
+  /// same text. `splitRows` makes none yet (#123-V3 owns the carve-out).
+  attachment,
 }
 
 /// A selection inside one text segment, in segment offsets.
@@ -190,6 +196,11 @@ class RowSpec {
       'run $numberedRun/$runDigits)';
 }
 
+/// Test-only work counter: how many times [splitRows] ran. Plain top-level
+/// int (pure Dart: no `package:meta`, ruling D9). Never read by production
+/// code.
+int debugSplitRowsCalls = 0;
+
 /// Splits one text segment into editor rows (Spec R9, R39).
 ///
 /// Each item line (bullet, numbered, task, quote; [classifyLines]) is its own
@@ -206,6 +217,7 @@ class RowSpec {
 /// a closed fence); `''` is one empty prose row. [atSegmentStart] is passed
 /// to [classifyLines] (leading frontmatter is prose).
 List<RowSpec> splitRows(String text, {required bool atSegmentStart}) {
+  debugSplitRowsCalls++;
   final lines = classifyLines(text, atSegmentStart: atSegmentStart);
   final rows = <RowSpec>[];
   // Indices of the open numbered runs by depth (R11).
@@ -288,6 +300,7 @@ bool _continues(RowKind block, MdLineKind last, MdLineKind next) =>
       RowKind.table =>
         next == MdLineKind.tableDelimiter || next == MdLineKind.tableBody,
       RowKind.prose ||
+      RowKind.attachment ||
       RowKind.bullet ||
       RowKind.numbered ||
       RowKind.task ||

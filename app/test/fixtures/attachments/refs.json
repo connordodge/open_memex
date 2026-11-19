@@ -273,6 +273,62 @@
       "path": null,
       "name": null,
       "why": "a bare path is not markdown"
+    },
+    {
+      "markdown": "[a b.txt](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/a b.txt)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "raw space in the destination"
+    },
+    {
+      "markdown": "[x](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/a(1).txt)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "raw ( and ) in the destination"
+    },
+    {
+      "markdown": "[a](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/x.txt) [b](y.txt)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "two references on one line"
+    },
+    {
+      "markdown": "[x](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/100%.txt)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "a % not followed by two hex digits"
+    },
+    {
+      "markdown": "[x](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/a%2.txt)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "a % followed by one hex digit"
+    },
+    {
+      "markdown": "[x](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/%FF.txt)",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "percent-decoded bytes that are not UTF-8"
+    },
+    {
+      "markdown": "[x](objects/66/66bc7611813b7443f25c4af21004864b3975eb83fb7c74be572b9d6aa74bd462/x.txt)\t",
+      "valid": false,
+      "kind": null,
+      "path": null,
+      "name": null,
+      "why": "a trailing tab after the reference"
     }
   ],
   "encode": [

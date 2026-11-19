@@ -9,7 +9,8 @@
 // note editor acts (see [SpellCheckHost]).
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show ValueListenable;
+import 'package:flutter/foundation.dart'
+    show ValueListenable, visibleForTesting;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
@@ -252,6 +253,22 @@ class SpellCheckField extends StatefulWidget {
   State<SpellCheckField> createState() => _SpellCheckFieldState();
 }
 
+/// Test-only work counter: how many times any spell-check field host
+/// answered [SpellFieldHost.line] (a segment row lookup).
+@visibleForTesting
+int debugSpellHostLineCalls = 0;
+
+/// Test-only work counter: how many times any spell-check field host
+/// measured an issue's rect in its field.
+@visibleForTesting
+int debugSpellHostRectCalls = 0;
+
+/// Test-only work counter: how many times any spell-check field host
+/// resolved its field's laid-out render object ([SpellFieldHost.editable]),
+/// the geometry entry point of an evaluation's viewport check.
+@visibleForTesting
+int debugSpellHostEditableCalls = 0;
+
 class _SpellCheckFieldState extends State<SpellCheckField>
     implements SpellFieldHost {
   SpellCheckController? _checker;
@@ -329,6 +346,7 @@ class _SpellCheckFieldState extends State<SpellCheckField>
 
   @override
   SpellFieldLine line(TextEditingController field) {
+    debugSpellHostLineCalls++;
     final segment = _segment;
     if (segment != null && segment.mounted) {
       final row = segment.rowLineOf(field);
@@ -345,6 +363,7 @@ class _SpellCheckFieldState extends State<SpellCheckField>
 
   @override
   RenderEditable? editable() {
+    debugSpellHostEditableCalls++;
     if (!mounted) return null;
     final editable = findRenderEditable(context.findRenderObject());
     return editable != null && editable.attached && editable.hasSize
@@ -360,7 +379,7 @@ class _SpellCheckFieldState extends State<SpellCheckField>
 
   @override
   bool revealed(TextEditingController field) =>
-      field is! LivePreviewController || !field.tableRow || field.tableRevealed;
+      field is! LivePreviewController || !field.textHidden;
 
   @override
   ValueListenable<bool>? revealGate(TextEditingController field) =>
@@ -393,6 +412,7 @@ class _SpellCheckFieldState extends State<SpellCheckField>
 
   /// [issue]'s range in the field's laid-out text (local), or null.
   Rect? _rectOf(SpellIssue issue) {
+    debugSpellHostRectCalls++;
     final e = editable();
     if (e == null) return null;
     final boxes = e.getBoxesForSelection(

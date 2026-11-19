@@ -113,6 +113,18 @@ fn digest(input: &Input) -> String {
 
 /// The D7 layout, written out independently of the implementation.
 fn reference(input: &Input) -> String {
+    let (mut h, part) = reference_head(input);
+    for (rel, bytes) in &input.objects {
+        part(&mut h, rel.as_bytes());
+        part(&mut h, bytes);
+    }
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+type Part = fn(&mut Sha256, &[u8]);
+
+/// The D7 layout up to the first object: tag, snapshot, manifest.
+fn reference_head(input: &Input) -> (Sha256, Part) {
     let mut h = Sha256::new();
     h.update(b"memex-backup-fp-1\0");
     let mut snap = input.snapshot.clone();
@@ -121,17 +133,14 @@ fn reference(input: &Input) -> String {
             snap[i] = 0;
         }
     }
-    let part = |h: &mut Sha256, bytes: &[u8]| {
+    fn part(h: &mut Sha256, bytes: &[u8]) {
         h.update((bytes.len() as u64).to_le_bytes());
         h.update(bytes);
-    };
+    }
+    let part: Part = part;
     part(&mut h, &snap);
     part(&mut h, &input.manifest);
-    for (rel, bytes) in &input.objects {
-        part(&mut h, rel.as_bytes());
-        part(&mut h, bytes);
-    }
-    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+    (h, part)
 }
 
 fn assert_lower_hex_sha256(d: &str) {
@@ -514,6 +523,29 @@ fn a_content_addressed_object_is_fingerprinted_by_path_and_size_never_its_bytes(
     input.objects = vec![(rel.clone(), b"abcdefghi".to_vec())];
     assert_ne!(a, reference(&input), "not hashed by its bytes");
     assert_lower_hex_sha256(&a);
+}
+
+#[test]
+fn a_content_addressed_object_is_hashed_as_its_path_part_then_its_size_as_a_le_u64_part() {
+    let rel = ca_rel("Q3 report.pdf");
+    let (mut h, part) = reference_head(&fixed_input());
+    part(&mut h, rel.as_bytes());
+    part(&mut h, &9u64.to_le_bytes());
+    let want: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(
+        digest_with_len(&rel, 9, &mut b"123456789".as_slice()).unwrap(),
+        want,
+        "path part, then the size's 8 little-endian bytes as a part"
+    );
+    // A size over 255 shows the byte order.
+    let (mut h, part) = reference_head(&fixed_input());
+    part(&mut h, rel.as_bytes());
+    part(&mut h, &0x0102u64.to_le_bytes());
+    let want: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(
+        digest_with_len(&rel, 0x0102, &mut std::io::empty()).unwrap(),
+        want
+    );
 }
 
 #[test]

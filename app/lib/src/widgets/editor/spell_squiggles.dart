@@ -145,9 +145,7 @@ String? spellIssuesHint(
 
 /// Whether [controller]'s field is an unrevealed table row's (offstage).
 bool _hidden(TextEditingController controller) =>
-    controller is LivePreviewController &&
-    controller.tableRow &&
-    !controller.tableRevealed;
+    controller is LivePreviewController && controller.textHidden;
 
 /// [issue]'s range inside a text of [length], or null when nothing of it is.
 TextRange? _clamped(SpellIssue issue, int length) {
