@@ -8,6 +8,12 @@
 //! then for each `objects/` file its relative path and then its content. The
 //! caller feeds objects sorted bytewise by path.
 //!
+//! A content-addressed object, `objects/<h2>/<h>/<name>` (Spec #123 R4,
+//! R51), has its size (a little-endian u64, itself length-prefixed) in
+//! place of its content: its path already holds the content hash, so the
+//! hourly `--if-changed` pre-pass never reads attachment bytes. A vault with
+//! no such objects fingerprints exactly as before.
+//!
 //! A part's length comes before its bytes and a `Read` has no length, so each
 //! snapshot or object is read whole into memory before it is hashed.
 
@@ -15,6 +21,7 @@ use std::io::Read;
 
 use sha2::{Digest, Sha256};
 
+use crate::attachments::is_content_addressed;
 use crate::error::MemexError;
 use crate::Result;
 
@@ -78,6 +85,21 @@ impl Fingerprinter {
         let buf = read_all(&format!("object {rel}"), bytes)?;
         self.part(rel.as_bytes());
         self.part(&buf);
+        Ok(())
+    }
+
+    /// One `objects/` file whose length `len` is known. A content-addressed
+    /// object (`<2 hex>/<64 lowercase hex>/<name>` with the two equal to the
+    /// first two of the 64, Spec #123 R4, R51) is hashed by its path and
+    /// `len`, and `bytes` is never read; any other object as [`object`].
+    ///
+    /// [`object`]: Fingerprinter::object
+    pub fn object_with_len(&mut self, rel: &str, len: u64, bytes: &mut dyn Read) -> Result<()> {
+        if !is_content_addressed(rel) {
+            return self.object(rel, bytes);
+        }
+        self.part(rel.as_bytes());
+        self.part(&len.to_le_bytes());
         Ok(())
     }
 

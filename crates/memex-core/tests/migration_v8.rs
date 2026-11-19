@@ -12,6 +12,10 @@
 //! to do on the next `schema::apply()`.
 //!
 //! Nothing in WI #8 sets the flag: tests set it with raw SQL.
+//!
+//! Since V9 (WI #135) a V7 vault migrates on to the current version, so the
+//! tests that mean "the latest" read `schema::APP_SCHEMA_VERSION`, and the
+//! tables V9 adds are told apart by [`is_later_table`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -575,7 +579,8 @@ fn make_v7_db(dir: &Path) -> PathBuf {
     db_path
 }
 
-/// The V7 fixture after one `schema::apply`, asserted to have reached V8.
+/// The V7 fixture after one `schema::apply`, asserted to have reached the
+/// current version (V8 and later).
 fn migrated_v7_fixture() -> (tempfile::TempDir, Connection) {
     let dir = tempfile::tempdir().unwrap();
     let db_path = make_v7_db(dir.path());
@@ -583,10 +588,27 @@ fn migrated_v7_fixture() -> (tempfile::TempDir, Connection) {
     schema::apply(&mut conn).expect("V7 -> V8 migration succeeds");
     assert_eq!(
         schema::current_version(&conn).unwrap(),
-        8,
-        "schema::apply did not advance the V7 fixture to V8"
+        schema::APP_SCHEMA_VERSION,
+        "schema::apply did not advance the V7 fixture to the current version"
     );
     (dir, conn)
+}
+
+/// `"1"` up to the current schema version: the `schema_version` rows of a
+/// vault at the current version.
+fn all_versions() -> Vec<String> {
+    (1..=schema::APP_SCHEMA_VERSION)
+        .map(|v| v.to_string())
+        .collect()
+}
+
+/// Whether `table` is one a version after V8 adds: V9's attachment index
+/// (WI #135), the FTS5 shadow tables of `attachment_chunk_fts` included.
+fn is_later_table(table: &str) -> bool {
+    matches!(
+        table,
+        "attachments" | "attachment_chunks" | "attachment_chunk_fts" | "note_attachments"
+    ) || table.starts_with("attachment_chunk_fts_")
 }
 
 /// A brand-new vault.
@@ -820,22 +842,25 @@ fn insert_note_revision(conn: &Connection, id: &str, note_id: &str, agent_change
 // ---- AC 4: APP_SCHEMA_VERSION; a V8 vault opens with no further migration ----------------------
 
 #[test]
-fn app_schema_version_is_8() {
-    assert_eq!(schema::APP_SCHEMA_VERSION, 8);
+fn app_schema_version_is_9() {
+    assert_eq!(schema::APP_SCHEMA_VERSION, 9);
 }
 
 #[test]
 fn fresh_vault_opens_at_v8_and_reopening_runs_no_further_migration() {
     let (dir, vault) = fresh_vault();
-    assert_eq!(vault.schema_version(), 8);
+    assert_eq!(vault.schema_version(), schema::APP_SCHEMA_VERSION);
     let conn = vault.connection_ref();
-    assert_eq!(schema::current_version(conn).unwrap(), 8);
+    assert_eq!(
+        schema::current_version(conn).unwrap(),
+        schema::APP_SCHEMA_VERSION
+    );
     assert_eq!(
         strings(
             conn,
             "SELECT CAST(version AS TEXT) FROM schema_version ORDER BY version"
         ),
-        ["1", "2", "3", "4", "5", "6", "7", "8"]
+        all_versions()
     );
     assert!(has_column(conn, "notes", "agent_read_only"));
     assert_eq!(
@@ -851,7 +876,11 @@ fn fresh_vault_opens_at_v8_and_reopening_runs_no_further_migration() {
     // Reopened twice: no further migration, so schema and rows are identical.
     for round in 0..2 {
         let vault = Vault::open(dir.path().join("vault")).expect("reopen the V8 vault");
-        assert_eq!(vault.schema_version(), 8, "round {round}");
+        assert_eq!(
+            vault.schema_version(),
+            schema::APP_SCHEMA_VERSION,
+            "round {round}"
+        );
         assert_eq!(
             full_snapshot(vault.connection_ref()),
             before,
@@ -861,7 +890,11 @@ fn fresh_vault_opens_at_v8_and_reopening_runs_no_further_migration() {
             &std::fs::read(dir.path().join("vault").join("manifest.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(manifest["schema_version"].as_i64(), Some(8), "{manifest}");
+        assert_eq!(
+            manifest["schema_version"].as_i64(),
+            Some(schema::APP_SCHEMA_VERSION),
+            "{manifest}"
+        );
     }
 }
 
@@ -870,11 +903,18 @@ fn fresh_vault_opens_at_v8_and_reopening_runs_no_further_migration() {
 #[test]
 fn v7_vault_open_migrates_to_v8_and_rewrites_the_manifest() {
     let (dir, vault) = opened_v7_vault();
-    assert_eq!(vault.schema_version(), 8);
-    assert_eq!(schema::current_version(vault.connection_ref()).unwrap(), 8);
+    assert_eq!(vault.schema_version(), schema::APP_SCHEMA_VERSION);
+    assert_eq!(
+        schema::current_version(vault.connection_ref()).unwrap(),
+        schema::APP_SCHEMA_VERSION
+    );
     let on_disk: serde_json::Value =
         serde_json::from_slice(&std::fs::read(dir.path().join("manifest.json")).unwrap()).unwrap();
-    assert_eq!(on_disk["schema_version"].as_i64(), Some(8), "{on_disk}");
+    assert_eq!(
+        on_disk["schema_version"].as_i64(),
+        Some(schema::APP_SCHEMA_VERSION),
+        "{on_disk}"
+    );
     assert_eq!(
         on_disk["vault_id"].as_str(),
         Some("01J9V8MANIFEST000000000000")
@@ -899,7 +939,10 @@ fn v7_fixture_migrates_to_v8_with_agent_read_only_0_on_every_note_and_keeps_ever
 
     let mut conn = open(&db_path);
     schema::apply(&mut conn).expect("V7 -> V8 migration succeeds");
-    assert_eq!(schema::current_version(&conn).unwrap(), 8);
+    assert_eq!(
+        schema::current_version(&conn).unwrap(),
+        schema::APP_SCHEMA_VERSION
+    );
 
     // The column: appended to notes, INTEGER NOT NULL DEFAULT 0.
     let mut expected_notes = v7_note_columns.clone();
@@ -944,9 +987,12 @@ fn v7_fixture_migrates_to_v8_with_agent_read_only_0_on_every_note_and_keeps_ever
             &conn,
             "SELECT CAST(version AS TEXT) FROM schema_version ORDER BY version"
         ),
-        ["1", "2", "3", "4", "5", "6", "7", "8"]
+        all_versions()
     );
-    let new_tables: Vec<&String> = after.keys().filter(|t| !before.contains_key(*t)).collect();
+    let new_tables: Vec<&String> = after
+        .keys()
+        .filter(|t| !before.contains_key(*t) && !is_later_table(t))
+        .collect();
     assert_eq!(new_tables, ["note_revisions"]);
     assert!(after["note_revisions"].is_empty());
 }
@@ -1222,11 +1268,14 @@ fn v8_migration_moves_no_content_revision_n() {
     assert!(before > 0, "fixture: the V7 rows moved n: {before}");
     let mut conn = open(&db_path);
     schema::apply(&mut conn).unwrap();
-    assert_eq!(schema::current_version(&conn).unwrap(), 8);
+    assert_eq!(
+        schema::current_version(&conn).unwrap(),
+        schema::APP_SCHEMA_VERSION
+    );
     assert_eq!(revision(&conn), before);
 
     let (_dir, vault) = fresh_vault();
-    assert_eq!(vault.schema_version(), 8);
+    assert_eq!(vault.schema_version(), schema::APP_SCHEMA_VERSION);
     assert_eq!(revision(vault.connection_ref()), 0);
 }
 
@@ -1277,13 +1326,17 @@ fn rerunning_the_v8_step_after_a_lost_version_row_keeps_the_flag_and_the_revisio
         "SELECT name FROM sqlite_master WHERE type = 'index' ORDER BY name",
     );
 
-    conn.execute("DELETE FROM schema_version WHERE version = 8", [])
+    // The rows of V8 and of every later version go, so the V8 step runs again.
+    conn.execute("DELETE FROM schema_version WHERE version >= 8", [])
         .unwrap();
     assert_eq!(schema::current_version(&conn).unwrap(), 7);
 
     schema::apply(&mut conn).expect("re-running V8 over V8 tables succeeds");
 
-    assert_eq!(schema::current_version(&conn).unwrap(), 8);
+    assert_eq!(
+        schema::current_version(&conn).unwrap(),
+        schema::APP_SCHEMA_VERSION
+    );
     assert_eq!(column_names(&conn, "notes"), notes_columns);
     assert_eq!(triggers_by_table(&conn), triggers);
     assert_eq!(
@@ -1321,7 +1374,10 @@ fn a_v7_vault_that_already_has_the_column_migrates_without_adding_it_twice() {
 
     let mut conn = open(&db_path);
     schema::apply(&mut conn).expect("V7 with the column already there -> V8");
-    assert_eq!(schema::current_version(&conn).unwrap(), 8);
+    assert_eq!(
+        schema::current_version(&conn).unwrap(),
+        schema::APP_SCHEMA_VERSION
+    );
     assert_eq!(
         column_names(&conn, "notes")
             .iter()
