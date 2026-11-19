@@ -771,10 +771,27 @@ async fn hosted_add_attachment_refuses_file_path() {
     let outside = h.root.parent().unwrap().join("files/report.pdf");
     fs::create_dir_all(outside.parent().unwrap()).unwrap();
     fs::write(&outside, b"%PDF-1.4 on the server's disk").unwrap();
+    // A hidden file that exists on the server's disk, and the vault's own database.
+    let hidden = h.root.parent().unwrap().join(".ssh/id_rsa");
+    fs::create_dir_all(hidden.parent().unwrap()).unwrap();
+    fs::write(&hidden, b"wi138 not a real key").unwrap();
+    let missing = h.root.parent().unwrap().join("files/does-not-exist.pdf");
+    let hidden_missing = h.root.parent().unwrap().join(".nowhere/missing.pdf");
+    let in_vault = h.work.join("memex.db");
 
+    // Every file_path is refused with the one hosted text, before any
+    // look at the disk: a missing, hidden, relative or in-vault path gets the
+    // same answer as an existing visible one, so the reply says nothing about
+    // which paths exist on the server.
     for args in [
         json!({ "file_path": s(&outside) }),
         json!({ "file_path": s(&outside), "name": "report.pdf" }),
+        json!({ "file_path": s(&missing) }),
+        json!({ "file_path": s(&hidden) }),
+        json!({ "file_path": s(&hidden_missing) }),
+        json!({ "file_path": s(&in_vault) }),
+        json!({ "file_path": "files/report.pdf" }),
+        json!({ "file_path": "./.ssh/id_rsa" }),
     ] {
         let reply = h.call("add_attachment", args.clone()).await;
         assert_eq!(
@@ -878,6 +895,56 @@ async fn add_attachment_refuses_a_path_inside_the_vault_outside_objects() {
     );
 }
 
+/// macOS reaches every file under the Data volume a second way,
+/// `/System/Volumes/Data/<path>`, which `canonicalize` does not fold away.
+/// The inside-the-vault check compares folder identity, so the alias is
+/// refused too, and a file in `objects/` is still accepted through it.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn add_attachment_refuses_a_vault_file_given_through_the_data_volume_alias() {
+    let data = Path::new("/System/Volumes/Data");
+    assert!(data.is_dir(), "this macOS has the Data volume alias");
+    let w = local().await;
+    let real = PathBuf::from(canonical(&w.vault));
+    let alias_of = |p: &Path| PathBuf::from(format!("{}{}", data.display(), p.display()));
+
+    let db = alias_of(&real.join("memex.db"));
+    {
+        use std::os::unix::fs::MetadataExt;
+        let alias = fs::metadata(&db).unwrap();
+        let direct = fs::metadata(real.join("memex.db")).unwrap();
+        assert_eq!(
+            (alias.dev(), alias.ino()),
+            (direct.dev(), direct.ino()),
+            "the alias names the vault's database"
+        );
+    }
+    assert_eq!(w.refused_path(s(&db)).await, inside_vault_text(s(&db)));
+
+    fs::write(w.vault.join("report.pdf"), b"%PDF-1.4 in the vault folder").unwrap();
+    let report = alias_of(&real.join("report.pdf"));
+    assert_eq!(
+        w.refused_path(s(&report)).await,
+        inside_vault_text(s(&report))
+    );
+
+    // The vault folder itself.
+    let folder = alias_of(&real);
+    assert!(!w.refused_path(s(&folder)).await.is_empty());
+
+    // A stored file, given through the alias, is still allowed.
+    let bytes: &[u8] = b"wi138 already stored";
+    let stored = w.stored(bytes, "kept.txt");
+    let through = alias_of(&real.join(&stored));
+    let reply = w
+        .call("add_attachment", json!({ "file_path": s(&through) }))
+        .await;
+    assert_eq!(
+        payload("add_attachment", &reply),
+        expected(bytes, "kept.txt")
+    );
+}
+
 #[tokio::test]
 async fn add_attachment_refuses_a_path_inside_a_vault_opened_through_a_symlink() {
     // The vault folder's own symlinks are resolved too: the vault is served
@@ -945,18 +1012,36 @@ async fn add_attachment_refuses_a_folder() {
     );
 }
 
-#[tokio::test]
+// Multi-threaded so the call's timeout can fire while a regressed handler
+// blocks a worker in `open`; a rescuer then opens the pipe's write end so
+// that blocked read returns and the runtime can drop instead of hanging.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn add_attachment_refuses_a_fifo_without_blocking() {
     let w = local().await;
     let fifo = w.root.join("files/pipe");
     mkfifo(&fifo);
-    let reply = w
-        .call_within(
+    let (done, finished) = std::sync::mpsc::channel::<()>();
+    let rescue = fifo.clone();
+    let rescuer = std::thread::spawn(move || {
+        if finished
+            .recv_timeout(FIFO_TIMEOUT + Duration::from_secs(5))
+            .is_err()
+        {
+            let _ = fs::OpenOptions::new().write(true).open(rescue);
+        }
+    });
+    let reply = tokio::time::timeout(
+        FIFO_TIMEOUT + Duration::from_secs(1),
+        w.call_within(
             FIFO_TIMEOUT,
             "add_attachment",
             json!({ "file_path": s(&fifo) }),
-        )
-        .await;
+        ),
+    )
+    .await;
+    let _ = done.send(());
+    rescuer.join().unwrap();
+    let reply = reply.expect("the FIFO refusal came back in time");
     assert_eq!(
         error_message("add_attachment", &reply),
         "pipe isn't a regular file and wasn't attached."
@@ -1449,6 +1534,50 @@ async fn get_attachment_refuses_a_link_inside_objects_that_points_outside() {
     let on_disk = w.vault.join(&path);
     fs::remove_file(&on_disk).unwrap();
     symlink(&hidden, &on_disk).unwrap();
+    let reply = w.get(&path).await;
+    assert_eq!(
+        error_message("get_attachment", &reply),
+        format!("Attachment not found: {path}")
+    );
+
+    // The stored file replaced by a link to a file inside the vault folder
+    // but outside `objects/`: the guard is `objects/`, not the whole vault.
+    let path = w.stored(b"original four", "db-link.txt");
+    let on_disk = w.vault.join(&path);
+    fs::remove_file(&on_disk).unwrap();
+    symlink(w.vault.join("memex.db"), &on_disk).unwrap();
+    let reply = w.get(&path).await;
+    assert_eq!(
+        error_message("get_attachment", &reply),
+        format!("Attachment not found: {path}")
+    );
+
+    let in_vault = w.vault.join("notes.txt");
+    fs::write(&in_vault, b"wi138 a visible text file in the vault folder").unwrap();
+    let path = w.stored(b"original five", "notes-link.txt");
+    let on_disk = w.vault.join(&path);
+    fs::remove_file(&on_disk).unwrap();
+    symlink(&in_vault, &on_disk).unwrap();
+    let reply = w.get(&path).await;
+    assert_eq!(
+        error_message("get_attachment", &reply),
+        format!("Attachment not found: {path}")
+    );
+
+    // The `<hash>` folder replaced by a link to a folder inside the vault
+    // folder (outside `objects/`) that holds a file of the same name.
+    let path = w.stored(b"original six", "vault-folder-link.txt");
+    let on_disk = w.vault.join(&path);
+    let hash_dir = on_disk.parent().unwrap().to_path_buf();
+    fs::remove_dir_all(&hash_dir).unwrap();
+    let in_vault_dir = w.vault.join("elsewhere");
+    fs::create_dir(&in_vault_dir).unwrap();
+    fs::write(
+        in_vault_dir.join("vault-folder-link.txt"),
+        b"wi138 in-vault folder secret",
+    )
+    .unwrap();
+    symlink(&in_vault_dir, &hash_dir).unwrap();
     let reply = w.get(&path).await;
     assert_eq!(
         error_message("get_attachment", &reply),
