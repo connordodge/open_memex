@@ -65,7 +65,8 @@ class LocalVaultAccess implements VaultAccess {
        words =
            words ?? LocalWordsAccess(vaultPath: vaultPath, db: db, cli: cli),
        search = search ?? LocalSearchAccess(vaultPath: vaultPath, cli: cli),
-       attachments = LocalAttachmentsAccess(vaultPath: vaultPath);
+       attachments =
+           attachments ?? LocalAttachmentsAccess(vaultPath: vaultPath);
 
   final String vaultPath;
   final VaultDb? db;
