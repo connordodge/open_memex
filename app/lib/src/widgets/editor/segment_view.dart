@@ -726,13 +726,6 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   FocusNode? rowFocusNode(int i) =>
       i >= 0 && i < _rows.length ? _rows[i].focusNode : null;
 
-  /// The row whose controller is [row], or null when [row] is no row
-  /// controller of this segment.
-  int? rowIndexOf(TextEditingController row) {
-    final i = _rows.indexWhere((r) => identical(r.controller, row));
-    return i < 0 ? null : i;
-  }
-
   /// The text position (row offset and affinity) of row [i]'s text slot
   /// under global [point], as the slot's own text resolves it; null past
   /// the last row and before the slot is laid out. A rendered table row

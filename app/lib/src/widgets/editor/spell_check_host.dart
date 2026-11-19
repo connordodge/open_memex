@@ -263,9 +263,10 @@ int debugSpellHostLineCalls = 0;
 int debugSpellHostRectCalls = 0;
 
 /// Test-only work counter: how many times any spell-check field host
-/// resolved its field's laid-out text (once per [SpellFieldHost.extent],
-/// [SpellFieldHost.extentAt] and issue rect, WI #127), the geometry entry
-/// point of an evaluation's viewport check.
+/// resolved its field's laid-out text (WI #127: once per
+/// [SpellFieldHost.extent] and [SpellFieldHost.extentAt] call, and per
+/// issue-rect or Check Document Now read), the geometry entry point of an
+/// evaluation's viewport check.
 @visibleForTesting
 int debugSpellHostEditableCalls = 0;
 
