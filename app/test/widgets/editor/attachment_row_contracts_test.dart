@@ -1366,10 +1366,331 @@ void main() {
       variant: macOnly,
     );
   });
+
+  group('block re-probes and per-vault existence (review r1)', () {
+    Finder inBlock(_V143Mounted m, Finder f) =>
+        find.descendant(of: find.byKey(m.row.blockKey!), matching: f);
+
+    testWidgets(
+      'a text edit that keeps the line a reference updates the block without a host rebuild',
+      (tester) async {
+        final vault = FakeAttachmentVault();
+        final first = _v143Attachment('first.pdf');
+        final second = _v143Attachment('second.zip');
+        vault
+          ..putFile(first.path, Uint8List(2048))
+          ..putFile(second.path, Uint8List(5 * 1024 * 1024));
+        final m = await _v143MountPresenter(tester, first.md, vault);
+        expect(inBlock(m, find.text('first.pdf')), findsOneWidget);
+        expect(inBlock(m, find.text('PDF · 2 KB')), findsOneWidget);
+
+        // Nothing rebuilds the presenter: only the controller notifies.
+        m.controller.text = second.md;
+        await tester.pump();
+        expect(inBlock(m, find.text('second.zip')), findsOneWidget);
+        expect(inBlock(m, find.text('ZIP · 5.0 MB')), findsOneWidget);
+        expect(inBlock(m, find.text('first.pdf')), findsNothing);
+        await tester.tapAt(m.block(tester).center);
+        await tester.pump();
+        expect(vault.openCalls, [second.path], reason: 'not the old path');
+
+        // No longer a reference: the block goes, the slot stays.
+        m.controller.text = 'plain words';
+        await tester.pump();
+        expect(find.byKey(m.row.blockKey!), findsNothing);
+        expect(find.byKey(const ValueKey('v143-slot')), findsOneWidget);
+        // A reference again: the block is back.
+        m.controller.text = first.md;
+        await tester.pump();
+        expect(inBlock(m, find.text('first.pdf')), findsOneWidget);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a link form png edited to image form shows the image at its final size',
+      (tester) async {
+        final vault = FakeAttachmentVault();
+        final pic = _v143Attachment('chart.png');
+        vault.putFile(pic.path, testPngBytes(300, 200));
+        final m = await _v143MountPresenter(tester, pic.md, vault);
+        // Link form: a card, with no image.
+        expect(inBlock(m, find.byType(AttachmentFileCard)), findsOneWidget);
+        expect(inBlock(m, find.byType(AttachmentImageBox)), findsNothing);
+        expect(m.block(tester).height, lessThan(100));
+
+        // Same path, now image form: probed again, at its final size.
+        m.controller.text = '!${pic.md}';
+        await tester.pump();
+        expect(inBlock(m, find.byType(AttachmentImageBox)), findsOneWidget);
+        expect(m.block(tester).size, const Size(300, 200));
+
+        // And back: a card again.
+        m.controller.text = pic.md;
+        await tester.pump();
+        expect(inBlock(m, find.byType(AttachmentFileCard)), findsOneWidget);
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 50)),
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a path edited from a missing file to a present one drops File not found',
+      (tester) async {
+        final vault = FakeAttachmentVault();
+        final gone = _v143Attachment('typo.pdf');
+        final there = _v143Attachment('real.pdf');
+        vault.putFile(there.path, Uint8List(2048));
+        final m = await _v143MountPresenter(tester, gone.md, vault);
+        expect(
+          inBlock(m, find.text('File not found · typo.pdf')),
+          findsOneWidget,
+        );
+        await tester.tapAt(m.block(tester).center);
+        await tester.pump();
+        expect(vault.openCalls, isEmpty, reason: 'a missing card is inert');
+
+        m.controller.text = there.md;
+        await tester.pump();
+        expect(inBlock(m, find.textContaining('File not found')), findsNothing);
+        expect(inBlock(m, find.text('PDF · 2 KB')), findsOneWidget);
+        await tester.tapAt(m.block(tester).center);
+        await tester.pump();
+        expect(vault.openCalls, [there.path], reason: 'a live card again');
+
+        // And back to a missing one.
+        m.controller.text = gone.md;
+        await tester.pump();
+        expect(
+          inBlock(m, find.text('File not found · typo.pdf')),
+          findsOneWidget,
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a late answer for an old path never shows on the block that replaced it',
+      (tester) async {
+        final hosted = FakeHostedAttachments();
+        final a = _v143Attachment('a.png', image: true);
+        final b = _v143Attachment('b.png', image: true);
+        final m = await _v143MountPresenter(tester, a.md, hosted);
+        expect(hosted.readCalls, [a.path]);
+        m.controller.text = b.md;
+        await tester.pump();
+        expect(hosted.readCalls, [a.path, b.path]);
+
+        // A's bytes arrive after the edit: B's block is still waiting.
+        hosted.answerRead(a.path, AttachmentBytes(testPngBytes(300, 200)));
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 50)),
+        );
+        await tester.pump();
+        expect(m.block(tester).height, lessThan(100), reason: 'B reserve');
+        expect(inBlock(m, find.byType(Image)), findsNothing);
+
+        hosted.answerRead(b.path, AttachmentBytes(testPngBytes(100, 50)));
+        await _v143Settle(tester, () => m.block(tester).height > 40);
+        expect(m.block(tester).size, const Size(100, 50));
+        expect(inBlock(m, find.byType(Image)), findsOneWidget);
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 50)),
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a card known from another vault is confirmed with the vault it shows in',
+      (tester) async {
+        final pdf = _v143Attachment('shared.pdf');
+        final big = _v143Attachment('big.png', image: true);
+        final first = FakeHostedAttachments()
+          ..answerFile(pdf.path, Uint8List(2048))
+          ..answerRead(
+            big.path,
+            AttachmentBytes(testPngHeaderOnly(10000, 10001)),
+          );
+        // One vault shows a live card and an over-cap image card.
+        var m = await _v143MountPresenter(tester, pdf.md, first);
+        await _v143Settle(
+          tester,
+          () => inBlock(m, find.text('PDF · 2 KB')).evaluate().isNotEmpty,
+        );
+        await tester.pumpWidget(const SizedBox());
+        m = await _v143MountPresenter(tester, big.md, first);
+        await _v143Settle(
+          tester,
+          () => inBlock(m, find.textContaining('PNG ·')).evaluate().isNotEmpty,
+        );
+
+        // Another vault holds neither file.
+        final second = FakeHostedAttachments()
+          ..answerFailure(pdf.path, AttachmentLookupFailure.missing)
+          ..answerFailure(big.path, AttachmentLookupFailure.missing);
+        for (final (item, name) in [(pdf, 'shared.pdf'), (big, 'big.png')]) {
+          await tester.pumpWidget(const SizedBox());
+          m = await _v143MountPresenter(tester, item.md, second);
+          await _v143Settle(
+            tester,
+            () => inBlock(
+              m,
+              find.text('File not found · $name'),
+            ).evaluate().isNotEmpty,
+          );
+          expect(second.infoCalls, contains(item.path), reason: name);
+          expect(inBlock(m, find.textContaining('PNG ·')), findsNothing);
+          expect(inBlock(m, find.textContaining('PDF ·')), findsNothing);
+        }
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a hosted vault offers Open without Reveal in Finder and a local one offers both',
+      (tester) async {
+        final hosted = FakeHostedAttachments();
+        final pdf = _v143Attachment('doc.pdf');
+        final pic = _v143Attachment('chart.png', image: true);
+        hosted
+          ..answerFile(pdf.path, Uint8List(2048))
+          ..answerRead(pic.path, AttachmentBytes(testPngBytes(300, 200)));
+        await _v143PumpEditor(
+          tester,
+          'Intro line\n${pdf.md}\n${pic.md}\nOutro line',
+          hosted,
+        );
+        await _v143Settle(
+          tester,
+          () => tester.getSize(_v143Block(2)).height > 60,
+        );
+        for (final r in [1, 2]) {
+          await _v143Click(
+            tester,
+            tester.getCenter(_v143Block(r)),
+            buttons: kSecondaryMouseButton,
+          );
+          await tester.pump(const Duration(milliseconds: 100));
+          expect(find.text('Open'), findsOneWidget, reason: 'row $r');
+          expect(find.text('Reveal in Finder'), findsNothing, reason: 'row $r');
+        }
+        await tester.tap(find.text('Open'));
+        await tester.pump();
+        expect(hosted.openCalls, [pic.path]);
+        expect(hosted.revealCalls, isEmpty);
+
+        // A local vault: both items.
+        await tester.pumpWidget(const SizedBox());
+        final vault = FakeAttachmentVault();
+        final lpdf = _v143Attachment('local.pdf');
+        vault.putFile(lpdf.path, Uint8List(2048));
+        await _v143PumpEditor(
+          tester,
+          'Intro line\n${lpdf.md}\nOutro line',
+          vault,
+        );
+        await _v143Click(
+          tester,
+          tester.getCenter(_v143Block(1)),
+          buttons: kSecondaryMouseButton,
+        );
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(find.text('Open'), findsOneWidget);
+        expect(find.text('Reveal in Finder'), findsOneWidget);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'cards and images open by semantics tap and reveal by a custom action on a local vault only',
+      (tester) async {
+        final handle = tester.ensureSemantics();
+        final vault = FakeAttachmentVault();
+        final lpdf = _v143Attachment('local.pdf');
+        final lpic = _v143Attachment('local.png', image: true);
+        final gone = _v143Attachment('gone.pdf');
+        vault
+          ..putFile(lpdf.path, Uint8List(2048))
+          ..putFile(lpic.path, testPngBytes(300, 200));
+        await _v143PumpEditor(
+          tester,
+          'Intro\n${lpdf.md}\n${lpic.md}\n${gone.md}\nOutro',
+          vault,
+        );
+        await tester.pump();
+        Finder card(int r) => find.descendant(
+          of: _v143Block(r),
+          matching: find.byType(AttachmentFileCard),
+        );
+        // Local card, local image: open by tap, reveal by custom action.
+        for (final (r, finder) in [(1, card(1)), (2, _v143Block(2))]) {
+          final data = tester.getSemantics(finder).getSemanticsData();
+          expect(data.hasAction(SemanticsAction.tap), isTrue, reason: 'row $r');
+          expect(_v143CustomLabels(data), [
+            'Reveal in Finder',
+          ], reason: 'row $r');
+          vault.openCalls.clear();
+          vault.revealCalls.clear();
+          _v143SemanticsTap(tester, finder);
+          await tester.pump();
+          expect(vault.openCalls, hasLength(1), reason: 'row $r tap opens');
+          expect(vault.revealCalls, isEmpty);
+          _v143PerformReveal(tester, finder);
+          await tester.pump();
+          expect(vault.revealCalls, hasLength(1), reason: 'row $r reveals');
+        }
+        // A missing card: no tap action, no custom action.
+        final missing = tester.getSemantics(card(3)).getSemanticsData();
+        expect(missing.hasAction(SemanticsAction.tap), isFalse);
+        expect(_v143CustomLabels(missing), isEmpty);
+        await tester.pumpWidget(const SizedBox());
+
+        // Hosted: open by tap, no reveal.
+        final hosted = FakeHostedAttachments();
+        final hpdf = _v143Attachment('hosted.pdf');
+        hosted.answerFile(hpdf.path, Uint8List(2048));
+        await _v143PumpEditor(tester, 'Intro\n${hpdf.md}\nOutro', hosted);
+        await tester.pump(const Duration(milliseconds: 100));
+        final data = tester.getSemantics(card(1)).getSemanticsData();
+        expect(data.hasAction(SemanticsAction.tap), isTrue);
+        expect(_v143CustomLabels(data), isEmpty, reason: 'no hosted Reveal');
+        _v143SemanticsTap(tester, card(1));
+        await tester.pump();
+        expect(hosted.openCalls, [hpdf.path]);
+        handle.dispose();
+      },
+      variant: macOnly,
+    );
+  });
 }
 
 /// The BoxDecoration of the notice's own DecoratedBox.
 BoxDecoration _v143NoticeBox(WidgetTester tester, Finder notice) {
   final box = find.descendant(of: notice, matching: find.byType(DecoratedBox));
   return tester.widget<DecoratedBox>(box.first).decoration as BoxDecoration;
+}
+
+/// The labels of [data]'s custom semantics actions.
+List<String> _v143CustomLabels(SemanticsData data) => [
+  for (final id in data.customSemanticsActionIds ?? const <int>[])
+    CustomSemanticsAction.getAction(id)!.label!,
+];
+
+/// Performs the `Reveal in Finder` custom action of [finder]'s node.
+void _v143PerformReveal(WidgetTester tester, Finder finder) {
+  final node = tester.getSemantics(finder);
+  final ids = node.getSemanticsData().customSemanticsActionIds ?? const <int>[];
+  final id = ids.singleWhere(
+    (id) => CustomSemanticsAction.getAction(id)!.label == 'Reveal in Finder',
+  );
+  node.owner!.performAction(node.id, SemanticsAction.customAction, id);
+}
+
+/// Performs the semantics tap action of [finder]'s node.
+void _v143SemanticsTap(WidgetTester tester, Finder finder) {
+  final node = tester.getSemantics(finder);
+  node.owner!.performAction(node.id, SemanticsAction.tap);
 }
