@@ -200,14 +200,20 @@ void _wi126ExpectMatchesMain({
   int from = 0,
   int? to,
   String label = '',
+  bool baselines = true,
 }) {
+  // Baselines of a strut or height behaviour other than the editor's may
+  // differ from main's (the class docs), so those checks leave them out.
+  Object key(LineBox l) => baselines
+      ? lineKey(l)
+      : (start: l.range.start, end: l.range.end, top: l.top, bottom: l.bottom);
   final q = _wi126Queries(oracle, length, box.size.width, from, to ?? length);
   final before = PerfCounters.snapshot();
   final source = lazy();
   for (final o in q.offsets) {
     expect(
-      lineKey(source.lineAt(o)),
-      lineKey(oracle.lineAt(o)),
+      key(source.lineAt(o)),
+      key(oracle.lineAt(o)),
       reason: '$label lineAt($o)',
     );
   }
@@ -242,8 +248,8 @@ void _wi126ExpectMatchesMain({
     reason: '$label range-local queries laid out a fresh copy ($measures)',
   );
   expect(
-    lineKeys(lazy().lines),
-    lineKeys(oracle.lines),
+    [for (final l in lazy().lines) key(l)],
+    [for (final l in oracle.lines) key(l)],
     reason: '$label lines',
   );
 }
@@ -254,6 +260,7 @@ void _wi126ExpectFieldMatchesMain(
   int from = 0,
   int? to,
   String label = '',
+  bool baselines = true,
 }) {
   final oracle = LineBoxOracle.editable(editable);
   try {
@@ -267,6 +274,7 @@ void _wi126ExpectFieldMatchesMain(
       from: from,
       to: to,
       label: label,
+      baselines: baselines,
     );
   } finally {
     oracle.dispose();
@@ -277,6 +285,7 @@ void _wi126ExpectFieldMatchesMain(
 void _wi126ExpectParagraphMatchesMain(
   RenderParagraph paragraph, {
   String label = '',
+  bool baselines = true,
 }) {
   final oracle = LineBoxOracle.paragraph(paragraph);
   try {
@@ -288,6 +297,7 @@ void _wi126ExpectParagraphMatchesMain(
       walks: 'paragraphLineWalks',
       measures: 'paragraphLineMeasures',
       label: label,
+      baselines: baselines,
     );
   } finally {
     oracle.dispose();
@@ -363,6 +373,141 @@ String _wi126Lines(String tag, int count) => [
   carets: [for (final o in offsets) lazy().caretRect(o)],
   lines: [for (final o in offsets) lineKey(lazy().lineAt(o))],
 );
+
+/// Lines of different lengths, so alignment, direction and scale move the
+/// boxes (and the last line wraps in a narrow box).
+const _wi126Varied =
+    'short\n'
+    'a somewhat longer line of plain words here\n'
+    'mid length line\n'
+    'x\n'
+    'a final line that is long enough to wrap in a narrow field box';
+
+/// A field with the layout inputs that live outside its span and its
+/// constraints (scaler, strut, alignment, direction, height behaviour), as a
+/// row's field is laid out.
+Widget _wi126InputField(
+  TextEditingController controller, {
+  double scale = 1,
+  StrutStyle? strut,
+  TextAlign align = TextAlign.start,
+  TextDirection? direction,
+  TextHeightBehavior behavior = const TextHeightBehavior(),
+}) => Builder(
+  builder: (context) => MediaQuery(
+    data: MediaQuery.of(context).copyWith(textScaler: TextScaler.linear(scale)),
+    child: DefaultTextHeightBehavior(
+      textHeightBehavior: behavior,
+      child: LineBoxEpoch(
+        child: TextField(
+          controller: controller,
+          maxLines: null,
+          style: const TextStyle(fontSize: 14, height: 2),
+          strutStyle: strut,
+          textAlign: align,
+          textDirection: direction,
+          selectionHeightStyle: ui.BoxHeightStyle.max,
+        ),
+      ),
+    ),
+  ),
+);
+
+/// A paragraph with the same inputs, plus the width basis.
+Widget _wi126InputParagraph({
+  double scale = 1,
+  StrutStyle? strut,
+  TextAlign align = TextAlign.start,
+  TextDirection direction = TextDirection.ltr,
+  TextWidthBasis basis = TextWidthBasis.parent,
+  TextHeightBehavior? behavior,
+}) => LineBoxEpoch(
+  child: Align(
+    alignment: Alignment.topLeft,
+    child: RichText(
+      key: const Key('wi126-input-paragraph'),
+      text: const TextSpan(
+        text: _wi126Varied,
+        style: TextStyle(fontSize: 14, height: 2, color: Color(0xFF101010)),
+      ),
+      textScaler: TextScaler.linear(scale),
+      strutStyle: strut,
+      textAlign: align,
+      textDirection: direction,
+      textWidthBasis: basis,
+      textHeightBehavior: behavior,
+    ),
+  ),
+);
+
+/// The paragraph inputs of a field, kept after the field is gone.
+typedef _Wi126Replica = ({
+  InlineSpan span,
+  StrutStyle? strut,
+  TextScaler scaler,
+  TextAlign align,
+  TextDirection direction,
+  Locale? locale,
+});
+
+_Wi126Replica _wi126ReplicaOf(RenderEditable e) => (
+  span: e.text!,
+  strut: e.strutStyle,
+  scaler: e.textScaler,
+  align: e.textAlign,
+  direction: e.textDirection,
+  locale: e.locale,
+);
+
+/// A [RichText] replica of a row's span, [width] wide (a replica of a
+/// row's paragraph at another wrap).
+Future<RenderParagraph> _wi126PumpReplica(
+  WidgetTester tester,
+  _Wi126Replica replica,
+  double width,
+) async {
+  await tester.pumpWidget(
+    Directionality(
+      textDirection: TextDirection.ltr,
+      child: Align(
+        alignment: Alignment.topLeft,
+        child: SizedBox(
+          width: width,
+          child: LineBoxEpoch(
+            child: RichText(
+              key: const Key('wi126-wrap-replica'),
+              text: replica.span,
+              strutStyle: replica.strut,
+              textScaler: replica.scaler,
+              textAlign: replica.align,
+              textDirection: replica.direction,
+              locale: replica.locale,
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+  return tester.renderObject<RenderParagraph>(
+    find.byKey(const Key('wi126-wrap-replica')),
+  );
+}
+
+/// A field in the platform's own selection height style (the Source
+/// surface's field), or in max height (a row's field).
+Widget _wi126StyledField(TextEditingController c, {required bool max}) =>
+    LineBoxEpoch(
+      child: TextField(
+        controller: c,
+        maxLines: null,
+        selectionHeightStyle: max
+            ? ui.BoxHeightStyle.max
+            : ui.BoxHeightStyle.tight,
+      ),
+    );
+
+const _wi126WrapLine =
+    'A paragraph long enough to wrap over several lines in this narrow box.';
 
 void main() {
   holdFontFetches();
@@ -688,6 +833,295 @@ void main() {
           RenderEditableLineBoxes(editable).boxesFor(range).single.left,
           left.left - 40,
         );
+      },
+    );
+  });
+
+  // ------------------------- layout inputs besides the span (AC7, TD1)
+
+  group('a changed layout input returns boxes from the new layout', () {
+    for (final (name, build)
+        in <(String, Widget Function(TextEditingController c, bool alt))>[
+          (
+            'a changed text scale returns boxes from the new layout for a field',
+            (c, alt) => _wi126InputField(c, scale: alt ? 1.6 : 1),
+          ),
+          (
+            'a changed strut returns boxes from the new layout for a field',
+            (c, alt) => _wi126InputField(
+              c,
+              strut: alt
+                  ? const StrutStyle(fontSize: 28, forceStrutHeight: true)
+                  : null,
+            ),
+          ),
+          (
+            'a changed text alignment returns boxes from the new layout for a field',
+            (c, alt) => _wi126InputField(
+              c,
+              align: alt ? TextAlign.right : TextAlign.start,
+            ),
+          ),
+          (
+            'a changed text direction returns boxes from the new layout for a field',
+            (c, alt) => _wi126InputField(
+              c,
+              direction: alt ? TextDirection.rtl : TextDirection.ltr,
+            ),
+          ),
+        ]) {
+      testWidgets(name, (tester) async {
+        final c = TextEditingController(text: _wi126Varied);
+        addTearDown(c.dispose);
+        await _wi126PumpAt(tester, 260, build(c, false));
+        final editable = _wi126OnlyEditable(tester);
+        final ranges = [
+          TextRange(start: 0, end: c.text.length),
+          const TextRange(start: 8, end: 30),
+        ];
+        final offsets = [0, 3, 20, 60, 100, c.text.length];
+        lazy() => RenderEditableLineBoxes(editable);
+        // Warm: every query once at this layout.
+        lazy().lines;
+        final warm = _wi126Answers(lazy, ranges, offsets);
+        await _wi126PumpAt(tester, 260, build(c, true));
+        expect(identical(_wi126OnlyEditable(tester), editable), isTrue);
+        final oracle = LineBoxOracle.editable(editable);
+        addTearDown(oracle.dispose);
+        expect(
+          [for (final r in ranges) ...oracle.boxesFor(r)],
+          isNot(warm.rects),
+          reason: 'the input moved the boxes, so a stale answer is wrong',
+        );
+        _wi126ExpectFieldMatchesMain(
+          editable,
+          label: name,
+          baselines: !name.contains('strut'),
+        );
+      });
+    }
+
+    for (final (name, build) in <(String, Widget Function(bool alt))>[
+      (
+        'a changed text scale returns boxes from the new layout for a paragraph',
+        (alt) => _wi126InputParagraph(scale: alt ? 1.6 : 1),
+      ),
+      (
+        'a changed strut returns boxes from the new layout for a paragraph',
+        (alt) => _wi126InputParagraph(
+          strut: alt
+              ? const StrutStyle(fontSize: 40, forceStrutHeight: true)
+              : null,
+        ),
+      ),
+      (
+        'a changed text alignment returns boxes from the new layout for a paragraph',
+        (alt) => _wi126InputParagraph(
+          align: alt ? TextAlign.right : TextAlign.start,
+        ),
+      ),
+      (
+        'a changed text direction returns boxes from the new layout for a paragraph',
+        (alt) => _wi126InputParagraph(
+          direction: alt ? TextDirection.rtl : TextDirection.ltr,
+        ),
+      ),
+      (
+        'a changed height behaviour returns boxes from the new layout for a paragraph',
+        (alt) => _wi126InputParagraph(
+          behavior: alt
+              ? const TextHeightBehavior(
+                  applyHeightToFirstAscent: false,
+                  applyHeightToLastDescent: false,
+                )
+              : null,
+        ),
+      ),
+      (
+        'a changed width basis returns boxes from the new layout for a paragraph',
+        (alt) => _wi126InputParagraph(
+          align: TextAlign.center,
+          basis: alt ? TextWidthBasis.longestLine : TextWidthBasis.parent,
+        ),
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        await _wi126PumpAt(tester, 260, build(false));
+        final p = tester.renderObject<RenderParagraph>(
+          find.byKey(const Key('wi126-input-paragraph')),
+        );
+        final ranges = [
+          const TextRange(start: 0, end: _wi126Varied.length),
+          const TextRange(start: 8, end: 30),
+        ];
+        final offsets = [0, 3, 20, 60, 100, _wi126Varied.length];
+        lazy() => RenderParagraphLineBoxes(p);
+        lazy().lines;
+        final warm = _wi126Answers(lazy, ranges, offsets);
+        await _wi126PumpAt(tester, 260, build(true));
+        expect(
+          identical(
+            tester.renderObject<RenderParagraph>(
+              find.byKey(const Key('wi126-input-paragraph')),
+            ),
+            p,
+          ),
+          isTrue,
+        );
+        final oracle = LineBoxOracle.paragraph(p);
+        addTearDown(oracle.dispose);
+        expect(
+          [for (final r in ranges) ...oracle.boxesFor(r)],
+          isNot(warm.rects),
+          reason: 'the input moved the boxes, so a stale answer is wrong',
+        );
+        _wi126ExpectParagraphMatchesMain(
+          p,
+          label: name,
+          baselines: !name.contains('strut') && !name.contains('behaviour'),
+        );
+      });
+    }
+  });
+
+  // -------------- the trickiest paths on varied text (AC1, TD1)
+
+  group('the newest geometry paths measure as main on varied text', () {
+    const wrapped = '$_wi126WrapLine $_wi126WrapLine';
+    for (final (name, text, max) in <(String, String, bool)>[
+      (
+        'a field in the platform height style measures wrapped blank and trailing newline lines exactly as main',
+        '# Title\n\n$wrapped\n\n\nTail line\n',
+        false,
+      ),
+      (
+        'a field in the platform height style ending in two blank lines measures exactly as main',
+        'one\n\n',
+        false,
+      ),
+      (
+        'a field in the platform height style holding only a newline measures exactly as main',
+        '\n',
+        false,
+      ),
+      (
+        'an empty field in the platform height style measures exactly as main',
+        '',
+        false,
+      ),
+      (
+        'a row field ending in a newline measures exactly as main',
+        '# Title\n\n$wrapped\n\n\nTail line\n',
+        true,
+      ),
+      (
+        'a row field ending in two blank lines measures exactly as main',
+        'one\n\n',
+        true,
+      ),
+      (
+        'a row field holding only a newline measures exactly as main',
+        '\n',
+        true,
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final c = TextEditingController(text: text);
+        addTearDown(c.dispose);
+        await _wi126PumpAt(tester, 200, _wi126StyledField(c, max: max));
+        final editable = _wi126OnlyEditable(tester);
+        final oracle = LineBoxOracle.editable(editable);
+        addTearDown(oracle.dispose);
+        if (text.contains(wrapped)) {
+          expect(
+            oracle.lines.length,
+            greaterThan('\n'.allMatches(text).length + 1),
+            reason: 'a long line wraps in the narrow box',
+          );
+        }
+        if (text.endsWith('\n')) {
+          expect(
+            oracle.lines.last.range,
+            TextRange.collapsed(text.length),
+            reason: 'the empty last line is a line of its own',
+          );
+        }
+        _wi126ExpectFieldMatchesMain(editable, label: name);
+      });
+    }
+
+    testWidgets(
+      'a Source mode note with wrapped blank and trailing newline lines measures exactly as main',
+      (tester) async {
+        final body = [
+          '# Source title',
+          '',
+          List.filled(14, _wi126WrapLine).join(' '),
+          '',
+          '```',
+          'let x = 1;',
+          '```',
+          '',
+          'Tail line',
+          '',
+        ].join('\n');
+        final e = await pumpSpellingEditor(tester, body: body, source: true);
+        await pumpFrames(tester);
+        final editable = findRenderEditable(
+          tester.renderObject(e.sourceField),
+        )!;
+        expect(editable.plainText, endsWith('\n'));
+        final oracle = LineBoxOracle.editable(editable);
+        addTearDown(oracle.dispose);
+        expect(
+          oracle.lines.length,
+          greaterThan('\n'.allMatches(editable.plainText).length + 1),
+          reason: 'the long line wraps in the Source field',
+        );
+        _wi126ExpectFieldMatchesMain(editable, label: 'Source');
+      },
+    );
+
+    testWidgets(
+      'a decorated paragraph replica measures exactly as main at several wraps',
+      (tester) async {
+        await _wi126PumpEditor(
+          tester,
+          List.filled(3, _wi126Decorated).join(' '),
+        );
+        final replica = _wi126ReplicaOf(_wi126RowEditable(tester, 0, 0));
+        final spans = <InlineSpan>[];
+        replica.span.visitChildren((s) {
+          spans.add(s);
+          return true;
+        });
+        expect(
+          spans.length,
+          greaterThan(6),
+          reason: 'the decorated row holds many styled and marker spans',
+        );
+        var wraps = 0;
+        for (final width in <double>[
+          70,
+          110,
+          150,
+          190,
+          230,
+          270,
+          330,
+          400,
+          520,
+        ]) {
+          final paragraph = await _wi126PumpReplica(tester, replica, width);
+          final oracle = LineBoxOracle.paragraph(paragraph);
+          wraps += oracle.lines.length;
+          oracle.dispose();
+          _wi126ExpectParagraphMatchesMain(
+            paragraph,
+            label: 'replica ${width}px',
+          );
+        }
+        expect(wraps, greaterThan(9 * 2), reason: 'the replicas wrap');
       },
     );
   });

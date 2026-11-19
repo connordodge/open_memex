@@ -23,6 +23,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/src/editor/editor_rows.dart' show RowKind;
 import 'package:open_memex_app/src/state/find_in_note_state.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
@@ -35,6 +36,7 @@ import '../support/editor_rows_probe.dart';
 import '../support/fake_spelling_service.dart';
 import '../support/font_fetch_hold.dart';
 import '../support/line_box_oracle.dart';
+import '../support/mac_editing.dart';
 import '../support/long_note_fixtures.dart';
 import '../support/perf_counters.dart';
 import '../support/segment_editing_finder.dart';
@@ -325,6 +327,117 @@ void main() {
         caret.extentOffset,
         inInclusiveRange(second, second + note.lines[1].length),
         reason: 'Arrow Down moved the caret to the second line',
+      );
+    },
+    timeout: _wi126Timeout,
+  );
+
+  // ------------------------------ quote band and line edge (AC2, AC4)
+
+  testWidgets(
+    'opening N1 decorated paints every quote row with no whole-text line walk',
+    (tester) async {
+      await _wi126RequireRangeLocalGeometry(tester);
+      final note = longNote(
+        LongNoteKind.n1Plain120k,
+        variant: LongNoteVariant.decorated,
+      );
+      PerfCounters.reset();
+      await _wi126Open(tester, note);
+      final host = rowsHostOf(tester);
+      final quotes = [
+        for (var i = 0; i < host.rowCount; i++)
+          if (host.rowSpec(i)!.kind == RowKind.quote) i,
+      ];
+      expect(quotes.length, greaterThan(4), reason: 'N1 decorated has quotes');
+      // Every row paints its overlays whether or not it is on screen, so the
+      // quote bands of the quote rows far below the first screen are drawn
+      // by this open too (each row's layer paints all its items).
+      final first = rowBoxesOf(tester, 0, quotes.first).box;
+      final last = rowBoxesOf(tester, 0, quotes.last).box;
+      expect(
+        last.localToGlobal(Offset.zero).dy -
+            first.localToGlobal(Offset.zero).dy,
+        greaterThan(_wi126Scroll(tester).viewportDimension),
+        reason: 'the last quote row is far below the first',
+      );
+      // The capture gutter's post-frame measure reads one field's lines once
+      // (not a paint path, not this WI); a quote band reading every line
+      // would add one walk per quote row (30 on N1 decorated).
+      final d = PerfCounters.snapshot();
+      expect(
+        d['editableLineWalks'],
+        lessThanOrEqualTo(1),
+        reason: 'the quote bands of ${quotes.length} quote rows walk no line',
+      );
+      expect(d['paragraphLineWalks'], 0);
+      expect(
+        (d['editableLineMeasures'], d['paragraphLineMeasures']),
+        (0, 0),
+        reason: 'no whole-text layout copy',
+      );
+    },
+    timeout: _wi126Timeout,
+  );
+
+  testWidgets(
+    'the first line edge move over rows of N1 decorated performs no whole-text line walk',
+    (tester) async {
+      final note = longNote(
+        LongNoteKind.n1Plain120k,
+        variant: LongNoteVariant.decorated,
+      );
+      await _wi126Open(tester, note);
+      final host = rowsHostOf(tester);
+      await activateRow(tester, 0, 0, offset: 3);
+      // A selection from row 0 into a later row: Cmd+Right then moves to the
+      // end of the visual line holding the selection's end.
+      final spec = host.rowSpec(2)!;
+      final end = spec.textStart + 2;
+      host.select(TextSelection(baseOffset: 3, extentOffset: end));
+      await tester.pump();
+      final before = PerfCounters.snapshot();
+      await tester.macSelector('moveToRightEndOfLine:');
+      _wi126ExpectNoWalk(PerfCounters.delta(before), 'first line edge move');
+      final caret = segmentEditingAt(tester, 0).selection;
+      expect(caret.isCollapsed, isTrue, reason: 'the selection collapsed');
+      expect(
+        caret.baseOffset,
+        inInclusiveRange(end, host.rowSpec(2)!.textEnd),
+        reason: 'the caret moved to the end of the line holding the end',
+      );
+    },
+    timeout: _wi126Timeout,
+    variant: macOnly,
+  );
+
+  // ---------------------------------------------- selection fill (AC3)
+
+  testWidgets(
+    'a selection over lines of N1 after a keystroke paints its fill with no whole-text line walk',
+    (tester) async {
+      final note = longNote(LongNoteKind.n1Plain120k);
+      final e = await _wi126Open(tester, note);
+      final offset = note.lines.take(3).join('\n').length;
+      await activateRow(tester, 0, 0, offset: offset);
+      // A keystroke lays the field out again: no line is cached after it.
+      await e.robot.typeChars('x');
+      final host = rowsHostOf(tester);
+      final before = PerfCounters.snapshot();
+      host.select(TextSelection(baseOffset: offset - 20, extentOffset: 400));
+      await tester.pump();
+      await tester.pump();
+      final d = PerfCounters.delta(before);
+      _wi126ExpectNoWalk(d, 'selection fill');
+      expect(
+        d['editableLineSpans'],
+        greaterThan(0),
+        reason: 'the fill read the lines its selection covers',
+      );
+      expect(
+        d['editableLineSpans'],
+        lessThanOrEqualTo(12),
+        reason: 'only the few lines a 420 character selection reaches',
       );
     },
     timeout: _wi126Timeout,
