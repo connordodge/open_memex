@@ -11,6 +11,7 @@ import '../../editor/markdown_inline.dart';
 import '../../editor/markdown_lines.dart';
 import '../../editor/markdown_table.dart';
 import '../../editor/tag_grammar.dart' show fencedMdLines, normalizeTagName;
+import '../../state/note_title_lookup.dart';
 import '../../state/tabs_state.dart';
 import '../../state/tags_browse_state.dart';
 import '../../state/url_opener.dart';
@@ -23,6 +24,18 @@ import 'live_preview_controller.dart';
 /// The most titles `noteTitlesAsyncProvider` loads: a list this long may be
 /// cut short, so no wikilink renders as a ghost (D14).
 const int _titlesCap = 1000;
+
+/// Test-only work counter (WI #129, Spec #122 R22): how many times a link
+/// region was handed a note-titles change, whether it rebuilt for it or was
+/// called back with it.
+@visibleForTesting
+int debugLinkRegionTitleUpdates = 0;
+
+/// Test-only gauge (WI #129, Spec #122 R21): how many `HardwareKeyboard`
+/// handlers link regions hold registered right now (one added per
+/// registration, one taken away per removal).
+@visibleForTesting
+int debugLinkKeyHandlers = 0;
 
 /// The URL schemes a click opens (D14, Spec #232 R13).
 const Set<String> _openableSchemes = {'http', 'https', 'mailto'};
@@ -122,6 +135,7 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
   void initState() {
     super.initState();
     HardwareKeyboard.instance.addHandler(_onKey);
+    debugLinkKeyHandlers++;
     widget.controller.addListener(_onControllerChanged);
   }
 
@@ -138,6 +152,7 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
   @override
   void dispose() {
     HardwareKeyboard.instance.removeHandler(_onKey);
+    debugLinkKeyHandlers--;
     widget.controller.removeListener(_onControllerChanged);
     super.dispose();
   }
@@ -149,10 +164,11 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
       ref.watch(currentVaultProvider),
     )?.value;
     if (!identical(titles, _titles)) {
+      debugLinkRegionTitleUpdates++;
       _titles = titles;
       _ids = titles == null || titles.length >= _titlesCap
           ? null
-          : {for (final t in titles.reversed) t.title: t.id};
+          : _titleIds(titles);
       _scheduleApply();
     }
     return Stack(
@@ -461,6 +477,12 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
     _tokensFenced = controller.fenced;
     return _links = links;
   }
+}
+
+/// Note id by title of [titles] (the first of equal titles wins).
+Map<String, String> _titleIds(List<NoteTitle> titles) {
+  debugNoteTitleLookupBuilds++;
+  return {for (final t in titles.reversed) t.title: t.id};
 }
 
 /// Whether a click opens [url]: its scheme (case-insensitive) is http, https
