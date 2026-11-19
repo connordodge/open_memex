@@ -225,6 +225,27 @@ fn store_applies_the_stored_name_rule_and_returns_the_stored_name() {
 }
 
 #[test]
+fn a_given_name_of_dot_or_dot_dot_is_stored_as_file_on_both_routes() {
+    let fx = Fx::new();
+    let bytes = b"dot name bytes";
+    let src = fx.source("dots.bin", bytes);
+    for given in [".", "..", " .. ", " . "] {
+        let got = attachments::store_bytes(&fx.vault, bytes, given).unwrap();
+        assert_stored(&fx, &got, bytes, "file", "application/octet-stream");
+        let got = attachments::store_file(&fx.vault, &src, Some(given)).unwrap();
+        assert_stored(&fx, &got, bytes, "file", "application/octet-stream");
+        assert_eq!(got.path, rel_path(bytes, "file"), "{given:?}: final path");
+    }
+    // Nothing was written at the dot names' paths, only `file`.
+    let h = sha(bytes);
+    let files = files_under(&fx.objects());
+    assert_eq!(files, BTreeSet::from([format!("{}/{h}/file", &h[..2])]));
+    // `...` is an ordinary name.
+    let got = attachments::store_bytes(&fx.vault, bytes, "...").unwrap();
+    assert_eq!(got.name, "...");
+}
+
+#[test]
 fn stored_attachment_serializes_as_markdown_path_name_size_type() {
     let fx = Fx::new();
     let bytes = b"json shape";
