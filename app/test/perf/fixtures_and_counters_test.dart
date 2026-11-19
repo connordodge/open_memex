@@ -597,6 +597,7 @@ void main() {
         expect(boxes.lines, hasLength(3));
         expect(_n('editableLineMeasures'), 2);
         expect(_n('editableLineWalks'), 2);
+        expect(_n('editableLineSpans'), 0, reason: 'a lines read has no span');
         expect(_n('paragraphLineMeasures'), 0);
         expect(_n('paragraphLineWalks'), 0);
       },
@@ -627,9 +628,11 @@ void main() {
         boxes.caretRect(14);
         expect(_n('editableLineMeasures'), 1);
         expect(_n('editableLineWalks'), 1);
+        expect(_n('editableLineSpans'), 0);
         final before = PerfCounters.snapshot();
         boxes.offsetAt(const Offset(10, 5));
         expect(boxes.boxesFor(const TextRange.collapsed(3)), isEmpty);
+        expect(PerfCounters.delta(before)['editableLineSpans'], 0);
         expect(PerfCounters.delta(before)['editableLineMeasures'], 0);
         expect(PerfCounters.delta(before)['editableLineWalks'], 0);
       },
@@ -645,6 +648,7 @@ void main() {
         expect(boxes.lines, hasLength(3));
         expect(_n('paragraphLineMeasures'), 2);
         expect(_n('paragraphLineWalks'), 2);
+        expect(_n('paragraphLineSpans'), 0, reason: 'a lines read has no span');
         expect(_n('editableLineMeasures'), 0);
         expect(_n('editableLineWalks'), 0);
       },
@@ -675,9 +679,11 @@ void main() {
         boxes.caretRect(14);
         expect(_n('paragraphLineMeasures'), 1);
         expect(_n('paragraphLineWalks'), 1);
+        expect(_n('paragraphLineSpans'), 0);
         final before = PerfCounters.snapshot();
         boxes.offsetAt(const Offset(10, 5));
         expect(boxes.boxesFor(const TextRange.collapsed(3)), isEmpty);
+        expect(PerfCounters.delta(before)['paragraphLineSpans'], 0);
         expect(PerfCounters.delta(before)['paragraphLineMeasures'], 0);
         expect(PerfCounters.delta(before)['paragraphLineWalks'], 0);
       },
@@ -741,27 +747,47 @@ void main() {
     testWidgets('a marker column counts a setState when its row changes', (
       tester,
     ) async {
-      final e = await pumpSpellingEditor(tester, body: '- one\n- two\n');
+      final e = await pumpSpellingEditor(tester, body: '- one\n');
+      await pumpFrames(tester);
       PerfCounters.reset();
+      await pumpFrames(tester);
+      expect(_n('markerColumnSetStates'), 0, reason: 'nothing changed');
+      expect(_n('markerColumnBuilds'), 0, reason: 'nothing changed');
       await e.typeAtEnd(' more');
       await pumpFrames(tester);
-      expect(_n('markerColumnSetStates'), greaterThan(0));
-      expect(_n('markerColumnBuilds'), greaterThan(0));
+      // One edit notifies the two things the column watches (its row's
+      // controller and the segment's controller): one setState and one build
+      // each, once.
+      expect(_n('markerColumnSetStates'), 2);
+      expect(_n('markerColumnBuilds'), 2);
+      await pumpFrames(tester);
+      expect(_n('markerColumnSetStates'), 2, reason: 'a quiet frame adds none');
+      expect(_n('markerColumnBuilds'), 2, reason: 'a quiet frame adds none');
     });
 
     testWidgets(
       'a segment counts a setState and a build when an edit re-derives its rows',
       (tester) async {
-        final e = await pumpSpellingEditor(
-          tester,
-          body: 'First line\n\n- item\n',
-        );
+        const body = 'First line\n\n- item\n';
+        final e = await pumpSpellingEditor(tester, body: body);
+        await pumpFrames(tester);
         PerfCounters.reset();
+        await pumpFrames(tester);
+        expect(_n('segmentSetStates'), 0, reason: 'nothing changed');
+        expect(_n('segmentBuilds'), 0, reason: 'nothing changed');
+        expect(_n('rowBuilds'), 0, reason: 'nothing changed');
         await e.typeAtEnd(' more');
         await pumpFrames(tester);
-        expect(_n('segmentSetStates'), greaterThan(0));
-        expect(_n('segmentBuilds'), greaterThan(0));
-        expect(_n('rowBuilds'), greaterThan(0));
+        // One edit re-derives the rows once: one setState, one segment
+        // build, and one build of each row the segment now holds.
+        expect(_n('segmentSetStates'), 1);
+        expect(_n('segmentBuilds'), 1);
+        expect(
+          _n('rowBuilds'),
+          rows
+              .splitRows('First line\n\n- item more\n', atSegmentStart: true)
+              .length,
+        );
       },
     );
   });
@@ -833,6 +859,20 @@ void main() {
         expect(_n('spellHostLineCalls'), 1);
       },
     );
+
+    testWidgets('a field host counts one editable lookup per editable call', (
+      tester,
+    ) async {
+      await pumpSpellingEditor(tester, body: 'Some words here.\n');
+      final spellHost =
+          tester.state(find.byType(host.SpellCheckField).first)
+              as SpellFieldHost;
+      PerfCounters.reset();
+      expect(spellHost.editable(), isNotNull);
+      expect(_n('spellHostEditableCalls'), 1);
+      expect(spellHost.editable(), isNotNull);
+      expect(_n('spellHostEditableCalls'), 2);
+    });
 
     testWidgets(
       'check document now measures an issue rect before and after the frame',
