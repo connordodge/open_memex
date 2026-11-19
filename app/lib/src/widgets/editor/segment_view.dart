@@ -579,6 +579,9 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
       // Setting tableRow notifies, so only a change is written.
       final table = spec.kind == RowKind.table;
       if (row.controller.tableRow != table) row.controller.tableRow = table;
+      // The row's presenter says whether its text is hidden (WI #124, D2):
+      // every suppression site reads it as the controller's textHidden.
+      row.controller.presenterTextHidden = () => _textHidden(row, j);
       final text = _text.substring(spec.textStart, spec.textEnd);
       final local = switch (slices[j]) {
         null => const TextSelection.collapsed(offset: -1),
@@ -646,16 +649,27 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   }
 
   /// What [row] (row [i])'s presenter was last built with; before its first
-  /// build, the row as it stands.
-  PresentedRow _presented(_Row row, int i) =>
-      row.presented ??
-      PresentedRow(
-        segment: widget.index,
-        index: i,
-        kind: row.spec.kind,
-        controller: row.controller,
-        blockKey: row.gridKey,
-      );
+  /// build, or once the row changed kind or index since, the row as it
+  /// stands.
+  PresentedRow _presented(_Row row, int i) {
+    final built = row.presented;
+    if (built != null && built.kind == row.spec.kind && built.index == i) {
+      return built;
+    }
+    return PresentedRow(
+      segment: widget.index,
+      index: i,
+      kind: row.spec.kind,
+      controller: row.controller,
+      blockKey: row.gridKey,
+    );
+  }
+
+  /// Whether [row] (row [i])'s presenter hides its text now (WI #124, D2).
+  bool _textHidden(_Row row, int i) {
+    final presented = _presented(row, i);
+    return presenterFor(presented.kind).textHidden(presented);
+  }
 
   /// Whether a row's presenter owns the press at global [position] (WI #124,
   /// ruling D5): the segment's pointer layer then ignores it, as it does a
