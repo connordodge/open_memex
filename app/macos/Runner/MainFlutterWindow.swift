@@ -34,6 +34,14 @@ import FlutterMacOS
 ///   `copy_failed` error whose details are `{domain: "NSPasteboard", code: 0}`
 ///   (`NSPasteboard.setString` returns a Bool, not an `NSError`); a
 ///   non-`String` argument gets `bad_arguments`. The text is never logged.
+/// - Dart → native `readPasteboard` (no arguments): reads the general
+///   pasteboard. Replies a map: `files` (absolute paths) when it holds file
+///   URLs; `hasText` (Bool, true) when a string is present; `png`
+///   (`FlutterStandardTypedData` PNG bytes; a TIFF image is converted) only
+///   when it holds an image and neither files nor text (Spec #123 R8: files,
+///   then text, then image, so the image is never decoded when it would go
+///   unused). Replies an empty map when it holds none of these. Never replies
+///   an error: nothing in this path throws.
 ///
 /// Updater channel `open_memex/updater` (Dart side: `app/lib/src/updater/updater_menu_host.dart`):
 /// - native → Dart `checkForUpdatesFromMenu` (no arguments): sent when
@@ -171,6 +179,30 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
           return
         }
         result(nil)
+      case "readPasteboard":
+        let pb = NSPasteboard.general
+        var reply: [String: Any] = [:]
+        let urls =
+          pb.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        let hasText = pb.availableType(from: [.string]) != nil
+        if hasText {
+          reply["hasText"] = true
+        }
+        if !urls.isEmpty {
+          reply["files"] = urls.map { $0.path }
+        } else if !hasText {
+          if let png = pb.data(forType: .png) {
+            reply["png"] = FlutterStandardTypedData(bytes: png)
+          } else if let tiff = pb.data(forType: .tiff),
+            let rep = NSBitmapImageRep(data: tiff),
+            let png = rep.representation(using: .png, properties: [:])
+          {
+            reply["png"] = FlutterStandardTypedData(bytes: png)
+          }
+        }
+        result(reply)
       default:
         result(FlutterMethodNotImplemented)
       }
