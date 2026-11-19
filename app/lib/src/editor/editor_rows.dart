@@ -35,6 +35,12 @@ enum RowKind {
   /// A markdown table (Spec #197 R8), from its header line through its last
   /// body line. Keeps its interior terminators.
   table,
+
+  /// An attachment line (Spec #123, ruling D1): an image row or a file card.
+  /// Its row-kind presenter (`attachment_row.dart`) shows it; until #123
+  /// fills that presenter it renders and edits like a prose row with the
+  /// same text. `splitRows` makes none yet (#123-V3 owns the carve-out).
+  attachment,
 }
 
 /// A selection inside one text segment, in segment offsets.
@@ -288,6 +294,7 @@ bool _continues(RowKind block, MdLineKind last, MdLineKind next) =>
       RowKind.table =>
         next == MdLineKind.tableDelimiter || next == MdLineKind.tableBody,
       RowKind.prose ||
+      RowKind.attachment ||
       RowKind.bullet ||
       RowKind.numbered ||
       RowKind.task ||

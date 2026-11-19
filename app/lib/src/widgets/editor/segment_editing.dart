@@ -1,5 +1,7 @@
 import 'package:flutter/widgets.dart';
 
+import '../../editor/editor_rows.dart' show SegmentEdit;
+
 /// The editing handle of one text segment of the segmented editor (D5,
 /// TD12), implemented by the State under Key `text-segment-<i>`.
 ///
@@ -35,4 +37,18 @@ abstract interface class SegmentEditing {
   /// without changing focus. When the text changed, reports the note's
   /// joined body once through the segmented body's `onContentChanged`.
   void replaceText(String text);
+
+  /// Applies [edit] (segment offsets) to the segment's text as one edit
+  /// (frozen, WI #124 ruling D12): the rows re-derive, the segment's undo
+  /// recorder records it once, and the note's joined body is reported once
+  /// through the segmented body's `onContentChanged`. [SegmentEdit.selection]
+  /// becomes the segment's selection; without one the selection is kept,
+  /// clamped to the new text. Focus does not change.
+  void applyEdit(SegmentEdit edit);
+
+  /// The segment offset under global [position] (frozen, WI #124 ruling
+  /// D12): the offset nearest to it in the segment's line boxes, as a press
+  /// there resolves it. Null while the segment has no line boxes (before its
+  /// rows are laid out).
+  int? offsetAtGlobal(Offset position);
 }

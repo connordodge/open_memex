@@ -26,7 +26,7 @@ MarkerColumnKind? markerColumnKind(RowKind kind) => switch (kind) {
   RowKind.task => MarkerColumnKind.task,
   RowKind.quote => MarkerColumnKind.quote,
   RowKind.prose || RowKind.code => null,
-  RowKind.table => null,
+  RowKind.table || RowKind.attachment => null,
 };
 
 /// The horizontal geometry of each of [rows] (A2, Spec R11, R12), x relative

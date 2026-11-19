@@ -619,6 +619,13 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
     return _RowsLineBoxes(box, rows);
   }
 
+  /// Row [i]'s geometry (WI #124, ruling D3): its presenter's
+  /// `blockBoxes` when non-null (a rendered table's grid), else its text
+  /// slot's (field's) line boxes, in the row field's text offsets and the
+  /// source's own box coordinates. Null past the last row and before the
+  /// row is laid out.
+  LineBoxSource? rowBoxes(int i) => null;
+
   /// [row]'s line boxes once laid out, in its field's text offsets: a
   /// rendered table's from its grid (`TableGridState.lineBoxes`, ruling
   /// D12), every other row's from its field. Until a table's grid is built
@@ -738,7 +745,11 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   /// re-derive, the segment's undo recorder records it once, and the note's
   /// joined body is reported once through `onContentChanged`. C1b's
   /// checkbox toggle applies `toggleTask` through it.
+  @override
   void applyEdit(SegmentEdit edit) => _apply(edit);
+
+  @override
+  int? offsetAtGlobal(Offset position) => null;
 
   @override
   Widget build(BuildContext context) {

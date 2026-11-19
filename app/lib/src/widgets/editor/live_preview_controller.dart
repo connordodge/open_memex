@@ -85,6 +85,12 @@ class LivePreviewController extends TextEditingController {
   /// predicate of a table row; false for every other row.
   bool get tableRevealed => tableRow && revealGate.value && selection.isValid;
 
+  /// Whether the field's text is hidden now (WI #124, ruling D2): a table
+  /// row that shows its grid, `tableRow && !tableRevealed`. False for every
+  /// other row and state. Find highlights, spelling squiggles, the selection
+  /// fill, link hits and the pointer layer's grid press read it.
+  bool get textHidden => false;
+
   /// True while the field's text segment has focus. Default: never true.
   ValueListenable<bool> revealGate = const AlwaysStoppedAnimation<bool>(false);
 
