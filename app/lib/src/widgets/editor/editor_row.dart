@@ -76,6 +76,10 @@ List<ItemGeometry?> rowGeometries(List<RowSpec> rows) {
 /// focused or not ([_RowSelection]), and its spelling squiggles and hint
 /// over it ([SpellSquiggles], WI #437).
 class EditorRow extends StatelessWidget {
+  /// Test-only work counter: how many times any editor row built.
+  @visibleForTesting
+  static int debugBuilds = 0;
+
   const EditorRow({
     super.key,
     required this.segment,
@@ -122,6 +126,7 @@ class EditorRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    debugBuilds++;
     final host = context.findAncestorStateOfType<SegmentViewState>();
     Widget keyedField(Widget child) => KeyedSubtree(
       key: ValueKey('editor-row-$segment-$index'),
@@ -229,6 +234,11 @@ class _RowSelection extends SingleChildRenderObjectWidget {
   ) => renderObject.watch(controller, index, host);
 }
 
+/// Test-only work counter: how many times any editor row painted its
+/// selection block.
+@visibleForTesting
+int debugEditorRowSelectionPaints = 0;
+
 class _RenderRowSelection extends RenderProxyBox {
   _RenderRowSelection(this._controller, this._index, this._host)
     : _segment = _host?.widget.controller,
@@ -278,6 +288,7 @@ class _RenderRowSelection extends RenderProxyBox {
 
   @override
   void paint(PaintingContext context, Offset offset) {
+    debugEditorRowSelectionPaints++;
     // One rect per line; lines never overlap, so the fill never doubles.
     final paint = Paint()..color = OmColors.selection;
     for (final rect in _selectionRects()) {

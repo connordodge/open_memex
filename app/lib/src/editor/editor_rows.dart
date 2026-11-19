@@ -190,6 +190,11 @@ class RowSpec {
       'run $numberedRun/$runDigits)';
 }
 
+/// Test-only work counter: how many times [splitRows] ran. Plain top-level
+/// int (pure Dart: no `package:meta`, ruling D9). Never read by production
+/// code.
+int debugSplitRowsCalls = 0;
+
 /// Splits one text segment into editor rows (Spec R9, R39).
 ///
 /// Each item line (bullet, numbered, task, quote; [classifyLines]) is its own
@@ -206,6 +211,7 @@ class RowSpec {
 /// a closed fence); `''` is one empty prose row. [atSegmentStart] is passed
 /// to [classifyLines] (leading frontmatter is prose).
 List<RowSpec> splitRows(String text, {required bool atSegmentStart}) {
+  debugSplitRowsCalls++;
   final lines = classifyLines(text, atSegmentStart: atSegmentStart);
   final rows = <RowSpec>[];
   // Indices of the open numbered runs by depth (R11).

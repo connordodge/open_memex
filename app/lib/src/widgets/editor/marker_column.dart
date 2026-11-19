@@ -83,6 +83,19 @@ MarkerTaskCheck markerTaskCheck() {
   );
 }
 
+/// Test-only work counter: how many times any marker column built.
+@visibleForTesting
+int debugMarkerColumnBuilds = 0;
+
+/// Test-only work counter: how many times any marker column called
+/// `setState` after a watched listenable changed.
+@visibleForTesting
+int debugMarkerColumnSetStates = 0;
+
+/// Test-only work counter: how many times any marker column painted.
+@visibleForTesting
+int debugMarkerColumnPaints = 0;
+
 /// The marker column of one item row (Spec R2, R4, R11, R22, R24): [width]
 /// (A2's unrevealed marker column width) wide and one item line tall.
 ///
@@ -184,7 +197,10 @@ class _MarkerColumnState extends State<MarkerColumn> {
   }
 
   void _changed() {
-    if (mounted) setState(() {});
+    if (mounted) {
+      debugMarkerColumnSetStates++;
+      setState(() {});
+    }
   }
 
   void _toggle() {
@@ -196,6 +212,7 @@ class _MarkerColumnState extends State<MarkerColumn> {
 
   @override
   Widget build(BuildContext context) {
+    debugMarkerColumnBuilds++;
     final place = _place();
     _watch([
       if (place != null) ...[
@@ -339,6 +356,7 @@ class _MarkerPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    debugMarkerColumnPaints++;
     if (fill case final fill?) {
       canvas.drawRect(Offset.zero & size, Paint()..color = fill);
     }
