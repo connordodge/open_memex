@@ -84,6 +84,9 @@ Future<void> _wi126RequireRangeLocalGeometry(WidgetTester tester) async {
         'whole-text copy (whole-text geometry); the long-note pump would '
         'take minutes',
   );
+  // Tear the probe down now: the editor pumped next must not meet this
+  // MaterialApp's deactivated field (EditorFocusMemory reads primaryFocus).
+  await tester.pumpWidget(const SizedBox());
 }
 
 /// Pumps the editor on [note] (live preview, or Source mode with [source]),
