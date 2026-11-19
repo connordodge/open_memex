@@ -301,6 +301,7 @@ Future<SegmentViewState> _t127PumpView(
   required String text,
   required String richRowText,
   SpellIssueRegistry? registry,
+  String? staleSlotText,
 }) async {
   final controller = TextEditingController(text: text);
   final focus = FocusNode();
@@ -318,10 +319,17 @@ Future<SegmentViewState> _t127PumpView(
     onChanged: () {},
     onRowRemoved: (_) {},
     fieldBuilder: (context, row) => row.controller.text == richRowText
-        ? _T127SlotText(
-            controller: row.controller,
-            slotKey: const ValueKey('t127-field-slot'),
-          )
+        ? staleSlotText != null
+              // A slot still showing another text than its row's (a stale
+              // layout).
+              ? RichText(
+                  key: const ValueKey('t127-field-slot'),
+                  text: TextSpan(text: staleSlotText, style: editorBodyStyle()),
+                )
+              : _T127SlotText(
+                  controller: row.controller,
+                  slotKey: const ValueKey('t127-field-slot'),
+                )
         : TextField(
             controller: row.controller,
             focusNode: row.focusNode,
@@ -360,24 +368,49 @@ RenderParagraph _t127FieldSlot(WidgetTester tester) =>
 /// A spelling field host that answers only the geometry-free seam (Spec
 /// #122 Req 25) from [extentAtOf]: no render object at all.
 class _T127ValueHost implements SpellFieldHost {
-  _T127ValueHost({required this.extentAtOf, required this.window});
+  _T127ValueHost({
+    required this.extentAtOf,
+    required this.window,
+    this.laidOut = true,
+    this.base = 0,
+    this.placesOffsets = true,
+  });
 
   /// The global top and bottom of the line holding a field offset.
   final ({double top, double bottom}) Function(int offset) extentAtOf;
 
-  /// The viewport's global top and bottom.
-  final ({double top, double bottom}) window;
+  /// The viewport's global top and bottom, null without one.
+  final ({double top, double bottom})? window;
+
+  /// Whether the field is laid out ([extent] answers).
+  final bool laidOut;
+
+  /// Where the field's text starts in its line (a block marker before it).
+  final int base;
+
+  /// Whether [extentAt] places an offset (else it answers null).
+  final bool placesOffsets;
+
+  /// Every field offset [extentAt] was asked for.
+  final asked = <int>[];
 
   @override
-  SpellFieldLine line(TextEditingController field) =>
-      (line: field.text, base: 0, atSegmentStart: true);
+  SpellFieldLine line(TextEditingController field) => (
+    line: '${'-' * base}${field.text}',
+    base: base,
+    atSegmentStart: base == 0,
+  );
 
   @override
-  ({double top, double bottom})? extent() =>
-      (top: extentAtOf(0).top, bottom: extentAtOf(1 << 20).bottom);
+  ({double top, double bottom})? extent() => laidOut
+      ? (top: extentAtOf(0).top, bottom: extentAtOf(1 << 20).bottom)
+      : null;
 
   @override
-  ({double top, double bottom})? extentAt(int offset) => extentAtOf(offset);
+  ({double top, double bottom})? extentAt(int offset) {
+    asked.add(offset);
+    return placesOffsets ? extentAtOf(offset) : null;
+  }
 
   @override
   ({double top, double bottom})? viewport() => window;
@@ -1277,6 +1310,714 @@ void main() {
         for (final path in allowed) {
           expect(File(path).existsSync(), isTrue, reason: path);
         }
+      },
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Accessor contracts the AC tests above leave open (verify)
+  // -------------------------------------------------------------------------
+  group('text slot lookup (verify)', () {
+    Future<RenderObject> pumpRoot(
+      WidgetTester tester,
+      List<Widget> kids,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Column(key: const ValueKey('t127-root'), children: kids),
+          ),
+        ),
+      );
+      return tester.renderObject(find.byKey(const ValueKey('t127-root')));
+    }
+
+    final hint = RichText(text: const TextSpan(text: 'hint'));
+
+    testWidgets(
+      'the text slot of a root is its field before a RichText whichever comes first, else its RichText, else nothing',
+      (tester) async {
+        final controller = TextEditingController(text: 'field text');
+        addTearDown(controller.dispose);
+        final field = TextField(controller: controller);
+
+        var root = await pumpRoot(tester, [hint, field]);
+        expect(
+          textSlotBox(root),
+          isA<RenderEditable>(),
+          reason: 'RichText first',
+        );
+        expect(textSlotBoxes(root), isA<RenderEditableLineBoxes>());
+
+        root = await pumpRoot(tester, [field, hint]);
+        expect(textSlotBox(root), isA<RenderEditable>(), reason: 'field first');
+
+        root = await pumpRoot(tester, [hint]);
+        expect(textSlotBox(root), isA<RenderParagraph>());
+        expect(textSlotBoxes(root), isA<RenderParagraphLineBoxes>());
+
+        root = await pumpRoot(tester, [const SizedBox(width: 10, height: 10)]);
+        expect(textSlotBox(root), isNull, reason: 'no text under the root');
+        expect(textSlotBoxes(root), isNull);
+        expect(textSlotLines(root, 'x'), isNull);
+        expect(textSlotBox(null), isNull, reason: 'no root');
+        expect(textSlotBoxes(null), isNull);
+        expect(textSlotLines(null, 'x'), isNull);
+      },
+    );
+
+    testWidgets(
+      'the text slot lines are answered only while the laid out text has the length of the given text',
+      (tester) async {
+        final root = await pumpRoot(tester, [
+          RichText(text: const TextSpan(text: 'hello world')),
+        ]);
+        final lines = textSlotLines(root, 'hello world');
+        expect(lines, isNotNull, reason: 'the same length');
+        expect(lines!.lines, hasLength(1));
+        expect(lines.lines.last.range.end, 'hello world'.length);
+        expect(
+          _t127Lines(lines.boxes),
+          _t127Lines(textSlotBoxes(root)!),
+          reason: 'the boxes measure the same slot',
+        );
+        expect(textSlotLines(root, 'hello world!'), isNull, reason: 'longer');
+        expect(textSlotLines(root, 'hello'), isNull, reason: 'shorter');
+        expect(textSlotLines(root, ''), isNull, reason: 'empty');
+      },
+    );
+  });
+
+  group('rows host accessor edges (verify)', () {
+    testWidgets(
+      'the host answers nothing for a row before the first or past the last and something for each row in range',
+      (tester) async {
+        await pumpTable(tester, _t127Text);
+        final host = rowsHostOf(tester);
+        final n = host.rowCount;
+        expect(n, 5, reason: 'fixture rows');
+        for (final i in [-1, n]) {
+          expect(host.rowController(i), isNull, reason: 'controller $i');
+          expect(host.rowFocusNode(i), isNull, reason: 'focus node $i');
+          expect(host.rowBoxes(i), isNull, reason: 'boxes $i');
+          expect(
+            host.rowPositionAt(i, const Offset(30, 30)),
+            isNull,
+            reason: 'position $i',
+          );
+          expect(
+            host.rowWordBoundary(i, const TextPosition(offset: 0)),
+            isNull,
+            reason: 'word $i',
+          );
+          host.rowPressed(i, 0);
+        }
+        for (final i in [0, n - 1]) {
+          final controller = tester
+              .widget<EditorRow>(_t127EditorRow(0, i))
+              .controller;
+          expect(host.rowController(i), same(controller), reason: 'row $i');
+          expect(host.rowFocusNode(i), isNotNull, reason: 'row $i');
+          expect(host.rowBoxes(i), isNotNull, reason: 'row $i');
+          expect(
+            host.rowWordBoundary(i, const TextPosition(offset: 1)),
+            isNotNull,
+            reason: 'row $i has a laid out slot',
+          );
+        }
+        expect(
+          host.rowFocusNode(0),
+          isNot(same(host.rowFocusNode(1))),
+          reason: 'one node per row',
+        );
+      },
+    );
+
+    testWidgets(
+      'a row position and word are resolved by the slot itself for a field row and for a RichText row',
+      (tester) async {
+        _t127PresentRichText(only: _t127Rich);
+        await pumpTable(tester, _t127Text);
+        final host = rowsHostOf(tester);
+
+        // The RichText row.
+        final slot = _t127Slot(tester, 0, _t127Rich);
+        final at = host.rowPositionAt(
+          _t127Rich,
+          _t127GlyphPoint(slot, _t127Needle + 1),
+        );
+        expect(at, isNotNull);
+        expect(
+          at!.offset,
+          _t127Needle + 1,
+          reason: 'the glyph under the point',
+        );
+        expect(
+          host.rowWordBoundary(
+            _t127Rich,
+            TextPosition(offset: _t127Needle + 2),
+          ),
+          TextRange(start: _t127Needle, end: _t127Needle + 'needle'.length),
+          reason: 'the word holding the offset',
+        );
+        expect(
+          host.rowWordBoundary(_t127Rich, const TextPosition(offset: 2)),
+          const TextRange(start: 0, end: 'Middle'.length),
+        );
+
+        // A field row.
+        final field = rowBoxesOf(tester, 0, 0).box as RenderEditable;
+        final caret = field.getLocalRectForCaret(const TextPosition(offset: 8));
+        final point = field.localToGlobal(
+          Offset(caret.left + 1, caret.center.dy),
+        );
+        expect(host.rowPositionAt(0, point)!.offset, 8, reason: 'a field row');
+        expect(
+          host.rowWordBoundary(0, const TextPosition(offset: 8)),
+          TextRange(start: 'Intro '.length, end: 'Intro paragraph'.length),
+        );
+      },
+    );
+
+    testWidgets(
+      'a press on a row without a field changes nothing and a press on a field row hides its open toolbar',
+      (tester) async {
+        _t127PresentRichText(only: _t127Rich);
+        final b = await pumpTable(tester, _t127Text);
+        final host = rowsHostOf(tester);
+        host.rowPressed(_t127Rich, 3);
+        await tester.pump();
+        expect(
+          host.rowController(_t127Rich)!.text,
+          '$_t127Middle1\n$_t127Middle2',
+        );
+
+        // A field row's toolbar is open; a press the pointer layer took on
+        // the row closes it, as the row field's own tap would.
+        await b.select(const TextSelection(baseOffset: 0, extentOffset: 5));
+        final field = b.focusedField();
+        expect(field.showToolbar(), isTrue, reason: 'the toolbar can open');
+        await tester.pump();
+        expect(field.selectionOverlay?.toolbarIsVisible, isTrue);
+
+        host.rowPressed(0, 2);
+        await tester.pump();
+
+        expect(field.selectionOverlay?.toolbarIsVisible ?? false, isFalse);
+      },
+    );
+  });
+
+  group('spelling host over a RichText slot (verify)', () {
+    Future<SpellFieldHost> pumpHost(
+      WidgetTester tester,
+      String text, {
+      Key? scroll,
+    }) async {
+      final controller = TextEditingController(text: text);
+      addTearDown(controller.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Align(
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: 400,
+                height: 300,
+                child: SingleChildScrollView(
+                  key: scroll,
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 40),
+                    child: SpellCheckField(
+                      controller: controller,
+                      child: RichText(
+                        key: const ValueKey('t127-host-slot'),
+                        text: TextSpan(
+                          text: text,
+                          style: const TextStyle(fontSize: 16, height: 1.5),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      return tester.state(find.byType(SpellCheckField)) as SpellFieldHost;
+    }
+
+    testWidgets(
+      'the host of a RichText slot answers its extent, the band of the line holding an offset clamped to its text, and the scroll viewport',
+      (tester) async {
+        const text = 'first line\nsecond line\nthird line';
+        const scroll = ValueKey('t127-host-scroll');
+        final host = await pumpHost(tester, text, scroll: scroll);
+        final slot = tester.renderObject<RenderParagraph>(
+          find.byKey(const ValueKey('t127-host-slot')),
+        );
+        final top = slot.localToGlobal(Offset.zero).dy;
+        final lines = RenderParagraphLineBoxes(slot).lines;
+        expect(lines, hasLength(3), reason: 'three source lines');
+
+        final extent = host.extent();
+        expect(extent, isNotNull);
+        expect(extent!.top, moreOrLessEquals(top), reason: 'extent top');
+        expect(
+          extent.bottom,
+          moreOrLessEquals(top + slot.size.height),
+          reason: 'extent bottom',
+        );
+
+        // Each offset's band lies on its own line.
+        for (final (i, offset) in [(0, 2), (1, 14), (2, 26)]) {
+          final band = host.extentAt(offset);
+          expect(band, isNotNull, reason: 'offset $offset');
+          expect(band!.top, moreOrLessEquals(top + lines[i].top, epsilon: 1.5));
+          expect(
+            band.bottom,
+            moreOrLessEquals(top + lines[i].bottom, epsilon: 1.5),
+          );
+          expect(band.bottom, greaterThan(band.top));
+        }
+
+        // Clamped to the laid out text, both ways.
+        final end = host.extentAt(text.length)!;
+        final past = host.extentAt(text.length + 500)!;
+        expect((past.top, past.bottom), (end.top, end.bottom), reason: 'past');
+        final start = host.extentAt(0)!;
+        final before = host.extentAt(-9)!;
+        expect(
+          (before.top, before.bottom),
+          (start.top, start.bottom),
+          reason: 'before',
+        );
+        expect(
+          end.top,
+          greaterThan(start.top),
+          reason: 'end is on a later line',
+        );
+
+        // The viewport is the page's scrollable.
+        final page = tester.renderObject<RenderBox>(find.byKey(scroll));
+        final view = host.viewport();
+        expect(view, isNotNull);
+        final pageTop = page.localToGlobal(Offset.zero).dy;
+        expect(view!.top, moreOrLessEquals(pageTop));
+        expect(view.bottom, moreOrLessEquals(pageTop + page.size.height));
+        expect(view.bottom - view.top, 300);
+      },
+    );
+
+    testWidgets(
+      'the host answers nothing once its field has left the tree and no viewport without a scrollable',
+      (tester) async {
+        final host = await pumpHost(tester, 'some text');
+        expect(host.extent(), isNotNull);
+        await tester.pumpWidget(const SizedBox());
+        expect(host.extent(), isNull, reason: 'unmounted extent');
+        expect(host.extentAt(2), isNull, reason: 'unmounted extentAt');
+
+        final controller = TextEditingController(text: 'x');
+        addTearDown(controller.dispose);
+        await tester.pumpWidget(
+          MaterialApp(
+            home: SpellCheckField(
+              controller: controller,
+              child: const SizedBox(width: 20, height: 20),
+            ),
+          ),
+        );
+        final bare =
+            tester.state(find.byType(SpellCheckField)) as SpellFieldHost;
+        expect(bare.extent(), isNull, reason: 'no text slot');
+        expect(bare.extentAt(0), isNull, reason: 'no text slot');
+        expect(bare.viewport(), isNull, reason: 'no scrollable');
+      },
+    );
+
+    testWidgets('the host of a field row clamps an offset to the field text', (
+      tester,
+    ) async {
+      await pumpTable(tester, _t127Text);
+      final controller = tester
+          .widget<EditorRow>(_t127EditorRow(0, 0))
+          .controller;
+      final host =
+          tester.state(
+                find.byWidgetPredicate(
+                  (w) =>
+                      w is SpellCheckField &&
+                      identical(w.controller, controller),
+                ),
+              )
+              as SpellFieldHost;
+      final end = host.extentAt(controller.text.length)!;
+      final past = host.extentAt(controller.text.length + 500)!;
+      expect((past.top, past.bottom), (end.top, end.bottom), reason: 'past');
+      final start = host.extentAt(0)!;
+      final before = host.extentAt(-9)!;
+      expect(
+        (before.top, before.bottom),
+        (start.top, start.bottom),
+        reason: 'before',
+      );
+    });
+  });
+
+  group('selection fill over a stale RichText slot (verify)', () {
+    for (final (name, stale) in [
+      (
+        'the selection fill paints nothing while a RichText text slot still shows a shorter text than its row',
+        'first',
+      ),
+      (
+        'the selection fill paints nothing while a RichText text slot already shows a longer text than its row',
+        '$_t127Middle1\n$_t127Middle2 and more words',
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final host = await _t127PumpView(
+          tester,
+          text: _t127Text,
+          richRowText: '$_t127Middle1\n$_t127Middle2',
+          staleSlotText: stale,
+        );
+        final from = _t127Middle1.indexOf('first');
+        host.select(
+          TextSelection(
+            baseOffset: _t127RichStart + from,
+            extentOffset: _t127RichStart + from + 'first line'.length,
+          ),
+        );
+        await tester.pump();
+
+        final row = tester.renderObject<RenderBox>(
+          find.byKey(ValueKey('editor-row-0-$_t127Rich')),
+        );
+        expect(
+          row,
+          isNot(
+            paints..something((method, args) {
+              if (method != #drawRect) return false;
+              final paint = args[1] as Paint;
+              return paint.color.toARGB32() == OmColors.selection.toARGB32();
+            }),
+          ),
+          reason: 'a stale layout gets no selection fill',
+        );
+      });
+    }
+  });
+
+  group('spelling controller geometry bounds (verify)', () {
+    /// Registers one single-paragraph field per [fields] entry (its text
+    /// and global extent), checks, and returns the checked paragraph texts.
+    Future<List<Object?>> checkedOf(
+      WidgetTester tester,
+      Map<String, ({double top, double bottom})?> fields, {
+      ({double top, double bottom})? window = (top: 0.0, bottom: 600.0),
+    }) async {
+      final service = FakeSpellingService();
+      final container = ProviderContainer(
+        overrides: [spellingServiceProvider.overrideWithValue(service)],
+      );
+      addTearDown(container.dispose);
+      final checker = SpellCheckController(
+        noteId: 't127-bounds',
+        sink: _T127MapSink(),
+        session: () => container.read(spellSessionProvider),
+        service: () => service,
+        flags: (spelling: true, grammar: false),
+      );
+      addTearDown(checker.dispose);
+      for (final entry in fields.entries) {
+        final controller = TextEditingController(text: entry.key);
+        addTearDown(controller.dispose);
+        final extent = entry.value;
+        checker.addField(
+          controller,
+          _T127ValueHost(
+            window: window,
+            laidOut: extent != null,
+            extentAtOf: (_) => extent ?? (top: 0.0, bottom: 0.0),
+          ),
+        );
+      }
+      for (var i = 0; i < 8; i++) {
+        await tester.pump(const Duration(milliseconds: 400));
+      }
+      return [for (final c in service.callsFor('check')) c.args['text']];
+    }
+
+    testWidgets(
+      'a field is checked while its extent overlaps the band one screen around the viewport and not when it only touches it',
+      (tester) async {
+        // The viewport is 0..600, so the band is -600..1200.
+        final checked = await checkedOf(tester, {
+          'Touching the band end.': (top: 1200.0, bottom: 1223.0),
+          'Inside the band end.': (top: 1199.0, bottom: 1210.0),
+          'Touching the band start.': (top: -623.0, bottom: -600.0),
+          'Inside the band start.': (top: -623.0, bottom: -599.0),
+          'Never laid out.': null,
+        });
+        expect(checked.toSet(), {
+          'Inside the band end.',
+          'Inside the band start.',
+        });
+      },
+    );
+
+    testWidgets('a field is checked everywhere while no host has a viewport', (
+      tester,
+    ) async {
+      final checked = await checkedOf(tester, {
+        'Far below the screen.': (top: 9000.0, bottom: 9023.0),
+      }, window: null);
+      expect(checked, ['Far below the screen.']);
+    });
+
+    testWidgets(
+      'a paragraph is checked while its host top and bottom overlap the band and not when it only touches it',
+      (tester) async {
+        const paras = [
+          'Zero paragraph text.',
+          'One paragraph text.',
+          'Two paragraph text.',
+          'Three paragraph text.',
+        ];
+        final text = paras.join('\n\n');
+        final starts = <int>[];
+        var at = 0;
+        for (final p in paras) {
+          starts.add(at);
+          at += p.length + 2;
+        }
+        // (top, bottom) of each paragraph; the band is -600..1200.
+        const bands = [
+          (top: -700.0, bottom: -600.0), // ends where the band starts
+          (top: -610.0, bottom: -599.0), // ends inside it
+          (top: 1199.0, bottom: 1300.0), // starts inside it
+          (top: 1200.0, bottom: 1300.0), // starts where it ends
+        ];
+        ({double top, double bottom}) bandOf(int offset) {
+          var i = 0;
+          for (var k = 0; k < starts.length; k++) {
+            if (starts[k] <= offset) i = k;
+          }
+          return bands[i];
+        }
+
+        final service = FakeSpellingService();
+        final container = ProviderContainer(
+          overrides: [spellingServiceProvider.overrideWithValue(service)],
+        );
+        addTearDown(container.dispose);
+        final checker = SpellCheckController(
+          noteId: 't127-paras',
+          sink: _T127MapSink(),
+          session: () => container.read(spellSessionProvider),
+          service: () => service,
+          flags: (spelling: true, grammar: false),
+        );
+        addTearDown(checker.dispose);
+        final controller = TextEditingController(text: text);
+        addTearDown(controller.dispose);
+        checker.addField(
+          controller,
+          _T127ValueHost(
+            window: (top: 0.0, bottom: 600.0),
+            extentAtOf: (o) => o > text.length ? bands.last : bandOf(o),
+          ),
+        );
+        for (var i = 0; i < 8; i++) {
+          await tester.pump(const Duration(milliseconds: 400));
+        }
+        expect(
+          {for (final c in service.callsFor('check')) c.args['text']},
+          {paras[1], paras[2]},
+        );
+      },
+    );
+
+    testWidgets(
+      'a host that cannot place an offset has every paragraph of a near field checked and none of a far field',
+      (tester) async {
+        final service = FakeSpellingService();
+        final container = ProviderContainer(
+          overrides: [spellingServiceProvider.overrideWithValue(service)],
+        );
+        addTearDown(container.dispose);
+        final checker = SpellCheckController(
+          noteId: 't127-unplaced',
+          sink: _T127MapSink(),
+          session: () => container.read(spellSessionProvider),
+          service: () => service,
+          flags: (spelling: true, grammar: false),
+        );
+        addTearDown(checker.dispose);
+        const window = (top: 0.0, bottom: 600.0);
+        final near = TextEditingController(
+          text: 'Near first paragraph.\n\nNear second paragraph.',
+        );
+        final far = TextEditingController(text: 'Far unplaced paragraph.');
+        addTearDown(near.dispose);
+        addTearDown(far.dispose);
+        checker.addField(
+          near,
+          _T127ValueHost(
+            window: window,
+            placesOffsets: false,
+            extentAtOf: (o) => o == 0
+                ? (top: 100.0, bottom: 110.0)
+                : (top: 100.0, bottom: 300.0),
+          ),
+        );
+        checker.addField(
+          far,
+          _T127ValueHost(
+            window: window,
+            placesOffsets: false,
+            extentAtOf: (_) => (top: 5000.0, bottom: 5100.0),
+          ),
+        );
+        for (var i = 0; i < 8; i++) {
+          await tester.pump(const Duration(milliseconds: 400));
+        }
+        expect(
+          {for (final c in service.callsFor('check')) c.args['text']},
+          {'Near first paragraph.', 'Near second paragraph.'},
+        );
+      },
+    );
+
+    testWidgets(
+      'the controller asks a host only for offsets inside the field text, also for a field text after a block marker',
+      (tester) async {
+        final service = FakeSpellingService();
+        final container = ProviderContainer(
+          overrides: [spellingServiceProvider.overrideWithValue(service)],
+        );
+        addTearDown(container.dispose);
+        final checker = SpellCheckController(
+          noteId: 't127-clamp',
+          sink: _T127MapSink(),
+          session: () => container.read(spellSessionProvider),
+          service: () => service,
+          flags: (spelling: true, grammar: false),
+        );
+        addTearDown(checker.dispose);
+        const body = 'Item paragraph text.';
+        final controller = TextEditingController(text: body);
+        addTearDown(controller.dispose);
+        final host = _T127ValueHost(
+          window: (top: 0.0, bottom: 600.0),
+          base: 2,
+          extentAtOf: (_) => (top: 100.0, bottom: 120.0),
+        );
+        checker.addField(controller, host);
+        for (var i = 0; i < 8; i++) {
+          await tester.pump(const Duration(milliseconds: 400));
+        }
+        expect(host.asked, isNotEmpty, reason: 'the near field was measured');
+        for (final offset in host.asked) {
+          expect(offset, inInclusiveRange(0, body.length));
+        }
+        expect(host.asked, contains(0), reason: 'the marker clamps to 0');
+        expect(
+          [for (final c in service.callsFor('check')) c.args['text']],
+          ['--$body'],
+          reason: 'the paragraph holds the block marker',
+        );
+      },
+    );
+
+    testWidgets(
+      'the next issue starts from the field with the smallest top, a field not laid out comes last and equal tops keep the joining order',
+      (tester) async {
+        Future<List<String>> firstIssueField(
+          List<(String, ({double top, double bottom})?)> joined,
+        ) async {
+          final service = FakeSpellingService()
+            ..misspell('teh', corrections: const ['the']);
+          final container = ProviderContainer(
+            overrides: [spellingServiceProvider.overrideWithValue(service)],
+          );
+          final checker = SpellCheckController(
+            noteId: 't127-order',
+            sink: _T127MapSink(),
+            session: () => container.read(spellSessionProvider),
+            service: () => service,
+            flags: (spelling: true, grammar: false),
+          );
+          final controllers = <String, TextEditingController>{};
+          for (final (name, extent) in joined) {
+            final c = TextEditingController(text: '$name has a teh typo.');
+            controllers[name] = c;
+            checker.addField(
+              c,
+              _T127ValueHost(
+                window: null,
+                laidOut: extent != null,
+                extentAtOf: (_) => extent ?? (top: 0.0, bottom: 0.0),
+              ),
+            );
+          }
+          for (var i = 0; i < 8; i++) {
+            await tester.pump(const Duration(milliseconds: 400));
+          }
+          final next = checker.nextIssue();
+          final names = [
+            for (final e in controllers.entries)
+              if (identical(e.value, next?.field)) e.key,
+          ];
+          checker.dispose();
+          container.dispose();
+          for (final c in controllers.values) {
+            c.dispose();
+          }
+          return names;
+        }
+
+        expect(
+          await firstIssueField([
+            ('low', (top: 300.0, bottom: 320.0)),
+            ('high', (top: 100.0, bottom: 120.0)),
+            ('mid', (top: 200.0, bottom: 220.0)),
+          ]),
+          ['high'],
+          reason: 'the smallest top first, whatever the joining order',
+        );
+        expect(
+          await firstIssueField([
+            ('unlaid first', null),
+            ('laid', (top: 500.0, bottom: 520.0)),
+          ]),
+          ['laid'],
+          reason: 'a field not laid out goes after a laid out one',
+        );
+        expect(
+          await firstIssueField([
+            ('laid', (top: 500.0, bottom: 520.0)),
+            ('unlaid last', null),
+          ]),
+          ['laid'],
+          reason: 'a laid out field is first, whichever side it is on',
+        );
+        expect(
+          await firstIssueField([
+            ('first joined', (top: 100.0, bottom: 120.0)),
+            ('second joined', (top: 100.0, bottom: 120.0)),
+          ]),
+          ['first joined'],
+          reason: 'equal tops keep the joining order',
+        );
+        expect(
+          await firstIssueField([('unlaid a', null), ('unlaid b', null)]),
+          ['unlaid a'],
+          reason: 'fields not laid out keep the joining order',
+        );
       },
     );
   });

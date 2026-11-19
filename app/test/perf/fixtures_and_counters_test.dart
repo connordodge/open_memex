@@ -860,19 +860,35 @@ void main() {
       },
     );
 
-    testWidgets('a field host counts one editable lookup per editable call', (
-      tester,
-    ) async {
-      await pumpSpellingEditor(tester, body: 'Some words here.\n');
-      final spellHost =
-          tester.state(find.byType(host.SpellCheckField).first)
-              as SpellFieldHost;
-      PerfCounters.reset();
-      expect(spellHost.editable(), isNotNull);
-      expect(_n('spellHostEditableCalls'), 1);
-      expect(spellHost.editable(), isNotNull);
-      expect(_n('spellHostEditableCalls'), 2);
-    });
+    testWidgets(
+      'a field host counts one laid-out text lookup per extent call',
+      (tester) async {
+        await pumpSpellingEditor(tester, body: 'Some words here.\n');
+        final spellHost =
+            tester.state(find.byType(host.SpellCheckField).first)
+                as SpellFieldHost;
+        PerfCounters.reset();
+        expect(spellHost.extent(), isNotNull);
+        expect(_n('spellHostEditableCalls'), 1);
+        expect(spellHost.extent(), isNotNull);
+        expect(_n('spellHostEditableCalls'), 2);
+      },
+    );
+
+    testWidgets(
+      'a field host counts one laid-out text lookup per extentAt call',
+      (tester) async {
+        await pumpSpellingEditor(tester, body: 'Some words here.\n');
+        final spellHost =
+            tester.state(find.byType(host.SpellCheckField).first)
+                as SpellFieldHost;
+        PerfCounters.reset();
+        expect(spellHost.extentAt(5), isNotNull);
+        expect(_n('spellHostEditableCalls'), 1);
+        expect(spellHost.extentAt(5), isNotNull);
+        expect(_n('spellHostEditableCalls'), 2);
+      },
+    );
 
     testWidgets(
       'check document now measures an issue rect before and after the frame',
