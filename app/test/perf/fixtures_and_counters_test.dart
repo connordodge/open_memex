@@ -37,6 +37,7 @@ import 'package:open_memex_app/src/widgets/find/find_highlights.dart' as findhl;
 import 'package:open_memex_app/src/widgets/outline/section_tracker.dart';
 
 import '../support/app_harness.dart';
+import '../support/editor_rows_probe.dart';
 import '../support/fake_spelling_service.dart';
 import '../support/font_fetch_hold.dart';
 import '../support/mac_editing.dart';
@@ -747,22 +748,21 @@ void main() {
     testWidgets('a marker column counts a setState when its row changes', (
       tester,
     ) async {
-      final e = await pumpSpellingEditor(tester, body: '- one\n');
+      await pumpSpellingEditor(tester, body: '- one\n');
       await pumpFrames(tester);
       PerfCounters.reset();
       await pumpFrames(tester);
       expect(_n('markerColumnSetStates'), 0, reason: 'nothing changed');
       expect(_n('markerColumnBuilds'), 0, reason: 'nothing changed');
-      await e.typeAtEnd(' more');
+      // Row 0 is the item row: activating it reveals its marker, the one
+      // change the column acts on (an edit of the trailing empty prose row
+      // changes nothing it shows, Spec #122 AC9).
+      await activateRow(tester, 0, 0);
       await pumpFrames(tester);
-      // Focusing the row reveals its marker and the edit changes its row: a
-      // setState and a build each time the column acts on that, once or
-      // twice (WI #129 drops the one for the segment's own notification,
-      // Spec #122 R21).
       final setStates = _n('markerColumnSetStates');
       final builds = _n('markerColumnBuilds');
-      expect(setStates, inInclusiveRange(1, 2));
-      expect(builds, inInclusiveRange(1, 2));
+      expect(setStates, 1);
+      expect(builds, 1);
       await pumpFrames(tester);
       expect(
         _n('markerColumnSetStates'),
@@ -789,19 +789,13 @@ void main() {
         expect(_n('rowBuilds'), 0, reason: 'nothing changed');
         await e.typeAtEnd(' more');
         await pumpFrames(tester);
-        // One edit re-derives the rows once: one setState, one segment
-        // build, and at most one build of each row the segment now holds
-        // (WI #129 builds only the rows that changed, Spec #122 R19).
+        // One edit re-derives the rows once: one setState and one segment
+        // build. The edit lands in the trailing empty row, whose field
+        // rebuilds through its own controller, so no EditorRow builds (WI
+        // #129 builds only the rows whose config changed, Spec #122 R19).
         expect(_n('segmentSetStates'), 1);
         expect(_n('segmentBuilds'), 1);
-        expect(
-          _n('rowBuilds'),
-          lessThanOrEqualTo(
-            rows
-                .splitRows('First line\n\n- item more\n', atSegmentStart: true)
-                .length,
-          ),
-        );
+        expect(_n('rowBuilds'), 0);
       },
     );
   });
