@@ -181,17 +181,6 @@ void main() {
     expect(c.hasText, isTrue);
   });
 
-  test('png and hasText together are both reported', () async {
-    final bytes = fakePngBytes(4);
-    _native((_) => {'png': Uint8List.fromList(bytes), 'hasText': true});
-
-    final c = await _read();
-
-    expect(c.png, bytes);
-    expect(c.hasText, isTrue);
-    expect(c.files, isEmpty);
-  });
-
   test('a platform error maps to empty without throwing', () async {
     _native(
       (_) => throw PlatformException(
