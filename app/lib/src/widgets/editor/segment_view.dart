@@ -15,12 +15,12 @@ import 'editor_row.dart';
 import 'find_decoration.dart';
 import 'line_boxes.dart';
 import 'live_preview_controller.dart';
+import 'row_kinds.dart';
 import 'segment_editing.dart';
 import 'segment_keyboard.dart';
 import 'segment_pointer_layer.dart';
 import 'segment_selection_ops.dart';
 import 'segment_undo.dart';
-import 'table_grid.dart';
 
 /// What the rows host hands its field builder for one editor row.
 @immutable
@@ -162,8 +162,15 @@ class _Row {
   /// connection) when the row moves or changes kind.
   final GlobalKey fieldKey;
 
-  /// Holds a table row's grid while it shows (ruling D12).
+  /// Holds the row's block while it shows (a table row's grid, ruling D12;
+  /// an attachment's image or card): its presenter's
+  /// `PresentedRow.blockKey`.
   final GlobalKey gridKey;
+
+  /// What the row's presenter was last built with (WI #124): the host asks
+  /// that presenter for the row's geometry and presses, so it answers for
+  /// the body it built. Null before the row's first build.
+  PresentedRow? presented;
 
   /// Find in note's decoration of the row's field (#61 F6, D7).
   final ValueNotifier<FindDecoration?> find = ValueNotifier(null);
@@ -572,6 +579,9 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
       // Setting tableRow notifies, so only a change is written.
       final table = spec.kind == RowKind.table;
       if (row.controller.tableRow != table) row.controller.tableRow = table;
+      // The row's presenter says whether its text is hidden (WI #124, D2):
+      // every suppression site reads it as the controller's textHidden.
+      row.controller.presenterTextHidden = () => _textHidden(row, j);
       final text = _text.substring(spec.textStart, spec.textEnd);
       final local = switch (slices[j]) {
         null => const TextSelection.collapsed(offset: -1),
@@ -604,8 +614,8 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
     final box = _rowsKey.currentContext?.findRenderObject();
     if (box is! RenderBox || !box.hasSize) return null;
     final rows = <_RowBoxes>[];
-    for (final row in _rows) {
-      final source = _rowBoxes(row);
+    for (final (i, row) in _rows.indexed) {
+      final source = _rowBoxes(row, i);
       if (source == null) return null;
       rows.add((
         spec: row.spec,
@@ -619,32 +629,59 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
     return _RowsLineBoxes(box, rows);
   }
 
-  /// [row]'s line boxes once laid out, in its field's text offsets: a
-  /// rendered table's from its grid (`TableGridState.lineBoxes`, ruling
-  /// D12), every other row's from its field. Until a table's grid is built
-  /// and laid out, its field (mounted offstage, still laid out) answers.
-  LineBoxSource? _rowBoxes(_Row row) {
-    final controller = row.controller;
-    if (!controller.tableRow || controller.tableRevealed) {
-      return _fieldBoxes(row);
-    }
-    return _gridBoxes(row) ?? _fieldBoxes(row);
+  /// Row [i]'s geometry (WI #124, ruling D3): its presenter's
+  /// `blockBoxes` when non-null (a rendered table's grid), else its text
+  /// slot's (field's) line boxes, in the row field's text offsets and the
+  /// source's own box coordinates. Null past the last row and before the
+  /// row is laid out.
+  LineBoxSource? rowBoxes(int i) =>
+      i >= 0 && i < _rows.length ? _rowBoxes(_rows[i], i) : null;
+
+  /// [row] (row [i])'s geometry, as [rowBoxes] reports it: its presenter's
+  /// block boxes when non-null, else its field's line boxes. A rendered
+  /// table's grid answers once built and laid out (`TableGridState.lineBoxes`,
+  /// ruling D12); until then its field (mounted offstage, still laid out)
+  /// does.
+  LineBoxSource? _rowBoxes(_Row row, int i) {
+    final presented = _presented(row, i);
+    return presenterFor(presented.kind).blockBoxes(presented) ??
+        _fieldBoxes(row);
   }
 
-  /// [row]'s grid line boxes while its grid is mounted and laid out.
-  LineBoxSource? _gridBoxes(_Row row) {
-    TableGridState? grid;
-    void visit(Element element) {
-      if (grid != null) return;
-      if (element is StatefulElement && element.state is TableGridState) {
-        grid = element.state as TableGridState;
-      } else {
-        element.visitChildren(visit);
+  /// What [row] (row [i])'s presenter was last built with; before its first
+  /// build, or once the row changed kind or index since, the row as it
+  /// stands.
+  PresentedRow _presented(_Row row, int i) {
+    final built = row.presented;
+    if (built != null && built.kind == row.spec.kind && built.index == i) {
+      return built;
+    }
+    return PresentedRow(
+      segment: widget.index,
+      index: i,
+      kind: row.spec.kind,
+      controller: row.controller,
+      blockKey: row.gridKey,
+    );
+  }
+
+  /// Whether [row] (row [i])'s presenter hides its text now (WI #124, D2).
+  bool _textHidden(_Row row, int i) {
+    final presented = _presented(row, i);
+    return presenterFor(presented.kind).textHidden(presented);
+  }
+
+  /// Whether a row's presenter owns the press at global [position] (WI #124,
+  /// ruling D5): the segment's pointer layer then ignores it, as it does a
+  /// marker column's.
+  bool rowOwnsPress(Offset position) {
+    for (final (i, row) in _rows.indexed) {
+      final presented = _presented(row, i);
+      if (presenterFor(presented.kind).ownsPress(presented, position)) {
+        return true;
       }
     }
-
-    row.gridKey.currentContext?.visitChildElements(visit);
-    return grid?.lineBoxes();
+    return false;
   }
 
   /// [row]'s field line boxes once it is laid out.
@@ -738,11 +775,30 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   /// re-derive, the segment's undo recorder records it once, and the note's
   /// joined body is reported once through `onContentChanged`. C1b's
   /// checkbox toggle applies `toggleTask` through it.
+  @override
   void applyEdit(SegmentEdit edit) => _apply(edit);
+
+  @override
+  int? offsetAtGlobal(Offset position) {
+    final boxes = lineBoxes();
+    return boxes?.offsetAt(boxes.box.globalToLocal(position));
+  }
 
   @override
   Widget build(BuildContext context) {
     final geometries = rowGeometries([for (final row in _rows) row.spec]);
+    for (final (r, row) in _rows.indexed) {
+      row.presented = PresentedRow(
+        segment: widget.index,
+        index: r,
+        kind: row.spec.kind,
+        controller: row.controller,
+        geometry: geometries[r],
+        // The marker as written, without the row's indentation.
+        marker: _text.substring(row.spec.start, row.spec.textStart).trimLeft(),
+        blockKey: row.gridKey,
+      );
+    }
     final last = _rows.length - 1;
     final rows = Column(
       key: _rowsKey,
@@ -780,13 +836,10 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
                     index: r,
                     kind: row.spec.kind,
                     geometry: geometries[r],
-                    // The marker as written, without the row's indentation.
-                    marker: _text
-                        .substring(row.spec.start, row.spec.textStart)
-                        .trimLeft(),
+                    marker: row.presented!.marker,
                     controller: row.controller,
                     focusNode: row.focusNode,
-                    boxes: () => _rowBoxes(row),
+                    boxes: () => _rowBoxes(row, r),
                     gridKey: row.gridKey,
                     field: KeyedSubtree(
                       key: row.fieldKey,
@@ -884,7 +937,7 @@ class _RowFindHighlights extends ConsumerWidget {
       listenable: changes,
       builder: (context, _) => FindHighlights(
         key: findHighlightsKey(segment, index),
-        ranges: active && !(controller.tableRow && !controller.tableRevealed)
+        ranges: active && !controller.textHidden
             ? findPaintRanges(
                 state,
                 segment: segment,

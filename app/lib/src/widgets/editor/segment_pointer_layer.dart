@@ -38,7 +38,9 @@ const double _autoScrollSpeed = 1200;
 ///   base to the pressed offset.
 /// - A press inside an editor row's marker column is the column's (its
 ///   checkbox; a revealed marker is display only): the layer ignores it,
-///   with no caret move, focus change, selection or drag.
+///   with no caret move, focus change, selection or drag. So is a press a
+///   row's presenter owns (`RowKindPresenter.ownsPress`, WI #124 ruling D5),
+///   such as one on an attachment's block.
 /// - A plain click on an editor row line whose markup is hidden (not
 ///   `revealedLines` in its row field) is the layer's (Spec #57 R5-R8,
 ///   TD4): it wins the gesture arena when it goes down and puts the caret at
@@ -269,9 +271,7 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
     final offset = boxes.offsetAt(local);
     final i = rows.indexWhere((row) => offset < row.end);
     final controller = fields[i < 0 ? rows.length - 1 : i].widget.controller;
-    return controller is LivePreviewController &&
-        controller.tableRow &&
-        !controller.tableRevealed;
+    return controller is LivePreviewController && controller.textHidden;
   }
 
   /// The word at segment [offset], as its row's field finds words.
@@ -472,6 +472,9 @@ class _SegmentPointerLayerState extends State<SegmentPointerLayer>
     if (_inMarkerColumn(event.position)) return;
     final host = _host;
     if (host == null) return;
+    // A press a row's presenter owns (an attachment's block) is its own
+    // (WI #124, D5).
+    if (host.rowOwnsPress(event.position)) return;
     final keyboard = HardwareKeyboard.instance;
     final cmd = keyboard.isMetaPressed;
     final shift = keyboard.isShiftPressed;

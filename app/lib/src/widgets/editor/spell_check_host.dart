@@ -360,7 +360,7 @@ class _SpellCheckFieldState extends State<SpellCheckField>
 
   @override
   bool revealed(TextEditingController field) =>
-      field is! LivePreviewController || !field.tableRow || field.tableRevealed;
+      field is! LivePreviewController || !field.textHidden;
 
   @override
   ValueListenable<bool>? revealGate(TextEditingController field) =>

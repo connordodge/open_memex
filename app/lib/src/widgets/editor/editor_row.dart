@@ -11,12 +11,12 @@ import 'line_boxes.dart';
 import 'live_preview_controller.dart';
 import 'live_preview_frame.dart';
 import 'marker_column.dart';
+import 'row_kinds.dart';
 import 'segment_pointer_layer.dart'
     show NewlineMarkLine, newlineMarkWidth, newlineMarks;
 import 'segment_view.dart';
 import 'spell_squiggles.dart';
 import 'table_grid.dart';
-import 'text_segment.dart';
 
 /// The marker column kind of an item row of [kind]; null for prose and code
 /// rows.
@@ -26,7 +26,7 @@ MarkerColumnKind? markerColumnKind(RowKind kind) => switch (kind) {
   RowKind.task => MarkerColumnKind.task,
   RowKind.quote => MarkerColumnKind.quote,
   RowKind.prose || RowKind.code => null,
-  RowKind.table => null,
+  RowKind.table || RowKind.attachment => null,
 };
 
 /// The horizontal geometry of each of [rows] (A2, Spec R11, R12), x relative
@@ -53,8 +53,10 @@ List<ItemGeometry?> rowGeometries(List<RowSpec> rows) {
   return out;
 }
 
-/// One editor row of text segment [segment] (Spec R9, R10): the row's
-/// [field] wrapped in a `LivePreviewFrame` of its [controller].
+/// One editor row of text segment [segment] (Spec R9, R10): the body the
+/// presenter of its [kind] builds (`presenterFor`, WI #124 ruling D2) around
+/// the row's text slot (its [field]), wrapped in a `LivePreviewFrame` of its
+/// [controller]. The built-in presenters lay rows out as follows.
 ///
 /// - An item row (bullet, numbered, task, quote) puts a [MarkerColumn]
 ///   (Key `editor-row-marker-<segment>-<index>`) of [geometry]'s width at its
@@ -116,8 +118,10 @@ class EditorRow extends StatelessWidget {
   /// The row's field.
   final Widget field;
 
-  /// The key of the subtree holding a table row's [TableGrid] while it
-  /// shows, so the host finds the grid's state; null for other rows.
+  /// The key of the subtree holding the row's block while it shows (a table
+  /// row's [TableGrid], an attachment's image or card), the presenter's
+  /// `PresentedRow.blockKey`, so the host finds it; null for a row pumped
+  /// alone.
   final GlobalKey? gridKey;
 
   @override
@@ -137,62 +141,25 @@ class EditorRow extends StatelessWidget {
         ),
       ),
     );
-    final keyed = keyedField(field);
-    final item = geometry;
-    final Widget row = switch (kind) {
-      RowKind.prose => keyed,
-      RowKind.table => ListenableBuilder(
-        listenable: Listenable.merge([controller, controller.revealGate]),
-        builder: (context, _) {
-          final revealed = controller.tableRevealed;
-          return Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              keyedField(Offstage(offstage: !revealed, child: field)),
-              if (!revealed)
-                KeyedSubtree(
-                  key: gridKey,
-                  child: TableGrid(
-                    key: ValueKey('editor-table-$segment-$index'),
-                    text: controller.text,
-                    style: editorBodyStyle(),
-                    links: controller,
-                    fenced: controller.fenced,
-                  ),
-                ),
-            ],
-          );
-        },
+    final presenter = presenterFor(kind);
+    // A row whose presenter may hide its text keeps its field under an
+    // Offstage, so hiding or showing the text never reparents the field.
+    final hides = presenter is! TextRowPresenter;
+    final row = presenter.build(
+      context,
+      PresentedRow(
+        segment: segment,
+        index: index,
+        kind: kind,
+        controller: controller,
+        geometry: geometry,
+        marker: marker,
+        blockKey: gridKey,
       ),
-      RowKind.code => Padding(
-        padding: EdgeInsets.only(
-          left: codeTextInsetLeft,
-          right: codeTextInsetRight,
-        ),
-        child: keyed,
+      ({required bool offstage}) => keyedField(
+        offstage || hides ? Offstage(offstage: offstage, child: field) : field,
       ),
-      _ => Padding(
-        padding: EdgeInsets.only(left: item!.markerX),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            KeyedSubtree(
-              key: ValueKey('editor-row-marker-$segment-$index'),
-              child: MarkerColumn(marker: marker, width: item.columnWidth),
-            ),
-            Expanded(
-              child: Padding(
-                padding: EdgeInsets.only(
-                  right: itemTextRightInset(markerColumnKind(kind)!),
-                ),
-                child: keyed,
-              ),
-            ),
-          ],
-        ),
-      ),
-    };
+    );
     return LivePreviewFrame(controller: controller, boxes: boxes, child: row);
   }
 }
@@ -290,9 +257,7 @@ class _RenderRowSelection extends RenderProxyBox {
   List<Rect> _selectionRects() {
     // A rendered table's grid shows no selection (Spec #197 R16).
     final controller = _controller;
-    if (controller is LivePreviewController &&
-        controller.tableRow &&
-        !controller.tableRevealed) {
+    if (controller is LivePreviewController && controller.textHidden) {
       return const [];
     }
     final editable = findRenderEditable(child);
