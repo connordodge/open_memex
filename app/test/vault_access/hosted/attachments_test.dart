@@ -854,4 +854,428 @@ void main() {
       expect(env.requests.single.method, 'POST');
     });
   });
+
+  group('verify: contracts of the domain docs', () {
+    String route(String name) =>
+        '/vaults/seed/api/v1/attachments/${_path(name)}';
+
+    test('the transfer timeout is 60 s plus 1 s per started MB', () {
+      for (final (bytes, seconds) in [
+        (0, 60),
+        (1, 61),
+        (_mb, 61),
+        (_mb + 1, 62),
+        (60 * _mb, 120),
+        (100 * _mb, 160),
+      ]) {
+        expect(
+          hostedTransferTimeout(bytes),
+          Duration(seconds: seconds),
+          reason: '$bytes bytes',
+        );
+      }
+    });
+
+    test(
+      'a hosted download waits for the size info gave and else 160 s',
+      () async {
+        final env = _env();
+        env.server.putAttachment(
+          'seed',
+          _path('big.pdf'),
+          _bytes(2 * _mb + _mb ~/ 2),
+        );
+        env.server.putAttachment('seed', _path('other.pdf'), _bytes(10));
+        final access = env.access();
+        await access.info(_path('big.pdf'));
+        env.server.holdAttachmentDownloads = true;
+
+        // HEAD said 2.5 MB: the download waits 60 s + 3 s.
+        final known = _start(access.read(_path('big.pdf')));
+        await _until(() => env.count('GET') == 1);
+        env.clock.advance(const Duration(seconds: 62));
+        await _settle();
+        expect(known, isEmpty, reason: 'a size of 2.5 MB waits 63 s');
+        env.clock.advance(const Duration(seconds: 2)); // 64 s
+        await _settle();
+        expect(known, hasLength(1));
+        expect(
+          _as<AttachmentReadFailed>(known.single).failure,
+          AttachmentLookupFailure.offline,
+        );
+
+        final unknown = _start(access.read(_path('other.pdf')));
+        await _until(() => env.count('GET') == 2);
+        env.clock.advance(const Duration(seconds: 159));
+        await _settle();
+        expect(unknown, isEmpty, reason: 'an unknown size waits 160 s');
+        env.clock.advance(const Duration(seconds: 2)); // 161 s
+        await _settle();
+        expect(unknown, hasLength(1));
+        expect(
+          _as<AttachmentReadFailed>(unknown.single).failure,
+          AttachmentLookupFailure.offline,
+        );
+      },
+    );
+
+    test(
+      'a failed route check is repeated for the next large upload',
+      () async {
+        final env = _env();
+        env.server.failure = FakeServerFailure.refused;
+
+        final first = await env.access().addBytes(Uint8List(9 * _mb), 'a.bin');
+        env.server.failure = null;
+        final second = await env.access().addBytes(Uint8List(9 * _mb), 'a.bin');
+
+        _expectAddFailed(
+          first,
+          AttachmentAddFailureReason.unreachable,
+          _offline,
+        );
+        expect(second, isA<AttachmentAdded>());
+        expect(env.count('POST'), 1, reason: 'the first never got to POST');
+        expect(env.count('GET'), 2, reason: 'checked again after the failure');
+      },
+    );
+
+    test(
+      'an answer from an attachment route settles the route check',
+      () async {
+        // A missing 404 shows the routes exist.
+        final missing = _env();
+        final a = missing.access();
+        await a.read(_path('gone.png'));
+        final before = missing.requests.length;
+        final big = await a.addBytes(Uint8List(9 * _mb), 'a.bin');
+        expect(big, isA<AttachmentAdded>());
+        expect(missing.requests.length, before + 1, reason: 'only the POST');
+
+        // A stored upload shows the routes exist.
+        final added = _env();
+        final b = added.access();
+        await b.addBytes(_bytes(10), 'small.txt');
+        final afterSmall = added.requests.length;
+        await b.addBytes(Uint8List(9 * _mb), 'big.bin');
+        expect(added.requests.length, afterSmall + 1, reason: 'only the POST');
+
+        // The no-route 404 of an upload shows they do not.
+        final old = _env();
+        old.server.attachmentRoutesMissing = true;
+        final c = old.access();
+        await c.addBytes(_bytes(10), 'small.txt');
+        final afterOld = old.requests.length;
+        final tooOld = await c.addBytes(Uint8List(9 * _mb), 'big.bin');
+        _expectAddFailed(
+          tooOld,
+          AttachmentAddFailureReason.serverTooOld,
+          _serverTooOld,
+        );
+        expect(old.requests.length, afterOld, reason: 'no request at all');
+
+        // A HEAD with an answer shows the routes exist.
+        final headed = _env();
+        headed.server.putAttachment('seed', _path('a.pdf'), _bytes(3));
+        final d = headed.access();
+        await d.info(_path('a.pdf'));
+        final afterHead = headed.requests.length;
+        await d.addBytes(Uint8List(9 * _mb), 'big.bin');
+        expect(headed.requests.length, afterHead + 1, reason: 'only the POST');
+      },
+    );
+
+    test('an info of a path read before makes no HEAD', () async {
+      final env = _env();
+      env.server.putAttachment('seed', _path('deck.pdf'), _bytes(321));
+      final access = env.access();
+
+      await access.read(_path('deck.pdf'));
+      final info = await access.info(_path('deck.pdf'));
+
+      final found = _as<AttachmentInfoFound>(info).info;
+      expect(found.size, 321);
+      expect(found.type, 'application/pdf');
+      expect(env.count('HEAD'), 0);
+    });
+
+    test('a hosted info keeps the media type without its parameters', () async {
+      final env = _env();
+      env.server.route(
+        'HEAD',
+        route('a.txt'),
+        body: '',
+        contentType: 'text/plain; charset=utf-8',
+      );
+      env.server.route('HEAD', route('b.bin'), body: '', contentType: '');
+
+      final a = await env.access().info(_path('a.txt'));
+      final b = await env.access().info(_path('b.bin'));
+
+      expect(_as<AttachmentInfoFound>(a).info.type, 'text/plain');
+      expect(_as<AttachmentInfoFound>(b).info.type, 'application/octet-stream');
+    });
+
+    test(
+      'a hosted lookup of a path that is no attachment sends nothing',
+      () async {
+        final env = _env();
+        final access = env.access();
+
+        for (final path in [
+          '../x.pdf',
+          'notes/a.md',
+          'objects/aa/short/x.pdf',
+        ]) {
+          final read = await access.read(path);
+          final info = await access.info(path);
+          final open = await access.open(path);
+          final reveal = await access.reveal(path);
+
+          expect(
+            _as<AttachmentReadFailed>(read).failure,
+            AttachmentLookupFailure.missing,
+            reason: path,
+          );
+          expect(
+            _as<AttachmentInfoFailed>(info).failure,
+            AttachmentLookupFailure.missing,
+            reason: path,
+          );
+          expect(
+            _as<AttachmentActionFailed>(open).failure,
+            AttachmentLookupFailure.missing,
+            reason: path,
+          );
+          expect(
+            _as<AttachmentActionFailed>(reveal).failure,
+            AttachmentLookupFailure.missing,
+            reason: path,
+          );
+        }
+        expect(env.requests, isEmpty);
+        expect(env.opener.opened, isEmpty);
+      },
+    );
+
+    test('a server error on a lookup gives the missing result', () async {
+      final env = _env();
+      env.server.putAttachment('seed', _path('a.pdf'), _bytes(3));
+      env.server.route(
+        'GET',
+        route('a.pdf'),
+        status: 500,
+        json: {
+          'error': {'code': 'internal', 'message': 'boom'},
+        },
+      );
+      env.server.route('HEAD', route('a.pdf'), status: 500, body: '');
+      env.server.route(
+        'GET',
+        route('b.pdf'),
+        status: 400,
+        json: {
+          'error': {'code': 'invalid_argument', 'message': 'bad path'},
+        },
+      );
+      final access = env.access();
+
+      final read = await access.read(_path('a.pdf'));
+      final info = await access.info(_path('a.pdf'));
+      final open = await access.open(_path('a.pdf'));
+      final badRead = await access.read(_path('b.pdf'));
+
+      expect(
+        _as<AttachmentReadFailed>(read).failure,
+        AttachmentLookupFailure.missing,
+      );
+      expect(
+        _as<AttachmentInfoFailed>(info).failure,
+        AttachmentLookupFailure.missing,
+      );
+      expect(
+        _as<AttachmentActionFailed>(open).failure,
+        AttachmentLookupFailure.missing,
+      );
+      expect(
+        _as<AttachmentReadFailed>(badRead).failure,
+        AttachmentLookupFailure.missing,
+      );
+      expect(env.opener.opened, isEmpty);
+    });
+
+    test('hosted add maps the servers refusal text to its reason', () async {
+      final table = {
+        "Folders can't be attached.": AttachmentAddFailureReason.folder,
+        "a.pdf is larger than 100 MB and wasn't attached.":
+            AttachmentAddFailureReason.tooLarge,
+        'disk full': AttachmentAddFailureReason.other,
+      };
+      for (final MapEntry(key: message, value: reason) in table.entries) {
+        final env = _env();
+        env.server.route(
+          'POST',
+          '/vaults/seed/api/v1/attachments?name=a.pdf',
+          status: 400,
+          json: {
+            'error': {'code': 'invalid_argument', 'message': message},
+          },
+        );
+
+        final result = await env.access().addBytes(_bytes(5), 'a.pdf');
+
+        _expectAddFailed(result, reason, message);
+      }
+    });
+
+    test('hosted add answers a failure for an answer it cannot read', () async {
+      for (final body in ['oops', '{"path":"objects/aa/x/a.pdf"}', '[1]']) {
+        final env = _env();
+        env.server.route(
+          'POST',
+          '/vaults/seed/api/v1/attachments?name=a.pdf',
+          body: body,
+        );
+
+        final result = await env.access().addBytes(_bytes(5), 'a.pdf');
+
+        _expectAddFailed(
+          result,
+          AttachmentAddFailureReason.other,
+          'The vault server sent an answer the app cannot read.',
+        );
+        final again = await env.access().info(_path('a.pdf'));
+        expect(again, isA<AttachmentInfoFailed>(), reason: 'nothing cached');
+      }
+    });
+
+    test(
+      'hosted add of a failed answer without a C1 body names the status',
+      () async {
+        final env = _env();
+        env.server.route(
+          'POST',
+          '/vaults/seed/api/v1/attachments?name=a.pdf',
+          status: 502,
+          body: 'Bad Gateway',
+          contentType: 'text/plain',
+        );
+
+        final result = await env.access().addBytes(_bytes(5), 'a.pdf');
+
+        final failed = _as<AttachmentAddFailed>(result);
+        expect(failed.reason, AttachmentAddFailureReason.other);
+        expect(failed.message, contains('502'));
+      },
+    );
+
+    test(
+      'hosted open writes the copy whole and rewrites a changed copy',
+      () async {
+        final env = _env();
+        final bytes = _bytes(2000, 4);
+        env.server.putAttachment('seed', _path('Q3 report.pdf'), bytes);
+        final access = env.access();
+
+        await access.open(_path('Q3 report.pdf'));
+        final copy = env.opener.opened.single;
+        expect(
+          Directory(p.dirname(copy)).listSync().map((e) => p.basename(e.path)),
+          ['Q3 report.pdf'],
+          reason: 'no half-written .part file stays',
+        );
+
+        File(copy).writeAsBytesSync([0, 0, 0]);
+        await access.open(_path('Q3 report.pdf'));
+
+        expect(env.opener.opened, [copy, copy]);
+        expect(File(copy).readAsBytesSync(), bytes);
+        expect(
+          Directory(p.dirname(copy)).listSync().map((e) => p.basename(e.path)),
+          ['Q3 report.pdf'],
+        );
+      },
+    );
+
+    test(
+      'hosted add of a file refuses on the client before reading it',
+      () async {
+        final env = _env();
+        final dir = Directory.systemTemp.createTempSync('wi140-refuse-');
+        addTearDown(() => dir.deleteSync(recursive: true));
+        final folder = Directory(p.join(dir.path, 'Taxes'))..createSync();
+        final big = File(p.join(dir.path, 'huge.bin'));
+        final raf = big.openSync(mode: FileMode.write)
+          ..truncateSync(100 * _mb + 1);
+        raf.closeSync();
+        final fifo = p.join(dir.path, 'pipe');
+        final made = await Process.run('mkfifo', [fifo]);
+        expect(made.exitCode, 0);
+        final access = env.access();
+
+        final asFolder = await access.add(folder.path, null);
+        final asBig = await access.add(big.path, null);
+        final asBigNamed = await access.add(big.path, 'Scan.bin');
+        final missing = await access.add(p.join(dir.path, 'gone.pdf'), null);
+        final missingNamed = await access.add(
+          p.join(dir.path, 'gone.pdf'),
+          'Lease.pdf',
+        );
+        final asPipe = await access.add(fifo, null);
+        final asPipeNamed = await access.add(fifo, 'Pipe.txt');
+
+        _expectAddFailed(
+          asFolder,
+          AttachmentAddFailureReason.folder,
+          "Folders can't be attached.",
+        );
+        _expectAddFailed(
+          asBig,
+          AttachmentAddFailureReason.tooLarge,
+          "huge.bin is larger than 100 MB and wasn't attached.",
+        );
+        _expectAddFailed(
+          asBigNamed,
+          AttachmentAddFailureReason.tooLarge,
+          "Scan.bin is larger than 100 MB and wasn't attached.",
+        );
+        _expectAddFailed(
+          missing,
+          AttachmentAddFailureReason.other,
+          "gone.pdf can't be read.",
+        );
+        _expectAddFailed(
+          missingNamed,
+          AttachmentAddFailureReason.other,
+          "Lease.pdf can't be read.",
+        );
+        _expectAddFailed(
+          asPipe,
+          AttachmentAddFailureReason.other,
+          "pipe isn't a regular file and wasn't attached.",
+        );
+        _expectAddFailed(
+          asPipeNamed,
+          AttachmentAddFailureReason.other,
+          "Pipe.txt isn't a regular file and wasn't attached.",
+        );
+        expect(env.requests, isEmpty, reason: 'nothing was sent');
+      },
+    );
+
+    test('hosted add of a file of exactly 100 MB is sent', () async {
+      final env = _env();
+      final dir = Directory.systemTemp.createTempSync('wi140-limit-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final file = File(p.join(dir.path, 'limit.bin'));
+      final raf = file.openSync(mode: FileMode.write)..truncateSync(100 * _mb);
+      raf.closeSync();
+
+      final result = await env.access().add(file.path, null);
+
+      expect(result, isA<AttachmentAdded>());
+      expect(_as<AttachmentAdded>(result).attachment.size, 100 * _mb);
+      expect(env.count('POST'), 1);
+    });
+  });
 }

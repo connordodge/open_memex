@@ -588,4 +588,286 @@ void main() {
       },
     );
   });
+
+  group('verify: contracts of the domain docs', () {
+    test(
+      'local read info open and reveal refuse a symlink under objects',
+      () async {
+        final env = _env();
+        final outside = Directory(p.join(env.root, 'elsewhere'))..createSync();
+        File(p.join(outside.path, 'x.pdf')).writeAsBytesSync([9, 9]);
+        final h2 = Directory(p.join(env.vaultPath, 'objects', 'aa'))
+          ..createSync(recursive: true);
+        // The hash folder is a link to a folder outside the vault.
+        Link(p.join(h2.path, fakeAttachmentHash)).createSync(outside.path);
+        // The file itself is a link to a file outside the vault.
+        final other =
+            '${fakeAttachmentHash.substring(0, 2)}'
+            '${'b' * 62}';
+        final otherDir = Directory(p.join(h2.path, other))..createSync();
+        Link(
+          p.join(otherDir.path, 'y.pdf'),
+        ).createSync(p.join(outside.path, 'x.pdf'));
+        // The objects folder of a second vault is a link to a real one.
+        final second = Directory(p.join(env.root, 'Second'))..createSync();
+        final real = Directory(p.join(env.root, 'real objects'))..createSync();
+        Link(p.join(second.path, 'objects')).createSync(real.path);
+        final viaObjectsLink = LocalAttachmentsAccess(
+          vaultPath: second.path,
+          urlOpener: env.opener,
+          fileRevealer: env.revealer,
+        );
+        Directory(
+          p.join(real.path, 'aa', fakeAttachmentHash),
+        ).createSync(recursive: true);
+        File(
+          p.join(real.path, 'aa', fakeAttachmentHash, 'z.pdf'),
+        ).writeAsBytesSync([1]);
+
+        final cases = <(LocalAttachmentsAccess, String)>[
+          (env.access, 'objects/aa/$fakeAttachmentHash/x.pdf'),
+          (env.access, 'objects/aa/$other/y.pdf'),
+          (viaObjectsLink, 'objects/aa/$fakeAttachmentHash/z.pdf'),
+        ];
+        for (final (access, path) in cases) {
+          final read = await access.read(path);
+          final info = await access.info(path);
+          final open = await access.open(path);
+          final reveal = await access.reveal(path);
+
+          expect(
+            _as<AttachmentReadFailed>(read).failure,
+            AttachmentLookupFailure.missing,
+            reason: path,
+          );
+          expect(
+            _as<AttachmentInfoFailed>(info).failure,
+            AttachmentLookupFailure.missing,
+            reason: path,
+          );
+          expect(
+            _as<AttachmentActionFailed>(open).failure,
+            AttachmentLookupFailure.missing,
+            reason: path,
+          );
+          expect(
+            _as<AttachmentActionFailed>(reveal).failure,
+            AttachmentLookupFailure.missing,
+            reason: path,
+          );
+        }
+        expect(env.opener.opened, isEmpty);
+        expect(env.revealer.paths, isEmpty);
+      },
+    );
+
+    test(
+      'local read info and open of a folder at the path give missing',
+      () async {
+        final env = _env();
+        Directory(
+          p.join(env.vaultPath, _path('folder.pdf')),
+        ).createSync(recursive: true);
+
+        final read = await env.access.read(_path('folder.pdf'));
+        final info = await env.access.info(_path('folder.pdf'));
+        final open = await env.access.open(_path('folder.pdf'));
+
+        expect(
+          _as<AttachmentReadFailed>(read).failure,
+          AttachmentLookupFailure.missing,
+        );
+        expect(
+          _as<AttachmentInfoFailed>(info).failure,
+          AttachmentLookupFailure.missing,
+        );
+        expect(
+          _as<AttachmentActionFailed>(open).failure,
+          AttachmentLookupFailure.missing,
+        );
+        expect(env.opener.opened, isEmpty);
+      },
+    );
+
+    test(
+      'local info stats once and caches the size and a generic type',
+      () async {
+        final env = _env();
+        env.put(_path('report.pdf'), List.filled(55, 1));
+
+        final first = await env.access.info(_path('report.pdf'));
+        final second = await env.access.info(_path('report.pdf'));
+
+        for (final r in [first, second]) {
+          final found = _as<AttachmentInfoFound>(r).info;
+          expect(found.size, 55);
+          expect(found.type, 'application/octet-stream');
+        }
+        expect(env.stats, hasLength(1), reason: 'the second info is cached');
+      },
+    );
+
+    test('local add refusals map by the R15 text to their reason', () async {
+      final env = _env();
+      final file = File(p.join(env.root, 'big.bin'))..writeAsBytesSync([0]);
+      final table = {
+        "big.bin is larger than 100 MB and wasn't attached.":
+            AttachmentAddFailureReason.tooLarge,
+        "Q3 report.pdf is larger than 100 MB and wasn't attached.":
+            AttachmentAddFailureReason.tooLarge,
+        "Folders can't be attached.": AttachmentAddFailureReason.folder,
+        "fifo isn't a regular file and wasn't attached.":
+            AttachmentAddFailureReason.other,
+        'Folders can not be attached.': AttachmentAddFailureReason.other,
+        'permission denied: big.bin': AttachmentAddFailureReason.other,
+      };
+      for (final MapEntry(key: message, value: reason) in table.entries) {
+        env.onAttach((_) => FakeMemexCli.error('invalid_argument', message));
+
+        final result = await env.access.add(file.path, null);
+
+        final failed = _as<AttachmentAddFailed>(result);
+        expect(failed.message, message);
+        expect(failed.reason, reason, reason: message);
+      }
+    });
+
+    test(
+      'local add puts the file after a double dash in the memex call',
+      () async {
+        final env = _env();
+        final file = File(p.join(env.root, '-odd name.pdf'))
+          ..writeAsBytesSync([0]);
+        env.onAttach((_) => _stored('-odd name.pdf'));
+
+        await env.access.add(file.path, 'a b.pdf');
+
+        final args = _single(env.cli.callsFor('attach')).args;
+        expect(args.first, 'attach');
+        expect(args.last, file.path);
+        expect(
+          args[args.length - 2],
+          '--',
+          reason: 'a file never reads as a flag',
+        );
+        expect(args, contains('--vault'));
+        expect(args.indexOf('--vault') + 1, lessThan(args.length - 2));
+        expect(args[args.indexOf('--vault') + 1], env.vaultPath);
+        expect(
+          args.any((a) => a == '--name=a b.pdf' || a == 'a b.pdf'),
+          isTrue,
+          reason: 'the name is passed whole',
+        );
+      },
+    );
+
+    test('local add answers a failure when memex cannot be started', () async {
+      final env = _env();
+      final file = File(p.join(env.root, 'a.pdf'))..writeAsBytesSync([0]);
+      env.onAttach(
+        (_) =>
+            throw const ProcessException('memex', ['attach'], 'no such file'),
+      );
+
+      final added = await env.access.add(file.path, null);
+      final bytes = await env.access.addBytes(Uint8List(3), 'a.png');
+
+      for (final r in [added, bytes]) {
+        final failed = _as<AttachmentAddFailed>(r);
+        expect(failed.reason, AttachmentAddFailureReason.other);
+        expect(failed.message, 'no such file');
+      }
+    });
+
+    test(
+      'local add without a memex answers unsupported and runs nothing',
+      () async {
+        final env = _env();
+        final noCli = LocalAttachmentsAccess(vaultPath: env.vaultPath);
+        final file = File(p.join(env.root, 'a.pdf'))..writeAsBytesSync([0]);
+
+        final added = await noCli.add(file.path, null);
+        final bytes = await noCli.addBytes(Uint8List(3), 'a.png');
+
+        for (final r in [added, bytes]) {
+          expect(
+            _as<AttachmentAddFailed>(r).reason,
+            AttachmentAddFailureReason.unsupported,
+          );
+        }
+      },
+    );
+
+    test(
+      'local add of a non-JSON failure shows the stderr or the exit code',
+      () async {
+        final env = _env();
+        final file = File(p.join(env.root, 'a.pdf'))..writeAsBytesSync([0]);
+
+        env.onAttach((_) => FakeMemexCli.failure('  boom: disk on fire\n'));
+        final withText = await env.access.add(file.path, null);
+        env.onAttach((_) => FakeMemexCli.failure('', exitCode: 3));
+        final silent = await env.access.add(file.path, null);
+
+        final text = _as<AttachmentAddFailed>(withText);
+        expect(text.reason, AttachmentAddFailureReason.other);
+        expect(text.message, 'boom: disk on fire');
+        final empty = _as<AttachmentAddFailed>(silent);
+        expect(empty.reason, AttachmentAddFailureReason.other);
+        expect(empty.message, 'memex attach failed (exit 3).');
+      },
+    );
+
+    test(
+      'local add reads the first non-empty line and refuses a wrong shape',
+      () async {
+        final env = _env();
+        final file = File(p.join(env.root, 'a.pdf'))..writeAsBytesSync([0]);
+        final good = <String, Object?>{
+          'markdown': '[a.pdf](objects/aa/h/a.pdf)',
+          'path': 'objects/aa/h/a.pdf',
+          'name': 'a.pdf',
+          'size': 5,
+          'type': 'application/pdf',
+        };
+
+        env.onAttach(
+          (_) => FakeMemexCli.ok('\n  \n${jsonEncode(good)}\nextra\n'),
+        );
+        final lead = await env.access.add(file.path, null);
+        expect(
+          _as<AttachmentAdded>(lead).attachment.path,
+          'objects/aa/h/a.pdf',
+        );
+
+        final bad = <String, String>{
+          'empty output': '',
+          'blank lines only': '\n  \n',
+          'not json': 'nope\n',
+          'a json array': '[1]\n',
+          ...{
+            for (final key in good.keys)
+              'no $key': '${jsonEncode({...good}..remove(key))}\n',
+          },
+          'size is text': '${jsonEncode({...good, 'size': '5'})}\n',
+          'name is a number': '${jsonEncode({...good, 'name': 5})}\n',
+          'path is null': '${jsonEncode({...good, 'path': null})}\n',
+          'markdown is a number': '${jsonEncode({...good, 'markdown': 1})}\n',
+          'type is a number': '${jsonEncode({...good, 'type': 1})}\n',
+        };
+        for (final MapEntry(key: why, value: out) in bad.entries) {
+          env.onAttach((_) => FakeMemexCli.ok(out));
+
+          final result = await env.access.add(file.path, null);
+
+          expect(result, isA<AttachmentAddFailed>(), reason: why);
+          expect(
+            _as<AttachmentAddFailed>(result).reason,
+            AttachmentAddFailureReason.other,
+            reason: why,
+          );
+        }
+      },
+    );
+  });
 }
