@@ -33,7 +33,7 @@ import 'package:open_memex_app/src/state/vault_access_state.dart';
 import 'package:open_memex_app/src/vault_access/local/local_vault_access.dart';
 import 'package:open_memex_app/src/widgets/editor/spelling_menu.dart';
 import 'package:open_memex_app/src/widgets/editor/text_segment.dart'
-    show showRowTextMenu;
+    show hideRowTextMenu, showRowTextMenu;
 
 import '../support/app_harness.dart' show pumpFrames;
 import '../support/attachments_fakes.dart';
@@ -949,6 +949,104 @@ void main() {
         expect(asked.late(), late);
       });
     }
+  });
+
+  group('canPasteOrAttach called from onLateOffer answers without a read (r5)', () {
+    /// A held read of an image that answers only after pasteOfferWait, so the
+    /// first answer is no and onLateOffer runs once [_Wi147HeldPasteboard.open]
+    /// is called. [inside] runs as onLateOffer.
+    Future<_Wi147HeldPasteboard> askLate(
+      WidgetTester tester,
+      void Function(_Wi147Unit u, _Wi147HeldPasteboard held) inside,
+    ) async {
+      MacClipboard.install(tester);
+      final held = _Wi147HeldPasteboard(
+        PasteboardContents(png: fakePngBytes()),
+      );
+      final u = await _unit(tester, const PasteboardContents(), reader: held);
+      final first = canPasteOrAttach(
+        u.context,
+        onLateOffer: () => inside(u, held),
+      );
+      await tester.pump(pasteOfferWait);
+      expect(await first, isFalse, reason: 'the read was late');
+      held.open();
+      await pumpFrames(tester);
+      return held;
+    }
+
+    testWidgets(
+      'a canPasteOrAttach called inside onLateOffer answers yes at once without reading the clipboard',
+      (tester) async {
+        final answers = <bool>[];
+        var readsInside = -1;
+        final held = await askLate(tester, (u, held) {
+          canPasteOrAttach(u.context).then(answers.add);
+          readsInside = held.reads;
+        });
+
+        expect(answers, [true]);
+        expect(readsInside, 1, reason: 'only the read that was late');
+        expect(held.reads, 1, reason: 'the inner call read nothing');
+      },
+    );
+
+    testWidgets(
+      'only the first canPasteOrAttach called inside onLateOffer gets the answer and the next one reads as usual',
+      (tester) async {
+        final answers = <bool>[];
+        final held = await askLate(tester, (u, held) {
+          canPasteOrAttach(u.context).then(answers.add);
+          canPasteOrAttach(u.context).then(answers.add);
+        });
+
+        expect(answers, [true, true], reason: 'an image on a writable vault');
+        expect(held.reads, 2, reason: 'the second inner call read');
+      },
+    );
+
+    testWidgets(
+      'a canPasteOrAttach called after onLateOffer returned reads the clipboard as usual',
+      (tester) async {
+        late _Wi147Unit unit;
+        final held = await askLate(tester, (u, held) => unit = u);
+        expect(held.reads, 1);
+
+        final answer = await canPasteOrAttach(unit.context);
+
+        expect(answer, isTrue);
+        expect(held.reads, 2, reason: 'asked the clipboard again');
+      },
+    );
+
+    testWidgets(
+      'a canPasteOrAttach called after an onLateOffer that threw reads the clipboard as usual',
+      (tester) async {
+        late _Wi147Unit unit;
+        final errors = <Object>[];
+        final held = _Wi147HeldPasteboard(
+          PasteboardContents(png: fakePngBytes()),
+        );
+        MacClipboard.install(tester);
+        unit = await _unit(tester, const PasteboardContents(), reader: held);
+        await runZonedGuarded(() async {
+          final first = canPasteOrAttach(
+            unit.context,
+            onLateOffer: () => throw StateError('menu failed'),
+          );
+          await tester.pump(pasteOfferWait);
+          await first;
+          held.open();
+          await pumpFrames(tester);
+        }, (error, _) => errors.add(error));
+        expect(held.reads, 1);
+
+        final answer = await canPasteOrAttach(unit.context);
+
+        expect(answer, isTrue);
+        expect(held.reads, 2, reason: 'nothing was left handed over');
+      },
+    );
   });
 
   // ------------------------------------------------------------ the entries
@@ -2257,6 +2355,222 @@ void main() {
           await g.choosePaste();
 
           expect(g.body, _plainAfter(''));
+        },
+        variant: macOnly,
+      );
+    },
+  );
+
+  group(
+    'the text menu of a row without a field gains Paste when the clipboard answers late (r5)',
+    () {
+      // `showRowTextMenu` is what a right click on a row without a field
+      // opens. Row 0 holds `_caret`; its first six characters are selected,
+      // so the menu shows Copy and Cut.
+      const first = Offset(300, 300);
+      const second = Offset(520, 420);
+
+      Future<Wi147Rig> pumpHeld(
+        WidgetTester tester,
+        _Wi147HeldPasteboard held, {
+        bool writable = true,
+      }) async {
+        final g = await wi147Pump(tester, pasteboardReader: held);
+        await g.r.open();
+        await g.setWritable(writable);
+        await g.r.caretAfter(_caret);
+        segmentEditingAt(
+          tester,
+          0,
+        ).select(const TextSelection(baseOffset: 0, extentOffset: 6));
+        await tester.pump();
+        return g;
+      }
+
+      /// Asks for the menu without awaiting it (it waits for fake time, which
+      /// only a pump moves) and lets pasteOfferWait pass: Copy and Cut show,
+      /// no Paste, while the clipboard read still waits.
+      Future<void> showWithoutPaste(Wi147Rig g, Offset anchor) async {
+        final shown = showRowTextMenu(rowsHostOf(g.tester), 0, anchor: anchor);
+        await g.tester.pump(pasteOfferWait);
+        await shown;
+        await pumpFrames(g.tester);
+        expect(g.menuItem('Copy'), findsOneWidget);
+        expect(g.menuItem('Cut'), findsOneWidget);
+        expect(g.menuItem('Paste'), findsNothing, reason: 'the read is late');
+      }
+
+      testWidgets(
+        'a row menu shown without Paste gains Paste when the late read finds an image with no second read and its Paste attaches the image once',
+        (tester) async {
+          final png = fakePngBytes(12);
+          final held = _Wi147HeldPasteboard(PasteboardContents(png: png));
+          final g = await pumpHeld(tester, held);
+          await showWithoutPaste(g, first);
+
+          held.open();
+          await pumpFrames(tester);
+
+          expect(g.menuItem('Paste'), findsOneWidget);
+          expect(g.menuItem('Copy'), findsOneWidget);
+          expect(g.menuItem('Cut'), findsOneWidget);
+          expect(held.reads, 1, reason: 'the menu shows again without a read');
+          await g.choosePaste();
+          expect(g.attaches, 1);
+          expect(g.r.attachments.addBytesCalls.single.bytes, png);
+        },
+        variant: macOnly,
+      );
+
+      testWidgets(
+        'a row menu shown without Paste gains Paste when the late read finds file URLs with no second read',
+        (tester) async {
+          final held = _Wi147HeldPasteboard(
+            PasteboardContents(files: [wi147PdfPath]),
+          );
+          final g = await pumpHeld(tester, held);
+          await showWithoutPaste(g, first);
+
+          held.open();
+          await pumpFrames(tester);
+
+          expect(g.menuItem('Paste'), findsOneWidget);
+          expect(held.reads, 1);
+          await g.choosePaste();
+          expect(g.addedPaths, [wi147PdfPath]);
+        },
+        variant: macOnly,
+      );
+
+      for (final (name, contents) in <(String, PasteboardContents)>[
+        (
+          'a row menu shown without Paste gains no Paste when the late read finds an image on a read only vault',
+          PasteboardContents(png: fakePngBytes()),
+        ),
+        (
+          'a row menu shown without Paste gains no Paste when the late read finds file URLs on a read only vault',
+          PasteboardContents(files: [wi147PdfPath]),
+        ),
+      ]) {
+        testWidgets(name, (tester) async {
+          final held = _Wi147HeldPasteboard(contents);
+          final g = await pumpHeld(tester, held, writable: false);
+          await showWithoutPaste(g, first);
+
+          held.open();
+          await pumpFrames(tester);
+
+          expect(g.menuItem('Copy'), findsOneWidget, reason: 'the menu stays');
+          expect(g.menuItem('Paste'), findsNothing);
+          expect(g.attaches, 0);
+        }, variant: macOnly);
+      }
+
+      testWidgets(
+        'a row menu shown without Paste gains no Paste when the late read finds nothing',
+        (tester) async {
+          final held = _Wi147HeldPasteboard(const PasteboardContents());
+          final g = await pumpHeld(tester, held);
+          await showWithoutPaste(g, first);
+
+          held.open();
+          await pumpFrames(tester);
+
+          expect(g.menuItem('Copy'), findsOneWidget, reason: 'the menu stays');
+          expect(g.menuItem('Paste'), findsNothing);
+        },
+        variant: macOnly,
+      );
+
+      testWidgets(
+        'a late read of an older row menu call does not move the menu of a newer call',
+        (tester) async {
+          final held = _Wi147HeldPasteboard(
+            PasteboardContents(png: fakePngBytes()),
+          );
+          final g = await pumpHeld(tester, held);
+          await showWithoutPaste(g, first);
+          // A newer call shows its own menu at another point while the first
+          // call's read still waits.
+          await showWithoutPaste(g, second);
+          final at = tester.getTopLeft(g.menuItem('Copy'));
+
+          held.open();
+          await pumpFrames(tester);
+
+          expect(g.menuItem('Paste'), findsOneWidget);
+          expect(
+            tester.getTopLeft(g.menuItem('Copy')),
+            at,
+            reason: 'the newer call keeps the menu where it put it',
+          );
+          expect(held.reads, 2, reason: 'one read per call, none per re-show');
+        },
+        variant: macOnly,
+      );
+
+      testWidgets(
+        'a row menu that was hidden gains no Paste when the late read finds an image',
+        (tester) async {
+          final held = _Wi147HeldPasteboard(
+            PasteboardContents(png: fakePngBytes()),
+          );
+          final g = await pumpHeld(tester, held);
+          await showWithoutPaste(g, first);
+
+          hideRowTextMenu();
+          await tester.pump();
+          expect(g.menuItem('Copy'), findsNothing, reason: 'it is hidden');
+          held.open();
+          await pumpFrames(tester);
+
+          expect(g.menuItem('Copy'), findsNothing, reason: 'it stays hidden');
+          expect(g.menuItem('Paste'), findsNothing);
+        },
+        variant: macOnly,
+      );
+
+      testWidgets(
+        'a row menu closed by a change of the segment text gains no Paste when the late read finds an image',
+        (tester) async {
+          final held = _Wi147HeldPasteboard(
+            PasteboardContents(png: fakePngBytes()),
+          );
+          final g = await pumpHeld(tester, held);
+          await showWithoutPaste(g, first);
+
+          segmentEditingAt(tester, 0).replaceText('changed');
+          await pumpFrames(tester);
+          expect(g.menuItem('Copy'), findsNothing, reason: 'it is closed');
+          held.open();
+          await pumpFrames(tester);
+
+          expect(g.menuItem('Copy'), findsNothing, reason: 'it stays closed');
+          expect(g.menuItem('Paste'), findsNothing);
+        },
+        variant: macOnly,
+      );
+
+      testWidgets(
+        'a late clipboard answer for a row menu after the note closed shows nothing and throws nothing',
+        (tester) async {
+          final held = _Wi147HeldPasteboard(
+            PasteboardContents(png: fakePngBytes()),
+          );
+          final g = await pumpHeld(tester, held);
+          await showWithoutPaste(g, first);
+
+          await g.r.open(wi146OtherId);
+          expect(find.text('Other body'), findsWidgets, reason: 'another note');
+          // The menu of the closed note is left as it was (it is not this
+          // change's to close); what the late answer must not do is add Paste.
+          final before = g.menuItem('Copy').evaluate().length;
+          held.open();
+          await pumpFrames(tester);
+
+          expect(g.menuItem('Copy').evaluate().length, before);
+          expect(g.menuItem('Paste'), findsNothing);
+          expect(tester.takeException(), isNull);
         },
         variant: macOnly,
       );
