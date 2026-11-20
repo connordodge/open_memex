@@ -788,6 +788,69 @@ void main() {
       },
       variant: macOnly,
     );
+
+    testWidgets(
+      'a secondary click in the image leaves the caret and the row hidden and shows only the block menu',
+      (tester) async {
+        final vault = FakeAttachmentVault();
+        final pic = _t143Attachment('chart.png');
+        vault.putFile(pic.path, testPngBytes(300, 200));
+        await _t143Pump(tester, 'Intro line\n${pic.md}\nOutro line', vault);
+        await activateRow(tester, 0, 0, offset: 3);
+        final selection = rowsHostOf(tester).selection;
+        expect(rowsHostOf(tester).focusedRow, 0);
+        _t143ExpectIdle(tester, 1);
+
+        await _t143Click(
+          tester,
+          tester.getCenter(_t143Block(1)),
+          buttons: kSecondaryMouseButton,
+        );
+        expect(find.text('Open'), findsOneWidget, reason: 'the block menu');
+        expect(find.text('Reveal in Finder'), findsOneWidget);
+        expect(
+          find.text('Cut'),
+          findsNothing,
+          reason: 'no text-field context menu beside the block menu',
+        );
+        expect(find.text('Copy'), findsNothing);
+        expect(find.text('Paste'), findsNothing);
+        expect(find.text('Select all'), findsNothing);
+        expect(rowsHostOf(tester).focusedRow, 0, reason: 'focus stays');
+        expect(rowsHostOf(tester).selection, selection, reason: 'caret stays');
+        _t143ExpectIdle(tester, 1);
+        expect(vault.openCalls, isEmpty);
+        expect(vault.revealCalls, isEmpty);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a secondary click on a file card with no focus leaves the editor unfocused and the row hidden',
+      (tester) async {
+        final vault = FakeAttachmentVault();
+        final pdf = _t143Attachment('Q3 report.pdf');
+        vault.putFile(pdf.path, Uint8List(812 * 1024));
+        await _t143Pump(tester, 'Intro line\n${pdf.md}\nOutro line', vault);
+        final selection = rowsHostOf(tester).selection;
+        expect(rowsHostOf(tester).focusedRow, isNull);
+        _t143ExpectIdle(tester, 1);
+
+        await _t143Click(
+          tester,
+          tester.getCenter(_t143Block(1)),
+          buttons: kSecondaryMouseButton,
+        );
+        expect(find.text('Open'), findsOneWidget, reason: 'the block menu');
+        expect(find.text('Reveal in Finder'), findsOneWidget);
+        expect(find.text('Cut'), findsNothing);
+        expect(find.text('Paste'), findsNothing);
+        expect(rowsHostOf(tester).focusedRow, isNull, reason: 'no focus');
+        expect(rowsHostOf(tester).selection, selection, reason: 'no caret');
+        _t143ExpectIdle(tester, 1);
+      },
+      variant: macOnly,
+    );
   });
 
   group('missing and unavailable images (AC7)', () {
