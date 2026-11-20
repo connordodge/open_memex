@@ -31,7 +31,9 @@ import 'package:open_memex_app/src/state/find_in_note_state.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/widgets/editor/editor_row.dart';
 import 'package:open_memex_app/src/widgets/editor/find_decoration.dart';
+import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
+import 'package:open_memex_app/src/widgets/editor/paragraph_line_boxes.dart';
 import 'package:open_memex_app/src/widgets/find/find_highlights.dart';
 import 'package:open_memex_app/src/widgets/find/find_in_note_host.dart';
 import 'package:open_memex_app/src/widgets/find/find_keys.dart';
@@ -321,6 +323,96 @@ Future<void> _wi130Flush(WidgetTester tester, SpellingEditorHarness e) async {
   expect(flushed, isTrue, reason: 'tab persistence finished');
 }
 
+/// How many times any `RenderEditable` was laid out while [body] ran, from
+/// the framework's layout profile (the Find bar's own field counts too).
+Future<int> _wi130EditableLayouts(Future<void> Function() body) async {
+  debugProfileLayoutsEnabled = true;
+  FlutterTimeline.debugCollectionEnabled = true;
+  try {
+    await body();
+    return FlutterTimeline.debugCollect().getAggregated('RenderEditable').count;
+  } finally {
+    FlutterTimeline.debugCollectionEnabled = false;
+    debugProfileLayoutsEnabled = false;
+  }
+}
+
+/// Pumps [span] as a paragraph under a [LineBoxEpoch] at 200 px wide and
+/// reads its lines once, so the line-box cache holds this layout.
+Future<RenderLineBoxEpoch> _wi130PumpSpan(
+  WidgetTester tester,
+  InlineSpan span,
+) async {
+  await tester.pumpWidget(
+    MaterialApp(
+      home: Scaffold(
+        body: Align(
+          alignment: Alignment.topLeft,
+          child: SizedBox(
+            width: 200,
+            child: LineBoxEpoch(
+              child: RichText(key: const Key('wi130-span'), text: span),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+  final p = tester.renderObject<RenderParagraph>(
+    find.byKey(const Key('wi130-span')),
+  );
+  RenderParagraphLineBoxes(p).lines;
+  return tester.renderObject<RenderLineBoxEpoch>(find.byType(LineBoxEpoch));
+}
+
+/// A hidden match of source ([segment], [kind]) under [outline].
+FindMatch _wi130Hidden(
+  int segment,
+  int start,
+  int end,
+  FindRange outline, {
+  FindSourceKind kind = FindSourceKind.body,
+}) => FindMatch(
+  segment: segment,
+  kind: kind,
+  start: start,
+  end: end,
+  hidden: true,
+  outline: outline,
+);
+
+/// The indices [index] returns for one outline lookup.
+List<int> _wi130Outlines(
+  FindMatchIndex index, {
+  int segment = 0,
+  FindSourceKind kind = FindSourceKind.body,
+  required int start,
+  required int end,
+}) => index.outlinesTouching(
+  segment: segment,
+  kind: kind,
+  start: start,
+  end: end,
+);
+
+/// The indices of [matches] whose hidden outline touches `[start, end)` in
+/// source ([segment], [kind]), by a scan of every match.
+List<int> _wi130OutlineScan(
+  List<FindMatch> matches, {
+  int segment = 0,
+  FindSourceKind kind = FindSourceKind.body,
+  required int start,
+  required int end,
+}) => [
+  for (final (i, m) in matches.indexed)
+    if (m.segment == segment &&
+        m.kind == kind &&
+        m.hidden &&
+        m.outline != null &&
+        m.outline!.start < end &&
+        m.outline!.end > start)
+      i,
+];
 // ------------------------------------------------------------ pure fixtures
 
 FindMatch _wi130Match(
@@ -746,6 +838,439 @@ void main() {
       _wi130ExpectRows(tester, after, specs, when: 'after the keystroke');
       await _wi130Flush(tester, e);
     }, timeout: _wi130Timeout);
+  });
+
+  group('the match index shares and looks up outlines (AC5)', () {
+    // Segment 0 hidden matches with outlines: 0 [0,10); 1 [10,20); 2 a wide
+    // outline [30,60) over 3 a narrow one [45,47) (a prefix of ends must
+    // reach past it); 4 has no outline; 5 is not hidden. Segment 1 holds
+    // one hidden match.
+    final matches = [
+      _wi130Hidden(0, 2, 4, const FindRange(0, 10)),
+      _wi130Hidden(0, 12, 14, const FindRange(10, 20)),
+      _wi130Hidden(0, 31, 33, const FindRange(30, 60)),
+      _wi130Hidden(0, 45, 46, const FindRange(45, 47)),
+      const FindMatch(
+        segment: 0,
+        kind: FindSourceKind.body,
+        start: 70,
+        end: 72,
+        hidden: true,
+      ),
+      _wi130Match(0, 80, 82),
+      _wi130Hidden(1, 5, 6, const FindRange(0, 40)),
+    ];
+
+    test('the match index of one list is one shared index', () {
+      final copy = [...matches];
+      expect(
+        identical(FindMatchIndex.of(matches), FindMatchIndex.of(matches)),
+        isTrue,
+        reason: 'one index per list',
+      );
+      expect(
+        identical(FindMatchIndex.of(matches), FindMatchIndex.of(copy)),
+        isFalse,
+        reason: 'another list has its own index',
+      );
+      expect(FindMatchIndex.of(matches).matches, same(matches));
+    });
+
+    test(
+      'an outline lookup returns the hidden matches whose outline touches the range in match order',
+      () {
+        final index = FindMatchIndex(matches);
+        for (final (what, start, end, expected) in [
+          ('the first outline', 0, 5, [0]),
+          ('a range on two outlines', 8, 12, [0, 1]),
+          ('an outline end is exclusive', 20, 30, <int>[]),
+          ('past the narrow outline inside the wide one', 55, 58, [2]),
+          ('both nested outlines', 44, 46, [2, 3]),
+          ('an empty range at an outline start', 0, 0, <int>[]),
+          ('a gap with no outline', 61, 90, <int>[]),
+          ('every outline', 0, 100, [0, 1, 2, 3]),
+        ]) {
+          expect(
+            _wi130Outlines(index, start: start, end: end),
+            expected,
+            reason: what,
+          );
+          expect(
+            _wi130Outlines(index, start: start, end: end),
+            _wi130OutlineScan(matches, start: start, end: end),
+            reason: '$what agrees with a scan',
+          );
+        }
+        expect(_wi130Outlines(index, segment: 1, start: 0, end: 10), [
+          6,
+        ], reason: 'the other segment');
+        expect(_wi130Outlines(index, segment: 0, start: 0, end: 10), [
+          0,
+        ], reason: 'the first segment alone');
+        expect(
+          _wi130Outlines(
+            index,
+            segment: 1,
+            kind: FindSourceKind.card,
+            start: 0,
+            end: 10,
+          ),
+          isEmpty,
+          reason: 'another kind in that segment',
+        );
+        expect(
+          _wi130Outlines(index, segment: 5, start: 0, end: 100),
+          isEmpty,
+          reason: 'a segment with no hidden matches',
+        );
+      },
+    );
+
+    test(
+      'an outline lookup finds a wide outline behind narrower ones that start inside it',
+      () {
+        // Outline 0 is wide; 1-5 are narrow and start inside it; 6 ends
+        // exactly where the query starts. Only the furthest end so far
+        // tells where the outlines that reach the query begin.
+        final nested = [
+          _wi130Hidden(0, 1000, 1001, const FindRange(100, 200)),
+          for (var i = 0; i < 5; i++)
+            _wi130Hidden(
+              0,
+              1010 + 10 * i,
+              1011 + 10 * i,
+              FindRange(110 + 2 * i, 111 + 2 * i),
+            ),
+          _wi130Hidden(0, 1100, 1101, const FindRange(140, 150)),
+        ];
+        final index = FindMatchIndex(nested);
+        for (final (what, start, end, expected) in [
+          ('past every narrow outline', 150, 160, [0]),
+          ('inside the wide outline between narrow ones', 125, 130, [0]),
+          ('on a narrow outline and the wide one', 110, 111, [0, 1]),
+        ]) {
+          expect(
+            _wi130Outlines(index, start: start, end: end),
+            expected,
+            reason: what,
+          );
+          expect(
+            _wi130Outlines(index, start: start, end: end),
+            _wi130OutlineScan(nested, start: start, end: end),
+            reason: '$what agrees with a scan',
+          );
+        }
+      },
+    );
+
+    test(
+      'an outline lookup returns match indices in match order not outline order',
+      () {
+        // Match 0's outline starts after match 1's.
+        final reversed = [
+          _wi130Hidden(0, 2, 3, const FindRange(50, 60)),
+          _wi130Hidden(0, 12, 13, const FindRange(10, 20)),
+        ];
+        expect(_wi130Outlines(FindMatchIndex(reversed), start: 0, end: 100), [
+          0,
+          1,
+        ]);
+      },
+    );
+
+    test(
+      'an outline lookup reads O(log n) outlines plus the ones it returns',
+      () {
+        const n = 5000;
+        final many = [
+          for (var i = 0; i < n; i++)
+            _wi130Hidden(0, 10 * i, 10 * i + 2, FindRange(10 * i, 10 * i + 5)),
+        ];
+        final index = FindMatchIndex(many);
+        // Built on the first lookup, not counted.
+        _wi130Outlines(index, start: 0, end: 1);
+        for (final (what, start, end) in [
+          ('the first', 0, 5),
+          ('a middle one', 25000, 25004),
+          ('the last', 49990, 49995),
+        ]) {
+          debugFindMatchReads = 0;
+          final got = _wi130Outlines(index, start: start, end: end);
+          expect(got, hasLength(1), reason: '$what outline');
+          expect(
+            debugFindMatchReads,
+            inInclusiveRange(1, 2 * _wi130Log(n) + 4),
+            reason: '$what: reads O(log n) of $n outlines',
+          );
+        }
+      },
+    );
+  });
+
+  group('N1 relayouts per Find change (AC3)', () {
+    testWidgets(
+      'a Find-bar keystroke on N1 lays out the one rows field once more than a keystroke that matches nothing',
+      (tester) async {
+        final e = await pumpSpellingEditor(tester, body: _wi130Body(_wi130N1));
+        expect(_wi130Specs(tester), hasLength(1), reason: 'fixture: one row');
+        await _wi130Open(e, 'zzzq');
+        await _wi130Key(tester, 'zzzqz');
+        await pumpFrames(tester);
+        expect(_wi130State(e).matches, isEmpty, reason: 'fixture: no zzzq');
+        // The bar's own field lays out for its keystroke too: a keystroke
+        // that changes no row's ink measures that.
+        final bar = await _wi130EditableLayouts(() async {
+          await _wi130Key(tester, 'zzzqzz');
+          await pumpFrames(tester);
+        });
+        expect(_wi130State(e).matches, isEmpty, reason: 'still no match');
+        await _wi130Key(tester, 'Speaker 2');
+        await pumpFrames(tester);
+        final layouts = await _wi130EditableLayouts(() async {
+          await _wi130Key(tester, 'Speaker 29');
+          await pumpFrames(tester);
+        });
+        expect(_wi130State(e).matches, isNotEmpty, reason: 'it matches now');
+        // WI #130 keeps Find ink in the row's span (an overlay cannot
+        // recolour drawn glyphs): a changed span relays the 120k row out
+        // once, and nothing else re-measures it.
+        expect(
+          layouts - bar,
+          1,
+          reason: 'row field layouts per keystroke (the bar: $bar)',
+        );
+        await _wi130Flush(tester, e);
+      },
+      timeout: _wi130Timeout,
+    );
+
+    for (final (name, action) in [
+      ('cmd g on N1 lays out the one rows field once', FindMenuAction.next),
+      (
+        'cmd shift g on N1 lays out the one rows field once',
+        FindMenuAction.previous,
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final e = await pumpSpellingEditor(tester, body: _wi130Body(_wi130N1));
+        await _wi130Open(e, 'Speaker 29');
+        expect(
+          _wi130State(e).matches.length,
+          greaterThan(2),
+          reason: 'fixture: matches',
+        );
+        void step() =>
+            e.container.read(findMenuActionsProvider.notifier).dispatch(action);
+        // Warm-up: one step.
+        step();
+        await pumpFrames(tester);
+        final before = _wi130State(e).current;
+        final layouts = await _wi130EditableLayouts(() async {
+          step();
+          await tester.pump();
+          await tester.pump();
+        });
+        expect(_wi130State(e).current, isNot(before), reason: 'it stepped');
+        expect(layouts, 1, reason: 'row field layouts per step');
+        await _wi130Flush(tester, e);
+      }, timeout: _wi130Timeout);
+    }
+  });
+
+  group('the line box cache keeps a re-split span (D25, AC4)', () {
+    TextStyle base({Color? color, double size = 14}) =>
+        TextStyle(fontSize: size, color: color ?? const Color(0xFF101010));
+
+    testWidgets(
+      'a span that only re-splits its runs and recolours them keeps the line box cache',
+      (tester) async {
+        const text = 'one two three four five six seven eight nine ten';
+        final epoch = await _wi130PumpSpan(
+          tester,
+          TextSpan(text: text, style: base()),
+        );
+        final was = epoch.epoch;
+        PerfCounters.reset();
+        await _wi130PumpSpan(
+          tester,
+          TextSpan(
+            style: base(),
+            children: const [
+              TextSpan(text: 'one two '),
+              TextSpan(
+                text: 'three four',
+                style: TextStyle(color: Color(0xFFD02020)),
+              ),
+              TextSpan(text: ' five six seven eight nine ten'),
+            ],
+          ),
+        );
+        final p = tester.renderObject<RenderParagraph>(
+          find.byKey(const Key('wi130-span')),
+        );
+        RenderParagraphLineBoxes(p).lines;
+        expect(epoch.epoch, was, reason: 'the layout epoch did not move');
+        expect(
+          (_n('paragraphLineWalks'), _n('paragraphLineMeasures')),
+          (0, 0),
+          reason: 'no walk or measure after a re-split paint-only span',
+        );
+      },
+    );
+
+    testWidgets('a span with other text moves the layout epoch', (
+      tester,
+    ) async {
+      final epoch = await _wi130PumpSpan(
+        tester,
+        TextSpan(
+          style: base(),
+          children: const [
+            TextSpan(text: 'abcd efgh'),
+            TextSpan(text: ' ijkl'),
+          ],
+        ),
+      );
+      final was = epoch.epoch;
+      // The same length and the same style, split elsewhere: only a code
+      // unit differs.
+      await _wi130PumpSpan(
+        tester,
+        TextSpan(
+          style: base(),
+          children: const [
+            TextSpan(text: 'abcd'),
+            TextSpan(text: ' efgh ijkm'),
+          ],
+        ),
+      );
+      expect(epoch.epoch, greaterThan(was), reason: 'different text');
+    });
+
+    testWidgets(
+      'a span with a longer text in the same runs moves the layout epoch',
+      (tester) async {
+        final epoch = await _wi130PumpSpan(
+          tester,
+          TextSpan(
+            style: base(),
+            children: const [
+              TextSpan(text: 'abcd'),
+              TextSpan(text: ' efgh'),
+            ],
+          ),
+        );
+        final was = epoch.epoch;
+        await _wi130PumpSpan(
+          tester,
+          TextSpan(
+            style: base(),
+            children: const [TextSpan(text: 'abcd efgh i')],
+          ),
+        );
+        expect(epoch.epoch, greaterThan(was), reason: 'a longer text');
+      },
+    );
+
+    testWidgets(
+      'a span that gives part of its text a bigger font size moves the layout epoch',
+      (tester) async {
+        final epoch = await _wi130PumpSpan(
+          tester,
+          TextSpan(text: 'abcd efgh ijkl', style: base()),
+        );
+        final was = epoch.epoch;
+        await _wi130PumpSpan(
+          tester,
+          TextSpan(
+            style: base(),
+            children: const [
+              TextSpan(text: 'abcd '),
+              TextSpan(text: 'efgh', style: TextStyle(fontSize: 28)),
+              TextSpan(text: ' ijkl'),
+            ],
+          ),
+        );
+        expect(epoch.epoch, greaterThan(was), reason: 'a layout style');
+      },
+    );
+
+    testWidgets(
+      'a span that gives part of its text a bolder weight moves the layout epoch',
+      (tester) async {
+        final epoch = await _wi130PumpSpan(
+          tester,
+          TextSpan(
+            style: base(),
+            children: const [TextSpan(text: 'abcd efgh ijkl')],
+          ),
+        );
+        final was = epoch.epoch;
+        await _wi130PumpSpan(
+          tester,
+          TextSpan(
+            style: base(),
+            children: const [
+              TextSpan(text: 'abcd efgh'),
+              TextSpan(
+                text: ' ijkl',
+                style: TextStyle(fontWeight: FontWeight.w900),
+              ),
+            ],
+          ),
+        );
+        expect(epoch.epoch, greaterThan(was), reason: 'a font weight');
+      },
+    );
+
+    testWidgets(
+      'a span that styles part of an unstyled text moves the layout epoch',
+      (tester) async {
+        final epoch = await _wi130PumpSpan(
+          tester,
+          const TextSpan(text: 'abcd efgh ijkl'),
+        );
+        final was = epoch.epoch;
+        await _wi130PumpSpan(
+          tester,
+          const TextSpan(
+            children: [
+              TextSpan(text: 'abcd '),
+              TextSpan(text: 'efgh ijkl', style: TextStyle(fontSize: 30)),
+            ],
+          ),
+        );
+        expect(epoch.epoch, greaterThan(was), reason: 'a style against none');
+      },
+    );
+
+    testWidgets(
+      'a span that gains a placeholder and one that loses it each move the layout epoch',
+      (tester) async {
+        final plain = TextSpan(text: 'abcd', style: base());
+        final gap = TextSpan(
+          style: base(),
+          children: const [
+            TextSpan(text: 'ab'),
+            WidgetSpan(child: SizedBox(width: 10, height: 10)),
+            TextSpan(text: 'cd'),
+          ],
+        );
+        // The same text and style around the placeholder: only the
+        // placeholder tells the spans apart.
+        final epoch = await _wi130PumpSpan(tester, plain);
+        final plainEpoch = epoch.epoch;
+        await _wi130PumpSpan(tester, gap);
+        final gapEpoch = epoch.epoch;
+        expect(
+          gapEpoch,
+          greaterThan(plainEpoch),
+          reason: 'gains a placeholder',
+        );
+        await _wi130PumpSpan(tester, plain);
+        expect(epoch.epoch, greaterThan(gapEpoch), reason: 'loses it again');
+      },
+    );
   });
 
   // --------------------------------------- rendering as on main (AC4)
