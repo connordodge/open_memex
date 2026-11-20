@@ -198,9 +198,12 @@ class RenderParagraphLineBoxes implements LineBoxSource {
     final hs = at == 0 ? 0 : text.lastIndexOf('\n', at - 1) + 1;
     final next = text.indexOf('\n', at);
     final he = next < 0 ? text.length : next;
-    // A character with a box on the line holding [at].
-    TextBox? box = at < text.length ? _boxAt(at) : null;
-    if (box == null) {
+    // The y of a character with a box on the line holding [at].
+    final atBox = at < text.length ? _boxAt(at) : null;
+    final double y;
+    if (atBox != null) {
+      y = _yOf(atBox);
+    } else {
       TextBox? before;
       for (var k = math.min(at, he) - 1; k >= hs && before == null; k--) {
         before = _boxAt(k);
@@ -212,11 +215,16 @@ class RenderParagraphLineBoxes implements LineBoxSource {
       if (before == null && after == null) {
         return TextRange(start: hs, end: he);
       }
-      box = before == null || after == null
-          ? (before ?? after)!
-          : (_markAt(_yOf(before)) == _markAt(_yOf(after)) ? before : after);
+      // At the text's end no box follows the zero-width run: the line after
+      // it is the paragraph's last laid-out line, which a hit test far below
+      // lands on.
+      final afterY = after != null
+          ? _yOf(after)
+          : (he == text.length ? _far : null);
+      y = before == null || afterY == null
+          ? (before == null ? afterY! : _yOf(before))
+          : (_markAt(_yOf(before)) == _markAt(afterY) ? _yOf(before) : afterY);
     }
-    final y = _yOf(box);
     final mark = _markAt(y);
     // Out to the line's start: over zero-width characters and characters
     // on this line, never past the source line's start.
@@ -250,11 +258,13 @@ class RenderParagraphLineBoxes implements LineBoxSource {
     return TextRange(start: start, end: end);
   }
 
-  /// The [_markAt] of the laid-out line holding the line break at [he] (its
-  /// zero-width box is on that line); null at the text's end, or for a
-  /// break without a box.
+  /// The [_markAt] of the laid-out line holding the end of the source line
+  /// at [he]: the line holding its line break (whose zero-width box is on
+  /// that line), or at the text's end the paragraph's last laid-out line;
+  /// null for a break without a box.
   int? _breakMark(String text, int he) {
-    final b = he < text.length ? _boxAt(he) : null;
+    if (he >= text.length) return _markAt(_far);
+    final b = _boxAt(he);
     return b == null ? null : _markAt(_yOf(b));
   }
 
