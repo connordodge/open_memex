@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import '../../editor/editor_rows.dart';
 import '../../editor/segment_selection.dart';
+import '../../state/paste_or_attach.dart';
 import 'segment_pointer_layer.dart';
 import 'segment_undo.dart';
 import 'segment_view.dart';
@@ -28,8 +29,18 @@ import 'spelling_menu.dart';
 ///   caret the pointer layer put in the revealed table (Spec #197 R21,
 ///   ruling D14), without Copy and Cut while the selection is a caret.
 ///
-/// Within one row, copy, cut, paste and typing keep the field's own
-/// behaviour. Cmd+Z and Shift+Cmd+Z undo and redo the whole segment through
+/// Within one row, copy, cut and typing keep the field's own behaviour.
+///
+/// Every Paste (Cmd+V, either right-click menu, the spelling menu's Paste)
+/// goes through `pasteOrAttach` (WI #147, D11): file URLs and images on the
+/// clipboard attach, and text pastes as before, through `replaceRange` over
+/// a selection that spans rows and through the field's own paste within one
+/// row. A right click on the focused row's field, off a flagged word, shows
+/// the field's menu items with Paste enabled ([pasteMenuItems]) in place of
+/// the field's own menu while the clipboard holds file URLs or an image
+/// (lead ruling Q3).
+///
+/// Cmd+Z and Shift+Cmd+Z undo and redo the whole segment through
 /// its [SegmentUndoRecorder]. While the focused field composes, keys go to
 /// the field unchanged. Every edit is a `SegmentEdit` applied through
 /// [SegmentViewState.applyEdit] (D2).
@@ -58,15 +69,18 @@ class _SegmentSelectionOpsState extends State<SegmentSelectionOps> {
   /// Whether that press went down on a rendered table grid.
   bool _secondaryOnGrid = false;
 
+  /// Bumped by every press: a right click's menu still waiting for the
+  /// clipboard then shows nothing.
+  int _presses = 0;
+
   late final Map<Type, Action<Intent>> _actions = {
     CopySelectionTextIntent: _AcrossAction<CopySelectionTextIntent>(
       _across,
       (intent) => intent.collapseSelection ? _cut() : _copy(),
     ),
-    PasteTextIntent: _AcrossAction<PasteTextIntent>(
-      _across,
-      (_) => unawaited(_paste()),
-    ),
+    PasteTextIntent: _PasteAction(_across, (pasteText) {
+      unawaited(_paste(pasteText));
+    }),
     UndoTextIntent: CallbackAction<UndoTextIntent>(
       onInvoke: (_) => _replay(_view.undo.undo(_view.text)),
     ),
@@ -161,7 +175,14 @@ class _SegmentSelectionOpsState extends State<SegmentSelectionOps> {
     _apply(deleteRange(_view.text, _rows(), _selection()));
   }
 
-  Future<void> _paste() async {
+  /// One Paste through `pasteOrAttach` (D11): its text paste is
+  /// [pasteText], or [_replaceWithClipboard] without one.
+  Future<void> _paste([FutureOr<void> Function()? pasteText]) =>
+      pasteOrAttach(context, pasteText: pasteText ?? _replaceWithClipboard);
+
+  /// Replaces the segment selection with the clipboard's text
+  /// (`replaceRange`), as one edit.
+  Future<void> _replaceWithClipboard() async {
     final text = (await Clipboard.getData(Clipboard.kTextPlain))?.text;
     if (text == null || !mounted) return;
     _apply(replaceRange(_view.text, _rows(), _selection(), text));
@@ -196,6 +217,7 @@ class _SegmentSelectionOpsState extends State<SegmentSelectionOps> {
   }
 
   void _onPointerDown(PointerDownEvent event) {
+    _presses++;
     final secondary = event.buttons & kSecondaryButton != 0;
     _secondary = secondary ? event.pointer : null;
     // Read before the pointer layer reveals the table (this runs first).
@@ -208,14 +230,48 @@ class _SegmentSelectionOpsState extends State<SegmentSelectionOps> {
   /// replaces it while the selection spans rows. A right click on a
   /// rendered table grid (no field under it, ruling D14) shows this menu
   /// once the pointer layer has put the caret in the revealed table.
+  /// Otherwise [_offerAttachPaste] may replace the field's own menu.
   void _onPointerUp(PointerUpEvent event) {
     if (event.pointer != _secondary) return;
     _secondary = null;
     final grid = _secondaryOnGrid;
     final at = event.position;
     scheduleMicrotask(() {
-      if (mounted && (grid || _across())) _showMenu(at);
+      if (!mounted) return;
+      if (grid || _across()) {
+        _showMenu(at);
+      } else {
+        unawaited(_offerAttachPaste(at));
+      }
     });
+  }
+
+  /// Q3: a right click at global [at] on the focused row's field, off a
+  /// flagged word (SpellingMenu wins), replaces the field's own menu with
+  /// its items and Paste enabled ([pasteMenuItems]) while the clipboard
+  /// holds file URLs or an image and the vault can be written. Nothing
+  /// changes with text only or an empty clipboard, or once another press
+  /// came.
+  Future<void> _offerAttachPaste(Offset at) async {
+    final press = _presses;
+    if (!await pasteAttachesFiles(context)) return;
+    if (!mounted || press != _presses) return;
+    final field = _field();
+    if (field == null ||
+        _view.rowIndexOf(field.widget.controller) == null ||
+        !_fieldUnder(field, at) ||
+        spellingIssueAtSelection(field) != null) {
+      return;
+    }
+    _menu.show(
+      context: context,
+      contextMenuBuilder: (context) => TextFieldTapRegion(
+        child: AdaptiveTextSelectionToolbar.buttonItems(
+          anchors: TextSelectionToolbarAnchors(primaryAnchor: at),
+          buttonItems: pasteMenuItems(field, hide: _hideMenu),
+        ),
+      ),
+    );
   }
 
   void _showMenu(Offset at) {
@@ -248,7 +304,7 @@ class _SegmentSelectionOpsState extends State<SegmentSelectionOps> {
               item(ContextMenuButtonType.copy, _copy),
               item(ContextMenuButtonType.cut, _cut),
             ],
-            item(ContextMenuButtonType.paste, _paste),
+            item(ContextMenuButtonType.paste, () => unawaited(_paste())),
             item(ContextMenuButtonType.selectAll, _selectAll),
           ],
         ),
@@ -290,6 +346,13 @@ bool _typesText(KeyEvent event) {
   );
 }
 
+/// Whether global [at] lies on [field]'s text box.
+bool _fieldUnder(EditableTextState field, Offset at) {
+  final box = field.renderEditable;
+  if (!box.attached || !box.hasSize) return false;
+  return (Offset.zero & box.size).inflate(1).contains(box.globalToLocal(at));
+}
+
 /// The index of the row holding segment [offset], as the rows host counts
 /// it: the first row ending after it, or the last row.
 int _rowOf(List<RowSpec> rows, int offset) {
@@ -297,6 +360,39 @@ int _rowOf(List<RowSpec> rows, int offset) {
     if (offset < rows[i].end) return i;
   }
   return rows.length - 1;
+}
+
+/// The row fields' `PasteTextIntent` override (D11): every Paste runs
+/// [paste], with the field's own paste as its text paste within one row and
+/// none ([_SegmentSelectionOpsState._replaceWithClipboard]) over a
+/// selection that spans rows.
+class _PasteAction extends ContextAction<PasteTextIntent> {
+  _PasteAction(this.across, this.paste);
+
+  final bool Function() across;
+  final void Function(FutureOr<void> Function()? pasteText) paste;
+
+  @override
+  bool isEnabled(PasteTextIntent intent, [BuildContext? context]) =>
+      across() || (callingAction?.isEnabled(intent) ?? false);
+
+  @override
+  Object? invoke(PasteTextIntent intent, [BuildContext? context]) {
+    if (across()) {
+      paste(null);
+      return null;
+    }
+    final native = callingAction;
+    if (native == null) return null;
+    paste(() {
+      if (native is ContextAction<PasteTextIntent>) {
+        native.invoke(intent, context);
+      } else {
+        native.invoke(intent);
+      }
+    });
+    return null;
+  }
 }
 
 /// An override of a row field's clipboard action (TD6): over a selection

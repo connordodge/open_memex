@@ -4,7 +4,12 @@
 // Source mode) goes through [pasteOrAttach].
 import 'dart:async';
 
-import 'package:flutter/widgets.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'attach_controller.dart';
+import 'pasteboard_reader.dart';
+import 'vault_access_state.dart';
 
 /// What one Paste did, in R8's order.
 enum PasteOutcome {
@@ -21,6 +26,11 @@ enum PasteOutcome {
   /// Nothing was pasted or attached.
   nothing,
 }
+
+/// Whether the vault open over [container] takes writes (R11); false with
+/// no vault.
+bool _writable(ProviderContainer container) =>
+    container.read(vaultAccessProvider)?.canWrite ?? false;
 
 /// Routes one Paste in the note editor (Spec #123 R8, D11). Reads
 /// `pasteboardReaderProvider` and, in this order:
@@ -39,9 +49,83 @@ enum PasteOutcome {
 Future<PasteOutcome> pasteOrAttach(
   BuildContext context, {
   required FutureOr<void> Function() pasteText,
-}) => Future.value(PasteOutcome.nothing);
+}) async {
+  final container = ProviderScope.containerOf(context, listen: false);
+  final clip = await container.read(pasteboardReaderProvider).read();
+  if (!context.mounted) return PasteOutcome.nothing;
+  final writable = _writable(container);
+  if (writable && clip.files.isNotEmpty) {
+    await container
+        .read(attachControllerProvider)
+        .attachPaths(context, clip.files);
+    return PasteOutcome.files;
+  }
+  if (clip.hasText) {
+    await pasteText();
+    return PasteOutcome.text;
+  }
+  final png = clip.png;
+  if (writable && png != null) {
+    final controller = container.read(attachControllerProvider);
+    await controller.attachBytes(context, png, controller.pastedImageName());
+    return PasteOutcome.image;
+  }
+  return PasteOutcome.nothing;
+}
 
 /// Whether the note editor offers Paste (R8, R11): the clipboard holds file
 /// URLs, text or an image. File URLs and images count only while the vault
 /// can be written.
-Future<bool> canPasteOrAttach(BuildContext context) => Future.value(false);
+Future<bool> canPasteOrAttach(BuildContext context) async {
+  final container = ProviderScope.containerOf(context, listen: false);
+  final clip = await container.read(pasteboardReaderProvider).read();
+  if (clip.hasText) return true;
+  return _writable(container) && (clip.files.isNotEmpty || clip.png != null);
+}
+
+/// Whether a right click in the note editor shows [pasteMenuItems] in place
+/// of a field's own menu (lead ruling Q3): the clipboard holds file URLs or
+/// an image, and the vault can be written. With text only, or nothing, the
+/// field's own menu stays.
+Future<bool> pasteAttachesFiles(BuildContext context) async {
+  final container = ProviderScope.containerOf(context, listen: false);
+  final clip = await container.read(pasteboardReaderProvider).read();
+  return _writable(container) && (clip.files.isNotEmpty || clip.png != null);
+}
+
+/// The items [field]'s own context menu shows on this platform (its
+/// labels, order and enabled rules, `EditableTextState.contextMenuButtonItems`)
+/// with Paste enabled: Paste invokes the field's `PasteTextIntent`, so it
+/// goes through the editor's override and [pasteOrAttach] (Q3). [hide]
+/// runs before any item's action.
+List<ContextMenuButtonItem> pasteMenuItems(
+  EditableTextState field, {
+  required VoidCallback hide,
+}) {
+  const cause = SelectionChangedCause.toolbar;
+  VoidCallback? item(bool enabled, void Function() run) => enabled
+      ? () {
+          hide();
+          run();
+        }
+      : null;
+  return EditableText.getEditableButtonItems(
+    clipboardStatus: ClipboardStatus.pasteable,
+    onCopy: item(field.copyEnabled, () => field.copySelection(cause)),
+    onCut: item(field.cutEnabled, () => field.cutSelection(cause)),
+    onPaste: item(true, () {
+      final context = field.widget.focusNode.context;
+      if (context != null && context.mounted) {
+        Actions.maybeInvoke(context, const PasteTextIntent(cause));
+      }
+    }),
+    onSelectAll: item(field.selectAllEnabled, () => field.selectAll(cause)),
+    onLookUp: item(field.lookUpEnabled, () => field.lookUpSelection(cause)),
+    onSearchWeb: item(
+      field.searchWebEnabled,
+      () => field.searchWebForSelection(cause),
+    ),
+    onShare: item(field.shareEnabled, () => field.shareSelection(cause)),
+    onLiveTextInput: null,
+  );
+}
