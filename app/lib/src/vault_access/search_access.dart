@@ -44,6 +44,7 @@ class SearchHit {
     this.startByte,
     this.via,
     required this.noteUpdatedAt,
+    this.attachment,
   });
 
   /// Parses one req 34 hit object: `note_id`, `note_title`, `note_role`
@@ -88,6 +89,11 @@ class SearchHit {
   /// The note's `updated_at`, ms epoch.
   final int noteUpdatedAt;
 
+  /// The attachment this hit came from (Spec #123 R46, R48), or null for a
+  /// hit on the note's own text (and from a `memex` or server that predates
+  /// attachments).
+  final SearchHitAttachment? attachment;
+
   @override
   bool operator ==(Object other) =>
       other is SearchHit &&
@@ -119,6 +125,56 @@ class SearchHit {
       'SearchHit($noteId, $noteTitle, role: $noteRole, day: $day, '
       'chunk: $chunkId, startByte: $startByte, via: $via, '
       'updatedAt: $noteUpdatedAt)';
+}
+
+/// A hit's `attachment: {name, path}` (Spec #123 R48). Value equality.
+class SearchHitAttachment {
+  const SearchHitAttachment({required this.name, required this.path});
+
+  /// The stored name.
+  final String name;
+
+  /// The vault-relative `objects/<h2>/<hash>/<name>` path.
+  final String path;
+}
+
+/// One referencing note of a [SearchAttachment]: `{id, title}`. Value
+/// equality.
+class SearchAttachmentNote {
+  const SearchAttachmentNote({required this.id, required this.title});
+
+  final String id;
+  final String title;
+}
+
+/// One entry of the answer's top-level `attachments` list (Spec #123 R48):
+/// `{name, path, type, size, snippet?, notes: [{id, title}]}`. [snippet] is
+/// the matching text of a content match, null for a name-only match. Value
+/// equality.
+class SearchAttachment {
+  const SearchAttachment({
+    required this.name,
+    required this.path,
+    required this.size,
+    required this.type,
+    this.snippet,
+    this.notes = const [],
+  });
+
+  final String name;
+  final String path;
+
+  /// Bytes.
+  final int size;
+
+  /// The media type, e.g. `text/plain`.
+  final String type;
+
+  /// The matching text (content match), or null (name-only match).
+  final String? snippet;
+
+  /// The notes that reference it, in the answer's order.
+  final List<SearchAttachmentNote> notes;
 }
 
 /// [json]'s [key] as a [T]; a missing, null or other-typed value throws
@@ -158,9 +214,14 @@ class SearchReady extends SearchResult {
     this.hits, {
     required this.semantic,
     required this.truncated,
+    this.attachments = const [],
   });
 
   final List<SearchHit> hits;
+
+  /// The matching attachments (Spec #123 R47, R48), in fused order; empty
+  /// when the answer has none (or predates attachments).
+  final List<SearchAttachment> attachments;
   final Semantic semantic;
   final bool truncated;
 

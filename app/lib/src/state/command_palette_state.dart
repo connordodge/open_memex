@@ -86,7 +86,7 @@ enum PaletteCommand {
 }
 
 /// What a palette row is, for its stable [PaletteItemId] and row key.
-enum PaletteItemKind { command, note, daily, canvas, passage }
+enum PaletteItemKind { command, note, daily, canvas, passage, attachment }
 
 /// The kind of a [NoteItem]: a note, a daily note or a canvas.
 enum PaletteNoteKind { note, daily, canvas }
@@ -212,9 +212,40 @@ class PassageItem extends PaletteItem {
   List<int> get matched => const [];
 }
 
+/// An Attachments row (Spec #123 R47): one matching attachment of the
+/// search answer. Its id is `(attachment, attachment.path)`; its title is
+/// the attachment's name. [notesLine] is `in <title>, <title>, <title>`
+/// with ` +N` past three; [marks] are the ranges of `attachment.snippet`
+/// drawn in the mark highlight.
+class AttachmentItem extends PaletteItem {
+  const AttachmentItem(
+    this.attachment, {
+    required this.notesLine,
+    this.marks = const [],
+  });
+
+  final SearchAttachment attachment;
+  final String notesLine;
+  final List<TextRange> marks;
+
+  @override
+  PaletteItemId get id => const PaletteItemId(PaletteItemKind.attachment, '');
+
+  /// The attachment's name.
+  @override
+  String get title => '';
+
+  @override
+  String? get meta => null;
+
+  /// Attachment titles carry no matched characters.
+  @override
+  List<int> get matched => const [];
+}
+
 /// A result group, in the fixed order commands, recent (empty input) or
-/// commands, notes, passages (typed).
-enum PaletteGroupKind { commands, notes, recent, passages }
+/// commands, notes, passages, attachments (typed).
+enum PaletteGroupKind { commands, notes, recent, passages, attachments }
 
 /// One group of selectable rows. [hint] is the Passages header's right-hand
 /// hint (`keyword + meaning` / `keyword only`); null for the other groups.
@@ -236,6 +267,9 @@ sealed class PassagesView {
 
   /// The Passages group's header hint, or null.
   String? get hint => null;
+
+  /// The Attachments rows the same search answer lists (Spec #123 R47).
+  List<AttachmentItem> get attachments => const [];
 }
 
 const _hintKeywordMeaning = 'keyword + meaning';
@@ -266,10 +300,17 @@ class PassagesSearching extends PassagesView {
 /// The latest input's answer: [rows] (may be empty) and whether meaning
 /// search ran ([semantic]); the footer follows [semantic].
 class PassagesShown extends PassagesView {
-  const PassagesShown({required this.rows, required this.semantic});
+  const PassagesShown({
+    required this.rows,
+    required this.semantic,
+    this.attachments = const [],
+  });
 
   @override
   final List<PassageItem> rows;
+
+  @override
+  final List<AttachmentItem> attachments;
 
   final Semantic semantic;
 
@@ -509,6 +550,12 @@ final palettePassageChooserProvider =
       (ref) => (item, {required newTab}) {},
     );
 
+/// Chooser for Attachments rows (Spec #123 R47). Default: does nothing.
+final paletteAttachmentChooserProvider =
+    Provider.autoDispose<PaletteChooser<AttachmentItem>>(
+      (ref) => (item, {required newTab}) {},
+    );
+
 /// The palette's notifier (Spec #59 TD4). Selection rules (reqs 25, 26):
 /// - typing ([setQuery]) selects the first row of the new groups;
 /// - a regroup (a source rebuilding, Passages answering) keeps the selected
@@ -608,6 +655,8 @@ class PaletteNotifier extends AutoDisposeNotifier<PaletteState> {
         ref.read(paletteNoteChooserProvider)(item, newTab: newTab);
       case PassageItem():
         ref.read(palettePassageChooserProvider)(item, newTab: newTab);
+      case AttachmentItem():
+        break;
     }
   }
 

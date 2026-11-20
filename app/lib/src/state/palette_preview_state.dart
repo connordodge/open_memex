@@ -155,6 +155,7 @@ class PalettePreviewReader extends PalettePreviewNotifier {
           return PreviewPassage(hit, contentMd: note.contentMd);
         }(),
         CommandItem() => _command(item),
+        AttachmentItem() => const PreviewNone(),
       };
     } catch (_) {
       view = const PreviewFailed();

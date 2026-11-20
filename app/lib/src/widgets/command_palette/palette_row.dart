@@ -105,7 +105,9 @@ class PaletteRow extends ConsumerWidget {
               ),
               child: switch (item) {
                 PassageItem() => _PassageBody(item, chip: chip),
-                CommandItem() || NoteItem() => _LineBody(item, chip: chip),
+                CommandItem() ||
+                NoteItem() ||
+                AttachmentItem() => _LineBody(item, chip: chip),
               },
             ),
           ),
@@ -238,6 +240,7 @@ class _KindIcon extends StatelessWidget {
       NoteItem(kind: PaletteNoteKind.daily) => LucideIcons.calendar,
       NoteItem(kind: PaletteNoteKind.canvas) => LucideIcons.layoutDashboard,
       PassageItem() => LucideIcons.textQuote,
+      AttachmentItem() => LucideIcons.textQuote,
     };
     return SizedBox.square(
       dimension: 14,

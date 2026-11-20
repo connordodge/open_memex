@@ -10,6 +10,7 @@ import '../vault_access/search_access.dart';
 import 'clock.dart';
 import 'command_palette_state.dart';
 import 'note_reveal.dart';
+import 'palette_attachments.dart';
 import 'palette_preview_state.dart';
 import 'search_model_download.dart';
 import 'tabs_state.dart';
@@ -332,4 +333,5 @@ final List<Override> palettePassagesOverrides = [
   palettePassagesProvider.overrideWith(PalettePassagesRunner.new),
   palettePreviewProvider.overrideWith(PalettePreviewReader.new),
   palettePassageChooserProvider.overrideWith(_passageChooser),
+  paletteAttachmentChooserProvider.overrideWith(paletteAttachmentChooser),
 ];

@@ -949,7 +949,7 @@ class _WideHints extends ConsumerWidget {
       ],
       PaletteItemKind.note || PaletteItemKind.daily || PaletteItemKind.canvas =>
         const [_hintMove, _hintChoose, _hintNewTab, _hintClose],
-      null => const [_hintMove, _hintClose],
+      PaletteItemKind.attachment || null => const [_hintMove, _hintClose],
     };
     return _HintBar(
       hints: hints,
