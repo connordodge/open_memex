@@ -19,6 +19,7 @@ import '../theme/typography.dart';
 import '../vault_access/vault_scoped.dart';
 import 'agents_sheet/agents_sheet.dart' show AgentsStatusBarButton;
 import 'atoms.dart';
+import 'editor/attachment_drop_target.dart';
 import 'editor/echo_arrival_highlight.dart';
 import 'editor/editor_toolbar.dart';
 import 'editor/note_header.dart';
@@ -652,7 +653,12 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
                 : Stack(
                     children: [
                       Positioned.fill(
-                        child: _body(note, editor, controller, header),
+                        // Files dropped on the body attach (#147, R7); the
+                        // outgoing editor of a zoom takes no drop.
+                        child: AttachmentDropTarget(
+                          active: !_outgoing,
+                          child: _body(note, editor, controller, header),
+                        ),
                       ),
                       ..._bodyOverlays(note),
                     ],

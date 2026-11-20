@@ -11,6 +11,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/src/state/vault_trash.dart'
+    show vaultFilesChannel;
 
 /// Run a `testWidgets` only with `defaultTargetPlatform` = macOS.
 final macOnly = TargetPlatformVariant.only(TargetPlatform.macOS);
@@ -179,9 +181,18 @@ class MacClipboard {
       }
       return null;
     });
-    addTearDown(
-      () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
-    );
+    // The note editor's Paste asks the pasteboard seam first (#147, R8): the
+    // platform reader reports whether the same fake pasteboard holds text.
+    messenger.setMockMethodCallHandler(vaultFilesChannel, (call) async {
+      if (call.method == 'readPasteboard') {
+        return <String, Object?>{'hasText': clip.text?.isNotEmpty ?? false};
+      }
+      return null;
+    });
+    addTearDown(() {
+      messenger.setMockMethodCallHandler(SystemChannels.platform, null);
+      messenger.setMockMethodCallHandler(vaultFilesChannel, null);
+    });
     return clip;
   }
 }
