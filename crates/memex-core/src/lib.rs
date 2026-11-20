@@ -3,6 +3,7 @@
 pub mod agents;
 pub mod app_reads;
 pub mod attachments;
+pub mod attachments_extract;
 pub mod backup;
 pub mod canvas;
 pub mod chunker;

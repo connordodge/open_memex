@@ -1,0 +1,7 @@
+Crate: pdf-extract 0.12.1
+Declared licence: MIT
+Upstream: https://github.com/jrmuizel/pdf-extract
+Copied from: no upstream file. The repository holds no licence file at any commit (checked through commit 47b792ba04c5f3b6e478072b2efb8e1a2a06ec7e, the commit the crate was published from, per its .cargo_vcs_info.json); its Cargo.toml declares license = "MIT".
+Files: LICENSE
+Why: the pdf-extract 0.12.1 package on crates.io ships no licence file, and upstream has none to copy.
+LICENSE is the standard MIT text (from GitHub's licenses API, https://choosealicense.com/licenses/mit/) with the copyright line naming the crate's author from its Cargo.toml (Jeff Muizelaar); the year is left out because upstream states none.

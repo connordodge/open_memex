@@ -7,9 +7,10 @@
 //! - `GET|HEAD /attachments/{*path}`: the file's bytes (GET), with
 //!   `Content-Type` from its extension and `Content-Length`.
 //!
-//! Neither route takes the vault lock: hashing, writing and reading run on
-//! the blocking pool against the vault folder (TD "No vault lease during
-//! heavy work").
+//! Hashing, writing and reading run on the blocking pool against the vault
+//! folder, without the vault lock (TD "No vault lease during heavy work").
+//! The upload then extracts the file's text in a child process (#136) and
+//! takes the lock only for the short `attachments` row writes.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -24,6 +25,7 @@ use memex_core::attachments::{self, AttachmentPath, StoredAttachment, MAX_ATTACH
 use memex_core::MemexError;
 use serde::Deserialize;
 
+use crate::attachment_extract_child::extract_and_record;
 use crate::cli::InvalidArgument;
 use crate::server::content_length;
 use crate::server::error::{ApiError, ApiPath, ApiQuery};
@@ -74,12 +76,15 @@ async fn upload(
     let Ok(bytes) = axum::body::to_bytes(body, UPLOAD_LIMIT).await else {
         return Err(too_large(&name));
     };
-    let vault = entry.state.vault_path.clone();
+    let state = entry.state.clone();
     drop(entry);
+    let vault = state.vault_path.clone();
     let stored =
         tokio::task::spawn_blocking(move || attachments::store_bytes(&vault, &bytes, &name))
             .await??;
-    // R3 (#136): extraction of the stored attachment goes here.
+    // R17 (#136): extract the stored file's text in the child, with the
+    // vault lock held only for the row writes, before answering.
+    extract_and_record(&state, &stored).await?;
     Ok(Json(stored))
 }
 
