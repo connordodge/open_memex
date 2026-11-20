@@ -60,6 +60,11 @@ const _metricConstants = [
   'clearSelection',
 ];
 
+/// [source] without its line comments (`//`, `///`), so a name in a comment
+/// is not read as code.
+String _code(String source) =>
+    [for (final line in source.split('\n')) line.split('//').first].join('\n');
+
 final _printCall = RegExp(r'(^|[^A-Za-z0-9_.$])print\(');
 final _homePath = RegExp(r'/(Users|home)/[A-Za-z0-9._-]+/');
 
@@ -184,19 +189,80 @@ void main() {
     );
 
     test('the benchmark records every metric', () {
-      final src = _read(_benchmark);
+      final src = _code(_read(_benchmark));
       expect(_metricConstants, hasLength(BenchMetric.all.length));
       for (final name in _metricConstants) {
-        expect(src, contains('BenchMetric.$name'), reason: name);
+        // A record site, not a mention: `record(` or `_recordFrames(` with the
+        // metric among its arguments (before the statement ends).
+        expect(
+          RegExp(
+            r'record(Frames)?\(\s*[^;]*?BenchMetric\.' + name + r'\b',
+            dotAll: true,
+          ).hasMatch(src),
+          isTrue,
+          reason: 'no record site for $name',
+        );
       }
     });
 
     test('the benchmark runs every extra scenario', () {
-      final src = _read(_benchmark);
+      final src = _code(_read(_benchmark));
       expect(ExtraScenario.values, hasLength(4));
       for (final s in ExtraScenario.values) {
         expect(src, contains('ExtraScenario.${s.name}'), reason: s.name);
+        // The scenario's own function declares the id the core names for it
+        // and owes the report its rows (`expectCase(id)` right after).
+        final decl = RegExp(
+          "const id = '${RegExp.escape(s.id)}';\\s*_report\\.expectCase\\(id\\);",
+        );
+        expect(decl.hasMatch(src), isTrue, reason: s.id);
       }
+    });
+
+    test(
+      'the benchmark declares every case and its caret scroll to the report',
+      () {
+        final src = _code(_read(_benchmark));
+        expect(
+          RegExp(
+            r'_report\s*\.\.expectCase\(id\)\s*\.\.expectCase\(\s*caretCaseId\(id\),\s*metrics: BenchMetric\.scroll,?\s*\)',
+          ).hasMatch(src),
+          isTrue,
+          reason: 'a matrix case owes its rows and its caret scroll rows',
+        );
+        // The caret scroll is run and recorded under the caret id.
+        expect(src, contains('_scroll(tester, caretCaseId(id))'));
+        // Failed phases are reported, not swallowed.
+        expect(src, contains("'failures'"));
+      },
+    );
+
+    test('the benchmark runs on the real clock and the live frame policy', () {
+      final src = _code(_read(_benchmark));
+      // The harness installs a FakeClock that fires no timer; the benchmark
+      // overrides it, and never installs one of its own.
+      expect(
+        src,
+        contains('clockProvider.overrideWithValue(const SystemClock())'),
+      );
+      expect(src, isNot(contains('FakeClock')));
+      expect(
+        src,
+        contains(
+          'binding.framePolicy = LiveTestWidgetsFlutterBindingFramePolicy.fullyLive',
+        ),
+      );
+    });
+
+    test('the paste scenario answers the pasteboard with text only', () {
+      final src = _code(_read(_benchmark));
+      expect(
+        src,
+        contains(
+          'pasteboardReaderProvider.overrideWithValue(const _TextOnlyPasteboard())',
+        ),
+      );
+      expect(src, contains('PasteboardContents(hasText: true)'));
     });
 
     test('the benchmark and its driver never call print', () {
