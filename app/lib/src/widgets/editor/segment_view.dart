@@ -733,15 +733,23 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   /// rest are retired and new rows are made.
   void _rederive(SegmentEdit edit, String text, TextSelection selection) {
     final specs = splitRows(text, atSegmentStart: true);
-    final match = matchRows(
-      [for (final row in _rows) row.spec],
-      specs,
-      edit: edit,
-      // The row holding focus, else the active row, keeps its controller
-      // (Req 33): typing lands in the focused row even while a row a move
-      // just activated waits to take focus.
-      focused: focusedRow ?? _active?.index,
-    );
+    final before = [for (final row in _rows) row.spec];
+    // The row holding focus keeps its controller (Req 33): typing lands in
+    // the focused row even while a row a move just activated waits to take
+    // focus.
+    final focused = focusedRow;
+    var match = matchRows(before, specs, edit: edit, focused: focused);
+    // With no row focused the active row keeps its controller too, but only
+    // through the edit's selection when it has no continuation of its own:
+    // carrying it to the row of a caret the edit moved elsewhere would
+    // leave every row in between without one (rebuilt and repainted).
+    final active = _active?.index;
+    if (focused == null &&
+        active != null &&
+        active < match.length &&
+        match[active] == null) {
+      match = matchRows(before, specs, edit: edit, focused: active);
+    }
     final kept = List<_Row?>.filled(specs.length, null);
     for (final (k, j) in match.indexed) {
       if (j == null) {
