@@ -15,6 +15,7 @@
 // and focus node records every value they notify.
 //
 // Helpers carry the `_t132`/`wi132` prefix. Text is synthetic.
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -89,6 +90,29 @@ List<SemanticsNode> _t132NodesOf(String text) => find.semantics
     })
     .evaluate()
     .toList();
+
+/// A focus node outside the editor (a palette, find bar or sidebar field
+/// stands in): a plain [Focus] in the app's overlay.
+Future<FocusNode> _t132OutsideNode(WidgetTester tester) async {
+  final node = FocusNode(debugLabel: 'outside the editor');
+  final entry = OverlayEntry(
+    builder: (_) => Positioned(
+      left: 0,
+      top: 0,
+      width: 1,
+      height: 1,
+      child: Focus(focusNode: node, child: const SizedBox()),
+    ),
+  );
+  tester.state<OverlayState>(find.byType(Overlay).first).insert(entry);
+  addTearDown(() {
+    entry.remove();
+    entry.dispose();
+    node.dispose();
+  });
+  await tester.pump();
+  return node;
+}
 
 void main() {
   holdFontFetches();
@@ -221,6 +245,36 @@ void main() {
           reason: 'the caret is in the receiving row',
         );
         _t132ExpectFocusedActive(tester, b, name);
+      }, variant: macOnly);
+    }
+
+    for (final (name, key, from) in [
+      (
+        'Page Down in the active row moves neither the caret out of its row nor the active row',
+        LogicalKeyboardKey.pageDown,
+        _t132Middle,
+      ),
+      (
+        'Page Up in the active row moves neither the caret out of its row nor the active row',
+        LogicalKeyboardKey.pageUp,
+        _t132Middle,
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        await _t132Pump(tester);
+        final a = _t132Row(tester, from);
+        await wi132Activate(tester, a, wi132CaretIn(tester, a, offset: 4));
+        final before = wi132Host(tester).selection;
+        final text = wi132Host(tester).text;
+        final pixels = wi132Page(tester).pixels;
+
+        await wi132Key(tester, key);
+        await tester.pump();
+        await tester.pump();
+        _t132ExpectFocusedActive(tester, a, name);
+        expect(wi132Host(tester).text, text, reason: 'no text change');
+        expect(wi132Host(tester).selection, before, reason: 'the caret stays');
+        expect(wi132Page(tester).pixels, pixels);
       }, variant: macOnly);
     }
 
@@ -547,7 +601,284 @@ void main() {
           before,
           reason: 'nothing else changed',
         );
+        // Where it went: in the row the caret moved to, at the caret, and
+        // not in the row the caret left (Req 31, 33).
+        expect(
+          wi132RowText(tester, b),
+          contains('Z'),
+          reason: 'Z is in the row the caret moved to',
+        );
+        expect(
+          wi132RowText(tester, a),
+          isNot(contains('Z')),
+          reason: 'Z is not in the row the caret left',
+        );
+        expect(
+          wi132Host(tester).selection,
+          wi132CaretIn(
+            tester,
+            b,
+            offset: wi132RowText(tester, b).indexOf('Z') + 1,
+          ),
+          reason: 'the caret is just after Z',
+        );
         _t132ExpectFocusedActive(tester, b, 'typed after the move');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a character typed after a click into an idle row before the next frame goes in at the click and not in the row the caret left',
+      (tester) async {
+        await _t132Pump(tester);
+        final a = _t132Row(tester, _t132First);
+        final b = _t132Row(tester, _t132Middle);
+        await wi132Activate(tester, a, _t132EndOf(tester, a));
+        final before = wi132Host(tester).text;
+        final at = wi132RowText(tester, b).indexOf('prose') + 2;
+
+        final gesture = await tester.startGesture(
+          wi132GlyphPoint(tester, b, at),
+          kind: PointerDeviceKind.mouse,
+          buttons: kPrimaryButton,
+        );
+        await gesture.up();
+        final caret = wi132Host(tester).selection;
+        expect(caret.isCollapsed, isTrue, reason: 'fixture: a caret');
+        expect(
+          caret.start,
+          inInclusiveRange(
+            wi132Spec(tester, b).textStart,
+            wi132Spec(tester, b).textEnd,
+          ),
+          reason: 'fixture: the click put the caret in row b',
+        );
+        wi132Type(tester, 'Z');
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(kDoubleTapTimeout + const Duration(milliseconds: 50));
+
+        final host = wi132Host(tester);
+        expect(host.text.replaceFirst('Z', ''), before, reason: 'only Z added');
+        expect(
+          wi132RowText(tester, a),
+          isNot(contains('Z')),
+          reason: 'Z is not in the row the caret left',
+        );
+        expect(
+          host.text.substring(caret.start, caret.start + 1),
+          'Z',
+          reason: 'Z went in at the click',
+        );
+        expect(
+          host.selection,
+          TextSelection.collapsed(offset: caret.start + 1),
+          reason: 'the caret is just after Z',
+        );
+        _t132ExpectFocusedActive(tester, b, 'typed after the click');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a deletion the platform sends before the handover frame stays in the row that holds the connection',
+      (tester) async {
+        await _t132Pump(tester);
+        final a = _t132Row(tester, _t132First);
+        final b = _t132Row(tester, _t132BulletOne);
+        await wi132Activate(tester, a, _t132EndOf(tester, a));
+
+        await wi132Key(tester, LogicalKeyboardKey.arrowDown);
+        final value = TextEditingValue.fromJSON(
+          tester.testTextInput.editingState!,
+        );
+        final next = TextEditingValue(
+          text: value.text.substring(0, value.text.length - 1),
+          selection: TextSelection.collapsed(offset: value.text.length - 1),
+        );
+        tester.testTextInput.editingState = next.toJSON();
+        tester.testTextInput.updateEditingValue(next);
+        await tester.pump();
+        await tester.pump();
+
+        expect(
+          wi132Host(tester).text,
+          _t132Body.replaceFirst(
+            _t132First,
+            _t132First.substring(0, _t132First.length - 1),
+          ),
+          reason: 'the deletion stays in the row it was made in',
+        );
+        _t132ExpectFocusedActive(tester, b, 'deleted before the handover');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'the row being left keeps its focus node attached and holding focus until the row taking over mounts its field',
+      (tester) async {
+        await _t132Pump(tester);
+        final a = _t132Row(tester, _t132First);
+        final b = _t132Row(tester, _t132BulletOne);
+        await wi132Activate(tester, a, _t132EndOf(tester, a));
+        final host = wi132Host(tester);
+        final node = host.rowFocusNode(a)!;
+        expect(node.hasPrimaryFocus, isTrue, reason: 'fixture: a is focused');
+        expect(
+          node.context,
+          isNotNull,
+          reason: 'fixture: its field is mounted',
+        );
+
+        // A callback registered first runs ahead of the one the handover
+        // registers, after the frame built row a as an idle row and before
+        // row b asked for focus.
+        final seen = <String, Object?>{};
+        tester.binding.addPostFrameCallback((_) {
+          seen['rowAIdle'] = wi132IsIdle(tester, a);
+          seen['rowBHasField'] = host.rowField(b) != null;
+          seen['attached'] = node.context != null;
+          seen['hasFocus'] = node.hasFocus;
+          seen['segmentFocus'] = host.widget.focusNode.hasFocus;
+        });
+        host.activateRow(b, wi132CaretIn(tester, b, offset: 2));
+        await tester.pump();
+
+        expect(seen['rowAIdle'], isTrue, reason: 'the frame idled the old row');
+        expect(
+          seen['rowBHasField'],
+          isTrue,
+          reason: 'and mounted the new field',
+        );
+        expect(
+          seen['attached'],
+          isTrue,
+          reason: 'the idle row keeps the old row focus node attached',
+        );
+        expect(seen['hasFocus'], isTrue, reason: 'it still holds focus');
+        expect(seen['segmentFocus'], isTrue, reason: 'the segment is focused');
+        _t132ExpectFocusedActive(tester, b, 'handover');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a character typed before the handover frame stays in the row that holds the connection when the selection moved across rows',
+      (tester) async {
+        await _t132Pump(tester);
+        final a = _t132Row(tester, _t132First);
+        final b = _t132Row(tester, _t132BulletOne);
+        final c = _t132Row(tester, _t132BulletTwo);
+        await wi132Activate(tester, a, _t132EndOf(tester, a));
+        final before = wi132Host(tester).text;
+
+        wi132Host(tester).activateRow(
+          b,
+          TextSelection(
+            baseOffset: wi132Spec(tester, b).textStart,
+            extentOffset: wi132Spec(tester, c).textStart + 2,
+          ),
+        );
+        wi132Type(tester, 'Z');
+        await tester.pump();
+        await tester.pump();
+
+        final host = wi132Host(tester);
+        expect(host.text.replaceFirst('Z', ''), before, reason: 'only Z added');
+        expect(
+          wi132RowText(tester, a),
+          contains('Z'),
+          reason: 'Z stays in the row that held the connection',
+        );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'focus that leaves the editor right after an Arrow Down into an idle row is not taken back by the row waiting for its field',
+      (tester) async {
+        await _t132Pump(tester);
+        final a = _t132Row(tester, _t132First);
+        final b = _t132Row(tester, _t132BulletOne);
+        await wi132Activate(tester, a, _t132EndOf(tester, a));
+        final outside = await _t132OutsideNode(tester);
+
+        await wi132Key(tester, LogicalKeyboardKey.arrowDown);
+        outside.requestFocus();
+        await tester.pump();
+        await tester.pump();
+        await tester.pump();
+
+        expect(outside.hasPrimaryFocus, isTrue, reason: 'focus stays outside');
+        expect(
+          wi132Host(tester).widget.focusNode.hasFocus,
+          isFalse,
+          reason: 'the segment did not take focus back',
+        );
+        expect(wi132Host(tester).focusedRow, isNull, reason: 'no row focused');
+        wi132ExpectOnlyActive(tester, b);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'focus that moves to another field before the frame of a row activated while the segment had no focus is not taken back',
+      (tester) async {
+        await _t132Pump(tester);
+        await wi132Unfocus(tester);
+        final a = _t132Row(tester, _t132First);
+        final b = _t132Row(tester, _t132BulletOne);
+        final outside = await _t132OutsideNode(tester);
+        await wi132Select(tester, wi132CaretIn(tester, a, offset: 2));
+        wi132ExpectIdle(tester, b, reason: 'fixture: b has no field yet');
+
+        wi132Host(tester).activateRow(b, wi132CaretIn(tester, b, offset: 3));
+        outside.requestFocus();
+        await tester.pump();
+        await tester.pump();
+        await tester.pump();
+
+        expect(outside.hasPrimaryFocus, isTrue, reason: 'focus stays outside');
+        expect(wi132Host(tester).widget.focusNode.hasFocus, isFalse);
+        expect(wi132Host(tester).focusedRow, isNull, reason: 'no row focused');
+        wi132ExpectOnlyActive(tester, b);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a row activated while the segment had no focus takes focus when none moved elsewhere in between',
+      (tester) async {
+        await _t132Pump(tester);
+        await wi132Unfocus(tester);
+        final b = _t132Row(tester, _t132BulletOne);
+
+        wi132Host(tester).activateRow(b, wi132CaretIn(tester, b, offset: 3));
+        await tester.pump();
+        await tester.pump();
+
+        _t132ExpectFocusedActive(tester, b, 'activated from no focus');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a click into an idle row while a field outside the editor has focus makes the row the focused active row',
+      (tester) async {
+        await _t132Pump(tester);
+        final a = _t132Row(tester, _t132First);
+        final b = _t132Row(tester, _t132Middle);
+        await wi132Activate(tester, a, _t132EndOf(tester, a));
+        final outside = await _t132OutsideNode(tester);
+        outside.requestFocus();
+        await tester.pump();
+        await tester.pump();
+        expect(outside.hasPrimaryFocus, isTrue, reason: 'fixture: outside');
+
+        await wi132Click(tester, wi132GlyphPoint(tester, b, 3));
+
+        expect(outside.hasFocus, isFalse, reason: 'the outside field let go');
+        _t132ExpectFocusedActive(tester, b, 'click from outside');
       },
       variant: macOnly,
     );
@@ -583,11 +914,57 @@ void main() {
         );
         final controller = wi132Host(tester).rowController(a)!;
 
+        final logged = tester.testTextInput.log.length;
+
+        // The composition closes in the very call or press that moves the
+        // caret, before any frame (the connection is still the old row's).
         if (how == 'click') {
-          await wi132Click(tester, wi132GlyphPoint(tester, b, 2));
+          final gesture = await tester.startGesture(
+            wi132GlyphPoint(tester, b, 2),
+            kind: PointerDeviceKind.mouse,
+            buttons: kPrimaryButton,
+          );
+          expect(
+            controller.value.composing.isValid,
+            isFalse,
+            reason: 'the composition closes on the press',
+          );
+          await gesture.up();
+          await tester.pump();
+          await tester.pump();
+          await tester.pump(
+            kDoubleTapTimeout + const Duration(milliseconds: 50),
+          );
         } else {
-          await wi132Activate(tester, b, wi132CaretIn(tester, b, offset: 2));
+          wi132Host(tester).activateRow(b, wi132CaretIn(tester, b, offset: 2));
+          expect(
+            controller.value.composing.isValid,
+            isFalse,
+            reason: 'the composition closes in the activateRow call',
+          );
+          await tester.pump();
+          await tester.pump();
         }
+
+        // The platform hears the commit (an empty composing range) before
+        // the old row's connection closes.
+        final calls = tester.testTextInput.log.sublist(logged);
+        final closed = calls.indexWhere(
+          (c) => c.method == 'TextInput.clearClient',
+        );
+        final committed = calls.indexWhere(
+          (c) =>
+              c.method == 'TextInput.setEditingState' &&
+              (c.arguments as Map)['composingBase'] == -1 &&
+              (c.arguments as Map)['text'] == '${_t132First}ka',
+        );
+        expect(committed, isNonNegative, reason: 'the platform got the commit');
+        expect(
+          closed == -1 || committed < closed,
+          isTrue,
+          reason:
+              'the commit reaches the platform before the connection closes',
+        );
 
         final host = wi132Host(tester);
         expect(
