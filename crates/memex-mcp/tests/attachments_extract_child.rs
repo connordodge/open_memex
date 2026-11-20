@@ -1541,6 +1541,39 @@ async fn the_extraction_child_caps_its_data_memory_at_1_gib_on_linux() {
     assert!(capped, "RLIMIT_DATA of the child is 1 GiB, saw {seen:?}");
 }
 
+/// The body of `fn run_subcommand`, up to the next top-level item.
+fn run_subcommand_body() -> String {
+    let src = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/attachment_extract_child.rs"),
+    )
+    .expect("read the child module source");
+    let start = src
+        .find("pub fn run_subcommand(")
+        .expect("run_subcommand is defined");
+    let rest = &src[start..];
+    let end = rest.find("\n}\n").expect("run_subcommand ends");
+    rest[..end].to_string()
+}
+
+/// macOS never enforces `RLIMIT_DATA`, so the behaviour test above cannot run
+/// there; this pins on every OS that the child applies the kernel cap (a
+/// no-op off Linux) before the watchdog limit and before it reads the file.
+#[test]
+fn the_child_subcommand_applies_the_kernel_data_cap_before_extracting() {
+    let body = run_subcommand_body();
+    let cap = body
+        .find("attachments_extract::cap_data_memory(MEMORY_LIMIT_BYTES);")
+        .expect("run_subcommand caps the data memory at MEMORY_LIMIT_BYTES");
+    let watchdog = body
+        .find("attachments_extract::limit_memory(MEMORY_LIMIT_BYTES);")
+        .expect("run_subcommand starts the memory watchdog");
+    let extract = body
+        .find("extract(file, &name)")
+        .expect("run_subcommand extracts the file");
+    assert!(cap < watchdog, "the kernel cap is set before the watchdog");
+    assert!(cap < extract, "the kernel cap is set before extraction");
+}
+
 // ---------------------------------------------------------------- notices
 
 #[test]
