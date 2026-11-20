@@ -788,6 +788,69 @@ void main() {
       },
       variant: macOnly,
     );
+
+    testWidgets(
+      'a secondary click in the image leaves the caret and the row hidden and shows only the block menu',
+      (tester) async {
+        final vault = FakeAttachmentVault();
+        final pic = _t143Attachment('chart.png');
+        vault.putFile(pic.path, testPngBytes(300, 200));
+        await _t143Pump(tester, 'Intro line\n${pic.md}\nOutro line', vault);
+        await activateRow(tester, 0, 0, offset: 3);
+        final selection = rowsHostOf(tester).selection;
+        expect(rowsHostOf(tester).focusedRow, 0);
+        _t143ExpectIdle(tester, 1);
+
+        await _t143Click(
+          tester,
+          tester.getCenter(_t143Block(1)),
+          buttons: kSecondaryMouseButton,
+        );
+        expect(find.text('Open'), findsOneWidget, reason: 'the block menu');
+        expect(find.text('Reveal in Finder'), findsOneWidget);
+        expect(
+          find.text('Cut'),
+          findsNothing,
+          reason: 'no text-field context menu beside the block menu',
+        );
+        expect(find.text('Copy'), findsNothing);
+        expect(find.text('Paste'), findsNothing);
+        expect(find.text('Select all'), findsNothing);
+        expect(rowsHostOf(tester).focusedRow, 0, reason: 'focus stays');
+        expect(rowsHostOf(tester).selection, selection, reason: 'caret stays');
+        _t143ExpectIdle(tester, 1);
+        expect(vault.openCalls, isEmpty);
+        expect(vault.revealCalls, isEmpty);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a secondary click on a file card with no focus leaves the editor unfocused and the row hidden',
+      (tester) async {
+        final vault = FakeAttachmentVault();
+        final pdf = _t143Attachment('Q3 report.pdf');
+        vault.putFile(pdf.path, Uint8List(812 * 1024));
+        await _t143Pump(tester, 'Intro line\n${pdf.md}\nOutro line', vault);
+        final selection = rowsHostOf(tester).selection;
+        expect(rowsHostOf(tester).focusedRow, isNull);
+        _t143ExpectIdle(tester, 1);
+
+        await _t143Click(
+          tester,
+          tester.getCenter(_t143Block(1)),
+          buttons: kSecondaryMouseButton,
+        );
+        expect(find.text('Open'), findsOneWidget, reason: 'the block menu');
+        expect(find.text('Reveal in Finder'), findsOneWidget);
+        expect(find.text('Cut'), findsNothing);
+        expect(find.text('Paste'), findsNothing);
+        expect(rowsHostOf(tester).focusedRow, isNull, reason: 'no focus');
+        expect(rowsHostOf(tester).selection, selection, reason: 'no caret');
+        _t143ExpectIdle(tester, 1);
+      },
+      variant: macOnly,
+    );
   });
 
   group('missing and unavailable images (AC7)', () {
@@ -1296,18 +1359,27 @@ void main() {
         );
         expect(_t143Text(1, 'Q3 report.pdf'), findsOneWidget);
         await activateRow(tester, 0, 1);
-        final renamed = pdf.md.replaceFirst(
-          '[Q3 report.pdf]',
-          '[Quarterly.pdf]',
-        );
+        // No extension in the new name: the type, icon and size still come
+        // from the stored file name (R38).
+        final renamed = pdf.md.replaceFirst('[Q3 report.pdf]', '[Q3 plan]');
         await tester.macEditingValue(renamed);
         await e.body.settleTyping();
         await e.body.focusOutside();
         expect(e.body.text(), 'Intro line\n$renamed\nOutro line');
         expect(rowsHostOf(tester).rowSpec(1)?.kind, RowKind.attachment);
-        expect(_t143Text(1, 'Quarterly.pdf'), findsOneWidget);
+        expect(_t143Text(1, 'Q3 plan'), findsOneWidget);
         expect(_t143Text(1, 'Q3 report.pdf'), findsNothing);
         expect(_t143Text(1, 'PDF · 812 KB'), findsOneWidget);
+        expect(
+          tester.widget<Icon>(_t143In(1, find.byType(Icon))).icon,
+          attachmentTypeIcon('Q3 report.pdf'),
+          reason: 'the icon comes from the stored name',
+        );
+        expect(
+          attachmentTypeIcon('Q3 report.pdf'),
+          isNot(attachmentTypeIcon('Q3 plan')),
+          reason: 'the shown name would give another icon',
+        );
         // The file on disk is the same file, and nothing was stored.
         final file = File(vault.absolute(pdf.path));
         expect(file.readAsBytesSync(), bytes);
@@ -1320,6 +1392,40 @@ void main() {
         // It still opens the same path.
         await _t143Click(tester, tester.getCenter(_t143Block(1)));
         expect(vault.openCalls, [pdf.path]);
+      },
+      variant: macOnly,
+    );
+  });
+
+  group('Source mode and renames (AC13) image form', () {
+    testWidgets(
+      'renaming an image to text without an extension keeps it an image row',
+      (tester) async {
+        final vault = FakeAttachmentVault();
+        final pic = _t143Attachment('chart.png');
+        vault.putFile(pic.path, testPngBytes(300, 200));
+        final e = await _t143Pump(
+          tester,
+          'Intro line\n${pic.md}\nOutro line',
+          vault,
+        );
+        await _t143Settle(tester, () => _t143Decoded(tester, 1) != null);
+        await activateRow(tester, 0, 1);
+        final renamed = pic.md.replaceFirst('![chart.png]', '![my chart]');
+        expect(renamed, isNot(pic.md));
+        await tester.macEditingValue(renamed);
+        await e.body.settleTyping();
+        await e.body.focusOutside();
+        expect(e.body.text(), 'Intro line\n$renamed\nOutro line');
+        expect(rowsHostOf(tester).rowSpec(1)?.kind, RowKind.attachment);
+        // The image-form decision comes from the stored name, not the shown
+        // one: still an image at its final size, not a file card.
+        expect(_t143In(1, find.byType(Image)), findsOneWidget);
+        expect(
+          tester.getSize(_t143Block(1)).height,
+          moreOrLessEquals(200, epsilon: 0.5),
+        );
+        expect(_t143Text(1, 'PNG · 1 KB'), findsNothing);
       },
       variant: macOnly,
     );
