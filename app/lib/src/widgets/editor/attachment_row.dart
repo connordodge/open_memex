@@ -505,7 +505,14 @@ class _AttachmentBlockState extends ConsumerState<AttachmentBlock> {
       return;
     }
     if (access is LocalAttachmentsAccess) {
-      final file = File('${access.vaultPath}/$_path');
+      // Reached as the domain reaches it (D10): a symlink on the way is
+      // missing, and nothing of it is read.
+      final located = access.locateSync(_path);
+      if (located == null) {
+        _failure = AttachmentLookupFailure.missing;
+        return;
+      }
+      final file = File(located);
       final stat = file.statSync();
       if (stat.type != FileSystemEntityType.file) {
         _failure = AttachmentLookupFailure.missing;
