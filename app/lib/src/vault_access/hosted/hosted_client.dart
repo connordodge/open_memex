@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
@@ -47,6 +48,48 @@ class HostedRequestTimeout implements Exception {
 
   @override
   String toString() => 'HostedRequestTimeout';
+}
+
+/// 1 MB as R15 and the transfer timeout count it: 1,048,576 bytes.
+const _bytesPerMb = 1024 * 1024;
+
+/// The largest attachment (R15), 100 MB: a download of unknown size waits as
+/// long as one of this size.
+const _largestTransferBytes = 100 * _bytesPerMb;
+
+/// How long a raw transfer of [bytes] may take, headers and body, before it
+/// is unreachable (Spec #123 TD "Hosted client"): 60 s plus 1 s per started
+/// MB (1,048,576 bytes).
+Duration hostedTransferTimeout(int bytes) =>
+    Duration(seconds: 60 + (bytes + _bytesPerMb - 1) ~/ _bytesPerMb);
+
+/// A raw (not JSON) 2xx answer of [HostedClient.uploadBytes],
+/// [HostedClient.downloadBytes] or [HostedClient.head].
+class HostedBytes {
+  const HostedBytes({
+    required this.bytes,
+    required this.contentType,
+    required this.contentLength,
+  });
+
+  /// The body; empty for a HEAD.
+  final Uint8List bytes;
+
+  /// The `Content-Type` header, or null.
+  final String? contentType;
+
+  /// The `Content-Length` header (a HEAD answer's size of the GET body), or
+  /// null when absent or not a number.
+  final int? contentLength;
+}
+
+/// A raw request's non-2xx answer whose body is no C1 error (a HEAD answer
+/// has no body). [statusCode] is the HTTP status.
+class HostedStatusException extends MemexException {
+  HostedStatusException(String operation, this.statusCode)
+    : super('$operation failed: HTTP $statusCode');
+
+  final int statusCode;
 }
 
 /// macOS errno values of socket failures that happen before the request is
@@ -116,10 +159,67 @@ class HostedClient {
     Duration? timeout,
   }) => _request(
     method,
-    _uri('/vaults/${Uri.encodeComponent(vaultName)}/api/v1$path', query),
+    _vaultUri(vaultName, path, query),
     operation: operation,
     body: body,
     timeout: timeout,
+  );
+
+  /// Whether this server has the attachment routes (Spec #123 R42), once
+  /// known in this server session (this client's life): the attachments
+  /// domain sets it from a check or from any attachment route's answer, and
+  /// clears it when the check could not reach the server. Shared by every
+  /// vault of this client.
+  Future<bool>? attachmentRoutesCheck;
+
+  /// A raw upload to a vault route: a `POST` of [bytes] as an
+  /// `application/octet-stream` body to
+  /// `<server url>/vaults/<vaultName>/api/v1<path>` ([path] already
+  /// percent-encoded). Waits
+  /// [hostedTransferTimeout] of the body size, then is unreachable. Answers
+  /// the raw 2xx body; throws `MemexException` (C1), [HostedStatusException]
+  /// or `VaultUnreachableException` like [vaultRequest].
+  Future<HostedBytes> uploadBytes(
+    String vaultName,
+    String path,
+    Uint8List bytes, {
+    required String operation,
+    Map<String, String>? query,
+  }) => _rawRequest(
+    'POST',
+    _vaultUri(vaultName, path, query),
+    operation: operation,
+    bytes: bytes,
+    timeout: hostedTransferTimeout(bytes.length),
+  );
+
+  /// A raw `GET` of a vault route ([path] already percent-encoded): the body
+  /// bytes, never decoded. Waits [hostedTransferTimeout] of
+  /// [expectedBytes] (100 MB, the largest attachment, when unknown).
+  Future<HostedBytes> downloadBytes(
+    String vaultName,
+    String path, {
+    required String operation,
+    int? expectedBytes,
+  }) => _rawRequest(
+    'GET',
+    _vaultUri(vaultName, path, null),
+    operation: operation,
+    timeout: hostedTransferTimeout(expectedBytes ?? _largestTransferBytes),
+  );
+
+  /// A `HEAD` of a vault route ([path] already percent-encoded): its
+  /// headers, no body. Waits [hostedTransferTimeout] of 0 bytes (60 s). A
+  /// non-2xx answer has no body, so it throws [HostedStatusException].
+  Future<HostedBytes> head(
+    String vaultName,
+    String path, {
+    required String operation,
+  }) => _rawRequest(
+    'HEAD',
+    _vaultUri(vaultName, path, null),
+    operation: operation,
+    timeout: hostedTransferTimeout(0),
   );
 
   /// `GET /api/v1/info`: the app's only `api_version` check. Never throws.
@@ -193,16 +293,59 @@ class HostedClient {
     return decoded;
   }
 
+  Uri _vaultUri(String vaultName, String path, Map<String, String>? query) =>
+      _uri('/vaults/${Uri.encodeComponent(vaultName)}/api/v1$path', query);
+
+  Future<HostedBytes> _rawRequest(
+    String method,
+    Uri uri, {
+    required String operation,
+    required Duration timeout,
+    Uint8List? bytes,
+  }) async {
+    final response = await _exchange(
+      method,
+      uri,
+      null,
+      bytes: bytes,
+      unreachableAfter: timeout,
+    );
+    final error = _isSuccess(response.statusCode)
+        ? null
+        : _c1ErrorOf(_decodeJson(response));
+    if (response.statusCode == HttpStatus.unauthorized) {
+      _record(HostedConnectionStatus.tokenRejected);
+      throw MemexException.fromC1(operation, {
+        ...?error,
+        'code': 'unauthorized',
+      });
+    }
+    _record(HostedConnectionStatus.connected);
+    if (!_isSuccess(response.statusCode)) {
+      if (error != null) throw MemexException.fromC1(operation, error);
+      throw HostedStatusException(operation, response.statusCode);
+    }
+    return HostedBytes(
+      bytes: response.bodyBytes,
+      contentType: response.headers['content-type'],
+      contentLength: int.tryParse(response.headers['content-length'] ?? ''),
+    );
+  }
+
   /// Sends one request and reads the whole response, or throws
   /// [VaultUnreachableException] after recording `unreachable`. Once the
   /// timeout fires, a late response or failure is ignored. Without a caller
   /// [timeout] it is 10 s and records `unreachable`; with one, it throws
-  /// [HostedRequestTimeout] and records nothing.
+  /// [HostedRequestTimeout] and records nothing. [unreachableAfter] replaces
+  /// the 10 s and keeps its `unreachable` outcome (raw transfers). [bytes],
+  /// when given, is sent as an `application/octet-stream` body.
   Future<http.Response> _exchange(
     String method,
     Uri uri,
     Object? body, {
     Duration? timeout,
+    Duration? unreachableAfter,
+    Uint8List? bytes,
   }) {
     final abort = Completer<void>();
     final request = http.AbortableRequest(
@@ -218,6 +361,10 @@ class HostedClient {
       request.headers['Content-Type'] = 'application/json';
       request.body = jsonEncode(body);
     }
+    if (bytes != null) {
+      request.headers['Content-Type'] = 'application/octet-stream';
+      request.bodyBytes = bytes;
+    }
 
     final outcome = Completer<http.Response>();
     void unreachable({required bool mayHaveCommitted}) {
@@ -231,7 +378,7 @@ class HostedClient {
     }
 
     final timer = _ref.read(clockProvider).after(
-      timeout ?? _requestTimeout,
+      timeout ?? unreachableAfter ?? _requestTimeout,
       () {
         if (outcome.isCompleted) return;
         if (timeout == null) {

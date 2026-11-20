@@ -25,9 +25,16 @@ class OutlineSectionNotifier extends AutoDisposeNotifier<OutlineEntry?> {
     return null;
   }
 
+  /// Keeps the reported entry itself, an element of the one shared entries
+  /// computation (WI #131), also when it equals the one before: listeners
+  /// hear only of a different entry ([updateShouldNotify]).
   void _report(OutlineEntry? entry) {
-    if (state != entry) state = entry;
+    if (!identical(state, entry)) state = entry;
   }
+
+  @override
+  bool updateShouldNotify(OutlineEntry? previous, OutlineEntry? next) =>
+      previous != next;
 }
 
 /// The current Outline entry, or null: none above the first heading, in
