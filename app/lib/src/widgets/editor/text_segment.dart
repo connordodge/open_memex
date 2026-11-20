@@ -50,6 +50,8 @@ class EditorScrollScope extends InheritedWidget {
 
 /// The editor page: a scroll view holding [header], the save [errorMessage]
 /// and [body], centred at reading width, with [overlays] stacked on top.
+/// The scroll content is one repaint boundary, so a scroll frame
+/// re-composites it and repaints nothing (Spec #122 R17, TD2).
 class EditorPage extends StatelessWidget {
   const EditorPage({
     super.key,
@@ -75,24 +77,26 @@ class EditorPage extends StatelessWidget {
         SingleChildScrollView(
           controller: EditorScrollScope.maybeOf(context),
           padding: const EdgeInsets.fromLTRB(28, 28, 28, 200),
-          child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 760),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  ?header,
-                  const SizedBox(height: 18),
-                  if (error != null)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: Text(
-                        error,
-                        style: OmType.mono(size: 11, color: OmColors.danger),
+          child: RepaintBoundary(
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 760),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    ?header,
+                    const SizedBox(height: 18),
+                    if (error != null)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Text(
+                          error,
+                          style: OmType.mono(size: 11, color: OmColors.danger),
+                        ),
                       ),
-                    ),
-                  body,
-                ],
+                    body,
+                  ],
+                ),
               ),
             ),
           ),
