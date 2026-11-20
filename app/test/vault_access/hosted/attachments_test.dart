@@ -595,6 +595,31 @@ void main() {
     );
 
     test(
+      'hosted open of a fileloc inetloc or webloc attachment reveals the downloaded copy and never opens it',
+      () async {
+        final env = _env();
+        final names = ['Disk.fileloc', 'Site.InetLoc', 'Read me.WEBLOC'];
+        final access = env.access();
+        for (final name in names) {
+          env.server.putAttachment('seed', _path(name), [1, 2, 3]);
+
+          final result = await access.open(_path(name));
+
+          expect(result, isA<AttachmentActionDone>(), reason: name);
+          expect(env.revealer.paths.last, endsWith('/$name'), reason: name);
+          expect(p.isWithin(env.cacheRoot, env.revealer.paths.last), isTrue);
+        }
+        expect(env.revealer.paths, hasLength(names.length));
+        expect(env.opener.opened, isEmpty);
+
+        env.server.putAttachment('seed', _path('notes.webloc.txt'), [1]);
+        await access.open(_path('notes.webloc.txt'));
+        expect(env.opener.opened, hasLength(1), reason: 'only last extension');
+        expect(env.revealer.paths, hasLength(names.length));
+      },
+    );
+
+    test(
       'hosted open of a cached copy with an executable bit reveals and never opens',
       () async {
         final env = _env();
