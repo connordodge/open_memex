@@ -20,11 +20,14 @@
 // runner (`palettePassagesOverrides`); `attachmentsProvider` overridden with
 // #141's FakeAttachmentsAccess.
 
-import 'package:flutter/material.dart' show SnackBar;
+import 'dart:async';
+
+import 'package:flutter/material.dart' show SnackBar, TextField;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:open_memex_app/src/state/attachments_state.dart';
 import 'package:open_memex_app/src/state/command_palette_state.dart';
 import 'package:open_memex_app/src/state/note_reveal.dart';
@@ -32,6 +35,7 @@ import 'package:open_memex_app/src/state/palette_passages.dart';
 import 'package:open_memex_app/src/state/settings.dart' show settingsProvider;
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/state/ui_state_store.dart';
+import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/vault_access/attachments_access.dart';
 import 'package:open_memex_app/src/vault_access/search_access.dart';
 import 'package:open_memex_app/src/widgets/command_palette/command_palette.dart';
@@ -113,9 +117,11 @@ Future<_Wi148Palette> _wi148Open(
   Size size = paletteWideSize,
   double textScale = 1.0,
   ValueNotifier<bool>? hostShown,
+  FakeAttachmentsAccess? access,
+  FocusNode? hostFocus,
 }) async {
   final settings = await _wi148Settings();
-  final fake = FakeAttachmentsAccess();
+  final fake = access ?? FakeAttachmentsAccess();
   final h = await pumpPaletteHost(
     tester,
     size: size,
@@ -131,7 +137,14 @@ Future<_Wi148Palette> _wi148Open(
         return Builder(
           builder: (context) {
             _wi148HostContext = context;
-            return const SizedBox.expand();
+            if (hostFocus == null) return const SizedBox.expand();
+            return Align(
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: 200,
+                child: TextField(focusNode: hostFocus, autofocus: true),
+              ),
+            );
           },
         );
       },
@@ -217,6 +230,64 @@ PaletteItemId _wi148AttachmentId(SearchAttachment a) =>
     PaletteItemId(PaletteItemKind.attachment, a.path);
 
 const _q3PassageId = PaletteItemId(PaletteItemKind.passage, _q3Chunk);
+
+/// An attachments domain whose `open` waits for [answer]: the file is
+/// still opening (a hosted download) until the test completes it.
+class _Wi148HeldAttachments extends FakeAttachmentsAccess {
+  final answer = Completer<AttachmentActionResult>();
+
+  @override
+  Future<AttachmentActionResult> open(String path) {
+    openCalls.add(path);
+    return answer.future;
+  }
+}
+
+/// The same answer as [_wi148Answer], from a vault whose meaning model is
+/// not downloaded.
+SearchReady _wi148KeywordOnlyAnswer() {
+  final base = _wi148Answer();
+  return SearchReady(
+    base.hits,
+    semantic: Semantic.modelNotDownloaded,
+    truncated: false,
+    attachments: base.attachments,
+  );
+}
+
+/// The words drawn in the mark highlight under [within].
+List<String> _wi148MarkedWords(Finder within) {
+  final marked = <String>[];
+  for (final e
+      in find
+          .descendant(of: within, matching: find.byType(RichText))
+          .evaluate()) {
+    (e.widget as RichText).text.visitChildren((span) {
+      if (span is TextSpan &&
+          span.style?.backgroundColor == OmColors.accentMark) {
+        marked.add(span.text ?? '');
+      }
+      return true;
+    });
+  }
+  return marked;
+}
+
+/// The Opacity(0.5) the dimmed rows are wrapped in, around row [id].
+Finder _wi148DimmedAround(PaletteItemId id) => find.ancestor(
+  of: _wi148Row(id),
+  matching: find.byWidgetPredicate((w) => w is Opacity && w.opacity == 0.5),
+);
+
+/// The icon the row [id] draws.
+IconData _wi148RowIcon(WidgetTester tester, PaletteItemId id) => tester
+    .widget<Icon>(
+      find.descendant(
+        of: _wi148Row(id),
+        matching: find.byType(Icon, skipOffstage: false),
+      ),
+    )
+    .icon!;
 
 Finder _wi148Row(PaletteItemId id) =>
     find.byKey(PaletteKeys.row(id), skipOffstage: false);
@@ -482,6 +553,292 @@ void main() {
         await p.wait(1);
         expect([for (final c in p.search.calls) c.query], ['re']);
         expect(_wi148Group(PaletteGroupKind.attachments), findsOneWidget);
+      },
+    );
+
+    testWidgets('an attachments row draws the icon for its file type', (
+      tester,
+    ) async {
+      final script = _wi148Attachment(
+        'deploy.sh',
+        type: 'text/x-sh',
+        h2: 'd4',
+        snippet: 'revenue sync',
+      );
+      final p = await _wi148Open(
+        tester,
+        answer: _wi148Answer(attachments: [_q3, _plan, script]),
+      );
+
+      await p.searchFor('revenue');
+
+      expect(
+        _wi148RowIcon(tester, _wi148AttachmentId(_plan)),
+        LucideIcons.fileImage,
+      );
+      expect(_wi148RowIcon(tester, _wi148AttachmentId(_q3)), LucideIcons.file);
+      expect(
+        _wi148RowIcon(tester, _wi148AttachmentId(script)),
+        LucideIcons.fileCode,
+      );
+      expect(
+        _wi148RowIcon(tester, _q3PassageId),
+        LucideIcons.textQuote,
+        reason: 'the passage row keeps its own icon',
+      );
+    });
+
+    testWidgets(
+      'the typed words are marked in a content match snippet and a name only row marks nothing',
+      (tester) async {
+        final p = await _wi148Open(tester);
+
+        await p.searchFor('revenue');
+
+        expect(_wi148MarkedWords(_wi148Row(_wi148AttachmentId(_q3))), [
+          'revenue',
+        ]);
+        expect(
+          _wi148MarkedWords(_wi148Row(_wi148AttachmentId(_plan))),
+          isEmpty,
+        );
+      },
+    );
+
+    testWidgets(
+      'a model not downloaded answer still draws the attachments group beside the download button',
+      (tester) async {
+        final p = await _wi148Open(tester, answer: _wi148KeywordOnlyAnswer());
+
+        await p.searchFor('revenue');
+
+        expect(find.byKey(PaletteKeys.download), findsOneWidget);
+        expect(_wi148Group(PaletteGroupKind.attachments), findsOneWidget);
+        expect(_wi148Row(_wi148AttachmentId(_q3)), findsOneWidget);
+        expect(_wi148Row(_wi148AttachmentId(_plan)), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'attachments rows are dimmed after a keystroke until the debounce answers',
+      (tester) async {
+        final q3 = _wi148AttachmentId(_q3);
+        final plan = _wi148AttachmentId(_plan);
+        final p = await _wi148Open(tester);
+        await p.searchFor('revenue');
+        expect(_wi148DimmedAround(q3), findsNothing, reason: 'a shown answer');
+        expect(_wi148DimmedAround(plan), findsNothing);
+
+        await p.type('revenue g');
+
+        expect(_wi148DimmedAround(q3), findsOneWidget);
+        expect(_wi148DimmedAround(plan), findsOneWidget);
+        expect(
+          _wi148DimmedAround(_q3PassageId),
+          findsOneWidget,
+          reason: 'the passages rows dim with them',
+        );
+
+        await p.wait(passagesDebounce.inMilliseconds);
+
+        expect(_wi148Row(q3), findsOneWidget);
+        expect(_wi148DimmedAround(q3), findsNothing);
+        expect(_wi148DimmedAround(plan), findsNothing);
+      },
+    );
+  });
+
+  group('choosing an attachment closes the palette first', () {
+    testWidgets(
+      'a click on an attachments row closes the palette and calls open',
+      (tester) async {
+        final p = await _wi148Open(tester);
+        await p.searchFor('revenue');
+        expect(find.byKey(PaletteKeys.palette), findsOneWidget);
+
+        await tester.ensureVisible(_wi148Row(_wi148AttachmentId(_q3)));
+        await tester.pump();
+        await tester.tap(_wi148Row(_wi148AttachmentId(_q3)));
+        await pumpFrames(tester);
+
+        expect(find.byKey(PaletteKeys.palette), findsNothing);
+        expect(p.attachments.openCalls, [_q3.path]);
+      },
+    );
+
+    testWidgets(
+      'choosing an attachments row closes the palette before the file open answers',
+      (tester) async {
+        final held = _Wi148HeldAttachments();
+        final p = await _wi148Open(tester, access: held);
+        await p.searchFor('revenue');
+        await p.downTo(_wi148AttachmentId(_plan));
+
+        await p.key(LogicalKeyboardKey.enter);
+        await pumpFrames(tester);
+
+        expect(held.openCalls, [_plan.path]);
+        expect(held.answer.isCompleted, isFalse, reason: 'still opening');
+        expect(
+          find.byKey(PaletteKeys.palette),
+          findsNothing,
+          reason: 'req 8: the palette closes first, then the file opens',
+        );
+        expect(find.byType(SnackBar), findsNothing);
+        held.answer.complete(const AttachmentActionDone());
+        await pumpFrames(tester);
+        expect(find.byType(SnackBar), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'an offline open that answers after the palette closed still shows the toast',
+      (tester) async {
+        final held = _Wi148HeldAttachments();
+        final p = await _wi148Open(tester, access: held);
+        await p.searchFor('revenue');
+        await p.downTo(_wi148AttachmentId(_plan));
+        await p.key(LogicalKeyboardKey.enter);
+        await pumpFrames(tester);
+        expect(find.byKey(PaletteKeys.palette), findsNothing);
+        expect(find.byType(SnackBar), findsNothing, reason: 'not yet');
+
+        held.answer.complete(
+          const AttachmentActionFailed(AttachmentLookupFailure.offline),
+        );
+        await pumpFrames(tester);
+
+        expect(
+          find.text(
+            "Couldn't open Revenue plan.png: the vault server can't be reached.",
+            skipOffstage: false,
+          ),
+          findsOneWidget,
+        );
+        expect(find.byType(SnackBar), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'choosing an attachments row gives the focus back to where it was before the palette opened',
+      (tester) async {
+        final hostFocus = FocusNode();
+        addTearDown(hostFocus.dispose);
+        final p = await _wi148Open(tester, hostFocus: hostFocus);
+        expect(hostFocus.hasFocus, isFalse, reason: 'the palette has it');
+        await p.searchFor('revenue');
+        await p.downTo(_wi148AttachmentId(_plan));
+
+        await p.key(LogicalKeyboardKey.enter);
+        await pumpFrames(tester);
+
+        expect(find.byKey(PaletteKeys.palette), findsNothing);
+        expect(p.attachments.openCalls, [_plan.path]);
+        expect(
+          hostFocus.hasFocus,
+          isTrue,
+          reason: 'the file opens in another app, so the focus returns',
+        );
+      },
+    );
+  });
+
+  group('the preview of an attachments row', () {
+    testWidgets(
+      'selecting an attachments row on the wide card shows no loading line and clears the preview at once',
+      (tester) async {
+        final p = await _wi148Open(tester);
+        await p.searchFor('revenue');
+        await p.downTo(_q3PassageId);
+        await p.wait(300);
+        expect(p.state.preview, isA<PreviewPassage>());
+        final seen = <PreviewView>[];
+        final sub = p.h.container.listen<PreviewView>(
+          palettePreviewProvider,
+          (_, next) => seen.add(next),
+        );
+        addTearDown(sub.close);
+
+        await p.key(LogicalKeyboardKey.arrowDown);
+
+        expect(p.selectedRows, [_wi148AttachmentId(_q3)]);
+        expect(p.state.preview, isA<PreviewNone>(), reason: 'at once');
+        expect(find.text('loading…'), findsNothing);
+        await p.wait(500);
+        expect(p.state.preview, isA<PreviewNone>());
+        expect(find.text('loading…'), findsNothing);
+        expect(seen, isNotEmpty);
+        expect(seen, everyElement(isA<PreviewNone>()));
+      },
+    );
+
+    testWidgets(
+      'the preview band for an attachment hit covers only the attachment line',
+      (tester) async {
+        const noteId = 'n-148-band';
+        const lead = 'Intro line\n';
+        const attachmentLine = 'Attached Q3 report.pdf here';
+        const body =
+            '$lead$attachmentLine\nSecond line below the attachment\n'
+            'Third line below it';
+        final answer = SearchReady(
+          [
+            SearchHit(
+              noteId: noteId,
+              noteTitle: ['Q3 review'].join(),
+              chunkId: ['c-148-band'].join(),
+              snippet: [
+                'Q3 report.pdf · …revenue grew 12% across every region and ',
+                'every product line this quarter, led by the new tier…',
+              ].join(),
+              startByte: lead.length,
+              noteUpdatedAt: paletteHoursAgo(3),
+              attachment: SearchHitAttachment(name: _q3.name, path: _q3.path),
+            ),
+          ],
+          semantic: Semantic.on,
+          truncated: false,
+          attachments: [_q3],
+        );
+        final p = await _wi148Open(tester, answer: answer);
+        p.h.db.seedNote(
+          id: noteId,
+          title: 'Q3 review',
+          content: body,
+          updatedAt: paletteHoursAgo(3),
+        );
+        await p.searchFor('revenue');
+        await p.downTo(
+          const PaletteItemId(PaletteItemKind.passage, 'c-148-band'),
+        );
+        await p.wait(300);
+
+        final band = find.descendant(
+          of: find.byKey(PaletteKeys.preview),
+          matching: find.byWidgetPredicate(
+            (w) =>
+                w is DecoratedBox &&
+                w.decoration is BoxDecoration &&
+                (w.decoration as BoxDecoration).color == OmColors.surface3,
+          ),
+        );
+        expect(band, findsOneWidget);
+        Finder inBand(String text) => find.descendant(
+          of: band,
+          matching: find.textContaining(text, findRichText: true),
+        );
+        expect(inBand(attachmentLine), findsOneWidget);
+        expect(inBand('Second line'), findsNothing);
+        expect(inBand('Third line'), findsNothing);
+        expect(
+          find.descendant(
+            of: find.byKey(PaletteKeys.preview),
+            matching: find.textContaining('Second line', findRichText: true),
+          ),
+          findsOneWidget,
+          reason: 'the following lines are drawn outside the band',
+        );
       },
     );
   });

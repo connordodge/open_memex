@@ -18,12 +18,16 @@
 // #76's real PaletteNotifier with `palettePassagesOverrides` (#78's runner
 // plus this WI's attachment chooser); `attachmentsProvider` overridden with
 // #141's FakeAttachmentsAccess.
+import 'dart:ui' show TextRange;
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/attachments_state.dart';
 import 'package:open_memex_app/src/state/command_palette_state.dart';
 import 'package:open_memex_app/src/state/palette_attachments.dart';
 import 'package:open_memex_app/src/state/palette_passages.dart';
+import 'package:open_memex_app/src/state/search_model_download.dart';
+import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/vault_access/attachments_access.dart';
 import 'package:open_memex_app/src/vault_access/search_access.dart';
 
@@ -178,6 +182,25 @@ SearchReady _wi148Answer({
 
 PaletteItemId _wi148AttachmentId(SearchAttachment a) =>
     PaletteItemId(PaletteItemKind.attachment, a.path);
+
+/// The same answer as [_wi148Answer], from a vault whose meaning model is
+/// not downloaded.
+SearchReady _wi148KeywordOnlyAnswer({List<SearchAttachment>? attachments}) {
+  final base = _wi148Answer(attachments: attachments);
+  return SearchReady(
+    base.hits,
+    semantic: Semantic.modelNotDownloaded,
+    truncated: false,
+    attachments: base.attachments,
+  );
+}
+
+/// A model download whose status the test sets.
+class _Wi148Download extends SearchModelDownloadNotifier {
+  void force(SearchModelDownloadStatus status) => state = status;
+}
+
+const _wi148Vault = LocalVaultRef(paletteVaultPath);
 
 void main() {
   holdFontFetches();
@@ -687,6 +710,183 @@ void main() {
 
         expect(rig.attachments.openCalls, [_q3.path]);
         expect(tester.takeException(), isNull);
+      },
+    );
+  });
+
+  group('the attachments group through the model download states', () {
+    List<Override> downloadOverride() => [
+      searchModelDownloadProvider.overrideWith(_Wi148Download.new),
+    ];
+
+    _Wi148Download download(_Wi148Rig rig) =>
+        rig.h.container.read(searchModelDownloadProvider(_wi148Vault).notifier)
+            as _Wi148Download;
+
+    final bothIds = [_wi148AttachmentId(_q3), _wi148AttachmentId(_plan)];
+
+    testWidgets(
+      'a model not downloaded answer keeps the attachments group with its rows',
+      (tester) async {
+        final rig = await _wi148Pump(
+          tester,
+          answer: _wi148KeywordOnlyAnswer(),
+          overrides: downloadOverride(),
+        );
+
+        await rig.searchFor('revenue');
+
+        expect(rig.state.passages, isA<PassagesShown>());
+        expect([for (final r in rig.attachmentRows) r.id], bothIds);
+        expect(rig.kinds.last, PaletteGroupKind.attachments);
+      },
+    );
+
+    testWidgets(
+      'a download that starts after the answer keeps the attachments rows and a failure keeps them too',
+      (tester) async {
+        final rig = await _wi148Pump(
+          tester,
+          answer: _wi148KeywordOnlyAnswer(),
+          overrides: downloadOverride(),
+        );
+        await rig.searchFor('revenue');
+
+        download(rig).force(SearchModelDownloadStatus.downloading);
+        await rig.wait(1);
+
+        expect(rig.state.passages, isA<PassagesDownloading>());
+        expect([for (final r in rig.attachmentRows) r.id], bothIds);
+        expect(
+          rig.attachmentRows[0].notesLine,
+          'in Planning notes, 2026-11-18',
+        );
+
+        download(rig).force(SearchModelDownloadStatus.failed);
+        await rig.wait(1);
+
+        expect(rig.state.passages, isA<PassagesDownloadFailed>());
+        expect([for (final r in rig.attachmentRows) r.id], bothIds);
+        expect(rig.kinds.last, PaletteGroupKind.attachments);
+      },
+    );
+
+    for (final (name, status, view)
+        in <(String, SearchModelDownloadStatus, bool Function(PassagesView))>[
+          (
+            'an answer that lands while the model downloads keeps the attachments rows',
+            SearchModelDownloadStatus.downloading,
+            (v) => v is PassagesDownloading,
+          ),
+          (
+            'an answer that lands after a failed model download keeps the attachments rows',
+            SearchModelDownloadStatus.failed,
+            (v) => v is PassagesDownloadFailed,
+          ),
+        ]) {
+      testWidgets(name, (tester) async {
+        final rig = await _wi148Pump(
+          tester,
+          answer: _wi148KeywordOnlyAnswer(),
+          overrides: downloadOverride(),
+        );
+        download(rig).force(status);
+        await tester.pump();
+
+        await rig.searchFor('revenue');
+
+        expect(view(rig.state.passages), isTrue, reason: '${status.name} view');
+        expect([for (final r in rig.attachmentRows) r.id], bothIds);
+        expect(rig.kinds.last, PaletteGroupKind.attachments);
+      });
+    }
+
+    testWidgets(
+      'an attachments only answer while the model downloads still lists the attachments',
+      (tester) async {
+        final rig = await _wi148Pump(
+          tester,
+          answer: SearchReady(
+            const [],
+            semantic: Semantic.modelNotDownloaded,
+            truncated: false,
+            attachments: [_q3],
+          ),
+          overrides: downloadOverride(),
+        );
+        download(rig).force(SearchModelDownloadStatus.downloading);
+        await tester.pump();
+
+        await rig.searchFor('revenue');
+
+        expect(rig.kinds, [PaletteGroupKind.attachments]);
+        expect(
+          [for (final r in rig.attachmentRows) r.id],
+          [_wi148AttachmentId(_q3)],
+        );
+        expect(rig.state.noMatches, isFalse);
+      },
+    );
+  });
+
+  group('the attachments group while the input changes', () {
+    testWidgets(
+      'a keystroke after a shown answer keeps the old attachments rows until the debounce answers',
+      (tester) async {
+        final rig = await _wi148Pump(tester);
+        await rig.searchFor('revenue');
+        expect(rig.state.passages, isA<PassagesShown>());
+
+        await rig.type('revenue g');
+
+        expect(rig.state.passages, isA<PassagesDimmed>());
+        expect(
+          [for (final r in rig.attachmentRows) r.id],
+          [_wi148AttachmentId(_q3), _wi148AttachmentId(_plan)],
+          reason: 'the previous answer stays, dimmed',
+        );
+        expect(rig.kinds.last, PaletteGroupKind.attachments);
+
+        rig.search.result = _wi148Answer(attachments: [_plan]);
+        await rig.wait(passagesDebounce.inMilliseconds);
+
+        expect(rig.state.passages, isA<PassagesShown>());
+        expect(
+          [for (final r in rig.attachmentRows) r.id],
+          [_wi148AttachmentId(_plan)],
+        );
+      },
+    );
+
+    testWidgets('before any answer a keystroke lists no attachments rows', (
+      tester,
+    ) async {
+      final rig = await _wi148Pump(tester);
+
+      await rig.type('revenue');
+
+      expect(rig.state.passages, isA<PassagesDimmed>());
+      expect(rig.attachmentRows, isEmpty);
+      expect(rig.kinds, isNot(contains(PaletteGroupKind.attachments)));
+    });
+  });
+
+  group('the attachments row text marks', () {
+    testWidgets(
+      'the typed words are marked in a content match and a name only match has no marks',
+      (tester) async {
+        final rig = await _wi148Pump(tester);
+
+        await rig.searchFor('Revenue GREW');
+
+        final rows = rig.attachmentRows;
+        expect(rows[0].attachment.snippet, '…revenue grew 12%…');
+        expect(rows[0].marks, [
+          const TextRange(start: 1, end: 8),
+          const TextRange(start: 9, end: 13),
+        ]);
+        expect(rows[1].attachment.snippet, isNull);
+        expect(rows[1].marks, isEmpty);
       },
     );
   });
