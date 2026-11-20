@@ -133,10 +133,35 @@ List<FindPaintRange> findPaintRanges(
     return false;
   }
 
+  // Only a match touching the field, or a hidden one whose outline touches
+  // it, can paint here: both come from the state's match index (WI #130),
+  // visited in match order as a scan of every match would.
+  final index = FindMatchIndex.of(state.matches);
+  final run = index.touching(
+    segment: segment,
+    kind: kind,
+    start: start,
+    end: end,
+  );
+  final outlined = index.outlinesTouching(
+    segment: segment,
+    kind: kind,
+    start: start,
+    end: end,
+  );
   final out = <FindPaintRange>{};
-  for (final (i, m) in state.matches.indexed) {
+  var o = 0;
+  var r = run.from;
+  while (r < run.to || o < outlined.length) {
+    final int i;
+    if (o >= outlined.length || (r < run.to && r <= outlined[o])) {
+      i = r++;
+      if (o < outlined.length && outlined[o] == i) o++;
+    } else {
+      i = outlined[o++];
+    }
     debugFindMatchReads++;
-    if (m.segment != segment || m.kind != kind) continue;
+    final m = state.matches[i];
     final int from;
     final int to;
     final FindPaintStyle style;

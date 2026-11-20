@@ -267,6 +267,10 @@ class _Row {
   /// Find in note's decoration of the row's field (#61 F6, D7).
   final ValueNotifier<FindDecoration?> find = ValueNotifier(null);
 
+  /// The Find in note state the row's find highlights paint (WI #130): it
+  /// notifies only when the row's paint ranges change.
+  final _RowFindPaint findPaint = _RowFindPaint();
+
   /// The controller's value as its listener last saw it: a notification
   /// with the same value (the controller repainting for its find
   /// decoration, hover or resolver) is no edit and no selection move.
@@ -376,25 +380,39 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
     }
   }
 
-  /// Every row's find decoration, from the Find in note state; none while
-  /// not [SegmentView.active].
+  /// Every row's find decoration and highlight state, from the Find in note
+  /// state; none while not [SegmentView.active]. Each row looks its matches
+  /// up by the state's match index, and only a row whose decoration or
+  /// paint ranges changed is told (WI #130).
   void _decorateRows() {
+    final state = _find?.read();
     for (final row in _rows) {
-      _decorate(row);
+      _decorate(row, state);
     }
   }
 
-  void _decorate(_Row row) {
-    final state = _find?.read();
-    row.find.value = state == null || !widget.active
+  void _decorate(_Row row, [FindInNoteState? state]) {
+    state ??= _find?.read();
+    final shown = state != null && widget.active ? state : null;
+    row.find.value = shown == null
         ? null
         : findFieldDecoration(
-            state,
+            shown,
             segment: widget.index,
             kind: FindSourceKind.body,
             start: row.spec.textStart,
             end: row.spec.textEnd,
           );
+    // After the decoration: its reveal range is one of the row's inputs.
+    row.findPaint.decorate(
+      shown,
+      _rowFindPaintRanges(
+        shown,
+        row,
+        segment: widget.index,
+        revealGate: widget.revealGate,
+      ),
+    );
   }
 
   @override
@@ -454,6 +472,7 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
     for (final row in _retired) {
       row.controller.dispose();
       row.find.dispose();
+      row.findPaint.dispose();
       row.edges.dispose();
       row.focusNode.dispose();
     }
@@ -1250,7 +1269,11 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
 /// visible match (lead ruling Q1). A table row showing its grid paints
 /// nothing here: its cells paint their own (D8). Nothing while not
 /// [active].
-class _RowFindHighlights extends ConsumerWidget {
+///
+/// It follows the Find in note state through the row's [_Row.findPaint]
+/// (WI #130), not the provider: a Find change rebuilds only the rows whose
+/// paint ranges it changes.
+class _RowFindHighlights extends StatelessWidget {
   const _RowFindHighlights({
     required this.segment,
     required this.index,
@@ -1275,28 +1298,30 @@ class _RowFindHighlights extends ConsumerWidget {
   final Object? layout;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final state = ref.watch(findInNoteProvider);
-    final controller = row.controller;
+  Widget build(BuildContext context) {
     // The field's text, selection and reveal change its layout and which
-    // lines show their markup.
-    final changes = Listenable.merge([controller, revealGate]);
+    // lines show their markup; the row's find state changes its matches.
+    final changes = Listenable.merge([
+      row.controller,
+      revealGate,
+      row.findPaint,
+    ]);
     return ListenableBuilder(
       listenable: changes,
       builder: (context, _) {
-        final spec = row.spec;
+        final paint = row.findPaint;
+        final ranges = active
+            ? _rowFindPaintRanges(
+                paint.state,
+                row,
+                segment: segment,
+                revealGate: revealGate,
+              )
+            : const <FindPaintRange>[];
+        paint.shown = ranges;
         return FindHighlights(
           key: findHighlightsKey(segment, index),
-          ranges: active && !controller.textHidden
-              ? findPaintRanges(
-                  state,
-                  segment: segment,
-                  kind: FindSourceKind.body,
-                  start: spec.textStart,
-                  end: spec.textEnd,
-                  revealed: _revealed(),
-                )
-              : const [],
+          ranges: ranges,
           boxes: boxes,
           repaint: changes,
           layout: layout,
@@ -1304,26 +1329,76 @@ class _RowFindHighlights extends ConsumerWidget {
       },
     );
   }
+}
 
-  /// The field-local ranges of the field's lines that show their markup
-  /// now, as `LivePreviewController.buildTextSpan` decides them; the line
-  /// kinds are parsed once per change of the row's text.
-  List<TextRange> _revealed() {
-    final controller = row.controller;
-    final lines = row.lines();
-    final revealed = revealedLines(
-      lines,
-      controller.selection,
-      forceHidden: !revealGate.value,
-      itemText: controller.itemText,
-      // A line Find in note reveals for the current match shows its markup
-      // too (#61 F6, lead ruling Q1).
-      revealRange: controller.findDecoration?.value?.revealRange,
-    );
-    return [
-      for (final (i, line) in lines.indexed)
-        if (revealed[i]) TextRange(start: line.start, end: line.contentEnd),
-    ];
+/// The paint ranges of [row]'s find highlights for [state] (null: none):
+/// nothing while the bar is closed, the query is empty or the row's text is
+/// hidden (a table showing its grid, D8); else [findPaintRanges] over the
+/// row's `[textStart, textEnd)` with the lines its field reveals now.
+List<FindPaintRange> _rowFindPaintRanges(
+  FindInNoteState? state,
+  _Row row, {
+  required int segment,
+  required ValueListenable<bool> revealGate,
+}) {
+  if (state == null ||
+      !state.open ||
+      state.query.isEmpty ||
+      row.controller.textHidden) {
+    return const [];
+  }
+  final spec = row.spec;
+  return findPaintRanges(
+    state,
+    segment: segment,
+    kind: FindSourceKind.body,
+    start: spec.textStart,
+    end: spec.textEnd,
+    revealed: _rowRevealed(row, revealGate),
+  );
+}
+
+/// The field-local ranges of [row]'s field lines that show their markup
+/// now, as `LivePreviewController.buildTextSpan` decides them; the line
+/// kinds are parsed once per change of the row's text.
+List<TextRange> _rowRevealed(_Row row, ValueListenable<bool> revealGate) {
+  final controller = row.controller;
+  final lines = row.lines();
+  final revealed = revealedLines(
+    lines,
+    controller.selection,
+    forceHidden: !revealGate.value,
+    itemText: controller.itemText,
+    // A line Find in note reveals for the current match shows its markup
+    // too (#61 F6, lead ruling Q1).
+    revealRange: controller.findDecoration?.value?.revealRange,
+  );
+  return [
+    for (final (i, line) in lines.indexed)
+      if (revealed[i]) TextRange(start: line.start, end: line.contentEnd),
+  ];
+}
+
+/// The Find in note state one row's find highlights paint (WI #130): the
+/// rows host writes the latest state on every Find change and notifies the
+/// row's highlights only when the row's paint ranges differ from those its
+/// layer was last built with ([shown]).
+final class _RowFindPaint extends ChangeNotifier {
+  /// The state the row's highlights paint; null: none (the segment is not
+  /// active, or there is no Find state).
+  FindInNoteState? state;
+
+  /// The ranges the row's layer was last built with (the layer writes
+  /// them), so a change the layer already shows notifies nothing.
+  List<FindPaintRange> shown = const [];
+
+  /// Takes [next] as the row's state; notifies when [ranges], the row's
+  /// paint ranges for it now, differ from [shown].
+  void decorate(FindInNoteState? next, List<FindPaintRange> ranges) {
+    state = next;
+    if (listEquals(ranges, shown)) return;
+    shown = ranges;
+    notifyListeners();
   }
 }
 
