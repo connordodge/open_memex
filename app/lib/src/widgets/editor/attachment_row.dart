@@ -608,40 +608,33 @@ class _AttachmentBlockState extends ConsumerState<AttachmentBlock> {
       _revealable ? {_revealAction: _reveal} : null;
 
   /// Offers `Open`, and `Reveal in Finder` where offered, at global [at].
-  /// It shows after any menu the press's segment shows for it, so it
-  /// replaces that one.
+  /// The pointer layer leaves a press the block owns alone (D5, D23), so
+  /// this is the only menu the press shows.
   void _showMenu(Offset at) {
-    scheduleMicrotask(() {
-      if (!mounted) return;
-      ContextMenuButtonItem item(String label, {required bool reveal}) =>
-          ContextMenuButtonItem(
-            label: label,
-            onPressed: () {
-              _menu.remove();
-              unawaited(_act(reveal: reveal));
-            },
-          );
-      _menu.show(
-        context: context,
-        contextMenuBuilder: (context) => TapRegion(
-          onTapOutside: (_) => _menu.remove(),
-          child: TextFieldTapRegion(
-            child: AdaptiveTextSelectionToolbar.buttonItems(
-              anchors: TextSelectionToolbarAnchors(primaryAnchor: at),
-              buttonItems: [
-                item('Open', reveal: false),
-                if (_revealable) item('Reveal in Finder', reveal: true),
-              ],
-            ),
+    ContextMenuButtonItem item(String label, {required bool reveal}) =>
+        ContextMenuButtonItem(
+          label: label,
+          onPressed: () {
+            _menu.remove();
+            unawaited(_act(reveal: reveal));
+          },
+        );
+    _menu.show(
+      context: context,
+      contextMenuBuilder: (context) => TapRegion(
+        onTapOutside: (_) => _menu.remove(),
+        child: TextFieldTapRegion(
+          child: AdaptiveTextSelectionToolbar.buttonItems(
+            anchors: TextSelectionToolbarAnchors(primaryAnchor: at),
+            buttonItems: [
+              item('Open', reveal: false),
+              if (_revealable) item('Reveal in Finder', reveal: true),
+            ],
           ),
         ),
-      );
-    });
+      ),
+    );
   }
-
-  /// A block that offers no menu: none shows for its secondary click, not
-  /// even one the press's segment shows for it.
-  void _noMenu() => scheduleMicrotask(ContextMenuController.removeAny);
 
   @override
   Widget build(BuildContext context) {
@@ -657,7 +650,6 @@ class _AttachmentBlockState extends ConsumerState<AttachmentBlock> {
         return GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: widget.onPlaceCaret,
-          onSecondaryTapUp: (_) => _noMenu(),
           child: AttachmentNotice(text: notice),
         );
       }
@@ -690,7 +682,7 @@ class _AttachmentBlockState extends ConsumerState<AttachmentBlock> {
       excludeFromSemantics: true,
       onTap: missing ? null : _open,
       onSecondaryTapUp: missing
-          ? (_) => _noMenu()
+          ? null
           : (details) => _showMenu(details.globalPosition),
       child: AttachmentFileCard(
         name: name,
