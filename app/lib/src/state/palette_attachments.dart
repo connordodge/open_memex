@@ -47,11 +47,12 @@ typedef PaletteAttachmentOpenFailure =
     void Function(String name, AttachmentLookupFailure failure);
 
 /// Where a failed open of a chosen Attachments row is reported. The
-/// chooser calls the provided function when the row is chosen, while the
-/// palette still shows, and reports the open's failure, if any, to the
-/// reporter it returned, which may run after the palette has closed. The
-/// widget layer overrides it to show the R42 toast over the context the
-/// palette was opened over. Default: reports nothing.
+/// chooser calls the provided function when the row is chosen, before it
+/// opens the file, and reports the open's failure, if any, to the reporter
+/// it returned, which may run after the palette has closed. The widget
+/// layer overrides it to close the palette at that call (Spec #59 req 8)
+/// and to show the R42 toast over the context the palette was opened over.
+/// Default: closes nothing and reports nothing.
 final paletteAttachmentOpenFailureProvider =
     Provider.autoDispose<PaletteAttachmentOpenFailure Function()>(
       (ref) =>
@@ -60,9 +61,10 @@ final paletteAttachmentOpenFailureProvider =
 
 /// Chooses an Attachments row (D10): opens its path through the open
 /// vault's attachments domain (`attachmentsProvider`), which downloads a
-/// hosted file first and reveals an executable instead (R33). A failed
-/// open goes to the reporter `paletteAttachmentOpenFailureProvider` gave
-/// at the choice. The Cmd flag changes nothing: a file has no tab. With no
+/// hosted file first and reveals an executable instead (R33). It first
+/// takes its reporter from `paletteAttachmentOpenFailureProvider` (the
+/// shell closes the palette then), then opens; a failed open goes to that
+/// reporter. The Cmd flag changes nothing: a file has no tab. With no
 /// open vault it does nothing.
 PaletteChooser<AttachmentItem> paletteAttachmentChooser(Ref ref) =>
     (item, {required newTab}) {

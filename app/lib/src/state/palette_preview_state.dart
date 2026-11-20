@@ -80,7 +80,8 @@ class PalettePreviewReader extends PalettePreviewNotifier {
     _timer?.cancel();
     _timer = null;
     final seq = ++_seq;
-    if (item == null || !_wide) {
+    // An Attachments row has no preview: none at once, with no `loading…`.
+    if (item == null || item is AttachmentItem || !_wide) {
       state = const PreviewNone();
       return;
     }

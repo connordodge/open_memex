@@ -40,10 +40,12 @@ import 'passages_states.dart';
 /// #77's production wiring of #76's seam (lead ruling W1), spread into
 /// `appRootOverrides`: the Commands and titles sources, and the command and
 /// note choosers. A chooser closes the palette first, then runs its action
-/// with the context the palette was opened over (R24). Also #148's report
-/// of a failed Attachments open: the R42 toast over that same context
-/// (Spec #123 R42, D22), taken when the row is chosen so it still shows
-/// after the palette closes.
+/// with the context the palette was opened over (R24). Also #148's
+/// Attachments choice: taking its reporter closes the palette (req 8)
+/// before the chooser opens the file, and a failed open shows the R42 toast
+/// over that same context (Spec #123 R42, D22), which still shows after the
+/// palette has closed. The file opens in another app, so the close gives
+/// the focus back to where it was before the palette opened.
 final List<Override> paletteShellOverrides = [
   paletteCommandsOverride,
   paletteTitlesOverride,
@@ -63,10 +65,12 @@ final List<Override> paletteShellOverrides = [
   paletteAttachmentOpenFailureProvider.overrideWith((ref) {
     final session = ref.watch(_sessionProvider);
     return () {
-      final host = session.host;
+      BuildContext? host;
+      session.choose((h, _) => host = h, placesFocus: false);
       return (name, failure) {
-        if (host == null || !host.mounted) return;
-        showAttachmentOpenFailure(host, name, failure);
+        final shown = host;
+        if (shown == null || !shown.mounted) return;
+        showAttachmentOpenFailure(shown, name, failure);
       };
     };
   }),
@@ -256,10 +260,15 @@ class _PaletteSession {
   }
 
   /// A row was chosen: closes the palette, then runs [action] with the
-  /// context the palette was opened over, when it is still mounted.
-  void choose(void Function(BuildContext host, ProviderContainer c) action) {
+  /// context the palette was opened over, when it is still mounted. With
+  /// [placesFocus] false the action leaves the focus alone, so the close
+  /// gives it back to where it was before the palette opened.
+  void choose(
+    void Function(BuildContext host, ProviderContainer c) action, {
+    bool placesFocus = true,
+  }) {
     final host = this.host;
-    _chosen = true;
+    if (placesFocus) _chosen = true;
     close();
     if (host == null || !host.mounted) return;
     action(host, container);
