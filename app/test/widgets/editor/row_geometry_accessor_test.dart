@@ -1636,7 +1636,8 @@ void main() {
           const TextRange(start: 0, end: 'Middle'.length),
         );
 
-        // A field row.
+        // A field row: row 0 is idle, so it is activated first.
+        await activateRow(tester, 0, 0);
         final field = rowBoxesOf(tester, 0, 0).box as RenderEditable;
         final caret = field.getLocalRectForCaret(const TextPosition(offset: 8));
         final point = field.localToGlobal(

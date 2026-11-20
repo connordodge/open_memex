@@ -15,7 +15,8 @@
 import 'dart:async';
 import 'dart:ui' as ui;
 
-import 'package:flutter/cupertino.dart' show CupertinoDesktopTextSelectionToolbar;
+import 'package:flutter/cupertino.dart'
+    show CupertinoDesktopTextSelectionToolbar;
 import 'package:flutter/gestures.dart' show PointerDeviceKind, kSecondaryButton;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -24,6 +25,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/spell_issues.dart';
 import 'package:open_memex_app/src/state/learned_words_seam.dart';
 import 'package:open_memex_app/src/widgets/atoms.dart';
+import 'package:open_memex_app/src/widgets/editor/segment_view.dart';
 import 'package:open_memex_app/src/widgets/editor/spell_issue_scope.dart';
 import 'package:open_memex_app/src/widgets/editor/spelling_menu.dart';
 import 'package:open_memex_app/src/widgets/editor/text_segment.dart'
@@ -291,8 +293,61 @@ class Wi438Editor {
     ),
   );
 
+  /// The controller of the row holding [needle], also while it is idle
+  /// (WI #132), or of Source mode's field.
   TextEditingController ctrl(String needle) =>
+      rowOf(needle)?.$1.rowController(rowOf(needle)!.$2) ??
       tester.widget<EditableText>(field(needle)).controller;
+
+  /// The rows host and index of the editor row whose text contains
+  /// [needle]; null in Source mode (WI #132: an idle row has no field).
+  (SegmentViewState, int)? rowOf(String needle) {
+    for (final h in allSegmentEditings(tester)) {
+      if (h is! SegmentViewState) continue;
+      for (var i = 0; i < h.rowCount; i++) {
+        if (h.rowController(i)!.text.contains(needle)) return (h, i);
+      }
+    }
+    return null;
+  }
+
+  /// Makes the editor row holding [needle] the active row (a no-op in
+  /// Source mode), so it has a field.
+  ///
+  /// TEST-CHANGE (WI #132, Spec #122 Req 38): "activate the row first".
+  Future<void> activate(String needle, [int? local]) async {
+    final row = rowOf(needle);
+    if (row == null) return;
+    final (host, i) = row;
+    if (host.rowField(i) != null) return;
+    final spec = host.rowSpec(i)!;
+    host.activateRow(
+      i,
+      TextSelection.collapsed(
+        offset: spec.textStart + (local ?? spec.textEnd - spec.textStart),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+  }
+
+  /// The global rect of the caret before field offset [offset] of the row
+  /// holding [needle]: from its field, or from its paragraph while idle.
+  Rect caretRectOf(String needle, int offset) {
+    final row = rowOf(needle);
+    // A field answers from its own render object, an idle row from its
+    // paragraph's line boxes.
+    if (row != null && row.$1.rowField(row.$2) == null) {
+      final boxes = row.$1.rowBoxes(row.$2)!;
+      final r = boxes.caretRect(offset);
+      return r.shift(boxes.box.localToGlobal(Offset.zero));
+    }
+    final editable = tester
+        .state<EditableTextState>(field(needle))
+        .renderEditable;
+    final r = editable.getLocalRectForCaret(TextPosition(offset: offset));
+    return r.shift(editable.localToGlobal(Offset.zero));
+  }
 
   FocusNode focusNode(String needle) =>
       tester.widget<EditableText>(field(needle)).focusNode;
@@ -306,7 +361,9 @@ class Wi438Editor {
 
   /// What the editor published for the field holding [needle].
   List<SpellIssue> issues(String needle) {
-    final registry = SpellIssueScope.maybeOf(tester.element(field(needle)));
+    final registry = SpellIssueScope.maybeOf(
+      rowOf(needle)?.$1.context ?? tester.element(field(needle)),
+    );
     expect(registry, isNotNull, reason: 'the field has a SpellIssueRegistry');
     return registry!.issuesFor(ctrl(needle)).value;
   }
@@ -318,11 +375,8 @@ class Wi438Editor {
   /// The global point of the caret before field offset [offset] (its left
   /// edge, line centre) in the field holding [needle].
   Offset caretPoint(String needle, int offset) {
-    final editable = tester
-        .state<EditableTextState>(field(needle))
-        .renderEditable;
-    final r = editable.getLocalRectForCaret(TextPosition(offset: offset));
-    return editable.localToGlobal(Offset(r.left, r.center.dy));
+    final r = caretRectOf(needle, offset);
+    return Offset(r.left, r.center.dy);
   }
 
   /// The global centre of the glyph at field offset [offset].
@@ -335,6 +389,7 @@ class Wi438Editor {
   /// Focuses the field holding [needle] and gives it [selection] as the
   /// platform text input does (a click or drag would leave it).
   Future<void> select(String needle, TextSelection selection) async {
+    await activate(needle, selection.extentOffset);
     final f = field(needle);
     await tester.showKeyboard(f);
     await tester.pump();
@@ -351,6 +406,7 @@ class Wi438Editor {
 
   /// Focuses the field holding [needle] without moving its selection.
   Future<void> focus(String needle) async {
+    await activate(needle);
     focusNode(needle).requestFocus();
     await tester.pump();
     await tester.pump();

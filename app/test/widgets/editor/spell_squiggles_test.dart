@@ -24,6 +24,7 @@ import 'package:open_memex_app/src/editor/spell_issues.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/widgets/editor/editor_row.dart';
 import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
+import 'package:open_memex_app/src/widgets/editor/paragraph_line_boxes.dart';
 import 'package:open_memex_app/src/widgets/editor/segment_view.dart';
 import 'package:open_memex_app/src/widgets/editor/spell_issue_scope.dart';
 import 'package:open_memex_app/src/widgets/editor/spell_squiggles.dart';
@@ -61,14 +62,47 @@ TextRange _wi437Find(String text, String word, [int n = 0]) {
 
 // ------------------------------------------------------------------ fields
 
-TextEditingController _wi437Ctrl(WidgetTester tester, Finder field) =>
-    tester.widget<EditableText>(field).controller;
+/// The (segment, row) of an `editor-row-<s>-<r>` Key finder, or null for a
+/// field finder.
+(int, int)? _wi437RowKey(Finder field) {
+  final key = field.evaluate().single.widget.key;
+  if (key is! ValueKey<String>) return null;
+  final m = RegExp(r'^editor-row-(\d+)-(\d+)$').firstMatch(key.value);
+  return m == null ? null : (int.parse(m[1]!), int.parse(m[2]!));
+}
+
+/// [field] is a field finder or (WI #132, Req 38: an idle row has no field)
+/// the `editor-row-<s>-<r>` Key finder of a row.
+TextEditingController _wi437Ctrl(WidgetTester tester, Finder field) {
+  final row = _wi437RowKey(field);
+  return row == null
+      ? tester.widget<EditableText>(field).controller
+      : segmentRowController(tester, row.$1, row.$2);
+}
 
 String _wi437Text(WidgetTester tester, Finder field) =>
     _wi437Ctrl(tester, field).text;
 
-RenderEditable _wi437Editable(WidgetTester tester, Finder field) =>
-    findRenderEditable(tester.renderObject(field))!;
+/// The box laying out [field]'s text: the field's `RenderEditable`, or an
+/// idle row's `RenderParagraph`.
+RenderBox _wi437Editable(WidgetTester tester, Finder field) {
+  final row = _wi437RowKey(field);
+  return row == null
+      ? findRenderEditable(tester.renderObject(field))!
+      : segmentRowTextBox(tester, row.$1, row.$2);
+}
+
+LineBoxSource _wi437Boxes(RenderBox box) => switch (box) {
+  final RenderEditable e => RenderEditableLineBoxes(e),
+  final RenderParagraph p => RenderParagraphLineBoxes(p),
+  _ => throw TestFailure('$box lays out no text'),
+};
+
+InlineSpan _wi437SpanOf(RenderBox box) => switch (box) {
+  final RenderEditable e => e.text!,
+  final RenderParagraph p => p.text,
+  _ => throw TestFailure('$box lays out no text'),
+};
 
 /// Seeds [field]'s issues in the registry its note editor hands down, then
 /// pumps one frame.
@@ -90,11 +124,16 @@ Future<void> _wi437Unfocus(WidgetTester tester) async {
 }
 
 /// The row field of live preview text segment 0 whose text contains [text].
-Finder _wi437RowWith(SpellingEditorHarness e, String text) {
-  final rows = e.rowFields(0);
-  for (var i = 0; i < rows.evaluate().length; i++) {
-    final row = rows.at(i);
-    if (_wi437Text(e.tester, row).contains(text)) return row;
+///
+/// TEST-CHANGE (WI #132, Req 38): only the active row has a field, so the
+/// row is found by its `editor-row-0-<r>` Key (its text slot) and read
+/// through the rows host, whether it is a field or an idle text.
+Future<Finder> _wi437RowWith(SpellingEditorHarness e, String text) async {
+  final host = segmentEditingAt(e.tester, 0) as SegmentViewState;
+  for (var i = 0; i < host.rowCount; i++) {
+    if (host.rowController(i)!.text.contains(text)) {
+      return find.byKey(Key('editor-row-0-$i'));
+    }
   }
   throw TestFailure('fixture: no row holding "$text"');
 }
@@ -102,7 +141,27 @@ Finder _wi437RowWith(SpellingEditorHarness e, String text) {
 /// Oracle: every line's baseline of [editable]'s laid-out text, in its local
 /// coordinates (vertical scroll applied), from its own span laid out again
 /// with its strut and scaler (`computeLineMetrics`).
-List<double> _wi437Baselines(RenderEditable editable) {
+List<double> _wi437Baselines(RenderBox box) {
+  if (box is RenderParagraph) {
+    // An idle row's paragraph: laid out at its own width, never scrolled.
+    final painter = TextPainter(
+      text: box.text,
+      textAlign: box.textAlign,
+      textDirection: box.textDirection,
+      textScaler: box.textScaler,
+      locale: box.locale,
+      strutStyle: box.strutStyle,
+      textHeightBehavior: box.textHeightBehavior,
+      textWidthBasis: box.textWidthBasis,
+    );
+    try {
+      painter.layout(maxWidth: box.constraints.maxWidth);
+      return [for (final m in painter.computeLineMetrics()) m.baseline];
+    } finally {
+      painter.dispose();
+    }
+  }
+  final editable = box as RenderEditable;
   final multiline = editable.maxLines != 1;
   final painter = TextPainter(
     text: editable.text,
@@ -142,7 +201,7 @@ List<_Wi437Part> _wi437Parts(
   final origin = editable.localToGlobal(Offset.zero);
   final baselines = _wi437Baselines(editable);
   return [
-    for (final rect in RenderEditableLineBoxes(editable).boxesFor(range))
+    for (final rect in _wi437Boxes(editable).boxesFor(range))
       (
         chars: rect.shift(origin),
         baseline:
@@ -359,11 +418,11 @@ Rect _wi437Around(_Wi437Part part) => Rect.fromLTRB(
 /// Everything about [field]'s layout an issue must not change.
 String _wi437Geometry(WidgetTester tester, Finder field) {
   final editable = _wi437Editable(tester, field);
-  final boxes = RenderEditableLineBoxes(editable);
+  final boxes = _wi437Boxes(editable);
   final text = _wi437Text(tester, field);
   final out = StringBuffer()
     ..writeln('text: $text')
-    ..writeln('span: ${editable.text!.toStringDeep()}')
+    ..writeln('span: ${_wi437SpanOf(editable).toStringDeep()}')
     ..writeln('size: ${editable.size}')
     ..writeln('at: ${editable.localToGlobal(Offset.zero)}');
   for (final line in boxes.lines) {
@@ -380,7 +439,19 @@ String _wi437Geometry(WidgetTester tester, Finder field) {
 /// Every non-empty semantics hint on [field]'s semantics node, its
 /// descendants and its ancestors: the hints that belong to its row.
 List<String> _wi437HintsOf(WidgetTester tester, Finder field) {
-  final node = tester.getSemantics(field);
+  // A row's `editor-row-<s>-<r>` Key box owns no semantics node: the row's
+  // own node is its field's or its idle text's (WI #132).
+  final text = _wi437RowKey(field) == null
+      ? field
+      : find
+            .descendant(
+              of: field,
+              matching: find.byWidgetPredicate(
+                (w) => w is EditableText || w is RichText,
+              ),
+            )
+            .first;
+  final node = tester.getSemantics(text);
   final hints = <String>[];
   void down(SemanticsNode n) {
     hints.add(n.getSemanticsData().hint);
@@ -522,7 +593,7 @@ void main() {
         body: 'first line here\n\nteh cat\n',
       );
       await _wi437Unfocus(tester);
-      final row = _wi437RowWith(e, 'teh cat');
+      final row = await _wi437RowWith(e, 'teh cat');
       final teh = _wi437Find(_wi437Text(tester, row), 'teh');
       final before = await _wi437Capture(tester);
       await _wi437Flag(tester, row, [_wi437Spelling(teh)]);
@@ -549,7 +620,7 @@ void main() {
         await _wi437Unfocus(tester);
         final row = e.rowFields(0).first;
         final editable = _wi437Editable(tester, row);
-        final lines = RenderEditableLineBoxes(editable).lines;
+        final lines = _wi437Boxes(editable).lines;
         expect(
           lines.length,
           greaterThanOrEqualTo(2),
@@ -599,7 +670,7 @@ void main() {
           body: 'body line\n\n${'#' * level} Heading teh\n\nafter\n',
         );
         await _wi437Unfocus(tester);
-        final row = _wi437RowWith(e, 'Heading teh');
+        final row = await _wi437RowWith(e, 'Heading teh');
         final teh = _wi437Find(_wi437Text(tester, row), 'teh');
         final before = await _wi437Capture(tester);
         await _wi437Flag(tester, row, [_wi437Spelling(teh)]);
@@ -634,7 +705,7 @@ void main() {
         body: 'intro\n\n- item teh\n- next one\n',
       );
       await _wi437Unfocus(tester);
-      final row = _wi437RowWith(e, 'item teh');
+      final row = await _wi437RowWith(e, 'item teh');
       final view = tester.widget<EditorRow>(
         find.ancestor(of: row, matching: find.byType(EditorRow)),
       );
@@ -710,7 +781,7 @@ void main() {
           body: '$filler\n\nteh cat\n\n$filler\n',
         );
         await _wi437Unfocus(tester);
-        final row = _wi437RowWith(e, 'teh cat');
+        final row = await _wi437RowWith(e, 'teh cat');
         final teh = _wi437Find(_wi437Text(tester, row), 'teh');
         // Scroll the word to y 500 (the editor page scrolls; the whole body
         // is one prose row), flag it, then scroll 60 px further.
@@ -806,9 +877,11 @@ void main() {
           skipOffstage: false,
         );
         expect(tableRow, findsOneWidget, reason: 'fixture: one table row');
-        final field = find.descendant(
-          of: tableRow,
-          matching: find.byType(EditableText, skipOffstage: false),
+        // TEST-CHANGE (WI #132, Req 38): the row is read through its
+        // `editor-row-0-<r>` Key (an idle row has no field).
+        final tableIndex = tester.widget<EditorRow>(tableRow).index;
+        final field = find.byKey(
+          Key('editor-row-0-$tableIndex'),
           skipOffstage: false,
         );
         expect(
@@ -839,7 +912,14 @@ void main() {
         // Revealed (the caret in the table): the issue paints.
         final segment = segmentEditingAt(tester, 0);
         final caret = segment.text.indexOf('| x |') + 2;
-        await tester.showKeyboard(field);
+        await activateSegmentRow(tester, 0, tableIndex);
+        await tester.showKeyboard(
+          find.descendant(
+            of: tableRow,
+            matching: find.byType(EditableText, skipOffstage: false),
+            skipOffstage: false,
+          ),
+        );
         await tester.pump();
         segment.select(TextSelection.collapsed(offset: caret));
         await tester.pump();
@@ -1029,7 +1109,7 @@ void main() {
       testWidgets(name, (tester) async {
         final e = await pumpSpellingEditor(tester, body: source);
         await _wi437Unfocus(tester);
-        final row = _wi437RowWith(e, 'teh');
+        final row = await _wi437RowWith(e, 'teh');
         final teh = _wi437Find(_wi437Text(tester, row), 'teh');
         final segment = segmentEditingAt(tester, 0);
         final text = segment.text;
@@ -1060,8 +1140,8 @@ void main() {
       (tester) async {
         final e = await pumpSpellingEditor(tester, body: '- teh\n- adn\n');
         await _wi437Unfocus(tester);
-        final first = _wi437RowWith(e, 'teh');
-        final second = _wi437RowWith(e, 'adn');
+        final first = await _wi437RowWith(e, 'teh');
+        final second = await _wi437RowWith(e, 'adn');
         final segment = segmentEditingAt(tester, 0);
         segment.select(
           TextSelection(baseOffset: 0, extentOffset: segment.text.length),
@@ -1102,7 +1182,7 @@ void main() {
           body: 'intro\n\n- item teh\n- next one\n',
         );
         await _wi437Unfocus(tester);
-        final row = _wi437RowWith(e, 'teh');
+        final row = await _wi437RowWith(e, 'teh');
         final teh = _wi437Find(_wi437Text(tester, row), 'teh');
         final segment = segmentEditingAt(tester, 0);
         final text = segment.text;
@@ -1164,7 +1244,7 @@ void main() {
       (tester) async {
         final e = await pumpSpellingEditor(tester, body: '- one\n- teh\n');
         await _wi437Unfocus(tester);
-        final row = _wi437RowWith(e, 'teh');
+        final row = await _wi437RowWith(e, 'teh');
         final teh = _wi437Find(_wi437Text(tester, row), 'teh');
         final segment = segmentEditingAt(tester, 0);
         final at = segment.text.indexOf('teh');
@@ -1250,8 +1330,8 @@ void main() {
         final segmentRect = tester.getRect(segment);
         final shotBefore = await _wi437Capture(tester);
 
-        final first = _wi437RowWith(e, 'teh cat');
-        final item = _wi437RowWith(e, 'item teh');
+        final first = await _wi437RowWith(e, 'teh cat');
+        final item = await _wi437RowWith(e, 'item teh');
         final tehFirst = _wi437Find(_wi437Text(tester, first), 'teh');
         final tehHead = _wi437Find(_wi437Text(tester, first), 'teh', 1);
         final tehItem = _wi437Find(_wi437Text(tester, item), 'teh');
@@ -1424,13 +1504,14 @@ void main() {
     testWidgets(
       'a selection move inside one row repaints no layer of the other rows while no row has issues',
       (tester) async {
-        final e = await pumpSpellingEditor(
+        await pumpSpellingEditor(
           tester,
           body: '- one\n- two\n- three\n- four\n',
         );
         await _wi437Unfocus(tester);
         final segment = segmentEditingAt(tester, 0);
-        expect(e.rowFields(0).evaluate().length, greaterThanOrEqualTo(4));
+        // (TEST-CHANGE, WI #132: only the active row has a field.)
+        expect(segment.rowCount, greaterThanOrEqualTo(4));
         final at = segment.text.indexOf('two');
         segment.select(TextSelection.collapsed(offset: at));
         await tester.pump();
@@ -1453,9 +1534,10 @@ void main() {
         );
         await _wi437Unfocus(tester);
         final segment = segmentEditingAt(tester, 0);
-        expect(e.rowFields(0).evaluate().length, greaterThanOrEqualTo(4));
+        // (TEST-CHANGE, WI #132: only the active row has a field.)
+        expect(segment.rowCount, greaterThanOrEqualTo(4));
         for (final word in ['one', 'three', 'four']) {
-          final row = _wi437RowWith(e, word);
+          final row = await _wi437RowWith(e, word);
           await _wi437Flag(tester, row, [
             _wi437Spelling(_wi437Find(_wi437Text(tester, row), 'teh')),
           ]);
@@ -1537,8 +1619,8 @@ void main() {
           body: 'teh cat\n\n- plain item\n',
         );
         await _wi437Unfocus(tester);
-        final row = _wi437RowWith(e, 'teh cat');
-        final other = _wi437RowWith(e, 'plain item');
+        final row = await _wi437RowWith(e, 'teh cat');
+        final other = await _wi437RowWith(e, 'plain item');
         expect(
           _wi437HintsOf(tester, row).where(_wi437SpellHint),
           isEmpty,

@@ -103,7 +103,15 @@ Future<SpellingEditorHarness> _wi126PumpEditor(
 /// The laid-out field of row [row] of segment [segment]: the
 /// [RenderEditable] under the segment whose text is the row's text (a
 /// rendered table's field is mounted offstage and still laid out).
-RenderEditable _wi126RowEditable(WidgetTester tester, int segment, int row) {
+///
+/// TEST-CHANGE (WI #132, Req 38): only the active row has a field, so the
+/// row is made the active row first.
+Future<RenderEditable> _wi126RowEditable(
+  WidgetTester tester,
+  int segment,
+  int row,
+) async {
+  await activateSegmentRow(tester, segment, row);
   final text = rowTextOf(tester, segment, row);
   final found = <RenderEditable>[];
   void visit(RenderObject node) {
@@ -539,7 +547,7 @@ void main() {
           _wi126KindsRows,
           reason: 'the kinds note splits into the rows this file expects',
         );
-        final editable = _wi126RowEditable(tester, 0, row);
+        final editable = await _wi126RowEditable(tester, 0, row);
         final text = editable.plainText;
         var from = 0;
         int? to;
@@ -573,7 +581,7 @@ void main() {
       await activateRow(tester, 0, 8, offset: 12);
       await pumpFrames(tester);
       _wi126ExpectFieldMatchesMain(
-        _wi126RowEditable(tester, 0, 8),
+        await _wi126RowEditable(tester, 0, 8),
         label: 'revealed',
       );
     });
@@ -583,7 +591,7 @@ void main() {
     ) async {
       final note = longNote(LongNoteKind.n5PlainLongLines120k);
       await _wi126PumpEditor(tester, note.text);
-      final editable = _wi126RowEditable(tester, 0, 0);
+      final editable = await _wi126RowEditable(tester, 0, 0);
       _wi126ExpectFieldMatchesMain(editable, label: 'N5');
     }, timeout: const Timeout(Duration(minutes: 3)));
 
@@ -594,7 +602,7 @@ void main() {
       final host = rowsHostOf(tester);
       final replicas = <Widget>[];
       for (var i = 0; i < host.rowCount; i++) {
-        final e = _wi126RowEditable(tester, 0, i);
+        final e = await _wi126RowEditable(tester, 0, i);
         replicas.add(
           Align(
             alignment: Alignment.topLeft,
@@ -771,13 +779,13 @@ void main() {
       'a keystroke in an editor row returns boxes from the new layout',
       (tester) async {
         final e = await _wi126PumpEditor(tester, _wi126KindsBody);
-        final editable = _wi126RowEditable(tester, 0, 0);
+        final editable = await _wi126RowEditable(tester, 0, 0);
         RenderEditableLineBoxes(editable).lines;
         await activateRow(tester, 0, 0, offset: 10);
         await e.robot.typeChars(' typed words that push the wrap further');
         await pumpFrames(tester);
         _wi126ExpectFieldMatchesMain(
-          _wi126RowEditable(tester, 0, 0),
+          await _wi126RowEditable(tester, 0, 0),
           label: 'after typing',
         );
       },
@@ -1089,7 +1097,7 @@ void main() {
           tester,
           List.filled(3, _wi126Decorated).join(' '),
         );
-        final replica = _wi126ReplicaOf(_wi126RowEditable(tester, 0, 0));
+        final replica = _wi126ReplicaOf(await _wi126RowEditable(tester, 0, 0));
         final spans = <InlineSpan>[];
         replica.span.visitChildren((s) {
           spans.add(s);
@@ -1251,7 +1259,7 @@ void main() {
       'after a system fonts notification an editor row returns boxes from the new layout',
       (tester) async {
         await _wi126PumpEditor(tester, _wi126KindsBody);
-        final editable = _wi126RowEditable(tester, 0, 0);
+        final editable = await _wi126RowEditable(tester, 0, 0);
         const range = TextRange(start: 0, end: 5);
         final stale = RenderEditableLineBoxes(editable).boxesFor(range);
         RenderEditableLineBoxes(editable).lines;

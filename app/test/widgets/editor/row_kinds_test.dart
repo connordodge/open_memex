@@ -31,6 +31,7 @@ import 'package:open_memex_app/src/widgets/editor/attachment_row.dart';
 import 'package:open_memex_app/src/widgets/editor/editor_row.dart';
 import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
+import 'package:open_memex_app/src/widgets/editor/paragraph_line_boxes.dart';
 import 'package:open_memex_app/src/widgets/editor/row_kinds.dart';
 import 'package:open_memex_app/src/widgets/editor/segment_editing.dart';
 import 'package:open_memex_app/src/widgets/editor/segment_view.dart';
@@ -64,15 +65,16 @@ List<(TextRange, double, double)> _t124Lines(LineBoxSource source) => [
 
 /// The render box of editor row [r]'s field in text segment [s] (also while
 /// offstage).
-RenderEditable _t124FieldEditable(WidgetTester tester, int s, int r) {
-  final editable = findRenderEditable(
-    tester.renderObject(
-      find.byKey(ValueKey('editor-row-$s-$r'), skipOffstage: false),
-    ),
-  );
-  if (editable == null) throw TestFailure('row $s-$r has no field');
-  return editable;
-}
+RenderBox _t124FieldEditable(WidgetTester tester, int s, int r) =>
+    segmentRowTextBox(tester, s, r);
+
+/// The line boxes of the text box [box] of an editor row: its field's, or
+/// (WI #132, an idle row) its paragraph's.
+LineBoxSource _t124BoxesOf(RenderBox box) => switch (box) {
+  final RenderEditable e => RenderEditableLineBoxes(e),
+  final RenderParagraph p => RenderParagraphLineBoxes(p),
+  _ => throw TestFailure('$box lays out no text'),
+};
 
 /// A primary-button mouse click at [at] (global), held [move] away before
 /// release when given; then lets any click chain expire.
@@ -820,7 +822,7 @@ void main() {
           expect(boxes!.box, same(editable), reason: 'row $r: its field');
           expect(
             _t124Lines(boxes),
-            _t124Lines(RenderEditableLineBoxes(editable)),
+            _t124Lines(_t124BoxesOf(editable)),
             reason: 'row $r',
           );
         }
@@ -847,10 +849,7 @@ void main() {
         final editable = _t124FieldEditable(tester, 0, 1);
         final revealed = host.rowBoxes(1);
         expect(revealed!.box, same(editable), reason: 'the field answers');
-        expect(
-          _t124Lines(revealed),
-          _t124Lines(RenderEditableLineBoxes(editable)),
-        );
+        expect(_t124Lines(revealed), _t124Lines(_t124BoxesOf(editable)));
       },
     );
 

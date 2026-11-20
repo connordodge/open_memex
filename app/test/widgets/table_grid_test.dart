@@ -724,12 +724,9 @@ void main() {
         await pumpTable(tester, _doc(_ruledTable), width: width, daily: true);
         expectTableRendered(0, 1);
         final grid = tester.getRect(tableGrid(0, 1));
-        final prose = tester.getRect(
-          find.descendant(
-            of: find.byKey(const Key('editor-row-0-0')),
-            matching: find.byType(EditableText),
-          ),
-        );
+        // The prose row's text slot (a field only while it is the active
+        // row, WI #132).
+        final prose = tester.getRect(find.byKey(const Key('editor-row-0-0')));
         expect(grid.left, moreOrLessEquals(prose.left, epsilon: _eps));
         expect(grid.right, moreOrLessEquals(prose.right, epsilon: _eps));
         expect(grid.width, moreOrLessEquals(expected, epsilon: _eps));

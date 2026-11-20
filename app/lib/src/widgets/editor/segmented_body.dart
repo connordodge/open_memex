@@ -640,27 +640,37 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
                     // The fields depend on the note only through this: a
                     // rebuild that keeps it rebuilds no row (WI #129).
                     fieldsKey: (_isSavedDaily ? widget.note.id : null,),
+                    // The active row's field; every other row's idle text
+                    // (WI #132), joined to the spell checker the same way.
                     fieldBuilder: (context, row) => SpellCheckField(
                       controller: row.controller,
-                      child: TextSegmentField(
-                        controller: row.controller,
-                        focusNode: row.focusNode,
-                        kindChips: _kindChips,
-                        hintText: row.hintText,
-                        // Tight glyph boxes (design A); the row paints the
-                        // selection itself, as one block (EditorRow).
-                        selectionHeightStyle: ui.BoxHeightStyle.tight,
-                        paintsSelection: false,
-                        onMoveUp: row.first
-                            ? () => _neighbour(t, forward: false)
-                            : null,
-                        onMoveDown: row.last
-                            ? () => _neighbour(t, forward: true)
-                            : null,
-                        dailyNoteId: _isSavedDaily ? widget.note.id : null,
-                        onTopicLinked: _onTopicLinked,
-                        onCreateError: _onCreateError,
-                      ),
+                      child: !row.active
+                          ? IdleRowText(
+                              controller: row.controller,
+                              focusNode: row.focusNode,
+                              onActivate: row.onActivate,
+                            )
+                          : TextSegmentField(
+                              controller: row.controller,
+                              focusNode: row.focusNode,
+                              kindChips: _kindChips,
+                              hintText: row.hintText,
+                              // Tight glyph boxes (design A); the row paints the
+                              // selection itself, as one block (EditorRow).
+                              selectionHeightStyle: ui.BoxHeightStyle.tight,
+                              paintsSelection: false,
+                              onMoveUp: row.first
+                                  ? () => _neighbour(t, forward: false)
+                                  : null,
+                              onMoveDown: row.last
+                                  ? () => _neighbour(t, forward: true)
+                                  : null,
+                              dailyNoteId: _isSavedDaily
+                                  ? widget.note.id
+                                  : null,
+                              onTopicLinked: _onTopicLinked,
+                              onCreateError: _onCreateError,
+                            ),
                     ),
                     builder: (context, rows, boxes) =>
                         _primaryKeyed(i == 0, t, rows, boxes),

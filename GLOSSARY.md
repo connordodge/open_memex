@@ -35,7 +35,7 @@ The note editor's way of showing a note body with its markdown formatting render
 _Avoid_: WYSIWYG, rich text, preview pane, rendered mode
 
 **Editor row**:
-One editable field inside a text segment of the live-preview editor: an item row holds one list item, task or quote line with its marker in a left column, and a prose row holds a run of consecutive lines that are not item lines. Not the same thing as a block.
+One row of a text segment in the live-preview editor: an item row holds one list item, task or quote line with its marker in a left column, and a prose row holds a run of consecutive lines that are not item lines. At any moment an editor row is either the active row or an idle row. Not the same thing as a block.
 _Avoid_: block, block field, line field
 
 **Indent / Outdent**:
@@ -178,6 +178,16 @@ _Avoid_: dictionary word, custom word
 **Table**:
 A GitHub-flavoured markdown pipe table in a note body: a header line, a delimiter line (such as `|---|:-:|`) and zero or more body lines. Live preview shows it as one table row of the editor: a grid, or its raw lines while revealed.
 _Avoid_: grid (for the markdown), spreadsheet
+
+## Long notes (#120)
+
+**Active row**:
+The one editor row of a text segment that is shown as an editable field: the row whose field has keyboard focus while the segment is focused (a selection that crosses rows keeps it in the row the selection started from), otherwise the row holding the segment's selection extent.
+_Avoid_: focused row, live row, editing row
+
+**Idle row**:
+Any editor row that is not the active row, shown as static text laid out exactly as its field would be, selection highlight, revealed markup, spelling squiggles and find highlights included. It becomes the active row when the caret moves into it.
+_Avoid_: static row, resting row, read-only row
 
 ## Agent note edits (#1)
 

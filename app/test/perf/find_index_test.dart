@@ -14,10 +14,9 @@
 // counts, never times. A row may run a step once per frame, and a test pumps
 // two frames per event ([_wi130PerRow]).
 //
-// The rows' decorations are read through each row field's controller
-// (`LivePreviewController.findDecoration`): #132 (idle rows) mounts a field
-// for the active row only and must move [_wi130Decorations] onto the rows
-// host then.
+// The rows' decorations are read through each row's controller on the rows
+// host (`SegmentViewState.rowController`, `LivePreviewController.
+// findDecoration`): #132 (idle rows) mounts a field for the active row only.
 import 'dart:collection';
 import 'dart:math' as math;
 
@@ -33,7 +32,6 @@ import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/widgets/editor/editor_row.dart';
 import 'package:open_memex_app/src/widgets/editor/find_decoration.dart';
 import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
-import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
 import 'package:open_memex_app/src/widgets/editor/paragraph_line_boxes.dart';
 import 'package:open_memex_app/src/widgets/find/find_highlights.dart';
 import 'package:open_memex_app/src/widgets/find/find_in_note_host.dart';
@@ -216,31 +214,18 @@ Map<int, FindHighlights> _wi130Layers(WidgetTester tester, int rows) {
   return {for (var r = 0; r < rows; r++) r: ?byKey[findHighlightsKey(0, r)]};
 }
 
-/// Every row field's find decoration in text segment 0, by row index (see
-/// the file comment: #132 moves this onto the rows host).
+/// Every row's find decoration in text segment 0, by row index, read from
+/// the rows host's row controllers (idle rows, #132, mount no field).
 Map<int, FindDecoration?> _wi130Decorations(
   WidgetTester tester,
   List<RowSpec> specs,
 ) {
   final host = rowsHostOf(tester);
-  final rowAt = {for (final (r, spec) in specs.indexed) spec.textStart: r};
-  final out = <int, FindDecoration?>{};
-  for (final field in tester.widgetList<EditableText>(
-    find.descendant(
-      of: find.byKey(textSegmentKey(0), skipOffstage: false),
-      matching: find.byType(EditableText, skipOffstage: false),
-      skipOffstage: false,
-    ),
-  )) {
-    final controller = field.controller;
-    if (controller is! LivePreviewController) continue;
-    final start = host.rowTextStartOf(controller);
-    if (start == null) continue;
-    if (rowAt[start] case final r?) {
-      out[r] = controller.findDecoration?.value;
-    }
-  }
-  return out;
+  return {
+    for (var r = 0; r < specs.length; r++)
+      if (host.rowController(r) case final controller?)
+        r: controller.findDecoration?.value,
+  };
 }
 
 /// Every row of text segment 0 paints and decorates exactly [state]'s

@@ -1194,6 +1194,10 @@ void main() {
         final offset = _wi207At('Ghost', plus: 2);
 
         await tester.macCmdClick(_wi207Glyph(b, offset));
+        // TEST-CHANGE (WI #132): the table row's field mounts after the
+        // click's frame and takes focus after it.
+        await tester.pump();
+        await tester.pump();
 
         expect(t.log, isEmpty, reason: 'nothing flushed or opened');
         expect(t.tabs.opened, isEmpty);
@@ -1211,6 +1215,10 @@ void main() {
         final offset = _wi207At('reveal', plus: 2);
 
         await tester.macCmdClick(_wi207Glyph(b, offset));
+        // TEST-CHANGE (WI #132): the table row's field mounts after the
+        // click's frame and takes focus after it.
+        await tester.pump();
+        await tester.pump();
 
         expect(t.log, isEmpty);
         _wi207ExpectCaretInTable(b, offset);

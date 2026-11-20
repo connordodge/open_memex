@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -34,6 +35,8 @@ class EditorRowField {
     required this.first,
     required this.last,
     required this.hintText,
+    this.active = true,
+    this.onActivate,
   });
 
   /// The row field's controller: it holds only the row's text.
@@ -50,11 +53,22 @@ class EditorRowField {
 
   /// The field's hint, or null.
   final String? hintText;
+
+  /// Whether the row is its segment's active row (WI #132, Spec #122 Req
+  /// 27): the builder builds its editable field then, and else may build
+  /// the row's idle text (`IdleRowText`) in its place. Default true (a
+  /// builder that ignores it gives every row a field, as before #132).
+  final bool active;
+
+  /// Makes the row the active row with the caret at its text end (the idle
+  /// row's semantics activate action, Req 34); null outside a rows host.
+  final VoidCallback? onActivate;
 }
 
 /// Builds the field of one editor row: an editable field (a
 /// `TextSegmentField`) of [EditorRowField.controller] and
-/// [EditorRowField.focusNode].
+/// [EditorRowField.focusNode] while [EditorRowField.active], else that or
+/// the row's idle text.
 typedef EditorRowFieldBuilder =
     Widget Function(BuildContext context, EditorRowField row);
 
@@ -99,10 +113,14 @@ abstract interface class SegmentLineBoxes implements LineBoxSource {
 ///
 /// [controller] holds the segment's whole text and its selection in segment
 /// offsets. The segment renders as A1's rows of that text (`splitRows`),
-/// re-derived after every change: one field per row, each editing its own
+/// re-derived after every change: one row per spec, each with its own
 /// `LivePreviewController` that holds only the row's text, keyed
-/// `editor-row-<index>-<r>`. Rows are matched across changes (`matchRows`),
-/// so the focused row keeps its controller, focus node and field.
+/// `editor-row-<index>-<r>`. Only the [SegmentViewState.activeRow] builds
+/// its editable field; every other row is an idle row, whose text
+/// [fieldBuilder] builds with [EditorRowField.active] false (WI #132, Spec
+/// #122 Req 27, TD5). Rows are matched across changes (`matchRows`), so
+/// the focused row, else the active row, keeps its controller, focus node
+/// and field.
 ///
 /// Each row's subtree is kept across changes and built again only when what
 /// it shows changed (WI #129, Spec #122 R17-R19, TD2, TD4): its kind,
@@ -119,7 +137,8 @@ abstract interface class SegmentLineBoxes implements LineBoxSource {
 /// the undo recorder.
 ///
 /// [focusNode] wraps the rows: it has focus while a row has, and focusing it
-/// moves focus to the row holding the segment's caret. Below the last row
+/// makes the row holding the segment's caret the active row, which takes
+/// focus. Below the last row
 /// an empty area makes the segment [minLines] lines tall; a click there
 /// puts the caret at the segment's end.
 ///
@@ -278,6 +297,10 @@ class _Row {
 
   late final VoidCallback onValue;
   late final VoidCallback onFocus;
+
+  /// Makes the row the active row, caret at its text end
+  /// ([EditorRowField.onActivate]): one function for the row's life.
+  late final VoidCallback activate;
 }
 
 /// The [SegmentEditing] handle over a [SegmentView]'s editor rows.
@@ -351,6 +374,11 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
       for (final spec in splitRows(_text, atSegmentStart: true)) _newRow(spec),
     ];
     _indexRows();
+    // The segment opens unfocused: the row holding the extent is active.
+    _setActive(
+      _rows[_rowHolding(widget.controller.selection.extentOffset)],
+      rebuild: false,
+    );
     _applying = true;
     try {
       _syncRows(widget.controller.selection, props: true, notify: false);
@@ -449,6 +477,7 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
     row.onFocus = () => _onRowFocus(row);
     row.boxes = () => _rowBoxes(row);
     row.slotBoxes = () => _slotBoxes(row);
+    row.activate = () => _activateAtEnd(row);
     row.controller.addListener(row.onValue);
     row.focusNode.addListener(row.onFocus);
     // The row's presenter says whether its text is hidden (WI #124, D2):
@@ -473,9 +502,10 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   /// [row] has no continuation: its field goes away with this frame.
   void _retire(_Row row) {
     _unlisten(row);
-    _rowOf.remove(row.controller);
     if (identical(_active, row)) _active = null;
     if (identical(_activating, row)) _activating = null;
+    if (identical(_focusPending, row)) _focusPending = null;
+    _rowOf.remove(row.controller);
     widget.onRowRemoved(row.controller);
     if (_retired.isEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _disposeRetired());
@@ -512,12 +542,14 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   /// A row field's typed change or selection move.
   void _onRowValue(_Row row) {
     final value = row.controller.value;
-    final changed = value != row.seen;
+    final prior = row.seen;
+    final changed = value != prior;
     row.seen = value;
     if (_applying || !changed) return;
     if (_intercepted(row, value)) return;
     if (value.text != row.text) {
       final local = SegmentEdit.diff(row.text, value.text);
+      if (_handedOver(row, prior, local)) return;
       final at = row.spec.textStart;
       final selection = value.selection;
       _apply(
@@ -536,6 +568,38 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
     } else if (row.focusNode.hasFocus) {
       _selectFrom(row);
     }
+  }
+
+  /// Text typed into [row] while it still holds the text input connection
+  /// but a handover to another row waits for its field ([_focusPending]):
+  /// it goes in at the segment selection, in the row the caret moved to,
+  /// as it would once that row's field has focus (Req 31, 33). Only a
+  /// plain insertion while the selection lies in the waiting row, into a
+  /// row that held no composition ([prior]), moves: an IME commit or a
+  /// deletion stays in [row]. Returns whether [local] went in elsewhere;
+  /// [row]'s field then gets its own text back.
+  bool _handedOver(_Row row, TextEditingValue prior, SegmentEdit local) {
+    final pending = _focusPending;
+    if (pending == null || identical(pending, row)) return false;
+    if (prior.composing.isValid) return false;
+    if (local.end != local.start || local.replacement.isEmpty) return false;
+    final selection = widget.controller.selection;
+    if (!selection.isValid ||
+        _rowHolding(selection.start) != pending.index ||
+        _rowHolding(selection.end) != pending.index) {
+      return false;
+    }
+    _apply(
+      SegmentEdit(
+        start: selection.start,
+        end: selection.end,
+        replacement: local.replacement,
+        selection: SegmentSelection.collapsed(
+          selection.start + local.replacement.length,
+        ),
+      ),
+    );
+    return true;
   }
 
   /// Offers [row]'s composing [value] to the composing interceptor while the
@@ -588,6 +652,12 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
     if (!row.focusNode.hasFocus) return;
     final activating = identical(_activating, row);
     _activating = null;
+    // The row holding focus is the active row (Req 27). One that took
+    // focus while idle (a request on its node from outside the host)
+    // mounts its field, which then needs the keyboard.
+    if (!identical(_focusPending, row)) _focusPending = null;
+    _setActive(row);
+    if (_fieldStateOf(row) == null) _focusAfterFrame(row);
     // An activated row's focus keeps the segment selection (WI #128), and
     // re-slices it so the row the caret left drops the end-of-text caret
     // its field took while still focused (D24).
@@ -621,6 +691,7 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
     } finally {
       _applying = false;
     }
+    _followExtent();
   }
 
   /// The segment controller changed: from outside when its text is not the
@@ -650,15 +721,24 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
     } finally {
       _applying = false;
     }
+    if (!external) _followExtent();
     if (external) _undo.reset();
   }
 
   /// The segment node itself got focus: hand it to the row holding the
-  /// segment's caret.
+  /// segment's caret, which becomes the active row (`activateRow`, keeping
+  /// the selection). The segment lost focus: the row holding the
+  /// selection extent becomes the active row (Req 27).
   void _onSegmentFocus() {
-    if (!widget.focusNode.hasPrimaryFocus) return;
-    _rows[_rowHolding(widget.controller.selection.extentOffset)].focusNode
-        .requestFocus();
+    if (widget.focusNode.hasPrimaryFocus) {
+      final selection = widget.controller.selection;
+      activateRow(_rowHolding(selection.extentOffset), selection);
+    } else if (!widget.focusNode.hasFocus) {
+      // Focus left the segment before a handover's row took it: the
+      // handover is dropped, so that row does not take focus back.
+      _focusPending = null;
+      _followExtent();
+    }
   }
 
   /// Applies [edit] to the segment text as one edit (D9).
@@ -709,12 +789,23 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   /// rest are retired and new rows are made.
   void _rederive(SegmentEdit edit, String text, TextSelection selection) {
     final specs = splitRows(text, atSegmentStart: true);
-    final match = matchRows(
-      [for (final row in _rows) row.spec],
-      specs,
-      edit: edit,
-      focused: focusedRow,
-    );
+    final before = [for (final row in _rows) row.spec];
+    // The row holding focus keeps its controller (Req 33): typing lands in
+    // the focused row even while a row a move just activated waits to take
+    // focus.
+    final focused = focusedRow;
+    var match = matchRows(before, specs, edit: edit, focused: focused);
+    // With no row focused the active row keeps its controller too, but only
+    // through the edit's selection when it has no continuation of its own:
+    // carrying it to the row of a caret the edit moved elsewhere would
+    // leave every row in between without one (rebuilt and repainted).
+    final active = _active?.index;
+    if (focused == null &&
+        active != null &&
+        active < match.length &&
+        match[active] == null) {
+      match = matchRows(before, specs, edit: edit, focused: active);
+    }
     final kept = List<_Row?>.filled(specs.length, null);
     for (final (k, j) in match.indexed) {
       if (j == null) {
@@ -729,8 +820,9 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
         if (kept[j] case final row?) (row..spec = spec) else _newRow(spec),
     ];
     _indexRows();
-    // The active row keeps being active where it moved to (WI #128).
-    _activeRow.value = _active?.index;
+    // The active row keeps being active where it moved to (WI #128); once
+    // it went away, the focused row or the row holding the extent is.
+    _restoreActive(selection);
     _syncRows(selection, props: true);
     debugSetStates++;
     setState(() {});
@@ -949,8 +1041,8 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
       i >= 0 && i < _rows.length ? _rows[i].controller : null;
 
   /// The index now of the row whose field edits [row], or null when [row]
-  /// is no row field of this segment (WI #128; WI #129: the D10 index Keys
-  /// read it).
+  /// is no row field of this segment (WI #129: the D10 index Keys read it;
+  /// WI #128's pointer layer too).
   int? rowIndexOf(TextEditingController row) => _rowOf[row]?.index;
 
   /// Where the segment selection meets the edges of the row whose field
@@ -1016,44 +1108,178 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
     );
   }
 
-  /// The row [activateRow] last made active (WI #128, Spec #122 Req 27,
-  /// Req 30), or null before any was. It notifies when it changes, so a row
-  /// presenter can build that row's field in place of its text (#132). It
-  /// follows that row when rows re-derive (its index moves with it) and
-  /// becomes null once the row goes away.
+  /// The segment's active row (WI #128, #132, Spec #122 Req 27): the one
+  /// row shown as its editable field, every other row idle. It notifies
+  /// when it changes, and the rows host builds the two rows' fields again.
   ///
-  /// The host's activation seam (lead ruling Q1): #132 extends which row is
-  /// active (Req 27) without changing this signature.
+  /// - While the segment has focus it is the row whose field holds focus,
+  ///   or the row [activateRow] asked focus for until that focus arrives
+  ///   (the old row keeps focus and its text input connection until the
+  ///   new row's field is mounted, so the segment stays focused
+  ///   throughout).
+  /// - Otherwise it is the row holding the segment's selection extent.
+  /// - A selection that crosses rows keeps it in the row holding focus,
+  ///   the row the selection started from.
+  ///
+  /// It follows its row when rows re-derive (an agent reload keeps the
+  /// row's controller, `matchRows`); when that row goes away, the focused
+  /// row or the row holding the extent becomes active.
+  ///
+  /// The host's activation seam (lead ruling Q1).
   ValueListenable<int?> get activeRow => _activeRow;
   final ValueNotifier<int?> _activeRow = ValueNotifier(null);
 
-  /// The row [activeRow] names, or null.
+  /// The row [activeRow] names.
   _Row? _active;
 
   /// The row [activateRow] asked focus for until that focus arrives: the
   /// focus keeps the segment selection rather than taking the row's slice.
   _Row? _activating;
 
-  /// Makes row [i] the active row with segment [selection] (WI #128, Spec
-  /// #122 Req 30): the press, menu or Check Document Now acting on a row
-  /// asks for it. The segment selection becomes [selection], [activeRow]
-  /// becomes [i], and row [i]'s focus node is asked for focus, which it
-  /// takes once the row's field is mounted (a row without a field mounts
-  /// one when its presenter sees [activeRow]). When that focus arrives the
-  /// segment selection stays as it is then (a drag may have extended it),
-  /// so a selection across rows keeps its ends. Nothing past the last row.
+  /// The active row that takes focus after this frame, once its field is
+  /// mounted ([_focusAfterFrame]); null when none waits.
+  _Row? _focusPending;
+
+  /// Makes [row] the active row; with [rebuild], the rows are built again,
+  /// so the row that was active builds its idle text and [row] its field.
+  void _setActive(_Row row, {bool rebuild = true}) {
+    if (identical(row, _active) && _activeRow.value == row.index) return;
+    _active = row;
+    _activeRow.value = row.index;
+    if (rebuild && mounted) setState(() {});
+  }
+
+  /// While the segment has no focus, the row holding the selection extent
+  /// is the active row (Req 27).
+  void _followExtent() {
+    if (widget.focusNode.hasFocus || _rows.isEmpty) return;
+    _setActive(_rows[_rowHolding(widget.controller.selection.extentOffset)]);
+  }
+
+  /// After a re-derive: the active row where it moved to, else (it went
+  /// away) the row holding focus or the row holding [selection]'s extent.
+  void _restoreActive(TextSelection selection) {
+    final active = _active;
+    if (active != null && identical(_rowOf[active.controller], active)) {
+      _activeRow.value = active.index;
+    } else {
+      _setActive(
+        _rows[focusedRow ?? _rowHolding(selection.extentOffset)],
+        rebuild: false,
+      );
+    }
+    _followExtent();
+  }
+
+  /// Makes row [i] the active row with segment [selection] (WI #128, #132,
+  /// Spec #122 Req 30, 33): a press, a menu, a keyboard move, the segment
+  /// taking focus, an idle row's activate action or Check Document Now
+  /// acting on a row asks for it.
   ///
-  /// The host's activation seam (lead ruling Q1): the pointer layer, the
-  /// row menus and Check Document Now activate rows through it only.
+  /// - An IME composition open in another row is committed there first
+  ///   (its text stays; the composing range closes).
+  /// - The segment selection becomes [selection] and [activeRow] becomes
+  ///   [i].
+  /// - Row [i] takes focus: now when its field is mounted, else after this
+  ///   frame, which mounts it. Until then the row holding focus keeps it
+  ///   (and its text input connection), so the segment stays focused and
+  ///   nothing typed meanwhile is lost.
+  /// - When that focus arrives the segment selection stays as it is then
+  ///   (a drag may have extended it), so a selection across rows keeps its
+  ///   ends.
+  ///
+  /// Nothing past the last row. The host's activation seam (lead ruling
+  /// Q1): the pointer layer, the keyboard, the row menus and Check
+  /// Document Now activate rows through it only.
   void activateRow(int i, TextSelection selection) {
     if (i < 0 || i >= _rows.length) return;
     final row = _rows[i];
+    _commitComposing(except: row);
     _select(selection);
-    _active = row;
-    _activeRow.value = i;
+    _setActive(row);
     final node = row.focusNode;
     _activating = node.hasFocus ? null : row;
-    node.requestFocus();
+    final field = _fieldStateOf(row);
+    if (field == null) {
+      _focusAfterFrame(row);
+    } else {
+      _focusPending = null;
+      if (!node.hasFocus) _focusField(row, field);
+    }
+  }
+
+  /// Focuses [row]'s unfocused [field] as a click on it does: the field's
+  /// own update with its value unchanged focuses it and builds its
+  /// selection overlay, so its toolbar and context menu (SpellingMenu) can
+  /// show over the caret activation gave it, also for a right click on
+  /// that caret, which selects nothing. A plain focus request builds no
+  /// overlay for a field that already holds a valid selection.
+  void _focusField(_Row row, EditableTextState field) {
+    if (identical(field.widget.focusNode, row.focusNode)) {
+      field.userUpdateTextEditingValue(field.textEditingValue, null);
+    } else {
+      row.focusNode.requestFocus();
+    }
+  }
+
+  /// [row]'s activate action: the active row, caret at its text end.
+  void _activateAtEnd(_Row row) {
+    if (!identical(_rowOf[row.controller], row)) return;
+    activateRow(row.index, TextSelection.collapsed(offset: row.spec.textEnd));
+  }
+
+  /// Commits an IME composition open in the focused row unless that row is
+  /// [except] (Req 33): its composing range closes and its text stays.
+  void _commitComposing({required _Row except}) {
+    final i = focusedRow;
+    if (i == null) return;
+    final row = _rows[i];
+    final value = row.controller.value;
+    if (identical(row, except) || !value.composing.isValid) return;
+    _applying = true;
+    try {
+      row.controller.value = value.copyWith(composing: TextRange.empty);
+    } finally {
+      _applying = false;
+    }
+  }
+
+  /// [row] takes focus after this frame, once its field is mounted: a
+  /// field takes the text input connection when its node gains focus, so
+  /// the node is asked then, not before. A row whose node already holds
+  /// focus (it took focus while idle) asks its field for the keyboard
+  /// instead. Only the last row asked for waits; nothing once it went away
+  /// or stopped being active, or once focus moved elsewhere since the ask:
+  /// out of the segment ([_onSegmentFocus] drops the wait), or, asked while
+  /// the segment had no focus, to another node that is not a focus scope
+  /// (a palette or search field took it; a tap outside a field only
+  /// unfocuses it to its scope).
+  void _focusAfterFrame(_Row row) {
+    _focusPending = row;
+    final from = FocusManager.instance.primaryFocus;
+    final binding = SchedulerBinding.instance;
+    binding.addPostFrameCallback((_) {
+      if (!mounted || !identical(_focusPending, row)) return;
+      _focusPending = null;
+      if (!identical(_active, row) || !identical(_rowOf[row.controller], row)) {
+        return;
+      }
+      final now = FocusManager.instance.primaryFocus;
+      if (!widget.focusNode.hasFocus &&
+          now != null &&
+          !identical(now, from) &&
+          now is! FocusScopeNode) {
+        return;
+      }
+      final field = _fieldStateOf(row);
+      if (field == null) return;
+      if (row.focusNode.hasFocus) {
+        field.requestKeyboard();
+      } else {
+        _focusField(row, field);
+      }
+    }, debugLabel: 'SegmentView.focusActiveRow');
+    binding.ensureVisualUpdate();
   }
 
   /// Row [i]'s field state (WI #128), or null past the last row and while
@@ -1183,6 +1409,9 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
     return null;
   }
 
+  /// Whether the segment selection's ends lie in different rows.
+  bool get selectionSpansRows => _crossesRows(widget.controller.selection);
+
   @override
   int? get focusedRow {
     final i = _rows.indexWhere((row) => row.focusNode.hasFocus);
@@ -1262,10 +1491,13 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
       blockKey: row.gridKey,
     );
     final hint = _text.isEmpty ? widget.hintText : null;
+    // Only the active row builds its editable field (WI #132).
+    final active = identical(row, _active);
     final fieldConfig = (
       first: first,
       last: last,
       hint: hint,
+      active: active,
       generation: _fieldsGeneration,
     );
     var field = row.field;
@@ -1281,6 +1513,8 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
             first: first,
             last: last,
             hintText: hint,
+            active: active,
+            onActivate: row.activate,
           ),
         ),
       );

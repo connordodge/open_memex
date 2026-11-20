@@ -19,7 +19,9 @@ import 'text_segment.dart' show editorBodyStyle;
 
 /// Builds an editor row's text slot (frozen, D2): the row's field under Key
 /// `editor-row-<segment>-<index>`, with the row's selection fill and
-/// spelling squiggles. With [offstage] the field stays mounted (its
+/// spelling squiggles. While the row is idle (WI #132) the slot holds its
+/// idle text (a `RichText` laid out as the field) in the field's place, so
+/// a presenter builds the same body for an idle and an active row. With [offstage] the field stays mounted (its
 /// controller, focus node and text input connection survive) but is not
 /// painted, hit or read by semantics, as a rendered table's field is.
 typedef RowTextSlot = Widget Function({required bool offstage});

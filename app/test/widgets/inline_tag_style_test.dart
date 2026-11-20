@@ -40,6 +40,7 @@ import 'package:open_memex_app/src/widgets/editor/text_segment.dart';
 import '../support/editor_scope.dart';
 import '../support/font_fetch_hold.dart';
 import '../support/markdown_fixtures.dart';
+import '../support/segment_editing_finder.dart';
 import '../support/table_harness.dart';
 import '../support/wi159_line_geometry.dart' show wi159EditableIn;
 
@@ -1292,11 +1293,7 @@ void main() {
 
     /// What editor row [r]'s field paints.
     TextSpan painted(WidgetTester tester, int r) =>
-        tester
-                .state<EditableTextState>(tableRowField(0, r))
-                .renderEditable
-                .text!
-            as TextSpan;
+        segmentRowSpan(tester, 0, r) as TextSpan; // idle rows too (WI #132)
 
     /// What grid cell ([row], [col]) of editor row [r] paints.
     TextSpan cell(WidgetTester tester, int r, int row, int col) =>
