@@ -498,6 +498,9 @@ void main() {
         'applescript',
         'jar',
         'exe',
+        'fileloc',
+        'inetloc',
+        'webloc',
       ]);
       expect(executableExtensions, _rustTable('EXECUTABLE_EXTENSIONS'));
     });
@@ -567,6 +570,40 @@ void main() {
         }
         expect(wrong, isEmpty);
         expect(executableExtensions, isNotEmpty);
+      },
+    );
+
+    test(
+      'isExecutableName is true for fileloc inetloc and webloc in any letter case',
+      () {
+        // #171 (L17): opening a location file follows the location it holds.
+        expect(isExecutableName('Read me.WEBLOC'), isTrue);
+        final wrong = <String>[];
+        for (final name in [
+          'Read me.webloc',
+          'Read me.WEBLOC',
+          'Read me.WebLoc',
+          'Site.inetloc',
+          'Site.INETLOC',
+          'Site.InetLoc',
+          'Disk.fileloc',
+          'Disk.FILELOC',
+          'Disk.FileLoc',
+          '.webloc',
+        ]) {
+          if (!isExecutableName(name)) wrong.add(name);
+        }
+        expect(wrong, isEmpty);
+        for (final name in [
+          'notes.webloc.txt',
+          'Site.inetloc.zip',
+          'webloc',
+          'x.weblocs',
+          'x.filelo',
+          'x.inet',
+        ]) {
+          expect(isExecutableName(name), isFalse, reason: name);
+        }
       },
     );
 

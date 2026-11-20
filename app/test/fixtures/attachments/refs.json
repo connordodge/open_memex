@@ -579,6 +579,21 @@
       "why": "R33 table: .exe"
     },
     {
+      "name": "Disk.fileloc",
+      "executable": true,
+      "why": "R33 table: .fileloc"
+    },
+    {
+      "name": "Site.InetLoc",
+      "executable": true,
+      "why": "R33 table: .inetloc"
+    },
+    {
+      "name": "Read me.WEBLOC",
+      "executable": true,
+      "why": "R33 table: .webloc"
+    },
+    {
       "name": "INSTALL.SH",
       "executable": true,
       "why": "the table matches in any letter case"
@@ -610,6 +625,11 @@
     },
     {
       "name": "my.app.zip",
+      "executable": false,
+      "why": "only the last extension counts"
+    },
+    {
+      "name": "notes.webloc.txt",
       "executable": false,
       "why": "only the last extension counts"
     }

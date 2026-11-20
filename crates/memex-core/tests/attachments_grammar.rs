@@ -18,7 +18,7 @@ use memex_core::attachments::{
 use serde_json::Value;
 
 /// R33's table, exactly as the Spec lists it.
-const R33_EXECUTABLES: [&str; 18] = [
+const R33_EXECUTABLES: [&str; 21] = [
     "command",
     "tool",
     "terminal",
@@ -37,6 +37,9 @@ const R33_EXECUTABLES: [&str; 18] = [
     "applescript",
     "jar",
     "exe",
+    "fileloc",
+    "inetloc",
+    "webloc",
 ];
 
 /// R31's inline image types.
@@ -590,6 +593,47 @@ fn executable_table_matches_r33_exactly() {
     for name in ["x.txt", "x.pdf", "x.png", "sh", "x.sh.txt", "x.command.zip"] {
         assert!(!attachments::is_executable_name(name), "{name}");
     }
+}
+
+/// #171 (L17): opening a location file follows the location it holds (an
+/// app or script on disk, or a URL), so it is revealed, never opened.
+#[test]
+fn location_files_are_executable_in_any_letter_case() {
+    for name in [
+        "Read me.webloc",
+        "Read me.WEBLOC",
+        "Read me.WebLoc",
+        "Site.inetloc",
+        "Site.INETLOC",
+        "Site.InetLoc",
+        "Disk.fileloc",
+        "Disk.FILELOC",
+        "Disk.FileLoc",
+        ".webloc",
+    ] {
+        assert!(attachments::is_executable_name(name), "{name}");
+    }
+    for name in [
+        "notes.webloc.txt",
+        "Site.inetloc.zip",
+        "webloc",
+        "x.weblocs",
+        "x.filelo",
+        "x.inet",
+    ] {
+        assert!(!attachments::is_executable_name(name), "{name}");
+    }
+}
+
+#[test]
+fn a_location_file_on_disk_counts_as_executable_without_an_x_bit() {
+    let tmp = tempfile::tempdir().unwrap();
+    for name in ["Read me.WEBLOC", "Site.inetloc", "Disk.FileLoc"] {
+        let p = file_with_mode(tmp.path(), name, 0o644);
+        assert!(attachments::is_executable(&p), "{name} by its extension");
+    }
+    let p = file_with_mode(tmp.path(), "notes.webloc.txt", 0o644);
+    assert!(!attachments::is_executable(&p), "notes.webloc.txt");
 }
 
 fn file_with_mode(dir: &Path, name: &str, mode: u32) -> PathBuf {
