@@ -18,6 +18,7 @@
 // (`LivePreviewController.findDecoration`): #132 (idle rows) mounts a field
 // for the active row only and must move [_wi130Decorations] onto the rows
 // host then.
+import 'dart:collection';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
@@ -68,6 +69,7 @@ int _n(String name) => PerfCounters.snapshot()[name]!;
 void _wi130Reset() {
   PerfCounters.reset();
   debugFindMatchReads = 0;
+  _wi130ListReads = 0;
 }
 
 /// `ceil(log2(n + 1))`: the depth of a binary search over [n] items.
@@ -456,6 +458,57 @@ List<int> _wi130Scan(
       i,
 ];
 
+/// Element reads of every [_Wi130CountingMatches] since the last
+/// [_wi130Reset]: a count made by the list itself, apart from the
+/// `debugFindMatchReads` counter the code under test increments, so a lookup
+/// that scans every match is counted whether or not it counts itself.
+int _wi130ListReads = 0;
+
+/// A match list that counts every element read (`[]`, an iteration and the
+/// `indexed` and `toList` built on it). Length reads are free.
+final class _Wi130CountingMatches extends ListBase<FindMatch> {
+  _Wi130CountingMatches(this._inner);
+
+  final List<FindMatch> _inner;
+
+  @override
+  int get length => _inner.length;
+
+  @override
+  set length(int value) => throw UnsupportedError('read only');
+
+  @override
+  FindMatch operator [](int index) {
+    _wi130ListReads++;
+    return _inner[index];
+  }
+
+  @override
+  void operator []=(int index, FindMatch value) =>
+      throw UnsupportedError('read only');
+}
+
+/// [state] with its matches counted by [_wi130ListReads].
+FindInNoteState _wi130Counted(FindInNoteState state) =>
+    state.copyWith(matches: _Wi130CountingMatches(state.matches));
+
+/// The Find in note notifier with every state's matches counted by
+/// [_wi130ListReads]: the editor under test reads matches through counting
+/// lists.
+final class _Wi130CountingFind extends FindInNoteNotifier {
+  @override
+  set state(FindInNoteState value) {
+    super.state = value.matches is _Wi130CountingMatches
+        ? value
+        : _wi130Counted(value);
+  }
+}
+
+/// Overrides for a harness whose Find matches are counted.
+final _wi130CountedFind = [
+  findInNoteProvider.overrideWith(_Wi130CountingFind.new),
+];
+
 /// N2's text as one body source (segment 0) and its matches of [query],
 /// with the current match in the middle.
 FindInNoteState _wi130N2State(String query) {
@@ -607,14 +660,23 @@ void main() {
     test(
       'findFieldDecoration and findPaintRanges over every row of N2 read matches by index not rows times matches',
       () {
-        final state = _wi130N2State('e');
+        final plain = _wi130N2State('e');
         final specs = splitRows(
-          state.sources.single.text,
+          plain.sources.single.text,
           atSegmentStart: true,
         );
-        final n = state.matches.length;
-        final touching = _wi130PerRowMatches(state, specs);
-        debugFindMatchReads = 0;
+        final n = plain.matches.length;
+        final touching = _wi130PerRowMatches(plain, specs);
+        // The matches are read through a list that counts its own reads.
+        final state = _wi130Counted(plain);
+        // Built once on the first lookup, outside the counts.
+        FindMatchIndex.of(state.matches).outlinesTouching(
+          segment: 0,
+          kind: FindSourceKind.body,
+          start: 0,
+          end: 1,
+        );
+        _wi130Reset();
         for (final (r, spec) in specs.indexed) {
           final decoration = findFieldDecoration(
             state,
@@ -630,6 +692,29 @@ void main() {
               'not ${_wi130Show(want)}',
             );
           }
+        }
+        final decorationReads = _wi130ListReads;
+        // One pass over every row: far below rows x matches (~3,000 x
+        // 10,000), within a quarter of [_wi130ReadBound]'s two frames.
+        expect(
+          decorationReads,
+          lessThanOrEqualTo(_wi130ReadBound(specs.length, n) ~/ 4),
+          reason:
+              'matches read for ${specs.length} decorations over $n matches',
+        );
+        expect(
+          decorationReads,
+          greaterThanOrEqualTo(specs.length),
+          reason: 'every row reads at least its lookup',
+        );
+        expect(
+          debugFindMatchReads,
+          decorationReads,
+          reason: 'the decoration lookups count every match they read',
+        );
+
+        _wi130Reset();
+        for (final (r, spec) in specs.indexed) {
           final paint = findPaintRanges(
             state,
             segment: 0,
@@ -642,12 +727,23 @@ void main() {
             fail('row $r paints $paint, not $wantPaint');
           }
         }
-        // One pass of each over every row: within a quarter of
-        // [_wi130ReadBound]'s two frames; rows x matches is ~3,000 x 10,000.
+        final paintReads = _wi130ListReads;
+        expect(
+          paintReads,
+          lessThanOrEqualTo(_wi130ReadBound(specs.length, n) ~/ 4),
+          reason: 'matches read for ${specs.length} paint lists over $n',
+        );
+        expect(
+          paintReads,
+          greaterThanOrEqualTo(specs.length),
+          reason: 'every row reads at least its lookup',
+        );
+        // The paint lookups count each match they read, apart from the one
+        // read of the current match per call.
         expect(
           debugFindMatchReads,
-          lessThanOrEqualTo(_wi130ReadBound(specs.length, n) ~/ 2),
-          reason: 'reads for ${specs.length} rows over $n matches',
+          paintReads - specs.length,
+          reason: 'the paint lookups count every match they read',
         );
       },
     );
@@ -697,7 +793,11 @@ void main() {
     testWidgets(
       'a Find-bar keystroke on N2 with a query matching every line reads matches by index not rows times matches',
       (tester) async {
-        final e = await pumpSpellingEditor(tester, body: _wi130Body(_wi130N2));
+        final e = await pumpSpellingEditor(
+          tester,
+          body: _wi130Body(_wi130N2),
+          overrides: _wi130CountedFind,
+        );
         // Warm-up: the bar opened (on the empty last query).
         await _wi130Open(e, '');
         await pumpFrames(tester);
@@ -705,8 +805,13 @@ void main() {
         _wi130Reset();
         await _wi130Key(tester, 'e');
         final updates = _n('findHighlightUpdates');
-        final reads = debugFindMatchReads;
+        final reads = _wi130ListReads;
         final after = _wi130State(e);
+        expect(
+          after.matches,
+          isA<_Wi130CountingMatches>(),
+          reason: 'the matches are counted by the list itself',
+        );
         final n = after.matches.length;
         final touching = _wi130PerRowMatches(after, specs);
         expect(
@@ -1088,21 +1193,24 @@ void main() {
             _wi130Match(0, 1000 + 10 * i, 1002 + i * 10),
           _wi130Hidden(0, 20000, 20002, const FindRange(190, 210)),
         ];
-        final state = FindInNoteState(
-          open: true,
-          query: 'x',
-          lastQuery: 'x',
-          matches: matches,
-          current: 0,
+        // The matches are read through a list that counts its own reads.
+        final state = _wi130Counted(
+          FindInNoteState(
+            open: true,
+            query: 'x',
+            lastQuery: 'x',
+            matches: matches,
+            current: 0,
+          ),
         );
         // Built once, outside the count.
-        FindMatchIndex.of(matches).outlinesTouching(
+        FindMatchIndex.of(state.matches).outlinesTouching(
           segment: 0,
           kind: FindSourceKind.body,
           start: 0,
           end: 1,
         );
-        debugFindMatchReads = 0;
+        _wi130Reset();
         final paint = findPaintRanges(
           state,
           segment: 0,
@@ -1115,9 +1223,19 @@ void main() {
           const FindPaintRange(90, 100, FindPaintStyle.outline),
         ]);
         expect(
+          _wi130ListReads,
+          inInclusiveRange(4, _wi130LookupBound(999) + 4),
+          reason:
+              'matches read of 1,000 for one field: its two and a binary '
+              'search, never a scan',
+        );
+        // The current match is read once and the lone outline is compared
+        // three times (one search to its end, one to its reach, one visit):
+        // the counter holds two more than the list was read.
+        expect(
           debugFindMatchReads,
-          lessThanOrEqualTo(_wi130LookupBound(999) * 2 + 8),
-          reason: 'reads of 1,000 matches for one field',
+          _wi130ListReads + 2,
+          reason: 'the lookups count every match and outline they read',
         );
       },
     );
