@@ -78,6 +78,10 @@ Future<PasteOutcome> pasteOrAttach(
 /// without it, so a menu that asks always shows (#147 r3).
 const pasteOfferWait = Duration(milliseconds: 100);
 
+/// The late answer [canPasteOrAttach] gives at once to a call made while
+/// its `onLateOffer` runs; null otherwise (#147 r5).
+bool? _lateAnswer;
+
 /// [future]'s value, or null when it fails.
 Future<T?> _orNull<T>(Future<T> future) =>
     future.then<T?>((value) => value, onError: (Object _) => null);
@@ -96,11 +100,19 @@ Future<T?> _orNull<T>(Future<T> future) =>
 /// [onLateOffer] runs once if the read (or, when it fails, the text check)
 /// later finds something to paste: the read of a large image-only clipboard
 /// (a TIFF converted to PNG, then sent whole) can take longer than
-/// [pasteOfferWait], and the caller can then add Paste to its menu.
+/// [pasteOfferWait], and the caller can then add Paste to its menu. A
+/// [canPasteOrAttach] called while [onLateOffer] runs answers yes at once,
+/// without reading the clipboard again, so a caller can show its menu again
+/// by asking again (#147 r5).
 Future<bool> canPasteOrAttach(
   BuildContext context, {
   VoidCallback? onLateOffer,
 }) async {
+  final handed = _lateAnswer;
+  if (handed != null) {
+    _lateAnswer = null;
+    return handed;
+  }
   final container = ProviderScope.containerOf(context, listen: false);
   // Sent before the read, so a slow native read does not hold it back.
   bool? text;
@@ -129,7 +141,13 @@ Future<bool> canPasteOrAttach(
         read
             .then((late) async => late == null ? await textCheck : offers(late))
             .then((offered) {
-              if (offered) onLateOffer();
+              if (!offered) return;
+              _lateAnswer = true;
+              try {
+                onLateOffer();
+              } finally {
+                _lateAnswer = null;
+              }
             }),
       );
     }

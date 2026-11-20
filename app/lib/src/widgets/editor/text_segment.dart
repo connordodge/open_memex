@@ -445,7 +445,16 @@ Future<void> showRowTextMenu(
   final ctrl = view.rowController(row);
   final focusNode = view.rowFocusNode(row);
   if (ctrl == null || focusNode == null) return;
-  final pasteable = await canPasteOrAttach(view.context);
+  // A menu shown without Paste because the clipboard answered late is
+  // shown again with Paste once it does, while it still shows (#147 r5).
+  final pasteable = await canPasteOrAttach(
+    view.context,
+    onLateOffer: () {
+      if (open == _rowMenuOpens && _rowMenu.isShown && view.mounted) {
+        showRowTextMenu(view, row, anchor: anchor).ignore();
+      }
+    },
+  );
   if (open != _rowMenuOpens || !view.mounted) return;
   final value = ctrl.value;
   final collapsed = !value.selection.isValid || value.selection.isCollapsed;
