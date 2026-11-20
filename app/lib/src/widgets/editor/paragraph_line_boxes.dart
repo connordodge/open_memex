@@ -227,7 +227,9 @@ class RenderParagraphLineBoxes implements LineBoxSource {
       start--;
     }
     // Out to its end: over characters on this line, and over a zero-width
-    // run only when more of this line, or the source line's end, follows.
+    // run only when more of this line, or the source line's end on this
+    // line, follows (a line can wrap after a space, before a zero-width run
+    // that ends the source line: the run is then a line of its own).
     var end = paragraph
         .getPositionForOffset(Offset(_far, y))
         .offset
@@ -244,8 +246,16 @@ class RenderParagraphLineBoxes implements LineBoxSource {
       if (_markAt(_yOf(b)) != mark) break;
       end = ++k;
     }
-    if (k >= he) end = he;
+    if (k >= he && (_breakMark(text, he) ?? mark) == mark) end = he;
     return TextRange(start: start, end: end);
+  }
+
+  /// The [_markAt] of the laid-out line holding the line break at [he] (its
+  /// zero-width box is on that line); null at the text's end, or for a
+  /// break without a box.
+  int? _breakMark(String text, int he) {
+    final b = he < text.length ? _boxAt(he) : null;
+    return b == null ? null : _markAt(_yOf(b));
   }
 
   /// The line starting at [start], from [cache] or measured (a range-local
