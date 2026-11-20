@@ -322,7 +322,7 @@ void main() {
       'appcast_empty_channel.xml',
     ]) {
       final text = updaterFixture(name);
-      expect(text, isNot(contains('0.6.0')), reason: name);
+      expect(text, isNot(contains('0.7.0')), reason: name);
       expect(text, isNot(contains('/Users/')), reason: name);
     }
   });
