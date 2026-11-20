@@ -134,7 +134,7 @@ class _Wi13Hosted {
     'GET',
     '$_wi13HostedBase/info',
     json: {
-      'server_version': '0.6.0',
+      'server_version': '0.7.0',
       'api_version': 1,
       'schema_version': schemaVersion,
     },
@@ -214,7 +214,7 @@ class _Wi13TwoVaults {
     'GET',
     '/vaults/$vault/api/v1/info',
     json: {
-      'server_version': '0.6.0',
+      'server_version': '0.7.0',
       'api_version': 1,
       'schema_version': schemaVersion,
     },
