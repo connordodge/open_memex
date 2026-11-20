@@ -42,6 +42,7 @@ import 'package:open_memex_app/src/widgets/outline/section_tracker.dart';
 
 import '../support/app_harness.dart';
 import '../support/editor_rows_probe.dart';
+import '../support/fake_clock.dart';
 import '../support/fake_spelling_service.dart';
 import '../support/font_fetch_hold.dart';
 import '../support/mac_editing.dart';
@@ -884,6 +885,7 @@ void main() {
       'an evaluation pass adds one per viewport check and one per check all',
       (tester) async {
         final service = FakeSpellingService()..misspell('teh');
+        final clock = FakeClock();
         final container = ProviderContainer(
           overrides: [spellingServiceProvider.overrideWithValue(service)],
         );
@@ -895,11 +897,16 @@ void main() {
           session: () => session,
           service: () => service,
           flags: (spelling: true, grammar: true),
+          clock: clock,
         );
         addTearDown(checker.dispose);
         await _wi125WarmTag(tester, session, 'wi125-note');
         PerfCounters.reset();
         checker.viewportChanged();
+        await tester.pump();
+        // A viewport check waits for the pause (Spec #122 Req 26).
+        expect(_n('spellEvaluations'), 0);
+        clock.advance(spellCheckDebounce);
         await tester.pump();
         expect(_n('spellEvaluations'), 1);
         final done = checker.checkAll();
