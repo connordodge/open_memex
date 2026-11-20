@@ -17,6 +17,8 @@ import '../../state/tabs_state.dart';
 import '../../state/tags_browse_state.dart';
 import '../../state/url_opener.dart';
 import '../../state/vault_access_state.dart';
+import '../../vault_access/attachments_access.dart' show AttachmentActionFailed;
+import 'attachment_row.dart' show showAttachmentOpenFailure;
 import 'line_boxes.dart';
 import 'live_preview_controller.dart';
 
@@ -391,15 +393,26 @@ class _LinkRegionState extends ConsumerState<LinkRegion> {
       case LinkToken(:final url):
         // An attachment opens through the vault's attachments domain, with
         // its decoded path; never the URL opener (Spec #123 D10, R33). A
-        // failed open, or no open vault, shows nothing yet: #143 wires its
-        // shared R42 toast to this one open call.
+        // failed open shows the shared R42 toast (`showAttachmentOpenFailure`,
+        // ruling D22), naming the path's decoded name; no open vault shows
+        // nothing.
         final attachment = parseAttachmentDestination(url);
         if (attachment == null) {
           unawaited(ref.read(urlOpenerProvider).open(url));
         } else {
           final attachments = ref.read(attachmentsProvider);
           if (attachments != null) {
-            unawaited(attachments.open(attachment.path));
+            unawaited(
+              attachments.open(attachment.path).then((result) {
+                if (mounted && result is AttachmentActionFailed) {
+                  showAttachmentOpenFailure(
+                    context,
+                    attachment.name,
+                    result.failure,
+                  );
+                }
+              }),
+            );
           }
         }
       case InlineToken(kind: InlineTokenKind.tag):

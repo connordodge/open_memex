@@ -61,6 +61,14 @@ pub const EXECUTABLE_EXTENSIONS: &[&str] = &[
     "applescript",
     "jar",
     "exe",
+    "fileloc",
+    "inetloc",
+    "webloc",
+    "afploc",
+    "ftploc",
+    "mailloc",
+    "newsloc",
+    "atloc",
 ];
 
 /// The longest stored name, in UTF-8 bytes (R1).
