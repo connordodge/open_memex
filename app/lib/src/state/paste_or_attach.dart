@@ -5,6 +5,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'attach_controller.dart';
@@ -73,14 +74,44 @@ Future<PasteOutcome> pasteOrAttach(
   return PasteOutcome.nothing;
 }
 
+/// How long [canPasteOrAttach] waits for the clipboard before it answers
+/// without it, so a menu that asks always shows (#147 r3).
+const pasteOfferWait = Duration(milliseconds: 100);
+
+/// [future]'s value, or null when it fails.
+Future<T?> _orNull<T>(Future<T> future) =>
+    future.then<T?>((value) => value, onError: (Object _) => null);
+
 /// Whether the note editor offers Paste (R8, R11): the clipboard holds file
 /// URLs, text or an image. File URLs and images count only while the vault
 /// can be written.
+///
+/// Answers within [pasteOfferWait], so the menu asking still shows its
+/// other items: a pasteboard read that fails, or has not answered by then,
+/// counts as no file URLs and no image, and Flutter's own text check
+/// (`Clipboard.hasStrings`) decides, if it answers by then.
 Future<bool> canPasteOrAttach(BuildContext context) async {
   final container = ProviderScope.containerOf(context, listen: false);
-  final clip = await container.read(pasteboardReaderProvider).read();
-  if (clip.hasText) return true;
-  return _writable(container) && (clip.files.isNotEmpty || clip.png != null);
+  final expired = Completer<void>();
+  final limit = Timer(pasteOfferWait, expired.complete);
+  try {
+    final clip = await Future.any([
+      _orNull(container.read(pasteboardReaderProvider).read()),
+      expired.future.then((_) => null),
+    ]);
+    if (clip != null) {
+      if (clip.hasText) return true;
+      return _writable(container) &&
+          (clip.files.isNotEmpty || clip.png != null);
+    }
+    if (expired.isCompleted) return false;
+    return await Future.any([
+      _orNull(Clipboard.hasStrings()).then((text) => text ?? false),
+      expired.future.then((_) => false),
+    ]);
+  } finally {
+    limit.cancel();
+  }
 }
 
 /// Whether a right click in the note editor shows [pasteMenuItems] in place
