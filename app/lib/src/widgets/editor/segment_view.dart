@@ -1180,11 +1180,26 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
     _setActive(row);
     final node = row.focusNode;
     _activating = node.hasFocus ? null : row;
-    if (_fieldStateOf(row) == null) {
+    final field = _fieldStateOf(row);
+    if (field == null) {
       _focusAfterFrame(row);
     } else {
       _focusPending = null;
-      if (!node.hasFocus) node.requestFocus();
+      if (!node.hasFocus) _focusField(row, field);
+    }
+  }
+
+  /// Focuses [row]'s unfocused [field] as a click on it does: the field's
+  /// own update with its value unchanged focuses it and builds its
+  /// selection overlay, so its toolbar and context menu (SpellingMenu) can
+  /// show over the caret activation gave it, also for a right click on
+  /// that caret, which selects nothing. A plain focus request builds no
+  /// overlay for a field that already holds a valid selection.
+  void _focusField(_Row row, EditableTextState field) {
+    if (identical(field.widget.focusNode, row.focusNode)) {
+      field.userUpdateTextEditingValue(field.textEditingValue, null);
+    } else {
+      row.focusNode.requestFocus();
     }
   }
 
@@ -1242,7 +1257,7 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
       if (row.focusNode.hasFocus) {
         field.requestKeyboard();
       } else {
-        row.focusNode.requestFocus();
+        _focusField(row, field);
       }
     }, debugLabel: 'SegmentView.focusActiveRow');
     binding.ensureVisualUpdate();
