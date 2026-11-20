@@ -1,5 +1,7 @@
 import '../../db.dart';
 import '../../memex_cli.dart';
+import '../../state/file_revealer.dart';
+import '../../state/url_opener.dart';
 import '../../state/vault_state.dart' show requiredVaultSchemaVersion;
 import '../vault_access.dart';
 import 'agents.dart';
@@ -29,7 +31,9 @@ export 'words.dart';
 /// no [db] gives today's empty reads, no [cli] makes [canWrite] false.
 ///
 /// A domain argument (e.g. [notes]) replaces that domain's default
-/// `Local<D>Access`; tests pass doubles that extend it (D21).
+/// `Local<D>Access`; tests pass doubles that extend it (D21). [urlOpener]
+/// and [fileRevealer] go to the default [attachments] (`urlOpenerProvider`
+/// and `fileRevealerProvider` in the app; null: the system ones).
 class LocalVaultAccess implements VaultAccess {
   LocalVaultAccess({
     required this.vaultPath,
@@ -47,6 +51,8 @@ class LocalVaultAccess implements VaultAccess {
     LocalWordsAccess? words,
     LocalSearchAccess? search,
     LocalAttachmentsAccess? attachments,
+    UrlOpener? urlOpener,
+    FileRevealer? fileRevealer,
   }) : notes =
            notes ?? LocalNotesAccess(vaultPath: vaultPath, db: db, cli: cli),
        agents = agents ?? LocalAgentsAccess(vaultPath: vaultPath, db: db),
@@ -67,7 +73,12 @@ class LocalVaultAccess implements VaultAccess {
        search = search ?? LocalSearchAccess(vaultPath: vaultPath, cli: cli),
        attachments =
            attachments ??
-           LocalAttachmentsAccess(vaultPath: vaultPath, cli: cli);
+           LocalAttachmentsAccess(
+             vaultPath: vaultPath,
+             cli: cli,
+             urlOpener: urlOpener,
+             fileRevealer: fileRevealer,
+           );
 
   final String vaultPath;
   final VaultDb? db;

@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
 import '../../memex_cli.dart';
+import '../../state/file_revealer.dart';
+import '../../state/url_opener.dart';
 import '../vault_access.dart';
 import 'agents.dart';
 import 'attachments.dart';
@@ -38,15 +40,28 @@ const vaultNotFoundCode = 'vault_not_found';
 ///
 /// [onVaultGone] runs when a request of a live composite fails with C1
 /// `vault_not_found` (Req 53a); the error still reaches the caller.
+/// [urlOpener] and [fileRevealer] go to [attachments] (`urlOpenerProvider`
+/// and `fileRevealerProvider` in the app; null: the system ones).
 class HostedVaultAccess implements VaultAccess {
   HostedVaultAccess({
     required HostedClient client,
     required String vaultName,
     void Function()? onVaultGone,
-  }) : this._(_ComposedClient(client, onVaultGone), vaultName);
+    UrlOpener? urlOpener,
+    FileRevealer? fileRevealer,
+  }) : this._(
+         _ComposedClient(client, onVaultGone),
+         vaultName,
+         urlOpener,
+         fileRevealer,
+       );
 
-  HostedVaultAccess._(_ComposedClient client, this.vaultName)
-    : _client = client,
+  HostedVaultAccess._(
+    _ComposedClient client,
+    this.vaultName,
+    UrlOpener? urlOpener,
+    FileRevealer? fileRevealer,
+  ) : _client = client,
       notes = HostedNotesAccess(client: client, vaultName: vaultName),
       agents = HostedAgentsAccess(client: client, vaultName: vaultName),
       daily = HostedDailyAccess(client: client, vaultName: vaultName),
@@ -61,6 +76,8 @@ class HostedVaultAccess implements VaultAccess {
       attachments = HostedAttachmentsAccess(
         client: client,
         vaultName: vaultName,
+        urlOpener: urlOpener,
+        fileRevealer: fileRevealer,
       ),
       _revision = HostedRevision(client, vaultName);
 

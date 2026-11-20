@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
@@ -115,6 +116,9 @@ class HostedAttachmentsAccess implements AttachmentsAccess {
   /// stale.
   final Map<String, AttachmentInfo> _info = {};
 
+  /// The open cache writes in flight, by attachment path.
+  final Map<String, Future<String>> _copyWrites = {};
+
   @override
   Future<AttachmentAddResult> add(String filePath, String? name) async {
     final stored = name ?? p.basename(filePath);
@@ -161,8 +165,17 @@ class HostedAttachmentsAccess implements AttachmentsAccess {
   @override
   Future<AttachmentAddResult> addBytes(Uint8List bytes, String name) async {
     try {
-      if (bytes.length > _olderServerBodyLimit && !await _hasRoutes()) {
-        return _serverTooOldAdd;
+      if (bytes.length > _olderServerBodyLimit) {
+        final bool present;
+        try {
+          present = await _hasRoutes();
+        } on MemexException catch (e) {
+          // The check got no decisive answer (a 401, a 5xx, a proxy page):
+          // the upload is not sent, so an older server's 413 can't show.
+          final message = c1MessageOf(e, _download);
+          return AttachmentAddFailed(AttachmentAddFailureReason.other, message);
+        }
+        if (!present) return _serverTooOldAdd;
       }
       final answer = await client.uploadBytes(
         vaultName,
@@ -236,6 +249,8 @@ class HostedAttachmentsAccess implements AttachmentsAccess {
         );
       } on VaultUnreachableException {
         return const AttachmentInfoFailed(_offline);
+      } on MemexException {
+        return const AttachmentInfoFailed(_missing);
       }
     } on MemexException catch (e) {
       return AttachmentInfoFailed(_lookupFailure(e, _download));
@@ -256,7 +271,9 @@ class HostedAttachmentsAccess implements AttachmentsAccess {
   }
 
   /// Downloads [path] to its open cache copy, then reveals the copy when it
-  /// is an executable (by name or by the copy's mode), else opens it.
+  /// is an executable (by name or by the copy's mode), else opens it. A copy
+  /// that can't be written or read is the `unsupported` failure, never a
+  /// throw.
   Future<AttachmentActionResult> _openCopy(String path) async {
     final target = parseAttachmentPath(path);
     if (target == null) return const AttachmentActionFailed(_missing);
@@ -268,8 +285,14 @@ class HostedAttachmentsAccess implements AttachmentsAccess {
       case AttachmentBytes(bytes: final b):
         bytes = b;
     }
-    final copy = await _writeCopy(target, bytes);
-    final mode = (await FileStat.stat(copy)).mode;
+    final String copy;
+    final int mode;
+    try {
+      copy = await _writeCopy(target, bytes);
+      mode = (await FileStat.stat(copy)).mode;
+    } on FileSystemException {
+      return const AttachmentActionFailed(AttachmentLookupFailure.unsupported);
+    }
     if (isExecutableName(target.name) || mode & _anyExecuteBit != 0) {
       await _revealer.reveal(copy);
     } else {
@@ -281,26 +304,55 @@ class HostedAttachmentsAccess implements AttachmentsAccess {
   /// Writes [bytes] to the open cache copy of [target] and returns its
   /// absolute path: `<root>/server-<id>/vault-<name>/<hash>/<name>`. An
   /// existing copy is rewritten in place, so it keeps its mode; a new one is
-  /// written beside and renamed, so no half-written copy is ever opened.
-  Future<String> _writeCopy(AttachmentPath target, Uint8List bytes) async {
+  /// written to a uniquely named file in the vault folder's `.partial`
+  /// folder and renamed, so no half-written copy is ever opened and the
+  /// temporary name never outgrows the stored name. Concurrent writes of one
+  /// copy share one write.
+  Future<String> _writeCopy(AttachmentPath target, Uint8List bytes) {
+    final pending = _copyWrites[target.path];
+    if (pending != null) return pending;
+    final write = _writeCopyOnce(target, bytes);
+    _copyWrites[target.path] = write;
+    return write.whenComplete(() {
+      if (identical(_copyWrites[target.path], write)) {
+        _copyWrites.remove(target.path);
+      }
+    });
+  }
+
+  Future<String> _writeCopyOnce(AttachmentPath target, Uint8List bytes) async {
     final root = _openCacheRoot ?? await _defaultOpenCacheRoot();
-    final folder = p.join(
+    final vaultFolder = p.join(
       root,
       'server-${Uri.encodeComponent(client.serverId)}',
       'vault-${Uri.encodeComponent(vaultName)}',
-      target.hash,
     );
+    final folder = p.join(vaultFolder, target.hash);
     final copy = File(p.join(folder, target.name));
     if (await copy.exists()) {
       await copy.writeAsBytes(bytes, flush: true);
       return copy.path;
     }
     await Directory(folder).create(recursive: true);
-    final part = File('${copy.path}.part');
-    await part.writeAsBytes(bytes, flush: true);
-    await part.rename(copy.path);
+    final partial = Directory(p.join(vaultFolder, '.partial'));
+    await partial.create(recursive: true);
+    final suffix = _random.nextInt(1 << 32).toRadixString(16);
+    final part = File(p.join(partial.path, '$suffix.part'));
+    try {
+      await part.writeAsBytes(bytes, flush: true);
+      await part.rename(copy.path);
+    } on FileSystemException {
+      try {
+        await part.delete();
+      } on FileSystemException {
+        // Already gone, or renamed.
+      }
+      rethrow;
+    }
     return copy.path;
   }
+
+  static final _random = Random();
 
   static Future<String> _defaultOpenCacheRoot() async =>
       p.join((await getApplicationCacheDirectory()).path, 'attachments');
@@ -344,8 +396,11 @@ class HostedAttachmentsAccess implements AttachmentsAccess {
 
   /// Whether the server has the attachment routes: known for the session
   /// (the client's [HostedClient.attachmentRoutesCheck]), else one GET of a
-  /// path that names no file. Throws `VaultUnreachableException` when the
-  /// server can't be reached; the next call checks again.
+  /// path that names no file. Only a decisive answer settles it for the
+  /// session: the no-route 404 (false), a success, the missing 404 or a 400
+  /// (true). Throws `VaultUnreachableException` when the server can't be
+  /// reached, and the `MemexException` of any other answer (a 401, a 5xx, a
+  /// proxy page); the next call then checks again.
   Future<bool> _hasRoutes() async {
     final known = client.attachmentRoutesCheck;
     if (known != null) return known;
@@ -370,7 +425,12 @@ class HostedAttachmentsAccess implements AttachmentsAccess {
         expectedBytes: 0,
       );
     } on MemexException catch (e) {
-      return !_isNoRoute(e, _download);
+      if (_isNoRoute(e, _download)) return false;
+      if (e is! HostedStatusException &&
+          (e.code == 'not_found' || e.code == 'invalid_argument')) {
+        return true;
+      }
+      rethrow;
     }
     return true;
   }
