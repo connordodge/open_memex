@@ -20,6 +20,13 @@ import 'segment_view.dart' show SegmentLineBoxes;
 // the lines the block occupies in the field, with a hover caption saying who
 // added it and when. The field itself stays one editable text.
 
+/// Test-only work counter: every read of measured lines the gutter takes
+/// from its source rather than from its own row cache (one per editor row
+/// whose text or size changed, or one whole-field read without rows),
+/// summed over all gutters (WI #129, Spec #122 R11).
+@visibleForTesting
+int debugCaptureGutterLineReads = 0;
+
 /// Width of the gutter column left of the person field.
 const double captureGutterWidth = 14;
 
@@ -160,7 +167,7 @@ class _CaptureGutterState extends ConsumerState<CaptureGutter> {
     final measured = <RenderBox, _RowLines>{};
     LineBox holding(int offset) => source is SegmentLineBoxes
         ? _rowLine(source, text, offset, measured)
-        : lineHolding(lines ??= source.lines, offset);
+        : lineHolding(lines ??= _readLines(source), offset);
     final rules = <_Rule>[];
     for (final block in _blocks) {
       if (!_capturedSources.contains(block.source)) continue;
@@ -178,6 +185,12 @@ class _CaptureGutterState extends ConsumerState<CaptureGutter> {
     }
     _rowLines = measured;
     if (!listEquals(rules, _rules)) setState(() => _rules = rules);
+  }
+
+  /// [source]'s measured lines, counted in [debugCaptureGutterLineReads].
+  List<LineBox> _readLines(LineBoxSource source) {
+    debugCaptureGutterLineReads++;
+    return source.lines;
   }
 
   /// The lines of the rows the last [_measure] read, by their text slot's
@@ -203,7 +216,7 @@ class _CaptureGutterState extends ConsumerState<CaptureGutter> {
     final lines =
         cached != null && cached.size == size && cached.text == rowText
         ? cached.lines
-        : row.source.lines;
+        : _readLines(row.source);
     measured[box] = (text: rowText, size: size, lines: lines);
     final line = lineHolding(lines, spec.toLocal(offset));
     return LineBox(
