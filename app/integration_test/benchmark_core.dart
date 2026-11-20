@@ -46,7 +46,20 @@ abstract final class BenchMetric {
     selectAll,
     clearSelection,
   ];
+
+  /// The four scrolling metrics (fling and 30 `jumpTo` steps, build and
+  /// raster).
+  static const List<String> scroll = [
+    flingBuild,
+    flingRaster,
+    jumpBuild,
+    jumpRaster,
+  ];
 }
+
+/// The frame budget of 60 fps, in milliseconds: what "holds 60 fps" (Spec
+/// #122 Requirement 3) asks the p90 frame to fit in.
+const double sixtyFpsFrameMs = 16.7;
 
 /// Millisecond samples, summarised.
 class MsStats {
@@ -223,6 +236,7 @@ class BenchTarget {
     required this.limitMs,
     this.strict = false,
     this.minSamples = 1,
+    this.p90LimitMs,
   });
 
   /// The Spec #122 Requirement number, as written there: `3`, `6a`, `8`.
@@ -241,12 +255,20 @@ class BenchTarget {
 
   /// Fewer samples than this make the verdict incomplete.
   final int minSamples;
+
+  /// When set, the p90 of the samples must also be at most this (a second
+  /// verdict row, for "holds 60 fps": most frames fit the frame budget while
+  /// [limitMs] caps the worst one).
+  final double? p90LimitMs;
 }
 
 /// Every Requirement's target (Spec #122 Requirements 3-11).
 ///
 /// Every verdict reads the max of the samples: Requirements 3, 6 and 6a say
-/// no frame over a limit, and 4, 7 and 8 say at most a limit per event.
+/// no frame over a limit, and 4, 7 and 8 say at most a limit per event. The
+/// scrolling targets of Requirements 3, 10 and 11 also read the p90 against
+/// the 60 fps frame budget (`p90LimitMs`), because they say the scroll "holds
+/// 60 fps".
 const List<BenchTarget> benchTargets = [
   // 3: scrolling N1, N2 and N5 (every variant) holds 60 fps, no frame over
   // 32 ms.
@@ -260,6 +282,7 @@ const List<BenchTarget> benchTargets = [
     ],
     covers: ['n1-', 'n2-', 'n5-'],
     limitMs: 32,
+    p90LimitMs: sixtyFpsFrameMs,
   ),
   // 4: one character typed mid-note in N1 or N2, at most 16 ms (L10).
   BenchTarget(
@@ -353,6 +376,7 @@ const List<BenchTarget> benchTargets = [
     ],
     covers: ['source-n1'],
     limitMs: 32,
+    p90LimitMs: sixtyFpsFrameMs,
   ),
   BenchTarget(
     requirement: '10',
@@ -371,6 +395,7 @@ const List<BenchTarget> benchTargets = [
     ],
     covers: ['daily-n1-'],
     limitMs: 32,
+    p90LimitMs: sixtyFpsFrameMs,
   ),
   BenchTarget(
     requirement: '11',
@@ -403,6 +428,31 @@ String judge(BenchTarget target, MsStats stats) {
       : stats.max <= target.limitMs;
   return meets ? 'PASS' : 'MISS';
 }
+
+/// The p90 verdict of a target with a `p90LimitMs`: `PASS` when
+/// [stats].p90 is at most it, `MISS` when it is not, and `INCOMPLETE` (judged
+/// first) with no samples or fewer than the target's minSamples. A target
+/// without a p90 limit has no p90 verdict: `PASS`.
+String judgeP90(BenchTarget target, MsStats stats) {
+  final limit = target.p90LimitMs;
+  if (limit == null) return 'PASS';
+  if (stats.count == 0 || stats.count < target.minSamples) {
+    return 'INCOMPLETE';
+  }
+  return stats.p90 <= limit ? 'PASS' : 'MISS';
+}
+
+/// The metrics a Requirement judges for [caseId], in [BenchMetric.all]'s
+/// order: the ones the benchmark must record for that case or scenario.
+List<String> expectedMetrics(String caseId) => [
+  for (final m in BenchMetric.all)
+    if (targetFor(caseId, m) != null) m,
+];
+
+/// The id the benchmark records a scroll under with the caret in the note
+/// (Requirement 3: "with the caret in the note and not"). It starts with
+/// [caseId], so the same targets judge it.
+String caretCaseId(String caseId) => '$caseId-caret';
 
 /// One judged (case, metric) of a [BenchReport].
 class VerdictRow {
@@ -442,33 +492,75 @@ class BenchReport {
   // Insertion-ordered: a pair keeps the place of its first record.
   final Map<(String, String), MsStats> _stats = {};
 
+  // Pairs the run was meant to record (see [expectCase]), in order.
+  final List<(String, String)> _expected = [];
+
   /// Summarises [samples] and stores them under [caseId] and [metric]; a
   /// second record of the same pair replaces the first.
   void record(String caseId, String metric, Iterable<double> samples) {
     _stats[(caseId, metric)] = summarize(samples);
   }
 
+  /// Declares that the run is meant to record [metrics] (by default
+  /// [expectedMetrics]) of [caseId]. A declared pair that no [record] fills
+  /// gets an `INCOMPLETE` row in [verdicts], so a phase that failed or was
+  /// skipped shows in the table instead of vanishing from it. Pairs no target
+  /// judges are ignored.
+  void expectCase(String caseId, {Iterable<String>? metrics}) {
+    for (final m in metrics ?? expectedMetrics(caseId)) {
+      final pair = (caseId, m);
+      if (targetFor(caseId, m) != null && !_expected.contains(pair)) {
+        _expected.add(pair);
+      }
+    }
+  }
+
   /// The stored summary, or null when nothing was recorded.
   MsStats? stats(String caseId, String metric) => _stats[(caseId, metric)];
 
   /// One row per recorded pair that a target judges, in the order first
-  /// recorded.
+  /// recorded, each followed by its p90 row (metric `<metric> (p90)`, the
+  /// p90 as the observed value) when its target has a `p90LimitMs`; then an
+  /// `INCOMPLETE` row (observed 0) for every pair declared with [expectCase]
+  /// and never recorded.
   List<VerdictRow> verdicts() {
     final rows = <VerdictRow>[];
-    for (final e in _stats.entries) {
-      final (caseId, metric) = e.key;
+    void add(String caseId, String metric, MsStats stats) {
       final target = targetFor(caseId, metric);
-      if (target == null) continue;
+      if (target == null) return;
       rows.add(
         VerdictRow(
           requirement: target.requirement,
           caseId: caseId,
           metric: metric,
           limitMs: target.limitMs,
-          observedMs: e.value.max,
-          verdict: judge(target, e.value),
+          observedMs: stats.max,
+          verdict: judge(target, stats),
         ),
       );
+      final p90Limit = target.p90LimitMs;
+      if (p90Limit != null) {
+        rows.add(
+          VerdictRow(
+            requirement: target.requirement,
+            caseId: caseId,
+            metric: '$metric (p90)',
+            limitMs: p90Limit,
+            observedMs: stats.p90,
+            verdict: judgeP90(target, stats),
+          ),
+        );
+      }
+    }
+
+    for (final e in _stats.entries) {
+      final (caseId, metric) = e.key;
+      add(caseId, metric, e.value);
+    }
+    for (final (caseId, metric) in _expected) {
+      if (!_stats.containsKey((caseId, metric))) {
+        add(caseId, metric, summarize(const <double>[]));
+      }
     }
     return rows;
   }
@@ -492,8 +584,8 @@ class BenchReport {
   /// A Markdown table, one line per verdict: the header
   /// `| Requirement | Case | Metric | Limit (ms) | Max (ms) | Verdict |`, the
   /// separator `| --- | --- | --- | --- | --- | --- |`, then one line per
-  /// verdict row with the limit in whole milliseconds and the max with one
-  /// decimal, for example `| 8 | n1-plain-outline-closed-spell-on |
+  /// verdict row with the limit in whole milliseconds (one decimal when it is
+  /// not whole, the 60 fps budget 16.7) and the max with one decimal, for example `| 8 | n1-plain-outline-closed-spell-on |
   /// find-bar-keystroke | 50 | 62.5 | MISS |` (on one line).
   String toMarkdown() {
     final b = StringBuffer()
@@ -504,7 +596,7 @@ class BenchReport {
     for (final v in verdicts()) {
       b.writeln(
         '| ${v.requirement} | ${v.caseId} | ${v.metric} | '
-        '${v.limitMs.toStringAsFixed(0)} | '
+        '${v.limitMs.toStringAsFixed(v.limitMs == v.limitMs.roundToDouble() ? 0 : 1)} | '
         '${v.observedMs.toStringAsFixed(1)} | ${v.verdict} |',
       );
     }

@@ -15,10 +15,19 @@
 // (the matrix, the statistics, the targets, the report) are in
 // `benchmark_core.dart` and tested there.
 //
+// The app runs on the real clock (`SystemClock`), not the harness's
+// `FakeClock`: the spell check's viewport-pause and post-edit timers and the
+// editor's save debounce only fire on it. The binding's frame policy is
+// `fullyLive`, so a scroll animation runs on the engine's vsync like a real
+// fling (the default policy renders only the frames the test pumps).
+//
 // How a time is taken:
 // - Frame metrics (fling, jump30, resize) come from the engine's
 //   `FrameTiming`s: build is the UI thread's frame, raster the raster
-//   thread's.
+//   thread's. Only frames inside the measured phase count (the idle frames
+//   before and after are dropped by their vsync time against the begin-frame
+//   times of the phase; a clock that does not match leaves no frame and
+//   reads INCOMPLETE).
 // - An event's UI time (keystroke, Arrow, Shift selection, pointer drag,
 //   Find bar keystroke, next match, Select All) is the time its input handler
 //   runs plus the UI-thread time of every frame it caused (the two frames
@@ -27,19 +36,24 @@
 // - An open time is the wall time from the request to the frame that shows
 //   the result (it includes waiting for vsync, at most one frame).
 import 'dart:async';
-import 'dart:ui' show FrameTiming;
+import 'dart:ui' show FramePhase, FrameTiming;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart' show Override;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';
 import 'package:open_memex_app/src/state/find_in_note_state.dart';
+import 'package:open_memex_app/src/state/clock.dart';
 import 'package:open_memex_app/src/state/learned_words_seam.dart';
+import 'package:open_memex_app/src/state/pasteboard_reader.dart';
 import 'package:open_memex_app/src/state/right_panel_tab.dart';
 import 'package:open_memex_app/src/state/settings.dart';
+import 'package:open_memex_app/src/state/spell_check_controller.dart'
+    show spellCheckDebounce;
 import 'package:open_memex_app/src/state/spelling_service.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
@@ -82,6 +96,13 @@ class _FrameProbe {
   /// UI-thread milliseconds of every frame since [reset].
   double frameMs = 0;
 
+  /// While true, [beginUs] collects the begin-frame time of every frame.
+  bool recording = false;
+
+  /// The engine timestamps (microseconds) of the frames begun while
+  /// [recording].
+  final beginUs = <int>[];
+
   void reset() => frameMs = 0;
 
   /// Wraps the dispatcher's frame callbacks. They are set once a frame has
@@ -94,6 +115,7 @@ class _FrameProbe {
       throw StateError('no frame has run yet: the frame callbacks are unset');
     }
     dispatcher.onBeginFrame = (Duration d) {
+      if (recording) beginUs.add(d.inMicroseconds);
       _watch
         ..reset()
         ..start();
@@ -158,31 +180,45 @@ Future<void> _phase(
   }
 }
 
-/// Real time passes (the test binding is live): lets futures, timers and
-/// animations finish.
+/// Real time passes (the test binding is live, the clock real): lets futures,
+/// timers and animations finish.
 Future<void> _settle(WidgetTester tester) async {
   await pumpFrames(tester);
   await Future<void>.delayed(const Duration(milliseconds: 400));
   await tester.pump();
 }
 
+/// How far outside the begin-frame times of a phase a frame's vsync may sit
+/// and still count as part of it (the vsync starts a frame before its begin).
+const _edgeUs = 50000;
+
 /// Runs [body], then waits until the engine has reported its frame timings
-/// and returns every frame since the start.
+/// and returns the frames of the phase: those whose vsync time lies between
+/// the first and the last begin-frame of [body] (give or take [_edgeUs]).
+/// Frames of an idle app before and after it are not part of the metric.
 Future<List<FrameTiming>> _frames(Future<void> Function() body) async {
   _timings.clear();
-  await body();
-  var seen = -1;
-  var stable = 0;
-  for (var i = 0; i < 60 && stable < 6; i++) {
-    await Future<void>.delayed(const Duration(milliseconds: 100));
-    if (_timings.length == seen) {
-      stable++;
-    } else {
-      stable = 0;
-      seen = _timings.length;
-    }
+  _probe
+    ..beginUs.clear()
+    ..recording = true;
+  try {
+    await body();
+  } finally {
+    _probe.recording = false;
   }
-  return List.of(_timings);
+  if (_probe.beginUs.isEmpty) return const [];
+  final from = _probe.beginUs.first - _edgeUs;
+  final to = _probe.beginUs.last + _edgeUs;
+  int vsync(FrameTiming f) => f.timestampInMicroseconds(FramePhase.vsyncStart);
+  // The engine reports in batches: wait until a frame past the phase arrived.
+  for (var i = 0; i < 120; i++) {
+    if (_timings.any((f) => vsync(f) > to)) break;
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+  }
+  return [
+    for (final f in _timings)
+      if (vsync(f) >= from && vsync(f) <= to) f,
+  ];
 }
 
 void _recordFrames(
@@ -252,6 +288,7 @@ Future<NoteRevealHarness> _pump(
   required String content,
   required FakeSpellingService spelling,
   String? role,
+  List<Override> extraOverrides = const [],
 }) async {
   final db = FakeVaultDb.v5()
     ..seedNote(
@@ -266,8 +303,13 @@ Future<NoteRevealHarness> _pump(
     open: null,
     surfaceSize: _viewSize,
     overrides: [
+      // The harness installs a FakeClock, which fires no timer until it is
+      // advanced: the spell check's re-checks and the save debounce would
+      // never run. The later override wins.
+      clockProvider.overrideWithValue(const SystemClock()),
       spellingServiceProvider.overrideWithValue(spelling),
       learnedWordKeysProvider.overrideWithValue(const <String>{}),
+      ...extraOverrides,
     ],
   );
   // The harness shrinks text for the gate's wide test font; the benchmark
@@ -298,9 +340,40 @@ Future<double> _open(WidgetTester tester, NoteRevealHarness h) async {
   return ms;
 }
 
+/// How far down the scroll phases reach: the fling's run-out and 30 steps of
+/// 400 px, with room to spare.
+const _scrollReach = 16000.0;
+
+/// With spelling on, walks down the page a screen at a time, letting the
+/// viewport pause long enough for the spell check to answer, so every
+/// paragraph the scroll phases pass already has its squiggles (the check
+/// only covers one screen around the viewport, after a pause). Then back to
+/// the top.
+Future<void> _warmSpelling(WidgetTester tester, ScrollPosition position) async {
+  final reach = _scrollReach < position.maxScrollExtent
+      ? _scrollReach
+      : position.maxScrollExtent;
+  final step = position.viewportDimension;
+  for (var offset = 0.0; offset <= reach; offset += step) {
+    position.jumpTo(offset);
+    await tester.pump();
+    await Future<void>.delayed(
+      spellCheckDebounce + const Duration(milliseconds: 250),
+    );
+    await tester.pump();
+  }
+  position.jumpTo(0);
+  await _settle(tester);
+}
+
 /// Fling the page, then 30 `jumpTo` steps; records both as build and raster
-/// frame metrics for [id].
-Future<void> _scroll(WidgetTester tester, String id) async {
+/// frame metrics for [id]. [warm] first lets the spell check cover the part
+/// of the page the scroll passes.
+Future<void> _scroll(
+  WidgetTester tester,
+  String id, {
+  bool warm = false,
+}) async {
   final scrollable = _scrollable(tester);
   final position = scrollable.position;
   if (position.maxScrollExtent <= 0) {
@@ -308,6 +381,7 @@ Future<void> _scroll(WidgetTester tester, String id) async {
   }
   position.jumpTo(0);
   await _settle(tester);
+  if (warm) await _warmSpelling(tester, position);
 
   final fling = await _frames(() async {
     await tester.fling(
@@ -315,10 +389,12 @@ Future<void> _scroll(WidgetTester tester, String id) async {
       const Offset(0, -700),
       3500,
     );
+    // The binding is fully live: the ballistic scroll runs on the engine's
+    // frames. Wait, in real time, until it stops.
     var still = 0;
     var last = position.pixels;
-    for (var i = 0; i < 80 && still < 3; i++) {
-      await tester.pump(const Duration(milliseconds: 100));
+    for (var i = 0; i < 100 && still < 3; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
       still = position.pixels == last ? still + 1 : 0;
       last = position.pixels;
     }
@@ -522,8 +598,21 @@ Future<({List<double> keys, List<double> next})> _find(
 
 // ------------------------------------------------------------- the matrix
 
+/// Scrolls to the middle of the page and puts the caret in a row there.
+Future<void> _focusInMiddle(WidgetTester tester) async {
+  final position = _scrollable(tester).position;
+  position.jumpTo(position.maxScrollExtent / 2);
+  await _settle(tester);
+  await _focusMiddle(tester);
+}
+
 Future<void> _runCase(WidgetTester tester, BenchCase c) async {
   final id = c.id;
+  // Every pair a Requirement judges is owed a verdict: one that a failed
+  // phase never records reads INCOMPLETE.
+  _report
+    ..expectCase(id)
+    ..expectCase(caretCaseId(id), metrics: BenchMetric.scroll);
   _asMac();
   final note = longNote(c.kind, variant: c.variant);
   final spelling = FakeSpellingService();
@@ -545,7 +634,14 @@ Future<void> _runCase(WidgetTester tester, BenchCase c) async {
   });
   await _settle(tester);
 
-  await _phase(id, 'scroll', () => _scroll(tester, id));
+  // No caret in the note; with spelling on, the spell check first covers the
+  // page the scroll passes (see [_warmSpelling]).
+  await _phase(id, 'scroll', () => _scroll(tester, id, warm: c.spellingOn));
+
+  // The same scroll with the caret in the note (Requirement 3), recorded
+  // under its own id.
+  await _phase(id, 'focus', () => _focusInMiddle(tester));
+  await _phase(id, 'scroll with caret', () => _scroll(tester, caretCaseId(id)));
 
   final wantsEditing = [
     BenchMetric.keystroke,
@@ -555,12 +651,7 @@ Future<void> _runCase(WidgetTester tester, BenchCase c) async {
     BenchMetric.selectAll,
   ].any((m) => _judged(id, m));
   if (wantsEditing) {
-    await _phase(id, 'focus', () async {
-      final position = _scrollable(tester).position;
-      position.jumpTo(position.maxScrollExtent / 2);
-      await _settle(tester);
-      await _focusMiddle(tester);
-    });
+    await _phase(id, 'refocus', () => _focusInMiddle(tester));
     if (_judged(id, BenchMetric.keystroke)) {
       await _phase(id, 'keystroke', () async {
         _report.record(id, BenchMetric.keystroke, await _typing(tester));
@@ -630,6 +721,7 @@ Future<void> _runCase(WidgetTester tester, BenchCase c) async {
 /// Source mode on N1: switching to it is the open; then scroll.
 Future<void> _sourceMode(WidgetTester tester) async {
   const id = 'source-n1';
+  _report.expectCase(id);
   _asMac();
   final note = longNote(LongNoteKind.n1Plain120k);
   final h = await _pump(
@@ -659,6 +751,7 @@ Future<void> _sourceMode(WidgetTester tester) async {
 /// A daily note holding N1's text, the capture gutter beside it.
 Future<void> _dailyNote(WidgetTester tester) async {
   const id = 'daily-n1-capture-gutter';
+  _report.expectCase(id);
   _asMac();
   final note = longNote(LongNoteKind.n1Plain120k);
   final h = await _pump(
@@ -674,21 +767,43 @@ Future<void> _dailyNote(WidgetTester tester) async {
   await _phase(id, 'scroll', () => _scroll(tester, id));
 }
 
+/// A pasteboard that holds text and nothing else. The editor's paste first
+/// asks the app's pasteboard reader whether files or an image sit on the
+/// clipboard to attach; the default reader asks the machine's own clipboard,
+/// which the benchmark never reads.
+class _TextOnlyPasteboard implements PasteboardReader {
+  const _TextOnlyPasteboard();
+
+  @override
+  Future<PasteboardContents> read() async =>
+      const PasteboardContents(hasText: true);
+}
+
 /// Pasting all of N1 into an empty note: the time until the note shows it.
 Future<void> _pasteIntoEmpty(WidgetTester tester) async {
   const id = 'paste-n1-empty-note';
+  _report.expectCase(id);
   _asMac();
   final text = longNote(LongNoteKind.n1Plain120k).text;
-  final h = await _pump(tester, content: '', spelling: FakeSpellingService());
+  final h = await _pump(
+    tester,
+    content: '',
+    spelling: FakeSpellingService(),
+    extraOverrides: [
+      pasteboardReaderProvider.overrideWithValue(const _TextOnlyPasteboard()),
+    ],
+  );
   await _open(tester, h);
   await _settle(tester);
   // The clipboard answers with N1 and nothing else: the machine's own
   // clipboard is never read or written.
+  var reads = 0;
   tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
     SystemChannels.platform,
     (call) async {
       switch (call.method) {
         case 'Clipboard.getData':
+          reads++;
           return <String, Object?>{'text': text};
         case 'Clipboard.hasStrings':
           return <String, Object?>{'value': true};
@@ -713,24 +828,25 @@ Future<void> _pasteIntoEmpty(WidgetTester tester) async {
     );
     await tester.sendKeyEvent(LogicalKeyboardKey.keyV, platform: 'macos');
     await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft, platform: 'macos');
-    var ms = 0.0;
-    var done = false;
-    for (var i = 0; i < 12 && !done; i++) {
+    // Cmd-V reaches the clipboard within a few frames, or never.
+    for (var i = 0; i < 30 && reads == 0; i++) {
       await tester.pump();
-      ms = watch.elapsedMicroseconds / 1000.0;
-      done = pasted();
     }
-    if (!done) {
-      // The key did not reach a paste: ask the focused field for it.
+    if (reads == 0) {
+      // The key started no paste: ask the focused field for it (nothing is
+      // in flight, so the text cannot land twice).
       watch
         ..reset()
         ..start();
       await _field(tester).pasteText(SelectionChangedCause.keyboard);
-      for (var i = 0; i < 400 && !done; i++) {
-        await tester.pump();
-        ms = watch.elapsedMicroseconds / 1000.0;
-        done = pasted();
-      }
+    }
+    // A paste in flight is waited for, however long it takes.
+    var ms = watch.elapsedMicroseconds / 1000.0;
+    var done = pasted();
+    for (var i = 0; i < 2000 && !done; i++) {
+      await tester.pump();
+      ms = watch.elapsedMicroseconds / 1000.0;
+      done = pasted();
     }
     if (!done) throw TestFailure('the pasted text never reached the note');
     _report.record(id, BenchMetric.openFirstScreen, [ms]);
@@ -741,6 +857,7 @@ Future<void> _pasteIntoEmpty(WidgetTester tester) async {
 /// stored text.
 Future<void> _reloadAfterOutsideEdit(WidgetTester tester) async {
   const id = 'reload-n1-outside-edit';
+  _report.expectCase(id);
   _asMac();
   final text = longNote(LongNoteKind.n1Plain120k).text;
   final h = await _pump(
@@ -777,6 +894,9 @@ Future<void> _reloadAfterOutsideEdit(WidgetTester tester) async {
 
 void main() {
   final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  // Every frame the framework asks for is drawn (the default policy draws
+  // only the frames a test pumps, so a fling would advance in 100 ms steps).
+  binding.framePolicy = LiveTestWidgetsFlutterBindingFramePolicy.fullyLive;
   holdFontFetches();
   binding.addTimingsCallback(_timings.addAll);
 
