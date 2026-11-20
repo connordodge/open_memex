@@ -122,6 +122,9 @@ pub struct SearchResultEnvelope {
     pub mode: SearchMode,
     pub results: Vec<search::SearchHit>,
     pub truncated: bool,
+    /// The matching attachments (Spec #123 R48); absent when none matched.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<search::AttachmentMatch>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -434,6 +437,7 @@ impl Memex {
                 mode,
                 results: res.hits,
                 truncated: res.truncated,
+                attachments: res.attachments,
             })
             .unwrap_or_else(|e| err_payload("search.serialize", &e.to_string())),
             Err(e) => err_from("search", &e),

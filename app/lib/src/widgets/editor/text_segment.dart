@@ -1,6 +1,7 @@
 import 'dart:math' show max;
 import 'dart:ui' as ui show BoxHeightStyle, BoxWidthStyle;
 
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -11,6 +12,7 @@ import '../tag_autocomplete.dart';
 import '../wikilink_autocomplete.dart';
 import 'line_boxes.dart';
 import 'live_preview_controller.dart';
+import 'segment_view.dart' show SegmentViewState;
 import 'spelling_menu.dart' show spellingAwareContextMenu;
 
 // Shared editing pieces of the note editor (WI #27): the scrolling editor
@@ -403,3 +405,115 @@ class _TextSegmentFieldState extends State<TextSegmentField> {
     );
   }
 }
+
+// ------------------------------------------------ rows without a field
+
+/// The text context menu [showRowTextMenu] shows.
+final _rowMenu = ContextMenuController(onRemove: () => _rowMenuShown?.call());
+
+/// Stops listening for what closes the shown row menu; null while none
+/// shows.
+VoidCallback? _rowMenuShown;
+
+/// Bumped by every [showRowTextMenu]: an older call still waiting for the
+/// clipboard then shows nothing.
+int _rowMenuOpens = 0;
+
+/// Closes the menu [showRowTextMenu] showed, if it still shows.
+void hideRowTextMenu() => _rowMenu.remove();
+
+/// Opens the text context menu of row [row] of [view] at global [anchor]
+/// (WI #128, Spec #122 Req 30) without needing the row's field: the items a
+/// [TextSegmentField]'s own menu shows on this platform for the row's
+/// selection, in its order (`EditableText.getEditableButtonItems`): Cut and
+/// Copy over a selection, Paste while the clipboard holds text, and Select
+/// All where the platform's field offers it (never on macOS). Each item
+/// invokes its intent (`CopySelectionTextIntent`, `PasteTextIntent`,
+/// `SelectAllTextIntent`) from the row's focus node, as SpellingMenu's
+/// items do, so Paste goes through the segment's `PasteTextIntent`
+/// override (ruling D11). It replaces any other context menu, and closes
+/// on an item, a tap outside the editor's fields, a press of the segment's
+/// pointer layer ([hideRowTextMenu]) or a change of the segment's text or
+/// selection.
+Future<void> showRowTextMenu(
+  SegmentViewState view,
+  int row, {
+  required Offset anchor,
+}) async {
+  final open = ++_rowMenuOpens;
+  final ctrl = view.rowController(row);
+  final focusNode = view.rowFocusNode(row);
+  if (ctrl == null || focusNode == null) return;
+  final pasteable = await Clipboard.hasStrings();
+  if (open != _rowMenuOpens || !view.mounted) return;
+  final value = ctrl.value;
+  final collapsed = !value.selection.isValid || value.selection.isCollapsed;
+  void invoke(Intent intent) {
+    _rowMenu.remove();
+    final context = focusNode.context;
+    if (context != null && context.mounted) {
+      Actions.maybeInvoke(context, intent);
+    }
+  }
+
+  const cause = SelectionChangedCause.toolbar;
+  final items = EditableText.getEditableButtonItems(
+    clipboardStatus: pasteable
+        ? ClipboardStatus.pasteable
+        : ClipboardStatus.notPasteable,
+    onCopy: collapsed ? null : () => invoke(CopySelectionTextIntent.copy),
+    onCut: collapsed
+        ? null
+        : () => invoke(const CopySelectionTextIntent.cut(cause)),
+    onPaste: pasteable ? () => invoke(const PasteTextIntent(cause)) : null,
+    onSelectAll: _selectAllOffered(value)
+        ? () => invoke(const SelectAllTextIntent(cause))
+        : null,
+    onLookUp: null,
+    onSearchWeb: null,
+    onShare: null,
+    onLiveTextInput: null,
+  );
+  if (items.isEmpty) return;
+  final segment = view.widget.controller;
+  final seen = segment.value;
+  void onSegment() {
+    if (segment.value != seen) _rowMenu.remove();
+  }
+
+  // A fresh overlay entry in [view]'s overlay (`show` rebuilds an entry
+  // still marked shown in place).
+  _rowMenu.remove();
+  _rowMenu.show(
+    context: view.context,
+    contextMenuBuilder: (_) => TextFieldTapRegion(
+      onTapOutside: (_) => _rowMenu.remove(),
+      child: AdaptiveTextSelectionToolbar.buttonItems(
+        anchors: TextSelectionToolbarAnchors(primaryAnchor: anchor),
+        buttonItems: items,
+      ),
+    ),
+  );
+  segment.addListener(onSegment);
+  _rowMenuShown = () {
+    segment.removeListener(onSegment);
+    _rowMenuShown = null;
+  };
+}
+
+/// Whether a field's text context menu offers Select All over [value] on
+/// this platform (`EditableTextState.selectAllEnabled` with the platform's
+/// selection controls).
+bool _selectAllOffered(TextEditingValue value) =>
+    switch (defaultTargetPlatform) {
+      TargetPlatform.macOS => false,
+      TargetPlatform.iOS =>
+        value.text.isNotEmpty && value.selection.isCollapsed,
+      TargetPlatform.android ||
+      TargetPlatform.fuchsia ||
+      TargetPlatform.linux ||
+      TargetPlatform.windows =>
+        value.text.isNotEmpty &&
+            !(value.selection.start == 0 &&
+                value.selection.end == value.text.length),
+    };

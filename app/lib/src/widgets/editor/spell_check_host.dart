@@ -272,6 +272,10 @@ int debugSpellHostRectCalls = 0;
 @visibleForTesting
 int debugSpellHostEditableCalls = 0;
 
+/// A `TextField`'s default scroll padding, which a row without a field
+/// pads a Check Document Now range by (WI #128).
+const _fieldScrollPadding = EdgeInsets.all(20);
+
 class _SpellCheckFieldState extends State<SpellCheckField>
     implements SpellFieldHost {
   SpellCheckController? _checker;
@@ -300,8 +304,8 @@ class _SpellCheckFieldState extends State<SpellCheckField>
 
   /// Whether the primary focus is this field or below it.
   bool _focusInside() {
-    final focus = FocusManager.instance.primaryFocus?.context;
-    if (!mounted || focus == null || !focus.mounted) return false;
+    final focus = _primaryFocusContext();
+    if (!mounted || focus == null) return false;
     if (identical(focus, context)) return true;
     var inside = false;
     focus.visitAncestorElements((e) {
@@ -511,24 +515,34 @@ class _SpellCheckFieldState extends State<SpellCheckField>
   /// Check Document Now's move to [issue], an issue of this field: selects
   /// its range (and the segment's in a live preview row), focuses the field,
   /// scrolls the range into view and, after the frame, opens SpellingMenu on
-  /// it. Nothing more happens once [stillCurrent] is false, the field is
-  /// gone or its text changed.
+  /// it. In a live preview row the row becomes the active row with that
+  /// selection (`SegmentViewState.activateRow`, WI #128), which focuses it;
+  /// a row without a field ([_goToRow]) mounts its field then. Nothing more
+  /// happens once [stillCurrent] is false, the field is gone or its text
+  /// changed.
   Future<void> _goTo(
     SpellIssue issue, {
     required bool Function() stillCurrent,
   }) async {
+    final segment = _segment;
+    final row = segment != null && segment.mounted
+        ? segment.rowIndexOf(widget.controller)
+        : null;
     final field = _editableText();
-    if (field == null) return;
+    if (field == null) {
+      if (segment != null && row != null) {
+        await _goToRow(segment, row, issue, stillCurrent: stillCurrent);
+      }
+      return;
+    }
     final ctrl = widget.controller;
     final text = ctrl.text;
     final end = issue.start + issue.length;
     if (issue.start < 0 || end > text.length) return;
-    final segment = _segment;
-    final base = segment != null && segment.mounted
-        ? segment.rowTextStartOf(ctrl)
-        : null;
-    if (segment != null && base != null) {
-      segment.select(
+    if (segment != null && row != null) {
+      final base = segment.rowSpec(row)!.textStart;
+      segment.activateRow(
+        row,
         TextSelection(baseOffset: base + issue.start, extentOffset: base + end),
       );
     } else {
@@ -536,8 +550,8 @@ class _SpellCheckFieldState extends State<SpellCheckField>
         baseOffset: issue.start,
         extentOffset: end,
       );
+      field.widget.focusNode.requestFocus();
     }
-    field.widget.focusNode.requestFocus();
     // The field's own reveal on focus pads its selection by its scroll
     // padding: padding the same way leaves it nothing to scroll.
     final rect = _rectOf(issue);
@@ -561,14 +575,84 @@ class _SpellCheckFieldState extends State<SpellCheckField>
     );
   }
 
+  /// [_goTo] on row [row] of [segment], a row without a field (WI #128):
+  /// the row becomes the active row with [issue]'s range selected, its text
+  /// scrolls the range into view (padded as a field pads it) and, after the
+  /// frame, SpellingMenu opens on the range through the segment
+  /// (`showRowSpellingMenu`), below the range as the row lays it out then.
+  /// The menu hangs off the segment: this host joined the row's `RichText`,
+  /// which the row's field replaces once the row is active.
+  Future<void> _goToRow(
+    SegmentViewState segment,
+    int row,
+    SpellIssue issue, {
+    required bool Function() stillCurrent,
+  }) async {
+    final ctrl = widget.controller;
+    final text = ctrl.text;
+    final end = issue.start + issue.length;
+    if (issue.start < 0 || end > text.length) return;
+    final base = segment.rowSpec(row)!.textStart;
+    segment.activateRow(
+      row,
+      TextSelection(baseOffset: base + issue.start, extentOffset: base + end),
+    );
+    final rect = _rectOf(issue);
+    if (rect != null) {
+      _text()?.showOnScreen(
+        rect: _fieldScrollPadding.inflateRect(rect),
+        duration: Duration.zero,
+      );
+    }
+    await SchedulerBinding.instance.endOfFrame;
+    if (!stillCurrent() || !segment.mounted || ctrl.text != text) return;
+    final now = segment.rowIndexOf(ctrl);
+    final boxes = now == null ? null : segment.rowBoxes(now);
+    if (now == null || boxes == null || !boxes.box.attached) return;
+    final rects = boxes.boxesFor(TextRange(start: issue.start, end: end));
+    if (rects.isEmpty) return;
+    final shown = rects
+        .skip(1)
+        .fold(rects.first, (a, b) => a.expandToInclude(b));
+    await showRowSpellingMenu(
+      segment,
+      now,
+      issue: issue,
+      anchor: boxes.box.localToGlobal(shown.bottomLeft),
+    );
+  }
+
   @override
   Widget build(BuildContext context) => widget.child;
 }
 
-/// The [SpellCheckField] whose subtree holds the primary focus, or null.
-_SpellCheckFieldState? _fieldWithFocus() {
+/// The primary focus's context when an ancestor walk from it is safe, or
+/// null.
+///
+/// Focus can still sit in a field whose row swapped to idle this frame: a
+/// click on a later row deactivates the earlier row's field before focus
+/// moves on. That element is deactivated but still [BuildContext.mounted],
+/// and an ancestor lookup from it throws "Looking up a deactivated
+/// widget's ancestor is unsafe" when a [SpellCheckField] registers in the
+/// same frame. Such a context counts as no focus. Only debug builds can
+/// tell an inactive element; in profile and release the walk is safe and
+/// stops at the deactivated subtree's detached root, so it reaches no
+/// live field.
+BuildContext? _primaryFocusContext() {
   final focus = FocusManager.instance.primaryFocus?.context;
   if (focus == null || !focus.mounted) return null;
+  var active = true;
+  assert(() {
+    active = focus is! Element || focus.debugIsActive;
+    return true;
+  }());
+  return active ? focus : null;
+}
+
+/// The [SpellCheckField] whose subtree holds the primary focus, or null.
+_SpellCheckFieldState? _fieldWithFocus() {
+  final focus = _primaryFocusContext();
+  if (focus == null) return null;
   _SpellCheckFieldState? found;
   bool visit(Element e) {
     if (e is StatefulElement && e.state is _SpellCheckFieldState) {
@@ -584,8 +668,8 @@ _SpellCheckFieldState? _fieldWithFocus() {
 
 /// Whether the primary focus is in a SpellingMenu.
 bool _spellingMenuHasFocus() {
-  final focus = FocusManager.instance.primaryFocus?.context;
-  if (focus == null || !focus.mounted) return false;
+  final focus = _primaryFocusContext();
+  if (focus == null) return false;
   return focus.widget is SpellingMenu ||
       focus.findAncestorWidgetOfExactType<SpellingMenu>() != null;
 }
