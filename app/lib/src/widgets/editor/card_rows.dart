@@ -4,6 +4,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../editor/attachment_ref.dart'
+    show AttachmentRef, parseAttachmentReference;
 import '../../editor/editor_rows.dart';
 import '../../editor/find_in_note.dart';
 import '../../editor/markdown_inline.dart';
@@ -19,6 +21,7 @@ import '../find/find_highlights.dart';
 import '../find/find_in_note_host.dart'
     show FindActiveScope, findFieldDecoration;
 import '../find/find_keys.dart';
+import 'attachment_row.dart';
 import 'editor_row.dart';
 import 'excerpt_card.dart';
 import 'find_decoration.dart';
@@ -55,9 +58,17 @@ import 'table_grid.dart';
 ///   controller unless the row holds a tag (markers always hidden, never
 ///   revealed). Its text is painted by the grid only. Several tables in one
 ///   excerpt are separate rows, so each is its own grid, stacked with no gap.
+/// - An attachment row (WI #144; Spec #123 R39, D6, D7) shows V3's
+///   [AttachmentBlock] in place of its markdown, under Key
+///   `card-attachment-<r>` directly inside `card-row-<r>`, aligned to the
+///   row's start: an image scaled to the card's width and at most
+///   [cardAttachmentImageMaxHeight] tall, or the compact file card, with the
+///   block's open, menu, missing and offline behaviour and no caret callback.
 /// - A row holding a live `#tag` (WI #247, ruling D51) adds [_CardTagRegion]:
-///   a click on the tag opens Tags mode. Every other row, a table row
-///   included, adds no listener, gesture detector or mouse region (D14).
+///   a click on the tag opens Tags mode. An attachment row's block takes
+///   pointer input inside itself only (R39's one exception). Every other
+///   row, a table row included, adds no listener, gesture detector or mouse
+///   region (D14).
 /// - Otherwise display only: no caret, focus, toggling or link clicks.
 class CardRows extends StatelessWidget {
   const CardRows({
@@ -148,6 +159,22 @@ class CardRows extends StatelessWidget {
     );
     Widget tagged(_TagRowBuilder build) =>
         tags.isEmpty ? build(null) : _CardTagRegion(tags: tags, builder: build);
+    if (cardAttachmentReference(text, spec) case final reference?) {
+      return KeyedSubtree(
+        key: ValueKey('card-row-$r'),
+        child: Align(
+          alignment: AlignmentDirectional.topStart,
+          child: KeyedSubtree(
+            key: ValueKey('card-attachment-$r'),
+            child: AttachmentBlock(
+              reference: reference,
+              name: attachmentShownName(rowText.trim(), reference),
+              imageMaxHeight: cardAttachmentImageMaxHeight,
+            ),
+          ),
+        ),
+      );
+    }
     if (spec.kind == RowKind.table) {
       return KeyedSubtree(
         key: ValueKey('card-row-$r'),
@@ -237,7 +264,8 @@ class CardRows extends StatelessWidget {
             child: plain,
           );
     final Widget row = switch (spec.kind) {
-      // An attachment row shows as prose until #123 gives it a card arm.
+      // An attachment row whose text is no reference (splitRows makes none)
+      // shows as prose; a reference shows its block above.
       RowKind.prose || RowKind.attachment => rich,
       RowKind.code => Padding(
         padding: EdgeInsets.only(
@@ -281,6 +309,20 @@ class CardRows extends StatelessWidget {
     );
   }
 }
+
+/// The tallest an excerpt card's image shows (R39), in logical pixels.
+const double cardAttachmentImageMaxHeight = 240;
+
+/// The reference an excerpt card's row [spec] of [text] shows as V3's
+/// [AttachmentBlock] (WI #144; R39), or null when the row shows its text:
+/// an attachment row whose trimmed text parses as a reference. A card
+/// shows no text for such a row, so Find skips it in cards (D27).
+AttachmentRef? cardAttachmentReference(String text, RowSpec spec) =>
+    spec.kind == RowKind.attachment
+    ? parseAttachmentReference(
+        text.substring(spec.textStart, spec.textEnd).trim(),
+      )
+    : null;
 
 /// A tag a click on a card row opens: its [span] in the row's text and its
 /// normalized [name].
