@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/editor_rows.dart';
+import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
 import 'package:open_memex_app/src/widgets/editor/segment_editing.dart';
 import 'package:open_memex_app/src/widgets/editor/segment_view.dart';
 
@@ -173,5 +174,90 @@ Future<void> typeSegmentText(
   }
   await focusSegmentAt(tester, finder);
   segmentEditingOf(tester, finder).replaceText(text);
+  await tester.pump();
+}
+
+// ---------------------------------------------------- idle rows (WI #132)
+
+/// The rows host of text segment [s]: under its Key, else (a `SegmentView`
+/// pumped without one) the [s]-th `SegmentView` of the tree.
+SegmentViewState? _rowsHostAt(WidgetTester tester, int s) {
+  if (maybeSegmentEditingOf(tester, find.byKey(textSegmentKey(s)))
+      case final SegmentViewState h) {
+    return h;
+  }
+  final all = tester
+      .stateList<SegmentViewState>(
+        find.byType(SegmentView, skipOffstage: false),
+      )
+      .toList();
+  return s < all.length ? all[s] : null;
+}
+
+/// Row [r]'s controller of text segment [s] (it holds the row's text), also
+/// while the row is idle and has no field.
+///
+/// TEST-CHANGE helper (WI #132, Spec #122 Req 38): the rows host answers
+/// for every row; the row's field exists only while the row is active.
+LivePreviewController segmentRowController(WidgetTester tester, int s, int r) {
+  final host = _rowsHostAt(tester, s);
+  final controller = host?.rowController(r);
+  if (controller == null) {
+    throw TestFailure('segment $s has no editor row $r');
+  }
+  return controller;
+}
+
+/// The span row [r] of text segment [s] lays out: its field's while it is
+/// the active row, its idle paragraph's otherwise (WI #132, Req 38).
+InlineSpan segmentRowSpan(WidgetTester tester, int s, int r) =>
+    switch (segmentRowTextBox(tester, s, r)) {
+      final RenderEditable e => e.text!,
+      final RenderParagraph p => p.text,
+      _ => throw TestFailure('segment $s row $r lays out no text'),
+    };
+
+/// The render box that lays row [r] of text segment [s]'s text out, also
+/// while the row shows its grid (offstage): the `RenderEditable` of its
+/// field while it is the active row, the `RenderParagraph` of its idle text
+/// otherwise (WI #132, Req 38).
+RenderBox segmentRowTextBox(WidgetTester tester, int s, int r) {
+  RenderBox? found;
+  void visit(RenderObject node) {
+    if (found != null) return;
+    if (node is RenderEditable || node is RenderParagraph) {
+      found = node as RenderBox;
+    } else {
+      node.visitChildren(visit);
+    }
+  }
+
+  visit(
+    tester.renderObject(
+      find.byKey(ValueKey('editor-row-$s-$r'), skipOffstage: false),
+    ),
+  );
+  return found ?? (throw TestFailure('segment $s row $r lays out no text'));
+}
+
+/// Makes row [r] of text segment [s] the active row, caret at row-text
+/// offset [local] (default: its end), and lets its field mount and take
+/// focus (two frames).
+///
+/// TEST-CHANGE helper (WI #132, Spec #122 Req 38): "activate the row
+/// first" for a test that finds a row's field or types into it.
+Future<void> activateSegmentRow(
+  WidgetTester tester,
+  int s,
+  int r, {
+  int? local,
+}) async {
+  final host = _rowsHostAt(tester, s);
+  if (host == null) return;
+  final spec = host.rowSpec(r);
+  if (spec == null) throw TestFailure('segment $s has no editor row $r');
+  final at = spec.textStart + (local ?? spec.textEnd - spec.textStart);
+  host.activateRow(r, TextSelection.collapsed(offset: at));
+  await tester.pump();
   await tester.pump();
 }

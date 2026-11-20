@@ -26,7 +26,6 @@ import 'package:flutter/gestures.dart'
         kPressTimeout,
         kSecondaryButton;
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -43,6 +42,7 @@ import 'package:open_memex_app/src/widgets/editor/segmented_body.dart';
 import 'package:open_memex_app/src/widgets/editor/text_segment.dart';
 
 import '../robots/segmented_editor_robot.dart';
+import '../support/editor_rows_probe.dart' show rowBoxesOf;
 import '../support/font_fetch_hold.dart';
 import '../support/editor_scope.dart';
 import '../support/mac_editing.dart';
@@ -135,9 +135,6 @@ Finder _wi170Row(int s, int r) => find.byKey(Key('editor-row-$s-$r'));
 
 Finder _wi170Marker(int s, int r) => find.byKey(Key('editor-row-marker-$s-$r'));
 
-Finder _wi170FieldOf(int s, int r) =>
-    find.descendant(of: _wi170Row(s, r), matching: find.byType(EditableText));
-
 /// How many `editor-row-<s>-<r>` Keys segment [s] shows.
 int _wi170RowCount(int s) => find
     .byWidgetPredicate((w) {
@@ -149,14 +146,12 @@ int _wi170RowCount(int s) => find
     .length;
 
 LivePreviewController _wi170Ctrl(WidgetTester tester, int s, int r) =>
-    tester.widget<EditableText>(_wi170FieldOf(s, r)).controller
-        as LivePreviewController;
+    segmentRowController(tester, s, r); // idle rows too (WI #132, Req 38)
 
-RenderEditable _wi170Editable(WidgetTester tester, int s, int r) {
-  final found = findRenderEditable(tester.renderObject(_wi170Row(s, r)));
-  if (found == null) throw TestFailure('No RenderEditable in row $s-$r');
-  return found;
-}
+/// Row [s]-[r]'s geometry: its field's while it is the active row, its
+/// paragraph's while idle (WI #132, Req 38).
+LineBoxSource _wi170Boxes(WidgetTester tester, int s, int r) =>
+    rowBoxesOf(tester, s, r);
 
 /// A global point on segment [s]'s glyph at [offset]: just right of the
 /// caret there, at the middle of its line, so the nearest offset is
@@ -174,6 +169,8 @@ Future<void> _wi170FocusRow(
   int r, {
   int? local,
 }) async {
+  // TEST-CHANGE (WI #132, Req 38): activate the row first.
+  await activateSegmentRow(tester, s, r, local: local);
   await tester.showKeyboard(_wi170Row(s, r));
   await tester.pump();
   final ctrl = _wi170Ctrl(tester, s, r);
@@ -271,8 +268,8 @@ List<Rect> _wi170Marks(
   final fills = _wi170SelectionFills(tester, s);
   final out = <Rect>[];
   for (var r = 0; r < _wi170RowCount(s); r++) {
-    final e = _wi170Editable(tester, s, r);
-    final boxes = RenderEditableLineBoxes(e);
+    final boxes = _wi170Boxes(tester, s, r);
+    final e = boxes.box;
     for (final line in boxes.lines) {
       if ((line.bottom - line.top - lineHeight).abs() >= 0.6) continue;
       final x = line.range.isCollapsed
@@ -299,8 +296,8 @@ List<Rect> _wi170Marks(
 /// [s]-[r]: from the right end of the line's last glyph (the field's text
 /// left on a blank line), one column wide, the line box's full height.
 Rect _wi170ExpectedMark(WidgetTester tester, int s, int r, int line) {
-  final e = _wi170Editable(tester, s, r);
-  final boxes = RenderEditableLineBoxes(e);
+  final boxes = _wi170Boxes(tester, s, r);
+  final e = boxes.box;
   final box = boxes.lines[line];
   final double x;
   if (box.range.isCollapsed) {
@@ -608,7 +605,7 @@ void main() {
         // Row 1 `thumbs 👍`: text [11, 20), the emoji [18, 20).
         const text = 'para one\n- thumbs 👍\nend';
         await _wi170Pump(tester, text);
-        final field = tester.getRect(_wi170FieldOf(0, 1));
+        final field = tester.getRect(_wi170Row(0, 1));
 
         // Past the row's end, right of the emoji.
         await tester.macDrag(
@@ -624,14 +621,12 @@ void main() {
         // Shift+click on the emoji's glyph: before or after it, never
         // between its surrogates.
         await _wi170PastDoubleClick(tester);
-        final e = _wi170Editable(tester, 0, 1);
-        final glyph = e
-            .getBoxesForSelection(
-              const TextSelection(baseOffset: 7, extentOffset: 9),
-            )
-            .first
-            .toRect();
-        await tester.macClick(e.localToGlobal(glyph.center), shift: true);
+        final boxes = _wi170Boxes(tester, 0, 1);
+        final glyph = boxes.boxesFor(const TextRange(start: 7, end: 9)).first;
+        await tester.macClick(
+          boxes.box.localToGlobal(glyph.center),
+          shift: true,
+        );
         final selection = segmentEditingAt(tester, 0).selection;
         expect(selection.baseOffset, 2);
         expect(selection.extentOffset, anyOf(18, 20));
@@ -1061,10 +1056,7 @@ void main() {
         ]);
         expect(
           _wi170ExpectedMark(tester, 0, 0, 1).left,
-          moreOrLessEquals(
-            tester.getRect(_wi170FieldOf(0, 0)).left,
-            epsilon: 1,
-          ),
+          moreOrLessEquals(tester.getRect(_wi170Row(0, 0)).left, epsilon: 1),
           reason: 'the blank line mark starts at the text left',
         );
 
@@ -1130,9 +1122,8 @@ void main() {
         }
         // `end` (no newline) stops at its last glyph, well short of the
         // field's right edge.
-        final e = _wi170Editable(tester, 0, 3);
-        final boxes = RenderEditableLineBoxes(e);
-        final glyphEnd = e
+        final boxes = _wi170Boxes(tester, 0, 3);
+        final glyphEnd = boxes.box
             .localToGlobal(
               Offset(boxes.boxesFor(boxes.lines.single.range).last.right, 0),
             )
@@ -1140,7 +1131,7 @@ void main() {
         expect(fills.last.right, moreOrLessEquals(glyphEnd, epsilon: 0.5));
         expect(
           fills.last.right,
-          lessThan(tester.getRect(_wi170FieldOf(0, 3)).right - 50),
+          lessThan(tester.getRect(_wi170Row(0, 3)).right - 50),
         );
       },
       variant: macOnly,
@@ -1207,12 +1198,11 @@ void main() {
         await tester.macDrag(_wi170At(tester, 0, 2), _wi170At(tester, 0, 22));
 
         for (final (r, slice) in [(0, (2, 8)), (1, (0, 5)), (2, (0, 3))]) {
-          final e = _wi170Editable(tester, 0, r);
           // TEST-CHANGE (block selection): one fill per line, the line
           // box's full height, reaching one column past the slice where the
           // row's newline is selected (rows 0 and 1).
           final width =
-              RenderEditableLineBoxes(e)
+              _wi170Boxes(tester, 0, r)
                   .boxesFor(TextRange(start: slice.$1, end: slice.$2))
                   .single
                   .width +
@@ -1509,10 +1499,7 @@ void main() {
         final node = FocusManager.instance.primaryFocus;
         final segment = tester.getRect(find.byKey(textSegmentKey(0)));
         final below = Offset(segment.left + 200, segment.bottom - 20);
-        expect(
-          below.dy,
-          greaterThan(tester.getRect(_wi170FieldOf(0, 1)).bottom),
-        );
+        expect(below.dy, greaterThan(tester.getRect(_wi170Row(0, 1)).bottom));
 
         final mouse = await tester.startGesture(
           below,
@@ -1625,11 +1612,14 @@ void main() {
       'a Cmd press and drag from a row is left to the row and never selects across rows',
       (tester) async {
         await _wi170Pump(tester, _wi170List);
-        await _wi170FocusRow(tester, 0, 2, local: 1);
+        // TEST-CHANGE (WI #132, Req 38): the press begins in the active row,
+        // the only row with a field; a Cmd drag from an idle row is the
+        // layer's and does select across rows (WI #128).
+        await _wi170FocusRow(tester, 0, 0, local: 1);
         await _wi170PastDoubleClick(tester);
         expect(
           segmentEditingAt(tester, 0).selection,
-          const TextSelection.collapsed(offset: 20),
+          const TextSelection.collapsed(offset: 1),
         );
 
         await tester.macHolding([LogicalKeyboardKey.metaLeft], () async {
@@ -1985,9 +1975,7 @@ void main() {
         ).select(const TextSelection(baseOffset: 13, extentOffset: 20));
         await tester.pump();
 
-        final lines = RenderEditableLineBoxes(
-          _wi170Editable(tester, 0, 0),
-        ).lines;
+        final lines = _wi170Boxes(tester, 0, 0).lines;
         expect(lines, hasLength(4), reason: 'the frontmatter row lines');
         _wi170ExpectRects(_wi170Marks(tester, 0), [
           _wi170ExpectedMark(tester, 0, 0, 3),
@@ -2001,17 +1989,19 @@ void main() {
       (tester) async {
         await _wi170Pump(tester, _wi170List);
         final handle = segmentEditingAt(tester, 0);
-        final e = _wi170Editable(tester, 0, 0);
+        final boxes = _wi170Boxes(tester, 0, 0);
+        int offsetAt(Offset global) =>
+            boxes.offsetAt(boxes.box.globalToLocal(global));
         // The first x (in quarter pixels) over the `o` in `para one` where
         // the nearest offset turns from 5 to 6.
         final before = handle.rectForOffset(5);
         final y = before.center.dy;
         var flip = before.left.floorToDouble();
-        while (e.getPositionForPoint(Offset(flip, y)).offset < 6) {
+        while (offsetAt(Offset(flip, y)) < 6) {
           flip += 0.25;
           expect(flip, lessThan(handle.rectForOffset(6).right));
         }
-        expect(e.getPositionForPoint(Offset(flip - 1, y)).offset, 5);
+        expect(offsetAt(Offset(flip - 1, y)), 5);
         // Half a pixel before the flip: a move of exactly the slop (exact
         // in binary) ends half a pixel past it, over offset 6.
         final x = flip - 0.5;
@@ -2084,9 +2074,7 @@ void main() {
         ).select(TextSelection(baseOffset: 0, extentOffset: text.length));
         await tester.pump();
 
-        final lines = RenderEditableLineBoxes(
-          _wi170Editable(tester, 0, 0),
-        ).lines;
+        final lines = _wi170Boxes(tester, 0, 0).lines;
         expect(lines.length, greaterThan(1), reason: 'the paragraph wraps');
         _wi170ExpectRects(_wi170Marks(tester, 0), [
           _wi170ExpectedMark(tester, 0, 0, lines.length - 1),

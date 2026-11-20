@@ -380,6 +380,14 @@ Future<_T128Editor> _t128Pump(
     actions: actions,
   );
   final e = _T128Editor(w);
+  // TEST-CHANGE (WI #132, Req 27): the active row is never null; while the
+  // segment has no focus it is the row holding the selection extent. The
+  // fixture's field row holds it (no focus is taken).
+  e.host.select(
+    TextSelection.collapsed(offset: e.spec(_t128FieldRow).textStart),
+  );
+  await tester.pump();
+  await tester.pump();
   // Every row but the field row is idle: no field under it.
   for (var r = 0; r < e.host.rowCount; r++) {
     if (r == _t128FieldRow) continue;
@@ -836,10 +844,9 @@ void main() {
           'field anchor',
           e.w.at('field anchor', 'anchor') + 1,
         );
-        final extent =
-            e.spec(_t128FieldRow).textStart +
-            e.w.at('field anchor', 'anchor') +
-            1;
+        // TEST-CHANGE (WI #132): the field row is idle now (row 6 is the
+        // active row), so the layer resolves the click on its paragraph.
+        final extent = e.offsetAt(_t128FieldRow, end);
 
         await tester.macHolding([
           LogicalKeyboardKey.shiftLeft,
@@ -1162,7 +1169,7 @@ void main() {
         expect(wi438Menu, findsNothing);
         expect(wi438DefaultMenu, findsNothing);
         expect(e.host.selection, selection, reason: 'the selection stays');
-        expect(e.active, isNull, reason: 'no row became active');
+        expect(e.active, _t128FieldRow, reason: 'no row became active');
       },
       variant: macOnly,
     );
@@ -1182,7 +1189,7 @@ void main() {
         expect(wi438Menu, findsNothing, reason: 'no spelling menu');
         expect(wi438DefaultMenu, findsNothing, reason: 'no text menu');
         expect(e.host.selection, selection, reason: 'the selection stays');
-        expect(e.active, isNull, reason: 'row 0 did not activate');
+        expect(e.active, _t128FieldRow, reason: 'row 0 did not activate');
       },
       variant: macOnly,
     );
@@ -1210,7 +1217,7 @@ void main() {
         expect(wi438Menu, findsNothing);
         expect(wi438DefaultMenu, findsNothing);
         expect(e.host.selection, selection);
-        expect(e.active, isNull);
+        expect(e.active, _t128FieldRow);
       },
       variant: macOnly,
     );
@@ -1238,7 +1245,7 @@ void main() {
           TextRange(start: start, end: start + text.length),
           reason: 'a field keeps a selection the right click lands on',
         );
-        expect(e.active, isNull);
+        expect(e.active, _t128FieldRow);
       },
       variant: macOnly,
     );
@@ -1268,7 +1275,7 @@ void main() {
         await pumpFrames(tester);
 
         expect(e.host.selection, selection, reason: 'no caret moved');
-        expect(e.active, isNull, reason: 'row 0 did not activate');
+        expect(e.active, _t128FieldRow, reason: 'row 0 did not activate');
         expect(wi438Menu, findsNothing, reason: 'no spelling menu');
         expect(
           wi438DefaultMenu,
@@ -1647,7 +1654,7 @@ void main() {
         );
         final issue = rowSpellingIssue(e.host, 0);
         expect(issue, isNotNull, reason: 'fixture: the selection is on teh');
-        expect(e.active, isNull, reason: 'fixture: row 0 is idle');
+        expect(e.active, _t128FieldRow, reason: 'fixture: row 0 is idle');
 
         final opened = await showRowSpellingMenu(
           e.host,
@@ -1825,7 +1832,7 @@ void main() {
       );
       await pumpFrames(tester);
 
-      expect(e.active, isNull);
+      expect(e.active, _t128FieldRow);
     }, variant: macOnly);
 
     testWidgets(

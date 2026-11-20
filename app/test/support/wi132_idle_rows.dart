@@ -354,7 +354,7 @@ List<(Symbol, Rect?, int?)> wi132PaintLog(RenderObject object) {
 
 /// Expects two paint logs ([wi132PaintLog]) to draw the same shapes in the
 /// same colours (positions to 0.01 px). Text draws (`drawParagraph`) are
-/// compared by count only.
+/// not compared, nor are draws in a fully transparent colour.
 void wi132ExpectSamePaint(
   List<(Symbol, Rect?, int?)> idle,
   List<(Symbol, Rect?, int?)> active,
@@ -362,7 +362,13 @@ void wi132ExpectSamePaint(
 ) {
   List<(Symbol, Rect?, int?)> shapes(List<(Symbol, Rect?, int?)> log) => [
     for (final op in log)
-      if (op.$1 != #drawParagraph && op.$1 != #save && op.$1 != #restore) op,
+      if (op.$1 != #drawParagraph &&
+          op.$1 != #save &&
+          op.$1 != #restore &&
+          // A draw in a fully transparent colour shows nothing: an
+          // unfocused field's RenderEditable paints its caret so.
+          (op.$3 == null || (op.$3! >> 24) & 0xFF != 0))
+        op,
   ];
   final a = shapes(idle);
   final b = shapes(active);

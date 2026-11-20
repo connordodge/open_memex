@@ -47,6 +47,7 @@ import '../robots/segmented_editor_robot.dart';
 import '../robots/today_robot.dart';
 import '../support/app_harness.dart';
 import '../support/daily_seed.dart';
+import '../support/editor_rows_probe.dart' show rowBoxesOf;
 import '../support/editor_scope.dart';
 import '../support/fake_clock.dart';
 import '../support/fake_memex_cli.dart';
@@ -174,6 +175,16 @@ Finder _wi167Marker(int s, int r) => find.byKey(Key('editor-row-marker-$s-$r'));
 Finder _wi167FieldOf(int s, int r) =>
     find.descendant(of: _wi167Row(s, r), matching: find.byType(EditableText));
 
+/// Row [r]'s text slot: its field while it is the active row, its idle text
+/// otherwise (WI #132, Req 38).
+Finder _wi167TextOf(int s, int r) => find.descendant(
+  of: _wi167Row(s, r),
+  matching: find.byWidgetPredicate(
+    (w) => w is EditableText || w is RichText,
+    description: 'a field or an idle row text',
+  ),
+);
+
 /// How many `editor-row-<s>-<r>` Keys segment [s] shows.
 int _wi167RowKeys(int s) => find
     .byWidgetPredicate((w) {
@@ -195,8 +206,7 @@ int _wi167MarkerKeys(int s) => find
     .length;
 
 LivePreviewController _wi167Ctrl(WidgetTester tester, int s, int r) =>
-    tester.widget<EditableText>(_wi167FieldOf(s, r)).controller
-        as LivePreviewController;
+    segmentRowController(tester, s, r); // idle rows too (WI #132, Req 38)
 
 String _wi167Text(WidgetTester tester, int s, int r) =>
     _wi167Ctrl(tester, s, r).text;
@@ -205,35 +215,21 @@ List<String> _wi167Texts(WidgetTester tester, int s) => [
   for (var r = 0; r < _wi167RowKeys(s); r++) _wi167Text(tester, s, r),
 ];
 
-RenderEditable _wi167Editable(WidgetTester tester, int s, int r) {
-  RenderEditable? found;
-  void visit(RenderObject node) {
-    if (found != null) return;
-    if (node is RenderEditable) {
-      found = node;
-    } else {
-      node.visitChildren(visit);
-    }
-  }
+/// Row [s]-[r]'s geometry: its field's while it is the active row, its
+/// paragraph's while idle (WI #132, Req 38).
+LineBoxSource _wi167Boxes(WidgetTester tester, int s, int r) =>
+    rowBoxesOf(tester, s, r);
 
-  visit(tester.renderObject(_wi167Row(s, r)));
-  if (found == null) throw TestFailure('No RenderEditable in row $s-$r');
-  return found!;
-}
+/// The global rect of row [s]-[r]'s text slot (its field's rect while it
+/// is the active row).
+Rect _wi167FieldRect(WidgetTester tester, int s, int r) =>
+    tester.getRect(_wi167Row(s, r));
 
-/// The global rect of row [s]-[r]'s field (its RenderEditable).
-Rect _wi167FieldRect(WidgetTester tester, int s, int r) {
-  final e = _wi167Editable(tester, s, r);
-  return e.localToGlobal(Offset.zero) & e.size;
-}
-
-/// The global left of the glyph at local [offset] of [e].
-double _wi167GlyphLeft(RenderEditable e, int offset) {
-  final boxes = e.getBoxesForSelection(
-    TextSelection(baseOffset: offset, extentOffset: offset + 1),
-  );
+/// The global left of the glyph at local [offset] of [b]'s row.
+double _wi167GlyphLeft(LineBoxSource b, int offset) {
+  final boxes = b.boxesFor(TextRange(start: offset, end: offset + 1));
   if (boxes.isEmpty) throw TestFailure('No glyph box at $offset');
-  return e.localToGlobal(Offset(boxes.first.left, boxes.first.top)).dx;
+  return b.box.localToGlobal(Offset(boxes.first.left, boxes.first.top)).dx;
 }
 
 /// Row [s]-[r]'s laid-out lines in global coordinates (top, bottom, range).
@@ -242,9 +238,10 @@ List<({double top, double bottom, TextRange range})> _wi167Lines(
   int s,
   int r,
 ) {
-  final e = _wi167Editable(tester, s, r);
+  final b = _wi167Boxes(tester, s, r);
+  final e = b.box;
   return [
-    for (final line in RenderEditableLineBoxes(e).lines)
+    for (final line in b.lines)
       (
         top: e.localToGlobal(Offset(0, line.top)).dy,
         bottom: e.localToGlobal(Offset(0, line.bottom)).dy,
@@ -301,6 +298,8 @@ Future<void> _wi167FocusRow(
   int r, {
   int? local,
 }) async {
+  // TEST-CHANGE (WI #132, Req 38): activate the row first.
+  await activateSegmentRow(tester, s, r, local: local);
   await tester.showKeyboard(_wi167Row(s, r));
   await tester.pump();
   final ctrl = _wi167Ctrl(tester, s, r);
@@ -362,8 +361,9 @@ void main() {
         expect(_wi167RowKeys(0), 4);
         for (var r = 0; r < 4; r++) {
           expect(_wi167Row(0, r), findsOneWidget, reason: 'editor-row-0-$r');
-          // The index Key wraps exactly one field.
-          expect(_wi167FieldOf(0, r), findsOneWidget);
+          // The index Key wraps exactly one text slot (TEST-CHANGE, WI #132:
+          // a field for the active row, an idle text for the others).
+          expect(_wi167TextOf(0, r), findsOneWidget);
         }
         expect(_wi167Row(0, 4), findsNothing);
         expect(_wi167Texts(tester, 0), ['para', 'a', 'b', '\nend']);
@@ -445,7 +445,7 @@ void main() {
         // The code text's first glyph (`l` of `let`): B1 hides the fence
         // line's backticks while unfocused, so they have no glyph box.
         expect(
-          _wi167GlyphLeft(_wi167Editable(tester, 0, 1), fence.indexOf('let')),
+          _wi167GlyphLeft(_wi167Boxes(tester, 0, 1), fence.indexOf('let')),
           moreOrLessEquals(column.left + 16.2, epsilon: 0.01),
         );
         // Prose rows span the text column.
@@ -548,7 +548,7 @@ void main() {
           final frame = tester.widget<LivePreviewFrame>(
             find
                 .ancestor(
-                  of: _wi167FieldOf(0, r),
+                  of: _wi167TextOf(0, r),
                   matching: find.byType(LivePreviewFrame),
                 )
                 .first,
@@ -621,7 +621,7 @@ void main() {
 
         expect(_wi167Text(tester, 0, 1), _wi167Long);
         final textX = _wi167SegmentRect(tester, 0).left + column;
-        final editable = _wi167Editable(tester, 0, 1);
+        final editable = _wi167Boxes(tester, 0, 1);
         final lines = _wi167Lines(tester, 0, 1);
         expect(lines.length, greaterThanOrEqualTo(2), reason: 'the item wraps');
         expect(
@@ -1198,18 +1198,18 @@ void main() {
         };
         for (final MapEntry(key: r, value: slice) in slices.entries) {
           expect(_wi167Ctrl(tester, 0, r).selection, slice, reason: 'row $r');
-          expect(
-            _wi167Editable(tester, 0, r).selection,
-            slice,
-            reason: 'row $r renders it',
-          );
+          // (TEST-CHANGE, WI #132: an idle row has no field whose
+          // `selection` could be read; every row's painted fill is checked
+          // below.)
           // The slice's x extent on its line, as the field lays it out.
           // TEST-CHANGE (block selection): the painted line is the line
           // box's full height (22.95), so selected lines touch, and reaches
           // one 8.1 px column further where the row's newline is selected
           // (rows 0 and 1; the selection ends before row 2's).
-          final line = RenderEditableLineBoxes(
-            _wi167Editable(tester, 0, r),
+          final line = _wi167Boxes(
+            tester,
+            0,
+            r,
           ).boxesFor(TextRange(start: slice.start, end: slice.end)).single;
           final width = line.width + (r < 2 ? 8.1 : 0);
           expect(
@@ -1259,11 +1259,11 @@ void main() {
         // Segment offset: (row, local offset).
         const cases = {2: (0, 2), 8: (1, 1), 11: (2, 0), 16: (3, 3)};
         for (final MapEntry(key: offset, value: (r, local)) in cases.entries) {
-          final editable = _wi167Editable(tester, 0, r);
-          final caret = RenderEditableLineBoxes(editable).caretRect(local);
+          final boxes = _wi167Boxes(tester, 0, r);
+          final caret = boxes.caretRect(local);
           final expected = Rect.fromPoints(
-            editable.localToGlobal(caret.topLeft),
-            editable.localToGlobal(caret.bottomRight),
+            boxes.box.localToGlobal(caret.topLeft),
+            boxes.box.localToGlobal(caret.bottomRight),
           );
           final actual = handle.rectForOffset(offset);
           expect(
@@ -1400,11 +1400,9 @@ void main() {
 
         expect(r.popover, findsOneWidget);
         expect(r.segment(0).focusedRow, 1);
-        final editable = _wi167Editable(tester, 0, 1);
-        final caret = RenderEditableLineBoxes(
-          editable,
-        ).caretRect('see [[Other'.length);
-        final caretBottom = editable.localToGlobal(caret.bottomLeft);
+        final editable = _wi167Boxes(tester, 0, 1);
+        final caret = editable.caretRect('see [[Other'.length);
+        final caretBottom = editable.box.localToGlobal(caret.bottomLeft);
         expect(
           tester.getTopLeft(r.popover).dy,
           moreOrLessEquals(caretBottom.dy + 6, epsilon: 0.5),
@@ -1414,12 +1412,8 @@ void main() {
         // the field lays out the newest keystroke, so it trails the caret by
         // that keystroke (unchanged behaviour, not this WI). It sits on this
         // row's text between the `[[` and the caret.
-        final triggerX = editable
-            .localToGlobal(
-              RenderEditableLineBoxes(
-                editable,
-              ).caretRect('see '.length).bottomLeft,
-            )
+        final triggerX = editable.box
+            .localToGlobal(editable.caretRect('see '.length).bottomLeft)
             .dx;
         expect(
           tester.getTopLeft(r.popover).dx,
@@ -1454,10 +1448,9 @@ void main() {
         await r.pressKey(LogicalKeyboardKey.enter);
         expect(r.kindChip, findsOneWidget);
 
-        // Focus moves to another row: the chip stays.
-        await _wi167FocusRow(tester, 0, 0, local: 2);
-        expect(r.kindChip, findsOneWidget);
-
+        // TEST-CHANGE (WI #132, Req 31, AC10): the kind chip belongs to the
+        // active row's field and closes when focus moves to another row;
+        // here its row is removed while it is the active row.
         r.segment(0).replaceText('Intro line\nOutro line\n');
         await pumpFrames(tester);
 
@@ -1747,8 +1740,9 @@ void main() {
 
         final expected = <({TextRange range, double top, double bottom})>[];
         for (final (r, spec) in specs.indexed) {
-          final e = _wi167Editable(tester, 0, r);
-          for (final (i, line) in RenderEditableLineBoxes(e).lines.indexed) {
+          final rb = _wi167Boxes(tester, 0, r);
+          final e = rb.box;
+          for (final (i, line) in rb.lines.indexed) {
             expected.add((
               range: TextRange(
                 start: i == 0 ? spec.start : spec.toSegment(line.range.start),
@@ -1800,9 +1794,10 @@ void main() {
             ),
         ];
         List<Rect> rowBoxes(int r, TextRange range) {
-          final e = _wi167Editable(tester, 0, r);
+          final rb = _wi167Boxes(tester, 0, r);
+          final e = rb.box;
           return globalOf(
-            RenderEditableLineBoxes(e).boxesFor(
+            rb.boxesFor(
               TextRange(
                 start: specs[r].toLocal(range.start),
                 end: specs[r].toLocal(range.end),
@@ -1855,11 +1850,10 @@ void main() {
         final boxes = _wi167View(tester, 0).lineBoxes()!;
 
         Offset onGlyph(int r, int local) {
-          final e = _wi167Editable(tester, 0, r);
-          final glyph = e
-              .getBoxesForSelection(
-                TextSelection(baseOffset: local, extentOffset: local + 1),
-              )
+          final rb = _wi167Boxes(tester, 0, r);
+          final e = rb.box;
+          final glyph = rb
+              .boxesFor(TextRange(start: local, end: local + 1))
               .single;
           return boxes.box.globalToLocal(
             e.localToGlobal(Offset(glyph.left + 0.5, glyph.top + 2)),

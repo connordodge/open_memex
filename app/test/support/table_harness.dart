@@ -117,14 +117,34 @@ Finder tableRowFieldOnstage(int s, int r) => find.descendant(
   matching: find.byType(EditableText),
 );
 
+/// Editor row [r]'s text slot, also while it is offstage: its field while
+/// it is the active row, else its idle `RichText` (WI #132, Req 38).
+Finder tableRowText(int s, int r) => find.descendant(
+  of: tableEditorRow(s, r),
+  matching: find.byWidgetPredicate(
+    (w) => w is EditableText || w is RichText,
+    description: 'a field or an idle row text',
+    skipOffstage: false,
+  ),
+  skipOffstage: false,
+);
+
+/// Editor row [r]'s text slot only while it is onstage ([tableRowText]).
+Finder tableRowTextOnstage(int s, int r) => find.descendant(
+  of: find.byKey(Key('editor-row-$s-$r')),
+  matching: find.byWidgetPredicate(
+    (w) => w is EditableText || w is RichText,
+    description: 'a field or an idle row text',
+  ),
+);
+
 /// Editor row [r]'s controller (also while its field is offstage).
 LivePreviewController tableRowController(WidgetTester tester, int s, int r) =>
-    tester.widget<EditableText>(tableRowField(s, r)).controller
-        as LivePreviewController;
+    segmentRowController(tester, s, r);
 
 /// Editor row [r]'s focus node (also while its field is offstage).
 FocusNode tableRowFocusNode(WidgetTester tester, int s, int r) =>
-    tester.widget<EditableText>(tableRowField(s, r)).focusNode;
+    tableView(tester, s).rowFocusNode(r)!;
 
 /// Editor row [r]'s field state (also while offstage).
 EditableTextState tableRowFieldState(WidgetTester tester, int s, int r) =>
@@ -145,13 +165,14 @@ EditorRow tableEditorRowWidget(WidgetTester tester, int s, int r) =>
     );
 
 /// Table row [r] of segment [s] shows its grid: the grid is on screen and
-/// the row's field is mounted but offstage.
+/// the row's field is offstage. TEST-CHANGE (WI #132, Req 38): the field is
+/// mounted only while the row is the active row; an idle row has none.
 void expectTableRendered(int s, int r, {String? reason}) {
   expect(tableGrid(s, r), findsOneWidget, reason: reason ?? 'grid shows');
   expect(
     tableRowField(s, r),
-    findsOneWidget,
-    reason: reason ?? 'the field stays mounted',
+    anyOf(findsNothing, findsOneWidget),
+    reason: reason ?? 'the field is mounted only while the row is active',
   );
   expect(
     tableRowFieldOnstage(s, r),
@@ -160,14 +181,15 @@ void expectTableRendered(int s, int r, {String? reason}) {
   );
 }
 
-/// Table row [r] of segment [s] is revealed: its field is on screen and no
+/// Table row [r] of segment [s] is revealed: its text is on screen (its
+/// field while it is the active row, else its idle text, WI #132) and no
 /// grid shows.
 void expectTableRevealed(int s, int r, {String? reason}) {
   expect(tableGrid(s, r), findsNothing, reason: reason ?? 'grid is gone');
   expect(
-    tableRowFieldOnstage(s, r),
+    tableRowTextOnstage(s, r),
     findsOneWidget,
-    reason: reason ?? 'the field shows',
+    reason: reason ?? 'the row text shows',
   );
 }
 
@@ -244,6 +266,13 @@ class TableBody {
   /// the segment's handle, as a click or drag would leave it.
   Future<void> select(TextSelection selection, {int s = 0}) async {
     final r = segmentRowHolding(segment(s), selection.extentOffset);
+    // TEST-CHANGE (WI #132, Req 38): activate the row first; only the
+    // active row has a field.
+    view(
+      s,
+    ).activateRow(r, TextSelection.collapsed(offset: selection.extentOffset));
+    await tester.pump();
+    await tester.pump();
     await tester.showKeyboard(tableRowField(s, r));
     await tester.pump();
     segment(s).select(selection);

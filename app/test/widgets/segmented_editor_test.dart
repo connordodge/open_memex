@@ -300,9 +300,10 @@ void main() {
         // editable text in the editor, so the footer is not a text field.
         // TEST-CHANGE (#167): the person segment renders as editor rows (its
         // `- tried coyote time` line is an item row), one field per row.
+        // TEST-CHANGE (WI #132, Req 6b): only the active row is a field.
         expect(r.segment(0).rowCount, 3);
-        expect(r.editorEditables, findsNWidgets(3));
-        expect(segmentRowFields(r.textSegment(0)), findsNWidgets(3));
+        expect(r.editorEditables, findsNWidgets(1));
+        expect(segmentRowFields(r.textSegment(0)), findsNWidgets(1));
         expect(r.segmentText(0), isNot(contains(topicsMarker)));
         expect(r.segmentText(0), isNot(contains('~about')));
       },

@@ -19,6 +19,7 @@ import 'package:open_memex_app/src/widgets/editor/segment_view.dart';
 import 'package:open_memex_app/src/widgets/editor/text_segment.dart';
 
 import '../../support/font_fetch_hold.dart';
+import '../../support/segment_editing_finder.dart';
 import '../../support/spelling_editor_pump.dart';
 
 /// Oracle: every line's baseline of [editable]'s laid-out text, top to
@@ -275,17 +276,12 @@ void main() {
         final merged = view.lineBoxes()!;
         final expected = <double?>[];
         final shifts = <double>[];
-        // Every row field under the rows box, in paint (row) order.
-        final editables = <RenderEditable>[];
-        void visit(RenderObject node) {
-          if (node is RenderEditable) {
-            editables.add(node);
-          } else {
-            node.visitChildren(visit);
-          }
-        }
-
-        merged.box.visitChildren(visit);
+        // Every row's text box under the rows box, in row order: the field of
+        // the active row, the paragraph of an idle row (WI #132, Req 38).
+        final editables = <RenderBox>[
+          for (var r = 0; r < view.rowCount; r++)
+            segmentRowTextBox(tester, 0, r),
+        ];
         for (final editable in editables) {
           final shift = MatrixUtils.transformPoint(
             editable.getTransformTo(merged.box),
@@ -294,7 +290,11 @@ void main() {
           shifts.add(shift);
           // An empty field has no line metrics (its one line box is a
           // caret's); it is not checked here.
-          final baselines = _wi437EditableBaselines(editable);
+          final baselines = switch (editable) {
+            final RenderEditable e => _wi437EditableBaselines(e),
+            final RenderParagraph p => _wi437ParagraphBaselines(p),
+            _ => <double>[],
+          };
           if (baselines.isEmpty) expected.add(null);
           for (final b in baselines) {
             expected.add(b + shift);

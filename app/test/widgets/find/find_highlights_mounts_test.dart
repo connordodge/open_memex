@@ -22,7 +22,6 @@ import 'package:open_memex_app/src/state/find_in_note_state.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/widgets/editor/card_rows.dart';
 import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
-import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
 import 'package:open_memex_app/src/widgets/editor/paragraph_line_boxes.dart';
 import 'package:open_memex_app/src/widgets/editor/segment_view.dart';
 import 'package:open_memex_app/src/widgets/editor/spell_issue_scope.dart';
@@ -32,6 +31,7 @@ import 'package:open_memex_app/src/widgets/note_editor.dart';
 
 import '../../robots/segmented_editor_robot.dart';
 import '../../support/font_fetch_hold.dart';
+import '../../support/segment_editing_finder.dart';
 import '../../support/spelling_editor_pump.dart';
 import '../../support/wi83_find_paint.dart';
 
@@ -95,10 +95,10 @@ int _wi83RowAt(SpellingEditorHarness e, int s, int offset) {
 RowSpec _wi83Spec(SpellingEditorHarness e, int s, int r) =>
     _wi83Segment(e, s).rowSpec(r)!;
 
-RenderEditable _wi83RowEditable(WidgetTester tester, int s, int r) =>
-    findRenderEditable(
-      tester.renderObject(find.byKey(ValueKey('editor-row-$s-$r'))),
-    )!;
+/// The box that lays row [r]'s text out: its field's while it is the active
+/// row, its idle paragraph's otherwise (WI #132).
+RenderBox _wi83RowEditable(WidgetTester tester, int s, int r) =>
+    segmentRowTextBox(tester, s, r);
 
 /// The design boxes of segment range [range] (segment offsets) in row [r]
 /// of segment [s], in that row's layer.
@@ -110,13 +110,15 @@ List<Wi83Box> _wi83RowBoxes(
   FindPaintStyle style,
 ) {
   final start = _wi83Spec(e, s, r).textStart;
-  final editable = _wi83RowEditable(e.tester, s, r);
+  // The row's geometry: its field's while it is the active row, its
+  // paragraph's while idle (WI #132).
+  final boxes = _wi83Segment(e, s).rowBoxes(r)!;
   return wi83BoxesOf(
-    RenderEditableLineBoxes(editable),
+    boxes,
     TextRange(start: range.start - start, end: range.end - start),
     style,
     wi83Layer(e.tester, findHighlightsKey(s, r)),
-    scale: wi83ScaleOf(editable),
+    scale: wi83ScaleOf(boxes.box),
   );
 }
 
@@ -239,14 +241,8 @@ int _wi83TableRow(SpellingEditorHarness e, int s) {
 /// Expects table row [r] of segment [s] to show as its grid.
 void _wi83ExpectGrid(SpellingEditorHarness e, int s, int r) {
   expect(find.byKey(ValueKey('editor-table-$s-$r')), findsOneWidget);
-  final field = e.tester.widget<EditableText>(
-    find.descendant(
-      of: find.byKey(ValueKey('editor-row-$s-$r'), skipOffstage: false),
-      matching: find.byType(EditableText, skipOffstage: false),
-      skipOffstage: false,
-    ),
-  );
-  final controller = field.controller as LivePreviewController;
+  // The row's controller (an idle row has no field, WI #132).
+  final controller = _wi83Segment(e, s).rowController(r)!;
   expect(controller.tableRow, isTrue);
   expect(controller.tableRevealed, isFalse, reason: 'the grid stays a grid');
 }
@@ -645,6 +641,7 @@ void main() {
         final wet = wi83Find(text, 'rye');
         // Focus the Intro row (opens the reveal gate), then move the caret
         // into the table row.
+        await activateSegmentRow(tester, 0, 0);
         await tester.showKeyboard(
           find.descendant(
             of: find.byKey(const ValueKey('editor-row-0-0')),
@@ -1055,8 +1052,9 @@ void main() {
           isFalse,
           reason: 'the overlay is never hit (D14)',
         );
+        final boxes = _wi83Segment(e, 0).rowBoxes(r)!;
         final want =
-            _wi83RowEditable(tester, 0, r).getPositionForPoint(global).offset +
+            boxes.offsetAt(boxes.box.globalToLocal(global)) +
             _wi83Spec(e, 0, r).textStart;
         await tester.tapAt(global);
         await tester.pump(const Duration(milliseconds: 400));
@@ -1101,9 +1099,10 @@ void main() {
       }
 
       Rect textGlobal() {
-        final editable = _wi83RowEditable(tester, 0, r);
+        final boxes = _wi83Segment(e, 0).rowBoxes(r)!;
+        final editable = boxes.box;
         final start = _wi83Spec(e, 0, r).textStart;
-        final rect = RenderEditableLineBoxes(editable)
+        final rect = boxes
             .boxesFor(TextRange(start: rye.start - start, end: rye.end - start))
             .single;
         return MatrixUtils.transformRect(editable.getTransformTo(null), rect);

@@ -17,7 +17,6 @@ import 'package:open_memex_app/src/state/settings.dart';
 import 'package:open_memex_app/src/state/spell_check_controller.dart';
 import 'package:open_memex_app/src/state/spelling_service.dart';
 import 'package:open_memex_app/src/theme/app_theme.dart';
-import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
 import 'package:open_memex_app/src/widgets/editor/segment_view.dart';
 import 'package:open_memex_app/src/widgets/editor/segmented_body.dart';
 import 'package:open_memex_app/src/widgets/editor/spell_check_host.dart';
@@ -54,6 +53,15 @@ List<SpellIssue> _issuesAt(WidgetTester tester, Finder field) {
 
 List<_Span> _spansAt(WidgetTester tester, Finder field) =>
     _spans(_issuesAt(tester, field));
+
+/// What the editor published for editor row [r] of segment 0, also while the
+/// row is idle and has no field (WI #132, Req 38): [anyField] is any field
+/// under the editor's issue scope.
+List<_Span> _spansOfRow(WidgetTester tester, Finder anyField, int r) {
+  final registry = SpellIssueScope.maybeOf(tester.element(anyField));
+  expect(registry, isNotNull, reason: 'the editor has a SpellIssueRegistry');
+  return _spans(registry!.issuesFor(segmentRowController(tester, 0, r)).value);
+}
 
 /// The texts of every `check` the fake received, in order.
 List<String> _checked(FakeSpellingService s) => [
@@ -798,12 +806,14 @@ void main() {
           spelling: FakeSpellingService()..misspell('teh'),
         );
         await _settle(e);
+        // TEST-CHANGE (WI #132, Req 38): the item row is idle, so it has no
+        // field; its issues are read through its controller.
+        await activateSegmentRow(tester, 0, 0);
         final prose = e.rowFields(0).at(0);
-        final item = e.rowFields(0).at(1);
-        expect(_spansAt(tester, item), [(_sp, 0, 3)]);
+        expect(_spansOfRow(tester, prose, 1), [(_sp, 0, 3)]);
         await _input(tester, prose, _value('Big Some teh here.', 4));
         expect(_spansAt(tester, prose), [(_sp, 9, 3)]);
-        expect(_spansAt(tester, item), [(_sp, 0, 3)]);
+        expect(_spansOfRow(tester, prose, 1), [(_sp, 0, 3)]);
       },
     );
   });
@@ -1496,24 +1506,31 @@ void main() {
           matching: find.byType(EditableText, skipOffstage: false),
           skipOffstage: false,
         );
-        Finder fieldWith(String prefix) {
-          for (var r = 0; r < 8; r++) {
-            final f = rowField(r);
-            if (f.evaluate().isEmpty) continue;
-            if (_ctrlOf(tester, f).text.startsWith(prefix)) return f;
+        // TEST-CHANGE (WI #132, Req 38): rows are found through the rows
+        // host; only the active row has a field, so a row is activated
+        // before its field is asked for the keyboard.
+        int rowWith(String prefix) {
+          final host = segmentEditingAt(tester, 0);
+          for (var r = 0; r < host.rowCount; r++) {
+            if (segmentRowController(tester, 0, r).text.startsWith(prefix)) {
+              return r;
+            }
           }
           throw TestFailure('no editor row starts with $prefix');
         }
 
-        final table = fieldWith('| teh');
-        final tableCtrl = _ctrlOf(tester, table) as LivePreviewController;
+        final tableRow = rowWith('| teh');
+        final intro = find.byKey(textSegmentKey(0));
+        List<_Span> tableSpans() => _spansOfRow(tester, intro, tableRow);
+        final tableCtrl = segmentRowController(tester, 0, tableRow);
         expect(tableCtrl.tableRevealed, isFalse);
         await e.advance(const Duration(seconds: 2));
         expect(_checked(e.spelling).where((t) => t.contains('|')), isEmpty);
-        expect(_spansAt(tester, table), isEmpty);
+        expect(tableSpans(), isEmpty);
 
         // Reveal: the caret in the `c` cell.
-        await tester.showKeyboard(table);
+        await activateSegmentRow(tester, 0, tableRow);
+        await tester.showKeyboard(rowField(tableRow));
         await tester.pump();
         segmentEditingAt(
           tester,
@@ -1524,10 +1541,11 @@ void main() {
         await e.advance(_debounce);
         await e.advance(const Duration(seconds: 1));
         expect(_checksOf(e.spelling, '| teh | b |'), 1);
-        expect(_spansAt(tester, table), [(_sp, 2, 3)]);
+        expect(tableSpans(), [(_sp, 2, 3)]);
 
         // Unrevealed again: its issues go.
-        await tester.showKeyboard(fieldWith('Intro'));
+        await activateSegmentRow(tester, 0, rowWith('Intro'));
+        await tester.showKeyboard(rowField(rowWith('Intro')));
         await tester.pump();
         segmentEditingAt(
           tester,
@@ -1536,7 +1554,7 @@ void main() {
         await tester.pump();
         expect(tableCtrl.tableRevealed, isFalse);
         await tester.pump();
-        expect(_spansAt(tester, table), isEmpty);
+        expect(tableSpans(), isEmpty);
       },
     );
   });
@@ -1945,7 +1963,7 @@ void main() {
         tester.element(e.rowFields(0).first),
       )!;
       final ctrls = [
-        for (var i = 0; i < 2; i++) _ctrlOf(tester, e.rowFields(0).at(i)),
+        for (var i = 0; i < 2; i++) segmentRowController(tester, 0, i),
       ];
       final before = [for (final c in ctrls) registry.issuesFor(c)];
       expect(before.every((l) => l.value.isNotEmpty), isTrue);
