@@ -50,6 +50,9 @@ strsim = "0.11.1"
 zip = { version = "9.5", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
 base64 = "0.22"
+# Attachment PDF text (Spec #123 R43, WI #136): MIT. Runs only in the
+# extraction child inside `memex serve` (TD "Extraction at store time, isolated").
+pdf-extract = "0.12"
 
 [profile.release]
 lto = "thin"

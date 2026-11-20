@@ -25,6 +25,7 @@ use tokio::sync::OnceCell;
 use ulid::Ulid;
 
 use super::error::ApiError;
+use crate::attachment_extract_child::ChildExtractor;
 use crate::state::AppState;
 
 const MANIFEST_FILE: &str = "manifest.json";
@@ -81,6 +82,8 @@ struct Inner {
     /// The canonical vault root.
     root: PathBuf,
     embedder: Option<Arc<dyn Embedder>>,
+    /// Every opened vault's attachment extraction child (WI #136).
+    extractor: Option<ChildExtractor>,
     /// Lower-cased name → its slot. Locked only to look up, insert or
     /// remove a slot, never across an open.
     vaults: Mutex<HashMap<String, Arc<Slot>>>,
@@ -129,11 +132,22 @@ impl Registry {
     /// A registry for the vault root `root`. Every vault it opens shares
     /// `embedder`.
     pub fn new(root: PathBuf, embedder: Option<Arc<dyn Embedder>>) -> Self {
+        Self::with_extractor(root, embedder, None)
+    }
+
+    /// [`Self::new`], with `extractor` as every opened vault's attachment
+    /// extraction child (`None`: the running `memex`, WI #136).
+    pub fn with_extractor(
+        root: PathBuf,
+        embedder: Option<Arc<dyn Embedder>>,
+        extractor: Option<ChildExtractor>,
+    ) -> Self {
         let root = fs::canonicalize(&root).unwrap_or(root);
         Self {
             inner: Arc::new(Inner {
                 root,
                 embedder,
+                extractor,
                 vaults: Mutex::new(HashMap::new()),
                 create_lock: tokio::sync::Mutex::new(()),
                 logged: Mutex::new(HashSet::new()),
@@ -319,7 +333,10 @@ impl Inner {
     fn open(&self, folder: PathBuf) -> Result<Opened, ApiError> {
         let vault = Vault::open(&folder)?;
         let vault_id = vault.manifest().vault_id.clone();
-        let state = AppState::new(vault, folder.clone(), self.embedder.clone());
+        let mut state = AppState::new(vault, folder.clone(), self.embedder.clone());
+        if let Some(extractor) = &self.extractor {
+            state = state.with_extractor(extractor.clone());
+        }
         Ok(Opened {
             entry: Arc::new(VaultEntry {
                 open_id: Ulid::new(),

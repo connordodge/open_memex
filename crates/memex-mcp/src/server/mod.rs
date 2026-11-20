@@ -175,7 +175,11 @@ fn app_parts(config: ServerConfig) -> (Router, Arc<BackupService>, Arc<Registry>
         (None, true) => Some(crate::state::build_embedder_in(&config.root)),
         (None, false) => None,
     };
-    let registry = Arc::new(Registry::new(config.root.clone(), embedder));
+    let registry = Arc::new(Registry::with_extractor(
+        config.root.clone(),
+        embedder,
+        config.extractor.clone(),
+    ));
     crate::backfill::spawn_server(registry.clone());
     let service = Arc::new(BackupService::new(
         config.backups.clone(),
