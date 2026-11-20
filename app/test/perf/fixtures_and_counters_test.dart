@@ -23,6 +23,8 @@ import 'package:open_memex_app/src/editor/spell_issues.dart';
 import 'package:open_memex_app/src/state/spell_check_controller.dart';
 import 'package:open_memex_app/src/state/spell_session_state.dart';
 import 'package:open_memex_app/src/state/spelling_service.dart';
+import 'package:open_memex_app/src/widgets/editor/capture_gutter.dart'
+    as gutter;
 import 'package:open_memex_app/src/widgets/editor/editor_row.dart' as row;
 import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
@@ -445,11 +447,12 @@ void main() {
       RenderEditableLineBoxes.debugLineSpans = 24;
       RenderParagraphLineBoxes.debugLineSpans = 25;
       host.debugSpellHostEditableCalls = 26;
+      gutter.debugCaptureGutterLineReads = 27;
     }
 
     test('snapshot returns every counter by name', () {
-      expect(PerfCounters.names, hasLength(26));
-      expect(PerfCounters.names.toSet(), hasLength(26));
+      expect(PerfCounters.names, hasLength(27));
+      expect(PerfCounters.names.toSet(), hasLength(27));
       setAll();
       expect(PerfCounters.snapshot(), {
         for (final (i, name) in PerfCounters.names.indexed) name: i + 1,

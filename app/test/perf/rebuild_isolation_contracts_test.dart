@@ -594,6 +594,56 @@ void main() {
     );
 
     testWidgets(
+      'a gate change repaints the row whose only selected part is its line break',
+      (tester) async {
+        await pumpSpellingEditor(tester, body: body);
+        await pumpFrames(tester);
+        await activateRow(tester, 0, 2, offset: 1);
+        final host = rowsHostOf(tester);
+        // From exactly the end of row 1's text into row 2: row 1 holds no
+        // selected character of its own, only the line break after it.
+        host.select(
+          TextSelection(
+            baseOffset: host.rowSpec(1)!.textEnd,
+            extentOffset: host.rowSpec(2)!.textStart + 1,
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+        await pumpFrames(tester);
+        final own = host.rowController(1)!.selection;
+        expect(
+          own.isValid && !own.isCollapsed,
+          isFalse,
+          reason: 'row 1 selects no character of its own text',
+        );
+        // The row's selection render object, marked dirty by the gate change
+        // alone: another row's repaint, or its own boundary's, must not hide
+        // that it was told to repaint.
+        RenderObject? fill;
+        void visit(RenderObject o) {
+          if (o.runtimeType.toString() == '_RenderRowSelection') fill ??= o;
+          o.visitChildren(visit);
+        }
+
+        final rowObject = tester
+            .element(find.byKey(const ValueKey<String>('editor-row-0-1')))
+            .renderObject!;
+        visit(rowObject);
+        expect(fill, isNotNull, reason: 'row 1 has a selection render object');
+        await tester.pump();
+        expect(fill!.debugNeedsPaint, isFalse, reason: 'settled first');
+        FocusManager.instance.primaryFocus?.unfocus();
+        await tester.idle();
+        expect(
+          fill!.debugNeedsPaint,
+          isTrue,
+          reason: 'the gate change marked the line break row for paint',
+        );
+      },
+    );
+
+    testWidgets(
       'a gate change repaints decorations of rows holding a selection only',
       (tester) async {
         final host = await prepare(tester, selecting: true);
