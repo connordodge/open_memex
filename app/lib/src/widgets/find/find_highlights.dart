@@ -135,6 +135,7 @@ List<FindPaintRange> findPaintRanges(
 
   final out = <FindPaintRange>{};
   for (final (i, m) in state.matches.indexed) {
+    debugFindMatchReads++;
     if (m.segment != segment || m.kind != kind) continue;
     final int from;
     final int to;

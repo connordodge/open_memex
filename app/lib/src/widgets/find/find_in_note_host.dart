@@ -106,6 +106,7 @@ FindDecoration? findFieldDecoration(
   TextRange? current;
   TextRange? reveal;
   for (final (i, m) in state.matches.indexed) {
+    debugFindMatchReads++;
     if (m.segment != segment || m.kind != kind) continue;
     if (m.end <= start || m.start >= end) continue;
     final range = TextRange(

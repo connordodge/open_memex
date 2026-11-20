@@ -186,6 +186,39 @@ List<FindMatch> findMatches(List<FindSource> sources, String query) {
   return out;
 }
 
+/// Test-only work counter (WI #130, Spec #122 TD8; ruling D9: a plain int):
+/// incremented once for every [FindMatch] a per-field match lookup reads:
+/// each match a [FindMatchIndex] lookup compares, and each match
+/// `findFieldDecoration` and `findPaintRanges` visit for one field. Tests
+/// read deltas to prove a Find change reads matches by index, not rows x
+/// matches. Never read by production code.
+int debugFindMatchReads = 0;
+
+/// The matches of one Find in note state, looked up by source and offset
+/// (WI #130, Spec #122 Requirement 22a): [matches] in document order, as
+/// [findMatches] gives them (by segment, then by offset, non-overlapping),
+/// so the matches of one source touching a range are one run of it.
+final class FindMatchIndex {
+  FindMatchIndex(this.matches);
+
+  /// The indexed matches, in document order.
+  final List<FindMatch> matches;
+
+  /// The run `[from, to)` of indices into [matches] of the matches of
+  /// source ([segment], [kind]) that touch `[start, end)`: `m.start < end`
+  /// and `m.end > start`, the rule `findFieldDecoration` and
+  /// `findPaintRanges` clip by. `from == to` when none does.
+  ///
+  /// A binary search by offset: it reads O(log n) matches, never every
+  /// match ([debugFindMatchReads] counts each one it compares).
+  ({int from, int to}) touching({
+    required int segment,
+    required FindSourceKind kind,
+    required int start,
+    required int end,
+  }) => (from: 0, to: 0);
+}
+
 /// [text] with case folded code unit for code unit, so every offset into
 /// the result is the same offset into [text]. A character whose lower case
 /// changes its length (`İ`) keeps its own case.
