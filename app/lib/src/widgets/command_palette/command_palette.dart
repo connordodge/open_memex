@@ -16,6 +16,7 @@ import '../../state/clock.dart';
 import '../../state/command_palette_state.dart';
 import '../../state/daily_state.dart';
 import '../../state/editor_controller.dart';
+import '../../state/palette_attachments.dart';
 import '../../state/palette_commands.dart';
 import '../../state/palette_titles.dart';
 import '../../state/sidebar_mode_state.dart';
@@ -27,6 +28,7 @@ import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import '../agents_sheet/agents_sheet.dart';
 import '../backups/backups_sheet.dart';
+import '../editor/attachment_row.dart' show showAttachmentOpenFailure;
 import '../note_editor.dart';
 import '../picker/vault_picker_modal.dart';
 import '../vault_settings_dialog.dart';
@@ -38,7 +40,10 @@ import 'passages_states.dart';
 /// #77's production wiring of #76's seam (lead ruling W1), spread into
 /// `appRootOverrides`: the Commands and titles sources, and the command and
 /// note choosers. A chooser closes the palette first, then runs its action
-/// with the context the palette was opened over (R24).
+/// with the context the palette was opened over (R24). Also #148's report
+/// of a failed Attachments open: the R42 toast over that same context
+/// (Spec #123 R42, D22), taken when the row is chosen so it still shows
+/// after the palette closes.
 final List<Override> paletteShellOverrides = [
   paletteCommandsOverride,
   paletteTitlesOverride,
@@ -54,6 +59,16 @@ final List<Override> paletteShellOverrides = [
     return (item, {required newTab}) => session.choose(
       (host, container) => _showNote(container, item, newTab: newTab),
     );
+  }),
+  paletteAttachmentOpenFailureProvider.overrideWith((ref) {
+    final session = ref.watch(_sessionProvider);
+    return () {
+      final host = session.host;
+      return (name, failure) {
+        if (host == null || !host.mounted) return;
+        showAttachmentOpenFailure(host, name, failure);
+      };
+    };
   }),
 ];
 

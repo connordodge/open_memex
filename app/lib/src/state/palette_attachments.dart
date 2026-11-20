@@ -4,6 +4,7 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../vault_access/attachments_access.dart';
 import '../vault_access/search_access.dart';
 import 'attachments_state.dart';
 import 'command_palette_state.dart';
@@ -40,13 +41,40 @@ List<AttachmentItem> paletteAttachmentItems(
     ),
 ];
 
+/// Reports that opening the Attachments row named `name` failed with
+/// `failure` (Spec #123 R42, ruling D22).
+typedef PaletteAttachmentOpenFailure =
+    void Function(String name, AttachmentLookupFailure failure);
+
+/// Where a failed open of a chosen Attachments row is reported. The
+/// chooser calls the provided function when the row is chosen, while the
+/// palette still shows, and reports the open's failure, if any, to the
+/// reporter it returned, which may run after the palette has closed. The
+/// widget layer overrides it to show the R42 toast over the context the
+/// palette was opened over. Default: reports nothing.
+final paletteAttachmentOpenFailureProvider =
+    Provider.autoDispose<PaletteAttachmentOpenFailure Function()>(
+      (ref) =>
+          () => (_, _) {},
+    );
+
 /// Chooses an Attachments row (D10): opens its path through the open
 /// vault's attachments domain (`attachmentsProvider`), which downloads a
-/// hosted file first and reveals an executable instead (R33). The Cmd flag
-/// changes nothing: a file has no tab. With no open vault it does nothing.
+/// hosted file first and reveals an executable instead (R33). A failed
+/// open goes to the reporter `paletteAttachmentOpenFailureProvider` gave
+/// at the choice. The Cmd flag changes nothing: a file has no tab. With no
+/// open vault it does nothing.
 PaletteChooser<AttachmentItem> paletteAttachmentChooser(Ref ref) =>
     (item, {required newTab}) {
       final attachments = ref.read(attachmentsProvider);
       if (attachments == null) return;
-      unawaited(attachments.open(item.attachment.path));
+      final report = ref.read(paletteAttachmentOpenFailureProvider)();
+      final name = item.attachment.name;
+      unawaited(
+        attachments.open(item.attachment.path).then((result) {
+          if (result case AttachmentActionFailed(:final failure)) {
+            report(name, failure);
+          }
+        }),
+      );
     };
