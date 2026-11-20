@@ -4,11 +4,13 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../db.dart';
+import '../../editor/editor_rows.dart' show RowKind;
 import '../../editor/outline.dart';
 import '../../state/outline_section.dart';
+import '../../state/outline_state.dart' show outlineEntriesOfProvider;
 import '../../state/tabs_state.dart' show tabsProvider;
-import '../editor/echo_arrival_highlight.dart';
 import '../editor/note_reveal.dart';
+import '../editor/segment_view.dart' show SegmentViewState;
 import '../editor/segmented_body.dart';
 import 'outline_jump.dart' show outlineJumpInset;
 
@@ -24,8 +26,10 @@ const double _edge = 1e-6;
 /// `outlineSectionProvider` while that provider is watched.
 ///
 /// The current section is the last heading whose heading line top (its own
-/// visual line, not its row's top: `revealAnchorRect`) is at or above the
-/// viewport top + 16 px; none above the first heading. Right after an
+/// visual line, not its row's top: `revealLineRect`) is at or above the
+/// viewport top + 16 px; none above the first heading. The entries are the
+/// Outline panel's own (`outlineEntriesOfProvider`), and a heading line is
+/// read from its row's cached geometry (WI #131). Right after an
 /// Outline jump it is the jumped-to entry while the page stays where the
 /// jump put it (Spec #58 R22), even when the jump clamped. Computed at most
 /// once per frame, after layout, on a scroll, a rebuild of the body (text
@@ -155,17 +159,33 @@ class _SectionTrackerState extends ConsumerState<SectionTracker> {
     }
     var shown = _shown;
     if (shown == null || !shown.matches(element, note, body.content)) {
-      shown = _shown = _Shown(element, note, body.content);
+      shown?.close();
+      shown = _shown = _Shown(
+        element,
+        note,
+        body.content,
+        // The Outline panel's own entries computation (Spec #122 Req 24):
+        // one per text change, whichever reads it first.
+        ref.listenManual(
+          outlineEntriesOfProvider((body.content, note.role)),
+          (_, _) {},
+        ),
+      );
     }
     final entries = shown.entries;
 
     /// The offset that puts entry [i]'s heading line at the viewport top.
     double? reveal(int i) {
-      final at = shown!.anchor(context, i);
+      final at = shown!.anchor(i);
       if (at == null) return null;
       final viewport = RenderAbstractViewport.maybeOf(at.row);
       if (viewport == null) return null;
-      final rect = revealAnchorRect(at.row, at.arrival);
+      final rect = revealLineRect(
+        at.row,
+        kind: at.kind,
+        rowText: at.controller.text,
+        local: at.local,
+      );
       return viewport.getOffsetToReveal(at.row, 0.0, rect: rect).offset;
     }
 
@@ -239,18 +259,30 @@ class _SectionTrackerState extends ConsumerState<SectionTracker> {
   }
 }
 
-/// The Outline entries of the body [element] shows ([note] with [content])
-/// and, found as needed, where each heading is.
+/// The Outline entries of the body [element] shows ([note] with [content]),
+/// from the shared entries computation, and, found as needed, where each
+/// heading is.
+///
+/// A heading is placed through its segment's own rows (WI #131): the row
+/// holding it by bisection over the segment view's row starts, its row
+/// widget under that row's context, and its line through the row's cached
+/// geometry (`revealLineRect`). No parse of the note, no walk of every row,
+/// no walk of a row's lines.
 class _Shown {
-  _Shown(this.element, this.note, this.content)
-    : entries = outlineEntries(content, role: note.role);
+  _Shown(this.element, this.note, this.content, this._entriesOf);
 
   final Element element;
   final Note note;
   final String content;
-  final List<OutlineEntry> entries;
-  final _arrivals = <int, EchoArrival?>{};
-  final _rows = <int, RenderBox>{};
+  final ProviderSubscription<List<OutlineEntry>> _entriesOf;
+
+  /// The entries, in document order.
+  List<OutlineEntry> get entries => _entriesOf.read();
+
+  final _anchors = <int, _Anchor>{};
+
+  /// The body's segment views by segment index, found once.
+  Map<int, SegmentViewState>? _views;
 
   bool matches(Element e, Note n, String c) =>
       identical(e, element) &&
@@ -258,22 +290,64 @@ class _Shown {
       n.role == note.role &&
       (identical(c, content) || c == content);
 
+  /// Stops holding the shared entries.
+  void close() => _entriesOf.close();
+
+  /// The segment view of text segment [segment], or null.
+  SegmentViewState? _viewOf(int segment) {
+    final known = _views?[segment];
+    if (known != null && known.mounted) return known;
+    final view = (_views = scanSegmentedBody(element, const {}).views)[segment];
+    return view != null && view.mounted ? view : null;
+  }
+
   /// Entry [i]'s row and its place in it, or null when not laid out.
-  ({RenderBox row, EchoArrival arrival})? anchor(BuildContext context, int i) {
-    final arrival = _arrivals.putIfAbsent(i, () {
-      final e = entries[i];
-      return locateInSegment(content, e.segment, e.local, role: note.role);
-    });
-    if (arrival == null) return null;
-    var row = _rows[i];
-    if (row == null || !row.attached || !row.hasSize) {
-      final found = revealRow(context, note.id, content, arrival)?.row;
-      if (found == null) {
-        _rows.remove(i);
-        return null;
-      }
-      row = _rows[i] = found;
+  _Anchor? anchor(int i) {
+    final cached = _anchors[i];
+    if (cached != null && cached.row.attached && cached.row.hasSize) {
+      return cached;
     }
-    return (row: row, arrival: arrival);
+    _anchors.remove(i);
+    final e = entries[i];
+    final view = _viewOf(e.segment);
+    if (view == null || e.local >= view.text.length) return null;
+    // The last row starting at or before the heading line.
+    var lo = 0;
+    var hi = view.rowCount - 1;
+    var r = -1;
+    while (lo <= hi) {
+      final mid = (lo + hi) >> 1;
+      if (view.rowSpec(mid)!.start <= e.local) {
+        r = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    final spec = view.rowSpec(r);
+    final controller = view.rowController(r);
+    final rowContext = view.rowContext(r);
+    if (spec == null || controller == null || rowContext is! Element) {
+      return null;
+    }
+    final key = ValueKey('editor-row-${e.segment}-$r');
+    final row = keyedUnder(rowContext, {key})[key]?.findRenderObject();
+    if (row is! RenderBox || !row.attached || !row.hasSize) return null;
+    return _anchors[i] = (
+      row: row,
+      kind: spec.kind,
+      controller: controller,
+      local: spec.toLocal(e.local),
+    );
   }
 }
+
+/// Where a heading is: its row widget's render box (Key
+/// `editor-row-<s>-<r>`, as a reveal lands on it), the row's kind and field
+/// controller, and the heading line's offset in the row's text.
+typedef _Anchor = ({
+  RenderBox row,
+  RowKind kind,
+  TextEditingController controller,
+  int local,
+});
