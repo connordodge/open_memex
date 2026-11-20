@@ -64,15 +64,20 @@ void showAttachmentOpenFailure(
 
 /// The size an image of [natural] logical pixels shows at in a column
 /// [maxWidth] wide (R24): scaled down, never up, to fit the column and
-/// [attachmentImageMaxHeight], aspect kept. An unbounded [maxWidth] fits
+/// [maxHeight] (an editor row's [attachmentImageMaxHeight] by default; an
+/// excerpt card's is 240, R39), aspect kept. An unbounded [maxWidth] fits
 /// the height cap only.
-Size attachmentImageSize(Size natural, double maxWidth) {
+Size attachmentImageSize(
+  Size natural,
+  double maxWidth, {
+  double maxHeight = attachmentImageMaxHeight,
+}) {
   if (natural.width <= 0 || natural.height <= 0) return Size.zero;
   final scale = math.min(
     1.0,
     math.min(
       maxWidth.isFinite ? maxWidth / natural.width : double.infinity,
-      attachmentImageMaxHeight / natural.height,
+      maxHeight / natural.height,
     ),
   );
   return Size(natural.width * scale, natural.height * scale);
@@ -427,6 +432,7 @@ class AttachmentBlock extends ConsumerStatefulWidget {
     required this.reference,
     required this.name,
     this.onPlaceCaret,
+    this.imageMaxHeight = attachmentImageMaxHeight,
   });
 
   /// The reference the block shows.
@@ -437,6 +443,10 @@ class AttachmentBlock extends ConsumerStatefulWidget {
 
   /// Puts the caret on the block's line; null for none.
   final VoidCallback? onPlaceCaret;
+
+  /// The tallest its image shows ([attachmentImageSize]): an editor row's
+  /// [attachmentImageMaxHeight] by default.
+  final double imageMaxHeight;
 
   @override
   ConsumerState<AttachmentBlock> createState() => _AttachmentBlockState();
@@ -669,6 +679,7 @@ class _AttachmentBlockState extends ConsumerState<AttachmentBlock> {
           onSecondaryTapUp: (details) => _showMenu(details.globalPosition),
           child: AttachmentImageBox(
             natural: dims,
+            maxHeight: widget.imageMaxHeight,
             image: _image,
             onError: _onDecodeError,
           ),
@@ -743,7 +754,7 @@ class AttachmentNotice extends StatelessWidget {
 }
 
 /// An image of [natural] logical pixels at its shown size in the column
-/// (R24, [attachmentImageSize]), [image] decoded at that width times the
+/// (R24, [attachmentImageSize], at most [maxHeight] tall), [image] decoded at that width times the
 /// device pixel ratio once given; empty until then. Its size depends only
 /// on [natural] and the column width (D7), so a decode never lays out more
 /// than the image, and it paints in its own `RepaintBoundary`, so a GIF
@@ -753,17 +764,23 @@ class AttachmentImageBox extends StatelessWidget {
   const AttachmentImageBox({
     super.key,
     required this.natural,
+    this.maxHeight = attachmentImageMaxHeight,
     this.image,
     this.onError,
   });
 
   final Size natural;
+
+  /// The tallest the image shows: an editor row's [attachmentImageMaxHeight]
+  /// by default.
+  final double maxHeight;
   final ImageProvider? image;
   final VoidCallback? onError;
 
   @override
   Widget build(BuildContext context) => _ImageFit(
     natural: natural,
+    maxHeight: maxHeight,
     // Laid out tight by the fit, so it is a relayout boundary: a frame's
     // rebuild under the LayoutBuilder relays out only the image.
     child: RepaintBoundary(
@@ -793,24 +810,31 @@ class AttachmentImageBox extends StatelessWidget {
   );
 }
 
-/// Sizes itself to [natural] fitted to its width constraint
+/// Sizes itself to [natural] fitted to its width constraint and [maxHeight]
 /// ([attachmentImageSize]) and lays its child out tight at that size.
 class _ImageFit extends SingleChildRenderObjectWidget {
-  const _ImageFit({required this.natural, super.child});
+  const _ImageFit({
+    required this.natural,
+    required this.maxHeight,
+    super.child,
+  });
 
   final Size natural;
+  final double maxHeight;
 
   @override
   RenderObject createRenderObject(BuildContext context) =>
-      _RenderImageFit(natural);
+      _RenderImageFit(natural, maxHeight);
 
   @override
   void updateRenderObject(BuildContext context, _RenderImageFit renderObject) =>
-      renderObject.natural = natural;
+      renderObject
+        ..natural = natural
+        ..maxHeight = maxHeight;
 }
 
 class _RenderImageFit extends RenderProxyBox {
-  _RenderImageFit(this._natural);
+  _RenderImageFit(this._natural, this._maxHeight);
 
   Size _natural;
   set natural(Size value) {
@@ -819,9 +843,18 @@ class _RenderImageFit extends RenderProxyBox {
     markNeedsLayout();
   }
 
-  Size _fit(BoxConstraints constraints) => constraints.constrain(
-    attachmentImageSize(_natural, constraints.maxWidth),
-  );
+  double _maxHeight;
+  set maxHeight(double value) {
+    if (value == _maxHeight) return;
+    _maxHeight = value;
+    markNeedsLayout();
+  }
+
+  Size _size(double maxWidth) =>
+      attachmentImageSize(_natural, maxWidth, maxHeight: _maxHeight);
+
+  Size _fit(BoxConstraints constraints) =>
+      constraints.constrain(_size(constraints.maxWidth));
 
   @override
   Size computeDryLayout(BoxConstraints constraints) => _fit(constraints);
@@ -837,15 +870,13 @@ class _RenderImageFit extends RenderProxyBox {
 
   @override
   double computeMaxIntrinsicWidth(double height) =>
-      attachmentImageSize(_natural, double.infinity).width;
+      _size(double.infinity).width;
 
   @override
-  double computeMinIntrinsicHeight(double width) =>
-      attachmentImageSize(_natural, width).height;
+  double computeMinIntrinsicHeight(double width) => _size(width).height;
 
   @override
-  double computeMaxIntrinsicHeight(double width) =>
-      attachmentImageSize(_natural, width).height;
+  double computeMaxIntrinsicHeight(double width) => _size(width).height;
 }
 
 /// A compact file card (R32, R36): a lucide [icon], the [name] and
