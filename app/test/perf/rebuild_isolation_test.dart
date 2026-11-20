@@ -73,12 +73,16 @@ final _wi129N2 = longNote(LongNoteKind.n2Bullets120k);
 /// One counter's current value, by its [PerfCounters] name.
 int _n(String name) => PerfCounters.snapshot()[name]!;
 
-/// Fresh line measures (whole-text layouts) and whole-text line walks.
+/// Every line measure: fresh whole-text layouts, whole-text line walks and
+/// the per-line measures of range reads (since #126 the first two stay 0 and
+/// the spans carry the work, so all three are summed).
 int _wi129Measures() =>
     _n('editableLineMeasures') +
     _n('paragraphLineMeasures') +
     _n('editableLineWalks') +
-    _n('paragraphLineWalks');
+    _n('paragraphLineWalks') +
+    _n('editableLineSpans') +
+    _n('paragraphLineSpans');
 
 /// Resets every counter this file reads.
 void _wi129Reset() {
@@ -594,6 +598,20 @@ void main() {
           reason:
               'the keystroke that made the note dirty builds the edited row',
         );
+        // The note body selects only the fields it renders (D12): a bare
+        // status flip changes none of them, so it rebuilds no segment (the
+        // real clean step moves lastSavedVersion and may). The flip is made
+        // by hand because the fake save lands saving and clean in one frame.
+        final controller = e.container.read(editorControllerProvider.notifier);
+        _wi129Reset();
+        for (final status in [SaveStatus.saving, SaveStatus.dirty]) {
+          // ignore: invalid_use_of_protected_member
+          controller.state = controller.state.copyWith(status: status);
+          await tester.pump();
+          await tester.pump();
+        }
+        expect(_n('segmentBuilds'), 0, reason: 'segment builds on a flip');
+        expect(_n('rowBuilds'), 0, reason: 'row builds on a flip');
         _wi129Reset();
         statuses.clear();
         await e.robot.waitForSave();
@@ -918,6 +936,32 @@ void main() {
         await tester.pump();
         expect(rowTextOf(tester, 0, 10), contains('z'));
         expect(_wi129Measures(), lessThanOrEqualTo(2 * _wi129PerRow));
+        // A row above the block changed, and the block's own row did not:
+        // the gutter takes the block's lines from its row cache and reads
+        // none (without the cache it reads the block's row every time).
+        expect(
+          _n('captureGutterLineReads'),
+          0,
+          reason: 'gutter line reads for a keystroke above the block',
+        );
+        // A keystroke in the block's own row is the one the gutter reads.
+        final host = rowsHostOf(tester);
+        final block = [
+          for (var i = 0; i < host.rowCount; i++) i,
+        ].firstWhere((i) => rowTextOf(tester, 0, i).contains('Agent saw'));
+        await activateRow(tester, 0, block, offset: 3);
+        await _wi129Key(tester, LogicalKeyboardKey.arrowRight);
+        await r.settle();
+        _wi129Reset();
+        await _wi129Type(tester, 'y');
+        await tester.pump();
+        await tester.pump();
+        expect(rowTextOf(tester, 0, block), contains('y'));
+        expect(
+          _n('captureGutterLineReads'),
+          inInclusiveRange(1, _wi129PerRow),
+          reason: 'gutter line reads for a keystroke in the block row',
+        );
         expect(r.gutterRule('a-bug'), findsOneWidget);
         await _wi129Flush(tester, r.h);
       },
