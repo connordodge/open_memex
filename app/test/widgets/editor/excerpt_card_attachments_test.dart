@@ -22,6 +22,7 @@
 // around row r's attachment block. Image bytes are tiny generated PNGs;
 // real decodes run under `runAsync`. Every file has its own path
 // (`testAttachmentPath`), since image sizes are cached per path (D7).
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -65,13 +66,20 @@ int _t144Ids = 4400;
 
 /// A fresh attachment named [name]: its decoded path and its reference
 /// markdown, image form for an inline image name unless [image] says.
-({String path, String md}) _t144Attachment(String name, {bool? image}) {
+///
+/// [shown] is the bracket text when it differs from [name] (R38: editing it
+/// changes only the shown name); '' makes the brackets empty.
+({String path, String md}) _t144Attachment(
+  String name, {
+  bool? image,
+  String? shown,
+}) {
   final n = ++_t144Ids;
   final bang = (image ?? isInlineImageName(name)) ? '!' : '';
   return (
     path: testAttachmentPath(n, name),
     md:
-        '$bang[$name](objects/5e/${testAttachmentHash(n)}/'
+        '$bang[${shown ?? name}](objects/5e/${testAttachmentHash(n)}/'
         '${encodeAttachmentName(name)})',
   );
 }
@@ -104,6 +112,7 @@ Future<_T144Rows> _t144PumpRows(
   AttachmentsAccess attachments, {
   double width = _t144Width,
   double textScale = 1,
+  TextDirection textDirection = TextDirection.ltr,
 }) async {
   tester.view.physicalSize = const Size(1200, 2000);
   tester.view.devicePixelRatio = 1;
@@ -131,7 +140,10 @@ Future<_T144Rows> _t144PumpRows(
                   padding: const EdgeInsets.all(20),
                   child: SizedBox(
                     width: width,
-                    child: CardRows(key: _t144RowsKey, text: text),
+                    child: Directionality(
+                      textDirection: textDirection,
+                      child: CardRows(key: _t144RowsKey, text: text),
+                    ),
                   ),
                 ),
               ),
@@ -297,6 +309,74 @@ const _t144PointerTypes = <Type>[
 List<Element> _t144Under(Finder scope, Type type) =>
     find.descendant(of: scope, matching: find.byType(type)).evaluate().toList();
 
+/// A file with [bytes] outside [vault], and at the vault's [path] a symlink
+/// to it (what a synced or hand-written vault can hold).
+void _t144Link(FakeAttachmentVault vault, String path, Uint8List bytes) {
+  final outside = Directory.systemTemp.createTempSync('t144-outside');
+  addTearDown(() {
+    if (outside.existsSync()) outside.deleteSync(recursive: true);
+  });
+  final target = File('${outside.path}/target')..writeAsBytesSync(bytes);
+  final link = Link(vault.absolute(path));
+  link.parent.createSync(recursive: true);
+  link.createSync(target.path);
+}
+
+/// Makes the vault's `objects/5e` folder a symlink to a folder outside
+/// [vault] that holds each of [files] (decoded vault path to bytes).
+void _t144LinkFolder(FakeAttachmentVault vault, Map<String, Uint8List> files) {
+  final outside = Directory.systemTemp.createTempSync('t144-outside');
+  addTearDown(() {
+    if (outside.existsSync()) outside.deleteSync(recursive: true);
+  });
+  for (final MapEntry(key: path, value: bytes) in files.entries) {
+    // objects/5e/<hash>/<name> lives at <outside>/<hash>/<name>.
+    final inner = path.split('/').skip(2).join('/');
+    File('${outside.path}/$inner')
+      ..parent.createSync(recursive: true)
+      ..writeAsBytesSync(bytes);
+  }
+  Directory('${vault.vaultPath}/objects').createSync(recursive: true);
+  Link('${vault.vaultPath}/objects/5e').createSync(outside.path);
+}
+
+/// Pumps one editor [AttachmentBlock] for the reference line [md] (the
+/// editor row's widget: a caret callback, the default 480 cap) over
+/// [attachments].
+Future<void> _t144PumpEditorBlock(
+  WidgetTester tester,
+  String md,
+  AttachmentsAccess attachments,
+) async {
+  final reference = parseAttachmentReference(md)!;
+  await tester.pumpWidget(
+    ProviderScope(
+      overrides: [
+        attachmentsProvider.overrideWithValue(attachments),
+        urlOpenerProvider.overrideWithValue(RecordingUrlOpener()),
+        fileRevealerProvider.overrideWithValue(FakeFileRevealer()),
+      ],
+      child: MaterialApp(
+        theme: buildOmTheme(),
+        home: Scaffold(
+          body: Align(
+            alignment: Alignment.topLeft,
+            child: SizedBox(
+              width: _t144Width,
+              child: AttachmentBlock(
+                reference: reference,
+                name: attachmentShownName(md, reference),
+                onPlaceCaret: () {},
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+  await tester.pump();
+}
+
 // ---------------------------------------------------------------- workspace
 
 const _t144Token = '![[2026-09-05#^t144a..^t144c]]';
@@ -441,6 +521,20 @@ void main() {
           tester.getSize(_t144In(5, find.byType(Image))).width,
           lessThan(300),
         );
+        expect(
+          tester.getSize(_t144In(5, find.byType(Image))).width,
+          moreOrLessEquals(300 * 240 / 241, epsilon: 0.01),
+          reason: '241 tall scales the width with the height, not a clip',
+        );
+        // Boundaries of the card width: exactly 400 is kept, 401 scales down
+        // (400 x 99.75), where a clip would keep the height 100.
+        expect(
+          tester.getSize(_t144In(7, find.byType(Image))),
+          const Size(400, 100),
+        );
+        final over = tester.getSize(_t144In(8, find.byType(Image)));
+        expect(over.width, moreOrLessEquals(400, epsilon: 0.01));
+        expect(over.height, moreOrLessEquals(100 * 400 / 401, epsilon: 0.01));
         // Never upscaled; aspect kept.
         expect(
           tester.getSize(_t144In(1, find.byType(Image))),
@@ -1146,6 +1240,261 @@ void main() {
         for (final (i, h) in again.block.indexed) {
           expect(h, moreOrLessEquals(240, epsilon: 0.5), reason: 'frame $i');
         }
+      },
+      variant: macOnly,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Review round 1: shown name, whitespace, alignment, symlinks
+  // -------------------------------------------------------------------------
+  group('shown name and whitespace (review r1)', () {
+    testWidgets(
+      'a card attachment line shows its bracket text and the stored name when the brackets are empty',
+      (tester) async {
+        final handle = tester.ensureSemantics();
+        final vault = FakeAttachmentVault();
+        final pdf = _t144Attachment('Q3 report.pdf', shown: 'Quarterly');
+        final pic = _t144Attachment('chart.png', shown: 'Fig one');
+        final blankPic = _t144Attachment('plain.png', shown: '');
+        final blankPdf = _t144Attachment('empty.pdf', shown: '');
+        final goneFile = _t144Attachment('lost.pdf', shown: 'Old report');
+        final gonePic = _t144Attachment('lost.png', shown: 'Old figure');
+        vault
+          ..putFile(pdf.path, Uint8List(812 * 1024))
+          ..putFile(pic.path, testPngBytes(300, 200))
+          ..putFile(blankPic.path, testPngBytes(300, 200))
+          ..putFile(blankPdf.path, Uint8List(2048));
+        await _t144PumpRows(
+          tester,
+          [
+            'Filed:',
+            pdf.md,
+            pic.md,
+            blankPic.md,
+            blankPdf.md,
+            goneFile.md,
+            gonePic.md,
+          ].join('\n'),
+          vault,
+        );
+        await tester.pump();
+
+        expect(_t144Text(1, 'Quarterly'), findsOneWidget);
+        expect(_t144Text(1, 'Q3 report.pdf'), findsNothing);
+        expect(_t144Text(1, 'PDF · 812 KB'), findsOneWidget);
+        expect(
+          find.descendant(
+            of: _t144Block(1),
+            matching: find.bySemanticsLabel('Quarterly, PDF, 812 KB'),
+            matchRoot: true,
+          ),
+          findsWidgets,
+          reason: 'the card is labelled with the shown name',
+        );
+        expect(
+          find.descendant(
+            of: _t144Block(2),
+            matching: find.bySemanticsLabel('Fig one'),
+            matchRoot: true,
+          ),
+          findsWidgets,
+          reason: 'the image is labelled with the shown name',
+        );
+        expect(
+          find.descendant(
+            of: _t144Block(2),
+            matching: find.bySemanticsLabel('chart.png'),
+            matchRoot: true,
+          ),
+          findsNothing,
+        );
+        // Empty brackets show the stored name (D21).
+        expect(
+          find.descendant(
+            of: _t144Block(3),
+            matching: find.bySemanticsLabel('plain.png'),
+            matchRoot: true,
+          ),
+          findsWidgets,
+        );
+        expect(_t144Text(4, 'empty.pdf'), findsOneWidget);
+        expect(_t144Text(4, 'PDF · 2 KB'), findsOneWidget);
+        // The missing texts carry the shown name too.
+        expect(_t144Text(5, 'File not found · Old report'), findsOneWidget);
+        expect(_t144Text(6, 'Image not found · Old figure'), findsOneWidget);
+        handle.dispose();
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a card attachment line with spaces around the reference is still a block with the right shown name',
+      (tester) async {
+        final vault = FakeAttachmentVault();
+        final pdf = _t144Attachment('Q3 report.pdf', shown: 'Quarterly');
+        final pic = _t144Attachment('chart.png', shown: 'Fig one');
+        final gone = _t144Attachment('lost.png', shown: 'Old figure');
+        vault
+          ..putFile(pdf.path, Uint8List(812 * 1024))
+          ..putFile(pic.path, testPngBytes(300, 200));
+        await _t144PumpRows(
+          tester,
+          [
+            'Filed:',
+            '   ${pdf.md}',
+            '${pic.md}   ',
+            '  ${gone.md}  ',
+          ].join('\n'),
+          vault,
+        );
+        await tester.pump();
+        expect(_t144In(1, find.byType(AttachmentFileCard)), findsOneWidget);
+        expect(_t144Text(1, 'Quarterly'), findsOneWidget);
+        expect(_t144In(2, find.byType(Image)), findsOneWidget);
+        expect(_t144Text(3, 'Image not found · Old figure'), findsOneWidget);
+        for (final r in [1, 2, 3]) {
+          expect(
+            find.descendant(
+              of: _t144Row(r),
+              matching: find.textContaining('objects/', findRichText: true),
+            ),
+            findsNothing,
+            reason: 'row $r shows no markdown',
+          );
+        }
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a card attachment block that is narrower than the card sits at its start edge',
+      (tester) async {
+        final vault = FakeAttachmentVault();
+        final pic = _t144Attachment('small.png');
+        final pdf = _t144Attachment('Q3 report.pdf');
+        vault
+          ..putFile(pic.path, testPngBytes(200, 100))
+          ..putFile(pdf.path, Uint8List(812 * 1024));
+        final text = 'Filed:\n${pic.md}\n${pdf.md}';
+        await _t144PumpRows(tester, text, vault);
+        final rows = tester.getRect(_t144Rows);
+        for (final r in [1, 2]) {
+          final block = tester.getRect(_t144Block(r));
+          expect(block.width, lessThan(rows.width - 20), reason: 'row $r');
+          expect(block.left, moreOrLessEquals(rows.left, epsilon: 0.01));
+        }
+        expect(
+          tester.getRect(_t144In(1, find.byType(Image))).left,
+          moreOrLessEquals(rows.left, epsilon: 0.01),
+        );
+        // Start is the right edge in a right-to-left card.
+        await _t144PumpRows(
+          tester,
+          text,
+          vault,
+          textDirection: TextDirection.rtl,
+        );
+        final rtlRows = tester.getRect(_t144Rows);
+        for (final r in [1, 2]) {
+          expect(
+            tester.getRect(_t144Block(r)).right,
+            moreOrLessEquals(rtlRows.right, epsilon: 0.01),
+            reason: 'row $r in rtl',
+          );
+        }
+      },
+      variant: macOnly,
+    );
+  });
+
+  group('symlinked attachments (review r1)', () {
+    testWidgets(
+      'a card line whose stored file is a symlink out of the vault reads not found and reads nothing',
+      (tester) async {
+        final vault = FakeAttachmentVault();
+        final pic = _t144Attachment('chart.png');
+        final pdf = _t144Attachment('Q3 report.pdf');
+        _t144Link(vault, pic.path, testPngBytes(300, 200));
+        _t144Link(vault, pdf.path, Uint8List(812 * 1024));
+        await _t144PumpRows(tester, 'Filed:\n${pic.md}\n${pdf.md}', vault);
+        await tester.pump();
+        expect(_t144Text(1, 'Image not found · chart.png'), findsOneWidget);
+        expect(_t144In(1, find.byType(Image)), findsNothing);
+        expect(_t144Text(2, 'File not found · Q3 report.pdf'), findsOneWidget);
+        expect(_t144Text(2, 'PDF · 812 KB'), findsNothing, reason: 'no size');
+        expect(vault.readCalls, isEmpty, reason: 'no read of the outside file');
+        expect(vault.infoCalls, isEmpty);
+
+        // Inert: no open, no menu, no toast.
+        await _t144Click(tester, tester.getCenter(_t144Block(2)));
+        await _t144DoubleClick(tester, tester.getCenter(_t144Block(1)));
+        await _t144Click(
+          tester,
+          tester.getCenter(_t144Block(2)),
+          buttons: kSecondaryMouseButton,
+        );
+        expect(vault.openCalls, isEmpty);
+        expect(find.text('Open'), findsNothing);
+        expect(find.byType(SnackBar), findsNothing);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a card line under a symlinked folder of the vault reads not found and reads nothing',
+      (tester) async {
+        final vault = FakeAttachmentVault();
+        final pic = _t144Attachment('chart.png');
+        final pdf = _t144Attachment('Q3 report.pdf');
+        _t144LinkFolder(vault, {
+          pic.path: testPngBytes(300, 200),
+          pdf.path: Uint8List(812 * 1024),
+        });
+        await _t144PumpRows(tester, 'Filed:\n${pic.md}\n${pdf.md}', vault);
+        await tester.pump();
+        expect(_t144Text(1, 'Image not found · chart.png'), findsOneWidget);
+        expect(_t144In(1, find.byType(Image)), findsNothing);
+        expect(_t144Text(2, 'File not found · Q3 report.pdf'), findsOneWidget);
+        expect(vault.readCalls, isEmpty);
+        expect(vault.infoCalls, isEmpty);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'an editor row attachment whose stored file is a symlink or sits under one reads not found and reads nothing',
+      (tester) async {
+        final linked = FakeAttachmentVault();
+        final pic = _t144Attachment('chart.png');
+        _t144Link(linked, pic.path, testPngBytes(300, 200));
+        await _t144PumpEditorBlock(tester, pic.md, linked);
+        expect(
+          find.text('Image not found · chart.png', findRichText: true),
+          findsOneWidget,
+        );
+        expect(find.byType(Image), findsNothing);
+        expect(linked.readCalls, isEmpty);
+
+        final pdf = _t144Attachment('Q3 report.pdf');
+        _t144Link(linked, pdf.path, Uint8List(812 * 1024));
+        await _t144PumpEditorBlock(tester, pdf.md, linked);
+        expect(
+          find.text('File not found · Q3 report.pdf', findRichText: true),
+          findsOneWidget,
+        );
+        expect(find.text('PDF · 812 KB', findRichText: true), findsNothing);
+        expect(linked.infoCalls, isEmpty);
+
+        final folder = FakeAttachmentVault();
+        final under = _t144Attachment('Q4 report.pdf');
+        _t144LinkFolder(folder, {under.path: Uint8List(4096)});
+        await _t144PumpEditorBlock(tester, under.md, folder);
+        expect(
+          find.text('File not found · Q4 report.pdf', findRichText: true),
+          findsOneWidget,
+        );
+        expect(folder.infoCalls, isEmpty);
       },
       variant: macOnly,
     );
