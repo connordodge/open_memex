@@ -16,6 +16,7 @@ import '../../state/clock.dart';
 import '../../state/command_palette_state.dart';
 import '../../state/daily_state.dart';
 import '../../state/editor_controller.dart';
+import '../../state/palette_attachments.dart';
 import '../../state/palette_commands.dart';
 import '../../state/palette_titles.dart';
 import '../../state/sidebar_mode_state.dart';
@@ -27,6 +28,7 @@ import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import '../agents_sheet/agents_sheet.dart';
 import '../backups/backups_sheet.dart';
+import '../editor/attachment_row.dart' show showAttachmentOpenFailure;
 import '../note_editor.dart';
 import '../picker/vault_picker_modal.dart';
 import '../vault_settings_dialog.dart';
@@ -38,7 +40,12 @@ import 'passages_states.dart';
 /// #77's production wiring of #76's seam (lead ruling W1), spread into
 /// `appRootOverrides`: the Commands and titles sources, and the command and
 /// note choosers. A chooser closes the palette first, then runs its action
-/// with the context the palette was opened over (R24).
+/// with the context the palette was opened over (R24). Also #148's
+/// Attachments choice: taking its reporter closes the palette (req 8)
+/// before the chooser opens the file, and a failed open shows the R42 toast
+/// over that same context (Spec #123 R42, D22), which still shows after the
+/// palette has closed. The file opens in another app, so the close gives
+/// the focus back to where it was before the palette opened.
 final List<Override> paletteShellOverrides = [
   paletteCommandsOverride,
   paletteTitlesOverride,
@@ -54,6 +61,18 @@ final List<Override> paletteShellOverrides = [
     return (item, {required newTab}) => session.choose(
       (host, container) => _showNote(container, item, newTab: newTab),
     );
+  }),
+  paletteAttachmentOpenFailureProvider.overrideWith((ref) {
+    final session = ref.watch(_sessionProvider);
+    return () {
+      BuildContext? host;
+      session.choose((h, _) => host = h, placesFocus: false);
+      return (name, failure) {
+        final shown = host;
+        if (shown == null || !shown.mounted) return;
+        showAttachmentOpenFailure(shown, name, failure);
+      };
+    };
   }),
 ];
 
@@ -241,10 +260,15 @@ class _PaletteSession {
   }
 
   /// A row was chosen: closes the palette, then runs [action] with the
-  /// context the palette was opened over, when it is still mounted.
-  void choose(void Function(BuildContext host, ProviderContainer c) action) {
+  /// context the palette was opened over, when it is still mounted. With
+  /// [placesFocus] false the action leaves the focus alone, so the close
+  /// gives it back to where it was before the palette opened.
+  void choose(
+    void Function(BuildContext host, ProviderContainer c) action, {
+    bool placesFocus = true,
+  }) {
     final host = this.host;
-    _chosen = true;
+    if (placesFocus) _chosen = true;
     close();
     if (host == null || !host.mounted) return;
     action(host, container);
@@ -830,8 +854,10 @@ class _PaletteListState extends ConsumerState<_PaletteList> {
         ),
         for (final item in group.rows)
           // Req 17 (ruling W3): the previous answer's rows, dimmed, until
-          // the debounce fires.
-          group.kind == PaletteGroupKind.passages && dimmed
+          // the debounce fires; its attachments too (Spec #123 R47).
+          (group.kind == PaletteGroupKind.passages ||
+                      group.kind == PaletteGroupKind.attachments) &&
+                  dimmed
               ? Opacity(opacity: 0.5, child: row(item))
               : row(item),
         if (group.kind == PaletteGroupKind.passages) const PassagesFooter(),
@@ -949,6 +975,7 @@ class _WideHints extends ConsumerWidget {
       ],
       PaletteItemKind.note || PaletteItemKind.daily || PaletteItemKind.canvas =>
         const [_hintMove, _hintChoose, _hintNewTab, _hintClose],
+      PaletteItemKind.attachment => const [_hintMove, _hintChoose, _hintClose],
       null => const [_hintMove, _hintClose],
     };
     return _HintBar(

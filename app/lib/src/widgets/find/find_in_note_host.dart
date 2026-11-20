@@ -22,6 +22,7 @@ import '../../state/note_reveal.dart';
 import '../../state/tabs_state.dart' show CanvasTab, TabsState, tabsProvider;
 import '../../state/vault_state.dart' show currentVaultProvider;
 import '../../vault_access/vault_scoped.dart' show currentVaultData;
+import '../editor/card_rows.dart' show cardAttachmentReference;
 import '../editor/excerpt_card.dart' show excerptRenderProvider;
 import '../editor/find_decoration.dart';
 import '../editor/line_boxes.dart';
@@ -385,7 +386,7 @@ class _FindInNoteHostState extends ConsumerState<FindInNoteHost> {
                 segment: i,
                 kind: FindSourceKind.card,
                 text: text,
-                hidden: hiddenOf(text),
+                hidden: [...hiddenOf(text), ..._cardBlockRanges(text)],
               ),
             );
           }
@@ -419,6 +420,15 @@ class _FindInNoteHostState extends ConsumerState<FindInNoteHost> {
         codeRow: spec.kind == RowKind.code,
       ))
         FindRange(spec.textStart + range.start, spec.textStart + range.end),
+  ];
+
+  /// The rows of card [text] a card shows as an attachment block, whole:
+  /// the card shows none of their text, so a match there is dropped (D27,
+  /// Req 4). Editor-body attachment lines still match.
+  static List<FindRange> _cardBlockRanges(String text) => [
+    for (final spec in splitRows(text, atSegmentStart: true))
+      if (cardAttachmentReference(text, spec) != null)
+        FindRange(spec.textStart, spec.textEnd),
   ];
 
   static bool _sameSources(List<FindSource> a, List<FindSource> b) {
