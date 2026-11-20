@@ -2516,3 +2516,184 @@ fn embed_missing_with_a_first_note_spends_the_others_cap_only_on_other_chunks() 
     );
     assert_eq!(r.pending, 2);
 }
+
+// ================================================================ mutation batch 1 (#123)
+
+/// The `chunk_fts` text of `note`'s only chunk.
+fn only_chunk_fts(conn: &Connection, note: &Note) -> String {
+    let rows = chunk_rows(conn, note.id.as_str());
+    assert_eq!(rows.len(), 1, "fixture: one chunk");
+    conn.query_row(
+        "SELECT content FROM chunk_fts WHERE chunk_id = ?",
+        [&rows[0].0],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_fence_opening_line_keeps_a_reference_in_its_info_string_whole_in_the_index_text() {
+    let (_d, mut vault) = fresh_vault();
+    let a = seed_attachment(vault.connection_ref(), "a4", "Opener.txt", 10, &[]);
+    // The reference is the opening fence's info string: that line is a
+    // fence line, not text outside fenced code, so R45 cuts nothing there.
+    let body = format!("Intro.\n```{}\ncode\n```\nTail.\n", a.markdown);
+    let n = create(&mut vault, "Opener", &body);
+    let stored = stored_body(vault.connection_ref(), n.id.as_str());
+    let conn = vault.connection_ref();
+    assert!(
+        refs(conn, n.id.as_str()).is_empty(),
+        "fixture: a fence line holds no reference"
+    );
+    assert_eq!(
+        only_chunk_fts(conn, &n),
+        stored.trim_end(),
+        "the fence line is kept whole"
+    );
+}
+
+#[test]
+fn a_destination_with_whitespace_or_a_paren_before_its_close_is_kept_whole_in_the_index_text() {
+    let (_d, mut vault) = fresh_vault();
+    let a = seed_attachment(vault.connection_ref(), "b5", "Plain.txt", 10, &[]);
+    let dir = &a.path[..a.path.rfind('/').unwrap()];
+    // A raw space or `(` ends the destination before its `)`: no attachment
+    // destination (R4), so nothing is cut, though the text up to the first
+    // `)` would decode to an attachment path.
+    let spaced = format!("See [Odd]({dir}/Odd name.txt) here.");
+    let parened = format!("See [Odd]({dir}/Odd(1).txt) here.");
+    assert!(
+        attachments::parse_destination(&format!("{dir}/Odd name.txt")).is_some()
+            && attachments::parse_destination(&format!("{dir}/Odd(1")).is_some(),
+        "fixture: the text up to the first `)` decodes to an attachment path"
+    );
+    // An empty `]()` is no destination either, and a reference after it on
+    // the same line is still cut.
+    let body = format!("{spaced}\n{parened}\nEmpty []() then {}.\n", a.markdown);
+    let n = create(&mut vault, "Odd", &body);
+    let conn = vault.connection_ref();
+    assert!(
+        refs(conn, n.id.as_str()).is_empty(),
+        "fixture: no reference line"
+    );
+    let cut = &a.markdown[..a.markdown.rfind('(').unwrap()];
+    assert_eq!(
+        only_chunk_fts(conn, &n),
+        format!("{spaced}\n{parened}\nEmpty []() then {cut}."),
+        "only the attachment destination is cut"
+    );
+}
+
+#[test]
+fn a_daily_hit_whose_reference_line_is_now_blank_still_expands_through_the_block_starting_there() {
+    let (_d, mut vault) = fresh_vault();
+    let att = seed_attachment(
+        vault.connection_ref(),
+        "e9",
+        "Pond Log.txt",
+        512,
+        &["Heron nest count by the north pond."],
+    );
+    let day = create_with(
+        &mut vault,
+        DAY,
+        &format!(
+            "Fixed the jump arc.\n\n{}\n\nSleep was bad.\n",
+            att.markdown
+        ),
+        Some(json!({ "role": "daily" })),
+    );
+    let n = vault
+        .connection_ref()
+        .execute(
+            "UPDATE blocks SET block_id = 'p0nd02' WHERE note_id = ? AND ord = 1",
+            [day.id.as_str()],
+        )
+        .unwrap();
+    assert_eq!(n, 1, "fixture: the day has a second block");
+    let topic = create_with(
+        &mut vault,
+        "Bird Topics",
+        &format!("Birds.\n\n![[{DAY}#^p0nd02]]\n"),
+        Some(json!({ "role": "topic" })),
+    );
+    let conn = vault.connection_ref();
+    let line = line_start(conn, &day, &att);
+    let block_start: i64 = conn
+        .query_row(
+            "SELECT start_byte FROM blocks WHERE note_id = ? AND ord = 1",
+            [day.id.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        block_start, line as i64,
+        "fixture: the block starts on the line"
+    );
+
+    // The stored body gains a blank line above the reference before the
+    // index catches up: the reference row now points at an empty line,
+    // right where its block starts.
+    let edited = format!(
+        "Fixed the jump arc.\n\n\n{}\n\nSleep was bad.\n",
+        att.markdown
+    );
+    assert_eq!(edited.as_bytes()[line], b'\n', "fixture: an empty line");
+    conn.execute(
+        "UPDATE notes SET content_md = ? WHERE id = ?",
+        params![edited, day.id.as_str()],
+    )
+    .unwrap();
+
+    // The empty reference line still covers one byte, so its block is hit.
+    for got in [
+        ns(&mut vault, "heron", 8),
+        core_search(&vault, "heron", 8, SearchMode::Fts),
+    ] {
+        the_hit(&got, &day);
+        let t = the_hit(&got, &topic);
+        assert_eq!(t["via"], json!(DAY), "{got:#}");
+        assert_eq!(t["attachment"], att.hit_json());
+    }
+}
+
+#[test]
+fn an_attachment_past_the_oversampled_name_cap_gets_no_name_score() {
+    let (_d, mut vault) = fresh_vault();
+    let conn = vault.connection_ref();
+    // At k = 1 the name list keeps k x 5 = 5 names, in name order: Heron 1
+    // to 5. Heron 6 is sixth by name and matches by content at rank 1, the
+    // score of Heron 1's name rank 1: with no name score it ties Heron 1,
+    // and the tie goes to Heron 1 by name.
+    let mut atts = Vec::new();
+    for i in 1..=5 {
+        let h2 = format!("{i}a");
+        atts.push(seed_attachment(
+            conn,
+            &h2,
+            &format!("Heron {i}.txt"),
+            10,
+            &[],
+        ));
+    }
+    let sixth = seed_attachment(conn, "6a", "Heron 6.txt", 10, &["a grey heron"]);
+    let body = atts
+        .iter()
+        .chain([&sixth])
+        .map(|a| a.markdown.clone())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    create(&mut vault, "Holder", &format!("{body}\n"));
+
+    for got in [
+        ns(&mut vault, "heron", 1),
+        core_search(&vault, "heron", 1, SearchMode::Fts),
+    ] {
+        assert_eq!(att_paths(&got), vec![atts[0].path.clone()], "{got:#}");
+    }
+    // At k = 2 the cap is 10: Heron 6 adds its name score and comes first.
+    assert_eq!(
+        att_paths(&ns(&mut vault, "heron", 2)),
+        vec![sixth.path.clone(), atts[0].path.clone()]
+    );
+}
