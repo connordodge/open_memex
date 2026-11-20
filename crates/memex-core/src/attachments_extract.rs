@@ -5,9 +5,10 @@
 //! - [`extract`] reads a file's text in this process: PDFs (their text
 //!   layer only) and the [`TEXT_EXTENSIONS`] files decoded as UTF-8 with
 //!   invalid bytes replaced. Any other type has no text. PDF parsing can
-//!   panic or overflow the stack on a hostile file, so `memex serve` never
-//!   calls this itself: it runs a child `memex` process (memex-mcp's
-//!   `attachment_extract_child`). A one-shot `memex attach` may.
+//!   panic or overflow the stack on a hostile file, so neither `memex serve`
+//!   nor `memex attach` calls this itself: each runs a child `memex`
+//!   process (memex-mcp's `attachment_extract_child`), and only that child
+//!   calls it.
 //! - [`record`] writes the `attachments` row (`done`, `empty`, or `failed`
 //!   with `extract_error`, and `extracted_at`) and the chunks of the first
 //!   [`MAX_CHARS`] characters of the text into `attachment_chunks` and
@@ -15,7 +16,9 @@
 //!   in a final state is never written again (R44: extracted once).
 //! - [`is_extracted`] says whether a path already has such a row, so a
 //!   store route can skip extraction.
-//! - [`limit_memory`] is the extraction child's memory limit.
+//! - [`cap_data_memory`] (Linux: the kernel's `RLIMIT_DATA`) and
+//!   [`limit_memory`] (a peak-resident watchdog, macOS and Linux) are the
+//!   extraction child's memory limits.
 //!
 //! No embeddings here: `embed_model_version` stays NULL (R4's lazy and
 //! backfill paths fill the vectors).
@@ -110,7 +113,7 @@ pub fn decode_text(bytes: &[u8]) -> String {
 /// that can't be read is [`Outcome::Failed`] with the reason. The text is
 /// cut to its first [`MAX_CHARS`] characters.
 ///
-/// Runs in this process: never call it inside `memex serve`.
+/// Runs in this process: call it only in the extraction child.
 pub fn extract(file: &Path, name: &str) -> Outcome {
     if is_pdf(name) {
         extract_pdf(file)
@@ -238,12 +241,47 @@ pub fn record(
     Ok(true)
 }
 
+/// Caps this process's (the extraction child's) data memory at `max_bytes`
+/// in the kernel, on Linux only: `setrlimit(RLIMIT_DATA)` lowers the soft
+/// limit (never above the hard one), so the kernel refuses any heap or
+/// private mapping past it and the allocation failure ends the process
+/// (the runner records it as a crash). Linux has counted private writable
+/// mappings, not just `brk`, in `RLIMIT_DATA` since 4.7, so it covers what
+/// the allocator `mmap`s. On macOS it does nothing: macOS does not apply
+/// `RLIMIT_DATA` to `mmap` allocations, so [`limit_memory`]'s watchdog is
+/// the only limit there. Returns whether a limit was set.
+pub fn cap_data_memory(max_bytes: u64) -> bool {
+    if cfg!(target_os = "linux") {
+        set_data_rlimit(max_bytes)
+    } else {
+        false
+    }
+}
+
+/// Lowers this process's soft `RLIMIT_DATA` to `max_bytes` (or to the hard
+/// limit, if that is lower).
+fn set_data_rlimit(max_bytes: u64) -> bool {
+    let mut limit = std::mem::MaybeUninit::<libc::rlimit>::zeroed();
+    // SAFETY: getrlimit writes a whole rlimit into the pointer it is given.
+    if unsafe { libc::getrlimit(libc::RLIMIT_DATA, limit.as_mut_ptr()) } != 0 {
+        return false;
+    }
+    // SAFETY: getrlimit returned 0, so it filled it (and zeroed is valid).
+    let mut limit = unsafe { limit.assume_init() };
+    let wanted = libc::rlim_t::try_from(max_bytes).unwrap_or(libc::RLIM_INFINITY);
+    limit.rlim_cur = std::cmp::min(wanted, limit.rlim_max);
+    // SAFETY: setrlimit only reads the rlimit it is given.
+    unsafe { libc::setrlimit(libc::RLIMIT_DATA, &limit) == 0 }
+}
+
 /// Limits this process (the extraction child) to `max_resident` bytes of
 /// peak resident memory: a watchdog thread reads the peak (`getrusage`)
 /// every 50 ms and, past the limit, prints why on stderr and exits with
-/// [`MEMORY_LIMIT_EXIT`]. It works the same on macOS and Linux; no rlimit
-/// is set (macOS refuses to lower `RLIMIT_AS`/`RLIMIT_DATA`, and Linux's
-/// `RLIMIT_AS` counts address space reserved but never used).
+/// [`MEMORY_LIMIT_EXIT`]. It works the same on macOS and Linux, but it is a
+/// poll: memory touched between two reads can pass the limit before it
+/// fires. On Linux [`cap_data_memory`] adds the kernel's limit; on macOS
+/// this is the only one (`RLIMIT_AS` and `RLIMIT_DATA` aren't enforced on
+/// `mmap` allocations there).
 pub fn limit_memory(max_resident: u64) {
     std::thread::spawn(move || loop {
         if peak_resident_bytes().is_some_and(|peak| peak > max_resident) {
