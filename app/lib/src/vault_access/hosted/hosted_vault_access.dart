@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
@@ -185,6 +187,59 @@ class _ComposedClient implements HostedClient {
       body: body,
       timeout: timeout,
     ),
+    operation,
+  );
+
+  /// The open's client keeps the session's attachment route check, so
+  /// every composite over it shares one.
+  @override
+  Future<bool>? get attachmentRoutesCheck => _inner.attachmentRoutesCheck;
+
+  @override
+  set attachmentRoutesCheck(Future<bool>? check) =>
+      _inner.attachmentRoutesCheck = check;
+
+  @override
+  Future<HostedBytes> uploadBytes(
+    String vaultName,
+    String path,
+    Uint8List bytes, {
+    required String operation,
+    Map<String, String>? query,
+  }) => _guard(
+    () => _inner.uploadBytes(
+      vaultName,
+      path,
+      bytes,
+      operation: operation,
+      query: query,
+    ),
+    operation,
+  );
+
+  @override
+  Future<HostedBytes> downloadBytes(
+    String vaultName,
+    String path, {
+    required String operation,
+    int? expectedBytes,
+  }) => _guard(
+    () => _inner.downloadBytes(
+      vaultName,
+      path,
+      operation: operation,
+      expectedBytes: expectedBytes,
+    ),
+    operation,
+  );
+
+  @override
+  Future<HostedBytes> head(
+    String vaultName,
+    String path, {
+    required String operation,
+  }) => _guard(
+    () => _inner.head(vaultName, path, operation: operation),
     operation,
   );
 
