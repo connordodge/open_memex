@@ -36,7 +36,10 @@ use base64::Engine;
 use memex_core::attachments::{store_bytes, StoredAttachment};
 use memex_core::attachments_extract::Outcome;
 use memex_core::Vault;
-use memex_mcp::attachment_extract_child::{ChildExtractor, SUBCOMMAND, TIME_LIMIT};
+use memex_mcp::attachment_extract_child::{
+    extract_and_record, extract_and_record_blocking, ChildExtractor, MAX_CHILDREN, SUBCOMMAND,
+    TIME_LIMIT,
+};
 use memex_mcp::server::{router, ServerConfig};
 use memex_mcp::state::AppState;
 use memex_mcp::tools::Memex;
@@ -570,11 +573,18 @@ fn runner_does_not_wait_for_a_grandchild_that_keeps_the_pipes_open() {
     let file = write_file(dir.path(), "x.pdf", b"%PDF-1.4");
     let started = Instant::now();
     // The child ends at once, but its background sleep holds both pipes.
-    let _ = sh("sleep 8 & echo hi").run(&file);
+    let outcome = sh("sleep 8 & echo hi").run(&file);
     let took = started.elapsed();
     assert!(
         took < Duration::from_secs(7),
         "the runner gave up on the open pipes: {took:?}"
+    );
+    // Its output may be cut short, so it is not recorded as a final `done`
+    // or `empty`: it is a failure that says so.
+    let error = failure_of(outcome);
+    assert!(
+        error.contains("output did not end within 2 s"),
+        "a drain timeout after a clean exit is `failed`: {error:?}"
     );
 }
 
@@ -1273,6 +1283,262 @@ async fn another_request_completes_while_the_server_extracts_an_upload() {
     assert_eq!(stored["path"], json!(path));
     assert_eq!(row(&vault, &path).expect("a row").state, "done");
     assert_eq!(fts_match(&vault, "gated"), vec![path]);
+}
+
+// ---------------------------------------------------------------- the child turns
+
+/// Marker files for test children that wait on the test. `hold*` children
+/// write `started.<name>`, then wait for `release.<name>`; any other child
+/// appends its name to `runs` and ends at once. All print `text of <name>`.
+struct Gate {
+    dir: TempDir,
+}
+
+impl Gate {
+    fn new() -> Self {
+        Self {
+            dir: visible_tempdir("wi136-gate-"),
+        }
+    }
+
+    fn extractor(&self) -> ChildExtractor {
+        let script = "n=$(basename \"$1\"); \
+            case \"$n\" in \
+            hold*) : > @D@/started.$n; while [ ! -e @D@/release.$n ] && [ -d @D@ ]; do sleep 0.05; done;; \
+            *) echo \"$n\" >> @D@/runs;; \
+            esac; \
+            printf 'text of %s' \"$n\"";
+        sh(&script.replace("@D@", &q(self.dir.path()))).with_time_limit(Duration::from_secs(120))
+    }
+
+    fn started_count(&self) -> usize {
+        fs::read_dir(self.dir.path())
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("started.")
+            })
+            .count()
+    }
+
+    fn release(&self, name: &str) {
+        fs::write(self.dir.path().join(format!("release.{name}")), b"go").unwrap();
+    }
+
+    fn release_all(&self) {
+        for i in 1..=9 {
+            self.release(&format!("hold{i}.pdf"));
+        }
+    }
+
+    /// The names of the non-gated children that ran, in order.
+    fn runs(&self) -> Vec<String> {
+        fs::read_to_string(self.dir.path().join("runs"))
+            .map(|s| s.lines().map(str::to_string).collect())
+            .unwrap_or_default()
+    }
+}
+
+impl Drop for Gate {
+    /// A failing test never leaves a child waiting: it is released here, and
+    /// a child also ends once the folder is gone (its time limit stops it in
+    /// any case).
+    fn drop(&mut self) {
+        self.release_all();
+    }
+}
+
+/// A state over a new vault in `dir` whose extraction child is `extractor`.
+fn state_with(dir: &Path, extractor: ChildExtractor) -> (AppState, PathBuf) {
+    let vault = new_vault(dir);
+    let state =
+        AppState::new(Vault::open(&vault).unwrap(), vault.clone(), None).with_extractor(extractor);
+    (state, vault)
+}
+
+/// Stores `name` (its own name as its bytes) and runs
+/// [`extract_and_record`] for it on its own task.
+fn store_and_extract(
+    state: &AppState,
+    vault: &Path,
+    name: &str,
+) -> (StoredAttachment, JoinHandle<memex_core::Result<()>>) {
+    let stored = store_bytes(vault, name.as_bytes(), name).unwrap();
+    let state = state.clone();
+    let task_stored = stored.clone();
+    let task = tokio::spawn(async move { extract_and_record(&state, &task_stored).await });
+    (stored, task)
+}
+
+async fn finished(task: JoinHandle<memex_core::Result<()>>) {
+    tokio::time::timeout(WAIT, task)
+        .await
+        .expect("the extraction finished")
+        .expect("extraction task")
+        .expect("extraction wrote its row");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn at_most_two_extraction_children_run_at_once() {
+    assert_eq!(MAX_CHILDREN, 2, "the cap on concurrent children");
+    let gate = Gate::new();
+    let dir = visible_tempdir("wi136-turns-");
+    let (state, vault) = state_with(dir.path(), gate.extractor());
+
+    // Five different files stored at once, each with a child that waits.
+    let mut stored = Vec::new();
+    let mut tasks = Vec::new();
+    for i in 1..=5 {
+        let (s, t) = store_and_extract(&state, &vault, &format!("hold{i}.pdf"));
+        stored.push(s);
+        tasks.push(t);
+    }
+
+    let two = wait_until(WAIT, || gate.started_count() >= 2).await;
+    assert!(two, "two children started: {}", gate.started_count());
+    // A third never starts while two run (a wait that can only pass late).
+    let third = wait_until(Duration::from_millis(600), || gate.started_count() > 2).await;
+    assert!(!third, "a third child started beside two");
+    assert_eq!(gate.started_count(), 2);
+
+    // Once they end, the others run (two at a time) and every file is done.
+    gate.release_all();
+    for task in tasks {
+        finished(task).await;
+    }
+    assert_eq!(gate.started_count(), 5);
+    for s in &stored {
+        assert_eq!(row(&vault, &s.path).expect("a row").state, "done");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_store_that_waited_for_a_turn_runs_no_child_when_the_file_was_extracted_meanwhile() {
+    let gate = Gate::new();
+    let dir = visible_tempdir("wi136-recheck-");
+    let (state, vault) = state_with(dir.path(), gate.extractor());
+
+    // Both turns are taken by children that wait.
+    let (_, hold1) = store_and_extract(&state, &vault, "hold1.pdf");
+    let (_, hold2) = store_and_extract(&state, &vault, "hold2.pdf");
+    let both = wait_until(WAIT, || gate.started_count() >= 2).await;
+    assert!(both, "both turns are taken");
+
+    // Two stores of the same file find it not yet extracted, and wait.
+    let (dup, first) = store_and_extract(&state, &vault, "dup.pdf");
+    let (same, second) = store_and_extract(&state, &vault, "dup.pdf");
+    assert_eq!(same.path, dup.path);
+    // Settle: both have passed their first check and queued for a turn.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(gate.runs().is_empty(), "no turn is free yet");
+
+    // One turn frees: one store runs the child; the other, given a turn
+    // after that, finds the row and runs none.
+    gate.release("hold1.pdf");
+    finished(first).await;
+    finished(second).await;
+    assert_eq!(gate.runs(), vec!["dup.pdf".to_string()], "one child ran");
+    assert_eq!(row(&vault, &dup.path).expect("a row").state, "done");
+    assert_eq!(chunk_count(&vault, &dup.path), 1, "one set of chunks");
+
+    gate.release_all();
+    finished(hold1).await;
+    finished(hold2).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_request_dropped_while_its_child_runs_still_gets_its_row_written() {
+    let gate = Gate::new();
+    let dir = visible_tempdir("wi136-dropped-");
+    let (state, vault) = state_with(dir.path(), gate.extractor());
+    let (stored, task) = store_and_extract(&state, &vault, "hold1.pdf");
+    let started = wait_until(WAIT, || gate.started_count() >= 1).await;
+    assert!(started, "the child started");
+    assert_eq!(row(&vault, &stored.path), None, "not recorded yet");
+
+    // The caller goes away (a dropped request, a cancelled tool call).
+    task.abort();
+    let outcome = task.await;
+    assert!(outcome.is_err_and(|e| e.is_cancelled()), "the caller ended");
+
+    gate.release_all();
+    let path = stored.path.clone();
+    let v = vault.clone();
+    let written = wait_until(WAIT, move || row(&v, &path).is_some()).await;
+    assert!(written, "the row is written although nobody waits");
+    assert_eq!(row(&vault, &stored.path).unwrap().state, "done");
+    assert_eq!(fts_match(&vault, "hold1"), vec![stored.path]);
+}
+
+#[test]
+fn blocking_extraction_runs_in_a_child_process_not_in_this_one() {
+    // This test binary is the running "memex": its child is another run of
+    // the binary (the file name is not a test name), never this process.
+    // Extracted in this process, the file's own words would be indexed.
+    let dir = visible_tempdir("wi136-blocking-");
+    let vault = new_vault(dir.path());
+    let bytes = b"wi136marker words that only an in-process read could index";
+    let stored = store_bytes(&vault, bytes, "notes.txt").unwrap();
+
+    extract_and_record_blocking(&vault, &stored).unwrap();
+
+    let r = row(&vault, &stored.path).expect("a row is recorded");
+    assert!(r.extracted_at.is_some(), "{r:?}");
+    assert_ne!(r.state, "pending", "{r:?}");
+    assert_eq!(
+        fts_match(&vault, "wi136marker"),
+        Vec::<String>::new(),
+        "the text was not read in this process"
+    );
+
+    // A type with no text needs no child at all: `empty`, no chunks.
+    let png = store_bytes(&vault, b"\x89PNG not really", "pic.png").unwrap();
+    extract_and_record_blocking(&vault, &png).unwrap();
+    assert_eq!(row(&vault, &png.path).unwrap().state, "empty");
+    assert_eq!(chunk_count(&vault, &png.path), 0);
+}
+
+// ---------------------------------------------------------------- the child's own limits
+
+/// The hidden subcommand on a FIFO named `blocked.txt`: it opens the file
+/// and blocks (nothing writes to it), after it has set its limits.
+fn blocked_memex_child(dir: &Path) -> Child {
+    let fifo = dir.join("blocked.txt");
+    let made = Command::new("mkfifo").arg(&fifo).status().expect("mkfifo");
+    assert!(made.success(), "mkfifo");
+    Command::new(memex())
+        .args([SUBCOMMAND, fifo.to_str().unwrap()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start the extraction child")
+}
+
+/// The soft `Max data size` of Linux process `pid`, once it is a number.
+fn data_limit(pid: u32) -> Option<u64> {
+    let limits = fs::read_to_string(format!("/proc/{pid}/limits")).ok()?;
+    let line = limits.lines().find(|l| l.starts_with("Max data size"))?;
+    line.split_whitespace().nth(3)?.parse().ok()
+}
+
+#[tokio::test]
+async fn the_extraction_child_caps_its_data_memory_at_1_gib_on_linux() {
+    if !cfg!(target_os = "linux") {
+        // macOS does not enforce RLIMIT_DATA on mmap, and the child sets none.
+        return;
+    }
+    let dir = visible_tempdir("wi136-rlimit-");
+    let mut child = blocked_memex_child(dir.path());
+    let pid = child.id();
+    let capped = wait_until(WAIT, move || data_limit(pid) == Some(1 << 30)).await;
+    let seen = data_limit(pid);
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(capped, "RLIMIT_DATA of the child is 1 GiB, saw {seen:?}");
 }
 
 // ---------------------------------------------------------------- notices

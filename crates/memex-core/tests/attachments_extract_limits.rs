@@ -20,8 +20,9 @@ use std::time::Duration;
 
 use memex_core::attachments::{self, StoredAttachment};
 use memex_core::attachments_extract::{
-    decode_text, extract, extracts_text, first_chars, is_extracted, limit_memory, record, Outcome,
-    MAX_CHARS, MAX_TEXT_BYTES, MEMORY_LIMIT_BYTES, MEMORY_LIMIT_EXIT, TEXT_EXTENSIONS,
+    cap_data_memory, decode_text, extract, extracts_text, first_chars, is_extracted, limit_memory,
+    record, Outcome, MAX_CHARS, MAX_TEXT_BYTES, MEMORY_LIMIT_BYTES, MEMORY_LIMIT_EXIT,
+    TEXT_EXTENSIONS,
 };
 use memex_core::Vault;
 use rusqlite::{params, OptionalExtension};
@@ -374,9 +375,24 @@ fn limit_memory_child_body() {
                 std::thread::sleep(Duration::from_millis(50));
             }
         }
+        // A 128 MiB data cap, then the exit code says whether one was set.
+        "cap_returns" => {
+            let set = cap_data_memory(128 << 20);
+            std::process::exit(if set { CAP_SET } else { CAP_NOT_SET });
+        }
+        // A 128 MiB data cap, then 512 MiB of memory is touched.
+        "cap_alloc" => {
+            cap_data_memory(128 << 20);
+            let big = vec![1u8; 512 << 20];
+            std::process::exit(if big.iter().all(|b| *b == 1) { 0 } else { 1 });
+        }
         other => panic!("unknown mode {other}"),
     }
 }
+
+/// `limit_memory_child_body`'s exit codes for "a cap was set" and "not".
+const CAP_SET: i32 = 10;
+const CAP_NOT_SET: i32 = 11;
 
 fn run_child_body(mode: &str) -> std::process::Output {
     Command::new(std::env::current_exe().unwrap())
@@ -417,4 +433,40 @@ fn limit_memory_leaves_a_process_under_the_limit_running() {
         "under the limit nothing stops it: {stderr}"
     );
     assert!(!stderr.contains("extraction stopped"), "{stderr}");
+}
+
+// ---------------------------------------------------------------- cap_data_memory
+
+#[test]
+fn cap_data_memory_sets_a_kernel_limit_on_linux_only() {
+    let out = run_child_body("cap_returns");
+    let expected = if cfg!(target_os = "linux") {
+        CAP_SET
+    } else {
+        CAP_NOT_SET
+    };
+    assert_eq!(
+        out.status.code(),
+        Some(expected),
+        "Linux sets RLIMIT_DATA, macOS sets none: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn cap_data_memory_makes_the_kernel_refuse_memory_past_the_cap_on_linux() {
+    let out = run_child_body("cap_alloc");
+    if cfg!(target_os = "linux") {
+        // The allocation fails and Rust aborts: no clean exit.
+        assert_ne!(
+            out.status.code(),
+            Some(0),
+            "512 MiB past a 128 MiB cap must not be granted: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!out.status.success());
+    } else {
+        // macOS has no such limit: the same allocation succeeds.
+        assert_eq!(out.status.code(), Some(0));
+    }
 }
