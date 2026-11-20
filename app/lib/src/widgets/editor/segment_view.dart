@@ -523,12 +523,14 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   /// A row field's typed change or selection move.
   void _onRowValue(_Row row) {
     final value = row.controller.value;
-    final changed = value != row.seen;
+    final prior = row.seen;
+    final changed = value != prior;
     row.seen = value;
     if (_applying || !changed) return;
     if (_intercepted(row, value)) return;
     if (value.text != row.text) {
       final local = SegmentEdit.diff(row.text, value.text);
+      if (_handedOver(row, prior, local)) return;
       final at = row.spec.textStart;
       final selection = value.selection;
       _apply(
@@ -547,6 +549,38 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
     } else if (row.focusNode.hasFocus) {
       _selectFrom(row);
     }
+  }
+
+  /// Text typed into [row] while it still holds the text input connection
+  /// but a handover to another row waits for its field ([_focusPending]):
+  /// it goes in at the segment selection, in the row the caret moved to,
+  /// as it would once that row's field has focus (Req 31, 33). Only a
+  /// plain insertion while the selection lies in the waiting row, into a
+  /// row that held no composition ([prior]), moves: an IME commit or a
+  /// deletion stays in [row]. Returns whether [local] went in elsewhere;
+  /// [row]'s field then gets its own text back.
+  bool _handedOver(_Row row, TextEditingValue prior, SegmentEdit local) {
+    final pending = _focusPending;
+    if (pending == null || identical(pending, row)) return false;
+    if (prior.composing.isValid) return false;
+    if (local.end != local.start || local.replacement.isEmpty) return false;
+    final selection = widget.controller.selection;
+    if (!selection.isValid ||
+        _rowHolding(selection.start) != pending.index ||
+        _rowHolding(selection.end) != pending.index) {
+      return false;
+    }
+    _apply(
+      SegmentEdit(
+        start: selection.start,
+        end: selection.end,
+        replacement: local.replacement,
+        selection: SegmentSelection.collapsed(
+          selection.start + local.replacement.length,
+        ),
+      ),
+    );
+    return true;
   }
 
   /// Offers [row]'s composing [value] to the composing interceptor while the
@@ -681,6 +715,9 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
       final selection = widget.controller.selection;
       activateRow(_rowHolding(selection.extentOffset), selection);
     } else if (!widget.focusNode.hasFocus) {
+      // Focus left the segment before a handover's row took it: the
+      // handover is dropped, so that row does not take focus back.
+      _focusPending = null;
       _followExtent();
     }
   }
@@ -1178,14 +1215,26 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   /// the node is asked then, not before. A row whose node already holds
   /// focus (it took focus while idle) asks its field for the keyboard
   /// instead. Only the last row asked for waits; nothing once it went away
-  /// or stopped being active.
+  /// or stopped being active, or once focus moved elsewhere since the ask:
+  /// out of the segment ([_onSegmentFocus] drops the wait), or, asked while
+  /// the segment had no focus, to another node that is not a focus scope
+  /// (a palette or search field took it; a tap outside a field only
+  /// unfocuses it to its scope).
   void _focusAfterFrame(_Row row) {
     _focusPending = row;
+    final from = FocusManager.instance.primaryFocus;
     final binding = SchedulerBinding.instance;
     binding.addPostFrameCallback((_) {
       if (!mounted || !identical(_focusPending, row)) return;
       _focusPending = null;
       if (!identical(_active, row) || !identical(_rowOf[row.controller], row)) {
+        return;
+      }
+      final now = FocusManager.instance.primaryFocus;
+      if (!widget.focusNode.hasFocus &&
+          now != null &&
+          !identical(now, from) &&
+          now is! FocusScopeNode) {
         return;
       }
       final field = _fieldStateOf(row);
