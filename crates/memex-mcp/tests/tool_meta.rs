@@ -401,6 +401,31 @@ fn is_write_is_false_for_unknown_names_and_prompts() {
     }
 }
 
+// ---------- is_logged: the activity hook's one gate ----------
+
+#[test]
+fn is_logged_is_true_only_for_write_tools_other_than_add_attachment() {
+    assert!(meta::is_logged("create_note"), "create_note is logged");
+    assert!(
+        !meta::is_logged("add_attachment"),
+        "add_attachment is a write but never logged"
+    );
+    assert!(!meta::is_logged("search"), "search is a read");
+    assert!(
+        !meta::is_logged("get_attachment"),
+        "get_attachment is a read"
+    );
+    for name in ["", "no_such_tool", "CREATE_NOTE", "capture"] {
+        assert!(!meta::is_logged(name), "is_logged({name:?})");
+    }
+    // Every registered tool: logged exactly when it writes and is not
+    // add_attachment.
+    for name in registered_tools() {
+        let expected = meta::is_write(&name) && name != "add_attachment";
+        assert_eq!(meta::is_logged(&name), expected, "is_logged({name:?})");
+    }
+}
+
 // ---------- AC 5: group ids, labels, order and members ----------
 
 #[test]
