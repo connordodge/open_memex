@@ -7,6 +7,8 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
+import '../../editor/attachment_ref.dart'
+    show isExecutableName, isInlineImageName;
 import '../../state/command_palette_state.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
@@ -15,11 +17,11 @@ import '../../theme/typography.dart';
 /// widgets by these exact strings:
 /// - [commandBar] `command-bar`, [palette] `command-palette`, [input]
 ///   `palette-input`;
-/// - [group] `palette-group-<commands|notes|recent|passages>` (on the group
-///   header);
+/// - [group] `palette-group-<commands|notes|recent|passages|attachments>`
+///   (on the group header);
 /// - [row] `palette-row-command-<enum name>`,
-///   `palette-row-<note|daily|canvas>-<id>`, `palette-row-passage-<chunk id>`
-///   (PaletteRow keys itself);
+///   `palette-row-<note|daily|canvas>-<id>`, `palette-row-passage-<chunk id>`,
+///   `palette-row-attachment-<path>` (PaletteRow keys itself);
 /// - [passagesState] `palette-passages-<state>` (state names are #78's,
 ///   e.g. `searching`, `no-cli`, `memex-outdated`, `server-outdated`,
 ///   `error`, `model-not-downloaded`, `downloading`, `embeddings-off`,
@@ -46,7 +48,9 @@ abstract final class PaletteKeys {
 
 /// One palette row (design pack 76): kind icon, title with
 /// [PaletteItem.matched] characters in `accent`, meta; a passage adds up to 2
-/// lines of passage text with its marks in `accentMark`. [selected] fills
+/// lines of passage text with its marks in `accentMark`; an attachment shows
+/// its name, a content match's text (marks in `accentMark`) and its notes
+/// line (Spec #123 R47). [selected] fills
 /// `surface4`; [showEnterChip] (the list-only layout) adds the `↵` chip to a
 /// selected row. Pointer movement over the row calls the palette's
 /// `hover(id)` (a rebuild under a resting pointer doesn't); a press calls
@@ -54,7 +58,7 @@ abstract final class PaletteKeys {
 /// `choose(newTab: <⌘ held at the press>)`: a press on a row the palette no
 /// longer lists chooses nothing. Semantics: a
 /// button with the selected state, labelled `<title>, <meta>` (`<title>`
-/// with no meta). Keys itself with [PaletteKeys.row]: don't give it that key
+/// with no meta; an attachment: `<name>, <notes line>`). Keys itself with [PaletteKeys.row]: don't give it that key
 /// again.
 class PaletteRow extends ConsumerWidget {
   const PaletteRow({
@@ -88,7 +92,11 @@ class PaletteRow extends ConsumerWidget {
         container: true,
         button: true,
         selected: selected,
-        label: [item.title, ?meta].join(', '),
+        label: switch (item) {
+          AttachmentItem(:final notesLine) when notesLine.isNotEmpty =>
+            '${item.title}, $notesLine',
+          _ => [item.title, ?meta].join(', '),
+        },
         onTap: () => press(newTab: false),
         excludeSemantics: true,
         child: MouseRegion(
@@ -105,6 +113,7 @@ class PaletteRow extends ConsumerWidget {
               ),
               child: switch (item) {
                 PassageItem() => _PassageBody(item, chip: chip),
+                AttachmentItem() => _AttachmentBody(item, chip: chip),
                 CommandItem() || NoteItem() => _LineBody(item, chip: chip),
               },
             ),
@@ -224,6 +233,84 @@ class _PassageBody extends StatelessWidget {
   }
 }
 
+/// An Attachments row (Spec #123 R47; the passage row's layout, L13): the
+/// file-type icon and name, then a content match's text (up to 2 lines,
+/// marks in `accentMark`; none for a name-only match), then the notes line
+/// `in <t1>, <t2>, <t3> +N` in the meta style.
+class _AttachmentBody extends StatelessWidget {
+  const _AttachmentBody(this.item, {required this.chip});
+
+  final AttachmentItem item;
+  final bool chip;
+
+  @override
+  Widget build(BuildContext context) {
+    final snippet = item.attachment.snippet;
+    final notesLine = item.notesLine;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 7, 10, 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 1),
+            child: _KindIcon(item),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        item.title,
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: TextOverflow.ellipsis,
+                        style: OmType.sans(
+                          size: 13,
+                          weight: FontWeight.w500,
+                          height: 16 / 13,
+                        ),
+                      ),
+                    ),
+                    if (chip) ...[
+                      const SizedBox(width: 10),
+                      const _EnterChip(),
+                    ],
+                  ],
+                ),
+                if (snippet != null && snippet.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text.rich(
+                    _passageSpan(snippet, item.marks),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+                if (notesLine.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    notesLine,
+                    maxLines: 1,
+                    softWrap: false,
+                    overflow: TextOverflow.ellipsis,
+                    style: _metaStyle(),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// The 14 px kind icon in `fg2`.
 class _KindIcon extends StatelessWidget {
   const _KindIcon(this.item);
@@ -238,12 +325,21 @@ class _KindIcon extends StatelessWidget {
       NoteItem(kind: PaletteNoteKind.daily) => LucideIcons.calendar,
       NoteItem(kind: PaletteNoteKind.canvas) => LucideIcons.layoutDashboard,
       PassageItem() => LucideIcons.textQuote,
+      AttachmentItem(:final attachment) => _attachmentIcon(attachment.name),
     };
     return SizedBox.square(
       dimension: 14,
       child: Icon(icon, size: 14, color: OmColors.fg2),
     );
   }
+}
+
+/// An Attachments row's file-type icon: an image, a script or executable
+/// (R33), or any other file.
+IconData _attachmentIcon(String name) {
+  if (isInlineImageName(name)) return LucideIcons.fileImage;
+  if (isExecutableName(name)) return LucideIcons.fileCode;
+  return LucideIcons.file;
 }
 
 IconData _commandIcon(PaletteCommand command) => switch (command) {
