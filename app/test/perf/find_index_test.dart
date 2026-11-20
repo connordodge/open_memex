@@ -1007,6 +1007,122 @@ void main() {
     );
   });
 
+  group('paint ranges follow match order (AC4)', () {
+    test(
+      'find paint ranges list outline hits and matches in match order exactly as a scan of every match',
+      () {
+        // Field [100, 200). 0 and 4 lie outside it but outline into it; 2
+        // is in the field and outlines into it too (one range, not two).
+        final matches = [
+          _wi130Hidden(0, 10, 12, const FindRange(90, 110)),
+          _wi130Match(0, 120, 122),
+          _wi130Hidden(0, 130, 132, const FindRange(125, 140)),
+          _wi130Match(0, 150, 152),
+          _wi130Hidden(0, 300, 302, const FindRange(190, 210)),
+        ];
+        final state = FindInNoteState(
+          open: true,
+          query: 'x',
+          lastQuery: 'x',
+          matches: matches,
+          current: 3,
+        );
+        expect(
+          findPaintRanges(
+            state,
+            segment: 0,
+            kind: FindSourceKind.body,
+            start: 100,
+            end: 200,
+          ),
+          [
+            const FindPaintRange(0, 10, FindPaintStyle.outline),
+            const FindPaintRange(20, 22, FindPaintStyle.other),
+            const FindPaintRange(25, 40, FindPaintStyle.outline),
+            const FindPaintRange(50, 52, FindPaintStyle.current),
+            const FindPaintRange(90, 100, FindPaintStyle.outline),
+          ],
+        );
+      },
+    );
+
+    test(
+      'find paint ranges keep the matches that follow the last outline hit',
+      () {
+        final state = FindInNoteState(
+          open: true,
+          query: 'x',
+          lastQuery: 'x',
+          matches: [
+            _wi130Hidden(0, 10, 12, const FindRange(90, 110)),
+            _wi130Match(0, 120, 122),
+            _wi130Match(0, 130, 132),
+          ],
+          current: 2,
+        );
+        expect(
+          findPaintRanges(
+            state,
+            segment: 0,
+            kind: FindSourceKind.body,
+            start: 100,
+            end: 200,
+          ),
+          [
+            const FindPaintRange(0, 10, FindPaintStyle.outline),
+            const FindPaintRange(20, 22, FindPaintStyle.other),
+            const FindPaintRange(30, 32, FindPaintStyle.current),
+          ],
+        );
+      },
+    );
+
+    test(
+      'find paint ranges for a field with one match and a far outline hit read only those two',
+      () {
+        // 1-998 lie beyond the field; 999 is hidden far off and outlines
+        // into the field.
+        final matches = [
+          _wi130Match(0, 120, 122),
+          for (var i = 1; i < 999; i++)
+            _wi130Match(0, 1000 + 10 * i, 1002 + i * 10),
+          _wi130Hidden(0, 20000, 20002, const FindRange(190, 210)),
+        ];
+        final state = FindInNoteState(
+          open: true,
+          query: 'x',
+          lastQuery: 'x',
+          matches: matches,
+          current: 0,
+        );
+        // Built once, outside the count.
+        FindMatchIndex.of(matches).outlinesTouching(
+          segment: 0,
+          kind: FindSourceKind.body,
+          start: 0,
+          end: 1,
+        );
+        debugFindMatchReads = 0;
+        final paint = findPaintRanges(
+          state,
+          segment: 0,
+          kind: FindSourceKind.body,
+          start: 100,
+          end: 200,
+        );
+        expect(paint, [
+          const FindPaintRange(20, 22, FindPaintStyle.current),
+          const FindPaintRange(90, 100, FindPaintStyle.outline),
+        ]);
+        expect(
+          debugFindMatchReads,
+          lessThanOrEqualTo(_wi130LookupBound(999) * 2 + 8),
+          reason: 'reads of 1,000 matches for one field',
+        );
+      },
+    );
+  });
+
   group('N1 relayouts per Find change (AC3)', () {
     testWidgets(
       'a Find-bar keystroke on N1 lays out the one rows field once more than a keystroke that matches nothing',
