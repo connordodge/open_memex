@@ -229,11 +229,12 @@ class AttachmentItem extends PaletteItem {
   final List<TextRange> marks;
 
   @override
-  PaletteItemId get id => const PaletteItemId(PaletteItemKind.attachment, '');
+  PaletteItemId get id =>
+      PaletteItemId(PaletteItemKind.attachment, attachment.path);
 
   /// The attachment's name.
   @override
-  String get title => '';
+  String get title => attachment.name;
 
   @override
   String? get meta => null;
@@ -281,15 +282,18 @@ class PassagesIdle extends PassagesView {
 }
 
 /// After a keystroke and until the debounce fires: the previous answer's
-/// [rows], dimmed, with that answer's [hint].
+/// [rows] and [attachments], dimmed, with that answer's [hint].
 class PassagesDimmed extends PassagesView {
-  const PassagesDimmed(this.rows, {this.hint});
+  const PassagesDimmed(this.rows, {this.hint, this.attachments = const []});
 
   @override
   final List<PassageItem> rows;
 
   @override
   final String? hint;
+
+  @override
+  final List<AttachmentItem> attachments;
 }
 
 /// A search is running: `searching note text…`.
@@ -333,12 +337,16 @@ class PassagesError extends PassagesView {
   const PassagesError();
 }
 
-/// The model download runs: keyword [rows] and the downloading footer.
+/// The model download runs: keyword [rows] and the downloading footer,
+/// with the same answer's [attachments].
 class PassagesDownloading extends PassagesView {
-  const PassagesDownloading(this.rows);
+  const PassagesDownloading(this.rows, {this.attachments = const []});
 
   @override
   final List<PassageItem> rows;
+
+  @override
+  final List<AttachmentItem> attachments;
 
   /// `keyword only`.
   @override
@@ -346,12 +354,15 @@ class PassagesDownloading extends PassagesView {
 }
 
 /// The model download failed: keyword [rows] and the model-not-downloaded
-/// footer and button again.
+/// footer and button again, with the same answer's [attachments].
 class PassagesDownloadFailed extends PassagesView {
-  const PassagesDownloadFailed(this.rows);
+  const PassagesDownloadFailed(this.rows, {this.attachments = const []});
 
   @override
   final List<PassageItem> rows;
+
+  @override
+  final List<AttachmentItem> attachments;
 
   /// `keyword only`.
   @override
@@ -656,7 +667,7 @@ class PaletteNotifier extends AutoDisposeNotifier<PaletteState> {
       case PassageItem():
         ref.read(palettePassageChooserProvider)(item, newTab: newTab);
       case AttachmentItem():
-        break;
+        ref.read(paletteAttachmentChooserProvider)(item, newTab: newTab);
     }
   }
 
@@ -707,6 +718,8 @@ class PaletteNotifier extends AutoDisposeNotifier<PaletteState> {
           passages.rows,
           hint: passages.hint,
         ),
+      if (typed && passages.attachments.isNotEmpty)
+        PaletteGroup(PaletteGroupKind.attachments, passages.attachments),
     ];
     final ids = _ids(groups);
     return PaletteState(

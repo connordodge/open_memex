@@ -830,8 +830,10 @@ class _PaletteListState extends ConsumerState<_PaletteList> {
         ),
         for (final item in group.rows)
           // Req 17 (ruling W3): the previous answer's rows, dimmed, until
-          // the debounce fires.
-          group.kind == PaletteGroupKind.passages && dimmed
+          // the debounce fires; its attachments too (Spec #123 R47).
+          (group.kind == PaletteGroupKind.passages ||
+                      group.kind == PaletteGroupKind.attachments) &&
+                  dimmed
               ? Opacity(opacity: 0.5, child: row(item))
               : row(item),
         if (group.kind == PaletteGroupKind.passages) const PassagesFooter(),
@@ -949,7 +951,8 @@ class _WideHints extends ConsumerWidget {
       ],
       PaletteItemKind.note || PaletteItemKind.daily || PaletteItemKind.canvas =>
         const [_hintMove, _hintChoose, _hintNewTab, _hintClose],
-      PaletteItemKind.attachment || null => const [_hintMove, _hintClose],
+      PaletteItemKind.attachment => const [_hintMove, _hintChoose, _hintClose],
+      null => const [_hintMove, _hintClose],
     };
     return _HintBar(
       hints: hints,
