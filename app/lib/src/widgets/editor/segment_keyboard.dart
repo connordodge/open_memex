@@ -5,7 +5,6 @@ import '../../editor/editor_rows.dart';
 import '../../editor/list_indent.dart';
 import '../../editor/row_edits.dart';
 import '../../editor/segment_selection.dart';
-import 'editor_row.dart';
 import 'line_boxes.dart';
 import 'segment_view.dart';
 
@@ -48,8 +47,9 @@ class SegmentKeyboard extends StatefulWidget {
   State<SegmentKeyboard> createState() => _SegmentKeyboardState();
 }
 
-/// What a key works on: the segment's text, its rows (A1), the focused row
-/// and the segment selection.
+/// What a key works on: the segment's text, its rows (A1), the active row
+/// (the focused row, or the row a move just activated, WI #132) and the
+/// segment selection.
 typedef _Keys = ({
   SegmentViewState view,
   String text,
@@ -144,8 +144,12 @@ class _SegmentKeyboardState extends State<SegmentKeyboard> {
     final field = focus?.findAncestorStateOfType<EditableTextState>();
     if (field == null || field.textEditingValue.composing.isValid) return null;
     final view = context.findAncestorStateOfType<SegmentViewState>();
-    final row = view?.focusedRow;
-    if (view == null || row == null) return null;
+    final focused = view?.focusedRow;
+    if (view == null || focused == null) return null;
+    // The active row: the focused row, or the row a move just activated
+    // whose field takes focus after this frame (WI #132), so a second key
+    // in the same frame moves on from where the first one went.
+    final row = view.activeRow.value ?? focused;
     final selection = view.selection;
     if (!selection.isValid) return null;
     final text = view.text;
@@ -494,30 +498,16 @@ class _SegmentKeyboardState extends State<SegmentKeyboard> {
   }
 
   /// Sets the segment selection to [selection]. When it lies in one row
-  /// that isn't focused, that row takes focus; a selection across rows
-  /// leaves focus where it is.
+  /// that isn't the active row, that row becomes the active row and takes
+  /// focus (`SegmentViewState.activateRow`, WI #132); a selection across
+  /// rows leaves focus and the active row where they are (Req 27, 31).
   void _moveTo(_Keys k, TextSelection selection) {
-    k.view.select(selection);
     final row = _rowOf(k.rows, selection.start);
-    if (row == k.row || row != _rowOf(k.rows, selection.end)) return;
-    _rowFocusNode(row)?.requestFocus();
-  }
-
-  /// The focus node of this segment's editor row [index].
-  FocusNode? _rowFocusNode(int index) {
-    FocusNode? found;
-    void visit(Element element) {
-      if (found != null) return;
-      final widget = element.widget;
-      if (widget is EditorRow) {
-        if (widget.index == index) found = widget.focusNode;
-        return;
-      }
-      element.visitChildren(visit);
+    if (row == k.row || row != _rowOf(k.rows, selection.end)) {
+      k.view.select(selection);
+      return;
     }
-
-    context.visitChildElements(visit);
-    return found;
+    k.view.activateRow(row, selection);
   }
 
   @override
