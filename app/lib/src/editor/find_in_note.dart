@@ -186,6 +186,174 @@ List<FindMatch> findMatches(List<FindSource> sources, String query) {
   return out;
 }
 
+/// Test-only work counter (WI #130, Spec #122 TD8; ruling D9: a plain int):
+/// incremented once for every [FindMatch] a per-field match lookup reads:
+/// each match a [FindMatchIndex] lookup compares, and each match
+/// `findFieldDecoration` and `findPaintRanges` visit for one field. Tests
+/// read deltas to prove a Find change reads matches by index, not rows x
+/// matches. Never read by production code.
+int debugFindMatchReads = 0;
+
+/// The matches of one Find in note state, looked up by source and offset
+/// (WI #130, Spec #122 Requirement 22a): [matches] in document order, as
+/// [findMatches] gives them (by segment, then by offset, non-overlapping),
+/// so the matches of one source touching a range are one run of it.
+///
+/// One source per segment: a segment is a text segment, an excerpt card or
+/// (segment 0) the Source field, never two of them, so the matches of one
+/// source are the matches of its segment.
+final class FindMatchIndex {
+  FindMatchIndex(this.matches);
+
+  static final _indexes = Expando<FindMatchIndex>('find-match-index');
+
+  /// The index of [matches], made once per list: every field looking up
+  /// the same state's matches shares it.
+  static FindMatchIndex of(List<FindMatch> matches) =>
+      _indexes[matches] ??= FindMatchIndex(matches);
+
+  /// The indexed matches, in document order.
+  final List<FindMatch> matches;
+
+  /// The run `[from, to)` of indices into [matches] of the matches of
+  /// source ([segment], [kind]) that touch `[start, end)`: `m.start < end`
+  /// and `m.end > start`, the rule `findFieldDecoration` and
+  /// `findPaintRanges` clip by. `from == to` when none does.
+  ///
+  /// A binary search by offset: it reads O(log n) matches, never every
+  /// match ([debugFindMatchReads] counts each one it compares).
+  ({int from, int to}) touching({
+    required int segment,
+    required FindSourceKind kind,
+    required int start,
+    required int end,
+  }) {
+    // Within a segment the matches do not overlap, so their ends rise with
+    // their starts and both tests below flip once along the list.
+    final from = _first(
+      0,
+      (m) => m.segment > segment || (m.segment == segment && m.end > start),
+    );
+    final to = _first(
+      from,
+      (m) => m.segment > segment || (m.segment == segment && m.start >= end),
+    );
+    if (from == to) return (from: from, to: from);
+    debugFindMatchReads++;
+    if (matches[from].kind != kind) return (from: from, to: from);
+    return (from: from, to: to);
+  }
+
+  /// The first index at or after [lo] whose match passes [test] (false up
+  /// to some index, true from it on), or `matches.length`.
+  int _first(int lo, bool Function(FindMatch m) test) {
+    var hi = matches.length;
+    while (lo < hi) {
+      final mid = (lo + hi) >> 1;
+      debugFindMatchReads++;
+      if (test(matches[mid])) {
+        hi = mid;
+      } else {
+        lo = mid + 1;
+      }
+    }
+    return lo;
+  }
+
+  /// The indices into [matches], ascending, of the hidden matches of source
+  /// ([segment], [kind]) whose [FindMatch.outline] touches `[start, end)`
+  /// (`outline.start < end` and `outline.end > start`). An outline can lie
+  /// in a field the match itself does not touch (a link label beside its
+  /// URL), so `findPaintRanges` looks outlines up apart from [touching].
+  ///
+  /// A binary search over the source's outlines by start: it reads O(log k)
+  /// of its k outlines, plus each one starting before [end] from the first
+  /// whose run of ends reaches past [start] ([debugFindMatchReads] counts
+  /// every one).
+  List<int> outlinesTouching({
+    required int segment,
+    required FindSourceKind kind,
+    required int start,
+    required int end,
+  }) {
+    final outlines = (_outlines ??= _indexOutlines())[(segment, kind)];
+    if (outlines == null) return const [];
+    final entries = outlines.entries;
+    final reach = outlines.reach;
+    // The first outline starting at or after [end]: none from it on touches.
+    var lo = 0;
+    var hi = entries.length;
+    while (lo < hi) {
+      final mid = (lo + hi) >> 1;
+      debugFindMatchReads++;
+      if (entries[mid].start >= end) {
+        hi = mid;
+      } else {
+        lo = mid + 1;
+      }
+    }
+    final last = lo;
+    // The first outline whose run of ends reaches past [start]: none before
+    // it touches.
+    lo = 0;
+    hi = last;
+    while (lo < hi) {
+      final mid = (lo + hi) >> 1;
+      debugFindMatchReads++;
+      if (reach[mid] > start) {
+        hi = mid;
+      } else {
+        lo = mid + 1;
+      }
+    }
+    final out = <int>[];
+    for (var i = lo; i < last; i++) {
+      debugFindMatchReads++;
+      if (entries[i].end > start) out.add(entries[i].match);
+    }
+    return out..sort();
+  }
+
+  /// Every source's outlines, made on the first [outlinesTouching].
+  Map<(int, FindSourceKind), _Outlines>? _outlines;
+
+  Map<(int, FindSourceKind), _Outlines> _indexOutlines() {
+    final bySource = <(int, FindSourceKind), List<_Outline>>{};
+    for (final (i, m) in matches.indexed) {
+      final outline = m.outline;
+      if (!m.hidden || outline == null) continue;
+      (bySource[(m.segment, m.kind)] ??= []).add((
+        start: outline.start,
+        end: outline.end,
+        match: i,
+      ));
+    }
+    return {
+      for (final MapEntry(:key, :value) in bySource.entries)
+        key: _Outlines(value..sort((a, b) => a.start.compareTo(b.start))),
+    };
+  }
+}
+
+/// One hidden match's outline: its range and the match's index.
+typedef _Outline = ({int start, int end, int match});
+
+/// One source's outlines by start, and for each the furthest end among the
+/// outlines up to it, so the outlines that may reach past an offset start
+/// at one index.
+final class _Outlines {
+  _Outlines(this.entries) {
+    var furthest = 0;
+    for (final entry in entries) {
+      furthest = max(furthest, entry.end);
+      reach.add(furthest);
+    }
+  }
+
+  final List<_Outline> entries;
+  final List<int> reach = [];
+}
+
 /// [text] with case folded code unit for code unit, so every offset into
 /// the result is the same offset into [text]. A character whose lower case
 /// changes its length (`İ`) keeps its own case.

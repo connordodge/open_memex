@@ -67,6 +67,33 @@ typedef SegmentRowsBuilder =
       LineBoxSource? Function() boxes,
     );
 
+/// Where a segment selection meets one editor row's edges (WI #129, Spec
+/// #122 R17a): it holds the line break above the row ([fromAbove]), the
+/// line break after it ([rowBreak]), or runs from at or before the row's
+/// start to at or past its text end ([spans]). All false for a collapsed or
+/// invalid selection.
+typedef RowSelectionEdges = ({bool fromAbove, bool rowBreak, bool spans});
+
+const RowSelectionEdges _noEdges = (
+  fromAbove: false,
+  rowBreak: false,
+  spans: false,
+);
+
+/// One laid-out editor row of a segment's line boxes
+/// ([SegmentLineBoxes.rowHolding]): its spec, its text slot's line boxes in
+/// row offsets and where its slot sits in the rows' box.
+typedef RowLineBoxes = ({RowSpec spec, LineBoxSource source, Offset shift});
+
+/// A segment's line boxes over its editor rows ([SegmentViewState.lineBoxes])
+/// that also answers row by row, so a caller measures only the rows it
+/// reads (WI #129, Spec #122 R11).
+abstract interface class SegmentLineBoxes implements LineBoxSource {
+  /// The row holding segment [offset]: the first row ending after it, or
+  /// the last row.
+  RowLineBoxes rowHolding(int offset);
+}
+
 /// One text segment of the segmented editor as editor rows (Spec R9, D5,
 /// D8, D9, TD12).
 ///
@@ -76,6 +103,13 @@ typedef SegmentRowsBuilder =
 /// `LivePreviewController` that holds only the row's text, keyed
 /// `editor-row-<index>-<r>`. Rows are matched across changes (`matchRows`),
 /// so the focused row keeps its controller, focus node and field.
+///
+/// Each row's subtree is kept across changes and built again only when what
+/// it shows changed (WI #129, Spec #122 R17-R19, TD2, TD4): its kind,
+/// geometry, marker, index or field configuration. A row moved to another
+/// index keeps its field subtree: its D10 index Keys follow it (the field's
+/// through a thin wrapper, `EditorRow`), and its offsets are read from the
+/// host when needed. Each row is its own repaint boundary.
 ///
 /// A row edit becomes one `SegmentEdit` of the segment text: the segment
 /// controller and every row controller are written in one pass, the
@@ -105,6 +139,7 @@ class SegmentView extends StatefulWidget {
     required this.fieldBuilder,
     required this.builder,
     this.active = true,
+    this.fieldsKey,
   });
 
   /// The segment's index (`<i>` of `text-segment-<i>`).
@@ -141,6 +176,14 @@ class SegmentView extends StatefulWidget {
   /// paint only while true.
   final bool active;
 
+  /// What the fields [fieldBuilder] builds depend on beyond each row's
+  /// [EditorRowField] (WI #129). When non-null, a rebuilt segment builds its
+  /// rows' fields again only when this changes (by `==`), so a parent that
+  /// rebuilds with a new but equivalent [fieldBuilder] rebuilds no row.
+  /// Null: the fields are built again whenever [fieldBuilder] is another
+  /// function.
+  final Object? fieldsKey;
+
   @override
   State<SegmentView> createState() => SegmentViewState();
 }
@@ -159,8 +202,49 @@ class _Row {
   /// The row's text as last derived from the segment text.
   String text;
 
+  /// The row's index in its segment now.
+  int index = 0;
+
   final LivePreviewController controller;
   final FocusNode focusNode;
+
+  /// Where the segment selection meets the row's edges, as the host last
+  /// wrote its rows: it notifies only when that changes.
+  final ValueNotifier<RowSelectionEdges> edges = ValueNotifier(_noEdges);
+
+  /// The row's geometry (the row-geometry accessor's answer for it, read
+  /// when called), and its text slot's: one function each for the row's
+  /// life, so a rebuilt row hands its layers the same ones.
+  late final LineBoxSource? Function() boxes;
+  late final LineBoxSource? Function() slotBoxes;
+
+  /// The row's field ([EditorRowField] of its first/last/hint state) and
+  /// what it was built with; built again only when that changes.
+  Widget? field;
+  Object? fieldConfig;
+
+  /// The row's subtree and what it was built with; built again only when
+  /// that changes.
+  Widget? built;
+  Object? config;
+
+  /// The line kinds of [controller]'s text, cached by text and segment
+  /// start (Spec #122 R18).
+  List<MdLine> lines() {
+    final text = controller.text;
+    final atStart = controller.atSegmentStart;
+    final cached = _lines;
+    if (cached != null && atStart == _linesAtStart && text == _linesText) {
+      return cached;
+    }
+    _linesText = text;
+    _linesAtStart = atStart;
+    return _lines = classifyLines(text, atSegmentStart: atStart);
+  }
+
+  List<MdLine>? _lines;
+  String? _linesText;
+  bool? _linesAtStart;
 
   /// Keeps the row's field (and its EditableText, focus and text input
   /// connection) when the row moves or changes kind.
@@ -182,6 +266,10 @@ class _Row {
 
   /// Find in note's decoration of the row's field (#61 F6, D7).
   final ValueNotifier<FindDecoration?> find = ValueNotifier(null);
+
+  /// The Find in note state the row's find highlights paint (WI #130): it
+  /// notifies only when the row's paint ranges change.
+  final _RowFindPaint findPaint = _RowFindPaint();
 
   /// The controller's value as its listener last saw it: a notification
   /// with the same value (the controller repainting for its find
@@ -219,6 +307,13 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   final SegmentUndoRecorder _undo = segmentUndoRecorderFactory();
   List<_Row> _rows = const [];
 
+  /// The current rows by their controller.
+  final Map<TextEditingController, _Row> _rowOf = {};
+
+  /// Bumped when the rows' fields must be built again (a new [SegmentView]
+  /// field builder or fields key).
+  int _fieldsGeneration = 0;
+
   /// Rows removed by a re-derive, disposed after the frame.
   final List<_Row> _retired = [];
 
@@ -255,9 +350,10 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
     _rows = [
       for (final spec in splitRows(_text, atSegmentStart: true)) _newRow(spec),
     ];
+    _indexRows();
     _applying = true;
     try {
-      _syncRows(widget.controller.selection);
+      _syncRows(widget.controller.selection, props: true, notify: false);
     } finally {
       _applying = false;
     }
@@ -279,30 +375,56 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   @override
   void didUpdateWidget(SegmentView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final fieldsChanged = widget.fieldsKey == null
+        ? !identical(oldWidget.fieldBuilder, widget.fieldBuilder)
+        : widget.fieldsKey != oldWidget.fieldsKey;
+    if (fieldsChanged) _fieldsGeneration++;
+    if (!identical(oldWidget.revealGate, widget.revealGate)) {
+      _applying = true;
+      try {
+        _syncRows(widget.controller.selection, props: true);
+      } finally {
+        _applying = false;
+      }
+    }
     if (oldWidget.active != widget.active || oldWidget.index != widget.index) {
       _decorateRows();
     }
   }
 
-  /// Every row's find decoration, from the Find in note state; none while
-  /// not [SegmentView.active].
+  /// Every row's find decoration and highlight state, from the Find in note
+  /// state; none while not [SegmentView.active]. Each row looks its matches
+  /// up by the state's match index, and only a row whose decoration or
+  /// paint ranges changed is told (WI #130).
   void _decorateRows() {
+    final state = _find?.read();
     for (final row in _rows) {
-      _decorate(row);
+      _decorate(row, state);
     }
   }
 
-  void _decorate(_Row row) {
-    final state = _find?.read();
-    row.find.value = state == null || !widget.active
+  void _decorate(_Row row, [FindInNoteState? state]) {
+    state ??= _find?.read();
+    final shown = state != null && widget.active ? state : null;
+    row.find.value = shown == null
         ? null
         : findFieldDecoration(
-            state,
+            shown,
             segment: widget.index,
             kind: FindSourceKind.body,
             start: row.spec.textStart,
             end: row.spec.textEnd,
           );
+    // After the decoration: its reveal range is one of the row's inputs.
+    row.findPaint.decorate(
+      shown,
+      _rowFindPaintRanges(
+        shown,
+        row,
+        segment: widget.index,
+        revealGate: widget.revealGate,
+      ),
+    );
   }
 
   @override
@@ -314,6 +436,7 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
     for (final row in _rows) {
       _unlisten(row);
     }
+    _rowOf.clear();
     _retired.addAll(_rows);
     _disposeRetired();
     super.dispose();
@@ -324,9 +447,22 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
     row.seen = row.controller.value;
     row.onValue = () => _onRowValue(row);
     row.onFocus = () => _onRowFocus(row);
+    row.boxes = () => _rowBoxes(row);
+    row.slotBoxes = () => _slotBoxes(row);
     row.controller.addListener(row.onValue);
     row.focusNode.addListener(row.onFocus);
+    // The row's presenter says whether its text is hidden (WI #124, D2):
+    // every suppression site reads it as the controller's textHidden.
+    row.controller.presenterTextHidden = () => _textHidden(row);
+    _rowOf[row.controller] = row;
     return row;
+  }
+
+  /// Writes each row's index in [_rows].
+  void _indexRows() {
+    for (final (j, row) in _rows.indexed) {
+      row.index = j;
+    }
   }
 
   void _unlisten(_Row row) {
@@ -337,6 +473,7 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   /// [row] has no continuation: its field goes away with this frame.
   void _retire(_Row row) {
     _unlisten(row);
+    _rowOf.remove(row.controller);
     if (identical(_active, row)) _active = null;
     if (identical(_activating, row)) _activating = null;
     widget.onRowRemoved(row.controller);
@@ -350,6 +487,8 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
     for (final row in _retired) {
       row.controller.dispose();
       row.find.dispose();
+      row.findPaint.dispose();
+      row.edges.dispose();
       row.focusNode.dispose();
     }
     _retired.clear();
@@ -589,46 +728,40 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
       for (final (j, spec) in specs.indexed)
         if (kept[j] case final row?) (row..spec = spec) else _newRow(spec),
     ];
+    _indexRows();
     // The active row keeps being active where it moved to (WI #128).
-    final active = _active;
-    _activeRow.value = active == null ? null : _rows.indexOf(active);
-    _syncRows(selection);
+    _activeRow.value = _active?.index;
+    _syncRows(selection, props: true);
     debugSetStates++;
     setState(() {});
   }
 
-  /// Writes every row's props, text and slice of the segment [selection]
-  /// (Spec R26). A focused row that is composing keeps its value while its
-  /// text is unchanged (D9).
-  void _syncRows(TextSelection selection) {
-    final slices = rowSlices([
-      for (final row in _rows) row.spec,
-    ], _segmentSelection(selection));
+  /// Writes every row's slice of the segment [selection] (Spec R26) and
+  /// where the selection meets its edges; with [props] (the rows were
+  /// derived from new text) also each row's text, props and find
+  /// decoration. A focused row that is composing keeps its value while its
+  /// text is unchanged (D9). A row whose text, slice, edges and props are
+  /// unchanged is not notified (Spec #122 R17a, R19). A row whose props
+  /// changed alone is told so once (unless not [notify]), so it re-renders
+  /// without being rebuilt; a row whose text or slice changed too already
+  /// notifies for that, and gets no second notification.
+  void _syncRows(
+    TextSelection selection, {
+    bool props = false,
+    bool notify = true,
+  }) {
+    final specs = [for (final row in _rows) row.spec];
+    final slices = rowSlices(specs, _segmentSelection(selection));
     final backward = selection.baseOffset > selection.extentOffset;
-    final fenced = fencedRowLines(_text, [for (final row in _rows) row.spec]);
+    final fenced = props ? fencedRowLines(_text, specs) : null;
     for (final (j, row) in _rows.indexed) {
       final spec = row.spec;
-      row.controller
-        ..fenced = fenced[j]
-        ..itemText = spec.isItem
-        ..taskDone = spec.done
-        ..quote = spec.kind == RowKind.quote
-        ..atSegmentStart = spec.textStart == 0
-        ..revealGate = widget.revealGate
-        ..findDecoration = row.find;
-      _decorate(row);
-      // A code row's hidden fence lines lay out 8 px tall (ruling D18).
-      // Setting codeRow notifies, so only a change is written.
-      final code = spec.kind == RowKind.code;
-      if (row.controller.codeRow != code) row.controller.codeRow = code;
-      // A table row shows its grid until revealed (Spec #197 R12, D12).
-      // Setting tableRow notifies, so only a change is written.
-      final table = spec.kind == RowKind.table;
-      if (row.controller.tableRow != table) row.controller.tableRow = table;
-      // The row's presenter says whether its text is hidden (WI #124, D2):
-      // every suppression site reads it as the controller's textHidden.
-      row.controller.presenterTextHidden = () => _textHidden(row, j);
-      final text = _text.substring(spec.textStart, spec.textEnd);
+      final before = row.text;
+      final text = fenced == null
+          ? before
+          : _text.substring(spec.textStart, spec.textEnd);
+      final propsChanged = fenced != null && _writeProps(row, fenced[j]);
+      row.text = text;
       final local = switch (slices[j]) {
         null => const TextSelection.collapsed(offset: -1),
         final s when backward => TextSelection(
@@ -643,9 +776,63 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
       } else if (value.selection != local &&
           !(row.focusNode.hasFocus && value.composing.isValid)) {
         row.controller.selection = local;
+      } else if (propsChanged && notify && text == before) {
+        // The row's own field typed a new text: that already notified.
+        row.controller.propsChanged();
       }
-      row.text = text;
+      row.edges.value = _edgesOf(spec, selection);
     }
+  }
+
+  /// Writes [row]'s props from its spec and [fenced] (which of its lines
+  /// are fenced code over the whole segment), and its find decoration;
+  /// returns whether a prop that notifies nothing when set changed.
+  /// [fenced] is kept when equal, so caches keyed on it hold.
+  bool _writeProps(_Row row, List<bool> fenced) {
+    final spec = row.spec;
+    final controller = row.controller;
+    final quote = spec.kind == RowKind.quote;
+    final atSegmentStart = spec.textStart == 0;
+    final changed =
+        !listEquals(controller.fenced, fenced) ||
+        controller.itemText != spec.isItem ||
+        controller.taskDone != spec.done ||
+        controller.quote != quote ||
+        controller.atSegmentStart != atSegmentStart ||
+        !identical(controller.revealGate, widget.revealGate);
+    if (changed) {
+      if (!listEquals(controller.fenced, fenced)) controller.fenced = fenced;
+      controller
+        ..itemText = spec.isItem
+        ..taskDone = spec.done
+        ..quote = quote
+        ..atSegmentStart = atSegmentStart
+        ..revealGate = widget.revealGate;
+    }
+    controller.findDecoration = row.find;
+    _decorate(row);
+    // A code row's hidden fence lines lay out 8 px tall (ruling D18).
+    // Setting codeRow notifies, so only a change is written.
+    final code = spec.kind == RowKind.code;
+    if (controller.codeRow != code) controller.codeRow = code;
+    // A table row shows its grid until revealed (Spec #197 R12, D12).
+    // Setting tableRow notifies, so only a change is written.
+    final table = spec.kind == RowKind.table;
+    if (controller.tableRow != table) controller.tableRow = table;
+    return changed;
+  }
+
+  /// Where [selection] meets the edges of the row of [spec].
+  RowSelectionEdges _edgesOf(RowSpec spec, TextSelection selection) {
+    if (!selection.isValid || selection.isCollapsed) return _noEdges;
+    final end = spec.textEnd;
+    final unit = end < _text.length ? _text.codeUnitAt(end) : 0;
+    final breakAfter = unit == 0x0A || unit == 0x0D;
+    return (
+      fromAbove: selection.start < spec.start && spec.start <= selection.end,
+      rowBreak: breakAfter && selection.start <= end && end < selection.end,
+      spans: selection.start <= spec.start && selection.end >= end,
+    );
   }
 
   /// Puts the caret at the segment's end, in its last row, with focus.
@@ -661,9 +848,9 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   LineBoxSource? lineBoxes() {
     final box = _rowsKey.currentContext?.findRenderObject();
     if (box is! RenderBox || !box.hasSize) return null;
-    final rows = <_RowBoxes>[];
-    for (final (i, row) in _rows.indexed) {
-      final source = _rowBoxes(row, i);
+    final rows = <RowLineBoxes>[];
+    for (final row in _rows) {
+      final source = _rowBoxes(row);
       if (source == null) return null;
       rows.add((
         spec: row.spec,
@@ -683,39 +870,40 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   /// source's own box coordinates. Null past the last row and before the
   /// row is laid out.
   LineBoxSource? rowBoxes(int i) =>
-      i >= 0 && i < _rows.length ? _rowBoxes(_rows[i], i) : null;
+      i >= 0 && i < _rows.length ? _rowBoxes(_rows[i]) : null;
 
-  /// [row] (row [i])'s geometry, as [rowBoxes] reports it: its presenter's
-  /// block boxes when non-null, else its text slot's line boxes
-  /// ([_slotBoxes]). A rendered table's grid answers once built and laid
-  /// out (`TableGridState.lineBoxes`, ruling D12); until then its field
+  /// [row]'s geometry, as [rowBoxes] reports it: its presenter's block
+  /// boxes when non-null, else its text slot's line boxes ([_slotBoxes]). A
+  /// rendered table's grid answers once built and laid out
+  /// (`TableGridState.lineBoxes`, ruling D12); until then its field
   /// (mounted offstage, still laid out) does.
-  LineBoxSource? _rowBoxes(_Row row, int i) {
-    final presented = _presented(row, i);
+  LineBoxSource? _rowBoxes(_Row row) {
+    final presented = _presented(row);
     return presenterFor(presented.kind).blockBoxes(presented) ??
         _slotBoxes(row);
   }
 
-  /// What [row] (row [i])'s presenter was last built with; before its first
-  /// build, or once the row changed kind or index since, the row as it
-  /// stands.
-  PresentedRow _presented(_Row row, int i) {
+  /// What [row]'s presenter was last built with; before its first build, or
+  /// once the row changed kind or index since, the row as it stands.
+  PresentedRow _presented(_Row row) {
     final built = row.presented;
-    if (built != null && built.kind == row.spec.kind && built.index == i) {
+    if (built != null &&
+        built.kind == row.spec.kind &&
+        built.index == row.index) {
       return built;
     }
     return PresentedRow(
       segment: widget.index,
-      index: i,
+      index: row.index,
       kind: row.spec.kind,
       controller: row.controller,
       blockKey: row.gridKey,
     );
   }
 
-  /// Whether [row] (row [i])'s presenter hides its text now (WI #124, D2).
-  bool _textHidden(_Row row, int i) {
-    final presented = _presented(row, i);
+  /// Whether [row]'s presenter hides its text now (WI #124, D2).
+  bool _textHidden(_Row row) {
+    final presented = _presented(row);
     return presenterFor(presented.kind).textHidden(presented);
   }
 
@@ -723,8 +911,8 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   /// ruling D5): the segment's pointer layer then ignores it, as it does a
   /// marker column's.
   bool rowOwnsPress(Offset position) {
-    for (final (i, row) in _rows.indexed) {
-      final presented = _presented(row, i);
+    for (final row in _rows) {
+      final presented = _presented(row);
       if (presenterFor(presented.kind).ownsPress(presented, position)) {
         return true;
       }
@@ -759,6 +947,23 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   /// last row.
   LivePreviewController? rowController(int i) =>
       i >= 0 && i < _rows.length ? _rows[i].controller : null;
+
+  /// The index now of the row whose field edits [row], or null when [row]
+  /// is no row field of this segment (WI #128; WI #129: the D10 index Keys
+  /// read it).
+  int? rowIndexOf(TextEditingController row) => _rowOf[row]?.index;
+
+  /// Where the segment selection meets the edges of the row whose field
+  /// edits [row]: it notifies only when that changes, once the rows hold
+  /// the selection (WI #129, Spec #122 R17a). Null when [row] is no row
+  /// field of this segment.
+  ValueListenable<RowSelectionEdges>? rowEdgesOf(TextEditingController row) =>
+      _rowOf[row]?.edges;
+
+  /// The line kinds (`classifyLines`) of [row]'s text, parsed once per
+  /// change of that text (Spec #122 R18); null when [row] is no row field
+  /// of this segment.
+  List<MdLine>? rowLinesOf(TextEditingController row) => _rowOf[row]?.lines();
 
   /// Row [i]'s focus node, null past the last row.
   FocusNode? rowFocusNode(int i) =>
@@ -855,15 +1060,6 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   /// the row's text slot holds no field (a `RichText` stands in for it).
   EditableTextState? rowField(int i) =>
       i >= 0 && i < _rows.length ? _fieldStateOf(_rows[i]) : null;
-
-  /// The index of the row whose controller is [controller] (WI #128), or
-  /// null when it is no row of this segment.
-  int? rowIndexOf(TextEditingController controller) {
-    for (final (i, row) in _rows.indexed) {
-      if (identical(row.controller, controller)) return i;
-    }
-    return null;
-  }
 
   /// [row]'s field state, or null while its slot holds no field.
   EditableTextState? _fieldStateOf(_Row row) {
@@ -1039,22 +1235,131 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
     return boxes?.offsetAt(boxes.box.globalToLocal(position));
   }
 
+  /// [row]'s subtree (WI #129, Spec #122 R17, R19, TD2, TD4): the same
+  /// widget as at the last build while what it shows is unchanged (its
+  /// field's configuration, index, kind, geometry, marker, a table row's
+  /// offset and the segment's own props), so a rebuilt segment rebuilds
+  /// only the rows that changed. Its offsets are read from the row when
+  /// needed. A row is its own repaint boundary; [first] and [last]: whether
+  /// it is the segment's first and last row.
+  Widget _rowWidget(
+    BuildContext context,
+    _Row row,
+    ItemGeometry? geometry, {
+    required bool first,
+    required bool last,
+  }) {
+    final spec = row.spec;
+    // The marker as written, without the row's indentation.
+    final marker = _text.substring(spec.start, spec.textStart).trimLeft();
+    row.presented = PresentedRow(
+      segment: widget.index,
+      index: row.index,
+      kind: spec.kind,
+      controller: row.controller,
+      geometry: geometry,
+      marker: marker,
+      blockKey: row.gridKey,
+    );
+    final hint = _text.isEmpty ? widget.hintText : null;
+    final fieldConfig = (
+      first: first,
+      last: last,
+      hint: hint,
+      generation: _fieldsGeneration,
+    );
+    var field = row.field;
+    if (field == null || row.fieldConfig != fieldConfig) {
+      row.fieldConfig = fieldConfig;
+      field = row.field = KeyedSubtree(
+        key: row.fieldKey,
+        child: widget.fieldBuilder(
+          context,
+          EditorRowField(
+            controller: row.controller,
+            focusNode: row.focusNode,
+            first: first,
+            last: last,
+            hintText: hint,
+          ),
+        ),
+      );
+    }
+    final table = spec.kind == RowKind.table;
+    final config = (
+      field: field,
+      segment: widget.index,
+      index: row.index,
+      kind: spec.kind,
+      geometry: geometry == null
+          ? null
+          : (
+              geometry.markerX,
+              geometry.columns,
+              geometry.columnWidth,
+              geometry.textX,
+              geometry.childMarkerX,
+            ),
+      marker: marker,
+      depth: spec.depth,
+      done: spec.done,
+      // Only a table's grid cells read the row's offset.
+      textStart: table ? spec.textStart : 0,
+      active: widget.active,
+      revealGate: widget.revealGate,
+    );
+    final built = row.built;
+    if (built != null && row.config == config) return built;
+    row.config = config;
+    return row.built = KeyedSubtree(
+      key: ObjectKey(row.controller),
+      child: RepaintBoundary(
+        // Find highlights below the row (#61 F3, Req 28): under its
+        // selection fill, spelling squiggles and text.
+        child: Stack(
+          fit: StackFit.passthrough,
+          children: [
+            Positioned.fill(
+              child: _RowFindHighlights(
+                segment: widget.index,
+                index: row.index,
+                row: row,
+                revealGate: widget.revealGate,
+                active: widget.active,
+                boxes: row.slotBoxes,
+                // Where the field sits in the row: an indent or a wider
+                // marker column moves it under equal ranges.
+                layout: (spec.kind, geometry?.textX),
+              ),
+            ),
+            FindGridScope(
+              segment: widget.index,
+              textStart: config.textStart,
+              active: widget.active,
+              child: EditorRow(
+                key: row.rowKey,
+                segment: widget.index,
+                index: row.index,
+                kind: spec.kind,
+                geometry: geometry,
+                marker: marker,
+                controller: row.controller,
+                focusNode: row.focusNode,
+                boxes: row.boxes,
+                gridKey: row.gridKey,
+                field: field,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     debugBuilds++;
     final geometries = rowGeometries([for (final row in _rows) row.spec]);
-    for (final (r, row) in _rows.indexed) {
-      row.presented = PresentedRow(
-        segment: widget.index,
-        index: r,
-        kind: row.spec.kind,
-        controller: row.controller,
-        geometry: geometries[r],
-        // The marker as written, without the row's indentation.
-        marker: _text.substring(row.spec.start, row.spec.textStart).trimLeft(),
-        blockKey: row.gridKey,
-      );
-    }
     final last = _rows.length - 1;
     final rows = Column(
       key: _rowsKey,
@@ -1062,59 +1367,12 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         for (final (r, row) in _rows.indexed)
-          KeyedSubtree(
-            key: ObjectKey(row.controller),
-            // Find highlights below the row (#61 F3, Req 28): under its
-            // selection fill, spelling squiggles and text.
-            child: Stack(
-              fit: StackFit.passthrough,
-              children: [
-                Positioned.fill(
-                  child: _RowFindHighlights(
-                    segment: widget.index,
-                    index: r,
-                    spec: row.spec,
-                    controller: row.controller,
-                    revealGate: widget.revealGate,
-                    active: widget.active,
-                    boxes: () => _slotBoxes(row),
-                    // Where the field sits in the row: an indent or a
-                    // wider marker column moves it under equal ranges.
-                    layout: (row.spec.kind, geometries[r]?.textX),
-                  ),
-                ),
-                FindGridScope(
-                  segment: widget.index,
-                  textStart: row.spec.textStart,
-                  active: widget.active,
-                  child: EditorRow(
-                    key: row.rowKey,
-                    segment: widget.index,
-                    index: r,
-                    kind: row.spec.kind,
-                    geometry: geometries[r],
-                    marker: row.presented!.marker,
-                    controller: row.controller,
-                    focusNode: row.focusNode,
-                    boxes: () => _rowBoxes(row, r),
-                    gridKey: row.gridKey,
-                    field: KeyedSubtree(
-                      key: row.fieldKey,
-                      child: widget.fieldBuilder(
-                        context,
-                        EditorRowField(
-                          controller: row.controller,
-                          focusNode: row.focusNode,
-                          first: r == 0,
-                          last: r == last,
-                          hintText: _text.isEmpty ? widget.hintText : null,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
+          _rowWidget(
+            context,
+            row,
+            geometries[r],
+            first: r == 0,
+            last: r == last,
           ),
       ],
     );
@@ -1161,12 +1419,15 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
 /// visible match (lead ruling Q1). A table row showing its grid paints
 /// nothing here: its cells paint their own (D8). Nothing while not
 /// [active].
-class _RowFindHighlights extends ConsumerWidget {
+///
+/// It follows the Find in note state through the row's [_Row.findPaint]
+/// (WI #130), not the provider: a Find change rebuilds only the rows whose
+/// paint ranges it changes.
+class _RowFindHighlights extends StatelessWidget {
   const _RowFindHighlights({
     required this.segment,
     required this.index,
-    required this.spec,
-    required this.controller,
+    required this.row,
     required this.revealGate,
     required this.active,
     required this.boxes,
@@ -1175,8 +1436,10 @@ class _RowFindHighlights extends ConsumerWidget {
 
   final int segment;
   final int index;
-  final RowSpec spec;
-  final LivePreviewController controller;
+
+  /// The row: its offsets are read when the highlights build, since a row
+  /// is not rebuilt when the rows above it change (WI #129).
+  final _Row row;
   final ValueListenable<bool> revealGate;
   final bool active;
   final LineBoxSource? Function() boxes;
@@ -1185,69 +1448,120 @@ class _RowFindHighlights extends ConsumerWidget {
   final Object? layout;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final state = ref.watch(findInNoteProvider);
+  Widget build(BuildContext context) {
     // The field's text, selection and reveal change its layout and which
-    // lines show their markup.
-    final changes = Listenable.merge([controller, revealGate]);
+    // lines show their markup; the row's find state changes its matches.
+    final changes = Listenable.merge([
+      row.controller,
+      revealGate,
+      row.findPaint,
+    ]);
     return ListenableBuilder(
       listenable: changes,
-      builder: (context, _) => FindHighlights(
-        key: findHighlightsKey(segment, index),
-        ranges: active && !controller.textHidden
-            ? findPaintRanges(
-                state,
+      builder: (context, _) {
+        final paint = row.findPaint;
+        final ranges = active
+            ? _rowFindPaintRanges(
+                paint.state,
+                row,
                 segment: segment,
-                kind: FindSourceKind.body,
-                start: spec.textStart,
-                end: spec.textEnd,
-                revealed: _revealed(),
+                revealGate: revealGate,
               )
-            : const [],
-        boxes: boxes,
-        repaint: changes,
-        layout: layout,
-      ),
+            : const <FindPaintRange>[];
+        paint.shown = ranges;
+        return FindHighlights(
+          key: findHighlightsKey(segment, index),
+          ranges: ranges,
+          boxes: boxes,
+          repaint: changes,
+          layout: layout,
+        );
+      },
     );
-  }
-
-  /// The field-local ranges of the field's lines that show their markup
-  /// now, as `LivePreviewController.buildTextSpan` decides them.
-  List<TextRange> _revealed() {
-    final lines = classifyLines(
-      controller.text,
-      atSegmentStart: controller.atSegmentStart,
-    );
-    final revealed = revealedLines(
-      lines,
-      controller.selection,
-      forceHidden: !revealGate.value,
-      itemText: controller.itemText,
-      // A line Find in note reveals for the current match shows its markup
-      // too (#61 F6, lead ruling Q1).
-      revealRange: controller.findDecoration?.value?.revealRange,
-    );
-    return [
-      for (final (i, line) in lines.indexed)
-        if (revealed[i]) TextRange(start: line.start, end: line.contentEnd),
-    ];
   }
 }
 
-/// One laid-out row of a [_RowsLineBoxes]: its spec, its field's line boxes
-/// and where its field sits in the rows' box.
-typedef _RowBoxes = ({RowSpec spec, LineBoxSource source, Offset shift});
+/// The paint ranges of [row]'s find highlights for [state] (null: none):
+/// nothing while the bar is closed, the query is empty or the row's text is
+/// hidden (a table showing its grid, D8); else [findPaintRanges] over the
+/// row's `[textStart, textEnd)` with the lines its field reveals now.
+List<FindPaintRange> _rowFindPaintRanges(
+  FindInNoteState? state,
+  _Row row, {
+  required int segment,
+  required ValueListenable<bool> revealGate,
+}) {
+  if (state == null ||
+      !state.open ||
+      state.query.isEmpty ||
+      row.controller.textHidden) {
+    return const [];
+  }
+  final spec = row.spec;
+  return findPaintRanges(
+    state,
+    segment: segment,
+    kind: FindSourceKind.body,
+    start: spec.textStart,
+    end: spec.textEnd,
+    revealed: _rowRevealed(row, revealGate),
+  );
+}
+
+/// The field-local ranges of [row]'s field lines that show their markup
+/// now, as `LivePreviewController.buildTextSpan` decides them; the line
+/// kinds are parsed once per change of the row's text.
+List<TextRange> _rowRevealed(_Row row, ValueListenable<bool> revealGate) {
+  final controller = row.controller;
+  final lines = row.lines();
+  final revealed = revealedLines(
+    lines,
+    controller.selection,
+    forceHidden: !revealGate.value,
+    itemText: controller.itemText,
+    // A line Find in note reveals for the current match shows its markup
+    // too (#61 F6, lead ruling Q1).
+    revealRange: controller.findDecoration?.value?.revealRange,
+  );
+  return [
+    for (final (i, line) in lines.indexed)
+      if (revealed[i]) TextRange(start: line.start, end: line.contentEnd),
+  ];
+}
+
+/// The Find in note state one row's find highlights paint (WI #130): the
+/// rows host writes the latest state on every Find change and notifies the
+/// row's highlights only when the row's paint ranges differ from those its
+/// layer was last built with ([shown]).
+final class _RowFindPaint extends ChangeNotifier {
+  /// The state the row's highlights paint; null: none (the segment is not
+  /// active, or there is no Find state).
+  FindInNoteState? state;
+
+  /// The ranges the row's layer was last built with (the layer writes
+  /// them), so a change the layer already shows notifies nothing.
+  List<FindPaintRange> shown = const [];
+
+  /// Takes [next] as the row's state; notifies when [ranges], the row's
+  /// paint ranges for it now, differ from [shown].
+  void decorate(FindInNoteState? next, List<FindPaintRange> ranges) {
+    state = next;
+    if (listEquals(ranges, shown)) return;
+    shown = ranges;
+    notifyListeners();
+  }
+}
 
 /// [LineBoxSource] over a segment's editor rows (R33), in the rows' box
 /// coordinates and segment offsets. An item row's first line starts at the
 /// row's start (its marker is drawn on that line).
-class _RowsLineBoxes implements LineBoxSource {
+class _RowsLineBoxes implements SegmentLineBoxes {
   _RowsLineBoxes(this.box, this._rows);
 
   @override
   final RenderBox box;
 
-  final List<_RowBoxes> _rows;
+  final List<RowLineBoxes> _rows;
 
   @override
   List<LineBox> get lines => [
@@ -1278,14 +1592,15 @@ class _RowsLineBoxes implements LineBoxSource {
         rect.shift(row.shift),
   ];
 
-  _RowBoxes _holding(int offset) => _rows.firstWhere(
+  @override
+  RowLineBoxes rowHolding(int offset) => _rows.firstWhere(
     (row) => offset < row.spec.end,
     orElse: () => _rows.last,
   );
 
   @override
   Rect caretRect(int offset) {
-    final row = _holding(offset);
+    final row = rowHolding(offset);
     return row.source.caretRect(row.spec.toLocal(offset)).shift(row.shift);
   }
 

@@ -23,6 +23,8 @@ import 'package:open_memex_app/src/editor/spell_issues.dart';
 import 'package:open_memex_app/src/state/spell_check_controller.dart';
 import 'package:open_memex_app/src/state/spell_session_state.dart';
 import 'package:open_memex_app/src/state/spelling_service.dart';
+import 'package:open_memex_app/src/widgets/editor/capture_gutter.dart'
+    as gutter;
 import 'package:open_memex_app/src/widgets/editor/editor_row.dart' as row;
 import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
@@ -39,6 +41,7 @@ import 'package:open_memex_app/src/widgets/find/find_highlights.dart' as findhl;
 import 'package:open_memex_app/src/widgets/outline/section_tracker.dart';
 
 import '../support/app_harness.dart';
+import '../support/editor_rows_probe.dart';
 import '../support/fake_clock.dart';
 import '../support/fake_spelling_service.dart';
 import '../support/font_fetch_hold.dart';
@@ -445,11 +448,12 @@ void main() {
       RenderEditableLineBoxes.debugLineSpans = 24;
       RenderParagraphLineBoxes.debugLineSpans = 25;
       host.debugSpellHostEditableCalls = 26;
+      gutter.debugCaptureGutterLineReads = 27;
     }
 
     test('snapshot returns every counter by name', () {
-      expect(PerfCounters.names, hasLength(26));
-      expect(PerfCounters.names.toSet(), hasLength(26));
+      expect(PerfCounters.names, hasLength(27));
+      expect(PerfCounters.names.toSet(), hasLength(27));
       setAll();
       expect(PerfCounters.snapshot(), {
         for (final (i, name) in PerfCounters.names.indexed) name: i + 1,
@@ -822,22 +826,32 @@ void main() {
     testWidgets('a marker column counts a setState when its row changes', (
       tester,
     ) async {
-      final e = await pumpSpellingEditor(tester, body: '- one\n');
+      await pumpSpellingEditor(tester, body: '- one\n');
       await pumpFrames(tester);
       PerfCounters.reset();
       await pumpFrames(tester);
       expect(_n('markerColumnSetStates'), 0, reason: 'nothing changed');
       expect(_n('markerColumnBuilds'), 0, reason: 'nothing changed');
-      await e.typeAtEnd(' more');
+      // Row 0 is the item row: activating it reveals its marker, the one
+      // change the column acts on (an edit of the trailing empty prose row
+      // changes nothing it shows, Spec #122 AC9).
+      await activateRow(tester, 0, 0);
       await pumpFrames(tester);
-      // One edit notifies the two things the column watches (its row's
-      // controller and the segment's controller): one setState and one build
-      // each, once.
-      expect(_n('markerColumnSetStates'), 2);
-      expect(_n('markerColumnBuilds'), 2);
+      final setStates = _n('markerColumnSetStates');
+      final builds = _n('markerColumnBuilds');
+      expect(setStates, 1);
+      expect(builds, 1);
       await pumpFrames(tester);
-      expect(_n('markerColumnSetStates'), 2, reason: 'a quiet frame adds none');
-      expect(_n('markerColumnBuilds'), 2, reason: 'a quiet frame adds none');
+      expect(
+        _n('markerColumnSetStates'),
+        setStates,
+        reason: 'a quiet frame adds none',
+      );
+      expect(
+        _n('markerColumnBuilds'),
+        builds,
+        reason: 'a quiet frame adds none',
+      );
     });
 
     testWidgets(
@@ -853,16 +867,13 @@ void main() {
         expect(_n('rowBuilds'), 0, reason: 'nothing changed');
         await e.typeAtEnd(' more');
         await pumpFrames(tester);
-        // One edit re-derives the rows once: one setState, one segment
-        // build, and one build of each row the segment now holds.
+        // One edit re-derives the rows once: one setState and one segment
+        // build. The edit lands in the trailing empty row, whose field
+        // rebuilds through its own controller, so no EditorRow builds (WI
+        // #129 builds only the rows whose config changed, Spec #122 R19).
         expect(_n('segmentSetStates'), 1);
         expect(_n('segmentBuilds'), 1);
-        expect(
-          _n('rowBuilds'),
-          rows
-              .splitRows('First line\n\n- item more\n', atSegmentStart: true)
-              .length,
-        );
+        expect(_n('rowBuilds'), 0);
       },
     );
   });

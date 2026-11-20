@@ -637,6 +637,9 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
                         : null,
                     onChanged: _onTextChanged,
                     onRowRemoved: _onRowRemoved,
+                    // The fields depend on the note only through this: a
+                    // rebuild that keeps it rebuilds no row (WI #129).
+                    fieldsKey: (_isSavedDaily ? widget.note.id : null,),
                     fieldBuilder: (context, row) => SpellCheckField(
                       controller: row.controller,
                       child: TextSegmentField(

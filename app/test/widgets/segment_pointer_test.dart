@@ -1770,10 +1770,18 @@ void main() {
           tester,
           0,
         ).select(const TextSelection(baseOffset: 2, extentOffset: 22));
+        // TEST-CHANGE (WI #129, Spec #122 R17a): only the rows the new
+        // selection (2..22: `para one`, `- alpha`, part of `- beta`) meets
+        // repaint; `- gamma` and `end` are not touched by it.
         expect(
-          rows.every((o) => o.debugNeedsPaint),
+          rows.take(3).every((o) => o.debugNeedsPaint),
           isTrue,
-          reason: 'a new selection moves the marks',
+          reason: 'a new selection moves the marks of the rows it meets',
+        );
+        expect(
+          rows.skip(3).any((o) => o.debugNeedsPaint),
+          isFalse,
+          reason: 'rows the selection does not meet keep their marks',
         );
         await tester.pump();
         expect(rows.any((o) => o.debugNeedsPaint), isFalse);
@@ -1783,9 +1791,14 @@ void main() {
         await tester.idle();
         expect(segmentEditingAt(tester, 0).focusedRow, isNull);
         expect(
-          rows.any((o) => o.debugNeedsPaint),
+          rows.take(3).any((o) => o.debugNeedsPaint),
           isTrue,
           reason: 'a closed reveal gate moves line ends',
+        );
+        expect(
+          rows.skip(3).any((o) => o.debugNeedsPaint),
+          isFalse,
+          reason: 'rows with no selection to fill do not repaint',
         );
         await tester.pump();
       },

@@ -180,18 +180,48 @@ class LocalAttachmentsAccess implements AttachmentsAccess {
   /// download route), or null: not an attachment path, missing, a symlink on
   /// the way, or not what it should be.
   Future<String?> _locate(String path) async {
+    final steps = _steps(path);
+    if (steps == null) return null;
+    for (final (at, want) in steps) {
+      if (await FileSystemEntity.type(at, followLinks: false) != want) {
+        return null;
+      }
+    }
+    return steps.last.$1;
+  }
+
+  /// The file `read`, `info`, `open` and `reveal` reach for [path], found
+  /// synchronously on the same terms (no symlink on the way), or null when
+  /// they would answer missing. For the editor's attachment block, which
+  /// learns a local file's size and header before its first frame (D7) and
+  /// must read nothing the domain refuses.
+  String? locateSync(String path) {
+    final steps = _steps(path);
+    if (steps == null) return null;
+    for (final (at, want) in steps) {
+      if (FileSystemEntity.typeSync(at, followLinks: false) != want) {
+        return null;
+      }
+    }
+    return steps.last.$1;
+  }
+
+  /// Each absolute path from `<vault>/objects` down to the file at the R4
+  /// attachment [path], with the type it must be (folders, then the file);
+  /// null when [path] is not an attachment path.
+  List<(String, FileSystemEntityType)>? _steps(String path) {
     final target = parseAttachmentPath(path);
     if (target == null) return null;
     final parts = target.path.split('/');
     var at = vaultPath;
-    for (var i = 0; i < parts.length; i++) {
-      at = p.join(at, parts[i]);
-      final type = await FileSystemEntity.type(at, followLinks: false);
-      final want = i == parts.length - 1
-          ? FileSystemEntityType.file
-          : FileSystemEntityType.directory;
-      if (type != want) return null;
-    }
-    return at;
+    return [
+      for (var i = 0; i < parts.length; i++)
+        (
+          at = p.join(at, parts[i]),
+          i == parts.length - 1
+              ? FileSystemEntityType.file
+              : FileSystemEntityType.directory,
+        ),
+    ];
   }
 }

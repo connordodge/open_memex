@@ -509,7 +509,7 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
   /// through [_trackSections].
   Widget _body(
     Note note,
-    EditorStateValue editor,
+    _BodyState editor,
     EditorController controller,
     Widget? header,
   ) {
@@ -584,7 +584,17 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
   @override
   Widget build(BuildContext context) {
     final note = watchVaultValue(ref, editorNoteAsyncProvider, null);
-    final editor = ref.watch(editorControllerProvider);
+    // Only the fields the body renders (Spec #122 R20): a save status
+    // change rebuilds the toolbar and the status bar, not the body.
+    final editor = ref.watch(
+      editorControllerProvider.select(
+        (e) => (
+          contentMd: e.contentMd,
+          errorMessage: e.errorMessage,
+          lastSavedVersion: e.lastSavedVersion,
+        ),
+      ),
+    );
     final controller = ref.read(editorControllerProvider.notifier);
     final vaultPath = ref.watch(currentVaultProvider).localPath;
 
@@ -623,14 +633,16 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          EditorToolbar(
-            note: note,
-            vaultPath: vaultPath,
-            status: editor.status,
-            rightOpen: widget.rightPanelOpen,
-            onToggleRight: widget.onToggleRightPanel,
-            sourceMode: _sourceMode,
-            onToggleSource: note == null ? null : _toggleSource,
+          Consumer(
+            builder: (context, ref, _) => EditorToolbar(
+              note: note,
+              vaultPath: vaultPath,
+              status: ref.watch(_saveStatus),
+              rightOpen: widget.rightPanelOpen,
+              onToggleRight: widget.onToggleRightPanel,
+              sourceMode: _sourceMode,
+              onToggleSource: note == null ? null : _toggleSource,
+            ),
           ),
           const OmHairline(),
           if (note != null) NoteDeleteError(noteId: note.id),
@@ -653,7 +665,10 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
                   ),
           ),
           const OmHairline(),
-          _StatusBar(status: editor.status),
+          Consumer(
+            builder: (context, ref, _) =>
+                _StatusBar(status: ref.watch(_saveStatus)),
+          ),
         ],
       ),
     );
@@ -662,6 +677,16 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
 
 /// The editor body: the segmented view (default) or the single Source field.
 enum _BodyView { segmented, source }
+
+/// What the editor body renders of the editor state.
+typedef _BodyState = ({
+  String contentMd,
+  String? errorMessage,
+  int? lastSavedVersion,
+});
+
+/// The editor's save status, for the toolbar and the status bar.
+final _saveStatus = editorControllerProvider.select((e) => e.status);
 
 class _StatusBar extends StatelessWidget {
   const _StatusBar({required this.status});

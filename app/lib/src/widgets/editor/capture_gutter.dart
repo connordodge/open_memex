@@ -13,11 +13,19 @@ import '../../state/vault_state.dart';
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import 'line_boxes.dart';
+import 'segment_view.dart' show SegmentLineBoxes;
 
 // The captured-text gutter (WI #28, Req 33): a thin rule beside a daily
 // note's person field for every `agent` and `quick-entry` block, aligned to
 // the lines the block occupies in the field, with a hover caption saying who
 // added it and when. The field itself stays one editable text.
+
+/// Test-only work counter: every read of measured lines the gutter takes
+/// from its source rather than from its own row cache (one per editor row
+/// whose text or size changed, or one whole-field read without rows),
+/// summed over all gutters (WI #129, Spec #122 R11).
+@visibleForTesting
+int debugCaptureGutterLineReads = 0;
 
 /// Width of the gutter column left of the person field.
 const double captureGutterWidth = 14;
@@ -98,6 +106,10 @@ typedef _Rule = ({
   double bottom,
 });
 
+/// One editor row's measured lines and the text and size they were measured
+/// at.
+typedef _RowLines = ({String text, Size size, List<LineBox> lines});
+
 class _CaptureGutterState extends ConsumerState<CaptureGutter> {
   List<BlockRow> _blocks = const [];
   List<_Rule> _rules = const [];
@@ -138,6 +150,11 @@ class _CaptureGutterState extends ConsumerState<CaptureGutter> {
   /// Positions each captured block's rule from the field's real line boxes
   /// (R33): from the top of the line holding the block's first character to
   /// the bottom of the line holding its last, in the gutter's coordinates.
+  ///
+  /// Over editor rows ([SegmentLineBoxes]) only the rows holding a block's
+  /// ends are read, and a row's lines are measured again only when its text
+  /// or laid-out size changed (WI #129, Spec #122 R11); a row that moved
+  /// keeps its lines and takes its new position.
   void _measure() {
     if (!mounted) return;
     final source = _source();
@@ -146,14 +163,18 @@ class _CaptureGutterState extends ConsumerState<CaptureGutter> {
     if (gutter is! RenderBox) return;
     final text = widget.controller.text;
     final dy = gutter.globalToLocal(source.box.localToGlobal(Offset.zero)).dy;
-    final lines = source.lines;
+    List<LineBox>? lines;
+    final measured = <RenderBox, _RowLines>{};
+    LineBox holding(int offset) => source is SegmentLineBoxes
+        ? _rowLine(source, text, offset, measured)
+        : lineHolding(lines ??= _readLines(source), offset);
     final rules = <_Rule>[];
     for (final block in _blocks) {
       if (!_capturedSources.contains(block.source)) continue;
       final range = capturedRange(text, block);
       if (range == null) continue;
-      final first = lineHolding(lines, range.start);
-      final last = lineHolding(lines, math.max(range.start, range.end - 1));
+      final first = holding(range.start);
+      final last = holding(math.max(range.start, range.end - 1));
       rules.add((
         blockId: block.blockId,
         source: block.source,
@@ -162,7 +183,48 @@ class _CaptureGutterState extends ConsumerState<CaptureGutter> {
         bottom: dy + last.bottom,
       ));
     }
+    _rowLines = measured;
     if (!listEquals(rules, _rules)) setState(() => _rules = rules);
+  }
+
+  /// [source]'s measured lines, counted in [debugCaptureGutterLineReads].
+  List<LineBox> _readLines(LineBoxSource source) {
+    debugCaptureGutterLineReads++;
+    return source.lines;
+  }
+
+  /// The lines of the rows the last [_measure] read, by their text slot's
+  /// box.
+  Map<RenderBox, _RowLines> _rowLines = const {};
+
+  /// The line holding segment [offset] of [text] in the rows' box: its
+  /// row's lines (the last measure's while the row's text and size are the
+  /// same, else measured now, kept in [measured]) shifted to where the row
+  /// sits now. A row's first line starts at its marker.
+  LineBox _rowLine(
+    SegmentLineBoxes rows,
+    String text,
+    int offset,
+    Map<RenderBox, _RowLines> measured,
+  ) {
+    final row = rows.rowHolding(offset);
+    final spec = row.spec;
+    final box = row.source.box;
+    final rowText = text.substring(spec.textStart, spec.textEnd);
+    final size = box.size;
+    final cached = measured[box] ?? _rowLines[box];
+    final lines =
+        cached != null && cached.size == size && cached.text == rowText
+        ? cached.lines
+        : _readLines(row.source);
+    measured[box] = (text: rowText, size: size, lines: lines);
+    final line = lineHolding(lines, spec.toLocal(offset));
+    return LineBox(
+      range: line.range,
+      top: line.top + row.shift.dy,
+      bottom: line.bottom + row.shift.dy,
+      baseline: line.baseline + row.shift.dy,
+    );
   }
 
   @override

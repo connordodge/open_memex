@@ -10,6 +10,7 @@ import '../vault_access/search_access.dart';
 import 'clock.dart';
 import 'command_palette_state.dart';
 import 'note_reveal.dart';
+import 'palette_attachments.dart';
 import 'palette_preview_state.dart';
 import 'search_model_download.dart';
 import 'tabs_state.dart';
@@ -40,6 +41,9 @@ class _Run {
 ///   replaces; only the latest input's answer shows.
 /// - Between a keystroke and the debounce the previous answer's rows stay
 ///   ([PassagesDimmed]); then [PassagesSearching] until the answer.
+/// - The same answer's top-level `attachments` ride every view that lists
+///   its rows, for the Attachments group (Spec #123 R47): one search feeds
+///   both groups.
 /// - [close] cancels the debounce and drops the queue; a search still in
 ///   flight ends, and its answer is discarded.
 /// - It never watches `vaultRevisionProvider` (R42), and drops an answer for
@@ -63,6 +67,7 @@ class PalettePassagesRunner extends PalettePassagesNotifier {
   /// The rows the last answer listed, kept dimmed after a keystroke.
   List<PassageItem> _lastRows = const [];
   String? _lastHint;
+  List<AttachmentItem> _lastAttachments = const [];
 
   @override
   PassagesView build() {
@@ -75,6 +80,7 @@ class PalettePassagesRunner extends PalettePassagesNotifier {
     _session++;
     _lastRows = const [];
     _lastHint = null;
+    _lastAttachments = const [];
     final vault = ref.watch(currentVaultProvider);
     if (vault != null) {
       ref.listen(searchModelDownloadProvider(vault), (_, s) => _onDownload(s));
@@ -99,7 +105,11 @@ class PalettePassagesRunner extends PalettePassagesNotifier {
       state = const PassagesIdle();
       return;
     }
-    state = PassagesDimmed(_lastRows, hint: _lastHint);
+    state = PassagesDimmed(
+      _lastRows,
+      hint: _lastHint,
+      attachments: _lastAttachments,
+    );
     _timer = ref.read(clockProvider).after(passagesDebounce, _fire);
   }
 
@@ -113,6 +123,7 @@ class PalettePassagesRunner extends PalettePassagesNotifier {
     _query = null;
     _lastRows = const [];
     _lastHint = null;
+    _lastAttachments = const [];
   }
 
   void _fire() {
@@ -177,7 +188,7 @@ class PalettePassagesRunner extends PalettePassagesNotifier {
 
   void _show(_Run run, Object answer) {
     switch (answer) {
-      case SearchReady(:final hits, :final semantic):
+      case SearchReady(:final hits, :final semantic, :final attachments):
         final now = ref.read(clockProvider).now();
         final rows = [
           for (final hit in hits)
@@ -187,19 +198,27 @@ class PalettePassagesRunner extends PalettePassagesNotifier {
               marks: passageMarks(hit.snippet, run.query),
             ),
         ];
-        final shown = PassagesShown(rows: rows, semantic: semantic);
+        final attachmentRows = paletteAttachmentItems(attachments, run.query);
+        final shown = PassagesShown(
+          rows: rows,
+          semantic: semantic,
+          attachments: attachmentRows,
+        );
         _lastRows = rows;
         _lastHint = shown.hint;
+        _lastAttachments = attachmentRows;
         state = semantic == Semantic.modelNotDownloaded
-            ? _withDownload(rows, shown)
+            ? _withDownload(rows, attachmentRows, shown)
             : shown;
       case SearchUnavailable(:final reason):
         _lastRows = const [];
         _lastHint = null;
+        _lastAttachments = const [];
         state = PassagesUnavailable(reason);
       default:
         _lastRows = const [];
         _lastHint = null;
+        _lastAttachments = const [];
         state = const PassagesError();
     }
   }
@@ -207,12 +226,22 @@ class PalettePassagesRunner extends PalettePassagesNotifier {
   /// A model-not-downloaded answer's view for the vault's download state.
   /// With no hits it stays [shown], so an all-empty palette still shows
   /// `no matches for “<query>”` (req 33).
-  PassagesView _withDownload(List<PassageItem> rows, PassagesView shown) {
+  PassagesView _withDownload(
+    List<PassageItem> rows,
+    List<AttachmentItem> attachments,
+    PassagesView shown,
+  ) {
     final vault = ref.read(currentVaultProvider);
     if (vault == null || rows.isEmpty) return shown;
     return switch (ref.read(searchModelDownloadProvider(vault))) {
-      SearchModelDownloadStatus.downloading => PassagesDownloading(rows),
-      SearchModelDownloadStatus.failed => PassagesDownloadFailed(rows),
+      SearchModelDownloadStatus.downloading => PassagesDownloading(
+        rows,
+        attachments: attachments,
+      ),
+      SearchModelDownloadStatus.failed => PassagesDownloadFailed(
+        rows,
+        attachments: attachments,
+      ),
       _ => shown,
     };
   }
@@ -223,11 +252,14 @@ class PalettePassagesRunner extends PalettePassagesNotifier {
     switch (status) {
       case SearchModelDownloadStatus.downloading:
         if (_wantsModel(view) && view.rows.isNotEmpty) {
-          state = PassagesDownloading(view.rows);
+          state = PassagesDownloading(view.rows, attachments: view.attachments);
         }
       case SearchModelDownloadStatus.failed:
         if (view is PassagesDownloading) {
-          state = PassagesDownloadFailed(view.rows);
+          state = PassagesDownloadFailed(
+            view.rows,
+            attachments: view.attachments,
+          );
         }
       case SearchModelDownloadStatus.succeeded:
         // Meaning search is on now: search the current input again,
@@ -332,4 +364,5 @@ final List<Override> palettePassagesOverrides = [
   palettePassagesProvider.overrideWith(PalettePassagesRunner.new),
   palettePreviewProvider.overrideWith(PalettePreviewReader.new),
   palettePassageChooserProvider.overrideWith(_passageChooser),
+  paletteAttachmentChooserProvider.overrideWith(paletteAttachmentChooser),
 ];

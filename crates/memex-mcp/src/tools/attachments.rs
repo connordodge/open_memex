@@ -38,6 +38,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::Memex;
+use crate::attachment_extract_child::extract_and_record;
 use crate::state::McpTransport;
 
 /// The largest image returned as image content (R21): 5 MB.
@@ -101,10 +102,17 @@ impl Memex {
         let vault = self.state.vault_path.clone();
         let transport = self.state.transport;
         let done = tokio::task::spawn_blocking(move || add(&vault, transport, params.0)).await;
-        match done {
-            Ok(Ok(stored)) => json!(stored).to_string(),
-            Ok(Err(refusal)) => refusal,
-            Err(e) => internal(&e.to_string()),
+        let stored = match done {
+            Ok(Ok(stored)) => stored,
+            Ok(Err(refusal)) => return refusal,
+            Err(e) => return internal(&e.to_string()),
+        };
+        // R17 (#136): extract (in the child, without the vault lock) and
+        // index the stored file's text before answering. A failed
+        // extraction is recorded and the file still attaches.
+        match extract_and_record(&self.state, &stored).await {
+            Ok(()) => json!(stored).to_string(),
+            Err(e) => core_error(&e),
         }
     }
 
@@ -139,7 +147,6 @@ fn add(
         (None, Some(data)) => store_data(vault, &data, name)?,
         _ => return Err(invalid(EXACTLY_ONE)),
     };
-    // R17 (#136): extract and index the stored file's text here.
     Ok(stored)
 }
 

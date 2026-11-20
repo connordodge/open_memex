@@ -22,6 +22,7 @@ import '../../state/note_reveal.dart';
 import '../../state/tabs_state.dart' show CanvasTab, TabsState, tabsProvider;
 import '../../state/vault_state.dart' show currentVaultProvider;
 import '../../vault_access/vault_scoped.dart' show currentVaultData;
+import '../editor/card_rows.dart' show cardAttachmentReference;
 import '../editor/excerpt_card.dart' show excerptRenderProvider;
 import '../editor/find_decoration.dart';
 import '../editor/line_boxes.dart';
@@ -102,12 +103,17 @@ FindDecoration? findFieldDecoration(
   required int end,
 }) {
   if (!state.open || state.query.isEmpty) return null;
+  // The matches touching the field, by the state's match index (WI #130).
+  final run = FindMatchIndex.of(
+    state.matches,
+  ).touching(segment: segment, kind: kind, start: start, end: end);
+  if (run.from == run.to) return null;
   final ink = <TextRange>[];
   TextRange? current;
   TextRange? reveal;
-  for (final (i, m) in state.matches.indexed) {
-    if (m.segment != segment || m.kind != kind) continue;
-    if (m.end <= start || m.start >= end) continue;
+  for (var i = run.from; i < run.to; i++) {
+    debugFindMatchReads++;
+    final m = state.matches[i];
     final range = TextRange(
       start: math.max(m.start, start) - start,
       end: math.min(m.end, end) - start,
@@ -118,7 +124,6 @@ FindDecoration? findFieldDecoration(
       if (m.hidden) reveal = range;
     }
   }
-  if (ink.isEmpty) return null;
   return FindDecoration(revealRange: reveal, inkRanges: ink, current: current);
 }
 
@@ -381,7 +386,7 @@ class _FindInNoteHostState extends ConsumerState<FindInNoteHost> {
                 segment: i,
                 kind: FindSourceKind.card,
                 text: text,
-                hidden: hiddenOf(text),
+                hidden: [...hiddenOf(text), ..._cardBlockRanges(text)],
               ),
             );
           }
@@ -415,6 +420,15 @@ class _FindInNoteHostState extends ConsumerState<FindInNoteHost> {
         codeRow: spec.kind == RowKind.code,
       ))
         FindRange(spec.textStart + range.start, spec.textStart + range.end),
+  ];
+
+  /// The rows of card [text] a card shows as an attachment block, whole:
+  /// the card shows none of their text, so a match there is dropped (D27,
+  /// Req 4). Editor-body attachment lines still match.
+  static List<FindRange> _cardBlockRanges(String text) => [
+    for (final spec in splitRows(text, atSegmentStart: true))
+      if (cardAttachmentReference(text, spec) != null)
+        FindRange(spec.textStart, spec.textEnd),
   ];
 
   static bool _sameSources(List<FindSource> a, List<FindSource> b) {
