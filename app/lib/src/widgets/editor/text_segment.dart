@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../state/paste_or_attach.dart' show canPasteOrAttach;
 import '../../theme/colors.dart';
 import '../../theme/typography.dart';
 import '../kind_chip.dart';
@@ -448,7 +449,16 @@ Future<void> showRowTextMenu(
   final ctrl = view.rowController(row);
   final focusNode = view.rowFocusNode(row);
   if (ctrl == null || focusNode == null) return;
-  final pasteable = await Clipboard.hasStrings();
+  // A menu shown without Paste because the clipboard answered late is
+  // shown again with Paste once it does, while it still shows (#147 r5).
+  final pasteable = await canPasteOrAttach(
+    view.context,
+    onLateOffer: () {
+      if (open == _rowMenuOpens && _rowMenu.isShown && view.mounted) {
+        showRowTextMenu(view, row, anchor: anchor).ignore();
+      }
+    },
+  );
   if (open != _rowMenuOpens || !view.mounted) return;
   final value = ctrl.value;
   final collapsed = !value.selection.isValid || value.selection.isCollapsed;

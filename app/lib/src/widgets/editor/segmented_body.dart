@@ -702,3 +702,88 @@ class _SegmentedBodyState extends ConsumerState<SegmentedBody> {
         )
       : rows;
 }
+
+/// The note body line (0-based, the body's `\n` lines) a file drop at
+/// global [position] anchors to in the segmented body under [root] (WI
+/// #147, Spec #123 R7; ruling D12): on a text segment, the line of the
+/// offset under the point (`SegmentEditing.offsetAtGlobal`, so a wrapped
+/// line's later visual lines count as that line); on an excerpt card, the
+/// card's line; below the last segment, the body's last line (the person
+/// section's last line once `planAttachmentInsert` takes it). Null above
+/// the first segment (the note header), before the segments are laid out,
+/// and when [root] holds no segmented body.
+int? segmentedBodyDropLine(BuildContext root, Offset position) {
+  _SegmentedBodyState? body;
+  void findBody(Element e) {
+    if (body != null) return;
+    if (e is StatefulElement && e.state is _SegmentedBodyState) {
+      body = e.state as _SegmentedBodyState;
+    } else {
+      e.visitChildren(findBody);
+    }
+  }
+
+  root.visitChildElements(findBody);
+  final state = body;
+  if (state == null || !state.mounted) return null;
+  // Each shown segment's laid-out box (and text handle), by segment index.
+  final shown = <int, (RenderBox, SegmentViewState?)>{};
+  void collect(Element e) {
+    final index = switch (e.widget) {
+      SegmentView(:final index) || ExcerptCard(:final index) => index,
+      _ => null,
+    };
+    if (index == null) {
+      e.visitChildren(collect);
+      return;
+    }
+    final box = e.renderObject;
+    if (box is RenderBox && box.attached && box.hasSize) {
+      shown[index] = (
+        box,
+        e is StatefulElement && e.state is SegmentViewState
+            ? e.state as SegmentViewState
+            : null,
+      );
+    }
+  }
+
+  state.context.visitChildElements(collect);
+  final joined = state._joined;
+  int lineAt(int offset) => '\n'
+      .allMatches(joined.substring(0, offset.clamp(0, joined.length)))
+      .length;
+  final segs = state._segs;
+  // The anchor of the last shown segment that starts above [position].
+  int? Function()? above;
+  var start = 0;
+  for (var i = 0; i < segs.length; i++) {
+    final seg = segs[i];
+    final segStart = start;
+    switch (seg) {
+      case _TextSeg():
+        start += state._textOf(segs, i).length;
+      case _CardSeg(:final segment):
+        start += segment.raw.length;
+      case _FooterSeg():
+        continue;
+    }
+    final hit = shown[i];
+    if (hit == null) continue;
+    final (box, view) = hit;
+    final top = box.localToGlobal(Offset.zero).dy;
+    // Between two segments: the one above.
+    if (position.dy < top) return above?.call();
+    int? anchor() {
+      if (seg is! _TextSeg || view == null) return lineAt(segStart);
+      final offset = view.offsetAtGlobal(position);
+      if (offset == null) return null;
+      return lineAt(segStart + offset.clamp(0, seg.ctrl.text.length));
+    }
+
+    if (position.dy < top + box.size.height) return anchor();
+    above = anchor;
+  }
+  // Below every segment: the body's last line.
+  return above == null ? null : lineAt(joined.length);
+}
