@@ -310,6 +310,18 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   @visibleForTesting
   static int debugSetStates = 0;
 
+  /// Test-only work counter (WI #131): how many row boxes
+  /// [rowsWithin] read, so a bisection (a handful per call) tells from a
+  /// scan of every row.
+  @visibleForTesting
+  static int debugRowEdgeReads = 0;
+
+  /// Test-only work counter (WI #131): how many times a segment view rebuilt
+  /// its row-controller index, so a lookup (one build per re-derive) tells
+  /// from a scan per call.
+  @visibleForTesting
+  static int debugRowIndexBuilds = 0;
+
   final _rowsKey = GlobalKey(debugLabel: 'editor-rows');
   final SegmentUndoRecorder _undo = segmentUndoRecorderFactory();
   List<_Row> _rows = const [];
@@ -593,8 +605,14 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
     if (!identical(_focusPending, row)) _focusPending = null;
     _setActive(row);
     if (_fieldStateOf(row) == null) _focusAfterFrame(row);
-    // An activated row's focus keeps the segment selection (WI #128).
-    if (!activating) _selectFrom(row);
+    // An activated row's focus keeps the segment selection (WI #128), and
+    // re-slices it so the row the caret left drops the end-of-text caret
+    // its field took while still focused (D24).
+    if (activating) {
+      _select(widget.controller.selection);
+    } else {
+      _selectFrom(row);
+    }
   }
 
   /// The focused [row]'s selection becomes the segment's.
@@ -1212,17 +1230,84 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   ({String line, int textStart, bool atSegmentStart})? rowLineOf(
     TextEditingController row,
   ) {
-    for (final r in _rows) {
-      if (!identical(r.controller, row)) continue;
-      final spec = r.spec;
-      return (
-        line: _text.substring(spec.start, spec.textEnd),
-        textStart: spec.textStart - spec.start,
-        atSegmentStart: spec.start == 0,
-      );
-    }
-    return null;
+    final i = _rowIndexOf(row);
+    if (i == null) return null;
+    final spec = _rows[i].spec;
+    return (
+      line: _text.substring(spec.start, spec.textEnd),
+      textStart: spec.textStart - spec.start,
+      atSegmentStart: spec.start == 0,
+    );
   }
+
+  /// The rows [_rowIndex] indexes; rebuilt when the rows are re-derived (a
+  /// re-derive makes a new list).
+  List<_Row>? _indexedRows;
+
+  /// Each row field's controller to its row's index (WI #131).
+  Map<TextEditingController, int> _rowIndex = const {};
+
+  /// The index of the row whose field edits [row], or null: a lookup, not a
+  /// scan of the rows (Spec #122 Req 25).
+  int? _rowIndexOf(TextEditingController row) {
+    if (!identical(_indexedRows, _rows)) {
+      _indexedRows = _rows;
+      debugRowIndexBuilds++;
+      _rowIndex = Map.identity()
+        ..addAll({for (final (i, r) in _rows.indexed) r.controller: i});
+    }
+    return _rowIndex[row];
+  }
+
+  /// The row-top index (WI #131, Spec #122 Req 25): the rows whose laid-out
+  /// [EditorRow]s meet the global band [top]..[bottom], as `(first, last)`
+  /// (`first > last` when none does), found by bisection over the rows'
+  /// global tops and bottoms, never by a walk of every row. Null while a
+  /// row it reads is not laid out.
+  ({int first, int last})? rowsWithin(double top, double bottom) {
+    final count = _rows.length;
+    double? edge(int i, {required bool bottomEdge}) {
+      debugRowEdgeReads++;
+      final box = _rows[i].rowKey.currentContext?.findRenderObject();
+      if (box is! RenderBox || !box.attached || !box.hasSize) return null;
+      final y = bottomEdge ? box.size.height : 0.0;
+      return box.localToGlobal(Offset(0, y)).dy;
+    }
+
+    // The first row ending below [top].
+    var lo = 0;
+    var hi = count;
+    while (lo < hi) {
+      final mid = (lo + hi) >> 1;
+      final y = edge(mid, bottomEdge: true);
+      if (y == null) return null;
+      if (y > top) {
+        hi = mid;
+      } else {
+        lo = mid + 1;
+      }
+    }
+    final first = lo;
+    // The first row starting at or below [bottom].
+    hi = count;
+    while (lo < hi) {
+      final mid = (lo + hi) >> 1;
+      final y = edge(mid, bottomEdge: false);
+      if (y == null) return null;
+      if (y >= bottom) {
+        hi = mid;
+      } else {
+        lo = mid + 1;
+      }
+    }
+    return (first: first, last: lo - 1);
+  }
+
+  /// Row [i]'s [EditorRow] context (WI #131: a reveal finds a row's widgets
+  /// under it, never by a walk of every row), null past the last row and
+  /// before the row is built.
+  BuildContext? rowContext(int i) =>
+      i >= 0 && i < _rows.length ? _rows[i].rowKey.currentContext : null;
 
   /// Where [row]'s field text starts in the segment text (WI #438), or
   /// null when [row] is no row field of this segment.

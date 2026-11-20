@@ -11,13 +11,22 @@
 //
 // Like the real server, every request needs `Authorization: Bearer <token>`;
 // a missing or wrong token gets 401 with the `errors/unauthorized.json` body.
+//
+// WI #140 (Spec #123 R40, R42, D19) adds the attachment routes
+// ([FakeVaultServer.serveAttachments]): `POST /attachments?name=`, `GET|HEAD
+// /attachments/{*path}`, an old server without them
+// ([FakeVaultServer.attachmentRoutesMissing]), the 8 MiB body limit of every
+// other route, and held uploads or downloads. Like the real server, a HEAD
+// answer never has a body (a HEAD 404 can't say which 404 it is).
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:open_memex_app/src/editor/attachment_ref.dart';
 import 'package:open_memex_app/src/vault_access/hosted/hosted_client.dart';
 import 'package:path/path.dart' as p;
 
@@ -151,6 +160,28 @@ class FakeVaultServer {
   /// The client to hand to `HostedClient`.
   late final http.Client client = MockClient(_handle);
 
+  /// WI #140: while true the server is an older `memex` (v0.6.0) without
+  /// attachment routes: every `/attachments` request of a vault given to
+  /// [serveAttachments] is the no-route 404, a body over 8 MiB is the 8 MiB
+  /// 413 on every route (the upload included), and `/api/v1/info` reports
+  /// `server_version` 0.6.0 (else 0.7.0).
+  bool attachmentRoutesMissing = false;
+
+  /// WI #140: the largest upload body; a larger one is the C1 413
+  /// `payload_too_large` with the R15 text. 104,857,600 like the server;
+  /// tests lower it instead of sending 100 MB.
+  int attachmentUploadLimit = wi140UploadLimit;
+
+  /// WI #140: while true an upload (`POST /attachments`) is recorded and
+  /// never answered. Other requests answer.
+  bool holdAttachmentUploads = false;
+
+  /// WI #140: while true a `GET /attachments/…` is recorded and never
+  /// answered. HEAD and other requests answer.
+  bool holdAttachmentDownloads = false;
+
+  final Map<String, Map<String, Uint8List>> _wi140Vaults = {};
+
   final List<FixtureRow> _rows = [];
   final Map<FixtureRow, int> _served = {};
   final Map<String, _Wi77Route> _routes = {};
@@ -210,6 +241,24 @@ class FakeVaultServer {
     return container.read(provider);
   }
 
+  /// WI #140: [vault] serves the attachment routes (R40) from an in-memory
+  /// store, empty at first. An upload stores its body under
+  /// `objects/<h2>/<hash>/<name>` (a fake content hash: the same bytes give
+  /// the same path) and answers `{markdown, path, name, size, type}`.
+  void serveAttachments(String vault) =>
+      _wi140Vaults.putIfAbsent(vault.toLowerCase(), () => {});
+
+  /// WI #140: stores [bytes] at the decoded vault-relative [path] of
+  /// [vault] (which then serves the attachment routes).
+  void putAttachment(String vault, String path, List<int> bytes) {
+    serveAttachments(vault);
+    _wi140Vaults[vault.toLowerCase()]![path] = Uint8List.fromList(bytes);
+  }
+
+  /// WI #140: the bytes stored at [path] of [vault], or null.
+  Uint8List? storedAttachment(String vault, String path) =>
+      _wi140Vaults[vault.toLowerCase()]?[path];
+
   /// Every `/vaults/<name>/…` request answers 404 `vault_not_found`.
   void removeVault(String name) => _goneVaults.add(name.toLowerCase());
 
@@ -247,6 +296,9 @@ class FakeVaultServer {
     if (custom != null) {
       return _response(request, custom.status, custom.body, custom.contentType);
     }
+
+    final attachments = _wi140Handle(request, path);
+    if (attachments != null) return attachments;
 
     final vault = _vaultName(path);
     if (vault != null && _goneVaults.contains(vault.toLowerCase())) {
@@ -374,15 +426,177 @@ class FakeVaultServer {
   static String _errorsFile(String name) =>
       File(p.join(apiV1FixturesDir, 'errors', name)).readAsStringSync();
 
+  /// WI #140: the attachment routes, the 8 MiB body limit and the built-in
+  /// `/api/v1/info`, or null when none of them answers [request].
+  Future<http.Response>? _wi140Handle(http.Request request, String path) {
+    if (_wi140Vaults.isEmpty && !attachmentRoutesMissing) return null;
+    final segments = Uri(path: path).pathSegments;
+    final vault = _vaultName(path)?.toLowerCase();
+    final isAttachmentRoute =
+        segments.length >= 5 &&
+        segments[2] == 'api' &&
+        segments[3] == 'v1' &&
+        segments[4] == 'attachments' &&
+        vault != null &&
+        _wi140Vaults.containsKey(vault);
+    final isUpload =
+        isAttachmentRoute && segments.length == 5 && request.method == 'POST';
+    final size = request.bodyBytes.length;
+    if (size > wi140BodyLimit && (attachmentRoutesMissing || !isUpload)) {
+      return Future.value(
+        _response(request, 413, _errorsFile('payload_too_large.json')),
+      );
+    }
+    if (request.method == 'GET' && path == '/api/v1/info') {
+      return Future.value(
+        _response(
+          request,
+          200,
+          jsonEncode({
+            'api_version': kApiVersion,
+            'server_version': attachmentRoutesMissing ? '0.6.0' : '0.7.0',
+          }),
+        ),
+      );
+    }
+    if (!isAttachmentRoute) return null;
+    if (attachmentRoutesMissing) {
+      return Future.value(
+        _response(request, 404, _errorsFile('not_found.json')),
+      );
+    }
+    final store = _wi140Vaults[vault]!;
+    if (isUpload) {
+      final name = request.url.queryParameters['name'] ?? '';
+      if (size > attachmentUploadLimit) {
+        return Future.value(
+          _wi140Error(
+            request,
+            413,
+            'payload_too_large',
+            "$name is larger than 100 MB and wasn't attached.",
+          ),
+        );
+      }
+      if (holdAttachmentUploads) return Completer<http.Response>().future;
+      final hash = _wi140Hash(request.bodyBytes);
+      final stored = 'objects/${hash.substring(0, 2)}/$hash/$name';
+      store[stored] = Uint8List.fromList(request.bodyBytes);
+      return Future.value(
+        _response(
+          request,
+          200,
+          jsonEncode({
+            'markdown': attachmentMarkdown(name, hash),
+            'path': stored,
+            'name': name,
+            'size': size,
+            'type': _wi140Mime(name),
+          }),
+        ),
+      );
+    }
+    if (segments.length == 5 ||
+        (request.method != 'GET' && request.method != 'HEAD')) {
+      return Future.value(
+        _response(request, 404, _errorsFile('not_found.json')),
+      );
+    }
+    final rest = segments.sublist(5).join('/');
+    final target =
+        parseAttachmentPath(rest) ?? parseAttachmentDestination(rest);
+    if (target == null) {
+      return Future.value(
+        _wi140Error(
+          request,
+          400,
+          'invalid_argument',
+          '$rest is not an attachment path',
+        ),
+      );
+    }
+    if (request.method == 'GET' && holdAttachmentDownloads) {
+      return Completer<http.Response>().future;
+    }
+    final bytes = store[target.path];
+    if (bytes == null) {
+      return Future.value(
+        _wi140Error(
+          request,
+          404,
+          'not_found',
+          'not found: attachment ${target.path}',
+        ),
+      );
+    }
+    return Future.value(
+      _bytesResponse(request, 200, bytes, _wi140Mime(target.name)),
+    );
+  }
+
+  http.Response _wi140Error(
+    http.Request request,
+    int status,
+    String code,
+    String message,
+  ) => _response(
+    request,
+    status,
+    jsonEncode({
+      'error': {'code': code, 'message': message},
+    }),
+  );
+
+  /// A fake content hash of [bytes]: 64 lowercase hex characters (FNV-1a
+  /// repeated), the same for the same bytes.
+  static String _wi140Hash(List<int> bytes) {
+    var h = 0xcbf29ce484222325;
+    for (final b in bytes) {
+      h ^= b;
+      h *= 0x100000001b3;
+    }
+    String half(int v) => (v & 0xFFFFFFFF).toRadixString(16).padLeft(8, '0');
+    final hex = half(h >> 32) + half(h);
+    return hex * 4;
+  }
+
+  static String _wi140Mime(String name) {
+    final dot = name.lastIndexOf('.');
+    final ext = dot < 0 ? '' : name.substring(dot + 1).toLowerCase();
+    return switch (ext) {
+      'png' => 'image/png',
+      'jpg' || 'jpeg' => 'image/jpeg',
+      'gif' => 'image/gif',
+      'pdf' => 'application/pdf',
+      'txt' => 'text/plain',
+      _ => 'application/octet-stream',
+    };
+  }
+
   static http.Response _response(
     http.Request request,
     int status,
     String body, [
     String contentType = 'application/json',
-  ]) => http.Response.bytes(
-    utf8.encode(body),
+  ]) => _bytesResponse(request, status, utf8.encode(body), contentType);
+
+  /// [body] with its `Content-Type` and `Content-Length`. A HEAD answer keeps
+  /// the headers and drops the body, as a real server does.
+  static http.Response _bytesResponse(
+    http.Request request,
+    int status,
+    List<int> body,
+    String contentType,
+  ) => http.Response.bytes(
+    request.method == 'HEAD' ? const <int>[] : body,
     status,
     request: request,
-    headers: {'content-type': contentType},
+    headers: {'content-type': contentType, 'content-length': '${body.length}'},
   );
 }
+
+/// WI #140: the upload route's body limit (R15), 104,857,600 bytes.
+const wi140UploadLimit = 104857600;
+
+/// WI #140: every other route's body limit, 8 MiB (8,388,608 bytes).
+const wi140BodyLimit = 8388608;
