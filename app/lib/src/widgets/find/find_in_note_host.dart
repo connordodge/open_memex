@@ -103,12 +103,17 @@ FindDecoration? findFieldDecoration(
   required int end,
 }) {
   if (!state.open || state.query.isEmpty) return null;
+  // The matches touching the field, by the state's match index (WI #130).
+  final run = FindMatchIndex.of(
+    state.matches,
+  ).touching(segment: segment, kind: kind, start: start, end: end);
+  if (run.from == run.to) return null;
   final ink = <TextRange>[];
   TextRange? current;
   TextRange? reveal;
-  for (final (i, m) in state.matches.indexed) {
-    if (m.segment != segment || m.kind != kind) continue;
-    if (m.end <= start || m.start >= end) continue;
+  for (var i = run.from; i < run.to; i++) {
+    debugFindMatchReads++;
+    final m = state.matches[i];
     final range = TextRange(
       start: math.max(m.start, start) - start,
       end: math.min(m.end, end) - start,
@@ -119,7 +124,6 @@ FindDecoration? findFieldDecoration(
       if (m.hidden) reveal = range;
     }
   }
-  if (ink.isEmpty) return null;
   return FindDecoration(revealRange: reveal, inkRanges: ink, current: current);
 }
 

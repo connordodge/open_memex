@@ -159,13 +159,83 @@ final class LineBoxCache {
 
   /// Whether [span] lays out differently from the cached span; a paint-only
   /// or identical span is kept as the cached one.
+  ///
+  /// A span that only splits or joins its runs differently, with the same
+  /// text and, code unit for code unit, the same layout-affecting style
+  /// (`TextStyle.compareTo` below `RenderComparison.layout`), is paint-only
+  /// too (WI #130, ruling D25): Find in note's ink recolours runs of the
+  /// text without moving a glyph. A placeholder in either span is a layout
+  /// change.
   bool _spanChanged(InlineSpan? span) {
     final old = _span;
     if (identical(old, span)) return false;
     _span = span;
     plainText = null;
     if (old == null || span == null) return true;
-    return old.compareTo(span) == RenderComparison.layout;
+    if (old.compareTo(span) != RenderComparison.layout) return false;
+    return !_sameLayout(old, span);
+  }
+
+  /// Whether [a] and [b] hold the same text with the same layout-affecting
+  /// style at every code unit, however their runs split it.
+  static bool _sameLayout(InlineSpan a, InlineSpan b) {
+    final x = _runsOf(a);
+    final y = _runsOf(b);
+    if (x == null || y == null) return false;
+    var i = 0;
+    var j = 0;
+    var atX = 0;
+    var atY = 0;
+    while (i < x.length && j < y.length) {
+      final (textX, styleX) = x[i];
+      final (textY, styleY) = y[j];
+      final n = math.min(textX.length - atX, textY.length - atY);
+      if (!_sameLayoutStyle(styleX, styleY)) return false;
+      for (var k = 0; k < n; k++) {
+        if (textX.codeUnitAt(atX + k) != textY.codeUnitAt(atY + k)) {
+          return false;
+        }
+      }
+      atX += n;
+      atY += n;
+      if (atX == textX.length) {
+        i++;
+        atX = 0;
+      }
+      if (atY == textY.length) {
+        j++;
+        atY = 0;
+      }
+    }
+    return i == x.length && j == y.length;
+  }
+
+  /// Whether text in [a] and in [b] lays out the same.
+  static bool _sameLayoutStyle(TextStyle? a, TextStyle? b) {
+    if (identical(a, b)) return true;
+    if (a == null || b == null) return false;
+    return a.compareTo(b) != RenderComparison.layout;
+  }
+
+  /// [span]'s non-empty text runs in order, each with its style merged
+  /// down from its ancestors; null when [span] holds a placeholder.
+  static List<(String, TextStyle?)>? _runsOf(InlineSpan span) {
+    final out = <(String, TextStyle?)>[];
+    bool walk(InlineSpan node, TextStyle? parent) {
+      if (node is! TextSpan) return false;
+      final own = node.style;
+      final style = parent == null || own == null
+          ? own ?? parent
+          : parent.merge(own);
+      final text = node.text;
+      if (text != null && text.isNotEmpty) out.add((text, style));
+      for (final child in node.children ?? const <InlineSpan>[]) {
+        if (!walk(child, style)) return false;
+      }
+      return true;
+    }
+
+    return walk(span, null) ? out : null;
   }
 
   static InlineSpan? _textOf(RenderBox owner) => switch (owner) {
