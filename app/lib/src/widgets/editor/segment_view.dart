@@ -437,8 +437,14 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
     if (!row.focusNode.hasFocus) return;
     final activating = identical(_activating, row);
     _activating = null;
-    // An activated row's focus keeps the segment selection (WI #128).
-    if (!activating) _selectFrom(row);
+    // An activated row's focus keeps the segment selection (WI #128), and
+    // re-slices it so the row the caret left drops the end-of-text caret
+    // its field took while still focused (D24).
+    if (activating) {
+      _select(widget.controller.selection);
+    } else {
+      _selectFrom(row);
+    }
   }
 
   /// The focused [row]'s selection becomes the segment's.
