@@ -9,7 +9,7 @@ import 'card_rows.dart';
 import 'echo_arrival_highlight.dart';
 import 'line_boxes.dart';
 import 'paragraph_line_boxes.dart';
-import 'segment_view.dart' show textSlotLines;
+import 'segment_view.dart' show SegmentViewState, textSlotBox;
 import 'segmented_body.dart';
 import 'table_grid.dart';
 
@@ -37,7 +37,6 @@ Rect revealAnchorRect(
   int? cardStart,
   int? cardEnd,
 }) {
-  final whole = Offset.zero & row.size;
   if (element != null) {
     final Rect? inner = switch (arrival.kind) {
       RowKind.table when end != null => _tableAnchor(
@@ -56,20 +55,63 @@ Rect revealAnchorRect(
     };
     if (inner != null) return inner;
   }
-  if (arrival.kind != RowKind.prose) return whole;
-  // The row's text through the row-geometry accessor's text-slot half
-  // (WI #127): its field's, or a RichText's standing in for it.
-  final text = textSlotLines(row, arrival.rowText);
-  if (text == null) return whole;
-  final (:boxes, :lines) = text;
-  final first = lineHolding(lines, arrival.local);
-  final last = end == null || end <= arrival.local
-      ? first
-      : lineHolding(lines, end - 1);
+  return revealLineRect(
+    row,
+    kind: arrival.kind,
+    rowText: arrival.rowText,
+    local: arrival.local,
+    end: end,
+  );
+}
+
+/// The Text anchor of a row of [kind] whose field holds [rowText], at
+/// row-local [local] (to [end], exclusive, when given), in [row]'s local
+/// coordinates: [revealAnchorRect] without an arrival (WI #131, the section
+/// tracker's probe). A prose row anchors on the line boxes holding
+/// `[local, end)` (only the line holding [local] when [end] is null or not
+/// past it), any other row on the whole row, as does a prose row whose text
+/// slot is not laid out or shows another text.
+///
+/// The lines come from the row's cached geometry one at a time
+/// (`LineBoxSource.lineAt`, WI #126), never from a walk of every line of the
+/// row: the text slot is a field's or a `RichText`'s standing in for it
+/// (the row-geometry accessor's text-slot half, WI #127).
+Rect revealLineRect(
+  RenderBox row, {
+  required RowKind? kind,
+  required String rowText,
+  required int local,
+  int? end,
+}) {
+  final whole = Offset.zero & row.size;
+  if (kind != RowKind.prose) return whole;
+  final boxes = _slotLinesHolding(row, rowText);
+  if (boxes == null) return whole;
+  final first = boxes.lineAt(local);
+  final last = end == null || end <= local ? first : boxes.lineAt(end - 1);
   double y(double textY) =>
       row.globalToLocal(boxes.box.localToGlobal(Offset(0, textY))).dy;
   final top = y(first.top);
   return Rect.fromLTRB(0, top, row.size.width, math.max(top, y(last.bottom)));
+}
+
+/// The line boxes of the text slot at or under [root] while it holds
+/// [text] (as `textSlotLines` decides, without its walk of every line): a
+/// field's laid-out text equals it, a `RichText`'s last line ends at its
+/// length. Null before then, or while the slot shows another text.
+LineBoxSource? _slotLinesHolding(RenderObject root, String text) {
+  final LineBoxSource boxes;
+  switch (textSlotBox(root)) {
+    case final RenderEditable field:
+      if (field.plainText != text) return null;
+      boxes = RenderEditableLineBoxes(field);
+    case final RenderParagraph paragraph:
+      boxes = RenderParagraphLineBoxes(paragraph);
+      if (boxes.lineAt(text.length).range.end != text.length) return null;
+    default:
+      return null;
+  }
+  return boxes;
 }
 
 /// The rows of [source] holding `[start, end)` (end exclusive; only the line
@@ -110,9 +152,9 @@ Rect? _tableAnchor(
         ? null
         : _rangeAnchor(row, source, arrival.local, end);
   }
-  final text = textSlotLines(row, arrival.rowText);
-  if (text == null) return null;
-  return _rangeAnchor(row, text.boxes, arrival.local, end);
+  final boxes = _slotLinesHolding(row, arrival.rowText);
+  if (boxes == null) return null;
+  return _rangeAnchor(row, boxes, arrival.local, end);
 }
 
 /// A card's anchor: the lines of the card row holding [start] (a card text
@@ -237,41 +279,34 @@ double? revealScrollOffset(
 /// The laid-out widget holding [arrival] in the segmented body under
 /// [context] that shows note [noteId] with text [content], and its text
 /// segment; null until then.
+///
+/// A row is found through its segment's row list (WI #131): the body's
+/// segment views are found without entering any segment's rows, then the
+/// row's own subtree is searched for its key; never a walk of the whole
+/// element tree.
 ({RenderBox row, RenderBox? column, Element element})? revealRow(
   BuildContext context,
   String noteId,
   String content,
   EchoArrival arrival,
 ) {
-  Element? body;
-  void findBody(Element e) {
-    if (body != null) return;
-    final w = e.widget;
-    if (w is SegmentedBody && w.note.id == noteId) {
-      body = e;
-    } else {
-      e.visitChildren(findBody);
-    }
-  }
-
-  context.visitChildElements(findBody);
-  final host = body;
-  if (host == null || (host.widget as SegmentedBody).content != content) {
+  final body = segmentedBodyUnder(context, noteId: noteId);
+  if (body == null || (body.widget as SegmentedBody).content != content) {
     return null;
   }
-  final keys = {
-    arrival.key,
-    ?arrival.fallbackKey,
-    ValueKey('text-segment-${arrival.segment}'),
-  };
-  final found = <Key, Element>{};
-  void visit(Element e) {
-    final key = e.widget.key;
-    if (key != null && keys.contains(key)) found.putIfAbsent(key, () => e);
-    e.visitChildren(visit);
+  final columnKey = ValueKey('text-segment-${arrival.segment}');
+  final rowKeys = {arrival.key, ?arrival.fallbackKey};
+  final row = arrival.kind == null ? null : rowIndexOfKey(arrival.key);
+  // A card is keyed outside every segment's rows; a row inside its own.
+  final scan = scanSegmentedBody(body, {
+    columnKey,
+    if (row == null) ...rowKeys,
+  });
+  final found = {...scan.found};
+  if (row != null) {
+    final rowContext = scan.views[arrival.segment]?.rowContext(row);
+    if (rowContext is Element) found.addAll(keyedUnder(rowContext, rowKeys));
   }
-
-  host.visitChildren(visit);
   RenderBox? laidOut(Key? key) {
     final box = key == null ? null : found[key]?.findRenderObject();
     return box is RenderBox && box.attached && box.hasSize ? box : null;
@@ -280,11 +315,81 @@ double? revealScrollOffset(
   final rowKey = laidOut(arrival.key) != null
       ? arrival.key
       : arrival.fallbackKey;
-  final row = laidOut(rowKey);
-  if (row == null) return null;
-  return (
-    row: row,
-    column: laidOut(ValueKey('text-segment-${arrival.segment}')),
-    element: found[rowKey]!,
-  );
+  final box = laidOut(rowKey);
+  if (box == null) return null;
+  return (row: box, column: laidOut(columnKey), element: found[rowKey]!);
+}
+
+/// The segmented body showing note [noteId] (any note when null) at or
+/// under [context], found depth first without entering it; null when there
+/// is none.
+Element? segmentedBodyUnder(BuildContext context, {String? noteId}) {
+  Element? body;
+  void findBody(Element e) {
+    if (body != null) return;
+    final w = e.widget;
+    if (w is SegmentedBody && (noteId == null || w.note.id == noteId)) {
+      body = e;
+    } else {
+      e.visitChildren(findBody);
+    }
+  }
+
+  context.visitChildElements(findBody);
+  return body;
+}
+
+/// The text segment views of the segmented body [body] by segment index
+/// (`SegmentView.index`), and the first element keyed by each of [keys]
+/// found on the way, from one walk of [body] that never enters a segment
+/// view's rows (WI #131).
+({Map<int, SegmentViewState> views, Map<Key, Element> found}) scanSegmentedBody(
+  Element body,
+  Set<Key> keys,
+) {
+  final views = <int, SegmentViewState>{};
+  final found = <Key, Element>{};
+  void visit(Element e) {
+    final key = e.widget.key;
+    if (key != null && keys.contains(key)) found.putIfAbsent(key, () => e);
+    if (e is StatefulElement && e.state is SegmentViewState) {
+      final view = e.state as SegmentViewState;
+      views.putIfAbsent(view.widget.index, () => view);
+      return;
+    }
+    e.visitChildren(visit);
+  }
+
+  body.visitChildren(visit);
+  return (views: views, found: found);
+}
+
+/// The first element keyed by each of [keys] at or under [root], depth
+/// first, entering no keyed element's subtree and stopping once every key
+/// is found.
+Map<Key, Element> keyedUnder(Element root, Set<Key> keys) {
+  final found = <Key, Element>{};
+  void visit(Element e) {
+    if (found.length == keys.length) return;
+    final key = e.widget.key;
+    if (key != null && keys.contains(key)) {
+      found.putIfAbsent(key, () => e);
+      return;
+    }
+    e.visitChildren(visit);
+  }
+
+  visit(root);
+  return found;
+}
+
+/// The row index `<r>` of a row key `editor-row-<s>-<r>` or
+/// `editor-table-<s>-<r>` (an `EchoArrival.key`), or null for any other key.
+int? rowIndexOfKey(Key key) {
+  if (key is! ValueKey<String>) return null;
+  final value = key.value;
+  if (!value.startsWith('editor-row-') && !value.startsWith('editor-table-')) {
+    return null;
+  }
+  return int.tryParse(value.substring(value.lastIndexOf('-') + 1));
 }
