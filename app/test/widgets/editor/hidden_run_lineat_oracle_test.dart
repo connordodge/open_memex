@@ -233,4 +233,59 @@ void main() {
       expect(before.length, lessThan(400 - 14 + 1));
     },
   );
+
+  // A hidden run that ends the whole text (no line break after it), kept on
+  // the last visible line: the fix leaves the end of the text alone, so the
+  // line still takes in the run.
+  testWidgets(
+    'lineAt matches the oracle at every offset of a hidden run that ends the text on the last visible line',
+    (tester) async {
+      const visible = 'aaa bbb ';
+      const text = '$visible**';
+      await tester.pumpWidget(
+        Directionality(
+          textDirection: TextDirection.ltr,
+          child: Align(
+            alignment: Alignment.topLeft,
+            child: SizedBox(
+              width: 322,
+              child: LineBoxEpoch(
+                child: RichText(
+                  key: const Key('text-end'),
+                  text: const TextSpan(
+                    style: TextStyle(fontSize: 14, height: 1.7),
+                    children: [
+                      TextSpan(text: visible),
+                      TextSpan(text: '**', style: livePreviewHiddenStyle),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      final paragraph = tester.renderObject<RenderParagraph>(
+        find.byKey(const Key('text-end')),
+      );
+      expect(paragraph.text.toPlainText(), text);
+      final oracle = LineBoxOracle.paragraph(paragraph);
+      final source = RenderParagraphLineBoxes(paragraph);
+      try {
+        for (var offset = 0; offset <= text.length; offset++) {
+          final line = source.lineAt(offset);
+          final want = oracle.lineAt(offset);
+          expect(
+            (line.range.start, line.range.end, line.top, line.bottom),
+            (want.range.start, want.range.end, want.top, want.bottom),
+            reason:
+                'lineAt($offset): got ${_show(line)}, oracle ${_show(want)}',
+          );
+        }
+        expect(source.lineAt(0).range.end, text.length);
+      } finally {
+        oracle.dispose();
+      }
+    },
+  );
 }
