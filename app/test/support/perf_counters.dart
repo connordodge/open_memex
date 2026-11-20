@@ -11,6 +11,8 @@ import 'package:open_memex_app/src/editor/editor_rows.dart' as rows;
 import 'package:open_memex_app/src/editor/markdown_inline.dart' as inline;
 import 'package:open_memex_app/src/editor/markdown_lines.dart' as lines;
 import 'package:open_memex_app/src/state/spell_check_controller.dart';
+import 'package:open_memex_app/src/widgets/editor/capture_gutter.dart'
+    as gutter;
 import 'package:open_memex_app/src/widgets/editor/editor_row.dart' as row;
 import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';
 import 'package:open_memex_app/src/widgets/editor/live_preview_controller.dart';
@@ -66,6 +68,9 @@ abstract final class PerfCounters {
     'editableLineSpans',
     'paragraphLineSpans',
     'spellHostEditableCalls',
+    // Capture gutter (WI #129): reads of measured lines it did not take
+    // from its own row cache.
+    'captureGutterLineReads',
   ];
 
   /// Every counter's current value, by [names].
@@ -96,6 +101,7 @@ abstract final class PerfCounters {
     'editableLineSpans': RenderEditableLineBoxes.debugLineSpans,
     'paragraphLineSpans': RenderParagraphLineBoxes.debugLineSpans,
     'spellHostEditableCalls': host.debugSpellHostEditableCalls,
+    'captureGutterLineReads': gutter.debugCaptureGutterLineReads,
   };
 
   /// Sets every counter to 0.
@@ -126,6 +132,7 @@ abstract final class PerfCounters {
     RenderEditableLineBoxes.debugLineSpans = 0;
     RenderParagraphLineBoxes.debugLineSpans = 0;
     host.debugSpellHostEditableCalls = 0;
+    gutter.debugCaptureGutterLineReads = 0;
   }
 
   /// The work done since [before] (a [snapshot]): each counter's value now

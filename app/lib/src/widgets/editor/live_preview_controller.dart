@@ -64,6 +64,13 @@ class LivePreviewController extends TextEditingController {
   /// it rebuilds the rows.
   List<bool>? fenced;
 
+  /// Tells the field's listeners that the host changed [itemText],
+  /// [taskDone], [quote], [atSegmentStart], [fenced] or [revealGate], which
+  /// notify nothing when set (WI #129): the rows host calls it after it
+  /// rewrote a row's props to other values, so the row re-renders without
+  /// the host rebuilding it.
+  void propsChanged() => notifyListeners();
+
   /// The field is a code row's text (a fenced block, ruling D18): its hidden
   /// fence lines lay out at the design's 8 px, so [strutStyle] drops the
   /// 22.95 px minimum. Default false. Setting it notifies listeners.
