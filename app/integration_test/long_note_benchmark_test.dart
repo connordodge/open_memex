@@ -273,9 +273,14 @@ ScrollableState _scrollable(WidgetTester tester) {
 }
 
 /// Pins `defaultTargetPlatform` to macOS (the benchmark is a macOS run; on
-/// any other host the editing shortcuts would differ).
+/// any other host the editing shortcuts would differ). The override exists
+/// only in debug builds (profile and release throw on a write), so a profile
+/// run on another host stops here instead of measuring the wrong shortcuts.
 void _asMac() {
   if (defaultTargetPlatform == TargetPlatform.macOS) return;
+  if (!kDebugMode) {
+    throw TestFailure('the benchmark runs on macOS: no platform override');
+  }
   debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
 }
 
@@ -912,9 +917,17 @@ void main() {
   final selection = _selection();
 
   void publish() {
-    // The test binding checks the override is unset when a test ends.
-    debugDefaultTargetPlatformOverride = null;
-    binding.reportData = {..._report.toData(), 'failures': List.of(_failures)};
+    try {
+      binding.reportData = {
+        ..._report.toData(),
+        'failures': List.of(_failures),
+      };
+    } finally {
+      // The test binding checks the override is unset when a test ends. The
+      // override is a debug-only setter: a write throws in profile and
+      // release, and that must never keep the report from being set.
+      if (kDebugMode) debugDefaultTargetPlatformOverride = null;
+    }
   }
 
   for (final c in selection.cases) {

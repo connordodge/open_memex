@@ -316,6 +316,53 @@ void main() {
       },
     );
 
+    test(
+      'every write of the platform override in integration_test sits under a debug-mode guard',
+      () {
+        final write = RegExp(r'debugDefaultTargetPlatformOverride\s*=[^=]');
+        for (final path in [_benchmark, _core]) {
+          final lines = _code(_read(path)).split('\n');
+          for (var i = 0; i < lines.length; i++) {
+            if (!write.hasMatch(lines[i])) continue;
+            // The guard is on the line itself, or one of the three lines
+            // above it (an if block or an early return).
+            final near = lines.sublist(i < 3 ? 0 : i - 3, i + 1).join('\n');
+            expect(
+              near.contains('kDebugMode'),
+              isTrue,
+              reason:
+                  '$path:${i + 1}: the setter throws in profile and release',
+            );
+          }
+        }
+        // Control: the benchmark writes the override at least twice.
+        expect(
+          write.allMatches(_code(_read(_benchmark))).length,
+          greaterThanOrEqualTo(2),
+        );
+      },
+    );
+
+    test(
+      'the benchmark publishes the report before it resets the platform override',
+      () {
+        final src = _code(_read(_benchmark));
+        final start = src.indexOf('void publish()');
+        expect(start, isNonNegative);
+        final body = src.substring(
+          start,
+          src.indexOf('for (final c in', start),
+        );
+        final report = body.indexOf('binding.reportData =');
+        final finallyAt = body.indexOf('finally');
+        final reset = body.indexOf('debugDefaultTargetPlatformOverride = null');
+        expect(report, isNonNegative);
+        expect(finallyAt, greaterThan(report));
+        expect(reset, greaterThan(finallyAt));
+        expect(body.substring(finallyAt, reset), contains('kDebugMode'));
+      },
+    );
+
     test('the benchmark and its driver never call print', () {
       for (final path in [_benchmark, _core, _driver]) {
         final lines = _read(path).split('\n');
