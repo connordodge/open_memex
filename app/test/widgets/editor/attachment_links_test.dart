@@ -372,7 +372,9 @@ void main() {
           ('[](https://example.org)', 'example.org'),
           ('[](a/b.png)', 'b.png'),
         ];
-        final control = '![](${_t142Path('ok.png')})';
+        // The control sits in a sentence: a lone reference line is an
+        // attachment row (#143), not a link in a paragraph row.
+        final control = 'see ![](${_t142Path('ok.png')}) end';
         final text =
             'head\n${[for (final c in cases) c.$1].join('\n')}\n$control\ntail';
         // Rendered: none is link styled or hidden (no token), the control is.
