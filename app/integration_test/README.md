@@ -70,8 +70,9 @@ The driver writes everything the benchmark reports to
 - `verdicts`: one row per judged (case, metric): the Requirement, the limit,
   the observed max and the verdict.
 - `markdown`: the same verdicts as a table, ready for a PR body.
-- `failures`: a phase that threw, with its case id and the first line of the
-  error. The run goes on; the metrics of that phase read `INCOMPLETE` in
+- `failures`: a phase that threw, with its case id, the first line of the
+  error and the top three stack frames (repo-relative paths, never a home
+  path). The run goes on; the metrics of that phase read `INCOMPLETE` in
   `verdicts`.
 
 ### Metrics

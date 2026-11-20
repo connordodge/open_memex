@@ -6,6 +6,9 @@
 //
 // The tests in `test/perf/long_note_benchmark_core_test.dart` are the
 // contract.
+import 'package:flutter/services.dart'
+    show LogicalKeyboardKey, PhysicalKeyboardKey;
+
 import '../test/support/long_note_fixtures.dart';
 
 /// The metric names the benchmark reports (the keys under a case in the
@@ -602,4 +605,88 @@ class BenchReport {
     }
     return b.toString();
   }
+}
+
+// ------------------------------------------------- profile-build run helpers
+
+/// The [PhysicalKeyboardKey] to pass with [key] to a simulated key event.
+///
+/// The test binding looks a simulated key's physical key up by comparing
+/// `debugName`s, and `debugName` is null outside debug builds: in a profile
+/// build the lookup finds nothing and the simulation throws "Null check
+/// operator used on a null value" (the first profile run: every Select All
+/// and the paste). A key sent with the physical key this returns skips the
+/// lookup. Throws for a key the benchmark does not send.
+PhysicalKeyboardKey benchmarkPhysicalKey(LogicalKeyboardKey key) {
+  if (key == LogicalKeyboardKey.metaLeft) return PhysicalKeyboardKey.metaLeft;
+  if (key == LogicalKeyboardKey.keyA) return PhysicalKeyboardKey.keyA;
+  if (key == LogicalKeyboardKey.keyV) return PhysicalKeyboardKey.keyV;
+  throw ArgumentError.value(key.keyId, 'key', 'no physical key for this key');
+}
+
+/// Polls [isMet] until it holds, at most [attempts] times: each time it does
+/// not, [nudge] (an explicit request, such as a focus request) runs, then
+/// [pause] (real time passing). Returns whether [isMet] holds at the end.
+/// Bounded, and it never waits when [isMet] already holds.
+Future<bool> awaitCondition({
+  required bool Function() isMet,
+  required Future<void> Function() pause,
+  Future<void> Function()? nudge,
+  int attempts = 60,
+}) async {
+  for (var i = 0; i < attempts; i++) {
+    if (isMet()) return true;
+    if (nudge != null) await nudge();
+    if (isMet()) return true;
+    await pause();
+  }
+  return isMet();
+}
+
+/// [text] with every machine-specific path made repo-relative: a file URI or
+/// absolute path under the app package becomes `app/<dir>/...`, any other
+/// path under a home directory keeps only its last segment (`.../name.dart`),
+/// and a bare home directory becomes `~`.
+String repoRelative(String text) {
+  var out = text.replaceAllMapped(
+    RegExp(
+      r'(?:file://)?/[^\s():]*?/app/((?:lib|test|integration_test|test_driver)/)',
+    ),
+    (m) => 'app/${m[1]}',
+  );
+  out = out.replaceAllMapped(
+    RegExp(r'(?:file://)?/(?:Users|home)/[^\s():]*/([^\s():/]+)'),
+    (m) => '.../${m[1]}',
+  );
+  return out.replaceAll(RegExp(r'/(?:Users|home)/[^/\s():]+'), '~');
+}
+
+/// The first [count] frames of [stack], as `at <frame>` strings: no index, no
+/// async-gap marker, paths repo-relative ([repoRelative]).
+List<String> topFrames(StackTrace stack, {int count = 3}) {
+  final out = <String>[];
+  for (final line in stack.toString().split('\n')) {
+    final frame = line.trim().replaceFirst(RegExp(r'^#\d+\s+'), '');
+    if (frame.isEmpty || frame.startsWith('<asynchronous')) continue;
+    out.add('at ${repoRelative(frame)}');
+    if (out.length == count) break;
+  }
+  return out;
+}
+
+/// What the report keeps of a phase that threw: the case id, the phase and
+/// the first line of the error, then the top [frames] stack frames, one per
+/// line, so the next run shows where the throw came from.
+String failureRecord(
+  String id,
+  String phase,
+  Object error,
+  StackTrace stack, {
+  int frames = 3,
+}) {
+  final first = repoRelative(error.toString().split('\n').first);
+  return [
+    '$id $phase: $first',
+    for (final f in topFrames(stack, count: frames)) '    $f',
+  ].join('\n');
 }

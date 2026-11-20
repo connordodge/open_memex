@@ -174,9 +174,10 @@ Future<void> _phase(
 ) async {
   try {
     await body();
-  } catch (e) {
-    final text = e.toString().split('\n').first;
-    _failures.add('$id $name: $text');
+  } catch (e, stack) {
+    // The error and the top frames of its stack, repo-relative: the first
+    // line alone does not say where a throw came from.
+    _failures.add(failureRecord(id, name, e, stack));
   }
 }
 
@@ -286,6 +287,37 @@ void _asMac() {
 
 // ------------------------------------------------------------------- rig
 
+bool _windowAwaited = false;
+
+/// Before the run's first pump: waits, on the real clock, until the app is
+/// active. The window is brought to the front a few seconds after launch, and
+/// a focus request made before that does not stick. A window that never
+/// becomes active is recorded; the run goes on (the focus waits then report
+/// what they could not do).
+Future<void> _awaitWindow(WidgetTester tester) async {
+  if (_windowAwaited) return;
+  _windowAwaited = true;
+  bool active() {
+    final state = WidgetsBinding.instance.lifecycleState;
+    return state == null || state == AppLifecycleState.resumed;
+  }
+
+  final ok = await awaitCondition(
+    isMet: active,
+    pause: () async {
+      await Future<void>.delayed(_focusPause);
+      await tester.pump();
+    },
+    attempts: _focusTries,
+  );
+  if (!ok) {
+    _failures.add(
+      'window: the app was not active after the wait '
+      '(lifecycle: ${WidgetsBinding.instance.lifecycleState})',
+    );
+  }
+}
+
 /// Pumps the workspace on a vault holding one note, at the benchmark's
 /// window size and real text scale.
 Future<NoteRevealHarness> _pump(
@@ -295,6 +327,7 @@ Future<NoteRevealHarness> _pump(
   String? role,
   List<Override> extraOverrides = const [],
 }) async {
+  await _awaitWindow(tester);
   final db = FakeVaultDb.v5()
     ..seedNote(
       id: _noteId,
@@ -444,14 +477,59 @@ Future<void> _resize(WidgetTester tester, String id) async {
   _recordFrames(id, frames, BenchMetric.resizeBuild, BenchMetric.resizeRaster);
 }
 
+/// Whether the first segment's rows host has a row with focus.
+bool _rowHasFocus(WidgetTester tester) {
+  try {
+    return rowsHostOf(tester).focusedRow != null;
+  } on StateError {
+    return false;
+  }
+}
+
+/// How long [_holdFocus] waits in all: 60 tries, half a second apart.
+const _focusTries = 60;
+const _focusPause = Duration(milliseconds: 500);
+
+/// Waits, on the real clock, until a row field of the first segment holds
+/// focus, asking for it with [request] every time it does not. The app window
+/// may not be key yet (the first case of a run starts before the window comes
+/// to the front), and a focus request made then does not stick. Throws when
+/// focus never arrives.
+Future<void> _holdFocus(
+  WidgetTester tester,
+  Future<void> Function() request,
+) async {
+  final held = await awaitCondition(
+    isMet: () => _rowHasFocus(tester),
+    nudge: request,
+    pause: () async {
+      await Future<void>.delayed(_focusPause);
+      await tester.pump();
+    },
+    attempts: _focusTries,
+  );
+  if (!held) {
+    final seconds = _focusTries * _focusPause.inMilliseconds ~/ 1000;
+    throw TestFailure(
+      'no row field held focus after $seconds s '
+      '(app lifecycle: ${WidgetsBinding.instance.lifecycleState})',
+    );
+  }
+}
+
 /// Puts the caret mid-note, in a row's text (after a `: ` the fixtures put
-/// in every line), and gives the row focus.
+/// in every line), and gives the row focus; waits until a row field holds it.
 Future<void> _focusMiddle(WidgetTester tester) async {
-  final text = segmentEditingAt(tester, 0).text;
-  final colon = text.indexOf(': ', text.length ~/ 2);
-  final at = colon < 0 ? text.length ~/ 2 : colon + 2;
-  await focusSegmentAt(tester, find.byKey(textSegmentKey(0)), offset: at);
-  await pumpFrames(tester);
+  Future<void> request() async {
+    final text = segmentEditingAt(tester, 0).text;
+    final colon = text.indexOf(': ', text.length ~/ 2);
+    final at = colon < 0 ? text.length ~/ 2 : colon + 2;
+    await focusSegmentAt(tester, find.byKey(textSegmentKey(0)), offset: at);
+    await pumpFrames(tester);
+  }
+
+  await request();
+  await _holdFocus(tester, request);
 }
 
 /// The focused row's field.
@@ -516,16 +594,38 @@ Future<List<double>> _pointerDrag(
   return out;
 }
 
+// Simulated macOS key events. Each passes its physical key: without one the
+// test binding looks it up by `debugName`, which is null in a profile build,
+// and the simulation throws a null check error (see [benchmarkPhysicalKey]).
+
+Future<bool> _keyDown(WidgetTester tester, LogicalKeyboardKey key) =>
+    tester.sendKeyDownEvent(
+      key,
+      platform: 'macos',
+      physicalKey: benchmarkPhysicalKey(key),
+    );
+
+Future<bool> _keyPress(WidgetTester tester, LogicalKeyboardKey key) =>
+    tester.sendKeyEvent(
+      key,
+      platform: 'macos',
+      physicalKey: benchmarkPhysicalKey(key),
+    );
+
+Future<bool> _keyUp(WidgetTester tester, LogicalKeyboardKey key) =>
+    tester.sendKeyUpEvent(
+      key,
+      platform: 'macos',
+      physicalKey: benchmarkPhysicalKey(key),
+    );
+
 /// Cmd-[key], one event.
 Future<double> _cmd(WidgetTester tester, LogicalKeyboardKey key) async {
-  await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft, platform: 'macos');
+  await _keyDown(tester, LogicalKeyboardKey.metaLeft);
   try {
-    return await _event(
-      tester,
-      () => tester.sendKeyEvent(key, platform: 'macos'),
-    );
+    return await _event(tester, () => _keyPress(tester, key));
   } finally {
-    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft, platform: 'macos');
+    await _keyUp(tester, LogicalKeyboardKey.metaLeft);
     await tester.pump();
   }
 }
@@ -831,16 +931,18 @@ Future<void> _pasteIntoEmpty(WidgetTester tester) async {
     ),
   );
   await _phase(id, 'paste', () async {
-    await focusSegmentAt(tester, find.byKey(textSegmentKey(0)));
-    await pumpFrames(tester);
+    Future<void> focusRow() async {
+      await focusSegmentAt(tester, find.byKey(textSegmentKey(0)));
+      await pumpFrames(tester);
+    }
+
+    await focusRow();
+    await _holdFocus(tester, focusRow);
     bool pasted() => segmentEditingAt(tester, 0).text.length >= text.length;
     final watch = Stopwatch()..start();
-    await tester.sendKeyDownEvent(
-      LogicalKeyboardKey.metaLeft,
-      platform: 'macos',
-    );
-    await tester.sendKeyEvent(LogicalKeyboardKey.keyV, platform: 'macos');
-    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft, platform: 'macos');
+    await _keyDown(tester, LogicalKeyboardKey.metaLeft);
+    await _keyPress(tester, LogicalKeyboardKey.keyV);
+    await _keyUp(tester, LogicalKeyboardKey.metaLeft);
     // Cmd-V reaches the clipboard within a few frames, or never.
     for (var i = 0; i < 30 && reads == 0; i++) {
       await tester.pump();
