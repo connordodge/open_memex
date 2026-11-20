@@ -641,8 +641,10 @@ class _NoteEditorState extends ConsumerState<NoteEditor> {
                 : Stack(
                     children: [
                       Positioned.fill(
-                        // Files dropped on the body attach (#147, R7).
+                        // Files dropped on the body attach (#147, R7); the
+                        // outgoing editor of a zoom takes no drop.
                         child: AttachmentDropTarget(
+                          active: !_outgoing,
                           child: _body(note, editor, controller, header),
                         ),
                       ),

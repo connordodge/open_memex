@@ -24,14 +24,23 @@ const attachmentDropOutlineKey = Key('editor-drop-outline');
 /// - a drop on the note header, or outside this widget's box, does nothing;
 /// - while files are dragged over it, [attachmentDropOutlineKey] shows;
 /// - nothing is offered while the Command palette, a dialog or a sheet is
-///   open, or while the vault can't be written (R11).
+///   open, while the vault can't be written (R11), or while [active] is
+///   false (the outgoing editor of a zoom switch).
 ///
 /// The seam's local positions are relative to this widget's box.
 class AttachmentDropTarget extends ConsumerStatefulWidget {
-  const AttachmentDropTarget({super.key, required this.child});
+  const AttachmentDropTarget({
+    super.key,
+    required this.child,
+    this.active = true,
+  });
 
   /// The editor body.
   final Widget child;
+
+  /// False while the editor is the outgoing one of a zoom switch: one drop
+  /// then reaches only the incoming editor's target.
+  final bool active;
 
   @override
   ConsumerState<AttachmentDropTarget> createState() =>
@@ -102,7 +111,10 @@ class _AttachmentDropTargetState extends ConsumerState<AttachmentDropTarget> {
     return ref
         .watch(attachmentDropSourceProvider)
         .buildTarget(
-          enabled: writable && (ModalRoute.isCurrentOf(context) ?? true),
+          enabled:
+              widget.active &&
+              writable &&
+              (ModalRoute.isCurrentOf(context) ?? true),
           onEntered: _onDragged,
           onUpdated: _onDragged,
           onExited: _onExited,

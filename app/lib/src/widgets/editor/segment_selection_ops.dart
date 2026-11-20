@@ -24,7 +24,10 @@ import 'spelling_menu.dart';
 /// - A composition that starts deletes the range the same way (the host's
 ///   composing interceptor, D19).
 /// - The right-click menu offers Copy, Cut, Paste and Select All; Select
-///   All invokes the field's `SelectAllTextIntent` as Cmd+A does.
+///   All invokes the field's `SelectAllTextIntent` as Cmd+A does. Paste is
+///   offered only while the clipboard holds file URLs, text or an image
+///   (`canPasteOrAttach`, R8: file URLs and images count only while the
+///   vault can be written, R11).
 /// - A right click on a rendered table grid shows the same menu at the
 ///   caret the pointer layer put in the revealed table (Spec #197 R21,
 ///   ruling D14), without Copy and Cut while the selection is a caret.
@@ -238,12 +241,24 @@ class _SegmentSelectionOpsState extends State<SegmentSelectionOps> {
     final at = event.position;
     scheduleMicrotask(() {
       if (!mounted) return;
-      if (grid || _across()) {
+      if (grid) {
         _showMenu(at);
+      } else if (_across()) {
+        unawaited(_showAcrossMenu(at));
       } else {
         unawaited(_offerAttachPaste(at));
       }
     });
+  }
+
+  /// The menu of a right click at global [at] over a selection that spans
+  /// rows, with Paste only while `canPasteOrAttach` (R8, R11). Nothing
+  /// shows once another press came or the selection no longer spans rows.
+  Future<void> _showAcrossMenu(Offset at) async {
+    final press = _presses;
+    final paste = await canPasteOrAttach(context);
+    if (!mounted || press != _presses || !_across()) return;
+    _showMenu(at, paste: paste);
   }
 
   /// Q3: a right click at global [at] on the focused row's field, off a
@@ -274,7 +289,8 @@ class _SegmentSelectionOpsState extends State<SegmentSelectionOps> {
     );
   }
 
-  void _showMenu(Offset at) {
+  /// The selection ops menu at global [at]; [paste] false leaves Paste out.
+  void _showMenu(Offset at, {bool paste = true}) {
     // A right click on a flagged range of a rendered grid (a caret): the
     // spelling menu instead (WI #438).
     final field = _view.selection.isCollapsed ? _field() : null;
@@ -304,7 +320,8 @@ class _SegmentSelectionOpsState extends State<SegmentSelectionOps> {
               item(ContextMenuButtonType.copy, _copy),
               item(ContextMenuButtonType.cut, _cut),
             ],
-            item(ContextMenuButtonType.paste, () => unawaited(_paste())),
+            if (paste)
+              item(ContextMenuButtonType.paste, () => unawaited(_paste())),
             item(ContextMenuButtonType.selectAll, _selectAll),
           ],
         ),
