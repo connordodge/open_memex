@@ -106,4 +106,48 @@ void main() {
       expect(w.counter, endsWith(' of 4'));
     },
   );
+
+  testWidgets(
+    'find still counts a reference line inside a card frontmatter block because it is prose there not an attachment row',
+    (tester) async {
+      final db = wi85SeedVault();
+      db.seedBlock(wi85DailyId, 't144d', ord: 2, text: '---');
+      db.seedBlock(wi85DailyId, 't144e', ord: 3, text: _t144Image);
+      db.seedBlock(wi85DailyId, 't144f', ord: 4, text: '---');
+      db.seedBlock(wi85DailyId, 't144g', ord: 5, text: 'Closing words');
+      db.seedNote(
+        id: _t144TopicId,
+        title: 'Diagram notes',
+        role: 'topic',
+        content: 'Intro line\n![[$wi85DailyDate#^t144d..^t144g]]\n',
+      );
+      final w = await pumpWi85(
+        tester,
+        db: db,
+        open: _t144TopicId,
+        overrides: [
+          attachmentsProvider.overrideWithValue(FakeAttachmentVault()),
+        ],
+      );
+      // Fixture: the card opens with frontmatter, so its middle line is prose
+      // text and the card shows no attachment block.
+      expect(
+        find.byKey(const ValueKey('card-attachment-1')),
+        findsNothing,
+        reason: 'a reference line inside frontmatter is not an attachment row',
+      );
+
+      await w.openOn('diagram');
+
+      final cardText = ['---', _t144Image, '---', 'Closing words'].join('\n');
+      expect(
+        [
+          for (final m in w.state.matches)
+            if (m.kind == FindSourceKind.card) m.start,
+        ],
+        [cardText.indexOf('diagram'), cardText.indexOf('diagram.png')],
+        reason: 'the frontmatter line holding the query matches in the card',
+      );
+    },
+  );
 }
