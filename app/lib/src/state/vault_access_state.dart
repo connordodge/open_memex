@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../vault_access/hosted/hosted_vault_access.dart';
 import '../vault_access/local/local_vault_access.dart';
 import '../vault_access/vault_access.dart';
+import 'file_revealer.dart';
+import 'url_opener.dart';
 import 'vault_open_controller.dart';
 import 'vault_open_hosted.dart';
 import 'vault_state.dart';
@@ -12,7 +14,9 @@ import 'vault_state.dart';
 /// `LocalVaultAccess` for a [LocalVaultRef]'s folder (either handle may be
 /// null). A [HostedVaultRef] gives the [HostedVaultAccess] over the client
 /// its open made (`hostedSessionProvider`), or null when no open made one;
-/// the composite is disposed when the open vault changes (D19).
+/// the composite is disposed when the open vault changes (D19). Its
+/// attachments domain opens and reveals through `urlOpenerProvider` and
+/// `fileRevealerProvider` (Spec #123 W3).
 final vaultAccessProvider = Provider<VaultAccess?>((ref) {
   final vault = ref.watch(currentVaultProvider);
   if (vault is HostedVaultRef) {
@@ -23,6 +27,8 @@ final vaultAccessProvider = Provider<VaultAccess?>((ref) {
       client: session.client,
       vaultName: vault.vaultName,
       onVaultGone: () => controller.hostedVaultGoneWhileOpen(vault),
+      urlOpener: ref.watch(urlOpenerProvider),
+      fileRevealer: ref.watch(fileRevealerProvider),
     );
     ref.onDispose(access.dispose);
     return access;
@@ -33,6 +39,8 @@ final vaultAccessProvider = Provider<VaultAccess?>((ref) {
     vaultPath: path,
     db: ref.watch(vaultDbProvider),
     cli: ref.watch(memexCliProvider),
+    urlOpener: ref.watch(urlOpenerProvider),
+    fileRevealer: ref.watch(fileRevealerProvider),
   );
 });
 
