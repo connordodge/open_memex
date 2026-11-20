@@ -87,28 +87,53 @@ Future<T?> _orNull<T>(Future<T> future) =>
 /// can be written.
 ///
 /// Answers within [pasteOfferWait], so the menu asking still shows its
-/// other items: a pasteboard read that fails, or has not answered by then,
-/// counts as no file URLs and no image, and Flutter's own text check
-/// (`Clipboard.hasStrings`) decides, if it answers by then.
-Future<bool> canPasteOrAttach(BuildContext context) async {
+/// other items. Flutter's own text check (`Clipboard.hasStrings`) is sent
+/// first, then the pasteboard read. A read that fails, or has not answered
+/// by then, counts as no file URLs and no image, and the text check decides
+/// if it has answered by then (#147 r4).
+///
+/// When the answer was no because the read had not answered in time,
+/// [onLateOffer] runs once if the read (or, when it fails, the text check)
+/// later finds something to paste: the read of a large image-only clipboard
+/// (a TIFF converted to PNG, then sent whole) can take longer than
+/// [pasteOfferWait], and the caller can then add Paste to its menu.
+Future<bool> canPasteOrAttach(
+  BuildContext context, {
+  VoidCallback? onLateOffer,
+}) async {
   final container = ProviderScope.containerOf(context, listen: false);
+  // Sent before the read, so a slow native read does not hold it back.
+  bool? text;
+  final textCheck = _orNull(
+    Clipboard.hasStrings(),
+  ).then((value) => text = value ?? false);
+  final read = _orNull(container.read(pasteboardReaderProvider).read());
+  bool offers(PasteboardContents clip) =>
+      clip.hasText ||
+      _writable(container) && (clip.files.isNotEmpty || clip.png != null);
+
   final expired = Completer<void>();
   final limit = Timer(pasteOfferWait, expired.complete);
+  final timeout = expired.future.then((_) => null);
   try {
-    final clip = await Future.any([
-      _orNull(container.read(pasteboardReaderProvider).read()),
-      expired.future.then((_) => null),
-    ]);
-    if (clip != null) {
-      if (clip.hasText) return true;
-      return _writable(container) &&
-          (clip.files.isNotEmpty || clip.png != null);
+    final clip = await Future.any<PasteboardContents?>([read, timeout]);
+    if (clip != null) return offers(clip);
+    if (!expired.isCompleted) {
+      // The read failed in time: the text check decides, if it answers in
+      // the time left.
+      return await Future.any<bool?>([textCheck, timeout]) ?? false;
     }
-    if (expired.isCompleted) return false;
-    return await Future.any([
-      _orNull(Clipboard.hasStrings()).then((text) => text ?? false),
-      expired.future.then((_) => false),
-    ]);
+    final now = text ?? false;
+    if (!now && onLateOffer != null) {
+      unawaited(
+        read
+            .then((late) async => late == null ? await textCheck : offers(late))
+            .then((offered) {
+              if (offered) onLateOffer();
+            }),
+      );
+    }
+    return now;
   } finally {
     limit.cancel();
   }

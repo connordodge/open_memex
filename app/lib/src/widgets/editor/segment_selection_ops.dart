@@ -254,10 +254,18 @@ class _SegmentSelectionOpsState extends State<SegmentSelectionOps> {
   /// The menu of a right click at global [at] over a selection that spans
   /// rows, with Paste only while `canPasteOrAttach` (R8, R11). Nothing
   /// shows once another press came or the selection no longer spans rows.
+  /// A menu shown without Paste because the clipboard answered late gains
+  /// Paste once it does, while it is still open for that press (#147 r4).
   Future<void> _showAcrossMenu(Offset at) async {
     final press = _presses;
-    final paste = await canPasteOrAttach(context);
-    if (!mounted || press != _presses || !_across()) return;
+    bool current() => mounted && press == _presses && _across();
+    final paste = await canPasteOrAttach(
+      context,
+      onLateOffer: () {
+        if (current() && _menu.isShown) _showMenu(at);
+      },
+    );
+    if (!current()) return;
     _showMenu(at, paste: paste);
   }
 
