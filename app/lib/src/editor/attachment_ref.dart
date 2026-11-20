@@ -73,6 +73,14 @@ const List<String> executableExtensions = <String>[
   'applescript',
   'jar',
   'exe',
+  'fileloc',
+  'inetloc',
+  'webloc',
+  'afploc',
+  'ftploc',
+  'mailloc',
+  'newsloc',
+  'atloc',
 ];
 
 const String _objectsDir = 'objects';
