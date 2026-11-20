@@ -241,6 +241,35 @@ void main() {
     );
   });
 
+  group('gutter rule ends on the line of the last character (AC10)', () {
+    testWidgets(
+      'a gutter rule for a block whose last character is a line break stops at that line and not at the line after it',
+      (tester) async {
+        // The block's range ends with its own line break: the first byte
+        // after it starts the blank line below.
+        final r = await _launch(tester, const [
+          SeedBlock('p-top', 'Top line.'),
+          SeedBlock('a-nl', 'Agent line.\n', source: 'agent'),
+          SeedBlock('p-bottom', 'Bottom line.'),
+        ]);
+        final text = r.bodyText;
+        final start = text.indexOf('Agent line.');
+        final blank = start + 'Agent line.\n'.length;
+        expect(text[blank], '\n', reason: 'a blank line follows the block');
+        final rule = tester.getRect(r.gutterRule('a-nl'));
+
+        _expectCovers(r, rule, start, reason: 'the agent line');
+        _expectMisses(r, rule, blank, reason: 'the blank line below it');
+        _expectMisses(
+          r,
+          rule,
+          text.indexOf('Bottom line.'),
+          reason: 'the bottom line',
+        );
+      },
+    );
+  });
+
   group('captured text stays editable (AC13)', () {
     testWidgets(
       'the person edits the text of an agent block in the single field and the edit saves through memex update',
