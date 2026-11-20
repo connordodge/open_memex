@@ -44,25 +44,33 @@ class SearchHit {
     this.startByte,
     this.via,
     required this.noteUpdatedAt,
+    this.attachment,
   });
 
   /// Parses one req 34 hit object: `note_id`, `note_title`, `note_role`
   /// (null, `daily` or `topic`), `day` (null or `YYYY-MM-DD`), `chunk_id`,
   /// `snippet`, `start_byte` (int or null), `via` (null or `YYYY-MM-DD`) and
-  /// `note_updated_at` (ms epoch). A nullable key may be absent. A missing
-  /// or null required key, or a value of the wrong type, throws
+  /// `note_updated_at` (ms epoch), plus the optional `attachment` (null,
+  /// absent or `{name, path}`, Spec #123 R48). A nullable key may be absent.
+  /// A missing or null required key, or a value of the wrong type, throws
   /// [FormatException].
-  factory SearchHit.fromJson(Map<String, Object?> json) => SearchHit(
-    noteId: _required<String>(json, 'note_id'),
-    noteTitle: _required<String>(json, 'note_title'),
-    noteRole: _optional<String>(json, 'note_role'),
-    day: _optional<String>(json, 'day'),
-    chunkId: _required<String>(json, 'chunk_id'),
-    snippet: _required<String>(json, 'snippet'),
-    startByte: _optional<int>(json, 'start_byte'),
-    via: _optional<String>(json, 'via'),
-    noteUpdatedAt: _required<int>(json, 'note_updated_at'),
-  );
+  factory SearchHit.fromJson(Map<String, Object?> json) {
+    final attachment = _optional<Map<String, Object?>>(json, 'attachment');
+    return SearchHit(
+      noteId: _required<String>(json, 'note_id'),
+      noteTitle: _required<String>(json, 'note_title'),
+      noteRole: _optional<String>(json, 'note_role'),
+      day: _optional<String>(json, 'day'),
+      chunkId: _required<String>(json, 'chunk_id'),
+      snippet: _required<String>(json, 'snippet'),
+      startByte: _optional<int>(json, 'start_byte'),
+      via: _optional<String>(json, 'via'),
+      noteUpdatedAt: _required<int>(json, 'note_updated_at'),
+      attachment: attachment == null
+          ? null
+          : SearchHitAttachment.fromJson(attachment),
+    );
+  }
 
   final String noteId;
   final String noteTitle;
@@ -88,6 +96,11 @@ class SearchHit {
   /// The note's `updated_at`, ms epoch.
   final int noteUpdatedAt;
 
+  /// The attachment this hit came from (Spec #123 R46, R48), or null for a
+  /// hit on the note's own text (and from a `memex` or server that predates
+  /// attachments).
+  final SearchHitAttachment? attachment;
+
   @override
   bool operator ==(Object other) =>
       other is SearchHit &&
@@ -99,7 +112,8 @@ class SearchHit {
       other.snippet == snippet &&
       other.startByte == startByte &&
       other.via == via &&
-      other.noteUpdatedAt == noteUpdatedAt;
+      other.noteUpdatedAt == noteUpdatedAt &&
+      other.attachment == attachment;
 
   @override
   int get hashCode => Object.hash(
@@ -112,13 +126,156 @@ class SearchHit {
     startByte,
     via,
     noteUpdatedAt,
+    attachment,
   );
 
   @override
   String toString() =>
       'SearchHit($noteId, $noteTitle, role: $noteRole, day: $day, '
       'chunk: $chunkId, startByte: $startByte, via: $via, '
-      'updatedAt: $noteUpdatedAt)';
+      'updatedAt: $noteUpdatedAt, attachment: $attachment)';
+}
+
+/// A hit's `attachment: {name, path}` (Spec #123 R48). Value equality.
+class SearchHitAttachment {
+  const SearchHitAttachment({required this.name, required this.path});
+
+  /// Parses `{name, path}`; a missing or wrong-typed key throws
+  /// [FormatException].
+  factory SearchHitAttachment.fromJson(Map<String, Object?> json) =>
+      SearchHitAttachment(
+        name: _required<String>(json, 'name'),
+        path: _required<String>(json, 'path'),
+      );
+
+  /// The stored name.
+  final String name;
+
+  /// The vault-relative `objects/<h2>/<hash>/<name>` path.
+  final String path;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SearchHitAttachment && other.name == name && other.path == path;
+
+  @override
+  int get hashCode => Object.hash(SearchHitAttachment, name, path);
+
+  @override
+  String toString() => 'SearchHitAttachment($name, $path)';
+}
+
+/// One referencing note of a [SearchAttachment]: `{id, title}`. Value
+/// equality.
+class SearchAttachmentNote {
+  const SearchAttachmentNote({required this.id, required this.title});
+
+  /// Parses `{id, title}`; a missing or wrong-typed key throws
+  /// [FormatException].
+  factory SearchAttachmentNote.fromJson(Map<String, Object?> json) =>
+      SearchAttachmentNote(
+        id: _required<String>(json, 'id'),
+        title: _required<String>(json, 'title'),
+      );
+
+  final String id;
+  final String title;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SearchAttachmentNote && other.id == id && other.title == title;
+
+  @override
+  int get hashCode => Object.hash(SearchAttachmentNote, id, title);
+
+  @override
+  String toString() => 'SearchAttachmentNote($id, $title)';
+}
+
+/// One entry of the answer's top-level `attachments` list (Spec #123 R48):
+/// `{name, path, type, size, snippet?, notes: [{id, title}]}`. [snippet] is
+/// the matching text of a content match, null for a name-only match. Value
+/// equality.
+class SearchAttachment {
+  const SearchAttachment({
+    required this.name,
+    required this.path,
+    required this.size,
+    required this.type,
+    this.snippet,
+    this.notes = const [],
+  });
+
+  /// Parses one entry: `name`, `path`, `type` (strings), `size` (int),
+  /// `snippet` (string, or null or absent) and `notes` (a list of
+  /// `{id, title}`). A missing or wrong-typed key throws [FormatException].
+  factory SearchAttachment.fromJson(Map<String, Object?> json) =>
+      SearchAttachment(
+        name: _required<String>(json, 'name'),
+        path: _required<String>(json, 'path'),
+        size: _required<int>(json, 'size'),
+        type: _required<String>(json, 'type'),
+        snippet: _optional<String>(json, 'snippet'),
+        notes: [
+          for (final note in _required<List<Object?>>(json, 'notes'))
+            SearchAttachmentNote.fromJson(
+              note is Map<String, Object?>
+                  ? note
+                  : throw const FormatException(
+                      'search attachment: a note is not an object',
+                    ),
+            ),
+        ],
+      );
+
+  final String name;
+  final String path;
+
+  /// Bytes.
+  final int size;
+
+  /// The media type, e.g. `text/plain`.
+  final String type;
+
+  /// The matching text (content match), or null (name-only match).
+  final String? snippet;
+
+  /// The notes that reference it, in the answer's order.
+  final List<SearchAttachmentNote> notes;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SearchAttachment &&
+      other.name == name &&
+      other.path == path &&
+      other.size == size &&
+      other.type == type &&
+      other.snippet == snippet &&
+      _listEquals(other.notes, notes);
+
+  @override
+  int get hashCode => Object.hash(
+    SearchAttachment,
+    name,
+    path,
+    size,
+    type,
+    snippet,
+    Object.hashAll(notes),
+  );
+
+  @override
+  String toString() =>
+      'SearchAttachment($name, $path, $type, $size bytes, '
+      'snippet: $snippet, ${notes.length} notes)';
+}
+
+bool _listEquals<T>(List<T> a, List<T> b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
 }
 
 /// [json]'s [key] as a [T]; a missing, null or other-typed value throws
@@ -158,34 +315,39 @@ class SearchReady extends SearchResult {
     this.hits, {
     required this.semantic,
     required this.truncated,
+    this.attachments = const [],
   });
 
   final List<SearchHit> hits;
+
+  /// The matching attachments (Spec #123 R47, R48), in fused order; empty
+  /// when the answer has none (or predates attachments).
+  final List<SearchAttachment> attachments;
   final Semantic semantic;
   final bool truncated;
 
   @override
   bool operator ==(Object other) {
-    if (other is! SearchReady ||
-        other.semantic != semantic ||
-        other.truncated != truncated ||
-        other.hits.length != hits.length) {
-      return false;
-    }
-    for (var i = 0; i < hits.length; i++) {
-      if (other.hits[i] != hits[i]) return false;
-    }
-    return true;
+    return other is SearchReady &&
+        other.semantic == semantic &&
+        other.truncated == truncated &&
+        _listEquals(other.hits, hits) &&
+        _listEquals(other.attachments, attachments);
   }
 
   @override
-  int get hashCode =>
-      Object.hash(SearchReady, Object.hashAll(hits), semantic, truncated);
+  int get hashCode => Object.hash(
+    SearchReady,
+    Object.hashAll(hits),
+    semantic,
+    truncated,
+    Object.hashAll(attachments),
+  );
 
   @override
   String toString() =>
-      'SearchReady(${hits.length} hits, semantic: ${semantic.name}, '
-      'truncated: $truncated)';
+      'SearchReady(${hits.length} hits, ${attachments.length} attachments, '
+      'semantic: ${semantic.name}, truncated: $truncated)';
 }
 
 /// Search can't run on this vault right now, for [reason].
@@ -254,8 +416,9 @@ class ServerOutdated extends SearchUnavailableReason {
 
 /// The search answer `{"query":…,"semantic":…,"hits":[…],"truncated":…}`
 /// (req 34: the CLI's stdout and the route's 200 body alike) as a
-/// [SearchReady]. `query` is not read. Anything that is not such an answer
-/// throws [MemexException] (never [FormatException]).
+/// [SearchReady], with the optional top-level `attachments` list (Spec #123
+/// R48; absent or null = none). `query` is not read. Anything that is not
+/// such an answer throws [MemexException] (never [FormatException]).
 SearchReady searchReadyFromJson(Object? decoded) {
   if (decoded is! Map<String, Object?>) {
     throw MemexException('search failed: the answer is not a JSON object');
@@ -269,6 +432,7 @@ SearchReady searchReadyFromJson(Object? decoded) {
     );
   }
   try {
+    final attachments = _optional<List<Object?>>(decoded, 'attachments');
     return SearchReady(
       [
         for (final row in rows)
@@ -280,6 +444,16 @@ SearchReady searchReadyFromJson(Object? decoded) {
       ],
       semantic: semanticFromWire(semantic),
       truncated: truncated,
+      attachments: [
+        for (final entry in attachments ?? const <Object?>[])
+          SearchAttachment.fromJson(
+            entry is Map<String, Object?>
+                ? entry
+                : throw const FormatException(
+                    'search attachment: not an object',
+                  ),
+          ),
+      ],
     );
   } on FormatException catch (e) {
     throw MemexException('search failed: ${e.message}');

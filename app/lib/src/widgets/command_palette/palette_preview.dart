@@ -125,7 +125,9 @@ class PalettePreview extends ConsumerWidget {
 /// [content] split around the lines holding [hit]'s chunk: (before, the
 /// chunk's lines, after), or null with no byte offset or one past the end.
 /// The chunk runs from `start_byte` for the length of the hit's passage
-/// text (its 280-character cut and `…` aside).
+/// text (its 280-character cut and `…` aside). An attachment hit's text is
+/// the attachment's, not the note's, so its chunk is the line at
+/// `start_byte` alone.
 (String, String, String)? _chunkLines(String content, SearchHit hit) {
   final byte = hit.startByte;
   if (byte == null || byte < 0) return null;
@@ -137,7 +139,9 @@ class PalettePreview extends ConsumerWidget {
   final snippet = hit.snippet.endsWith('…')
       ? hit.snippet.substring(0, hit.snippet.length - 1)
       : hit.snippet;
-  final length = max<int>(1, snippet.trimRight().length);
+  final length = hit.attachment != null
+      ? 1
+      : max<int>(1, snippet.trimRight().length);
   final end = min(content.length, start + length);
   final lineStart = start == 0 ? 0 : content.lastIndexOf('\n', start - 1) + 1;
   final lastChar = max(start, end - 1);
