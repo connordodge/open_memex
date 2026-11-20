@@ -640,8 +640,16 @@ Future<void> _runCase(WidgetTester tester, BenchCase c) async {
 
   // The same scroll with the caret in the note (Requirement 3), recorded
   // under its own id.
+  // Only when the caret landed: without one the rows would read as a caret
+  // scroll that never had a caret, so a failed focus leaves them INCOMPLETE.
   await _phase(id, 'focus', () => _focusInMiddle(tester));
-  await _phase(id, 'scroll with caret', () => _scroll(tester, caretCaseId(id)));
+  if (rowsHostOf(tester).focusedRow != null) {
+    await _phase(
+      id,
+      'scroll with caret',
+      () => _scroll(tester, caretCaseId(id)),
+    );
+  }
 
   final wantsEditing = [
     BenchMetric.keystroke,
