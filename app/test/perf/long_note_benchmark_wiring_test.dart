@@ -265,6 +265,57 @@ void main() {
       expect(src, contains('PasteboardContents(hasText: true)'));
     });
 
+    test(
+      'the paste scenario asks the field to paste only when the clipboard was never read',
+      () {
+        final src = _code(_read(_benchmark));
+        final start = src.indexOf('Future<void> _pasteIntoEmpty(');
+        expect(start, isNonNegative);
+        final end = src.indexOf('Future<void> _reloadAfterOutsideEdit(');
+        expect(end, greaterThan(start));
+        final body = src.substring(start, end);
+        // The wait for Cmd-V gives up as soon as the clipboard was read.
+        expect(
+          RegExp(
+            r'for \(var i = 0; i < \d+ && reads == 0; i\+\+\)',
+          ).hasMatch(body),
+          isTrue,
+          reason: 'the pump loop stops once the key started a paste',
+        );
+        // The fallback paste, and the stopwatch restart it needs, sit inside
+        // the reads == 0 branch only: otherwise a paste already in flight lands
+        // twice and the timing restarts under it.
+        final branch = RegExp(
+          r'if \(reads == 0\) \{(?<inner>[^}]*)\}',
+        ).firstMatch(body);
+        expect(branch, isNotNull, reason: 'a reads == 0 fallback branch');
+        final inner = branch!.namedGroup('inner')!;
+        expect(inner, contains('pasteText('));
+        expect(inner, contains('..reset()'));
+        expect('pasteText('.allMatches(body), hasLength(1));
+        expect('..reset()'.allMatches(body), hasLength(1));
+      },
+    );
+
+    test(
+      'the benchmark scrolls with the caret only when the focus landed one',
+      () {
+        final src = _code(_read(_benchmark));
+        expect(
+          RegExp(
+            r"if \(rowsHostOf\(tester\)\.focusedRow != null\) \{\s*await _phase\(\s*id,\s*'scroll with caret',\s*\(\) => _scroll\(tester, caretCaseId\(id\)\),?\s*\);\s*\}",
+          ).hasMatch(src),
+          isTrue,
+          reason: 'a failed focus leaves the caret rows INCOMPLETE',
+        );
+        // The only caret scroll is the guarded one.
+        expect(
+          '_scroll(tester, caretCaseId(id))'.allMatches(src),
+          hasLength(1),
+        );
+      },
+    );
+
     test('the benchmark and its driver never call print', () {
       for (final path in [_benchmark, _core, _driver]) {
         final lines = _read(path).split('\n');
