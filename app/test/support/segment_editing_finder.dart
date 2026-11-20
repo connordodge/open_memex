@@ -7,6 +7,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/editor_rows.dart';
 import 'package:open_memex_app/src/widgets/editor/segment_editing.dart';
+import 'package:open_memex_app/src/widgets/editor/segment_view.dart';
 
 /// Key of text segment [i] (`text-segment-<i>`).
 Key textSegmentKey(int i) => Key('text-segment-$i');
@@ -116,7 +117,13 @@ Finder segmentRowFields(Finder finder) =>
 /// Focuses the field of the text segment at, under or above [finder] that
 /// holds segment [offset] (default: the segment's end), then puts the caret
 /// at [offset] through the segment's handle. Works whether the segment is one
-/// field or several editor rows (#167).
+/// field or several editor rows (#167), and when only the active row has a
+/// field (#132, idle rows).
+///
+/// TEST-CHANGE (WI #132, Spec #122 Req 38): while the segment's rows are not
+/// one field each (idle rows have none), the row holding [offset] is made
+/// the active row through the rows host's activation seam first, then its
+/// field gets the keyboard.
 Future<void> focusSegmentAt(
   WidgetTester tester,
   Finder finder, {
@@ -126,12 +133,24 @@ Future<void> focusSegmentAt(
   final at = offset ?? handle.text.length;
   final fields = segmentRowFields(finder);
   final count = fields.evaluate().length;
+  final row = segmentRowHolding(handle, at);
   if (count != handle.rowCount) {
-    throw TestFailure(
-      '$finder shows $count fields for ${handle.rowCount} editor rows',
-    );
+    if (handle is! SegmentViewState) {
+      throw TestFailure(
+        '$finder shows $count fields for ${handle.rowCount} editor rows',
+      );
+    }
+    handle.activateRow(row, TextSelection.collapsed(offset: at));
+    await tester.pump();
+    await tester.pump();
+    final field = handle.rowField(row);
+    if (field == null) {
+      throw TestFailure('$finder: row $row has no field once activated');
+    }
+    await tester.showKeyboard(find.byWidget(field.widget));
+  } else {
+    await tester.showKeyboard(fields.at(row));
   }
-  await tester.showKeyboard(fields.at(segmentRowHolding(handle, at)));
   await tester.pump();
   segmentEditingOf(tester, finder).select(TextSelection.collapsed(offset: at));
   await tester.pump();
