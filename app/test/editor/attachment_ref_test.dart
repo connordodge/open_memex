@@ -595,6 +595,21 @@ void main() {
           'Disk.FILELOC',
           'Disk.FileLoc',
           '.webloc',
+          'Item.afploc',
+          'Item.AFPLOC',
+          'Item.AfploC',
+          'Item.ftploc',
+          'Item.FTPLOC',
+          'Item.FtploC',
+          'Item.mailloc',
+          'Item.MAILLOC',
+          'Item.MailloC',
+          'Item.newsloc',
+          'Item.NEWSLOC',
+          'Item.NewsloC',
+          'Item.atloc',
+          'Item.ATLOC',
+          'Item.AtloC',
         ]) {
           if (!isExecutableName(name)) wrong.add(name);
         }
@@ -606,6 +621,10 @@ void main() {
           'x.weblocs',
           'x.filelo',
           'x.inet',
+          'Item.afploc.txt',
+          'Item.mailloc.zip',
+          'x.atlocs',
+          'x.newsloc2',
         ]) {
           expect(isExecutableName(name), isFalse, reason: name);
         }

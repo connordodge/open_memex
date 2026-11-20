@@ -615,6 +615,21 @@ fn location_files_are_executable_in_any_letter_case() {
         "Disk.FILELOC",
         "Disk.FileLoc",
         ".webloc",
+        "Item.afploc",
+        "Item.AFPLOC",
+        "Item.AfploC",
+        "Item.ftploc",
+        "Item.FTPLOC",
+        "Item.FtploC",
+        "Item.mailloc",
+        "Item.MAILLOC",
+        "Item.MailloC",
+        "Item.newsloc",
+        "Item.NEWSLOC",
+        "Item.NewsloC",
+        "Item.atloc",
+        "Item.ATLOC",
+        "Item.AtloC",
     ] {
         assert!(attachments::is_executable_name(name), "{name}");
     }
@@ -625,6 +640,10 @@ fn location_files_are_executable_in_any_letter_case() {
         "x.weblocs",
         "x.filelo",
         "x.inet",
+        "Item.afploc.txt",
+        "Item.mailloc.zip",
+        "x.atlocs",
+        "x.newsloc2",
     ] {
         assert!(!attachments::is_executable_name(name), "{name}");
     }
@@ -633,7 +652,16 @@ fn location_files_are_executable_in_any_letter_case() {
 #[test]
 fn a_location_file_on_disk_counts_as_executable_without_an_x_bit() {
     let tmp = tempfile::tempdir().unwrap();
-    for name in ["Read me.WEBLOC", "Site.inetloc", "Disk.FileLoc"] {
+    for name in [
+        "Read me.WEBLOC",
+        "Site.inetloc",
+        "Disk.FileLoc",
+        "Item.AFPLOC",
+        "Item.FtpLoc",
+        "Item.mailloc",
+        "Item.NewsLoc",
+        "Item.ATLOC",
+    ] {
         let p = file_with_mode(tmp.path(), name, 0o644);
         assert!(attachments::is_executable(&p), "{name} by its extension");
     }
