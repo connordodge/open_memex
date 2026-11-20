@@ -439,7 +439,19 @@ String _wi437Geometry(WidgetTester tester, Finder field) {
 /// Every non-empty semantics hint on [field]'s semantics node, its
 /// descendants and its ancestors: the hints that belong to its row.
 List<String> _wi437HintsOf(WidgetTester tester, Finder field) {
-  final node = tester.getSemantics(field);
+  // A row's `editor-row-<s>-<r>` Key box owns no semantics node: the row's
+  // own node is its field's or its idle text's (WI #132).
+  final text = _wi437RowKey(field) == null
+      ? field
+      : find
+            .descendant(
+              of: field,
+              matching: find.byWidgetPredicate(
+                (w) => w is EditableText || w is RichText,
+              ),
+            )
+            .first;
+  final node = tester.getSemantics(text);
   final hints = <String>[];
   void down(SemanticsNode n) {
     hints.add(n.getSemanticsData().hint);

@@ -44,6 +44,7 @@ import '../support/long_note_fixtures.dart';
 import '../support/mac_editing.dart';
 import '../support/note_reveal_pump.dart' show pumpNoteReveal;
 import '../support/perf_counters.dart';
+import '../support/segment_editing_finder.dart';
 import '../support/spelling_editor_pump.dart';
 
 const _t131Timeout = Timeout(Duration(minutes: 8));
@@ -185,7 +186,9 @@ Future<void> _t131Input(
   String text,
   int caret,
 ) async {
-  final field = e.rowFields(0).at(r);
+  // TEST-CHANGE (WI #132, Req 38): only the active row has a field.
+  await activateSegmentRow(tester, 0, r);
+  final field = e.rowFields(0).first;
   await tester.showKeyboard(field);
   await tester.pump();
   tester.testTextInput.updateEditingValue(
