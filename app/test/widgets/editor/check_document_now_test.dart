@@ -566,6 +566,31 @@ void main() {
       },
       variant: macOnly,
     );
+
+    testWidgets(
+      'Check Document Now selects and opens the menu for an issue that starts at the first character of its row',
+      (tester) async {
+        final m = await _wi439Pump(
+          tester,
+          body: 'Start here.\n\n- teh first item\n\nLast line is fine.\n',
+        );
+        expect(
+          m.at('teh', 'teh'),
+          0,
+          reason: 'the issue starts at the first character of its row',
+        );
+        await m.placeCaret('Start here.', 0);
+        expect(
+          m.ctrl('Start here.'),
+          isNot(same(m.ctrl('teh'))),
+          reason: 'the caret row and the issue row are different rows',
+        );
+        await m.checkNow();
+        _wi439ExpectOn(m, 'teh');
+        expect(tester.takeException(), isNull);
+      },
+      variant: macOnly,
+    );
   });
 
   // ---------------------- keyboard order: ties, boundaries, held (AC1)
