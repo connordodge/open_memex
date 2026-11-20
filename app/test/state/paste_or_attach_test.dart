@@ -16,9 +16,11 @@
 // native reader (files, text flag, PNG) and Flutter's plain-text clipboard
 // (`MacClipboard`), which a field's own paste reads. As on macOS, no PNG is
 // reported while text is present.
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -38,6 +40,7 @@ import '../support/fake_memex_cli.dart';
 import '../support/fake_spelling_service.dart';
 import '../support/font_fetch_hold.dart';
 import '../support/mac_editing.dart';
+import '../support/segment_editing_finder.dart';
 import '../support/wi146_attach_harness.dart';
 import '../support/wi147_drop_paste_harness.dart';
 
@@ -235,6 +238,23 @@ Future<void> _sourceRightClick(Wi147Rig g) async {
   await g.r.sourceCaret(_caret.length);
   await g.rightClickAtCaret();
   await g.choosePaste();
+}
+
+/// A [FakePasteboardReader] whose read waits until [open] is called: a right
+/// click's menu is then still waiting for the clipboard.
+class _Wi147HeldPasteboard extends FakePasteboardReader {
+  _Wi147HeldPasteboard(super.contents);
+
+  final Completer<void> _gate = Completer<void>();
+
+  /// Lets every waiting and later read answer.
+  void open() => _gate.complete();
+
+  @override
+  Future<PasteboardContents> read() async {
+    await _gate.future;
+    return super.read();
+  }
 }
 
 void main() {
@@ -857,6 +877,312 @@ void main() {
           findsOneWidget,
           reason: 'with canWrite true the image is offered',
         );
+      },
+      variant: macOnly,
+    );
+  });
+
+  group('files on a vault that cannot be written (Q1, AC8)', () {
+    testWidgets(
+      'with canWrite false file URLs with the Finder name text paste the text and attach nothing',
+      (tester) async {
+        final u = await _unit(
+          tester,
+          PasteboardContents(files: [wi147PdfPath], hasText: true),
+          writable: false,
+        );
+        expect(await u.paste(), PasteOutcome.text);
+        expect(u.textPastes, 1, reason: 'the text pastes once');
+        expect(u.controller.calls, 0, reason: 'nothing attaches');
+
+        final w = await _unit(
+          tester,
+          PasteboardContents(files: [wi147PdfPath], hasText: true),
+        );
+        expect(await w.paste(), PasteOutcome.files);
+        expect(w.textPastes, 0, reason: 'with canWrite true the files win');
+        expect(w.controller.pathCalls.single.paths, [wi147PdfPath]);
+      },
+    );
+
+    testWidgets(
+      'with canWrite false Cmd V with file URLs and the Finder name text pastes the text and attaches nothing',
+      (tester) async {
+        final g = await wi147Pump(tester);
+        await g.r.open();
+        await g.setWritable(false);
+        await g.r.caretAfter(_caret);
+        g.clipboard(files: const [wi147PdfPath], text: _finderText);
+
+        await g.cmdV();
+
+        expect(g.attaches, 0);
+        expect(g.body, 'Review the draft$_finderText\nNext steps');
+        expect(g.pasteboard.reads, greaterThan(0));
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'in Source mode with canWrite false Cmd V with file URLs and the Finder name text pastes the text and attaches nothing',
+      (tester) async {
+        final g = await wi147Pump(tester);
+        await g.r.open();
+        await g.setWritable(false);
+        await g.r.sourceCaret(_caret.length);
+        g.clipboard(files: const [wi147PdfPath], text: _finderText);
+
+        await g.cmdV();
+
+        expect(g.attaches, 0);
+        expect(g.body, 'Review the draft$_finderText\nNext steps');
+      },
+      variant: macOnly,
+    );
+  });
+
+  group('pasteAttachesFiles decides the right click take over (Q3)', () {
+    for (final (name, contents, writable, expected) in [
+      (
+        'the right click take over applies to file URLs on a writable vault',
+        PasteboardContents(files: [wi147PdfPath], hasText: true),
+        true,
+        true,
+      ),
+      (
+        'the right click take over applies to an image on a writable vault',
+        PasteboardContents(png: fakePngBytes()),
+        true,
+        true,
+      ),
+      (
+        'the right click take over does not apply to text only',
+        const PasteboardContents(hasText: true),
+        true,
+        false,
+      ),
+      (
+        'the right click take over does not apply to an empty clipboard',
+        const PasteboardContents(),
+        true,
+        false,
+      ),
+      (
+        'the right click take over does not apply to an image on a read only vault',
+        PasteboardContents(png: fakePngBytes()),
+        false,
+        false,
+      ),
+      (
+        'the right click take over does not apply to file URLs on a read only vault',
+        PasteboardContents(files: [wi147PdfPath]),
+        false,
+        false,
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final u = await _unit(tester, contents, writable: writable);
+        expect(await pasteAttachesFiles(u.context), expected);
+        expect(u.reader.reads, 1);
+      });
+    }
+  });
+
+  group('the right click menu with Paste enabled (Q3)', () {
+    testWidgets(
+      'a text only right click shows the stock menu and its Paste pastes the text once',
+      (tester) async {
+        final g = await wi147Pump(tester);
+        await g.r.open();
+        g.clipboard(text: _text);
+        await g.r.caretAfter(_caret);
+        await g.rightClickAtCaret();
+        expect(g.menuItem('Paste'), findsOneWidget);
+        expect(
+          find.byType(AdaptiveTextSelectionToolbar),
+          findsOneWidget,
+          reason: 'one menu: the take over does not stack on the stock menu',
+        );
+
+        await g.choosePaste();
+
+        expect(g.body, _plainAfter(''));
+        expect(g.attaches, 0);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'an image right click over a selection keeps Cut and Copy beside Paste',
+      (tester) async {
+        final g = await wi147Pump(tester);
+        await g.r.open();
+        g.clipboard(png: _png());
+        await g.r.caretAfter(_caret);
+        segmentEditingAt(
+          tester,
+          0,
+        ).select(const TextSelection(baseOffset: 0, extentOffset: 6));
+        await tester.pump();
+
+        await g.rightClick(g.caretPoint(3));
+
+        expect(g.menuItem('Paste'), findsOneWidget);
+        expect(g.menuItem('Cut'), findsOneWidget);
+        expect(g.menuItem('Copy'), findsOneWidget);
+        await tester.tap(g.menuItem('Cut'));
+        await pumpFrames(tester);
+        expect(g.clip.text, 'Review', reason: 'Cut put the selection there');
+        expect(g.body, startsWith(' the draft'));
+        expect(g.attaches, 0);
+        expect(g.menuItem('Paste'), findsNothing, reason: 'the menu closed');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'an image right click in Source mode over a selection keeps Cut and Copy beside Paste',
+      (tester) async {
+        final g = await wi147Pump(tester);
+        await g.r.open();
+        g.clipboard(png: _png());
+        await g.r.sourceCaret(_caret.length);
+        final field = g.focusedField();
+        field.userUpdateTextEditingValue(
+          field.textEditingValue.copyWith(
+            selection: const TextSelection(baseOffset: 0, extentOffset: 6),
+          ),
+          SelectionChangedCause.tap,
+        );
+        await tester.pump();
+        final rect = field.renderEditable.getLocalRectForCaret(
+          const TextPosition(offset: 3),
+        );
+        await g.rightClick(
+          field.renderEditable.localToGlobal(Offset(rect.left, rect.center.dy)),
+        );
+
+        expect(g.menuItem('Paste'), findsOneWidget);
+        expect(g.menuItem('Cut'), findsOneWidget);
+        expect(g.menuItem('Copy'), findsOneWidget);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets('a take over menu closes when the row text changes', (
+      tester,
+    ) async {
+      final g = await wi147Pump(tester);
+      await g.r.open();
+      g.clipboard(png: _png());
+      await g.r.caretAfter(_caret);
+      await g.rightClickAtCaret();
+      expect(g.menuItem('Paste'), findsOneWidget);
+
+      final field = g.focusedField();
+      tester.testTextInput.updateEditingValue(
+        field.textEditingValue.copyWith(
+          text: '${field.textEditingValue.text}!',
+        ),
+      );
+      await pumpFrames(tester);
+
+      expect(g.menuItem('Paste'), findsNothing);
+      expect(g.attaches, 0);
+    }, variant: macOnly);
+
+    testWidgets('a take over menu closes when the row loses focus', (
+      tester,
+    ) async {
+      final g = await wi147Pump(tester);
+      await g.r.open();
+      g.clipboard(png: _png());
+      await g.r.caretAfter(_caret);
+      await g.rightClickAtCaret();
+      expect(g.menuItem('Paste'), findsOneWidget);
+
+      await tester.showKeyboard(find.byKey(const Key('editor-title')));
+      await pumpFrames(tester);
+
+      expect(g.menuItem('Paste'), findsNothing);
+    }, variant: macOnly);
+
+    testWidgets(
+      'a take over menu in Source mode closes when the body text changes',
+      (tester) async {
+        final g = await wi147Pump(tester);
+        await g.r.open();
+        g.clipboard(png: _png());
+        await g.r.sourceCaret(_caret.length);
+        await g.rightClickAtCaret();
+        expect(g.menuItem('Paste'), findsOneWidget);
+
+        final field = g.focusedField();
+        tester.testTextInput.updateEditingValue(
+          field.textEditingValue.copyWith(
+            text: '${field.textEditingValue.text}!',
+          ),
+        );
+        await pumpFrames(tester);
+
+        expect(g.menuItem('Paste'), findsNothing);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a take over menu in Source mode closes when the body loses focus',
+      (tester) async {
+        final g = await wi147Pump(tester);
+        await g.r.open();
+        g.clipboard(png: _png());
+        await g.r.sourceCaret(_caret.length);
+        await g.rightClickAtCaret();
+        expect(g.menuItem('Paste'), findsOneWidget);
+
+        await tester.showKeyboard(find.byKey(const Key('editor-title')));
+        await pumpFrames(tester);
+
+        expect(g.menuItem('Paste'), findsNothing);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a press while the right click still waits for the clipboard cancels its take over menu',
+      (tester) async {
+        final held = _Wi147HeldPasteboard(PasteboardContents(png: _png()));
+        final g = await wi147Pump(tester, pasteboardReader: held);
+        await g.r.open();
+        await g.r.caretAfter(_caret);
+        final at = g.caretPoint(_caret.length);
+
+        await g.rightClickAtCaret();
+        expect(g.menuItem('Paste'), findsNothing, reason: 'still waiting');
+        await tester.tapAt(at, kind: PointerDeviceKind.mouse);
+        await pumpFrames(tester);
+        held.open();
+        await pumpFrames(tester);
+
+        expect(g.menuItem('Paste'), findsNothing, reason: 'cancelled');
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a right click waiting for the clipboard shows its take over menu once the clipboard answers',
+      (tester) async {
+        final held = _Wi147HeldPasteboard(PasteboardContents(png: _png()));
+        final g = await wi147Pump(tester, pasteboardReader: held);
+        await g.r.open();
+        await g.r.caretAfter(_caret);
+
+        await g.rightClickAtCaret();
+        expect(g.menuItem('Paste'), findsNothing, reason: 'still waiting');
+        held.open();
+        await pumpFrames(tester);
+
+        expect(g.menuItem('Paste'), findsOneWidget);
       },
       variant: macOnly,
     );

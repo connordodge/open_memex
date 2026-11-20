@@ -390,6 +390,7 @@ Future<Wi147Rig> wi147Pump(
   String? topicBody,
   Wi146HeldAttachments? attachments,
   FakeSpellingService? spelling,
+  FakePasteboardReader? pasteboardReader,
 }) async {
   final clip = MacClipboard.install(tester);
   final vault = topicBody == null
@@ -404,7 +405,7 @@ Future<Wi147Rig> wi147Pump(
   final domain = attachments ?? Wi146HeldAttachments();
   final picker = installFakeFilePicker();
   final drop = FakeAttachmentDropSource();
-  final pasteboard = FakePasteboardReader();
+  final pasteboard = pasteboardReader ?? FakePasteboardReader();
   final h = await pumpWorkspace(
     tester,
     db: vault.db,
