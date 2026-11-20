@@ -1,8 +1,11 @@
 // WI #141 (Spec #123 V1, TD "App access"): `VaultAccess.attachments` on local
-// and hosted vaults answers the typed `unsupported` outcome until W3 (#140),
-// without touching the filesystem or the network; `attachmentsProvider`
-// derives from `vaultAccessProvider`; `FakeAttachmentsAccess` records calls
-// and answers from queues, and a widget test overrides the provider with it.
+// and hosted vaults; `attachmentsProvider` derives from `vaultAccessProvider`;
+// `FakeAttachmentsAccess` records calls and answers from queues, and a widget
+// test overrides the provider with it. WI #140 (W3) replaced the V1 stub that
+// the first two tests pinned: they now pin that each composite wires its
+// domain to its own vault (local: the vault folder and its `memex`; hosted:
+// its client and vault name).
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -21,6 +24,7 @@ import 'package:open_memex_app/src/vault_access/vault_access.dart';
 
 import '../support/attachments_fakes.dart';
 import '../support/fake_clock.dart';
+import '../support/fake_memex_cli.dart';
 import '../support/fake_vault_server.dart';
 
 const _vaultA = LocalVaultRef('/vaults/My Vault');
@@ -33,51 +37,6 @@ const _path = 'objects/66/$_hash/Q3 report.pdf';
 T _as<T extends Object>(Object? value) {
   expect(value, isA<T>());
   return value! as T;
-}
-
-/// Every op of [access] answers the typed `unsupported` outcome.
-Future<void> _expectUnsupported(AttachmentsAccess access, String source) async {
-  final added = await access.add(source, 'Q3 report.pdf');
-  expect(added, isA<AttachmentAddFailed>());
-  expect(
-    _as<AttachmentAddFailed>(added).reason,
-    AttachmentAddFailureReason.unsupported,
-  );
-
-  final addedBytes = await access.addBytes(Uint8List.fromList([1, 2]), 'a.png');
-  expect(addedBytes, isA<AttachmentAddFailed>());
-  expect(
-    _as<AttachmentAddFailed>(addedBytes).reason,
-    AttachmentAddFailureReason.unsupported,
-  );
-
-  final read = await access.read(_path);
-  expect(read, isA<AttachmentReadFailed>());
-  expect(
-    _as<AttachmentReadFailed>(read).failure,
-    AttachmentLookupFailure.unsupported,
-  );
-
-  final info = await access.info(_path);
-  expect(info, isA<AttachmentInfoFailed>());
-  expect(
-    _as<AttachmentInfoFailed>(info).failure,
-    AttachmentLookupFailure.unsupported,
-  );
-
-  final opened = await access.open(_path);
-  expect(opened, isA<AttachmentActionFailed>());
-  expect(
-    _as<AttachmentActionFailed>(opened).failure,
-    AttachmentLookupFailure.unsupported,
-  );
-
-  final revealed = await access.reveal(_path);
-  expect(revealed, isA<AttachmentActionFailed>());
-  expect(
-    _as<AttachmentActionFailed>(revealed).failure,
-    AttachmentLookupFailure.unsupported,
-  );
 }
 
 /// A container whose open vault is [_vaultA] or [_vaultB], each with its own
@@ -141,7 +100,45 @@ class _OpenProbeState extends ConsumerState<_OpenProbe> {
 void main() {
   group('local vault attachments', () {
     test(
-      'a local vault answers every attachments op as unsupported and touches nothing',
+      'a local vault wires its attachments domain to the vault folder and its memex',
+      () async {
+        final dir = Directory.systemTemp.createTempSync('om-141-vault');
+        addTearDown(() => dir.deleteSync(recursive: true));
+        final source = File('${dir.path}/source.txt')..writeAsStringSync('hi');
+        final vault = Directory('${dir.path}/vault')..createSync();
+        final stored = File('${vault.path}/$_path')
+          ..createSync(recursive: true)
+          ..writeAsBytesSync([4, 5, 6]);
+        final cli = FakeMemexCli()
+          ..on('attach', (_) {
+            final a = fakeAddedAttachment('Q3 report.pdf', size: 2);
+            return FakeMemexCli.ok(
+              '${jsonEncode({'markdown': a.markdown, 'path': a.path, 'name': a.name, 'size': a.size, 'type': a.type})}\n',
+            );
+          });
+
+        final VaultAccess access = LocalVaultAccess(
+          vaultPath: vault.path,
+          cli: cli,
+        );
+        expect(access.attachments, isA<LocalAttachmentsAccess>());
+        final attachments = access.attachments as LocalAttachmentsAccess;
+        expect(attachments.vaultPath, vault.path);
+
+        final read = await attachments.read(_path);
+        expect(_as<AttachmentBytes>(read).bytes, [4, 5, 6]);
+        final added = await attachments.add(source.path, 'Q3 report.pdf');
+        expect(added, isA<AttachmentAdded>());
+        final call = cli.callsFor('attach').single;
+        expect(call.args, contains(vault.path), reason: 'its vault');
+        expect(call.args.last, source.path);
+        expect(stored.readAsBytesSync(), [4, 5, 6]);
+        expect(source.readAsStringSync(), 'hi');
+      },
+    );
+
+    test(
+      'a local vault without a memex cannot add and makes nothing in the vault',
       () async {
         final dir = Directory.systemTemp.createTempSync('om-141-vault');
         addTearDown(() => dir.deleteSync(recursive: true));
@@ -149,9 +146,30 @@ void main() {
         final vault = Directory('${dir.path}/vault')..createSync();
 
         final VaultAccess access = LocalVaultAccess(vaultPath: vault.path);
-        expect(access.attachments, isA<LocalAttachmentsAccess>());
-        await _expectUnsupported(access.attachments, source.path);
+        final attachments = access.attachments;
 
+        final added = await attachments.add(source.path, 'Q3 report.pdf');
+        final addedBytes = await attachments.addBytes(
+          Uint8List.fromList([1, 2]),
+          'a.png',
+        );
+        for (final r in [added, addedBytes]) {
+          expect(r, isA<AttachmentAddFailed>());
+          expect(
+            _as<AttachmentAddFailed>(r).reason,
+            AttachmentAddFailureReason.unsupported,
+          );
+        }
+        final read = await attachments.read(_path);
+        expect(
+          _as<AttachmentReadFailed>(read).failure,
+          AttachmentLookupFailure.missing,
+        );
+        final info = await attachments.info(_path);
+        expect(
+          _as<AttachmentInfoFailed>(info).failure,
+          AttachmentLookupFailure.missing,
+        );
         expect(vault.listSync(), isEmpty, reason: 'no objects folder made');
         expect(source.readAsStringSync(), 'hi');
       },
@@ -169,7 +187,7 @@ void main() {
 
   group('hosted vault attachments', () {
     test(
-      'a hosted vault answers every attachments op as unsupported and sends no request',
+      'a hosted vault wires its attachments domain to its client and vault name',
       () async {
         final container = ProviderContainer(
           overrides: [
@@ -178,7 +196,7 @@ void main() {
           ],
         );
         addTearDown(container.dispose);
-        final server = FakeVaultServer();
+        final server = FakeVaultServer()..putAttachment('seed', _path, [7, 8]);
         final hosted = HostedVaultAccess(
           client: server.connect(container),
           vaultName: 'seed',
@@ -188,10 +206,85 @@ void main() {
 
         expect(access.attachments, isA<HostedAttachmentsAccess>());
         expect(hosted.attachments.vaultName, 'seed');
-        await _expectUnsupported(access.attachments, '/vaults/My Vault/a.txt');
-        expect(server.requests, isEmpty);
+        final read = await access.attachments.read(_path);
+        expect(_as<AttachmentBytes>(read).bytes, [7, 8]);
+        final info = await access.attachments.info(_path);
+        expect(_as<AttachmentInfoFound>(info).info.size, 2);
+        final added = await access.attachments.addBytes(
+          Uint8List.fromList([1, 2, 3]),
+          'a.png',
+        );
+        expect(added, isA<AttachmentAdded>());
+
+        expect(server.requests.map((r) => r.method), [
+          'GET',
+          'POST',
+        ], reason: 'the read answers the info; the add posts');
+        for (final r in server.requests) {
+          expect(r.url.path, startsWith('/vaults/seed/api/v1/attachments'));
+        }
       },
     );
+
+    test(
+      'two hosted vaults of one client share the server route check',
+      () async {
+        final container = ProviderContainer(
+          overrides: [
+            clockProvider.overrideWithValue(FakeClock()),
+            utcOffsetProvider.overrideWithValue(() => Duration.zero),
+          ],
+        );
+        addTearDown(container.dispose);
+        final server = FakeVaultServer()
+          ..serveAttachments('seed')
+          ..serveAttachments('other');
+        final client = server.connect(container);
+        final a = HostedVaultAccess(client: client, vaultName: 'seed');
+        final b = HostedVaultAccess(client: client, vaultName: 'other');
+        addTearDown(a.dispose);
+        addTearDown(b.dispose);
+
+        final first = await a.attachments.addBytes(
+          Uint8List(9 * 1024 * 1024),
+          'a.bin',
+        );
+        final afterFirst = server.requests.length;
+        final second = await b.attachments.addBytes(
+          Uint8List.fromList(List.filled(9 * 1024 * 1024, 5)),
+          'b.bin',
+        );
+
+        expect(first, isA<AttachmentAdded>());
+        expect(second, isA<AttachmentAdded>());
+        expect(afterFirst, 2, reason: 'one check, then the POST');
+        expect(server.requests.length, 3, reason: 'the second only POSTs');
+      },
+    );
+
+    test('a disposed hosted vault sends no attachment request', () async {
+      final container = ProviderContainer(
+        overrides: [
+          clockProvider.overrideWithValue(FakeClock()),
+          utcOffsetProvider.overrideWithValue(() => Duration.zero),
+        ],
+      );
+      addTearDown(container.dispose);
+      final server = FakeVaultServer()..putAttachment('seed', _path, [7]);
+      final hosted = HostedVaultAccess(
+        client: server.connect(container),
+        vaultName: 'seed',
+      );
+      hosted.dispose();
+
+      await expectLater(hosted.attachments.read(_path), throwsStateError);
+      await expectLater(hosted.attachments.info(_path), throwsStateError);
+      await expectLater(
+        hosted.attachments.addBytes(Uint8List(1), 'a.png'),
+        throwsStateError,
+      );
+      expect(server.requests, isEmpty);
+    });
   });
 
   group('attachmentsProvider', () {
