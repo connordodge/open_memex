@@ -41,7 +41,11 @@ final outlineEntriesFnProvider = Provider<OutlineEntriesFn>(
 /// The entries of one (text, role) pair, so an editor state change that
 /// keeps the text computes nothing (R41). AutoDispose: a pair nothing
 /// watches any more is dropped.
-final _outlineEntriesProvider = Provider.autoDispose
+///
+/// The one entries computation per text change (WI #131, Spec #122 Req 24):
+/// the Outline panel ([outlineProvider]) and the editor's section tracker
+/// both read their entries here, so a text both see is computed once.
+final outlineEntriesOfProvider = Provider.autoDispose
     .family<List<OutlineEntry>, (String, String?)>((ref, key) {
       final (text, role) = key;
       return ref.watch(outlineEntriesFnProvider)(text, role: role);
@@ -83,7 +87,7 @@ final outlineProvider =
         return const AsyncLoading();
       }
       final text = editor.contentMd;
-      final entries = ref.watch(_outlineEntriesProvider((text, note.role)));
+      final entries = ref.watch(outlineEntriesOfProvider((text, note.role)));
       return AsyncData(
         VaultScoped(
           scoped.vault,

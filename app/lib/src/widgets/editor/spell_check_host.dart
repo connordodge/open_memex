@@ -167,10 +167,24 @@ class _SpellCheckHostState extends ConsumerState<SpellCheckHost> {
     super.dispose();
   }
 
-  /// The primary focus moved: remembers this editor's field holding it, and
-  /// keeps the last one while a SpellingMenu holds it.
+  /// This editor's field that held the primary focus when it last moved.
+  _SpellCheckFieldState? _focusedField;
+
+  /// The primary focus moved: tells the field it left and the field it
+  /// entered (this editor's one focus listener for spelling, whatever its
+  /// row count: WI #131, Spec #122 Req 21), remembers this editor's field
+  /// holding it, and keeps the last one while a SpellingMenu holds it.
   void _onFocus() {
     final field = _fieldWithFocus();
+    final mine = field != null && identical(field._checker, _controller)
+        ? field
+        : null;
+    final left = _focusedField;
+    _focusedField = mine;
+    if (!identical(left, mine)) {
+      if (left != null && left.mounted) left._focusMoved();
+      mine?._focusMoved();
+    }
     if (field != null) {
       _lastFocused = identical(field._checker, _controller) ? field : null;
     } else if (!_spellingMenuHasFocus()) {
@@ -277,7 +291,7 @@ int debugSpellHostEditableCalls = 0;
 const _fieldScrollPadding = EdgeInsets.all(20);
 
 class _SpellCheckFieldState extends State<SpellCheckField>
-    implements SpellFieldHost {
+    implements SpellFieldHost, SpellFieldRun {
   SpellCheckController? _checker;
   ScrollableState? _scrollable;
 
@@ -287,15 +301,10 @@ class _SpellCheckFieldState extends State<SpellCheckField>
   /// [hasFocus] when focus last moved.
   bool _focused = false;
 
-  @override
-  void initState() {
-    super.initState();
-    FocusManager.instance.addListener(_onFocus);
-  }
-
-  /// The primary focus moved: tells the checker when it entered or left
-  /// this field.
-  void _onFocus() {
+  /// The primary focus entered or left this field (the editor's
+  /// [SpellCheckHost] tells it: one focus listener per editor, WI #131):
+  /// tells the checker when that flipped.
+  void _focusMoved() {
     final focused = _focusInside();
     if (focused == _focused) return;
     _focused = focused;
@@ -319,20 +328,49 @@ class _SpellCheckFieldState extends State<SpellCheckField>
   @override
   void activate() {
     super.activate();
-    _segment = context.findAncestorStateOfType<SegmentViewState>();
+    if (_findSegment()) _checker?.addField(widget.controller, this);
+  }
+
+  /// Finds the segment holding this field; true when it changed ([run]
+  /// changed with it).
+  bool _findSegment() {
+    final segment = context.findAncestorStateOfType<SegmentViewState>();
+    if (identical(segment, _segment)) return false;
+    _segment = segment;
+    return true;
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _segment = context.findAncestorStateOfType<SegmentViewState>();
+    final moved = _findSegment();
     _scrollable = Scrollable.maybeOf(context, axis: Axis.vertical);
     final checker = SpellCheckScope.maybeOf(context);
     if (!identical(checker, _checker)) {
       _checker?.removeField(widget.controller, this, forget: false);
       _checker = checker;
       checker?.addField(widget.controller, this);
+    } else if (moved) {
+      // Joins again under its new run.
+      checker?.addField(widget.controller, this);
     }
+  }
+
+  @override
+  Object? get run {
+    final segment = _segment;
+    return segment != null && segment.mounted ? segment : null;
+  }
+
+  @override
+  List<TextEditingController>? fieldsWithin(double top, double bottom) {
+    final segment = _segment;
+    if (segment == null || !segment.mounted) return null;
+    final rows = segment.rowsWithin(top, bottom);
+    if (rows == null) return null;
+    return [
+      for (var i = rows.first; i <= rows.last; i++) segment.rowController(i)!,
+    ];
   }
 
   @override
@@ -346,7 +384,6 @@ class _SpellCheckFieldState extends State<SpellCheckField>
 
   @override
   void dispose() {
-    FocusManager.instance.removeListener(_onFocus);
     _checker?.removeField(widget.controller, this, forget: true);
     super.dispose();
   }
