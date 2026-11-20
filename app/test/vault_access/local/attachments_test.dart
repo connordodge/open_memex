@@ -548,6 +548,30 @@ void main() {
     );
 
     test(
+      'local open of a fileloc inetloc or webloc attachment reveals it and never opens it',
+      () async {
+        final env = _env();
+        final names = ['Disk.fileloc', 'Site.InetLoc', 'Read me.WEBLOC'];
+        final expected = <String>[];
+        for (final name in names) {
+          // Stored copies carry no x bit; the name alone decides.
+          expected.add(env.put(_path(name), [0]));
+
+          final result = await env.access.open(_path(name));
+
+          expect(result, isA<AttachmentActionDone>(), reason: name);
+        }
+        expect(env.revealer.paths, expected);
+        expect(env.opener.opened, isEmpty);
+
+        final near = env.put(_path('notes.webloc.txt'), [0]);
+        await env.access.open(_path('notes.webloc.txt'));
+        expect(env.opener.opened, [near], reason: 'only the last extension');
+        expect(env.revealer.paths, expected);
+      },
+    );
+
+    test(
       'local open of a file with an executable bit reveals and never opens',
       () async {
         final env = _env();
