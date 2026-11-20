@@ -18,11 +18,13 @@
 // #76's real PaletteNotifier with `palettePassagesOverrides` (#78's runner
 // plus this WI's attachment chooser); `attachmentsProvider` overridden with
 // #141's FakeAttachmentsAccess.
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/attachments_state.dart';
 import 'package:open_memex_app/src/state/command_palette_state.dart';
 import 'package:open_memex_app/src/state/palette_attachments.dart';
 import 'package:open_memex_app/src/state/palette_passages.dart';
+import 'package:open_memex_app/src/vault_access/attachments_access.dart';
 import 'package:open_memex_app/src/vault_access/search_access.dart';
 
 import '../support/attachments_fakes.dart';
@@ -80,6 +82,7 @@ class _Wi148Rig {
 Future<_Wi148Rig> _wi148Pump(
   WidgetTester tester, {
   SearchResult? answer,
+  List<Override> overrides = const [],
 }) async {
   final fake = FakeAttachmentsAccess();
   final h = await pumpPaletteHost(
@@ -91,6 +94,7 @@ Future<_Wi148Rig> _wi148Pump(
     overrides: [
       ...palettePassagesOverrides,
       attachmentsProvider.overrideWithValue(fake),
+      ...overrides,
     ],
   );
   h.container.invalidate(paletteProvider);
@@ -582,6 +586,107 @@ void main() {
 
         expect(rig.kinds, contains(PaletteGroupKind.attachments));
         expect(rig.state.selected, _wi148AttachmentId(_plan));
+      },
+    );
+  });
+
+  group('a failed open is reported (R42, D22)', () {
+    /// Overrides the seam with a recorder: [events] logs `take` when the
+    /// chooser asks for a reporter and `report <name> <failure>` per report.
+    List<Override> recorder(List<String> events) => [
+      paletteAttachmentOpenFailureProvider.overrideWith(
+        (ref) => () {
+          events.add('take');
+          return (name, failure) => events.add('report $name ${failure.name}');
+        },
+      ),
+    ];
+
+    for (final (name, failure) in [
+      (
+        'a failed open of missing reaches the reporter with the row name and the failure',
+        AttachmentLookupFailure.missing,
+      ),
+      (
+        'a failed open of offline reaches the reporter with the row name and the failure',
+        AttachmentLookupFailure.offline,
+      ),
+      (
+        'a failed open of serverTooOld reaches the reporter with the row name and the failure',
+        AttachmentLookupFailure.serverTooOld,
+      ),
+      (
+        'a failed open of unsupported reaches the reporter with the row name and the failure',
+        AttachmentLookupFailure.unsupported,
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final events = <String>[];
+        final rig = await _wi148Pump(tester, overrides: recorder(events));
+        rig.attachments.openResults.add(AttachmentActionFailed(failure));
+        await rig.searchFor('revenue');
+        rig.palette.hover(_wi148AttachmentId(_plan));
+
+        rig.palette.choose(newTab: false);
+        await tester.pump();
+        await tester.pump();
+
+        expect(rig.attachments.openCalls, [_plan.path]);
+        expect(events, ['take', 'report Revenue plan.png ${failure.name}']);
+      });
+    }
+
+    testWidgets('a successful open reports nothing', (tester) async {
+      final events = <String>[];
+      final rig = await _wi148Pump(tester, overrides: recorder(events));
+      rig.attachments.openResults.add(const AttachmentActionDone());
+      await rig.searchFor('revenue');
+      rig.palette.hover(_wi148AttachmentId(_q3));
+
+      rig.palette.choose(newTab: false);
+      await tester.pump();
+      await tester.pump();
+
+      expect(rig.attachments.openCalls, [_q3.path]);
+      expect(events, ['take']);
+    });
+
+    testWidgets(
+      'the reporter is taken when the row is chosen and before the open answers',
+      (tester) async {
+        final events = <String>[];
+        final rig = await _wi148Pump(tester, overrides: recorder(events));
+        rig.attachments.openResults.add(
+          const AttachmentActionFailed(AttachmentLookupFailure.offline),
+        );
+        await rig.searchFor('revenue');
+        rig.palette.hover(_wi148AttachmentId(_q3));
+
+        rig.palette.choose(newTab: false);
+
+        expect(events, ['take'], reason: 'taken synchronously at the choice');
+        await tester.pump();
+        await tester.pump();
+        expect(events, ['take', 'report Q3 report.pdf offline']);
+      },
+    );
+
+    testWidgets(
+      'a failed open with no reporter override completes without an error',
+      (tester) async {
+        final rig = await _wi148Pump(tester);
+        rig.attachments.openResults.add(
+          const AttachmentActionFailed(AttachmentLookupFailure.offline),
+        );
+        await rig.searchFor('revenue');
+        rig.palette.hover(_wi148AttachmentId(_q3));
+
+        rig.palette.choose(newTab: false);
+        await tester.pump();
+        await tester.pump();
+
+        expect(rig.attachments.openCalls, [_q3.path]);
+        expect(tester.takeException(), isNull);
       },
     );
   });

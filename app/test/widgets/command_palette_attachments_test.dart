@@ -20,6 +20,7 @@
 // runner (`palettePassagesOverrides`); `attachmentsProvider` overridden with
 // #141's FakeAttachmentsAccess.
 
+import 'package:flutter/material.dart' show SnackBar;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -31,6 +32,7 @@ import 'package:open_memex_app/src/state/palette_passages.dart';
 import 'package:open_memex_app/src/state/settings.dart' show settingsProvider;
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/state/ui_state_store.dart';
+import 'package:open_memex_app/src/vault_access/attachments_access.dart';
 import 'package:open_memex_app/src/vault_access/search_access.dart';
 import 'package:open_memex_app/src/widgets/command_palette/command_palette.dart';
 import 'package:open_memex_app/src/widgets/command_palette/palette_row.dart';
@@ -110,6 +112,7 @@ Future<_Wi148Palette> _wi148Open(
   SearchResult? answer,
   Size size = paletteWideSize,
   double textScale = 1.0,
+  ValueNotifier<bool>? hostShown,
 }) async {
   final settings = await _wi148Settings();
   final fake = FakeAttachmentsAccess();
@@ -121,10 +124,16 @@ Future<_Wi148Palette> _wi148Open(
       vaultPath: paletteVaultPath,
       result: answer ?? _wi148Answer(),
     ),
-    child: Builder(
-      builder: (context) {
-        _wi148HostContext = context;
-        return const SizedBox.expand();
+    child: ValueListenableBuilder<bool>(
+      valueListenable: hostShown ?? ValueNotifier(true),
+      builder: (_, shown, _) {
+        if (!shown) return const SizedBox.expand();
+        return Builder(
+          builder: (context) {
+            _wi148HostContext = context;
+            return const SizedBox.expand();
+          },
+        );
       },
     ),
     overrides: [
@@ -593,6 +602,177 @@ void main() {
         expect(tester.takeException(), isNull);
         await p.downTo(_wi148AttachmentId(_plan));
         await pumpFrames(tester);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  });
+
+  group('a failed open shows the R42 toast', () {
+    const offlineToast =
+        "Couldn't open Revenue plan.png: the vault server can't be reached.";
+
+    Future<_Wi148Palette> openAndChoosePlan(
+      WidgetTester tester,
+      AttachmentActionResult? result, {
+      ValueNotifier<bool>? hostShown,
+    }) async {
+      final p = await _wi148Open(tester, hostShown: hostShown);
+      if (result != null) p.attachments.openResults.add(result);
+      await p.searchFor('revenue');
+      await p.downTo(_wi148AttachmentId(_plan));
+      return p;
+    }
+
+    testWidgets(
+      'an offline open from an attachments row shows the offline toast once',
+      (tester) async {
+        final p = await openAndChoosePlan(
+          tester,
+          const AttachmentActionFailed(AttachmentLookupFailure.offline),
+        );
+        expect(find.byType(SnackBar), findsNothing, reason: 'none before');
+
+        await p.key(LogicalKeyboardKey.enter);
+        await pumpFrames(tester);
+
+        expect(p.attachments.openCalls, [_plan.path]);
+        expect(find.text(offlineToast, skipOffstage: false), findsOneWidget);
+        expect(find.byType(SnackBar), findsOneWidget);
+      },
+    );
+
+    testWidgets('a missing open from an attachments row shows no toast', (
+      tester,
+    ) async {
+      final p = await openAndChoosePlan(
+        tester,
+        const AttachmentActionFailed(AttachmentLookupFailure.missing),
+      );
+
+      await p.key(LogicalKeyboardKey.enter);
+      await pumpFrames(tester);
+
+      expect(p.attachments.openCalls, [_plan.path]);
+      expect(find.byType(SnackBar), findsNothing);
+    });
+
+    testWidgets(
+      'a server too old open from an attachments row shows no toast',
+      (tester) async {
+        final p = await openAndChoosePlan(
+          tester,
+          const AttachmentActionFailed(AttachmentLookupFailure.serverTooOld),
+        );
+
+        await p.key(LogicalKeyboardKey.enter);
+        await pumpFrames(tester);
+
+        expect(p.attachments.openCalls, [_plan.path]);
+        expect(find.byType(SnackBar), findsNothing);
+      },
+    );
+
+    testWidgets('an unsupported open from an attachments row shows no toast', (
+      tester,
+    ) async {
+      final p = await openAndChoosePlan(
+        tester,
+        const AttachmentActionFailed(AttachmentLookupFailure.unsupported),
+      );
+
+      await p.key(LogicalKeyboardKey.enter);
+      await pumpFrames(tester);
+
+      expect(p.attachments.openCalls, [_plan.path]);
+      expect(find.byType(SnackBar), findsNothing);
+    });
+
+    testWidgets('a successful open from an attachments row shows no toast', (
+      tester,
+    ) async {
+      final p = await openAndChoosePlan(tester, const AttachmentActionDone());
+
+      await p.key(LogicalKeyboardKey.enter);
+      await pumpFrames(tester);
+
+      expect(p.attachments.openCalls, [_plan.path]);
+      expect(find.byType(SnackBar), findsNothing);
+    });
+
+    testWidgets('the offline toast names the chosen row', (tester) async {
+      final p = await _wi148Open(tester);
+      p.attachments.openResults.add(
+        const AttachmentActionFailed(AttachmentLookupFailure.offline),
+      );
+      await p.searchFor('revenue');
+      await p.downTo(_wi148AttachmentId(_q3));
+
+      await p.key(LogicalKeyboardKey.enter);
+      await pumpFrames(tester);
+
+      expect(
+        find.text(
+          "Couldn't open Q3 report.pdf: the vault server can't be reached.",
+          skipOffstage: false,
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets(
+      'an offline open that answers after the host is gone shows no toast and no error',
+      (tester) async {
+        final hostShown = ValueNotifier(true);
+        addTearDown(hostShown.dispose);
+        final p = await openAndChoosePlan(
+          tester,
+          const AttachmentActionFailed(AttachmentLookupFailure.offline),
+          hostShown: hostShown,
+        );
+        hostShown.value = false;
+        await pumpFrames(tester);
+        expect(
+          _wi148HostContext.mounted,
+          isFalse,
+          reason: 'the context the palette opened over is unmounted',
+        );
+
+        await p.key(LogicalKeyboardKey.enter);
+        await pumpFrames(tester);
+
+        expect(p.attachments.openCalls, [_plan.path]);
+        expect(find.byType(SnackBar), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'an offline open chosen with no palette session shows no toast and no error',
+      (tester) async {
+        final settings = await _wi148Settings();
+        final fake = FakeAttachmentsAccess();
+        fake.openResults.add(
+          const AttachmentActionFailed(AttachmentLookupFailure.offline),
+        );
+        final h = await pumpPaletteHost(
+          tester,
+          overrides: [
+            settings,
+            uiStateStoreProvider.overrideWithValue(null),
+            ...paletteShellOverrides,
+            ...palettePassagesOverrides,
+            attachmentsProvider.overrideWithValue(fake),
+          ],
+        );
+
+        h.read(paletteAttachmentChooserProvider)(
+          AttachmentItem(_plan, notesLine: 'in Bay'),
+          newTab: false,
+        );
+        await pumpFrames(tester);
+
+        expect(fake.openCalls, [_plan.path]);
+        expect(find.byType(SnackBar), findsNothing);
         expect(tester.takeException(), isNull);
       },
     );
