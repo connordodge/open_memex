@@ -1,5 +1,6 @@
 mod activity_log;
 pub mod activity_summary;
+pub mod attachment_extract_child;
 pub mod backfill;
 pub mod caller_tz;
 pub mod cli;

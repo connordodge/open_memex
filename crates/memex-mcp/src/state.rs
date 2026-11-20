@@ -5,6 +5,8 @@ use memex_core::embedder::{Embedder, FastEmbedder};
 use memex_core::Vault;
 use tokio::sync::Mutex;
 
+use crate::attachment_extract_child::ChildExtractor;
+
 /// How the MCP tools reach this vault (Spec #123 TD "MCP transport"): on
 /// the person's own machine (`memex serve --vault`, the default) or through
 /// the vault server (`server/mcp.rs`). `add_attachment` refuses `file_path`
@@ -25,6 +27,9 @@ pub struct AppState {
     pub embedder: Option<Arc<dyn Embedder>>,
     /// Local unless the vault server set it to Hosted.
     pub transport: McpTransport,
+    /// The attachment extraction child (WI #136). `None`: the running
+    /// `memex` ([`ChildExtractor::current_exe`]).
+    pub extractor: Option<ChildExtractor>,
 }
 
 impl AppState {
@@ -34,7 +39,14 @@ impl AppState {
             vault_path,
             embedder,
             transport: McpTransport::Local,
+            extractor: None,
         }
+    }
+
+    /// This state with `extractor` as its attachment extraction child.
+    pub fn with_extractor(mut self, extractor: ChildExtractor) -> Self {
+        self.extractor = Some(extractor);
+        self
     }
 
     /// This state with its MCP transport set to Hosted, sharing the same

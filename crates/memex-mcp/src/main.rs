@@ -7,6 +7,7 @@ use memex_core::links::{self as core_links, LinkKind};
 use memex_core::notes::{get_note as core_get_note, list_notes, NoteId};
 use memex_core::{SystemClock, Vault};
 
+use memex_mcp::attachment_extract_child;
 use memex_mcp::cli::{self, InvalidArgument, Role};
 use memex_mcp::ops;
 use memex_mcp::state::build_default_embedder;
@@ -204,6 +205,13 @@ enum Commands {
     /// Run as an MCP server over stdio, as the vault server over HTTP, or as
     /// a stdio bridge to a hosted vault.
     Serve(cli::serve::ServeArgs),
+    /// Extract one attachment's text and print it: the extraction child of
+    /// `memex serve` (WI #136). Not listed in `--help`.
+    #[command(name = "extract-attachment", hide = true)]
+    ExtractAttachment {
+        /// The stored file; its name's extension picks the type.
+        file: PathBuf,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -291,6 +299,11 @@ enum CanvasAction {
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
+    // The extraction child prints only the text or only the reason, never
+    // the C1 error JSON.
+    if let Commands::ExtractAttachment { file } = &cli.command {
+        return attachment_extract_child::run_subcommand(file);
+    }
     match dispatch(cli.command).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -380,6 +393,7 @@ async fn dispatch(command: Commands) -> Result<()> {
         Commands::Tools => cli::tools::run(),
         Commands::Embeddings(args) => cli::embeddings::run(args),
         Commands::Serve(args) => cli::serve::run(args).await,
+        Commands::ExtractAttachment { .. } => unreachable!("main runs extract-attachment itself"),
     }
 }
 

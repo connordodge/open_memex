@@ -1,0 +1,7 @@
+Crate: adobe-cmap-parser 0.4.1
+Declared licence: MIT
+Upstream: https://github.com/jrmuizel/adobe-cmap-parser
+Copied from: no upstream file. The repository holds no licence file at any commit (checked through commit ac107d55f0d31a9d47955082238ab9e4fb157cdb, the commit the crate was published from, per its .cargo_vcs_info.json); its Cargo.toml declares license = "MIT".
+Files: LICENSE
+Why: the adobe-cmap-parser 0.4.1 package on crates.io ships no licence file, and upstream has none to copy.
+LICENSE is the standard MIT text (from GitHub's licenses API, https://choosealicense.com/licenses/mit/) with the copyright line naming the crate's author from its Cargo.toml (Jeff Muizelaar); the year is left out because upstream states none.
