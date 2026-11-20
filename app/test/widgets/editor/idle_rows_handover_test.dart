@@ -705,6 +705,55 @@ void main() {
     }
   });
 
+  group('agent reload changes the kind of the unfocused active row (AC9)', () {
+    testWidgets(
+      'an agent reload that changes the kind of the unfocused active row keeps its controller and the rows around it',
+      (tester) async {
+        await _t132Pump(tester);
+        await wi132Unfocus(tester);
+        final middle = _t132Row(tester, _t132Middle);
+        await wi132Select(tester, wi132CaretIn(tester, middle, offset: 2));
+        final host = wi132Host(tester);
+        final before = [
+          for (var i = 0; i < host.rowCount; i++) host.rowController(i),
+        ];
+        final start = wi132Spec(tester, middle).start;
+
+        // An agent turns the active prose row into a bullet.
+        host.widget.controller.value = TextEditingValue(
+          text: host.text.replaceRange(start, start, '- '),
+          selection: TextSelection.collapsed(
+            offset: host.selection.extentOffset + 2,
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+
+        expect(
+          host.text.substring(wi132Spec(tester, middle).start).trimLeft(),
+          startsWith('- Middle'),
+          reason: 'fixture: the row is a bullet now',
+        );
+        expect(
+          host.rowController(middle),
+          same(before[middle]),
+          reason: 'the active row keeps its controller across a kind change',
+        );
+        for (var i = 0; i < before.length; i++) {
+          if (i == middle) continue;
+          expect(
+            host.rowController(i),
+            same(before[i]),
+            reason: 'row $i has a continuation of its own',
+          );
+        }
+        expect(host.focusedRow, isNull, reason: 'still unfocused');
+        wi132ExpectOnlyActive(tester, middle);
+      },
+      variant: macOnly,
+    );
+  });
+
   // ------------------------------------------------------------ autocomplete
 
   group('autocomplete belongs to the active row (AC10)', () {
