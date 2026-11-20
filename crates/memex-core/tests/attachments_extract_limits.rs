@@ -9,7 +9,8 @@
 //!   in any letter case).
 //! - `record` replaces a `pending` row and nothing else.
 //! - `limit_memory`: the extraction child's watchdog stops its own process
-//!   with exit status 3 past the limit, and leaves it alone under it. Tested
+//!   with exit status 3 past the limit, and leaves it alone under it or at
+//!   it. Tested
 //!   in a re-run of this test binary (the watchdog ends its process).
 //!
 //! Real SQLite, real schema, temp vaults and folders.
@@ -375,6 +376,15 @@ fn limit_memory_child_body() {
                 std::thread::sleep(Duration::from_millis(50));
             }
         }
+        // A limit of exactly this process's peak: 64 MiB touched and
+        // unmapped, so the peak stays where it is while the watchdog runs.
+        "at_peak" => {
+            raise_peak_then_unmap(64 << 20);
+            limit_memory(peak_resident_now());
+            for _ in 0..12 {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
         // A 128 MiB data cap, then the exit code says whether one was set.
         "cap_returns" => {
             let set = cap_data_memory(128 << 20);
@@ -387,6 +397,45 @@ fn limit_memory_child_body() {
             std::process::exit(if big.iter().all(|b| *b == 1) { 0 } else { 1 });
         }
         other => panic!("unknown mode {other}"),
+    }
+}
+
+/// Maps `bytes` of anonymous memory, touches every page, and unmaps it:
+/// the peak resident memory rises by about `bytes`, the current resident
+/// memory falls back.
+fn raise_peak_then_unmap(bytes: usize) {
+    // SAFETY: a fresh private anonymous mapping, written only inside its
+    // length and unmapped once.
+    unsafe {
+        let p = libc::mmap(
+            std::ptr::null_mut(),
+            bytes,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANON,
+            -1,
+            0,
+        );
+        assert_ne!(p, libc::MAP_FAILED, "mmap");
+        std::ptr::write_bytes(p.cast::<u8>(), 1, bytes);
+        assert_eq!(libc::munmap(p, bytes), 0, "munmap");
+    }
+}
+
+/// This process's peak resident memory in bytes, read as `limit_memory`
+/// reads it (`ru_maxrss`: bytes on macOS, KiB on Linux).
+fn peak_resident_now() -> u64 {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+    // SAFETY: getrusage writes a whole rusage into the pointer it is given.
+    assert_eq!(
+        unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) },
+        0
+    );
+    // SAFETY: getrusage returned 0, so it filled it.
+    let max = u64::try_from(unsafe { usage.assume_init() }.ru_maxrss).unwrap();
+    if cfg!(target_os = "macos") {
+        max
+    } else {
+        max * 1024
     }
 }
 
@@ -431,6 +480,19 @@ fn limit_memory_leaves_a_process_under_the_limit_running() {
         out.status.code(),
         Some(0),
         "under the limit nothing stops it: {stderr}"
+    );
+    assert!(!stderr.contains("extraction stopped"), "{stderr}");
+}
+
+#[test]
+fn limit_memory_leaves_a_process_whose_peak_equals_the_limit_running() {
+    // "More than" the limit stops it; exactly the limit does not.
+    let out = run_child_body("at_peak");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a peak equal to the limit is not past it: {stderr}"
     );
     assert!(!stderr.contains("extraction stopped"), "{stderr}");
 }
