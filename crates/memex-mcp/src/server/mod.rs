@@ -24,6 +24,7 @@ use memex_core::fs_guard::{self, FsInfo};
 use memex_core::{MemexError, SystemClock};
 use serde_json::{json, Value};
 
+use crate::attachment_extract_child::ChildExtractor;
 use crate::cli::InvalidArgument;
 
 pub mod api;
@@ -65,6 +66,7 @@ pub struct ServerConfig {
     clock: SharedClock,
     backups: Option<BackupConfig>,
     backup_archive_hook: Option<BackupArchiveHook>,
+    extractor: Option<ChildExtractor>,
 }
 
 impl ServerConfig {
@@ -78,7 +80,20 @@ impl ServerConfig {
             clock: Arc::new(SystemClock),
             backups: None,
             backup_archive_hook: None,
+            extractor: None,
         }
+    }
+
+    /// The attachment extraction child every served vault uses (default:
+    /// the running `memex`). Tests pass the built `memex` or a test child.
+    pub fn with_extractor(mut self, extractor: ChildExtractor) -> Self {
+        self.extractor = Some(extractor);
+        self
+    }
+
+    /// The extraction child set with [`Self::with_extractor`], if any.
+    pub fn extractor(&self) -> Option<&ChildExtractor> {
+        self.extractor.as_ref()
     }
 
     /// Whether every served vault uses real embeddings (default: no).
