@@ -12,24 +12,32 @@
 // The outline (Key `editor-drop-outline`) is the agents sheet's focus-ring
 // style: a `BoxDecoration` border, 2 px `OmColors.accent` on every side,
 // over the whole drop target.
-import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/segments.dart';
+import 'package:open_memex_app/src/state/attachment_drop_source.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
+import 'package:open_memex_app/src/state/tabs_state.dart';
+import 'package:open_memex_app/src/state/vault_access_state.dart';
+import 'package:open_memex_app/src/state/vault_state.dart';
+import 'package:open_memex_app/src/vault_access/local/local_vault_access.dart';
 import 'package:open_memex_app/src/widgets/editor/attachment_drop_target.dart';
 import 'package:open_memex_app/src/widgets/editor/excerpt_card.dart';
 import 'package:open_memex_app/src/widgets/sidebar.dart';
 
 import '../../robots/segmented_editor_robot.dart';
 import '../../support/app_harness.dart' show pumpFrames;
+import '../../support/canvas_seeds.dart';
+import '../../support/fake_memex_cli.dart';
+import '../../support/fake_vault_db.dart';
 import '../../support/font_fetch_hold.dart';
 import '../../support/mac_editing.dart';
 import '../../support/segment_editing_finder.dart';
 import '../../support/wi146_attach_harness.dart';
 import '../../support/wi147_drop_paste_harness.dart';
+import '../../support/wi85_find_editor.dart';
 
 const _card = fixtureRangeToken;
 const _footer = '$topicsMarker\n[[Zeta Game~about]]\n';
@@ -109,6 +117,43 @@ Future<void Function()> _showModal(Wi147Rig g, String kind) async {
       return () => Navigator.of(tester.element(find.text('wi147 sheet'))).pop();
   }
   throw ArgumentError(kind);
+}
+
+/// An [AttachmentDropSource] whose targets are [_Wi147DropProbe]s, so a test
+/// reads each mounted editor's `enabled` flag (the fake source tracks only
+/// the latest target).
+class _Wi147ProbeDropSource implements AttachmentDropSource {
+  @override
+  Widget buildTarget({
+    required Widget child,
+    required bool enabled,
+    AttachmentDragCallback? onEntered,
+    AttachmentDragCallback? onUpdated,
+    VoidCallback? onExited,
+    AttachmentDropCallback? onDropped,
+  }) => _Wi147DropProbe(enabled: enabled, child: child);
+}
+
+class _Wi147DropProbe extends StatelessWidget {
+  const _Wi147DropProbe({required this.enabled, required this.child});
+
+  final bool enabled;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => child;
+}
+
+/// The canvas fixture with Alpha and Beta noted, for the zoom switch.
+FakeVaultDb _zoomVault() {
+  final db = wi85SeedVault(seedCanvasFixture(FakeVaultDb.v5()));
+  for (final id in [C89.alpha, C89.beta]) {
+    db.db.execute('UPDATE notes SET content_md = ? WHERE id = ?', [
+      'Rye one.\nRye two.\n',
+      id,
+    ]);
+  }
+  return db;
 }
 
 void main() {
@@ -277,6 +322,42 @@ void main() {
       expect(g.addedPaths, [wi147PngPath]);
       expect(g.body, 'Intro line\n$_card\n\n$_m\n\nOutro line');
     });
+
+    testWidgets(
+      'a drop on a text line after an excerpt card anchors to that line by counting the card length',
+      (tester) async {
+        const topic = 'Intro line\n$_card\nOutro line\nLast line';
+        final g = await wi147Pump(tester, topicBody: topic);
+        await _open(g, fixtureTopicId);
+        await g.r.caretAfter('Intro line');
+
+        await g.dropAt(g.lineCenter(0, segment: 2), const [wi147PngPath]);
+
+        expect(g.addedPaths, [wi147PngPath]);
+        expect(
+          g.body,
+          'Intro line\n$_card\nOutro line\n\n$_m\n\nLast line',
+          reason: 'the line after the card, not the caret line',
+        );
+      },
+    );
+
+    testWidgets(
+      'a drop on the second text line after an excerpt card anchors to the second line',
+      (tester) async {
+        const topic = 'Intro line\n$_card\nOutro line\nLast line\nEnd line';
+        final g = await wi147Pump(tester, topicBody: topic);
+        await _open(g, fixtureTopicId);
+        await g.r.caretAfter('Intro line');
+
+        await g.dropAt(g.lineCenter(1, segment: 2), const [wi147PngPath]);
+
+        expect(
+          g.body,
+          'Intro line\n$_card\nOutro line\nLast line\n\n$_m\n\nEnd line',
+        );
+      },
+    );
   });
 
   group('drops elsewhere do nothing (AC2)', () {
@@ -456,6 +537,72 @@ void main() {
         _expectOutline(g);
         await g.dropAt(g.lineCenter(0), const [wi147PngPath]);
         expect(g.addedPaths, [wi147PngPath]);
+      },
+    );
+  });
+
+  group('a canvas zoom switch (AC1)', () {
+    testWidgets(
+      'while a zoom switches notes only the incoming editor takes a drop',
+      (tester) async {
+        const duration = Duration(seconds: 3);
+        final probe = _Wi147ProbeDropSource();
+        final w = await pumpWi85(
+          tester,
+          open: null,
+          db: _zoomVault(),
+          zoom: duration,
+          overrides: [
+            attachmentDropSourceProvider.overrideWithValue(probe),
+            vaultAccessProvider.overrideWith((ref) {
+              final path = ref.watch(currentVaultProvider).localPath;
+              if (path == null) return null;
+              return LocalVaultAccess(
+                vaultPath: path,
+                db: ref.watch(vaultDbProvider),
+                cli: FakeMemexCli(),
+              );
+            }),
+          ],
+        );
+        Finder zoomed(String id) => find.byKey(Key('zoomed-$id'));
+        Finder targets(String id) => find.descendant(
+          of: zoomed(id),
+          matching: find.byType(_Wi147DropProbe),
+        );
+        bool enabledUnder(String id) =>
+            tester.widget<_Wi147DropProbe>(targets(id)).enabled;
+
+        await w.h.navigate(const CanvasTab(C89.newer));
+        await w.h.navigate(const CanvasTab(C89.newer, zoomedNoteId: C89.alpha));
+        await tester.pump(duration);
+        await tester.pump(duration);
+        await pumpFrames(tester);
+        expect(targets(C89.alpha), findsOneWidget);
+        expect(enabledUnder(C89.alpha), isTrue, reason: 'the only editor');
+
+        w.h.tabs.navigate(const CanvasTab(C89.newer, zoomedNoteId: C89.beta));
+        await tester.pump(const Duration(milliseconds: 50));
+        await tester.pump(const Duration(milliseconds: 50));
+
+        expect(zoomed(C89.alpha), findsOneWidget, reason: 'switching');
+        expect(zoomed(C89.beta), findsOneWidget);
+        expect(
+          enabledUnder(C89.alpha),
+          isFalse,
+          reason: 'the outgoing editor takes no drop',
+        );
+        expect(
+          enabledUnder(C89.beta),
+          isTrue,
+          reason: 'the incoming editor does',
+        );
+
+        await tester.pump(duration);
+        await tester.pump(duration);
+        await pumpFrames(tester);
+        expect(zoomed(C89.alpha), findsNothing);
+        expect(enabledUnder(C89.beta), isTrue);
       },
     );
   });

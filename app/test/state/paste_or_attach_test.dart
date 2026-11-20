@@ -24,6 +24,7 @@ import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_memex_app/src/editor/editor_rows.dart' show RowKind;
 import 'package:open_memex_app/src/state/attach_controller.dart';
 import 'package:open_memex_app/src/state/clock.dart';
 import 'package:open_memex_app/src/state/paste_or_attach.dart';
@@ -31,8 +32,11 @@ import 'package:open_memex_app/src/state/pasteboard_reader.dart';
 import 'package:open_memex_app/src/state/vault_access_state.dart';
 import 'package:open_memex_app/src/vault_access/local/local_vault_access.dart';
 import 'package:open_memex_app/src/widgets/editor/spelling_menu.dart';
+import 'package:open_memex_app/src/widgets/editor/text_segment.dart'
+    show showRowTextMenu;
 
 import '../support/app_harness.dart' show pumpFrames;
+import '../support/attachments_fakes.dart';
 import '../support/attachment_input_fakes.dart';
 import '../support/editor_rows_probe.dart';
 import '../support/fake_clock.dart';
@@ -625,10 +629,18 @@ void main() {
         g.clipboard(files: const [wi147PdfPath], text: _finderText);
         await g.select(base, extent);
 
+        g.r.bodyChanges.clear();
+
         await g.cmdV();
 
         expect(g.addedPaths, [wi147PdfPath]);
-        expect(wi147Count(g.body, _s), 1, reason: 'the line is inserted');
+        expect(
+          g.body,
+          '$body\n\n$_s',
+          reason:
+              'the line goes after the caret row and the selected text stays',
+        );
+        expect(g.r.bodyChanges, ['$body\n\n$_s'], reason: 'one body change');
         expect(
           wi147Count(g.body, _finderText),
           wi147Count(_s, _finderText),
@@ -650,12 +662,19 @@ void main() {
         final b = g.caretPoint(17);
         await g.rightClick(Offset((a.dx + b.dx) / 2, a.dy));
         expect(g.body, body, reason: 'the right click edits nothing');
+        g.r.bodyChanges.clear();
 
         await g.choosePaste();
 
         final name = wi147PastedName(g.r.h.clock.now());
+        final expected = '$body\n\n${wi146Line(name)}';
         expect(g.addedNames, [name]);
-        expect(wi147Count(g.body, wi146Line(name)), 1);
+        expect(
+          g.body,
+          expected,
+          reason: 'after the caret row; the selected text stays',
+        );
+        expect(g.r.bodyChanges, [expected], reason: 'one body change');
       },
       variant: macOnly,
     );
@@ -1183,6 +1202,381 @@ void main() {
         await pumpFrames(tester);
 
         expect(g.menuItem('Paste'), findsOneWidget);
+      },
+      variant: macOnly,
+    );
+  });
+
+  group('the cross row menu offers Paste only while canPasteOrAttach (AC7, AC8)', () {
+    // Selection `al|pha` to `be|ta` over three rows; a right click on the
+    // selected `b` of `beta` shows the cross-row menu.
+    const body = 'Intro\n- alpha\n- beta';
+    for (final (name, clipboard, writable, offered)
+        in <(String, PasteboardContents, bool, bool)>[
+          (
+            'the cross row menu offers Paste for file URLs only',
+            PasteboardContents(files: [wi147PdfPath]),
+            true,
+            true,
+          ),
+          (
+            'the cross row menu offers Paste for an image only',
+            PasteboardContents(png: fakePngBytes()),
+            true,
+            true,
+          ),
+          (
+            'the cross row menu offers Paste for text only',
+            const PasteboardContents(hasText: true),
+            true,
+            true,
+          ),
+          (
+            'the cross row menu offers no Paste for an empty clipboard',
+            const PasteboardContents(),
+            true,
+            false,
+          ),
+          (
+            'the cross row menu offers no Paste for file URLs only on a read only vault',
+            PasteboardContents(files: [wi147PdfPath]),
+            false,
+            false,
+          ),
+          (
+            'the cross row menu offers no Paste for an image only on a read only vault',
+            PasteboardContents(png: fakePngBytes()),
+            false,
+            false,
+          ),
+          (
+            'the cross row menu still offers Paste for text on a read only vault',
+            const PasteboardContents(hasText: true),
+            false,
+            true,
+          ),
+        ]) {
+      testWidgets(name, (tester) async {
+        final g = await wi147Pump(tester, body: body);
+        await g.r.open();
+        g.pasteboard.contents = clipboard;
+        await g.setWritable(writable);
+        await g.select(10, 18);
+        final a = g.caretPoint(16);
+        final b = g.caretPoint(17);
+
+        await g.rightClick(Offset((a.dx + b.dx) / 2, a.dy));
+
+        expect(g.menuItem('Copy'), findsOneWidget, reason: 'the menu shows');
+        expect(g.menuItem('Cut'), findsOneWidget);
+        expect(
+          g.menuItem('Paste'),
+          offered ? findsOneWidget : findsNothing,
+          reason: 'Paste is offered only while canPasteOrAttach',
+        );
+        expect(g.pasteboard.reads, greaterThan(0));
+      }, variant: macOnly);
+    }
+
+    testWidgets(
+      'a press while the cross row right click still waits for the clipboard cancels its menu',
+      (tester) async {
+        final held = _Wi147HeldPasteboard(
+          const PasteboardContents(hasText: true),
+        );
+        final g = await wi147Pump(tester, body: body, pasteboardReader: held);
+        await g.r.open();
+        await g.select(10, 18);
+        final a = g.caretPoint(16);
+        final b = g.caretPoint(17);
+
+        await g.rightClick(Offset((a.dx + b.dx) / 2, a.dy));
+        expect(g.menuItem('Copy'), findsNothing, reason: 'still waiting');
+        await tester.tapAt(g.caretPoint(2), kind: PointerDeviceKind.mouse);
+        await pumpFrames(tester);
+        held.open();
+        await pumpFrames(tester);
+
+        expect(g.menuItem('Copy'), findsNothing, reason: 'cancelled');
+        expect(g.menuItem('Paste'), findsNothing);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'the cross row right click Paste with a text only clipboard replaces the selection once and attaches nothing',
+      (tester) async {
+        final g = await wi147Pump(tester, body: body);
+        await g.r.open();
+        g.clipboard(text: _text);
+        await g.select(10, 18);
+        final a = g.caretPoint(16);
+        final b = g.caretPoint(17);
+        await g.rightClick(Offset((a.dx + b.dx) / 2, a.dy));
+        g.r.bodyChanges.clear();
+
+        await g.choosePaste();
+
+        expect(g.body, 'Intro\n- al${_text}ta');
+        expect(g.r.bodyChanges, ['Intro\n- al${_text}ta']);
+        expect(g.attaches, 0);
+      },
+      variant: macOnly,
+    );
+  });
+
+  group(
+    'the text menu of a row without a field offers Paste while canPasteOrAttach (AC7, AC8)',
+    () {
+      // `showRowTextMenu` is the menu a right click on a row without a field
+      // opens; it only needs the row's controller and focus node, so the real
+      // app's focused row stands in for one.
+      Future<Wi147Rig> pumpRow(
+        WidgetTester tester, {
+        required bool writable,
+      }) async {
+        final g = await wi147Pump(tester);
+        await g.r.open();
+        await g.setWritable(writable);
+        await g.r.caretAfter(_caret);
+        return g;
+      }
+
+      Future<void> openMenu(Wi147Rig g) async {
+        await showRowTextMenu(
+          rowsHostOf(g.tester),
+          0,
+          anchor: const Offset(300, 300),
+        );
+        await pumpFrames(g.tester);
+      }
+
+      testWidgets(
+        'the text menu of a row without a field offers Paste for an image only and its Paste attaches the image once',
+        (tester) async {
+          final g = await pumpRow(tester, writable: true);
+          g.clipboard(png: _png());
+
+          await openMenu(g);
+          await g.choosePaste();
+
+          expect(g.addedNames, [wi147PastedName(g.r.h.clock.now())]);
+          expect(g.r.attachments.addCalls, isEmpty);
+          expect(g.body, _plainAfter(wi146Line(g.addedNames.single)));
+        },
+        variant: macOnly,
+      );
+
+      testWidgets(
+        'the text menu of a row without a field offers Paste for file URLs with the Finder name text and its Paste gives 1 attach and 0 text pastes',
+        (tester) async {
+          final g = await pumpRow(tester, writable: true);
+          g.clipboard(files: const [wi147PdfPath], text: _finderText);
+
+          await openMenu(g);
+          await g.choosePaste();
+
+          expect(g.addedPaths, [wi147PdfPath]);
+          expect(g.body, _plainAfter(_s), reason: 'no Finder name text');
+        },
+        variant: macOnly,
+      );
+
+      testWidgets(
+        'the text menu of a row without a field offers Paste for text only and its Paste pastes the text once',
+        (tester) async {
+          final g = await pumpRow(tester, writable: true);
+          g.clipboard(text: _text);
+
+          await openMenu(g);
+          await g.choosePaste();
+
+          expect(g.body, _plainAfter(''));
+          expect(g.attaches, 0);
+        },
+        variant: macOnly,
+      );
+
+      testWidgets(
+        'the text menu of a row without a field offers no Paste for an empty clipboard',
+        (tester) async {
+          final g = await pumpRow(tester, writable: true);
+          g.clipboard();
+
+          await openMenu(g);
+
+          expect(g.menuItem('Paste'), findsNothing);
+          expect(g.pasteboard.reads, greaterThan(0), reason: 'asked');
+        },
+        variant: macOnly,
+      );
+
+      for (final (name, put) in <(String, void Function(Wi147Rig))>[
+        (
+          'the text menu of a row without a field offers no Paste for an image only on a read only vault',
+          (g) => g.clipboard(png: _png()),
+        ),
+        (
+          'the text menu of a row without a field offers no Paste for file URLs only on a read only vault',
+          (g) => g.clipboard(files: const [wi147PdfPath]),
+        ),
+      ]) {
+        testWidgets(name, (tester) async {
+          final g = await pumpRow(tester, writable: false);
+          put(g);
+
+          await openMenu(g);
+
+          expect(g.menuItem('Paste'), findsNothing);
+          expect(g.attaches, 0);
+        }, variant: macOnly);
+      }
+
+      testWidgets(
+        'the text menu of a row without a field offers Paste for text on a read only vault',
+        (tester) async {
+          final g = await pumpRow(tester, writable: false);
+          g.clipboard(text: _text);
+
+          await openMenu(g);
+          await g.choosePaste();
+
+          expect(g.body, _plainAfter(''));
+        },
+        variant: macOnly,
+      );
+    },
+  );
+
+  group('the right click take over guards (Q3, D23)', () {
+    testWidgets(
+      'a right click on an attachment block while a text row has focus shows no Paste menu for an image clipboard while a right click on the focused row does',
+      (tester) async {
+        final vault = Wi147VaultAttachments();
+        final path = testAttachmentPath(147010, 'mock.png');
+        vault.putFile(path, testPngBytes(40, 20));
+        final g = await wi147Pump(
+          tester,
+          attachments: vault,
+          body: 'Review the draft\n![mock.png]($path)\nNext steps',
+        );
+        await g.r.open();
+        await g.r.caretAfter(_caret);
+        g.clipboard(png: _png());
+        final host = rowsHostOf(tester);
+        var block = -1;
+        for (var i = 0; i < host.rowCount; i++) {
+          if (host.rowSpec(i)!.kind == RowKind.attachment) block = i;
+        }
+        expect(block, isNonNegative, reason: 'the note has an attachment row');
+        final card = find.byKey(ValueKey('editor-attachment-0-$block'));
+        expect(card, findsOneWidget);
+        final focused = g.focusedField();
+
+        await g.rightClick(tester.getCenter(card));
+
+        expect(g.menuItem('Paste'), findsNothing, reason: 'no menu there');
+        expect(g.focusedField(), same(focused), reason: 'focus stayed');
+        expect(g.attaches, 0);
+
+        // The same clipboard on the focused row's own text does show it.
+        await g.rightClickAtCaret();
+        expect(g.menuItem('Paste'), findsOneWidget);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'an image right click over a caret lists Paste and neither Cut nor Copy',
+      (tester) async {
+        final g = await wi147Pump(tester);
+        await g.r.open();
+        g.clipboard(png: _png());
+        await g.r.caretAfter(_caret);
+
+        await g.rightClickAtCaret();
+
+        expect(g.menuItem('Paste'), findsOneWidget);
+        expect(g.menuItem('Cut'), findsNothing);
+        expect(g.menuItem('Copy'), findsNothing);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a press while the Source right click still waits for the clipboard cancels its take over menu',
+      (tester) async {
+        final held = _Wi147HeldPasteboard(PasteboardContents(png: _png()));
+        final g = await wi147Pump(tester, pasteboardReader: held);
+        await g.r.open();
+        await g.r.sourceCaret(_caret.length);
+        final field = g.focusedField();
+        final rect = field.renderEditable.getLocalRectForCaret(
+          const TextPosition(offset: 2),
+        );
+        final inField = field.renderEditable.localToGlobal(
+          Offset(rect.left, rect.center.dy),
+        );
+
+        await g.rightClickAtCaret();
+        expect(g.menuItem('Paste'), findsNothing, reason: 'still waiting');
+        await tester.tapAt(inField, kind: PointerDeviceKind.mouse);
+        await pumpFrames(tester);
+        held.open();
+        await pumpFrames(tester);
+
+        expect(g.menuItem('Paste'), findsNothing, reason: 'cancelled');
+        expect(g.attaches, 0);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a Source right click waiting for the clipboard shows its take over menu once the clipboard answers',
+      (tester) async {
+        final held = _Wi147HeldPasteboard(PasteboardContents(png: _png()));
+        final g = await wi147Pump(tester, pasteboardReader: held);
+        await g.r.open();
+        await g.r.sourceCaret(_caret.length);
+
+        await g.rightClickAtCaret();
+        expect(g.menuItem('Paste'), findsNothing, reason: 'still waiting');
+        held.open();
+        await pumpFrames(tester);
+
+        expect(g.menuItem('Paste'), findsOneWidget);
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'in Source mode a right click on a flagged word with an image clipboard shows the spelling menu and its Paste gives 1 attach',
+      (tester) async {
+        final g = await wi147Pump(
+          tester,
+          body: 'Good teh day.\nNext steps',
+          spelling: FakeSpellingService()
+            ..misspell('teh', corrections: const ['the'])
+            ..scriptGuesses('teh', const ['the']),
+        );
+        await g.r.open();
+        await g.settleSpelling();
+        final png = _png();
+        g.clipboard(png: png);
+        await g.r.sourceCaret(6);
+        await g.settleSpelling();
+
+        await g.rightClickAtCaret();
+
+        expect(find.byType(SpellingMenu), findsOneWidget, reason: 'spelling');
+        await g.choosePaste();
+        expect(g.addedNames, [wi147PastedName(g.r.h.clock.now())]);
+        expect(g.r.attachments.addBytesCalls.single.bytes, png);
+        expect(g.attaches, 1);
+        expect(
+          g.body,
+          'Good teh day.\n\n${wi146Line(g.addedNames.single)}\n\nNext steps',
+        );
       },
       variant: macOnly,
     );
