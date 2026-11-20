@@ -2,7 +2,8 @@ import 'dart:async' show scheduleMicrotask;
 import 'dart:math' show max;
 import 'dart:ui' as ui show BoxHeightStyle, BoxWidthStyle;
 
-import 'package:flutter/foundation.dart' show ValueListenable, defaultTargetPlatform;
+import 'package:flutter/foundation.dart'
+    show ValueListenable, defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -276,6 +277,19 @@ class _TextSegmentFieldState extends State<TextSegmentField> {
   late String _lastSeen;
   late bool _empty;
 
+  /// The field's own context menu ([spellingAwareContextMenu]), none while
+  /// the segment selection of the row this field edits spans rows: a right
+  /// click there gets the segment's cross-row menu once the clipboard
+  /// answered (WI #147), whether the field took focus from a click or from
+  /// activation (WI #132).
+  Widget _contextMenu(BuildContext context, EditableTextState editable) {
+    final view = mounted
+        ? this.context.findAncestorStateOfType<SegmentViewState>()
+        : null;
+    if (view?.selectionSpansRows ?? false) return const SizedBox.shrink();
+    return spellingAwareContextMenu(context, editable);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -395,7 +409,7 @@ class _TextSegmentFieldState extends State<TextSegmentField> {
                 hintStyle: OmType.mono(size: _bodySize, color: OmColors.fg3),
               ),
               // A right click on a flagged range opens SpellingMenu (WI #438).
-              contextMenuBuilder: spellingAwareContextMenu,
+              contextMenuBuilder: _contextMenu,
               // No onChanged: the controller listener reports typed AND
               // spliced changes.
             ),
