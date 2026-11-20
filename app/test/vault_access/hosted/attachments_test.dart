@@ -20,18 +20,23 @@
 // Time runs on a FakeClock through `clockProvider`; no real wait.
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:open_memex_app/src/editor/attachment_ref.dart';
+import 'package:open_memex_app/src/state/attachments_state.dart';
 import 'package:open_memex_app/src/state/clock.dart';
+import 'package:open_memex_app/src/state/file_revealer.dart';
 import 'package:open_memex_app/src/state/hosted_connection_state.dart';
 import 'package:open_memex_app/src/state/url_opener.dart';
+import 'package:open_memex_app/src/state/vault_open_hosted.dart';
+import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/vault_access/attachments_access.dart';
 import 'package:open_memex_app/src/vault_access/hosted/attachments.dart';
 import 'package:open_memex_app/src/vault_access/hosted/hosted_client.dart';
+import 'package:open_memex_app/src/vault_access/hosted/hosted_vault_access.dart';
 import 'package:path/path.dart' as p;
 
 import '../../support/attachments_fakes.dart';
@@ -43,6 +48,19 @@ const _offline = "the vault server can't be reached";
 const _serverTooOld =
     "This vault's server is too old for attachments; update memex on the server.";
 const _mb = 1024 * 1024;
+
+/// The route the domain's once-per-session server check reads.
+const _checkRoute =
+    '/vaults/seed/api/v1/attachments/objects/00/'
+    '0000000000000000000000000000000000000000000000000000000000000000/check';
+
+/// What an older server answers for a route it doesn't have.
+const _noRouteBody = {
+  'error': {
+    'code': 'not_found',
+    'message': 'not found: no route for this path',
+  },
+};
 
 class _Wi140UrlOpener implements UrlOpener {
   final List<String> opened = [];
@@ -1278,4 +1296,470 @@ void main() {
       expect(env.count('POST'), 1);
     });
   });
+
+  group('verify r1: route check, open failures, status, defaults', () {
+    test(
+      'an old servers first attachment call being info gives server too old after one HEAD and one check',
+      () async {
+        final env = _env();
+        env.server.attachmentRoutesMissing = true;
+
+        final info = await env.access().info(_path('photo.png'));
+
+        expect(
+          _as<AttachmentInfoFailed>(info).failure,
+          AttachmentLookupFailure.serverTooOld,
+        );
+        expect(env.count('HEAD'), 1);
+        expect(env.count('GET'), 1, reason: 'the HEAD has no body: one check');
+      },
+    );
+
+    test(
+      'a current servers first attachment call being info of a missing file gives missing after one HEAD and one check',
+      () async {
+        final env = _env();
+
+        final info = await env.access().info(_path('gone.png'));
+        final again = await env.access().info(_path('gone2.png'));
+
+        expect(
+          _as<AttachmentInfoFailed>(info).failure,
+          AttachmentLookupFailure.missing,
+        );
+        expect(
+          _as<AttachmentInfoFailed>(again).failure,
+          AttachmentLookupFailure.missing,
+        );
+        expect(env.count('HEAD'), 2);
+        expect(env.count('GET'), 1, reason: 'the check is settled by now');
+      },
+    );
+
+    test(
+      'a route check that cannot reach the server after a HEAD 404 gives the offline result',
+      () async {
+        final env = _env();
+        final failing = _FailAfterHead(env.server.client, env.server);
+        final provider = Provider<HostedClient>(
+          (ref) => HostedClient(
+            ref,
+            serverId: fakeServerId,
+            serverName: fakeServerName,
+            serverUrl: env.server.url.toString(),
+            accessToken: env.server.token,
+            httpClient: failing,
+          ),
+        );
+        final client = env.container.read(provider);
+
+        final info = await env.access(over: client).info(_path('gone.png'));
+
+        expect(
+          _as<AttachmentInfoFailed>(info).failure,
+          AttachmentLookupFailure.offline,
+        );
+        expect(env.count('HEAD'), 1);
+        expect(env.count('GET'), 1);
+      },
+    );
+
+    test(
+      'a route check that gets a 401 is not trusted: after the token is fixed an old server is still found',
+      () async {
+        final env = _env();
+        final access = env.access();
+        env.server.token = 'a-token-the-client-does-not-have';
+
+        final stale = await access.addBytes(Uint8List(9 * _mb), 'a.pdf');
+
+        expect(stale, isA<AttachmentAddFailed>());
+        expect(
+          _as<AttachmentAddFailed>(stale).reason,
+          AttachmentAddFailureReason.other,
+        );
+        expect(env.count('POST'), 0, reason: 'an unchecked upload is not sent');
+
+        env.server.token = fakeServerToken;
+        env.server.attachmentRoutesMissing = true;
+        final fixed = await access.addBytes(Uint8List(9 * _mb), 'a.pdf');
+
+        _expectAddFailed(
+          fixed,
+          AttachmentAddFailureReason.serverTooOld,
+          _serverTooOld,
+        );
+        expect(env.count('POST'), 0, reason: 'its 413 never shows as a size');
+      },
+    );
+
+    test(
+      'a route check that gets a proxy 502 is repeated and an upload waits for a decisive answer',
+      () async {
+        final env = _env();
+        env.server.route(
+          'GET',
+          _checkRoute,
+          status: 502,
+          body: 'Bad Gateway',
+          contentType: 'text/plain',
+        );
+        final access = env.access();
+
+        final first = await access.addBytes(Uint8List(9 * _mb), 'a.pdf');
+
+        final failed = _as<AttachmentAddFailed>(first);
+        expect(failed.reason, AttachmentAddFailureReason.other);
+        expect(failed.message, contains('502'));
+        expect(env.count('POST'), 0);
+
+        env.server.route('GET', _checkRoute, status: 404, json: _noRouteBody);
+        final second = await access.addBytes(Uint8List(9 * _mb), 'a.pdf');
+
+        _expectAddFailed(
+          second,
+          AttachmentAddFailureReason.serverTooOld,
+          _serverTooOld,
+        );
+        expect(env.count('GET'), 2, reason: 'checked again, not cached');
+        expect(env.count('POST'), 0);
+      },
+    );
+
+    test(
+      'a route check that gets a 502 after a HEAD 404 gives missing and is not cached',
+      () async {
+        final env = _env();
+        env.server.route(
+          'GET',
+          _checkRoute,
+          status: 502,
+          body: 'Bad Gateway',
+          contentType: 'text/plain',
+        );
+        final access = env.access();
+
+        final first = await access.info(_path('gone.png'));
+        final second = await access.info(_path('gone.png'));
+
+        for (final r in [first, second]) {
+          expect(
+            _as<AttachmentInfoFailed>(r).failure,
+            AttachmentLookupFailure.missing,
+          );
+        }
+        expect(env.count('GET'), 2, reason: 'each info checked again');
+      },
+    );
+
+    test(
+      'a route check that gets a C1 invalid_argument or not_found settles for the session',
+      () async {
+        for (final (code, status) in [
+          ('invalid_argument', 400),
+          ('not_found', 404),
+        ]) {
+          final env = _env();
+          env.server.route(
+            'GET',
+            _checkRoute,
+            status: status,
+            json: {
+              'error': {'code': code, 'message': 'no such thing'},
+            },
+          );
+          final access = env.access();
+
+          final first = await access.addBytes(Uint8List(9 * _mb), 'a.pdf');
+          final second = await access.addBytes(_bytes(9 * _mb), 'b.pdf');
+
+          expect(first, isA<AttachmentAdded>(), reason: code);
+          expect(second, isA<AttachmentAdded>(), reason: code);
+          expect(env.count('GET'), 1, reason: code);
+          expect(env.count('POST'), 2, reason: code);
+        }
+      },
+    );
+
+    test(
+      'a hosted open of a copy that cannot be written gives unsupported and never throws',
+      () async {
+        final env = _env();
+        env.server.putAttachment('seed', _path('report.pdf'), _bytes(10));
+        env.server.putAttachment('seed', _path('setup.sh'), _bytes(10));
+        // A cache root that is a file: no folder can be made under it.
+        final notAFolder = File(p.join(p.dirname(env.cacheRoot), 'a file'))
+          ..writeAsStringSync('x');
+        final access = HostedAttachmentsAccess(
+          client: env.client,
+          vaultName: 'seed',
+          urlOpener: env.opener,
+          fileRevealer: env.revealer,
+          openCacheRoot: notAFolder.path,
+        );
+
+        final open = await access.open(_path('report.pdf'));
+        final reveal = await access.reveal(_path('setup.sh'));
+        final openExec = await access.open(_path('setup.sh'));
+
+        for (final r in [open, reveal, openExec]) {
+          expect(
+            _as<AttachmentActionFailed>(r).failure,
+            AttachmentLookupFailure.unsupported,
+          );
+        }
+        expect(env.opener.opened, isEmpty);
+        expect(env.revealer.paths, isEmpty);
+      },
+    );
+
+    test(
+      'a hosted open whose copy cannot be put in place gives unsupported and leaves no partial file',
+      () async {
+        final env = _env();
+        env.server.putAttachment('seed', _path('report.pdf'), _bytes(10));
+        final target = parseAttachmentPath(_path('report.pdf'))!;
+        final vaultFolder = p.join(
+          env.cacheRoot,
+          'server-$fakeServerId',
+          'vault-seed',
+        );
+        // A folder where the copy belongs: the rename onto it fails.
+        Directory(
+          p.join(vaultFolder, target.hash, target.name),
+        ).createSync(recursive: true);
+
+        final result = await env.access().open(_path('report.pdf'));
+
+        expect(
+          _as<AttachmentActionFailed>(result).failure,
+          AttachmentLookupFailure.unsupported,
+        );
+        expect(env.opener.opened, isEmpty);
+        expect(
+          Directory(p.join(vaultFolder, '.partial')).listSync(),
+          isEmpty,
+          reason: 'the part file is removed',
+        );
+      },
+    );
+
+    test('a hosted open of a stored name of 255 bytes opens it', () async {
+      final env = _env();
+      final name = '${'n' * 251}.pdf';
+      expect(name.length, 255);
+      final bytes = _bytes(33);
+      env.server.putAttachment('seed', _path(name), bytes);
+
+      final result = await env.access().open(_path(name));
+
+      expect(result, isA<AttachmentActionDone>());
+      final copy = env.opener.opened.single;
+      expect(p.basename(copy), name);
+      expect(File(copy).readAsBytesSync(), bytes);
+    });
+
+    test(
+      'two hosted opens of one uncached path at once both open a whole copy and leave no partial file',
+      () async {
+        final env = _env();
+        final bytes = _bytes(70000, 3);
+        env.server.putAttachment('seed', _path('report.pdf'), bytes);
+        final access = env.access();
+
+        final results = await Future.wait([
+          access.open(_path('report.pdf')),
+          access.open(_path('report.pdf')),
+        ]);
+
+        expect(results[0], isA<AttachmentActionDone>());
+        expect(results[1], isA<AttachmentActionDone>());
+        expect(env.opener.opened, hasLength(2));
+        expect(env.opener.opened[0], env.opener.opened[1]);
+        expect(File(env.opener.opened.first).readAsBytesSync(), bytes);
+        final vaultFolder = p.join(
+          env.cacheRoot,
+          'server-$fakeServerId',
+          'vault-seed',
+        );
+        expect(Directory(p.join(vaultFolder, '.partial')).listSync(), isEmpty);
+      },
+    );
+
+    test(
+      'a raw request that gets a 401 records the token as rejected and a later answer records connected',
+      () async {
+        final status = hostedConnectionStatusProvider(fakeServerId);
+        final unauthorized = {
+          'error': {'code': 'unauthorized', 'message': 'bad token'},
+        };
+        final attachment = '/vaults/seed/api/v1/attachments/${_path('a.png')}';
+        for (final (method, route) in [
+          ('GET', attachment),
+          ('HEAD', attachment),
+          ('POST', '/vaults/seed/api/v1/attachments?name=a.png'),
+        ]) {
+          final env = _env();
+          env.server.putAttachment('seed', _path('a.png'), _bytes(3));
+          final access = env.access();
+          env.server.route(method, route, status: 401, json: unauthorized);
+          expect(
+            env.container.read(status),
+            isNot(HostedConnectionStatus.tokenRejected),
+            reason: method,
+          );
+
+          switch (method) {
+            case 'GET':
+              await access.read(_path('a.png'));
+            case 'HEAD':
+              await access.info(_path('a.png'));
+            default:
+              await access.addBytes(_bytes(3), 'a.png');
+          }
+
+          expect(
+            env.container.read(status),
+            HostedConnectionStatus.tokenRejected,
+            reason: method,
+          );
+        }
+
+        final env = _env();
+        env.server.putAttachment('seed', _path('a.png'), _bytes(3));
+        final access = env.access();
+        env.server.failure = FakeServerFailure.refused;
+        await access.read(_path('a.png'));
+        expect(env.container.read(status), HostedConnectionStatus.unreachable);
+        env.server.failure = null;
+        await access.info(_path('a.png'));
+        expect(env.container.read(status), HostedConnectionStatus.connected);
+        env.server.failure = FakeServerFailure.refused;
+        await access.read(_path('a.png'));
+        expect(env.container.read(status), HostedConnectionStatus.unreachable);
+        env.server.failure = null;
+        await access.read(_path('gone.png'));
+        expect(
+          env.container.read(status),
+          HostedConnectionStatus.connected,
+          reason: 'a missing 404 is an answer from the server',
+        );
+      },
+    );
+
+    test(
+      'a hosted vault built without a cache bound serves a second read of an image from the cache and a new image after its add',
+      () async {
+        final env = _env();
+        env.server.putAttachment('seed', _path('photo.png'), _bytes(4000));
+        final composite = HostedVaultAccess(
+          client: env.client,
+          vaultName: 'seed',
+        );
+        addTearDown(composite.dispose);
+        final access = composite.attachments;
+
+        final first = await access.read(_path('photo.png'));
+        final second = await access.read(_path('photo.png'));
+        final added = await access.addBytes(_bytes(2500, 7), 'new.png');
+        final newPath = _as<AttachmentAdded>(added).attachment.path;
+        final fromAdd = await access.read(newPath);
+
+        expect(_as<AttachmentBytes>(first).bytes, _bytes(4000));
+        expect(_as<AttachmentBytes>(second).bytes, _bytes(4000));
+        expect(_as<AttachmentBytes>(fromAdd).bytes, _bytes(2500, 7));
+        expect(env.count('GET'), 1, reason: 'one GET for four reads');
+        expect(env.count('POST'), 1);
+      },
+    );
+
+    test(
+      'a hosted attachments domain built without a bound caches an image read',
+      () async {
+        final env = _env();
+        env.server.putAttachment('seed', _path('photo.png'), _bytes(4000));
+        final access = HostedAttachmentsAccess(
+          client: env.client,
+          vaultName: 'seed',
+        );
+
+        await access.read(_path('photo.png'));
+        await access.read(_path('photo.png'));
+
+        expect(env.count('GET'), 1);
+      },
+    );
+
+    test('the hosted domain caches only image bytes in its LRU', () async {
+      final env = _env();
+      env.server.putAttachment('seed', _path('deck.pdf'), _bytes(40));
+      final access = env.access();
+
+      await access.read(_path('deck.pdf'));
+      await access.read(_path('deck.pdf'));
+
+      expect(env.count('GET'), 2, reason: 'a pdf is not kept in memory');
+    });
+  });
+
+  group('verify r1: the providers reach the domain', () {
+    test(
+      'a hosted vault opened through the providers opens and reveals through the overridden opener and revealer',
+      () async {
+        TestWidgetsFlutterBinding.ensureInitialized();
+        final messenger =
+            TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+        const channel = MethodChannel('plugins.flutter.io/path_provider');
+        final cacheDir = Directory.systemTemp.createTempSync('wi140-appcache-');
+        addTearDown(() => cacheDir.deleteSync(recursive: true));
+        messenger.setMockMethodCallHandler(channel, (_) async => cacheDir.path);
+        addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+        final server = FakeVaultServer()
+          ..putAttachment('seed', _path('report.pdf'), _bytes(20))
+          ..putAttachment('seed', _path('setup.sh'), _bytes(20));
+        final opener = _Wi140UrlOpener();
+        final revealer = FakeFileRevealer();
+        const vault = HostedVaultRef(fakeServerId, 'seed');
+        final container = ProviderContainer(
+          overrides: [
+            clockProvider.overrideWithValue(FakeClock()),
+            utcOffsetProvider.overrideWithValue(() => Duration.zero),
+            currentVaultProvider.overrideWith((_) => vault),
+            urlOpenerProvider.overrideWithValue(opener),
+            fileRevealerProvider.overrideWithValue(revealer),
+          ],
+        );
+        addTearDown(container.dispose);
+        container.read(hostedSessionProvider.notifier).state = HostedSession(
+          vault,
+          server.connect(container),
+        );
+
+        final attachments = container.read(attachmentsProvider)!;
+        final pdf = await attachments.open(_path('report.pdf'));
+        final script = await attachments.open(_path('setup.sh'));
+
+        expect(pdf, isA<AttachmentActionDone>());
+        expect(script, isA<AttachmentActionDone>());
+        expect(opener.opened.map(p.basename), ['report.pdf']);
+        expect(revealer.paths.map(p.basename), ['setup.sh']);
+      },
+    );
+  });
+}
+
+/// Delegates to [inner]; once a HEAD has been answered, every later request
+/// is refused.
+class _FailAfterHead extends http.BaseClient {
+  _FailAfterHead(this.inner, this.server);
+
+  final http.Client inner;
+  final FakeVaultServer server;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    final response = await inner.send(request);
+    if (request.method == 'HEAD') server.failure = FakeServerFailure.refused;
+    return response;
+  }
 }

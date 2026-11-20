@@ -16,10 +16,14 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/attachment_ref.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
+import 'package:open_memex_app/src/state/attachments_state.dart';
+import 'package:open_memex_app/src/state/file_revealer.dart';
 import 'package:open_memex_app/src/state/url_opener.dart';
+import 'package:open_memex_app/src/state/vault_state.dart';
 import 'package:open_memex_app/src/vault_access/attachments_access.dart';
 import 'package:open_memex_app/src/vault_access/local/attachments.dart';
 import 'package:path/path.dart' as p;
@@ -867,6 +871,42 @@ void main() {
             reason: why,
           );
         }
+      },
+    );
+  });
+
+  group('verify r1: the providers reach the domain', () {
+    test(
+      'a local vault opened through the providers opens and reveals through the overridden opener and revealer',
+      () async {
+        final env = _env();
+        final pdf = env.put(_path('report.pdf'), [1, 2]);
+        final script = env.put(_path('setup.sh'), [3]);
+        final opener = _Wi140UrlOpener();
+        final revealer = FakeFileRevealer();
+        final container = ProviderContainer(
+          overrides: [
+            currentVaultProvider.overrideWith(
+              (_) => LocalVaultRef(env.vaultPath),
+            ),
+            vaultDbProvider.overrideWithValue(null),
+            memexCliProvider.overrideWithValue(null),
+            urlOpenerProvider.overrideWithValue(opener),
+            fileRevealerProvider.overrideWithValue(revealer),
+          ],
+        );
+        addTearDown(container.dispose);
+
+        final attachments = container.read(attachmentsProvider)!;
+        final opened = await attachments.open(_path('report.pdf'));
+        final revealedScript = await attachments.open(_path('setup.sh'));
+        final revealed = await attachments.reveal(_path('report.pdf'));
+
+        expect(opened, isA<AttachmentActionDone>());
+        expect(revealedScript, isA<AttachmentActionDone>());
+        expect(revealed, isA<AttachmentActionDone>());
+        expect(opener.opened, [pdf]);
+        expect(revealer.paths, [script, pdf]);
       },
     );
   });
