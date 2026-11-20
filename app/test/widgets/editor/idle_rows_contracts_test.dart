@@ -244,26 +244,28 @@ void main() {
   });
 
   group('the kind chip release (WI #132)', () {
-    test('releasing the chip of a field that goes away hides the chip once '
-        'the microtask has run', () async {
-      final host = KindChipHost();
-      addTearDown(host.dispose);
-      final field = TextEditingController(text: '[[Zeta Game]]');
-      addTearDown(field.dispose);
-      host.showFor(field, start: 0, end: 13);
-      expect(host.chip.visible, isTrue, reason: 'fixture: chip shown');
+    test(
+      'releasing the chip of a field that goes away hides the chip once the microtask has run',
+      () async {
+        final host = KindChipHost();
+        addTearDown(host.dispose);
+        final field = TextEditingController(text: '[[Zeta Game]]');
+        addTearDown(field.dispose);
+        host.showFor(field, start: 0, end: 13);
+        expect(host.chip.visible, isTrue, reason: 'fixture: chip shown');
 
-      host.release(field);
-      expect(
-        host.chip.visible,
-        isTrue,
-        reason: 'not before the microtask: the tree may be tearing down',
-      );
-      await Future<void>.value();
+        host.release(field);
+        expect(
+          host.chip.visible,
+          isTrue,
+          reason: 'not before the microtask: the tree may be tearing down',
+        );
+        await Future<void>.value();
 
-      expect(host.chip.visible, isFalse, reason: 'the chip is hidden');
-      expect(host.target, isNull, reason: 'the chip forgot its field');
-    });
+        expect(host.chip.visible, isFalse, reason: 'the chip is hidden');
+        expect(host.target, isNull, reason: 'the chip forgot its field');
+      },
+    );
 
     test(
       'releasing a field the chip does not belong to leaves the chip',
@@ -304,17 +306,19 @@ void main() {
       },
     );
 
-    test('releasing then disposing the host before the microtask throws '
-        'nothing', () async {
-      final host = KindChipHost();
-      final field = TextEditingController(text: '[[Zeta Game]]');
-      addTearDown(field.dispose);
-      host.showFor(field, start: 0, end: 13);
+    test(
+      'releasing then disposing the host before the microtask throws nothing',
+      () async {
+        final host = KindChipHost();
+        final field = TextEditingController(text: '[[Zeta Game]]');
+        addTearDown(field.dispose);
+        host.showFor(field, start: 0, end: 13);
 
-      host.release(field);
-      host.dispose();
-      await Future<void>.value();
-      await Future<void>.value();
-    });
+        host.release(field);
+        host.dispose();
+        await Future<void>.value();
+        await Future<void>.value();
+      },
+    );
   });
 }
