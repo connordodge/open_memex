@@ -4,7 +4,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../editor/attachment_ref.dart' show parseAttachmentReference;
+import '../../editor/attachment_ref.dart'
+    show AttachmentRef, parseAttachmentReference;
 import '../../editor/editor_rows.dart';
 import '../../editor/find_in_note.dart';
 import '../../editor/markdown_inline.dart';
@@ -158,24 +159,21 @@ class CardRows extends StatelessWidget {
     );
     Widget tagged(_TagRowBuilder build) =>
         tags.isEmpty ? build(null) : _CardTagRegion(tags: tags, builder: build);
-    if (spec.kind == RowKind.attachment) {
-      final markdown = rowText.trim();
-      if (parseAttachmentReference(markdown) case final reference?) {
-        return KeyedSubtree(
-          key: ValueKey('card-row-$r'),
-          child: Align(
-            alignment: AlignmentDirectional.topStart,
-            child: KeyedSubtree(
-              key: ValueKey('card-attachment-$r'),
-              child: AttachmentBlock(
-                reference: reference,
-                name: attachmentShownName(markdown, reference),
-                imageMaxHeight: cardAttachmentImageMaxHeight,
-              ),
+    if (cardAttachmentReference(text, spec) case final reference?) {
+      return KeyedSubtree(
+        key: ValueKey('card-row-$r'),
+        child: Align(
+          alignment: AlignmentDirectional.topStart,
+          child: KeyedSubtree(
+            key: ValueKey('card-attachment-$r'),
+            child: AttachmentBlock(
+              reference: reference,
+              name: attachmentShownName(rowText.trim(), reference),
+              imageMaxHeight: cardAttachmentImageMaxHeight,
             ),
           ),
-        );
-      }
+        ),
+      );
     }
     if (spec.kind == RowKind.table) {
       return KeyedSubtree(
@@ -314,6 +312,17 @@ class CardRows extends StatelessWidget {
 
 /// The tallest an excerpt card's image shows (R39), in logical pixels.
 const double cardAttachmentImageMaxHeight = 240;
+
+/// The reference an excerpt card's row [spec] of [text] shows as V3's
+/// [AttachmentBlock] (WI #144; R39), or null when the row shows its text:
+/// an attachment row whose trimmed text parses as a reference. A card
+/// shows no text for such a row, so Find skips it in cards (D27).
+AttachmentRef? cardAttachmentReference(String text, RowSpec spec) =>
+    spec.kind == RowKind.attachment
+    ? parseAttachmentReference(
+        text.substring(spec.textStart, spec.textEnd).trim(),
+      )
+    : null;
 
 /// A tag a click on a card row opens: its [span] in the row's text and its
 /// normalized [name].
