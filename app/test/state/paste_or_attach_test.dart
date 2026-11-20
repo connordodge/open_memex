@@ -20,7 +20,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/gestures.dart' show PointerDeviceKind;
+import 'package:flutter/gestures.dart' show PointerDeviceKind, kSecondaryButton;
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -109,8 +109,9 @@ Future<_Wi147Unit> _unit(
   PasteboardContents contents, {
   bool writable = true,
   bool vault = true,
+  FakePasteboardReader? reader,
 }) async {
-  final reader = FakePasteboardReader(contents);
+  reader ??= FakePasteboardReader(contents);
   late BuildContext context;
   await tester.pumpWidget(
     ProviderScope(
@@ -259,6 +260,29 @@ class _Wi147HeldPasteboard extends FakePasteboardReader {
     await _gate.future;
     return super.read();
   }
+}
+
+/// A [FakePasteboardReader] whose read fails.
+class _Wi147ThrowingPasteboard extends FakePasteboardReader {
+  @override
+  Future<PasteboardContents> read() async {
+    reads++;
+    throw PlatformException(code: 'unavailable');
+  }
+}
+
+/// A right click at [at] that pumps no time, so the menu's wait for the
+/// clipboard is still running when it returns.
+Future<void> _rightClickNoWait(Wi147Rig g, Offset at) async {
+  final mouse = await g.tester.startGesture(
+    at,
+    kind: PointerDeviceKind.mouse,
+    buttons: kSecondaryButton,
+  );
+  await g.tester.pump();
+  await mouse.up();
+  await g.tester.pump();
+  await mouse.removePointer();
 }
 
 void main() {
@@ -464,6 +488,131 @@ void main() {
         expect(u.reader.reads, greaterThan(0), reason: 'asked the clipboard');
       });
     }
+  });
+
+  group('canPasteOrAttach answers within pasteOfferWait (r3)', () {
+    /// Starts [_Wi147Unit.offered] and returns what it has answered so far.
+    ({bool? Function() answer, Future<void> Function() done}) ask(
+      _Wi147Unit u,
+    ) {
+      bool? answer;
+      final f = u.offered().then((v) => answer = v);
+      return (answer: () => answer, done: () => f);
+    }
+
+    testWidgets(
+      'a clipboard read that never answers gives no Paste once pasteOfferWait has passed and not before',
+      (tester) async {
+        final held = _Wi147HeldPasteboard(
+          const PasteboardContents(hasText: true),
+        );
+        final u = await _unit(tester, const PasteboardContents(), reader: held);
+        final asked = ask(u);
+
+        await tester.pump(pasteOfferWait - const Duration(milliseconds: 1));
+        expect(asked.answer(), isNull, reason: 'still inside the wait');
+        await tester.pump(const Duration(milliseconds: 1));
+        await asked.done();
+
+        expect(asked.answer(), isFalse);
+      },
+    );
+
+    testWidgets(
+      'a clipboard read that never answers gives no Paste even while Flutter reports text',
+      (tester) async {
+        final clip = MacClipboard.install(tester, initial: _text);
+        expect(clip.text, _text);
+        final held = _Wi147HeldPasteboard(
+          const PasteboardContents(hasText: true),
+        );
+        final u = await _unit(tester, const PasteboardContents(), reader: held);
+        final asked = ask(u);
+
+        await tester.pump(pasteOfferWait);
+        await asked.done();
+
+        expect(asked.answer(), isFalse, reason: 'the time ran out');
+      },
+    );
+
+    for (final (name, text, offered) in <(String, String?, bool)>[
+      (
+        'a clipboard read that fails gives Paste when Flutter reports text',
+        _text,
+        true,
+      ),
+      (
+        'a clipboard read that fails gives no Paste when Flutter reports no text',
+        null,
+        false,
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        MacClipboard.install(tester, initial: text);
+        final throwing = _Wi147ThrowingPasteboard();
+        final u = await _unit(
+          tester,
+          const PasteboardContents(),
+          reader: throwing,
+        );
+
+        expect(await u.offered(), offered);
+        expect(throwing.reads, 1, reason: 'asked the clipboard');
+      });
+    }
+
+    testWidgets(
+      'a clipboard read that fails and a text check that never answers give no Paste once pasteOfferWait has passed and not before',
+      (tester) async {
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          (call) => Completer<Object?>().future,
+        );
+        addTearDown(
+          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            SystemChannels.platform,
+            null,
+          ),
+        );
+        final u = await _unit(
+          tester,
+          const PasteboardContents(),
+          reader: _Wi147ThrowingPasteboard(),
+        );
+        final asked = ask(u);
+
+        await tester.pump(pasteOfferWait - const Duration(milliseconds: 1));
+        expect(asked.answer(), isNull, reason: 'still inside the wait');
+        await tester.pump(const Duration(milliseconds: 1));
+        await asked.done();
+
+        expect(asked.answer(), isFalse);
+      },
+    );
+
+    testWidgets(
+      'a clipboard read that fails and a text check that fails give no Paste',
+      (tester) async {
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          (call) async => throw PlatformException(code: 'unavailable'),
+        );
+        addTearDown(
+          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            SystemChannels.platform,
+            null,
+          ),
+        );
+        final u = await _unit(
+          tester,
+          const PasteboardContents(),
+          reader: _Wi147ThrowingPasteboard(),
+        );
+
+        expect(await u.offered(), isFalse);
+      },
+    );
   });
 
   // ------------------------------------------------------------ the entries
@@ -1290,7 +1439,8 @@ void main() {
         final a = g.caretPoint(16);
         final b = g.caretPoint(17);
 
-        await g.rightClick(Offset((a.dx + b.dx) / 2, a.dy));
+        // The right click and the press both land inside pasteOfferWait.
+        await _rightClickNoWait(g, Offset((a.dx + b.dx) / 2, a.dy));
         expect(g.menuItem('Copy'), findsNothing, reason: 'still waiting');
         await tester.tapAt(g.caretPoint(2), kind: PointerDeviceKind.mouse);
         await pumpFrames(tester);
@@ -1302,6 +1452,63 @@ void main() {
       },
       variant: macOnly,
     );
+
+    testWidgets(
+      'a cross row right click whose clipboard never answers still shows Copy and Cut but no Paste',
+      (tester) async {
+        // Never opened: the read of the clipboard never answers.
+        final held = _Wi147HeldPasteboard(
+          const PasteboardContents(hasText: true),
+        );
+        final g = await wi147Pump(tester, body: body, pasteboardReader: held);
+        await g.r.open();
+        await g.select(10, 18);
+        final a = g.caretPoint(16);
+        final b = g.caretPoint(17);
+
+        await _rightClickNoWait(g, Offset((a.dx + b.dx) / 2, a.dy));
+        expect(g.menuItem('Copy'), findsNothing, reason: 'within the wait');
+        await tester.pump(pasteOfferWait);
+        await pumpFrames(tester);
+
+        expect(g.menuItem('Copy'), findsOneWidget);
+        expect(g.menuItem('Cut'), findsOneWidget);
+        expect(g.menuItem('Paste'), findsNothing);
+      },
+      variant: macOnly,
+    );
+
+    for (final (name, text, offered) in <(String, String?, bool)>[
+      (
+        'a cross row right click whose clipboard read fails offers Paste when Flutter reports text',
+        _text,
+        true,
+      ),
+      (
+        'a cross row right click whose clipboard read fails offers no Paste when Flutter reports no text',
+        null,
+        false,
+      ),
+    ]) {
+      testWidgets(name, (tester) async {
+        final g = await wi147Pump(
+          tester,
+          body: body,
+          pasteboardReader: _Wi147ThrowingPasteboard(),
+        );
+        await g.r.open();
+        g.clip.text = text;
+        await g.select(10, 18);
+        final a = g.caretPoint(16);
+        final b = g.caretPoint(17);
+
+        await g.rightClick(Offset((a.dx + b.dx) / 2, a.dy));
+
+        expect(g.menuItem('Copy'), findsOneWidget);
+        expect(g.menuItem('Cut'), findsOneWidget);
+        expect(g.menuItem('Paste'), offered ? findsOneWidget : findsNothing);
+      }, variant: macOnly);
+    }
 
     testWidgets(
       'the cross row right click Paste with a text only clipboard replaces the selection once and attaches nothing',
@@ -1407,6 +1614,39 @@ void main() {
 
           expect(g.menuItem('Paste'), findsNothing);
           expect(g.pasteboard.reads, greaterThan(0), reason: 'asked');
+        },
+        variant: macOnly,
+      );
+
+      testWidgets(
+        'the text menu of a row without a field still shows Copy and Cut but no Paste when the clipboard never answers',
+        (tester) async {
+          // Never opened: the read of the clipboard never answers.
+          final held = _Wi147HeldPasteboard(
+            const PasteboardContents(hasText: true),
+          );
+          final g = await wi147Pump(tester, pasteboardReader: held);
+          await g.r.open();
+          await g.r.caretAfter(_caret);
+          segmentEditingAt(
+            tester,
+            0,
+          ).select(const TextSelection(baseOffset: 0, extentOffset: 6));
+          await tester.pump();
+
+          // Not awaited: the menu waits for fake time, which only a pump moves.
+          final shown = showRowTextMenu(
+            rowsHostOf(g.tester),
+            0,
+            anchor: const Offset(300, 300),
+          );
+          await tester.pump(pasteOfferWait);
+          await shown;
+          await pumpFrames(tester);
+
+          expect(g.menuItem('Copy'), findsOneWidget);
+          expect(g.menuItem('Cut'), findsOneWidget);
+          expect(g.menuItem('Paste'), findsNothing);
         },
         variant: macOnly,
       );
