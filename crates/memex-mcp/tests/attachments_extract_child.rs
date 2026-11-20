@@ -493,6 +493,104 @@ fn runner_records_failed_when_the_program_cannot_start() {
     );
 }
 
+/// A four-byte character (U+10348).
+const FOUR_BYTES: &str = "\u{10348}";
+
+fn failure_of(outcome: Outcome) -> String {
+    match outcome {
+        Outcome::Failed(e) => e,
+        Outcome::Text(t) => panic!("expected Failed, got Text({t:?})"),
+    }
+}
+
+#[test]
+fn runner_failure_messages_name_the_cause() {
+    let dir = visible_tempdir("wi136-msg-");
+    let file = write_file(dir.path(), "x.pdf", b"%PDF-1.4");
+
+    // A non-zero exit with nothing on stderr names the status.
+    let error = failure_of(sh("exit 7").run(&file));
+    assert!(error.contains("status 7"), "{error:?}");
+
+    // A non-zero exit with stderr gives that text, trimmed, and nothing else.
+    let error = failure_of(sh("printf '  spaced boom \\n\\n' >&2; exit 4").run(&file));
+    assert_eq!(error, "spaced boom");
+
+    // A crash says so, with and without stderr.
+    let error = failure_of(crasher().run(&file));
+    assert!(error.contains("crashed"), "{error:?}");
+    let error = failure_of(sh("echo wi136-sig >&2; kill -ABRT $$").run(&file));
+    assert!(error.contains("crashed"), "{error:?}");
+    assert!(error.contains("wi136-sig"), "{error:?}");
+
+    // A timeout names the limit; a program that can't start names itself.
+    let pid_file = dir.path().join("child.pid");
+    let error = failure_of(sleeper(&pid_file).run(&file));
+    assert!(error.contains("longer than 0.5 s"), "{error:?}");
+    let missing = dir.path().join("no-such-memex");
+    let error = failure_of(ChildExtractor::new(&missing).run(&file));
+    assert!(error.contains("could not start"), "{error:?}");
+    assert!(error.contains("no-such-memex"), "{error:?}");
+}
+
+#[test]
+fn runner_keeps_the_first_200000_characters_of_a_large_output_of_four_byte_characters() {
+    let dir = visible_tempdir("wi136-cap-");
+    // The child prints the file: one ASCII byte, then far more four-byte
+    // characters than the cap, so the byte offsets are not multiples of
+    // four.
+    let body = format!("a{}", FOUR_BYTES.repeat(250_000));
+    let file = write_file(dir.path(), "big.pdf", body.as_bytes());
+    let outcome = sh("cat \"$1\"").run(&file);
+    let Outcome::Text(text) = outcome else {
+        panic!("a large output is text: {outcome:?}");
+    };
+    assert_eq!(text.chars().count(), 200_000);
+    assert_eq!(text, format!("a{}", FOUR_BYTES.repeat(199_999)));
+
+    // The output of fewer characters is kept whole.
+    let small = write_file(dir.path(), "small.pdf", "zebr\u{e4}".as_bytes());
+    assert_eq!(
+        sh("cat \"$1\"").run(&small),
+        Outcome::Text("zebr\u{e4}".to_string())
+    );
+}
+
+#[test]
+fn runner_keeps_at_most_4096_bytes_of_stderr() {
+    let dir = visible_tempdir("wi136-cap-");
+    let file = write_file(dir.path(), "x.pdf", b"%PDF-1.4");
+    let error = failure_of(sh("head -c 10000 /dev/zero | tr '\\0' 'e' >&2; exit 1").run(&file));
+    assert_eq!(error, "e".repeat(4096));
+}
+
+#[test]
+fn runner_does_not_wait_for_a_grandchild_that_keeps_the_pipes_open() {
+    let dir = visible_tempdir("wi136-drain-");
+    let file = write_file(dir.path(), "x.pdf", b"%PDF-1.4");
+    let started = Instant::now();
+    // The child ends at once, but its background sleep holds both pipes.
+    let _ = sh("sleep 8 & echo hi").run(&file);
+    let took = started.elapsed();
+    assert!(
+        took < Duration::from_secs(7),
+        "the runner gave up on the open pipes: {took:?}"
+    );
+}
+
+#[test]
+fn hidden_subcommand_prints_at_most_the_first_200000_characters() {
+    let dir = visible_tempdir("wi136-sub-");
+    let body = format!("a{}", FOUR_BYTES.repeat(250_000));
+    let file = write_file(dir.path(), "big.txt", body.as_bytes());
+    let out = run_memex(&[SUBCOMMAND, file.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "exit status");
+    assert_eq!(
+        String::from_utf8(out.stdout).expect("UTF-8"),
+        format!("a{}", FOUR_BYTES.repeat(199_999))
+    );
+}
+
 // ---------------------------------------------------------------- memex attach (in process)
 
 fn new_vault(dir: &Path) -> PathBuf {
@@ -738,6 +836,159 @@ async fn add_attachment_of_a_file_already_extracted_runs_no_child() {
     let fresh_path = fresh["path"].as_str().unwrap();
     assert_eq!(runs(&count_file), 1, "extracted once");
     assert_eq!(row(&mcp.vault, fresh_path).unwrap().state, "done");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn add_attachment_runs_the_child_only_for_a_type_with_text() {
+    let count = visible_tempdir("wi136-count-");
+    let count_file = count.path().join("runs");
+    let mcp = local(counter(&count_file)).await;
+
+    for name in ["photo.png", "bundle.zip", "slides.pptx", "Makefile"] {
+        let stored = mcp
+            .add_data(format!("bytes of {name}").as_bytes(), name)
+            .await;
+        let path = stored["path"].as_str().unwrap();
+        assert_eq!(
+            row(&mcp.vault, path).expect("a row").state,
+            "empty",
+            "{name}"
+        );
+        assert_eq!(runs(&count_file), 0, "{name}: no child for no text");
+    }
+    let mut want = 0;
+    for name in ["a.pdf", "b.TXT", "c.md", "d.Csv", "e.json"] {
+        let stored = mcp
+            .add_data(format!("bytes of {name}").as_bytes(), name)
+            .await;
+        want += 1;
+        assert_eq!(runs(&count_file), want, "{name}: one child");
+        let path = stored["path"].as_str().unwrap();
+        assert_eq!(
+            row(&mcp.vault, path).expect("a row").state,
+            "done",
+            "{name}"
+        );
+    }
+}
+
+/// A `memex serve --vault <vault>` subprocess (the person's own machine:
+/// no extractor is configured, so the running `memex` is the child), spoken
+/// to over newline-delimited JSON-RPC.
+struct StdioServer {
+    child: Child,
+    stdin: std::process::ChildStdin,
+    lines: std::sync::mpsc::Receiver<String>,
+}
+
+impl StdioServer {
+    fn start(vault: &Path) -> Self {
+        use std::io::{BufRead, BufReader};
+        let mut child = Command::new(memex())
+            .args(["serve", "--vault", vault.to_str().unwrap()])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn memex serve");
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let (tx, lines) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut server = Self {
+            child,
+            stdin,
+            lines,
+        };
+        let init = server.request(
+            1,
+            "initialize",
+            json!({
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": { "name": "wi136-test", "version": "0" },
+            }),
+        );
+        assert!(init["result"].is_object(), "initialize failed: {init}");
+        server.send(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+        server
+    }
+
+    fn send(&mut self, msg: Value) {
+        use std::io::Write;
+        writeln!(self.stdin, "{msg}").expect("write to server");
+        self.stdin.flush().unwrap();
+    }
+
+    fn request(&mut self, id: i64, method: &str, params: Value) -> Value {
+        self.send(json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }));
+        loop {
+            let line = self
+                .lines
+                .recv_timeout(Duration::from_secs(120))
+                .unwrap_or_else(|e| panic!("no response to {method}: {e}"));
+            let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if v["id"] == json!(id) {
+                return v;
+            }
+        }
+    }
+}
+
+impl Drop for StdioServer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[test]
+fn serve_extracts_through_the_running_memex_when_no_child_is_configured() {
+    let dir = visible_tempdir("wi136-stdio-");
+    let vault = new_vault(dir.path());
+    let mut server = StdioServer::start(&vault);
+    let mut id = 1;
+    let mut add = |name: &str, bytes: &[u8]| -> String {
+        id += 1;
+        let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+        let reply = server.request(
+            id,
+            "tools/call",
+            json!({ "name": "add_attachment", "arguments": { "data": data, "name": name } }),
+        );
+        let text = reply["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("add_attachment answered: {reply}"));
+        let stored: Value = serde_json::from_str(text).unwrap_or_else(|e| panic!("{e}: {text}"));
+        stored["path"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a stored path: {text}"))
+            .to_string()
+    };
+
+    let pdf = add("report.pdf", &fixture_bytes("text-layer.pdf"));
+    assert_pdf_done(&vault, &pdf);
+
+    let bytes = fixture_bytes("corrupt.pdf");
+    let broken = add("broken.pdf", &bytes);
+    let error = assert_failed_and_stored(&vault, &broken, &bytes);
+    assert!(
+        !error.contains("could not start") && !error.contains("not found"),
+        "the child ran and rejected the file: {error:?}"
+    );
+
+    let notes = add("notes.md", b"Walrus tundra ledger notes.");
+    assert_eq!(row(&vault, &notes).expect("a row").state, "done");
+    assert_eq!(fts_match(&vault, "tundra"), vec![notes]);
 }
 
 // ---------------------------------------------------------------- server upload (child)
