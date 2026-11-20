@@ -282,14 +282,37 @@ class _SpellingMenuState extends State<SpellingMenu> {
 SpellIssue? spellingIssueAtSelection(EditableTextState field) {
   if (!field.mounted) return null;
   final context = field.context;
+  return _issueAtSelection(
+    context,
+    field.widget.controller,
+    context.findAncestorStateOfType<SegmentViewState>(),
+  );
+}
+
+/// The issue a context menu over row [row]'s selection opens SpellingMenu
+/// for, as [spellingIssueAtSelection] finds it for the row's field, without
+/// needing that field (WI #128: a row whose text slot is a `RichText`).
+/// Null past the last row or while [view] is unmounted.
+SpellIssue? rowSpellingIssue(SegmentViewState view, int row) {
+  final ctrl = view.rowController(row);
+  if (!view.mounted || ctrl == null) return null;
+  return _issueAtSelection(view.context, ctrl, view);
+}
+
+/// [spellingIssueAtSelection] for [ctrl]'s selection, the registry read
+/// from [context], inside live preview segment [view] (null in Source
+/// mode).
+SpellIssue? _issueAtSelection(
+  BuildContext context,
+  TextEditingController ctrl,
+  SegmentViewState? view,
+) {
   final registry = context
       .getInheritedWidgetOfExactType<SpellIssueScope>()
       ?.registry;
   if (registry == null) return null;
-  final ctrl = field.widget.controller;
   final selection = ctrl.selection;
   if (!selection.isValid) return null;
-  final view = context.findAncestorStateOfType<SegmentViewState>();
   if (view != null) {
     final base = view.rowTextStartOf(ctrl);
     if (base == null) return null;
@@ -369,13 +392,76 @@ Future<bool> showSpellingMenu(
   required SpellIssue issue,
   required Offset anchor,
 }) async {
+  if (!field.mounted) {
+    ++_opens;
+    return false;
+  }
+  return _openSpellingMenu(
+    field.context,
+    ctrl: field.widget.controller,
+    focusNode: field.widget.focusNode,
+    view: () => field.context.findAncestorStateOfType<SegmentViewState>(),
+    field: () => field,
+    issue: issue,
+    anchor: anchor,
+  );
+}
+
+/// [showSpellingMenu] for [issue], an issue the editor published for row
+/// [row] of [view] (row-local offsets), without needing the row's field
+/// (WI #128: a row whose text slot is a `RichText`). The menu hangs off
+/// [view], so it outlives the row's text slot when the row swaps it for its
+/// field; its actions act on the row through [view] and its focus node.
+/// Closing it gives the focus back to the row's field, or makes the row the
+/// active row again (`SegmentViewState.activateRow`) while it has none.
+///
+/// Completes with true once the menu shows; false as [showSpellingMenu]
+/// does, and past the last row.
+Future<bool> showRowSpellingMenu(
+  SegmentViewState view,
+  int row, {
+  required SpellIssue issue,
+  required Offset anchor,
+}) async {
+  final ctrl = view.rowController(row);
+  final focusNode = view.rowFocusNode(row);
+  if (!view.mounted || ctrl == null || focusNode == null) {
+    ++_opens;
+    return false;
+  }
+  return _openSpellingMenu(
+    view.context,
+    ctrl: ctrl,
+    focusNode: focusNode,
+    view: () => view,
+    field: () => switch (view.rowIndexOf(ctrl)) {
+      final i? when view.mounted => view.rowField(i),
+      _ => null,
+    },
+    issue: issue,
+    anchor: anchor,
+    live: () => view.mounted && view.rowIndexOf(ctrl) != null,
+  );
+}
+
+/// Opens SpellingMenu for [issue] of [ctrl] (see [showSpellingMenu]) from
+/// [context], under the editor's spell check and issue scopes. When [live]
+/// is given, the menu opens only if it still holds once the guesses arrive
+/// (a row retired meanwhile gets no menu).
+Future<bool> _openSpellingMenu(
+  BuildContext context, {
+  required TextEditingController ctrl,
+  required FocusNode focusNode,
+  required SegmentViewState? Function() view,
+  required EditableTextState? Function() field,
+  required SpellIssue issue,
+  required Offset anchor,
+  bool Function()? live,
+}) async {
   final open = ++_opens;
-  if (!field.mounted) return false;
-  final context = field.context;
   final checker = context
       .getInheritedWidgetOfExactType<SpellCheckScope>()
       ?.controller;
-  final ctrl = field.widget.controller;
   final text = ctrl.text;
   final end = issue.start + issue.length;
   if (checker == null ||
@@ -400,14 +486,19 @@ Future<bool> showSpellingMenu(
           );
     }
   }
-  if (open != _opens || !field.mounted || ctrl.text != text) return false;
+  if (open != _opens ||
+      !context.mounted ||
+      (live != null && !live()) ||
+      ctrl.text != text) {
+    return false;
+  }
   final session = _MenuSession(
     checker: checker,
     container: container,
     field: field,
     ctrl: ctrl,
-    focusNode: field.widget.focusNode,
-    view: field.context.findAncestorStateOfType<SegmentViewState>(),
+    focusNode: focusNode,
+    view: view(),
     issue: issue,
     flagged: text.substring(issue.start, end),
     noteId: noteId,
@@ -417,8 +508,12 @@ Future<bool> showSpellingMenu(
     collapsed: !ctrl.selection.isValid || ctrl.selection.isCollapsed,
   );
   _shown?.removed();
+  // A fresh overlay entry in [context]'s overlay: `show` would otherwise
+  // rebuild the entry still marked shown in place, even when the overlay
+  // holding it has gone.
+  _menus.remove();
   _menus.show(
-    context: field.context,
+    context: context,
     contextMenuBuilder: (_) => SpellingMenu(
       // A fresh state (highlight, focus) for every menu, also when it
       // replaces one still shown.
@@ -449,7 +544,10 @@ class _MenuSession {
 
   final SpellCheckController checker;
   final ProviderContainer container;
-  final EditableTextState field;
+
+  /// The field the menu acts on now, or null while it has none (a live
+  /// preview row without a field, WI #128).
+  final EditableTextState? Function() field;
   final TextEditingController ctrl;
   final FocusNode focusNode;
 
@@ -482,14 +580,22 @@ class _MenuSession {
   /// dropped that overlay when the menu took the focus, and a right click
   /// on the unchanged selection would not rebuild it. Done as Flutter does
   /// for a right click on an unfocused field whose selection is already
-  /// there (`userUpdateTextEditingValue` with the unchanged value).
+  /// there (`userUpdateTextEditingValue` with the unchanged value). A live
+  /// preview row with no field now becomes the active row again with the
+  /// segment selection as it is (WI #128), which focuses it.
   void _restoreFocus() {
-    final field = this.field;
-    if (field.mounted && !field.widget.focusNode.hasFocus) {
+    final field = this.field();
+    final view = this.view;
+    final row = field == null && view != null && view.mounted
+        ? view.rowIndexOf(ctrl)
+        : null;
+    if (field != null && field.mounted && !field.widget.focusNode.hasFocus) {
       field.userUpdateTextEditingValue(
         field.textEditingValue,
         SelectionChangedCause.toolbar,
       );
+    } else if (row != null) {
+      view!.activateRow(row, view.selection);
     } else {
       focusNode.requestFocus();
     }

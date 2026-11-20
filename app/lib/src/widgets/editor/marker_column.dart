@@ -203,9 +203,15 @@ class _MarkerColumnState extends State<MarkerColumn> {
     }
   }
 
+  /// The checkbox state this column last built (a task's `done`), or null.
+  bool? _shownDone;
+
+  /// A click toggles the task as the column shows it: a second press
+  /// before the column rebuilt (two presses in one frame) finds the task
+  /// already toggled and does nothing (WI #128).
   void _toggle() {
     final place = _place();
-    if (place == null) return;
+    if (place == null || place.spec.done != _shownDone) return;
     final edit = toggleTask(place.host.text, place.spec);
     if (edit != null) place.host.applyEdit(edit);
   }
@@ -229,6 +235,7 @@ class _MarkerColumnState extends State<MarkerColumn> {
       spec = rows.isEmpty ? null : rows.first;
     }
     final kind = spec == null ? null : markerColumnKind(spec.kind);
+    _shownDone = spec?.done;
 
     final revealed =
         place != null &&
