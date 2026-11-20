@@ -1409,6 +1409,9 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
     return null;
   }
 
+  /// Whether the segment selection's ends lie in different rows.
+  bool get selectionSpansRows => _crossesRows(widget.controller.selection);
+
   @override
   int? get focusedRow {
     final i = _rows.indexWhere((row) => row.focusNode.hasFocus);
