@@ -246,6 +246,23 @@ class _T128BlockPresenter extends _T128IdlePresenter {
       owns && row.index == block;
 }
 
+/// [_T128IdlePresenter] whose row [block] hides its text and owns only
+/// the presses inside [rect], as a block owns the presses inside its own
+/// rect (D5, D23); [rect] is set once the rows are laid out.
+class _T128RectPresenter extends _T128IdlePresenter {
+  _T128RectPresenter(this.block);
+
+  final int block;
+  Rect? rect;
+
+  @override
+  bool textHidden(PresentedRow row) => row.index == block;
+
+  @override
+  bool ownsPress(PresentedRow row, Offset position) =>
+      row.index == block && (rect?.contains(position) ?? false);
+}
+
 // ---------------------------------------------------------------- harness
 
 /// One pumped note editor on [_t128Body] with the idle presenter.
@@ -1258,6 +1275,34 @@ void main() {
           findsNothing,
           reason: 'no text menu and no selection ops menu',
         );
+      },
+      variant: macOnly,
+    );
+
+    testWidgets(
+      'a right click outside the block a presenter owns still opens the text menu and the spelling menu of the row it lands on',
+      (tester) async {
+        final presenter = _T128RectPresenter(0);
+        final e = await _t128Pump(tester, presenter: presenter);
+        await e.focusFieldRow();
+        presenter.rect = rowRectOf(tester, 0, 0);
+        expect(
+          presenter.rect!.contains(e.wordPoint(0, 'teh')),
+          isTrue,
+          reason: 'fixture: the owned rect holds row 0',
+        );
+
+        await wi438RightClick(tester, e.wordPoint(3, 'quote'));
+        expect(wi438DefaultMenu, findsOneWidget, reason: 'text menu, row 3');
+        expect(e.selected, e.range(3, 'quote'));
+        expect(e.active, 3);
+        ContextMenuController.removeAny();
+        await pumpFrames(tester);
+
+        await wi438RightClick(tester, e.wordPoint(1, 'wrld'));
+        expect(wi438Menu, findsOneWidget, reason: 'spelling menu, row 1');
+        expect(e.selected, e.range(1, 'wrld'));
+        expect(e.active, 1);
       },
       variant: macOnly,
     );
