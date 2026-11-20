@@ -20,6 +20,8 @@
 // scroll notification over every row) they fail by assertion.
 //
 // Helpers carry the `_t131` prefix. Text is invented (public repo).
+import 'dart:math' as math;
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -349,6 +351,38 @@ void main() {
           d['spellHostLineCalls'],
           lessThanOrEqualTo(near + _t131BisectSlack),
           reason: 'row lookups only for the $near rows within one screen',
+        );
+      },
+      timeout: _t131Timeout,
+    );
+  });
+
+  group('row top index (AC6)', () {
+    testWidgets(
+      'a spell evaluation after a scroll pause on N2 finds the rows near the viewport by a bisection of row boxes',
+      (tester) async {
+        final note = longNote(LongNoteKind.n2Bullets120k);
+        final e = await pumpSpellingEditor(tester, body: note.text);
+        await _t131Settle(e);
+        e.spelling.holdReplies = true;
+        final p = _t131Scrollable(tester).position;
+        final count = rowsHostOf(tester).rowCount;
+        expect(count, greaterThan(2000), reason: 'N2 is thousands of rows');
+
+        p.jumpTo(p.maxScrollExtent / 2);
+        await tester.pump();
+        SegmentViewState.debugRowEdgeReads = 0;
+        await e.advance(spellCheckDebounce);
+        final reads = SegmentViewState.debugRowEdgeReads;
+
+        expect(reads, greaterThan(0), reason: 'the evaluation read row boxes');
+        // log2(count) + 1 reads for each of the two bisections, and the
+        // evaluation asks for the window once or twice.
+        final probes = (math.log(count) / math.ln2).ceil() + 1;
+        expect(
+          reads,
+          lessThanOrEqualTo(4 * probes),
+          reason: 'a bisection over $count rows, not a read of every row',
         );
       },
       timeout: _t131Timeout,

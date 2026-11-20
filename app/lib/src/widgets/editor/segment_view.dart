@@ -203,6 +203,18 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   @visibleForTesting
   static int debugSetStates = 0;
 
+  /// Test-only work counter (WI #131): how many row boxes
+  /// [rowsWithin] read, so a bisection (a handful per call) tells from a
+  /// scan of every row.
+  @visibleForTesting
+  static int debugRowEdgeReads = 0;
+
+  /// Test-only work counter (WI #131): how many times a segment view rebuilt
+  /// its row-controller index, so a lookup (one build per re-derive) tells
+  /// from a scan per call.
+  @visibleForTesting
+  static int debugRowIndexBuilds = 0;
+
   final _rowsKey = GlobalKey(debugLabel: 'editor-rows');
   final SegmentUndoRecorder _undo = segmentUndoRecorderFactory();
   List<_Row> _rows = const [];
@@ -829,6 +841,7 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   int? _rowIndexOf(TextEditingController row) {
     if (!identical(_indexedRows, _rows)) {
       _indexedRows = _rows;
+      debugRowIndexBuilds++;
       _rowIndex = Map.identity()
         ..addAll({for (final (i, r) in _rows.indexed) r.controller: i});
     }
@@ -843,6 +856,7 @@ class SegmentViewState extends State<SegmentView> implements SegmentEditing {
   ({int first, int last})? rowsWithin(double top, double bottom) {
     final count = _rows.length;
     double? edge(int i, {required bool bottomEdge}) {
+      debugRowEdgeReads++;
       final box = _rows[i].rowKey.currentContext?.findRenderObject();
       if (box is! RenderBox || !box.attached || !box.hasSize) return null;
       final y = bottomEdge ? box.size.height : 0.0;

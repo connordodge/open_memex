@@ -15,6 +15,8 @@
 //   names (every field of a run that cannot tell), in join order.
 //
 // Helpers carry the `_t131c` prefix. Text is invented (public repo).
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/rendering.dart';
@@ -211,6 +213,35 @@ void main() {
     );
 
     testWidgets(
+      'rowsWithin of a band over a few rows of 600 reads a bisection of row boxes not every row',
+      (tester) async {
+        final body = [for (var i = 0; i < 600; i++) '- Item $i is fine.'];
+        await pumpSpellingEditor(tester, body: body.join('\n'));
+        final host = rowsHostOf(tester);
+        final count = host.rowCount;
+        expect(count, greaterThan(500));
+        final top = _t131cEdges(host, 300).top;
+        final bottom = _t131cEdges(host, 305).bottom;
+        final want = _t131cScan(host, top, bottom);
+        expect(want.first, lessThan(want.last), reason: 'a band of rows');
+
+        SegmentViewState.debugRowEdgeReads = 0;
+        final got = host.rowsWithin(top, bottom);
+        final reads = SegmentViewState.debugRowEdgeReads;
+
+        expect(got, (first: want.first, last: want.last));
+        expect(reads, greaterThan(0), reason: 'it reads the row boxes');
+        // Two bisections over `count` rows: log2(count) + 1 reads each.
+        final probes = 2 * (math.log(count) / math.ln2).ceil() + 2;
+        expect(
+          reads,
+          lessThanOrEqualTo(probes),
+          reason: 'a bisection over $count rows is at most $probes reads',
+        );
+      },
+    );
+
+    testWidgets(
       'rowsWithin of a band of zero height at a row top finds no row',
       (tester) async {
         await pumpSpellingEditor(
@@ -275,6 +306,52 @@ void main() {
           reason: 'the edit added rows',
         );
         check('after the edit');
+      },
+    );
+  });
+
+  group('rowLineOf work', () {
+    testWidgets(
+      'rowLineOf of every row of 600 builds the row index once per re-derive not once per call',
+      (tester) async {
+        final body = [for (var i = 0; i < 600; i++) '- Item $i is fine.'];
+        final e = await pumpSpellingEditor(tester, body: body.join('\n'));
+        final count = rowsHostOf(tester).rowCount;
+        expect(count, greaterThan(500));
+
+        void lookUpEveryRow() {
+          final host = rowsHostOf(tester);
+          for (var i = 0; i < host.rowCount; i++) {
+            expect(host.rowLineOf(host.rowController(i)!), isNotNull);
+          }
+        }
+
+        // Every row looked up after the first pump, then after an edit that
+        // re-derives the rows: an index is built for each list of rows,
+        // never one per call.
+        SegmentViewState.debugRowIndexBuilds = 0;
+        lookUpEveryRow();
+        lookUpEveryRow();
+        expect(
+          SegmentViewState.debugRowIndexBuilds,
+          inInclusiveRange(0, 1),
+          reason: 'a second look up of the same rows builds nothing',
+        );
+
+        SegmentViewState.debugRowIndexBuilds = 0;
+        await e.typeAtEnd('\n- item added\n');
+        lookUpEveryRow();
+        final builds = SegmentViewState.debugRowIndexBuilds;
+        expect(
+          builds,
+          greaterThan(0),
+          reason: 'the re-derived rows need an index of their own',
+        );
+        expect(
+          builds,
+          lessThanOrEqualTo(3),
+          reason: 'one index per list of rows, $count look ups',
+        );
       },
     );
   });
