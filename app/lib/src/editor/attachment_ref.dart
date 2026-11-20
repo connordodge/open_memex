@@ -76,6 +76,11 @@ const List<String> executableExtensions = <String>[
   'fileloc',
   'inetloc',
   'webloc',
+  'afploc',
+  'ftploc',
+  'mailloc',
+  'newsloc',
+  'atloc',
 ];
 
 const String _objectsDir = 'objects';

@@ -501,6 +501,11 @@ void main() {
         'fileloc',
         'inetloc',
         'webloc',
+        'afploc',
+        'ftploc',
+        'mailloc',
+        'newsloc',
+        'atloc',
       ]);
       expect(executableExtensions, _rustTable('EXECUTABLE_EXTENSIONS'));
     });

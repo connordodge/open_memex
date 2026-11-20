@@ -594,6 +594,31 @@
       "why": "R33 table: .webloc"
     },
     {
+      "name": "Share.AFPLoc",
+      "executable": true,
+      "why": "R33 table: .afploc"
+    },
+    {
+      "name": "Mirror.ftpLOC",
+      "executable": true,
+      "why": "R33 table: .ftploc"
+    },
+    {
+      "name": "Write.MailLoc",
+      "executable": true,
+      "why": "R33 table: .mailloc"
+    },
+    {
+      "name": "Group.NEWSLOC",
+      "executable": true,
+      "why": "R33 table: .newsloc"
+    },
+    {
+      "name": "Talk.atLoc",
+      "executable": true,
+      "why": "R33 table: .atloc"
+    },
+    {
       "name": "INSTALL.SH",
       "executable": true,
       "why": "the table matches in any letter case"

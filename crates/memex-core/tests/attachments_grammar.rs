@@ -18,7 +18,7 @@ use memex_core::attachments::{
 use serde_json::Value;
 
 /// R33's table, exactly as the Spec lists it.
-const R33_EXECUTABLES: [&str; 21] = [
+const R33_EXECUTABLES: [&str; 26] = [
     "command",
     "tool",
     "terminal",
@@ -40,6 +40,11 @@ const R33_EXECUTABLES: [&str; 21] = [
     "fileloc",
     "inetloc",
     "webloc",
+    "afploc",
+    "ftploc",
+    "mailloc",
+    "newsloc",
+    "atloc",
 ];
 
 /// R31's inline image types.
