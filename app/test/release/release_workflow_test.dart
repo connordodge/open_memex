@@ -726,7 +726,7 @@ void main() {
     );
 
     test(
-      'each build job pins Flutter 3.47.5 stable and Rust 1.95.0 on an arm64 macOS runner and prints the Xcode version',
+      'each build job pins Flutter 3.50.1 stable and Rust 1.95.0 on an arm64 macOS runner and prints the Xcode version',
       () {
         final jobs = _buildJobs(_workflow());
         expect(
@@ -744,10 +744,10 @@ void main() {
           expect(
             steps.where((s) {
               final t = _text(s);
-              return t.contains('3.47.5') && t.contains('stable');
+              return t.contains('3.50.1') && t.contains('stable');
             }),
             isNotEmpty,
-            reason: '${e.key} pins Flutter 3.47.5 stable',
+            reason: '${e.key} pins Flutter 3.50.1 stable',
           );
           expect(
             steps.where((s) => _text(s).contains('1.95.0')),
