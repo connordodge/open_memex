@@ -10,7 +10,9 @@
 //!   temp git repo with fabricated `v*` tags, an isolated git config and no
 //!   network.
 //! - `scripts/docker/smoke-test.sh`: its usage error path (with a recording
-//!   `docker` on PATH) and the text of every check Spec requirement 19 lists.
+//!   `docker` on PATH), the text of every check Spec requirement 19 lists, and
+//!   a run of the real script against scripted `docker`, `curl`, `sudo` and
+//!   `date` fakes on PATH: a passing image, and one broken image per check.
 //! - `docker.yml`, parsed with serde_yaml for the static contract, and walked
 //!   by a small simulator (`simulate`) for the behaviour that only shows when
 //!   the jobs run: which jobs start for an event, what each builds, pushes,
@@ -931,6 +933,35 @@ fn image_tags_for_an_older_patch_prints_only_the_version() {
 }
 
 #[test]
+fn image_tags_ignores_v_tags_that_are_not_releases() {
+    // git's version sort puts v1.4.3-rc.1 and v1.4.2.1 above v1.4.2 inside the
+    // 1.4 line, and v1.5, v2 and v10 above it overall. Only v<d>.<d>.<d> tags
+    // count as releases, so none of them takes `1.4` or `latest` away.
+    let stray: &[&str] = &[
+        "v1.4.2",
+        "v1.4.3-rc.1",
+        "v1.4.2-rc.1",
+        "v1.4.2.1",
+        "v1.5",
+        "v2",
+        "v10",
+        "v1.4.10-beta",
+        "vnext",
+    ];
+    let fx = fixture(&[("a", "1.4.1", &["v1.4.1"]), ("b", "1.4.2", stray)]);
+    assert_tags(&fx, "1.4.2", &["1.4.2", "1.4", "latest"]);
+    // An older release is still only its own version.
+    assert_tags(&fx, "1.4.1", &["1.4.1"]);
+    // Stray tags above a later release do not take its tags either.
+    let fx = fixture(&[
+        ("a", "1.4.2", &["v1.4.2"]),
+        ("b", "1.4.3", &["v1.4.3", "v9", "v1.5.0-rc.1"]),
+    ]);
+    assert_tags(&fx, "1.4.3", &["1.4.3", "1.4", "latest"]);
+    assert_tags(&fx, "1.4.2", &["1.4.2"]);
+}
+
+#[test]
 fn image_tags_rejects_a_malformed_version_with_no_output() {
     let fx = fixture(AC_TAGS);
     let (code, out, err) = image_tags(&fx, &["0.7.0"]);
@@ -1033,6 +1064,506 @@ fn smoke_test_script_rejects_missing_arguments_without_running_docker() {
             "smoke-test.sh {args:?} runs no docker command"
         );
     }
+}
+
+// A scripted `docker`, `curl`, `sudo` and `date` on PATH let the real
+// smoke-test.sh run every check with no daemon. `FAKE_*` variables set what
+// each fake answers; every call is recorded in `FAKE_LOG`.
+const FAKE_DOCKER: &str = r#"#!/bin/sh
+{ printf 'docker'; for a in "$@"; do printf '\037%s' "$a"; done; printf '\n'; } >> "$FAKE_LOG"
+n() { echo "${1#cid-}"; }
+case "$1" in
+  run)
+    shift
+    detached=0
+    user=0
+    for a in "$@"; do
+      case "$a" in
+        -d) detached=1 ;;
+        --user) user=1 ;;
+      esac
+    done
+    if [ "$detached" = 1 ]; then
+      if [ "$user" = 1 ]; then echo cid-2; else echo cid-1; fi
+    else
+      printf '%s\n' "$FAKE_VERSION_OUT"
+    fi
+    ;;
+  inspect)
+    case "$3" in
+      '{{.Config.User}}') printf '%s\n' "$FAKE_USER" ;;
+      '{{json .Config.Healthcheck}}') printf '%s\n' "$FAKE_HEALTHCHECK" ;;
+      '{{index .Config.Labels "org.opencontainers.image.version"}}') printf '%s\n' "$FAKE_LABEL" ;;
+      '{{.State.Running}}') eval "printf '%s\n' \"\$FAKE_RUNNING_$(n "$4")\"" ;;
+      '{{.State.ExitCode}}') printf '%s\n' "$FAKE_EXIT" ;;
+      *) echo "fake docker: unexpected inspect format $3" >&2; exit 99 ;;
+    esac
+    ;;
+  logs) eval "printf '%s\n' \"\$FAKE_LOGS_$(n "$2")\"" ;;
+  stop | rm) exit 0 ;;
+  *) echo "fake docker: unexpected command $*" >&2; exit 99 ;;
+esac
+"#;
+
+const FAKE_CURL: &str = r#"#!/bin/sh
+{ printf 'curl'; for a in "$@"; do printf '\037%s' "$a"; done; printf '\n'; } >> "$FAKE_LOG"
+code=0
+auth=0
+for a in "$@"; do
+  case "$a" in
+    -w) code=1 ;;
+    "Authorization: Bearer "*) auth=1 ;;
+  esac
+done
+if [ "$code" = 1 ]; then
+  if [ "$auth" = 1 ]; then printf '%s' "$FAKE_CODE_AUTH"; else printf '%s' "$FAKE_CODE_NOAUTH"; fi
+else
+  printf '%s' "$FAKE_BODY"
+fi
+"#;
+
+const FAKE_SUDO: &str = r#"#!/bin/sh
+{ printf 'sudo'; for a in "$@"; do printf '\037%s' "$a"; done; printf '\n'; } >> "$FAKE_LOG"
+case "$1" in
+  chown) exit 0 ;;
+  rm) exec "$@" ;;
+  stat)
+    case "$3" in
+      '%a %u:%g') printf '%s\n' "$FAKE_TOKEN_STAT" ;;
+      '%u:%g') printf '%s\n' "$FAKE_TOKEN_OWNER2" ;;
+      *) echo "fake sudo: unexpected stat format $3" >&2; exit 99 ;;
+    esac
+    ;;
+  cat) printf '%s\n' "$FAKE_TOKEN" ;;
+  sh) printf '%s\n' "$FAKE_SERVER_LOG" ;;
+  *) echo "fake sudo: unexpected command $*" >&2; exit 99 ;;
+esac
+"#;
+
+// The first `date` call answers 1000, the second 1000 + FAKE_DATE_STEP.
+const FAKE_DATE: &str = r#"#!/bin/sh
+f="$FAKE_DIR/date-next"
+if [ -f "$f" ]; then
+  cat "$f"
+else
+  echo 1000
+  echo $((1000 + FAKE_DATE_STEP)) > "$f"
+fi
+"#;
+
+const SMOKE_VERSION: &str = "1.2.3";
+const SMOKE_TOKEN: &str = "fake-access-token-0123456789";
+const SMOKE_LISTENING: &str = "memex serve: vault server listening on http://0.0.0.0:7878";
+const SMOKE_GENERATED: &str =
+    "memex serve: generated a new access token in /vaults/.memex/access-token";
+
+/// What the fakes answer when the image is right.
+fn smoke_env() -> BTreeMap<&'static str, String> {
+    let both = format!("{SMOKE_GENERATED}\n{SMOKE_LISTENING}");
+    [
+        ("FAKE_VERSION_OUT", format!("memex {SMOKE_VERSION}")),
+        ("FAKE_USER", "1000:1000".to_string()),
+        ("FAKE_HEALTHCHECK", "null".to_string()),
+        ("FAKE_LABEL", SMOKE_VERSION.to_string()),
+        ("FAKE_RUNNING_1", "true".to_string()),
+        ("FAKE_RUNNING_2", "true".to_string()),
+        ("FAKE_LOGS_1", both),
+        ("FAKE_LOGS_2", SMOKE_LISTENING.to_string()),
+        ("FAKE_EXIT", "0".to_string()),
+        ("FAKE_TOKEN_STAT", "600 1000:1000".to_string()),
+        ("FAKE_TOKEN_OWNER2", "99:100".to_string()),
+        ("FAKE_TOKEN", SMOKE_TOKEN.to_string()),
+        ("FAKE_CODE_NOAUTH", "401".to_string()),
+        ("FAKE_CODE_AUTH", "200".to_string()),
+        (
+            "FAKE_BODY",
+            format!("{{\"server_version\":\"{SMOKE_VERSION}\",\"api_version\":1}}"),
+        ),
+        (
+            "FAKE_SERVER_LOG",
+            "2026-11-27T09:00:00.000000Z  INFO memex_mcp::server: vault server started utc_offset=+09:00 with_embeddings=false"
+                .to_string(),
+        ),
+        ("FAKE_DATE_STEP", "1".to_string()),
+    ]
+    .into_iter()
+    .collect()
+}
+
+struct SmokeRun {
+    code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    /// Every fake call: the command and its arguments.
+    calls: Vec<Vec<String>>,
+    /// Entries left in the script's TMPDIR afterwards.
+    leftovers: usize,
+}
+
+fn run_smoke(overrides: &[(&str, &str)]) -> SmokeRun {
+    let fx = fixture(&[("a", "1.0.0", &[])]);
+    let bin = fx.root.join("fakes");
+    let tmp = fx.root.join("tmp");
+    fs::create_dir_all(&tmp).unwrap();
+    for (name, body) in [
+        ("docker", FAKE_DOCKER),
+        ("curl", FAKE_CURL),
+        ("sudo", FAKE_SUDO),
+        ("date", FAKE_DATE),
+    ] {
+        write_exec(&bin.join(name), body);
+    }
+    let log = fx.root.join("fake.log");
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let mut env = smoke_env();
+    let overrides: BTreeMap<&str, String> =
+        overrides.iter().map(|(k, v)| (*k, v.to_string())).collect();
+    for (k, v) in &overrides {
+        assert!(env.contains_key(k), "unknown fake setting {k}");
+        env.insert(k, v.clone());
+    }
+    let mut cmd = Command::new("/bin/bash");
+    cmd.arg(repo_root().join(SMOKE_TEST))
+        .args(["memex:ci", SMOKE_VERSION])
+        .current_dir(&fx.repo)
+        .env("PATH", path)
+        .env("TMPDIR", &tmp)
+        .env("FAKE_LOG", &log)
+        .env("FAKE_DIR", &fx.root);
+    isolate(&mut cmd);
+    for (k, v) in &env {
+        cmd.env(k, v);
+    }
+    let (code, stdout, stderr) = run_bounded(cmd, 60, &fx.root);
+    let calls = fs::read_to_string(&log)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| l.split(SIM_LOG_SEP).map(str::to_string).collect())
+        .collect();
+    SmokeRun {
+        code,
+        stdout,
+        stderr,
+        calls,
+        leftovers: fs::read_dir(&tmp).map(|d| d.count()).unwrap_or(0),
+    }
+}
+
+impl SmokeRun {
+    fn has_call(&self, words: &[&str]) -> bool {
+        self.calls
+            .iter()
+            .any(|c| c.len() >= words.len() && c.iter().zip(words).all(|(a, w)| a == w))
+    }
+
+    fn started(&self) -> Vec<String> {
+        // `docker run -d ...` prints cid-1 for the first container, cid-2 for
+        // the --user one.
+        let mut ids = Vec::new();
+        for c in &self.calls {
+            if c.len() > 2 && c[0] == "docker" && c[1] == "run" && c.iter().any(|a| a == "-d") {
+                ids.push(
+                    if c.iter().any(|a| a == "--user") {
+                        "cid-2"
+                    } else {
+                        "cid-1"
+                    }
+                    .to_string(),
+                );
+            }
+        }
+        ids
+    }
+}
+
+#[test]
+fn smoke_test_script_passes_and_runs_its_docker_commands_when_the_image_is_right() {
+    let r = run_smoke(&[]);
+    assert_eq!(
+        r.code,
+        Some(0),
+        "stderr: {}\nstdout: {}",
+        r.stderr,
+        r.stdout
+    );
+    assert!(
+        r.stdout
+            .contains(&format!("all checks passed for memex:ci ({SMOKE_VERSION})")),
+        "stdout: {}",
+        r.stdout
+    );
+    assert!(
+        !r.stderr.contains("FAIL"),
+        "no failure on stderr: {}",
+        r.stderr
+    );
+    assert!(
+        r.has_call(&["docker", "run", "--rm", "memex:ci", "memex", "--version"]),
+        "{:?}",
+        r.calls
+    );
+    // The first container: TZ=Asia/Tokyo, loopback port, the vault bind mount.
+    let first = r
+        .calls
+        .iter()
+        .find(|c| c.len() > 2 && c[0] == "docker" && c[1] == "run" && c.contains(&"-d".to_string()))
+        .expect("a detached docker run");
+    for needle in [
+        "-e",
+        "TZ=Asia/Tokyo",
+        "-p",
+        "127.0.0.1:7878:7878",
+        "memex:ci",
+    ] {
+        assert!(first.iter().any(|a| a == needle), "{needle}: {first:?}");
+    }
+    assert!(
+        first
+            .iter()
+            .any(|a| a.ends_with(":/vaults") && a.contains('/')),
+        "bind-mounts a host folder on /vaults: {first:?}"
+    );
+    assert!(
+        r.calls.iter().any(|c| c.iter().any(|a| a == "99:100")
+            && c.iter().any(|a| a == "--user")
+            && c[0] == "docker"),
+        "a second container runs --user 99:100: {:?}",
+        r.calls
+    );
+    // Each vault folder is handed to its uid:gid.
+    for owner in ["1000:1000", "99:100"] {
+        assert!(
+            r.calls.iter().any(|c| c[0] == "sudo"
+                && c.get(1).map(String::as_str) == Some("chown")
+                && c.get(2).map(String::as_str) == Some(owner)),
+            "chown {owner}: {:?}",
+            r.calls
+        );
+    }
+    // The bearer token read from the token file is the one sent.
+    assert!(
+        r.calls.iter().any(|c| c[0] == "curl"
+            && c.iter()
+                .any(|a| a == &format!("Authorization: Bearer {SMOKE_TOKEN}"))),
+        "curl sends the token: {:?}",
+        r.calls
+    );
+    assert!(
+        r.calls
+            .iter()
+            .any(|c| c[0] == "curl" && c.iter().any(|a| a == "http://127.0.0.1:7878/api/v1/info")),
+        "{:?}",
+        r.calls
+    );
+    assert!(
+        r.has_call(&["docker", "stop", "-t", "10", "cid-1"]),
+        "{:?}",
+        r.calls
+    );
+    // Both containers and both vault folders are cleaned up.
+    for id in ["cid-1", "cid-2"] {
+        assert!(
+            r.has_call(&["docker", "rm", "-f", id]),
+            "{id}: {:?}",
+            r.calls
+        );
+    }
+    assert_eq!(r.leftovers, 0, "the temp vault folders are removed");
+    assert!(
+        !r.stderr.contains("--- docker logs"),
+        "no container log dump on success: {}",
+        r.stderr
+    );
+}
+
+#[test]
+fn smoke_test_script_fails_when_each_startup_contract_breaks() {
+    let no_token_line = SMOKE_LISTENING.to_string();
+    let not_listening = "memex serve: starting".to_string();
+    #[allow(clippy::type_complexity)]
+    let cases: Vec<(&str, Vec<(&str, String)>, &str)> = vec![
+        (
+            "a wrong memex --version",
+            vec![("FAKE_VERSION_OUT", "memex 0.0.1".into())],
+            "memex --version printed 'memex 0.0.1'",
+        ),
+        (
+            "a --version without the memex prefix",
+            vec![("FAKE_VERSION_OUT", SMOKE_VERSION.into())],
+            "memex --version printed",
+        ),
+        (
+            "an image running as root",
+            vec![("FAKE_USER", "0:0".into())],
+            "Config.User is '0:0'",
+        ),
+        (
+            "an image with no user",
+            vec![("FAKE_USER", "".into())],
+            "Config.User is ''",
+        ),
+        (
+            "an image with a Healthcheck",
+            vec![("FAKE_HEALTHCHECK", "{\"Test\":[\"CMD\",\"true\"]}".into())],
+            "the image has a Healthcheck",
+        ),
+        (
+            "a wrong version label",
+            vec![("FAKE_LABEL", "0.0.1".into())],
+            "org.opencontainers.image.version is '0.0.1'",
+        ),
+        (
+            "a missing version label",
+            vec![("FAKE_LABEL", "".into())],
+            "org.opencontainers.image.version is ''",
+        ),
+        (
+            "a server that exits before listening",
+            vec![
+                ("FAKE_LOGS_1", not_listening.clone()),
+                ("FAKE_RUNNING_1", "false".into()),
+            ],
+            "exited before printing",
+        ),
+        (
+            "no generated-token line",
+            vec![("FAKE_LOGS_1", no_token_line)],
+            "no 'memex serve: generated a new access token",
+        ),
+        (
+            "a token file with mode 644",
+            vec![("FAKE_TOKEN_STAT", "644 1000:1000".into())],
+            "the token file is '644 1000:1000'",
+        ),
+        (
+            "a token file owned by root",
+            vec![("FAKE_TOKEN_STAT", "600 0:0".into())],
+            "the token file is '600 0:0'",
+        ),
+        (
+            "an empty token file",
+            vec![("FAKE_TOKEN", "".into())],
+            "the token file is empty",
+        ),
+        (
+            "200 without a token",
+            vec![("FAKE_CODE_NOAUTH", "200".into())],
+            "without a token answered 200, expected 401",
+        ),
+        (
+            "403 without a token",
+            vec![("FAKE_CODE_NOAUTH", "403".into())],
+            "without a token answered 403, expected 401",
+        ),
+        (
+            "401 with the token",
+            vec![("FAKE_CODE_AUTH", "401".into())],
+            "with the token answered 401, expected 200",
+        ),
+        (
+            "a wrong server_version",
+            vec![(
+                "FAKE_BODY",
+                "{\"server_version\":\"0.0.1\",\"api_version\":1}".into(),
+            )],
+            "expected server_version 1.2.3",
+        ),
+        (
+            "a body without server_version",
+            vec![("FAKE_BODY", "{}".into())],
+            "expected server_version 1.2.3",
+        ),
+        (
+            "a container killed on docker stop",
+            vec![("FAKE_EXIT", "137".into())],
+            "container exited 137, expected 0",
+        ),
+        (
+            "a docker stop that takes 11 s",
+            vec![("FAKE_DATE_STEP", "11".into())],
+            "docker stop took 11s",
+        ),
+        (
+            "a missing server.log startup line",
+            vec![("FAKE_SERVER_LOG", "".into())],
+            "has no 'vault server started' line",
+        ),
+        (
+            "a UTC container ignoring TZ",
+            vec![(
+                "FAKE_SERVER_LOG",
+                "vault server started utc_offset=+00:00 with_embeddings=false".into(),
+            )],
+            "does not record utc_offset=+09:00",
+        ),
+        (
+            "a server started with embeddings",
+            vec![(
+                "FAKE_SERVER_LOG",
+                "vault server started utc_offset=+09:00 with_embeddings=true".into(),
+            )],
+            "started with embeddings",
+        ),
+        (
+            "a --user 99:100 server that exits before listening",
+            vec![
+                ("FAKE_LOGS_2", not_listening),
+                ("FAKE_RUNNING_2", "false".into()),
+            ],
+            "exited before printing",
+        ),
+        (
+            "a token file left owned by 1000:1000 under --user 99:100",
+            vec![("FAKE_TOKEN_OWNER2", "1000:1000".into())],
+            "the token file is owned by '1000:1000', expected 99:100",
+        ),
+    ];
+    for (what, overrides, expected) in cases {
+        let ov: Vec<(&str, &str)> = overrides.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let r = run_smoke(&ov);
+        assert_eq!(
+            r.code,
+            Some(1),
+            "{what}: exits 1 (stderr: {}\nstdout: {})",
+            r.stderr,
+            r.stdout
+        );
+        assert!(
+            r.stderr.contains("smoke-test: FAIL: ") && r.stderr.contains(expected),
+            "{what}: stderr names the failed check `{expected}`: {}",
+            r.stderr
+        );
+        assert!(
+            !r.stdout.contains("all checks passed"),
+            "{what}: no success line: {}",
+            r.stdout
+        );
+        // Whatever the failure, every container that was started is removed,
+        // and its log is printed for the person reading the CI run.
+        for id in r.started() {
+            assert!(
+                r.has_call(&["docker", "rm", "-f", &id]),
+                "{what}: removes {id}: {:?}",
+                r.calls
+            );
+            assert!(
+                r.stderr.contains(&format!("--- docker logs {id}")),
+                "{what}: dumps the log of {id}: {}",
+                r.stderr
+            );
+        }
+        assert_eq!(r.leftovers, 0, "{what}: the temp vault folders are removed");
+    }
+}
+
+#[test]
+fn smoke_test_script_accepts_a_docker_stop_that_takes_exactly_ten_seconds() {
+    let r = run_smoke(&[("FAKE_DATE_STEP", "10")]);
+    assert_eq!(r.code, Some(0), "stderr: {}", r.stderr);
 }
 
 #[test]
@@ -2372,9 +2903,35 @@ fn docker_yml_triggers_are_exactly_release_workflow_run_and_pull_request_paths()
         "docker.yml triggers on workflow_run and pull_request only (no push, workflow_dispatch, schedule or pull_request_target)"
     );
     let wr = on.get("workflow_run").unwrap();
+    // Exactly these keys: a `branches:` filter on workflow_run would match the
+    // tag name of a tag-push Release and silently stop every publish, and an
+    // extra filter on pull_request would quietly narrow when the PR job runs.
+    let keys = |v: &Value| -> BTreeSet<String> {
+        v.as_mapping()
+            .unwrap_or_else(|| panic!("a trigger with filters is a mapping: {v:?}"))
+            .keys()
+            .map(ytext)
+            .collect()
+    };
+    assert_eq!(
+        keys(wr),
+        ["types", "workflows"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<BTreeSet<_>>(),
+        "workflow_run has only `workflows` and `types` (no branches, branches-ignore)"
+    );
     assert_eq!(str_list(wr.get("workflows")), ["Release"]);
     assert_eq!(str_list(wr.get("types")), ["completed"]);
     let pr = on.get("pull_request").unwrap();
+    assert_eq!(
+        keys(pr),
+        ["paths"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<BTreeSet<_>>(),
+        "pull_request has only `paths` (no types, branches, paths-ignore)"
+    );
     let mut paths = str_list(pr.get("paths"));
     paths.sort();
     let mut expected = vec![
@@ -2915,6 +3472,79 @@ fn docker_yml_publish_pushes_digests_then_merges_one_manifest_with_image_tags_sh
         ("main", "1.6.0", &[]),
     ]);
     assert_publish_tags(&fx, &["1.4.2", "1.4"]);
+}
+
+#[test]
+fn docker_yml_merge_job_needs_every_pushing_job_and_has_no_status_function_in_its_if() {
+    let wf = workflow();
+    let all = jobs(&wf);
+    let pushes_by_digest = |job: &Value| {
+        steps(job).iter().any(|s| {
+            s.get("uses")
+                .map(ytext)
+                .is_some_and(|u| u.starts_with("docker/build-push-action@"))
+                && s.get("with")
+                    .and_then(|w| w.get("outputs"))
+                    .map(ytext)
+                    .is_some_and(|o| o.contains("push-by-digest=true"))
+        })
+    };
+    let creates_manifest = |job: &Value| {
+        steps(job).iter().any(|s| {
+            s.get("run")
+                .map(ytext)
+                .is_some_and(|r| r.contains("imagetools create"))
+        })
+    };
+    let arch_jobs: Vec<&str> = all
+        .iter()
+        .filter(|(_, j)| pushes_by_digest(j))
+        .map(|(n, _)| n.as_str())
+        .collect();
+    assert!(
+        !arch_jobs.is_empty(),
+        "docker.yml has a job that pushes an arch image by digest"
+    );
+    let mergers: Vec<&(String, Value)> = all.iter().filter(|(_, j)| creates_manifest(j)).collect();
+    assert_eq!(
+        mergers.len(),
+        1,
+        "exactly one job creates the manifest list: {:?}",
+        mergers.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+    let (name, merge) = mergers[0];
+    assert!(
+        !arch_jobs.contains(&name.as_str()),
+        "the merge job {name} is not itself an arch job"
+    );
+    // Actions runs a job alongside its siblings unless `needs` orders it, and
+    // a failed need skips it: this is what stops a one-arch manifest list.
+    let have = needs(merge);
+    for arch in &arch_jobs {
+        assert!(
+            have.iter().any(|n| n == arch),
+            "merge job {name} must list the arch job {arch} in needs (needs: {have:?}), or it can run when an arch build failed"
+        );
+    }
+    // A status function in `if:` (always(), failure(), ...) replaces the
+    // implicit success() of `needs`, so the job would run after a failure.
+    let cond = merge.get("if").map(ytext).unwrap_or_default();
+    assert!(
+        !has_status_fn(&cond),
+        "merge job {name}'s if: has no status function (`{cond}`): it runs only when every needed job succeeded"
+    );
+    for arch in &arch_jobs {
+        let job = &all.iter().find(|(n, _)| n == arch).unwrap().1;
+        let cond = job.get("if").map(ytext).unwrap_or_default();
+        assert!(
+            !has_status_fn(&cond),
+            "arch job {arch}'s if: has no status function (`{cond}`)"
+        );
+        assert!(
+            job.get("continue-on-error").is_none(),
+            "arch job {arch} does not continue on error: a failed arch must fail the run"
+        );
+    }
 }
 
 #[test]
