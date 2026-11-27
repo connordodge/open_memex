@@ -84,7 +84,12 @@ jobs:
       - name: Read the workspace version
         id: version
         run: |
-          version=$(awk '/^\[/ { t = ($0 == "[workspace.package]"); next } t && /^version *=/ { gsub(/[" ]/, ""); sub(/^version=/, ""); print; exit }' Cargo.toml)
+          # The same [workspace.package] parser as scripts/release/check-version.sh.
+          version=$(awk '
+            { sub(/\r$/, "") }
+            /^[ \t]*\[/ { h = $0; gsub(/[ \t]/, "", h); sub(/#.*$/, "", h); t = (h == "[workspace.package]"); next }
+            t && /^[ \t]*version[ \t]*=/ { v = $0; sub(/^[^=]*=[ \t]*/, "", v); sub(/[ \t]*#.*$/, "", v); gsub(/["\047]/, "", v); sub(/[ \t]+$/, "", v); print v; exit }
+          ' Cargo.toml)
           if [ -z "$version" ]; then
             echo "::error::no [workspace.package] version in Cargo.toml"
             exit 1
@@ -171,7 +176,13 @@ jobs:
             echo "::error::tag $TAG points at $tag_sha, but the Release built $HEAD_SHA"
             exit 1
           fi
-          cargo_version=$(awk '/^\[/ { t = ($0 == "[workspace.package]"); next } t && /^version *=/ { gsub(/[" ]/, ""); sub(/^version=/, ""); print; exit }' Cargo.toml)
+          # The same [workspace.package] parser as scripts/release/check-version.sh,
+          # so a version the Release accepted is read the same way here.
+          cargo_version=$(awk '
+            { sub(/\r$/, "") }
+            /^[ \t]*\[/ { h = $0; gsub(/[ \t]/, "", h); sub(/#.*$/, "", h); t = (h == "[workspace.package]"); next }
+            t && /^[ \t]*version[ \t]*=/ { v = $0; sub(/^[^=]*=[ \t]*/, "", v); sub(/[ \t]*#.*$/, "", v); gsub(/["\047]/, "", v); sub(/[ \t]+$/, "", v); print v; exit }
+          ' Cargo.toml)
           if [ "$cargo_version" != "$VERSION" ]; then
             echo "::error::Cargo.toml [workspace.package] version is '$cargo_version', not $VERSION"
             exit 1
@@ -219,7 +230,9 @@ jobs:
           name: digests-${{ env.PLATFORM_PAIR }}
           path: ${{ runner.temp }}/digests/*
           if-no-files-found: error
-          retention-days: 1
+          # Long enough for "Re-run failed jobs" on a failed merge job to find
+          # both digests again.
+          retention-days: 7
 
   merge:
     name: Publish the manifest list
