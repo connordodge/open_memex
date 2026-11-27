@@ -530,7 +530,7 @@ fn hosted_nas_ssh_route_spells_out_its_own_build_and_the_token_text_drops_sudo_f
     docker_assert_mentions(
         "the SSH route",
         &ssh.body,
-        &["rust:1-bookworm", "linux machine", "processor"],
+        &["rust:1-trixie", "linux machine", "processor", "glibc 2.38"],
     );
     docker_assert_omits("the SSH route", &ssh.body, &["the same way"]);
     // The token text: the path stays, the Docker-needs-sudo claim goes.
