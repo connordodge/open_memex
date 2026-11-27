@@ -336,8 +336,11 @@ fn compose_file_comments_say_to_set_tz_chown_the_folder_and_enable_embeddings() 
         "a comment says to set your own time zone (TZ): {comments}"
     );
     assert!(
-        flat.contains("your own") || flat.contains("your"),
-        "the TZ comment is addressed to the reader: {comments}"
+        comments.lines().any(|l| {
+            let l = l.to_lowercase();
+            l.contains("your own") && (l.contains("time zone") || l.contains("tz"))
+        }),
+        "one comment line tells the reader to set their own time zone: {comments}"
     );
     docker_assert_mentions(
         "the compose comments",
@@ -847,6 +850,12 @@ fn container_docs_set_no_access_token_and_give_the_host_path_and_the_docker_logs
             "memex serve: generated a new access token in /vaults/.memex/access-token",
         ],
     );
+    // The quoted line is the server's real message, not a paraphrase.
+    let server = read_repo_file("crates/memex-mcp/src/server/mod.rs");
+    assert!(
+        server.contains("\"memex serve: generated a new access token in {}\""),
+        "the server prints the message the docs quote (src/server/mod.rs changed?)"
+    );
 }
 
 // AC 13.
@@ -932,11 +941,21 @@ fn hosted_permission_denied_entry_gives_the_chown_and_the_user_flag_with_ls_n_nu
             "start the container again",
         ],
     );
-    assert_eq!(
-        perm.body.matches("\n- ").count(),
-        2,
-        "two ways out, one bullet each: {}",
-        perm.body
+    for bullet in [
+        "\n- Give the folder to the container's user",
+        "\n- Or keep the folder's owner",
+    ] {
+        assert!(
+            perm.body.contains(bullet),
+            "the two ways out are bullets (missing `{}`): {}",
+            bullet.trim(),
+            perm.body
+        );
+    }
+    docker_assert_mentions(
+        "the permission entry",
+        &perm.body,
+        &["copy a vault in", "(#move-a-local-vault-onto-the-server)"],
     );
 }
 
@@ -1050,6 +1069,37 @@ fn backups_nas_docker_creates_the_backups_folder_owned_by_1000_1000() {
     );
 }
 
+// AC 15 (pinned at verify r1): a second backup disk's folder is created and
+// handed to the container's user, or every backup fails while the server runs.
+#[test]
+fn backups_second_volume_folder_is_created_and_handed_to_1000_1000() {
+    let doc = read_repo_file(BACKUPS_DOC);
+    let section = docker_section(&doc, "NAS Docker backups", r"on a nas, in docker");
+    let blocks: Vec<String> = docker_fenced_blocks(&section.body)
+        .into_iter()
+        .map(|(_, b)| docker_one_line(&b))
+        .collect();
+    assert!(
+        blocks.iter().any(|b| b.contains(
+            "sudo mkdir -p /volume2/memex-backups sudo chown 1000:1000 /volume2/memex-backups"
+        )),
+        "a block creates /volume2/memex-backups and hands it to 1000:1000: {blocks:?}"
+    );
+    let flat = docker_one_line(&section.body);
+    for needle in [
+        "-v /volume2/memex-backups:/backups",
+        "--backup-dir /backups",
+        "not owned by `1000:1000`",
+        "every backup fails",
+    ] {
+        assert!(
+            flat.contains(needle),
+            "the second-volume paragraph says `{needle}`: {}",
+            section.body
+        );
+    }
+}
+
 // AC 16 (pinned at verify): the three one-time package steps and the no-PR rule.
 #[test]
 fn releasing_docker_image_section_gives_the_package_steps_and_says_nothing_publishes_from_a_pr() {
@@ -1142,4 +1192,48 @@ fn container_files_and_docs_use_invented_paths_never_a_home_directory() {
             panic!("{what} names a home path `{}`", m.as_str());
         }
     }
+}
+
+// Verify r1: moving or restoring a vault onto the Docker vault server hands the
+// copy to the container's user, or the container cannot write the vault.
+#[test]
+fn hosted_move_section_hands_the_copied_vault_to_the_container_user_before_the_rename() {
+    let doc = hosted_vault_doc();
+    let section = docker_section(
+        &doc,
+        "the move steps",
+        r"move a local vault onto the server",
+    );
+    let blocks: Vec<String> = docker_fenced_blocks(&section.body)
+        .into_iter()
+        .map(|(_, b)| b)
+        .collect();
+    let script = blocks
+        .iter()
+        .find(|b| b.contains("/volume1/memex/.incoming"))
+        .unwrap_or_else(|| panic!("a block moves a vault via .incoming: {blocks:?}"));
+    let line_of = |needle: &str| {
+        script
+            .lines()
+            .position(|l| l.trim() == needle)
+            .unwrap_or_else(|| panic!("the move block has the line `{needle}`: {script}"))
+    };
+    let mkdir = line_of("sudo mkdir -p /volume1/memex/.incoming");
+    let own_dir = line_of("sudo chown \"$(id -u):$(id -g)\" /volume1/memex/.incoming");
+    let chown = line_of("chown -R 1000:1000 /volume1/memex/.incoming/notes");
+    let rename = line_of("mv /volume1/memex/.incoming/notes /volume1/memex/notes");
+    assert!(
+        mkdir < own_dir && own_dir < chown && chown < rename,
+        ".incoming is created and owned first; the copy is chowned before the rename: {script}"
+    );
+    docker_assert_mentions(
+        "the move steps",
+        &section.body,
+        &[
+            "`1000:1000`",
+            "`99:100` on Unraid",
+            "(#permission-denied-on-first-start)",
+            "skip the `chown` lines",
+        ],
+    );
 }
