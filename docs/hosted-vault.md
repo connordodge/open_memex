@@ -310,18 +310,22 @@ To bring a vault you already use onto the vault server, copy it in whole. The se
 1. Quit the app and any agent that has the local vault open. SQLite writes some data into side files while a vault is open; quitting makes `memex.db` complete.
 2. Choose the vault's name. The vault-name rule: letters, digits, `-` and `_`, 1 to 64 characters, compared case-insensitively. So `Work` and `work` are the same vault, and the server serves only one of them.
 3. Copy the vault folder into `<root>/.incoming/`. The server ignores every folder that starts with a dot, so nothing is served while the copy runs. An SMB share of the vault root works well for this (mount it in Finder), as does `rsync` or `scp`. Create `.incoming` first if it does not exist.
-4. When the copy is complete, rename the folder to `<root>/<name>` on the machine that runs the vault server (or in your file manager on the share, which is also a rename on the same volume). The vault appears at once, with no restart.
+4. When the copy is complete, give the copy to the user the vault server runs as, then rename the folder to `<root>/<name>` on the machine that runs the vault server (or in your file manager on the share, which is also a rename on the same volume). On the Docker route the container runs as `1000:1000` (`99:100` on Unraid), and a copy you made belongs to the account that copied it, so without the `chown` the container cannot write the vault and does not open it (see [Permission denied on first start](#permission-denied-on-first-start)). The vault appears at once, with no restart.
 
 ```bash
-# on the machine that runs the vault server
-mkdir -p /volume1/memex/.incoming
+# on the machine that runs the vault server: create .incoming for the account that copies
+sudo mkdir -p /volume1/memex/.incoming
+sudo chown "$(id -u):$(id -g)" /volume1/memex/.incoming
 
 # on your Mac, with the share mounted at /Volumes/memex
 cp -R ~/Documents/MyMemex /Volumes/memex/.incoming/notes
 
-# on the machine that runs the vault server, once the copy has finished
+# on the machine that runs the vault server, once the copy has finished, in a root shell (sudo -i)
+chown -R 1000:1000 /volume1/memex/.incoming/notes
 mv /volume1/memex/.incoming/notes /volume1/memex/notes
 ```
+
+If you run the vault server from a binary instead (the SSH route, systemd or launchd), skip the `chown` lines and the root shell: the copy only has to belong to the account that runs the vault server.
 
 Check the result with `curl`, using the token (see [Troubleshooting](#troubleshooting) for the expected answers):
 
@@ -425,7 +429,7 @@ Do not open the port to "any address", and do not forward it on your router.
 
 ### Permission denied on first start
 
-The vault server stops at once with "Permission denied" when the container's user cannot write to the vault root. The image runs as user `1000:1000`, so the folder you mount at `/vaults` needs that owner. If the folder did not exist, Docker created it owned by root. Check the folder's owner with `ls -ld <folder>`, then do one of these:
+The vault server stops at once with "Permission denied" when the container's user cannot write to the vault root. The same ownership problem shows later when you copy a vault in (see [Move a local vault onto the server](#move-a-local-vault-onto-the-server)): the vault does not open until its folder belongs to the container's user. The image runs as user `1000:1000`, so the folder you mount at `/vaults` needs that owner. If the folder did not exist, Docker created it owned by root. Check the folder's owner with `ls -ld <folder>`, then do one of these:
 
 - Give the folder to the container's user: `chown 1000:1000 <folder>` (on Unraid, `chown 99:100 <folder>` together with the `user: "99:100"` line from the compose file above), then start the container again.
 - Or keep the folder's owner and run the container as it: add `user: "<uid>:<gid>"` to the compose service, or `--user <uid>:<gid>` to `docker run`, using the owner's numbers from `ls -n`.

@@ -159,7 +159,14 @@ docker run -d --name memex-vault-server --restart unless-stopped \
   memex serve --root /vaults --listen 0.0.0.0:7878 --backup-dir /vaults/.backups --backup-keep 30
 ```
 
-To keep the backups on a different disk from the vaults, mount that disk's folder as a second volume (for example `-v /volume2/memex-backups:/backups`) and pass `--backup-dir /backups`. A backup destination on a different disk survives the loss of the first one. On an always-on Mac, add `--backup-dir` and its folder to the vault server's `ProgramArguments`.
+To keep the backups on a different disk from the vaults, create a folder on that disk and give it to `1000:1000` the same way, mount it as a second volume (for example `-v /volume2/memex-backups:/backups`) and pass `--backup-dir /backups`. If that folder is not owned by `1000:1000`, the vault server still starts, but every backup fails and the Backups sheet shows the error. A backup destination on a different disk survives the loss of the first one.
+
+```bash
+sudo mkdir -p /volume2/memex-backups
+sudo chown 1000:1000 /volume2/memex-backups
+```
+
+On an always-on Mac, add `--backup-dir` and its folder to the vault server's `ProgramArguments`.
 
 ### Copy the backups on to the cloud
 
