@@ -516,6 +516,25 @@ fn hosted_nas_docker_route_drops_the_source_build_and_names_the_first_image_rele
     );
 }
 
+// AC 6 (pinned at verify): `latest` only exists once a release after v0.7.0 is out.
+#[test]
+fn hosted_nas_docker_route_says_latest_exists_once_a_release_after_0_7_0_is_out() {
+    let doc = hosted_vault_doc();
+    let route = nas_docker_route(&doc);
+    let flat = docker_flat_lower(&route.body);
+    assert!(
+        Regex::new(r"`latest` exists once a release after v0\.7\.0 is out")
+            .unwrap()
+            .is_match(&flat),
+        "the Docker route says when `latest` first exists: {flat}"
+    );
+    docker_assert_mentions(
+        "the Docker route",
+        &route.body,
+        &["published for every release after v0.7.0"],
+    );
+}
+
 // AC 7.
 #[test]
 fn hosted_nas_ssh_route_spells_out_its_own_build_and_the_token_text_drops_sudo_for_docker() {
@@ -888,6 +907,39 @@ fn hosted_troubleshooting_has_permission_denied_on_first_start_and_the_unraid_us
     docker_assert_mentions("Network drive refusal", &net.body, &["memex vault check"]);
 }
 
+// AC 14 (pinned at verify): the entry gives both ways out of the wrong owner.
+#[test]
+fn hosted_permission_denied_entry_gives_the_chown_and_the_user_flag_with_ls_n_numbers() {
+    let doc = hosted_vault_doc();
+    let trouble = docker_section(&doc, "troubleshooting", r"troubleshoot");
+    let perm = docker_section(
+        &trouble.body,
+        "permission denied on first start",
+        r"permission denied on first start",
+    );
+    docker_assert_mentions(
+        "the permission entry",
+        &perm.body,
+        &[
+            "ls -ld <folder>",
+            "chown 1000:1000 <folder>",
+            "chown 99:100 <folder>",
+            "user: \"99:100\"",
+            "user: \"<uid>:<gid>\"",
+            "--user <uid>:<gid>",
+            "ls -n",
+            "owned by root",
+            "start the container again",
+        ],
+    );
+    assert_eq!(
+        perm.body.matches("\n- ").count(),
+        2,
+        "two ways out, one bullet each: {}",
+        perm.body
+    );
+}
+
 // ---------- docs/backups.md, releasing.md, README.md ----------
 
 // AC 15.
@@ -974,6 +1026,63 @@ fn releasing_doc_has_a_docker_image_section_for_the_publish_rerun_and_package_vi
     // The every-release steps point at the same trigger.
     let every = docker_section(&doc, "every release", r"^every release$");
     docker_assert_mentions("Every release", &every.body, &["docker.yml"]);
+}
+
+// AC 15 (pinned at verify): the backups folder is created for the container's user.
+#[test]
+fn backups_nas_docker_creates_the_backups_folder_owned_by_1000_1000() {
+    let doc = read_repo_file(BACKUPS_DOC);
+    let section = docker_section(&doc, "NAS Docker backups", r"on a nas, in docker");
+    let blocks: Vec<String> = docker_fenced_blocks(&section.body)
+        .into_iter()
+        .map(|(_, b)| docker_one_line(&b))
+        .collect();
+    assert!(
+        blocks
+            .iter()
+            .any(|b| b.contains("sudo chown 1000:1000 /volume1/memex/.backups")),
+        "the example hands .backups to 1000:1000: {blocks:?}"
+    );
+    docker_assert_mentions(
+        "the prose",
+        &section.body,
+        &["user `1000:1000`, which must own `.backups`"],
+    );
+}
+
+// AC 16 (pinned at verify): the three one-time package steps and the no-PR rule.
+#[test]
+fn releasing_docker_image_section_gives_the_package_steps_and_says_nothing_publishes_from_a_pr() {
+    let doc = read_repo_file(RELEASING_DOC);
+    let section = docker_section(&doc, "the Docker image", r"^docker image$");
+    let steps: Vec<&str> = section
+        .body
+        .lines()
+        .filter(|l| Regex::new(r"^[123]\. ").unwrap().is_match(l))
+        .collect();
+    assert_eq!(steps.len(), 3, "three numbered steps: {}", section.body);
+    docker_assert_mentions("step 1", steps[0], &["Package settings", "Public"]);
+    docker_assert_mentions("step 2", steps[1], &["linked", "open_memex"]);
+    docker_assert_mentions(
+        "step 3",
+        steps[2],
+        &[
+            "not signed in to ghcr.io",
+            "docker pull ghcr.io/connordodge/memex:latest",
+        ],
+    );
+    docker_assert_mentions(
+        "the Docker image section",
+        &section.body,
+        &[
+            "Nothing is published from a pull request or a manual dry run",
+            "private",
+            "linux/amd64",
+            "linux/arm64",
+            "smoke-tests",
+            "first Release after v0.7.0",
+        ],
+    );
 }
 
 // AC 17.
