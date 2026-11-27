@@ -1237,3 +1237,37 @@ fn hosted_move_section_hands_the_copied_vault_to_the_container_user_before_the_r
         ],
     );
 }
+
+#[test]
+fn hosted_move_section_keeps_the_file_manager_rename_to_the_binary_routes() {
+    let doc = hosted_vault_doc();
+    let section = docker_section(
+        &doc,
+        "the move steps",
+        r"move a local vault onto the server",
+    );
+    let flat = docker_flat_lower(&section.body);
+    // Every sentence that offers the file manager is either scoped to the binary routes or
+    // says the Docker route cannot use it: after the chown the SMB account cannot move the folder.
+    let mut offers = 0;
+    for sentence in flat.split(". ").filter(|s| s.contains("file manager")) {
+        offers += 1;
+        assert!(
+            sentence.contains("binary routes") || sentence.contains("not the file manager"),
+            "a file-manager rename is scoped to the binary routes or ruled out for Docker: {sentence}"
+        );
+    }
+    assert!(
+        offers >= 2,
+        "the file-manager option is both offered (binary routes) and ruled out (Docker): {flat}"
+    );
+    docker_assert_mentions(
+        "the move steps",
+        &section.body,
+        &[
+            "on the binary routes (ssh, systemd or launchd) you can instead rename it in your file manager",
+            "your account on the share cannot move it",
+            "on the docker route the rename is the root `mv` on the server, not the file manager",
+        ],
+    );
+}
