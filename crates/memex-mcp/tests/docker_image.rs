@@ -358,7 +358,7 @@ fn has_flag_value(words: &[&str], flags: &[&str], values: &[&str]) -> bool {
 }
 
 #[test]
-fn dockerfile_builder_is_rust_bookworm_at_the_release_rust_version_and_runtime_is_bookworm_slim() {
+fn dockerfile_builder_is_rust_trixie_at_the_release_rust_version_and_runtime_is_trixie_slim() {
     let release = read_repo_file(RELEASE_WORKFLOW);
     let step = Regex::new(r"(?m)^\s*-?\s*name:\s*Set up Rust (\d+\.\d+\.\d+)\s*$")
         .unwrap()
@@ -383,13 +383,13 @@ fn dockerfile_builder_is_rust_bookworm_at_the_release_rust_version_and_runtime_i
         "the builder is not the runtime (last) stage"
     );
     let rust = Regex::new(&format!(
-        r"^rust:{}-bookworm(@sha256:[0-9a-f]{{64}})?$",
+        r"^rust:{}-trixie(@sha256:[0-9a-f]{{64}})?$",
         regex::escape(&step)
     ))
     .unwrap();
     assert!(
         rust.is_match(&builder.image),
-        "the builder stage is FROM rust:{step}-bookworm (release.yml's Rust), not `{}`",
+        "the builder stage is FROM rust:{step}-trixie (release.yml's Rust), not `{}`",
         builder.image
     );
     let cargo_build = builder
@@ -413,10 +413,10 @@ fn dockerfile_builder_is_rust_bookworm_at_the_release_rust_version_and_runtime_i
         has_flag_value(&words, &["-p", "--package"], &["memex-mcp"]),
         "cargo build builds -p memex-mcp: `{cargo_build}`"
     );
-    let slim = Regex::new(r"^debian:bookworm-slim(@sha256:[0-9a-f]{64})?$").unwrap();
+    let slim = Regex::new(r"^debian:trixie-slim(@sha256:[0-9a-f]{64})?$").unwrap();
     assert!(
         slim.is_match(&runtime.image),
-        "the runtime stage is FROM debian:bookworm-slim, not `{}`",
+        "the runtime stage is FROM debian:trixie-slim, not `{}`",
         runtime.image
     );
 }
