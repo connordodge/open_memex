@@ -5,8 +5,10 @@
 # Build context: the repo root, cut down by .dockerignore to Cargo.toml,
 # Cargo.lock and crates/.
 
-# Builder: the Rust version release.yml builds the macOS release with.
-FROM rust:1.95.0-bookworm AS builder
+# Builder: the Rust version release.yml builds the macOS release with, on
+# Debian 13 (trixie): the prebuilt ONNX Runtime that ort-sys links needs
+# glibc >= 2.38 and libstdc++ from GCC >= 14, which bookworm lacks.
+FROM rust:1.95.0-trixie AS builder
 # openssl-sys (hf-hub -> ureq -> native-tls) links the system OpenSSL.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends pkg-config libssl-dev \
@@ -18,7 +20,7 @@ RUN cargo build --release --locked -p memex-mcp
 
 # Runtime: the binary, CA certificates, time zone data and the shared
 # libraries it links. No compiler, curl or Rust toolchain.
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 ARG VERSION=0.0.0
 LABEL org.opencontainers.image.source="https://github.com/connordodge/open_memex" \
       org.opencontainers.image.licenses="MIT" \
@@ -26,7 +28,7 @@ LABEL org.opencontainers.image.source="https://github.com/connordodge/open_memex
       org.opencontainers.image.description="Open Memex vault server (memex serve)" \
       org.opencontainers.image.version="${VERSION}"
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates tzdata libssl3 \
+ && apt-get install -y --no-install-recommends ca-certificates tzdata libssl3t64 \
  && rm -rf /var/lib/apt/lists/* \
  && groupadd --gid 1000 memex \
  && useradd --uid 1000 --gid 1000 --no-create-home --shell /usr/sbin/nologin memex \
