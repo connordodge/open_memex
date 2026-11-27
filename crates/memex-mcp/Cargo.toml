@@ -50,3 +50,5 @@ tokio = { workspace = true, features = ["test-util"] }
 fastembed = { workspace = true }
 # oneshot: drive the vault server router in memory on a paused clock (#446).
 tower = { workspace = true }
+# #190: docker_image.rs parses .github/workflows/docker.yml.
+serde_yaml = { workspace = true }

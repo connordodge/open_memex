@@ -1681,22 +1681,32 @@ fn readme_what_works_today_lists_the_serve_root_serve_remote_and_vault_check_com
     );
 }
 
-// ---------- AC 10: no container definitions ship (L3) ----------
+// ---------- AC 10: the only container definitions (Spec #189, WI #190 AC 23) ----------
+//
+// Hosted-vault Spec AC 10 (its ledger L3) said no container definition ships;
+// Spec #189 reverses that. The tree's container definitions are exactly
+// `Dockerfile` at the repo root and, once it lands, `deploy/compose.yaml`.
 
 #[test]
-fn repository_has_no_dockerfile_compose_file_or_image_definition() {
-    // The doc is where Docker is described (inline); nothing in the tree builds one.
+fn repository_container_definitions_are_the_root_dockerfile_and_deploy_compose_only() {
     let doc = hosted_vault_doc();
     assert!(
         doc.to_lowercase().contains("docker"),
         "{HOSTED_DOC} describes the Docker route for a NAS in text"
     );
     let root = repo_root();
+    assert!(
+        root.join("Dockerfile").is_file(),
+        "the image is defined by Dockerfile at the repo root"
+    );
     let mut files = Vec::new();
     wi104_walk(&root, &mut files);
     assert!(files.len() > 50, "the walk reaches the repository's files");
+    // /worktrees/ is gitignored: orchestration checkouts of other branches.
+    let worktrees = root.join("worktrees");
     let offenders: Vec<String> = files
         .iter()
+        .filter(|p| !p.starts_with(&worktrees))
         .filter(|p| {
             let name = p.file_name().unwrap().to_string_lossy().to_lowercase();
             name.starts_with("dockerfile")
@@ -1706,10 +1716,11 @@ fn repository_has_no_dockerfile_compose_file_or_image_definition() {
                 || name.starts_with("compose.")
         })
         .map(|p| p.strip_prefix(&root).unwrap().display().to_string())
+        .filter(|rel| rel != "Dockerfile" && rel != "deploy/compose.yaml")
         .collect();
     assert!(
         offenders.is_empty(),
-        "the repository ships no Dockerfile, compose file or image definition: {offenders:?}"
+        "the only container definitions are Dockerfile and deploy/compose.yaml: {offenders:?}"
     );
 }
 
