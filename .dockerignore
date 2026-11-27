@@ -1,0 +1,5 @@
+# Allowlist: the build context is only what `cargo build -p memex-mcp` needs.
+*
+!Cargo.toml
+!Cargo.lock
+!crates/
