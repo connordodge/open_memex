@@ -4,7 +4,7 @@ A **hosted vault** is a vault that lives on another machine. That machine runs t
 
 This page takes you from nothing to a working hosted vault:
 
-1. run the vault server on a NAS, on Linux or on an always-on Mac;
+1. run the vault server on a NAS, on Unraid, on Linux or on an always-on Mac;
 2. choose the address it listens on, and find its access token;
 3. move an existing local vault onto it (optional);
 4. connect the app, Claude Desktop, Raycast and Claude Code;
@@ -29,7 +29,7 @@ Use your home network or Tailscale. Never expose the server to the internet. Tha
 
 ## The short version
 
-On the always-on machine, once `memex` is installed (the next three sections show how for a NAS, Linux and a Mac):
+On the always-on machine, once `memex` is installed (the next four sections show how for a NAS, Unraid, Linux and a Mac):
 
 ```bash
 memex init <root>/<name>
@@ -40,44 +40,60 @@ Then copy the access token from `<root>/.memex/access-token` and connect from th
 
 ## Set up on a NAS (Synology or QNAP)
 
-There are two routes: Docker (Container Manager on Synology, Container Station on QNAP) or SSH. There is no published `memex` image, so both routes start by building the `memex` binary yourself.
+There are two routes: Docker (Container Manager on Synology, Container Station on QNAP) or SSH. The Docker route runs the published image `ghcr.io/connordodge/memex`, so you build nothing. The SSH route runs a `memex` binary you build from source.
 
 ### Run it with Docker
 
-Build `memex` inside a Rust container on the NAS itself, so the binary matches the NAS's processor, then run it in a plain Debian container. Turn SSH on in the NAS settings and run these in an SSH session. The example sets `TZ` (see [Time zone](#time-zone)) and publishes port 7878:
+The vault server image, `ghcr.io/connordodge/memex`, is published for every release after v0.7.0, so `latest` exists once a release after v0.7.0 is out. Turn SSH on in the NAS settings and run these in an SSH session. They create the vault root, give it to user `1000:1000` (the user the image runs as), and start the vault server. The example sets `TZ` (see [Time zone](#time-zone)) and publishes port 7878:
 
 ```bash
-# 1. build memex (a recent stable Rust image; this takes a while on a NAS)
-git clone https://github.com/connordodge/open_memex.git
-cd open_memex
-docker run --rm -v "$PWD":/src -w /src rust:1-bookworm cargo build --release -p memex-mcp
-mkdir -p /volume1/memex /volume1/memex-bin
-cp target/release/memex /volume1/memex-bin/memex
+sudo mkdir -p /volume1/memex
+sudo chown 1000:1000 /volume1/memex
 
-# 2. create the first vault inside the vault root
-docker run --rm \
-  -v /volume1/memex:/data \
-  -v /volume1/memex-bin/memex:/usr/local/bin/memex:ro \
-  debian:bookworm-slim \
-  memex init /data/home
-
-# 3. start the vault server
 docker run -d --name memex-vault-server --restart unless-stopped \
   -e TZ=Europe/London \
   -p 7878:7878 \
-  -v /volume1/memex:/data \
-  -v /volume1/memex-bin/memex:/usr/local/bin/memex:ro \
-  debian:bookworm-slim \
-  memex serve --root /data --listen 0.0.0.0:7878
+  -v /volume1/memex:/vaults \
+  ghcr.io/connordodge/memex:latest \
+  memex serve --root /vaults --listen 0.0.0.0:7878
 ```
 
-The paths are examples: `/volume1/memex` is a Synology volume path, so use the shared folder on your own NAS. Keep the vault root on one of the NAS's own disks (a normal shared folder is fine; a mounted network share is not, see [Network drive refusal](#network-drive-refusal)).
+The paths are examples: `/volume1/memex` is a Synology volume path, so use the shared folder on your own NAS. Keep the vault root on one of the NAS's own disks (a normal shared folder is fine; a mounted network share is not, see [Network drive refusal](#network-drive-refusal)). The folder must belong to `1000:1000` before the first start: if Docker has to create it, it belongs to root and the server stops with "Permission denied" (see [Permission denied on first start](#permission-denied-on-first-start)).
 
-If the container stops at once with a message about a missing shared library, read the log with `docker logs memex-vault-server` and either install the named library in a derived image or run the binary in the same `rust:1-bookworm` image you built it in.
+Start on an empty folder. Connect from the app (see [Connect the app and agents](#connect-the-app-and-agents)) and create your first vault there. If you would rather make the first vault from the command line, that is optional; run it once, in the same folder:
+
+```bash
+docker run --rm -v /volume1/memex:/vaults ghcr.io/connordodge/memex:latest memex init /vaults/home
+```
+
+The server sets no `MEMEX_ACCESS_TOKEN`, so on its first start it makes its own access token. Run `docker logs memex-vault-server` and you will see one line, `memex serve: generated a new access token in /vaults/.memex/access-token`; the token itself is never printed. On the NAS that file is `/volume1/memex/.memex/access-token`: read it with `cat`, as the account that owns the folder, or run `docker exec memex-vault-server cat /vaults/.memex/access-token`.
+
+To turn on embeddings for every vault, add `--with-embeddings` to the end of the `memex serve` line and start the container again (remove the old one first with `docker rm -f memex-vault-server`; your vaults stay in the folder):
+
+```bash
+docker run -d --name memex-vault-server --restart unless-stopped \
+  -e TZ=Europe/London \
+  -p 7878:7878 \
+  -v /volume1/memex:/vaults \
+  ghcr.io/connordodge/memex:latest \
+  memex serve --root /vaults --listen 0.0.0.0:7878 --with-embeddings
+```
+
+The first start with embeddings needs internet access: the server downloads about 130 MB of model files into `<root>/.memex/models` (here `/volume1/memex/.memex/models`), and later starts reuse them.
 
 ### Run it over SSH
 
-Build `memex` the same way (or build it on any Linux machine of the same processor type and copy it over), then run it directly:
+Build `memex` from source. You need a recent stable Rust toolchain, or a Rust container, and the build must match the NAS's processor: run it on the NAS itself in a `rust:1-trixie` container, or on any Linux machine of the same processor type and copy the binary over. The binary needs glibc 2.38 or later where it runs; if your NAS's Linux is older, use the Docker route above instead.
+
+```bash
+git clone https://github.com/connordodge/open_memex.git
+cd open_memex
+docker run --rm -v "$PWD":/src -w /src rust:1-trixie cargo build --release -p memex-mcp
+mkdir -p /volume1/memex-bin
+cp target/release/memex /volume1/memex-bin/memex
+```
+
+On a Linux machine, skip the container and run `cargo build --release -p memex-mcp` in the clone. Then run the binary directly on the NAS:
 
 ```bash
 mkdir -p /volume1/memex
@@ -87,7 +103,76 @@ TZ=Europe/London /volume1/memex-bin/memex serve --root /volume1/memex --listen 0
 
 That stops when your SSH session ends. To keep it running, make it a Task Scheduler "boot-up" task (Synology) or an autorun script (QNAP) that runs the same `serve` command, or use the Docker route above.
 
-The access token lands in `/volume1/memex/.memex/access-token`. The Docker route runs as root, so read it over SSH with `sudo cat`.
+The access token lands in `/volume1/memex/.memex/access-token`, owned by the account that ran `serve`, so read it over SSH as that account with `cat`.
+
+## Set up on Unraid
+
+Unraid runs the vault server as a Docker container from the published image `ghcr.io/connordodge/memex` (released after v0.7.0), started with the repository's compose file.
+
+Keep the vault root in the `appdata` folder on a pool, such as `/mnt/cache/appdata/memex`. If your pool is not named `cache`, use your pool's name: `/mnt/<pool>/appdata/memex`. `/mnt/user/appdata/memex` works only when `appdata` is an Exclusive share (Unraid 6.12 and later). Otherwise `/mnt/user` is the `shfs` FUSE layer that merges shares across disks, and the vault server refuses it with the error code `network_filesystem` (see [Network drive refusal](#network-drive-refusal)). Never put the vault root on the array or on a user share.
+
+Create the folder and give it to `99:100`, the `nobody:users` owner Unraid uses for container files:
+
+```bash
+mkdir -p /mnt/cache/appdata/memex && chown 99:100 /mnt/cache/appdata/memex
+```
+
+The compose file is [`deploy/compose.yaml`](https://raw.githubusercontent.com/connordodge/open_memex/main/deploy/compose.yaml) in the repository. This is the same file with two changes: an added `user: "99:100"` line, so the container runs as the folder's owner instead of the image's `1000:1000`, and your Unraid folder as the volume. Replace `Europe/London` with your own time zone (see [Time zone](#time-zone)). The comments are the file's own; on Unraid, read `./vaults` as the appdata folder and `1000:1000` as `99:100`.
+
+```yaml
+# The Open Memex vault server (memex serve) from the published image.
+# Start it with `docker compose up -d` in the folder that holds this file.
+# The image runs as user 1000:1000 and serves every vault in /vaults.
+services:
+  memex:
+    image: ghcr.io/connordodge/memex:latest
+    container_name: memex
+    restart: unless-stopped
+    user: "99:100"
+    environment:
+      # Set your own time zone here (a TZ name such as America/New_York).
+      # Without it the container runs in UTC, and callers that send no UTC
+      # offset get the wrong day.
+      TZ: Europe/London
+    ports:
+      - "7878:7878"
+    volumes:
+      # The folder on this host that holds your vaults. Create ./vaults and
+      # make 1000:1000 its owner (chown 1000:1000 ./vaults) before the first
+      # start. If you do not, Docker creates it owned by root and the server
+      # stops with "Permission denied". If the folder has another owner, add
+      # a user: line to this service (user: "<uid>:<gid>") instead.
+      - /mnt/cache/appdata/memex:/vaults
+    # To turn on embeddings for every vault, add this line under the service
+    # (it downloads about 130 MB on the first start):
+    #   command: memex serve --root /vaults --listen 0.0.0.0:7878 --with-embeddings
+```
+
+Start it with the Compose Manager plugin (add a stack, paste the file, then choose Compose Up), or from the Unraid terminal in the folder that holds the file:
+
+```bash
+docker compose up -d
+```
+
+Start on an empty folder. Connect from the app (see [Connect the app and agents](#connect-the-app-and-agents)) and create your first vault there. If you would rather make it from the command line, that is optional; run it once, in the folder with the compose file:
+
+```bash
+docker compose run --rm memex memex init /vaults/home
+```
+
+The compose file sets no `MEMEX_ACCESS_TOKEN`, so the first start makes its own access token. `docker logs memex` shows one line, `memex serve: generated a new access token in /vaults/.memex/access-token`; the token itself is never printed. Read it on the host:
+
+```bash
+cat /mnt/cache/appdata/memex/.memex/access-token
+```
+
+To turn on embeddings for every vault, uncomment the `command:` line shown at the end of the file, under the `memex` service:
+
+```yaml
+    command: memex serve --root /vaults --listen 0.0.0.0:7878 --with-embeddings
+```
+
+Then run `docker compose up -d` again. The first start with embeddings needs internet access: the server downloads about 130 MB of model files into `<root>/.memex/models` (here `/mnt/cache/appdata/memex/.memex/models`).
 
 ## Set up on Linux (systemd)
 
@@ -338,6 +423,13 @@ The server runs but only the machine itself can reach it. Open the port to your 
 
 Do not open the port to "any address", and do not forward it on your router.
 
+### Permission denied on first start
+
+The vault server stops at once with "Permission denied" when the container's user cannot write to the vault root. The image runs as user `1000:1000`, so the folder you mount at `/vaults` needs that owner. If the folder did not exist, Docker created it owned by root. Check the folder's owner with `ls -ld <folder>`, then do one of these:
+
+- Give the folder to the container's user: `chown 1000:1000 <folder>` (on Unraid, `chown 99:100 <folder>` together with the `user: "99:100"` line from the compose file above), then start the container again.
+- Or keep the folder's owner and run the container as it: add `user: "<uid>:<gid>"` to the compose service, or `--user <uid>:<gid>` to `docker run`, using the owner's numbers from `ls -n`.
+
 ### Network drive refusal
 
 Starting the server, `memex init` or opening a vault fails with the error code `network_filesystem` when the folder is on a network drive (an SMB, NFS or similar mount). SQLite in WAL mode is not safe there, so `memex` refuses. Put the vault root on a disk that belongs to the machine running the vault server. To test a folder, run:
@@ -346,4 +438,4 @@ Starting the server, `memex init` or opening a vault fails with the error code `
 memex vault check --vault /volume1/memex
 ```
 
-It exits 0 when the folder is safe, and otherwise prints the refusal and exits non-zero. The folder does not have to exist yet; the nearest existing parent is checked. Mounting your NAS share on a Mac and pointing a local vault at it is the same mistake, and is refused for the same reason: the vault belongs on the vault server, not on a share.
+It exits 0 when the folder is safe, and otherwise prints the refusal and exits non-zero. The folder does not have to exist yet; the nearest existing parent is checked. On Unraid the same refusal appears when the vault root is under `/mnt/user`, which is the `shfs` FUSE layer: use `/mnt/<pool>/appdata/memex` instead (or an Exclusive share), as in [Set up on Unraid](#set-up-on-unraid). Mounting your NAS share on a Mac and pointing a local vault at it is the same mistake, and is refused for the same reason: the vault belongs on the vault server, not on a share.

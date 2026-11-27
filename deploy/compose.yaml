@@ -1,0 +1,25 @@
+# The Open Memex vault server (memex serve) from the published image.
+# Start it with `docker compose up -d` in the folder that holds this file.
+# The image runs as user 1000:1000 and serves every vault in /vaults.
+services:
+  memex:
+    image: ghcr.io/connordodge/memex:latest
+    container_name: memex
+    restart: unless-stopped
+    environment:
+      # Set your own time zone here (a TZ name such as America/New_York).
+      # Without it the container runs in UTC, and callers that send no UTC
+      # offset get the wrong day.
+      TZ: Europe/London
+    ports:
+      - "7878:7878"
+    volumes:
+      # The folder on this host that holds your vaults. Create ./vaults and
+      # make 1000:1000 its owner (chown 1000:1000 ./vaults) before the first
+      # start. If you do not, Docker creates it owned by root and the server
+      # stops with "Permission denied". If the folder has another owner, add
+      # a user: line to this service (user: "<uid>:<gid>") instead.
+      - ./vaults:/vaults
+    # To turn on embeddings for every vault, add this line under the service
+    # (it downloads about 130 MB on the first start):
+    #   command: memex serve --root /vaults --listen 0.0.0.0:7878 --with-embeddings

@@ -145,18 +145,18 @@ The app shows a hosted vault's backup status in the Backups sheet, and **Back up
 
 ### On a NAS, in Docker
 
-With the Docker route from [`hosted-vault.md`](hosted-vault.md), `<root>` is the folder you mounted at `/data`, so `<root>/.backups` is `/data/.backups` inside the container and `/volume1/memex/.backups` on the NAS. Create it, then add the two options to the `docker run` that starts the vault server:
+With the Docker route from [`hosted-vault.md`](hosted-vault.md), `<root>` is the folder you mounted at `/vaults`, so `<root>/.backups` is `/vaults/.backups` inside the container and `/volume1/memex/.backups` on the NAS. The container runs as user `1000:1000`, which must own `.backups` (it already owns the folder it creates inside `<root>`). Create it, then add the two options to the `docker run` that starts the vault server:
 
 ```bash
-mkdir -p /volume1/memex/.backups
+sudo mkdir -p /volume1/memex/.backups
+sudo chown 1000:1000 /volume1/memex/.backups
 
 docker run -d --name memex-vault-server --restart unless-stopped \
   -e TZ=Europe/London \
   -p 7878:7878 \
-  -v /volume1/memex:/data \
-  -v /volume1/memex-bin/memex:/usr/local/bin/memex:ro \
-  debian:bookworm-slim \
-  memex serve --root /data --listen 0.0.0.0:7878 --backup-dir /data/.backups --backup-keep 30
+  -v /volume1/memex:/vaults \
+  ghcr.io/connordodge/memex:latest \
+  memex serve --root /vaults --listen 0.0.0.0:7878 --backup-dir /vaults/.backups --backup-keep 30
 ```
 
 To keep the backups on a different disk from the vaults, mount that disk's folder as a second volume (for example `-v /volume2/memex-backups:/backups`) and pass `--backup-dir /backups`. A backup destination on a different disk survives the loss of the first one. On an always-on Mac, add `--backup-dir` and its folder to the vault server's `ProgramArguments`.
