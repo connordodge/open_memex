@@ -52,12 +52,24 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Whether container $1's log (stdout and stderr) has the line $2. It reads
+# the whole log before matching: `docker logs | grep -q` fails under pipefail
+# when grep exits at its first match and docker logs then dies of SIGPIPE.
+log_has() {
+  local logs
+  logs=$(docker logs "$1" 2>&1) || return 1
+  case "$logs" in
+    *"$2"*) return 0 ;;
+  esac
+  return 1
+}
+
 # Polls the container's log until it prints $2, for up to
 # START_TIMEOUT_SECS (60) seconds; fails at once if the container exits.
 wait_for_line() {
   local c=$1 line=$2 waited=0
   while [ "$waited" -lt "$START_TIMEOUT_SECS" ]; do
-    if docker logs "$c" 2>&1 | grep -qF "$line"; then
+    if log_has "$c" "$line"; then
       return 0
     fi
     if [ "$(docker inspect -f '{{.State.Running}}' "$c")" != "true" ]; then
@@ -102,7 +114,7 @@ c=$(docker run -d -e TZ=Asia/Tokyo -p 127.0.0.1:7878:7878 -v "$dir:/vaults" "$IM
 containers="$containers $c"
 wait_for_line "$c" "$LISTENING"
 ok "the server is listening"
-docker logs "$c" 2>&1 | grep -qF "$GENERATED" || fail "no '$GENERATED' line"
+log_has "$c" "$GENERATED" || fail "no '$GENERATED' line"
 ok "it generated a new access token"
 
 token_file="$dir/.memex/access-token"
