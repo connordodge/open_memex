@@ -3,7 +3,7 @@
 // on the Activity tab: a V6 FakeVaultDb answers the reads, a stateful
 // FakeMemexCli plays the vault server for the writes, and a recording
 // RecordingFeedbackAccess counts what the app asked the vault to do.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
 import 'package:open_memex_app/src/vault_access/errors.dart';

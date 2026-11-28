@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// Open Memex color system. Mirrors `colors_and_type.css` from the design
 /// handoff. A dark editorial-tech surface with one terminal-green accent

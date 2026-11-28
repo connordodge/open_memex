@@ -1,7 +1,7 @@
 // WI #24 (A7): the sidebar Topics tree, Unsorted and the empty state (Req 2,
 // 35, 39, 46, 52, 53; TD8; Spec TS4). Robot journeys over the whole workspace
 // with FakeVaultDb and FakeMemexCli seams.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';
 import 'package:open_memex_app/src/theme/colors.dart';

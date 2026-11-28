@@ -2,7 +2,7 @@
 // match kind for one query: a prefix first, then a substring, then letters
 // found in order. Moving the scorer out must not change this order, so the
 // test passes on main as a regression guard.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db.dart';
 import 'package:open_memex_app/src/widgets/wikilink_autocomplete.dart';

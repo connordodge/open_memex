@@ -5,7 +5,7 @@
 // saved yet" (Key `tab-pending-<tabId>`), and both clear when the queued
 // save lands. The workspace opens on a local temp vault and then switches
 // to a hosted vault ref; `vaultAccessProvider` is the hosted double.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/segments.dart';

@@ -8,7 +8,7 @@
 // ancestor's style merged down to the leaf), never from the style function
 // alone, so a surface that stopped using the shared style would fail.
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/theme/typography.dart';

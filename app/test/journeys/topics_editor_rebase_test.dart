@@ -2,7 +2,7 @@
 // (`memex footer add` bumps its version), the editor rebases onto the returned
 // version, reading the stored note through VaultAccess.notes, and keeps the
 // unsaved text and title. The footer write goes through VaultAccess.daily.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';

@@ -8,7 +8,7 @@
 // `spellIssuesHint`, its semantics flags on a real semantics tree.
 import 'dart:ui' as ui;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/spell_issues.dart';

@@ -1,6 +1,6 @@
 // WI #70 (W0a) AC8–AC10: guardVaultWrite and the two L17 snackbars (Req 50,
 // Req 33; design pack 70: A11 state 4 snackbar).
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
 import 'package:open_memex_app/src/theme/app_theme.dart';

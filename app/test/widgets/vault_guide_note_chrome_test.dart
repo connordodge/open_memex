@@ -1,7 +1,7 @@
 // WI #262 (F10): what a `role: guide` note looks like when it is open: a
 // read-only title (Key `guide-title`, no `editor-title`), and a note menu
 // without `Delete note` and `Open graph`.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';

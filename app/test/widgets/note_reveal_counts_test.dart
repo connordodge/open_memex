@@ -9,7 +9,7 @@
 // Callers navigate first and request second (D3b).
 //
 // Never pumpAndSettle the workspace (OmDot pulses forever): pumpFrames only.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/graph/graph_scope.dart';
 import 'package:open_memex_app/src/state/note_reveal.dart';

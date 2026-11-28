@@ -3,7 +3,7 @@
 // field survive a save, focus follows a re-split, arrows keep working after
 // one, unsaved edits survive an excerpt removal, and the inline error lives
 // until another note opens.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 

@@ -1,6 +1,6 @@
 // WI #99 (H5): the lead rulings and the contracts the red tests left open,
 // pinned in the verify pass. Both dialogs, one host (the shared harness).
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/vault_ref.dart';
 import 'package:open_memex_app/src/widgets/hosted/create_on_server_dialog.dart';

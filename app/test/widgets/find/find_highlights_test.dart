@@ -7,7 +7,7 @@
 // and line top comes from the field's own line boxes; the box is 17 px tall
 // and 3 px below the top of its 22.95 px body line (pack 83).
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/editor_rows.dart';

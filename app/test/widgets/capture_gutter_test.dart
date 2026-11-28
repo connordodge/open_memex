@@ -3,7 +3,7 @@
 // `capture-gutter`) beside the daily person field marks the lines of each
 // `agent` and `quick-entry` block, with the C5 hover caption; person blocks
 // get none. Line positions come from the blocks' UTF-8 byte ranges.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/segments.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';

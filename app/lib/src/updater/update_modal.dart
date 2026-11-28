@@ -1,6 +1,6 @@
 // WI #38 (A4; Spec #31 req 10, 15, 16, 16a, 17, 18, 22, 23; D2, D4, D14,
 // D15, D17): the update modal and the version label that opens it.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../state/agent_activity.dart';

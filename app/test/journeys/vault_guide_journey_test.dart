@@ -1,6 +1,6 @@
 // WI #262 (F10) journey: open the Vault Guide from the Topics sidebar, then
 // edit and save its body in the normal editor. The title stays read-only.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';

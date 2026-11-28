@@ -1,7 +1,7 @@
 // WI #434 (Spec #392): the per-field spelling issue registry, the scope that
 // hands one note editor's registry to its fields (inserted at the root of
 // SegmentedBody and SourceSurface), and the shared `pumpSpellingEditor`.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/spell_issues.dart';
 import 'package:open_memex_app/src/widgets/editor/segmented_body.dart';

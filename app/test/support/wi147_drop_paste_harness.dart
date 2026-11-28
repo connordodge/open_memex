@@ -21,7 +21,7 @@
 import 'dart:io';
 
 import 'package:flutter/gestures.dart' show PointerDeviceKind, kSecondaryButton;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/app_exit.dart' show appWindowChannel;

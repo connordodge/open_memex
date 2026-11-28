@@ -94,11 +94,10 @@ class HostedAttachmentsAccess implements AttachmentsAccess {
     required this.vaultName,
     UrlOpener? urlOpener,
     FileRevealer? fileRevealer,
-    String? openCacheRoot,
+    this._openCacheRoot,
     int maxCachedBytes = hostedAttachmentCacheMaxBytes,
   }) : _opener = urlOpener ?? SystemUrlOpener(),
        _revealer = fileRevealer ?? SystemFileRevealer(),
-       _openCacheRoot = openCacheRoot,
        _lru = _ByteLru(maxCachedBytes);
 
   final HostedClient client;

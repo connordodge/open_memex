@@ -11,7 +11,7 @@
 // The real workspace over the shared Find fixture ([pumpWi85]), whose daily
 // note gains three blocks; the topic note's card transcludes them. Find is
 // opened the way the native menu does it ([Wi85.openOn]).
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/find_in_note.dart';
 import 'package:open_memex_app/src/state/attachments_state.dart';

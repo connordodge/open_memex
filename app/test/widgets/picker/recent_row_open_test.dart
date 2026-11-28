@@ -6,7 +6,7 @@
 // buttons and no menu. A tap still calls `onOpen`.
 // Seams: wi361_rows (bare rows over mock prefs, FakeFileRevealer), real
 // temp vault folders.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/vault_open_hosted.dart';
 import 'package:open_memex_app/src/state/vault_ref.dart';

@@ -5,7 +5,7 @@
 // screen shows. Writes that are not saves run through guardVaultWrite (L17)
 // and keep their revision bump; a Smart Folder, settings or topic write that
 // throws VaultUnreachableException shows the snackbar and changes nothing.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
 import 'package:open_memex_app/src/state/smart_folder_actions.dart';

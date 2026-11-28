@@ -3,7 +3,7 @@
 // FakeMemexCli's `update` handler (ReviewFakes.onUpdate) stands in for the
 // server (D9): it writes the new body into FakeVaultDb and bumps
 // `day_reviews.content_version` when the person section changes.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/segments.dart';
 import 'package:open_memex_app/src/theme/colors.dart';

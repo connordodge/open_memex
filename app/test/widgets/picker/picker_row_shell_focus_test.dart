@@ -5,7 +5,7 @@
 // its `onTap` once per key press (a held key's repeats are ignored). Bare
 // shells in a MaterialApp; the probes look at the focus and the borders
 // drawn, never at private state.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/theme/colors.dart';

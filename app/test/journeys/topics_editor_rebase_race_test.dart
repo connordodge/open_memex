@@ -4,7 +4,7 @@
 // first daily note back into the editor: that would put the old note id,
 // version and text under the note on screen and the next save would write the
 // wrong note.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';

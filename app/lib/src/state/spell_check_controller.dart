@@ -121,20 +121,16 @@ class SpellCheckController {
   static int debugEvaluations = 0;
 
   SpellCheckController({
-    required String noteId,
-    required SpellIssueSink sink,
+    required this._noteId,
+    required this._sink,
     required SpellSession Function() session,
     required SpellingService Function() service,
-    AppClock clock = const SystemClock(),
-    SpellFlags flags = _off,
+    this._clock = const SystemClock(),
+    this._flags = _off,
     Set<String> learnedKeys = const {},
     this.footerStartOf,
-  }) : _noteId = noteId,
-       _sink = sink,
-       _sessionOf = session,
+  }) : _sessionOf = session,
        _serviceOf = service,
-       _clock = clock,
-       _flags = flags,
        _learned = learnedKeys;
 
   final SpellIssueSink _sink;

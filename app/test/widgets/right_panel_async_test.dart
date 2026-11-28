@@ -2,7 +2,7 @@
 // content on screen, a vault switch never shows the previous vault's rows,
 // and a hosted first load shows the A12 loading state (VaultAsyncView).
 // Completer-gated doubles extend the local domain classes (D21).
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db.dart' show LinkRow;

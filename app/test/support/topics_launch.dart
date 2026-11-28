@@ -1,6 +1,6 @@
 // WI #87 (W3): launches the whole workspace on a Topics vault with recording
 // domain doubles served through `vaultAccessProvider`.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';

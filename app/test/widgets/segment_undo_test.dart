@@ -12,7 +12,7 @@
 //   write): Cmd+Z then changes nothing.
 // Every test runs on macOS (mac_editing.dart, TS7); time moves only through
 // pump durations (no wall-clock waits).
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';

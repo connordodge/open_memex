@@ -3,7 +3,7 @@
 // leaving keeps the text field, a guide note keeps a marker line as text, a
 // one-row footer has no gap row, a removed tag the vault gets back shows again, and the x's key handler activates on key down
 // only and swallows exactly the keys it uses.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/segments.dart';

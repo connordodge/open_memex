@@ -6,7 +6,7 @@
 // The editor tests pump the real note editor (`pumpSpellingEditor`, macOS)
 // and read rows through the rows host (`wi132_idle_rows.dart`). Helpers carry
 // the `_t132c`/`wi132` prefix. Text is synthetic.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/widgets/editor/text_segment.dart';

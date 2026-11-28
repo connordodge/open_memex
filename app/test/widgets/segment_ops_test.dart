@@ -15,7 +15,7 @@
 //   the range into the focused row without moving focus (no text input
 //   client change) and commits at the range start.
 // Every test runs on macOS (mac_editing.dart, TS7).
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/editor_rows.dart';

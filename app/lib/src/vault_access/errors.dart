@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// A vault write or read that could not reach the vault server (Req 50, L17):
 /// connection refused or no response within 10 s. Only the hosted

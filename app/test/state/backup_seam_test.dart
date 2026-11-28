@@ -4,7 +4,7 @@
 // `backup_seam_stubs_a1..a4_test.dart`; no filler edits this file.
 import 'dart:io';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/cli/backup_cli.dart';

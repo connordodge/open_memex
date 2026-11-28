@@ -6,7 +6,7 @@
 // Wi88GatedGraph (extends LocalGraphAccess, D21) to hold a read open.
 // vaultDbProvider is null, so a view still fed from the database directly
 // would show nothing at all.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/graph/graph_scope.dart';

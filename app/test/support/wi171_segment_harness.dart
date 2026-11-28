@@ -5,7 +5,7 @@
 // (segment_ops_test.dart, segment_undo_test.dart); mac_editing.dart is
 // frozen (D16).
 import 'package:flutter/gestures.dart' show PointerDeviceKind, kSecondaryButton;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';

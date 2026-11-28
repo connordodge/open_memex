@@ -6,7 +6,7 @@
 //
 // Fonts are the flutter_test fallback at the harness text scale (0.5). Note
 // content is invented. Test names use no apostrophes.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/graph/graph_scope.dart';

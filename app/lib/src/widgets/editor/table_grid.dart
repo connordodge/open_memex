@@ -295,10 +295,8 @@ class _Cell extends SingleChildRenderObjectWidget {
 /// measures) by their min height (the grid's row height once the grid
 /// places it, else 0).
 class _RenderCell extends RenderShiftedBox {
-  _RenderCell({required double padding, required double inset})
-    : _padding = padding,
-      _inset = inset,
-      super(null);
+  _RenderCell({required this._padding, required this._inset})
+    : super(null);
 
   double _padding;
   set padding(double value) {
@@ -392,14 +390,11 @@ class _RenderTableGrid extends RenderBox
         ContainerRenderObjectMixin<RenderBox, _CellParentData>,
         RenderBoxContainerDefaultsMixin<RenderBox, _CellParentData> {
   _RenderTableGrid({
-    required String text,
-    required ParsedTable table,
-    required TextScaler textScaler,
-    required Color headerBand,
-  }) : _text = text,
-       _table = table,
-       _textScaler = textScaler,
-       _headerBand = headerBand;
+    required this._text,
+    required this._table,
+    required this._textScaler,
+    required this._headerBand,
+  });
 
   String _text;
   ParsedTable _table;
@@ -608,11 +603,9 @@ final class _GridGeometry implements LineBoxSource {
     required String text,
     required this.table,
     required this.layout,
-    required List<_RenderCell> cells,
-    required List<List<LineBox>> cellLines,
-  }) : _cells = cells,
-       _cellLines = cellLines,
-       codeSpans = _codeSpans(text, table);
+    required this._cells,
+    required this._cellLines,
+  }) : codeSpans = _codeSpans(text, table);
 
   @override
   final RenderBox box;

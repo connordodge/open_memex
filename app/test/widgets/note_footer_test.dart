@@ -5,7 +5,7 @@
 // and footer alike (Connor, 2026-11-09).
 import 'dart:math' as math;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/segments.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';

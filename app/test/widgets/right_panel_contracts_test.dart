@@ -3,7 +3,7 @@
 //   the empty state (no partial rows), local and hosted (lead ruling).
 // - agentChangesAsyncProvider: a hosted vault (no local db) is not V5-gated;
 //   a local V4 vault yields empty without reading or throwing.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db.dart';

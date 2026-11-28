@@ -14,7 +14,7 @@
 // There is no board panel for the error row (pack 405), so nothing here is a
 // golden against the board.
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/theme/app_theme.dart';

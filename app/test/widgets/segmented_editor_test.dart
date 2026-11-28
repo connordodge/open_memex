@@ -2,7 +2,7 @@
 // footer chips, the Source toggle, saving through join, focus moves and
 // autocomplete in segments. Runs the whole workspace on FakeVaultDb +
 // FakeMemexCli (D20); widgets are found by the Spec's TS4 Keys.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/segments.dart';

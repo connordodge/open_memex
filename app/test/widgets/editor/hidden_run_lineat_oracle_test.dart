@@ -9,7 +9,7 @@
 // hidden run ends the whole text (no line break after it), the shape of an
 // editor row ending in hidden markup, and for lines, boxesFor and
 // caretRect, not only lineAt.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';

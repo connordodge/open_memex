@@ -3,7 +3,7 @@
 // Comment action under every entry. F10: Restore on an entry that a guide
 // revision names. Neither feature's own tests had both on one tab, so a merge
 // that kept only one of them would have passed both suites.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/app_harness.dart';

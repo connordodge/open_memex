@@ -9,7 +9,7 @@
 // `computeLineMetrics()`, never from the adapter under test. Live preview
 // lines are measured in the real editor (pumpSpellingEditor), so the theme's
 // even leading and the controller strut apply (run 20261102-221 lesson).
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';

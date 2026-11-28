@@ -12,7 +12,7 @@
 //
 // Never pumpAndSettle the workspace (OmDot pulses forever): pumpFrames only.
 // Test names use no apostrophes.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/screens/workspace.dart';

@@ -10,7 +10,7 @@
 // count fails by assertion.
 //
 // Helpers carry the `_t132`/`wi132` prefix. Text is synthetic.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/widgets/editor/paragraph_line_boxes.dart';
 import 'package:open_memex_app/src/widgets/editor/segment_view.dart';

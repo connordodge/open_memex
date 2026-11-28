@@ -9,7 +9,7 @@
 // Stable Keys: topics-new-topic, new-topic-title-field, new-topic-confirm,
 // wikilink-popover-create, inline-error, inline-error-dismiss, editor-body,
 // sidebar-mode-topics, topics-unsorted-<noteId>.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db/daily_reads.dart';
 import 'package:open_memex_app/src/state/daily_state.dart';

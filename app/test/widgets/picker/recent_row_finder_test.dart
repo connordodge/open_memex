@@ -7,7 +7,7 @@
 // Seams: vault_picker_harness (the full-screen picker; Finder is never
 // pressed there), wi361_rows (bare rows with a FakeFileRevealer), real temp
 // vault folders. Never a real Finder.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';

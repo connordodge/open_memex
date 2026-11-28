@@ -12,7 +12,7 @@
 // (reset, snapshot by name, delta) has its own tests.
 import 'dart:ui' as ui show BoxHeightStyle;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';

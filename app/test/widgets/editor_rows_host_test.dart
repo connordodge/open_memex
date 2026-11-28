@@ -21,7 +21,7 @@
 // - Composition points (D8): keyboard, pointer and selection-ops
 //   pass-throughs and the undo recorder, called once per applied edit.
 import 'package:flutter/gestures.dart' show PointerDeviceKind;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

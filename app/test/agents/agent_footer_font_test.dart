@@ -7,7 +7,7 @@
 // out in the bundled font, 267 px wide (the sidebar's 268 px less its 1 px
 // border), and checks that both hint lines stay on screen at text scale 1.0
 // and 1.3.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart' show RenderParagraph;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';

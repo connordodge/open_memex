@@ -8,7 +8,7 @@
 // recording notes/canvas domains that extend the local classes (D21) and
 // forward to them, so each write reaches the FakeMemexCli as today. Never
 // pumpAndSettle the workspace.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db.dart';

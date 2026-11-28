@@ -9,7 +9,7 @@
 // box (its border, the magnifier inside it and the query), 198 px at a
 // 372 px box. Widths are the design's, in the fonts the app ships
 // (wi82LoadFonts), to half a pixel.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/find_in_note.dart';
 

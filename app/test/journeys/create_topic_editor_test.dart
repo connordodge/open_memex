@@ -3,7 +3,7 @@
 // (`memex footer add` bumps its version), so the editor must rebase onto the
 // returned version; the Source surface wires the same create path; the
 // virtual Today note (no row yet) has no footer to add a chip to.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';

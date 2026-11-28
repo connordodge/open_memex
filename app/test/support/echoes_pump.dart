@@ -1,6 +1,6 @@
 // #424 (391-A0): pumps the right panel's echoes tab over the echoes fakes.
 // Call `holdFontFetches()` at the top of `main()` in a file that uses it.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/clock.dart';

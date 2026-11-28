@@ -4,7 +4,7 @@
 // such menu, a drop on a folder still adds and pins, and a failed removal
 // shows the dismissible Topics error.
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';
 

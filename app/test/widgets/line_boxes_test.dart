@@ -12,7 +12,7 @@
 // Its two consumers measure through it: the capture gutter's rules span
 // their blocks' real line boxes (R33) and the `[[` popover anchors under
 // the caret's real line box (R32), with a taller line in the field.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';

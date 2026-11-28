@@ -12,7 +12,7 @@
 //
 // Geometry comes from fake line boxes (pure layout) or from a pumped field's
 // own line boxes (widget), never constants.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/theme/app_theme.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
