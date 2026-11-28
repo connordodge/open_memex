@@ -3,7 +3,7 @@
 // a MemexException shows its own text; an unreachable server shows the guard
 // snackbar and changes nothing; a Restore whose Activity entry is gone before
 // the person confirms restores nothing.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';

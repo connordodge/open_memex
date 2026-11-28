@@ -17,7 +17,7 @@
 // style is its ancestors' styles merged down to its leaf. Widths come from a
 // pumped field's own line boxes (theme even leading), never constants.
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/markdown_lines.dart';

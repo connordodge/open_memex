@@ -9,7 +9,7 @@
 // from `editorNoteAsyncProvider` (D18). The narrow-width test pumps
 // `NoteHeader` alone at the 320 px editor's content width: the full editor
 // toolbar is not part of the title row.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/semantics.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';

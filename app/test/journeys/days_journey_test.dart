@@ -1,7 +1,7 @@
 // WI #23 (A6): the sidebar Days mode and the Days/Topics switch (Req 20,
 // 49, 50, 51, 53; TD8; Spec TS4). Robot journeys over the whole workspace
 // with FakeVaultDb, FakeMemexCli and FakeClock seams.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db/daily_reads.dart';
 import 'package:open_memex_app/src/state/sidebar_mode_state.dart';

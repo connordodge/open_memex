@@ -17,7 +17,7 @@
 // Helpers carry the `_t131c` prefix. Text is invented (public repo).
 import 'dart:math' as math;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

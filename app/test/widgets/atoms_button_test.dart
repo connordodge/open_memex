@@ -2,7 +2,7 @@
 // primary / secondary / ghost / agent styling, dims to 40% when disabled and
 // gains a small (24 px) size.
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:open_memex_app/src/theme/app_theme.dart';

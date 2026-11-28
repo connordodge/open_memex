@@ -1,6 +1,6 @@
 // One row of the Outline list (Spec #58 R12-R14, R24, R29, R36, R40; WI #68),
 // design pack 68 "Row states".
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../../editor/outline.dart';
 import '../../theme/colors.dart';

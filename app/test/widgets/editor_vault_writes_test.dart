@@ -4,7 +4,7 @@
 // snackbar); a write that throws `VaultUnreachableException` shows the
 // guard's snackbar instead and changes nothing. The domains are recording
 // doubles that delegate to the FakeMemexCli unless told to throw.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/memex_cli.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';

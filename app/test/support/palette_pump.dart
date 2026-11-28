@@ -1,7 +1,7 @@
 // WI #76 (56-A2, Spec #59 D17): the Command palette test pump. #77 and #78
 // use it unchanged; this Spec owns it (and recording_tabs.dart) this run.
 // Call `holdFontFetches()` at the top of `main()` in a file that uses it.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/clock.dart';

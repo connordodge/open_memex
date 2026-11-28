@@ -1,7 +1,7 @@
 // WI #253 (A5): the meta rail and the right panel's tag count. The whole rail
 // is fg2 with no clock icon. A note's tags are listed only in the Note footer,
 // not the rail (Connor, 2026-11-09).
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:open_memex_app/src/editor/segments.dart' show topicsMarker;

@@ -3,7 +3,7 @@
 // and reads no settings, so every test pumps a bare MaterialApp (no
 // ProviderScope). Exact values come from design pack #100; the lead decision
 // there makes `docs/hosted-vault.md` monospace text with a footer copy button.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';

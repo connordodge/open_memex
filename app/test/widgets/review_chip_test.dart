@@ -3,7 +3,7 @@
 // `reviewStateColor`); the chip is read-only, hover shows the review time and
 // a tap opens the right panel's Activity tab.
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db/daily_reads.dart';
 import 'package:open_memex_app/src/state/vault_state.dart';

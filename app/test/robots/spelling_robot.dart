@@ -4,7 +4,7 @@
 // these helpers address one field by the text it holds, which a
 // SegmentEditing handle cannot do for the rows of one segment.
 import 'package:flutter/gestures.dart' show PointerDeviceKind, kSecondaryButton;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart' show SemanticsNode;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';

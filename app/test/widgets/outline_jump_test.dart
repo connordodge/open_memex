@@ -7,7 +7,7 @@
 // that pin a no-op end with a control jump that does land.
 //
 // Never pumpAndSettle the workspace (OmDot pulses forever): pumpFrames only.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/outline.dart';

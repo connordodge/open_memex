@@ -2,7 +2,7 @@
 // handle from its Key. Robots, journeys and widget tests read and drive text
 // segments only through the handle, never through the field widgets inside
 // them, so a segment can be one field or several editor rows.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/editor_rows.dart';

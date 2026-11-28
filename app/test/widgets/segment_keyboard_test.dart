@@ -26,7 +26,7 @@
 // (`deleteBackward:`, `moveUp:`, ...; flutter_test's macOS key handler does
 // this for an unhandled key event) or, for Enter, inserts a newline
 // ([_wi169Press] does this).
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';

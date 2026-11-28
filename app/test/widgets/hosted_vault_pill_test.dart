@@ -8,7 +8,7 @@
 // `pill-open-failed-snackbar` with the row's copy and action. A refused
 // local pill shows #92's refusal dialog with the OPEN LOCAL VAULT eyebrow
 // (lead update on #117), and a plain failure the picker's error message.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;

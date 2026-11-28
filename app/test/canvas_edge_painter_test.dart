@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db.dart';
 import 'package:open_memex_app/src/widgets/canvas_edge_painter.dart';

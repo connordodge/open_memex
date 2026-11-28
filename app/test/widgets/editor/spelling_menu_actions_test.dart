@@ -5,7 +5,7 @@
 // learnedWordsActionsProvider and shows `Could not learn "<word>".` above
 // the editor body when it fails; the ignores go through E3's
 // SpellCheckController; two activations in one frame run one action.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/widgets/inline_error.dart';
 

@@ -6,7 +6,7 @@
 // Keyboard tests never assume which item (if any) is focused when the menu
 // opens: Up from the open menu reaches the last enabled item either way
 // (from none, or wrapping from the first), so every sequence starts with Up.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/widgets/editor/spelling_menu.dart'

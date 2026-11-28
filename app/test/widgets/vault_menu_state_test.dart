@@ -6,7 +6,7 @@
 // - The divider is the pack's 9-high `line2` rule.
 // Seams: wi361_rows (a bare region over mock prefs), real temp vault folders.
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/vault_ref.dart';

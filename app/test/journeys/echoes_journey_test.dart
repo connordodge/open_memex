@@ -17,7 +17,7 @@
 // pumpAndSettle the workspace (OmDot pulses forever).
 import 'dart:convert';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';
 import 'package:open_memex_app/src/state/right_panel_tab.dart';

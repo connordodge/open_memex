@@ -9,7 +9,7 @@
 //   - a read error that is not a VaultUnreachableException leaves the tab's
 //     own body and never marks the tab loaded;
 //   - the shared `workspaceTabTitle(ref, tab)` gives the title the chip shows.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db.dart';

@@ -5,7 +5,7 @@
 // the IME keep their keys. `sendKeyEvent` returns whether Flutter handled
 // the key: true for a list-line Tab and an R5 edge, false when the default
 // Tab applies.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';

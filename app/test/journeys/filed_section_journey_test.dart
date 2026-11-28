@@ -8,7 +8,7 @@
 // does not depend on. Here the journey asserts the vault holds the open
 // ExcerptMovedCorrection with the Why? text after the section re-reads; F9
 // AC 6 pins how the row looks.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db/feedback_reads.dart';
 import 'package:open_memex_app/src/state/vault_access_state.dart';

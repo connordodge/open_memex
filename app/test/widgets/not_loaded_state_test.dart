@@ -26,7 +26,7 @@
 //   workspace bumps vaultRevisionProvider exactly once (no other transition
 //   bumps it), and a not-loaded tab reads its content once more and renders
 //   it without a reopen.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';

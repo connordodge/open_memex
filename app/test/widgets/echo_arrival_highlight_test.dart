@@ -4,7 +4,7 @@
 // that changes while the highlight shows, and a target that is gone or a
 // highlight that has faded out completely. They pin the mutants the merge gate
 // found surviving. Plain widget tests on fake async, no workspace.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/editor_rows.dart' show RowKind;
 import 'package:open_memex_app/src/widgets/editor/echo_arrival_highlight.dart';

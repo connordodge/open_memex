@@ -4,7 +4,7 @@
 // the line below the text, and the line break is the only character with a
 // box to find them by; the lazy line boxes must give the line main's
 // whole-text measurement gave (LineBoxOracle).
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/widgets/editor/line_boxes.dart';

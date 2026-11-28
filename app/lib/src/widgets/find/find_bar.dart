@@ -6,7 +6,7 @@
 // design/55-find-in-note/packs/82.md (boards B1, B3, B4).
 import 'dart:math' show max;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';

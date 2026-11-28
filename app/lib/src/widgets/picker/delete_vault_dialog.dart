@@ -1,5 +1,5 @@
 // WI #350 (Spec #347 req 7–16, 19, 20): the delete-vault confirm.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';

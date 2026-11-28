@@ -17,7 +17,7 @@
 // Tests assert behaviour, not pixels (D18): rects come from the seam and
 // the widgets' own render boxes.
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';

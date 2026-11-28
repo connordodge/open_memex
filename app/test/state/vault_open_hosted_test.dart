@@ -8,7 +8,7 @@
 // no network, never the real Keychain.
 import 'dart:io';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/screens/vault_picker.dart';
 import 'package:open_memex_app/src/screens/workspace.dart';

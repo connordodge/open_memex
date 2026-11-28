@@ -3,7 +3,7 @@
 // person's line (the segmented body carries each end of its selection through
 // `carrySelection`), and Source mode follows the merged text, so the next
 // keystroke builds on it instead of saving over the server's change.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';
 import 'package:open_memex_app/src/widgets/editor/segmented_body.dart'

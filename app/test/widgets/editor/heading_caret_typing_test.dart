@@ -8,7 +8,7 @@
 // rect `RenderEditable.getLocalRectForCaret` at the selection must sit on
 // the trailing edge of the just-typed character's box from the same
 // editable's `getBoxesForSelection`, never a hard-coded x.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';

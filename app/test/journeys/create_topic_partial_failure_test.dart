@@ -2,7 +2,7 @@
 // `memex footer add` fails. The note stays (no rollback), a dismissible inline
 // error says it was created but not linked and carries the CLI message, and
 // the vault views refresh so the note shows under Unsorted.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db/daily_reads.dart';
 import 'package:open_memex_app/src/state/tabs_state.dart';

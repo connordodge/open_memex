@@ -1,7 +1,7 @@
 // WI #22 (A5), beyond the ACs: the unsaved virtual Today note has no meta
 // rail and no review chip (it was never updated or reviewed), while a saved
 // daily note keeps both.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/db.dart';

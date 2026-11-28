@@ -4,7 +4,7 @@
 // `rye`, steps to the card match and the table match, types in the body
 // with the bar open, then presses Esc in the field and lands in the editor
 // with the current body match selected.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/find_in_note.dart';
 import 'package:open_memex_app/src/state/note_reveal.dart';

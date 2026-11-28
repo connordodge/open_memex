@@ -2,7 +2,7 @@
 // the test author's ACs — the folder selection rules behind `+ New Smart
 // Folder`, the dialogs' focus and indentation, and the vault settings
 // surface's validation and read failure.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
 

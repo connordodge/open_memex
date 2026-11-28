@@ -2,7 +2,7 @@
 // Today's daily note is open and clean; the server (FakeVaultDb) gets an
 // agent, quick-entry or footer write with a new `updated_at`, and the fake
 // clock drives the 2 s poll. No real timers.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/conflict_merge.dart';
 import 'package:open_memex_app/src/editor/segments.dart';

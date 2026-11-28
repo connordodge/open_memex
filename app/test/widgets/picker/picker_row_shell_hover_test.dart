@@ -4,7 +4,7 @@
 // returns to rest when the pointer leaves. Bare shells in a MaterialApp; the
 // probes read the fill drawn and drive a real mouse pointer.
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/theme/colors.dart';
 import 'package:open_memex_app/src/widgets/picker/server_row.dart';

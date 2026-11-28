@@ -9,7 +9,7 @@
 // debounce never fires unless a test advances it, so "with the clock not
 // advanced" is exact. Never pumpAndSettle the workspace (OmDot pulses
 // forever): pumpFrames only.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/state/editor_controller.dart';

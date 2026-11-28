@@ -12,7 +12,7 @@
 // Helpers carry the `wi132`/`Wi132` prefix so stacked siblings never
 // collide. Text is synthetic (public repo).
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_memex_app/src/editor/editor_rows.dart';
